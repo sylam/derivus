@@ -1,0 +1,63 @@
+# Requirements
+
+In order to run Derivus, an nvidia video card with compute capability 6.1 or above (and 
+corresponding drivers) is strongly recommended. Most of the modules listed here can simply be installed via pip but may require a full build environment (with a C/C++ compiler). The
+[Anaconda](https://www.continuum.io/anaconda-overview) python distribution already comes with many
+of the below packages already installed. The required packages are:
+
+[Python](http://www.python.org/)>=3.6
+
+- Only python 3.6 and above is supported
+
+[Numpy](http://numpy.scipy.org/)>=1.16.1
+
+- Earlier versions could work but have not been tested.
+
+[Scipy](http://scipy.org/)>=1.2.2
+
+- Currently only required for interpolation and numerical integration. Again, earlier versions could
+work but have not been tested.
+
+[Pandas](http://pandas.pydata.org/)>=1.0
+
+- Earlier versions could work but have not been tested.
+
+[Pytorch](https://pytorch.org/)>=2.0
+
+- This is the computational library that evaluates tensors either on CPU or GPU.
+
+[pyparsing](https://github.com/pyparsing/pyparsing)
+
+- Required for simple parsing of time grids. Not declared directly: it arrives as a dependency of
+  matplotlib, which `setup.py` installs.
+
+[sortedcontainers](https://grantjenks.com/docs/sortedcontainers/)>2.0
+
+- Required for the ordered tenor/expiry maps a volatility surface is built from.
+
+## Optional requirements
+
+[NVIDIA CUDA drivers and SDK](http://developer.nvidia.com/object/gpucomputing.html)
+
+- Needed for GPU code execution. This is needed by Pytorch if GPU computation is required
+
+[Matplotlib](https://matplotlib.org/)>=3.0.0
+
+- Needed for generating plots of risk factors and simulated paths
+
+[arch](https://arch.readthedocs.io/)>=6.0
+
+- Only needed to CALIBRATE `GARCHSpotModel`. The import is lazy, so the library installs and
+  simulates without it; `pip install derivus[garch]` adds it.
+
+[mkdocs](http://www.mkdocs.org/)>=0.16
+
+- Needed for building this documentation.
+- Additional documentation dependencies are 
+  - Math formatting is done via [pymdown-extensions](https://facelessuser.github.io/pymdown-extensions/) (specifically the `pymdownx.arithmatex` extension).
+  - Theming is done via [mkdocs-material](https://squidfunk.github.io/mkdocs-material/)
+
+[jupyter](https://jupyter.org/)
+
+- An interactive notebook environment that's useful for interacting with derivus via a 
+jupyter plugin called [riskflow_widgets](https://github.com/sylam/riskflow_widgets).

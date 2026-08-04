@@ -1,0 +1,456 @@
+{
+ "Calc": {
+  "Calculation": {
+   "Object": "HedgeMonteCarlo",
+   "Time_Grid": "0d 1d(1d)",
+   "Base_Date": {
+    ".Timestamp": "2025-12-01"
+   },
+   "Simulation_Batches": 5,
+   "Batch_Size": 4096,
+   "Random_Seed": 1234,
+   "Currency": "USD",
+   "Calendar": "Chicago",
+   "Execution_Mode": "solve_hedge",
+   "Hedging_Problem": {
+    "History_Lookback_Business_Days": 30,
+    "Tradable_Instruments": {
+     "CommodityFutureDeal": {
+      "PL_M1": {
+       "Maturity_Date": {
+        ".Timestamp": "2026-01-30"
+       },
+       "Currency": "USD",
+       "Carry": "PLATINUM_CARRY",
+       "Repo_Rate": "USD-SOFR",
+       "Commodity": "PLATINUM_CME",
+       "Contract_Size": 50
+      },
+      "PL_M2": {
+       "Maturity_Date": {
+        ".Timestamp": "2026-04-30"
+       },
+       "Currency": "USD",
+       "Carry": "PLATINUM_CARRY",
+       "Repo_Rate": "USD-SOFR",
+       "Commodity": "PLATINUM_CME",
+       "Contract_Size": 50
+      },
+      "PL_M3": {
+       "Maturity_Date": {
+        ".Timestamp": "2026-07-31"
+       },
+       "Currency": "USD",
+       "Carry": "PLATINUM_CARRY",
+       "Repo_Rate": "USD-SOFR",
+       "Commodity": "PLATINUM_CME",
+       "Contract_Size": 50
+      }
+     },
+     "CashAccountDeal": {
+      "USD_CASH": {
+       "Currency": "USD",
+       "Investment_Horizon": {
+        ".Timestamp": "2026-04-05"
+       },
+       "Discount_Rate": "USD-SOFR"
+      }
+     }
+    },
+    "Portfolio_State": {
+     "Positions": {
+      "PL_M1": 0,
+      "PL_M2": 0,
+      "PL_M3": 0
+     },
+     "Cash_Balances": {
+      "USD_CASH": 125000.0
+     },
+     "Settlement_Prices": {
+      "PL_M1": 1666.7819,
+      "PL_M2": 1674.7606,
+      "PL_M3": 1673.2864
+     },
+     "Margin_Balances": {
+      "USD_CASH": 0.0
+     },
+     "Initial_Margin": {
+      "PL_M1": {
+       "Method": "per_contract",
+       "Amount": 7084.0
+      },
+      "PL_M2": {
+       "Method": "per_contract",
+       "Amount": 7118.0
+      },
+      "PL_M3": {
+       "Method": "per_contract",
+       "Amount": 7111.0
+      }
+     }
+    },
+    "Objective": {
+     "Object": "AsymmetricUtility_Huber",
+     "Huber_Aversion": 6.0,
+     "Huber_Delta": 1.0
+    },
+    "Liabilities": {
+     "FloatingEnergyDeal": {
+      "PLAT_JUL29": {
+       "Currency": "USD",
+       "Sampling_Type": "USD",
+       "FX_Sampling_Type": "USD",
+       "Discount_Rate": "USD-SOFR",
+       "Commodity": "PLATINUM_CME.LME_CME",
+       "Reference_Type": "PLATINUM",
+       "Payer_Receiver": "Receiver",
+       "Payments": {
+        "Items": [
+         {
+          "Payment_Date": {
+           ".Timestamp": "2026-04-05"
+          },
+          "Period_Start": {
+           ".Timestamp": "2026-03-01"
+          },
+          "Period_End": {
+           ".Timestamp": "2026-03-31"
+          },
+          "Volume": 2500.0,
+          "Fixed_Basis": -1696.5043849902409,
+          "Price_Multiplier": 1.0,
+          "FX_Period_Start": {
+           ".Timestamp": "2026-03-01"
+          },
+          "Realized_Average": 0.0,
+          "FX_Period_End": {
+           ".Timestamp": "2026-03-31"
+          },
+          "FX_Realized_Average": 0.0
+         }
+        ]
+       }
+      }
+     }
+    },
+    "Evaluator": {
+     "Object": "DynamicHedgeEvaluator",
+     "Accounting_Mode": "futures",
+     "Cash_Instruments": [
+      "USD_CASH"
+     ],
+     "Force_Flat_At_End": "Yes",
+     "Transaction_Cost_Per_Unit": 0.0,
+     "Bid_Offer_Spread_Bps": 10.0,
+     "Position_Limits": {
+      "PL_M1": {
+       "Min_Position": -50,
+       "Max_Position": 0
+      },
+      "PL_M2": {
+       "Min_Position": -50,
+       "Max_Position": 0
+      },
+      "PL_M3": {
+       "Min_Position": -50,
+       "Max_Position": 0
+      }
+     },
+     "Total_Position_Abs_Limit": 50
+    },
+    "Randomize_Initial_State": "Yes",
+    "Solver": {
+     "Object": "DiffSolverV2",
+     "Training_Action_Grid_Levels_Per_Axis": 9,
+     "Training_Action_Chunk_Size": 64,
+     "T_Min": 0,
+     "DiffV2_Fit_Iters": 60,
+     "DiffV2_Hidden": 32,
+     "DiffV2_LR": 0.002,
+     "DiffV2_Cost_Aware_Argmax": "Yes",
+     "DiffV2_Per_Column_Grad_Norm": "Yes"
+    }
+   },
+   "Inner_Sub_Batch": 64,
+   "Inner_MC_Enabled": "Yes",
+   "Inner_Antithetic": "Yes"
+  },
+  "MergeMarketData": {
+   "MarketDataFile": "./tests/fixtures/data/MarketDataRF_platinum_calibrated_cme.json",
+   "ExplicitMarketData": {
+    "System Parameters": {
+     "Base_Currency": "USD"
+    },
+    "Price Factors": {
+     "FxRate.USD": {
+      "Domestic_Currency": "",
+      "Interest_Rate": "USD-SOFR",
+      "Spot": 1.0
+     },
+     "CommodityPrice.PLATINUM_CME": {
+      "Currency": "USD",
+      "Interest_Rate": "USD-SOFR",
+      "Forward_Rate": "PLATINUM_CARRY",
+      "Spot": 1661.4839212399793,
+      "Property_Aliases": ""
+     },
+     "ObservedBasis.PLATINUM_CME.LME_CME": {
+      "Spot": 15.516078760020719
+     },
+     "ReferencePrice.PLATINUM": {
+      "Fixing_Curve": {
+       ".Curve": {
+        "meta": [],
+        "data": [
+         [
+          40000,
+          40000
+         ],
+         [
+          50000,
+          50000
+         ]
+        ]
+       }
+      },
+      "ForwardPrice": null,
+      "Property_Aliases": ""
+     },
+     "ForwardRate.PLATINUM_CARRY": {
+      "Currency": "USD",
+      "Curve": {
+       ".Curve": {
+        "meta": [],
+        "data": [
+         [
+          46052.0,
+          0.019101862781714447
+         ],
+         [
+          46142.0,
+          0.019101862781714447
+         ],
+         [
+          46234.0,
+          0.010529935346836326
+         ]
+        ]
+       }
+      }
+     },
+     "InterestRate.USD-SOFR": {
+      "Day_Count": "ACT_365",
+      "Currency": "USD",
+      "Sub_Type": null,
+      "Curve": {
+       ".Curve": {
+        "meta": [],
+        "data": [
+         [
+          0.00274,
+          0.041197641949844
+         ],
+         [
+          0.005479,
+          0.0410813304328302
+         ],
+         [
+          0.008219,
+          0.04096415595212
+         ],
+         [
+          0.010959,
+          0.0408461182020768
+         ],
+         [
+          0.013699,
+          0.0407272168737958
+         ],
+         [
+          0.016438,
+          0.0406074516560607
+         ],
+         [
+          0.019178,
+          0.0404868222372606
+         ],
+         [
+          0.038356,
+          0.0395764377776972
+         ],
+         [
+          0.057534,
+          0.0390220634314241
+         ],
+         [
+          0.082192,
+          0.0390400006065218
+         ],
+         [
+          0.164384,
+          0.0381132618207482
+         ],
+         [
+          0.246575,
+          0.037679013407221
+         ],
+         [
+          0.328767,
+          0.0373518645767814
+         ],
+         [
+          0.410959,
+          0.0370490786899835
+         ],
+         [
+          0.493151,
+          0.0367508713082242
+         ],
+         [
+          0.575342,
+          0.0364315757694925
+         ],
+         [
+          0.657534,
+          0.0360875240762256
+         ],
+         [
+          0.739726,
+          0.0357246710104634
+         ],
+         [
+          0.821918,
+          0.0353830710782128
+         ],
+         [
+          0.90411,
+          0.0350606231995822
+         ],
+         [
+          0.986301,
+          0.034741297744969
+         ],
+         [
+          1.068493,
+          0.0344427789212554
+         ],
+         [
+          1.150685,
+          0.0341762726812434
+         ],
+         [
+          1.232877,
+          0.0339374143401417
+         ],
+         [
+          1.315068,
+          0.0337222346732153
+         ],
+         [
+          1.39726,
+          0.0335267590732743
+         ],
+         [
+          1.479452,
+          0.0333470084165862
+         ],
+         [
+          1.561644,
+          0.033181647099187
+         ],
+         [
+          1.643836,
+          0.0330389184625474
+         ],
+         [
+          1.726027,
+          0.0329162303154852
+         ],
+         [
+          1.808219,
+          0.0328094340735923
+         ],
+         [
+          1.890411,
+          0.032714378431973
+         ],
+         [
+          1.972603,
+          0.032626909948893
+         ],
+         [
+          2.0,
+          0.0325987228269069
+         ],
+         [
+          4.0,
+          0.032533223677521
+         ],
+         [
+          5.0,
+          0.0330246324812472
+         ],
+         [
+          6.0,
+          0.0336497030540895
+         ],
+         [
+          7.0,
+          0.0343293643393802
+         ],
+         [
+          8.0,
+          0.0350240532470301
+         ],
+         [
+          9.0,
+          0.0357223063269848
+         ],
+         [
+          10.0,
+          0.0364148051353963
+         ],
+         [
+          11.0,
+          0.0370853632320912
+         ],
+         [
+          12.0,
+          0.0377167729141465
+         ],
+         [
+          15.0,
+          0.0392824045608397
+         ],
+         [
+          20.0,
+          0.0406123549351613
+         ],
+         [
+          25.0,
+          0.0406485002766695
+         ],
+         [
+          30.0,
+          0.0400162765531144
+         ]
+        ]
+       }
+      }
+     },
+     "ForwardPriceSample.USD": {
+      "Offset": 0,
+      "Holiday_Calendar": "New York",
+      "Sampling_Convention": "ForwardPriceSampleDaily"
+     }
+    },
+    "Valuation Configuration": {
+     "FloatingEnergyDeal": {
+      "ForwardCurve": "Components"
+     }
+    }
+   }
+  },
+  "CalendDataFile": "./tests/fixtures/data/calendars.cal"
+ }
+}

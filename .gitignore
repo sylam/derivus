@@ -1,0 +1,38 @@
+/build/
+/dist/
+/derivus.egg-info/
+/site/
+/tmp/
+/.idea/
+/.idea/derivus.iml
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+tests/_stepper_out*/
+
+# generated docs site (derivus_docs.py output)
+/docs/
+/mkdocs.yml
+
+# trained checkpoints
+*.pt
+
+# data/ is where you drop real market data. Exchange settlements, open interest and curve
+# history are licensed by their providers and are not ours to redistribute, so nothing here is
+# tracked. The suite's own inputs live in tests/fixtures/. See README, Market data.
+/data/
+
+# artifacts/ is output: decks, fits, calibrated dumps, sweep and run directories - all
+# regenerable from data plus a config. Nothing here is tracked.
+/artifacts/
+
+# gates/ holds the acceptance harnesses. One-off investigations - "how wrong is X, and does Y
+# fix it" - are measurements rather than source: what they establish belongs in the docs, so the
+# harnesses themselves stay local.
+/gates/*
+!/gates/wf_smoke_gate.sh
+!/gates/golden_worlds.py
+
+# Reference notebooks from Huge & Savine (github.com/differential-machine-learning/notebooks).
+# Third-party work under its own licence - kept locally, not redistributed here.
+/notebooks/Differential*.ipynb
