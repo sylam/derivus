@@ -36,6 +36,14 @@ import test_barrier_bridge as bb
 MONTHLY = [[bb.BASE + pd.Timedelta(days=d), 90.0] for d in range(30, 366, 30)]
 DISCRETE_BARRIER = dict(bb.BARRIER_DEAL, Barrier_Dates=MONTHLY)
 
+# The oracle differences two nearly-equal float32 prices, so what it can resolve is set by the
+# backend's rounding, not by the code under test. Under CUDA the ladder converges; on CPU it does
+# not - the discrete-barrier gate reads 8.70% flatness against a 7.84% disagreement - and by this
+# suite's own rule a reading taken off an unflat ladder gates nothing. Skipping is honest;
+# widening the tolerance to make CPU pass would pin Monte Carlo noise.
+needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(),
+                                reason='CRN oracle is float32-precision-limited off CUDA')
+
 QUARTERLY = [bb.BASE + pd.Timedelta(days=d) for d in (91, 182, 273, 365)]
 
 
@@ -549,6 +557,7 @@ def test_the_barrier_latch_is_what_the_residual_is():
 
 # ------------------------------------------------------- acceptance, xfail until the change lands
 
+@needs_cuda
 def test_discrete_barrier_latch_gradient_matches_bump_and_reprice():
     """The already-hit latch in pv_discrete_barrier_option. A discretely monitored knock-out really
     is worth nothing once it crosses, so the jump is genuine product economics and must NOT be
@@ -564,6 +573,7 @@ def test_discrete_barrier_latch_gradient_matches_bump_and_reprice():
     assert r.agrees(tol=0.05), f'{r}'
 
 
+@needs_cuda
 def test_collateralised_barrier_latch_gradient_matches_bump_and_reprice():
     """The same defect with collateral in the way, which is the harder half: a gross-mtm delta
     reaches the net through Vte AND through the balance the collateral scan produces, so a fix
@@ -613,6 +623,7 @@ def _fva(spot, gradient, batch=1024, mcmc=192):
     return float(g.loc[[i for i in g.index if 'EquityPrice' in str(i[0])][0]])
 
 
+@needs_cuda
 def test_fva_gradient_carries_the_boundary_term_too():
     """FVA reads the same exposure as CVA, so it drops the same boundary terms - and it is the path
     that matters in production, because the shipped batch job DELETES the CVA section, so a

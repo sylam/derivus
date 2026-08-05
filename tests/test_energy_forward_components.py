@@ -39,7 +39,11 @@ def _t0_mark(forward_curve):
     cx.load_json((jsonlib.dumps(cfg), f'components_{forward_curve}.json'))
     _, out = cx.run_job()
     t0 = out.bundle.liability_mtm[0]
-    assert t0.std().item() == 0.0, 't0 mark must be deterministic across paths'
+    # float32: the paths agree bit-for-bit under CUDA's reduction order and to 1 ULP under the
+    # CPU's (eps at this magnitude is ~0.009), so measure the spread against the mark rather
+    # than demanding an exact zero. Real path-dependence would be orders of magnitude larger.
+    assert t0.std().item() <= 1e-6 * abs(t0.mean().item()), \
+        f't0 mark must be deterministic across paths, spread {t0.std().item()}'
     return t0.mean().item(), cfg
 
 
