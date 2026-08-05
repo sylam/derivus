@@ -462,6 +462,10 @@ class ConstructMarkdown(object):
         logging.info(f"Source Docs : {self.docs_src_dir}")
         logging.info(f"Build Output: {self.doc_build_dir}")
 
+        # a rebuild, not an overlay: a page whose type is renamed or retired is no longer generated
+        # but was still sitting in the output, so the build published both names
+        if self.doc_build_dir.is_dir():
+            shutil.rmtree(self.doc_build_dir)
         self.doc_build_dir.mkdir(parents=True, exist_ok=True)
         generated_nav = {}
 
