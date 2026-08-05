@@ -28,8 +28,8 @@ market *quote* flows through bootstrapping rather than stopping at the calibrate
 
 **`fields.py` retirement — Instrument store declared, not yet authoritative.** 45 of the 47 deal
 types now carry a per-class `fields` list (`schema.py`), and `schema.emit_instrument` rebuilds the
-legacy three-level shape from them byte-identically, gated per type/section/descriptor. The engine
-never reads `fields.py` — `construct_instrument` takes the raw JSON — so none of this can break
+three-level `fields.mapping` shape from them byte-identically, gated per type/section/descriptor.
+The engine never reads `fields.py` — `construct_instrument` takes the raw JSON — so none of this can break
 valuation; the blast radius is the Workbench, the docs generator and the Excel add-in.
 
 The schema's inheritance turned out to be composition of named field GROUPS, not the class

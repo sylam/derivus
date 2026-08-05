@@ -19,7 +19,7 @@ Constructors dispatch on class name through the module `globals()`: `construct_c
 
 ## Registries, not functions
 
-Extension points are data. Factor discovery is three dicts (`dependant_fields`, `nested_fields`, `conditional_fields` — see [Dependency System](dependency_system.md)); process→factor wiring and calibration are registered in `Model Configuration` and `calibration_config.json`; a deal's JSON schema is a per-class `fields` list (`schema.py`), and `fields.mapping` is the legacy view `schema.emit_instrument` reproduces from it. A function that switches on a magic-string type, or a parallel dict passed alongside a primary operand, is a class-or-registry waiting to happen — flag it. Strengthen the existing primitive; do not bolt on a parallel concept or a magic-string branch.
+Extension points are data. Factor discovery is three dicts (`dependant_fields`, `nested_fields`, `conditional_fields` — see [Dependency System](dependency_system.md)); process→factor wiring and calibration are registered in `Model Configuration` and `calibration_config.json`; a deal's JSON schema is a per-class `fields` list (`schema.py`), and `fields.mapping` is the view `schema.emit_instrument` reproduces from it. A function that switches on a magic-string type, or a parallel dict passed alongside a primary operand, is a class-or-registry waiting to happen — flag it. Strengthen the existing primitive; do not bolt on a parallel concept or a magic-string branch.
 
 ## Documentation and doc generation {#documentation-and-doc-generation}
 

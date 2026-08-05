@@ -1,8 +1,8 @@
 """Per-class `fields` declarations must reproduce `fields.mapping['Instrument']` exactly.
 
 This is the gate the migration runs behind. Each class that has been migrated declares its own
-ordered field list; `schema.emit_instrument` rebuilds the legacy three-level shape from those
-declarations, and it has to come back byte-identical - because the Workbench, the docs generator
+ordered field list; `schema.emit_instrument` rebuilds the three-level `fields.mapping` shape from
+those declarations, and it has to come back byte-identical - because the Workbench, the docs generator
 and the Excel add-in all read that shape and none of them is being changed.
 
 Any difference that shows up here is NOT migration breakage. It is pre-existing drift between the

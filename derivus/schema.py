@@ -11,7 +11,7 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""Per-class field declarations, and the legacy `fields.mapping` view emitted from them.
+"""Per-class field declarations, and the `fields.mapping` view emitted from them.
 
 `fields.py` keys one descriptor per field NAME by convention, so two deals needing different valid
 values for the same field must invent a key and carry the real name elsewhere - the 21 entries in
@@ -23,26 +23,64 @@ module-level constants a class lists, not something recovered from the MRO.
 
 Nothing here is read at valuation time. `construct_instrument` takes the raw JSON and `Deal.__init__`
 stores it unfiltered, so this is authoring-time metadata: the UI, the docs generator and the Excel
-add-in. `emit_instrument()` reproduces the legacy shape exactly so none of them need to change.
+add-in. `emit_instrument()` reproduces `fields.mapping` exactly so none of them need to change.
 """
+
+
+#: `default=REQUIRED` - the author must supply it. Distinct from a default of None, which is a
+#: field the engine reads with `.get` and is content to find missing.
+REQUIRED = object()
+
+#: How `fields.mapping` renders each type for Handsontable. Rendering only: derived on the way out
+#: and never declared, which is the point - a front end that is not Handsontable ignores all of it.
+WIDGET_FORMAT = {
+    'Date': {'type': 'date', 'dateFormat': 'YYYY-MM-DD'},
+    'Float': {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}},
+    'Basis': {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}},
+    'Percent': {'type': 'numeric', 'numericFormat': {'pattern': '0.00 %'}},
+    'Integer': {'type': 'numeric', 'numericFormat': {'pattern': '0.'}},
+    'Text': {}, 'Period': {}, 'Table': {},
+}
+
+#: The `obj` token `fields.mapping` uses per type, for a table declaring its columns positionally.
+OBJ_TOKEN = {'Date': 'DatePicker', 'Float': 'Float', 'Integer': 'Integer', 'Text': 'Text',
+              'Percent': 'Percent', 'Basis': 'Basis', 'Period': 'Period', 'Table': 'ResetArray'}
+
+
+class Row(object):
+    """The ordered fields of one table row.
+
+    A table's columns were two parallel lists - names in `col_names`, rendering specs in
+    `sub_types` - matched by position, with no per-column default, type or required-ness. That is
+    why a column could not be declared nullable and why 21 columns could sit in a table of which
+    four are read: there was nothing to declare them ON.
+    """
+    __slots__ = ('fields',)
+
+    def __init__(self, fields):
+        self.fields = list(fields)
 
 
 class F(object):
     """One field of one deal.
 
-    `type` is semantic (Text/Float/Integer/Date/Choice/Table/Container); the WIDGET name is the
-    front end's business and is only reintroduced by the legacy emitter. `json_name` is the escape
-    hatch the name-keyed dict needed constantly and a per-class list needs almost never - the two
-    cashflow shapes that genuinely share a JSON key.
+    `type` is semantic (Text/Float/Integer/Date/Percent/Basis/Period/Choice/Table/Container); the
+    WIDGET name is the front end's business and is only reintroduced when emitting `fields.mapping`.
+    `json_name` is the escape hatch the name-keyed dict needed constantly and a per-class list
+    needs almost never - the cashflow shapes that genuinely share a JSON key.
+
+    A Table declares its columns as a `Row`; `tag` names the utils container the wire form uses
+    (`DateList`, `DateValueList`, `CreditSupportList`), absent for a plain array of rows.
     """
     WIDGET = {'Text': 'Text', 'Float': 'Float', 'Integer': 'Integer', 'Date': 'DatePicker',
+              'Percent': 'Float', 'Basis': 'Float', 'Period': 'Text',
               'Choice': 'Dropdown', 'Table': 'Table', 'Container': 'Container'}
 
-    __slots__ = ('name', 'type', 'default', 'description', 'values', 'obj', 'columns',
-                 'column_types', 'sub_fields', 'json_name')
+    __slots__ = ('name', 'type', 'default', 'description', 'values', 'row', 'tag',
+                 'sub_fields', 'json_name', 'obj')
 
-    def __init__(self, name, type, default=None, description=None, values=None, obj=None,
-                 columns=None, column_types=None, sub_fields=None, json_name=None):
+    def __init__(self, name, type, default=None, description=None, values=None, row=None,
+                 tag=None, sub_fields=None, json_name=None, obj=None):
         self.name = name
         self.type = type
         self.default = default
@@ -50,19 +88,26 @@ class F(object):
         # it is a key as well as a label - derive it rather than let the two drift
         self.description = description if description is not None else name.replace('_', ' ')
         self.values = values
-        self.obj = obj
-        self.columns = columns
-        self.column_types = column_types
+        self.row = row
+        self.tag = tag
         self.sub_fields = sub_fields
         self.json_name = json_name
+        # parse token on SCALARS only ('Tuple' = a dotted factor reference); tables no longer
+        # carry it, `row` and `tag` say it properly
+        self.obj = obj
 
     @property
     def key(self):
-        """The descriptor key the legacy store uses - the alias when there is one."""
+        """The key `fields.mapping` files this descriptor under - the alias when there is one."""
         return self.name
 
     def descriptor(self):
-        """This field as a legacy `fields.mapping[...]['fields']` entry."""
+        """This field as a `fields.mapping[...]['fields']` entry.
+
+        `col_names`, `sub_types` and `obj` are DERIVED from the row rather than stored: they are
+        Handsontable's rendering vocabulary, and a front end that is not Handsontable wants none
+        of it. Deriving them is also what stops the two parallel lists drifting apart.
+        """
         d = {'widget': self.WIDGET[self.type], 'description': self.description,
              'value': self.default}
         if self.json_name is not None:
@@ -71,17 +116,17 @@ class F(object):
             d['values'] = self.values
         if self.obj is not None:
             d['obj'] = self.obj
-        if self.columns is not None:
-            d['col_names'] = self.columns
-        if self.column_types is not None:
-            d['sub_types'] = self.column_types
+        if self.row is not None:
+            d['obj'] = self.tag if self.tag else [OBJ_TOKEN[f.type] for f in self.row.fields]
+            d['col_names'] = [f.name for f in self.row.fields]
+            d['sub_types'] = [dict(WIDGET_FORMAT[f.type]) for f in self.row.fields]
         if self.sub_fields is not None:
             d['sub_fields'] = self.sub_fields
         return d
 
 
 class Group(object):
-    """A named, reusable block of fields - what the legacy schema called a section.
+    """A named, reusable block of fields - what `fields.mapping` calls a section.
 
     Shared blocks (`Admin`, `FXAdmin`) are module-level constants; a class's own block is named
     `<ClassName>.Fields` by convention and built by `own()`.
@@ -94,12 +139,12 @@ class Group(object):
 
 
 def own(cls_name, fields, role='Fields'):
-    """A class's own block, named the way the legacy sections are."""
+    """A class's own block, named the way `fields.mapping`'s sections are."""
     return Group('{}.{}'.format(cls_name, role), fields)
 
 
 def emit_instrument(declared):
-    """The legacy `mapping['Instrument']` sub-tree, rebuilt from per-class declarations.
+    """The `fields.mapping['Instrument']` sub-tree, rebuilt from per-class declarations.
 
     `declared` maps deal type -> ordered list of Groups. Returns (types, sections, fields) with
     declaration order preserved: the UI lays panels out in `types[T]` order and widgets within a

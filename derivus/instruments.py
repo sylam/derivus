@@ -18,7 +18,7 @@ from functools import reduce
 
 # utility functions and constants
 from . import utils, pricing
-from .schema import F, Group, own
+from .schema import F, Group, Row, own
 
 # specific modules
 import numpy as np
@@ -473,15 +473,15 @@ EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', [
 ])
 
 QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
-    F('Price_Fixing', 'Table', default='null', obj='DateValueList', columns=['Date', 'Value'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+    F('Price_Fixing', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
     F('Settlement_Style', 'Choice', default='Physical', values=['Physical', 'Cash']),
     F('Option_On_Forward', 'Choice', default='No', values=['Yes', 'No']),
     F('Barrier', 'Float', default=0),
     F('Option_Style', 'Choice', default='European', values=['European', 'American']),
     F('Units', 'Float', default=0.0),
-    F('Barrier_Dates', 'Table', default='null', obj='DateList', columns=['Date'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}]),
-    F('Autocall_Coupons', 'Table', default='null', obj='DateValueList', columns=['Date', 'Value'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
-    F('Autocall_Thresholds', 'Table', default='null', obj='DateValueList', columns=['Date', 'Value'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+    F('Barrier_Dates', 'Table', default='null', row=Row([F('Date', 'Date')]), tag='DateList'),
+    F('Autocall_Coupons', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
+    F('Autocall_Thresholds', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
     F('Payoff_Type', 'Choice', default='Standard', values=['Standard', 'Quanto', 'Compo'])
 ])
 
@@ -489,7 +489,7 @@ QEDI_CUSTOMSWAP = Group('QEDI_CustomSwap.Fields', [
     F('Forecast_Rate', 'Text', default='', obj='Tuple'),
     F('Floating_Margin', 'Float', default=0.0),
     F('Reset_Frequency', 'Text', default='3M', obj='Period'),
-    F('Autocall_Floating', 'Table', default='null', obj='DateValueList', columns=['Date', 'Value'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}])
+    F('Autocall_Floating', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList')
 ])
 
 ADMIN = Group('Admin', [
@@ -2073,7 +2073,7 @@ class DepositDeal(Deal):
         F('Accrual_Day_Count', 'Choice', default='ACT_365', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
         F('First_Coupon_Date', 'Date', default=''),
         F('Penultimate_Coupon_Date', 'Date', default=''),
-        F('Amortisation', 'Table', default='null', obj='DateList', columns=['Date', 'Amount'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Amortisation', 'Table', default='null', row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Effective_Date', 'Date', default=''),
         F('Maturity_Date', 'Date', default=''),
         F('Payment_Frequency', 'Text', default='0M', obj='Period'),
@@ -2083,10 +2083,10 @@ class DepositDeal(Deal):
         F('Compounding', 'Choice', default='No', values=['Yes', 'No']),
         F('Rate_Currency', 'Text', default=''),
         F('FX_Reset_Offset', 'Integer', default=0),
-        F('Known_FX_Rates', 'Table', default='null', obj='DateList', columns=['Date', 'Amount'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Known_FX_Rates', 'Table', default='null', row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Amount', 'Float', default=0.0),
         F('Interest_Rate', 'Text', default='', obj='Tuple'),
-        F('Interest_Rate_Schedule', 'Table', default='null', obj='DateList', columns=['Date', 'Amount'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}])
+        F('Interest_Rate_Schedule', 'Table', default='null', row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList')
 ])]
 
 
@@ -2177,7 +2177,7 @@ class SwapInterestDeal(Deal):
         F('Discount_Rate', 'Text', default='', obj='Tuple'),
         F('Index_Tenor', 'Text', default='0M', obj='Period'),
         F('Index_Calendars', 'Text', default=''),
-        F('Known_Rates', 'Table', default='null', obj='DateList', columns=['Date', 'Amount'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Known_Rates', 'Table', default='null', row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Maturity_Date', 'Date', default=''),
         F('Interest_Rate', 'Text', default='', obj='Tuple'),
         F('Interest_Rate_Volatility', 'Text', default='', obj='Tuple'),
@@ -2188,7 +2188,7 @@ class SwapInterestDeal(Deal):
         F('Rate_Constant', 'Float', default=0.0, obj='Percent'),
         F('Compounding_Method', 'Choice', default='None', values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin', 'Exponential']),
         F('Index_Publication_Calendars', 'Text', default=''),
-        F('Amortisation', 'Table', default='null', obj='DateList', columns=['Date', 'Amount'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Amortisation', 'Table', default='null', row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Discount_Rate_Volatility', 'Text', default='', obj='Tuple'),
         F('Currency', 'Text', default=''),
         F('Swap_Rate', 'Float', default=0.0),
@@ -2695,7 +2695,7 @@ class CapDeal(Deal):
         F('Forecast_Rate', 'Text', default='', obj='Tuple'),
         F('Index_Tenor', 'Text', default='0M', obj='Period'),
         F('Index_Calendars', 'Text', default=''),
-        F('Known_Rates', 'Table', default='null', obj='DateList', columns=['Date', 'Amount'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Known_Rates', 'Table', default='null', row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Maturity_Date', 'Date', default=''),
         F('Payment_Timing', 'Choice', default='End', values=['End', 'Begin', 'Discounted']),
         F('Payment_Offset', 'Integer', default=0),
@@ -2708,7 +2708,7 @@ class CapDeal(Deal):
         F('Cap_Rate', 'Float', default=0.0),
         F('Payment_Interval', 'Text', default='3M', obj='Period'),
         F('Reset_Frequency', 'Text', default='3M', obj='Period'),
-        F('Amortisation', 'Table', default='null', obj='DateList', columns=['Date', 'Amount'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Amortisation', 'Table', default='null', row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Discount_Rate_Volatility', 'Text', default='', obj='Tuple'),
         F('Currency', 'Text', default=''),
         F('Forecast_Rate_Volatility', 'Text', default='', obj='Tuple'),
@@ -2808,7 +2808,7 @@ class FloorDeal(Deal):
         F('Forecast_Rate', 'Text', default='', obj='Tuple'),
         F('Index_Tenor', 'Text', default='0M', obj='Period'),
         F('Index_Calendars', 'Text', default=''),
-        F('Known_Rates', 'Table', default='null', obj='DateList', columns=['Date', 'Amount'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Known_Rates', 'Table', default='null', row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Maturity_Date', 'Date', default=''),
         F('Payment_Timing', 'Choice', default='End', values=['End', 'Begin', 'Discounted']),
         F('Floor_Rate', 'Float', default=0.0),
@@ -2821,7 +2821,7 @@ class FloorDeal(Deal):
         F('Index_Publication_Calendars', 'Text', default=''),
         F('Payment_Interval', 'Text', default='3M', obj='Period'),
         F('Reset_Frequency', 'Text', default='3M', obj='Period'),
-        F('Amortisation', 'Table', default='null', obj='DateList', columns=['Date', 'Amount'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Amortisation', 'Table', default='null', row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Discount_Rate_Volatility', 'Text', default='', obj='Tuple'),
         F('Currency', 'Text', default=''),
         F('Forecast_Rate_Volatility', 'Text', default='', obj='Tuple'),
@@ -2911,7 +2911,7 @@ class FloorDeal(Deal):
 class SwaptionDeal(Deal):
     fields = [ADMIN, own('SwaptionDeal', [
         F('Floating_Margin', 'Float', default=0.0),
-        F('Rate_Schedule', 'Table', default='null', obj='DateList', columns=['Date', 'Amount'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Rate_Schedule', 'Table', default='null', row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Reset_Type', 'Choice', default='Standard', values=['Standard', 'Advance', 'Arrears']),
         F('Settlement_Style', 'Choice', default='Physical', values=['Physical', 'Cash']),
         F('Index_Day_Count', 'Choice', default='ACT_365', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
@@ -2920,7 +2920,7 @@ class SwaptionDeal(Deal):
         F('Option_Expiry_Date', 'Date', default=''),
         F('Forecast_Rate_Volatility', 'Text', default='', obj='Tuple'),
         F('Settlement_Date', 'Date', default=''),
-        F('Margin_Schedule', 'Table', default='null', obj='DateList', columns=['Date', 'Amount'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Margin_Schedule', 'Table', default='null', row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Principal', 'Float', default=0.0),
         F('Index_Publication_Calendars', 'Text', default=''),
         F('Swap_Maturity_Date', 'Date', default=''),
@@ -2932,7 +2932,7 @@ class SwaptionDeal(Deal):
         F('Index_Offset', 'Integer', default=0),
         F('Index_Calendars', 'Text', default='')
 ]), own('SwaptionDeal', [
-        F('Pay_Amortisation', 'Table', default='null', obj='DateList', columns=['Date', 'Amount'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Pay_Amortisation', 'Table', default='null', row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Pay_First_Coupon_Date', 'Date', default=''),
         F('Pay_Timing', 'Choice', default='End', values=['End', 'Begin', 'Discounted']),
         F('Pay_Payment_Offset', 'Integer', default=0),
@@ -2945,7 +2945,7 @@ class SwaptionDeal(Deal):
         F('Receive_Penultimate_Coupon_Date', 'Date', default=''),
         F('Receive_Day_Count', 'Choice', default='ACT_365', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
         F('Receive_First_Coupon_Date', 'Date', default=''),
-        F('Receive_Amortisation', 'Table', default='null', obj='DateList', columns=['Date', 'Amount'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Receive_Amortisation', 'Table', default='null', row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Receive_Payment_Calendars', 'Text', default=''),
         F('Receive_Timing', 'Choice', default='End', values=['End', 'Begin', 'Discounted']),
         F('Receive_Frequency', 'Text', default='3M', obj='Period'),
@@ -3243,7 +3243,7 @@ class FXDiscreteExplicitAsianOption(Deal):
         F('Strike_Price', 'Float', default=0.0),
         F('Is_Digital', 'Choice', default='No', values=['Yes', 'No']),
         F('Underlying_Amount', 'Float', default=0.0),
-        F('Sampling_Data', 'Table', default='null', description='Sampling_Data', obj=['DatePicker', 'Float', 'Float'], columns=['Date', 'Price', 'Weight'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}])
+        F('Sampling_Data', 'Table', default='null', description='Sampling_Data', row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')]))
 ])]
 
     factor_fields = {'Currency': ['FxRate'],
@@ -3328,9 +3328,9 @@ class FXDiscreteExplicitDoubleAsianOption(Deal):
         F('Underlying_Amount', 'Float', default=0.0),
         F('Strike_Price', 'Float', default=0.0),
         F('Strike_Multiplier', 'Float', default=1.0),
-        F('Sampling_Data_1', 'Table', default='null', description='Sampling_Data_1', obj=['DatePicker', 'Float', 'Float'], columns=['Date', 'Price', 'Weight'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Sampling_Data_1', 'Table', default='null', description='Sampling_Data_1', row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')])),
         F('Sampling_Multiplier_1', 'Float', default=1.0),
-        F('Sampling_Data_2', 'Table', default='null', description='Sampling_Data_2', obj=['DatePicker', 'Float', 'Float'], columns=['Date', 'Price', 'Weight'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Sampling_Data_2', 'Table', default='null', description='Sampling_Data_2', row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')])),
         F('Sampling_Multiplier_2', 'Float', default=1.0)
 ])]
 
@@ -3405,7 +3405,7 @@ class EquityDiscreteExplicitAsianOption(Deal):
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityDiscreteExplicitAsianOption', [
         F('Is_Digital', 'Choice', default='No', values=['Yes', 'No']),
         F('Units', 'Float', default=0.0),
-        F('Sampling_Data', 'Table', default='null', description='Sampling_Data', obj=['DatePicker', 'Float', 'Float'], columns=['Date', 'Price', 'Weight'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Sampling_Data', 'Table', default='null', description='Sampling_Data', row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')])),
         F('Payoff_Type', 'Choice', default='Standard', values=['Standard', 'Quanto', 'Compo'])
 ])]
 
@@ -3491,7 +3491,7 @@ class EquityDiscreteExplicitAsianOption(Deal):
 
 class EquityBarrierBinaryOption(Deal):
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBarrierBinaryOption', [
-        F('Barrier_Dates', 'Table', default='null', obj='DateList', columns=['Date'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}]),
+        F('Barrier_Dates', 'Table', default='null', row=Row([F('Date', 'Date')]), tag='DateList'),
         F('Cash_Payoff', 'Float', default=0),
         F('Barrier_Type', 'Choice', default='Down_And_In', values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_Price', 'Float', default=0),
@@ -4164,7 +4164,7 @@ class EquityBarrierOption(Deal):
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBarrierOption', [
         F('Cash_Rebate', 'Float', default=0),
         F('Units', 'Float', default=0.0),
-        F('Barrier_Dates', 'Table', default='null', obj='DateList', columns=['Date'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}]),
+        F('Barrier_Dates', 'Table', default='null', row=Row([F('Date', 'Date')]), tag='DateList'),
         F('Barrier_Monitoring_Frequency', 'Text', default='0M', obj='Period'),
         F('Barrier_Type', 'Choice', default='Down_And_In', values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_Price', 'Float', default=0),
@@ -4783,10 +4783,10 @@ class EquitySwapLeg(Deal):
         F('Dividend_Timing', 'Choice', default='Terminal', values=['Continuous', 'Terminal']),
         F('Equity', 'Text', default='', obj='Tuple'),
         F('Equity_Volatility', 'Text', default='', obj='Tuple'),
-        F('Equity_Known_Prices', 'Table', default='null', obj='DateEqualList', columns=['Date', 'Asset Price', 'FX Rate'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Equity_Known_Prices', 'Table', default='null', row=Row([F('Date', 'Date'), F('Asset Price', 'Float'), F('FX Rate', 'Float')]), tag='DateEqualList'),
         F('Effective_Date', 'Date', default=''),
         F('First_Coupon_Date', 'Date', default=''),
-        F('Known_Dividends', 'Table', default='null', obj='DateEqualList', columns=['Date', 'Value'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Known_Dividends', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateEqualList'),
         F('Maturity_Date', 'Date', default=''),
         F('Payment_Calendars', 'Text', default=''),
         F('Payment_Frequency', 'Text', default='0M', obj='Period'),
@@ -5274,7 +5274,7 @@ class FXTARFOptionDeal(Deal):
         F('LeverageNotional', 'Float', default=0),
         F('TargetAdjustment', 'Text', default=''),
         F('TargetLevel', 'Float', default=0),
-        F('TARF_ExpiryDates', 'Table', default='null', obj='DateEqualList', columns=['Fixing Date', 'Settlement Date', 'Value'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('TARF_ExpiryDates', 'Table', default='null', row=Row([F('Fixing Date', 'Date'), F('Settlement Date', 'Date'), F('Value', 'Float')]), tag='DateEqualList'),
         F('Barrier', 'Float', default=0)
 ])]
 
@@ -5531,7 +5531,7 @@ class FXBinaryOption(FXOptionDeal):
 
 class CreditNthToDefault(Deal):
     fields = [ADMIN, own('CreditNthToDefault', [
-        F('Names', 'Table', default='null', obj=['Text'], columns=['Name'], column_types=[{}]),
+        F('Names', 'Table', default='null', row=Row([F('Name', 'Text')])),
         F('Currency', 'Text', default=''),
         F('Discount_Rate', 'Text', default='', obj='Tuple'),
         F('Effective_Date', 'Date', default=''),
@@ -5545,7 +5545,7 @@ class CreditNthToDefault(Deal):
         F('Buy_Sell', 'Choice', default='Buy', values=['Buy', 'Sell']),
         F('Principal', 'Float', default=0.0),
         F('Accrual_Day_Count', 'Choice', default='ACT_365', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
-        F('Amortisation', 'Table', default='null', obj='DateList', columns=['Date', 'Amount'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Amortisation', 'Table', default='null', row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('CDS_Index', 'Text', default='', obj='Tuple')
 ])]
 
@@ -5638,7 +5638,7 @@ class DealDefaultSwap(Deal):
         F('Recovery_Rate', 'Text', default='', obj='Tuple'),
         F('Name', 'Text', default=''),
         F('Buy_Sell', 'Choice', default='Buy', values=['Buy', 'Sell']),
-        F('Amortisation', 'Table', default='null', obj='DateList', columns=['Date', 'Amount'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Amortisation', 'Table', default='null', row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Calendars', 'Text', default=''),
         F('Accrual_Day_Count', 'Choice', default='ACT_365', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
         F('Currency', 'Text', default=''),
