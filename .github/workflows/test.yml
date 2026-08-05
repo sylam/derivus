@@ -16,20 +16,20 @@ permissions:
 
 jobs:
   test:
-    name: python ${{ matrix.python }}
+    name: python 3.10 (cpu)
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ['3.10', '3.11', '3.12']
 
     steps:
       - uses: actions/checkout@v4
 
+      # 3.10 to match the development environment. No version matrix: derivus is a pure-python
+      # wheel (py3-none-any, no ext_modules, no version-gated syntax), so a second interpreter
+      # runs the same suite for the same answer. What this job buys that a local run does not is
+      # a clean-room install on a machine that is not the author's, exercising the CPU path.
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
+          python-version: '3.10'
           cache: pip
 
       # CPU wheels first, so installing the package finds torch already satisfied and never
