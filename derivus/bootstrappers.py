@@ -344,8 +344,8 @@ class HestonNandiModelParameters(object):
         ['For Risk Neutral simulation, the Heston-Nandi GARCH(1,1) model is calibrated to a set of European',
          'options $J$ on a spot underlying. The model is ASSET CLASS AGNOSTIC - the *Underlying* may be any',
          'spot (0D) price factor (**FxRate**, **EquityPrice**, **CommodityPrice**, **FuturesPrice**) and the',
-         '*Volatility* any (moneyness, expiry) vol surface (**FXVol**, **EquityPriceVol**,',
-         '**CommodityPriceVol**); the type of each is looked up from the price factors, or named explicitly',
+         '*Volatility* any (moneyness, expiry) vol surface (**VolatilityGrid**, whatever the asset',
+         'class); the type of each is looked up from the price factors, or named explicitly',
          'with *Underlying_Type* / *Volatility_Type*. Under the locally risk neutral valuation relationship',
          '(LRNVR) $\\lambda^*=-\\frac{1}{2}$, so the model is parameterised directly in $\\gamma^*$:',
          '',
@@ -397,7 +397,7 @@ class HestonNandiModelParameters(object):
     # factor and the volatility any (moneyness, expiry) surface, so one instrument definition
     # serves FX, equity and commodity underlyings
     factor_types = {'Underlying': ['FxRate', 'EquityPrice', 'CommodityPrice', 'FuturesPrice'],
-                    'Volatility': ['FXVol', 'EquityPriceVol', 'CommodityPriceVol'],
+                    'Volatility': ['VolatilityGrid'],
                     'Discount_Rate': ['InterestRate'],
                     'Yield': ['DividendRate', 'InterestRate']}
     # Surface_Types whose vol at a strike is a TABLE LOOKUP, hence usable here. SVI/Skew are
@@ -412,8 +412,7 @@ class HestonNandiModelParameters(object):
     @classmethod
     def resolve(cls, instrument, field, price_factors):
         """The factor named by instrument[field], typed by the first candidate that exists in the
-        price factors (the FXVol/EquityPriceVol probe of GBMAssetPriceTSModelParameters,
-        generalised) or by an explicit instrument[field + '_Type']. None if the field is unset."""
+        price factors, or by an explicit instrument[field + '_Type']. None if the field is unset."""
         if not instrument.get(field):
             return None
         rate = utils.check_rate_name(instrument[field])
@@ -676,14 +675,11 @@ class GBMAssetPriceTSModelParameters(object):
             if market_factor.type == 'GBMAssetPriceTSModelPrices':
                 # get the vol surface
                 implied_param = utils.check_rate_name(implied_params['instrument']['Asset_Price_Volatility'])
-                if 'FXVol.' + implied_params['instrument']['Asset_Price_Volatility'] in price_factors:
-                    vol_factor = utils.Factor('FXVol', utils.check_rate_name(
-                        implied_params['instrument']['Asset_Price_Volatility']))
-                    is_fx = True
-                else:
-                    vol_factor = utils.Factor('EquityPriceVol', utils.check_rate_name(
-                        implied_params['instrument']['Asset_Price_Volatility']))
-                    is_fx = False
+                vol_factor = utils.Factor('VolatilityGrid', implied_param)
+                # asset class is a property of the UNDERLYING, not of its vol surface: one
+                # VolatilityGrid serves every asset class, so this asks whether the thing being
+                # modelled is an fx rate rather than which type its surface was declared under
+                is_fx = utils.check_tuple_name(utils.Factor('FxRate', rate[1:])) in price_factors
 
                 # this shouldn't fail - if it does, need to log it and move on
                 try:

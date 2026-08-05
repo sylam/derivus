@@ -1231,30 +1231,17 @@ class HullWhite2FactorModelParameters(Factor1D):
         return params
 
 
-class CommodityPriceVol(Factor2D):
-    field_desc = ('Commodity',
-                  ['- **Surface**: *Curve* object consisting of (moneyness, expiry, volatility) triples. Flat',
-                   'extrapolated and linearly interpolated. All Floats.'
-                   ])
+class VolatilityGrid(Factor2D):
+    """A (moneyness, expiry) vol surface, whatever the underlying asset class.
 
-    def __init__(self, param):
-        super(CommodityPriceVol, self).__init__(param)
-
-
-class FXVol(Factor2D):
+    FXVol, EquityPriceVol and CommodityPriceVol were three empty `Factor2D` subclasses differing
+    only in their docstring, and three schema declarations that had drifted apart - FX and commodity
+    could not author the SVI/Skew surfaces the class has always supported. The variation that
+    matters is the SUBTYPE, `(Surface_Type, Moneyness_Rule)`, not the asset class: asset class is a
+    property of the UNDERLYING, which keeps its own distinct factor types."""
     field_desc = ('Fx And Equity',
-                  ['- **Surface**: *Curve* object consisting of (moneyness, expiry, volatility) triples. Flat',
-                   'extrapolated and linearly interpolated. All Floats.'
-                   ])
-
-    def __init__(self, param):
-        super(FXVol, self).__init__(param)
-
-
-class EquityPriceVol(Factor2D):
-    field_desc = ('Fx And Equity',
-                  ['- **Surface Type**: Can be either "Explicit", "SVI" or "Skew"',
-                   '- **Surface**: *Curve* object consisting of (moneyness, expiry, volatility) triples. Flat'
+                  ['- **Surface Type**: Can be either "Explicit", "SVI", "Skew" or "Malz"',
+                   '- **Surface**: *Curve* object consisting of (moneyness, expiry, volatility) triples. Flat',
                    'extrapolated and linearly interpolated. All Floats. Only used if Surface Type is Explicit',
                    '- **ATM_Ref**: Used by Skew and SVI surfaces',
                    '- **ATM_Vol**: Used by Skew and SVI surfaces',
@@ -1262,8 +1249,6 @@ class EquityPriceVol(Factor2D):
                    '- Skew Parameters - *s*, *L*, *R*, *C*, *D*, *lam*, *rho*'
                    ])
 
-    def __init__(self, param):
-        super(EquityPriceVol, self).__init__(param)
 
 
 class InterestYieldVol(Factor3D):

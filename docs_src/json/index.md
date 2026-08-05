@@ -240,7 +240,7 @@ override for any section already defined in the MarketDataFile specified above. 
             "Interest_Rate": "ZAR-SWAP.ZAR-USD-BASIS",
             "Spot": 0.0566318758176227
           },
-          "FXVol.USD.ZAR": {
+          "VolatilityGrid.USD.ZAR": {
             "Surface": {
               ".Curve": {
                 "meta": [

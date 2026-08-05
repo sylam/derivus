@@ -62,7 +62,7 @@ def _cfg(hn):
                            'Issuer': '', 'Respect_Default': 'No', 'Jump_Level': 0.0},
         'DividendRate.EQ': {'Currency': 'USD', 'Floor': None,
                             'Curve': utils.Curve([], [[0.01, 0.01], [5.0, 0.01]])},
-        'EquityPriceVol.EQ': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+        'VolatilityGrid.EQ': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
                               'Surface': utils.Curve([], [[m, t, 0.25] for m in (0.8, 1.0, 1.2)
                                                           for t in (0.02, 2.0)])},
         'HestonNandiModelParameters.EQ': dict(HN, Property_Aliases=None),

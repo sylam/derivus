@@ -19,7 +19,8 @@ import re
 
 import pytest
 
-from derivus import bootstrappers, calculation, fields, instruments, riskfactors, stochasticprocess
+from derivus import (bootstrappers, calculation, fields, instruments, riskfactors, stochasticprocess,
+                      utils)
 
 MAPPING = fields.mapping
 INSTRUMENT = MAPPING['Instrument']
@@ -187,6 +188,34 @@ def test_bootstrapped_market_prices_are_declared():
     UI or found in the docs. `CSForwardPriceModelPrices` sat in that state."""
     undeclared = bootstrapped_market_factor_types() - set(MAPPING['MarketPrices']['types'])
     assert not undeclared, f'bootstrapped types absent from the schema: {sorted(undeclared)}'
+
+
+RETIRED_VOL_TYPES = ('FXVol', 'EquityPriceVol', 'CommodityPriceVol')
+
+
+def test_the_retired_vol_types_stay_retired():
+    """Three empty `Factor2D` subclasses whose bodies differed only in a docstring, and three schema
+    declarations that had drifted apart - FX and commodity could not author the SVI/Skew surfaces
+    `Factor2D.get_subtype` has always supported, and only commodity declared Currency.
+
+    What varies is the SUBTYPE, not the asset class: asset class belongs to the UNDERLYING, whose
+    types (FxRate / EquityPrice / CommodityPrice) stay distinct and are what the bootstrapper reads
+    it from. One `VolatilityGrid` replaces all three, in the classes, the schema, the discovery
+    registries and the deals' `factor_fields`."""
+    assert hasattr(riskfactors, 'VolatilityGrid')
+    back = [n for n in RETIRED_VOL_TYPES if hasattr(riskfactors, n)]
+    assert not back, f'retired vol classes are back in riskfactors: {back}'
+
+    declared = {n for n in RETIRED_VOL_TYPES
+                if n in MAPPING['Factor']['types'] or n in MAPPING['Process_factor_map']}
+    assert not declared, f'retired vol types are back in the schema: {sorted(declared)}'
+
+    referenced = sorted({f'{n}.{f}' for n, c in deal_classes().items()
+                         for f, types in getattr(c, 'factor_fields', {}).items()
+                         if set(types) & set(RETIRED_VOL_TYPES)})
+    assert not referenced, f'deals still reference a retired vol type: {referenced}'
+    assert utils.TwoDimensionalFactors == ['VolatilityGrid'], (
+        f'the 2D factor registry disagrees: {utils.TwoDimensionalFactors}')
 
 
 def test_docs_publish_only_real_market_price_names():

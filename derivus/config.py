@@ -668,16 +668,20 @@ class Config(object):
                 ['Currency'], instrument.field['Currency'], instrument.field['Reference_Type']).split('.')))] if
             instrument.field['Currency'] != params[utils.check_tuple_name(
                 utils.Factor('ForwardPrice', (instrument.field['Reference_Type'],)))]['Currency'] else [],
-            'ForwardPrice': lambda instrument, factor_fields, params: [utils.Factor('FXVol', tuple(
+            'ForwardPrice': lambda instrument, factor_fields, params: [utils.Factor('VolatilityGrid', tuple(
                 sorted([instrument.field['Currency'], factor_fields['Currency']])))] if
             instrument.field['Currency'] != factor_fields['Currency'] else [],
-            'EquityPriceVol': lambda instrument, factor_fields, params:
+            # one VolatilityGrid now serves every asset class, so this fires for an fx or commodity
+            # surface too - it must test the INSTRUMENT for the quanto shape rather than rely on the
+            # factor type to have meant "equity"
+            'VolatilityGrid': lambda instrument, factor_fields, params:
             [utils.Factor('Correlation', tuple('EquityPrice.{0}/FxRate.{1}'.format(
                 instrument.field['Equity_Volatility'],
                 '.'.join(sorted([instrument.field['Currency'], instrument.field['Payoff_Currency']]))
-            ).split('.'))), utils.Factor('FXVol', tuple(
+            ).split('.'))), utils.Factor('VolatilityGrid', tuple(
                 sorted([instrument.field['Currency'], instrument.field['Payoff_Currency']])))
-             ] if instrument.field['Currency'] != instrument.field.get(
+             ] if getattr(instrument, 'field', {}).get('Equity_Volatility') is not None
+            and instrument.field['Currency'] != instrument.field.get(
                 'Payoff_Currency', instrument.field['Currency']) else [],
             # SpotModel switch pulls in the <SpotModel>ModelParameters.<equity> static factor
             'EquityPrice': lambda instrument, factor_fields, params:

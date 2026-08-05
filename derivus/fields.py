@@ -19,6 +19,11 @@ num_format = {
     'currency': {'pattern': '0,0.00'}
 }
 
+# FXVol/EquityPriceVol/CommodityPriceVol were three declarations of one thing. What varies is the
+# SUBTYPE (Surface_Type, Moneyness_Rule), not the asset class, so there is one type and one list.
+_VOLATILITY_GRID = ["Surface_Type", "Surface", "Moneyness_Rule", "Delta_Surface", "ATM_Ref", "ATM_Vol",
+                    "a", "b", "s", "L", "R", "C", "D", "lam", "rho", "m", "sigma", "Currency"]
+
 # this whole thing could be stored as a json file . . .
 mapping = {
     'Calibration': {
@@ -191,17 +196,12 @@ mapping = {
                 ["Value"],
             "CommodityPrice":
                 ["Spot", "Currency", "Interest_Rate"],
-            "CommodityPriceVol":
-                ["Surface_Type", "Surface", "Moneyness_Rule", "Delta_Surface", "Currency"],
             "CSForwardPriceModelParameters":
                 ["Sigma", "Alpha"],
             "HestonNandiModelParameters":
                 ["Omega", "Alpha", "Beta", "Gamma_Star", "H0"],
             "ConvenienceYield":
                 ["Curve", "Currency"],
-            "EquityPriceVol":
-                ["Surface_Type", "Surface", "ATM_Ref", "ATM_Vol", "Moneyness_Rule", "a",
-                 "b", "s", "L", "R", "C", "D", "lam", "rho", "m", "sigma"],
             "FuturesPrice":
                 ["Price"],
             "InterestYieldVol":
@@ -209,8 +209,8 @@ mapping = {
             "InflationRate":
                 ["Price_Index", "Seasonal_Adjustment", "Reference_Name", "Day_Count", "Accrual_Calendar", "Currency",
                  "Curve"],
-            "FXVol":
-                ["Surface_Type", "Surface", "Moneyness_Rule", "Delta_Surface"],
+            "VolatilityGrid":
+                _VOLATILITY_GRID,
             "EquityPrice":
                 ["Issuer", "Respect_Default", "Jump_Level", "Currency", "Interest_Rate", "Spot"],
             "FxRate":
@@ -452,14 +452,12 @@ mapping = {
     'Process_factor_map': {
         "Correlation": [],
         "CommodityPrice": ['LogOUSpotModel', 'MarkovSwitchingLogOUSpotModel', 'MarkovHMMSpotModel'],
-        "CommodityPriceVol": [],
         "ConvenienceYield": [],
-        "EquityPriceVol": [],
         "ObservedBasis": ["SingleRegimeOU1FactorKalmanModel", "BasisLinkedSpotModel"],
         "InterestYieldVol": [],
         "FuturesPrice": [],
         "InflationRate": ["HullWhite1FactorInterestRateModel", "PCAInterestRateModel"],
-        "FXVol": [],
+        "VolatilityGrid": [],
         "ForwardPrice": ["CSForwardPriceModel"],
         "ForwardRate": ["VARMixedFactorInterestRateModel"],
         "ForwardPriceVol": [],
@@ -600,7 +598,7 @@ mapping = {
                                 'values': ['', 'FxRate', 'EquityPrice', 'CommodityPrice', 'FuturesPrice']},
             'Volatility': {'widget': 'Text', 'description': 'Volatility surface price factor', 'value': ''},
             'Volatility_Type': {'widget': 'Dropdown', 'description': 'Volatility Type', 'value': '',
-                                'values': ['', 'FXVol', 'EquityPriceVol', 'CommodityPriceVol']},
+                                'values': ['', 'VolatilityGrid']},
             'Yield': {'widget': 'Text', 'description': 'Dividend/repo/convenience yield curve', 'value': ''},
             'Yield_Type': {'widget': 'Dropdown', 'description': 'Yield Type', 'value': '',
                            'values': ['', 'DividendRate', 'InterestRate']},

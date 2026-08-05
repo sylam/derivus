@@ -311,7 +311,7 @@
       "Interest_Rate": "ZAR-SWAP.ZAR-USD-BASIS",
       "Spot": 0.06185898625493325
      },
-     "CommodityPriceVol.PLATINUM": {
+     "VolatilityGrid.PLATINUM": {
       "Surface": {
        ".Curve": {
         "meta": [

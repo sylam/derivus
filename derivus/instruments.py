@@ -367,13 +367,13 @@ def get_inflation_factor(fieldname, static_offsets, stochastic_offsets, all_teno
 
 def get_fx_vol_factor(fieldname, static_offsets, stochastic_offsets, all_tenors):
     """Read the index of the fx vol price factor"""
-    return [calc_factor_index(utils.Factor('FXVol', fieldname), static_offsets, stochastic_offsets,
+    return [calc_factor_index(utils.Factor('VolatilityGrid', fieldname), static_offsets, stochastic_offsets,
                               all_tenors)]
 
 
 def get_equity_price_vol_factor(fieldname, static_offsets, stochastic_offsets, all_tenors):
     """Read the index of the Equity Price vol price factor - note we do not support more than 1 vol surface"""
-    factor_name = utils.Factor('EquityPriceVol', fieldname)
+    factor_name = utils.Factor('VolatilityGrid', fieldname)
 
     def check_surface_type(subtype, factor, stoch):
         if subtype[0] == 'SVI':
@@ -438,7 +438,7 @@ def get_forward_price_vol_factor(fieldname, static_offsets, stochastic_offsets, 
 
 def get_commoditiy_vol_factor(fieldname, static_offsets, stochastic_offsets, all_tenors):
     """Read the index of the fx vol price factor"""
-    return [calc_factor_index(utils.Factor('CommodityPriceVol', fieldname), static_offsets, stochastic_offsets,
+    return [calc_factor_index(utils.Factor('VolatilityGrid', fieldname), static_offsets, stochastic_offsets,
                               all_tenors)]
 
 
@@ -569,7 +569,7 @@ class Deal(object):
         if 'Payoff_Type' in self.field and field['Payoff_Currency'] != field['Currency']:
             field_index['Check_Payoff_Type'] = True
             corr_sign, fx_lookup = utils.check_fx_name([field['Currency'][0], field['Payoff_Currency'][0]])
-            field_index['FXVol'] = get_fx_vol_factor(fx_lookup, static_offsets, stochastic_offsets, all_tenors)
+            field_index['VolatilityGrid'] = get_fx_vol_factor(fx_lookup, static_offsets, stochastic_offsets, all_tenors)
             field_index['{}ImpliedCorrelation'.format(self.field['Payoff_Type'])] = get_implied_correlation(
                 ('EquityPrice',) + field['Equity_Volatility'], ('FxRate',) + fx_lookup, all_factors) * corr_sign
 
@@ -2862,7 +2862,7 @@ class FXDiscreteExplicitAsianOption(Deal):
     factor_fields = {'Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
                      'Discount_Rate': ['DiscountRate'],
-                     'FX_Volatility': ['FXVol']}
+                     'FX_Volatility': ['VolatilityGrid']}
 
     documentation = ('Fx And Equity', ['A path independent option described [here](#discrete-asian-options)'])
 
@@ -2933,7 +2933,7 @@ class FXDiscreteExplicitDoubleAsianOption(Deal):
     factor_fields = {'Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
                      'Discount_Rate': ['DiscountRate'],
-                     'FX_Volatility': ['FXVol']}
+                     'FX_Volatility': ['VolatilityGrid']}
 
     documentation = ('Fx And Equity', ['A path independent option described [here](#discrete-double-asian-options)'])
 
@@ -3003,7 +3003,7 @@ class EquityDiscreteExplicitAsianOption(Deal):
                      'Equity': ['EquityPrice', 'DividendRate'],
                      'Dividends': ['DividendRate'],
                      'Discount_Rate': ['DiscountRate'],
-                     'Equity_Volatility': ['EquityPriceVol']}
+                     'Equity_Volatility': ['VolatilityGrid']}
 
     documentation = ('Fx And Equity', ['A path independent option described [here](#discrete-asian-options)'])
 
@@ -3084,7 +3084,7 @@ class EquityBarrierBinaryOption(Deal):
                      'Equity': ['EquityPrice', 'DividendRate'],
                      'Dividends': ['DividendRate'],
                      'Discount_Rate': ['DiscountRate'],
-                     'Equity_Volatility': ['EquityPriceVol']}
+                     'Equity_Volatility': ['VolatilityGrid']}
 
     documentation = ('Fx And Equity', [
                      'A discrete barrier binary (digital) option priced using the same One-Step Survival (OSS)',
@@ -3195,7 +3195,7 @@ class EquityOptionDeal(Deal):
                      'Equity': ['EquityPrice', 'DividendRate'],
                      'Dividends': ['DividendRate'],
                      'Discount_Rate': ['DiscountRate'],
-                     'Equity_Volatility': ['EquityPriceVol']}
+                     'Equity_Volatility': ['VolatilityGrid']}
 
     documentation = ('Fx And Equity', ['A vanilla option described [here](./definitions.md#european-options)'])
 
@@ -3318,7 +3318,7 @@ class QEDI_CustomAutoCallSwap(Deal):
                      'Equity': ['EquityPrice', 'DividendRate'],
                      'Dividends': ['DividendRate'],
                      'Discount_Rate': ['DiscountRate'],
-                     'Equity_Volatility': ['EquityPriceVol']}
+                     'Equity_Volatility': ['VolatilityGrid']}
 
     documentation = ('Fx And Equity',
                      ['An autocallable equity swap priced using the One-Step Survival (OSS) Monte Carlo',
@@ -3529,7 +3529,7 @@ class QEDI_CustomAutoCallSwap_V2(QEDI_CustomAutoCallSwap):
                      'Equity': ['EquityPrice', 'DividendRate'],
                      'Discount_Rate': ['DiscountRate'],
                      'Forecast_Rate': ['InterestRate'],
-                     'Equity_Volatility': ['EquityPriceVol']}
+                     'Equity_Volatility': ['VolatilityGrid']}
 
     documentation = ('Fx And Equity',
                      ['An exotic Equity option described',
@@ -3596,7 +3596,7 @@ class EquityOneTouchOption(Deal):
                      'Payoff_Currency': ['FxRate'],
                      'Equity': ['EquityPrice', 'DividendRate'],
                      'Discount_Rate': ['DiscountRate'],
-                     'Equity_Volatility': ['EquityPriceVol']}
+                     'Equity_Volatility': ['VolatilityGrid']}
 
     documentation = ('Fx And Equity', [
         'A path dependent Equity Option described [here](#one-touch-and-no-touch-binary-options-and-rebates)'])
@@ -3713,7 +3713,7 @@ class EquityBarrierOption(Deal):
                      'Equity': ['EquityPrice', 'DividendRate'],
                      'Dividends': ['DividendRate'],
                      'Discount_Rate': ['DiscountRate'],
-                     'Equity_Volatility': ['EquityPriceVol']}
+                     'Equity_Volatility': ['VolatilityGrid']}
 
     documentation = ('Fx And Equity', [
                      'A path dependent barrier option priced using the One-Step Survival (OSS) Monte Carlo',
@@ -4195,7 +4195,7 @@ class EquitySwapletListDeal(Deal):
                      'Equity_Currency': ['FxRate'],
                      'Discount_Rate': ['DiscountRate'],
                      'Equity': ['EquityPrice', 'DividendRate'],
-                     'Equity_Volatility': ['EquityPriceVol']}
+                     'Equity_Volatility': ['VolatilityGrid']}
 
     documentation = ('Fx And Equity', ['Described [here](#equity-swaps)'])
 
@@ -4361,7 +4361,7 @@ class FXOneTouchOption(Deal):
                      'Payoff_Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
                      'Discount_Rate': ['DiscountRate'],
-                     'FX_Volatility': ['FXVol']}
+                     'FX_Volatility': ['VolatilityGrid']}
 
     documentation = ('Fx And Equity', [
         'A path dependent FX Option described [here](#one-touch-and-no-touch-binary-options-and-rebates)'])
@@ -4467,7 +4467,7 @@ class FXBarrierOption(Deal):
                      'Payoff_Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
                      'Discount_Rate': ['DiscountRate'],
-                     'FX_Volatility': ['FXVol']}
+                     'FX_Volatility': ['VolatilityGrid']}
 
     documentation = ('Fx And Equity', ['A path dependent FX Option described [here](#single-barrier-options)'])
 
@@ -4568,7 +4568,7 @@ class FXPartialTimeBarrierOption(Deal):
     factor_fields = {'Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
                      'Discount_Rate': ['DiscountRate'],
-                     'FX_Volatility': ['FXVol']}
+                     'FX_Volatility': ['VolatilityGrid']}
 
     documentation = ('Fx And Equity', ['A partial path dependent FX Option described [here](#partial-barrier-options)'])
 
@@ -4654,7 +4654,7 @@ class FXTARFOptionDeal(Deal):
     factor_fields = {'Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
                      'Discount_Rate': ['DiscountRate'],
-                     'FX_Volatility': ['FXVol']}
+                     'FX_Volatility': ['VolatilityGrid']}
 
     documentation = (
         'Fx And Equity', [
@@ -4775,7 +4775,7 @@ class FXOptionDeal(Deal):
     factor_fields = {'Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
                      'Discount_Rate': ['DiscountRate'],
-                     'FX_Volatility': ['FXVol']}
+                     'FX_Volatility': ['VolatilityGrid']}
 
     documentation = (
         'Fx And Equity', ['A path independent vanilla FX Option described [here](./definitions.md#european-options)'])
@@ -5279,7 +5279,7 @@ class EnergySingleOption(Deal):
                      'Sampling_Type': ['ForwardPriceSample'],
                      'FX_Sampling_Type': ['ForwardPriceSample'],
                      'Reference_Type': ['ReferencePrice'],
-                     'Reference_Volatility': ['ReferenceVol', 'CommodityPriceVol'],
+                     'Reference_Volatility': ['ReferenceVol', 'VolatilityGrid'],
                      'Payoff_Currency': ['FxRate']}
 
     documentation = ('Energy', [

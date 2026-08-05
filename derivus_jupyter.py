@@ -160,7 +160,7 @@ class TreePanel(metaclass=ABCMeta):
         def get_repr(obj, field_name, default_val):
 
             if isinstance(obj, rf.utils.Curve):
-                # {}, FXVol, FXVol.AUD.JPY, <class 'derivus.utils.Curve'>
+                # {}, VolatilityGrid, VolatilityGrid.AUD.JPY, <class 'derivus.utils.Curve'>
                 if field_name in ['Surface', 'Delta_Surface']:
                     # need to use a threeview
                     v = getattr(rf.riskfactors, rate_type)(config[section_name])
@@ -961,22 +961,24 @@ class RiskFactorsPage(TreePanel):
                             
                     elif frame_name == 'Factor':
                         # filter out unnecessary fields
-                        if key.startswith('EquityPriceVol'):
+                        # one VolatilityGrid for every asset class, so the surface-type rules that
+                        # used to be split across the equity and fx/commodity branches both apply
+                        if key.startswith('VolatilityGrid'):
                             for sub_field in frame_value.values():
                                 sub_field['isvisible'] = 'True'
-                            if frame_value['Surface_Type']['value'] == 'Explicit':
+                            surface_type = frame_value['Surface_Type']['value']
+                            if surface_type == 'Explicit':
                                 for sub_field in ["ATM_Ref", "ATM_Vol", "a", "b", "s", "L", "R", "C", "D", "lam", "rho", "m", "sigma"]:
                                     frame_value[sub_field]['isvisible'] = 'False'
-                            elif frame_value['Surface_Type']['value'] == 'SVI':
+                            elif surface_type == 'SVI':
                                 for sub_field in ["ATM_Vol", "s", "L", "R", "C", "D", "lam"]:
                                     frame_value[sub_field]['isvisible'] = 'False'
-                            elif frame_value['Surface_Type']['value'] == 'Skew':
+                            elif surface_type == 'Skew':
                                 for sub_field in ["a", "b", "m", "sigma"]:
-                                        frame_value[sub_field]['isvisible'] = 'False'
-                        elif key.startswith('FXVol') or key.startswith('CommodityPriceVol'):
-                            for sub_field in frame_value.values():
-                                sub_field['isvisible'] = 'True'
-                            if frame_value['Surface_Type']['value'] != 'Maltz':
+                                    frame_value[sub_field]['isvisible'] = 'False'
+                            # 'Maltz' here never matched the 'Malz' Factor2D.update dispatches on,
+                            # so a Malz surface had its own Delta_Surface hidden
+                            if surface_type != 'Malz':
                                 frame_value['Delta_Surface']['isvisible'] = 'False'
                                                    
                         frames.append(self.define_input((frame_name, rf.utils.check_tuple_name(factor)), frame_value))

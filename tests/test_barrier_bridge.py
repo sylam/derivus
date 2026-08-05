@@ -59,7 +59,7 @@ def _cfg():
                            'Issuer': '', 'Respect_Default': 'No', 'Jump_Level': 0.0},
         'DividendRate.EQ': {'Currency': 'USD', 'Floor': None,
                             'Curve': utils.Curve([], [[0.0, 0.0], [5.0, 0.0]])},
-        'EquityPriceVol.EQ': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+        'VolatilityGrid.EQ': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
                               'Surface': utils.Curve([], [[m, t, VOL] for m in (0.8, 1.0, 1.2)
                                                           for t in (0.02, 2.0)])},
     }
@@ -348,7 +348,7 @@ def test_digital_reports_its_equity_and_vol_factors():
             'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
             'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes'}})
     factors = {str(i[0]).split('.')[0] for i in out['Results']['grad_cva']['Gradient'].index}
-    for needed in ('EquityPrice', 'EquityPriceVol'):
+    for needed in ('EquityPrice', 'VolatilityGrid'):
         assert needed in factors, f'{needed} missing from the greeks report; got {sorted(factors)}'
 
 
