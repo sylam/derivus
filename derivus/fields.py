@@ -1425,7 +1425,7 @@ mapping = {
                                      {},
                                      {},
                                      {},
-                                     {'type': 'numeric', 'numericFormat': num_format['int']},
+                                     {'type': 'numeric', 'numericFormat': num_format['currency']},
                                      {'type': 'numeric', 'numericFormat': num_format['percent']},
                                      {},
                                      {},
@@ -1442,7 +1442,7 @@ mapping = {
             'Equity_Collateral': {'widget': 'Table', 'description': 'Equity_Collateral', 'value': 'null',
                                   'sub_types':
                                       [{},
-                                       {'type': 'numeric', 'numericFormat': num_format['float']},
+                                       {'type': 'numeric', 'numericFormat': num_format['currency']},
                                        {'type': 'numeric', 'numericFormat': num_format['percent']},
                                        {'type': 'numeric', 'numericFormat': num_format['percent']},
                                        {},
@@ -1458,7 +1458,7 @@ mapping = {
             'Commodity_Collateral': {'widget': 'Table', 'description': 'Commodity Collateral', 'value': 'null',
                                      'sub_types':
                                          [{},
-                                          {'type': 'numeric', 'numericFormat': num_format['float']},
+                                          {'type': 'numeric', 'numericFormat': num_format['currency']},
                                           {'type': 'numeric', 'numericFormat': num_format['percent']},
                                           {'type': 'numeric', 'numericFormat': num_format['percent']},
                                           {},

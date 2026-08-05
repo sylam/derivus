@@ -64,8 +64,10 @@ class Row(object):
 class F(object):
     """One field of one deal.
 
-    `type` is semantic (Text/Float/Integer/Date/Percent/Basis/Period/Choice/Table/Container); the
-    WIDGET name is the front end's business and is only reintroduced when emitting `fields.mapping`.
+    `type` is semantic (Text/Float/Integer/Date/Percent/Basis/Period/Table/Container); the WIDGET
+    name is the front end's business and is only reintroduced when emitting `fields.mapping`. A
+    choice list is not a type - it is a Text whose `values` are a fixed set, and the dropdown falls
+    out of that.
     `json_name` is the escape hatch the name-keyed dict needed constantly and a per-class list
     needs almost never - the cashflow shapes that genuinely share a JSON key.
 
@@ -74,7 +76,7 @@ class F(object):
     """
     WIDGET = {'Text': 'Text', 'Float': 'Float', 'Integer': 'Integer', 'Date': 'DatePicker',
               'Percent': 'Float', 'Basis': 'Float', 'Period': 'Text',
-              'Choice': 'Dropdown', 'Table': 'Table', 'Container': 'Container'}
+              'Table': 'Table', 'Container': 'Container'}
 
     __slots__ = ('name', 'type', 'default', 'description', 'values', 'row', 'tag',
                  'sub_fields', 'json_name', 'obj')
@@ -108,8 +110,8 @@ class F(object):
         Handsontable's rendering vocabulary, and a front end that is not Handsontable wants none
         of it. Deriving them is also what stops the two parallel lists drifting apart.
         """
-        d = {'widget': self.WIDGET[self.type], 'description': self.description,
-             'value': self.default}
+        widget = 'Dropdown' if self.values is not None else self.WIDGET[self.type]
+        d = {'widget': widget, 'description': self.description, 'value': self.default}
         if self.json_name is not None:
             d = {'name': self.json_name, **d}
         if self.values is not None:
@@ -119,9 +121,10 @@ class F(object):
         if self.row is not None:
             d['obj'] = self.tag if self.tag else [OBJ_TOKEN[f.type] for f in self.row.fields]
             d['col_names'] = [f.name for f in self.row.fields]
-            d['sub_types'] = [dict(WIDGET_FORMAT[f.type]) for f in self.row.fields]
+            d['sub_types'] = [{'type': 'dropdown', 'source': f.values} if f.values is not None
+                              else dict(WIDGET_FORMAT[f.type]) for f in self.row.fields]
         if self.sub_fields is not None:
-            d['sub_fields'] = self.sub_fields
+            d['sub_fields'] = [f.key for f in self.sub_fields]
         return d
 
 
@@ -150,11 +153,18 @@ def emit_instrument(declared):
     declaration order preserved: the UI lays panels out in `types[T]` order and widgets within a
     panel in section order, and a set-backed view scrambles both silently.
     """
+    def register(f, fields):
+        # a container's children and a table's columns are fields in their own right; the flat
+        # store needs them by key, which is also why an alias like FloatItems has to exist there
+        fields.setdefault(f.key, f.descriptor())
+        for child in (f.sub_fields or []):
+            register(child, fields)
+
     types, sections, fields = {}, {}, {}
     for deal_type, groups in declared.items():
         types[deal_type] = [g.name for g in groups]
         for g in groups:
             sections.setdefault(g.name, [f.key for f in g.fields])
             for f in g.fields:
-                fields.setdefault(f.key, f.descriptor())
+                register(f, fields)
     return types, sections, fields
