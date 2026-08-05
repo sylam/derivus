@@ -16,6 +16,7 @@ Two rules apply to everything here, from [Conventions](conventions.md):
 | Collateralised autocall boundary correction | `utils.RowBoundarySet` | An autocall settles a coupon when it fires, and a collateralised exposure reads that ledger through `C_ts_te`, but `gross_to_net` takes only an mtm delta. Shipped as a strict xfail naming the reproduction. |
 | TARF target pin | `pricing` (TARF block) | Material — fires on 27–61% of paths, 27% short uncorrected — but neither the estimator (13% bandwidth spread) nor the **oracle** (8.9% flatness) resolves better than ~10%, so it is gated structurally with no tolerance asserted. Do not tune one on: the oracle cannot see it either. |
 | `pv_partial_barrier_option` | `pricing` | Excluded from the sensitivity work by decision; wants its own review. Also carries a suspected NaN — `limit` goes negative past `Barrier_Limit_Date` and is passed to `sqrt` unclamped. **Read, not run.** |
+| Four tables the Workbench cannot save | `derivus_jupyter.set_value_from_widget` | `set_repr` picks a deserializer from the `obj` token, and for an untagged table falls to a hardcoded whitelist of field NAMES. `Names`, `Sampling_Data_1`, `Sampling_Data_2` and `Barrier_Dates` are outside it and raise. The token table is per-field knowledge the `Row` now carries — the fix is to render from the declaration, not to add a fifth token. |
 | Boundary scoping is not mutation-gated | `tests/test_boundary_pricer_events.py` | The fix is verified by measuring the term directly against CRN, but both two-netting-set gates measure the END-TO-END gradient, where the boundary term is a small fraction — so if it breaks later the suite stays green. Isolating it needs a portfolio where the correction dominates the smooth sensitivity, which is not a portfolio anyone runs. |
 
 ## Designed, not built
@@ -26,20 +27,29 @@ one carrying a boundary term. Related and also unbuilt: **calibration Jacobians*
 market *quote* flows through bootstrapping rather than stopping at the calibrated factor; and
 **Hessian-vector products** instead of materialising full Hessians.
 
-**`fields.py` retirement — Instrument store declared, not yet authoritative.** 45 of the 47 deal
-types now carry a per-class `fields` list (`schema.py`), and `schema.emit_instrument` rebuilds the
-three-level `fields.mapping` shape from them byte-identically, gated per type/section/descriptor.
-The engine never reads `fields.py` — `construct_instrument` takes the raw JSON — so none of this can break
-valuation; the blast radius is the Workbench, the docs generator and the Excel add-in.
+**`fields.py` retirement — the Instrument store is now a VIEW.** Every deal type carries a per-class
+`fields` list (`schema.py`), and `mapping['Instrument']`'s `types` / `sections` / `fields` are built
+by `schema.emit_instrument(instruments)` at import. The hand-written dict is gone — 1,283 of
+`fields.py`'s 1,932 lines. The engine never reads any of it (`construct_instrument` takes the raw
+JSON), so the blast radius is the Workbench, the docs generator and the Excel add-in.
+
+Two defect classes went with it, which is why the strict xfails guarding them are gone. A type
+naming no class: `SwapBasisDeal` and `SwapCurrencyDeal` were offered under two menus with 128
+descriptors between them and had no class in this repo or the one it came from, so creating one
+logged and returned `{}`. And a descriptor no section reaches: fifteen of them, unrenderable and
+undocumentable. Neither state is expressible when a class is the only place a field can be declared.
 
 The schema's inheritance turned out to be composition of named field GROUPS, not the class
-hierarchy: `FXAdmin` is shared by eight deals with no common base and `Admin` by all 47, so groups
-are module-level `Group` constants a class lists. An MRO-based design cannot express that.
+hierarchy: `FXAdmin` is shared by eight deals with no common base and `Admin` by all of them, so
+groups are module-level `Group` constants a class lists. An MRO-based design cannot express that.
 
-Remaining: flip the direction so `mapping['Instrument']` is GENERATED from the classes and the
-hand-written dict goes; `SwapBasisDeal`/`SwapCurrencyDeal` have no class to hold a declaration and
-need the same ruling as the strict xfail they already sit under; `bind=` (value-versus-structural
-patching) is designed but unbuilt; the other eight stores are untouched.
+`groups` stays hand-written: it is the Workbench's create-deal menu and its jsTree node kind —
+presentation, with one consumer. It is therefore the one part of the store that can still drift, so
+a gate holds every declared type to appearing in some menu. That gate found `EquityDeal` and
+`EquityOneTouchOption`, both concrete and documented, in no menu at all.
+
+Remaining: `bind=` (value-versus-structural patching) is designed but unbuilt; the other eight
+stores are untouched.
 
 The paired naming cleanup settles first, and is now done: the `MarketPrices` types the engine
 matches, one `VolatilityGrid` in place of the three asset-class vol twins, and the IR prefix chain

@@ -146,12 +146,13 @@ def own(cls_name, fields, role='Fields'):
     return Group('{}.{}'.format(cls_name, role), fields)
 
 
-def emit_instrument(declared):
-    """The `fields.mapping['Instrument']` sub-tree, rebuilt from per-class declarations.
+def emit_instrument(module):
+    """The `types` / `sections` / `fields` of `fields.mapping['Instrument']`, from the classes.
 
-    `declared` maps deal type -> ordered list of Groups. Returns (types, sections, fields) with
-    declaration order preserved: the UI lays panels out in `types[T]` order and widgets within a
-    panel in section order, and a set-backed view scrambles both silently.
+    Scans `module` for classes declaring their own `fields` list. Own-attr only, so a subclass that
+    inherits its parent's declaration does not re-emit it as a second deal type. Declaration order
+    is preserved: the UI lays panels out in `types[T]` order and widgets within a panel in section
+    order, and a set-backed view scrambles both silently, with no exception.
     """
     def register(f, fields):
         # a container's children and a table's columns are fields in their own right; the flat
@@ -161,7 +162,10 @@ def emit_instrument(declared):
             register(child, fields)
 
     types, sections, fields = {}, {}, {}
-    for deal_type, groups in declared.items():
+    for deal_type, cls in vars(module).items():
+        groups = cls.__dict__.get('fields') if isinstance(cls, type) else None
+        if not isinstance(groups, list):
+            continue
         types[deal_type] = [g.name for g in groups]
         for g in groups:
             sections.setdefault(g.name, [f.key for f in g.fields])

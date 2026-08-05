@@ -19,17 +19,17 @@ Constructors dispatch on class name through the module `globals()`: `construct_c
 
 ## Registries, not functions
 
-Extension points are data. Factor discovery is three dicts (`dependant_fields`, `nested_fields`, `conditional_fields` — see [Dependency System](dependency_system.md)); process→factor wiring and calibration are registered in `Model Configuration` and `calibration_config.json`; a deal's JSON schema is a per-class `fields` list (`schema.py`), and `fields.mapping` is the view `schema.emit_instrument` reproduces from it. A function that switches on a magic-string type, or a parallel dict passed alongside a primary operand, is a class-or-registry waiting to happen — flag it. Strengthen the existing primitive; do not bolt on a parallel concept or a magic-string branch.
+Extension points are data. Factor discovery is three dicts (`dependant_fields`, `nested_fields`, `conditional_fields` — see [Dependency System](dependency_system.md)); process→factor wiring and calibration are registered in `Model Configuration` and `calibration_config.json`; a deal's JSON schema is a per-class `fields` list (`schema.py`), and `mapping['Instrument']` is the view `schema.emit_instrument` builds from those declarations at import — not a second copy to keep in step. A function that switches on a magic-string type, or a parallel dict passed alongside a primary operand, is a class-or-registry waiting to happen — flag it. Strengthen the existing primitive; do not bolt on a parallel concept or a magic-string branch.
 
 ## Documentation and doc generation {#documentation-and-doc-generation}
 
 Developer-facing model/deal/process docs are **class attributes**, harvested at build time by `derivus_docs.py`:
 
 - `documentation` (a `(section_name, [md_lines])` tuple) on classes in `stochasticprocess.py` / `instruments.py` / `bootstrappers.py` / `calculation.py` auto-publishes the Theory / Valuation / Bootstrapping / API pages. It is read **own-attr-only** (`cls.__dict__`, not MRO) so an alias subclass does not re-emit the parent's page.
-- `fields.mapping` alone drives the JSON reference tree (`generate_json_docs`), for the `Factor`, `Process` and `Instrument` stores only.
+- `fields.mapping` alone drives the JSON reference tree (`generate_json_docs`), for the `Factor`, `Process` and `Instrument` stores only. `Instrument` reaches it from the classes via `schema.emit_instrument`; the other two are still hand-written.
 - `field_desc` on the `riskfactors.py` classes is **dead**. It is harvested into `_riskfactor_field_desc`, which nothing reads, because the `JSON_Config` section it belongs to is skipped in favour of `generate_json_docs`. Twenty-four classes carry prose that reaches no page. Wire it in or delete it; do not add more.
 
-So: model math lives **on the class**, JSON field docs in `fields.py`. This developer section links to those generated pages; it does not restate them. The doc build (`ConstructMarkdown.build`) is described in the section README.
+So for a deal, model math and JSON field docs both live **on the class**; `fields.py` still holds the eight stores that have no class to own them. This developer section links to those generated pages; it does not restate them. The doc build (`ConstructMarkdown.build`) is described in the section README.
 
 ## Comment and code style {#code-style}
 

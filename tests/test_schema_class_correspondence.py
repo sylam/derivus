@@ -66,13 +66,14 @@ def declared_fields(deal_type):
     return {f for section in INSTRUMENT['types'][deal_type] for f in INSTRUMENT['sections'][section]}
 
 
-@pytest.mark.xfail(strict=True, reason='DepositDeal / SwapBasisDeal / SwapCurrencyDeal are declared '
-                                       'but unwritten - wanted for bootstrapping and the calibration '
-                                       'Jacobians. Implementing them flips this to XPASS.')
 def test_every_declared_deal_type_is_dispatchable():
     """`construct_instrument` does `globals().get(param['Object'])`, and on a miss LOGS AN ERROR and
     returns `{}` - the deal vanishes from the portfolio rather than raising. So a schema type naming
-    no class is a deal the UI offers, the docs document, and the engine silently drops."""
+    no class is a deal the UI offers, the docs document, and the engine silently drops.
+
+    `SwapBasisDeal` and `SwapCurrencyDeal` sat in exactly that state, offered under two menus with
+    128 descriptors between them and no class in this repo or the one it came from. A type is now a
+    class that declares `fields`, so the state is unreachable rather than merely absent."""
     undispatchable = sorted(set(INSTRUMENT['types']) - set(deal_classes()))
     assert not undispatchable, (
         f'schema offers deal types that instruments.globals() cannot construct: {undispatchable}')
@@ -103,12 +104,14 @@ def test_every_section_field_has_a_descriptor():
     assert not undescribed, f'sections list fields that have no descriptor: {undescribed}'
 
 
-@pytest.mark.xfail(strict=True, reason='15 unreachable descriptors awaiting a ruling: most name '
-                                       'real unbuilt features (double/memory barrier, pivot TARF, '
-                                       'dual strike), so wiring beats deleting.')
 def test_no_dead_descriptors():
     """A descriptor no section reaches is unreachable metadata - it cannot be rendered, documented
-    or authored. Left in place it reads as coverage that does not exist."""
+    or authored. Left in place it reads as coverage that does not exist.
+
+    Fifteen sat here (double/memory barrier, pivot TARF, dual strike - real unbuilt features). They
+    were reachable only because a flat dict admits an entry no section names; a descriptor now
+    exists only by being declared on a class, so building one of those features means declaring its
+    fields on the deal that reads them."""
     used = {f for fl in INSTRUMENT['sections'].values() for f in fl}
     nested = {s for d in INSTRUMENT['fields'].values() for s in d.get('sub_fields', [])}
     dead = sorted(set(INSTRUMENT['fields']) - used - nested)

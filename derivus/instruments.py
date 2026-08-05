@@ -479,7 +479,7 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
     F('Barrier', 'Float', default=0),
     F('Option_Style', 'Text', default='European', values=['European', 'American']),
     F('Units', 'Float', default=0.0),
-    F('Barrier_Dates', 'Table', default='null', row=Row([F('Date', 'Date')]), tag='DateList'),
+    F('Barrier_Dates', 'Table', default='null', row=Row([F('Date', 'Date')])),
     F('Autocall_Coupons', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
     F('Autocall_Thresholds', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
     F('Payoff_Type', 'Text', default='Standard', values=['Standard', 'Quanto', 'Compo'])
@@ -3491,7 +3491,7 @@ class EquityDiscreteExplicitAsianOption(Deal):
 
 class EquityBarrierBinaryOption(Deal):
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBarrierBinaryOption', [
-        F('Barrier_Dates', 'Table', default='null', row=Row([F('Date', 'Date')]), tag='DateList'),
+        F('Barrier_Dates', 'Table', default='null', row=Row([F('Date', 'Date')])),
         F('Cash_Payoff', 'Float', default=0),
         F('Barrier_Type', 'Text', default='Down_And_In', values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_Price', 'Float', default=0),
@@ -4164,7 +4164,7 @@ class EquityBarrierOption(Deal):
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBarrierOption', [
         F('Cash_Rebate', 'Float', default=0),
         F('Units', 'Float', default=0.0),
-        F('Barrier_Dates', 'Table', default='null', row=Row([F('Date', 'Date')]), tag='DateList'),
+        F('Barrier_Dates', 'Table', default='null', row=Row([F('Date', 'Date')])),
         F('Barrier_Monitoring_Frequency', 'Text', default='0M', obj='Period'),
         F('Barrier_Type', 'Text', default='Down_And_In', values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_Price', 'Float', default=0),
