@@ -3069,9 +3069,7 @@ def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=True):
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     cash_start_idx = factor_dep['Cashflows'].get_cashflow_start_index(deal_time)
 
-    resets_per_cf = 2 if (factor_dep['IndexMethod'] in [
-        utils.CASHFLOW_METHOD_IndexReferenceInterpolated3M,
-        utils.CASHFLOW_METHOD_IndexReferenceInterpolated4M]) else 1
+    resets_per_cf = factor_dep['Resets_Per_Cashflow']
 
     last_published = factor_dep['Cashflows'].Resets.schedule[deal_data.Time_dep.deal_time_grid]
     last_published_index = utils.calc_time_grid_spot_rate(factor_dep['PriceIndex'], deal_time, shared)

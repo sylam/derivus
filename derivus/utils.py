@@ -100,10 +100,6 @@ CASHFLOW_INDEX_ResetOffset = 10
 CASHFLOW_INDEX_Settle = 11
 
 # Cashflow calculation methods 
-CASHFLOW_METHOD_IndexReference2M = 1
-CASHFLOW_METHOD_IndexReference3M = 2
-CASHFLOW_METHOD_IndexReferenceInterpolated3M = 3
-CASHFLOW_METHOD_IndexReferenceInterpolated4M = 4
 
 CASHFLOW_METHOD_Equity_Shares = 0
 CASHFLOW_METHOD_Equity_Principal = 1
@@ -117,10 +113,6 @@ CASHFLOW_METHOD_Compounding_None = 5
 CASHFLOW_METHOD_Fixed_Compounding_No = 0
 CASHFLOW_METHOD_Fixed_Compounding_Yes = 1
 
-CASHFLOW_IndexMethodLookup = {'IndexReference2M': CASHFLOW_METHOD_IndexReference2M,
-                              'IndexReference3M': CASHFLOW_METHOD_IndexReference3M,
-                              'IndexReferenceInterpolated3M': CASHFLOW_METHOD_IndexReferenceInterpolated3M,
-                              'IndexReferenceInterpolated4M': CASHFLOW_METHOD_IndexReferenceInterpolated4M}
 
 # reset codes - note that the first 3 fields correspond with the TIME_GRID
 # (so that a reset can be treated as a timepoint)
@@ -4087,59 +4079,39 @@ def make_equity_swaplet_cashflows(base_date, time_grid, position, cashflows, cur
     return cashflows, bus_offset
 
 
+def index_reference_samples(pricing_date, months_lag, interpolated):
+    """The (date, weight) index observations an inflation reference reads.
+
+    A non-interpolated reference reads one month-start, `months_lag` months back. An interpolated
+    one straddles two, weighted by how far into its own month the pricing date sits - so the four
+    hand-written IndexReference{2M,3M,Interpolated3M,Interpolated4M} variants were these two shapes
+    at lag 2, 3, 3 and 4. Keeping the rule and the lag separate admits any lag, which is what the
+    schema always declared and only the lookup refused.
+    """
+    if not interpolated:
+        return [((pricing_date - pd.DateOffset(months=months_lag)).to_period('M').to_timestamp('D'), 1.0)]
+
+    month_start = pricing_date.to_period('M').to_timestamp('D')
+    w = (pricing_date - month_start).days / float(
+        ((month_start + pd.DateOffset(months=1)) - month_start).days)
+    return [((pricing_date - pd.DateOffset(months=lag)).to_period('M').to_timestamp('D'), weight)
+            for lag, weight in ((months_lag, 1.0 - w), (months_lag - 1, w))]
+
+
 def make_index_cashflows(base_date, time_grid, position, cashflows, price_index, index_rate,
-                         settlement_date, reference_name, isBond=True):
+                         settlement_date, months_lag, interpolated, isBond=True):
     """
     Generates a vector of index-linked cashflows from a data source given the price_index and index_rate price factors.
     """
 
-    def IndexReference2M(pricing_date, lagged_date, resets, offsets):
-        Fixing_Day = (pricing_date - pd.DateOffset(months=2)).to_period('M').to_timestamp('D')
-        Rel_Day = (Fixing_Day - lagged_date).days
-        Value = index_rate.get_reference_value(Fixing_Day) if Fixing_Day <= lagged_date else 0.0
-
-        Time_Grid, Scenario = time_grid.get_scenario_offset(Rel_Day) if Rel_Day >= 0.0 else (0, -1)
-        resets.append([Time_Grid, Rel_Day, -1, Rel_Day, Rel_Day, 1.0, Value, 0.0])
-        offsets.append(Scenario)
-
-    def IndexReference3M(pricing_date, lagged_date, resets, offsets):
-        Fixing_Day = (pricing_date - pd.DateOffset(months=3)).to_period('M').to_timestamp('D')
-        Rel_Day = (Fixing_Day - lagged_date).days
-        Value = index_rate.get_reference_value(Fixing_Day) if Fixing_Day <= lagged_date else 0.0
-
-        Time_Grid, Scenario = time_grid.get_scenario_offset(Rel_Day) if Rel_Day >= 0.0 else (0, -1)
-        resets.append([Time_Grid, Rel_Day, -1, Rel_Day, Rel_Day, 1.0, Value, 0.0])
-        offsets.append(Scenario)
-
-    def IndexReferenceInterpolated3M(pricing_date, lagged_date, resets, offsets):
-        T1 = pricing_date.to_period('M').to_timestamp('D')
-        Sample_Day_1 = (pricing_date - pd.DateOffset(months=3)).to_period('M').to_timestamp('D')
-        Sample_Day_2 = (pricing_date - pd.DateOffset(months=2)).to_period('M').to_timestamp('D')
-        w = (pricing_date - T1).days / float(((T1 + pd.DateOffset(months=1)) - T1).days)
-        Weights = [(Sample_Day_1, (1.0 - w)), (Sample_Day_2, w)]
-
-        for Day, Weight in Weights:
+    def index_reference(pricing_date, lagged_date, resets, offsets):
+        for Day, Weight in index_reference_samples(pricing_date, months_lag, interpolated):
             Rel_Day = (Day - lagged_date).days
             Value = index_rate.get_reference_value(Day) if Day <= lagged_date else 0.0
             Time_Grid, Scenario = time_grid.get_scenario_offset(Rel_Day) if Rel_Day >= 0.0 else (0, -1)
-
             resets.append([Time_Grid, Rel_Day, -1, Rel_Day, Rel_Day, Weight, Value, 0.0])
             offsets.append(Scenario)
 
-    def IndexReferenceInterpolated4M(pricing_date, lagged_date, resets, offsets):
-        T1 = pricing_date.to_period('M').to_timestamp('D')
-        Sample_Day_1 = (pricing_date - pd.DateOffset(months=4)).to_period('M').to_timestamp('D')
-        Sample_Day_2 = (pricing_date - pd.DateOffset(months=3)).to_period('M').to_timestamp('D')
-        w = (pricing_date - T1).days / float(((T1 + pd.DateOffset(months=1)) - T1).days)
-        Weights = [(Sample_Day_1, (1.0 - w)), (Sample_Day_2, w)]
-
-        for Day, Weight in Weights:
-            Rel_Day = (Day - lagged_date).days
-            Value = index_rate.get_reference_value(Day) if Day <= lagged_date else 0.0
-            Time_Grid, Scenario = time_grid.get_scenario_offset(Rel_Day) if Rel_Day >= 0.0 else (0, -1)
-
-            resets.append([Time_Grid, Rel_Day, -1, Rel_Day, Rel_Day, Weight, Value, 0.0])
-            offsets.append(Scenario)
 
     cash = []
     cashflow_reset_offsets = []
@@ -4178,9 +4150,9 @@ def make_index_cashflows(base_date, time_grid, position, cashflows, price_index,
                  Pay_Date if settlement_date is None else -(settlement_date - base_date).days])
 
             if isBond:
-                locals()[reference_name](
+                index_reference(
                     base_reference_date, base_date, base_resets, base_scenario_offsets)
-                locals()[reference_name](
+                index_reference(
                     final_reference_date, base_date, final_resets, final_scenario_offsets)
 
     # set the cashflows
@@ -4210,7 +4182,7 @@ def make_index_cashflows(base_date, time_grid, position, cashflows, price_index,
         for eval_time in time_grid.time_grid[:, TIME_GRID_MTM]:
             actual_time = base_date + pd.DateOffset(days=eval_time)
 
-            locals()[reference_name](
+            index_reference(
                 actual_time, index_rate.param['Last_Period_Start'], time_resets, time_scenario_offsets)
 
         cashflows.set_resets(time_resets, time_scenario_offsets)
