@@ -551,12 +551,21 @@ class Descriptor:
         return self.descriptor_type.join([str(x) for x in self.data])
 
 
-class Percent:
+class Scaled(object):
+    """A number authored in one unit and stored in another; `divisor` is the whole difference.
+
+    Percent and Basis were the same class twice - identical but for the divisor, the suffix and
+    one missing `__add__`. They stay distinct NAMES because the JSON encoder picks its tag by
+    isinstance, and siblings rather than parent/child so neither is an instance of the other.
+    """
+    divisor = 1.0
+    suffix = ''
+
     def __init__(self, amount):
-        self.amount = amount / 100.0
+        self.amount = amount / self.divisor
 
     def __str__(self):
-        return '%g%%' % (self.amount * 100.0)
+        return '%g%s' % (self.amount * self.divisor, self.suffix)
 
     def __float__(self):
         return self.amount
@@ -565,9 +574,7 @@ class Percent:
         return self.amount < other.amount
 
     def __eq__(self, other):
-        if isinstance(other, Percent):
-            return self.amount == other.amount
-        return NotImplemented
+        return self.amount == other.amount if isinstance(other, type(self)) else NotImplemented
 
     def __hash__(self):
         return hash(self.amount)
@@ -581,40 +588,15 @@ class Percent:
     def __repr__(self):
         return str(self)
 
-    # define right multiply
     __rmul__ = __mul__
 
 
-class Basis:
-    def __init__(self, amount):
-        self.amount = amount / 10000.0
-        self.points = amount
+class Percent(Scaled):
+    divisor, suffix = 100.0, '%'
 
-    def __str__(self):
-        return '%d bp' % self.points
 
-    def __float__(self):
-        return self.amount
-
-    def __lt__(self, other):
-        return self.amount < other.amount
-
-    def __eq__(self, other):
-        if isinstance(other, Basis):
-            return self.amount == other.amount
-        return NotImplemented
-
-    def __hash__(self):
-        return hash(self.points)
-
-    def __mul__(self, other):
-        return self.amount * other
-
-    def __repr__(self):
-        return str(self)
-
-    # define right multiply
-    __rmul__ = __mul__
+class Basis(Scaled):
+    divisor, suffix = 10000.0, ' bp'
 
 
 class Curve:
