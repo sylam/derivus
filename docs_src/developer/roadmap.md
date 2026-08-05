@@ -27,9 +27,17 @@ market *quote* flows through bootstrapping rather than stopping at the calibrate
 **Hessian-vector products** instead of materialising full Hessians.
 
 **`fields.py` retirement.** A per-class `fields = [F(name, type, required=, units=, bind=)]`
-declaration replacing the 1,868-line name-keyed dict, with schema, UI, defaults, docs and validation
-all generated from it, and `bind=` declaring value-versus-structural patching. The paired naming
-cleanup settles first.
+declaration replacing the 1,931-line name-keyed dict, with schema, UI, defaults, docs and validation
+all generated from it, and `bind=` declaring value-versus-structural patching. The engine never
+reads `fields.py` — `construct_instrument` takes the raw JSON — so this cannot break valuation; the
+blast radius is the Workbench, the docs generator, the Excel add-in and the correspondence tests.
+
+The paired naming cleanup settles first, and is now done: the `MarketPrices` types the engine
+matches, one `VolatilityGrid` in place of the three asset-class vol twins, and the IR prefix chain
+(`InterestRate.USD.LIBOR`) **grandfathered** by decision rather than migrated to explicit spread
+declarations. `Observed_Factor` and the type-switched `ObservedBasis` tail closed themselves —
+`nested_fields` already wires FX and equity alongside commodity, and all four
+`calc_factor_code_chain` call sites agree.
 
 **PREPARE / EXECUTE.** A content-hashed `plan_id` from the structural projection, `EXECUTE` = plan
 plus a values patch, `VALIDATE` returning the whole want-list, and `(plan_hash, values_hash,

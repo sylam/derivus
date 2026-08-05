@@ -26,9 +26,10 @@ Extension points are data. Factor discovery is three dicts (`dependant_fields`, 
 Developer-facing model/deal/process docs are **class attributes**, harvested at build time by `derivus_docs.py`:
 
 - `documentation` (a `(section_name, [md_lines])` tuple) on classes in `stochasticprocess.py` / `instruments.py` / `bootstrappers.py` / `calculation.py` auto-publishes the Theory / Valuation / Bootstrapping / API pages. It is read **own-attr-only** (`cls.__dict__`, not MRO) so an alias subclass does not re-emit the parent's page.
-- `fields.mapping` + `field_desc` drive the entire JSON reference tree (`generate_json_docs`).
+- `fields.mapping` alone drives the JSON reference tree (`generate_json_docs`), for the `Factor`, `Process` and `Instrument` stores only.
+- `field_desc` on the `riskfactors.py` classes is **dead**. It is harvested into `_riskfactor_field_desc`, which nothing reads, because the `JSON_Config` section it belongs to is skipped in favour of `generate_json_docs`. Twenty-four classes carry prose that reaches no page. Wire it in or delete it; do not add more.
 
-So: model math and JSON field docs live **on the class / in `fields.py`**, not in prose pages. This developer section links to those generated pages; it does not restate them. The doc build (`ConstructMarkdown.build`) is described in the section README.
+So: model math lives **on the class**, JSON field docs in `fields.py`. This developer section links to those generated pages; it does not restate them. The doc build (`ConstructMarkdown.build`) is described in the section README.
 
 ## Comment and code style {#code-style}
 
