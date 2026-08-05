@@ -671,24 +671,22 @@ class Config(object):
             'ForwardPrice': lambda instrument, factor_fields, params: [utils.Factor('VolatilityGrid', tuple(
                 sorted([instrument.field['Currency'], factor_fields['Currency']])))] if
             instrument.field['Currency'] != factor_fields['Currency'] else [],
-            # one VolatilityGrid now serves every asset class, so this fires for an fx or commodity
-            # surface too - it must test the INSTRUMENT for the quanto shape rather than rely on the
-            # factor type to have meant "equity"
-            'VolatilityGrid': lambda instrument, factor_fields, params:
-            [utils.Factor('Correlation', tuple('EquityPrice.{0}/FxRate.{1}'.format(
+            # SpotModel params, plus the quanto pair's vol and correlation. Keyed on the
+            # UNDERLYING like ForwardPrice above: one VolatilityGrid serves every asset class.
+            'EquityPrice': lambda instrument, factor_fields, params:
+            ([utils.Factor(instrument.options['SpotModel'] + 'ModelParameters',
+                           utils.check_rate_name(instrument.field['Equity']))]
+             if instrument.options.get('SpotModel', 'None') != 'None'
+             and instrument.field.get('Equity') is not None else []) +
+            ([utils.Factor('Correlation', tuple('EquityPrice.{0}/FxRate.{1}'.format(
                 instrument.field['Equity_Volatility'],
                 '.'.join(sorted([instrument.field['Currency'], instrument.field['Payoff_Currency']]))
-            ).split('.'))), utils.Factor('VolatilityGrid', tuple(
-                sorted([instrument.field['Currency'], instrument.field['Payoff_Currency']])))
-             ] if getattr(instrument, 'field', {}).get('Equity_Volatility') is not None
-            and instrument.field['Currency'] != instrument.field.get(
-                'Payoff_Currency', instrument.field['Currency']) else [],
-            # SpotModel switch pulls in the <SpotModel>ModelParameters.<equity> static factor
-            'EquityPrice': lambda instrument, factor_fields, params:
-            [utils.Factor(instrument.options['SpotModel'] + 'ModelParameters',
-                          utils.check_rate_name(instrument.field['Equity']))]
-            if instrument.options.get('SpotModel', 'None') != 'None'
-            and instrument.field.get('Equity') is not None else [],
+            ).split('.'))),
+              utils.Factor('VolatilityGrid', tuple(
+                  sorted([instrument.field['Currency'], instrument.field['Payoff_Currency']])))]
+             if instrument.field.get('Equity_Volatility') is not None
+             and instrument.field['Currency'] != instrument.field.get(
+                 'Payoff_Currency', instrument.field['Currency']) else []),
             # FX analogue; getattr-guarded (FxRate is also visited with a bare {} sentinel)
             'FxRate': lambda instrument, factor_fields, params:
             [utils.Factor(instrument.options['SpotModel'] + 'ModelParameters',
