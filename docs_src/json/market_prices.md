@@ -5,13 +5,13 @@ model used and the necessary data required to correctly simulate a risk-neutral 
 
 Currently only FX, Equities, Commodities and IR rates may be risk neutral:
 
-- FX may be simulated via *GBMTSModelPrices*  and requires only a corresponding FX vol surface to
+- FX may be simulated via *GBMAssetPriceTSModelPrices*  and requires only a corresponding FX vol surface to
   establish average ATM vols used by the corresponding *GBMAssetPriceTSModelImplied* model. It is
   specified as follows:
 
 ```json
 {
-"GBMTSModelPrices.AUD":
+"GBMAssetPriceTSModelPrices.AUD":
   {
     "instrument": {
       "Asset_Price_Volatility": "AUD.USD"
@@ -22,13 +22,13 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
 ```
 
 - The only risk neutral IR currently available may be simulated via 
-  *HullWhite2FactorInterestRateModelPrices* and requires both a corresponding swaption volatility
+  *HullWhite2FactorModelPrices* and requires both a corresponding swaption volatility
    surface and a set of **instrument definitions** that define the forward starting swaps that
    reference the swaption vol surface. Note that again, only ATM vols are used. They are specified as:
 
 ```json
 {
-  "HullWhite2FactorInterestRateModelPrices.ZAR-JIBAR-3M": {
+  "HullWhite2FactorModelPrices.ZAR-JIBAR-3M": {
     "instrument": {
       "Swaption_Volatility": "ZAR_SMILE_ICE",
       "Property_Aliases": null,

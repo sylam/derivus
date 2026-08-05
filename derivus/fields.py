@@ -485,8 +485,8 @@ mapping = {
         # logical groupings
         'groups': {
             'MarketPrices': (
-                'group', ['InterestRatePrices', 'GBMTSModelPrices', 'HullWhite2FactorInterestRateModelPrices',
-                          'HestonNandiModelPrices']),
+                'group', ['InterestRatePrices', 'GBMAssetPriceTSModelPrices', 'HullWhite2FactorModelPrices',
+                          'HestonNandiModelPrices', 'CSForwardPriceModelPrices']),
             'PointFields': ('default', ['FRADeal', 'SwapInterestDeal', 'DepositDeal']),
         },
 
@@ -494,11 +494,13 @@ mapping = {
         'sections': {
             'InterestRatePrices':
                 ['FRADeal', 'SwapInterestDeal', 'DepositDeal'],
-            'GBMTSModelPrices':
+            'GBMAssetPriceTSModelPrices':
                 [],
-            'HullWhite2FactorInterestRateModelPrices':
+            'HullWhite2FactorModelPrices':
                 [],
             'HestonNandiModelPrices':
+                [],
+            'CSForwardPriceModelPrices':
                 []
         },
 
@@ -506,10 +508,12 @@ mapping = {
         'types': {
             "InterestRatePrices":
                 ["Currency", "Spot_Offset", "Zero_Rate_Grid", "Discount_Rate"],
-            "GBMTSModelPrices":
+            "GBMAssetPriceTSModelPrices":
                 ["Asset_Price_Volatility"],
-            "HullWhite2FactorInterestRateModelPrices":
+            "HullWhite2FactorModelPrices":
                 ["Swaption_Volatility", "Generate_Instruments", "Generation_Parameters", "Instrument_Definitions"],
+            "CSForwardPriceModelPrices":
+                ["Energy", "Forward_Volatility", "Discount_Rate", "Quote_Type", "Energy_Futures_Options"],
             "HestonNandiModelPrices":
                 ["Underlying", "Underlying_Type", "Volatility", "Volatility_Type", "Discount_Rate",
                  "Yield", "Yield_Type", "Quote_Type", "Use_Forward", "Invert_Moneyness",
@@ -574,6 +578,12 @@ mapping = {
             'Discount_Rate': {'widget': 'Text', 'description': 'Discount Rate', 'value': ''},
             'Currency': {'widget': 'Text', 'description': 'Currency', 'value': ''},
             'Asset_Price_Volatility': {'widget': 'Text', 'description': 'Asset Price Volatility', 'value': ''},
+            'Energy': {'widget': 'Text', 'description': 'Energy forward price factor', 'value': ''},
+            'Forward_Volatility': {'widget': 'Text', 'description': 'Forward Volatility', 'value': ''},
+            'Energy_Futures_Options': {'widget': 'Table', 'description': 'Energy Futures Options', 'value': 'null',
+                                       'col_names': ['Expiry_Date', 'Settlement_Date', 'Strike', 'Option_Type',
+                                                     'Units', 'Quoted_Market_Value'],
+                                       'obj': ['DatePicker', 'DatePicker', 'Float', 'Text', 'Float', 'Float']},
             'Spot_Offset': {'widget': 'Integer', 'description': 'Spot Offset', 'value': 2},
             'Zero_Rate_Grid': {'widget': 'Text', 'description': 'Zero Rate Grid',
                                'value': '0d 1d 2d 1w 2w 1m 3m 6m 9m 1y 6m1y 2y 6m2y 3y 6m3y 4y 6m4y 5y 6y 7y 8y 9y 10y 15y 20y 25y'},

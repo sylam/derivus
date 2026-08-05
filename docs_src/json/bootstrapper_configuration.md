@@ -8,7 +8,7 @@ The bootstrapper configurations so far supported are:
 ```json
 {
 "GBMAssetPriceTSModelParameters": "GBMAssetPriceTSModelPrices",
-"HullWhite2FactorModelParameters": "HullWhite2FactorInterestRateModelPrices",
+"HullWhite2FactorModelParameters": "HullWhite2FactorModelPrices",
 "CSForwardPriceModelParameters": "CSForwardPriceModelPrices",
 "HestonNandiModelParameters": "HestonNandiModelPrices"
 }
