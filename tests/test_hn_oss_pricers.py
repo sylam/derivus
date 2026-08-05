@@ -133,7 +133,7 @@ def _barrier_field(btype, bprice, bdays, horizon):
         'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': STRIKE,
         'Expiry_Date': BASE + pd.Timedelta(days=horizon), 'Units': N,
         'Barrier_Type': btype, 'Barrier_Price': bprice, 'Cash_Rebate': 0.0,
-        'Barrier_Dates': [[d, bprice] for d in bdates],
+        'Barrier_Dates': [d for d in bdates],
         'Barrier_Monitoring_Frequency': pd.DateOffset(days=1),
     }
 

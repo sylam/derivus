@@ -229,7 +229,7 @@ def test_aad_delta_matches_bump_and_reprice(deal, label):
         f'{label}: a channel through which spot moves the value is not being differentiated\n{r}')
 
 
-MONTHLY_BARRIER = [[BASE + pd.Timedelta(days=d), 90.0] for d in range(30, 366, 30)]
+MONTHLY_BARRIER = [BASE + pd.Timedelta(days=d) for d in range(30, 366, 30)]
 
 
 def test_discrete_barrier_is_observed_only_on_its_own_dates():
@@ -268,7 +268,7 @@ def _rebate_run(rebate, units):
     c = _cfg()
     c.deals['Deals']['Children'] = [{'Instrument': construct_instrument(dict(
         BARRIER_DEAL, Barrier_Price=95.0, Cash_Rebate=rebate, Units=units,
-        Barrier_Dates=[[BASE + pd.Timedelta(days=d), 95.0] for d in range(30, 366, 30)]), {})}]
+        Barrier_Dates=[BASE + pd.Timedelta(days=d) for d in range(30, 366, 30)]), {})}]
     _, out = derivus.run_cmc(c, prec=DTYPE, overrides={
         'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 1m(1m)', 'Batch_Size': 2048,
         'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
@@ -306,7 +306,7 @@ def _digital(H, btype='Down_And_Out'):
             'Strike_Price': 100.0, 'Expiry_Date': BASE + pd.Timedelta(days=365),
             'Cash_Payoff': 100.0, 'Barrier_Type': btype, 'Barrier_Price': H,
             'Settlement_Date': BASE + pd.Timedelta(days=365),
-            'Barrier_Dates': [[BASE + pd.Timedelta(days=d), H] for d in range(30, 366, 30)]}
+            'Barrier_Dates': [BASE + pd.Timedelta(days=d) for d in range(30, 366, 30)]}
 
 
 def test_digital_terminal_step_is_integrated_not_sampled():
@@ -374,7 +374,7 @@ def test_a_sold_knock_out_pays_its_rebate_rather_than_receiving_it():
     Buy and Sell must be exact mirror images. The original rebate gate only ever ran Buy, which is
     why this survived it."""
     kw = dict(Barrier_Price=95.0,
-              Barrier_Dates=[[BASE + pd.Timedelta(days=d), 95.0] for d in range(30, 361, 30)])
+              Barrier_Dates=[BASE + pd.Timedelta(days=d) for d in range(30, 361, 30)])
     buy = np.subtract(_settled(dict(kw, Buy_Sell='Buy', Cash_Rebate=5.0)),
                       _settled(dict(kw, Buy_Sell='Buy', Cash_Rebate=0.0)))
     sell = np.subtract(_settled(dict(kw, Buy_Sell='Sell', Cash_Rebate=5.0)),
@@ -396,9 +396,9 @@ def test_a_barrier_date_on_expiry_settles_its_rebate_once():
     out of reach here so the rebate is the only cash in the run."""
     expiry = BASE + pd.Timedelta(days=365)
     at_expiry = _settled({'Barrier_Price': 95.0, 'Cash_Rebate': 5.0, 'Strike_Price': 1e6,
-                          'Barrier_Dates': [[expiry, 95.0]]})[1]
+                          'Barrier_Dates': [expiry]})[1]
     earlier = _settled({'Barrier_Price': 95.0, 'Cash_Rebate': 5.0, 'Strike_Price': 1e6,
-                        'Barrier_Dates': [[BASE + pd.Timedelta(days=330), 95.0]]})[1]
+                        'Barrier_Dates': [BASE + pd.Timedelta(days=330)]})[1]
     assert at_expiry < 1.5 * earlier, (
         f'rebate settled twice: {at_expiry:.2f} against {earlier:.2f} for a barrier date 35 days '
         f'earlier - a single count differs only by the extra knock-out probability')

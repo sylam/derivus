@@ -1031,15 +1031,8 @@ mapping = {
                                 ['Date', 'Value']
                             },
             'Barrier_Dates': {'widget': 'Table', 'description': 'Barrier Dates', 'value': 'null',
-                            'sub_types':
-                                [{'type': 'date', 'dateFormat': 'YYYY-MM-DD'},
-                                 {'type': 'numeric', 'numericFormat': num_format['currency']}
-                                 ],
-                            'obj':
-                                'DateValueList',
-                            'col_names':
-                                ['Date', 'Value']
-                            },
+                              'obj': 'DateList', 'col_names': ['Date'],
+                              'sub_types': [{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}]},
             'Barrier2Condition': {'widget': 'Text', 'description': 'Barrier2Condition', 'value': ''},
             'Barrier2Memory': {'widget': 'Text', 'description': 'Barrier2Memory', 'value': ''},
             'BarrierCondition': {'widget': 'Text', 'description': 'BarrierCondition', 'value': ''},

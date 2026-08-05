@@ -478,7 +478,7 @@ def _dedupe_calc(gradient_variables=None):
         'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': 100.0,
         'Expiry_Date': BASE_HN + pd.Timedelta(days=horizon), 'Units': 10.0,
         'Barrier_Type': 'Down_And_Out', 'Barrier_Price': 1.0, 'Cash_Rebate': 0.0,
-        'Barrier_Dates': [[d, 1.0] for d in bdates],
+        'Barrier_Dates': [d for d in bdates],
         'Barrier_Monitoring_Frequency': pd.DateOffset(days=1),
     }
     val = {'EquityBarrierOption': {'SpotModel': 'HestonNandi'}}

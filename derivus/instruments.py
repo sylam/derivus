@@ -479,7 +479,7 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
     F('Barrier', 'Float', default=0),
     F('Option_Style', 'Choice', default='European', values=['European', 'American']),
     F('Units', 'Float', default=0.0),
-    F('Barrier_Dates', 'Table', default='null', obj='DateValueList', columns=['Date', 'Value'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+    F('Barrier_Dates', 'Table', default='null', obj='DateList', columns=['Date'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}]),
     F('Autocall_Coupons', 'Table', default='null', obj='DateValueList', columns=['Date', 'Value'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
     F('Autocall_Thresholds', 'Table', default='null', obj='DateValueList', columns=['Date', 'Value'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
     F('Payoff_Type', 'Choice', default='Standard', values=['Standard', 'Quanto', 'Compo'])
@@ -3491,7 +3491,7 @@ class EquityDiscreteExplicitAsianOption(Deal):
 
 class EquityBarrierBinaryOption(Deal):
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBarrierBinaryOption', [
-        F('Barrier_Dates', 'Table', default='null', obj='DateValueList', columns=['Date', 'Value'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Barrier_Dates', 'Table', default='null', obj='DateList', columns=['Date'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}]),
         F('Cash_Payoff', 'Float', default=0),
         F('Barrier_Type', 'Choice', default='Down_And_In', values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_Price', 'Float', default=0),
@@ -3520,7 +3520,7 @@ class EquityBarrierBinaryOption(Deal):
         super(EquityBarrierBinaryOption, self).reset()
         self.payoff_ccy = self.field['Payoff_Currency'] if 'Payoff_Currency' in self.field \
             else self.field['Currency']
-        barrierdates = set([x[0] for x in self.field['Barrier_Dates']])
+        barrierdates = set(self.field['Barrier_Dates'])
         self.add_reval_dates(barrierdates.union({self.field['Expiry_Date']}), self.field['Payoff_Currency'])
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
@@ -3538,11 +3538,11 @@ class EquityBarrierBinaryOption(Deal):
 
         # add the expiry to the barrier dates
         all_dates = sorted(
-            set([x[0] for x in self.field['Barrier_Dates']]).union([self.field['Expiry_Date']])
+            set(self.field['Barrier_Dates']).union([self.field['Expiry_Date']])
         )
 
         # create lookups
-        ab = dict(self.field.get('Barrier_Dates', []))
+        ab = set(self.field.get('Barrier_Dates', []))
 
         field_index = {
             'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
@@ -3560,7 +3560,7 @@ class EquityBarrierBinaryOption(Deal):
                 field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Observation_Dates': utils.make_fixing_data(
                 base_date, time_grid, [[x, 0] for x in all_dates]),
-            'Barrier_Dates': [ab.get(x, -1) for x in all_dates],
+            'Barrier_Dates': [1 if x in ab else -1 for x in all_dates],
             'Strike_Price': self.field['Strike_Price'],
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
             'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
@@ -3830,7 +3830,7 @@ class QEDI_CustomAutoCallSwap(Deal):
         # merge all the dates - except fixings - those will be added later
         all_dates = reduce(set.union, [
             set(coupon_dates),
-            set([x[0] for x in self.field.get('Barrier_Dates', [])]),
+            set(self.field.get('Barrier_Dates', [])),
             set([x[0] for x in self.field.get('Autocall_Floating', [])])
         ])
 
@@ -3839,7 +3839,7 @@ class QEDI_CustomAutoCallSwap(Deal):
         ac = dict(self.field['Autocall_Coupons'])
         at = dict(self.field['Autocall_Thresholds'])
         af = dict(self.field.get('Autocall_Floating', []))
-        ab = dict(self.field.get('Barrier_Dates', []))
+        ab = set(self.field.get('Barrier_Dates', []))
 
         # check if the dates are less than or equal to the expiry date
         # if max(all_dates) > self.field['Expiry_Date']:
@@ -3912,7 +3912,7 @@ class QEDI_CustomAutoCallSwap(Deal):
             logging.warning('Autocall involves averaging - running older pricing model')
 
         field_index.update({
-            'Barrier_Dates': [ab.get(x, -1) for x in all_dates],
+            'Barrier_Dates': [1 if x in ab else -1 for x in all_dates],
             'Autocall_Floating': [af.get(x, -1) for x in all_dates],
             'Autocall_Coupons': [ac.get(x, -1) for x in all_dates]
         })
@@ -4122,7 +4122,7 @@ class EquityOneTouchOption(Deal):
 
         if self.field.get('Barrier_Dates', []):
             average_days = np.mean(
-                [x.days for x in np.diff(sorted(set([x[0] for x in sorted(self.field['Barrier_Dates'])])))])
+                [x.days for x in np.diff(sorted(set(self.field['Barrier_Dates'])))])
             field_index['Barrier_Monitoring'] = 0.5826 * np.sqrt(average_days / 365.0)
         else:
             field_index['Barrier_Monitoring'] = 0.5826 * np.sqrt(
@@ -4164,7 +4164,7 @@ class EquityBarrierOption(Deal):
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBarrierOption', [
         F('Cash_Rebate', 'Float', default=0),
         F('Units', 'Float', default=0.0),
-        F('Barrier_Dates', 'Table', default='null', obj='DateValueList', columns=['Date', 'Value'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}, {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}}]),
+        F('Barrier_Dates', 'Table', default='null', obj='DateList', columns=['Date'], column_types=[{'type': 'date', 'dateFormat': 'YYYY-MM-DD'}]),
         F('Barrier_Monitoring_Frequency', 'Text', default='0M', obj='Period'),
         F('Barrier_Type', 'Choice', default='Down_And_In', values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_Price', 'Float', default=0),
@@ -4241,7 +4241,7 @@ class EquityBarrierOption(Deal):
     def reset(self, calendars):
         super(EquityBarrierOption, self).reset()
         if self.field.get('Barrier_Dates', []):
-            barrierdates = set([x[0] for x in self.field['Barrier_Dates']])
+            barrierdates = set(self.field['Barrier_Dates'])
             self.add_reval_dates(barrierdates.union({self.field['Expiry_Date']}), self.payoff_ccy)
         else:
             self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy)
@@ -4299,13 +4299,13 @@ class EquityBarrierOption(Deal):
         if self.field.get('Barrier_Dates', []):
             # add the expiry to the barrier dates
             all_dates = sorted(
-                set([x[0] for x in self.field['Barrier_Dates']]).union([self.field['Expiry_Date']])
+                set(self.field['Barrier_Dates']).union([self.field['Expiry_Date']])
             )
             # create lookups
-            ab = dict(self.field.get('Barrier_Dates', []))
+            ab = set(self.field.get('Barrier_Dates', []))
             field_index['Observation_Dates'] = utils.make_fixing_data(
                 base_date, time_grid, [[x, 0] for x in all_dates])
-            field_index['Barrier_Dates'] = [ab.get(x, -1) for x in all_dates]
+            field_index['Barrier_Dates'] = [1 if x in ab else -1 for x in all_dates]
         else:
             field_index['Barrier_Monitoring'] = 0.5826 * np.sqrt(
                 (base_date + self.field['Barrier_Monitoring_Frequency'] - base_date).days / 365.0)

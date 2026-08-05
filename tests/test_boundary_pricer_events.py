@@ -33,7 +33,7 @@ from derivus.instruments import construct_instrument
 from crn_ladder import ladder
 import test_barrier_bridge as bb
 
-MONTHLY = [[bb.BASE + pd.Timedelta(days=d), 90.0] for d in range(30, 366, 30)]
+MONTHLY = [bb.BASE + pd.Timedelta(days=d) for d in range(30, 366, 30)]
 DISCRETE_BARRIER = dict(bb.BARRIER_DEAL, Barrier_Dates=MONTHLY)
 
 # The oracle differences two nearly-equal float32 prices, so what it can resolve is set by the
@@ -63,7 +63,7 @@ def _autocall(threshold, barrier=0.0):
         'Price_Fixing': [[d, 0.0] for d in QUARTERLY],
         'Autocall_Coupons': [[d, 0.05] for d in QUARTERLY],
         'Autocall_Thresholds': [[d, threshold] for d in QUARTERLY],
-        'Barrier_Dates': [[d, barrier] for d in QUARTERLY] if barrier else [],
+        'Barrier_Dates': [d for d in QUARTERLY] if barrier else [],
         'Autocall_Floating': []}
 
 
@@ -547,7 +547,7 @@ def test_the_barrier_latch_is_what_the_residual_is():
     never fires and the same machinery agrees with bump-and-reprice; with it live, it does not.
     Any claimed fix has to close the second reading without disturbing the first."""
     far = dict(bb.BARRIER_DEAL, Barrier_Price=1e-6,
-               Barrier_Dates=[[d, 1e-6] for d, _ in MONTHLY])
+               Barrier_Dates=list(MONTHLY))
     kw = dict(batch=1024, mcmc=256)
     aad = _run(far, gradient=True, **kw)[2]
     r = ladder(price=lambda s: _run(far, spot=s, **kw)[1], aad=aad, base=bb.SPOT,
@@ -650,7 +650,7 @@ def test_the_correction_generalises_to_the_other_barrier_direction():
     A gate there would be pinning Monte Carlo noise."""
     H = 110.0
     deal = dict(bb.BARRIER_DEAL, Barrier_Type='Up_And_In', Barrier_Price=H,
-                Barrier_Dates=[[bb.BASE + pd.Timedelta(days=d), H] for d in range(30, 366, 30)])
+                Barrier_Dates=[bb.BASE + pd.Timedelta(days=d) for d in range(30, 366, 30)])
     kw = dict(batch=1024, mcmc=256)
     aad = _run(deal, gradient=True, **kw)[2]
     r = ladder(price=lambda s: _run(deal, spot=s, **kw)[1], aad=aad, base=bb.SPOT,

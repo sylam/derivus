@@ -811,7 +811,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     dual_samples = samples.dual()
     start_index, counts = np.unique(start_idx, return_counts=True)
 
-    BarrierDates = [1 if x != -1 else -1 for x in factor_dep['Barrier_Dates']]
+    BarrierDates = factor_dep['Barrier_Dates']
     phi = OPTION_CALL if deal_data.Instrument.field['Option_Type'] == 'Call' else OPTION_PUT
     eta = BARRIER_DOWN if 'Down' in deal_data.Instrument.field['Barrier_Type'] else BARRIER_UP
     direction = BARRIER_OUT if 'Out' in deal_data.Instrument.field['Barrier_Type'] else BARRIER_IN
@@ -2127,7 +2127,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         forward = discount
 
     # params for the autocallable
-    BarrierDates = [1 if x != -1 else -1 for x in factor_dep['Barrier_Dates']]
+    BarrierDates = factor_dep['Barrier_Dates']
     if not factor_dep['no_averaging']:
         FixingDates = [1 if x != -1 else -1 for x in factor_dep['Price_Fixing']]
     Threshold = factor_dep['Autocall_Thresholds']
