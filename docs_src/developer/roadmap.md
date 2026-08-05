@@ -26,11 +26,20 @@ one carrying a boundary term. Related and also unbuilt: **calibration Jacobians*
 market *quote* flows through bootstrapping rather than stopping at the calibrated factor; and
 **Hessian-vector products** instead of materialising full Hessians.
 
-**`fields.py` retirement.** A per-class `fields = [F(name, type, required=, units=, bind=)]`
-declaration replacing the 1,931-line name-keyed dict, with schema, UI, defaults, docs and validation
-all generated from it, and `bind=` declaring value-versus-structural patching. The engine never
-reads `fields.py` — `construct_instrument` takes the raw JSON — so this cannot break valuation; the
-blast radius is the Workbench, the docs generator, the Excel add-in and the correspondence tests.
+**`fields.py` retirement — Instrument store declared, not yet authoritative.** 45 of the 47 deal
+types now carry a per-class `fields` list (`schema.py`), and `schema.emit_instrument` rebuilds the
+legacy three-level shape from them byte-identically, gated per type/section/descriptor. The engine
+never reads `fields.py` — `construct_instrument` takes the raw JSON — so none of this can break
+valuation; the blast radius is the Workbench, the docs generator and the Excel add-in.
+
+The schema's inheritance turned out to be composition of named field GROUPS, not the class
+hierarchy: `FXAdmin` is shared by eight deals with no common base and `Admin` by all 47, so groups
+are module-level `Group` constants a class lists. An MRO-based design cannot express that.
+
+Remaining: flip the direction so `mapping['Instrument']` is GENERATED from the classes and the
+hand-written dict goes; `SwapBasisDeal`/`SwapCurrencyDeal` have no class to hold a declaration and
+need the same ruling as the strict xfail they already sit under; `bind=` (value-versus-structural
+patching) is designed but unbuilt; the other eight stores are untouched.
 
 The paired naming cleanup settles first, and is now done: the `MarketPrices` types the engine
 matches, one `VolatilityGrid` in place of the three asset-class vol twins, and the IR prefix chain
