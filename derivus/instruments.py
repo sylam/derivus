@@ -2490,7 +2490,7 @@ class CFFloatingInterestListDeal(Deal):
         F('Forecast_Rate_Swaption_Volatility', 'Text', default='', obj='Tuple'),
         F('Is_Defaultable', 'Text', default='No', values=['Yes', 'No']),
         F('Settlement_Amount', 'Float', default=0.0),
-        F('Float_Cashflows', 'Container', default={'Properties': [], 'Compounding_Method': 'None', 'Averaging_Method': 'Average_Interest', 'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('Properties', 'Table', default='null', row=Row([F('First_Cashflow_Index', 'Float'), F('Digital_Payoff', 'Float'), F('Digital_Payoff_Rate', 'Percent'), F('Rate_Constant', 'Percent'), F('Rate_Multiplier', 'Float'), F('Swap_Multiplier', 'Float'), F('Cap_Multiplier', 'Float'), F('Cap_Strike', 'Percent'), F('Floor_Multiplier', 'Float'), F('Floor_Strike', 'Percent'), F('Use_Cap_Lower_Barrier', 'Text', values=['Yes', 'No']), F('Cap_Lower_Barrier', 'Percent'), F('Use_Cap_Upper_Barrier', 'Text', values=['Yes', 'No']), F('Cap_Upper_Barrier', 'Percent'), F('Use_Floor_Lower_Barrier', 'Text', values=['Yes', 'No']), F('Floor_Lower_Barrier', 'Percent'), F('Use_Floor_Upper_Barrier', 'Text', values=['Yes', 'No']), F('Floor_Upper_Barrier', 'Percent'), F('Exponential_Multiplier', 'Percent'), F('Exponential_Margin', 'Float'), F('Discounted', 'Text', values=['Yes', 'No'])])), F('Compounding_Method', 'Text', default='None', values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin', 'Exponential']), F('Averaging_Method', 'Text', default='Average_Rate', values=['Average_Interest', 'Average_Rate']), F('FloatItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Notional', 'Float'), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'), F('Accrual_Day_Count', 'Text', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']), F('Accrual_Year_Fraction', 'Float'), F('Resets', 'Table'), F('Margin', 'Basis'), F('Fixed_Amount', 'Float'), F('FX_Reset_Date', 'Date'), F('Known_FX_Rate', 'Float')]))]),
+        F('Float_Cashflows', 'Container', default={'Properties': [], 'Compounding_Method': 'None', 'Averaging_Method': 'Average_Interest', 'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('Properties', 'Table', default='null', row=Row([F('Digital_Payoff_Rate', 'Percent'), F('Cap_Multiplier', 'Float'), F('Cap_Strike', 'Percent'), F('Floor_Multiplier', 'Float'), F('Floor_Strike', 'Percent')])), F('Compounding_Method', 'Text', default='None', values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin', 'Exponential']), F('Averaging_Method', 'Text', default='Average_Rate', values=['Average_Interest', 'Average_Rate']), F('FloatItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Notional', 'Float'), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'), F('Accrual_Day_Count', 'Text', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']), F('Accrual_Year_Fraction', 'Float'), F('Resets', 'Table'), F('Margin', 'Basis'), F('Fixed_Amount', 'Float'), F('FX_Reset_Date', 'Date'), F('Known_FX_Rate', 'Float')]))]),
         F('Forecast_Rate_Cap_Volatility', 'Text', default='', obj='Tuple'),
         F('Settlement_Amount_Is_Clean', 'Text', default='Yes', values=['Yes', 'No']),
         F('Discount_Rate_Cap_Volatility', 'Text', default='', obj='Tuple'),
@@ -2564,19 +2564,21 @@ class CFFloatingInterestListDeal(Deal):
         field_index['Model'] = pricing.pricer_float_cashflows
         if self.field['Cashflows'].get('Properties'):
             first_prop = self.field['Cashflows']['Properties'][0]
-            if first_prop.get('Cap_Multiplier', 0.0) or first_prop.get('Floor_Multiplier', 0.0):
+            # cap vs floor is decided the same way the branch is entered - on a non-zero
+            # multiplier. Deciding it on PRESENCE made an authored floor, which carries
+            # Cap_Multiplier: 0.0, price as a cap struck at Cap_Strike.
+            is_cap = bool(first_prop.get('Cap_Multiplier', 0.0))
+            if is_cap or first_prop.get('Floor_Multiplier', 0.0):
                 if first_prop.get('Digital_Payoff_Rate') is not None:
                     field_index['Digital_Payoff_Rate'] = first_prop['Digital_Payoff_Rate']
-                field_index['Model'] = pricing.pricer_cap if first_prop.get(
-                    'Cap_Multiplier') is not None else pricing.pricer_floor
+                field_index['Model'] = pricing.pricer_cap if is_cap else pricing.pricer_floor
                 field_index['VolSurface'] = get_interest_vol_factor(
                     utils.check_rate_name(self.field['Forecast_Rate_Cap_Volatility']), pd.DateOffset(months=3),
                     static_offsets, stochastic_offsets, all_tenors)
 
                 field_index['Cashflows'].overwrite_rate(
                     utils.CASHFLOW_INDEX_Strike,
-                    float(first_prop['Cap_Strike']) if
-                    first_prop.get('Cap_Multiplier') is not None else float(first_prop['Floor_Strike']))
+                    float(first_prop['Cap_Strike'] if is_cap else first_prop['Floor_Strike']))
 
         return field_index
 
