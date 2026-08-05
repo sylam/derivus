@@ -13,7 +13,10 @@ with open(os.path.join(here, 'derivus', '_version.py')) as f:
 setup(
     name='derivus',
     version=version_ns['__version__'],
-    packages=find_packages(),
+    # excel_integration is an add-in that lives in the repo, not part of the installed library
+    packages=find_packages(include=['derivus', 'derivus.*']),
+    # the three console scripts are flat modules beside the package, so they need declaring
+    py_modules=['derivus_bootstrap', 'derivus_batch', 'derivus_docs'],
     url='https://github.com/sylam/derivus',
     license='PolyForm-Noncommercial-1.0.0',
     # PolyForm's Notices section obliges passing the terms on with the software, so the licence
@@ -26,17 +29,21 @@ setup(
     long_description_content_type="text/markdown",
     # torch>=2.0 does not build below 3.8, so the old >=3.6 floor let pip resolve a broken install
     python_requires='>=3.8',
-    install_requires=['numpy>=1.16.1', 'scipy>=1.2.2', 'pandas>=1.0', 'matplotlib>=3.0', 'torch>=2.0',
-                      'python-markdown-math>=0.6', 'sortedcontainers>2.0'],
+    # exactly what the package imports — pyparsing was previously only reaching us by accident,
+    # as a transitive dependency of matplotlib
+    install_requires=['numpy>=1.16.1', 'scipy>=1.2.2', 'pandas>=1.0', 'pyparsing>=2.4.7',
+                      'sortedcontainers>2.0', 'torch>=2.0'],
     extras_require={
-        'interactive': ['jupyter'],
+        'interactive': ['jupyter', 'matplotlib>=3.0'],
         # GARCHSpotModel's calibration only; the import is lazy, so the rest of the library
         # installs and runs without it
         'garch': ['arch>=6.0'],
+        # DV_Docs only writes mkdocs.yml; these are what building the emitted config needs
+        'docs': ['mkdocs>=1.5', 'mkdocs-material>=9.0', 'pymdown-extensions>=10.0'],
     },
     entry_points={
         'console_scripts': [
-            'DV_Bootstrap = bootstrap:main',
+            'DV_Bootstrap = derivus_bootstrap:main',
             'DV_Batch = derivus_batch:main',
             'DV_Docs = derivus_docs:main'
         ]},

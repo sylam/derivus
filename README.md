@@ -10,20 +10,25 @@ full greek vector costs one backward pass however many factors it covers.
 
 ## Installation
 
-Derivus is not published to PyPI. Install from a clone:
-
 ```
-pip install -e .
+pip install derivus
 ```
 
-Requires python >= 3.6 and pytorch >= 2.0. A GPU build of pytorch is strongly recommended — the
+Requires python >= 3.8 and pytorch >= 2.0. A GPU build of pytorch is strongly recommended — the
 scenario engine is written for it.
 
 Optional extras:
 
 ```
-pip install -e ".[garch]"        # GARCHSpotModel calibration (lazy import; the rest runs without it)
-pip install -e ".[interactive]"  # jupyter
+pip install "derivus[garch]"        # GARCHSpotModel calibration (lazy import; the rest runs without it)
+pip install "derivus[interactive]"  # jupyter and matplotlib
+pip install "derivus[docs]"         # the mkdocs toolchain DV_Docs generates config for
+```
+
+To work on Derivus itself, install from a clone instead:
+
+```
+pip install -e .
 ```
 
 ## Usage

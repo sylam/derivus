@@ -1,0 +1,68 @@
+name: Publish to PyPI
+
+# Publishing is irreversible: a filename PyPI has seen once can never be reused, even after
+# deletion. So the build is gated on the tag agreeing with derivus/_version.py, and the upload
+# runs in its own environment with nothing but the built artifacts in scope.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and check distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Tag must match the package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(python -c "v={}; exec(open('derivus/_version.py').read(), {}, v); print(v['__version__'])")
+          echo "tag=$tag package=$pkg"
+          test "$tag" = "$pkg" || { echo "::error::tag '$tag' != derivus/_version.py '$pkg'"; exit 1; }
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Verify the console scripts are actually in the wheel
+        run: |
+          for m in derivus_bootstrap.py derivus_batch.py derivus_docs.py; do
+            unzip -Z1 dist/*.whl | grep -qx "$m" || { echo "::error::$m missing from wheel"; exit 1; }
+          done
+
+      - name: Check metadata renders on PyPI
+        run: |
+          python -m pip install --upgrade twine
+          python -m twine check --strict dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/derivus
+    permissions:
+      id-token: write   # mints the OIDC token for trusted publishing; no API token stored
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

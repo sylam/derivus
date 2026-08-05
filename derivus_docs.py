@@ -520,16 +520,19 @@ class ConstructMarkdown(object):
 
 
 # --- Main Execution Block ---
-if __name__ == '__main__':
-    script_dir = Path(__file__).parent.resolve()
-    # Assume documentation lives directly inside the project root (sibling to derivus/ and docs_src/)
-    # If it lives *inside* derivus/, change project_root to script_dir.parent
-    project_root = script_dir
-    logging.info(f"Detected script directory: {script_dir}")
+def main():
+    # cwd, not __file__: installed as DV_Docs the module sits in site-packages, and docs_src
+    # only ever exists in a checkout
+    project_root = Path.cwd()
     logging.info(f"Using project root: {project_root}")
 
-    if not (project_root / 'derivus').is_dir():
-         logging.warning(f"Could not find 'derivus' directory in {project_root}. Project root might be incorrect.")
+    if not (project_root / 'docs_src').is_dir():
+        logging.error(f"No docs_src/ in {project_root}. Run DV_Docs from the repo root.")
+        return 1
 
-    md = ConstructMarkdown(project_root)
-    md.build()
+    ConstructMarkdown(project_root).build()
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
