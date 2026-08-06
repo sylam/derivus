@@ -48,7 +48,7 @@ ALIASED_KEYS = {
         'Real_Yield_Cashflows': 'Cashflows',
         'Energy_Cashflows': 'Payments', 'Energy_Fixed_Cashflows': 'Payments',
         'Index_Reference_Type': 'Reference_Type', 'Adjustment_Method': 'Rate_Adjustment_Method',
-        'Barrier_Type_One': 'Barrier_Type', 'Option_Payment_Timing': 'Payment_Timing',
+        'Barrier_Type_One': 'Barrier_Type',
     },
     'Factor': {'Space': 'Surface'},
     'Process': {'sigma': 'Sigma'},
