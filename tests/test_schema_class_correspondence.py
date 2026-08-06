@@ -7,10 +7,10 @@ offers but `globals()` cannot dispatch (logged, then dropped as `{}`), a field a
 schema-authored deal can emit, a widget that reads a JSON key nobody writes.
 
 Each test below is one leg of the class<->schema correspondence, and each exemption list names WHY
-a case is deliberate. The lists are the interesting part: `ALIASED_KEYS` in particular enumerates
-every field whose descriptor key had to be invented because a name-keyed dict cannot give two deals
-different descriptors for the same field name - which is the cost the per-class `fields` declaration
-exists to remove.
+a case is deliberate. `ALIASED_KEYS` used to be the interesting one - every field whose descriptor
+key had to be invented because a name-keyed dict cannot give two deals different descriptors for
+the same name. The Instrument store is now keyed per SECTION and its entries are gone; the three
+that remain belong to stores still keyed flat.
 """
 import ast
 import inspect
@@ -33,23 +33,11 @@ UNDECLARED_DEALS = {
 }
 
 # Descriptor keys that are NOT the JSON field name, per store -> the key they actually read.
-# A name-keyed dict admits one descriptor per name, so a field needing different widgets or
-# different valid values in two deals must invent a key and carry the real name elsewhere:
-# `Barrier_Type` is Up/Down for a one-touch and Down_And_In/... for a barrier, so `Barrier_Type_One`
-# exists. `sigma` is aliased in Process but genuine in Factor, which is why this is keyed by store.
-# A per-class declaration gives each class its own descriptor and every entry here disappears.
+# A name-keyed dict admits one descriptor per name, so a field needing different valid values in
+# two deals must invent a key and carry the real name elsewhere. `sigma` is aliased in Process but
+# genuine in Factor, which is why this is keyed by store. Instrument has no entries left: its
+# store is keyed per section, so `Cashflows` and `Payment_Timing` each hold their own.
 ALIASED_KEYS = {
-    'Instrument': {
-        'FloatItems': 'Items', 'RealYieldItems': 'Items', 'FixedItems': 'Items',
-        'FixedSimpleItems': 'Items', 'EnergyItems': 'Items', 'EquityItems': 'Items',
-        'EnergyFixedItems': 'Items',
-        'Float_Cashflows': 'Cashflows', 'Equity_Cashflows': 'Cashflows',
-        'Fixed_Cashflows': 'Cashflows', 'Fixed_Simple_Cashflows': 'Cashflows',
-        'Real_Yield_Cashflows': 'Cashflows',
-        'Energy_Cashflows': 'Payments', 'Energy_Fixed_Cashflows': 'Payments',
-        'Index_Reference_Type': 'Reference_Type', 'Adjustment_Method': 'Rate_Adjustment_Method',
-        'Barrier_Type_One': 'Barrier_Type',
-    },
     'Factor': {'Space': 'Surface'},
     'Process': {'sigma': 'Sigma'},
     'Calibration': {'Number_PCA_Factors': 'Number_Of_PCA_Factors'},
@@ -94,28 +82,6 @@ def test_every_group_member_is_a_declared_type():
                for name, (_, members) in INSTRUMENT['groups'].items()}
     unknown = {k: v for k, v in unknown.items() if v}
     assert not unknown, f'context-menu entries naming no declared type: {unknown}'
-
-
-def test_every_section_field_has_a_descriptor():
-    """A section listing a name with no descriptor is skipped by the doc generator and raises a
-    KeyError in the UI's `load_fields`."""
-    undescribed = sorted({f for fl in INSTRUMENT['sections'].values() for f in fl
-                          if f not in INSTRUMENT['fields']})
-    assert not undescribed, f'sections list fields that have no descriptor: {undescribed}'
-
-
-def test_no_dead_descriptors():
-    """A descriptor no section reaches is unreachable metadata - it cannot be rendered, documented
-    or authored. Left in place it reads as coverage that does not exist.
-
-    Fifteen sat here (double/memory barrier, pivot TARF, dual strike - real unbuilt features). They
-    were reachable only because a flat dict admits an entry no section names; a descriptor now
-    exists only by being declared on a class, so building one of those features means declaring its
-    fields on the deal that reads them."""
-    used = {f for fl in INSTRUMENT['sections'].values() for f in fl}
-    nested = {s for d in INSTRUMENT['fields'].values() for s in d.get('sub_fields', [])}
-    dead = sorted(set(INSTRUMENT['fields']) - used - nested)
-    assert not dead, f'descriptors no section references: {dead}'
 
 
 def test_factor_fields_are_declared():

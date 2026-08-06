@@ -1,16 +1,19 @@
-"""`fields.mapping['Instrument']` is now GENERATED from the per-class `fields` declarations, so the
-old round-trip gate - emit the dict, diff it against the hand-written one - compares the view against
-itself and asserts nothing. These are the gates that survive the flip.
+"""`fields.mapping['Instrument']` is generated from the per-class `fields` declarations, and a
+SECTION owns its descriptors. So there is no round-trip to gate - the old test diffed the emitted
+dict against a hand-written one, and both sides are now the same object.
 
-What the flip removed structurally: a schema type naming no class (`SwapBasisDeal`,
-`SwapCurrencyDeal` - the UI offered them, `construct_instrument` logged and returned `{}`) and a
-descriptor no section reaches (15 of them). Neither is expressible when the classes are the source,
-which is why the two strict xfails guarding them in `test_schema_class_correspondence` are gone.
+Three defect classes are unreachable by construction rather than merely absent, which is why the
+gates that guarded them are gone:
 
-What the flip did NOT remove is the flat store itself. `emit_instrument` folds 45 classes into one
-name-keyed dict with `setdefault`, so two classes declaring the same key with different content
-still silently resolve to whichever class was defined first - the exact defect the per-class
-declaration exists to end, still live for as long as anything consumes the flat view.
+  - a type naming no class (`SwapBasisDeal`, `SwapCurrencyDeal`: the UI offered them and
+    `construct_instrument` logged and returned `{}`) - a type IS a class that declares fields
+  - a section naming a field with no descriptor, and a descriptor no section reaches - a section
+    IS its descriptors, and a descriptor exists only inside one
+  - one field name silently resolving to another deal's descriptor - each section holds its own
+
+What remains gateable is what the declarations can still get wrong: a malformed descriptor, a
+section declared two ways by two classes, a shared group copied instead of shared, and a deal type
+that no create-menu offers.
 """
 import os
 import sys
@@ -62,10 +65,9 @@ def test_descriptor_shape(cls_name):
     without checking. A `Table` missing `sub_types` raises in the UI's cell renderer; a `Dropdown`
     missing `values` renders an empty list the author cannot pick from.
 
-    Parametrized over CLASSES, not over the merged store's keys. `emit_instrument` folds 45 classes
-    into one name-keyed dict with `setdefault`, so a descriptor read back from there is whichever
-    class was defined first - checking the merged view tests the winner and cannot see a defect in
-    any of the other declarations of the same key.
+    Parametrized over CLASSES and reading the DECLARATIONS, not the emitted store. Sections are
+    shared objects, so walking the store visits `Admin` once however many types list it; walking
+    the classes checks every declaration in the place an author would edit it.
     """
     for group in declared_classes()[cls_name]:
         for f in every_field(group):
@@ -91,14 +93,6 @@ def check_descriptor(key, d):
                 f'{len(d["col_names"])}')
 
 
-def test_sub_fields_resolve():
-    """A container names its children by key, and the UI looks each one up. A name with no
-    descriptor is a KeyError in `load_fields`, not a missing widget."""
-    missing = sorted({s for d in INSTRUMENT['fields'].values() for s in d.get('sub_fields', [])
-                      if s not in INSTRUMENT['fields']})
-    assert not missing, f'containers name children that have no descriptor: {missing}'
-
-
 def test_no_class_is_hidden_from_the_create_menu():
     """`groups` is the Workbench's create-deal menu and stays hand-curated, being presentation. So
     it is the one part of the store that can still drift from the classes: a deal type absent from
@@ -108,25 +102,36 @@ def test_no_class_is_hidden_from_the_create_menu():
         f'declared deal types in no menu group: {sorted(set(INSTRUMENT["types"]) - menued)}')
 
 
-def test_no_key_is_declared_two_ways():
-    """`emit_instrument` folds every class into one name-keyed dict with `setdefault`, so a key two
-    classes declare differently resolves to whichever class `vars(module)` yields first - i.e. to
-    source order. The loser renders the winner's widget with no error anywhere."""
-    seen = {}
-    for cls_name, groups in declared_classes().items():
-        for f in (f for g in groups for f in every_field(g)):
-            seen.setdefault(f.key, {}).setdefault(repr(f.descriptor()), []).append(cls_name)
-    clashing = {k: {c[0] for c in v.values()} for k, v in seen.items() if len(v) > 1}
-    assert not clashing, f'one descriptor key declared with differing content: {clashing}'
+def test_one_name_may_carry_two_descriptors_in_different_sections():
+    """The capability the per-section store exists for, pinned so a return to a flat one fails.
+
+    `Payment_Timing` is `Touch`/`Expiry` on a one-touch and `End`/`Begin`/`Discounted` on a
+    cashflow leg. Both are right - the JSON is per-deal, so the data is never ambiguous and only a
+    store keyed by field name across every deal was. Under that store one of these silently won,
+    and the loser had to invent a descriptor key (`Option_Payment_Timing`) and carry its real name
+    as an alias.
+    """
+    sections = INSTRUMENT['sections']
+    seen = {tuple(d['values']) for s in sections.values()
+            for k, d in s.items() if k == 'Payment_Timing'}
+    assert seen == {('Touch', 'Expiry'), ('End', 'Begin', 'Discounted')}, seen
+
+    # and each type sees only its own
+    def values_for(deal_type):
+        return [d['values'] for g in INSTRUMENT['types'][deal_type]
+                for k, d in sections[g].items() if k == 'Payment_Timing']
+    assert values_for('FXOneTouchOption') == [['Touch', 'Expiry']]
+    assert values_for('CapDeal') == [['End', 'Begin', 'Discounted']]
 
 
 @pytest.mark.parametrize('cls_name', sorted(declared_classes()))
 def test_no_group_declares_a_key_twice(cls_name):
-    """A key listed twice in one group is always a mistake, whether or not the two agree.
+    """A section is now a dict keyed by the JSON name, so a name declared twice in one group loses
+    a descriptor outright rather than merely shadowing one. `Net_Cashflows` was declared twice
+    verbatim on `StructuredDeal` and the duplicate was invisible.
 
-    `test_no_key_is_declared_two_ways` compares CONTENT across classes, so a verbatim duplicate
-    slipped past it: `Net_Cashflows` was declared twice identically on SwapInterestDeal and
-    `emit_instrument`'s setdefault kept the first, leaving the second invisible."""
+    The cross-class version of this check is gone on purpose - two SECTIONS may key the same name
+    differently, which is the point of the per-section store."""
     for group in declared_classes()[cls_name]:
         keys = [f.key for f in group.fields]
         dupes = sorted({k for k in keys if keys.count(k) > 1})

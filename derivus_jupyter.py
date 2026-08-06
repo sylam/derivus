@@ -127,6 +127,23 @@ class TreePanel(metaclass=ABCMeta):
         return self.context.current_cfg
 
     @staticmethod
+    def load_descriptors(fields):
+        """Widget metadata for a map that already HOLDS its descriptors - the Instrument store.
+
+        `load_fields` resolves NAMES against a flat store keyed by field name; a section owns its
+        descriptors, so there is nothing to resolve. Only the widget's `default` has to be seeded
+        and containers recursed, and a container now holds its children rather than naming them.
+        """
+        storage = {}
+        for name, meta in fields.items():
+            meta = meta.copy()
+            if 'sub_fields' in meta:
+                meta['sub_fields'] = TreePanel.load_descriptors(meta['sub_fields'])
+            meta['default'] = meta['value']
+            storage[name] = meta
+        return storage
+
+    @staticmethod
     def load_fields(field_names, field_data):
         storage = {}
         for k, v in field_names.items():
@@ -556,13 +573,11 @@ class PortfolioPage(TreePanel):
         deals_to_append = []
         self.data = {(): [{}, self.config.deals['Deals'], None, {}]}
 
-        # map all the fields to one flat hierarchy
-        instrument_types = {
-            key: reduce(operator.concat, [rf.fields.mapping['Instrument']['sections'][group] for group in groups]) for
-            key, groups in rf.fields.mapping['Instrument']['types'].items()}
-
-        # get the fields from the master list
-        self.instrument_fields = self.load_fields(instrument_types, rf.fields.mapping['Instrument']['fields'])
+        # a type's panel set is the merge of its sections, each of which owns its descriptors
+        sections = rf.fields.mapping['Instrument']['sections']
+        self.instrument_fields = {
+            key: self.load_descriptors({k: v for group in groups for k, v in sections[group].items()})
+            for key, groups in rf.fields.mapping['Instrument']['types'].items()}
         # fill it with data
         walkPortfolio(self.config.deals['Deals']['Children'], (), self.instrument_fields, deals_to_append, self.data)
 

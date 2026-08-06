@@ -303,39 +303,35 @@ class ConstructMarkdown(object):
                 content = [f"# {item_type}", f"JSON configuration for the `{item_type}` type.", ""]
 
                 # Determine the actual field names to document
-                actual_field_names = set()
-                if mapping_key == 'Instrument': # Instruments list field *groups*
+                # Instruments list field GROUPS, and a group owns its descriptors; factors and
+                # processes list field names against the store's own flat `fields`
+                actual_fields = {}
+                if mapping_key == 'Instrument':
                     for group_name in field_identifiers:
-                        actual_field_names.update(mapping_data.get('sections',{}).get(group_name, []))
-                else: # Factors and Processes list field *names* directly
-                     actual_field_names.update(field_identifiers)
+                        actual_fields.update(mapping_data.get('sections', {}).get(group_name, {}))
+                else:
+                    actual_fields = {n: mapping_data['fields'][n] for n in field_identifiers
+                                     if n in mapping_data.get('fields', {})}
 
                 # Document each field
-                for field_name in sorted(list(actual_field_names)):
-                    if field_name in mapping_data.get('fields', {}):
-                        meta = mapping_data['fields'][field_name]
-                        desc = meta.get('description', field_name)
-                        dtype = self._infer_data_type(meta)
-                        default_val_str = self._format_default_value(meta.get('value'), meta)
+                for field_name in sorted(actual_fields):
+                    meta = actual_fields[field_name]
+                    desc = meta.get('description', field_name)
+                    dtype = self._infer_data_type(meta)
+                    default_val_str = self._format_default_value(meta.get('value'), meta)
 
-                        content.append(f"### `{field_name}`")
-                        content.append(f"- **Description:** {desc}")
-                        content.append(f"- **JSON Type:** {dtype}")
-                        content.append(f"- **Default:** {default_val_str}")
-                        # Handle nested containers if info is available
-                        if meta.get('widget') == 'Container' and 'sub_fields' in meta:
-                            content.append("- **Nested Fields:**")
-                            for sub_field_name in meta['sub_fields']:
-                                if sub_field_name in mapping_data.get('fields', {}):
-                                     sub_meta = mapping_data['fields'][sub_field_name]
-                                     sub_desc = sub_meta.get('description', sub_field_name)
-                                     content.append(f"  - `{sub_field_name}` ({sub_desc})")
-                                else:
-                                     content.append(f"  - `{sub_field_name}`")
+                    content.append(f"### `{field_name}`")
+                    content.append(f"- **Description:** {desc}")
+                    content.append(f"- **JSON Type:** {dtype}")
+                    content.append(f"- **Default:** {default_val_str}")
+                    # Handle nested containers if info is available
+                    if meta.get('widget') == 'Container' and 'sub_fields' in meta:
+                        content.append("- **Nested Fields:**")
+                        for sub_field_name, sub_meta in meta['sub_fields'].items():
+                            sub_desc = sub_meta.get('description', sub_field_name)
+                            content.append(f"  - `{sub_field_name}` ({sub_desc})")
 
-                        content.append("")
-                    else:
-                        logging.warning(f"      Field '{field_name}' listed for type '{item_type}' not found in '{mapping_key}' fields mapping.")
+                    content.append("")
 
                 # Write file and add to nav
                 try:

@@ -174,7 +174,7 @@ def test_one_touch_paid_at_expiry_holds_its_value_until_then():
     was carried as zero: a touched deal reported nothing for the rest of its life and then jumped
     to the nominal on the last date. With r=0 the correct value is a martingale, and equals the
     nominal times the touch probability at t=0."""
-    mtm = _profile('0d 3m(3m)', deal=dict(ONE_TOUCH, Option_Payment_Timing='Expiry'))
+    mtm = _profile('0d 3m(3m)', deal=dict(ONE_TOUCH, Payment_Timing='Expiry'))
     v = mtm.values.mean(axis=1)
     expected = 100.0 * _analytic_touch_probability()
     assert v[0] == pytest.approx(expected, rel=2e-3), (
@@ -187,8 +187,8 @@ def test_one_touch_paid_on_touch_settles_and_leaves():
     """The counterpart, and the reason the fix above is confined to Expiry timing: paid ON touch,
     the cash settles and the path stops carrying it, so this profile SHOULD decay. Both timings
     must still agree at inception, since with r=0 there is nothing to discount between them."""
-    on_touch = _profile('0d 3m(3m)', deal=dict(ONE_TOUCH, Option_Payment_Timing='Touch'))
-    at_expiry = _profile('0d 3m(3m)', deal=dict(ONE_TOUCH, Option_Payment_Timing='Expiry'))
+    on_touch = _profile('0d 3m(3m)', deal=dict(ONE_TOUCH, Payment_Timing='Touch'))
+    at_expiry = _profile('0d 3m(3m)', deal=dict(ONE_TOUCH, Payment_Timing='Expiry'))
     v = on_touch.values.mean(axis=1)
     assert v[0] == pytest.approx(at_expiry.values[0].mean(), rel=2e-3), (
         'with r=0 the two payment timings are worth the same at inception')
@@ -207,7 +207,7 @@ BARRIER_DEAL = {
 
 @pytest.mark.parametrize('deal,label', [
     (BARRIER_DEAL, 'barrier'),
-    (dict(ONE_TOUCH, Option_Payment_Timing='Expiry'), 'one_touch')])
+    (dict(ONE_TOUCH, Payment_Timing='Expiry'), 'one_touch')])
 def test_aad_delta_matches_bump_and_reprice(deal, label):
     """The gradient has to be the derivative of the value actually reported. Under common random
     numbers - same seed, so the same normals, the draws depending on seed and factor ordering

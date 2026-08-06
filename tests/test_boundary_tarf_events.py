@@ -179,7 +179,6 @@ def test_the_knock_in_barrier_is_reachable_from_the_schema():
     assert 'Barrier' in instrument['sections']['FXTARFOptionDeal.Fields'], (
         'Barrier is not in FXTARFOptionDeal.Fields, so no schema-authored TARF can carry a '
         'knock-in and the OTM leg is unreachable')
-    assert 'Barrier' in instrument['fields'], 'the Barrier widget descriptor is missing'
     priced, _ = _baseval(KNOCK_IN, sims=1 << 12)
     unbarriered, _ = _baseval(NO_BARRIER, sims=1 << 12)
     assert priced != unbarriered, 'the Barrier key did not reach the pricer at all'

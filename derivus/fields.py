@@ -2,7 +2,7 @@ from . import instruments
 from .schema import emit_instrument
 
 # the Instrument store is a VIEW of the per-class declarations, not a second copy
-_types, _sections, _fields = emit_instrument(instruments)
+_types, _sections = emit_instrument(instruments)
 
 # object list defaults
 default = {
@@ -650,7 +650,6 @@ mapping = {
         },
 
         'sections': _sections,
-        'types': _types,
-        'fields': _fields
+        'types': _types
     }
 }

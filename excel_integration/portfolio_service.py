@@ -302,13 +302,13 @@ def get_deal_defaults(instrument_type: str) -> str:
     """
     instr_mapping = rf.fields.mapping["Instrument"]
     section_names: list[str] = instr_mapping["types"].get(instrument_type, [])
-    all_fields: dict = instr_mapping["fields"]
 
+    # a section carries its own descriptors, keyed by the JSON name the engine reads - so the
+    # default lands under a key a pricer looks for, which an aliased descriptor key did not
     defaults: dict[str, Any] = {"Object": instrument_type}
     for section in section_names:
-        for fname in instr_mapping["sections"].get(section, []):
-            meta = all_fields.get(fname)
-            if meta and meta.get("widget") not in _COMPLEX_WIDGETS:
+        for fname, meta in instr_mapping["sections"].get(section, {}).items():
+            if meta.get("widget") not in _COMPLEX_WIDGETS:
                 defaults[fname] = meta.get("value", "")
 
     return encode_fields_json(defaults)

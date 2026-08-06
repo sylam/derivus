@@ -105,7 +105,7 @@ def test_a_discount_rate_that_is_not_supplied_drops_the_deal(name, how, names, c
 
 def test_both_rates_are_declared_required():
     """The schema has to say what the engine enforces, or a UI keeps offering a blank."""
-    f = fields.mapping['Instrument']['fields']
+    f = fields.mapping['Instrument']['sections']['FXForwardDeal.Fields']
     for name in ('Buy_Discount_Rate', 'Sell_Discount_Rate'):
         assert f[name].get('required') is True, f'{name} is not declared required'
         assert f[name]['value'] == '', f'{name} still offers a default'

@@ -100,8 +100,13 @@ class F(object):
 
     @property
     def key(self):
-        """The key `fields.mapping` files this descriptor under - the alias when there is one."""
-        return self.name
+        """The key an author writes in the JSON, which is what the descriptor is filed under.
+
+        This used to be the descriptor's own name with `json_name` carried alongside as an alias,
+        because a store keyed by field name across all 47 deals cannot hold two `Cashflows`. Filed
+        per SECTION, each one holds its own, and the alias has nothing left to do.
+        """
+        return self.json_name or self.name
 
     def descriptor(self):
         """This field as a `fields.mapping[...]['fields']` entry.
@@ -116,8 +121,6 @@ class F(object):
              'value': '' if self.default is REQUIRED else self.default}
         if self.default is REQUIRED:
             d['required'] = True
-        if self.json_name is not None:
-            d = {'name': self.json_name, **d}
         if self.values is not None:
             d['values'] = self.values
         if self.obj is not None:
@@ -128,7 +131,8 @@ class F(object):
             d['sub_types'] = [{'type': 'dropdown', 'source': f.values} if f.values is not None
                               else dict(WIDGET_FORMAT[f.type]) for f in self.row.fields]
         if self.sub_fields is not None:
-            d['sub_fields'] = [f.key for f in self.sub_fields]
+            # a container holds its children, rather than naming entries in a store beside it
+            d['sub_fields'] = {f.key: f.descriptor() for f in self.sub_fields}
         return d
 
 
@@ -181,28 +185,25 @@ def validate_instrument(deal):
 
 
 def emit_instrument(module):
-    """The `types` / `sections` / `fields` of `fields.mapping['Instrument']`, from the classes.
+    """The `types` and `sections` of `fields.mapping['Instrument']`, from the classes.
 
     Scans `module` for classes declaring their own `fields` list. Own-attr only, so a subclass that
     inherits its parent's declaration does not re-emit it as a second deal type. Declaration order
     is preserved: the UI lays panels out in `types[T]` order and widgets within a panel in section
     order, and a set-backed view scrambles both silently, with no exception.
-    """
-    def register(f, fields):
-        # a container's children and a table's columns are fields in their own right; the flat
-        # store needs them by key, which is also why an alias like FloatItems has to exist there
-        fields.setdefault(f.key, f.descriptor())
-        for child in (f.sub_fields or []):
-            register(child, fields)
 
-    types, sections, fields = {}, {}, {}
+    A section OWNS its descriptors. The store used to key them by field name across every deal,
+    which admits one descriptor per name - so a field needing different valid values in two deals
+    had to invent a key and carry the real one as an alias. `Payment_Timing` is `Touch`/`Expiry` on
+    a one-touch and `End`/`Begin`/`Discounted` on a cashflow leg, and both are right, because the
+    JSON is per-deal and only the flat view was ambiguous.
+    """
+    types, sections = {}, {}
     for deal_type, cls in vars(module).items():
         groups = cls.__dict__.get('fields') if isinstance(cls, type) else None
         if not isinstance(groups, list):
             continue
         types[deal_type] = [g.name for g in groups]
         for g in groups:
-            sections.setdefault(g.name, [f.key for f in g.fields])
-            for f in g.fields:
-                register(f, fields)
-    return types, sections, fields
+            sections.setdefault(g.name, {f.key: f.descriptor() for f in g.fields})
+    return types, sections

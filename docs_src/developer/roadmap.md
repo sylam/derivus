@@ -49,17 +49,18 @@ presentation, with one consumer. It is therefore the one part of the store that 
 a gate holds every declared type to appearing in some menu. That gate found `EquityDeal` and
 `EquityOneTouchOption`, both concrete and documented, in no menu at all.
 
-Remaining: **the descriptor store is keyed by field NAME, and that choice picks the name.** A front
-end that flattens every instrument's fields into one dictionary needs `Option_Payment_Timing`,
-because four deals declare `Payment_Timing` as `['End','Begin','Discounted']` and two want
-`['Touch','Expiry']`. A front end that keys on `(instrument, field)` needs only `Payment_Timing`,
-and the prefix is redundant. Both enums are correct — the JSON is per-deal, so the data is never
-ambiguous; only the flat view is. So the name is not a naming question, it is downstream of which
-store shape wins, and `ALIASED_KEYS` is the running cost of the flat one.
+**A section owns its descriptors.** The store was keyed by field NAME across all 47 deals, which
+admits one descriptor per name — so a field needing different valid values in two deals had to
+invent a key and carry the real one as an alias, and `ALIASED_KEYS` was the running cost.
+`sections[S]` is now `{json_key: descriptor}` and a container holds its children inline, so
+`Payment_Timing` is `Touch`/`Expiry` on a one-touch and `End`/`Begin`/`Discounted` on a cashflow leg
+with no collision. Both were always right — the JSON is per-deal, and only the flat view was
+ambiguous. `Option_Payment_Timing` is renamed, the Instrument aliases are gone, and the flat
+`fields` key with them.
 
-Making `fields` per-type would settle it and delete the remaining aliases, at the cost of a shape
-change to the three consumers (`derivus_jupyter.load_fields`, `generate_json_docs`, the Excel
-add-in) — all three of which already reconstruct per-type data from the flat dict.
+Three more defect classes became unreachable rather than merely absent: a section naming a field
+with no descriptor, a descriptor no section reaches, and one deal's field silently resolving to
+another's. Their gates are deleted, not disabled.
 
 **Authoring rules are stated, not just enforced.** `schema.validate_instrument(deal)` returns the
 messages for one constructed deal. Two layers, because the rules have two shapes: `default=REQUIRED`

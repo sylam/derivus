@@ -1184,14 +1184,14 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
             log_vol = torch.log(barrier_t / s_t) / raw_sig
             barrovert = log_vol / root_tau
 
-            if deal_data.Instrument.field['Option_Payment_Timing'] == 'Expiry':
+            if deal_data.Instrument.field['Payment_Timing'] == 'Expiry':
                 muroot = mu * root_tau
                 d1 = muroot - barrovert
                 d2 = -muroot - barrovert
                 payoff = torch.exp(-r_t * exp) * 0.5 * (
                         torch.erfc(eta_scale * d1) + torch.exp(2.0 * mu * log_vol) * torch.erfc(eta_scale * d2))
 
-            elif deal_data.Instrument.field['Option_Payment_Timing'] == 'Touch':
+            elif deal_data.Instrument.field['Payment_Timing'] == 'Touch':
                 lamb = torch.sqrt(smooth_relu(mu * mu + 2.0 * r_t))
                 lambroot = lamb * root_tau
                 d1 = lambroot - barrovert
@@ -1205,7 +1205,7 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
         one_touch_part = (1.0 - touched) * buy_or_sell * nominal * payoff
 
         # settle cashflows (The potential rebate)
-        if deal_data.Instrument.field['Option_Payment_Timing'] == 'Touch':
+        if deal_data.Instrument.field['Payment_Timing'] == 'Touch':
             # paid AT the touch, so it settles here and leaves the deal - already-touched paths
             # carry nothing forward, which is why only the increment appears
             rebate_part = buy_or_sell * nominal * (touched - prev_touched)

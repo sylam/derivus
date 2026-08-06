@@ -4072,7 +4072,7 @@ class EquityOneTouchOption(Deal):
         F('Barrier_Monitoring_Frequency', 'Text', default='0M', obj='Period'),
         F('Barrier_Price', 'Float', default=0),
         F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
-        F('Option_Payment_Timing', 'Text', default='Expiry', description='Payment Timing', values=['Touch', 'Expiry']),
+        F('Payment_Timing', 'Text', default='Expiry', values=['Touch', 'Expiry']),
         F('Expiry_Date', 'Date', default=''),
         F('Equity_Volatility', 'Text', default='', obj='Tuple'),
         F('Discount_Rate', 'Text', default='', obj='Tuple'),
@@ -4099,7 +4099,7 @@ class EquityOneTouchOption(Deal):
 
     def add_grid_dates(self, parser, base_date, grid):
         # only if the payoff is american (Touch) should we add potential payoff dates
-        if self.field['Option_Payment_Timing'] == 'Touch':
+        if self.field['Payment_Timing'] == 'Touch':
             if isinstance(grid, str):
                 grid_dates = parser(base_date, self.field['Expiry_Date'], grid)
                 self.reval_dates.update(grid_dates)
@@ -4115,7 +4115,7 @@ class EquityOneTouchOption(Deal):
     def add_reval_date_offset(self, offset, relative_to_settlement=True):
         # don't add any extra reval dates if this is a touch option
         if relative_to_settlement:
-            if self.field['Option_Payment_Timing'] != 'Touch':
+            if self.field['Payment_Timing'] != 'Touch':
                 for curr, fixings in self.settlement_currencies.items():
                     new_dates = [x + pd.DateOffset(days=offset) for x in fixings]
                     self.reval_dates.update(new_dates)
@@ -4953,7 +4953,7 @@ class FXOneTouchOption(Deal):
         F('Barrier_Monitoring_Frequency', 'Text', default='0M', obj='Period'),
         F('Barrier_Price', 'Float', default=0),
         F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
-        F('Option_Payment_Timing', 'Text', default='Expiry', description='Payment Timing', values=['Touch', 'Expiry']),
+        F('Payment_Timing', 'Text', default='Expiry', values=['Touch', 'Expiry']),
         F('Expiry_Date', 'Date', default=''),
         F('FX_Volatility', 'Text', default='', obj='Tuple'),
         F('Discount_Rate', 'Text', default='', obj='Tuple'),
@@ -4980,7 +4980,7 @@ class FXOneTouchOption(Deal):
 
     def add_grid_dates(self, parser, base_date, grid):
         # only if the payoff is american (Touch) should we add potential payoff dates
-        if self.field['Option_Payment_Timing'] == 'Touch':
+        if self.field['Payment_Timing'] == 'Touch':
             if isinstance(grid, str):
                 grid_dates = parser(base_date, self.field['Expiry_Date'], grid)
                 self.reval_dates.update(grid_dates)
@@ -4996,7 +4996,7 @@ class FXOneTouchOption(Deal):
     def add_reval_date_offset(self, offset, relative_to_settlement=True):
         # don't add any extra reval dates if this is a touch option
         if relative_to_settlement:
-            if self.field['Option_Payment_Timing'] != 'Touch':
+            if self.field['Payment_Timing'] != 'Touch':
                 for curr, fixings in self.settlement_currencies.items():
                     new_dates = [x + pd.DateOffset(days=offset) for x in fixings]
                     self.reval_dates.update(new_dates)
