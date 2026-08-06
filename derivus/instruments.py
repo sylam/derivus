@@ -689,7 +689,7 @@ class NettingCollateralSet(Deal):
         F('Opening_Balance', 'Float', default=0.0),
         F('Base_Collateral_Call_Date', 'Date', default=''),
         F('Calendars', 'Text', default=''),
-        F('Collateral_Assets', 'Container', default={'Cash_Collateral': [], 'Bond_Collateral': [], 'Equity_Collateral': [], 'Commodity_Collateral': []}, sub_fields=[F('Cash_Collateral', 'Table', default='null', row=Row([F('Currency', 'Text'), F('Amount', 'Float'), F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text'), F('Liquidation_Period', 'Integer')])), F('Bond_Collateral', 'Table', default='null', row=Row([F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Liquidation_Period', 'Integer'), F('Issuer', 'Text'), F('Currency', 'Text'), F('Discount_Rate', 'Text'), F('Maturity', 'Period'), F('Principle', 'Float'), F('Coupon_Rate', 'Percent'), F('Coupon_Interval', 'Period'), F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text')])), F('Equity_Collateral', 'Table', default='null', description='Equity_Collateral', row=Row([F('Equity', 'Text'), F('Units', 'Float'), F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text'), F('Liquidation_Period', 'Integer')])), F('Commodity_Collateral', 'Table', default='null', row=Row([F('Commodity', 'Text'), F('Units', 'Float'), F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text'), F('Liquidation_Period', 'Integer')]))]),
+        F('Collateral_Assets', 'Container', default={'Cash_Collateral': [], 'Bond_Collateral': [], 'Equity_Collateral': [], 'Commodity_Collateral': []}, sub_fields=[F('Cash_Collateral', 'Table', default='null', row=Row([F('Currency', 'Text'), F('Amount', 'Float'), F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text'), F('Liquidation_Period', 'Integer')])), F('Bond_Collateral', 'Table', default='null', row=Row([F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Liquidation_Period', 'Integer'), F('Issuer', 'Text'), F('Currency', 'Text'), F('Discount_Rate', 'Text'), F('Maturity', 'Period'), F('Principal', 'Float'), F('Coupon_Rate', 'Percent'), F('Coupon_Interval', 'Period'), F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text')])), F('Equity_Collateral', 'Table', default='null', description='Equity_Collateral', row=Row([F('Equity', 'Text'), F('Units', 'Float'), F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text'), F('Liquidation_Period', 'Integer')])), F('Commodity_Collateral', 'Table', default='null', row=Row([F('Commodity', 'Text'), F('Units', 'Float'), F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text'), F('Liquidation_Period', 'Integer')]))]),
         F('Collateral_Call_Frequency', 'Text', default='1D', obj='Period'),
         F('Collateralized', 'Text', default='False', values=['True', 'False']),
         F('Netted', 'Text', default='True', values=['True', 'False']),
@@ -1966,7 +1966,6 @@ class StructuredDeal(Deal):
     # dependent price factors for this instrument
     fields = [ADMIN, own('StructuredDeal', [
         F('Currency', 'Text', default=''),
-        F('Net_Cashflows', 'Text', default='Yes', values=['Yes', 'No']),
         F('Net_Cashflows', 'Text', default='Yes', values=['Yes', 'No'])
 ])]
 
@@ -2770,7 +2769,7 @@ class CapDeal(Deal):
         field['Forecast_Rate_Volatility'] = utils.check_rate_name(self.field['Forecast_Rate_Volatility'])
 
         field_index = {}
-        Principal = self.field.get('Principal', 1000000.0)
+        Principal = self.field['Principal']
         Amortisation = self.field.get('Amortisation')
         Known_Rates = self.field.get('Known_Rates')
 
@@ -2883,7 +2882,7 @@ class FloorDeal(Deal):
         field['Forecast_Rate_Volatility'] = utils.check_rate_name(self.field['Forecast_Rate_Volatility'])
 
         field_index = {}
-        Principal = self.field.get('Principal', 1000000.0)
+        Principal = self.field['Principal']
         Amortisation = self.field.get('Amortisation')
         Known_Rates = self.field.get('Known_Rates')
 
@@ -3069,7 +3068,7 @@ class SwaptionDeal(Deal):
                        'Expiry': (self.field['Option_Expiry_Date'] - base_date).days}
 
         # need to check defaults
-        Principal = self.field.get('Principal', 1000000.0)
+        Principal = self.field['Principal']
         Pay_Amortisation = self.field.get('Pay_Amortisation')
         Receive_Amortisation = self.field.get('Receive_Amortisation')
         Receive_Day_Count = self.field.get('Receive_Day_Count', 'ACT_365')
@@ -4655,7 +4654,7 @@ class CashAccountDeal(Deal):
             shared).squeeze(1).cumprod(0)
 
         fx_rep = utils.calc_fx_cross(factor_dep['Currency'], shared.Report_Currency, deal_time, shared)
-        cash = self.field.get('Units',1.0) / discount
+        cash = self.field['Units'] / discount
         return cash * fx_rep
 
 
@@ -4698,7 +4697,7 @@ class EquityDeal(Deal):
         spot = utils.calc_time_grid_spot_rate(factor_dep['Equity'], deal_time, shared)
         spot = utils.spot_on_deal_grid(spot, deal_time, shared)
         fx_rep = utils.calc_fx_cross(factor_dep['Currency'], shared.Report_Currency, deal_time, shared)
-        nominal = (1.0 if self.field.get('Buy_Sell', 'Buy') == 'Buy' else -1.0) * self.field.get('Units', 1.0)
+        nominal = (1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0) * self.field['Units']
         cash = nominal * spot
         return cash * fx_rep
 

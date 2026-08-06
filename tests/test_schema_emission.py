@@ -120,6 +120,19 @@ def test_no_key_is_declared_two_ways():
     assert not clashing, f'one descriptor key declared with differing content: {clashing}'
 
 
+@pytest.mark.parametrize('cls_name', sorted(declared_classes()))
+def test_no_group_declares_a_key_twice(cls_name):
+    """A key listed twice in one group is always a mistake, whether or not the two agree.
+
+    `test_no_key_is_declared_two_ways` compares CONTENT across classes, so a verbatim duplicate
+    slipped past it: `Net_Cashflows` was declared twice identically on SwapInterestDeal and
+    `emit_instrument`'s setdefault kept the first, leaving the second invisible."""
+    for group in declared_classes()[cls_name]:
+        keys = [f.key for f in group.fields]
+        dupes = sorted({k for k in keys if keys.count(k) > 1})
+        assert not dupes, f'{cls_name}.{group.name} declares {dupes} more than once'
+
+
 def test_no_section_is_declared_two_ways():
     """The same hazard one level up: `sections` is keyed by group NAME, so two groups sharing a name
     and differing in fields silently collapse to one panel."""
