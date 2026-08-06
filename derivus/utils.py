@@ -3739,6 +3739,18 @@ def check_tuple_name(factor):
     return '.'.join((factor.type,) + factor.name) if type(factor.name) == tuple else factor
 
 
+def payoff_currency(field):
+    """A deal's payoff currency, which is its own currency unless it says otherwise.
+
+    Optional currency fields are declared with an EMPTY default, so 'not specified' reaches the
+    engine as a present empty string from any UI and as an absent key from hand-written JSON. Both
+    mean the same thing, so the test is on the VALUE. Four idioms had been in use for this one
+    rule - two presence tests, a `.get` default, and a value test - and only the value test gives
+    the same answer for both authorings.
+    """
+    return field.get('Payoff_Currency') or field['Currency']
+
+
 # 0D spot factor types whose NAME may carry a composed reference: a primary spot plus one or
 # more ObservedBasis periods, positional like the InterestRate curve+basis parent chain
 # (InterestRate.USD_SOFR.FUNDING; here CommodityPrice.PLATINUM_CME.LME_CME).

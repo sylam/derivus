@@ -680,13 +680,12 @@ class Config(object):
              and instrument.field.get('Equity') is not None else []) +
             ([utils.Factor('Correlation', tuple('EquityPrice.{0}/FxRate.{1}'.format(
                 instrument.field['Equity_Volatility'],
-                '.'.join(sorted([instrument.field['Currency'], instrument.field['Payoff_Currency']]))
+                '.'.join(sorted([instrument.field['Currency'], utils.payoff_currency(instrument.field)]))
             ).split('.'))),
               utils.Factor('VolatilityGrid', tuple(
-                  sorted([instrument.field['Currency'], instrument.field['Payoff_Currency']])))]
+                  sorted([instrument.field['Currency'], utils.payoff_currency(instrument.field)])))]
              if instrument.field.get('Equity_Volatility') is not None
-             and instrument.field['Currency'] != instrument.field.get(
-                 'Payoff_Currency', instrument.field['Currency']) else []),
+             and instrument.field['Currency'] != utils.payoff_currency(instrument.field) else []),
             # FX analogue; getattr-guarded (FxRate is also visited with a bare {} sentinel)
             'FxRate': lambda instrument, factor_fields, params:
             [utils.Factor(instrument.options['SpotModel'] + 'ModelParameters',

@@ -3421,8 +3421,7 @@ class EquityDiscreteExplicitAsianOption(Deal):
 
     def __init__(self, params, valuation_options):
         super(EquityDiscreteExplicitAsianOption, self).__init__(params, valuation_options)
-        self.payoff_ccy = self.field['Payoff_Currency'] if 'Payoff_Currency' in self.field \
-            else self.field['Currency']
+        self.payoff_ccy = utils.payoff_currency(self.field)
 
     def reset(self, calendars):
         super(EquityDiscreteExplicitAsianOption, self).reset()
@@ -3519,8 +3518,7 @@ class EquityBarrierBinaryOption(Deal):
 
     def reset(self, calendars):
         super(EquityBarrierBinaryOption, self).reset()
-        self.payoff_ccy = self.field['Payoff_Currency'] if 'Payoff_Currency' in self.field \
-            else self.field['Currency']
+        self.payoff_ccy = utils.payoff_currency(self.field)
         barrierdates = set(self.field['Barrier_Dates'])
         self.add_reval_dates(barrierdates.union({self.field['Expiry_Date']}), self.field['Payoff_Currency'])
 
@@ -3634,8 +3632,7 @@ class EquityOptionDeal(Deal):
 
     def reset(self, calendars):
         super(EquityOptionDeal, self).reset()
-        self.payoff_ccy = self.field['Payoff_Currency'] if 'Payoff_Currency' in self.field \
-            else self.field['Currency']
+        self.payoff_ccy = utils.payoff_currency(self.field)
         self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy)
 
     def add_grid_dates(self, parser, base_date, grid):
@@ -3654,7 +3651,7 @@ class EquityOptionDeal(Deal):
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
         # set the payoff_currency if not definied
-        Payoff_Currency = self.field.get('Payoff_Currency', self.field['Currency'])
+        Payoff_Currency = utils.payoff_currency(self.field)
 
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Equity': utils.check_rate_name(self.field['Equity']),
@@ -4061,8 +4058,7 @@ class EquityOneTouchOption(Deal):
 
     def reset(self, calendars):
         super(EquityOneTouchOption, self).reset()
-        self.payoff_ccy = self.field['Payoff_Currency'] if self.field['Payoff_Currency'] in self.field \
-            else self.field['Currency']
+        self.payoff_ccy = utils.payoff_currency(self.field)
         self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy)
 
     def add_grid_dates(self, parser, base_date, grid):
@@ -4235,8 +4231,7 @@ class EquityBarrierOption(Deal):
 
     def __init__(self, params, valuation_options):
         super(EquityBarrierOption, self).__init__(params, valuation_options)
-        self.payoff_ccy = self.field['Payoff_Currency'] if 'Payoff_Currency' in self.field \
-            else self.field['Currency']
+        self.payoff_ccy = utils.payoff_currency(self.field)
         self.path_dependent = True
 
     def reset(self, calendars):
@@ -4944,8 +4939,7 @@ class FXOneTouchOption(Deal):
 
     def reset(self, calendars):
         super(FXOneTouchOption, self).reset()
-        self.payoff_ccy = self.field['Payoff_Currency'] if 'Payoff_Currency' in self.field \
-            else self.field['Currency']
+        self.payoff_ccy = utils.payoff_currency(self.field)
         self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy)
 
     def add_grid_dates(self, parser, base_date, grid):
@@ -5066,8 +5060,7 @@ class FXBarrierOption(Deal):
 
     def reset(self, calendars):
         super(FXBarrierOption, self).reset()
-        self.payoff_ccy = self.field['Payoff_Currency'] if 'Payoff_Currency' in self.field \
-            else self.field['Currency']
+        self.payoff_ccy = utils.payoff_currency(self.field)
         self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy)
 
     def add_grid_dates(self, parser, base_date, grid):
@@ -5186,7 +5179,7 @@ class FXPartialTimeBarrierOption(Deal):
 
     def reset(self, calendars):
         super(FXPartialTimeBarrierOption, self).reset()
-        self.payoff_ccy = self.field.get('Payoff_Currency', self.field['Currency'])
+        self.payoff_ccy = utils.payoff_currency(self.field)
         self.add_reval_dates({self.field['Expiry_Date'], self.field['Barrier_Limit_Date']}, self.payoff_ccy)
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
@@ -5894,7 +5887,7 @@ class FloatingEnergyDeal(Deal):
         super(FloatingEnergyDeal, self).reset()
         paydates = set([x['Payment_Date'] for x in self.field['Payments']['Items']])
         self.add_reval_dates(
-            paydates, self.field['Payoff_Currency' if 'Payoff_Currency' in self.field else 'Currency'])
+            paydates, utils.payoff_currency(self.field))
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -5906,7 +5899,7 @@ class FloatingEnergyDeal(Deal):
             'Reference_Type': utils.check_rate_name(self.field['Reference_Type'])
         }
 
-        payoff_currency = self.field['Payoff_Currency' if 'Payoff_Currency' in self.field else 'Currency']
+        payoff_currency = utils.payoff_currency(self.field)
         field['Discount_Rate'] = utils.check_rate_name(
             self.field['Discount_Rate']) if self.field['Discount_Rate'] else field['Currency']
         field['Payoff_Currency'] = utils.check_rate_name(payoff_currency)
