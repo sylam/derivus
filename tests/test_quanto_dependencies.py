@@ -39,7 +39,6 @@ def _cfg(payoff_currency):
         'InterestRate.' + PAYOFF_CCY: {'Currency': PAYOFF_CCY, 'Day_Count': 'ACT_365',
                                        'Sub_Type': None,
                                        'Curve': utils.Curve([], [[0.0, 0.0], [5.0, 0.0]])},
-        'DiscountRate.' + PAYOFF_CCY: {'Interest_Rate': PAYOFF_CCY},
         # the pair's vol surface and the equity/fx correlation: the two the rule must reach
         'VolatilityGrid.USD.' + PAYOFF_CCY: {
             'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
@@ -137,7 +136,6 @@ def test_a_non_equity_quanto_referencing_a_vol_grid_does_not_raise():
         'InterestRate.' + PAYOFF_CCY: {'Currency': PAYOFF_CCY, 'Day_Count': 'ACT_365',
                                        'Sub_Type': None,
                                        'Curve': utils.Curve([], [[0.0, 0.0], [5.0, 0.0]])},
-        'DiscountRate.' + PAYOFF_CCY: {'Interest_Rate': PAYOFF_CCY},
         'VolatilityGrid.USD.' + PAYOFF_CCY: {
             'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
             'Surface': utils.Curve([], [[m, t, 0.15] for m in (0.8, 1.0, 1.2) for t in (0.02, 2.0)])},

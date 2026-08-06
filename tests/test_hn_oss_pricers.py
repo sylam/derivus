@@ -78,7 +78,6 @@ def _price_factors(sig, hn_params, r, q):
         'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Priority': 1, 'Spot': 1.0},
         'InterestRate.USD': {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                              'Curve': utils.Curve([], [[0.0, r], [5.0, r]])},
-        'DiscountRate.USD': {'Interest_Rate': 'USD'},
         'EquityPrice.EQ': {'Spot': SPOT, 'Currency': 'USD', 'Interest_Rate': 'USD', 'Issuer': '',
                            'Respect_Default': 'No', 'Jump_Level': 0.0},
         'DividendRate.EQ': {'Currency': 'USD', 'Floor': None,

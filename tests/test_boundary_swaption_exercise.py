@@ -132,8 +132,6 @@ def _cfg(curve=CURVE, rate=SWAP_RATE, collateralised=False):
                              # curve by its own tenor, so a zero-tenor knot is 0/0 and NaNs the
                              # whole netting set
                              'Curve': utils.Curve([], [[t, curve] for t in (0.25, 1.0, 3.0, 5.0)])},
-        'DiscountRate.USD': {'Interest_Rate': 'USD'},
-        'DiscountRate.EUR': {'Interest_Rate': 'EUR'},
         'InterestYieldVol.EUR': {
             'Property_Aliases': None,
             'Surface': utils.Curve([], [[m, e, t, VOL] for m in (-0.01, 0.0, 0.01)

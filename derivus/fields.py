@@ -225,8 +225,6 @@ mapping = {
                 ["Recovery_Rate", "Minimum_Recovery_Rate", "Issuer", "Curve"],
             "InterestRate":
                 ["Sub_Type", "Floor", "Day_Count", "Accrual_Calendar", "Currency", "Curve", "Near_Interpolation", "Near_Date"],
-            "DiscountRate":
-                ["Interest_Rate"],
             "HullWhite2FactorModelParameters":
                 ["Quanto_FX_Volatility", "Alpha_1", "Sigma_1", "Quanto_FX_Correlation_1", "Alpha_2", "Sigma_2",
                  "Quanto_FX_Correlation_2", "Correlation"],
@@ -480,7 +478,6 @@ mapping = {
         "SurvivalProb": ["HWHazardRateModel"],
         "InterestRate": ["HullWhite1FactorInterestRateModel", "PCAInterestRateModel",
                           "VARMixedFactorInterestRateModel"],
-        "DiscountRate": [],
         "PriceIndex": ["GBMPriceIndexModel"],
         "InterestRateVol": [],
         "DividendRate": ["HullWhite1FactorInterestRateModel", "PCAInterestRateModel"]

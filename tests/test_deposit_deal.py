@@ -57,7 +57,6 @@ def _cfg(schedule_dates):
         'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Priority': 1, 'Spot': 1.0},
         'InterestRate.USD': {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                              'Curve': utils.Curve([], [[0.0, RATE], [5.0, RATE]])},
-        'DiscountRate.USD': {'Interest_Rate': 'USD'},
     }
     c.params['Price Models'] = {}
     c.params['Valuation Configuration'] = {}

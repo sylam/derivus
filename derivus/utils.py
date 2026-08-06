@@ -159,7 +159,7 @@ Partition = namedtuple('Partition', 'DealMTMs Collateral_Cash Funding_Cost Cashf
 Collateral = namedtuple('Collateral', 'Haircut Amount Currency Funding_Rate Collateral_Rate Collateral')
 
 # define 1, 2 and 3d risk factors - add more as development proceeds
-DimensionLessFactors = ['DiscountRate', 'ReferenceVol', 'Correlation']
+DimensionLessFactors = ['ReferenceVol', 'Correlation']
 OneDimensionalFactors = ['InterestRate', 'InflationRate', 'DividendRate', 'SurvivalProb', 'ForwardPrice', 'ForwardRate']
 TwoDimensionalFactors = ['VolatilityGrid']
 ThreeDimensionalFactors = ['InterestRateVol', 'InterestYieldVol', 'ForwardPriceVol']

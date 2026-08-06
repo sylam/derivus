@@ -567,16 +567,7 @@ class Config(object):
                         return
                     except KeyError as e:
                         logging.warning("Price Factor %s not found in market data", e)
-
-                    if factor.type != "DiscountRate":
                         logging.error("Skipping Price Factor")
-                        return
-
-                    logging.info("Creating default Discount %s", factor)
-                    self.params["Price Factors"][utils.check_tuple_name(factor)] = {
-                        'Interest_Rate':".".join(factor.name)}
-                    # try again after creating default
-                    rates_to_add.update(get_rates(factor, instrument))
 
                 reval_dates = instrument.get_reval_dates()
                 max_reval = max(reval_dates) if reval_dates else None
@@ -645,7 +636,6 @@ class Config(object):
 
         # derived fields are fields that embed other risk factors
         dependant_fields = {'FxRate': [('Interest_Rate', 'InterestRate')],
-                            'DiscountRate': [('Interest_Rate', 'InterestRate')],
                             'ForwardPrice': [('Currency', 'FxRate')],
                             'ReferencePrice': [('ForwardPrice', 'ForwardPrice')],
                             'ReferenceVol': [('ForwardPriceVol', 'ForwardPriceVol'),

@@ -452,7 +452,6 @@ def _dedupe_calc(gradient_variables=None):
         'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Priority': 1, 'Spot': 1.0},
         'InterestRate.USD': {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                              'Curve': utils.Curve([], [[0.0, 0.02], [5.0, 0.02]])},
-        'DiscountRate.USD': {'Interest_Rate': 'USD'},
         'EquityPrice.EQ': {'Spot': 100.0, 'Currency': 'USD', 'Interest_Rate': 'USD', 'Issuer': '',
                            'Respect_Default': 'No', 'Jump_Level': 0.0},
         'DividendRate.EQ': {'Currency': 'USD', 'Floor': None,

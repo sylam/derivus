@@ -106,7 +106,6 @@ def _foreign_report_currency(c, ccy='EUR'):
     c.params['Price Factors']['InterestRate.' + ccy] = {
         'Currency': ccy, 'Day_Count': 'ACT_365', 'Sub_Type': None,
         'Curve': utils.Curve([], [[0.0, 0.0], [5.0, 0.0]])}
-    c.params['Price Factors']['DiscountRate.' + ccy] = {'Interest_Rate': ccy}
     c.params['Price Models']['GBMAssetPriceModel.USD'] = {'Vol': 0.12, 'Drift': 0.0}
     c.params['Model Configuration'].append('FxRate', (), 'GBMAssetPriceModel')
     return ccy
@@ -607,7 +606,6 @@ def _fva(spot, gradient, batch=1024, mcmc=192):
     c.params['Price Factors']['InterestRate.FUND'] = {
         'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
         'Curve': utils.Curve([], [[0.0, 0.02], [10.0, 0.02]])}
-    c.params['Price Factors']['DiscountRate.FUND'] = {'Interest_Rate': 'FUND'}
     c.deals['Deals']['Children'] = [{'Instrument': construct_instrument(DISCRETE_BARRIER, {})}]
     _, out = derivus.run_cmc(c, prec=bb.DTYPE, overrides={
         'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,

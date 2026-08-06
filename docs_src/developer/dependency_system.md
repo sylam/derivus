@@ -27,10 +27,10 @@ All three are plain dicts defined inside `calculate_dependencies`. Extend by add
 
 `walk_groups` recurses the deal tree **depth-first, children before parent**, skipping `Ignore=='True'` nodes. Per instrument it runs `instrument.reset(holidays)` and `finalize_dates(...)` (which fill `reval_dates` / `settlement_currencies`), then `get_price_factors`. That iterates the class attribute `instrument.factor_fields` (`{field_name: [factor_type, …]}`); `iter_factors` pulls the field value(s) via `utils.get_fieldname` (handles nested-tuple keys), flattens, and yields `Factor(type, check_rate_name(v))`. For each factor: record its per-deal max date (`max(instrument.get_reval_dates())`) into `dependent_factor_tenors`, and add its rates unless already present (or its type is conditional).
 
-`add_rates_for_factor` calls `get_rates`; on a `KeyError` (missing `Price Factors` block) it logs a warning and — **only for `DiscountRate`** — auto-creates a default block and retries. **Any other type is silently skipped.**
+`add_rates_for_factor` calls `get_rates`; on a `KeyError` (missing `Price Factors` block) it logs a warning and skips the factor. It used to auto-create a default block for `DiscountRate` — that type is retired, and with it the only self-heal.
 
-!!! warning "Invariant — the self-heal is `DiscountRate`-only"
-    A non-`DiscountRate` factor whose `Price Factors` block is missing is dropped (two log lines), absent from `dependent_factors`, never simulated or valued. If a new derived type needs a default block, extend `add_rates_for_factor` explicitly — do not rely on the silent skip.
+!!! warning "Invariant — a missing block is a silently skipped factor"
+    A factor whose `Price Factors` block is missing is dropped (two log lines), absent from `dependent_factors`, never simulated or valued. Nothing is auto-created. If a new derived type needs a default block, extend `add_rates_for_factor` explicitly — do not rely on the silent skip.
 
 !!! warning "Invariant — dates before tenors"
     `get_reval_dates` / `finalize_dates` must run (via `walk_groups`) before tenor collection: the per-factor max date and the reset/settlement sets all come from `instrument.reset()` + `finalize_dates`. A deal whose `reset()` leaves `reval_dates` empty contributes no tenor, and its directly-referenced factors default to `max(reset_dates)`.

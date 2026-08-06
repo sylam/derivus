@@ -221,6 +221,27 @@ def test_the_retired_vol_types_stay_retired():
         f'the 2D factor registry disagrees: {utils.TwoDimensionalFactors}')
 
 
+def test_discountrate_stays_retired():
+    """`DiscountRate` was a factor type whose entire body was one field pointing at another factor,
+    and `get_discount_factor` existed only to follow it: look up the wrapper, ask it for the name,
+    resolve THAT as an InterestRate. Every block in the repo mapped a name to itself.
+
+    The tell that it was redundant is that `add_rates_for_factor` self-healed this type and no
+    other - it could synthesise the block precisely because the block held nothing the engine could
+    not already derive. A deal's `Discount_Rate` field now names an InterestRate directly, which
+    loses no expressiveness: discounting on a different curve was always done by naming one."""
+    assert not hasattr(riskfactors, 'DiscountRate'), 'the wrapper class is back'
+    assert not hasattr(instruments, 'get_discount_factor'), 'the name hop is back'
+    assert 'DiscountRate' not in MAPPING['Factor']['types'], 'back in the Factor store'
+    assert 'DiscountRate' not in MAPPING['Process_factor_map'], 'back in the process map'
+    assert 'DiscountRate' not in utils.DimensionLessFactors, 'back in the dimensionless registry'
+
+    referenced = sorted({f'{n}.{f}' for n, c in deal_classes().items()
+                         for f, types in getattr(c, 'factor_fields', {}).items()
+                         if 'DiscountRate' in types})
+    assert not referenced, f'deals still reference the retired type: {referenced}'
+
+
 def test_docs_publish_only_real_market_price_names():
     """The drift reached the DOCS, which is where it did its damage: a reader copying the example
     authored a block the engine walks past. Neither the schema nor the suite looked at prose, so the

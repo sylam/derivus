@@ -70,8 +70,6 @@ def _cfg(deal=None, third_currency=False):
                              'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.0]])},
         'InterestRate.EUR': {'Currency': 'EUR', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                              'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.0]])},
-        'DiscountRate.USD': {'Interest_Rate': 'USD'},
-        'DiscountRate.EUR': {'Interest_Rate': 'EUR'},
         'VolatilityGrid.EUR.USD': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
                               'Surface': utils.Curve([], [[m, t, VOL] for m in (0.8, 1.0, 1.2)
                                                           for t in (0.1, 3.0)])},
@@ -83,7 +81,6 @@ def _cfg(deal=None, third_currency=False):
         c.params['Price Factors']['InterestRate.GBP'] = {
             'Currency': 'GBP', 'Day_Count': 'ACT_365', 'Sub_Type': None,
             'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.0]])}
-        c.params['Price Factors']['DiscountRate.GBP'] = {'Interest_Rate': 'GBP'}
         c.params['Price Models']['GBMAssetPriceModel.GBP'] = {'Vol': 0.10, 'Drift': 0.0}
         c.params['Price Factors']['VolatilityGrid.EUR.GBP'] = {
             'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',

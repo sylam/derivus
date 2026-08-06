@@ -761,22 +761,6 @@ class ForwardPriceSample(Factor0D):
         return self.param.get('Sampling_Convention')
 
 
-class DiscountRate(object):
-    """
-    A wrapper for interest rate price factors.
-    """
-    field_desc = (
-        'Interest Rates',
-        ['- **Interest_Rate**: String. Name of the *Interest Rate* price factor for discounting']
-    )
-
-    def __init__(self, param):
-        self.param = param
-
-    def get_interest_rate(self):
-        return utils.check_rate_name(self.param['Interest_Rate'])
-
-
 class ReferenceVol(object):
     field_desc = ('Energy',
                   ['- **ForwardPriceVol**: String. Name of the *ForwardPriceVol* price factor to use',

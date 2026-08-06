@@ -45,8 +45,6 @@ def _price(deal, ref):
                              'Curve': utils.Curve([], [[0.0, USD_RATE], [10.0, USD_RATE]])},
         'InterestRate.EUR': {'Currency': 'EUR', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                              'Curve': utils.Curve([], [[0.0, EUR_RATE], [10.0, EUR_RATE]])},
-        'DiscountRate.USD': {'Interest_Rate': 'USD'},
-        'DiscountRate.EUR': {'Interest_Rate': 'EUR'},
         'EquityPrice.ACME': {'Issuer': None, 'Respect_Default': 'No', 'Jump_Level': 0.0,
                              'Spot': 100.0, 'Interest_Rate': 'USD', 'Currency': 'USD'},
         'DividendRate.ACME': {'Floor': None, 'Currency': 'USD',

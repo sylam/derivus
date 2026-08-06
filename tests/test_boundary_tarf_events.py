@@ -67,7 +67,6 @@ def _price_factors(spot):
                              'Curve': utils.Curve([], [[0.0, 0.0], [5.0, 0.0]])},
         'InterestRate.AUD': {'Currency': 'AUD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                              'Curve': utils.Curve([], [[0.0, 0.0], [5.0, 0.0]])},
-        'DiscountRate.USD': {'Interest_Rate': 'USD'},
         'VolatilityGrid.AUD.USD': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
                           'Surface': utils.Curve([], [[m, t, SIGMA] for m in (0.5, 1.0, 1.5)
                                                       for t in (0.02, 2.0)])},

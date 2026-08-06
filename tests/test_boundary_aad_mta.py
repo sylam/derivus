@@ -77,8 +77,6 @@ def _cfg(min_transfer, collateralised=True):
                              'Curve': utils.Curve([], [[0.0, 0.03], [10.0, 0.03]])},
         'InterestRate.EUR': {'Currency': 'EUR', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                              'Curve': utils.Curve([], [[0.0, 0.02], [10.0, 0.02]])},
-        'DiscountRate.USD': {'Interest_Rate': 'USD'},
-        'DiscountRate.EUR': {'Interest_Rate': 'EUR'},
         'SurvivalProb.CPTY': {'Recovery_Rate': 0.4,
                               'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.4]])},
         'FxRateVol.EUR.USD': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
