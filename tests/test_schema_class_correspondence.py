@@ -221,6 +221,42 @@ def test_the_retired_vol_types_stay_retired():
         f'the 2D factor registry disagrees: {utils.TwoDimensionalFactors}')
 
 
+def json_names(cls):
+    """The keys an author writes for this deal - the alias where a field has one, plus the children
+    of every container, since those are authored inside it."""
+    out = set()
+
+    def walk(f):
+        out.add(f.json_name or f.name)
+        for child in (f.sub_fields or []):
+            walk(child)
+    for group in getattr(cls, 'fields', []):
+        for f in group.fields:
+            walk(f)
+    return out
+
+
+@pytest.mark.parametrize('deal_type', sorted(
+    n for n, c in deal_classes().items() if getattr(c, 'fields', None)))
+def test_every_field_a_deal_reads_is_declarable(deal_type):
+    """`test_factor_fields_are_declared` checks the same thing for factor REFERENCES; this is every
+    field. A deal that hard-keys `self.field['X']` while no declaration offers X cannot be authored
+    from the schema at all - `SwaptionDeal` read `Swap_Effective_Date` in `reset` with no guard, so
+    a schema-authored swaption raised KeyError before it could price, and `EquityOneTouchOption`
+    read `Barrier_Dates` for its discrete-monitoring path while only `EquityBarrierOption` declared
+    it, putting that path out of reach of any UI.
+
+    Hard keys only. A `.get` read is a field the deal is content to find missing, which is a
+    different statement and is what `default=REQUIRED` and `validate()` are for."""
+    src = ast.parse(inspect.getsource(getattr(instruments, deal_type)))
+    read = {n.slice.value for n in ast.walk(src)
+            if isinstance(n, ast.Subscript) and isinstance(n.value, ast.Attribute)
+            and n.value.attr == 'field' and isinstance(n.slice, ast.Constant)
+            and isinstance(n.slice.value, str)}
+    undeclared = sorted(read - json_names(getattr(instruments, deal_type)))
+    assert not undeclared, f'{deal_type} reads fields no schema-authored deal can carry: {undeclared}'
+
+
 def test_discountrate_stays_retired():
     """`DiscountRate` was a factor type whose entire body was one field pointing at another factor,
     and `get_discount_factor` existed only to follow it: look up the wrapper, ask it for the name,
