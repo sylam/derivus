@@ -17,7 +17,6 @@ Two rules apply to everything here, from [Conventions](conventions.md):
 | TARF target pin | `pricing` (TARF block) | Material — fires on 27–61% of paths, 27% short uncorrected — but neither the estimator (13% bandwidth spread) nor the **oracle** (8.9% flatness) resolves better than ~10%, so it is gated structurally with no tolerance asserted. Do not tune one on: the oracle cannot see it either. |
 | `pv_partial_barrier_option` | `pricing` | Excluded from the sensitivity work by decision; wants its own review. Also carries a suspected NaN — `limit` goes negative past `Barrier_Limit_Date` and is passed to `sqrt` unclamped. **Read, not run.** |
 | A blank optional factor reference resolves to nothing | `config.get_price_factors` / each deal's `calc_dependencies` | Discovery iterates `factor_fields` over the RAW field and `get_fieldname` drops blanks, but the deal then applies a fallback — so the fallback names a factor discovery never fetched. `FXForwardDeal` is the measured case: `Sell_Discount_Rate=''` prices the deal to **0.0**, and its `else field['Buy_Currency']` fallback is therefore dead code, not a mispricing. Two coherent fixes and they are a design choice: make the sibling default EXECUTABLE so discovery applies it too (`Discount_Rate ← Currency` is written by hand 34 times), or declare the field required and delete the fallback. |
-| The declared `Payment_Frequency` default hangs | `DepositDeal.reset` | `'0M'` is the house convention for "no frequency" across 13 declarations, but `generate_dates_backward` loops `while new_date > start_date` recomputing `max(start_date, end_date - 0)`, which never advances — reproduced, no timeout. Most consumers guard on a zero period; this one does not. Fix in the generator (a zero period = one period) rather than in the one declaration, or the convention keeps setting the trap. |
 | Four tables the Workbench cannot save | `derivus_jupyter.set_value_from_widget` | `set_repr` picks a deserializer from the `obj` token, and for an untagged table falls to a hardcoded whitelist of field NAMES. `Names`, `Sampling_Data_1`, `Sampling_Data_2` and `Barrier_Dates` are outside it and raise. The token table is per-field knowledge the `Row` now carries — the fix is to render from the declaration, not to add a fifth token. |
 | Boundary scoping is not mutation-gated | `tests/test_boundary_pricer_events.py` | The fix is verified by measuring the term directly against CRN, but both two-netting-set gates measure the END-TO-END gradient, where the boundary term is a small fraction — so if it breaks later the suite stays green. Isolating it needs a portfolio where the correction dominates the smooth sensitivity, which is not a portfolio anyone runs. |
 
@@ -50,7 +49,16 @@ presentation, with one consumer. It is therefore the one part of the store that 
 a gate holds every declared type to appearing in some menu. That gate found `EquityDeal` and
 `EquityOneTouchOption`, both concrete and documented, in no menu at all.
 
-Remaining: `bind=` (value-versus-structural patching) is designed but unbuilt; the other eight
+Remaining: **the descriptor store is still keyed by field NAME**, which is the last thing forcing
+a class to invent a key. `Option_Payment_Timing` should be `Payment_Timing` — the "Option" prefix
+is redundant — but four deals declare `Payment_Timing` as `['End','Begin','Discounted']` and two
+want `['Touch','Expiry']`. Both are legitimate: the JSON is per-deal, so the data is unambiguous
+and only the flat view collides. Making `fields` per-type deletes that constraint and with it the
+remaining `ALIASED_KEYS`, at the cost of a shape change to the three consumers
+(`derivus_jupyter.load_fields`, `generate_json_docs`, the Excel add-in) — all three of which
+already reconstruct per-type data from the flat dict.
+
+Also remaining: `bind=` (value-versus-structural patching) is designed but unbuilt; the other eight
 stores are untouched.
 
 The paired naming cleanup settles first, and is now done: the `MarketPrices` types the engine
