@@ -150,6 +150,36 @@ def own(cls_name, fields, role='Fields'):
     return Group('{}.{}'.format(cls_name, role), fields)
 
 
+def required_fields(cls):
+    """Every field a class declares REQUIRED, inherited declarations included."""
+    return [f.key for group in getattr(cls, 'fields', []) for f in group.fields
+            if f.default is REQUIRED]
+
+
+def validate_instrument(deal):
+    """Authoring-time messages for one constructed deal; empty when it has nothing to say.
+
+    Two layers. The declarations give the REQUIRED fields for free. A rule spanning several fields
+    cannot be declared on any one of them, so a class states those in its own `validate()` - as
+    code, because the predicates have no common shape: a value being non-zero, two fields being
+    alternatives, one column of a table row implying another.
+
+    Missing means FALSY, not absent. Optional fields are declared with an empty default, so a UI
+    writes the key present and empty where hand-written JSON omits it, and every fallback in the
+    engine already tests the value for exactly that reason.
+
+    `validate` is looked up normally rather than own-attr-only, unlike `fields`: an alias subclass
+    inherits the `calc_dependencies` whose reads these rules describe, so it inherits the rules.
+
+    Nothing in the valuation path calls this, and a message never stops a deal pricing. The engine
+    still fails exactly where it failed before - this says so first, naming the field.
+    """
+    messages = ['{} is required'.format(name) for name in required_fields(type(deal))
+                if not deal.field.get(name)]
+    own = getattr(deal, 'validate', None)
+    return messages + (list(own()) if own else [])
+
+
 def emit_instrument(module):
     """The `types` / `sections` / `fields` of `fields.mapping['Instrument']`, from the classes.
 

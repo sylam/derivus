@@ -61,6 +61,20 @@ Making `fields` per-type would settle it and delete the remaining aliases, at th
 change to the three consumers (`derivus_jupyter.load_fields`, `generate_json_docs`, the Excel
 add-in) — all three of which already reconstruct per-type data from the flat dict.
 
+**Authoring rules are stated, not just enforced.** `schema.validate_instrument(deal)` returns the
+messages for one constructed deal. Two layers, because the rules have two shapes: `default=REQUIRED`
+covers a field that must simply be there, and the declaration alone is enough; a rule spanning
+several fields has no shape in common with the next one — a value being non-zero, two fields being
+alternatives, one column of a table row implying another — so a class states those as code in its
+own `validate()`. An audit of all 45 deal types found 16 cross-field rules over 6 predicate forms,
+which is why they are code rather than a declarative `one_of=`; 17 more key on `base_date`,
+`self.options` or a resolved price factor and can never be evaluated at authoring time at all.
+
+Nothing in the valuation path calls it and a message never stops a deal pricing — the engine still
+fails where it always failed. Four rules are stated so far (`Cash_Payoff` on the binaries,
+`Settlement_Amount ⇒ Settlement_Date`, `Collateral_Rate ⇒ Funding_Rate`, and the inflation
+value-or-date pair). It is what `VALIDATE` should return alongside the factor want-list.
+
 Also remaining: `bind=` (value-versus-structural patching) is designed but unbuilt; the other eight
 stores are untouched.
 

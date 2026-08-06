@@ -1010,6 +1010,20 @@ class NettingCollateralSet(Deal):
 
             self.reval_dates = node_resets
 
+    def validate(self):
+        """A cash collateral row asking for ColVA must fund it.
+
+        Collateral_Rate and Funding_Rate are each optional on the row, but post_process enters the
+        ColVA block on Collateral_Rate alone and then reads Funding_Rate unconditionally - correct,
+        because there is no collateral valuation adjustment without a funding curve to value it
+        against. Reads defensively: validation runs BEFORE the contract is known to hold.
+        """
+        rows = (self.field.get('Collateral_Assets') or {}).get('Cash_Collateral') or []
+        for i, row in enumerate(rows):
+            if row.get('Collateral_Rate') and not row.get('Funding_Rate'):
+                yield ('Collateral_Assets.Cash_Collateral[{}]: Collateral_Rate is set, so '
+                       'Funding_Rate is required'.format(i))
+
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
         field = {}
@@ -2328,6 +2342,17 @@ class CFFixedInterestListDeal(Deal):
 
         self.add_reval_dates(resetdates, self.field['Currency'])
 
+    def validate(self):
+        """A settlement amount is paid ON a date.
+
+        calc_dependencies leaves Settlement_Date as None when it is not supplied, and
+        pv_fixed_cashflows reaches `factor_dep['Settlement_Date'] - time_block` under `if
+        settlement_amt:` - so a non-zero amount without a date meets None. The guard is right; what
+        was missing is anything saying so at authoring time.
+        """
+        if self.field.get('Settlement_Amount') and not self.field.get('Settlement_Date'):
+            yield 'Settlement_Amount is set, so Settlement_Date is required'
+
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
         field = {'Currency': utils.check_rate_name(self.field['Currency'])}
@@ -2627,6 +2652,20 @@ class YieldInflationCashflowListDeal(Deal):
             resetdates = paydates
 
         self.add_reval_dates(resetdates, self.field['Currency'])
+
+    def validate(self):
+        """Each cashflow must pin both index references: the known VALUE, or the DATE to read it at.
+
+        make_index_cashflows stores the value when there is one and a negative day offset when
+        there is not, and the offset is measured from base_date if no reference date was given -
+        so supplying neither prices against the wrong index level rather than failing. That is a
+        wrong number, not an exception, which is the only reason this is worth stating.
+        """
+        for i, cashflow in enumerate((self.field.get('Cashflows') or {}).get('Items') or []):
+            for ref in ('Base', 'Final'):
+                if not (cashflow.get(ref + '_Reference_Value') or cashflow.get(ref + '_Reference_Date')):
+                    yield ('Cashflows.Items[{}]: supply {}_Reference_Value or '
+                           '{}_Reference_Date'.format(i, ref, ref))
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -3487,7 +3526,7 @@ class EquityDiscreteExplicitAsianOption(Deal):
 class EquityBarrierBinaryOption(Deal):
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBarrierBinaryOption', [
         F('Barrier_Dates', 'Table', default='null', row=Row([F('Date', 'Date')])),
-        F('Cash_Payoff', 'Float', default=0),
+        F('Cash_Payoff', 'Float', default=REQUIRED),
         F('Barrier_Type', 'Text', default='Down_And_In', values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_Price', 'Float', default=0),
         F('Settlement_Date', 'Date', default='')
@@ -3714,7 +3753,7 @@ class EquityOptionDeal(Deal):
 class EquityBinaryOption(EquityOptionDeal):
 
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBinaryOption', [
-        F('Cash_Payoff', 'Float', default=0),
+        F('Cash_Payoff', 'Float', default=REQUIRED),
         F('Settlement_Date', 'Date', default='')
 ])]
 
@@ -4026,7 +4065,7 @@ class EquityOneTouchOption(Deal):
         F('Payoff_Currency', 'Text', default=''),
         F('Equity', 'Text', default='', obj='Tuple'),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
-        F('Cash_Payoff', 'Float', default=0),
+        F('Cash_Payoff', 'Float', default=REQUIRED),
         F('Payoff_Type', 'Text', default='Standard', values=['Standard', 'Quanto', 'Compo']),
         F('Barrier_Monitoring_Frequency', 'Text', default='0M', obj='Period'),
         F('Barrier_Price', 'Float', default=0),
@@ -4908,7 +4947,7 @@ class FXOneTouchOption(Deal):
         F('Payoff_Currency', 'Text', default=''),
         F('Underlying_Currency', 'Text', default=''),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
-        F('Cash_Payoff', 'Float', default=0),
+        F('Cash_Payoff', 'Float', default=REQUIRED),
         F('Barrier_Monitoring_Frequency', 'Text', default='0M', obj='Period'),
         F('Barrier_Price', 'Float', default=0),
         F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
@@ -5483,7 +5522,7 @@ class FXEuropeanOption(FXOptionDeal):
 
 class FXBinaryOption(FXOptionDeal):
     fields = [ADMIN, FX_ADMIN, own('FXBinaryOption', [
-        F('Cash_Payoff', 'Float', default=0),
+        F('Cash_Payoff', 'Float', default=REQUIRED),
         F('Settlement_Style', 'Text', default='Physical', values=['Physical', 'Cash']),
         F('Strike_Price', 'Float', default=0.0),
         F('Underlying_Currency', 'Text', default=''),
