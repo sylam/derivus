@@ -111,7 +111,11 @@ class F(object):
         of it. Deriving them is also what stops the two parallel lists drifting apart.
         """
         widget = 'Dropdown' if self.values is not None else self.WIDGET[self.type]
-        d = {'widget': widget, 'description': self.description, 'value': self.default}
+        # a required field has no default to offer - it is blank until the author supplies it
+        d = {'widget': widget, 'description': self.description,
+             'value': '' if self.default is REQUIRED else self.default}
+        if self.default is REQUIRED:
+            d['required'] = True
         if self.json_name is not None:
             d = {'name': self.json_name, **d}
         if self.values is not None:

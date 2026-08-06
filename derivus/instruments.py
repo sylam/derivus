@@ -18,7 +18,7 @@ from functools import reduce
 
 # utility functions and constants
 from . import utils, pricing
-from .schema import F, Group, Row, own
+from .schema import F, Group, REQUIRED, Row, own
 
 # specific modules
 import numpy as np
@@ -1877,9 +1877,9 @@ class FXForwardDeal(Deal):
         F('Sell_Amount', 'Float', default=0.0),
         F('Settlement_Date', 'Date', default=''),
         F('Buy_Amount', 'Float', default=0.0),
-        F('Sell_Discount_Rate', 'Text', default='', obj='Tuple'),
+        F('Sell_Discount_Rate', 'Text', default=REQUIRED, obj='Tuple'),
         F('Buy_Currency', 'Text', default=''),
-        F('Buy_Discount_Rate', 'Text', default='', obj='Tuple')
+        F('Buy_Discount_Rate', 'Text', default=REQUIRED, obj='Tuple')
 ])]
 
     factor_fields = {'Buy_Currency': ['FxRate'],
@@ -1910,12 +1910,13 @@ class FXForwardDeal(Deal):
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
-        field = {'Buy_Currency': utils.check_rate_name(self.field['Buy_Currency'])}
-        field['Buy_Discount_Rate'] = utils.check_rate_name(self.field['Buy_Discount_Rate']) if self.field[
-            'Buy_Discount_Rate'] else field['Buy_Currency']
-        field['Sell_Currency'] = utils.check_rate_name(self.field['Sell_Currency'])
-        field['Sell_Discount_Rate'] = utils.check_rate_name(self.field['Sell_Discount_Rate']) if self.field[
-            'Sell_Discount_Rate'] else field['Buy_Currency']
+        # both discount rates are required: discovery reads the RAW field and skips a blank, so a
+        # fallback here would name a curve that was never loaded - and the sell leg's named the BUY
+        # currency, mispricing it silently on the wrong curve
+        field = {'Buy_Currency': utils.check_rate_name(self.field['Buy_Currency']),
+                 'Buy_Discount_Rate': utils.check_rate_name(self.field['Buy_Discount_Rate']),
+                 'Sell_Currency': utils.check_rate_name(self.field['Sell_Currency']),
+                 'Sell_Discount_Rate': utils.check_rate_name(self.field['Sell_Discount_Rate'])}
 
         field_index = {
             'BuyFX': get_fxrate_factor(field['Buy_Currency'], static_offsets, stochastic_offsets),

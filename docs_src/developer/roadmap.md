@@ -16,7 +16,7 @@ Two rules apply to everything here, from [Conventions](conventions.md):
 | Collateralised autocall boundary correction | `utils.RowBoundarySet` | An autocall settles a coupon when it fires, and a collateralised exposure reads that ledger through `C_ts_te`, but `gross_to_net` takes only an mtm delta. Shipped as a strict xfail naming the reproduction. |
 | TARF target pin | `pricing` (TARF block) | Material — fires on 27–61% of paths, 27% short uncorrected — but neither the estimator (13% bandwidth spread) nor the **oracle** (8.9% flatness) resolves better than ~10%, so it is gated structurally with no tolerance asserted. Do not tune one on: the oracle cannot see it either. |
 | `pv_partial_barrier_option` | `pricing` | Excluded from the sensitivity work by decision; wants its own review. Also carries a suspected NaN — `limit` goes negative past `Barrier_Limit_Date` and is passed to `sqrt` unclamped. **Read, not run.** |
-| A blank optional factor reference resolves to nothing | `config.get_price_factors` / each deal's `calc_dependencies` | Discovery iterates `factor_fields` over the RAW field and `get_fieldname` drops blanks, but the deal then applies a fallback — so the fallback names a factor discovery never fetched. `FXForwardDeal` is the measured case: `Sell_Discount_Rate=''` prices the deal to **0.0**, and its `else field['Buy_Currency']` fallback is therefore dead code, not a mispricing. Two coherent fixes and they are a design choice: make the sibling default EXECUTABLE so discovery applies it too (`Discount_Rate ← Currency` is written by hand 34 times), or declare the field required and delete the fallback. |
+| A sibling fallback may name a factor discovery never fetched | each deal's `calc_dependencies` | Discovery iterates `factor_fields` over the RAW field and `get_fieldname` drops blanks, so a blank reference loads no factor. A fallback is only safe if it names one something ELSE already pulled in. `Discount_Rate ← Currency` is safe — 34 sites — because `Currency` is an `FxRate` and `dependant_fields` pulls its `InterestRate` transitively. Adding a fallback to a field whose sibling has no such edge silently resolves to whatever the sibling's chain did load. The one cross-leg instance (`FXForwardDeal.Sell_Discount_Rate ← Buy_Currency`) is fixed: both rates are `default=REQUIRED` with no fallback. |
 | Four tables the Workbench cannot save | `derivus_jupyter.set_value_from_widget` | `set_repr` picks a deserializer from the `obj` token, and for an untagged table falls to a hardcoded whitelist of field NAMES. `Names`, `Sampling_Data_1`, `Sampling_Data_2` and `Barrier_Dates` are outside it and raise. The token table is per-field knowledge the `Row` now carries — the fix is to render from the declaration, not to add a fifth token. |
 | Boundary scoping is not mutation-gated | `tests/test_boundary_pricer_events.py` | The fix is verified by measuring the term directly against CRN, but both two-netting-set gates measure the END-TO-END gradient, where the boundary term is a small fraction — so if it breaks later the suite stays green. Isolating it needs a portfolio where the correction dominates the smooth sensitivity, which is not a portfolio anyone runs. |
 
@@ -49,14 +49,17 @@ presentation, with one consumer. It is therefore the one part of the store that 
 a gate holds every declared type to appearing in some menu. That gate found `EquityDeal` and
 `EquityOneTouchOption`, both concrete and documented, in no menu at all.
 
-Remaining: **the descriptor store is still keyed by field NAME**, which is the last thing forcing
-a class to invent a key. `Option_Payment_Timing` should be `Payment_Timing` — the "Option" prefix
-is redundant — but four deals declare `Payment_Timing` as `['End','Begin','Discounted']` and two
-want `['Touch','Expiry']`. Both are legitimate: the JSON is per-deal, so the data is unambiguous
-and only the flat view collides. Making `fields` per-type deletes that constraint and with it the
-remaining `ALIASED_KEYS`, at the cost of a shape change to the three consumers
-(`derivus_jupyter.load_fields`, `generate_json_docs`, the Excel add-in) — all three of which
-already reconstruct per-type data from the flat dict.
+Remaining: **the descriptor store is keyed by field NAME, and that choice picks the name.** A front
+end that flattens every instrument's fields into one dictionary needs `Option_Payment_Timing`,
+because four deals declare `Payment_Timing` as `['End','Begin','Discounted']` and two want
+`['Touch','Expiry']`. A front end that keys on `(instrument, field)` needs only `Payment_Timing`,
+and the prefix is redundant. Both enums are correct — the JSON is per-deal, so the data is never
+ambiguous; only the flat view is. So the name is not a naming question, it is downstream of which
+store shape wins, and `ALIASED_KEYS` is the running cost of the flat one.
+
+Making `fields` per-type would settle it and delete the remaining aliases, at the cost of a shape
+change to the three consumers (`derivus_jupyter.load_fields`, `generate_json_docs`, the Excel
+add-in) — all three of which already reconstruct per-type data from the flat dict.
 
 Also remaining: `bind=` (value-versus-structural patching) is designed but unbuilt; the other eight
 stores are untouched.
