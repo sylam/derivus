@@ -550,15 +550,19 @@ def calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared):
     # b_adj adjusts the carry on the forward, s_adj is to scale the forward directly (as a factor)
     if 'QuantoImpliedCorrelation' in factor_dep:
         # quanto fx deal
+        rho = utils.implied_correlation(
+            factor_dep['QuantoImpliedCorrelation'], factor_dep['Correlation_Sign'])
         atm_vol = utils.calc_time_grid_vol_rate(factor_dep['Volatility'], None, expiry, shared)
-        return {'vol': vols, 'b_adj': -atm_vol * fx_vols * factor_dep['QuantoImpliedCorrelation'], 's_adj': 1.0}
+        return {'vol': vols, 'b_adj': -atm_vol * fx_vols * rho, 's_adj': 1.0}
     else:
+        rho = utils.implied_correlation(
+            factor_dep['CompoImpliedCorrelation'], factor_dep['Correlation_Sign'])
         tenor_in_days = factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM]
         forwardfx = utils.calc_fx_forward(
             factor_dep['Local'], factor_dep['Other'],
             tenor_in_days, deal_time, shared)
         compo_vols = torch.sqrt(
-            fx_vols * fx_vols + 2.0 * fx_vols * vols * factor_dep['CompoImpliedCorrelation'] + vols * vols)
+            fx_vols * fx_vols + 2.0 * fx_vols * vols * rho + vols * vols)
         return {'vol': compo_vols, 'b_adj': 0.0, 's_adj':forwardfx}
 
 
@@ -2623,7 +2627,8 @@ def pv_energy_option(shared, time_grid, deal_data, nominal):
                 fx_vols = torch.stack(
                     [utils.calc_time_grid_vol_rate(factor_dep['FXCompoVol'], None, sb, shared)
                      for sb in sample_block])
-                vol2 += fx_vols * fx_vols + 2.0 * fx_vols * vols * factor_dep['ImpliedCorrelation']
+                vol2 += fx_vols * fx_vols + 2.0 * fx_vols * vols * utils.implied_correlation(
+                    factor_dep['ImpliedCorrelation'])
 
             product_t = sample_ft * torch.exp(
                 sample_ft.new(np.expand_dims(sample_block, axis=2)) * vol2)
@@ -3319,7 +3324,7 @@ def pv_credit_cashflows(shared, time_grid, deal_data, return_par_spread=False):
         # note the minus sign here
         premium = -(interest[cash_index] * cashflows.tn[cash_index, utils.CASHFLOW_INDEX_Nominal]).reshape(1, -1, 1)
         pv_premium = premium * (survival_T + adjustment * marginal_PD) * Dt_T
-        pv_credit = (1.0 - factor_dep['Recovery_Rate']) * cashflows.tn[
+        pv_credit = (1.0 - factor_dep['Recovery_Rate'].recovery_rate()) * cashflows.tn[
             cash_index, utils.CASHFLOW_INDEX_Nominal].reshape(1, -1, 1) * 0.5 * (
                             Dt_T + Dt_Tm1) * marginal_PD
 

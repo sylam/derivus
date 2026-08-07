@@ -10,8 +10,14 @@ The gates below are the three things that can go wrong. The partition can lose i
 `test_reconstruction` catches per declared type over shapes the framework never sees in a fixture.
 The patch verb can accept something it should refuse, which the fail-loud gates catch. And - the
 one no structural gate can see - the patch can be correct on paper and never reach a number, which
-is what `test_a_patched_curve_and_spot_reprice` is for: it bumps through `patch_market` and again
-by hand, and holds the two to the same MTM.
+is what the reprice gates are for: each bumps through `patch_market` and again by hand, and holds
+the two to the same MTM.
+
+Three fixtures, because a field is only bindable from its consumption site and the three sites are
+different: a cashflow for a curve rate and a spot, a quanto equity option for `Correlation.Value`,
+and a CDS for `SurvivalProb.Recovery_Rate`. The last two used to be read at COMPILE, which is why
+they were declined; the reprice gates are what says they are read at eval now, and their base MTMs
+are pinned to the commit that still baked them.
 """
 import os
 import sys
@@ -35,6 +41,22 @@ DTYPE = torch.float64
 RATE = 0.02
 SPOT = 18.5
 AMOUNT = 1_000_000.0
+VOL = 0.25
+EQ_SPOT = 100.0
+RHO = 0.3
+RHO_BUMPED = -0.5
+RECOVERY = 0.4
+RECOVERY_BUMPED = 0.2
+CORRELATION = 'Correlation.EquityPrice.EQ/FxRate.USD.ZAR'
+
+# What the parent commit (92dad5c) produced, when `get_implied_correlation` and `get_recovery_rate`
+# still baked their numbers into `field_index` at `calc_dependencies`. Reading them at eval instead
+# is a change of WHEN, so all four have to survive it - the bumped pair authored the only way that
+# commit could author it, by editing the block before the run.
+QUANTO_MTM = 11.548002479638967
+QUANTO_MTM_BUMPED = 9.827092105505875
+CDS_MTM = 54332.429663776406
+CDS_MTM_BUMPED = 81391.73851161855
 
 # Content for each shape, authored HERE: the coordinate arity is what the partition splits on, and
 # a fixture only ever carries the shapes its own market data happens to use.
@@ -60,9 +82,8 @@ def sample_block(factor_type):
             for key, f in schema.FACTOR_FIELDS[factor_type].items()}
 
 
-def _context():
-    """A ZAR cashflow reported in USD: its MTM is amount x discount factor x spot, so one deal is
-    sensitive to a Curve's rate column and a 0D Spot at once."""
+def _two_currency_cfg():
+    """USD reporting over a ZAR leg - the smallest world every fixture here is built on."""
     cfg = Config()
     cfg.params['System Parameters']['Base_Currency'] = 'USD'
     cfg.params['System Parameters']['Base_Date'] = BASE
@@ -78,10 +99,11 @@ def _context():
     }
     cfg.params['Price Models'] = {}
     cfg.params['Valuation Configuration'] = {}
-    deal = {'Object': 'FixedCashflowDeal', 'Reference': 'CF1', 'Currency': 'ZAR',
-            'Discount_Rate': 'ZAR', 'Calendars': None, 'Amount': AMOUNT,
-            'Payment_Date': BASE + pd.DateOffset(years=2)}
-    cfg.deals = {'Attributes': {'Reference': 'patch', 'Tag_Titles': ''},
+    return cfg
+
+
+def _in_context(cfg, deal, reference):
+    cfg.deals = {'Attributes': {'Reference': reference, 'Tag_Titles': ''},
                  'Deals': {'Children': [{'Instrument': construct_instrument(deal, {})}]},
                  'Calculation': {'Base_Date': BASE, 'Currency': 'USD'}}
     context = derivus.Context()
@@ -89,11 +111,69 @@ def _context():
     return context
 
 
-def price(context):
+def _context():
+    """A ZAR cashflow reported in USD: its MTM is amount x discount factor x spot, so one deal is
+    sensitive to a Curve's rate column and a 0D Spot at once."""
+    return _in_context(_two_currency_cfg(), {
+        'Object': 'FixedCashflowDeal', 'Reference': 'CF1', 'Currency': 'ZAR',
+        'Discount_Rate': 'ZAR', 'Calendars': None, 'Amount': AMOUNT,
+        'Payment_Date': BASE + pd.DateOffset(years=2)}, 'patch')
+
+
+def _quanto_context():
+    """A ZAR equity option settling in USD, which is what makes `Correlation.Value` reachable.
+
+    The correlation is named on the SORTED currency pair, so a ZAR deal paying USD reads it with
+    the reverse-pair sign - which is why raising rho LOWERS this option. A fixture the other way
+    round would price identically whether or not the sign survived.
+    """
+    cfg = _two_currency_cfg()
+    cfg.params['Price Factors'].update({
+        'EquityPrice.EQ': {'Spot': EQ_SPOT, 'Currency': 'ZAR', 'Interest_Rate': 'ZAR',
+                           'Issuer': '', 'Respect_Default': 'No', 'Jump_Level': 0.0},
+        'DividendRate.EQ': {'Currency': 'ZAR', 'Floor': None,
+                            'Curve': utils.Curve([], [[0.0, 0.0], [5.0, 0.0]])},
+        'VolatilityGrid.EQ': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+                              'Surface': utils.Curve([], [[m, t, VOL] for m in (0.8, 1.0, 1.2)
+                                                          for t in (0.02, 2.0)])},
+        'VolatilityGrid.USD.ZAR': {
+            'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+            'Surface': utils.Curve([], [[m, t, 0.15] for m in (0.8, 1.0, 1.2)
+                                        for t in (0.02, 2.0)])},
+        CORRELATION: {'Value': RHO},
+    })
+    return _in_context(cfg, {
+        'Object': 'EquityOptionDeal', 'Reference': 'QUANTO1', 'Currency': 'ZAR',
+        'Payoff_Currency': 'USD', 'Equity': 'EQ', 'Dividends': 'EQ', 'Discount_Rate': 'ZAR',
+        'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
+        'Strike_Price': EQ_SPOT, 'Units': 1.0, 'Payoff_Type': 'Quanto',
+        'Expiry_Date': BASE + pd.DateOffset(years=1)}, 'quanto')
+
+
+def _cds_context():
+    """A three-year CDS on one name: the only deal whose price reads `SurvivalProb.Recovery_Rate`.
+    Protection is the (1 - R) leg, so the recovery moves the MTM without touching the premium."""
+    cfg = _two_currency_cfg()
+    cfg.params['Price Factors']['SurvivalProb.CPTY'] = {
+        'Recovery_Rate': RECOVERY, 'Minimum_Recovery_Rate': None, 'Issuer': '',
+        'Curve': utils.Curve([], [[0.0, 0.0], [5.0, 0.25]])}
+    return _in_context(cfg, {
+        'Object': 'DealDefaultSwap', 'Reference': 'CDS1', 'Currency': 'USD',
+        'Discount_Rate': 'USD', 'Name': 'CPTY', 'Buy_Sell': 'Buy', 'Principal': AMOUNT,
+        'Pay_Frequency': pd.DateOffset(months=3), 'Pay_Rate': utils.Percent(1.0),
+        'Accrual_Day_Count': 'ACT_365', 'Effective_Date': BASE,
+        'Maturity_Date': BASE + pd.DateOffset(years=3), 'Amortisation': None,
+        'Penultimate_Coupon_Date': None, 'First_Coupon_Date': None, 'Upfront': 0.0,
+        'Upfront_Date': None, 'Survival_Probability': 'CPTY', 'Calendars': None,
+        'ISDA_Standard': 'ISDA_03', 'Accrue_Fee': 'No',
+        'Protection_Paid_At_Maturity': 'No'}, 'cds')
+
+
+def price(context, reference):
     _, out = derivus.run_baseval(context.current_cfg, prec=DTYPE,
                                  overrides={'MCMC_Simulations': 1, 'Random_Seed': 1})
     rows = out['Results']['mtm']
-    return float(rows[rows['Reference'] == 'CF1']['Value'].iloc[0])
+    return float(rows[rows['Reference'] == reference]['Value'].iloc[0])
 
 
 def test_the_declarations_bind_something():
@@ -179,21 +259,21 @@ def test_a_patched_curve_and_spot_reprice():
     exactly as before. So bump twice - once through `patch_market`, once by editing the blocks the
     way a market-data file would - and hold the two to the same MTM.
     """
-    base = price(_context())
+    base = price(_context(), 'CF1')
 
     patched = _context()
     patch = patched.market_patch()
     patch['InterestRate.ZAR']['Curve'] = [RATE + 0.01, RATE + 0.01]
     patch['FxRate.ZAR']['Spot'] = SPOT * 1.1
     patched.patch_market(patch)
-    by_patch = price(patched)
+    by_patch = price(patched, 'CF1')
 
     authored = _context()
     factors = authored.current_cfg.params['Price Factors']
     factors['InterestRate.ZAR']['Curve'] = utils.Curve(
         [], [[0.0, RATE + 0.01], [5.0, RATE + 0.01]])
     factors['FxRate.ZAR']['Spot'] = SPOT * 1.1
-    by_hand = price(authored)
+    by_hand = price(authored, 'CF1')
 
     assert by_patch != pytest.approx(base, rel=1e-9), 'the patch never reached the number'
     assert by_patch == pytest.approx(by_hand, rel=1e-12)
@@ -201,3 +281,71 @@ def test_a_patched_curve_and_spot_reprice():
     assert by_patch == pytest.approx(
         base * 1.1 * np.exp(-0.01 * ((BASE + pd.DateOffset(years=2)) - BASE).days / 365.0),
         rel=1e-6)
+
+
+def test_the_two_eval_time_reads_carry_the_number_they_used_to_bake():
+    """Reading a field at eval rather than at compile changes WHEN, so nothing may move.
+
+    Both fixtures are pinned twice: unbumped, and bumped the only way the parent commit could bump
+    them - by editing the block before the run, which that commit read at `calc_dependencies`.
+    Pinning only the unbumped pair would be satisfied by a factor reference nobody ever reads.
+    """
+    assert price(_quanto_context(), 'QUANTO1') == pytest.approx(QUANTO_MTM, rel=1e-12)
+    assert price(_cds_context(), 'CDS1') == pytest.approx(CDS_MTM, rel=1e-12)
+
+    quanto = _quanto_context()
+    quanto.current_cfg.params['Price Factors'][CORRELATION]['Value'] = RHO_BUMPED
+    assert price(quanto, 'QUANTO1') == pytest.approx(QUANTO_MTM_BUMPED, rel=1e-12)
+
+    cds = _cds_context()
+    cds.current_cfg.params['Price Factors']['SurvivalProb.CPTY'][
+        'Recovery_Rate'] = RECOVERY_BUMPED
+    assert price(cds, 'CDS1') == pytest.approx(CDS_MTM_BUMPED, rel=1e-12)
+
+
+def test_a_patched_implied_correlation_reprices():
+    """What binding `Correlation.Value` bought: the quanto adjustment follows a patch.
+
+    The value half now carries it, so the same bump through `patch_market` has to land on the same
+    MTM as authoring it - and on the DOWN side, because this deal reads the pair in reverse.
+    """
+    base = price(_quanto_context(), 'QUANTO1')
+
+    patched = _quanto_context()
+    patch = patched.market_patch()
+    assert patch[CORRELATION] == {'Value': RHO}
+    patch[CORRELATION]['Value'] = RHO_BUMPED
+    patched.patch_market(patch)
+    by_patch = price(patched, 'QUANTO1')
+
+    assert by_patch != pytest.approx(base, rel=1e-9), 'the patch never reached the number'
+    assert by_patch == pytest.approx(QUANTO_MTM_BUMPED, rel=1e-12)
+    assert by_patch < base, 'raising rho raised the option - the reverse-pair sign was dropped'
+
+
+def test_a_patched_recovery_rate_reprices():
+    """What binding `SurvivalProb.Recovery_Rate` bought: the protection leg follows a patch.
+
+    Protection pays (1 - R) and the premium leg does not see R at all, so the MTM is affine in R -
+    which a third recovery pins without any reference outside this fixture. A patch that reached
+    only part of the pricer would land on the right direction and the wrong line.
+    """
+    base = price(_cds_context(), 'CDS1')
+
+    patched = _cds_context()
+    patch = patched.market_patch()
+    assert patch['SurvivalProb.CPTY']['Recovery_Rate'] == RECOVERY
+    patch['SurvivalProb.CPTY']['Recovery_Rate'] = RECOVERY_BUMPED
+    patched.patch_market(patch)
+    by_patch = price(patched, 'CDS1')
+
+    zero_recovery = _cds_context()
+    patch_zero = zero_recovery.market_patch()
+    patch_zero['SurvivalProb.CPTY']['Recovery_Rate'] = 0.0
+    zero_recovery.patch_market(patch_zero)
+    by_patch_zero = price(zero_recovery, 'CDS1')
+
+    assert by_patch != pytest.approx(base, rel=1e-9), 'the patch never reached the number'
+    assert by_patch == pytest.approx(CDS_MTM_BUMPED, rel=1e-12)
+    assert by_patch_zero - base == pytest.approx(
+        (by_patch - base) * RECOVERY / (RECOVERY - RECOVERY_BUMPED), rel=1e-9)

@@ -31,7 +31,7 @@ from .riskfactors import construct_factor
 # import the stochastic processes
 from .stochasticprocess import construct_process
 # import the currency/curve lookup factors 
-from .instruments import get_fxrate_factor, get_recovery_rate, get_interest_factor, get_survival_factor
+from .instruments import get_fxrate_factor, get_survival_component, get_interest_factor, get_survival_factor
 # import the hessian function
 from .pricing import SensitivitiesEstimator
 # import the documentation and utils modules
@@ -1471,8 +1471,9 @@ class Credit_Monte_Carlo(Calculation):
                 survival = get_survival_factor(
                     utils.check_rate_name(params['Credit_Valuation_Adjustment']['Counterparty']),
                     self.static_factors, self.stoch_factors, self.all_tenors)
-                recovery = get_recovery_rate(
-                    utils.check_rate_name(params['Credit_Valuation_Adjustment']['Counterparty']), self.all_factors)
+                recovery = get_survival_component(
+                    utils.check_rate_name(params['Credit_Valuation_Adjustment']['Counterparty']),
+                    self.all_factors).recovery_rate()
 
                 # Calculates unilateral CVA with or without stochastic deflation.
                 mtm_grid = self.time_grid.mtm_time_grid[time_index]

@@ -18,6 +18,7 @@ Two rules apply to everything here, from [Conventions](conventions.md):
 | `pv_partial_barrier_option` | `pricing` | Excluded from the sensitivity work by decision; wants its own review. Also carries a suspected NaN — `limit` goes negative past `Barrier_Limit_Date` and is passed to `sqrt` unclamped. **Read, not run.** |
 | A sibling fallback may name a factor discovery never fetched | each deal's `calc_dependencies` | Discovery iterates `factor_fields` over the RAW field and `get_fieldname` drops blanks, so a blank reference loads no factor. A fallback is only safe if it names one something ELSE already pulled in. `Discount_Rate ← Currency` is safe — 34 sites — because `Currency` is an `FxRate` and `dependant_fields` pulls its `InterestRate` transitively. Adding a fallback to a field whose sibling has no such edge silently resolves to whatever the sibling's chain did load. The one cross-leg instance (`FXForwardDeal.Sell_Discount_Rate ← Buy_Currency`) is fixed: both rates are `default=REQUIRED` with no fallback. |
 | Four tables the Workbench cannot save | `derivus_jupyter.set_value_from_widget` | `set_repr` picks a deserializer from the `obj` token, and for an untagged table falls to a hardcoded whitelist of field NAMES. `Names`, `Sampling_Data_1`, `Sampling_Data_2` and `Barrier_Dates` are outside it and raise. The token table is per-field knowledge the `Row` now carries — the fix is to render from the declaration, not to add a fifth token. |
+| A PARTIAL values patch drops the rest of a factor's value half | `Context.patch_market` | A shape-valued field splits inside itself, so the structural half of a curve is its coordinate columns alone. `apply_values` puts back only the fields the patch names, so a patch omitting one of the factor's value-bound fields leaves that field as its coordinates — a one-column curve that fails on the next read. It is outside the documented contract (the verb takes what `market_patch` emits) but it fails LATE and confusingly rather than by name. |
 | Boundary scoping is not mutation-gated | `tests/test_boundary_pricer_events.py` | The fix is verified by measuring the term directly against CRN, but both two-netting-set gates measure the END-TO-END gradient, where the boundary term is a small fraction — so if it breaks later the suite stays green. Isolating it needs a portfolio where the correction dominates the smooth sensitivity, which is not a portfolio anyone runs. |
 
 ## Designed, not built
@@ -101,7 +102,7 @@ are loaded. `CommodityPrice.Forward_Rate` is newly declarable: the class hard-re
 
 **`bind=` and the partition are built.** A declaration is STRUCTURAL unless it says `bind='value'`,
 and `schema.partition_factor(type, block)` splits a `Price Factors` block into the half a plan pins
-and the half a patch carries — 30 fields over 19 types, each declared from its consumption site. A
+and the half a patch carries — 32 fields over 20 types, each declared from its consumption site. A
 shape-valued field splits INSIDE itself, because a curve's knots size `all_tenors` when the factor
 is constructed while its rate column is content; the structural half keeps the coordinate columns
 and only the last one travels. `cx.market_patch()` emits one and `cx.patch_market()` applies it,
@@ -109,19 +110,32 @@ refusing anything structural by name. The next consumer is `plan_hash`: the stru
 now the thing there is to hash, and what remains undecided is its DOMAIN (deals, the calculation
 block, engine version) and the PREPARE/EXECUTE sequencing, not the market-data half.
 
-Six candidates were declined with a citation rather than bound, all for the same reason — the
-content is consumed building a compiled structure rather than read at eval. `Correlation.Value` and
-`SurvivalProb.Recovery_Rate` are baked into `field_index` by `get_implied_correlation` /
-`get_recovery_rate` at `calc_dependencies`; `ReferencePrice.Fixing_Curve` and `PriceIndex.Index`
-become reset rows in `make_energy_cashflows` / `make_index_cashflows`. Two more are value-dependent
-CODE PATHS, which is the trap the partition is most exposed to:
+Four candidates remain declined with a citation rather than bound. `ReferencePrice.Fixing_Curve` and
+`PriceIndex.Index` become reset rows in `make_energy_cashflows` / `make_index_cashflows`, so the
+content is consumed building a compiled structure. The other two are value-dependent CODE PATHS,
+which is the trap the partition is most exposed to:
 `GBMAssetPriceTSModelParameters.get_tenor_indices` branches on the truthiness of
 `Quanto_FX_Correlation`, so the leaf SET depends on a number; and `get_quanto_fx` returns `None`
 when the `Quanto_FX_Volatility` array is all zeros, which decides whether the implied tensor is
-published at all. `VolatilityGrid.Delta_Surface` is a third: `Factor2D.update` runs the Malz solver
-on it and rebuilds `Surface` on a grid refined against the VALUES.
+published at all. `VolatilityGrid.Delta_Surface` is a third of that kind: `Factor2D.update` runs the
+Malz solver on it and rebuilds `Surface` on a grid refined against the VALUES.
+
+**`Correlation.Value` and `SurvivalProb.Recovery_Rate` are bound**, because the compile bake was a
+SHAPE and not a fact about either number. `get_implied_correlation` and `get_survival_component`
+(was `get_recovery_rate`) now return the factor OBJECT, `Factor_dep` carries the reference, and
+`utils.implied_correlation` / `SurvivalProb.recovery_rate` do the reading at eval. The reverse-pair
+flip a quanto applies is genuinely compile-time — it follows from the two currencies sorting — so it
+travels as its own `Correlation_Sign` entry rather than pre-multiplied into a number.
 
 Also remaining: the other seven stores are untouched.
+
+!!! warning "`CreditNthToDefault`'s beta is calibrated at compile off bound content"
+    `get_index_hazard_scale` → `utils.calibrate_index_hazard_scale` solves for `beta` at
+    `calc_dependencies` reading the index `SurvivalProb.Curve`, the discount `InterestRate.Curve`
+    and now `Recovery_Rate` — all three value-bound. A values patch therefore reprices that deal
+    against a STALE beta. It predates this work (the two curves were bound in the first pass) and it
+    is confined to the one deal type; the fix is either to bind the calibration to eval or to declare
+    a factor whose content feeds a compiled calibration structural.
 
 The paired naming cleanup settles first, and is now done: the `MarketPrices` types the engine
 matches, one `VolatilityGrid` in place of the three asset-class vol twins, and the IR prefix chain

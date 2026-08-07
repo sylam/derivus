@@ -152,14 +152,8 @@ def calc_factor_value(field, static_offsets, stochastic_offsets, all_factors):
         raise Exception('Cannot find value for {}'.format(utils.check_tuple_name(field)))
 
 
-def get_recovery_rate(name, all_factors):
-    """Read the Recovery Rate on a Survival Probability Price Factor"""
-    survival_prob = all_factors.get(utils.Factor('SurvivalProb', name))
-    return survival_prob.factor.recovery_rate() if hasattr(survival_prob, 'factor') else survival_prob.recovery_rate()
-
-
 def get_interest_rate_currency(name, all_factors):
-    """Read the Recovery Rate on a Survival Probability Price Factor"""
+    """Read the Currency on an Interest Rate Price Factor"""
     ir_curve = all_factors.get(utils.Factor('InterestRate', name))
     return ir_curve.factor.get_currency() if hasattr(ir_curve, 'factor') else ir_curve.get_currency()
 
@@ -280,6 +274,11 @@ def get_commodity_component(fieldname, all_factors):
     return get_factor_component(utils.Factor('CommodityPrice', fieldname), all_factors)
 
 
+def get_survival_component(fieldname, all_factors):
+    """The Survival Probability factor object - a credit pricer reads its Recovery Rate at eval"""
+    return get_factor_component(utils.Factor('SurvivalProb', fieldname), all_factors)
+
+
 def get_reference_factor_objects(fieldname, all_factors):
     """Read the Reference and Forward price factors"""
     reference_factor = get_reference_factor(fieldname, all_factors)
@@ -290,11 +289,12 @@ def get_reference_factor_objects(fieldname, all_factors):
 
 
 def get_implied_correlation(rate1, rate2, all_factors):
+    """The Correlation factor object a rate pair names, or None when the pair is unauthored -
+    `utils.implied_correlation` reads the number off it at eval"""
     correlation_name = rate1[:-1] + ('{0}/{1}'.format(rate1[-1], rate2[0]),) + rate2[1:]
     if rate1[0] == 'FxRate':
         correlation_name += (rate1[1],)
-    implied_correlation = all_factors.get(utils.Factor('Correlation', correlation_name))
-    return implied_correlation.current_value()[0] if implied_correlation else 0.0
+    return all_factors.get(utils.Factor('Correlation', correlation_name))
 
 
 def get_commodity_rate_factor(fieldname, static_offsets, stochastic_offsets):
@@ -665,8 +665,10 @@ class Deal(object):
             field_index['Check_Payoff_Type'] = True
             corr_sign, fx_lookup = utils.check_fx_name([field['Currency'][0], field['Payoff_Currency'][0]])
             field_index['VolatilityGrid'] = get_fx_vol_factor(fx_lookup, static_offsets, stochastic_offsets, all_tenors)
+            # the pair is named sorted, so the deal's own direction is a sign the compile resolves
+            field_index['Correlation_Sign'] = corr_sign
             field_index['{}ImpliedCorrelation'.format(self.field['Payoff_Type'])] = get_implied_correlation(
-                ('EquityPrice',) + field['Equity_Volatility'], ('FxRate',) + fx_lookup, all_factors) * corr_sign
+                ('EquityPrice',) + field['Equity_Volatility'], ('FxRate',) + fx_lookup, all_factors)
 
             if self.field['Payoff_Type'] == 'Compo':
                 # needed to calculate fx forwards
@@ -5671,7 +5673,7 @@ class CreditNthToDefault(Deal):
             'Coupon': pay_rate,
             'Correlation': self.field.get('Correlation', 0.0),
             'beta': b,
-            'Recovery_Rate': float(get_recovery_rate(field['CDS_Index'], all_factors))
+            'Recovery_Rate': get_survival_component(field['CDS_Index'], all_factors)
         }
 
         field_index['Cashflows'] = utils.generate_fixed_cashflows(
@@ -5799,7 +5801,7 @@ class DealDefaultSwap(Deal):
             'Discount': get_interest_factor(
                 field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
             'Name': get_survival_factor(field['Name'], static_offsets, stochastic_offsets, all_tenors),
-            'Recovery_Rate': float(get_recovery_rate(field['Name'], all_factors))
+            'Recovery_Rate': get_survival_component(field['Name'], all_factors)
         }
 
         pay_rate = self.field['Pay_Rate'] / 100.0 if isinstance(

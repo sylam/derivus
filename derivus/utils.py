@@ -3770,6 +3770,15 @@ def check_fx_name(fx_correlation):
     return (1.0, (ccy1, ccy2)) if ccy1 < ccy2 else (-1.0, (ccy2, ccy1))
 
 
+def implied_correlation(factor, sign=1.0):
+    """The market implied correlation between a rate pair, read at eval off the `Correlation` price
+    factor `Factor_dep` carries. An unauthored pair is uncorrelated, which is what `None` means.
+
+    `sign` is the reverse-pair flip `check_fx_name` resolved at compile: a correlation is named on
+    the sorted currency pair, so a deal running the other way reads -rho off the same factor."""
+    return sign * factor.current_value()[0] if factor is not None else 0.0
+
+
 def check_tensor_name(name, scope):
     return '/'.join(name.split('/')[:2] + [scope]).translate(
         str.maketrans({'#': '_', ':': '_', ' ': '_', '(': '_', '+': '_', ')': '_'}))

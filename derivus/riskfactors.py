@@ -845,7 +845,7 @@ class InterestRateJacobian(object):
 class Correlation(Factor0D):
     """The market implied correlation between the two rates its name pairs, e.g.
     `Correlation.FxRate.USD.ZAR/ReferencePrice.BRENT_OIL-IPE.USD`."""
-    fields = [F('Value', 'Float', default=0,
+    fields = [F('Value', 'Float', default=0, bind='value',
                 description='Market implied correlation between the two rates the name pairs')]
 
     def __init__(self, param):
@@ -903,7 +903,7 @@ class SurvivalProb(Factor1D):
     Represents the Probability of Survival risk factor
     """
     fields = [
-        F('Recovery_Rate', 'Float', default=0.4, bounds=(0.0, 1.0),
+        F('Recovery_Rate', 'Float', default=0.4, bounds=(0.0, 1.0), bind='value',
           description='The assumed recovery amount. Enter 0.4 for 40%'),
         F('Minimum_Recovery_Rate', 'Text', default='<undefined>'),
         F('Issuer', 'Text', default=''),
