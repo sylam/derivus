@@ -1,18 +1,19 @@
-from . import instruments
-from .schema import emit_instrument
+from . import instruments, riskfactors
+from .schema import BLANK, emit_factor, emit_instrument
 
-# the Instrument store is a VIEW of the per-class declarations, not a second copy
+# the Instrument and Factor stores are VIEWS of the per-class declarations, not a second copy
 _types, _sections = emit_instrument(instruments)
 
-# object list defaults
+# object list defaults, keyed by WIDGET - the shape-valued ones come from the declaration
+# vocabulary so a blank curve has one definition
 default = {
     'Integer': 0,
     'Float': 0.0,
     'Percent': 0.0,
     'Text': '',
-    'Flot': '[{"label":"None", "data":[[0.0,0.0]]}]',
-    'Surface': '[[0.0,1.0], [1.0,0.0]]',
-    'Space': '{"0.0":[[0.0,0.0],[0.0,0.0]]}',
+    'Flot': BLANK['Curve'],
+    'Surface': BLANK['Surface'],
+    'Space': BLANK['Space'],
     'DateList': 'null',
     'CreditSupportList': '[[0,1]]',
     'DatePicker': ''
@@ -24,11 +25,6 @@ num_format = {
     'percent': {'pattern': '0.00 %'},
     'currency': {'pattern': '0,0.00'}
 }
-
-# FXVol/EquityPriceVol/CommodityPriceVol were three declarations of one thing. What varies is the
-# SUBTYPE (Surface_Type, Moneyness_Rule), not the asset class, so there is one type and one list.
-_VOLATILITY_GRID = ["Surface_Type", "Surface", "Moneyness_Rule", "Delta_Surface", "ATM_Ref", "ATM_Vol",
-                    "a", "b", "s", "L", "R", "C", "D", "lam", "rho", "m", "sigma", "Currency"]
 
 # this whole thing could be stored as a json file . . .
 mapping = {
@@ -195,151 +191,8 @@ mapping = {
                  'Correlations_Healing_Method']
         }
     },
-    'Factor': {
-        # All supported risk factors - need to append this once new risk factors are developed.
-        'types': {
-            "Correlation":
-                ["Value"],
-            "CommodityPrice":
-                ["Spot", "Currency", "Interest_Rate"],
-            "CSForwardPriceModelParameters":
-                ["Sigma", "Alpha"],
-            "HestonNandiModelParameters":
-                ["Omega", "Alpha", "Beta", "Gamma_Star", "H0"],
-            "ConvenienceYield":
-                ["Curve", "Currency"],
-            "FuturesPrice":
-                ["Price"],
-            "InterestYieldVol":
-                ["Space", "Shift", "Distribution_Type"],
-            "InflationRate":
-                ["Price_Index", "Seasonal_Adjustment", "Reference_Name", "Day_Count", "Accrual_Calendar", "Currency",
-                 "Curve"],
-            "VolatilityGrid":
-                _VOLATILITY_GRID,
-            "EquityPrice":
-                ["Issuer", "Respect_Default", "Jump_Level", "Currency", "Interest_Rate", "Spot"],
-            "FxRate":
-                ["Domestic_Currency", "Interest_Rate", "Priority", "Spot"],
-            "SurvivalProb":
-                ["Recovery_Rate", "Minimum_Recovery_Rate", "Issuer", "Curve"],
-            "InterestRate":
-                ["Sub_Type", "Floor", "Day_Count", "Accrual_Calendar", "Currency", "Curve", "Near_Interpolation", "Near_Date"],
-            "HullWhite2FactorModelParameters":
-                ["Quanto_FX_Volatility", "Alpha_1", "Sigma_1", "Quanto_FX_Correlation_1", "Alpha_2", "Sigma_2",
-                 "Quanto_FX_Correlation_2", "Correlation"],
-            "GBMAssetPriceTSModelParameters":
-                ["Quanto_FX_Volatility", "Vol", "Quanto_FX_Correlation"],
-            "PriceIndex":
-                ["Index", "Next_Publication_Date", "Last_Period_Start", "Publication_Period", "Currency"],
-            "ObservedBasis":
-                ["Spot"],
-            "ForwardPrice":
-                ["Currency", "Curve", "Fixings"],
-            "ForwardRate":
-                ["Currency", "Curve"],
-            "ForwardPriceSample":
-                ["Offset", "Holiday_Calendar", "Sampling_Convention"],
-            "ReferencePrice":
-                ["Fixing_Curve", "ForwardPrice"],
-            "ReferenceVol":
-                ["ForwardPriceVol", "ReferencePrice"],
-            "ForwardPriceVol":
-                ["Space"],
-            "InterestRateVol":
-                ["Space"],
-            "DividendRate":
-                ["Floor", "Currency", "Curve"]
-        },
-
-        # field types for the various risk factors - need to explicitly mention all of them
-        'fields': {
-            'Accrual_Calendar': {'widget': 'Text', 'description': 'Accrual Calendar', 'value': ''},
-            'Currency': {'widget': 'Text', 'description': 'Currency', 'value': ''},
-            'Curve': {'widget': 'Flot', 'description': 'Curve', 'value': default['Flot']},
-            'Fixing_Curve': {'widget': 'Flot', 'description': 'Fixing Curve', 'value': default['Flot']},
-            'Day_Count': {'widget': 'Dropdown', 'description': 'Day Count', 'value': 'ACT_365',
-                          'values': ['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']},
-            'Surface_Type': {'widget': 'Dropdown', 'description': 'Surface Type', 'value': 'Explicit',
-                             'values': ['Explicit', 'SVI', 'Skew', 'Malz', 'Relative_Forward']},
-            'Moneyness_Rule': {'widget': 'Dropdown', 'description': 'Moneyness Rule', 'value': 'Sticky_Moneyness',
-                               'values': ['Sticky_Strike', 'Sticky_Moneyness', 'Sticky_Delta']},
-            'Domestic_Currency': {'widget': 'Text', 'description': 'Domestic Currency', 'value': ''},
-            'Floor': {'widget': 'Text', 'description': 'Floor', 'value': '<undefined>'},
-            'ForwardPrice': {'widget': 'Text', 'description': 'ForwardPrice', 'value': '', 'obj': 'Tuple'},
-            'ReferencePrice': {'widget': 'Text', 'description': 'ReferencePrice', 'value': '', 'obj': 'Tuple'},
-            'ForwardPriceVol': {'widget': 'Text', 'description': 'ForwardPriceVol', 'value': '', 'obj': 'Tuple'},
-            'Holiday_Calendar': {'widget': 'Text', 'description': 'Holiday Calendar', 'value': ''},
-            'Sampling_Convention': {'widget': 'Dropdown', 'description': 'Sampling Convention',
-                                    'value': 'ForwardPriceSampleDaily',
-                                    'values': ['ForwardPriceSampleDaily', 'ForwardPriceSampleBullet']},
-            'Offset': {'widget': 'Integer', 'description': 'Offset', 'value': 0},
-            'Value': {'widget': 'Float', 'description': 'Value', 'value': 0},
-            'Sigma': {'widget': 'Float', 'description': 'Sigma', 'value': 0},
-            'Shift': {'widget': 'Float', 'description': 'Shift', 'value': 0, 'obj': 'Percent'},
-            'Distribution_Type': {'widget': 'Dropdown', 'description': 'Distribution Type', 'value': 'Lognormal',
-                                  'values': ['Lognormal', 'Normal']},
-            'Alpha': {'widget': 'Float', 'description': 'Alpha', 'value': 0},
-            'Beta': {'widget': 'Float', 'description': 'Beta', 'value': 0},
-            'Omega': {'widget': 'Float', 'description': 'Omega', 'value': 0},
-            'Gamma_Star': {'widget': 'Float', 'description': 'Gamma Star', 'value': 0},
-            'H0': {'widget': 'Float', 'description': 'H0', 'value': 0},
-            'Issuer': {'widget': 'Text', 'description': 'Issuer', 'value': ''},
-            'Index': {'widget': 'Flot', 'description': 'Index', 'value': default['Flot']},
-            'Vol': {'widget': 'Flot', 'description': 'Vol', 'value': default['Flot']},
-            'Fixings': {'widget': 'Text', 'description': 'Fixings', 'value': ''},
-            'Interest_Rate': {'widget': 'Text', 'description': 'Interest Rate', 'value': '', 'obj': 'Tuple'},
-            'Jump_Level': {'widget': 'Float', 'description': 'Jump Level', 'value': 0.0, 'obj': 'Percent'},
-            'Last_Period_Start': {'widget': 'DatePicker', 'description': 'Last Period Start',
-                                  'value': default['DatePicker']},
-            'Near_Date':{'widget': 'DatePicker', 'description': 'Near Date', 'value': default['DatePicker']},
-            'Correlation': {'widget': 'Float', 'description': 'Correlation', 'value': 0},
-            'Quanto_FX_Correlation': {'widget': 'Float', 'description': 'Quanto FX Correlation', 'value': 0},
-            'Quanto_FX_Correlation_1': {'widget': 'Float', 'description': 'Quanto FX_Correlation 1', 'value': 0},
-            'Quanto_FX_Correlation_2': {'widget': 'Float', 'description': 'Quanto FX Correlation 2', 'value': 0},
-            'Alpha_1': {'widget': 'Float', 'description': 'Alpha 1', 'value': 0},
-            'Alpha_2': {'widget': 'Float', 'description': 'Alpha 2', 'value': 0},
-            'Quanto_FX_Volatility': {'widget': 'Flot', 'description': 'Quanto FX Volatility', 'value': default['Flot']},
-            'a': {'widget': 'Flot', 'description': 'a', 'value': default['Flot']},
-            'b': {'widget': 'Flot', 'description': 'b', 'value': default['Flot']},
-            's': {'widget': 'Flot', 'description': 's', 'value': default['Flot']},
-            'L': {'widget': 'Flot', 'description': 'L', 'value': default['Flot']},
-            'R': {'widget': 'Flot', 'description': 'R', 'value': default['Flot']},
-            'C': {'widget': 'Flot', 'description': 'C', 'value': default['Flot']},
-            'D': {'widget': 'Flot', 'description': 'D', 'value': default['Flot']},
-            'lam': {'widget': 'Flot', 'description': 'lam', 'value': default['Flot']},
-            'rho': {'widget': 'Flot', 'description': 'rho', 'value': default['Flot']},
-            'ATM_Ref': {'widget': 'Flot', 'description': 'ATM Ref', 'value': default['Flot']},
-            'ATM_Vol': {'widget': 'Flot', 'description': 'ATM Vol', 'value': default['Flot']},
-            'm': {'widget': 'Flot', 'description': 'm', 'value': default['Flot']},
-            'sigma': {'widget': 'Flot', 'description': 'sigma', 'value': default['Flot']},
-            'Sigma_1': {'widget': 'Flot', 'description': 'Sigma 1', 'value': default['Flot']},
-            'Sigma_2': {'widget': 'Flot', 'description': 'Sigma 2', 'value': default['Flot']},
-            'Minimum_Recovery_Rate': {'widget': 'Text', 'description': 'Minimum Recovery Rate', 'value': '<undefined>'},
-            'Next_Publication_Date': {'widget': 'DatePicker', 'description': 'Next Publication Date',
-                                      'value': default['DatePicker']},
-            'Price_Index': {'widget': 'Text', 'description': 'Price Index', 'value': '', 'obj': 'Tuple'},
-            'Priority': {'widget': 'Float', 'description': 'Priority', 'value': 3},
-            'Publication_Period': {'widget': 'Dropdown', 'description': 'Publication Period', 'value': 'Monthly',
-                                   'values': ['Monthly', 'Quarterly']},
-            'Near_Interpolation':{'widget': 'Text', 'description': 'Near Interpolation', 'value': ''},
-            'Reference_Name': {'widget': 'Dropdown', 'description': 'Reference Name',
-                               'value': 'IndexReferenceInterpolated3M',
-                               'values': ['IndexReferenceInterpolated1M', 'IndexReferenceInterpolated2M',
-                                          'IndexReferenceInterpolated3M', 'IndexReferenceInterpolated4M']},
-            'Respect_Default': {'widget': 'Dropdown', 'description': 'Respect Default', 'value': 'Yes',
-                                'values': ['Yes', 'No']},
-            'Recovery_Rate': {'widget': 'BoundedFloat', 'description': 'Recovery Rate', 'value': 0.4, 'min': 0.0,
-                              'max': 1.0},
-            'Seasonal_Adjustment': {'widget': 'Text', 'description': 'Seasonal Adjustment', 'value': ''},
-            'Spot': {'widget': 'Float', 'description': 'Spot', 'value': 0},
-            'Price': {'widget': 'Float', 'description': 'Price', 'value': 0},
-            'Surface': {'widget': 'Three', 'description': 'Surface', 'value': default['Surface']},
-            'Delta_Surface': {'widget': 'Three', 'description': 'Delta_Surface', 'value': default['Surface']},
-            'Space': {'name': 'Surface', 'widget': 'Three', 'description': 'Surface', 'value': default['Space']},
-            'Sub_Type': {'widget': 'Text', 'description': 'Sub Type', 'value': ''}
-        }
-    },
+    # the Factor store is a VIEW: a type IS the descriptors its class declares
+    'Factor': {'types': emit_factor(riskfactors)},
     'Process': {
         # All supported risk stochastic processes - need to append this once new risk processes are developed.
         'types': {
@@ -456,7 +309,6 @@ mapping = {
     'Process_factor_map': {
         "Correlation": [],
         "CommodityPrice": ['LogOUSpotModel', 'MarkovSwitchingLogOUSpotModel', 'MarkovHMMSpotModel'],
-        "ConvenienceYield": [],
         "ObservedBasis": ["SingleRegimeOU1FactorKalmanModel", "BasisLinkedSpotModel"],
         "InterestYieldVol": [],
         "FuturesPrice": [],

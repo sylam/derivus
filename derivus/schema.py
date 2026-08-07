@@ -17,19 +17,31 @@
 values for the same field must invent a key and carry the real name elsewhere - the 21 entries in
 `ALIASED_KEYS`. A class that owns its own fields has no such collision.
 
-The schema's inheritance is composition of named field GROUPS, not the class hierarchy: `FXAdmin`
-is shared by eight deals with no common base, and `Admin` by all 47. Groups are therefore ordinary
-module-level constants a class lists, not something recovered from the MRO.
+A deal's schema is composition of named field GROUPS, not the class hierarchy: `FXAdmin` is shared
+by eight deals with no common base, and `Admin` by all 47. Groups are therefore ordinary
+module-level constants a class lists, not something recovered from the MRO. A price factor has no
+such structure - its JSON block is one flat dict - so a factor class declares a flat list and
+`emit_factor` files the descriptors per TYPE.
 
 Nothing here is read at valuation time. `construct_instrument` takes the raw JSON and `Deal.__init__`
-stores it unfiltered, so this is authoring-time metadata: the UI, the docs generator and the Excel
-add-in. `emit_instrument()` reproduces `fields.mapping` exactly so none of them need to change.
+stores it unfiltered; `construct_factor` hands the raw block to the factor class. So this is
+authoring-time metadata: the UI, the docs generator and the Excel add-in. A front end needs no other
+source - a type's entry IS its descriptors, each keyed by the JSON key an author writes, so a panel,
+its defaults and the write-back key all come from one lookup.
 """
 
 
 #: `default=REQUIRED` - the author must supply it. Distinct from a default of None, which is a
 #: field the engine reads with `.get` and is content to find missing.
 REQUIRED = object()
+
+#: The blank FORM of a shape-valued field. A curve or a surface has no empty value - the blank is
+#: one degenerate knot - so these are what "no default" means for those types.
+BLANK = {
+    'Curve': '[{"label":"None", "data":[[0.0,0.0]]}]',
+    'Surface': '[[0.0,1.0], [1.0,0.0]]',
+    'Space': '{"0.0":[[0.0,0.0],[0.0,0.0]]}',
+}
 
 #: How `fields.mapping` renders each type for Handsontable. Rendering only: derived on the way out
 #: and never declared, which is the point - a front end that is not Handsontable ignores all of it.
@@ -62,32 +74,34 @@ class Row(object):
 
 
 class F(object):
-    """One field of one deal.
+    """One field of one deal or one price factor.
 
-    `type` is semantic (Text/Float/Integer/Date/Percent/Basis/Period/Table/Container); the WIDGET
-    name is the front end's business and is only reintroduced when emitting `fields.mapping`. A
-    choice list is not a type - it is a Text whose `values` are a fixed set, and the dropdown falls
-    out of that.
+    `type` is semantic (Text/Float/Integer/Date/Percent/Basis/Period/Table/Container, plus the
+    market-data shapes Curve/Surface/Space); the WIDGET name is the front end's business and is
+    only reintroduced when emitting `fields.mapping`. A choice list is not a type - it is a Text
+    whose `values` are a fixed set, and the dropdown falls out of that.
     `json_name` is the escape hatch the name-keyed dict needed constantly and a per-class list
     needs almost never - the cashflow shapes that genuinely share a JSON key.
 
     A Table declares its columns as a `Row`; `tag` names the utils container the wire form uses
     (`DateList`, `DateValueList`, `CreditSupportList`), absent for a plain array of rows.
+
+    `description` is free text: the JSON key is the key the descriptor is FILED under, so a front
+    end reads it from the store rather than reconstructing it from a label.
     """
     WIDGET = {'Text': 'Text', 'Float': 'Float', 'Integer': 'Integer', 'Date': 'DatePicker',
               'Percent': 'Float', 'Basis': 'Float', 'Period': 'Text',
-              'Table': 'Table', 'Container': 'Container'}
+              'Table': 'Table', 'Container': 'Container',
+              'Curve': 'Flot', 'Surface': 'Three', 'Space': 'Three'}
 
     __slots__ = ('name', 'type', 'default', 'description', 'values', 'row', 'tag',
-                 'sub_fields', 'json_name', 'obj')
+                 'sub_fields', 'json_name', 'obj', 'bounds')
 
     def __init__(self, name, type, default=None, description=None, values=None, row=None,
-                 tag=None, sub_fields=None, json_name=None, obj=None):
+                 tag=None, sub_fields=None, json_name=None, obj=None, bounds=None):
         self.name = name
         self.type = type
-        self.default = default
-        # the UI recovers the JSON key from the description (`description.replace(' ', '_')`), so
-        # it is a key as well as a label - derive it rather than let the two drift
+        self.default = BLANK.get(type) if default is None else default
         self.description = description if description is not None else name.replace('_', ' ')
         self.values = values
         self.row = row
@@ -97,6 +111,8 @@ class F(object):
         # parse token on SCALARS only ('Tuple' = a dotted factor reference); tables no longer
         # carry it, `row` and `tag` say it properly
         self.obj = obj
+        # (min, max) on a Float the author cannot sensibly exceed - a recovery rate is a fraction
+        self.bounds = bounds
 
     @property
     def key(self):
@@ -115,7 +131,8 @@ class F(object):
         Handsontable's rendering vocabulary, and a front end that is not Handsontable wants none
         of it. Deriving them is also what stops the two parallel lists drifting apart.
         """
-        widget = 'Dropdown' if self.values is not None else self.WIDGET[self.type]
+        widget = ('Dropdown' if self.values is not None else
+                  'BoundedFloat' if self.bounds is not None else self.WIDGET[self.type])
         # a required field has no default to offer - it is blank until the author supplies it
         d = {'widget': widget, 'description': self.description,
              'value': '' if self.default is REQUIRED else self.default}
@@ -123,6 +140,8 @@ class F(object):
             d['required'] = True
         if self.values is not None:
             d['values'] = self.values
+        if self.bounds is not None:
+            d['min'], d['max'] = self.bounds
         if self.obj is not None:
             d['obj'] = self.obj
         if self.row is not None:
@@ -207,3 +226,18 @@ def emit_instrument(module):
         for g in groups:
             sections.setdefault(g.name, {f.key: f.descriptor() for f in g.fields})
     return types, sections
+
+
+def emit_factor(module):
+    """The `types` of `fields.mapping['Factor']` - each factor TYPE holding its own descriptors.
+
+    A price factor has no sections to compose: its `Price Factors` block is one flat dict, so a
+    class declares a flat list and the type IS that list's descriptors, keyed by the JSON key.
+
+    Own-attr only, matching `emit_instrument`. `ForwardRate` subclasses `ForwardPrice` and carries
+    no `Fixings`, so it declares its own; a subclass that inherits the declaration is an alias for
+    the same block rather than a second factor type.
+    """
+    return {factor_type: {f.key: f.descriptor() for f in cls.__dict__['fields']}
+            for factor_type, cls in vars(module).items()
+            if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)}

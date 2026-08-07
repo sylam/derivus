@@ -128,11 +128,11 @@ class TreePanel(metaclass=ABCMeta):
 
     @staticmethod
     def load_descriptors(fields):
-        """Widget metadata for a map that already HOLDS its descriptors - the Instrument store.
+        """Widget metadata for a map that already HOLDS its descriptors - Instrument and Factor.
 
-        `load_fields` resolves NAMES against a flat store keyed by field name; a section owns its
-        descriptors, so there is nothing to resolve. Only the widget's `default` has to be seeded
-        and containers recursed, and a container now holds its children rather than naming them.
+        `load_fields` resolves NAMES against a flat store keyed by field name; a section or a
+        factor type owns its descriptors, so there is nothing to resolve. Only the widget's
+        `default` has to be seeded and containers recursed.
         """
         storage = {}
         for name, meta in fields.items():
@@ -140,11 +140,19 @@ class TreePanel(metaclass=ABCMeta):
             if 'sub_fields' in meta:
                 meta['sub_fields'] = TreePanel.load_descriptors(meta['sub_fields'])
             meta['default'] = meta['value']
+            meta.setdefault('name', name)
             storage[name] = meta
         return storage
 
     @staticmethod
     def load_fields(field_names, field_data):
+        """The same, for the stores still keyed by field NAME across every type.
+
+        The key a descriptor is filed under IS the JSON key unless it declares a `name` - which is
+        the only reason an alias exists - so stamping it here is what lets every widget write back
+        by key. Reconstructing one from the description made that string a key and a label at once,
+        so a prose description pointed the widget at a key nobody writes.
+        """
         storage = {}
         for k, v in field_names.items():
             storage[k] = {}
@@ -157,6 +165,7 @@ class TreePanel(metaclass=ABCMeta):
                         field_meta.update(TreePanel.load_fields(
                             {'sub_fields': field_meta['sub_fields']}, field_data))
                     field_meta['default'] = field_meta['value']
+                    field_meta.setdefault('name', property_name)
                     storage[k].setdefault(property_name, field_meta)
         return storage
 
@@ -279,7 +288,7 @@ class TreePanel(metaclass=ABCMeta):
 
         # update an existing factor
         rate_type = rf.utils.check_rate_name(section_name)[0]
-        field_name = field_meta['description'].replace(' ', '_')
+        field_name = field_meta['name']
 
         if config.get(section_name) is not None and field_name in config[section_name]:
             # return the value in the config obj
@@ -311,9 +320,9 @@ class TreePanel(metaclass=ABCMeta):
             elif element['widget'] == 'Text':
                 w = widgets.Text(description=element['description'], value=str(element['value']))
             elif element['widget'] == 'Container':
-                new_label = label + [
-                    element['description']] if isinstance(label, list) else [element['description']]
-                w = self.define_input([x.replace(' ', '_') for x in new_label], element['sub_fields'])
+                # a container's children are authored INSIDE it, so its own key is a path segment
+                new_label = label + [element['name']] if isinstance(label, list) else [element['name']]
+                w = self.define_input(new_label, element['sub_fields'])
                 # uncomment this if you want to use accordians (can hide fields)
                 # raw_w = self.define_input([], element['sub_fields'])                
                 # w = widgets.Accordion(children=[raw_w])
@@ -488,7 +497,7 @@ class PortfolioPage(TreePanel):
                 # default is to just return the object
                 return obj
 
-        field_name = field_meta['description'].replace(' ', '_')
+        field_name = field_meta['name']
         obj_type = field_meta.get('obj', field_meta['widget'])
         instrument[field_name] = set_repr(new_val, obj_type)
 
@@ -527,7 +536,7 @@ class PortfolioPage(TreePanel):
             for property_name, property_data in sorted(properties.items()):
                 value = copy.deepcopy(property_data)
                 if 'sub_fields' in value:
-                    new_field_name = value['description'].replace(' ', '_')
+                    new_field_name = value['name']
                     load_items(config[field_name], new_field_name, {new_field_name: value['sub_fields']},
                                value['sub_fields'])
                 value['value'] = self.get_value_for_widget(config, field_name, value)
@@ -705,8 +714,9 @@ class RiskFactorsPage(TreePanel):
                 value['value'] = self.get_value_for_widget(config, rf.utils.check_tuple_name(factor_data), value)
                 storage[property_name] = value
 
-        risk_factor_fields = self.load_fields(
-            rf.fields.mapping['Factor']['types'], rf.fields.mapping['Factor']['fields'])
+        # a factor type IS its descriptors; only processes still name entries in a flat store
+        risk_factor_fields = {factor_type: self.load_descriptors(descriptors) for factor_type,
+                              descriptors in rf.fields.mapping['Factor']['types'].items()}
         risk_process_fields = self.load_fields(
             rf.fields.mapping['Process']['types'], rf.fields.mapping['Process']['fields'])
 
@@ -829,7 +839,7 @@ class RiskFactorsPage(TreePanel):
                 return obj
 
         rate_type = rf.utils.check_rate_name(section_name)[0]
-        field_name = field_meta['description'].replace(' ', '_')
+        field_name = field_meta['name']
         obj_type = field_meta.get('obj', field_meta['widget'])
         config = self.config.params[self.config_map[frame_name]]
 
@@ -846,7 +856,7 @@ class RiskFactorsPage(TreePanel):
                 frame_defaults = self.data[self.tree.selected[-1]][frame_name][rate_type]
 
             for new_field_meta in frame_defaults.values():
-                new_field_name = new_field_meta['description'].replace(' ', '_')
+                new_field_name = new_field_meta['name']
                 new_obj_type = new_field_meta.get('obj', new_field_meta['widget'])
                 if new_field_name not in config[section_name]:
                     config[section_name][new_field_name] = set_repr(new_field_meta['value'], new_obj_type)
@@ -1077,7 +1087,7 @@ class SetupPage(TreePanel):
             else:
                 return obj
 
-        field_name = field_meta['description'].replace(' ', '_')
+        field_name = field_meta['name']
         obj_type = field_meta.get('obj', field_meta['widget'])
         config = self.config.params.get(frame_name, "")
 
@@ -1256,10 +1266,12 @@ class CalculationPage(TreePanel):
                 v['sub_fields']) for k, v in x.items()}
 
         def make_float_widgets(x):
-            return {k: {'widget': 'Float', 'description': k.replace('_', ' '), 'value': v} for k, v in x.items()}
+            return {k: {'name': k, 'widget': 'Float', 'description': k.replace('_', ' '),
+                        'value': v} for k, v in x.items()}
 
         def make_container(label, x):
-            return {label: {'widget': 'Container', 'description': label.replace('_', ' '),
+            return {label: {'name': label, 'widget': 'Container',
+                            'description': label.replace('_', ' '),
                             'value': {k: v['value'] for k, v in x.items()}, 'sub_fields': x}}
 
         def make_results(results):
@@ -1306,11 +1318,12 @@ class CalculationPage(TreePanel):
                     with open(filename_field, 'wt') as fp:
                         v.to_csv(fp)
                     subfields = {k: Widget, 'link': link}
-                    widget = {'widget': 'Container', 'description': k.replace('_', ' '), 'value': subfields,
-                              'sub_fields': subfields}
+                    widget = {'name': k, 'widget': 'Container', 'description': k.replace('_', ' '),
+                              'value': subfields, 'sub_fields': subfields}
 
                 elif isinstance(v, float):
-                    widget = {'widget': 'Float', 'description': k.replace('_', ' '), 'value': v}
+                    widget = {'name': k, 'widget': 'Float', 'description': k.replace('_', ' '),
+                              'value': v}
 
                 elif isinstance(v, dict):
                     if k == 'scenarios':

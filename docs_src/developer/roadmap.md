@@ -83,7 +83,23 @@ fails where it always failed. Four rules are stated so far (`Cash_Payoff` on the
 value-or-date pair). `cx.validate()` now returns them alongside the factor want-list, keyed by each
 deal's `Reference`.
 
-Also remaining: `bind=` (value-versus-structural patching) is designed but unbuilt; the other eight
+**A price factor owns its schema too, and a TYPE owns its descriptors.** Every factor class carries
+a flat `fields` list and `mapping['Factor']['types']` is `schema.emit_factor(riskfactors)` — a
+per-type `{json_key: descriptor}` map, so the flat `fields` dict and the `Space`→`Surface` alias
+with it are gone. A 2D `Surface` and a 3D one are both called `Surface`, which is what the JSON
+always said. Two more states became unreachable: a declared type naming no class (`ConvenienceYield`
+had two fields, a process-map row and no class anywhere, and `construct_factor` would have called
+`None(block)`), and a factor class no schema can author.
+
+The dead `field_desc` prose went into the declarations as each field's `description`, which is what
+the generated page publishes. That needed one thing fixing first: the Workbench rebuilt the JSON key
+as `description.replace(' ', '_')` at six sites, so a prose description silently wrote to a key
+nobody reads — and the `Process` store's prose descriptions (`States`, `Transition_Matrix`, `Mu`, …)
+were already doing exactly that. The key is now stamped from the store as `name` when descriptors
+are loaded. `CommodityPrice.Forward_Rate` is newly declarable: the class hard-reads it and
+`dependant_fields` builds a `ForwardRate` edge from it, and no authored block could carry it.
+
+Also remaining: `bind=` (value-versus-structural patching) is designed but unbuilt; the other seven
 stores are untouched.
 
 The paired naming cleanup settles first, and is now done: the `MarketPrices` types the engine

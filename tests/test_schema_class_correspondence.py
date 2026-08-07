@@ -9,8 +9,8 @@ schema-authored deal can emit, a widget that reads a JSON key nobody writes.
 Each test below is one leg of the class<->schema correspondence, and each exemption list names WHY
 a case is deliberate. `ALIASED_KEYS` used to be the interesting one - every field whose descriptor
 key had to be invented because a name-keyed dict cannot give two deals different descriptors for
-the same name. The Instrument store is now keyed per SECTION and its entries are gone; the three
-that remain belong to stores still keyed flat.
+the same name. Instrument is keyed per SECTION and Factor per TYPE, and both their entries are
+gone; the two that remain belong to stores still keyed flat.
 """
 import ast
 import inspect
@@ -34,11 +34,10 @@ UNDECLARED_DEALS = {
 
 # Descriptor keys that are NOT the JSON field name, per store -> the key they actually read.
 # A name-keyed dict admits one descriptor per name, so a field needing different valid values in
-# two deals must invent a key and carry the real name elsewhere. `sigma` is aliased in Process but
-# genuine in Factor, which is why this is keyed by store. Instrument has no entries left: its
-# store is keyed per section, so `Cashflows` and `Payment_Timing` each hold their own.
+# two deals must invent a key and carry the real name elsewhere. Instrument and Factor have no
+# entries left: both are keyed per type, so a 2D `Surface` and a 3D one each hold their own and
+# neither has to be filed as `Space`. Only the flat stores can still need an alias.
 ALIASED_KEYS = {
-    'Factor': {'Space': 'Surface'},
     'Process': {'sigma': 'Sigma'},
     'Calibration': {'Number_PCA_Factors': 'Number_Of_PCA_Factors'},
 }

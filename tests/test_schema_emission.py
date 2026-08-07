@@ -1,6 +1,7 @@
-"""`fields.mapping['Instrument']` is generated from the per-class `fields` declarations, and a
-SECTION owns its descriptors. So there is no round-trip to gate - the old test diffed the emitted
-dict against a hand-written one, and both sides are now the same object.
+"""`fields.mapping['Instrument']` and `['Factor']` are generated from the per-class `fields`
+declarations, and a SECTION (deals) or a TYPE (factors) owns its descriptors. So there is no
+round-trip to gate - the old test diffed the emitted dict against a hand-written one, and both
+sides are now the same object.
 
 Three defect classes are unreachable by construction rather than merely absent, which is why the
 gates that guarded them are gone:
@@ -23,9 +24,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pytest
 
-from derivus import fields, instruments, schema
+from derivus import fields, instruments, riskfactors, schema
 
 INSTRUMENT = fields.mapping['Instrument']
+FACTOR = fields.mapping['Factor']
+
+# riskfactors classes that legitimately declare no schema row of their own.
+UNDECLARED_FACTORS = {
+    'Factor0D': 'dimension base', 'Factor1D': 'dimension base',
+    'Factor2D': 'dimension base', 'Factor3D': 'dimension base',
+    'InterestRateJacobian': 'its block is keyed by BENCHMARK name, so it has no fixed field set',
+}
 
 # How many columns each table tag's deserializer consumes, read off `set_repr` in derivus_jupyter:
 # `DateList`/`CreditSupportList` unpack a PAIR per row, `DateEqualList` keys on [0] and keeps [1:],
@@ -39,6 +48,18 @@ def declared_classes():
     subclass inheriting its parent's declaration is an alias, not a second deal type."""
     return {n: c.__dict__['fields'] for n, c in vars(instruments).items()
             if isinstance(c, type) and isinstance(c.__dict__.get('fields'), list)}
+
+
+def factor_classes():
+    """The same for price factors, whose declaration is one flat list rather than groups."""
+    return {n: c.__dict__['fields'] for n, c in vars(riskfactors).items()
+            if isinstance(c, type) and isinstance(c.__dict__.get('fields'), list)}
+
+
+def riskfactor_classes():
+    """Every class DEFINED in riskfactors - the set a declared type has to come from."""
+    return {n: c for n, c in vars(riskfactors).items()
+            if isinstance(c, type) and c.__module__ == riskfactors.__name__}
 
 
 def every_field(group):
@@ -156,3 +177,57 @@ def test_shared_groups_are_shared_not_copied():
     assert len(users) > 1, 'FXAdmin is declared by fewer than two classes - nothing to share'
     groups = {id(g) for f in users for g in f if g.name == 'FXAdmin'}
     assert len(groups) == 1, f'FXAdmin exists as {len(groups)} distinct objects, not one'
+
+
+def test_the_factor_store_is_generated():
+    """The same guard as above, for factors: every Factor assertion here is vacuously true over an
+    empty declaration set."""
+    assert factor_classes(), 'no riskfactors class declares `fields` - these gates are vacuous'
+    assert FACTOR['types'] == schema.emit_factor(riskfactors), (
+        'the Factor store is not the emitted view - a hand-written copy has come back')
+    assert 'fields' not in FACTOR, 'a flat name-keyed store has come back beside the types'
+
+
+def test_every_declared_factor_type_is_constructible():
+    """`construct_factor` does `globals().get(factor.type)(block)`, so a declared type naming no
+    class is not a logged miss like a deal - it is `None(block)`, a TypeError at compile time.
+    `ConvenienceYield` sat in exactly that state, declared with two fields and a process-map row
+    and with no class in this repo. A type IS a class that declares fields, so it is unreachable."""
+    undispatchable = sorted(set(FACTOR['types']) - set(riskfactor_classes()))
+    assert not undispatchable, f'schema offers factor types with no class: {undispatchable}'
+
+
+def test_every_riskfactor_class_is_declarable():
+    """The converse: a factor class no schema declares cannot be authored or documented. The
+    exemptions are the four dimension bases, which are never a `Factor.type`, and the Jacobian,
+    whose block is keyed by benchmark instrument rather than by a fixed field set."""
+    missing = sorted(set(riskfactor_classes()) - set(FACTOR['types']) - set(UNDECLARED_FACTORS))
+    assert not missing, f'riskfactors classes no schema can author: {missing}'
+
+
+@pytest.mark.parametrize('cls_name', sorted(factor_classes()))
+def test_factor_descriptor_shape(cls_name):
+    """`check_descriptor` again, over the factor declarations - same tagged union, same
+    consumers."""
+    for f in factor_classes()[cls_name]:
+        check_descriptor(f'{cls_name}.{f.key}', f.descriptor())
+
+
+@pytest.mark.parametrize('cls_name', sorted(factor_classes()))
+def test_no_factor_declares_a_key_twice(cls_name):
+    """A factor type is one dict keyed by the JSON name, so a name declared twice loses a
+    descriptor outright."""
+    keys = [f.key for f in factor_classes()[cls_name]]
+    dupes = sorted({k for k in keys if keys.count(k) > 1})
+    assert not dupes, f'{cls_name} declares {dupes} more than once'
+
+
+def test_a_2d_and_a_3d_surface_may_both_be_called_surface():
+    """The capability the per-type store exists for, pinned so a return to a flat one fails.
+
+    `Surface` is a (moneyness, expiry, vol) triple list on a `VolatilityGrid` and a quad list on
+    the three vol SPACES, and both are right - the JSON is per factor type. Under a flat store one
+    of them had to be filed as `Space` and carry `Surface` as an alias."""
+    assert FACTOR['types']['VolatilityGrid']['Surface']['value'] == schema.BLANK['Surface']
+    for space in ('InterestYieldVol', 'InterestRateVol', 'ForwardPriceVol'):
+        assert FACTOR['types'][space]['Surface']['value'] == schema.BLANK['Space']

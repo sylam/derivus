@@ -390,10 +390,9 @@ def test_get_tenors_yields_five_scope_names(round_trip):
 
 def test_fields_mapping_matches_the_factor():
     from derivus.fields import mapping
-    assert mapping['Factor']['types']['HestonNandiModelParameters'] == list(
+    # the factor type HOLDS its descriptors, so its keys ARE the parameter set the class reads
+    assert list(mapping['Factor']['types']['HestonNandiModelParameters']) == list(
         riskfactors.HestonNandiModelParameters.parameters)
-    assert all(x in mapping['Factor']['fields'] for x in
-               mapping['Factor']['types']['HestonNandiModelParameters'])
     assert all(x in mapping['MarketPrices']['fields'] for x in
                mapping['MarketPrices']['types']['HestonNandiModelPrices'])
 

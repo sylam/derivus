@@ -30,7 +30,6 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 def fetch_module_documentation(module_name, attribute='documentation', package='derivus'):
     """
     Fetches documentation attributes from classes within a specified module.
-    Also fetches 'field_desc' specifically from riskfactors.
     """
     document_mapping = defaultdict(list)
     try:
@@ -50,17 +49,6 @@ def fetch_module_documentation(module_name, attribute='documentation', package='
                     document_mapping[section_name].append((class_name, doc_content))
                 else:
                     logging.warning(f"Documentation attribute '{attribute}' in class '{class_name}' in module '{module_name}' has unexpected format.")
-
-            # Get 'field_desc' attribute specifically if module is riskfactors (own attribute only)
-            if module_name == '.riskfactors' and 'field_desc' in cls.__dict__:
-                field_desc = cls.__dict__.get('field_desc')
-                if field_desc and isinstance(field_desc, (list, tuple)) and len(field_desc) == 2:
-                    section_name, desc_content = field_desc
-                    if isinstance(desc_content, list):
-                        # Store under a specific key for later use in JSON docs
-                        document_mapping['_riskfactor_field_desc'].append((class_name, (section_name, desc_content)))
-                    else:
-                        logging.warning(f"Attribute 'field_desc' in class '{class_name}' in module '{module_name}' has unexpected format.")
 
     except ImportError:
         logging.error(f"Could not import module '{module_name}' from package '{package}'.")
@@ -92,7 +80,9 @@ class ConstructMarkdown(object):
                     'documentation'),
         # Developer is static-only, like Calibration: the attr is one no class defines.
         'Developer': ('Developer', '.stochasticprocess', 'documentation_developer'),
-        'JSON_Config': ('JSON Configuration', '.riskfactors', 'field_desc'), # Special handling now uses fields.py
+        # JSON_Config names no module or attribute: `generate_json_docs` builds it from
+        # `fields.mapping`, and `build` skips it here. Only the display name is read.
+        'JSON_Config': ('JSON Configuration', None, None),
     }
 
     def __init__(self, project_dir):
@@ -302,13 +292,15 @@ class ConstructMarkdown(object):
                 build_filepath = details_build_dir / build_filename
                 content = [f"# {item_type}", f"JSON configuration for the `{item_type}` type.", ""]
 
-                # Determine the actual field names to document
-                # Instruments list field GROUPS, and a group owns its descriptors; factors and
-                # processes list field names against the store's own flat `fields`
-                actual_fields = {}
+                # A store either HOLDS its descriptors - an instrument type composes the sections
+                # that hold them, a factor type IS them - or names entries in a flat store beside
+                # it, which is where `Process` still is
                 if mapping_key == 'Instrument':
+                    actual_fields = {}
                     for group_name in field_identifiers:
                         actual_fields.update(mapping_data.get('sections', {}).get(group_name, {}))
+                elif isinstance(field_identifiers, dict):
+                    actual_fields = field_identifiers
                 else:
                     actual_fields = {n: mapping_data['fields'][n] for n in field_identifiers
                                      if n in mapping_data.get('fields', {})}

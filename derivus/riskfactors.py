@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from . import utils
+from .schema import F
 from scipy.interpolate import RectBivariateSpline
 from scipy.stats import norm
 from scipy.optimize import brentq
@@ -616,10 +617,13 @@ class FxRate(Factor0D):
     """
     Represents the price of a currency relative to the base currency (snapped at end of day).
     """
-    field_desc = ('Fx And Equity',
-                  ['- **Interest_Rate**: String. Associated interest rate curve name.',
-                   '- **Spot**:Float. Spot rate in base currency.'
-                   ])
+    fields = [
+        F('Domestic_Currency', 'Text', default=''),
+        F('Interest_Rate', 'Text', default='', obj='Tuple',
+          description='Associated interest rate curve name'),
+        F('Priority', 'Float', default=3),
+        F('Spot', 'Float', default=0, description='Spot rate in base currency')
+    ]
 
     def __init__(self, param):
         super(FxRate, self).__init__(param)
@@ -636,9 +640,10 @@ class FuturesPrice(Factor0D):
     Spot price of a single listed futures contract. Used when a deal references the price of one
     specific futures by name rather than a forward curve indexed by maturity.
     """
-    field_desc = ('Energy',
-                  ['- **Price**: Float. The current settlement price of the futures contract in '
-                   'its quote currency.'])
+    fields = [
+        F('Price', 'Float', default=0,
+          description='The current settlement price of the futures contract in its quote currency')
+    ]
 
     def __init__(self, param):
         super(FuturesPrice, self).__init__(param)
@@ -651,12 +656,13 @@ class PriceIndex(Factor0D):
     """
     Used to represent things like CPI/Stock Indices etc.
     """
-    field_desc = ('Inflation', [
-        '- **Index**: A *Curve* object representing a series of (date, value) pairs where the date is an excel integer',
-        '- **Next_Publication_Date**: *TimeStamp* object',
-        '- **Last_Period_Start**: *TimeStamp* object',
-        '- **Publication_Period**: String. Either **Monthly** or **Quarterly**'
-    ])
+    fields = [
+        F('Index', 'Curve', description='Series of (date, value) pairs, the date an excel integer'),
+        F('Next_Publication_Date', 'Date', default=''),
+        F('Last_Period_Start', 'Date', default=''),
+        F('Publication_Period', 'Text', default='Monthly', values=['Monthly', 'Quarterly']),
+        F('Currency', 'Text', default='')
+    ]
 
     def __init__(self, param):
         super(PriceIndex, self).__init__(param)
@@ -688,10 +694,14 @@ class EquityPrice(Factor0D):
     """
     This is just the equity price on a particular end of day
     """
-    field_desc = ('Fx And Equity',
-                  ['- **Currency**: String',
-                   '- **Interest_Rate**: String representing the equity repo curve',
-                   '- **Spot**:Spot rate in the specified *Currency*'])
+    fields = [
+        F('Issuer', 'Text', default=''),
+        F('Respect_Default', 'Text', default='Yes', values=['Yes', 'No']),
+        F('Jump_Level', 'Float', default=0.0, obj='Percent'),
+        F('Currency', 'Text', default=''),
+        F('Interest_Rate', 'Text', default='', obj='Tuple', description='The equity repo curve'),
+        F('Spot', 'Float', default=0, description='Spot price in the specified Currency')
+    ]
 
     def __init__(self, param):
         super(EquityPrice, self).__init__(param)
@@ -710,10 +720,14 @@ class CommodityPrice(EquityPrice):
     we instead use the forwardPrice linked to the reference price. We just need this object
     to read the carry curve and the currency
     """
-    field_desc = ('Commodity',
-                  ['- **Currency**: String',
-                   '- **Interest_Rate**: String representing the repo/lease (carry funding) curve',
-                   '- **Spot**:Spot rate in the specified *Currency*'])
+    fields = [
+        F('Spot', 'Float', default=0, description='Spot price in the specified Currency'),
+        F('Currency', 'Text', default=''),
+        F('Interest_Rate', 'Text', default='', obj='Tuple',
+          description='The repo/lease (carry funding) curve'),
+        F('Forward_Rate', 'Text', default='', obj='Tuple',
+          description='The carry curve; falls back to Currency when blank')
+    ]
 
     def __init__(self, param):
         super(CommodityPrice, self).__init__(param)
@@ -731,8 +745,7 @@ class ObservedBasis(Factor0D):
     the factor's own name minus its last period (e.g. ObservedBasis.PLATINUM_CME.LME_CME
     is observed against CommodityPrice.PLATINUM_CME). The state is exposed as the spot value.
     """
-    field_desc = ('Energy',
-                  ['- **Spot**: Float. Initial basis level $b_0$.'])
+    fields = [F('Spot', 'Float', default=0, description='Initial basis level $b_0$')]
 
     def __init__(self, param):
         super(ObservedBasis, self).__init__(param)
@@ -742,11 +755,13 @@ class ForwardPriceSample(Factor0D):
     """
     This is just the sampling method for Forward Prices
     """
-    field_desc = ('Energy',
-                  ['- **Offset**: Integer specifying a calendar day offset',
-                   '- **Holiday_Calendar**: String specifying the name of the calendar to use in the calendar xml file',
-                   '- **Sampling_Convention**: String. Either **ForwardPriceSampleDaily** or ',
-                   '**ForwardPriceSampleBullet**'])
+    fields = [
+        F('Offset', 'Integer', default=0, description='Calendar day offset'),
+        F('Holiday_Calendar', 'Text', default='',
+          description='Name of the calendar to use in the calendar xml file'),
+        F('Sampling_Convention', 'Text', default='ForwardPriceSampleDaily',
+          values=['ForwardPriceSampleDaily', 'ForwardPriceSampleBullet'])
+    ]
 
     def __init__(self, param):
         super(ForwardPriceSample, self).__init__(param)
@@ -762,11 +777,13 @@ class ForwardPriceSample(Factor0D):
 
 
 class ReferenceVol(object):
-    field_desc = ('Energy',
-                  ['- **ForwardPriceVol**: String. Name of the *ForwardPriceVol* price factor to use',
-                   '- **ReferencePrice**: String: Name of the *ReferencePrice* price factor that defines the reference',
-                   'lookup'
-                   ])
+    """Pairs a forward-price vol space with the reference-price lookup it is quoted against."""
+    fields = [
+        F('ForwardPriceVol', 'Text', default='', obj='Tuple',
+          description='Name of the ForwardPriceVol price factor to use'),
+        F('ReferencePrice', 'Text', default='', obj='Tuple',
+          description='Name of the ReferencePrice price factor that defines the reference lookup')
+    ]
 
     def __init__(self, param):
         self.param = param
@@ -824,10 +841,10 @@ class InterestRateJacobian(object):
 
 
 class Correlation(Factor0D):
-    field_desc = ('General',
-                  ['- **Value**: Float. The market implied correlation between rates. Specified as '
-                   '"pricefactor1/pricefactor2" e.g. Correlation.FxRate.USD.ZAR/ReferencePrice.BRENT_OIL-IPE.USD']
-                  )
+    """The market implied correlation between the two rates its name pairs, e.g.
+    `Correlation.FxRate.USD.ZAR/ReferencePrice.BRENT_OIL-IPE.USD`."""
+    fields = [F('Value', 'Float', default=0,
+                description='Market implied correlation between the two rates the name pairs')]
 
     def __init__(self, param):
         super(Correlation, self).__init__(param)
@@ -840,9 +857,11 @@ class DividendRate(Factor1D):
     """
     Represents the Dividend Yield risk factor
     """
-    field_desc = ('Fx And Equity',
-                  ['- **Currency**: String.',
-                   '- **Curve**: *Curve* object specifying the continuous dividend yield'])
+    fields = [
+        F('Floor', 'Text', default='<undefined>'),
+        F('Currency', 'Text', default=''),
+        F('Curve', 'Curve', description='Continuous dividend yield')
+    ]
 
     def __init__(self, param):
         super(DividendRate, self).__init__(param)
@@ -882,9 +901,13 @@ class SurvivalProb(Factor1D):
     """
     Represents the Probability of Survival risk factor
     """
-    field_desc = ('Credit',
-                  ['- **Recovery_Rate**: Float. The assumed recovery amount. Enter 0.4 for 40%.',
-                   '- **Curve**: *Curve* object specifying the negative log survival probability'])
+    fields = [
+        F('Recovery_Rate', 'Float', default=0.4, bounds=(0.0, 1.0),
+          description='The assumed recovery amount. Enter 0.4 for 40%'),
+        F('Minimum_Recovery_Rate', 'Text', default='<undefined>'),
+        F('Issuer', 'Text', default=''),
+        F('Curve', 'Curve', description='Negative log survival probability')
+    ]
 
     def __init__(self, param):
         super(SurvivalProb, self).__init__(param)
@@ -937,13 +960,19 @@ class InterestRate(Factor1D):
     Represents an Interest Rate risk factor - basically a time indexed array of rates
     Remember that the tenors are normally expressed as year fractions - not days.
     """
-    field_desc = ('Interest Rates',
-                  ['- **Currency**: String. The associated currency for this curve',
-                   '- **Curve**: *Curve* object specifying the continuously compounded interest rate',
-                   '- **Day_Count**: String. One of ACT_365, ACT_360, ACT_365_ISDA, _30_360, _30E_360, '
-                   'ACT_ACT_ICMA. The daycount convention for this curve',
-                   '- **Sub_Type**: Optional String can be null or set to **BasisSpread** if this curve is a spread',
-                   'over its parent'])
+    fields = [
+        F('Sub_Type', 'Text', default='',
+          description='Set to BasisSpread if this curve is a spread over its parent'),
+        F('Floor', 'Text', default='<undefined>'),
+        F('Day_Count', 'Text', default='ACT_365', description='Daycount convention for this curve',
+          values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+        F('Accrual_Calendar', 'Text', default=''),
+        F('Currency', 'Text', default='', description='The associated currency for this curve'),
+        F('Curve', 'Curve', description='Continuously compounded interest rate'),
+        F('Near_Interpolation', 'Text', default='',
+          description='Interpolation to use up to Near Date, when the near end is quoted differently'),
+        F('Near_Date', 'Date', default='')
+    ]
 
     def __init__(self, param):
         super(InterestRate, self).__init__(param)
@@ -966,14 +995,20 @@ class InflationRate(Factor1D):
     Represents an Interest Rate (1D) risk factor - basically a time indexed array of rates
     Remember that the tenors are normally expressed as year fractions - not days.
     """
-    field_desc = ('Inflation',
-                  ['- **Currency**: String. The associated currency for this curve',
-                   '- **Reference_Name**: String. allowed values listed [here]'
-                   '(../Theory/Inflation/#price-index-references)',
-                   '- **Curve**: *Curve* object specifying the continuously compounded inflation growth rate',
-                   '- **Day_Count**: String. One of ACT_365, ACT_360, ACT_365_ISDA, _30_360, _30E_360, '
-                   'ACT_ACT_ICMA. The daycount convention for this curve',
-                   '- **Price_Index**: String. Name of associated PriceIndex factor'])
+    fields = [
+        F('Price_Index', 'Text', default='', obj='Tuple',
+          description='Name of the associated PriceIndex factor'),
+        F('Seasonal_Adjustment', 'Text', default=''),
+        F('Reference_Name', 'Text', default='IndexReferenceInterpolated3M',
+          description='Price index reference rule',
+          values=['IndexReferenceInterpolated1M', 'IndexReferenceInterpolated2M',
+                  'IndexReferenceInterpolated3M', 'IndexReferenceInterpolated4M']),
+        F('Day_Count', 'Text', default='ACT_365', description='Daycount convention for this curve',
+          values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+        F('Accrual_Calendar', 'Text', default=''),
+        F('Currency', 'Text', default='', description='The associated currency for this curve'),
+        F('Curve', 'Curve', description='Continuously compounded inflation growth rate')
+    ]
 
     def __init__(self, param):
         super(InflationRate, self).__init__(param)
@@ -992,11 +1027,12 @@ class ForwardPrice(Factor1D):
     """
     Used to represent things like Futures prices on OIL/GOLD/Platinum etc.
     """
-    field_desc = ('Energy',
-                  ['- **Currency**: String. The associated currency for this curve',
-                   '- **Curve**: *Curve* object of date, rate pairs specifying forward price at the corresponding',
-                   'excel date'
-                   ])
+    fields = [
+        F('Currency', 'Text', default='', description='The associated currency for this curve'),
+        F('Curve', 'Curve',
+          description='(excel date, price) pairs giving the forward price at each contract expiry'),
+        F('Fixings', 'Text', default='')
+    ]
 
     def __init__(self, param):
         super(ForwardPrice, self).__init__(param)
@@ -1018,21 +1054,24 @@ class ForwardRate(ForwardPrice):
     semantically a rate rather than a price. Distinct from `InterestRate` (which is
     quoted at relative year-tenors); used for forward-curve dynamics where each curve
     knot is tied to a specific dated contract."""
-    field_desc = ('Energy',
-                  ['- **Currency**: String. The associated currency for this curve',
-                   '- **Curve**: *Curve* object of (excel_date, rate) pairs specifying the rate at the contract expiry'
-                   ])
+    fields = [
+        F('Currency', 'Text', default='', description='The associated currency for this curve'),
+        F('Curve', 'Curve',
+          description='(excel date, rate) pairs giving the rate at each contract expiry')
+    ]
 
 
 class ReferencePrice(Factor1D):
     """
     Used to represent how lookups on the Forward/Futures curve are performed.
     """
-    field_desc = ('Energy',
-                  ['- **Fixing_Curve**: *Curve* object of date, reference date pairs specifying the delivery date for',
-                   'a particular date. Both dates are in excel format.',
-                   '- **ForwardPrice**: String. The name of associated ForwardPrice factor'
-                   ])
+    fields = [
+        F('Fixing_Curve', 'Curve',
+          description='(date, reference date) pairs giving the delivery date for a particular '
+                      'date, both in excel format'),
+        F('ForwardPrice', 'Text', default='', obj='Tuple',
+          description='Name of the associated ForwardPrice factor')
+    ]
 
     def __init__(self, param):
         super(ReferencePrice, self).__init__(param)
@@ -1063,6 +1102,10 @@ class CSForwardPriceModelParameters(Factor0D):
     """
     Represents the Bootstrapped CS implied parameters for a risk neutral process
     """
+    fields = [
+        F('Sigma', 'Float', default=0, description='Bootstrapped forward-price volatility'),
+        F('Alpha', 'Float', default=0, description='Bootstrapped mean reversion speed')
+    ]
 
     def __init__(self, param):
         super(CSForwardPriceModelParameters, self).__init__(param)
@@ -1082,17 +1125,20 @@ class HestonNandiModelParameters(Factor0D):
     Represents the Bootstrapped Heston-Nandi GARCH(1,1) implied parameters for a risk neutral process.
     Asset class agnostic - the underlying may be any spot (0D) factor (FX, equity, commodity, futures);
     the factor name is just the underlying's name.
+
+    The persistence is $\\psi=\\beta+\\alpha\\gamma^{*2}$ (must be less than 1) and the stationary
+    per-step variance is $\\frac{\\omega+\\alpha}{1-\\psi}$.
     """
-    field_desc = ('Fx And Equity',
-                  ['- **Omega**: Float. Constant $\\omega$ of the per-step variance recursion',
-                   '- **Alpha**: Float. ARCH coefficient $\\alpha$',
-                   '- **Beta**: Float. GARCH coefficient $\\beta$',
-                   '- **Gamma_Star**: Float. Risk neutral leverage $\\gamma^*=\\gamma+\\lambda+\\frac{1}{2}$',
-                   '- **H0**: Float. The predictable variance $h_1$ of the first step from the base date',
-                   '',
-                   'The persistence is $\\psi=\\beta+\\alpha\\gamma^{*2}$ (must be less than 1) and the stationary',
-                   'per-step variance is $\\frac{\\omega+\\alpha}{1-\\psi}$'
-                   ])
+    fields = [
+        F('Omega', 'Float', default=0,
+          description='Constant $\\omega$ of the per-step variance recursion'),
+        F('Alpha', 'Float', default=0, description='ARCH coefficient $\\alpha$'),
+        F('Beta', 'Float', default=0, description='GARCH coefficient $\\beta$'),
+        F('Gamma_Star', 'Float', default=0,
+          description='Risk neutral leverage $\\gamma^*=\\gamma+\\lambda+\\frac{1}{2}$'),
+        F('H0', 'Float', default=0,
+          description='The predictable variance $h_1$ of the first step from the base date')
+    ]
     # one source of truth for the key set - get_tenor_indices and current_value must agree; the
     # canonical name tuple lives in utils (the explicit-arg hn_* pricers/simulator consume the same set)
     parameters = utils.HN_PARAM_NAMES
@@ -1113,6 +1159,13 @@ class GBMAssetPriceTSModelParameters(Factor1D):
     """
     Represents the Bootstrapped TS implied parameters for a risk neutral process
     """
+    fields = [
+        F('Quanto_FX_Volatility', 'Curve',
+          description='Vol of the payoff-currency FX rate, read only when quanto'),
+        F('Vol', 'Curve', description='Term structure of the bootstrapped asset volatility'),
+        F('Quanto_FX_Correlation', 'Float', default=0,
+          description='Correlation between the asset and the payoff-currency FX rate')
+    ]
 
     def __init__(self, param):
         super(GBMAssetPriceTSModelParameters, self).__init__(param)
@@ -1141,6 +1194,19 @@ class HullWhite2FactorModelParameters(Factor1D):
     """
     Represents the Bootstrapped implied parameters for a hull-white 2-factor model
     """
+    fields = [
+        F('Quanto_FX_Volatility', 'Curve',
+          description='Vol of the payoff-currency FX rate, read only when quanto'),
+        F('Alpha_1', 'Float', default=0, description='Mean reversion speed of the first factor'),
+        F('Sigma_1', 'Curve', description='Volatility term structure of the first factor'),
+        F('Quanto_FX_Correlation_1', 'Float', default=0,
+          description='Correlation between the first factor and the payoff-currency FX rate'),
+        F('Alpha_2', 'Float', default=0, description='Mean reversion speed of the second factor'),
+        F('Sigma_2', 'Curve', description='Volatility term structure of the second factor'),
+        F('Quanto_FX_Correlation_2', 'Float', default=0,
+          description='Correlation between the second factor and the payoff-currency FX rate'),
+        F('Correlation', 'Float', default=0, description='Correlation between the two factors')
+    ]
 
     def __init__(self, param):
         super(HullWhite2FactorModelParameters, self).__init__(param)
@@ -1223,25 +1289,48 @@ class VolatilityGrid(Factor2D):
     could not author the SVI/Skew surfaces the class has always supported. The variation that
     matters is the SUBTYPE, `(Surface_Type, Moneyness_Rule)`, not the asset class: asset class is a
     property of the UNDERLYING, which keeps its own distinct factor types."""
-    field_desc = ('Fx And Equity',
-                  ['- **Surface Type**: Can be either "Explicit", "SVI", "Skew" or "Malz"',
-                   '- **Surface**: *Curve* object consisting of (moneyness, expiry, volatility) triples. Flat',
-                   'extrapolated and linearly interpolated. All Floats. Only used if Surface Type is Explicit',
-                   '- **ATM_Ref**: Used by Skew and SVI surfaces',
-                   '- **ATM_Vol**: Used by Skew and SVI surfaces',
-                   '- SVI Parameters - *a*, *b*, *rho*, *m*, *sigma*',
-                   '- Skew Parameters - *s*, *L*, *R*, *C*, *D*, *lam*, *rho*'
-                   ])
+    fields = [
+        F('Surface_Type', 'Text', default='Explicit',
+          values=['Explicit', 'SVI', 'Skew', 'Malz', 'Relative_Forward']),
+        F('Surface', 'Surface',
+          description='(moneyness, expiry, volatility) triples, flat extrapolated and linearly '
+                      'interpolated. Read when Surface Type is Explicit'),
+        F('Moneyness_Rule', 'Text', default='Sticky_Moneyness',
+          values=['Sticky_Strike', 'Sticky_Moneyness', 'Sticky_Delta']),
+        F('Delta_Surface', 'Surface',
+          description='(delta, expiry, volatility) triples, read when Surface Type is Malz'),
+        F('ATM_Ref', 'Curve', description='Skew and SVI parameter'),
+        F('ATM_Vol', 'Curve', description='Skew and SVI parameter'),
+        F('a', 'Curve', description='SVI parameter'),
+        F('b', 'Curve', description='SVI parameter'),
+        F('s', 'Curve', description='Skew parameter'),
+        F('L', 'Curve', description='Skew parameter'),
+        F('R', 'Curve', description='Skew parameter'),
+        F('C', 'Curve', description='Skew parameter'),
+        F('D', 'Curve', description='Skew parameter'),
+        F('lam', 'Curve', description='Skew parameter'),
+        F('rho', 'Curve', description='Skew and SVI parameter'),
+        F('m', 'Curve', description='SVI parameter'),
+        F('sigma', 'Curve', description='SVI parameter'),
+        F('Currency', 'Text', default='')
+    ]
 
 
 
 class InterestYieldVol(Factor3D):
-    field_desc = ('Interest Rates',
-                  ['- **Surface**: *Curve* object consisting of (moneyness, expiry, tenor, volatility) quads. Flat',
-                   'extrapolated and linearly interpolated. All Floats.',
-                   '- **Property_Aliases**: list of key value pairs specifying additional options e.g. Specification',
-                   'of a shifted black scholes value via BlackScholesDisplacedShiftValue'
-                   ])
+    """A swaption volatility space, read at (moneyness, expiry, underlying tenor).
+
+    `Property_Aliases` - a list of key/value pairs carrying `BlackScholesDisplacedShiftValue` - is
+    read with `.get` but has no descriptor, so no schema-authored block can carry it.
+    """
+    fields = [
+        F('Surface', 'Space',
+          description='(moneyness, expiry, tenor, volatility) quads, flat extrapolated and '
+                      'linearly interpolated'),
+        F('Shift', 'Float', default=0, obj='Percent',
+          description='Displacement of the shifted lognormal quote'),
+        F('Distribution_Type', 'Text', default='Lognormal', values=['Lognormal', 'Normal'])
+    ]
 
     def __init__(self, param):
         super(InterestYieldVol, self).__init__(param)
@@ -1287,24 +1376,29 @@ class InterestYieldVol(Factor3D):
 
 
 class InterestRateVol(Factor3D):
-    field_desc = ('Interest Rates',
-                  ['- **Surface**: *Curve* object consisting of (moneyness, expiry, tenor, volatility) quads. Flat'
-                   'extrapolated and linearly interpolated. All Floats.'
-                   ])
+    """A caplet volatility space, read at (moneyness, expiry, underlying tenor)."""
+    fields = [
+        F('Surface', 'Space',
+          description='(moneyness, expiry, tenor, volatility) quads, flat extrapolated and '
+                      'linearly interpolated')
+    ]
 
     def __init__(self, param):
         super(InterestRateVol, self).__init__(param)
 
 
 class ForwardPriceVol(Factor3D):
+    """A forward-price volatility space. Its column order is the REVERSE of `Factor3D`'s -
+    delivery first, moneyness last - which the three index constants below are what state."""
     TENOR_INDEX = 0
     EXPIRY_INDEX = 1
     MONEYNESS_INDEX = 2
 
-    field_desc = ('Energy',
-                  ['- **Surface**: *Curve* object consisting of (moneyness, expiry, delivery, volatility) quads. Flat',
-                   'extrapolated and linearly interpolated. All Floats.'
-                   ])
+    fields = [
+        F('Surface', 'Space',
+          description='(delivery, expiry, moneyness, volatility) quads, flat extrapolated and '
+                      'linearly interpolated')
+    ]
 
     def __init__(self, param):
         self.flat = None
