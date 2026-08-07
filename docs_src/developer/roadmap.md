@@ -80,7 +80,8 @@ which is why they are code rather than a declarative `one_of=`; 17 more key on `
 Nothing in the valuation path calls it and a message never stops a deal pricing — the engine still
 fails where it always failed. Four rules are stated so far (`Cash_Payoff` on the binaries,
 `Settlement_Amount ⇒ Settlement_Date`, `Collateral_Rate ⇒ Funding_Rate`, and the inflation
-value-or-date pair). It is what `VALIDATE` should return alongside the factor want-list.
+value-or-date pair). `cx.validate()` now returns them alongside the factor want-list, keyed by each
+deal's `Reference`.
 
 Also remaining: `bind=` (value-versus-structural patching) is designed but unbuilt; the other eight
 stores are untouched.
@@ -95,6 +96,12 @@ declarations. `Observed_Factor` and the type-switched `ObservedBasis` tail close
 **PREPARE / EXECUTE.** A content-hashed `plan_id` from the structural projection, `EXECUTE` = plan
 plus a values patch, `VALIDATE` returning the whole want-list, and `(plan_hash, values_hash,
 engine_version, seed)` making every reported number replayable. Sequencing undecided.
+
+**VALIDATE built**, and only that: `cx.validate()` returns `{'deals': {reference: [message]},
+'factors': [name]}` — the authoring messages of every deal in the book, and every price factor it
+names that the market data has no block for. No plan hash and no `EXECUTE`. It reuses discovery
+(`discover_factors`) and not `calculate_dependencies`, which is where `find_models` mints the
+`Price Models` dummies that make that method non-idempotent.
 
 ## Flagged, not authorised
 

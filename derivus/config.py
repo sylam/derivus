@@ -30,6 +30,7 @@ from pyparsing import Literal, Word, nums, OneOrMore, delimitedList, oneOf, Opti
 
 # import libraries
 from . import utils
+from . import schema
 from .bootstrappers import construct_bootstrapper
 from .instruments import construct_instrument, Deal
 from .stochasticprocess import construct_calibration_config, construct_process
@@ -498,6 +499,57 @@ class Config(object):
                     self.params['Correlations'][(correlation_names[index1], correlation_names[index2])] = \
                         factor_correlations[index1, index2]
 
+    def validate(self):
+        """What stops this job running, as data: the authoring messages of every deal in the book,
+        and the price factors the book names that the market data has no block for.
+
+        Read-only, and it has to be: `calculate_dependencies` is not idempotent, because
+        `find_models` injects a dummy `Price Models` entry for every implied model. So this calls
+        `discover_factors`, the half before that, which reads the market data and writes nothing.
+        Dates are taken the way `Base_Revaluation` takes them (`calc_dates=False`), so no
+        instrument accumulates a reval-date offset either.
+
+        A factor goes missing in two ways, and the want-list is the union. A type carrying
+        dependants (`FxRate`, `CommodityPrice`, ...) raises `KeyError` on the absent block and
+        discovery logs and SKIPS it, so it never reaches `dependent_factors` at all; every other
+        type is discovered happily and fails later in `construct_factor`, so it is the set
+        difference against `Price Factors`. Both end the same way - the factor is not built, the
+        deal cannot resolve it, and `Deal.calculate`'s guard drops the deal from the portfolio.
+
+        Messages are keyed by the deal's `Reference`, with the walk position appended where that
+        is blank or repeated. Nothing here raises on bad deal data and a message never stops a
+        deal pricing: the engine still fails exactly where it always failed.
+        """
+
+        def walk(nodes):
+            # `walk_groups` semantics: an `Ignore` node is skipped whole, and recursion is on
+            # `Children` being PRESENT, never on the type
+            for node in nodes:
+                if node.get('Ignore') == 'True':
+                    continue
+                yield node['Instrument']
+                yield from walk(node.get('Children', []))
+
+        deals = {}
+        for position, instrument in enumerate(walk(self.deals['Deals']['Children'])):
+            if isinstance(instrument, Deal):
+                key, messages = instrument.field.get('Reference'), schema.validate_instrument(instrument)
+            else:
+                # construct_instrument logged the unknown Object and returned {}, taking the
+                # payload with it, so the position is all that is left to name this node by
+                key, messages = None, ['Object names no deal type']
+            if messages:
+                key = key or '#{}'.format(position)
+                deals[key if key not in deals else '{}#{}'.format(key, position)] = messages
+
+        options = self.deals['Calculation']
+        factors, skipped, _, _ = self.discover_factors(options, options['Base_Date'], '0d', False)
+
+        return {'deals': deals,
+                'factors': sorted(skipped.union(
+                    name for name in map(utils.check_tuple_name, factors)
+                    if name not in self.params['Price Factors']))}
+
     def calculate_dependencies(self, options, base_date, base_MTM_dates, calc_dates=True):
         """
         Works out the risk factors (and risk models) in the given set of deals.
@@ -505,7 +557,32 @@ class Config(object):
         name. This can be extended as needed.
 
         Returns the dependant factors, the stochastic models, the full list of
-        reset dates and optionally the potential currency settlements
+        reset dates and optionally the potential currency settlements.
+
+        Discovery and model resolution are separate methods because only the second one writes:
+        `find_models` injects a dummy `Price Models` entry for an implied model, which is what
+        makes this method non-idempotent. `validate` wants discovery alone. Iterating the
+        `dependent_factors` dict is iterating the topological order `discover_factors` sorted it
+        into, which is the RNG-substream order every process reads from.
+        """
+        dependent_factors, _, reset_dates, currency_settlement_dates = self.discover_factors(
+            options, base_date, base_MTM_dates, calc_dates)
+        stochastic_factors, additional_factors = self.find_models(dependent_factors)
+
+        return dependent_factors, stochastic_factors, additional_factors, reset_dates, currency_settlement_dates
+
+    def discover_factors(self, options, base_date, base_MTM_dates, calc_dates=True):
+        """
+        Walks the deal tree and returns every price factor it reaches, ordered so that a factor
+        follows the factors it depends on, along with the reset and settlement dates the walk
+        collected.
+
+        Also returns the price factors it asked the market data for and did NOT find: a type
+        carrying dependants raises `KeyError` on its own block, and the factor is logged and
+        skipped rather than discovered, so this is the only place that knowledge exists. A type
+        without dependants is discovered happily and fails later, in `construct_factor`.
+
+        Reads the market data and writes nothing.
         """
         def update_nested_rates(factor, rates_to_add):
             # tail periods take the mapped nested type, linked to their parent prefix; a type switch
@@ -566,6 +643,9 @@ class Config(object):
                         rates_to_add.update(get_rates(factor, instrument))
                         return
                     except KeyError as e:
+                        # the key names the block the lookup wanted - this factor's own, or that
+                        # of a dependant it embeds. Skipped here, it reaches nothing downstream
+                        skipped_factors.add(e.args[0])
                         logging.warning("Price Factor %s not found in market data", e)
                         logging.error("Skipping Price Factor")
 
@@ -589,7 +669,9 @@ class Config(object):
                 # get the instrument
                 instrument = node['Instrument']
 
-                if node.get('Ignore') == 'True':
+                # an Object naming no class loaded as {} (construct_instrument logs and returns
+                # it), and a node that never became a Deal has no factors to contribute
+                if node.get('Ignore') == 'True' or not isinstance(instrument, Deal):
                     continue
 
                 # get a list of children ready to pass back to the parent
@@ -686,6 +768,8 @@ class Config(object):
 
         # the list of returned factors
         dependent_factors = set()
+        # the factors the walk asked the market data for and did not find
+        skipped_factors = set()
         # complete list of reset dates referenced
         reset_dates = set()
         # complete list of currency settlement dates
@@ -773,10 +857,7 @@ class Config(object):
             # now get the last tenor for each factor
             dependent_factors = {k: max(dependent_factor_tenors.get(k, reset_dates)) for k in sorted_factors}
 
-            # now lookup the processes
-            stochastic_factors, additional_factors = self.find_models(sorted_factors)
-
-        return dependent_factors, stochastic_factors, additional_factors, reset_dates, currency_settlement_dates
+        return dependent_factors, skipped_factors, reset_dates, currency_settlement_dates
 
     def find_models(self, sorted_factors):
         stochastic_factors = {}

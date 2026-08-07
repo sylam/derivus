@@ -11,7 +11,7 @@ The internal object walk behind a calculation. The public entry points and outpu
 Discovers the factor universe, wires the dependency DAG, topologically orders it, and splits stochastic vs static. This is a subsystem in itself — see [Dependency System](dependency_system.md). It returns `dependent_factors` (factor → max date), `stochastic_factors` (process-factor → price-factor), `additional_factors` (implied factors), plus reset/settlement date sets.
 
 !!! danger "Invariant — `calculate_dependencies` is not idempotent"
-    It **mutates** `self.params`: `find_models` injects `Price Models[model] = None` for implied models. A second call sees the injected dummies. Do not call it twice expecting identical output, and do not treat `Price Models` as pristine afterward.
+    It **mutates** `self.params`: `find_models` injects `Price Models[model] = None` for implied models. A second call sees the injected dummies. Do not call it twice expecting identical output, and do not treat `Price Models` as pristine afterward. `find_models` is the only half that writes, which is why it is a separate method — anything that wants the factor universe without disturbing the job (`Context.validate`) calls `discover_factors` instead.
 
 ## Compile phase 2 — `_build_factor_state`
 

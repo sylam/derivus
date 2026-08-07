@@ -2,11 +2,13 @@
 
 `Context.calculate_dependencies` (`config.py`) is the compiler front end: it discovers every price factor the book touches, wires each to its sub-factor dependencies, orders them, and splits stochastic vs static. Discovery is table-driven — three plain-dict **registries** decide which factors exist; the code around them just walks the tables.
 
+It is two methods: `discover_factors` does everything above except the split, and `find_models` does the split. They are separate because only the second one **writes** (see the idempotency box on [Calc Lifecycle](calc_lifecycle.md#compile-phase-1-calculate_dependencies)), which is what lets `Context.validate` ask what the book needs without disturbing it. Iterating the `dependent_factors` dict `discover_factors` returns is iterating the topological order — the order everything below depends on.
+
 The already-present [Cross Factor](../calibration/cross_factor.md) page covers the composed-spot name-prefix chain and the sim-time buffer publish/consume from the calibration angle; this page is the discovery/ordering intro. Read them together — do not expect either to restate the other.
 
 ## The three registries
 
-All three are plain dicts defined inside `calculate_dependencies`. Extend by adding a row.
+All three are plain dicts defined inside `discover_factors`. Extend by adding a row.
 
 **`dependant_fields`** — `{factor_type: [(price_factor_key, linked_factor_type), …]}`. The edge generator of the dependency DAG: for a factor it reads `Price Factors[name][price_factor_key]`, and if present builds `Factor(linked_type, check_rate_name(value))` as a dependency, **recursing** if the linked type is itself a `dependant_fields` key. Chains like `CommodityPrice → {Interest_Rate, Forward_Rate, Currency}` and `ReferencePrice → ForwardPrice → FxRate → InterestRate`. There is **no visited-set** — termination relies on the registry being acyclic.
 
@@ -25,12 +27,12 @@ All three are plain dicts defined inside `calculate_dependencies`. Extend by add
 
 ## The walk
 
-`walk_groups` recurses the deal tree **depth-first, children before parent**, skipping `Ignore=='True'` nodes. Per instrument it runs `instrument.reset(holidays)` and `finalize_dates(...)` (which fill `reval_dates` / `settlement_currencies`), then `get_price_factors`. That iterates the class attribute `instrument.factor_fields` (`{field_name: [factor_type, …]}`); `iter_factors` pulls the field value(s) via `utils.get_fieldname` (handles nested-tuple keys), flattens, and yields `Factor(type, check_rate_name(v))`. For each factor: record its per-deal max date (`max(instrument.get_reval_dates())`) into `dependent_factor_tenors`, and add its rates unless already present (or its type is conditional).
+`walk_groups` recurses the deal tree **depth-first, children before parent**, skipping `Ignore=='True'` nodes and nodes that never became a `Deal` (an `Object` naming no class loads as `{}`; `Context.validate` reports it by position). Per instrument it runs `instrument.reset(holidays)` and `finalize_dates(...)` (which fill `reval_dates` / `settlement_currencies`), then `get_price_factors`. That iterates the class attribute `instrument.factor_fields` (`{field_name: [factor_type, …]}`); `iter_factors` pulls the field value(s) via `utils.get_fieldname` (handles nested-tuple keys), flattens, and yields `Factor(type, check_rate_name(v))`. For each factor: record its per-deal max date (`max(instrument.get_reval_dates())`) into `dependent_factor_tenors`, and add its rates unless already present (or its type is conditional).
 
 `add_rates_for_factor` calls `get_rates`; on a `KeyError` (missing `Price Factors` block) it logs a warning and skips the factor. It used to auto-create a default block for `DiscountRate` — that type is retired, and with it the only self-heal.
 
 !!! warning "Invariant — a missing block is a silently skipped factor"
-    A factor whose `Price Factors` block is missing is dropped (two log lines), absent from `dependent_factors`, never simulated or valued. Nothing is auto-created. If a new derived type needs a default block, extend `add_rates_for_factor` explicitly — do not rely on the silent skip.
+    A factor whose `Price Factors` block is missing is dropped (two log lines), absent from `dependent_factors`, never simulated or valued. Nothing is auto-created. If a new derived type needs a default block, extend `add_rates_for_factor` explicitly — do not rely on the silent skip. `discover_factors` returns the skipped names, because nothing else can recover them; `Context.validate` reports them alongside the discovered factors that have no block, which is the *other* way a factor goes missing — those reach `construct_factor` and fail there instead.
 
 !!! warning "Invariant — dates before tenors"
     `get_reval_dates` / `finalize_dates` must run (via `walk_groups`) before tenor collection: the per-factor max date and the reset/settlement sets all come from `instrument.reset()` + `finalize_dates`. A deal whose `reset()` leaves `reval_dates` empty contributes no tenor, and its directly-referenced factors default to `max(reset_dates)`.

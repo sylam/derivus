@@ -369,7 +369,9 @@ class Context:
                     if 'Children' in i:
                         i['Children'] = utils.compress_deal_data(i['Children'])
         else :
-            deals = {}
+            # a job that carries no deal tree (a hedging problem builds its own at execute time)
+            # still loads an empty BOOK, which is the shape every walk of it reads
+            deals = {'Children': []}
 
         cfg.deals.update({'Deals': deals})
         cfg.deals.update({'Calculation': data['Calc']['Calculation']})
@@ -432,6 +434,9 @@ class Context:
                 f.write(data)
         else:
             return data
+
+    def validate(self):
+        return self.current_cfg.validate()
 
     def run_job(self, overrides=None, runparallel=False):
         # check what calc we should run

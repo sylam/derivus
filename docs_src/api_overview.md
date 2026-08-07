@@ -43,6 +43,7 @@ dispatcher:
 | `cx.Credit_Monte_Carlo(overrides)` | `CreditMonteCarlo` | Path-dependent simulation (CVA / FVA / PFE) |
 | `cx.Hedge_Monte_Carlo(overrides)` | `HedgeMonteCarlo` | Same simulation engine, used to solve a dynamic hedging problem (DiffSolverV2) |
 | `cx.run_job(overrides)` | (any of the above) | Dispatches based on the loaded JSON's `Calculation.Object` |
+| `cx.validate()` | (any of the above) | Reports what would stop the loaded job running, without running it |
 
 Use `run_job()` when the JSON itself fully specifies which calculation to run:
 
@@ -136,6 +137,28 @@ When `Execution_Mode` is `solve_hedge`, the solver fits the value function in-pr
 `out['Results']` contains the fitted value-function artifact, the greedy-policy verdict, and the
 benchmark comparison table. When `Execution_Mode` is `simulate_only`, only the scenario bundle is
 computed and the no-trade baseline is run (useful for offline analysis).
+
+## Checking a job before running it
+
+`cx.validate()` reads the loaded job and returns what would stop it running, as a JSON-serializable
+dict. It runs nothing, prices nothing and changes nothing:
+
+```python
+cx = rf.Context()
+cx.load_json('fxfwd.json')
+cx.validate()
+{'deals': {'FWD1': ['Sell_Discount_Rate is required']}, 'factors': ['InterestRate.ZAR']}
+```
+
+- `'deals'` — the authoring messages of every deal in the book, keyed by the deal's `Reference`
+  (the walk position, as `#3`, where that is blank or repeated). These are the rules a deal states
+  about itself: a field it cannot price without, or a rule spanning several of its fields.
+- `'factors'` — every price factor the book names that the market data has no `Price Factors` block
+  for, spelled as the key you would add. A factor with no block is never built, so the deals that
+  reference it are dropped from the portfolio when the run reaches them.
+
+Both empty means nothing here can tell you the job will fail. A message never stops a deal pricing:
+the engine still fails exactly where it always failed, and this says so first.
 
 ## Overrides
 
