@@ -44,10 +44,16 @@ The schema's inheritance turned out to be composition of named field GROUPS, not
 hierarchy: `FXAdmin` is shared by eight deals with no common base and `Admin` by all of them, so
 groups are module-level `Group` constants a class lists. An MRO-based design cannot express that.
 
-`groups` stays hand-written: it is the Workbench's create-deal menu and its jsTree node kind —
-presentation, with one consumer. It is therefore the one part of the store that can still drift, so
-a gate holds every declared type to appearing in some menu. That gate found `EquityDeal` and
-`EquityOneTouchOption`, both concrete and documented, in no menu at all.
+`groups` stays hand-written, but it is now ONLY the create-deal menu. It also carried the jsTree
+node kind, which is not presentation at all: it says whether a deal breaks down into simpler
+instruments, and only `New Structure` was a folder. So `CapDeal`, `FloorDeal`, `SwapInterestDeal`,
+`SwaptionDeal` and `MtMCrossCurrencySwapDeal` were files, and the Workbench could not build any of
+them with the legs their own `post_process` prices. That is `Deal.accepts_children` now, declared
+on the class and gated against `post_process` in both directions. The engine never cared — it
+recurses on `Children` being PRESENT, never on the type — which is exactly why nothing failed.
+
+The menu can still drift from the classes, so a gate holds every declared type to appearing in one.
+It found `EquityDeal` and `EquityOneTouchOption`, both concrete and documented, in no menu at all.
 
 **A section owns its descriptors.** The store was keyed by field NAME across all 47 deals, which
 admits one descriptor per name — so a field needing different valid values in two deals had to

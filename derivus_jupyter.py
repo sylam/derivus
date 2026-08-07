@@ -592,10 +592,12 @@ class PortfolioPage(TreePanel):
                      "default": {"icon": "fa fa-file", "valid_children": []}}
 
         context_menu = {}
-        for k, v in sorted(rf.fields.mapping['Instrument']['groups'].items()):
-            group_type = v[0]
-            for instype in sorted(v[1]):
-                context_menu.setdefault(k, {}).setdefault(instype, group_type)
+        # a deal that breaks down into simpler instruments is a jsTree folder and takes
+        # children; a leaf is a file. The deal says which, not the menu it appears under.
+        for k, members in sorted(rf.fields.mapping['Instrument']['groups'].items()):
+            for instype in sorted(members):
+                context_menu.setdefault(k, {}).setdefault(
+                    instype, 'group' if rf.instruments.accepts_children(instype) else 'default')
 
         # tree widget data
         self.tree = Tree(
@@ -644,7 +646,7 @@ class PortfolioPage(TreePanel):
         ins['Reference'] = reference
 
         # Now check if this is a group or a regular deal
-        if instrument_type in rf.fields.mapping['Instrument']['groups']['New Structure'][1]:
+        if rf.instruments.accepts_children(instrument_type):
             deal = {'Instrument': rf.instruments.construct_instrument(
                 ins, self.config.params['Valuation Configuration']), 'Children': []}
         else:

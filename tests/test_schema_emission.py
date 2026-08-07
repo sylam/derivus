@@ -97,7 +97,7 @@ def test_no_class_is_hidden_from_the_create_menu():
     """`groups` is the Workbench's create-deal menu and stays hand-curated, being presentation. So
     it is the one part of the store that can still drift from the classes: a deal type absent from
     every group is fully declared, fully priceable and unreachable from the UI."""
-    menued = {t for _, members in INSTRUMENT['groups'].values() for t in members}
+    menued = {t for members in INSTRUMENT['groups'].values() for t in members}
     assert not sorted(set(INSTRUMENT['types']) - menued), (
         f'declared deal types in no menu group: {sorted(set(INSTRUMENT["types"]) - menued)}')
 

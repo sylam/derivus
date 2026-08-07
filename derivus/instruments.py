@@ -508,6 +508,12 @@ class Deal(object):
     """
     documentation = ''
 
+    #: A deal that breaks down into simpler instruments carries them as JSON `Children`, and its
+    #: `post_process` prices them. A leaf - an option, a cashflow list, a deposit - cannot be
+    #: broken down, and offering it children in a UI builds a tree the pricer will not read.
+    #: The engine itself recurses on `Children` being PRESENT, never on the type.
+    accepts_children = False
+
     def __init__(self, params, valuation_options):
         # valuation options
         self.options = valuation_options
@@ -676,6 +682,7 @@ def scan_collateral_balance(opening, required, recv_band, post_band, call_mask,
 
 class NettingCollateralSet(Deal):
     # dependent price factors for this instrument
+    accepts_children = True
     fields = [ADMIN, own('NettingCollateralSet', [
         F('Agreement_Currency', 'Text', default=''),
         F('Apply_Closeout_When_Uncollateralized', 'Text', default='No', values=['Yes', 'No']),
@@ -1496,6 +1503,7 @@ class NettingCollateralSet(Deal):
 
 class MtMCrossCurrencySwapDeal(Deal):
     # dependent price factors for this instrument
+    accepts_children = True
     fields = [ADMIN, own('MtMCrossCurrencySwapDeal', [
         F('Pay_Discount_Rate', 'Text', default='', obj='Tuple'),
         F('Pay_Rate_Type', 'Text', default='Fixed', values=['Fixed', 'Floating']),
@@ -1973,6 +1981,7 @@ class FXForwardDeal(Deal):
 
 class StructuredDeal(Deal):
     # dependent price factors for this instrument
+    accepts_children = True
     fields = [ADMIN, own('StructuredDeal', [
         F('Currency', 'Text', default=''),
         F('Net_Cashflows', 'Text', default='Yes', values=['Yes', 'No'])
@@ -2177,6 +2186,7 @@ class DepositDeal(Deal):
 
 class SwapInterestDeal(Deal):
     # dependent price factors for this instrument
+    accepts_children = True
     fields = [ADMIN, own('SwapInterestDeal', [
         F('Reset_Type', 'Text', default='Standard', values=['Standard', 'Advance', 'Arrears']),
         F('Index_Day_Count', 'Text', default='ACT_365', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
@@ -2719,6 +2729,7 @@ class YieldInflationCashflowListDeal(Deal):
 
 class CapDeal(Deal):
     # dependent price factors for this instrument
+    accepts_children = True
     fields = [ADMIN, own('CapDeal', [
         F('Reset_Type', 'Text', default='Standard', values=['Standard', 'Advance', 'Arrears']),
         F('Penultimate_Coupon_Date', 'Date', default=''),
@@ -2832,6 +2843,7 @@ class CapDeal(Deal):
 
 class FloorDeal(Deal):
     # dependent price factors for this instrument
+    accepts_children = True
     fields = [ADMIN, own('FloorDeal', [
         F('Reset_Type', 'Text', default='Standard', values=['Standard', 'Advance', 'Arrears']),
         F('Penultimate_Coupon_Date', 'Date', default=''),
@@ -2944,6 +2956,7 @@ class FloorDeal(Deal):
 
 
 class SwaptionDeal(Deal):
+    accepts_children = True
     fields = [ADMIN, own('SwaptionDeal', [
         F('Floating_Margin', 'Float', default=0.0),
         F('Rate_Schedule', 'Table', default='null', row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
@@ -6165,6 +6178,17 @@ class EnergySingleOption(Deal):
 
     def generate(self, shared, time_grid, deal_data):
         return pricing.pv_energy_option(shared, time_grid, deal_data, self.field['Volume'])
+
+
+def accepts_children(deal_type):
+    """Whether a deal of this type breaks down into simpler instruments.
+
+    A container prices its children in `post_process` - a swaption over its two legs, a cap over
+    the floating list it caps. A leaf (an option, a cashflow list, a deposit) cannot be broken
+    down. The engine recurses on `Children` being PRESENT and never on the type, so this is an
+    AUTHORING question: a UI that offers a leaf children builds a tree the pricer will not read.
+    """
+    return getattr(globals().get(deal_type), 'accepts_children', False)
 
 
 def construct_instrument(param, all_valuation_options):

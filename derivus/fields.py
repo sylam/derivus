@@ -624,29 +624,32 @@ mapping = {
     },
     'Instrument': {
         # logical groupings
+        # the create-deal menu. Whether a type can hold children is NOT here: it is
+        # `Deal.accepts_children`, because it is a property of the deal, not of the menu.
         'groups': {
-            'New Structure': ('group', ['NettingCollateralSet', 'StructuredDeal']),
-            'New Interest Rate Derivative': (
-                'default', ['FixedCashflowDeal', 'CFFixedListDeal', 'CFFixedInterestListDeal',
-                            'CFFloatingInterestListDeal', 'DepositDeal', 'CapDeal', 'FRADeal',
-                            'FloorDeal', 'SwapInterestDeal', 'SwaptionDeal',
-                            'YieldInflationCashflowListDeal', 'CashAccountDeal']),
-            'New FX Derivative': (
-                'default', ['FXNonDeliverableForward', 'FXForwardDeal', 'FXOptionDeal', 'FXBinaryOption',
-                            'FXDiscreteExplicitAsianOption', 'FXOneTouchOption',
-                            'FXBarrierOption', 'FXSwapDeal',
-                            'MtMCrossCurrencySwapDeal', 'FXTARFOptionDeal',
-                            'FXDiscreteExplicitDoubleAsianOption', 'FXPartialTimeBarrierOption']),
-            'New Energy Derivative': (
-                'default', ['FloatingEnergyDeal', 'FixedEnergyDeal', 'EnergySingleOption', 'CommodityForwardDeal',
-                            'CommodityFutureDeal']),
-            'New Equity Derivative': ('default', ['EquityDeal', 'EquitySwapLeg', 'EquityForwardDeal',
-                                                  'EquityOptionDeal', 'EquityBinaryOption',
-                                                  'EquityOneTouchOption', 'QEDI_CustomAutoCallSwap',
-                                                  'QEDI_CustomAutoCallSwap_V2', 'EquitySwapletListDeal',
-                                                  'EquityBarrierOption', 'EquityBarrierBinaryOption',
-                                                  'EquityDiscreteExplicitAsianOption']),
-            'New Credit Derivative': ('default', ['DealDefaultSwap','CreditNthToDefault'])
+            'New Structure': ['NettingCollateralSet', 'StructuredDeal'],
+            'New Interest Rate Derivative':
+                ['FixedCashflowDeal', 'CFFixedListDeal', 'CFFixedInterestListDeal',
+                 'CFFloatingInterestListDeal', 'DepositDeal', 'CapDeal', 'FRADeal',
+                 'FloorDeal', 'SwapInterestDeal', 'SwaptionDeal',
+                 'YieldInflationCashflowListDeal', 'CashAccountDeal'],
+            'New FX Derivative':
+                ['FXNonDeliverableForward', 'FXForwardDeal', 'FXOptionDeal', 'FXBinaryOption',
+                 'FXDiscreteExplicitAsianOption', 'FXOneTouchOption',
+                 'FXBarrierOption', 'FXSwapDeal',
+                 'MtMCrossCurrencySwapDeal', 'FXTARFOptionDeal',
+                 'FXDiscreteExplicitDoubleAsianOption', 'FXPartialTimeBarrierOption'],
+            'New Energy Derivative':
+                ['FloatingEnergyDeal', 'FixedEnergyDeal', 'EnergySingleOption', 'CommodityForwardDeal',
+                 'CommodityFutureDeal'],
+            'New Equity Derivative':
+                ['EquityDeal', 'EquitySwapLeg', 'EquityForwardDeal',
+                 'EquityOptionDeal', 'EquityBinaryOption',
+                 'EquityOneTouchOption', 'QEDI_CustomAutoCallSwap',
+                 'QEDI_CustomAutoCallSwap_V2', 'EquitySwapletListDeal',
+                 'EquityBarrierOption', 'EquityBarrierBinaryOption',
+                 'EquityDiscreteExplicitAsianOption'],
+            'New Credit Derivative': ['DealDefaultSwap', 'CreditNthToDefault']
         },
 
         'sections': _sections,

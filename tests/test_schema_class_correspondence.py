@@ -79,7 +79,7 @@ def test_every_group_member_is_a_declared_type():
     deal the panel cannot build. This caught a missing comma between two adjacent entries, which
     Python concatenated into `FXSwapDealMtMCrossCurrencySwapDeal` - removing BOTH from the menu."""
     unknown = {name: [m for m in members if m not in INSTRUMENT['types']]
-               for name, (_, members) in INSTRUMENT['groups'].items()}
+               for name, members in INSTRUMENT['groups'].items()}
     unknown = {k: v for k, v in unknown.items() if v}
     assert not unknown, f'context-menu entries naming no declared type: {unknown}'
 
@@ -221,6 +221,30 @@ def test_every_field_a_deal_reads_is_declarable(deal_type):
             and isinstance(n.slice.value, str)}
     undeclared = sorted(read - json_names(getattr(instruments, deal_type)))
     assert not undeclared, f'{deal_type} reads fields no schema-authored deal can carry: {undeclared}'
+
+
+def test_accepts_children_matches_what_the_class_does_with_them():
+    """A deal that breaks down into simpler instruments prices them in `post_process`; a leaf has
+    no `post_process` at all. `accepts_children` is the DECLARATION of that, and this holds it to
+    the implementation in both directions.
+
+    It has to be declared rather than inferred, because it is what a UI asks before offering a
+    node children - and it lived in the wrong place: the create-menu's jsTree node kind, where only
+    `New Structure` was a folder. So `CapDeal`, `FloorDeal`, `SwapInterestDeal`, `SwaptionDeal` and
+    `MtMCrossCurrencySwapDeal` were all files, and the Workbench could not build any of them with
+    the legs their `post_process` prices. The engine never cared - it recurses on `Children` being
+    present - which is exactly why nothing failed and no test noticed."""
+    prices_children = {n for n, c in deal_classes().items() if 'post_process' in c.__dict__}
+    declares = {n for n, c in deal_classes().items() if getattr(c, 'accepts_children', False)}
+
+    # alias subclasses inherit both the method and the declaration, so compare on own-attr for the
+    # implementation and let inheritance carry the declaration
+    inherited = {n for n in declares - prices_children
+                 if any('post_process' in b.__dict__ for b in deal_classes()[n].__mro__[1:])}
+    assert declares - prices_children - inherited == set(), (
+        f'declared a container but prices no children: {sorted(declares - prices_children - inherited)}')
+    assert prices_children - declares == set(), (
+        f'prices children but is not declared a container: {sorted(prices_children - declares)}')
 
 
 def test_discountrate_stays_retired():
