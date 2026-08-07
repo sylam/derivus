@@ -19,6 +19,7 @@ __all__ = ['version_info', '__version__', '__author__', '__license__', 'Context'
 import os
 import json
 import torch
+import hashlib
 import pathlib
 import logging
 import numpy as np
@@ -56,6 +57,13 @@ def getpath(pathlist):
     for path in pathlist:
         if os.path.isdir(path):
             return path
+
+
+def content_hash(obj):
+    """sha256 over a CANONICAL dump - sorted keys, and `CustomJsonEncoder` for everything a config
+    tree holds that JSON has no form for: curves, deals, timestamps, offsets, model parameters."""
+    return hashlib.sha256(json.dumps(
+        obj, sort_keys=True, separators=(',', ':'), cls=CustomJsonEncoder).encode()).hexdigest()
 
 
 def summarize_data(data, percentiles):
@@ -472,6 +480,36 @@ class Context:
                     raise ValueError(
                         '{}: {} is structural, not a value'.format(name, field))
             factors[name] = schema.apply_values(type_name, structural, values)
+
+    def plan_hash(self):
+        """The content hash of the PROGRAM: everything a run compiles, market values excluded.
+
+        A plan is `params` and `deals` less the two things that are replay coordinates of their own -
+        every `bind='value'` field, which `values_hash` carries, and `Random_Seed`. Everything else
+        is in, `Batch_Size` and `Simulation_Batches` included: they change the realized numbers, so a
+        replay has to pin them.
+
+        `params['Correlations']` is the SIMULATION matrix feeding the cholesky - a compile input, and
+        a different thing entirely from the `Correlation` price factor a quanto reads. It is re-keyed
+        off its name PAIR here only because JSON has no tuple key.
+        """
+        cfg = self.current_cfg
+        params = dict(cfg.params)
+        params['Price Factors'] = {
+            name: schema.partition_factor(utils.check_rate_name(name)[0], block)[0]
+            for name, block in cfg.params['Price Factors'].items()}
+        params['Correlations'] = {'{}/{}'.format(*pair): value
+                                  for pair, value in cfg.params['Correlations'].items()}
+        calculation = {k: v for k, v in cfg.deals['Calculation'].items() if k != 'Random_Seed'}
+        return content_hash({'params': params, 'deals': dict(cfg.deals, Calculation=calculation)})
+
+    def values_hash(self):
+        """The content hash of `market_patch()` - the market VALUES, and nothing else.
+
+        With `plan_hash`, `__version__` and the seed this is the replay identity: two runs agreeing
+        on all four report the same numbers.
+        """
+        return content_hash(self.market_patch())
 
     def run_job(self, overrides=None, runparallel=False):
         # check what calc we should run

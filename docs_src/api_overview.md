@@ -160,6 +160,42 @@ cx.validate()
 Both empty means nothing here can tell you the job will fail. A message never stops a deal pricing:
 the engine still fails exactly where it always failed, and this says so first.
 
+## Patching market values and replaying a run
+
+The market data splits in two. A price factor field declared `bind='value'` is one whose CONTENT
+the engine reads and nothing else depends on — a spot, the rate column of a curve, the vol column of
+a surface, a calibrated model parameter, a market implied correlation, a recovery rate. Everything
+else is STRUCTURAL: change it and the job is a different program. A curve splits *inside* itself,
+since its knots size the tenor grid while its rate column is content.
+
+```python
+patch = cx.market_patch()          # {factor_name: {field: content}} - the values half, all of it
+patch['FxRate.ZAR']['Spot'] = 19.0
+cx.patch_market(patch)             # applied in place; anything structural raises, naming it
+```
+
+`patch_market` takes what `market_patch` emits. Two verbs hash the two halves:
+
+| Verb | What it hashes |
+|---|---|
+| `cx.plan_hash()` | the program — `params` and `deals`, less every value-bound field and `Random_Seed` |
+| `cx.values_hash()` | exactly what `cx.market_patch()` emits |
+
+Both are sha256 over a canonical dump and pure functions of the loaded config: they run nothing,
+price nothing and change nothing. The plan covers the `Calculation` block too, so `Batch_Size` and
+`Simulation_Batches` move it — they change the realized numbers.
+
+A reported number is replayable from four coordinates:
+
+```python
+(cx.plan_hash(), cx.values_hash(), rf.__version__, calculation['Random_Seed'])
+```
+
+`rf.__version__` is the engine version, and the seed is its own coordinate because it belongs to
+neither hash. Two runs agreeing on all four report the same numbers, so one plan can be compiled
+once and re-run against many value sets — and a run whose engine version differs is not a replay,
+because a code change may legitimately reassign the RNG substreams.
+
 ## Overrides
 
 Every calculation method accepts an `overrides` dict that updates the JSON's `Calculation` section

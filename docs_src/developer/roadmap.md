@@ -106,9 +106,9 @@ and the half a patch carries — 32 fields over 20 types, each declared from its
 shape-valued field splits INSIDE itself, because a curve's knots size `all_tenors` when the factor
 is constructed while its rate column is content; the structural half keeps the coordinate columns
 and only the last one travels. `cx.market_patch()` emits one and `cx.patch_market()` applies it,
-refusing anything structural by name. The next consumer is `plan_hash`: the structural projection is
-now the thing there is to hash, and what remains undecided is its DOMAIN (deals, the calculation
-block, engine version) and the PREPARE/EXECUTE sequencing, not the market-data half.
+refusing anything structural by name. `plan_hash` is the consumer it was built for, and it hashes
+the structural projection alongside the deal tree and the calculation block — see PREPARE / EXECUTE
+below.
 
 Four candidates remain declined with a citation rather than bound. `ReferencePrice.Fixing_Curve` and
 `PriceIndex.Index` become reset rows in `make_energy_cashflows` / `make_index_cashflows`, so the
@@ -134,8 +134,8 @@ Also remaining: the other seven stores are untouched.
     `calc_dependencies` reading the index `SurvivalProb.Curve`, the discount `InterestRate.Curve`
     and now `Recovery_Rate` — all three value-bound. A values patch therefore reprices that deal
     against a STALE beta. It predates this work (the two curves were bound in the first pass) and it
-    is confined to the one deal type; the fix is either to bind the calibration to eval or to declare
-    a factor whose content feeds a compiled calibration structural.
+    is confined to the one deal type; the fix is either to move the calibration to eval, or to treat
+    content that feeds a compiled calibration as structural.
 
 The paired naming cleanup settles first, and is now done: the `MarketPrices` types the engine
 matches, one `VolatilityGrid` in place of the three asset-class vol twins, and the IR prefix chain
@@ -144,14 +144,30 @@ declarations. `Observed_Factor` and the type-switched `ObservedBasis` tail close
 `nested_fields` already wires FX and equity alongside commodity, and all four
 `calc_factor_code_chain` call sites agree.
 
-**PREPARE / EXECUTE.** A content-hashed `plan_id` from the structural projection, `EXECUTE` = plan
-plus a values patch, `VALIDATE` returning the whole want-list, and `(plan_hash, values_hash,
-engine_version, seed)` making every reported number replayable. Sequencing undecided.
+**PREPARE / EXECUTE — the hashes are built.** `cx.plan_hash()` and `cx.values_hash()` are pure
+functions of the loaded config, sha256 over a canonical dump (sorted keys, `CustomJsonEncoder` for
+the objects). The PLAN is `params` and `deals` less two coordinates of their own: every
+`bind='value'` field, and `Random_Seed`. So `System Parameters`, `Model Configuration`, `Price
+Models`, `params['Correlations']` (the simulation matrix — the cholesky is compile, and this is not
+the `Correlation` price factor), `Market Prices`, the structural projection of `Price Factors`, the
+whole deal tree and the `Calculation` block are all in, `Batch_Size` and `Simulation_Batches`
+included because they change the realized numbers. VALUES is exactly `cx.market_patch()`. The
+identity `(plan_hash, values_hash, engine_version, seed)` is documented for callers in
+[API Overview](../api_overview.md#patching-market-values-and-replaying-a-run); `engine_version` is
+`derivus/_version.py` and no second version source was invented for it.
+
+What remains is the live-refill EXECUTE path and the service lift, and the refill is
+**deprioritised**, by measurement rather than by taste: recompiling is relatively quick, and the
+latency it would buy back is BASE VALUATION's — CMC is compute-heavy enough that compile time is
+dwarfed by the run. The case that would change that is a future **STRUCTURING** calc, solving for a
+strike, a margin or a vol: it iterates pricing on one changing input, and strike and margin are DEAL
+fields, structural today. Such a calc either accepts a recompile per iterate or `bind=` eventually
+extends to deal fields. A vol solve already patches cleanly.
 
 **VALIDATE built**, and only that: `cx.validate()` returns `{'deals': {reference: [message]},
 'factors': [name]}` — the authoring messages of every deal in the book, and every price factor it
-names that the market data has no block for. No plan hash and no `EXECUTE`. It reuses discovery
-(`discover_factors`) and not `calculate_dependencies`, which is where `find_models` mints the
+names that the market data has no block for. It answers the want-list and nothing else, and it reuses
+discovery (`discover_factors`) and not `calculate_dependencies`, which is where `find_models` mints the
 `Price Models` dummies that make that method non-idempotent.
 
 ## Flagged, not authorised
