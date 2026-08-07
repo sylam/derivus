@@ -223,6 +223,29 @@ def test_every_field_a_deal_reads_is_declarable(deal_type):
     assert not undeclared, f'{deal_type} reads fields no schema-authored deal can carry: {undeclared}'
 
 
+def test_instruments_call_resolvers_not_factor_types():
+    """The `get_*` layer owns every factor-type text key; an instrument knows WHICH resolver to
+    call, never the literal. Six sites violated that - two barrier deals built
+    `utils.Factor('EquityPrice', ...)` raw (and for a composed equity name that named the dropped
+    full-name head key, so the bridge lookup missed by accident rather than by the documented
+    guard), three object hops in CreditNthToDefault's beta block, and one commodity component hop.
+
+    Held exception, noted in the roadmap: `get_implied_correlation`'s two callers still build
+    type-prefixed correlation-name tuples. Those are tuple literals, not Factor constructions, so
+    this gate does not cover them - it pins Factor construction and raw opcode calls to zero."""
+    src = ast.parse(inspect.getsource(instruments))
+    offenders = []
+    for cls in [n for n in src.body if isinstance(n, ast.ClassDef)]:
+        for call in [n for n in ast.walk(cls) if isinstance(n, ast.Call)]:
+            f = call.func
+            name = f.attr if isinstance(f, ast.Attribute) else getattr(f, 'id', None)
+            literal = call.args and isinstance(call.args[0], ast.Constant)
+            if (name == 'Factor' and literal) or name in ('calc_factor_index',
+                                                          'calc_factor_code_chain'):
+                offenders.append(f'{cls.name}:{call.lineno}')
+    assert not offenders, f'instrument methods owning factor-type text: {offenders}'
+
+
 def test_accepts_children_matches_what_the_class_does_with_them():
     """A deal that breaks down into simpler instruments prices them in `post_process`; a leaf has
     no `post_process` at all. `accepts_children` is the DECLARATION of that, and this holds it to

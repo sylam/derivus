@@ -111,6 +111,16 @@ class waiting to happen. `DealStructure`'s recursions are in the same category.
 
 ## Tidy-ups
 
+**`get_implied_correlation` makes its callers own factor types.** The resolver rule — the `get_*`
+layer owns every factor-type text key; an instrument knows which resolver to call, never the
+literal — is now gated (`test_instruments_call_resolvers_not_factor_types`), with one held
+exception: `get_implied_correlation`'s two callers build type-prefixed correlation-name tuples
+(`('EquityPrice',) + …` in `Deal.check_option_data`, `('FxRate',) + …` in
+`EnergySingleOption.calc_dependencies`). The fix is two single-caller wrappers
+(`get_equity_fx_correlation`, `get_fx_reference_correlation`), which brushes the
+no-abstraction-ahead-of-a-second-caller rule — held until a third correlation pair shows up or the
+rule is judged to outrank it. The gate does not cover tuple literals, so this stays a note.
+
 **Inline comment density.** The boundary-correction work left ~12 inline blocks of 4-11 comment
 lines, several outweighing the code beneath them. House style is detailed docstrings, 2-3 lines
 maximum inline, and never more comments than code. The material is right - the reasoning, the trap,

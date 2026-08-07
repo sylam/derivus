@@ -212,6 +212,17 @@ def get_fx_barrier_underlying(field, stochastic_offsets):
     return utils.Factor('FxRate', field['Underlying_Currency'])
 
 
+def get_equity_barrier_underlying(fieldname):
+    """The single factor whose simulated log-variance governs crossings between grid dates, or None.
+
+    The equity leg is monitored directly (no cross), so the only guard is a composed basis chain:
+    the head factor's variance alone understates the composed spot's, and `t_Bridge_Variance_Rate`
+    is keyed per factor, so no single entry can express the sum. None means the pricer observes
+    endpoints, which is the conservative direction - same rule as `get_fx_barrier_underlying`.
+    """
+    return None if len(fieldname) > 1 else utils.Factor('EquityPrice', fieldname)
+
+
 def get_fxrate_spot(fieldname, static_offsets, stochastic_offsets, all_factors):
     """Read the spot of the FX rate price factor"""
     return calc_factor_value(
@@ -261,6 +272,14 @@ def get_factor_component(componentname, all_factors):
     return under_factor
 
 
+def get_equity_component(fieldname, all_factors):
+    return get_factor_component(utils.Factor('EquityPrice', fieldname), all_factors)
+
+
+def get_commodity_component(fieldname, all_factors):
+    return get_factor_component(utils.Factor('CommodityPrice', fieldname), all_factors)
+
+
 def get_reference_factor_objects(fieldname, all_factors):
     """Read the Reference and Forward price factors"""
     reference_factor = get_reference_factor(fieldname, all_factors)
@@ -300,7 +319,7 @@ def get_equity_spot(fieldname, static_offsets, stochastic_offsets, all_factors):
 
 def get_equity_currency_factor(fieldname, static_offsets, stochastic_offsets, all_factors):
     """Read the index of the Equity's Currency price factor (off the primary spot)"""
-    fxrate = get_factor_component(utils.Factor('EquityPrice', fieldname), all_factors).get_currency()
+    fxrate = get_equity_component(fieldname, all_factors).get_currency()
     return [calc_factor_index(utils.Factor('FxRate', fxrate),
                               static_offsets, stochastic_offsets)]
 
@@ -319,13 +338,13 @@ def get_interest_factor(fieldname, static_offsets, stochastic_offsets, all_tenor
 
 def get_equity_zero_rate_factor(fieldname, static_offsets, stochastic_offsets, all_tenors, all_factors):
     """Read the equity's interest rate price factor (off the primary spot)"""
-    ir_curve = get_factor_component(utils.Factor('EquityPrice', fieldname), all_factors).get_repo_curve_name()
+    ir_curve = get_equity_component(fieldname, all_factors).get_repo_curve_name()
     return get_interest_factor(ir_curve, static_offsets, stochastic_offsets, all_tenors)
 
 
 def get_commodity_zero_rate_factor(fieldname, static_offsets, stochastic_offsets, all_tenors, all_factors):
     """Read the commodity's interest rate price factor (off the primary spot)"""
-    ir_curve = get_factor_component(utils.Factor('CommodityPrice', fieldname), all_factors).get_repo_curve_name()
+    ir_curve = get_commodity_component(fieldname, all_factors).get_repo_curve_name()
     return get_interest_factor(ir_curve, static_offsets, stochastic_offsets, all_tenors)
 
 
@@ -416,6 +435,17 @@ def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, 
                        % (spot_model, utils.check_tuple_name(mp)))
     return [tuple([stoch, [utils.Factor(mp.type, mp.name + (param,))
                            for param in get_factor_component(mp, all_factors).current_value()], spot_model])]
+
+
+def get_index_hazard_scale(index, names, discount_rate, base_date, last_reset, all_factors):
+    """A beta between a CDS index and each underlying name, so stressing the index translates to
+    a per-name PD. Owns the object lookups; the calibration is `utils.calibrate_index_hazard_scale`."""
+    return utils.calibrate_index_hazard_scale(
+        base_date,
+        all_factors.get(utils.Factor('SurvivalProb', index)),
+        [all_factors.get(utils.Factor('SurvivalProb', name)) for name in names],
+        all_factors.get(utils.Factor('InterestRate', discount_rate)),
+        last_reset)
 
 
 def get_interest_vol_factor(fieldname, tenor, static_offsets, stochastic_offsets, all_tenors):
@@ -4163,7 +4193,7 @@ class EquityOneTouchOption(Deal):
                 field['Equity'], static_offsets, stochastic_offsets, all_tenors),
             'Volatility': get_equity_price_vol_factor(
                 field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors),
-            'Barrier_Underlying': utils.Factor('EquityPrice', field['Equity']),
+            'Barrier_Underlying': get_equity_barrier_underlying(field['Equity']),
             'Expiry': (self.field['Expiry_Date'] - base_date).days}
 
         if self.field.get('Barrier_Dates', []):
@@ -4328,7 +4358,7 @@ class EquityBarrierOption(Deal):
                            field['Equity'], static_offsets, stochastic_offsets), field['Equity']),
                        # names the factor the barrier is monitored ON, so the pricer can ask what
                        # the simulation did between grid dates rather than only at them
-                       'Barrier_Underlying': utils.Factor('EquityPrice', field['Equity']),
+                       'Barrier_Underlying': get_equity_barrier_underlying(field['Equity']),
                        'Equity_Zero': get_equity_zero_rate_factor(
                            field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
                        'Dividend_Yield': get_dividend_rate_factor(
@@ -5626,16 +5656,8 @@ class CreditNthToDefault(Deal):
         pay_rate = self.field['Pay_Rate'] / 100.0 if isinstance(
             self.field['Pay_Rate'], float) else self.field['Pay_Rate'].amount
 
-        index_factor = all_factors.get(utils.Factor('SurvivalProb',field['CDS_Index']))
-        # the idea here is to calculate a "beta" between the index and each underlying name
-        # so we can stress the index and translate that to a pd in the underlying name
-        b=utils.calibrate_index_hazard_scale(
-            base_date,
-            index_factor,
-            [all_factors.get(utils.Factor('SurvivalProb',name)) for name in field['Names']],
-            all_factors.get(utils.Factor('InterestRate', field['Discount_Rate'])),
-            self.resetdates.max()
-        )
+        b = get_index_hazard_scale(field['CDS_Index'], field['Names'], field['Discount_Rate'],
+                                   base_date, self.resetdates.max(), all_factors)
 
         field_index = {
             'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
@@ -5963,8 +5985,7 @@ class FloatingEnergyDeal(Deal):
             # composition fields or branches on the deal.
             field["Commodity"] = utils.check_rate_name(self.field["Commodity"])
             reference_factor = get_reference_factor(field["Reference_Type"], all_factors)
-            commodity_factor = get_factor_component(
-                utils.Factor('CommodityPrice', field["Commodity"]), all_factors)
+            commodity_factor = get_commodity_component(field["Commodity"], all_factors)
             field_index['Commodity'] = get_commodity_rate_factor(
                 field['Commodity'], static_offsets, stochastic_offsets)
             field_index["ForwardPrice"], field_index["ForwardFX"], field_index["CashFX"] = get_forwardprice_factor(
