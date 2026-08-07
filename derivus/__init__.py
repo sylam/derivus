@@ -463,11 +463,13 @@ class Context:
         return patch
 
     def patch_market(self, patch):
-        """Apply what `market_patch` emits, in place, and fail loud on anything else.
+        """Apply a values patch in place, and fail loud on anything else.
 
-        A key naming no value-bound field of that factor raises - including a field the block does
-        not carry, since a key set that grows or shrinks is a different plan, not a different
-        value.
+        A patch is a DELTA: a field it names is replaced, a value field it omits keeps its current
+        content - so `{"FxRate.EUR": {"Spot": 1.24}}` is a complete, valid patch and streaming one
+        tick never needs the rest of the block. A key naming no value-bound field of that factor
+        raises - including a field the block does not carry, since a key set that grows or shrinks
+        is a different plan, not a different value.
         """
         factors = self.current_cfg.params['Price Factors']
         for name, values in patch.items():
@@ -479,7 +481,7 @@ class Context:
                 if field not in value_fields:
                     raise ValueError(
                         '{}: {} is structural, not a value'.format(name, field))
-            factors[name] = schema.apply_values(type_name, structural, values)
+            factors[name] = schema.apply_values(type_name, structural, {**value_fields, **values})
 
     def plan_hash(self):
         """The content hash of the PROGRAM: everything a run compiles, market values excluded.

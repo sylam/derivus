@@ -1839,58 +1839,6 @@ def index_cds_par_spread(
     return v_prot_total / v_fee
 
 
-def calibrate_index_hazard_scale(
-        base_date,
-        index,
-        curves,
-        discount,
-        maturity,
-        b_lo = 0.05,
-        b_hi = 5.0,
-        tol = 1e-10,
-        max_iter = 100
-    ):
-
-    def func(b: float) -> float:
-        s = index_cds_par_spread(
-            H0, tau, D, R, f, S_ti, b)
-        return s - target
-
-    index_factor = index.factor if hasattr(index, 'factor') else index
-    discount_factor = discount.factor if hasattr(discount, 'factor') else discount
-    pay_times = cds_dates(base_date, int((maturity-base_date).days/365+.5) * 12)
-    tau = np.array([index_factor.get_day_count_accrual(base_date, (x - base_date).days) for x in pay_times])
-
-    # calculate the piecewise hazard rate, forward rate and survival and discount curves
-    S_ti = np.union1d(index_factor.get_tenor().clip(max=max(tau)), tau)
-    D_vals = discount_factor.current_value(S_ti) * S_ti
-    f = (D_vals[1:] - D_vals[:-1]) / (S_ti[1:] - S_ti[:-1])
-    D = np.exp(-D_vals)
-    R = index_factor.recovery_rate()
-    S_vals_0 = index_factor.current_value(S_ti)
-
-    # the target is the index
-    target = calc_par_cds(R, D, f, S_ti, S_vals_0, tau)
-    # all the cumulative hazard rates at time 0
-    H0 = np.array([cv.current_value(S_ti) for cv in curves])
-
-    flo = func(b_lo)
-    fhi = func(b_hi)
-    if flo == 0.0:
-        return float(b_lo)
-    if fhi == 0.0:
-        return float(b_hi)
-    if flo * fhi > 0:
-        raise ValueError(
-            f"Root not bracketed for b in [{b_lo},{b_hi}]. "
-            f"f(lo)={flo:.6g}, f(hi)={fhi:.6g}. "
-            f"Try widening bracket or check index_spread_running."
-        )
-
-    return scipy.optimize.brentq(func, b_lo, b_hi)
-
-# dataframe manipulation
-
 def filter_data_frame(df, from_date, to_date, rate=None):
     index1 = (pd.Timestamp(from_date) - excel_offset).days
     index2 = (pd.Timestamp(to_date) - excel_offset).days

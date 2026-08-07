@@ -33,6 +33,8 @@ its defaults and the write-back key all come from one lookup.
 See `partition_factor`.
 """
 
+import logging
+
 import numpy as np
 
 from . import utils
@@ -312,6 +314,12 @@ def apply_values(type_name, structural, values):
     the factor NAME, which is what a message has to say.
     """
     declared = FACTOR_FIELDS[type_name]
+    for key, f in declared.items():
+        # a value-bound field absent from `values` stays a coordinate shell - reconstructible
+        # only on purpose, so say so where the caller can hear it
+        if f.bind == 'value' and key in structural and key not in values:
+            logging.warning('%s.%s reconstructed without its values - left as a coordinate shell',
+                            type_name, key)
     block = dict(structural)
     for key, content in values.items():
         if declared[key].type in SHAPED:

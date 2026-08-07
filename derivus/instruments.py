@@ -437,17 +437,6 @@ def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, 
                            for param in get_factor_component(mp, all_factors).current_value()], spot_model])]
 
 
-def get_index_hazard_scale(index, names, discount_rate, base_date, last_reset, all_factors):
-    """A beta between a CDS index and each underlying name, so stressing the index translates to
-    a per-name PD. Owns the object lookups; the calibration is `utils.calibrate_index_hazard_scale`."""
-    return utils.calibrate_index_hazard_scale(
-        base_date,
-        all_factors.get(utils.Factor('SurvivalProb', index)),
-        [all_factors.get(utils.Factor('SurvivalProb', name)) for name in names],
-        all_factors.get(utils.Factor('InterestRate', discount_rate)),
-        last_reset)
-
-
 def get_interest_vol_factor(fieldname, tenor, static_offsets, stochastic_offsets, all_tenors):
     """Read the index of the interest vol price factor"""
     pricefactor = 'InterestRateVol' if pd.Timestamp('1900-01-01') + tenor <= pd.Timestamp('1900-01-01') + pd.DateOffset(
@@ -5658,9 +5647,6 @@ class CreditNthToDefault(Deal):
         pay_rate = self.field['Pay_Rate'] / 100.0 if isinstance(
             self.field['Pay_Rate'], float) else self.field['Pay_Rate'].amount
 
-        b = get_index_hazard_scale(field['CDS_Index'], field['Names'], field['Discount_Rate'],
-                                   base_date, self.resetdates.max(), all_factors)
-
         field_index = {
             'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
             'SettleCurrency': self.field['Currency'],
@@ -5671,9 +5657,7 @@ class CreditNthToDefault(Deal):
             'Names': [get_survival_factor(
                 name, static_offsets, stochastic_offsets, all_tenors) for name in field['Names']],
             'Coupon': pay_rate,
-            'Correlation': self.field.get('Correlation', 0.0),
-            'beta': b,
-            'Recovery_Rate': get_survival_component(field['CDS_Index'], all_factors)
+            'Correlation': self.field.get('Correlation', 0.0)
         }
 
         field_index['Cashflows'] = utils.generate_fixed_cashflows(

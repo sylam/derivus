@@ -349,3 +349,44 @@ def test_a_patched_recovery_rate_reprices():
     assert by_patch == pytest.approx(CDS_MTM_BUMPED, rel=1e-12)
     assert by_patch_zero - base == pytest.approx(
         (by_patch - base) * RECOVERY / (RECOVERY - RECOVERY_BUMPED), rel=1e-9)
+
+
+def test_a_patch_is_a_delta():
+    """A field the patch names is replaced; a value field it omits keeps its current content.
+
+    Without the merge, `apply_values` put back only the named fields and a factor's OTHER value
+    fields stayed coordinate shells - `SurvivalProb` is the two-value-field case, so patching only
+    its Recovery_Rate used to leave `Curve` as a one-column shell that failed on the next read."""
+    cx = _context()
+    cx.current_cfg.params['Price Factors']['SurvivalProb.CPTY'] = {
+        'Recovery_Rate': 0.4, 'Currency': 'USD',
+        'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.4]])}
+    original = cx.current_cfg.params['Price Factors']['SurvivalProb.CPTY']['Curve'].array.copy()
+    cx.patch_market({'SurvivalProb.CPTY': {'Recovery_Rate': 0.55}})
+    block = cx.current_cfg.params['Price Factors']['SurvivalProb.CPTY']
+    assert block['Recovery_Rate'] == 0.55
+    assert np.array_equal(block['Curve'].array, original), 'the unnamed value field was dropped'
+
+
+def test_an_empty_per_factor_patch_is_a_no_op():
+    """The degenerate delta: naming a factor with no fields changes nothing."""
+    cx = _context()
+    before = cx.current_cfg.params['Price Factors']['InterestRate.USD']['Curve'].array.copy()
+    cx.patch_market({'InterestRate.USD': {}})
+    after = cx.current_cfg.params['Price Factors']['InterestRate.USD']['Curve'].array
+    assert np.array_equal(after, before)
+
+
+def test_apply_values_warns_when_a_value_field_is_missing(caplog):
+    """The low-level guard: `apply_values` called directly with an incomplete values dict leaves a
+    coordinate shell, which is reconstructible only on purpose - so it says so, naming the field.
+    `patch_market` merges before calling, so the public verb never triggers this."""
+    import logging as _logging
+    block = {'Recovery_Rate': 0.4, 'Curve': utils.Curve([], [[0.0, 0.01], [10.0, 0.02]]),
+             'Currency': 'USD'}
+    structural, values = schema.partition_factor('SurvivalProb', block)
+    del values['Curve']
+    with caplog.at_level(_logging.WARNING):
+        schema.apply_values('SurvivalProb', structural, values)
+    assert any('SurvivalProb.Curve' in r.getMessage() and 'coordinate shell' in r.getMessage()
+               for r in caplog.records), caplog.records
