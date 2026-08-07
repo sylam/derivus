@@ -621,7 +621,6 @@ class FxRate(Factor0D):
         F('Domestic_Currency', 'Text', default=''),
         F('Interest_Rate', 'Text', default='', obj='Tuple',
           description='Associated interest rate curve name'),
-        F('Priority', 'Float', default=3),
         F('Spot', 'Float', default=0, bind='value', description='Spot rate in base currency')
     ]
 
@@ -861,7 +860,6 @@ class DividendRate(Factor1D):
     Represents the Dividend Yield risk factor
     """
     fields = [
-        F('Floor', 'Text', default='<undefined>'),
         F('Currency', 'Text', default=''),
         F('Curve', 'Curve', bind='value', description='Continuous dividend yield')
     ]
@@ -966,7 +964,6 @@ class InterestRate(Factor1D):
     fields = [
         F('Sub_Type', 'Text', default='',
           description='Set to BasisSpread if this curve is a spread over its parent'),
-        F('Floor', 'Text', default='<undefined>'),
         F('Day_Count', 'Text', default='ACT_365', description='Daycount convention for this curve',
           values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
         F('Accrual_Calendar', 'Text', default=''),
