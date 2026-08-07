@@ -14,8 +14,8 @@
 """Per-class field declarations, and the `fields.mapping` view emitted from them.
 
 `fields.py` keys one descriptor per field NAME by convention, so two deals needing different valid
-values for the same field must invent a key and carry the real name elsewhere - the 21 entries in
-`ALIASED_KEYS`. A class that owns its own fields has no such collision.
+values for the same field had to invent a key and carry the real name elsewhere - 21 entries in
+`ALIASED_KEYS` at its worst. A class that owns its own fields has no such collision.
 
 A deal's schema is composition of named field GROUPS, not the class hierarchy: `FXAdmin` is shared
 by eight deals with no common base, and `Admin` by all 47. Groups are therefore ordinary
@@ -28,7 +28,14 @@ stores it unfiltered; `construct_factor` hands the raw block to the factor class
 authoring-time metadata: the UI, the docs generator and the Excel add-in. A front end needs no other
 source - a type's entry IS its descriptors, each keyed by the JSON key an author writes, so a panel,
 its defaults and the write-back key all come from one lookup.
+
+`bind=` adds the second axis a front end needs: which fields a job may change without recompiling.
+See `partition_factor`.
 """
+
+import numpy as np
+
+from . import utils
 
 
 #: `default=REQUIRED` - the author must supply it. Distinct from a default of None, which is a
@@ -42,6 +49,16 @@ BLANK = {
     'Surface': '[[0.0,1.0], [1.0,0.0]]',
     'Space': '{"0.0":[[0.0,0.0],[0.0,0.0]]}',
 }
+
+#: The types whose content is a coordinate grid plus ONE value column - `[[tenor, rate], ...]`,
+#: `[[moneyness, expiry, vol], ...]`, `[[moneyness, expiry, tenor, vol], ...]`. The coordinates
+#: size `all_tenors` when the factor is constructed; only the last column is content. So `bind` on
+#: these splits the field rather than choosing it, which is why `BLANK` and this share a key set.
+SHAPED = tuple(BLANK)
+
+#: `{factor_type: {json_key: F}}`, filled by `emit_factor`. The partition and the emitted store
+#: read the same declarations, so neither can drift from the other.
+FACTOR_FIELDS = {}
 
 #: How `fields.mapping` renders each type for Handsontable. Rendering only: derived on the way out
 #: and never declared, which is the point - a front end that is not Handsontable ignores all of it.
@@ -88,6 +105,11 @@ class F(object):
 
     `description` is free text: the JSON key is the key the descriptor is FILED under, so a front
     end reads it from the store rather than reconstructing it from a label.
+
+    `bind` is STRUCTURAL by default. `bind='value'` says the engine reads this field's CONTENT and
+    nothing about discovery, tenor grids, process wiring, correlation or the code paths depends on
+    it - see `partition_factor`. Declare it only from the consumption site, and leave it alone when
+    unsure: a wrong structural costs a recompile, a wrong value corrupts a plan silently.
     """
     WIDGET = {'Text': 'Text', 'Float': 'Float', 'Integer': 'Integer', 'Date': 'DatePicker',
               'Percent': 'Float', 'Basis': 'Float', 'Period': 'Text',
@@ -95,10 +117,10 @@ class F(object):
               'Curve': 'Flot', 'Surface': 'Three', 'Space': 'Three'}
 
     __slots__ = ('name', 'type', 'default', 'description', 'values', 'row', 'tag',
-                 'sub_fields', 'json_name', 'obj', 'bounds')
+                 'sub_fields', 'json_name', 'obj', 'bounds', 'bind')
 
     def __init__(self, name, type, default=None, description=None, values=None, row=None,
-                 tag=None, sub_fields=None, json_name=None, obj=None, bounds=None):
+                 tag=None, sub_fields=None, json_name=None, obj=None, bounds=None, bind=None):
         self.name = name
         self.type = type
         self.default = BLANK.get(type) if default is None else default
@@ -113,6 +135,7 @@ class F(object):
         self.obj = obj
         # (min, max) on a Float the author cannot sensibly exceed - a recovery rate is a fraction
         self.bounds = bounds
+        self.bind = bind
 
     @property
     def key(self):
@@ -142,6 +165,8 @@ class F(object):
             d['values'] = self.values
         if self.bounds is not None:
             d['min'], d['max'] = self.bounds
+        if self.bind is not None:
+            d['bind'] = self.bind
         if self.obj is not None:
             d['obj'] = self.obj
         if self.row is not None:
@@ -237,7 +262,60 @@ def emit_factor(module):
     Own-attr only, matching `emit_instrument`. `ForwardRate` subclasses `ForwardPrice` and carries
     no `Fixings`, so it declares its own; a subclass that inherits the declaration is an alias for
     the same block rather than a second factor type.
+
+    It also records the declarations themselves in `FACTOR_FIELDS`, which is what `partition_factor`
+    reads - one scan, one source.
     """
-    return {factor_type: {f.key: f.descriptor() for f in cls.__dict__['fields']}
-            for factor_type, cls in vars(module).items()
-            if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)}
+    declared = {factor_type: {f.key: f for f in cls.__dict__['fields']}
+                for factor_type, cls in vars(module).items()
+                if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)}
+    FACTOR_FIELDS.update(declared)
+    return {factor_type: {key: f.descriptor() for key, f in fields.items()}
+            for factor_type, fields in declared.items()}
+
+
+def partition_factor(type_name, block):
+    """Split one `Price Factors` block into `(structural, values)`.
+
+    STRUCTURAL is the PLAN's half: everything discovery, the tenor grids, process wiring,
+    correlation and the code paths read. That is every field unless its declaration says
+    `bind='value'`, and an undeclared field is structural for the same reason a blank one is - the
+    safe answer costs a recompile.
+
+    A shape-valued field splits INSIDE itself rather than falling to one side. A curve's knots size
+    `all_tenors` when the factor is constructed while its rate column is content, so the structural
+    half keeps the coordinate columns and the value half is the last one. A scalar shadows to
+    `None`, which still says the key is THERE: the key SET is structural even where the content is
+    not, so adding or dropping a field is a new plan.
+
+    `apply_values` is the exact inverse: `apply_values(t, *partition_factor(t, block)) == block`.
+    """
+    declared = FACTOR_FIELDS.get(type_name, {})
+    structural, values = dict(block), {}
+    for key, content in block.items():
+        field = declared.get(key)
+        if field is None or field.bind != 'value':
+            continue
+        if field.type in SHAPED:
+            structural[key] = utils.Curve(content.meta, content.array[:, :-1])
+            values[key] = content.array[:, -1].tolist()
+        else:
+            structural[key] = None
+            values[key] = content
+    return structural, values
+
+
+def apply_values(type_name, structural, values):
+    """Put a values patch back onto a structural projection, returning the whole block.
+
+    The caller owns the check that `values` names only value-bound fields - it is the one holding
+    the factor NAME, which is what a message has to say.
+    """
+    declared = FACTOR_FIELDS[type_name]
+    block = dict(structural)
+    for key, content in values.items():
+        if declared[key].type in SHAPED:
+            coords = structural[key]
+            content = utils.Curve(coords.meta, np.column_stack((coords.array, content)))
+        block[key] = content
+    return block

@@ -99,8 +99,29 @@ were already doing exactly that. The key is now stamped from the store as `name`
 are loaded. `CommodityPrice.Forward_Rate` is newly declarable: the class hard-reads it and
 `dependant_fields` builds a `ForwardRate` edge from it, and no authored block could carry it.
 
-Also remaining: `bind=` (value-versus-structural patching) is designed but unbuilt; the other seven
-stores are untouched.
+**`bind=` and the partition are built.** A declaration is STRUCTURAL unless it says `bind='value'`,
+and `schema.partition_factor(type, block)` splits a `Price Factors` block into the half a plan pins
+and the half a patch carries — 30 fields over 19 types, each declared from its consumption site. A
+shape-valued field splits INSIDE itself, because a curve's knots size `all_tenors` when the factor
+is constructed while its rate column is content; the structural half keeps the coordinate columns
+and only the last one travels. `cx.market_patch()` emits one and `cx.patch_market()` applies it,
+refusing anything structural by name. The next consumer is `plan_hash`: the structural projection is
+now the thing there is to hash, and what remains undecided is its DOMAIN (deals, the calculation
+block, engine version) and the PREPARE/EXECUTE sequencing, not the market-data half.
+
+Six candidates were declined with a citation rather than bound, all for the same reason — the
+content is consumed building a compiled structure rather than read at eval. `Correlation.Value` and
+`SurvivalProb.Recovery_Rate` are baked into `field_index` by `get_implied_correlation` /
+`get_recovery_rate` at `calc_dependencies`; `ReferencePrice.Fixing_Curve` and `PriceIndex.Index`
+become reset rows in `make_energy_cashflows` / `make_index_cashflows`. Two more are value-dependent
+CODE PATHS, which is the trap the partition is most exposed to:
+`GBMAssetPriceTSModelParameters.get_tenor_indices` branches on the truthiness of
+`Quanto_FX_Correlation`, so the leaf SET depends on a number; and `get_quanto_fx` returns `None`
+when the `Quanto_FX_Volatility` array is all zeros, which decides whether the implied tensor is
+published at all. `VolatilityGrid.Delta_Surface` is a third: `Factor2D.update` runs the Malz solver
+on it and rebuilds `Surface` on a grid refined against the VALUES.
+
+Also remaining: the other seven stores are untouched.
 
 The paired naming cleanup settles first, and is now done: the `MarketPrices` types the engine
 matches, one `VolatilityGrid` in place of the three asset-class vol twins, and the IR prefix chain

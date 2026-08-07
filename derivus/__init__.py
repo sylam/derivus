@@ -28,6 +28,7 @@ import torch.multiprocessing as mp
 
 from ._version import version_info, __version__
 from . import fields
+from . import schema
 from . import utils
 from .instruments import construct_instrument
 from .config import CustomJsonEncoder, Config
@@ -437,6 +438,40 @@ class Context:
 
     def validate(self):
         return self.current_cfg.validate()
+
+    def market_patch(self):
+        """The VALUES half of the market data: `{factor_name: {field: content}}`.
+
+        Everything a job may change without recompiling - spots, the rate column of every curve,
+        the vol column of every surface, and the calibrated model parameters. What sizes a tenor
+        grid, wires a process or picks a code path is absent, because that is the plan. A factor
+        whose block holds no value-bound field does not appear at all.
+        """
+        patch = {}
+        for name, block in self.current_cfg.params['Price Factors'].items():
+            values = schema.partition_factor(utils.check_rate_name(name)[0], block)[1]
+            if values:
+                patch[name] = values
+        return patch
+
+    def patch_market(self, patch):
+        """Apply what `market_patch` emits, in place, and fail loud on anything else.
+
+        A key naming no value-bound field of that factor raises - including a field the block does
+        not carry, since a key set that grows or shrinks is a different plan, not a different
+        value.
+        """
+        factors = self.current_cfg.params['Price Factors']
+        for name, values in patch.items():
+            if name not in factors:
+                raise KeyError('{} is not a price factor'.format(name))
+            type_name = utils.check_rate_name(name)[0]
+            structural, value_fields = schema.partition_factor(type_name, factors[name])
+            for field in values:
+                if field not in value_fields:
+                    raise ValueError(
+                        '{}: {} is structural, not a value'.format(name, field))
+            factors[name] = schema.apply_values(type_name, structural, values)
 
     def run_job(self, overrides=None, runparallel=False):
         # check what calc we should run
