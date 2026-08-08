@@ -117,6 +117,26 @@ ONE knot per used quote, at that benchmark's last cashflow date, in the block's 
 what the Jacobian is square in, so the quote-delta buckets a desk eventually reads are the
 benchmark maturities themselves.
 
+## Curve contracts the solve relies on {#curve-contracts}
+
+**No knot at tenor zero — by design, not by accident.** A curve NEVER carries a 0.0 knot: rates
+start at T+1 (or wherever the overnight rate settles), and a rate at tenor zero is redundant
+anyway — its discount factor is 1 by identity. `Factor1D.interpolate` divides by the tenor for the
+rate-times-time kinds, so a zero knot yields NaN, which is the contract asserting itself rather
+than a defect to guard against. The knot rule above complies by construction: every benchmark's
+last cashflow is strictly after t0.
+
+**The compounding leg is a compile-time SHAPE, not a pricer branch.** `pv_float_cashflow_list`
+routes an accrual period through geometric compounding when the reset count differs from the
+cashflow count (`all_resets.shape[1] != reset_cashflows.np.shape[0]`) — daily resets against
+quarterly cashflows, the reshape set up at `calculate_dependencies` by
+`compress_no_compounding(groupsize=-1)` under `Compounding_Method='OIS'`. The regular route's
+`Weight = 1/n` resets are the AVERAGING legs' arithmetic and must never reach the compounding
+path. This is why an OIS benchmark is authored as a floating list with `Compounding_Method='OIS'`
+(composed under a `StructuredDeal` for the par swap) and not as a `SwapInterestDeal`: the swap's
+generated legs never pass through the compression. The shape-difference check is acknowledged
+tech debt — it works, and it is subtle enough that it is written down here.
+
 ## The precision seam {#the-precision-seam}
 
 The bootstrap and its Jacobian are **float64 regardless of the simulation's precision**.

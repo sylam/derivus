@@ -477,6 +477,12 @@ the measurement - it just belongs in the function's docstring or the commit mess
 offenders: `pv_discrete_barrier_option`'s hit-mask and rebate blocks, `sim_spot_oss`'s terminal
 digital, `NettingCollateralSet.post_process`'s `net_from_gross`.
 
+**The compounding-leg shape check.** `pv_float_cashflow_list` selects the compounded-in-arrears
+path by comparing reset count to cashflow count — a shape encoding of intent, set up at
+`calculate_dependencies`. It works and is now documented
+([Quote Sensitivities](quote_sensitivities.md#curve-contracts)), but an explicit signal on the
+compiled cashflow object would say the same thing without the inference.
+
 ## Model punchlist
 
 `GARCHSpotModel` and the Heston-Nandi stack are built end to end; what remains is narrow:
