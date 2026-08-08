@@ -29,7 +29,21 @@ one carrying a boundary term. Related and also unbuilt: **calibration Jacobians*
 market *quote* flows through bootstrapping rather than stopping at the calibrated factor; and
 **Hessian-vector products** instead of materialising full Hessians.
 
-**`fields.py` retirement — the Instrument store is now a VIEW.** Every deal type carries a per-class
+**`fields.py` is retired.** This started as 1,931 lines and three drifting stores; it ends with
+`derivus/fields.py` a 22-line deprecation shim re-exporting `mapping` and `default` from
+`schema.py`, kept for one release because `fields.mapping` was the documented surface and the
+package is on PyPI. Every store but `System` and the create-deal menu is emitted from the per-class
+declarations, `schema.py` holds the vocabulary, the emitters and the assembly, and every in-repo
+consumer reads `schema.mapping`. The sections below are the seven migrations that got there, in
+order.
+
+The assembly sits at the BOTTOM of `schema.py`, after the vocabulary its declaring modules import
+from it — a one-way edge with an ordering question attached, since a declaring module initialised
+first would have `emit_*` read a half-initialised module and return an EMPTY store rather than
+raising. A submodule import always initialises the package first and `derivus/__init__` imports
+`schema` before any declaring module, and a subprocess gate holds that fixed.
+
+**The Instrument store was the first VIEW.** Every deal type carries a per-class
 `fields` list (`schema.py`), and `mapping['Instrument']`'s `types` / `sections` / `fields` are built
 by `schema.emit_instrument(instruments)` at import. The hand-written dict is gone — 1,283 of
 `fields.py`'s 1,932 lines. The engine never reads any of it (`construct_instrument` takes the raw
@@ -306,7 +320,14 @@ same terms as the four unread calculation fields — the JSON reference document
 `Discount_Rate_Type` is newly declarable: `HestonNandiModelParameters.resolve` reads a
 `<field>_Type` for every one of its four references and the store declared three.
 
-Also remaining: `System` is the last hand-written store.
+`System` is the last hand-written store, and stays one: its single "type" is a UI panel name rather
+than anything the JSON dispatches on, and the class consuming `System Parameters` is `Config`
+itself — the whole configuration object — so a `fields` list on it would make "a class that
+declares fields IS a type" mean something else in that module. It has never been audited
+declared-versus-read the way the other stores now have been: `Volatility_Delta`, `Master_Curves`
+and `Swaption_Premiums` are read by the bootstrappers and declared by nothing, and
+`Grouping_File`, `Proxying_Rules_File` and `Script_Base_Scenario_Multiplier` ship in the market
+data and reach no read. That audit is the one piece of this work still owed.
 
 The paired naming cleanup settles first, and is now done: the `MarketPrices` types the engine
 matches, one `VolatilityGrid` in place of the three asset-class vol twins, and the IR prefix chain
@@ -346,7 +367,7 @@ accepts a recompile per iterate or `bind=` eventually extends to deal fields. A 
 patches cleanly.
 
 **Service layer — slice 1 built.** `derivus/service.py` is the HTTP binding of the Context verbs and
-owns no logic of its own: `GET /schema` publishes `fields.mapping` with `engine_version`, `POST
+owns no logic of its own: `GET /schema` publishes `schema.mapping` with `engine_version`, `POST
 /validate` returns `cx.validate()` verbatim, `POST /execute` takes a job document plus an optional
 `Patch` delta and always answers `{result_id, status}`, and `GET /results/{id}` returns the run's
 `Results` tables stamped with the replay tuple. The ruling it implements is one vocabulary, two
@@ -406,7 +427,7 @@ Two things stayed in process, each for a stated reason. `RF_SOLVE_*` iterates a 
 changing DEAL field, which is the STRUCTURING calc this roadmap has yet to build; a deal field is
 structural today, so every iterate is a fresh compile and a round trip per iterate would buy
 nothing. And `RF_*_PORTFOLIO` builds its job from the sheets through `portfolio_service`, which
-still reads `fields.mapping` directly — migrating that to `GET /schema`, which publishes exactly
+still reads `schema.mapping` directly — migrating that to `GET /schema`, which publishes exactly
 those declarations, is the remaining end-state for the folder: after it, nothing there imports the
 engine and the add-in installs without it.
 

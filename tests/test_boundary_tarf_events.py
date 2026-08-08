@@ -174,7 +174,7 @@ def test_the_knock_in_barrier_is_reachable_from_the_schema():
     Asserting the FIELD LIST and not just that the pricer sees a hand-written dict: the dict path
     worked before too (`instruments.py` keeps params unfiltered), so a test that only priced one
     would have passed against the defect."""
-    from derivus.fields import mapping
+    from derivus.schema import mapping
     instrument = mapping['Instrument']
     assert 'Barrier' in instrument['sections']['FXTARFOptionDeal.Fields'], (
         'Barrier is not in FXTARFOptionDeal.Fields, so no schema-authored TARF can carry a '

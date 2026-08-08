@@ -1,4 +1,4 @@
-"""`fields.mapping['Instrument']`, `['Factor']`, `['Process']` and `['Calculation']` are generated
+"""`schema.mapping['Instrument']`, `['Factor']`, `['Process']` and `['Calculation']` are generated
 from the per-class `fields` declarations, and a SECTION (deals) or a TYPE (everything else) owns
 its descriptors. So there is no round-trip to gate - the old test diffed the emitted dict against a
 hand-written one, and both sides are now the same object.
@@ -20,6 +20,7 @@ dispatch.
 import ast
 import inspect
 import os
+import subprocess
 import sys
 import textwrap
 
@@ -29,17 +30,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pytest
 
 import derivus
-from derivus import (bootstrappers, calculation, fields, instruments, riskfactors, schema,
+from derivus import (bootstrappers, calculation, instruments, riskfactors, schema,
                      stochasticprocess)
 
-INSTRUMENT = fields.mapping['Instrument']
-FACTOR = fields.mapping['Factor']
-PROCESS = fields.mapping['Process']
-PROCESS_FACTOR_MAP = fields.mapping['Process_factor_map']
-CALCULATION = fields.mapping['Calculation']
-CALIBRATION = fields.mapping['Calibration']
-INTERPOLATION_MAP = fields.mapping['Interpolation_factor_map']
-MARKET_PRICES = fields.mapping['MarketPrices']
+INSTRUMENT = schema.mapping['Instrument']
+FACTOR = schema.mapping['Factor']
+PROCESS = schema.mapping['Process']
+PROCESS_FACTOR_MAP = schema.mapping['Process_factor_map']
+CALCULATION = schema.mapping['Calculation']
+CALIBRATION = schema.mapping['Calibration']
+INTERPOLATION_MAP = schema.mapping['Interpolation_factor_map']
+MARKET_PRICES = schema.mapping['MarketPrices']
 
 # riskfactors classes that legitimately declare no schema row of their own.
 UNDECLARED_FACTORS = {
@@ -111,6 +112,38 @@ def test_the_store_is_generated():
     assert declared_classes(), 'no class declares `fields` - these gates are vacuous'
     assert INSTRUMENT['types'] == schema.emit_instrument(instruments)[0], (
         'the Instrument store is not the emitted view - a hand-written copy has come back')
+
+
+def test_the_fields_shim_serves_the_same_objects():
+    """`derivus.fields` is deprecated for one release and holds nothing of its own. `fields.mapping`
+    was the documented surface and the package is on PyPI, so an external caller that bound it keeps
+    working - on the same object, not a copy, which is the whole point of the retirement."""
+    assert derivus.fields.mapping is schema.mapping
+    assert derivus.fields.default is schema.default
+    src = inspect.getsource(derivus.fields)
+    assert 'mapping = {' not in src, 'the shim has grown a store of its own'
+
+
+def test_the_store_survives_a_declaring_module_being_imported_first():
+    """`schema.py` assembles `mapping` at the BOTTOM, after the vocabulary its declaring modules
+    import from it. That is a one-way edge with an ordering question attached: a declaring module
+    initialised first would have `emit_*` read a half-initialised module, and an emitter that found
+    nothing would return an EMPTY store rather than raising - which every gate in this file would
+    pass right through, since they compare the store to the emitter and both would be empty.
+
+    In this package the wrong order raises instead, because `stochasticprocess` imports NAMES from
+    `instruments` and a partially initialised module has none - but that is a property of the
+    import graph rather than of the design, so it is not what this leans on. A submodule import
+    always initialises the package first, `derivus/__init__` imports schema before any declaring
+    module, and this holds that fixed. In a subprocess: by the time this module is collected the
+    answer is already cached in `sys.modules`."""
+    out = subprocess.run(
+        [sys.executable, '-c', 'import derivus.instruments, derivus;'
+         'print(len(derivus.schema.mapping["Instrument"]["types"]))'],
+        capture_output=True, text=True, cwd=os.path.dirname(os.path.dirname(__file__)))
+    assert out.returncode == 0, out.stderr
+    assert int(out.stdout) == len(INSTRUMENT['types']), (
+        'importing a declaring module first yields a different store')
 
 
 @pytest.mark.parametrize('cls_name', sorted(declared_classes()))

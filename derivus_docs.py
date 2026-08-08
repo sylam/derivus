@@ -20,7 +20,7 @@ import json # For formatting default values
 import shutil
 from collections import defaultdict
 from pathlib import Path
-from derivus import fields
+from derivus import schema
 
 
 # Configure basic logging
@@ -61,7 +61,7 @@ class ConstructMarkdown(object):
     """
     Constructs the markdown (.md) files and mkdocs config by combining
     static content from docs_src/ and dynamic content extracted from the codebase.
-    Leverages fields.py for detailed JSON configuration documentation.
+    Leverages schema.mapping for detailed JSON configuration documentation.
     """
     # Insertion order IS the mkdocs nav order.
     SECTIONS = {
@@ -81,7 +81,7 @@ class ConstructMarkdown(object):
         # Developer is static-only, like Calibration: the attr is one no class defines.
         'Developer': ('Developer', '.stochasticprocess', 'documentation_developer'),
         # JSON_Config names no module or attribute: `generate_json_docs` builds it from
-        # `fields.mapping`, and `build` skips it here. Only the display name is read.
+        # `schema.mapping`, and `build` skips it here. Only the display name is read.
         'JSON_Config': ('JSON Configuration', None, None),
     }
 
@@ -95,8 +95,8 @@ class ConstructMarkdown(object):
         if not self.docs_src_dir.is_dir():
             logging.error(f"'docs_src' directory not found at {self.docs_src_dir}")
             raise FileNotFoundError(f"'docs_src' directory not found at {self.docs_src_dir}")
-        if not fields:
-            logging.error("fields.py mapping is not available. JSON documentation generation will be limited.")
+        if not schema.mapping:
+            logging.error("schema.mapping is not available. JSON documentation generation will be limited.")
 
 
     def _read_static_content(self, filepath):
@@ -236,8 +236,8 @@ class ConstructMarkdown(object):
 
 
     def generate_json_docs(self):
-        """Generates detailed documentation for JSON configuration using fields.py."""
-        if not fields: return {} # Skip if fields.py wasn't imported
+        """Generates detailed documentation for JSON configuration using schema.mapping."""
+        if not schema.mapping: return {} # Skip if the store did not assemble
 
         logging.info("Processing section: JSON Configuration")
         display_name = 'JSON Configuration'
@@ -267,7 +267,7 @@ class ConstructMarkdown(object):
                  except Exception as e:
                     logging.error(f"  Error writing JSON static file {build_filepath}: {e}")
 
-        # --- Generate dynamic pages based on fields.py ---
+        # --- Generate dynamic pages based on the declarations ---
         sections_to_process = {
             'Price Factors': ('Factor', 'price_factors'),
             'Price Models': ('Process', 'price_models'),
@@ -277,11 +277,11 @@ class ConstructMarkdown(object):
 
         for section_title, (mapping_key, build_subdir) in sections_to_process.items():
             logging.info(f"    Generating JSON details for: {section_title}")
-            if mapping_key not in fields.mapping:
-                logging.warning(f"      Mapping key '{mapping_key}' not found in fields.py")
+            if mapping_key not in schema.mapping:
+                logging.warning(f"      Mapping key '{mapping_key}' not found in schema.mapping")
                 continue
 
-            mapping_data = fields.mapping[mapping_key]
+            mapping_data = schema.mapping[mapping_key]
             details_build_dir = section_build_dir / build_subdir
             details_build_dir.mkdir(parents=True, exist_ok=True)
             section_nav = {}
@@ -487,7 +487,7 @@ class ConstructMarkdown(object):
                 nav_data = self.fetch_and_write_section(section_key, display_name, module, attr)
                 generated_nav.update(nav_data)
 
-        # --- Generate Detailed JSON Docs using fields.py ---
+        # --- Generate Detailed JSON Docs using the declarations ---
         json_nav_data = self.generate_json_docs()
         generated_nav.update(json_nav_data)
 

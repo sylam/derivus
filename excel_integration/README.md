@@ -87,7 +87,7 @@ The solve spec is unchanged:
 
 `RF_LOAD_PORTFOLIO`, `RF_SAVE_PORTFOLIO`, `RF_PRICE_PORTFOLIO` and `RF_SOLVE_PORTFOLIO` build a job
 from the Portfolio / RiskFactors / Calculations sheets, and they are still in process. They go
-through `portfolio_service.py`, which reads `derivus.fields.mapping` directly for the deal-type
+through `portfolio_service.py`, which reads `derivus.schema.mapping` directly for the deal-type
 menus and field defaults. Migrating that to `GET /schema` — which publishes exactly those
 declarations — is the remaining end-state for this folder: after it, nothing here imports the
 engine and the add-in installs without it.

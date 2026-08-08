@@ -189,12 +189,12 @@ def test_the_result_carries_the_replay_tuple():
 
 
 def test_the_schema_endpoint_is_the_declarations_plus_the_version():
-    """What makes a front end thin: it renders panels, tables and enums from `fields.mapping`
+    """What makes a front end thin: it renders panels, tables and enums from `schema.mapping`
     rather than restating them, so the endpoint is that store and the version that emitted it."""
     published = CLIENT.get('/schema').json()
 
     assert published.pop('engine_version') == derivus.__version__
-    assert published == json.loads(json.dumps(derivus.fields.mapping, cls=CustomJsonEncoder))
+    assert published == json.loads(json.dumps(derivus.schema.mapping, cls=CustomJsonEncoder))
     # not vacuous: this is the declaration a client reads to know which fields it may patch
     assert published['Factor']['types']['FxRate']['Spot']['bind'] == 'value'
 

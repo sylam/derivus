@@ -4,7 +4,7 @@ House rules for the derivus codebase. These are enforced by convention, not by l
 
 ## JSON is the contract {#json-is-the-contract}
 
-The job JSON is the whole program. End-user scripts do `import derivus as rf`, `cx.load_json(...)`, `cx.run_job(...)` — **no internal imports, no monkey-patching**. Every framework feature ships behind a JSON switch, defaulting to bit-identical-when-off. The JSON format is documented in [JSON Configuration](../json/index.md) and generated from `fields.mapping`.
+The job JSON is the whole program. End-user scripts do `import derivus as rf`, `cx.load_json(...)`, `cx.run_job(...)` — **no internal imports, no monkey-patching**. Every framework feature ships behind a JSON switch, defaulting to bit-identical-when-off. The JSON format is documented in [JSON Configuration](../json/index.md) and generated from `schema.mapping`.
 
 Consequences:
 
@@ -26,11 +26,11 @@ Extension points are data. Factor discovery is three dicts (`dependant_fields`, 
 Developer-facing model/deal/process docs are **class attributes**, harvested at build time by `derivus_docs.py`:
 
 - `documentation` (a `(section_name, [md_lines])` tuple) on classes in `stochasticprocess.py` / `instruments.py` / `bootstrappers.py` / `calculation.py` auto-publishes the Theory / Valuation / Bootstrapping / API pages. It is read **own-attr-only** (`cls.__dict__`, not MRO) so an alias subclass does not re-emit the parent's page.
-- `fields.mapping` alone drives the JSON reference tree (`generate_json_docs`), for the `Factor`, `Process` and `Instrument` stores only. All three reach it from the classes, via `schema.emit_instrument` / `emit_factor` / `emit_process` — an instrument type composes the sections that hold its descriptors, a factor or process type IS them.
+- `schema.mapping` alone drives the JSON reference tree (`generate_json_docs`), for the `Factor`, `Process` and `Instrument` stores only. All three reach it from the classes, via `schema.emit_instrument` / `emit_factor` / `emit_process` — an instrument type composes the sections that hold its descriptors, a factor or process type IS them.
 - A field's `description` is its **prose**, published per field on the generated page. It used to be a key as well - the Workbench rebuilt the JSON key as `description.replace(' ', '_')` at six sites - so prose in it pointed a widget at a key nobody writes. The key is now the key the descriptor is FILED under, stamped as `name` when the store is loaded, and an alias is the one thing that has to be declared.
 - `field_desc` on the `riskfactors.py` classes is **gone**: it was harvested into `_riskfactor_field_desc`, which nothing read, so twenty-four classes carried prose that reached no page. Its content is now each field's `description`.
 
-So for a deal, a price factor or a stochastic process, model math and JSON field docs both live **on the class**; `fields.py` still holds the stores that have no class to own them. This developer section links to those generated pages; it does not restate them. The doc build (`ConstructMarkdown.build`) is described in the section README.
+So for a deal, a price factor, a stochastic process, a calculation, a calibration or a price family, model math and JSON field docs both live **on the class**. `schema.py` holds the vocabulary (`F`, `Row`, `Group`), the emitters and the assembly, and `fields.py` is a deprecated shim re-exporting `mapping` for one release — it was the documented surface and the package is on PyPI. The only hand-written store left is `System`, whose consumer is `Config` itself, and the create-deal menu. This developer section links to those generated pages; it does not restate them. The doc build (`ConstructMarkdown.build`) is described in the section README.
 
 ## Comment and code style {#code-style}
 

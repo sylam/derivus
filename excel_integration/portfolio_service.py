@@ -300,7 +300,7 @@ def get_deal_defaults(instrument_type: str) -> str:
     Return a Fields_JSON string with schema-default values for given instrument type.
     Only scalar/simple fields are included (complex widgets are skipped).
     """
-    instr_mapping = rf.fields.mapping["Instrument"]
+    instr_mapping = rf.schema.mapping["Instrument"]
     section_names: list[str] = instr_mapping["types"].get(instrument_type, [])
 
     # a section carries its own descriptors, keyed by the JSON name the engine reads - so the
@@ -318,14 +318,14 @@ def instrument_types_grouped() -> dict[str, list[str]]:
     """Return all instrument types keyed by their group name."""
     return {
         group_name: sorted(type_list)
-        for group_name, type_list in rf.fields.mapping["Instrument"]["groups"].items()
+        for group_name, type_list in rf.schema.mapping["Instrument"]["groups"].items()
     }
 
 
 def all_instrument_types() -> list[str]:
     """Return a sorted flat list of every known instrument type."""
     types: set[str] = set()
-    for type_list in rf.fields.mapping["Instrument"]["groups"].values():
+    for type_list in rf.schema.mapping["Instrument"]["groups"].values():
         types.update(type_list)
     return sorted(types)
 

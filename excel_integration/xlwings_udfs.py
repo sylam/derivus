@@ -10,7 +10,7 @@ field, which is the STRUCTURING calculation the roadmap has yet to build; until 
 iterate is a fresh document and a fresh compile, so the loop stays in process where it costs one
 recompile instead of one recompile plus one round trip. `RF_*_PORTFOLIO` is in process for the
 other standing reason: it builds its job from the sheets through `portfolio_service`, which still
-reads `fields.mapping` directly rather than `GET /schema`.
+reads `schema.mapping` directly rather than `GET /schema`.
 """
 from __future__ import annotations
 

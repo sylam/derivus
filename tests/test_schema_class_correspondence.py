@@ -1,7 +1,7 @@
-"""`fields.mapping` is a third store of field knowledge, keyed by name by CONVENTION, and nothing
+"""`schema.mapping` is a third store of field knowledge, keyed by name by CONVENTION, and nothing
 checks that convention against the classes it describes.
 
-The engine never reads `fields.py` - `construct_instrument` takes the raw JSON - so every drift here
+The engine never reads it - `construct_instrument` takes the raw JSON - so every drift here
 is invisible to the valuation suite and shows up only as an authoring failure: a deal type the UI
 offers but `globals()` cannot dispatch (logged, then dropped as `{}`), a field a pricer reads but no
 schema-authored deal can emit, a widget that reads a JSON key nobody writes.
@@ -19,10 +19,9 @@ import re
 
 import pytest
 
-from derivus import (bootstrappers, calculation, fields, instruments, riskfactors, stochasticprocess,
-                      utils)
+from derivus import bootstrappers, instruments, riskfactors, schema, utils
 
-MAPPING = fields.mapping
+MAPPING = schema.mapping
 INSTRUMENT = MAPPING['Instrument']
 
 # Deal subclasses that legitimately have no schema row of their own.

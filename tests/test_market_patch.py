@@ -219,7 +219,7 @@ def test_every_value_field_has_a_shadow_rule():
 def test_the_descriptor_publishes_the_binding():
     """A front end has to know which fields it may offer for a patch, and the store is all it
     reads. Structural is the default, so only a value-bound field carries the key."""
-    types = derivus.fields.mapping['Factor']['types']
+    types = derivus.schema.mapping['Factor']['types']
     assert types['FxRate']['Spot']['bind'] == 'value'
     assert 'bind' not in types['FxRate']['Interest_Rate']
 

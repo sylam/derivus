@@ -270,7 +270,7 @@ DV_Service --port 8000
 
 | | | |
 |---|---|---|
-| `GET` | `/schema` | `fields.mapping` plus `engine_version` — what a front end renders panels, tables and enums from |
+| `GET` | `/schema` | `schema.mapping` plus `engine_version` — what a front end renders panels, tables and enums from |
 | `GET` | `/schema/job` | the job ENVELOPE those declarations sit inside, as a skeleton that loads |
 | `POST` | `/validate` | `cx.validate()` over the posted job, verbatim |
 | `POST` | `/describe` | `cx.describe()` plus what the queue would make of the job |

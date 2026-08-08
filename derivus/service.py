@@ -63,7 +63,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import Context, content_hash
-from . import fields
+from .schema import mapping
 from ._version import __version__
 from .config import CustomJsonEncoder
 
@@ -288,11 +288,11 @@ def context_for(body):
 def schema():
     """Every declaration in the engine, and the version that emitted them.
 
-    This is what makes a front end thin: panels, tables and enums are rendered from `fields.mapping`
+    This is what makes a front end thin: panels, tables and enums are rendered from `schema.mapping`
     rather than restated, so a field gaining a `bind`, a valid value or a new deal type reaches the
     UI by being declared on the class.
     """
-    return dict(as_json(fields.mapping), engine_version=__version__)
+    return dict(as_json(mapping), engine_version=__version__)
 
 
 @app.get('/schema/job', summary='The job envelope, as a skeleton that loads')

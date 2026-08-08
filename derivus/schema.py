@@ -11,11 +11,13 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""Per-class field declarations, and the `fields.mapping` view emitted from them.
+"""The field-declaration vocabulary, the emitters that read it off the classes, and `mapping`.
 
-`fields.py` keys one descriptor per field NAME by convention, so two deals needing different valid
-values for the same field had to invent a key and carry the real name elsewhere - 21 entries in
-`ALIASED_KEYS` at its worst. A class that owns its own fields has no such collision.
+This is what `fields.py` was: 1,931 lines of hand-written stores keyed one descriptor per field
+NAME, so two deals needing different valid values for the same field had to invent a key and carry
+the real name elsewhere - 21 entries in `ALIASED_KEYS` at its worst. A class that owns its own
+fields has no such collision, and the alias list is empty. What is left hand-written is `System`,
+whose consumer is `Config` itself, and the create-deal menu.
 
 A deal's schema is composition of named field GROUPS, not the class hierarchy: `FXAdmin` is shared
 by eight deals with no common base, and `Admin` by all 47. Groups are therefore ordinary
@@ -31,6 +33,9 @@ its defaults and the write-back key all come from one lookup.
 
 `bind=` adds the second axis a front end needs: which fields a job may change without recompiling.
 See `partition_factor`.
+
+`mapping` is assembled at the BOTTOM of this file, because the declaring modules import `F` from
+here and the edge only runs one way.
 """
 
 import logging
@@ -431,3 +436,102 @@ def apply_values(type_name, structural, values):
             content = utils.Curve(coords.meta, np.column_stack((coords.array, content)))
         block[key] = content
     return block
+
+
+# The declaring modules import `F` from here, so the edge only runs one way and the assembly below
+# has to come after the vocabulary above it. Any `import derivus.<anything>` initialises the
+# package first, and `derivus/__init__` imports this module before any declaring one.
+from . import bootstrappers, calculation, instruments, riskfactors, stochasticprocess  # noqa: E402
+
+_types, _sections = emit_instrument(instruments)
+_factor_types = emit_factor(riskfactors)
+_process_types, _process_factor_map = emit_process(stochasticprocess, _factor_types)
+
+#: Object-list defaults, keyed by WIDGET. The shape-valued ones come from the declaration
+#: vocabulary so a blank curve has one definition.
+default = {
+    'Integer': 0,
+    'Float': 0.0,
+    'Percent': 0.0,
+    'Text': '',
+    'Flot': BLANK['Curve'],
+    'Surface': BLANK['Surface'],
+    'Space': BLANK['Space'],
+    'DateList': 'null',
+    'CreditSupportList': '[[0,1]]',
+    'DatePicker': ''
+}
+
+#: Every JSON store a front end renders from, and the last of it that is hand-written is `System`
+#: and the create-deal menu. Everything else is emitted from the declarations on the classes.
+mapping = {
+    # keyed by the PROCESS a `Calibrations` entry is filed under, while its `Method` names the
+    # calibration class the engine dispatches on
+    'Calibration': {'types': emit_calibration(stochasticprocess)},
+    # keyed by the `Object` string a job document writes
+    'Calculation': {'types': emit_calculation(calculation)},
+    # a factor TYPE holds its own descriptors, and so does a process type
+    'Factor': {'types': _factor_types},
+    'Process': {'types': _process_types},
+    # a price FAMILY holds its own, keyed by the `Market Prices` type string the engine selects
+    # work by
+    'MarketPrices': {'types': emit_market_prices(bootstrappers)},
+    # the UI's two menus: a valid-processes-per-factor one and a valid-interpolations-per-factor
+    # one, both the same declarations read the other way round
+    'Process_factor_map': _process_factor_map,
+    'Interpolation_factor_map': emit_interpolation(riskfactors),
+    # `System` stays hand-written. Its one "type" is a UI panel name rather than anything the JSON
+    # dispatches on, and the class that consumes `System Parameters` is `Config` itself - the whole
+    # configuration object, so giving it a `fields` list would make "a class that declares fields
+    # IS a type" mean something else in that module.
+    'System': {
+        'fields': {
+            'Base_Currency': {'widget': 'Text', 'description': 'Base Currency', 'value': ''},
+            'Base_Date': {'widget': 'DatePicker', 'description': 'Base Date',
+                          'value': default['DatePicker']},
+            'Exclude_Deals_With_Missing_Market_Data': {
+                'widget': 'Dropdown', 'value': 'Yes', 'values': ['Yes', 'No'],
+                'description': 'Exclude Deals With Missing Market Data'},
+            'Correlations_Healing_Method': {
+                'widget': 'Dropdown', 'value': 'Eigenvalue_Raising',
+                'values': ['Eigenvalue_Raising', 'Alternating_Projections'],
+                'description': 'Correlations Healing Method'}
+        },
+        'types': {
+            'Config':
+                ['Base_Currency', 'Base_Date', 'Exclude_Deals_With_Missing_Market_Data',
+                 'Correlations_Healing_Method']
+        }
+    },
+    'Instrument': {
+        # the create-deal menu, the one hand-kept part of the Instrument store. Whether a type can
+        # hold children is NOT here: it is `Deal.accepts_children`, a property of the deal.
+        'groups': {
+            'New Structure': ['NettingCollateralSet', 'StructuredDeal'],
+            'New Interest Rate Derivative':
+                ['FixedCashflowDeal', 'CFFixedListDeal', 'CFFixedInterestListDeal',
+                 'CFFloatingInterestListDeal', 'DepositDeal', 'CapDeal', 'FRADeal',
+                 'FloorDeal', 'SwapInterestDeal', 'SwaptionDeal',
+                 'YieldInflationCashflowListDeal', 'CashAccountDeal'],
+            'New FX Derivative':
+                ['FXNonDeliverableForward', 'FXForwardDeal', 'FXOptionDeal', 'FXBinaryOption',
+                 'FXDiscreteExplicitAsianOption', 'FXOneTouchOption',
+                 'FXBarrierOption', 'FXSwapDeal',
+                 'MtMCrossCurrencySwapDeal', 'FXTARFOptionDeal',
+                 'FXDiscreteExplicitDoubleAsianOption', 'FXPartialTimeBarrierOption'],
+            'New Energy Derivative':
+                ['FloatingEnergyDeal', 'FixedEnergyDeal', 'EnergySingleOption',
+                 'CommodityForwardDeal', 'CommodityFutureDeal'],
+            'New Equity Derivative':
+                ['EquityDeal', 'EquitySwapLeg', 'EquityForwardDeal',
+                 'EquityOptionDeal', 'EquityBinaryOption',
+                 'EquityOneTouchOption', 'QEDI_CustomAutoCallSwap',
+                 'QEDI_CustomAutoCallSwap_V2', 'EquitySwapletListDeal',
+                 'EquityBarrierOption', 'EquityBarrierBinaryOption',
+                 'EquityDiscreteExplicitAsianOption'],
+            'New Credit Derivative': ['DealDefaultSwap', 'CreditNthToDefault']
+        },
+        'sections': _sections,
+        'types': _types
+    }
+}

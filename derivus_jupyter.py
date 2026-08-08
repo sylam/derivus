@@ -228,7 +228,7 @@ class TreePanel(metaclass=ABCMeta):
                     data = []
                     for flow in obj:
                         data.append(
-                            [get_repr(flow.get(field_name), field_name, rf.fields.default.get(widget_type, default_val))
+                            [get_repr(flow.get(field_name), field_name, rf.schema.default.get(widget_type, default_val))
                              for field_name, widget_type in zip(field_meta['col_names'], field_meta['obj'])])
                     return_value = to_json(data)
                 elif field_name == 'Resets':
@@ -238,7 +238,7 @@ class TreePanel(metaclass=ABCMeta):
                                'Text', 'Period', 'Float', 'Text', 'Percent']
                     data = []
                     for flow in obj:
-                        data.append([get_repr(item, field, rf.fields.default.get(widget_type, default_val)) for
+                        data.append([get_repr(item, field, rf.schema.default.get(widget_type, default_val)) for
                                      field, item, widget_type in zip(headings, flow, widgets)])
                     return_value = to_json(data)
                 elif field_name in ['Description', 'Tags']:
@@ -248,7 +248,7 @@ class TreePanel(metaclass=ABCMeta):
                     widgets = ['DatePicker', 'DatePicker', 'Float']
                     data = []
                     for flow in obj:
-                        data.append([get_repr(item, field, rf.fields.default.get(widget_type, default_val)) for
+                        data.append([get_repr(item, field, rf.schema.default.get(widget_type, default_val)) for
                                      field, item, widget_type in zip(headings, flow, widgets)])
                     return_value = to_json(data)
                 elif field_name == 'Names':
@@ -260,7 +260,7 @@ class TreePanel(metaclass=ABCMeta):
                     widgets = ['DatePicker', 'Float', 'Float']
                     data = []
                     for flow in obj:
-                        data.append([get_repr(item, field, rf.fields.default.get(widget_type, default_val)) for
+                        data.append([get_repr(item, field, rf.schema.default.get(widget_type, default_val)) for
                                      field, item, widget_type in zip(headings, flow, widgets)])
                     return_value = to_json(data)
                 elif field_name in ['Price_Fixing', 'Autocall_Thresholds', 'Autocall_Coupons', 'Autocall_Floating', 'Barrier_Dates']:
@@ -268,7 +268,7 @@ class TreePanel(metaclass=ABCMeta):
                     widgets = ['DatePicker', 'Float']
                     data = []
                     for flow in obj:
-                        data.append([get_repr(item, field, rf.fields.default.get(widget_type, default_val)) for
+                        data.append([get_repr(item, field, rf.schema.default.get(widget_type, default_val)) for
                                      field, item, widget_type in zip(headings, flow, widgets)])
                     return_value = to_json(data)
                 else:
@@ -585,10 +585,10 @@ class PortfolioPage(TreePanel):
         self.data = {(): [{}, self.config.deals['Deals'], None, {}]}
 
         # a type's panel set is the merge of its sections, each of which owns its descriptors
-        sections = rf.fields.mapping['Instrument']['sections']
+        sections = rf.schema.mapping['Instrument']['sections']
         self.instrument_fields = {
             key: self.load_descriptors({k: v for group in groups for k, v in sections[group].items()})
-            for key, groups in rf.fields.mapping['Instrument']['types'].items()}
+            for key, groups in rf.schema.mapping['Instrument']['types'].items()}
         # fill it with data
         walkPortfolio(self.config.deals['Deals']['Children'], (), self.instrument_fields, deals_to_append, self.data)
 
@@ -605,7 +605,7 @@ class PortfolioPage(TreePanel):
         context_menu = {}
         # a deal that breaks down into simpler instruments is a jsTree folder and takes
         # children; a leaf is a file. The deal says which, not the menu it appears under.
-        for k, members in sorted(rf.fields.mapping['Instrument']['groups'].items()):
+        for k, members in sorted(rf.schema.mapping['Instrument']['groups'].items()):
             for instype in sorted(members):
                 context_menu.setdefault(k, {}).setdefault(
                     instype, 'group' if rf.instruments.accepts_children(instype) else 'default')
@@ -632,9 +632,9 @@ class PortfolioPage(TreePanel):
             # get the object type - this should always be defined
             obj_type = frame['Object']['value']
 
-            for frame_name in rf.fields.mapping['Instrument']['types'][obj_type]:
+            for frame_name in rf.schema.mapping['Instrument']['types'][obj_type]:
                 # load the values:
-                instrument_fields = rf.fields.mapping['Instrument']['sections'][frame_name]
+                instrument_fields = rf.schema.mapping['Instrument']['sections'][frame_name]
                 frame_fields = {k: v for k, v in frame.items() if k in instrument_fields}
                 frames.append(self.define_input((frame_name, key[-1]), frame_fields))
 
@@ -718,12 +718,12 @@ class RiskFactorsPage(TreePanel):
 
         # a factor type IS its descriptors, and so is a process type
         risk_factor_fields = {factor_type: self.load_descriptors(descriptors) for factor_type,
-                              descriptors in rf.fields.mapping['Factor']['types'].items()}
+                              descriptors in rf.schema.mapping['Factor']['types'].items()}
         risk_process_fields = {process: self.load_descriptors(descriptors) for process,
-                               descriptors in rf.fields.mapping['Process']['types'].items()}
+                               descriptors in rf.schema.mapping['Process']['types'].items()}
 
         possible_risk_process = {}
-        for k, v in rf.fields.mapping['Process_factor_map'].items():
+        for k, v in rf.schema.mapping['Process_factor_map'].items():
             fields_to_add = {}
             for process in v:
                 fields_to_add[process] = risk_process_fields[process]
@@ -1036,7 +1036,7 @@ class SetupPage(TreePanel):
 
         # only 1 level of config parameters here - unlike the other 2
         self.sys_config = next(iter(self.load_fields(
-            rf.fields.mapping['System']['types'], rf.fields.mapping['System']['fields']).values()))
+            rf.schema.mapping['System']['types'], rf.schema.mapping['System']['fields']).values()))
         for value in self.sys_config.values():
             value['value'] = self.get_value_for_widget(self.config.params, 'System Parameters', value)
 
@@ -1124,7 +1124,7 @@ class SetupPage(TreePanel):
         # label this container
         wig = [widgets.HTML(value='<h4>{}:</h4>'.format(heading))]
 
-        optionmap = {k: v for k, v in rf.fields.mapping[fieldmapping].items() if v}
+        optionmap = {k: v for k, v in rf.schema.mapping[fieldmapping].items() if v}
         col_types = [{"type": "dropdown",
                       "source": sorted(
                           reduce(operator.concat,
@@ -1214,7 +1214,7 @@ class CalculationPage(TreePanel):
 
         # a calculation type IS its descriptors, keyed by the Object string a job document writes
         self.calculation_fields = {calc_type: self.load_descriptors(descriptors) for calc_type,
-                                   descriptors in rf.fields.mapping['Calculation']['types'].items()}
+                                   descriptors in rf.schema.mapping['Calculation']['types'].items()}
 
         calculation_to_add = []
         if self.config.deals.get('Calculation'):
@@ -1245,7 +1245,7 @@ class CalculationPage(TreePanel):
         # set the context menu to all risk factors defined
         context_menu = {
             "Create New Calculation": dict.fromkeys(
-                rf.fields.mapping['Calculation']['types'].keys(), 'default')
+                rf.schema.mapping['Calculation']['types'].keys(), 'default')
         }
 
         # tree widget data
