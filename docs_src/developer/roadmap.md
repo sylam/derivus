@@ -192,6 +192,47 @@ type" mean something else in that module.
 nothing on a class to read the two rows off, and emitting it would either publish all four for
 every curve factor or write the same two rows onto two classes.
 
+**`Calibration` and `MarketPrices` are enumerated and NOT migrated.** Both were candidates for the
+same recipe and neither has the correspondence it needs. The enumeration is the deliverable, so
+that picking either up later starts from evidence rather than from the assumption that a class is
+waiting for its declarations.
+
+`Calibration` does not describe the calibration classes at all — it is keyed by the STOCHASTIC
+PROCESS name while `construct_calibration_config` dispatches on the entry's own `Method`, so the
+type, the block and the class carry three different names:
+
+| | |
+| --- | --- |
+| Types declared | 2 (`PCAInterestRateModel`, `GBMAssetPriceModel`) of the 12 models `calibration_config.json` configures |
+| Class the type names | a `StochasticProcess` subclass, which owns the process schema instead; the class this store describes is `*Calibration`, dispatched by `Method` |
+| `Method` and `ID` | carried by every configured entry, declared by neither type |
+| Declared and read | 3 — `Distribution_Type`, `Matrix_Type`, `Rate_Drift_Model`, all by `PCAInterestRateCalibration` |
+| Declared and read by nothing | the rest, including the whole `MLE_Parameters` tree (`Min_Tenor`, `Reversion_Speed_*`, `Exact_Solution_Optimisation_Parameters`, …), `Data_Retrieval_Parameters` and `Use_Pre_Computed_Statistics` — 19 descriptors |
+| Read and declared by nothing | every tuning key the calibrators actually take: `N_States`, `N_Iter`, `Seed`, `Tol`, `Use_Student_T`, `Nu_Min`, `Nu_Max`, `Outlier_Threshold`, `Max_Persistence`, `Convexity_Correction`, `Tau_Floor`, `Vol_Window`, `Log_Price` |
+
+So a migration here is not a migration: it is authoring the store for the first time, against
+thirteen classes whose only shared surface is `calibrate()`. That is a piece of work with its own
+design question — whether a calibration is a class that declares fields at all, or a `Method`
+block hung off the process — and it is not this one.
+
+`MarketPrices` is much closer and still not clean. Four of six types map exactly onto a
+bootstrapper class, and that half is already gated in both directions against the literals the
+engine matches. What does not map:
+
+| | |
+| --- | --- |
+| `InterestRatePrices` | no bootstrapper matches it; exempted today as declared-but-not-bootstrapped, so half the store would stay hand-written |
+| `quote` | the shape of one quote inside a price block, not a market-factor type — nothing to hang on a class |
+| `market_factor_type` | set on ONE of the four classes; the other three select work by comparing `market_factor.type` to a literal, so the attribute a `calc_type`-style bridge would read does not uniformly exist yet |
+| `groups`, `sections`, `properties` | three sibling sub-stores no bootstrapper owns — a create menu, the point-field grouping, and `Locked_Dates` |
+| `Points` | declares a `Deal` sub-field with no descriptor, and no type reaches `Points` itself — one instance each of two defect classes the per-type stores made unreachable |
+| `Holiday_Calendar` | a descriptor nothing reaches (`Instrument_Definitions` has a column of that name, which is a different thing) |
+| `Instrument_Definitions` | ten columns as three parallel hand-written lists (`col_names` / `sub_types` / `obj`), which is exactly what `Row` exists to replace — the clearest single win available here |
+
+Migrating it would leave the store half emitted and half hand-written, which is worse than either
+end state. The order is: hoist `market_factor_type` onto all four classes first, decide where
+`InterestRatePrices` lives, and only then move the descriptors.
+
 Also remaining: the other stores are untouched.
 
 The paired naming cleanup settles first, and is now done: the `MarketPrices` types the engine
