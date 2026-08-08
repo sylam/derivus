@@ -25,9 +25,15 @@ Two rules apply to everything here, from [Conventions](conventions.md):
 
 **Sensitivity estimators as first-class objects.** Every Greek should carry the estimator that
 produced it — a `SensitivityProfile` per pricer — so a consumer can tell a pathwise derivative from
-one carrying a boundary term. Related and also unbuilt: **calibration Jacobians**, so bumping a
-market *quote* flows through bootstrapping rather than stopping at the calibrated factor; and
-**Hessian-vector products** instead of materialising full Hessians.
+one carrying a boundary term. Related and also unbuilt: **Hessian-vector products** instead of
+materialising full Hessians.
+
+**Calibration Jacobians — increment 1 in progress.** Bumping a market *quote* should flow through
+bootstrapping rather than stopping at the calibrated factor. [Quote
+Sensitivities](quote_sensitivities.md) is the page: what is built, the graph audit that made it
+possible, the precision seam and the non-goals. The t0 benchmark closure
+(`bootstrappers.BenchmarkInstruments`) and its audit have landed; the multi-curve solver, the
+`InterestRatePrices` family and the implicit-function-theorem wrapper have not.
 
 **`fields.py` is retired.** This started as 1,931 lines and three drifting stores; it ends with
 `derivus/fields.py` a 22-line deprecation shim re-exporting `mapping` and `default` from

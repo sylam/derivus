@@ -1280,6 +1280,132 @@ scipy.optimize.leastsq.html) are used.',
         return riskfactors.HullWhite2FactorModelParameters(param)
 
 
+class Benchmark_State(utils.Calculation_State):
+    """The pricing state a t0 benchmark valuation needs: one date, one path, float64.
+
+    `t_Static_Buffer` is the point of it. That dict is where every pricer reads a static curve
+    from, so putting a `requires_grad` tensor in it is what puts the curve's nodes on the tape -
+    there is no other seam that reaches the pricers without a numpy round trip in between. It is
+    built fresh per evaluation because `t_Buffer` is a memo table keyed by `(stoch, Factor)` and
+    not by the tensor's identity, so a reused state answers the second call with the first call's
+    curves.
+
+    Boundary registration is off: a deposit, an FRA and a swap leg take no decision on simulated
+    state, so there is nothing for the correction to carry.
+    """
+
+    def __init__(self, static_buffer, one, report_currency):
+        super(Benchmark_State, self).__init__(
+            static_buffer, one, 1, report_currency, 'Constant', 1, False)
+        self.boundary_aad = False
+        self.boundary_sets = []
+
+
+class BenchmarkInstruments(object):
+    """The benchmark instruments of one curve solve, compiled once and priced at t0 off curve node
+    TENSORS - so `torch.autograd.grad(pv, theta)` is the calibration Jacobian's row.
+
+    A benchmark is a deal-tree NODE, `{'Instrument': deal, 'Children': [...]}`, exactly as
+    `Trade Data` authors it: a deposit or an FRA is one deal, a par swap is one `SwapInterestDeal`,
+    and an OIS swap is a container over an OIS-compounded floating leg and a fixed leg. Its PV is
+    the sum of its leaves' PVs, each already converted to the reporting currency by its own
+    `pv_*_leg`; there is no netting or collateral rule to apply on top, which is what lets this
+    stay out of `DealStructure`.
+
+    **The graph audit.** The factor-construction path severs autograd in four places, and every one
+    of them is on the way IN to `t_Static_Buffer` rather than on the way out:
+
+    - `Calculation._build_factor_state` and `Base_Revaluation.update_factors` mint every leaf as
+      `torch.tensor(factor.current_value(), requires_grad=...)`. That is a fresh leaf built from a
+      numpy array, so anything upstream of it is severed by construction. This class writes theta
+      straight into the buffer instead and never calls `current_value` for a curve it is solving.
+    - `riskfactors.Factor1D.current_value` is numpy end to end, and `Factor1D.get_tenor` REWRITES
+      `param['Curve'].array` (dedupe plus `np.interp`) as a side effect of construction - so the
+      node order theta is indexed by is the rewritten one, read back off the constructed factor.
+    - `Factor1D.check_interpolation` precomputes the Hermite `(g, c)` pair from the numpy rate
+      column. Those coefficients are constants in theta, and the pricing path does not use them:
+      `utils.Interpolation.build` re-derives the pair from the buffer TENSOR, and `all_tenors`
+      carries only the interpolation KIND and the tenor grid. A Hermite curve differentiates.
+    - `utils.TensorSchedule.merged` copies the cashflow schedule across with `new_tensor`, which is
+      where the QUOTE - a fixed rate, a margin - stops being differentiable. Theta does not pass
+      through it, so this closure is unaffected; a quote-side derivative has to come from
+      elsewhere.
+
+    One trap that is not a severance: `utils.CurveTenor` caches its tenor grid as a tensor built
+    from the first tensor that queries it. `all_tenors` is rebuilt per instance here, so a float64
+    solve cannot inherit a float32 grid from whatever ran before it.
+    """
+
+    #: The solve is float64 whatever the simulation runs in - a bootstrap that converges to 1e-10
+    #: cannot be done in float32, and the Jacobian it hands the implicit-function theorem is only
+    #: as good as the residual it came from.
+    dtype = torch.float64
+
+    def __init__(self, nodes, price_factors, factor_interp, base_date, currency, calendars,
+                 solve_for, device):
+        # `config` imports `construct_bootstrapper` from this module, so the module-level edge runs
+        # one way only and discovery is reached from inside the call
+        from .config import Config
+
+        cfg = Config(base_currency=currency)
+        cfg.params['Price Factors'] = price_factors
+        cfg.params['Price Factor Interpolation'] = factor_interp
+        cfg.params['System Parameters']['Base_Date'] = base_date
+        cfg.holidays = calendars
+        cfg.set_calculation_children(nodes)
+        # the engine's own discovery, so the benchmark set pulls exactly the factors a valuation
+        # would. Single currency by construction: reporting IS the curve's currency, which makes
+        # every `calc_fx_cross` the identity
+        dependent_factors, _, _, _ = cfg.discover_factors(
+            {'Currency': currency}, base_date, '0d', False)
+
+        self.factors = {factor: riskfactors.construct_factor(
+            factor, price_factors, factor_interp, base_date=base_date) for factor in dependent_factors}
+        self.solve_for = tuple(solve_for)
+        # the knot grid theta is indexed by, read off the factor AFTER `get_tenor` has rewritten it
+        self.tenors = {factor: self.factors[factor].tenors for factor in self.solve_for}
+        self.all_tenors = utils.update_tenors(base_date, self.factors)
+        self.time_grid = utils.TimeGrid({base_date}, {base_date}, {base_date})
+        self.time_grid.set_base_date(base_date)
+        self.time_grid.set_report_dates(base_date, {base_date})
+        self.one = torch.ones([1, 1], dtype=self.dtype, device=device)
+        self.report_currency = instruments.get_fxrate_factor(
+            utils.check_rate_name(currency), self.factors, {})
+        # every factor the solve is NOT solving for is a constant of it
+        self.constants = {factor: torch.tensor(
+            obj.current_value(), dtype=self.dtype, device=device)
+            for factor, obj in self.factors.items()
+            if factor.type not in utils.DimensionLessFactors and factor not in self.solve_for}
+
+        self.benchmarks = [[self._compile(leaf, base_date, calendars) for leaf in self._leaves(node)]
+                           for node in nodes]
+
+    def _compile(self, deal, base_date, calendars):
+        """One leaf deal's compiled form - the same `Factor_dep` / `Time_dep` pair a valuation
+        builds, on a grid holding the base date alone."""
+        return utils.DealDataType(
+            Instrument=deal,
+            Factor_dep=deal.calc_dependencies(
+                base_date, self.factors, {}, self.factors, self.all_tenors, self.time_grid, calendars),
+            Time_dep=self.time_grid.calc_deal_grid({base_date}),
+            Calc_res=None)
+
+    @staticmethod
+    def _leaves(node):
+        """The deals a benchmark node prices - itself, or its children if it is a container."""
+        if node.get('Children'):
+            return [leaf for child in node['Children'] for leaf in BenchmarkInstruments._leaves(child)]
+        return [node['Instrument']]
+
+    def __call__(self, theta):
+        """The benchmark PV vector at curve nodes `theta`, a `{Factor: tensor}` over `solve_for`."""
+        shared = Benchmark_State({**self.constants, **theta}, self.one, self.report_currency)
+        # one date and one path, so a leg's PV is a scalar - `reshape` says so and fails loud
+        return torch.stack([
+            sum(leg.Instrument.generate(shared, self.time_grid, leg).reshape(()) for leg in legs)
+            for legs in self.benchmarks])
+
+
 class InterestRateCurveParameters(object):
     """The quote family that is designed and not built: FRA, swap and deposit quotes bootstrapping
     an `InterestRate` curve. See the developer note on
