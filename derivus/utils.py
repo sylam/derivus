@@ -1104,11 +1104,46 @@ class DualArray:
 
 # Tensor specific classes that's used internally
 class TensorSchedule(object):
+    """A cashflow or reset schedule held as numpy, copied to a device tensor on demand.
+
+    The DUAL representation is the point: the index columns - payment days, accrual days, reset
+    counts - are checked in fast numpy (`np.unique`, `searchsorted`, masks) and only the copy the
+    arithmetic runs on goes to the device. `carry` is the one seam where the tensor half can differ
+    from that copy, and nothing on the numpy side ever sees it.
+    """
+
     def __init__(self, schedule, offsets):
         self.schedule = np.array(schedule)
         self.offsets = np.array(offsets)
         self.cache = {}
         self.unit = None
+        self.overlay = None
+
+    def carry(self, overlay):
+        """Attach differentiable VALUE columns, `{column: tensor}`, to the tensor half.
+
+        A schedule's value columns - a fixed rate, a margin - are where a market QUOTE lands, and
+        `new_tensor` copies them across as data, which is where a quote stops being differentiable.
+        An overlay column is spliced into that copy instead, so a quote reaches a pricer with its
+        graph intact. Index columns are never overlaid: they are read off `.np`, which stays plain
+        numpy, so every existing consumer is untouched and absent-by-default means the ordinary
+        path does not know this exists.
+
+        Attaching CLEARS the cache. `dual` and `merged` memoize under one key, so an overlay
+        attached after a plain copy was taken would be silently ignored, and a plain caller must
+        never be handed a graph it did not ask for.
+        """
+        self.overlay = overlay
+        self.cache = {}
+        return self
+
+    def _spliced(self, tensor):
+        """`tensor` with the overlay's columns replaced, out of place so the graph survives."""
+        if not self.overlay:
+            return tensor
+        return tensor.index_copy(
+            1, torch.tensor(list(self.overlay), dtype=torch.int64, device=tensor.device),
+            torch.stack(list(self.overlay.values()), dim=1))
 
     def __getitem__(self, x):
         return self.schedule[x]
@@ -1129,7 +1164,8 @@ class TensorSchedule(object):
     def dual(self, index=0):
         '''Returns just the schedule as a dual'''
         if 'dual' not in self.cache:
-            self.cache['dual'] = DualArray(self.unit.new_tensor(self.schedule), self.schedule)
+            self.cache['dual'] = DualArray(
+                self._spliced(self.unit.new_tensor(self.schedule)), self.schedule)
         return self.cache['dual'][index:]
 
     def merged(self, unit, index=0):
@@ -1143,7 +1179,7 @@ class TensorSchedule(object):
                 merged = np.concatenate((self.schedule, self.offsets[:len(self.schedule)]), axis=1)
             else:
                 merged = np.concatenate((self.schedule, self.offsets), axis=1)
-            self.cache['dual'] = DualArray(self.unit.new_tensor(merged), merged)
+            self.cache['dual'] = DualArray(self._spliced(self.unit.new_tensor(merged)), merged)
         return self.cache['dual'][index:]
 
 

@@ -1335,13 +1335,17 @@ class BenchmarkInstruments(object):
       `utils.Interpolation.build` re-derives the pair from the buffer TENSOR, and `all_tenors`
       carries only the interpolation KIND and the tenor grid. A Hermite curve differentiates.
     - `utils.TensorSchedule.merged` copies the cashflow schedule across with `new_tensor`, which is
-      where the QUOTE - a fixed rate, a margin - stops being differentiable. Theta does not pass
-      through it, so this closure is unaffected; a quote-side derivative has to come from
-      elsewhere.
+      where the QUOTE - a fixed rate, a margin - stops being differentiable. Severed until
+      `TensorSchedule.carry` gave the tensor half an overlay; `_carry_quotes` builds it, and only
+      then is the residual differentiable in `q` as well as in theta.
 
     One trap that is not a severance: `utils.CurveTenor` caches its tenor grid as a tensor built
     from the first tensor that queries it. `all_tenors` is rebuilt per instance here, so a float64
     solve cannot inherit a float32 grid from whatever ran before it.
+
+    `quotes` and `bumped_nodes` are the quote side, and they come as a pair: the quotes the set was
+    authored at, in percent, and the SAME set authored one percent higher. The second is what says
+    which schedule columns the quote writes - see `_carry_quotes`.
     """
 
     #: The solve is float64 whatever the simulation runs in - a bootstrap that converges to 1e-10
@@ -1350,7 +1354,7 @@ class BenchmarkInstruments(object):
     dtype = torch.float64
 
     def __init__(self, nodes, price_factors, factor_interp, base_date, currency, calendars,
-                 solve_for, device):
+                 solve_for, device, quotes=None, bumped_nodes=None):
         # `config` imports `construct_bootstrapper` from this module, so the module-level edge runs
         # one way only and discovery is reached from inside the call
         from .config import Config
@@ -1387,6 +1391,10 @@ class BenchmarkInstruments(object):
 
         self.benchmarks = [[self._compile(leaf, base_date, calendars) for leaf in leaf_deals(node)]
                            for node in nodes]
+        self.quotes = None if quotes is None else torch.tensor(
+            quotes, dtype=self.dtype, device=device, requires_grad=True)
+        if self.quotes is not None:
+            self._carry_quotes(bumped_nodes, base_date, calendars)
 
     def _compile(self, deal, base_date, calendars):
         """One leaf deal's compiled form - the same `Factor_dep` / `Time_dep` pair a valuation
@@ -1397,6 +1405,54 @@ class BenchmarkInstruments(object):
                 base_date, self.factors, {}, self.factors, self.all_tenors, self.time_grid, calendars),
             Time_dep=self.time_grid.calc_deal_grid({base_date}),
             Calc_res=None)
+
+    def _carry_quotes(self, bumped_nodes, base_date, calendars):
+        """Put the quote leaf on every schedule column the quote WRITES.
+
+        Which columns those are is MEASURED, not declared: the same benchmark set authored one
+        percent higher is compiled, and the columns that moved are the value columns with the
+        difference as their slope. The authoring map is affine in the quote - a percent scaled into
+        a fixed-rate column, a margin - so one bumped compile IS the derivative rather than a
+        difference quotient of one. That keeps `QUOTE_WRITERS` the only place a quotable instrument
+        is declared: where its number lands is read off it, never restated beside it.
+
+        The splice is `base + (q - q.detach()) * slope` - the boundary correction's shape, worth
+        exactly zero in the forward pass with derivative one. So the tensor half is bit-identical
+        to the copy `new_tensor` would have made and enabling quote gradients cannot move the
+        solve. It is a derivative carrier and NOT a reparameterisation: the value does not follow a
+        moved quote, because the pricers memoize payment tensors off the schedule the same way
+        `t_Buffer` memoizes curves, so a different quote needs a fresh closure.
+
+        Resets carry no overlay. No increment-1 quote reaches one - a deposit's pinned rate, an
+        FRA's margin and a fixed leg's rate all land in the cashflow schedule - and a reset value
+        also leaves through `known_resets`, which reads numpy. Measured rather than assumed: a
+        moved reset column raises here.
+        """
+        for index, (legs, node) in enumerate(zip(self.benchmarks, bumped_nodes)):
+            delta = self.quotes[index] - self.quotes[index].detach()
+            # the bumped set never went through discovery, and discovery is what resets a deal
+            bumped_legs = leaf_deals(node)
+            for leaf in bumped_legs:
+                leaf.reset(calendars)
+            for leg, plus in zip(legs, [self._compile(leaf, base_date, calendars)
+                                        for leaf in bumped_legs]):
+                for name, schedule in leg.Factor_dep.items():
+                    if not isinstance(schedule, utils.TensorCashFlows):
+                        continue
+                    bumped = plus.Factor_dep[name]
+                    if schedule.Resets is not None and (
+                            bumped.Resets.schedule != schedule.Resets.schedule).any():
+                        raise Exception(
+                            'Curve bootstrap: {} writes its quote into a RESET column, which the '
+                            'schedule overlay does not reach'.format(name))
+                    moved = bumped.schedule - schedule.schedule
+                    columns = np.flatnonzero(np.abs(moved).max(axis=0))
+                    if columns.size:
+                        schedule.carry({int(column): self._column(schedule.schedule[:, column]) +
+                                        delta * self._column(moved[:, column]) for column in columns})
+
+    def _column(self, values):
+        return torch.tensor(values, dtype=self.dtype, device=self.one.device)
 
     def __call__(self, theta):
         """The benchmark PV vector at curve nodes `theta`, a `{Factor: tensor}` over `solve_for`."""

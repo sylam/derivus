@@ -54,7 +54,7 @@ silently reports a zero gradient.
 | `Calculation._build_factor_state`, `Base_Revaluation.update_factors` | Every leaf is minted as `torch.tensor(factor.current_value(offset=…), requires_grad=…)` — a fresh leaf built out of a **numpy array**. Anything upstream is severed by construction. This is the *only* way a curve becomes a tensor on the ordinary path. | θ is written straight into `t_Static_Buffer`, which is where the pricers read a static curve from. `current_value` is never called for a curve being solved. |
 | `riskfactors.Factor1D.current_value` | numpy end to end — `param['Curve'].array[:, 1] + self.delta`, `np.interp`, `np.concatenate`. Handed a tensor it would still return numpy. | Not on the closure's path. It is still used for the **constants** — every factor the solve is not solving for — where a detached leaf is the right answer. |
 | `Factor1D.__init__` → `check_interpolation` | Precomputes the Hermite `(g, c)` coefficient pair from the numpy rate column at construction. Those coefficients are constants in θ. | The pricing path does not read them. `utils.Interpolation.build` re-derives the pair from the buffer **tensor** (`hermite_interpolation_tensor`), and `all_tenors` carries only the interpolation *kind* and the tenor grid, both θ-independent. A Hermite curve therefore differentiates, and there is a gate per interpolation kind saying so. |
-| `utils.TensorSchedule.merged` | Copies the whole cashflow schedule across with `new_tensor` — notionals, accruals, margins **and the fixed rate**. This is where the **quote** stops being differentiable. | θ does not pass through it, so the closure is unaffected. A quote-side derivative cannot come from autograd through this seam and has to be obtained another way; that is the increment's open question, recorded here rather than guessed at. |
+| `utils.TensorSchedule.merged` | Copies the whole cashflow schedule across with `new_tensor` — notionals, accruals, margins **and the fixed rate**. This is where the **quote** stopped being differentiable. | **Closed.** `TensorSchedule.carry` gives the *tensor* half an optional per-column overlay; see [The quote side](#the-quote-side). θ never passed through this seam, so the θ-side closure is unchanged either way. |
 
 Two traps that are not severances, and would each be silent:
 
@@ -66,6 +66,43 @@ Two traps that are not severances, and would each be silent:
 - **`utils.CurveTenor` caches its tenor grid as a tensor built from the first tensor that queries
   it.** `all_tenors` is rebuilt per closure instance, so a float64 solve cannot inherit a float32
   grid from whatever ran before it.
+
+## The quote side {#the-quote-side}
+
+A schedule is a **dual**: `.np` for the index columns — payment days, accrual days, reset counts,
+everything `np.unique` and `searchsorted` are asked about — and a device copy for the arithmetic.
+That split is deliberate and it stays: `TensorSchedule.carry` attaches an optional
+`{column: tensor}` overlay to the **tensor half only**, spliced into the copy `new_tensor` makes.
+Absent by default, so no caller outside a calibration knows it exists; and `carry` clears the
+memoized dual, because `dual` and `merged` cache under one key and a plain caller must never be
+handed a graph it did not ask for.
+
+Only **value** columns are overlaid. Measured, not assumed: compiling the four benchmark shapes at
+three quotes moves exactly one column, `CASHFLOW_INDEX_FixedRate`/`FloatMargin` (they are the same
+index 6), on the deposit, the FRA, the swap's fixed leg and the OIS fixed leg alike — and moves it
+*linearly*, second difference exactly zero. No reset column moves, and `_carry_quotes` raises if one
+ever does, because a reset value also leaves through `known_resets`, which reads numpy.
+
+`BenchmarkInstruments` therefore takes the benchmark set **twice**: at its quotes, and one percent
+higher. The difference between the two compiles is the exact ∂(schedule)/∂q, so
+[`QUOTE_WRITERS`](market_prices.md#interestrateprices) stays the only place a quotable instrument
+declares where its number goes — the derivative is read off it rather than restated beside it.
+
+The splice is
+
+$$\text{column} = \text{base} + (q - \bar q)\,\frac{\partial \text{column}}{\partial q}$$
+
+which is the [boundary correction](calc_lifecycle.md#boundary-corrections--the-sensitivity-subsystem)'s
+shape and is there for the same reason: worth **exactly zero** in the forward pass, derivative one.
+The tensor half is bit-identical to the plain copy, so enabling quote gradients cannot move a
+single PV — asserted with `np.array_equal`, not a tolerance.
+
+!!! warning "The overlay is a derivative carrier, not a reparameterisation"
+    A moved quote needs a **fresh closure**. `pv_fixed_cashflows` memoizes its payment tensor in
+    `Factor_dep`, built from the schedule's tensor half, so the first evaluation freezes whatever
+    overlay was attached — removing the overlay afterwards does not remove the gradient. That is the
+    third memo table in this subsystem, after `t_Buffer` and `CurveTenor`, and it is held in place
+    by a gate rather than fixed.
 
 ## The solve {#the-solve}
 

@@ -43,27 +43,34 @@ TENORS = [1.0 / 365.0, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0]
 OIS_NODES = [0.0430, 0.0435, 0.0432, 0.0425, 0.0415, 0.0410, 0.0405, 0.0400]
 PROJ_NODES = [r + 0.0020 for r in OIS_NODES]
 
+#: The quotes the four benchmarks below are authored at, in percent.
+QUOTES = [4.32, 4.55, 4.20, 4.05]
+
+
 #: A deposit, an FRA, a par swap and an OIS swap - the four shapes the family has to price, and
 #: between them every pricer the residual reaches: the fixed leg, the single-reset floating leg,
 #: fixed-against-floating in one deal, and the OIS-compounded leg under a container.
-def benchmark_nodes():
+def benchmark_nodes(quotes=None):
     return [quote_node(block, {}) for block in (
-        deposit('DEPO_6M', CCY, OIS, 6, 4.32),
-        fra('FRA_3X6', CCY, PROJ, OIS, 3, 6, 4.55),
-        par_swap('IRS_2Y', CCY, PROJ, OIS, 2, 4.20),
-        ois_swap('OIS_2Y', CCY, OIS, 24, 4.05))]
+        deposit('DEPO_6M', CCY, OIS, 6, (quotes or QUOTES)[0]),
+        fra('FRA_3X6', CCY, PROJ, OIS, 3, 6, (quotes or QUOTES)[1]),
+        par_swap('IRS_2Y', CCY, PROJ, OIS, 2, (quotes or QUOTES)[2]),
+        ois_swap('OIS_2Y', CCY, OIS, 24, (quotes or QUOTES)[3]))]
 
 
-def closure(interpolation=None, nodes=None, curves=None):
+def closure(interpolation=None, nodes=None, curves=None, quotes=None):
+    """The compiled benchmark set. `quotes` additionally puts the quote vector on the tape - the
+    bumped set it is measured against is the same four instruments one percent higher."""
     interp = ModelParams()
     if interpolation:
         interp.append('InterestRate', (), interpolation)
     curves = curves or {OIS: (TENORS, OIS_NODES), PROJ: (TENORS, PROJ_NODES)}
     return BenchmarkInstruments(
-        nodes if nodes is not None else benchmark_nodes(),
+        nodes if nodes is not None else benchmark_nodes(quotes),
         market(CCY, curves, OIS), interp, BASE, CCY, {},
         [f for f in (OIS_FACTOR, PROJ_FACTOR) if f.name[0] in curves],
-        torch.device('cpu'))
+        torch.device('cpu'), quotes=quotes,
+        bumped_nodes=None if quotes is None else benchmark_nodes([q + 1.0 for q in quotes]))
 
 
 def theta(bm, requires_grad=False, bump=None):
@@ -197,6 +204,115 @@ def test_a_leaf_minted_from_current_value_severs_the_graph():
         'the mutation has to reproduce the VALUE, or it is testing something else')
     with pytest.raises(RuntimeError):
         torch.autograd.grad(pv.sum(), list(th.values()))
+
+
+def quote_jacobian(bm):
+    """d(PV_i)/d(quote_j), one backward pass per benchmark."""
+    pv = bm(theta(bm))
+    return np.array([np.zeros(len(QUOTES)) if g is None else g.numpy() for g in (
+        torch.autograd.grad(pv[i], bm.quotes, retain_graph=True, allow_unused=True)[0]
+        for i in range(len(pv)))])
+
+
+def test_the_residual_is_differentiable_in_its_quotes():
+    """The other half of the tape. `TensorSchedule.merged` copies the schedule across with
+    `new_tensor` - notionals, accruals, margins and the FIXED RATE - so until the tensor half
+    carried an overlay a quote could not be differentiated through at all.
+
+    The residual is AFFINE in its quotes (a deposit's coupons, an FRA's strike and a fixed leg's
+    rate are each linear in one), so the exact derivative is a SECANT and not an approximation of
+    one - which makes this an identity rather than a tolerance, and it gates the pricer as well as
+    the schedule: the overlay could be right and `pv_fixed_cashflows` still fold it in wrongly.
+    """
+    aad = quote_jacobian(closure(quotes=QUOTES))
+    lo = closure(quotes=None, nodes=benchmark_nodes(QUOTES))
+    hi = closure(quotes=None, nodes=benchmark_nodes([q + 1.0 for q in QUOTES]))
+    secant = np.diag(hi(theta(hi)).detach().numpy() - lo(theta(lo)).detach().numpy())
+    assert np.abs(aad - secant).max() / np.abs(secant).max() < 1e-12, (
+        'AAD and the exact secant disagree:\n{}\n{}'.format(aad, secant))
+
+
+def test_a_quote_reaches_its_own_benchmark_and_no_other():
+    """The zeros carry as much as the numbers. A quote is a property of ONE instrument, so
+    d(PV)/d(quote) is diagonal - an off-diagonal entry would mean a quote had leaked into a
+    benchmark that does not carry it, and the calibration Jacobian would then be solving a system
+    nobody authored."""
+    jac = quote_jacobian(closure(quotes=QUOTES))
+    assert (np.abs(np.diag(jac)) > 0).all(), 'a benchmark that ignores its own quote: {}'.format(jac)
+    assert np.abs(jac - np.diag(np.diag(jac))).max() == 0.0, (
+        'a quote reached a benchmark that does not carry it:\n{}'.format(jac))
+
+
+def test_putting_the_quotes_on_the_tape_does_not_move_a_single_pv():
+    """Bit-identity, which is what makes the overlay safe to leave on. The splice is
+    `base + (q - q.detach()) * slope` - the boundary correction's shape - so it is worth exactly
+    zero in the forward pass and `np.array_equal` rather than a tolerance is the right assertion."""
+    with_quotes = closure(quotes=QUOTES)
+    plain = closure()
+    assert np.array_equal(with_quotes(theta(with_quotes)).detach().numpy(),
+                          plain(theta(plain)).detach().numpy())
+
+
+def test_an_overlay_attached_after_a_copy_is_not_served_the_copy():
+    """The unit gate on `TensorSchedule`, both ways round.
+
+    `dual` and `merged` memoize under ONE key, so an overlay attached after a plain copy was taken
+    would be silently dropped, and a plain caller could be handed a graph it never asked for -
+    the same shape of trap as `t_Buffer` answering a second curve with the first one's discount
+    factors. `carry` clears the cache, and taking the copy FIRST is what says so.
+    """
+    one = torch.ones([1, 1], dtype=torch.float64)
+    schedule = utils.TensorSchedule([[1.0, 2.0], [3.0, 4.0]], [[0.0], [0.0]])
+    plain = schedule.merged(one).tn
+    assert plain.grad_fn is None and not plain.requires_grad
+
+    column = torch.tensor([7.0, 8.0], dtype=torch.float64, requires_grad=True)
+    carried = schedule.carry({1: column}).merged(one).tn
+    assert carried[:, 1].tolist() == [7.0, 8.0], 'the overlay was not spliced in: {}'.format(carried)
+    assert carried[:, 0].tolist() == [1.0, 3.0], 'the splice moved a column it does not own'
+    assert torch.autograd.grad(carried.sum(), column)[0].tolist() == [1.0, 1.0]
+
+    # and back: dropping the overlay has to drop the graph, not serve the spliced copy
+    assert schedule.carry(None).merged(one).tn.grad_fn is None
+
+
+def drop_overlays(bm):
+    for legs in bm.benchmarks:
+        for leg in legs:
+            for schedule in leg.Factor_dep.values():
+                if isinstance(schedule, utils.TensorCashFlows):
+                    schedule.carry(None)
+    return bm
+
+
+def test_a_schedule_copied_without_the_overlay_severs_the_quote():
+    """MUTATE the seam this commit exists to close. Dropping the overlay is exactly what
+    `new_tensor` did before it: the PV comes out the same to the last bit and the quote gradient
+    silently disappears."""
+    connected = closure(quotes=QUOTES)
+    severed = drop_overlays(closure(quotes=QUOTES))
+    assert np.array_equal(severed(theta(severed)).detach().numpy(),
+                          connected(theta(connected)).detach().numpy()), (
+        'the mutation has to reproduce the VALUE, or it is testing something else')
+    with pytest.raises(RuntimeError):
+        torch.autograd.grad(severed(theta(severed)).sum(), severed.quotes)
+
+
+def test_a_priced_closure_keeps_the_quote_graph_it_was_priced_with():
+    """The trap, held in place rather than fixed - the third memo table in this subsystem.
+
+    `pv_fixed_cashflows` caches its payment tensor in `Factor_dep`, and that tensor is built from
+    the schedule's tensor half, so it carries whatever overlay was attached at the FIRST
+    evaluation. Removing the overlay afterwards changes nothing: the quote gradient survives a
+    mutation that should have destroyed it. That is why the overlay is attached at construction and
+    why a moved quote needs a fresh closure rather than a re-attached one - the same rule
+    `Benchmark_State` follows for `t_Buffer`.
+    """
+    bm = closure(quotes=QUOTES)
+    bm(theta(bm))
+    drop_overlays(bm)
+    assert np.abs(quote_jacobian(bm)).max() > 0, (
+        'the payment cache is not the trap this gate claims it is - re-check the caching')
 
 
 def test_a_reused_pricing_state_answers_with_the_first_curve():
