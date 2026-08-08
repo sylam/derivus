@@ -231,7 +231,39 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
 
 Note that although *Generation paramaters* can be specified, instrument definitions are preferred.
 
-- *InterestRatePrices* — a curve bootstrapped from FRA, swap and deposit quotes — is **declared and
-  not built**. Its block is in the schema so that the shape is stated, but no bootstrapper solves
-  it yet and a configured run logs an error rather than writing a curve. The specification it will
-  be built to is the developer note on Market Prices.
+- *InterestRatePrices* solves an *InterestRate* zero curve from deposit, FRA and swap quotes. Each
+  `Points` entry names an instrument type in `DealType` and carries a block of that type under
+  `Deal`, authored exactly as `Trade Data` would author it, with `Quoted_Market_Value` the rate in
+  percent the instrument is held at par at. A blank `Discount_Rate` builds a self-discounting
+  curve; naming another block's curve makes this one a projection curve solved after it. The
+  solved curve carries one knot per used quote, at that quote's last cashflow date, so holding a
+  quote out with `Use` drops its knot too. An OIS swap is a `StructuredDeal` over a
+  `Compounding_Method: OIS` floating leg and a fixed leg:
+
+```json
+{
+  "InterestRatePrices.USD-OIS": {
+    "instrument": {
+      "Currency": "USD",
+      "Day_Count": "ACT_365",
+      "Discount_Rate": "",
+      "Points": [
+        {
+          "Use": "Yes",
+          "Descriptor": "USD 2Y OIS",
+          "DealType": "StructuredDeal",
+          "Quote_Type": "Par_Rate",
+          "Quoted_Market_Value": 4.1524,
+          "Deal": {
+            "Reference": "OIS_24M",
+            "Currency": "USD",
+            "Net_Cashflows": "Yes",
+            "Children": ["... the floating and fixed legs ..."]
+          }
+        }
+      ]
+    },
+    "Children": []
+  }
+}
+```

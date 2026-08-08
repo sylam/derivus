@@ -13,6 +13,7 @@
 
 
 # import standard libraries
+import copy
 import time
 import logging
 from collections import namedtuple
@@ -1280,6 +1281,13 @@ scipy.optimize.leastsq.html) are used.',
         return riskfactors.HullWhite2FactorModelParameters(param)
 
 
+def leaf_deals(node):
+    """The deals a deal-tree node prices - itself, or its children if it is a container."""
+    if node.get('Children'):
+        return [leaf for child in node['Children'] for leaf in leaf_deals(child)]
+    return [node['Instrument']]
+
+
 class Benchmark_State(utils.Calculation_State):
     """The pricing state a t0 benchmark valuation needs: one date, one path, float64.
 
@@ -1377,7 +1385,7 @@ class BenchmarkInstruments(object):
             for factor, obj in self.factors.items()
             if factor.type not in utils.DimensionLessFactors and factor not in self.solve_for}
 
-        self.benchmarks = [[self._compile(leaf, base_date, calendars) for leaf in self._leaves(node)]
+        self.benchmarks = [[self._compile(leaf, base_date, calendars) for leaf in leaf_deals(node)]
                            for node in nodes]
 
     def _compile(self, deal, base_date, calendars):
@@ -1390,13 +1398,6 @@ class BenchmarkInstruments(object):
             Time_dep=self.time_grid.calc_deal_grid({base_date}),
             Calc_res=None)
 
-    @staticmethod
-    def _leaves(node):
-        """The deals a benchmark node prices - itself, or its children if it is a container."""
-        if node.get('Children'):
-            return [leaf for child in node['Children'] for leaf in BenchmarkInstruments._leaves(child)]
-        return [node['Instrument']]
-
     def __call__(self, theta):
         """The benchmark PV vector at curve nodes `theta`, a `{Factor: tensor}` over `solve_for`."""
         shared = Benchmark_State({**self.constants, **theta}, self.one, self.report_currency)
@@ -1406,33 +1407,185 @@ class BenchmarkInstruments(object):
             for legs in self.benchmarks])
 
 
+def damped_newton(residual, theta, n_iter, tol, halvings):
+    """Solve `residual(theta) = 0` for a `{Factor: tensor}` of curve nodes, in float64.
+
+    The curves are flattened into ONE system, so a projection curve solved against a discount curve
+    in the same call is a single Jacobian rather than two coupled ones. That Jacobian comes from
+    autograd on the residual - one backward pass per benchmark gives the whole row - which is the
+    same derivative the implicit function theorem needs on the other side, so the residual is
+    written once and differentiated twice.
+
+    Damping is a backtracking line search on the max-norm of the residual: full step first, halved
+    until it decreases. Newton takes the full step everywhere near the root, so the damping is
+    insurance against a bad first iterate rather than something the converged path exercises.
+
+    The three knobs are the caller's, not this function's: they are declared fields of the block
+    being solved, so a job tightens or loosens the solve without a code edit.
+    """
+    keys = list(theta)
+    sizes = [theta[key].numel() for key in keys]
+
+    def unflatten(flat):
+        return dict(zip(keys, flat.split(sizes)))
+
+    x = torch.cat([theta[key].detach() for key in keys])
+    for iteration in range(n_iter):
+        x = x.detach().requires_grad_(True)
+        f = residual(unflatten(x))
+        jacobian = torch.stack([torch.autograd.grad(f[i], x, retain_graph=True)[0]
+                                for i in range(f.numel())])
+        step = torch.linalg.solve(jacobian, f.detach())
+
+        # convergence is tested on the step BEFORE the line search, not after it: a step this small
+        # is inside the linear solve's own rounding, and asking a residual already at noise level
+        # to decrease again is a test nothing passes
+        if step.abs().max() <= tol:
+            return unflatten((x - step).detach())
+
+        norm = f.detach().abs().max()
+        damping = 1.0
+        for _ in range(halvings + 1):
+            trial = x.detach() - damping * step
+            if residual(unflatten(trial)).abs().max() < norm:
+                break
+            damping *= 0.5
+        else:
+            raise Exception('Curve bootstrap: no damped Newton step reduces the residual '
+                            '(iteration {}, residual {:.6g})'.format(iteration, float(norm)))
+        x = trial
+
+    raise Exception('Curve bootstrap: {} Newton iterations without converging'.format(n_iter))
+
+
+def _pin_deposit_schedule(deal, quote):
+    """A deposit has no rate field of its own. Pinning every accrual start is what makes it price
+    as a fixed leg, which is also what keeps it off the forecast curve the solve is building -
+    `DepositDeal.reset` drops that dependency when the schedule covers every start."""
+    starts = instruments.generate_dates_backward(
+        deal['Maturity_Date'], deal['Effective_Date'], deal['Payment_Frequency'])[:-1]
+    deal['Interest_Rate_Schedule'] = utils.DateList({date: quote for date in starts})
+
+
+def _fixed_cashflow_rate(deal, quote):
+    """The fixed leg of a two-leg benchmark carries the quote on every row of its schedule."""
+    for item in deal['Cashflows']['Items']:
+        item['Rate'] = utils.Percent(quote)
+
+
+#: Where a quote's number goes, per instrument type, keyed by the `Object` string. A quote NAMES an
+#: instrument type and carries a block of it, so this is the ONE thing the family knows about a type
+#: beyond that type's own declarations - and it is a registry rather than a branch because a new
+#: quotable instrument is then a row. A container carries no rate itself; its fixed leg does.
+QUOTE_WRITERS = {
+    'DepositDeal': _pin_deposit_schedule,
+    'FRADeal': lambda deal, quote: deal.update({'FRA_Rate': quote}),
+    'SwapInterestDeal': lambda deal, quote: deal.update({'Swap_Rate': quote}),
+    'CFFixedInterestListDeal': _fixed_cashflow_rate,
+}
+
+
+def author_quote(deal, quote, discount_rate):
+    """Author an instrument block AT its quote, discounting on `discount_rate`.
+
+    The split is the one the family is for: what an instrument PROJECTS off is its own business and
+    it names that curve itself, while what the quote set DISCOUNTS on is a property of the curve
+    set and is stated once on the block. Recurses into `Children`, so a two-leg benchmark gets the
+    quote on the leg that holds a rate and the discount curve on both.
+    """
+    for child in deal.get('Children', ()):
+        author_quote(child, quote, discount_rate)
+    deal['Discount_Rate'] = discount_rate
+    writer = QUOTE_WRITERS.get(deal['Object'])
+    if writer:
+        writer(deal, quote)
+
+
+def quote_node(deal, valuation_options):
+    """A deal-tree node from an authored instrument block - the shape `set_calculation_children`
+    takes. `Config.parse_json` builds it from `.Deal` markers and a `Children` list; a quote carries
+    the same block inline, so it is built here instead."""
+    node = {'Instrument': instruments.construct_instrument(
+        {key: value for key, value in deal.items() if key != 'Children'}, valuation_options)}
+    if deal.get('Children'):
+        node['Children'] = [quote_node(child, valuation_options) for child in deal['Children']]
+    return node
+
+
+def quote_knots(nodes, base_date, day_count, calendars):
+    """The curve's knot grid: ONE knot per benchmark, at that benchmark's last cashflow date.
+
+    That is the only placement that makes the system square, and squareness is the whole shape of a
+    bootstrap: a knot with no instrument maturing at it is unidentified, and two instruments
+    maturing between the same pair of knots leave the curve under-determined between them. Below
+    the shortest knot the curve is flat, which `CurveTenor` gives by clipping, so the front stub
+    costs no extra unknown. The output grid IS this grid - there is no second grid to write the
+    result onto, because interpolating a solved curve onto one would stop it repricing its quotes.
+
+    Returned in NODE order and in the curve's own day count, so a caller can pair each knot with
+    the quote that identifies it; the curve itself is sorted.
+    """
+    code = utils.get_day_count(day_count)
+    maturities = []
+    for node in nodes:
+        leaves = leaf_deals(node)
+        for leaf in leaves:
+            leaf.reset(calendars)
+        maturities.append(max(max(leaf.get_reval_dates()) for leaf in leaves))
+    return np.array([utils.get_day_count_accrual(
+        base_date, (maturity - base_date).days, code) for maturity in maturities])
+
+
 class InterestRateCurveParameters(object):
-    """The quote family that is designed and not built: FRA, swap and deposit quotes bootstrapping
-    an `InterestRate` curve. See the developer note on
-    [Market Prices](../developer/market_prices.md) for the spec this is to be built to.
+    """A zero curve solved from deposit, FRA and swap quotes, priced by the engine's own pricers.
 
-    It declares rather than bootstraps, so that the schema states the family instead of leaving
-    half the store hand-written. `bootstrap` says so where a configured run can hear it.
+    A quote is an instrument, a `Quote_Type` and a number - see the developer note on
+    [Market Prices](../developer/market_prices.md). Each `Points` entry names an instrument type in
+    `DealType` and carries a block of it in `Deal`, so the `Instrument` store's declarations ARE
+    this family's quote schema and nothing about a swap is described twice. The family authors that
+    block at its `Quoted_Market_Value`, and the residual is what the instrument is then worth at
+    t0: a fair benchmark prices to zero, so the solve is a root find on the PV vector.
 
-    Two loose ends the note records: the curve it writes is an `InterestRate`, not the
-    `<ClassName>` parameter block the other four write, so `Config.bootstrap`'s "wrote no
-    <name>.* price factor" check wants settling; and the solve wants the calibration Jacobians
-    the roadmap has yet to build.
+    Two blocks make a multi-curve set - an OIS discount curve solved from OIS quotes, then a
+    projection curve solved from FRAs and par swaps discounting on it - and the second must be
+    solved after the first, which is what `Discount_Rate` orders. A block whose `Discount_Rate` is
+    blank discounts on the curve it is building, which is the degenerate single-curve
+    configuration and the harder solve, since the unknown appears on both sides.
+
+    Unlike the other four families this writes an `InterestRate` price factor rather than a
+    `<ClassName>` parameter block, which is what `price_factor_type` declares.
     """
     market_factor_type = 'InterestRatePrices'
+    #: The `Price Factors` type this family writes. The other four write a block named for their own
+    #: class, so the emitter can recover it; a bootstrapped curve is an ordinary `InterestRate` and
+    #: no rule recovers that from `InterestRateCurveParameters`.
+    price_factor_type = 'InterestRate'
     #: The instrument types a quote in this family may be. Each is a declared `Instrument` type,
     #: so the quote's schema IS that type's declarations - reused by reference, never restated.
-    quote_instruments = ('DepositDeal', 'FRADeal', 'SwapInterestDeal')
+    #: `StructuredDeal` is how a two-leg benchmark is authored - an OIS swap is its compounded
+    #: floating leg and its fixed leg, composed by `Children`.
+    quote_instruments = ('DepositDeal', 'FRADeal', 'SwapInterestDeal', 'StructuredDeal')
     fields = [
         F('Currency', 'Text', default=REQUIRED, description='The currency of the curve to build'),
+        F('Day_Count', 'Text', default='ACT_365',
+          values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA'],
+          description='Daycount the solved curve\'s tenors are expressed in'),
         F('Discount_Rate', 'Text', default='',
-          description='The curve the quotes discount on, where that is not the curve being built'),
-        F('Spot_Offset', 'Integer', default=2,
-          description='Business days from the base date to the curve\'s spot'),
-        F('Zero_Rate_Grid', 'Text',
-          default='0d 1d 2d 1w 2w 1m 3m 6m 9m 1y 6m1y 2y 6m2y 3y 6m3y 4y 6m4y 5y 6y 7y 8y 9y 10y '
-                  '15y 20y 25y',
-          description='The tenor grid the bootstrapped curve is written on'),
+          description='The curve the quotes discount on; blank builds a self-discounting curve'),
+        F('N_Iter', 'Integer', default=50,
+          description='Newton iteration cap. Newton is quadratic near the root and a par-rate seed '
+                      'is already within a few basis points, so a well-posed strip converges in '
+                      'single digits; reaching the cap raises rather than returning a half-solved '
+                      'curve'),
+        F('Tol', 'Float', default=1e-14,
+          description='Convergence tolerance on the Newton STEP, in rate space. A zero rate is '
+                      'O(1e-2), so 1e-14 is about 1e-12 relative - inside the 1e-10 a round trip '
+                      'asks for, and where the linear solve\'s own rounding stops the iteration '
+                      'improving'),
+        F('Damping_Halvings', 'Integer', default=6,
+          description='How many times the line search may halve a Newton step before giving up. '
+                      'Below that the step LENGTH is not what is wrong, so the solve says so '
+                      'rather than creeping towards a root it will not reach'),
         F('Points', 'Container', default={
             'Use': 'Yes', 'Deal': {}, 'Descriptor': '', 'DealType': 'DepositDeal',
             'Quote_Type': 'Par_Rate', 'Quoted_Market_Value': 0.0},
@@ -1444,10 +1597,10 @@ class InterestRateCurveParameters(object):
             F('Descriptor', 'Text', default='', description='Free text naming the quote'),
             F('DealType', 'Text', default='DepositDeal', values=list(quote_instruments),
               description='The instrument type the quote is a price for'),
-            F('Quote_Type', 'Text', default='Par_Rate',
-              values=['Par_Rate', 'Rate', 'Price'],
-              description='What Quoted_Market_Value is, and therefore what repricing to par means'),
-            F('Quoted_Market_Value', 'Float', description='The quote the instrument reprices to')],
+            F('Quote_Type', 'Text', default='Par_Rate', values=['Par_Rate'],
+              description='What Quoted_Market_Value is; the solve holds the instrument at par'),
+            F('Quoted_Market_Value', 'Float',
+              description='The quote, in percent, the instrument is authored at')],
           description='One market quote: an instrument, what kind of number is quoted, and the '
                       'number')
     ]
@@ -1457,10 +1610,93 @@ class InterestRateCurveParameters(object):
         self.prec = dtype
         self.param = param
 
+    def in_dependency_order(self, market_prices):
+        """This family's blocks, one that discounts on a curve another block BUILDS coming after it.
+
+        Dict order is the JSON author's, and a projection curve solved before its discount curve is
+        solved against a curve that does not exist yet - which fails on the lookup rather than
+        quietly, but fails on the author's ordering rather than on anything they got wrong.
+        """
+        blocks = {}
+        for name, implied_params in market_prices.items():
+            rate = utils.check_rate_name(name)
+            market_factor = utils.Factor(rate[0], rate[1:])
+            if market_factor.type == self.market_factor_type:
+                blocks[name] = implied_params
+        # keyed by the curve NAME a `Discount_Rate` field carries, which is the block's name without
+        # its `Market Prices` type
+        builds = {'.'.join(utils.check_rate_name(name)[1:]): name for name in blocks}
+        graph = {name: [builds[implied_params['instrument']['Discount_Rate']]]
+                 if implied_params['instrument']['Discount_Rate'] in builds else []
+                 for name, implied_params in blocks.items()}
+        return [(name, blocks[name]) for name in utils.topological_sort(graph)]
+
     def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices,
                   calendars, debug=None):
-        logging.error('InterestRatePrices is declared and not bootstrapped - see the Market Prices '
-                      'developer note. No curve was built from these quotes.')
+        """Solve each block for the zero curve that reprices every used quote to par."""
+        base_date = sys_params['Base_Date']
+
+        for market_price, implied_params in self.in_dependency_order(market_prices):
+            block = implied_params['instrument']
+            curve = utils.Factor('InterestRate', utils.check_rate_name(market_price)[1:])
+            curve_name = utils.check_tuple_name(curve)
+            discount_rate = block['Discount_Rate'] or '.'.join(curve.name)
+
+            quotes = [point for point in block['Points'] if point['Use'] == 'Yes'
+                      and self.takes(point, market_price)]
+            nodes = []
+            for point in quotes:
+                # deep-copied because authoring WRITES the quote and the discount curve into the
+                # block, and the market data it came out of is data
+                authored = dict(copy.deepcopy(point['Deal']), Object=point['DealType'])
+                author_quote(authored, point['Quoted_Market_Value'], discount_rate)
+                nodes.append(quote_node(authored, {}))
+
+            # seed the block first: the closure constructs the curve factor out of `Price Factors`,
+            # and a par rate is within a few basis points of the zero rate at the same maturity.
+            # `Curve` sorts the pairs, so each knot keeps the quote that identifies it
+            price_factors[curve_name] = {
+                'Property_Aliases': None, 'Sub_Type': None, 'Currency': block['Currency'],
+                'Day_Count': block['Day_Count'], 'Curve': utils.Curve([], list(zip(
+                    quote_knots(nodes, base_date, block['Day_Count'], calendars),
+                    [point['Quoted_Market_Value'] / 100.0 for point in quotes])))}
+
+            time_now = time.monotonic()
+            benchmarks = BenchmarkInstruments(
+                nodes, price_factors, factor_interp, base_date, block['Currency'], calendars,
+                [curve], self.device)
+            # theta off the CONSTRUCTED factor, so it is aligned with the tenor grid the pricers
+            # gather against whatever `get_tenor` did to the authored block
+            solved = damped_newton(
+                benchmarks,
+                {curve: torch.tensor(benchmarks.factors[curve].current_value(),
+                                     dtype=BenchmarkInstruments.dtype, device=self.device)},
+                int(block.get('N_Iter', 50)), float(block.get('Tol', 1e-14)),
+                int(block.get('Damping_Halvings', 6)))
+
+            price_factors[curve_name]['Curve'] = utils.Curve(
+                [], list(zip(benchmarks.tenors[curve], solved[curve].cpu().numpy())))
+
+            residuals = benchmarks(solved)
+            logging.info('{} bootstrapped from {} quotes in {:.2f} seconds, residual {:.3g}'.format(
+                curve_name, len(quotes), time.monotonic() - time_now,
+                float(residuals.abs().max())))
+            for point, residual in zip(quotes, residuals):
+                logging.info('  {} at {:.4f} reprices to {:.3g}'.format(
+                    point['Descriptor'], point['Quoted_Market_Value'], float(residual)))
+
+    def takes(self, point, market_price):
+        """Whether this family prices the quote, the way Clewlow-Strickland says so of a vol type.
+
+        `Par_Rate` is the only convention built: every increment-1 benchmark is held at PV zero.
+        A futures price and a money-market rate on a different basis are conventions this would
+        have to author differently, and they are declared when they are read.
+        """
+        if point['Quote_Type'] == 'Par_Rate':
+            return True
+        logging.error('{} quote {} - Quote_Type {} not supported yet'.format(
+            market_price, point['Descriptor'], point['Quote_Type']))
+        return False
 
 
 def construct_bootstrapper(btype, param, dtype=torch.float32):

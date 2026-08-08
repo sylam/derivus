@@ -544,9 +544,11 @@ def test_no_market_price_declares_a_key_twice(market_type):
 
 
 # The locals a bootstrapper binds from its own quote block, and therefore the reads that have to be
-# declared. `implied_params['instrument']` IS the block, `instrument` is its alias, and `option`
-# and `x` are one quote row - the loop and comprehension variables over the quote tables.
-QUOTE_LOCALS = ("implied_params['instrument']", 'instrument', 'option', 'x')
+# declared. `implied_params['instrument']` IS the block, `instrument` and `block` are its aliases,
+# and `option`, `x` and `point` are one quote row - the loop and comprehension variables over the
+# quote tables. A family binding the block under a name that is not here is not gated at all, which
+# is why the list is a comment rather than a guess.
+QUOTE_LOCALS = ("implied_params['instrument']", 'instrument', 'block', 'option', 'x', 'point')
 
 
 def quote_reads(cls_name, module_ast):
@@ -614,14 +616,58 @@ def test_the_quote_block_declares_what_the_bootstrapper_reads(market_type):
         f'{market_type} reads quote keys no schema-authored block can carry: {undeclared}')
 
 
+def declared_values(descriptors):
+    """Every declared key's default value, containers flattened the way `declared_keys` flattens."""
+    out = {}
+    for key, d in descriptors.items():
+        out[key] = d['value']
+        out.update(declared_values(d.get('sub_fields', {})))
+    return out
+
+
+def fallback_reads(cls_name, module_ast):
+    """`{key: fallback}` for every quote-block knob read as `<block>.get('Key', <constant>)`."""
+    classes = {n.name: n for n in module_ast.body if isinstance(n, ast.ClassDef)}
+    return {n.args[0].value: n.args[1].value
+            for n in ast.walk(classes[cls_name])
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == 'get' and ast.unparse(n.func.value) in QUOTE_LOCALS
+            and len(n.args) == 2 and all(isinstance(a, ast.Constant) for a in n.args)}
+
+
+@pytest.mark.parametrize('market_type', sorted(market_price_classes()))
+def test_a_declared_default_is_the_default_the_engine_falls_back_to(market_type):
+    """A knob read with `.get(key, fallback)` publishes TWO defaults, and they have to be one.
+
+    An author who fills the panel in gets the DECLARED value; a block that omits the key gets the
+    engine's FALLBACK. Where those disagree the same job means two different things depending on
+    whether it was hand-written or authored from the schema, and nothing raises - the solve just
+    runs to a different tolerance. This is the mismatch class that put `Base_Time_Grid` in the
+    Calculation store beside a `Time_Grid` the engine read: the key was wrong there rather than the
+    value, and the same gate catches both.
+    """
+    module_ast = ast.parse(inspect.getsource(bootstrappers))
+    cls_name = market_price_classes()[market_type].__name__
+    declared = declared_values(MARKET_PRICES['types'][market_type])
+    drift = {key: (declared.get(key), fallback)
+             for key, fallback in fallback_reads(cls_name, module_ast).items()
+             if declared.get(key) != fallback}
+    assert not drift, f'{market_type} declares one default and falls back to another: {drift}'
+
+
 def test_a_quote_type_means_different_things_to_different_families():
     """The capability the per-type store exists for, pinned so a return to a flat one fails.
 
     The flat store published `ATM` / `Implied_Volatility` / `Premium` for every family. The
     Clewlow-Strickland bootstrapper logs `quote_type ... not supported yet` for anything but
-    `Implied_Volatility`, Heston-Nandi takes that or `Premium`, and the unbuilt interest-rate
-    family quotes a par rate - three different questions sharing one name, which is right, because
-    the JSON is per family."""
+    `Implied_Volatility`, Heston-Nandi takes that or `Premium`, and an interest-rate quote is a par
+    rate - three different questions sharing one name, which is right, because the JSON is per
+    family.
+
+    `InterestRatePrices` declares the one convention it implements. It used to offer `Rate` and
+    `Price` as well, which nothing read: a futures price and a money-market rate on a different
+    basis are conventions the family would have to author differently, and a value the solve does
+    not implement is the same defect as a field nothing reads."""
     def find(descriptors):
         for key, d in descriptors.items():
             if key == 'Quote_Type':
@@ -635,7 +681,7 @@ def test_a_quote_type_means_different_things_to_different_families():
                           'HestonNandiModelPrices': ['Implied_Volatility', 'Premium'],
                           'GBMAssetPriceTSModelPrices': None,
                           'HullWhite2FactorModelPrices': None,
-                          'InterestRatePrices': ['Par_Rate', 'Rate', 'Price']}, quote_type
+                          'InterestRatePrices': ['Par_Rate']}, quote_type
     assert not any('ATM' in (v or ()) for v in quote_type.values()), (
         'ATM is back, and no family takes it')
 

@@ -5,8 +5,9 @@ round-trip fixture constructs a curve, prices the benchmark set off it to GENERA
 then requires the bootstrap to recover the curve - so the numbers only have to be plausibly shaped,
 not real.
 
-The builders return deal-tree NODES (`{'Instrument': deal}`, or a container plus `Children`), which
-is what `Config.set_calculation_children` and `BenchmarkInstruments` both take.
+The builders return authored deal BLOCKS - raw JSON as `Trade Data` carries it, a container
+holding its legs under `Children`. `bootstrappers.quote_node` turns one into the deal-tree node
+`BenchmarkInstruments` takes, and a quote carries the same block under `Deal`.
 
 Quotes are quoted in PERCENT throughout, because that is what the engine reads: `DepositDeal`
 divides its `Interest_Rate_Schedule` by 100, `SwapInterestDeal` divides `Swap_Rate` by 100, and
@@ -22,7 +23,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 
 from derivus import utils
-from derivus.instruments import construct_instrument
 
 BASE = pd.Timestamp('2026-08-03')
 
@@ -42,10 +42,6 @@ def market(currency, curves, discount_curve, day_count='ACT_365'):
     return factors
 
 
-def node(deal):
-    return {'Instrument': construct_instrument(deal, {})}
-
-
 def deposit(ref, currency, discount, months, quote, day_count='ACT_360'):
     """A money-market deposit quoted at `quote` percent.
 
@@ -54,7 +50,7 @@ def deposit(ref, currency, discount, months, quote, day_count='ACT_360'):
     schedule covers every accrual start, so a quote cannot depend on the curve it is solving for.
     """
     maturity = BASE + pd.DateOffset(months=months)
-    return node({
+    return {
         'Object': 'DepositDeal', 'Reference': ref, 'Currency': currency,
         'Discount_Rate': discount, 'Interest_Rate': discount,
         'Effective_Date': BASE, 'Maturity_Date': maturity,
@@ -65,12 +61,12 @@ def deposit(ref, currency, discount, months, quote, day_count='ACT_360'):
         'Accrual_Calendars': None, 'Payment_Calendars': None,
         'First_Coupon_Date': None, 'Penultimate_Coupon_Date': None,
         'Rate_Currency': '', 'FX_Reset_Offset': 0, 'Known_FX_Rates': None,
-        'Interest_Rate_Schedule': utils.DateList({BASE: quote})})
+        'Interest_Rate_Schedule': utils.DateList({BASE: quote})}
 
 
 def fra(ref, currency, forecast, discount, start_months, end_months, quote, day_count='ACT_360'):
     """A forward rate agreement on the projection curve, quoted at `quote` percent."""
-    return node({
+    return {
         'Object': 'FRADeal', 'Reference': ref, 'Currency': currency,
         'Discount_Rate': discount, 'Interest_Rate': forecast,
         'Effective_Date': BASE + pd.DateOffset(months=start_months),
@@ -78,7 +74,7 @@ def fra(ref, currency, forecast, discount, start_months, end_months, quote, day_
         'Reset_Date': BASE + pd.DateOffset(months=start_months),
         'Day_Count': day_count, 'Principal': 1e6, 'FRA_Rate': quote,
         'Borrower_Lender': 'Borrower', 'Use_Known_Rate': 'No', 'Known_Rate': 0.0,
-        'Payment_Timing': 'End', 'Calendars': None})
+        'Payment_Timing': 'End', 'Calendars': None}
 
 
 def par_swap(ref, currency, forecast, discount, years, quote,
@@ -86,7 +82,7 @@ def par_swap(ref, currency, forecast, discount, years, quote,
     """A par interest-rate swap quoted at `quote` percent - fixed against a single-reset floating
     leg. `Index_Tenor` of zero months is what makes each coupon carry ONE reset spanning its own
     accrual period, which is the vanilla shape; a multi-reset period is the OIS one below."""
-    return node({
+    return {
         'Object': 'SwapInterestDeal', 'Reference': ref, 'Currency': currency,
         'Discount_Rate': discount, 'Interest_Rate': forecast,
         'Effective_Date': BASE, 'Maturity_Date': BASE + pd.DateOffset(years=years),
@@ -106,10 +102,10 @@ def par_swap(ref, currency, forecast, discount, years, quote,
         'Reset_Type': 'Standard', 'Rate_Multiplier': 1.0, 'Rate_Constant': utils.Percent(0.0),
         'Floating_Margin': 0.0, 'Fixed_Compounding': 'No', 'Compounding_Method': 'None',
         'Known_Rates': None, 'Amortisation': None, 'Swap_Rate': quote, 'Principal': 1e6,
-        'Interest_Rate_Volatility': '', 'Discount_Rate_Volatility': ''})
+        'Interest_Rate_Volatility': '', 'Discount_Rate_Volatility': ''}
 
 
-def ois_swap(ref, currency, curve, years, quote, day_count='ACT_360'):
+def ois_swap(ref, currency, curve, months, quote, day_count='ACT_360'):
     """An OIS swap quoted at `quote` percent, as a container over two legs.
 
     The floating leg is a `CFFloatingInterestListDeal` with `Compounding_Method='OIS'` and ONE
@@ -120,9 +116,11 @@ def ois_swap(ref, currency, curve, years, quote, day_count='ACT_360'):
     weighted `1/n` compounds at `1/n` of the rate.
 
     Fixings are on business days, which is what an RFR actually publishes on, and each accrues to
-    the next fixing so the daily windows tile the coupon exactly.
+    the next fixing so the daily windows tile the coupon exactly. Coupons are annual with a final
+    stub, so a sub-annual OIS is one compounded period - which is how the short end is quoted.
     """
-    coupons = [BASE + pd.DateOffset(years=k) for k in range(years + 1)]
+    coupons = [BASE + pd.DateOffset(months=m) for m in range(0, months, 12)] + [
+        BASE + pd.DateOffset(months=months)]
     float_items, fixed_items = [], []
     for start, end in zip(coupons[:-1], coupons[1:]):
         fixings = pd.bdate_range(start, end, inclusive='left')
@@ -145,21 +143,20 @@ def ois_swap(ref, currency, curve, years, quote, day_count='ACT_360'):
             'Fixed_Amount': 0.0, 'Discounted': 'No',
             'FX_Reset_Date': None, 'Known_FX_Rate': 0.0})
 
-    container = construct_instrument(
-        {'Object': 'StructuredDeal', 'Reference': ref, 'Currency': currency,
-         'Net_Cashflows': 'Yes'}, {})
-    return {'Instrument': container, 'Children': [
-        node(_cashflow_leg('CFFloatingInterestListDeal', ref + '_FLOAT', currency, curve, 'Buy',
-                           {'Compounding_Method': 'OIS', 'Averaging_Method': 'Average_Interest',
-                            'Properties': [], 'Items': float_items},
-                           Forecast_Rate=curve, Rate_Adjustment_Method='None',
-                           Rate_Sticky_Month_End='Yes', Rate_Offset=0, Rate_Calendars=None,
-                           Accrual_Calendars=None, Forecast_Rate_Cap_Volatility='',
-                           Forecast_Rate_Swaption_Volatility='', Discount_Rate_Cap_Volatility='',
-                           Discount_Rate_Swaption_Volatility='')),
-        node(_cashflow_leg('CFFixedInterestListDeal', ref + '_FIXED', currency, curve, 'Sell',
-                           {'Compounding': 'No', 'Items': fixed_items},
-                           Calendars=None, Rate_Currency=''))]}
+    return {
+        'Object': 'StructuredDeal', 'Reference': ref, 'Currency': currency,
+        'Net_Cashflows': 'Yes', 'Children': [
+            _cashflow_leg('CFFloatingInterestListDeal', ref + '_FLOAT', currency, curve, 'Buy',
+                          {'Compounding_Method': 'OIS', 'Averaging_Method': 'Average_Interest',
+                           'Properties': [], 'Items': float_items},
+                          Forecast_Rate=curve, Rate_Adjustment_Method='None',
+                          Rate_Sticky_Month_End='Yes', Rate_Offset=0, Rate_Calendars=None,
+                          Accrual_Calendars=None, Forecast_Rate_Cap_Volatility='',
+                          Forecast_Rate_Swaption_Volatility='', Discount_Rate_Cap_Volatility='',
+                          Discount_Rate_Swaption_Volatility=''),
+            _cashflow_leg('CFFixedInterestListDeal', ref + '_FIXED', currency, curve, 'Sell',
+                          {'Compounding': 'No', 'Items': fixed_items},
+                          Calendars=None, Rate_Currency='')]}
 
 
 def _cashflow_leg(object_type, ref, currency, discount, buy_sell, cashflows, **extra):

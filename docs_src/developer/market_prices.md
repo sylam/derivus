@@ -5,8 +5,8 @@ observed curves and surfaces a historical calibration produces, this section hol
 a risk-neutral model is fitted to, and a *bootstrapper* turns each block into the factor or model
 parameters the simulation reads.
 
-This page is the design. Four families are built; one — the interest-rate curve — is declared and
-not built, and the specification below is what it is to be built to.
+This page is the design. All five families are built; the interest-rate curve was the last, and the
+section below is what it was built to.
 
 ## A quote is an instrument, a quote type and a number {#a-quote}
 
@@ -45,7 +45,7 @@ A bootstrapper class is one price family. It declares:
 declarations, and `construct_bootstrapper` resolves the class by name from the
 `Bootstrapper Configuration` section.
 
-The four built families, and what each fits:
+The five families, and what each fits:
 
 | Family | Quotes | Writes |
 | --- | --- | --- |
@@ -53,39 +53,68 @@ The four built families, and what each fits:
 | `CSForwardPriceModelPrices` | European energy futures options | `CSForwardPriceModelParameters` — sigma, alpha |
 | `HestonNandiModelPrices` | European options on any spot | `HestonNandiModelParameters` — omega, alpha, beta, gamma\*, H0 |
 | `HullWhite2FactorModelPrices` | forward-starting swaps against a swaption surface | `HullWhite2FactorModelParameters` — two sigma curves, two alphas, a correlation |
+| `InterestRatePrices` | deposits, FRAs and swaps | an `InterestRate` zero curve |
 
-## `InterestRatePrices` — the family that is designed and not built {#interestrateprices}
+## `InterestRatePrices` — a curve solved from its quotes {#interestrateprices}
 
-The store has carried the shape of this one for as long as it has existed: a `Points` container
-holding `Deal` / `DealType` / `Quote_Type` / `Quoted_Market_Value`, and a `DealType` whose values
-are `DepositDeal`, `FRADeal` and `SwapInterestDeal`. That is the design showing through, and it is
-the design above with nothing bolted on.
+The store carried the shape of this one for as long as it existed: a `Points` container holding
+`Deal` / `DealType` / `Quote_Type` / `Quoted_Market_Value`, and a `DealType` naming instrument
+types. That was the design showing through, and what got built is that design with nothing bolted
+on.
 
-**The block.** `InterestRateCurveParameters` declares it: the `Currency` of the curve to build, an
-optional `Discount_Rate` naming the curve the quotes discount on where that differs from the one
-being built, a `Spot_Offset` in business days, a `Zero_Rate_Grid` of the tenors the result is
-written on, and the quote `Points`.
+**The block.** `InterestRateCurveParameters` declares it: the `Currency` of the curve to build, the
+`Day_Count` its tenors are expressed in, an optional `Discount_Rate` naming the curve the quotes
+discount on, the solver's three tuning knobs (`N_Iter`, `Tol`, `Damping_Halvings` — the same
+vocabulary the calibration classes tune with, and each read with its declared default as the
+engine's fallback), and the quote `Points`. A blank `Discount_Rate` builds a **self-discounting**
+curve, which is the single-curve configuration.
 
-**The quotes.** Each point carries a `Deal` — a deposit, an FRA or a swap, authored exactly as it
-would be in `Trade Data`, because it is the same declaration — plus `Quote_Type` and
-`Quoted_Market_Value`, and a `Use` flag so a quote can be held out without being deleted.
+**The quotes.** Each point carries a `Deal` — a deposit, an FRA, a swap, or a `StructuredDeal` over
+two legs, authored exactly as it would be in `Trade Data`, because it is the same declaration —
+plus `DealType`, `Quote_Type` and `Quoted_Market_Value`, and a `Use` flag so a quote can be held out
+without being deleted. `DealType` supplies the block's `Object`, and the family stamps
+`Discount_Rate`: what an instrument *projects* off is its own business and it names that curve
+itself, what the quote set *discounts* on belongs to the curve set and is stated once.
 
-**The solve.** Find the zero curve on `Zero_Rate_Grid` that reprices every `Use`d quote instrument
-to its quote: a deposit and an FRA to their quoted rate, a swap to par. The instruments are priced
-by the engine's own pricers — that is the point of quoting them as instruments — so the residual
-is a vector of pricing functions of the curve, and the solve is a root find on it. The curve is
-written back as an `InterestRate` price factor.
+`Quoted_Market_Value` is a rate in percent, and where it lands is a property of the instrument
+TYPE — a `FRA_Rate`, a `Swap_Rate`, a pinned `Interest_Rate_Schedule`, a fixed leg's `Rate` column.
+That correspondence is the one thing the family knows about a type beyond the type's own
+declarations, and it is a registry (`QUOTE_WRITERS`) rather than a branch, so a new quotable
+instrument is a row. `Quote_Type` declares the single convention that is built, `Par_Rate`: the
+solve holds every benchmark at PV zero.
 
-**What makes the solve cheap.** The residual's Jacobian with respect to the curve knots is exactly
-what **calibration Jacobians** buy, and they are on the [roadmap](roadmap.md#designed-not-built)
-already, listed there beside sensitivity estimators as first-class objects: with AAD through the
-pricers, one backward pass per quote gives the whole row, and a bump-and-reprice loop over
-twenty-six knots is not needed at all. That thread and this family should land together — the
-same derivative that makes bumping a market *quote* flow through bootstrapping is the one that
-makes the bootstrap converge.
+**The knot rule.** ONE knot per used quote, at that benchmark's last cashflow date, in the block's
+`Day_Count`. That is the only placement that makes the system square, and squareness is the shape
+of a bootstrap: a knot with no instrument maturing at it is unidentified, and two instruments
+maturing between the same pair of knots leave the curve under-determined between them. Below the
+shortest knot the curve is flat, which `CurveTenor` gives by clipping, so the front stub costs no
+extra unknown. **The output grid is that grid** — writing the result onto a second, wider grid
+would interpolate it, and an interpolated curve no longer reprices its quotes. There is therefore
+no `Zero_Rate_Grid` field; holding a quote out with `Use` drops its knot with it.
 
-**Two loose ends, recorded rather than guessed at.** The curve this writes is an `InterestRate`,
-not the `<ClassName>` parameter block the other four write, so `Config.bootstrap`'s "wrote no
-`<name>.*` price factor" check wants settling when it is built. And a curve solved from quotes
-needs a stated interpolation, which comes from `Price Factor Interpolation` rather than from the
-block — see the `Interpolation` note in [Conventions](conventions.md#registries-not-functions).
+**The solve.** Find the curve that reprices every used quote to par. The instruments are priced by
+the engine's own pricers — that is the point of quoting them as instruments — so the residual is a
+vector of pricing functions of the curve, and the solve is a damped Newton root find on it in
+float64. Two blocks make a multi-curve set, and `Discount_Rate` orders them: a projection curve
+solved before the discount curve it prices against would be solved against a curve that does not
+exist.
+
+**What makes the solve cheap.** The residual's Jacobian in the curve knots comes from AAD through
+the pricers — one backward pass per quote gives a whole row, and no bump loop is needed. That is
+the same derivative the [quote-sensitivity](quote_sensitivities.md) thread carries the other way,
+through the bootstrap's fixed point into `dV/dq`; the residual is written once and differentiated
+twice, which is why the two land together.
+
+**Two declared fields are gone**, on the terms every store here is held to: a field the engine does
+not read is not declared. `Zero_Rate_Grid` named an output grid there is no longer one of, and
+`Spot_Offset` named a spot lag that a quote's own `Deal` block states as an `Effective_Date` —
+which is the whole point of a quote carrying an instrument rather than describing one.
+`Quote_Type` loses `Rate` and `Price` for the same reason: a futures price and a money-market rate
+on a different basis are conventions the family would have to author differently, and a value the
+solve does not implement is the same defect as a field nothing reads.
+
+**The loose ends, settled.** The curve this writes is an `InterestRate`, not the `<ClassName>`
+parameter block the other four write, so the class declares `price_factor_type` and
+`Config.bootstrap`'s "wrote no `<name>.*` price factor" check reads it. And the interpolation of a
+solved curve comes from `Price Factor Interpolation` rather than from the block — see the
+`Interpolation` note in [Conventions](conventions.md#registries-not-functions).

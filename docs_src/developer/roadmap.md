@@ -31,9 +31,12 @@ materialising full Hessians.
 **Calibration Jacobians — increment 1 in progress.** Bumping a market *quote* should flow through
 bootstrapping rather than stopping at the calibrated factor. [Quote
 Sensitivities](quote_sensitivities.md) is the page: what is built, the graph audit that made it
-possible, the precision seam and the non-goals. The t0 benchmark closure
-(`bootstrappers.BenchmarkInstruments`) and its audit have landed; the multi-curve solver, the
-`InterestRatePrices` family and the implicit-function-theorem wrapper have not.
+possible, the solver constants, the knot rule, the precision seam and the non-goals. The t0
+benchmark closure (`bootstrappers.BenchmarkInstruments`), its audit, the damped-Newton multi-curve
+solver and the `InterestRatePrices` family have landed — round-trip fixtures recover a known curve
+to 1e-17 in the USD multi-curve world and 1e-15 in the single-curve ZAR one. The
+implicit-function-theorem wrapper, the factor-buffer attachment and the validation triangle have
+not.
 
 **`fields.py` is retired.** This started as 1,931 lines and three drifting stores; it ends with
 `derivus/fields.py` a 22-line deprecation shim re-exporting `mapping` and `default` from
@@ -277,9 +280,10 @@ where `InterestRatePrices` lives, then move the descriptors.
 The design it is now shaped around is its own page, [Market Prices](market_prices.md): a quote is
 a reference to an EXISTING instrument type plus a `Quote_Type` and a `Quoted_Market_Value`, so the
 `Instrument` store's declarations ARE the quote's schema and a family only names the types its
-quotes may be. `InterestRatePrices` is specified there as the designed-unbuilt family — FRA, swap
+quotes may be. `InterestRatePrices` was specified there as the designed-unbuilt family — FRA, swap
 and deposit quotes solved for the curve that reprices each to par — with the calibration-Jacobians
-thread named as what makes that solve cheap.
+thread named as what makes that solve cheap. It is built now, and the two landed together as that
+note said they should.
 
 `market_factor_type` is a class attribute on all five families and the engine compares against it,
 so the two gates that held the declared types to the literals the engine matched would now be
@@ -288,9 +292,9 @@ owns the text**, parsed by AST, the same shape as
 `test_instruments_call_resolvers_not_factor_types`. A second gate holds every `quote_instruments`
 name to a declared deal type, which is the reuse-by-reference rule made checkable.
 
-`InterestRatePrices` is declared by `InterestRateCurveParameters`, which refuses to bootstrap with
-an error naming the design note rather than being absent from the store or half hand-written.
-`quote` is gone as a type — it was never a market-factor type, only the shape of one quote, and it
+`InterestRatePrices` is declared by `InterestRateCurveParameters`, which at the time refused to
+bootstrap with an error naming the design note rather than being absent from the store or half
+hand-written; it solves now. `quote` is gone as a type — it was never a market-factor type, only the shape of one quote, and it
 is now the `Points` container's children. `groups`, `sections` and `properties` are gone with it:
 the create menu is the type list itself, the point-field grouping is `quote_instruments` (which
 lands as the `DealType` dropdown's values, where a UI needs it), and `properties.Locked_Dates`

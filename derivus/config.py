@@ -384,10 +384,14 @@ class Config(object):
                                    self.holidays,
                                    debug=self)
 
-            # empty result = the bootstrapper silently did nothing (misnamed Market Prices or class-name mismatch)
-            if not [x for x in self.params['Price Factors'] if x.startswith(bootstrapper_name + '.')]:
-                logging.error('Bootstrapper {0} wrote no {0}.* price factor - check the Market Prices'
-                              ' section'.format(bootstrapper_name))
+            # empty result = the bootstrapper silently did nothing (misnamed Market Prices or
+            # class-name mismatch). Four families write a block named for their own class, so the
+            # name is recoverable; a curve bootstrap writes an ordinary `InterestRate` and declares
+            # that instead
+            written = getattr(bootstrapper, 'price_factor_type', bootstrapper_name)
+            if not [x for x in self.params['Price Factors'] if x.startswith(written + '.')]:
+                logging.error('Bootstrapper {0} wrote no {1}.* price factor - check the Market '
+                              'Prices section'.format(bootstrapper_name, written))
 
     def calibrate_factors(self, from_date, to_date, factors, smooth=0.0, correlation_cuttoff=0.2,
                           overwrite_correlations=True, vol_shift=0.0):

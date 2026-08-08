@@ -24,7 +24,7 @@ import pytest
 import torch
 
 from derivus import utils
-from derivus.bootstrappers import BenchmarkInstruments, Benchmark_State
+from derivus.bootstrappers import BenchmarkInstruments, Benchmark_State, quote_node
 from derivus.config import ModelParams
 
 from rates_world import BASE, market, deposit, fra, par_swap, ois_swap
@@ -47,10 +47,11 @@ PROJ_NODES = [r + 0.0020 for r in OIS_NODES]
 #: between them every pricer the residual reaches: the fixed leg, the single-reset floating leg,
 #: fixed-against-floating in one deal, and the OIS-compounded leg under a container.
 def benchmark_nodes():
-    return [deposit('DEPO_6M', CCY, OIS, 6, 4.32),
-            fra('FRA_3X6', CCY, PROJ, OIS, 3, 6, 4.55),
-            par_swap('IRS_2Y', CCY, PROJ, OIS, 2, 4.20),
-            ois_swap('OIS_2Y', CCY, OIS, 2, 4.05)]
+    return [quote_node(block, {}) for block in (
+        deposit('DEPO_6M', CCY, OIS, 6, 4.32),
+        fra('FRA_3X6', CCY, PROJ, OIS, 3, 6, 4.55),
+        par_swap('IRS_2Y', CCY, PROJ, OIS, 2, 4.20),
+        ois_swap('OIS_2Y', CCY, OIS, 24, 4.05))]
 
 
 def closure(interpolation=None, nodes=None, curves=None):
@@ -160,7 +161,7 @@ def test_the_ois_leg_compounds_in_arrears():
     flat = 0.04
     years = 3
     quote = 4.0
-    bm = closure(nodes=[ois_swap('OIS', CCY, OIS, years, quote)],
+    bm = closure(nodes=[quote_node(ois_swap('OIS', CCY, OIS, 12 * years, quote), {})],
                  curves={OIS: ([0.0, 30.0], [flat, flat])})
     pv = bm(theta(bm))
 
@@ -175,7 +176,7 @@ def test_the_ois_leg_compounds_in_arrears():
 
     # MUTATE: the same swap quoted 25bp away has to move by one basis-point-value of the annuity,
     # so the agreement above is not a coincidence of two zeros
-    moved = closure(nodes=[ois_swap('OIS', CCY, OIS, years, quote + 0.25)],
+    moved = closure(nodes=[quote_node(ois_swap('OIS', CCY, OIS, 12 * years, quote + 0.25), {})],
                     curves={OIS: ([0.0, 30.0], [flat, flat])})
     annuity = 1e6 * sum((e - s).days / 360.0 * df[e] for s, e in zip(coupons[:-1], coupons[1:]))
     assert float(moved(theta(moved))[0]) == pytest.approx(
