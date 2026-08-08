@@ -317,6 +317,36 @@ class Calculation(object):
     def execute(self, params):
         pass
 
+    def factor_leaf(self, factor, current_val, requires_grad, offset=0.0):
+        """The AAD leaf for one factor - and the ONE seam a calibration upstream of it can reach.
+
+        Every leaf the engine mints is `torch.tensor(factor.current_value(...))`, a fresh tensor
+        built out of a numpy array, so anything that produced those numbers is severed by
+        construction: it does not raise, it reports a zero gradient. A curve the library
+        BOOTSTRAPPED and kept the graph of is offered here instead, as
+
+            leaf + (theta - theta.detach())
+
+        which is the boundary correction's shape and is here for exactly its reason: worth zero in
+        the forward pass, derivative one, so what reaches `backward()` changes and what is reported
+        cannot. `leaf` stays a leaf, so the tensor is still the one the pricers read and
+        `retain_grad` keeps `.grad` populated - the factor greek reported for this curve is the
+        same number it always was, and dV/dq arrives in the same pass.
+
+        A non-zero `Tenor_Offset` declines the attachment: the curve the calculation consumes is
+        then a SHIFTED one, and dtheta_shifted/dq is not dtheta/dq. Quote sensitivities are t0
+        risk; a tenor offset is a different curve, so it gets the leaf it always got.
+        """
+        leaf = torch.tensor(current_val, device=self.device, dtype=self.dtype,
+                            requires_grad=requires_grad)
+        theta = self.config.calibrated_factors.get(factor)
+        if theta is None or not requires_grad or offset:
+            return leaf
+        theta = theta.to(device=self.device, dtype=self.dtype)
+        connected = leaf + (theta - theta.detach())
+        connected.retain_grad()
+        return connected
+
     def make_factor_index(self, tensors):
         # need to match the indices back
         tenors = utils.get_tenors(self.all_factors)
@@ -971,8 +1001,8 @@ class Credit_Monte_Carlo(Calculation):
                 # record the offset of this risk factor
                 current_val = value.factor.current_value(offset=factor_tenor_offset)
                 calc_grad = greeks and sensitivities in ['All', 'Factors']
-                self.stoch_var[key] = torch.tensor(
-                    current_val, device=self.device, dtype=self.dtype, requires_grad=calc_grad)
+                self.stoch_var[key] = self.factor_leaf(
+                    key, current_val, calc_grad, factor_tenor_offset)
 
         # and then get the static risk factors ready - these will just be looked up
         calc_grad = greeks and sensitivities in ['All', 'Factors']
@@ -1002,8 +1032,8 @@ class Credit_Monte_Carlo(Calculation):
                         self.static_var[fkey] = implied_leaves[fkey] if fkey in implied_leaves else torch.tensor(
                             v, device=self.device, dtype=self.dtype, requires_grad=calc_grad)
                 else:
-                    self.static_var[key] = implied_leaves[key] if key in implied_leaves else torch.tensor(
-                        current_val, device=self.device, dtype=self.dtype, requires_grad=calc_grad)
+                    self.static_var[key] = implied_leaves[key] if key in implied_leaves else \
+                        self.factor_leaf(key, current_val, calc_grad, factor_tenor_offset)
 
         # set up the device and allocate memory
         shared_mem = self._init_shared_mem(
@@ -1780,8 +1810,7 @@ class Base_Revaluation(Calculation):
                         self.static_var[utils.Factor(key.type, key.name + (k,))] = torch.tensor(
                             v, device=self.device, dtype=self.dtype, requires_grad=calc_grad)
                 else:
-                    self.static_var[key] = torch.tensor(
-                        current_val, device=self.device, dtype=self.dtype, requires_grad=calc_grad)
+                    self.static_var[key] = self.factor_leaf(key, current_val, calc_grad)
 
         # set up the device and allocate memory
         shared_mem = self.__init_shared_mem(

@@ -203,6 +203,13 @@ class Config(object):
         self.archive = None
         self.archive_columns = {}
 
+        # What a bootstrap that kept its graph leaves behind, and the only thing a calculation
+        # needs to reach it: `{Factor: theta*}` still connected to its quotes, and the quote leaf
+        # per market-price block. These are TENSORS, so they cannot live in `Price Factors` - that
+        # section is data and gets written back out as JSON.
+        self.calibrated_factors = {}
+        self.quote_leaves = {}
+
         # the default state of the system
         self.version = None
         self.params = {
@@ -383,6 +390,12 @@ class Config(object):
                                    self.params['Market Prices'],
                                    self.holidays,
                                    debug=self)
+
+            # a family that kept its calibration on the tape hands the leaves over here, which is
+            # what lets `_build_factor_state` offer an already-connected tensor instead of minting
+            # a fresh one out of numpy
+            self.calibrated_factors.update(getattr(bootstrapper, 'calibrated', {}))
+            self.quote_leaves.update(getattr(bootstrapper, 'quote_leaves', {}))
 
             # empty result = the bootstrapper silently did nothing (misnamed Market Prices or
             # class-name mismatch). Four families write a block named for their own class, so the

@@ -1,10 +1,10 @@
 # Quote Sensitivities
 
-!!! note "Increment 1, in progress"
-    This page is written as the work lands. The **t0 benchmark closure**, its **graph audit**, the
-    **plain multi-curve solver** and the `InterestRatePrices` family are built; the
-    **implicit-function-theorem contract**, the factor-buffer attachment and the validation
-    triangle are not, and are not specified here yet.
+!!! note "Increment 1 is complete"
+    The t0 benchmark closure and its graph audit, the multi-curve solver, the `InterestRatePrices`
+    family, the quote-side graph, the implicit-function-theorem wrapper, the factor-buffer
+    attachment and the validation triangle are all built. Increment 2 — the same IFT contract
+    around the HW2F swaption-vol calibration — is not.
 
 The autograd tape starts at *calibrated* factors today, so a greek is reported in zero-curve-node
 space. Desks explain P&L in **quote** space — par swap rates, FRA strips, OIS quotes. This
@@ -90,7 +90,7 @@ declares where its number goes — the derivative is read off it rather than res
 
 The splice is
 
-$$\text{column} = \text{base} + (q - \bar q)\,\frac{\partial \text{column}}{\partial q}$$
+$$\text{column} = \text{base} + \big(q - \texttt{detach}(q)\big)\,\frac{\partial \text{column}}{\partial q}$$
 
 which is the [boundary correction](calc_lifecycle.md#boundary-corrections--the-sensitivity-subsystem)'s
 shape and is there for the same reason: worth **exactly zero** in the forward pass, derivative one.
@@ -174,15 +174,121 @@ path. This is why an OIS benchmark is authored as a floating list with `Compound
 generated legs never pass through the compression. The shape-difference check is acknowledged
 tech debt — it works, and it is subtle enough that it is written down here.
 
+## The IFT contract {#the-ift-contract}
+
+`bootstrappers.CalibrationSolve` is the bootstrap as one differentiable node. Its contract is two
+sentences:
+
+**Forward is the ordinary solve.** It calls `damped_newton` and nothing else — same iterations,
+same tolerances, same float64 — so enabling quote gradients cannot move a mark *by construction*
+rather than by a claim someone has to re-check. Autograd runs `forward` with grad mode off, which
+the solve needs on for its own Jacobian, so it is re-enabled inside and the iteration's graph is
+discarded with the iteration. The block goes through the wrapper whether or not any quote is on the
+tape: with `quotes=None` no edge is recorded and the wrapper is a pass-through.
+
+**Backward is the implicit function theorem**, never an unrolled solver. At the fixed point
+$F(\theta^*, q) = 0$, so
+
+$$\frac{\partial F}{\partial \theta}\frac{d\theta}{dq} + \frac{\partial F}{\partial q} = 0
+\qquad\Longrightarrow\qquad
+\frac{d\theta}{dq} = -\Big(\frac{\partial F}{\partial \theta}\Big)^{-1}\frac{\partial F}{\partial q}$$
+
+and an incoming cotangent $v = \partial L/\partial\theta^*$ contracts in two steps:
+
+$$\Big(\frac{\partial F}{\partial \theta}\Big)^{\!\top} w = v
+\qquad\text{then}\qquad
+\frac{\partial L}{\partial q} = -\Big(\frac{\partial F}{\partial q}\Big)^{\!\top} w$$
+
+Both derivatives come from **autograd on the residual closure itself**, evaluated once at
+$(\theta^*, q)$: the $n \times n$ matrix by one backward pass per benchmark, the $q$ side as a
+single vector-Jacobian product with $-w$ as its cotangent. The residual is therefore *written once
+and differentiated twice*, and the quote derivative cannot drift from the one the solve converged
+on. $n$ is the benchmark count, so the linear solve is small by construction — the
+[knot rule](#the-knot-rule) is what makes it square.
+
+The Jacobian is recomputed at $\theta^*$ rather than reused from the last Newton step, which was
+taken at the iterate *before* it. That costs one iteration's worth of work.
+
+!!! warning "Every `grad` in the backward retains the graph"
+    The residual's subgraph is **shared with the forward pass** — `pv_fixed_cashflows` memoizes its
+    payment tensor in `Factor_dep` — so freeing it in the backward would take the forward pass's
+    graph with it.
+
+## The attachment {#the-attachment}
+
+θ\* still carrying its graph has to become the `InterestRate` factor leaf a calculation consumes,
+and there is exactly one seam where that is possible: `Calculation.factor_leaf`, called from both
+`_build_factor_state` branches (static and stochastic) and from `Base_Revaluation.update_factors`.
+Those three sites were the first row of [the graph audit](#the-graph-audit) — the
+`torch.tensor(current_value(...))` mint. The leaf offered there is
+
+$$\text{leaf} + \big(\theta^* - \texttt{detach}(\theta^*)\big)$$
+
+which is the [boundary correction](calc_lifecycle.md#boundary-corrections--the-sensitivity-subsystem)'s
+shape and is here for its reason: **change what reaches `backward()`, nothing about what is
+reported**. `leaf` stays a leaf, so it is still the tensor the pricers read, and `retain_grad`
+keeps `.grad` populated on the sum — the factor greek reported for that curve is the same number it
+always was, and `dV/dq` arrives in the *same* pass. Nothing about discovery ordering or
+`process_ofs` moves, which is a feature: a quote bump and its reval are bit-comparable.
+
+The switch is the declared field `Quote_Sensitivity` on the `InterestRatePrices` block, not a
+module constant. `Config.bootstrap` harvests `calibrated_factors` and `quote_leaves` off the
+bootstrapper — they are tensors, so they cannot live in `Price Factors`, which is data and gets
+written back out as JSON.
+
+!!! warning "A `Tenor_Offset` declines the attachment"
+    A non-zero offset shifts every tenor before the leaf is minted, so the curve the calculation
+    consumes is a **different** one and $d\theta_{\text{shifted}}/dq$ is not $d\theta/dq$. Attaching
+    anyway would report a plausible number that is the derivative of something nobody priced.
+
 ## The precision seam {#the-precision-seam}
 
 The bootstrap and its Jacobian are **float64 regardless of the simulation's precision**.
 `BenchmarkInstruments.dtype` states it once, and `construct_bootstrapper`'s own `dtype` — float32 by
 default — does not reach it. A solve that has to converge to 1e-10 cannot be done in float32, and
 the Jacobian handed to the implicit function theorem is only as good as the residual it came from.
-Setting that one attribute to float32 fails eight of the nine round-trip gates. Where θ\* crosses
-back into the simulation it is cast to the cube's dtype; that boundary is specified with the IFT
-contract, which is not built yet.
+Setting that one attribute to float32 fails eight of the nine round-trip gates.
+
+**θ\* crosses back into the simulation at the `Function` boundary**, and the cast is one `.to()`
+inside `factor_leaf`. Three things follow.
+
+- The cast is **differentiable**, so the cotangent arriving at `CalibrationSolve.backward` has been
+  promoted back to float64 before the linear solve sees it. A float32 cube therefore still gets a
+  float64 calibration Jacobian; what it loses is the *precision of the cotangent*, not of the
+  contraction.
+- Bit-identity survives it. `theta - theta.detach()` is evaluated **after** the cast, in the cube's
+  dtype, so it is exactly `0.0` there and `leaf + 0.0` is `leaf` for every finite value. Rounding
+  θ\* to float32 and rounding `current_value()` to float32 cannot disagree, because they are the
+  same float64 numbers.
+- The seam is **one-way**. Nothing float32 flows back into the solve: the residual closure, its
+  Jacobian and the transpose solve are all float64, and `BenchmarkInstruments` rebuilds
+  `all_tenors` per instance so a float64 solve cannot inherit a float32 tenor grid from whatever
+  ran before it.
+
+## The validation triangle {#the-validation-triangle}
+
+Three corners, deliberately independent, plus three identities that need no bump at all.
+
+| gate | what it isolates | result |
+| --- | --- | --- |
+| θ\* bit-identical, gradients on vs off | the forward pass | `np.array_equal`, max diff **0.0** |
+| round trip vs θ_true | the solve | **1.7e-15** |
+| one-pass `dV/dq` vs `dV/dθ · dθ/dq` (FD) | the linear solve and the VJP, nothing else | **8.7e-12** relative |
+| CRN quote-bump ladder | the whole job, re-authored and re-bootstrapped per rung | agreement **3.7e-11 … 8.1e-8**, flatness **8.1e-8** |
+| benchmark self-delta matrix | the IFT equation, through the full chain | `‖·− I‖∞` = **2.2e-14** |
+| reference exposure run, gradients on vs off | the stochastic branch and the xVA block | `np.array_equal` |
+
+The self-delta identity is the one worth reading twice. A benchmark is at par, so
+$PV_i(\theta^*(q), q_i) = 0$ for *every* q; differentiating that total derivative gives
+
+$$\frac{\partial PV_i}{\partial \theta}\cdot\frac{d\theta}{dq_j}
+= -\frac{\partial PV_i}{\partial q_i}\,\delta_{ij}$$
+
+The left-hand side is exactly what a calculation reports when it prices benchmark $i$ as an
+**ordinary deal** — the deal carries a number, not a quote — so the reported quote-delta matrix must
+be diagonal, and dividing by each instrument's own quote sensitivity makes it the identity. The
+normaliser is a *secant* on the fixed solved curve, because a benchmark's PV is affine in its quote,
+so no part of the check reuses the machinery it is checking.
 
 ## Non-goals {#non-goals}
 
@@ -190,3 +296,10 @@ No SIMM aggregation or regulatory bucketing — bucketed quote deltas are the ra
 stops there. No wrong-way risk. **No recalibration inside the simulation**: quote sensitivities are
 t0 risk, and future-dated dynamics stay on calibrated parameters. No new pricers, and no changes to
 the `instruments.py` pricers beyond what the t0 closure strictly requires — so far, none.
+
+Two more, specific to what landed here. **No reporting format**: `dV/dq` lands on the quote leaf in
+`Config.quote_leaves`, paired with each quote's `Descriptor`, and no `Greeks_First`-style block is
+emitted for it — `make_factor_index` reads a tenor grid off `all_factors`, and a quote is not a
+factor. **No second differentiation**: `CalibrationSolve.backward` does not support `create_graph`,
+so a Hessian in quote space is not available; the first-order contraction is what increment 1
+promised.

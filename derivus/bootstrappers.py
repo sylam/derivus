@@ -1514,6 +1514,72 @@ def damped_newton(residual, theta, n_iter, tol, halvings):
     raise Exception('Curve bootstrap: {} Newton iterations without converging'.format(n_iter))
 
 
+class CalibrationSolve(torch.autograd.Function):
+    """The bootstrap as one differentiable node: quotes in, calibrated nodes out.
+
+    FORWARD IS THE ORDINARY SOLVE. It calls `damped_newton` and nothing else - same iterations,
+    same tolerances, same float64 - so enabling quote gradients cannot move a mark by construction
+    rather than by a claim anyone has to check. Autograd runs `forward` with grad mode off, which
+    the solve needs on for its own Jacobian, so it is re-enabled here and the graph the iteration
+    builds is discarded with the iteration.
+
+    BACKWARD IS THE IMPLICIT FUNCTION THEOREM, never an unrolled solver. At the fixed point
+    `F(theta*, q) = 0`, so `dtheta/dq = -(dF/dtheta)^-1 (dF/dq)` and a cotangent `v = dL/dtheta*`
+    contracts to
+
+        w = (dF/dtheta)^-T v      then      dL/dq = -(dF/dq)^T w
+
+    Both come from autograd on the residual closure itself, evaluated once at `(theta*, q)`: the
+    n x n matrix by one backward pass per benchmark, the q side as a single vector-Jacobian product
+    with `-w` as its cotangent. So the residual is WRITTEN ONCE AND DIFFERENTIATED TWICE, and the
+    quote derivative cannot drift from the one the solve converged on.
+
+    The Jacobian is recomputed at theta* rather than reused from the last Newton step, which was
+    taken at the iterate BEFORE it. Cost is one iteration's worth on a system whose dimension is
+    the benchmark count.
+
+    Every `grad` here retains the graph. The residual's own subgraph is shared with the forward
+    pass - `pv_fixed_cashflows` memoizes its payment tensor in `Factor_dep` - so freeing it would
+    take the forward pass's graph with it.
+    """
+
+    @staticmethod
+    def forward(ctx, benchmarks, seed, n_iter, tol, halvings, quotes):
+        with torch.enable_grad():
+            theta = damped_newton(benchmarks, seed, n_iter, tol, halvings)
+        ctx.benchmarks, ctx.theta = benchmarks, theta
+        return torch.cat([theta[factor] for factor in benchmarks.solve_for])
+
+    @staticmethod
+    def backward(ctx, cotangent):
+        benchmarks, theta = ctx.benchmarks, ctx.theta
+        keys = list(benchmarks.solve_for)
+        sizes = [theta[factor].numel() for factor in keys]
+        with torch.enable_grad():
+            x = torch.cat([theta[factor] for factor in keys]).requires_grad_(True)
+            residual = benchmarks(dict(zip(keys, x.split(sizes))))
+            jacobian = torch.stack([torch.autograd.grad(residual[i], x, retain_graph=True)[0]
+                                    for i in range(residual.numel())])
+            w = torch.linalg.solve(jacobian.t(), cotangent)
+            quote_grad, = torch.autograd.grad(
+                residual, benchmarks.quotes, grad_outputs=-w.detach(), retain_graph=True)
+        return None, None, None, None, None, quote_grad
+
+
+def quote_nodes(points, discount_rate, shift=0.0):
+    """The used quotes as deal-tree nodes, each authored at its own quote plus `shift` percent.
+
+    Deep-copied because authoring WRITES the quote and the discount curve into the block, and the
+    market data it came out of is data.
+    """
+    nodes = []
+    for point in points:
+        authored = dict(copy.deepcopy(point['Deal']), Object=point['DealType'])
+        author_quote(authored, point['Quoted_Market_Value'] + shift, discount_rate)
+        nodes.append(quote_node(authored, {}))
+    return nodes
+
+
 def _pin_deposit_schedule(deal, quote):
     """A deposit has no rate field of its own. Pinning every accrual start is what makes it price
     as a fixed leg, which is also what keeps it off the forecast curve the solve is building -
@@ -1642,6 +1708,11 @@ class InterestRateCurveParameters(object):
           description='How many times the line search may halve a Newton step before giving up. '
                       'Below that the step LENGTH is not what is wrong, so the solve says so '
                       'rather than creeping towards a root it will not reach'),
+        F('Quote_Sensitivity', 'Text', default='No', values=['Yes', 'No'],
+          description='Keep the solved curve connected to its quotes, so a calculation\'s backward '
+                      'pass reports dV/dq beside dV/dtheta. Costs one extra compile of the '
+                      'benchmark set and holds the residual graph for the life of the config; the '
+                      'solved numbers are identical either way'),
         F('Points', 'Container', default={
             'Use': 'Yes', 'Deal': {}, 'Descriptor': '', 'DealType': 'DepositDeal',
             'Quote_Type': 'Par_Rate', 'Quoted_Market_Value': 0.0},
@@ -1665,6 +1736,11 @@ class InterestRateCurveParameters(object):
         self.device = device
         self.prec = dtype
         self.param = param
+        #: What a block asking for `Quote_Sensitivity` leaves behind: the solved nodes STILL
+        #: CONNECTED to their quotes, per curve, and the quote leaf per block. `Config.bootstrap`
+        #: harvests both - they are tensors, so they cannot live in `Price Factors`, which is data.
+        self.calibrated = {}
+        self.quote_leaves = {}
 
     def in_dependency_order(self, market_prices):
         """This family's blocks, one that discounts on a curve another block BUILDS coming after it.
@@ -1700,13 +1776,8 @@ class InterestRateCurveParameters(object):
 
             quotes = [point for point in block['Points'] if point['Use'] == 'Yes'
                       and self.takes(point, market_price)]
-            nodes = []
-            for point in quotes:
-                # deep-copied because authoring WRITES the quote and the discount curve into the
-                # block, and the market data it came out of is data
-                authored = dict(copy.deepcopy(point['Deal']), Object=point['DealType'])
-                author_quote(authored, point['Quoted_Market_Value'], discount_rate)
-                nodes.append(quote_node(authored, {}))
+            nodes = quote_nodes(quotes, discount_rate)
+            connect = block.get('Quote_Sensitivity', 'No') == 'Yes'
 
             # seed the block first: the closure constructs the curve factor out of `Price Factors`,
             # and a par rate is within a few basis points of the zero rate at the same maturity.
@@ -1720,20 +1791,29 @@ class InterestRateCurveParameters(object):
             time_now = time.monotonic()
             benchmarks = BenchmarkInstruments(
                 nodes, price_factors, factor_interp, base_date, block['Currency'], calendars,
-                [curve], self.device)
+                [curve], self.device,
+                quotes=[point['Quoted_Market_Value'] for point in quotes] if connect else None,
+                bumped_nodes=quote_nodes(quotes, discount_rate, 1.0) if connect else None)
             # theta off the CONSTRUCTED factor, so it is aligned with the tenor grid the pricers
-            # gather against whatever `get_tenor` did to the authored block
-            solved = damped_newton(
+            # gather against whatever `get_tenor` did to the authored block. The solve goes through
+            # the implicit-function wrapper either way - with no quotes on the tape its forward IS
+            # `damped_newton` and no edge is recorded, which is what makes "gradients cannot move a
+            # mark" structural rather than a claim
+            theta = CalibrationSolve.apply(
                 benchmarks,
                 {curve: torch.tensor(benchmarks.factors[curve].current_value(),
                                      dtype=BenchmarkInstruments.dtype, device=self.device)},
                 int(block.get('N_Iter', 50)), float(block.get('Tol', 1e-14)),
-                int(block.get('Damping_Halvings', 6)))
+                int(block.get('Damping_Halvings', 6)), benchmarks.quotes)
 
             price_factors[curve_name]['Curve'] = utils.Curve(
-                [], list(zip(benchmarks.tenors[curve], solved[curve].cpu().numpy())))
+                [], list(zip(benchmarks.tenors[curve], theta.detach().cpu().numpy())))
+            if connect:
+                self.calibrated[curve] = theta
+                self.quote_leaves[market_price] = ([point['Descriptor'] for point in quotes],
+                                                   benchmarks.quotes)
 
-            residuals = benchmarks(solved)
+            residuals = benchmarks({curve: theta.detach()}).detach()
             logging.info('{} bootstrapped from {} quotes in {:.2f} seconds, residual {:.3g}'.format(
                 curve_name, len(quotes), time.monotonic() - time_now,
                 float(residuals.abs().max())))
