@@ -187,10 +187,28 @@ dispatches on, and the class that consumes `System Parameters` is `Config` itsel
 configuration object — so giving it a `fields` list would make "a class that declares fields IS a
 type" mean something else in that module.
 
-`Interpolation_factor_map` stays hand-written. It restricts a capability that is not per-class:
-`Factor1D.check_interpolation` supports all four methods for every curve factor, so there is
-nothing on a class to read the two rows off, and emitting it would either publish all four for
-every curve factor or write the same two rows onto two classes.
+**`Interpolation_factor_map` is a view too, and the restriction it carried is real.** The last
+reading of it was that `Factor1D.check_interpolation` supports all four methods for every curve
+factor, so there was nothing on a class to read the two rows off. That is true of the
+interpolation code and beside the point. `Interpolation` is not a `Price Factors` key an author
+writes at all: `construct_factor` reads it out of the `Price Factor Interpolation` section — a
+`ModelParams` mapping factor type → method, exactly like `Model Configuration` — and injects it
+into the block, and only for `InterestRate` and `InflationRate`. So what the two rows restrict is
+the OPT-IN, which is per-class, and the menu for a type outside it would offer a setting the
+engine drops on the floor.
+
+Those two classes therefore declare `interpolation_methods`, one shared `INTERPOLATION_METHODS`
+object rather than a row copied onto each, and the map is `schema.emit_interpolation(riskfactors)`
+— the same shape as a process naming the `factor_types` it drives. Two gates pin it to the engine:
+the menu's keys are the type list `construct_factor` routes, parsed by AST in both directions, and
+every method offered is one `check_interpolation` implements and `factor_interp_map` accepts.
+`check_interpolation` falls through to `Linear` for anything it does not know, so an unimplemented
+method offered is not an error — it is a curve silently interpolated the wrong way.
+
+`SurvivalProb` is the one curve factor that overrides `check_interpolation`, with a different pair
+(`Linear` / `LinearExtrapolate`), and it is not routed — so it always takes the extrapolating
+branch. That is the current behaviour, declared by its absence from the menu rather than by a row
+nobody could honour.
 
 **A calibration owns its tuning block, and the store is authored for the first time.** The
 enumeration said this was not a migration but an authoring job against thirteen classes whose only

@@ -24,6 +24,11 @@ from scipy.stats import norm
 from scipy.optimize import brentq
 from sortedcontainers import sorteddict
 
+#: The methods `Factor1D.check_interpolation` implements, which is what a curve factor routed
+#: through `Price Factor Interpolation` may be set to. One object listed by the classes that opt
+#: in, not a row copied onto each of them.
+INTERPOLATION_METHODS = ('HermiteRT', 'Hermite', 'LinearRT', 'Linear')
+
 # map the names of various factor interpolations to something simpler
 factor_interp_map = {
     'CubicSplineCurveInterpolation': 'Hermite',
@@ -961,6 +966,7 @@ class InterestRate(Factor1D):
     Represents an Interest Rate risk factor - basically a time indexed array of rates
     Remember that the tenors are normally expressed as year fractions - not days.
     """
+    interpolation_methods = INTERPOLATION_METHODS
     fields = [
         F('Sub_Type', 'Text', default='',
           description='Set to BasisSpread if this curve is a spread over its parent'),
@@ -995,6 +1001,7 @@ class InflationRate(Factor1D):
     Represents an Interest Rate (1D) risk factor - basically a time indexed array of rates
     Remember that the tenors are normally expressed as year fractions - not days.
     """
+    interpolation_methods = INTERPOLATION_METHODS
     fields = [
         F('Price_Index', 'Text', default='', obj='Tuple',
           description='Name of the associated PriceIndex factor'),

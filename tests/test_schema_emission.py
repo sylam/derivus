@@ -37,6 +37,7 @@ PROCESS = fields.mapping['Process']
 PROCESS_FACTOR_MAP = fields.mapping['Process_factor_map']
 CALCULATION = fields.mapping['Calculation']
 CALIBRATION = fields.mapping['Calibration']
+INTERPOLATION_MAP = fields.mapping['Interpolation_factor_map']
 
 # riskfactors classes that legitimately declare no schema row of their own.
 UNDECLARED_FACTORS = {
@@ -466,6 +467,59 @@ def test_the_calculation_time_grid_is_the_key_the_engine_reads():
     assert 'Base_Time_Grid' not in CALCULATION['types']['CreditMonteCarlo']
     src = inspect.getsource(derivus)
     assert "calc_params.get('Time_Grid'" in src and 'Base_Time_Grid' not in src
+
+
+def interpolated_factor_types():
+    """The factor types `construct_factor` routes through the `Price Factor Interpolation` section,
+    read off the source.
+
+    Parsed rather than listed, for the reason `dispatched_calculations` is: a hand-kept list here
+    would be a second store of the same knowledge and would drift the same way."""
+    src = ast.parse(inspect.getsource(riskfactors))
+    fn = next(n for n in src.body
+              if isinstance(n, ast.FunctionDef) and n.name == 'construct_factor')
+    # `if factor.type in ['InterestRate', 'InflationRate']:`
+    return {c.value for n in ast.walk(fn) if isinstance(n, ast.Compare)
+            and any(isinstance(o, ast.In) for o in n.ops)
+            for comp in n.comparators if isinstance(comp, (ast.List, ast.Tuple))
+            for c in comp.elts if isinstance(c, ast.Constant)}
+
+
+def test_the_interpolation_map_is_generated():
+    """The same guard again - the two Interpolation assertions below are vacuous over an empty
+    declaration set."""
+    assert INTERPOLATION_MAP, 'no factor class declares `interpolation_methods`'
+    assert INTERPOLATION_MAP == schema.emit_interpolation(riskfactors), (
+        'the interpolation menu is not the emitted view - a hand-written copy has come back')
+
+
+def test_the_interpolation_menu_is_the_types_the_engine_routes():
+    """`Interpolation` is not a `Price Factors` key an author writes - `construct_factor` reads it
+    out of the `Price Factor Interpolation` section and injects it, and only for the types listed
+    there. Every `Factor1D` honours the key once it has one, so the restriction the two
+    hand-written rows carried was never about the interpolation code: it is this opt-in, and a
+    factor type outside it offers the author a setting the engine drops on the floor."""
+    routed = interpolated_factor_types()
+    assert set(INTERPOLATION_MAP) == routed, (
+        f'interpolation menu and the routed types disagree: '
+        f'{sorted(set(INTERPOLATION_MAP) ^ routed)}')
+
+
+def test_every_offered_interpolation_method_is_implemented():
+    """`Factor1D.check_interpolation` falls through to `Linear` for anything it does not know, so a
+    method offered but not implemented is not an error - it is a curve silently interpolated the
+    wrong way. The authored value also has to survive `factor_interp_map`, which is what
+    `construct_factor` looks it up in."""
+    src = ast.parse(textwrap.dedent(inspect.getsource(riskfactors.Factor1D.check_interpolation)))
+    implemented = {n.value for n in ast.walk(src)
+                   if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    for factor_type, methods in INTERPOLATION_MAP.items():
+        assert not set(methods) - implemented, (
+            f'{factor_type} offers methods check_interpolation does not implement: '
+            f'{sorted(set(methods) - implemented)}')
+        assert not set(methods) - set(riskfactors.factor_interp_map), (
+            f'{factor_type} offers methods factor_interp_map drops: '
+            f'{sorted(set(methods) - set(riskfactors.factor_interp_map))}')
 
 
 def calibration_classes():

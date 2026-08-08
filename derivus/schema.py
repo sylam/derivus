@@ -309,6 +309,24 @@ def emit_process(module, factor_types):
     return types, factor_map
 
 
+def emit_interpolation(module):
+    """The `Interpolation_factor_map` beside the Factor store, from the factor declarations.
+
+    `Interpolation` is NOT a key an author writes in a `Price Factors` block: `construct_factor`
+    reads it out of the `Price Factor Interpolation` section and injects it, and only for the
+    factor types that opt in. So the class declares which METHODS it can be set to rather than an
+    `F` for the block, and the map is that read straight off - the same shape as a process naming
+    the `factor_types` it drives.
+
+    The restriction the two hand-written rows carried is real and is exactly this opt-in. Every
+    `Factor1D` honours an `Interpolation` in its block, but only a routed type is ever given one,
+    so publishing the menu for the rest would offer a setting the engine drops on the floor.
+    """
+    return {factor_type: list(cls.__dict__['interpolation_methods'])
+            for factor_type, cls in vars(module).items()
+            if isinstance(cls, type) and 'interpolation_methods' in cls.__dict__}
+
+
 def emit_calculation(module):
     """The `types` of `fields.mapping['Calculation']` - each calculation TYPE holding its own.
 

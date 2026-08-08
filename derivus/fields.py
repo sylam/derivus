@@ -1,6 +1,6 @@
 from . import calculation, instruments, riskfactors, stochasticprocess
 from .schema import (BLANK, emit_calculation, emit_calibration, emit_factor, emit_instrument,
-                     emit_process)
+                     emit_interpolation, emit_process)
 
 # the Instrument, Factor, Process, Calculation and Calibration stores are VIEWS of the per-class
 # declarations, not a second copy
@@ -9,6 +9,7 @@ _factor_types = emit_factor(riskfactors)
 _process_types, _process_factor_map = emit_process(stochasticprocess, _factor_types)
 _calculation_types = emit_calculation(calculation)
 _calibration_types = emit_calibration(stochasticprocess)
+_interpolation_factor_map = emit_interpolation(riskfactors)
 
 # object list defaults, keyed by WIDGET - the shape-valued ones come from the declaration
 # vocabulary so a blank curve has one definition
@@ -66,11 +67,9 @@ mapping = {
     # the Process store is a VIEW too: a process TYPE holds its own descriptors
     'Process': {'types': _process_types},
 
-    # list mapping risk factors to allowable interpolation methods
-    'Interpolation_factor_map': {
-        "InflationRate": ['HermiteRT','Hermite','LinearRT','Linear'],
-        "InterestRate":['HermiteRT','Hermite','LinearRT','Linear']
-    },
+    # the UI's interpolation-per-factor menu, and a VIEW too: a curve factor declares the methods
+    # it can be set to, and only the types `construct_factor` routes through this section have any
+    'Interpolation_factor_map': _interpolation_factor_map,
     # the UI's valid-processes-per-factor menu, the process declarations read the other way
     # round. Every factor type is a key, including the ones no process drives.
     'Process_factor_map': _process_factor_map,
