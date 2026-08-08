@@ -2717,6 +2717,42 @@ def pricer_floor(all_resets, t_cash, factor_dep, expiries, tenor, shared, vol_ex
 
 def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.TimeGrid, deal_data: utils.DealDataType,
                            cashflow_pricer, mtm_currency=None, settle_cash=True):
+    """The floating leg. Its one invariant is CANONICAL FORM: by the time the fold below runs,
+    every cashflow row carries exactly ONE effective reset, so a row is a rate and an accrual.
+
+    Three reductions restore that form, and each lives somewhere different:
+
+    - **Averaging** happens at COMPILE. `make_float_cashflows` writes `Weight = 1/n` on each of a
+      row's `n` resets and `get_simulated_resets` applies `Weight / Accrual`, so several fixings
+      arrive as one already-averaged rate. The weight is baked in, which is why it must never reach
+      a path that compounds - a `1/n` weighted reset compounded geometrically compounds at `1/n` of
+      its rate.
+    - **OIS** happens HERE, and the switch is a SHAPE difference:
+      `all_resets.shape[1] != reset_cashflows.np.shape[0]` means a row owns several resets, which
+      `compress_no_compounding(groupsize=-1)` is what produces. Those are compounded geometrically
+      by `segment_reduce` back to one rate per row.
+    - **Method compounding** is the ordered ragged fold at the end, and it is a different axis: it
+      is several cashflow ROWS sharing one payment date (`cash_counts > 1`), each already canonical,
+      accumulated in order with the margin placed by convention.
+
+    The three margin conventions differ only in where the spread sits. Writing `int` for
+    `(rate + margin) * accrual`, `mrg` for `margin * accrual` and `N` for the nominal:
+
+    | method | fold |
+    | --- | --- |
+    | `Include_Margin` | `total + int * (total + N)` - everything compounds |
+    | `Flat` | `total + int * N + total * (int - mrg)` |
+    | `Exclude_Margin` | `total + (int - mrg) * (total + N) + mrg * N` |
+
+    !!! warning "`Flat` and `Exclude_Margin` are the SAME fold"
+        Expand both: each is `total * (1 + rate * accrual) + int * N`. They are one function written
+        two ways, at every margin and not only at zero, so the two branches below cannot be told
+        apart by any test - the difference between them is floating-point reassociation, ~1e-16
+        relative. Either `Flat` is meant to compound only the BASIC period amounts (the accumulated
+        additional amounts excluded), in which case it is unimplemented, or the two conventions
+        genuinely coincide and one name is redundant. Recorded rather than guessed at: the branch
+        below states the spread-exclusive convention as it reads, which is the honest half.
+    """
     mtm_list = []
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -2822,6 +2858,8 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
             time_ofs += size
 
             if all_resets.shape[1] != reset_cashflows.np.shape[0]:
+                # OIS: a row owning several resets is the SHAPE the compile side produces on
+                # purpose - see docs_src/developer/quote_sensitivities.md#curve-contracts
                 # check if the resets need to be averaged (compounded) before being applied (i.e. OIS)
                 reset_per_cashflows = factor_dep['Cashflows'].offsets[start_index[index]:, 0]
                 accrual = reset_block.tn[:, utils.RESET_INDEX_Accrual]  # should align with all_resets dim=1
@@ -2890,8 +2928,12 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                         total = total + (int_i * nominal[offst].reshape(1, -1, 1)) + total * (
                                 int_i - margin[offst].reshape(1, -1, 1))
                     elif factor_dep['CompoundingMethod'] == 'Exclude_Margin':
-                        total = total + (int_i * nominal[offst].reshape(1, -1, 1)) + total * (
-                                int_i - margin[offst].reshape(1, -1, 1))
+                        # spread-exclusive: the RATE compounds on principal plus accrued, the margin
+                        # stays simple on the nominal. Written as the convention reads - which is
+                        # the Flat fold rearranged, see the docstring
+                        margin_i = margin[offst].reshape(1, -1, 1)
+                        nominal_i = nominal[offst].reshape(1, -1, 1)
+                        total = total + (int_i - margin_i) * (total + nominal_i) + margin_i * nominal_i
                     else:
                         raise Exception(
                             'Floating cashflow list method {} not implemented'.format(
