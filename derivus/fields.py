@@ -1,10 +1,12 @@
-from . import instruments, riskfactors, stochasticprocess
-from .schema import BLANK, emit_factor, emit_instrument, emit_process
+from . import calculation, instruments, riskfactors, stochasticprocess
+from .schema import BLANK, emit_calculation, emit_factor, emit_instrument, emit_process
 
-# the Instrument, Factor and Process stores are VIEWS of the per-class declarations, not a second copy
+# the Instrument, Factor, Process and Calculation stores are VIEWS of the per-class declarations,
+# not a second copy
 _types, _sections = emit_instrument(instruments)
 _factor_types = emit_factor(riskfactors)
 _process_types, _process_factor_map = emit_process(stochasticprocess, _factor_types)
+_calculation_types = emit_calculation(calculation)
 
 # object list defaults, keyed by WIDGET - the shape-valued ones come from the declaration
 # vocabulary so a blank curve has one definition
@@ -104,78 +106,12 @@ mapping = {
         }
     },
 
-    'Calculation': {
-
-        'fields': {
-            'Base_Date': {'widget': 'DatePicker', 'description': 'Base Date', 'value': default['DatePicker']},
-            'Calculate': {'widget': 'Dropdown', 'description': 'Calculate', 'value': 'No', 'values': ['Yes', 'No']},
-            'Counterparty': {'widget': 'Text', 'description': 'Counterparty', 'value': ''},
-            'Collateral_Curve': {'widget': 'Text', 'description': 'Collateral Curve', 'value': ''},
-            'Funding_Curve': {'widget': 'Text', 'description': 'Funding Curve', 'value': ''},
-            'Risk_Free_Curve': {'widget': 'Text', 'description': 'Risk Free Curve', 'value': ''},
-            'Funding_Cost_Interest_Curve': {'widget': 'Text', 'description': 'Funding Cost Interest Curve', 'value': ''},
-            'Funding_Benefit_Interest_Curve': {'widget': 'Text', 'description': 'Funding Benefit Interest Curve', 'value': ''},
-            'Collateral_Spread': {'widget': 'Integer', 'description': 'Collateral Spread', 'value': 0},
-            'Funding_Spread': {'widget': 'Integer', 'description': 'Funding Spread', 'value': 0},
-            'Bank': {'widget': 'Text', 'description': 'Bank', 'value': ''},
-            'Deflate_Stochastically': {'widget': 'Dropdown', 'description': 'Deflate Stochastically', 'value': 'Yes',
-                                       'values': ['Yes', 'No']},
-            'Stochastic_Hazard_Rates': {'widget': 'Dropdown', 'description': 'Stochastic Hazard Rates', 'value': 'No',
-                                        'values': ['Yes', 'No']},
-            'Stochastic_Funding': {'widget': 'Dropdown', 'description': 'Stochastic Funding', 'value': 'No',
-                                        'values': ['Yes', 'No']},
-            'Gradient': {'widget': 'Dropdown', 'description': 'Gradient', 'value': 'No', 'values': ['Yes', 'No']},
-            'Greeks': {'widget': 'Dropdown', 'description': 'Greeks', 'value': 'No', 'values': ['First', 'No']},
-            'Antithetic': {'widget': 'Dropdown', 'description': 'Antithetic', 'value': 'No', 'values': ['Yes', 'No']},            
-            'Base_Time_Grid': {'widget': 'Text', 'description': 'Base Time Grid',
-                               'value': '0d 2d 1w(1w) 3m(1m) 2y(3m)'},
-            'Dynamic_Scenario_Dates': {'widget': 'Dropdown', 'description': 'Dynamic Scenario Dates',
-                                       'value': 'Yes', 'values': ['Yes', 'No']},
-            'Currency': {'widget': 'Text', 'description': 'Currency', 'value': 'ZAR'},
-            'Percentile': {'widget': 'Text', 'description': 'Percentile', 'value': '95'},
-            'Simulation_Batches': {'widget': 'Integer', 'description': 'Simulation Batches', 'value': 1},
-            'MCMC_Simulations': {'widget': 'Integer', 'description': 'MCMC Simulations', 'value': 2048},
-            'Batch_Size': {'widget': 'Integer', 'description': 'Batch Size', 'value': 1024},
-            'Random_Seed': {'widget': 'Integer', 'description': 'Random Seed', 'value': 5120},
-            'Calc_Scenarios': {'widget': 'Dropdown', 'description': 'Calc Scenarios', 'value': 'No',
-                               'values': ['At_Percentile', 'All', 'No']},
-            'Deflation_Interest_Rate': {'widget': 'Text', 'description': 'Deflation Interest Rate',
-                                        'value': 'ZAR-SWAP'},
-            'Credit_Valuation_Adjustment': {'widget': 'Container', 'description': 'Credit Valuation Adjustment',
-                                            'value': {"Calculate": "No", "Counterparty": "", "Bank": "",
-                                                      "Deflate_Stochastically": "Yes", "Stochastic_Hazard_Rates": "No",
-                                                      "Gradient": "No"},
-                                            'sub_fields': ['Calculate', 'Counterparty', 'Bank',
-                                                           'Deflate_Stochastically', 'Stochastic_Hazard_Rates',
-                                                           'Gradient']},
-            'Funding_Valuation_Adjustment': {'widget': 'Container', 'description': 'Funding Valuation Adjustment',
-                                             'value': {"Calculate": "No", "Counterparty": "", "Bank": "",
-                                                       "Risk_Free_Curve": "", "Funding_Cost_Interest_Curve": "",
-                                                       "Funding_Benefit_Interest_Curve": "",
-                                                       "Deflate_Stochastically": "Yes", "Stochastic_Funding": "No",
-                                                       "Gradient": "No"},
-                                            'sub_fields': ['Calculate', 'Counterparty', 'Bank', 'Risk_Free_Curve',
-                                                           'Funding_Cost_Interest_Curve', 'Funding_Benefit_Interest_Curve', 
-                                                           'Deflate_Stochastically', 'Stochastic_Funding',
-                                                           'Gradient']},
-            'Collateral_Valuation_Adjustment': {'widget': 'Container', 'description': 'Collateral Valuation Adjustment',
-                                                'value': {"Calculate": "No", "Collateral_Curve": "",
-                                                          "Funding_Curve": "", "Collateral_Spread": 0,
-                                                          "Funding_Spread": 0, "Gradient": "No"},
-                                                'sub_fields': ['Calculate', 'Collateral_Curve',
-                                                               'Funding_Curve', 'Collateral_Spread',
-                                                               'Funding_Spread', 'Gradient']},
-            'Generate_Cashflows': {'widget': 'Dropdown', 'description': 'Generate Cashflows', 'value': 'Yes',
-                                   'values': ['Yes', 'No'], 'Output': 'Cashflows'}
-        },
-        'types': {
-            'CreditMonteCarlo': ['Base_Date', 'Currency', 'Base_Time_Grid', 'Deflation_Interest_Rate', 'Percentile',  
-                                 'MCMC_Simulations', 'Simulation_Batches', 'Batch_Size', 'Random_Seed', 'Antithetic', 
-                                 'Calc_Scenarios', 'Dynamic_Scenario_Dates', 'Generate_Cashflows', 'Credit_Valuation_Adjustment', 
-                                 'Funding_Valuation_Adjustment', 'Collateral_Valuation_Adjustment'],
-            'BaseValuation': ['Base_Date', 'Currency', 'MCMC_Simulations', 'Random_Seed', 'Greeks']
-        }
-    },
+    # the Calculation store is a VIEW too, keyed by the `Object` string a job document writes
+    'Calculation': {'types': _calculation_types},
+    # `System` stays hand-written. Its one "type" is a UI panel name rather than anything the JSON
+    # dispatches on, and the class that consumes `System Parameters` is `Config` itself - the whole
+    # configuration object, so giving it a `fields` list would make "a class that declares fields
+    # IS a type" mean something else in that module.
     'System': {
         'fields': {
             'Base_Currency': {'widget': 'Text', 'description': 'Base Currency', 'value': ''},

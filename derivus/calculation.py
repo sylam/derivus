@@ -36,6 +36,7 @@ from .instruments import get_fxrate_factor, get_survival_component, get_interest
 from .pricing import SensitivitiesEstimator
 # import the documentation and utils modules
 from . import utils, pricing
+from .schema import F
 from .hedge_runtime import construct_hedge_runtime
 from .hedge_bundle import Bundle, run_hedge_execution, HedgeRuntimeExecutionResult
 from .hedge_solver import StreamingSolve
@@ -782,6 +783,89 @@ class Credit_Monte_Carlo(Calculation):
         'portfolios.',
         ' - **Generate Cashflows** - returns the simulated cashflows during the simulation period'
     ])
+
+    calc_type = 'CreditMonteCarlo'
+    fields = [
+        F('Base_Date', 'Date', default=''),
+        F('Currency', 'Text', default='ZAR'),
+        F('Time_Grid', 'Text', default='0d 2d 1w(1w) 3m(1m) 2y(3m)'),
+        F('Deflation_Interest_Rate', 'Text', default='ZAR-SWAP'),
+        F('Percentile', 'Text', default='95'),
+        F('MCMC_Simulations', 'Integer', default=2048),
+        F('Simulation_Batches', 'Integer', default=1),
+        F('Batch_Size', 'Integer', default=1024),
+        F('Random_Seed', 'Integer', default=5120),
+        F('Tenor_Offset', 'Float', default=0.0,
+          description='Years to shift every factor tenor by before the run'),
+        F('Antithetic', 'Text', default='No', values=['Yes', 'No']),
+        F('Calc_Scenarios', 'Text', default='No', values=['At_Percentile', 'All', 'No']),
+        F('Dynamic_Scenario_Dates', 'Text', default='Yes', values=['Yes', 'No']),
+        F('Generate_Cashflows', 'Text', default='Yes', values=['Yes', 'No']),
+        F('Keep_Tensor', 'Text', default='No', values=['Yes', 'No'],
+          description='Keep the simulated mtm tensor on the device after the run'),
+        F('NoModel', 'Text', default='Constant', values=['Constant', 'RiskNeutral'],
+          description='How a factor with no stochastic process evolves'),
+        F('Gradient_Variables', 'Text', default='All', values=['All', 'Factors', 'Implied'],
+          description='Which leaves the sensitivity engine differentiates'),
+        F('Boundary_AAD_Bandwidth', 'Float', default=0.01,
+          description='Kernel bandwidth of the boundary correction assembled into backward()'),
+        F('Credit_Valuation_Adjustment', 'Container',
+          default={"Calculate": "No", "Counterparty": "", "Bank": "",
+                   "Deflate_Stochastically": "Yes", "Stochastic_Hazard_Rates": "No",
+                   "Gradient": "No"},
+          sub_fields=[
+              F('Calculate', 'Text', default='No', values=['Yes', 'No']),
+              F('Counterparty', 'Text', default=''),
+              F('Bank', 'Text', default=''),
+              F('Deflate_Stochastically', 'Text', default='Yes', values=['Yes', 'No']),
+              F('Stochastic_Hazard_Rates', 'Text', default='No', values=['Yes', 'No']),
+              F('Gradient', 'Text', default='No', values=['Yes', 'No']),
+              F('Hessian', 'Text', default='No', values=['Yes', 'No'],
+                description='Second derivatives of the CVA as well as the first'),
+              F('CDS_Tenors', 'Container', default=[],
+                description='Tenors in years to add to the survival curve so CDS rates can be '
+                            'interpolated off it')]),
+        F('Funding_Valuation_Adjustment', 'Container',
+          default={"Calculate": "No", "Counterparty": "", "Bank": "", "Risk_Free_Curve": "",
+                   "Funding_Cost_Interest_Curve": "", "Funding_Benefit_Interest_Curve": "",
+                   "Deflate_Stochastically": "Yes", "Stochastic_Funding": "No", "Gradient": "No"},
+          sub_fields=[
+              F('Calculate', 'Text', default='No', values=['Yes', 'No']),
+              F('Counterparty', 'Text', default=''),
+              F('Bank', 'Text', default=''),
+              F('Risk_Free_Curve', 'Text', default=''),
+              F('Funding_Cost_Interest_Curve', 'Text', default=''),
+              F('Funding_Benefit_Interest_Curve', 'Text', default=''),
+              F('Deflate_Stochastically', 'Text', default='Yes', values=['Yes', 'No']),
+              F('Stochastic_Funding', 'Text', default='No', values=['Yes', 'No']),
+              F('Gradient', 'Text', default='No', values=['Yes', 'No'])]),
+        F('Collateral_Valuation_Adjustment', 'Container',
+          default={"Calculate": "No", "Collateral_Curve": "", "Funding_Curve": "",
+                   "Collateral_Spread": 0, "Funding_Spread": 0, "Gradient": "No"},
+          sub_fields=[
+              F('Calculate', 'Text', default='No', values=['Yes', 'No']),
+              F('Collateral_Curve', 'Text', default=''),
+              F('Funding_Curve', 'Text', default=''),
+              F('Collateral_Spread', 'Integer', default=0),
+              F('Funding_Spread', 'Integer', default=0),
+              F('Gradient', 'Text', default='No', values=['Yes', 'No'])]),
+        F('Initial_Margin', 'Container',
+          default={"Calculate": "No", "Liquidity_Weights": "", "IRS_Weights": "",
+                   "Local_Currency": "", "IM_Currency": "", "Delta_Factor": 1.0},
+          description='The LCH-style initial margin add-on',
+          sub_fields=[
+              F('Calculate', 'Text', default='No', values=['Yes', 'No']),
+              F('Liquidity_Weights', 'Text', default='',
+                description='Path to the liquidity-weight csv, indexed by tenor bucket'),
+              F('IRS_Weights', 'Text', default='',
+                description='Path to the delta-weight csv, indexed by tenor bucket'),
+              F('Local_Currency', 'Text', default='',
+                description='The currency whose curves are charged the local weights'),
+              F('IM_Currency', 'Text', default='', obj='Tuple',
+                description='Currency the margin is reported in'),
+              F('Delta_Factor', 'Float', default=1.0,
+                description='Multiplier on the delta charge before the liquidity add-on')])
+    ]
 
     def __init__(self, config, **kwargs):
         super(Credit_Monte_Carlo, self).__init__(config, **kwargs)
@@ -1643,6 +1727,17 @@ class Base_Revaluation(Calculation):
                       'statistics.'
                       ])
 
+    calc_type = 'BaseValuation'
+    fields = [
+        F('Base_Date', 'Date', default=''),
+        F('Currency', 'Text', default='ZAR'),
+        F('MCMC_Simulations', 'Integer', default=2048),
+        F('Random_Seed', 'Integer', default=5120),
+        F('Greeks', 'Text', default='No', values=['First', 'No']),
+        F('Boundary_AAD_Bandwidth', 'Float', default=0.01,
+          description='Kernel bandwidth of the boundary correction assembled into backward()')
+    ]
+
     def __init__(self, config, **kwargs):
         super(Base_Revaluation, self).__init__(config, **kwargs)
         self.base_date = None
@@ -1959,6 +2054,48 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         'difference is what we do with the simulated MtMs: aggregate into exposures, or',
         'feed into a learning loop.'
     ])
+
+    calc_type = 'HedgeMonteCarlo'
+    fields = [
+        F('Base_Date', 'Date', default=''),
+        F('Currency', 'Text', default='ZAR'),
+        F('Time_Grid', 'Text', default='0d 1d(1d) 4m'),
+        F('Calendar', 'Text', default='',
+          description='Holiday calendar naming the business day the roll steps on'),
+        F('Simulation_Batches', 'Integer', default=1),
+        F('Batch_Size', 'Integer', default=1024),
+        F('Random_Seed', 'Integer', default=5120),
+        F('Antithetic', 'Text', default='No', values=['Yes', 'No']),
+        F('Execution_Mode', 'Text', default='simulate_only',
+          values=['simulate_only', 'solve_hedge']),
+        F('Inner_MC_Enabled', 'Text', default='No', values=['Yes', 'No'],
+          description='Required by solve_hedge - the nested simulation the DP sweep prices on'),
+        F('Inner_Sub_Batch', 'Integer', default=0,
+          description='Inner draws per outer path; peak memory is Batch_Size x this'),
+        F('Inner_Antithetic', 'Text', default='No', values=['Yes', 'No'],
+          description='Mirror the inner Sobol draws as (z, -z) pairs - needs an even '
+                      'Inner_Sub_Batch'),
+        F('Inner_Draws', 'Text', default='sobol', values=['sobol', 'random']),
+        F('Observed_Scenario', 'Text', default='',
+          description='Path to an npz of realized factor paths that replace the simulated draw'),
+        F('Hedging_Problem', 'Container', default={},
+          description='The hedging problem itself - tradables, liabilities, objective, solver',
+          sub_fields=[
+              F('History_Lookback_Business_Days', 'Integer', default=30),
+              F('Randomize_Initial_State', 'Text', default='No', values=['Yes', 'No']),
+              F('Tradable_Instruments', 'Container', default={},
+                description='Deal blocks keyed by Object then by Reference'),
+              F('Liabilities', 'Container', default={},
+                description='Deal blocks keyed by Object then by Reference'),
+              F('Portfolio_State', 'Container', default={},
+                description='Opening positions, cash balances and posted margin'),
+              F('Objective', 'Container', default={},
+                description='The utility SHAPE and its parameters, dispatched on Object'),
+              F('Evaluator', 'Container', default={},
+                description='Accounting mode and cash instruments, dispatched on Object'),
+              F('Solver', 'Container', default={},
+                description='The value-function solver and its schedule, dispatched on Object')])
+    ]
 
     @staticmethod
     def _factor_bundle_key(factor_key):

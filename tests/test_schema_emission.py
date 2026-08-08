@@ -1,7 +1,7 @@
-"""`fields.mapping['Instrument']` and `['Factor']` are generated from the per-class `fields`
-declarations, and a SECTION (deals) or a TYPE (factors) owns its descriptors. So there is no
-round-trip to gate - the old test diffed the emitted dict against a hand-written one, and both
-sides are now the same object.
+"""`fields.mapping['Instrument']`, `['Factor']`, `['Process']` and `['Calculation']` are generated
+from the per-class `fields` declarations, and a SECTION (deals) or a TYPE (everything else) owns
+its descriptors. So there is no round-trip to gate - the old test diffed the emitted dict against a
+hand-written one, and both sides are now the same object.
 
 Three defect classes are unreachable by construction rather than merely absent, which is why the
 gates that guarded them are gone:
@@ -13,23 +13,29 @@ gates that guarded them are gone:
   - one field name silently resolving to another deal's descriptor - each section holds its own
 
 What remains gateable is what the declarations can still get wrong: a malformed descriptor, a
-section declared two ways by two classes, a shared group copied instead of shared, and a deal type
-that no create-menu offers.
+section declared two ways by two classes, a shared group copied instead of shared, a deal type that
+no create-menu offers, a process no factor menu offers, and a calculation type `run_job` cannot
+dispatch.
 """
+import ast
+import inspect
 import os
 import sys
+import textwrap
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pytest
 
-from derivus import fields, instruments, riskfactors, schema, stochasticprocess
+import derivus
+from derivus import calculation, fields, instruments, riskfactors, schema, stochasticprocess
 
 INSTRUMENT = fields.mapping['Instrument']
 FACTOR = fields.mapping['Factor']
 PROCESS = fields.mapping['Process']
 PROCESS_FACTOR_MAP = fields.mapping['Process_factor_map']
+CALCULATION = fields.mapping['Calculation']
 
 # riskfactors classes that legitimately declare no schema row of their own.
 UNDECLARED_FACTORS = {
@@ -111,6 +117,49 @@ def test_descriptor_shape(cls_name):
     for group in declared_classes()[cls_name]:
         for f in every_field(group):
             check_descriptor(f'{cls_name}.{group.name}.{f.key}', f.descriptor())
+
+
+# Descriptors whose JSON value is an array or a map whose SHAPE is an OUTPUT - an NxN transition
+# matrix, a length-N regime vector, a list of per-regime dicts, a deal map keyed by Object then by
+# Reference. `Table` declares fixed columns and `Container` fixed named children, so the
+# vocabulary cannot state any of them, and the Workbench raises on all of them. Pinned by
+# `test_the_descriptors_with_no_widget_are_exactly_these`, which is the known-defect gate: it
+# fails both when one appears and when one is fixed. Keyed (type, dotted key).
+SHAPELESS = {
+    ('MarkovSwitchingLogOUSpotModel', 'States'),
+    ('MarkovSwitchingLogOUSpotModel', 'Transition_Matrix'),
+    ('MarkovSwitchingLogOUSpotModel', 'Initial_State_Probs'),
+    ('MarkovHMMSpotModel', 'States'),
+    ('MarkovHMMSpotModel', 'Transition_Matrix'),
+    ('MarkovHMMSpotModel', 'Initial_State_Probs'),
+    ('VARMixedFactorInterestRateModel', 'Mean'),
+    ('VARMixedFactorInterestRateModel', 'Phi'),
+    ('VARMixedFactorInterestRateModel', 'Sigma'),
+    ('VARMixedFactorInterestRateModel', 'Calibration_Tenors'),
+    ('BasisLinkedSpotModel', 'Sigma_By_State'),
+    ('CreditMonteCarlo', 'Credit_Valuation_Adjustment.CDS_Tenors'),
+    ('HedgeMonteCarlo', 'Hedging_Problem.Tradable_Instruments'),
+    ('HedgeMonteCarlo', 'Hedging_Problem.Liabilities'),
+    ('HedgeMonteCarlo', 'Hedging_Problem.Portfolio_State'),
+    ('HedgeMonteCarlo', 'Hedging_Problem.Objective'),
+    ('HedgeMonteCarlo', 'Hedging_Problem.Evaluator'),
+    ('HedgeMonteCarlo', 'Hedging_Problem.Solver'),
+}
+
+
+def is_shapeless(d):
+    """A Container with no children or a Table with no columns - the two ways a descriptor can
+    name a shape the vocabulary cannot state."""
+    return ((d['widget'] == 'Container' and 'sub_fields' not in d)
+            or (d['widget'] == 'Table' and 'col_names' not in d))
+
+
+def check_shape(key, d):
+    """`check_descriptor` skipping the pinned shapeless set, so the gate covers everything else."""
+    if (key.split('.')[0], key.split('.', 1)[1]) not in SHAPELESS:
+        check_descriptor(key, d)
+    for sub_key, sub in d.get('sub_fields', {}).items():
+        check_shape(f'{key}.{sub_key}', sub)
 
 
 def check_descriptor(key, d):
@@ -268,30 +317,12 @@ def test_every_process_class_is_declarable():
     assert not missing, f'process classes no schema can author: {missing}'
 
 
-# Processes whose block carries an array whose SHAPE is a calibration output - an NxN transition
-# matrix, a length-N regime vector, a list of per-regime dicts. See the xfail below.
-SHAPELESS_ARRAY_PROCESSES = {
-    'MarkovSwitchingLogOUSpotModel', 'MarkovHMMSpotModel',
-    'VARMixedFactorInterestRateModel', 'BasisLinkedSpotModel'}
-
-
-@pytest.mark.parametrize('cls_name', [
-    pytest.param(n, marks=pytest.mark.xfail(strict=True, reason='shapeless array - no widget'))
-    if n in SHAPELESS_ARRAY_PROCESSES else n for n in sorted(process_classes())])
+@pytest.mark.parametrize('cls_name', sorted(process_classes()))
 def test_process_descriptor_shape(cls_name):
-    """`check_descriptor` again, over the process declarations - same tagged union, same consumers.
-
-    Four processes fail it, and the xfail is strict because the defect is live rather than
-    theoretical: `define_input` reads `element['sub_fields']` for a Container and
-    `element['col_names']` for a Table without checking, so eleven descriptors raise KeyError the
-    moment the Workbench renders a Markov, VAR or basis process - which is every process in the
-    platinum world. The declaration is not the bug: `Transition_Matrix` is NxN, `Mean` and
-    `Sigma_By_State` are length-N, and `States` is a list of per-regime dicts, so their shape is a
-    calibration OUTPUT. Table declares fixed columns and Container fixed named children, and
-    neither can say that. Migrating the store put the defect where it can be declared away rather
-    than fixing it - which wants a widget, not a schema change."""
+    """`check_descriptor` again, over the process declarations - same tagged union, same
+    consumers. The shapeless arrays are pinned separately, below."""
     for f in process_classes()[cls_name]:
-        check_descriptor(f'{cls_name}.{f.key}', f.descriptor())
+        check_shape(f'{cls_name}.{f.key}', f.descriptor())
 
 
 @pytest.mark.parametrize('cls_name', sorted(process_classes()))
@@ -349,6 +380,114 @@ def test_one_name_may_carry_two_shapes_in_different_processes():
     assert types['VARMixedFactorInterestRateModel']['Phi']['widget'] == 'Table'
     assert types['BasisLinkedSpotModel']['Phi']['widget'] == 'Float'
     assert not any('sigma' in d for d in types.values()), 'the lowercase alias key is back'
+
+
+def calculation_classes():
+    """Calculation classes carrying their own `fields`, keyed by the `Object` string a job writes
+    rather than by the class name - `Base_Revaluation` is authored as `BaseValuation`."""
+    return {c.__dict__['calc_type']: c for c in vars(calculation).values()
+            if isinstance(c, type) and isinstance(c.__dict__.get('fields'), list)}
+
+
+def dispatched_calculations():
+    """The `Object` strings `Context.run_job` actually branches on, read off the source.
+
+    Parsed rather than listed, for the reason `bootstrapped_market_factor_types` is: a hand-kept
+    list here would be a fourth store of the same knowledge and would drift the same way."""
+    found = set()
+    src = inspect.getsource(derivus.Context.run_job)
+    for node in ast.walk(ast.parse(textwrap.dedent(src))):
+        # `if self.current_cfg.deals['Calculation']['Object'] == 'X':`
+        if isinstance(node, ast.Compare) and isinstance(node.left, ast.Subscript) \
+                and isinstance(node.left.slice, ast.Constant) and node.left.slice.value == 'Object':
+            found.update(c.value for c in node.comparators
+                         if isinstance(c, ast.Constant) and isinstance(c.value, str))
+    return found
+
+
+def test_the_calculation_store_is_generated():
+    """The same guard again - every Calculation assertion here is vacuous over an empty
+    declaration set."""
+    assert calculation_classes(), 'no calculation class declares `fields` - these gates are vacuous'
+    assert CALCULATION['types'] == schema.emit_calculation(calculation), (
+        'the Calculation store is not the emitted view - a hand-written copy has come back')
+    assert 'fields' not in CALCULATION, 'a flat name-keyed store has come back beside the types'
+
+
+def test_every_declared_calculation_type_is_dispatchable():
+    """`run_job` branches on the `Object` string and RAISES on a miss, so a declared type naming no
+    branch is a calculation the Workbench offers in its create menu and the engine refuses to run.
+
+    The type is the `Object` string, which is not the class name: `Base_Revaluation` is authored as
+    `BaseValuation`. The class states its own with `calc_type` rather than the emitter unmangling
+    underscores, because no rule recovers one of those words from the other."""
+    undispatchable = sorted(set(CALCULATION['types']) - dispatched_calculations())
+    assert not undispatchable, f'schema offers calculations run_job cannot dispatch: {undispatchable}'
+
+
+def test_every_dispatchable_calculation_is_declared():
+    """The converse, which is where the drift was: `HedgeMonteCarlo` had a `run_job` branch, a
+    documented `Hedging_Problem` contract and two shipped fixtures, and no schema row at all. So
+    the Workbench's create menu did not offer it, and opening a job that used it raised KeyError in
+    `CalculationPage.load_items` - the store is indexed by the block's own `Object`."""
+    undeclared = sorted(dispatched_calculations() - set(CALCULATION['types']))
+    assert not undeclared, f'calculations run_job dispatches that no schema declares: {undeclared}'
+
+
+@pytest.mark.parametrize('calc_type', sorted(calculation_classes()))
+def test_calculation_descriptor_shape(calc_type):
+    """`check_descriptor` over the calculation declarations, containers recursed - the CVA, FVA,
+    CollVA and initial-margin blocks are where the nesting is."""
+    for key, d in CALCULATION['types'][calc_type].items():
+        check_shape(f'{calc_type}.{key}', d)
+
+
+@pytest.mark.parametrize('calc_type', sorted(calculation_classes()))
+def test_no_calculation_declares_a_key_twice(calc_type):
+    """One dict per type keyed by the JSON name, so a name declared twice loses a descriptor."""
+    keys = [f.key for f in calculation_classes()[calc_type].__dict__['fields']]
+    dupes = sorted({k for k in keys if keys.count(k) > 1})
+    assert not dupes, f'{calc_type} declares {dupes} more than once'
+
+
+def test_the_calculation_time_grid_is_the_key_the_engine_reads():
+    """The drift this migration fixed. The store declared `Base_Time_Grid`; `run_cmc` and
+    `run_hedgemontecarlo` read `calc_params.get('Time_Grid', ...)` and every fixture and doc
+    writes `Time_Grid`, so the Workbench's grid field wrote a key nobody reads and a
+    Workbench-authored run silently took the hardcoded default grid."""
+    assert 'Time_Grid' in CALCULATION['types']['CreditMonteCarlo']
+    assert 'Time_Grid' in CALCULATION['types']['HedgeMonteCarlo']
+    assert 'Base_Time_Grid' not in CALCULATION['types']['CreditMonteCarlo']
+    src = inspect.getsource(derivus)
+    assert "calc_params.get('Time_Grid'" in src and 'Base_Time_Grid' not in src
+
+
+def test_the_descriptors_with_no_widget_are_exactly_these():
+    """The known defect, pinned in both directions: a new shapeless descriptor fails here, and so
+    does fixing one without updating the list.
+
+    `define_input` reads `element['col_names']` for a Table and `element['sub_fields']` for a
+    Container without checking, so every entry below raises KeyError the moment the Workbench
+    renders it - which is every process in the platinum world, and the hedging problem itself. The
+    declarations are not wrong: the shape of a transition matrix, a regime vector or a deal map
+    keyed by Object then Reference is an OUTPUT, and the vocabulary has no way to say that.
+    Migrating the two stores is what made the defect expressible; the fix wants a widget."""
+    found = set()
+
+    def walk(type_name, key, d):
+        if is_shapeless(d):
+            found.add((type_name, key))
+        for sub_key, sub in d.get('sub_fields', {}).items():
+            walk(type_name, f'{key}.{sub_key}', sub)
+    for store in (PROCESS['types'], CALCULATION['types'], FACTOR['types']):
+        for type_name, descriptors in store.items():
+            for key, d in descriptors.items():
+                walk(type_name, key, d)
+    for section in INSTRUMENT['sections'].values():
+        for key, d in section.items():
+            walk('Instrument', key, d)
+    assert found == SHAPELESS, (
+        f'appeared: {sorted(found - SHAPELESS)}; fixed or gone: {sorted(SHAPELESS - found)}')
 
 
 def test_a_2d_and_a_3d_surface_may_both_be_called_surface():

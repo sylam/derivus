@@ -1210,11 +1210,9 @@ class CalculationPage(TreePanel):
 
         self.data = {}
 
-        # get the fields from the master list
-        self.calculation_fields = self.load_fields(
-            rf.fields.mapping['Calculation']['types'],
-            rf.fields.mapping['Calculation']['fields']
-        )
+        # a calculation type IS its descriptors, keyed by the Object string a job document writes
+        self.calculation_fields = {calc_type: self.load_descriptors(descriptors) for calc_type,
+                                   descriptors in rf.fields.mapping['Calculation']['types'].items()}
 
         calculation_to_add = []
         if self.config.deals.get('Calculation'):

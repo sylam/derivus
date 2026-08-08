@@ -18,7 +18,7 @@ Two rules apply to everything here, from [Conventions](conventions.md):
 | `pv_partial_barrier_option` | `pricing` | Excluded from the sensitivity work by decision; wants its own review. Also carries a suspected NaN — `limit` goes negative past `Barrier_Limit_Date` and is passed to `sqrt` unclamped. **Read, not run.** |
 | A sibling fallback may name a factor discovery never fetched | each deal's `calc_dependencies` | Discovery iterates `factor_fields` over the RAW field and `get_fieldname` drops blanks, so a blank reference loads no factor. A fallback is only safe if it names one something ELSE already pulled in. `Discount_Rate ← Currency` is safe — 34 sites — because `Currency` is an `FxRate` and `dependant_fields` pulls its `InterestRate` transitively. Adding a fallback to a field whose sibling has no such edge silently resolves to whatever the sibling's chain did load. The one cross-leg instance (`FXForwardDeal.Sell_Discount_Rate ← Buy_Currency`) is fixed: both rates are `default=REQUIRED` with no fallback. |
 | Four tables the Workbench cannot save | `derivus_jupyter.set_value_from_widget` | `set_repr` picks a deserializer from the `obj` token, and for an untagged table falls to a hardcoded whitelist of field NAMES. `Names`, `Sampling_Data_1`, `Sampling_Data_2` and `Barrier_Dates` are outside it and raise. The token table is per-field knowledge the `Row` now carries — the fix is to render from the declaration, not to add a fifth token. |
-| Eleven process descriptors have no widget | `stochasticprocess` (Markov / VAR / basis models) | `Transition_Matrix` is N×N, `Mean` and `Sigma_By_State` are length-N, `States` is a list of per-regime dicts — their shape is a calibration OUTPUT, and `Table` declares fixed columns while `Container` declares fixed named children. `define_input` reads `element['col_names']` / `element['sub_fields']` unchecked, so the Workbench raises the moment it renders any process in the platinum world. Shipped as a strict xfail per class. The fix wants a widget, not a schema change. |
+| Eighteen descriptors have no widget | `stochasticprocess` (Markov / VAR / basis models), `calculation` (`Hedging_Problem`, `CDS_Tenors`) | `Transition_Matrix` is N×N, `Mean` and `Sigma_By_State` are length-N, `States` is a list of per-regime dicts, `Tradable_Instruments` is a deal map keyed by `Object` then by `Reference` — every one of those shapes is an OUTPUT, and `Table` declares fixed columns while `Container` declares fixed named children. `define_input` reads `element['col_names']` / `element['sub_fields']` unchecked, so the Workbench raises the moment it renders any process in the platinum world, or the hedging problem itself. Pinned by an exact-set gate that fails in both directions. The fix wants a widget, not a schema change. |
 | Boundary scoping is not mutation-gated | `tests/test_boundary_pricer_events.py` | The fix is verified by measuring the term directly against CRN, but both two-netting-set gates measure the END-TO-END gradient, where the boundary term is a small fraction — so if it breaks later the suite stays green. Isolating it needs a portfolio where the correction dominates the smooth sensitivity, which is not a portfolio anyone runs. |
 
 ## Designed, not built
@@ -150,6 +150,42 @@ shipped in a fixture and documented), `CSImpliedForwardPriceModel`,
 declarable: the first is one half of the exactly-one-of pair the class asserts on and the shipped
 platinum market data carries it, the second is written by the calibration into every block it
 emits.
+
+**A calculation owns its parameters, and the audit is the point.** The three calculation classes
+carry a `fields` list and a `calc_type` naming the `Object` string a job writes, and
+`mapping['Calculation']['types']` is `schema.emit_calculation(calculation)`. The type is keyed by
+that string rather than the class name — `Base_Revaluation` is authored as `BaseValuation` — and
+a gate holds every declared type to reaching a real branch of `run_job`, parsed by AST for the
+reason the `MarketPrices` gate is: a hand-kept list would be a fourth store.
+
+`HedgeMonteCarlo` had no schema row at all, which is worse for a calculation than for a deal: the
+store is indexed by the block's own `Object`, so `CalculationPage.load_items` raised KeyError and
+the Workbench could not open a hedging job.
+
+The declared-versus-read audit is most of what this bought. **`Base_Time_Grid` was declared and
+never read** — `run_cmc` and `run_hedgemontecarlo` read `Time_Grid`, and so do every fixture and
+the JSON reference's own example — so the Workbench's grid field wrote a key nobody reads and a
+Workbench-authored run silently took the hardcoded default grid. Eight more keys were read and
+never declared: `Tenor_Offset`, `Keep_Tensor`, `NoModel`, `Gradient_Variables`,
+`Boundary_AAD_Bandwidth` (also on base valuation), the whole `Initial_Margin` block, and
+`Hessian` / `CDS_Tenors` inside the CVA block — the last already published in the JSON reference's
+example. Their descriptor defaults are the engine's own `.get` defaults, which is the only
+defensible source for them.
+
+Four are declared and NOT read, and stay declared as unbuilt functionality:
+`Credit_Valuation_Adjustment.Bank`, `Funding_Valuation_Adjustment.Bank` and
+`Funding_Valuation_Adjustment.Stochastic_Funding` reach no read anywhere, and
+`System.Exclude_Deals_With_Missing_Market_Data` likewise. Two calculation options are read and
+still undeclared by decision: `DealLevel` is passed straight to `deal_level_mtm=` as a BOOL, and
+every boolean-ish descriptor in the vocabulary is a `'True'`/`'False'` STRING, which is truthy in
+both positions; and `LegacyFVA`, whose own comment says it is to be removed. Three keys the
+shipped market data carries — `Grouping_File`, `Proxying_Rules_File`,
+`Script_Base_Scenario_Multiplier` — are in no store and reach no read.
+
+`System` stays hand-written. Its one type is a UI panel name rather than anything the JSON
+dispatches on, and the class that consumes `System Parameters` is `Config` itself — the whole
+configuration object — so giving it a `fields` list would make "a class that declares fields IS a
+type" mean something else in that module.
 
 `Interpolation_factor_map` stays hand-written. It restricts a capability that is not per-class:
 `Factor1D.check_interpolation` supports all four methods for every curve factor, so there is
