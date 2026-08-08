@@ -44,6 +44,7 @@ dispatcher:
 | `cx.Hedge_Monte_Carlo(overrides)` | `HedgeMonteCarlo` | Same simulation engine, used to solve a dynamic hedging problem (DiffSolverV2) |
 | `cx.run_job(overrides)` | (any of the above) | Dispatches based on the loaded JSON's `Calculation.Object` |
 | `cx.validate()` | (any of the above) | Reports what would stop the loaded job running, without running it |
+| `cx.describe()` | (any of the above) | Reports what the engine made of the loaded job, without running it |
 
 Use `run_job()` when the JSON itself fully specifies which calculation to run:
 
@@ -160,6 +161,24 @@ cx.validate()
 Both empty means nothing here can tell you the job will fail. A message never stops a deal pricing:
 the engine still fails exactly where it always failed, and this says so first.
 
+`cx.describe()` answers the other question — not what is wrong with the job, but what the engine
+made of it. Also read-only, on the same discovery walk:
+
+```python
+cx.describe()
+{'deals': {'FXForwardDeal': 2, 'NettingCollateralSet': 1},
+ 'factors': {'resolved': ['FxRate.USD', 'FxRate.ZAR', 'InterestRate.USD'],
+             'missing': ['InterestRate.ZAR']},
+ 'calculation': {'Object': 'BaseValuation', 'Base_Date': Timestamp('2024-06-28'), ...}}
+```
+
+- `'deals'` — the book counted by the `Object` each deal was constructed from. A node whose `Object`
+  names no deal type is counted under nothing: the name went with the payload, and `validate()` is
+  where that node is reported.
+- `'factors'` — the same walk as `validate()`, both halves this time: `resolved` is what a run would
+  build, and `missing` is the want-list `validate()` returns on its own.
+- `'calculation'` — the `Calculation` block as loaded.
+
 ## Patching market values and replaying a run
 
 The market data splits in two. A price factor field declared `bind='value'` is one whose CONTENT
@@ -240,9 +259,9 @@ top-level keys:
 One vocabulary, two bindings. Everything above is the in-process binding; `derivus.service` is the
 same verbs over HTTP and owns no logic of its own — every endpoint builds a `Context` from the
 posted job, calls one of the methods above, and serialises what comes back. A browser SPA, a marimo
-notebook and an Excel add-in are clients of the same four endpoints, so nothing specific to any one
-of them belongs on the surface. `fastapi` and `uvicorn` are the `service` extra, imported only
-there, so `import derivus` needs neither:
+notebook and an Excel add-in are clients of the same endpoints, so nothing specific to any one of
+them belongs on the surface. `fastapi` and `uvicorn` are the `service` extra, imported only there,
+so `import derivus` needs neither:
 
 ```
 pip install derivus[service]
@@ -252,9 +271,13 @@ DV_Service --port 8000
 | | | |
 |---|---|---|
 | `GET` | `/schema` | `fields.mapping` plus `engine_version` — what a front end renders panels, tables and enums from |
+| `GET` | `/schema/job` | the job ENVELOPE those declarations sit inside, as a skeleton that loads |
 | `POST` | `/validate` | `cx.validate()` over the posted job, verbatim |
+| `POST` | `/describe` | `cx.describe()` plus what the queue would make of the job |
+| `POST` | `/prepare` | `{"plan_id": …, "values_hash": …, "engine_version": …}` |
 | `POST` | `/execute` | `{"result_id": …, "status": …}` |
-| `GET` | `/results/{result_id}` | `{"status": …}`, and when done the `Results` tables plus the replay tuple |
+| `GET` | `/results/{result_id}` | `{"status": …}`, and when done the replay tuple plus the SHAPE of each table |
+| `GET` | `/results/{result_id}/{table}` | one table, `?offset=&limit=` |
 
 A posted job is a job *file* — the same document `load_json` reads, parsed by the same decoder, so
 its `.Curve`, `.Timestamp` and `.DateList` tokens travel as themselves. `/execute` takes one extra
@@ -267,6 +290,29 @@ top-level key beside `Calc`:
 `Patch` is a values delta, exactly what `patch_market` accepts, and it is applied *before* the
 hashes are taken — so `values_hash` describes what actually ran.
 
+**The envelope, from the service.** `/schema` describes what goes *in* a `Calculation` block, a
+`Price Factors` block and a deal; it cannot describe where those blocks go, and that is not
+guessable from them — market data lives under `MergeMarketData.ExplicitMarketData` (or behind a
+`MarketDataFile` path instead of it), and a deal is a `.Deal` token inside
+`Deals.Deals.Children[].Instrument`, nested by each node's own `Children`. `GET /schema/job` serves
+a minimal job with exactly that shape, and it is a job rather than a description of one: post it to
+`/validate` or `/execute` unedited and it loads, validates clean and prices.
+
+**Plan then patch.** `POST /prepare` parses a job, names it by its `plan_hash` and keeps the parse
+under that name, so `/execute` takes either the whole document or the plan:
+
+```json
+{"plan_id": "89db21b1…", "Patch": {"FxRate.ZAR": {"Spot": 19.0}}}
+```
+
+`/validate` and `/describe` take `{"plan_id": …}` the same way. An unknown `plan_id` is a `404`.
+Content addressing does not care how the job arrived: a plan-id execute with no patch reports the
+same `result_id` as a full-document execute of the same job. The cache is bounded (32) and
+least-recently-used, and every read of it is a deep copy — two executes off one plan cannot
+contaminate each other or the plan they came from. What is cached today is the **parse**; caching
+the compile arrives behind the same verb with the live refill, and a client written against this
+one does not move.
+
 **Always a result_id.** There is no sync/async split at the API level. `/execute` answers
 immediately with an id and a status for every calculation, and a base valuation is simply `done` by
 the first poll. That is the one contract an Excel RTD cell and a browser poll loop can both be
@@ -276,16 +322,49 @@ written against.
 because a base valuation *is* a Monte Carlo for an autocall or a TARF book; device selection stays
 where it already is, in the engine. What the queue orders is cost CLASS, read off
 `Calculation.Object`: a base valuation jumps a simulation among the jobs still **waiting**, within a
-class it is first in first out, and a running job is never preempted. `/schema` and `/validate` run
-nothing, so they answer inline and never reach the queue.
+class it is first in first out, and a running job is never preempted. `/schema`, `/schema/job`,
+`/validate`, `/describe` and `/prepare` run nothing, so they answer inline and never reach the
+queue. `/describe` reports that class under `cost`, with a crude size estimate beside it —
+`Batch_Size × Simulation_Batches ×` the segments `Time_Grid` declares, which is a proxy for the
+scenario grid and labelled as an estimate because that is what it is.
 
 **One job, one execution.** `result_id` is the content hash of the replay tuple `(plan_hash,
 values_hash, engine_version, seed)`. Submitting the same job twice returns the same id without
 re-running — while it is still queued, while it is running, and after it has finished — so dedupe
 and retry-idempotency are one feature, and two clients patching to the same market share a result.
 
-A `done` result carries `out['Results']` serialised through `CustomJsonEncoder` (a dataframe as
-`{".DataFrame": {"index": …, "columns": …, "data": …}}`) stamped with the four replay coordinates.
-An `error` result carries the message the run failed with, and nothing else.
+**Never the whole cube.** A `done` result is a SUMMARY: the four replay coordinates, and every
+table the run produced named with its row count and column labels. No cells — a credit Monte Carlo's
+exposure is dates by scenarios and does not fit in an answer anyone wants to hold. A client reads
+the shapes and fetches the one table it is showing:
+
+```
+GET /results/{result_id}
+{"status": "done", "plan_hash": …, "values_hash": …, "engine_version": …, "seed": 1,
+ "tables": {"mtm": {"rows": 240, "columns": ["Reference", "Object", "Value", …]}}}
+
+GET /results/{result_id}/mtm?offset=0&limit=100
+{"name": "mtm", "rows": 240, "columns": [...], "offset": 0, "index": [...], "data": [[...], …]}
+```
+
+`rows` and `columns` are the whole table's; `data` is the page. `limit` defaults to the rest of the
+table and an offset past the end is an empty page. A group of tables — `cashflows`, `scenarios` —
+is flattened to the path that names each one (`cashflows/ZAR`), because a group has no page. An
+unknown table, like an unknown result, is a `404`. An `error` result carries the message the run
+failed with, and nothing else.
+
+**Generating a client.** The service publishes its own OpenAPI document at
+`http://localhost:8000/openapi.json`, with a summary and a description on every endpoint. An SPA
+generates its TypeScript client straight from it — `npx openapi-typescript
+http://localhost:8000/openapi.json -o src/api/derivus.ts` for types alone, or
+[openapi-generator](https://openapi-generator.tech/) (`-g typescript-fetch`) for types plus a
+fetch layer. The result payloads are deliberately typed as objects rather than pinned to response
+models: a `Results` tree's tables are named by the calculation that ran, so a schema restating them
+would be a second copy to keep in step.
+
+**No auth, open CORS.** The service is a **trusted-network** deployment. There is no
+authentication, and `Access-Control-Allow-Origin` is `*` so a browser client can call it at all;
+put it behind something that terminates both, or narrow the origins with `DV_Service --origin
+https://app.internal` (repeatable). Auth and budget caps are on the roadmap, not in the service.
 
 ---

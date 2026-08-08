@@ -447,6 +447,9 @@ class Context:
     def validate(self):
         return self.current_cfg.validate()
 
+    def describe(self):
+        return self.current_cfg.describe()
+
     def market_patch(self):
         """The VALUES half of the market data: `{factor_name: {field: content}}`.
 

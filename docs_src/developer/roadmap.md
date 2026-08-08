@@ -183,16 +183,45 @@ to be added elsewhere is `CustomJsonEncoder` learning the two shapes a `Results`
 DataFrame (as `split`, with missing cells as `null`) and an ndarray — rather than the service
 inventing a result schema of its own.
 
-Slice 2, in the order it was scoped: PREPARE and the plan cache (a content-hashed `plan_id`, so
-EXECUTE is plan + values patch), `/describe`, paged drill-down into a result rather than the whole
-table, SSE for progress, refining the cost CLASS into a batch-count x grid-size estimate, and auth
-with budget caps.
+**Service layer — slice 2 built.** What the SPA needs before it can be written against this at all.
+`CORSMiddleware` first, because a browser discards an answer the server did not invite: origins are
+`*` by default and narrowed with `DV_Service --origin`, and the service is stated to be a
+trusted-network deployment — auth is still the last slice. `GET /schema/job` publishes the job
+ENVELOPE, which is the one piece of contract `/schema` cannot state and is not guessable from it;
+it is a skeleton that LOADS rather than a description, and the gate posts it back through
+`/validate` and `/execute` unedited. `POST /describe` answers what the engine made of a job without
+running it — the book counted by `Object`, both halves of the factor universe, the `Calculation`
+block as loaded, and the queue's cost class with a crude `Batch_Size x Simulation_Batches x
+Time_Grid`-segment estimate. `POST /prepare` names a parsed job by its `plan_hash` and caches it
+(bounded 32, LRU), so `/execute` takes `{plan_id, Patch}` in place of the document; the cache holds
+a PRISTINE parse and hands out deep copies, and the two gates that matter are that a plan-id execute
+reports the same `result_id` as the full-document execute — content addressing does not care how the
+job arrived — and that a patched execute leaves the plan as it found it. It is the PARSE that is
+cached, not the compile; the compile arrives behind the same verb with the live refill.
+
+Two things went in elsewhere rather than into the service, because the wrapper owns no logic:
+`cx.describe()` is a Context verb (`Config.describe`), and the factor half of `validate` became
+`Config.factor_universe`, which both callers now read — `validate` takes its `missing` list.
+
+The `/results` contract MOVED, deliberately, before any external client exists. `GET /results/{id}`
+is now a summary — status, the replay tuple, and `tables: {name: {rows, columns}}` — and cells come
+from `GET /results/{id}/{table}?offset=&limit=`. "Never return the exposure cube" is the design rule
+this implements: a CMC's `mtm` is dates by scenarios and does not fit inline, and a client that has
+to hold the whole thing to show one page of it is a client that will fall over on the first real
+book. A group of tables (`cashflows`, `scenarios`) flattens to the path naming each one. Now was
+the moment: slice 1 shipped yesterday, the Excel add-in is the first client and it is migrated in
+the same breath, so the break costs one commit and no downstream.
+
+What remains of the service: SSE for progress, a cost estimate that reads the real grid rather than
+a segment count, and auth with budget caps.
 
 **VALIDATE built**, and only that: `cx.validate()` returns `{'deals': {reference: [message]},
 'factors': [name]}` — the authoring messages of every deal in the book, and every price factor it
 names that the market data has no block for. It answers the want-list and nothing else, and it reuses
 discovery (`discover_factors`) and not `calculate_dependencies`, which is where `find_models` mints the
-`Price Models` dummies that make that method non-idempotent.
+`Price Models` dummies that make that method non-idempotent. The discovery half is now
+`Config.factor_universe`, which returns both sides (`resolved` / `missing`) because `describe` wants
+both; `validate` reads its `missing`, and the deal walk `Config.walk_deals` is shared with it.
 
 ## Flagged, not authorised
 

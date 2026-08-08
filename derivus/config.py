@@ -18,6 +18,7 @@ import json
 import logging
 import operator
 
+from collections import Counter
 from functools import reduce
 
 # import parsing libraries
@@ -507,9 +508,24 @@ class Config(object):
                     self.params['Correlations'][(correlation_names[index1], correlation_names[index2])] = \
                         factor_correlations[index1, index2]
 
-    def validate(self):
-        """What stops this job running, as data: the authoring messages of every deal in the book,
-        and the price factors the book names that the market data has no block for.
+    def walk_deals(self):
+        """Every instrument in the book, depth first.
+
+        `walk_groups` semantics: an `Ignore` node is skipped whole, and recursion is on `Children`
+        being PRESENT, never on the type.
+        """
+        def walk(nodes):
+            for node in nodes:
+                if node.get('Ignore') == 'True':
+                    continue
+                yield node['Instrument']
+                yield from walk(node.get('Children', []))
+
+        return walk(self.deals['Deals']['Children'])
+
+    def factor_universe(self):
+        """Every price factor the deal walk reaches, split by whether the market data has a block
+        for it: `resolved` is what a run would build, `missing` is the want-list.
 
         Read-only, and it has to be: `calculate_dependencies` is not idempotent, because
         `find_models` injects a dummy `Price Models` entry for every implied model. So this calls
@@ -523,23 +539,24 @@ class Config(object):
         type is discovered happily and fails later in `construct_factor`, so it is the set
         difference against `Price Factors`. Both end the same way - the factor is not built, the
         deal cannot resolve it, and `Deal.calculate`'s guard drops the deal from the portfolio.
+        """
+        options = self.deals['Calculation']
+        factors, skipped, _, _ = self.discover_factors(options, options['Base_Date'], '0d', False)
+        names = set(map(utils.check_tuple_name, factors))
+
+        return {'resolved': sorted(names.intersection(self.params['Price Factors'])),
+                'missing': sorted(skipped.union(names.difference(self.params['Price Factors'])))}
+
+    def validate(self):
+        """What stops this job running, as data: the authoring messages of every deal in the book,
+        and the price factors the book names that the market data has no block for.
 
         Messages are keyed by the deal's `Reference`, with the walk position appended where that
         is blank or repeated. Nothing here raises on bad deal data and a message never stops a
         deal pricing: the engine still fails exactly where it always failed.
         """
-
-        def walk(nodes):
-            # `walk_groups` semantics: an `Ignore` node is skipped whole, and recursion is on
-            # `Children` being PRESENT, never on the type
-            for node in nodes:
-                if node.get('Ignore') == 'True':
-                    continue
-                yield node['Instrument']
-                yield from walk(node.get('Children', []))
-
         deals = {}
-        for position, instrument in enumerate(walk(self.deals['Deals']['Children'])):
+        for position, instrument in enumerate(self.walk_deals()):
             if isinstance(instrument, Deal):
                 key, messages = instrument.field.get('Reference'), schema.validate_instrument(instrument)
             else:
@@ -550,13 +567,22 @@ class Config(object):
                 key = key or '#{}'.format(position)
                 deals[key if key not in deals else '{}#{}'.format(key, position)] = messages
 
-        options = self.deals['Calculation']
-        factors, skipped, _, _ = self.discover_factors(options, options['Base_Date'], '0d', False)
+        return {'deals': deals, 'factors': self.factor_universe()['missing']}
 
-        return {'deals': deals,
-                'factors': sorted(skipped.union(
-                    name for name in map(utils.check_tuple_name, factors)
-                    if name not in self.params['Price Factors']))}
+    def describe(self):
+        """What the engine made of this job, without running any of it: the book counted by deal
+        type, the price factors it reaches on both sides of the want-list, and the `Calculation`
+        block as loaded.
+
+        Counts are by the `Object` a deal was constructed from. A node whose `Object` names no deal
+        type is absent from them, because `construct_instrument` logged it and returned `{}`, taking
+        the name with it - `validate` is where that node is reported.
+        """
+        return {'deals': dict(Counter(
+                    instrument.field['Object'] for instrument in self.walk_deals()
+                    if isinstance(instrument, Deal))),
+                'factors': self.factor_universe(),
+                'calculation': self.deals['Calculation']}
 
     def calculate_dependencies(self, options, base_date, base_MTM_dates, calc_dates=True):
         """
