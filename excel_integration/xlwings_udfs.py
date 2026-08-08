@@ -1,3 +1,17 @@
+"""The Excel add-in — a client of `DV_Service`, and a thin one.
+
+Every worksheet function here is Excel plumbing over `service_client.ServiceClient`: read a cell,
+call one verb, write a cell. Nothing that could be tested without Excel lives in this file, because
+nothing here can be imported without `xlwings` — the client and everything worth gating is in
+`service_client.py`, which imports neither xlwings nor derivus.
+
+Pricing goes over HTTP. Solving does not: `RF_SOLVE_*` iterates a pricing run on one changing DEAL
+field, which is the STRUCTURING calculation the roadmap has yet to build; until it exists, each
+iterate is a fresh document and a fresh compile, so the loop stays in process where it costs one
+recompile instead of one recompile plus one round trip. `RF_*_PORTFOLIO` is in process for the
+other standing reason: it builds its job from the sheets through `portfolio_service`, which still
+reads `fields.mapping` directly rather than `GET /schema`.
+"""
 from __future__ import annotations
 
 import csv
@@ -17,7 +31,6 @@ for _p in (_REPO_ROOT, _REPO_ROOT / 'experiments'):
 
 import run_textbook_hedge as hedge_runner
 
-from .config import load_settings
 from .portfolio_service import (
     CALC_COLS,
     PORTFOLIO_COLS,
@@ -32,7 +45,7 @@ from .portfolio_service import (
     update_risk_factors_from_rows,
 )
 from .pricing_service import build_portfolio_job_json, price_job
-from .queue_clients import build_queue_client, FileQueueClient
+from .service_client import ServiceClient
 
 _STATE_FILE = Path(".rf_excel_state.json")
 
@@ -47,28 +60,27 @@ def _load_state() -> dict[str, Any]:
     return json.loads(_STATE_FILE.read_text(encoding="utf-8"))
 
 
+def _submit(job: Any, patch_json: str) -> str:
+    """Submit a job and remember what it was filed under. The answer is a `result_id` for every
+    calculation, so the cell holds the id and `RF_PROCESS_NEXT_REQUEST` fetches what it became."""
+    patch = json.loads(patch_json) if patch_json and str(patch_json).strip() else None
+    submitted = ServiceClient().submit(job, patch)
+    _save_state(submitted)
+    return submitted["result_id"]
+
+
 @xw.func
 @xw.arg("job_json", doc="Full Derivus calculation JSON as text")
-@xw.arg("overrides_json", doc="Optional overrides dict as JSON string")
-def RF_PRICE_JSON(job_json: str, overrides_json: str = "") -> str:
-    payload: dict[str, Any] = {"job_json": job_json}
-    if overrides_json and str(overrides_json).strip():
-        payload["overrides"] = json.loads(overrides_json)
-    result = price_job(payload)
-    _save_state(result)
-    return json.dumps(result, ensure_ascii=False, default=str)
+@xw.arg("patch_json", doc="Optional market values patch as JSON string")
+def RF_PRICE_JSON(job_json: str, patch_json: str = "") -> str:
+    return _submit(job_json, patch_json)
 
 
 @xw.func
 @xw.arg("job_path", doc="Path to a Derivus job JSON file")
-@xw.arg("overrides_json", doc="Optional overrides dict as JSON string")
-def RF_PRICE_PATH(job_path: str, overrides_json: str = "") -> str:
-    payload: dict[str, Any] = {"job_path": job_path}
-    if overrides_json and str(overrides_json).strip():
-        payload["overrides"] = json.loads(overrides_json)
-    result = price_job(payload)
-    _save_state(result)
-    return json.dumps(result, ensure_ascii=False, default=str)
+@xw.arg("patch_json", doc="Optional market values patch as JSON string")
+def RF_PRICE_PATH(job_path: str, patch_json: str = "") -> str:
+    return _submit(Path(job_path).read_text(encoding="utf-8"), patch_json)
 
 
 @xw.func
@@ -76,6 +88,7 @@ def RF_PRICE_PATH(job_path: str, overrides_json: str = "") -> str:
 @xw.arg("solve_spec_json", doc="Solve specification as JSON string")
 @xw.arg("overrides_json", doc="Optional overrides dict as JSON string")
 def RF_SOLVE_JSON(job_json: str, solve_spec_json: str, overrides_json: str = "") -> str:
+    # in process until the structuring calc exists: see the module docstring
     payload: dict[str, Any] = {"job_json": job_json, "solve_spec": json.loads(solve_spec_json)}
     if overrides_json and str(overrides_json).strip():
         payload["overrides"] = json.loads(overrides_json)
@@ -89,6 +102,7 @@ def RF_SOLVE_JSON(job_json: str, solve_spec_json: str, overrides_json: str = "")
 @xw.arg("solve_spec_json", doc="Solve specification as JSON string")
 @xw.arg("overrides_json", doc="Optional overrides dict as JSON string")
 def RF_SOLVE_PATH(job_path: str, solve_spec_json: str, overrides_json: str = "") -> str:
+    # in process until the structuring calc exists: see the module docstring
     payload: dict[str, Any] = {"job_path": job_path, "solve_spec": json.loads(solve_spec_json)}
     if overrides_json and str(overrides_json).strip():
         payload["overrides"] = json.loads(overrides_json)
@@ -99,16 +113,13 @@ def RF_SOLVE_PATH(job_path: str, solve_spec_json: str, overrides_json: str = "")
 
 @xw.sub
 def RF_PROCESS_NEXT_REQUEST() -> None:
-    settings = load_settings()
-    client = build_queue_client(settings)
-    request = client.pull_request()
-    if request is None:
-        _save_state({"status": "idle", "message": "No request available"})
-        return
+    """Advance the outstanding submission by one step: poll it and write the summary to state.
 
-    result = price_job(request)
-    client.push_result(result)
-    _save_state(result)
+    The queue this used to pull from is inside the service now, so what a button advances is the
+    POLL. A cheap job is `done` on the first press; a simulation says `running` until it is not.
+    """
+    state = _load_state()
+    _save_state(dict(state, **ServiceClient().poll(state["result_id"])))
 
 
 @xw.func
@@ -118,14 +129,15 @@ def RF_GET_LAST_RESULT(field: str = "status"):
 
 
 @xw.func
-def RF_ENQUEUE_FILE_REQUEST(job_path: str, request_id: str = "") -> str:
-    settings = load_settings()
-    client = build_queue_client(settings)
-    if not isinstance(client, FileQueueClient):
-        raise ValueError("RF_ENQUEUE_FILE_REQUEST is only available when RF_QUEUE_BACKEND=file")
-
-    rid = client.enqueue_request({"job_path": job_path}, request_id or None)
-    return rid
+@xw.arg("table", doc="Table name as published by the last poll, e.g. 'mtm' or 'cashflows/ZAR'")
+@xw.ret(expand="table")
+def RF_GET_TABLE(table: str = "mtm", offset: int = 0, limit: int = 0) -> list[list[Any]]:
+    """One table of the last polled result, header row first, spilling down and across. `limit` of
+    zero is the rest of the table — a run's exposure never arrives whole unless it is asked for."""
+    page = ServiceClient().fetch_table(
+        _load_state()["result_id"], str(table).strip(), int(offset), int(limit) or None)
+    return [page["columns"] or [str(table)]] + [
+        row if isinstance(row, list) else [row] for row in page["data"]]
 
 
 # =============================================================================

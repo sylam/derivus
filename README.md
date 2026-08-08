@@ -61,7 +61,7 @@ need to import derivus internals. Three console scripts are installed:
 | `docs_src/` | documentation sources, including the developer section |
 | `experiments/` | research and validation drivers; end-user scripts that only use `load_json` / `run_job` |
 | `notebooks/` | exploratory notebooks |
-| `excel_integration/` | xlwings add-in |
+| `excel_integration/` | xlwings add-in, and the HTTP client it talks to `DV_Service` through |
 | `data/` | *untracked* — where you drop real market data |
 | `artifacts/` | *untracked* — run outputs, fits, decks |
 

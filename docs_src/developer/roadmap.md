@@ -215,6 +215,24 @@ the same breath, so the break costs one commit and no downstream.
 What remains of the service: SSE for progress, a cost estimate that reads the real grid rather than
 a segment count, and auth with budget caps.
 
+**The Excel add-in is the first real client.** `excel_integration/service_client.py` is a plain
+`requests` client of the verbs and imports neither `xlwings` nor `derivus` — it is the HTTP binding
+a marimo notebook or a plain script uses as readily as the workbook, and a gate reads its import
+statements to keep it that way. `worker.py` and `queue_clients.py` are DELETED, not deprecated: the
+service is the worker and the queue, and the file-queue settings went out of `config.py` with them.
+Solace returns later as a second transport in front of the same verbs, not as a second queue.
+
+Two things stayed in process, each for a stated reason. `RF_SOLVE_*` iterates a pricing run on one
+changing DEAL field, which is the STRUCTURING calc this roadmap has yet to build; a deal field is
+structural today, so every iterate is a fresh compile and a round trip per iterate would buy
+nothing. And `RF_*_PORTFOLIO` builds its job from the sheets through `portfolio_service`, which
+still reads `fields.mapping` directly — migrating that to `GET /schema`, which publishes exactly
+those declarations, is the remaining end-state for the folder: after it, nothing there imports the
+engine and the add-in installs without it.
+
+`xlwings_udfs.py` is a thin uncovered shim by construction — it cannot be imported without xlwings,
+so nothing that could be gated is allowed to live in it.
+
 **VALIDATE built**, and only that: `cx.validate()` returns `{'deals': {reference: [message]},
 'factors': [name]}` — the authoring messages of every deal in the book, and every price factor it
 names that the market data has no block for. It answers the want-list and nothing else, and it reuses

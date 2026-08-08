@@ -1,188 +1,115 @@
-# Excel + xlwings integration (MVP)
+# Excel + xlwings add-in
 
-This folder provides a free Excel frontend path using `xlwings` and your local Python installation of Derivus.
+A free Excel front end for Derivus, and the first real client of `DV_Service`. The workbook talks
+HTTP; it does not import the engine.
 
-## What is implemented
+That is the whole design. There used to be a local worker and a pluggable queue in this folder —
+`worker.py` and `queue_clients.py` — because something had to order the work and hold the results.
+The service does both now: one compute lane, a cost-class priority queue, and a result store keyed
+by the content hash of the replay tuple. Both modules are gone rather than deprecated.
 
-- Excel-callable pricing functions:
-  - `RF_PRICE_JSON(job_json, overrides_json="")`
-  - `RF_PRICE_PATH(job_path, overrides_json="")`
-  - `RF_SOLVE_JSON(job_json, solve_spec_json, overrides_json="")`
-  - `RF_SOLVE_PATH(job_path, solve_spec_json, overrides_json="")`
-  - `RF_GET_LAST_RESULT(field="status")`
-- Queue-driven processing hook (for button/macro):
-  - `RF_PROCESS_NEXT_REQUEST()`
-- Standalone local worker:
-  - `python -m excel_integration.worker --verbose`
-- Queue backend abstraction:
-  - `file` backend works now (local folders)
-  - `solace` backend adapter is intentionally pluggable in `queue_clients.py`
-
-## Install
-
-From project root:
+## Install and run
 
 ```bash
-pip install xlwings
+pip install 'derivus[service]' xlwings requests
+DV_Service --port 8000
 ```
 
-For Solace backend:
+Point the workbook at it (defaults to `http://127.0.0.1:8000`):
 
 ```bash
-pip install solace-pubsubplus
+RF_SERVICE_URL=http://my-host:8000
 ```
 
-(If needed, also install your Derivus deps from `requirements.txt`.)
+Then in the xlwings add-in config, set the UDF module to `excel_integration.xlwings_udfs`.
 
-## Configure backend
+The service has no authentication and open CORS: it is a **trusted-network** deployment. See
+[the API overview](../docs_src/api_overview.md#the-same-verbs-over-http) for the endpoints
+themselves, which are the same ones a browser SPA or a marimo notebook calls.
 
-Environment variables:
+## Worksheet functions
 
-- `RF_QUEUE_BACKEND=file` or `solace`
-- `RF_FILE_QUEUE_ROOT=.rf_queue` (used by file backend)
+| | |
+|---|---|
+| `RF_PRICE_JSON(job_json, patch_json)` | submit a job document; returns the `result_id` |
+| `RF_PRICE_PATH(job_path, patch_json)` | the same, reading the document from a file |
+| `RF_PROCESS_NEXT_REQUEST()` | poll the outstanding submission (button / macro) |
+| `RF_GET_LAST_RESULT(field)` | a field of the last polled summary — `status`, `plan_hash`, … |
+| `RF_GET_TABLE(table, offset, limit)` | one table of that result, spilling down and across |
+| `RF_SOLVE_JSON` / `RF_SOLVE_PATH` | goal-seek on a deal field — in process, see below |
 
-For Solace mode (adapter wiring target):
+Every submission answers with a `result_id` and a status; there is no sync/async split. A base
+valuation is `done` on the first press of the button, a simulation says `running` until it is not.
+So the flow is always the same three steps:
 
-- `RF_SOLACE_HOST`
-- `RF_SOLACE_VPN`
-- `RF_SOLACE_USERNAME`
-- `RF_SOLACE_PASSWORD`
-- `RF_SOLACE_REQUEST_QUEUE` (default `derivus/requests`)
-- `RF_SOLACE_RESULT_TOPIC` (default `derivus/results`)
+```
+=RF_PRICE_PATH("C:\jobs\Trade01.json", "")     ' submit, cell holds the result_id
+RunPython("import excel_integration.xlwings_udfs as rf; rf.RF_PROCESS_NEXT_REQUEST()")
+=RF_GET_TABLE("mtm")                            ' the numbers, once status is done
+```
 
-## Message schema
+`patch_json` is a market **values** delta, exactly what `/execute` takes:
 
-Request JSON (from Solace or file queue):
+```json
+{"FxRate.ZAR": {"Spot": 19.0}}
+```
+
+A finished result publishes the shape of each table, never the cells — `RF_GET_TABLE` fetches one,
+and `offset` / `limit` page it. A group of tables (`cashflows`, `scenarios`) is named by its path,
+so `=RF_GET_TABLE("cashflows/ZAR")`.
+
+## Solve mode stays in process
+
+`RF_SOLVE_JSON` / `RF_SOLVE_PATH` iterate a pricing run on one changing **deal** field (a strike, a
+margin) through `scipy.optimize`, which is the STRUCTURING calculation the roadmap has yet to build.
+A deal field is structural today, so every iterate is a fresh document and a fresh compile: pushing
+the loop through HTTP would add a round trip per iterate and buy nothing. When the structuring calc
+lands it becomes a `Calculation.Object` like any other, submitted through the same `/execute`.
+
+The solve spec is unchanged:
 
 ```json
 {
-  "request_id": "abc-123",
-  "job_path": "C:/jobs/Trade01.json",
-  "overrides": {
-    "Simulation_Batches": 10,
-    "Batch_Size": 512
-  }
-}
-```
-
-You may send `job_json` instead of `job_path`.
-
-Optional solve mode:
-
-```json
-{
-  "request_id": "abc-123",
-  "job_path": "C:/jobs/Structure01.json",
-  "solve_spec": {
-    "method": "brentq",
-    "variables": [
-      {
-        "name": "strike",
-        "path": "/Calc/Deals/Deals/Children/0/Instrument/field/Strike",
-        "initial": 100,
-        "lower": 50,
-        "upper": 200
-      }
-    ],
-    "targets": [
-      {
-        "name": "net_mtm",
-        "metric": "net_mtm",
-        "target": 0.0,
-        "weight": 1.0
-      }
-    ]
-  }
-}
-```
-
-Result JSON:
-
-```json
-{
-  "request_id": "abc-123",
-  "status": "ok",
-  "elapsed_ms": 220,
-  "summary": {"stats": {}, "exposure_profile": []},
-  "result": {"Results": {}, "Stats": {}}
-}
-```
-
-Solve-mode result adds fields:
-
-```json
-{
-  "mode": "solve",
   "method": "brentq",
-  "solution": {"strike": 102.34},
-  "targets": {"net_mtm": 0.0002},
-  "residual_norm": 0.0002
+  "variables": [{"name": "strike", "path": "/Calc/Deals/Deals/Children/0/Instrument/field/Strike",
+                 "initial": 100, "lower": 50, "upper": 200}],
+  "targets":   [{"name": "net_mtm", "metric": "net_mtm", "target": 0.0, "weight": 1.0}]
 }
 ```
 
-On failure:
+- `variables[*].path` is a JSON Pointer into the job document; `lower` / `upper` bound the solver.
+- `targets[*]` takes either `metric: "net_mtm"` (top portfolio MTM) or `path:` into the priced
+  response (dot / bracket syntax).
+- `brentq` is one variable and one target and needs a sign change across the bounds;
+  `least_squares` handles several of either.
 
-```json
-{
-  "request_id": "abc-123",
-  "status": "error",
-  "error": "...",
-  "traceback": "..."
-}
+## Portfolio sheets
+
+`RF_LOAD_PORTFOLIO`, `RF_SAVE_PORTFOLIO`, `RF_PRICE_PORTFOLIO` and `RF_SOLVE_PORTFOLIO` build a job
+from the Portfolio / RiskFactors / Calculations sheets, and they are still in process. They go
+through `portfolio_service.py`, which reads `derivus.fields.mapping` directly for the deal-type
+menus and field defaults. Migrating that to `GET /schema` — which publishes exactly those
+declarations — is the remaining end-state for this folder: after it, nothing here imports the
+engine and the add-in installs without it.
+
+## Where the client lives
+
+`service_client.py` is the HTTP binding, and it imports neither `xlwings` nor `derivus` — a marimo
+notebook or a plain script uses it exactly as the add-in does:
+
+```python
+from excel_integration.service_client import ServiceClient
+
+client = ServiceClient()
+plan = client.prepare(open('Trade01.json').read())
+run = client.submit({'plan_id': plan['plan_id']}, {'FxRate.ZAR': {'Spot': 19.0}})
+client.poll(run['result_id'])
+client.fetch_table(run['result_id'], 'mtm', offset=0, limit=100)
 ```
 
-## Excel wiring (xlwings)
+`xlwings_udfs.py` is deliberately thin over it: reading a cell and writing a cell is all it does,
+because it cannot be imported without Excel installed and so cannot be tested. Everything worth
+gating is in `service_client.py`, against the real app — see `tests/test_service_client.py`.
 
-1. Open your workbook.
-2. In xlwings add-in config, set UDF module to:
-   - `excel_integration.xlwings_udfs`
-3. Use formulas like:
-   - `=RF_PRICE_PATH("C:\\jobs\\Trade01.json", "")`
-  - `=RF_SOLVE_PATH("C:\\jobs\\Structure01.json", A1, "")` where `A1` contains a JSON `solve_spec`
-   - `=RF_GET_LAST_RESULT("status")`
-4. Add a button/macro that runs:
-   - `RunPython ("import excel_integration.xlwings_udfs as rf; rf.RF_PROCESS_NEXT_REQUEST()")`
-
-This gives you a local “pull one request, price, push result” control loop from Excel.
-
-## Solve spec details
-
-- `variables[*].path` is a JSON Pointer path in the input job JSON.
-- `variables[*].lower` / `upper` define bounds used by the solver.
-- `targets[*]` supports either:
-  - `metric: "net_mtm"` (top portfolio MTM), or
-  - `path: "result.path.here"` in the priced response (dot/bracket path syntax).
-- Solver methods:
-  - `brentq`: 1 variable + 1 target root solve (requires sign change across bounds)
-  - `least_squares`: multi-variable or constrained fit to one/many targets
-
-## Local test without Solace
-
-1. Set backend:
-   - `RF_QUEUE_BACKEND=file`
-2. Enqueue a request from Excel formula:
-   - `=RF_ENQUEUE_FILE_REQUEST("C:\\jobs\\Trade01.json")`
-3. Process it:
-   - run `RF_PROCESS_NEXT_REQUEST()` from button or macro
-4. Read result files in:
-   - `.rf_queue/results`
-
-## Solace integration point
-
-`SolaceQueueClient` is now implemented in `queue_clients.py` and does the following:
-
-- Connects using `RF_SOLACE_HOST`, `RF_SOLACE_VPN`, `RF_SOLACE_USERNAME`, `RF_SOLACE_PASSWORD`
-- Pulls one JSON request from the persistent queue `RF_SOLACE_REQUEST_QUEUE`
-- Publishes JSON result to topic `RF_SOLACE_RESULT_TOPIC`
-
-Switch backends by setting:
-
-```bash
-RF_QUEUE_BACKEND=solace
-```
-
-Then run:
-
-```bash
-python -m excel_integration.worker --verbose
-```
+Solace returns later as a second **transport** in front of the same verbs, per the roadmap; it is
+not a second queue, and nothing in this folder waits for it.

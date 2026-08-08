@@ -34,9 +34,11 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
 
       # the service extra is a test dependency now that tests/test_service.py drives the endpoints,
-      # and httpx is what fastapi's TestClient calls them through
+      # and httpx is what fastapi's TestClient calls them through. requests is the excel_integration
+      # client's own transport - the add-in is not part of the installed library, so it is declared
+      # here rather than in setup.py
       - name: Install derivus
-        run: pip install -e '.[service]' pytest httpx
+        run: pip install -e '.[service]' pytest httpx requests
 
       - name: Confirm we are testing the repo, on CPU
         run: python -c "import derivus, torch; print(derivus.__version__, derivus.__file__, torch.__version__, torch.cuda.is_available())"
