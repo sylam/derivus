@@ -276,6 +276,43 @@ def emit_factor(module):
             for factor_type, fields in declared.items()}
 
 
+def emit_process(module, factor_types):
+    """The `types` of `fields.mapping['Process']`, and the `Process_factor_map` beside it.
+
+    A process's `Price Models` block is one flat dict, like a price factor's, so a class declares a
+    flat list and the type IS its descriptors. Own-attr only, matching the other two emitters:
+    `CSImpliedForwardPriceModel` subclasses `CSForwardPriceModel` and takes its parameters from the
+    implied factor instead, so it declares its own empty list rather than re-emitting the parent's.
+
+    The map is the same declaration read the other way round. A class names the price factors it can
+    drive; the UI wants the inverse, a menu per factor. Every factor type is a key, including the
+    ones no process drives, because the Workbench indexes it by the type of the factor in front of
+    it - a missing key is a KeyError, not an empty menu.
+    """
+    declared = [(name, cls) for name, cls in vars(module).items()
+                if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)]
+    factor_map = {factor_type: [] for factor_type in factor_types}
+    for name, cls in declared:
+        for factor_type in cls.__dict__['factor_types']:
+            factor_map[factor_type].append(name)
+    types = {name: {f.key: f.descriptor() for f in cls.__dict__['fields']} for name, cls in declared}
+    return types, factor_map
+
+
+def emit_calculation(module):
+    """The `types` of `fields.mapping['Calculation']` - each calculation TYPE holding its own.
+
+    Keyed by the `Object` string a job document writes, which is NOT the class name: `run_job`
+    branches on `CreditMonteCarlo` / `BaseValuation` / `HedgeMonteCarlo` while the classes are
+    `Credit_Monte_Carlo` / `Base_Revaluation` / `HedgeMonteCarlo`. The class states its own with
+    `calc_type` rather than the emitter unmangling underscores, because `Base_Revaluation` and
+    `BaseValuation` are not the same word and no rule recovers one from the other.
+    """
+    return {cls.__dict__['calc_type']: {f.key: f.descriptor() for f in cls.__dict__['fields']}
+            for cls in vars(module).values()
+            if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)}
+
+
 def partition_factor(type_name, block):
     """Split one `Price Factors` block into `(structural, values)`.
 

@@ -292,18 +292,14 @@ class ConstructMarkdown(object):
                 build_filepath = details_build_dir / build_filename
                 content = [f"# {item_type}", f"JSON configuration for the `{item_type}` type.", ""]
 
-                # A store either HOLDS its descriptors - an instrument type composes the sections
-                # that hold them, a factor type IS them - or names entries in a flat store beside
-                # it, which is where `Process` still is
+                # A store HOLDS its descriptors: an instrument type composes the sections that hold
+                # them, a factor or process type IS them
                 if mapping_key == 'Instrument':
                     actual_fields = {}
                     for group_name in field_identifiers:
                         actual_fields.update(mapping_data.get('sections', {}).get(group_name, {}))
-                elif isinstance(field_identifiers, dict):
-                    actual_fields = field_identifiers
                 else:
-                    actual_fields = {n: mapping_data['fields'][n] for n in field_identifiers
-                                     if n in mapping_data.get('fields', {})}
+                    actual_fields = field_identifiers
 
                 # Document each field
                 for field_name in sorted(actual_fields):

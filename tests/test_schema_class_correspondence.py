@@ -34,11 +34,11 @@ UNDECLARED_DEALS = {
 
 # Descriptor keys that are NOT the JSON field name, per store -> the key they actually read.
 # A name-keyed dict admits one descriptor per name, so a field needing different valid values in
-# two deals must invent a key and carry the real name elsewhere. Instrument and Factor have no
-# entries left: both are keyed per type, so a 2D `Surface` and a 3D one each hold their own and
-# neither has to be filed as `Space`. Only the flat stores can still need an alias.
+# two deals must invent a key and carry the real name elsewhere. Instrument, Factor and Process
+# have no entries left: all three are keyed per type, so a 2D `Surface` and a 3D one each hold
+# their own and a scalar `Sigma` no longer has to be filed as `sigma` beside a curve one. Only the
+# flat stores can still need an alias.
 ALIASED_KEYS = {
-    'Process': {'sigma': 'Sigma'},
     'Calibration': {'Number_PCA_Factors': 'Number_Of_PCA_Factors'},
 }
 

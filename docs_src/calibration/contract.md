@@ -95,8 +95,8 @@ To add a new calibration class:
    class lives — `globals()` resolution requires same module).
 2. Add an entry under `Calibrations` in `calibration_config.json` with `Method` set to the
    class name. Tuning parameters go in the same entry.
-3. Register the model class itself in `derivus/fields.py`'s `Process_factor_map` for
-   the relevant factor type.
+3. Give the model class a `fields` list and a `factor_types` tuple naming the price factors it
+   drives. `Process_factor_map` and the `Price Models` schema are both emitted from those.
 
 No other registration is needed — the framework picks up the new method automatically.
 

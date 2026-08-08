@@ -24,10 +24,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pytest
 
-from derivus import fields, instruments, riskfactors, schema
+from derivus import fields, instruments, riskfactors, schema, stochasticprocess
 
 INSTRUMENT = fields.mapping['Instrument']
 FACTOR = fields.mapping['Factor']
+PROCESS = fields.mapping['Process']
+PROCESS_FACTOR_MAP = fields.mapping['Process_factor_map']
 
 # riskfactors classes that legitimately declare no schema row of their own.
 UNDECLARED_FACTORS = {
@@ -54,6 +56,22 @@ def factor_classes():
     """The same for price factors, whose declaration is one flat list rather than groups."""
     return {n: c.__dict__['fields'] for n, c in vars(riskfactors).items()
             if isinstance(c, type) and isinstance(c.__dict__.get('fields'), list)}
+
+
+def process_classes():
+    """Stochastic-process classes carrying their own `fields`, own-attr only as `emit_process`
+    reads them. `CSImpliedForwardPriceModel` subclasses `CSForwardPriceModel` and declares its own
+    empty list, so it is a type in its own right rather than an alias re-emitting the parent's."""
+    return {n: c.__dict__['fields'] for n, c in vars(stochasticprocess).items()
+            if isinstance(c, type) and isinstance(c.__dict__.get('fields'), list)}
+
+
+def concrete_processes():
+    """Every process class DEFINED here bar the abstract base - the set a declared type comes
+    from, and the set every declared type has to come back to."""
+    return {n: c for n, c in vars(stochasticprocess).items()
+            if isinstance(c, type) and issubclass(c, stochasticprocess.StochasticProcess)
+            and c is not stochasticprocess.StochasticProcess}
 
 
 def riskfactor_classes():
@@ -220,6 +238,117 @@ def test_no_factor_declares_a_key_twice(cls_name):
     keys = [f.key for f in factor_classes()[cls_name]]
     dupes = sorted({k for k in keys if keys.count(k) > 1})
     assert not dupes, f'{cls_name} declares {dupes} more than once'
+
+
+def test_the_process_store_is_generated():
+    """The same guard again, for processes - every Process assertion here is vacuous over an empty
+    declaration set."""
+    assert process_classes(), 'no stochasticprocess class declares `fields` - these gates are vacuous'
+    types, factor_map = schema.emit_process(stochasticprocess, FACTOR['types'])
+    assert PROCESS['types'] == types, (
+        'the Process store is not the emitted view - a hand-written copy has come back')
+    assert PROCESS_FACTOR_MAP == factor_map, 'the process/factor map is not the emitted view'
+    assert 'fields' not in PROCESS, 'a flat name-keyed store has come back beside the types'
+
+
+def test_every_declared_process_type_is_dispatchable():
+    """`construct_process` does `globals().get(sp_type)(factor, param, implied_factor)`, so a
+    declared type naming no class is `None(...)` - a TypeError as the scenario engine builds,
+    after the market data has loaded and the deals have compiled."""
+    undispatchable = sorted(set(PROCESS['types']) - set(concrete_processes()))
+    assert not undispatchable, f'schema offers process types with no class: {undispatchable}'
+
+
+def test_every_process_class_is_declarable():
+    """The converse: a process class no schema declares cannot be authored from the Workbench or
+    found in the JSON reference, however well it simulates. `GARCHSpotModel` sat in exactly that
+    state - calibrated, shipped in a fixture, documented in the theory pages, and absent from both
+    the Price Models panel and every factor's process menu."""
+    missing = sorted(set(concrete_processes()) - set(PROCESS['types']))
+    assert not missing, f'process classes no schema can author: {missing}'
+
+
+# Processes whose block carries an array whose SHAPE is a calibration output - an NxN transition
+# matrix, a length-N regime vector, a list of per-regime dicts. See the xfail below.
+SHAPELESS_ARRAY_PROCESSES = {
+    'MarkovSwitchingLogOUSpotModel', 'MarkovHMMSpotModel',
+    'VARMixedFactorInterestRateModel', 'BasisLinkedSpotModel'}
+
+
+@pytest.mark.parametrize('cls_name', [
+    pytest.param(n, marks=pytest.mark.xfail(strict=True, reason='shapeless array - no widget'))
+    if n in SHAPELESS_ARRAY_PROCESSES else n for n in sorted(process_classes())])
+def test_process_descriptor_shape(cls_name):
+    """`check_descriptor` again, over the process declarations - same tagged union, same consumers.
+
+    Four processes fail it, and the xfail is strict because the defect is live rather than
+    theoretical: `define_input` reads `element['sub_fields']` for a Container and
+    `element['col_names']` for a Table without checking, so eleven descriptors raise KeyError the
+    moment the Workbench renders a Markov, VAR or basis process - which is every process in the
+    platinum world. The declaration is not the bug: `Transition_Matrix` is NxN, `Mean` and
+    `Sigma_By_State` are length-N, and `States` is a list of per-regime dicts, so their shape is a
+    calibration OUTPUT. Table declares fixed columns and Container fixed named children, and
+    neither can say that. Migrating the store put the defect where it can be declared away rather
+    than fixing it - which wants a widget, not a schema change."""
+    for f in process_classes()[cls_name]:
+        check_descriptor(f'{cls_name}.{f.key}', f.descriptor())
+
+
+@pytest.mark.parametrize('cls_name', sorted(process_classes()))
+def test_no_process_declares_a_key_twice(cls_name):
+    """A process type is one dict keyed by the JSON name, so a name declared twice loses a
+    descriptor outright."""
+    keys = [f.key for f in process_classes()[cls_name]]
+    dupes = sorted({k for k in keys if keys.count(k) > 1})
+    assert not dupes, f'{cls_name} declares {dupes} more than once'
+
+
+def test_every_factor_type_has_a_process_menu():
+    """The Workbench indexes the map by the type of the factor in front of it
+    (`possible_risk_process[factor.type]`), so a factor type with no entry is a KeyError that takes
+    the whole Price Factors page down - not an empty dropdown. Emitting the keys from the factor
+    declarations is what makes that unreachable."""
+    assert set(PROCESS_FACTOR_MAP) == set(FACTOR['types']), (
+        f'process menu and factor types disagree: '
+        f'{sorted(set(PROCESS_FACTOR_MAP) ^ set(FACTOR["types"]))}')
+
+
+def test_every_mapped_process_is_a_declared_type():
+    """The menu offers a process by name and the panel then looks its descriptors up by that name,
+    so an entry naming no declared type is a KeyError one click later."""
+    offered = {p for members in PROCESS_FACTOR_MAP.values() for p in members}
+    assert not offered - set(PROCESS['types']), (
+        f'process menu offers undeclared types: {sorted(offered - set(PROCESS["types"]))}')
+
+
+def test_every_process_reaches_a_factor_menu():
+    """The converse, which is the one that was drifting: a process the engine constructs but no
+    factor's menu offers cannot be selected in the Workbench at all. Three implied models were in
+    that state (`CSImpliedForwardPriceModel`, `HullWhite2FactorImpliedInterestRateModel`, and
+    `GBMAssetPriceTSModelImplied` on equity, which its own `calc_references` handles), plus
+    `GARCHSpotModel`, which was in no store at all."""
+    offered = {p for members in PROCESS_FACTOR_MAP.values() for p in members}
+    assert not set(PROCESS['types']) - offered, (
+        f'declared processes no factor menu offers: {sorted(set(PROCESS["types"]) - offered)}')
+
+
+def test_one_name_may_carry_two_shapes_in_different_processes():
+    """The capability the per-type store exists for, pinned so a return to a flat one fails.
+
+    Three names carry two shapes each. `Sigma` is a scalar on the OU/hazard/Clewlow-Strickland
+    models and a term-structure curve on Hull-White - under the flat store the scalar had to be
+    filed as `sigma` and carry `Sigma` as an alias, which is the last Process entry in
+    `ALIASED_KEYS`. `Phi` is a 3x3 VAR transition matrix on `VARMixedFactorInterestRateModel` and a
+    scalar AR(1) coefficient on `BasisLinkedSpotModel`; the flat store rendered the basis
+    coefficient as a matrix table. And `VARMixedFactorInterestRateModel.Sigma` is a length-3 vector,
+    which the flat store rendered as the Hull-White curve widget."""
+    types = PROCESS['types']
+    assert types['LogOUSpotModel']['Sigma']['widget'] == 'Float'
+    assert types['HullWhite1FactorInterestRateModel']['Sigma']['widget'] == 'Flot'
+    assert types['VARMixedFactorInterestRateModel']['Sigma']['widget'] == 'Container'
+    assert types['VARMixedFactorInterestRateModel']['Phi']['widget'] == 'Table'
+    assert types['BasisLinkedSpotModel']['Phi']['widget'] == 'Float'
+    assert not any('sigma' in d for d in types.values()), 'the lowercase alias key is back'
 
 
 def test_a_2d_and_a_3d_surface_may_both_be_called_surface():

@@ -22,10 +22,11 @@ import pandas as pd
 import scipy.interpolate
 from scipy.linalg import expm as matrix_expm, logm as matrix_logm
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as nnf
 
 # Internal modules
 from . import utils
+from .schema import F
 from .instruments import get_fx_zero_rate_factor, get_equity_zero_rate_factor, get_dividend_rate_factor
 
 
@@ -77,7 +78,7 @@ def integrate_piecewise_linear(fn_norm, shared, time_grid, tenor1, val1, tenor2=
         integral = np.pad(np.cumsum(int_fn) / norm, [1, 0], 'constant')
         return integral[integration_points.searchsorted(time_grid)]
     else:
-        integral = F.pad(torch.cumsum(int_fn, dim=0) / norm, (1, 0))
+        integral = nnf.pad(torch.cumsum(int_fn, dim=0) / norm, (1, 0))
         if integration_points.size == time_grid.size:
             return integral
         else:
@@ -307,6 +308,12 @@ class GBMAssetPriceModel(StochasticProcess):
                           '- $\\sigma$ is the constant volatility of the asset',
                           '- $dW(t)$ is a standard Wiener Process'])
 
+    factor_types = ('EquityPrice', 'FxRate')
+    fields = [
+        F('Vol', 'Float', default=0),
+        F('Drift', 'Float', default=0)
+    ]
+
     def __init__(self, factor, param, implied_factor=None):
         super(GBMAssetPriceModel, self).__init__(factor, param)
 
@@ -408,6 +415,11 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
         't)$'
     ])
 
+    factor_types = ('EquityPrice', 'FxRate')
+    fields = [
+        F('Risk_Premium', 'Curve')
+    ]
+
     def __init__(self, factor, param, implied_factor=None):
         super(GBMAssetPriceTSModelImplied, self).__init__(factor, param)
         self.implied = implied_factor
@@ -437,7 +449,7 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
         self.V = torch.unsqueeze(integrate_piecewise_linear(
             (calc_vol, 1.0), shared, time_grid.time_grid_years, vol_tenor, implied_tensor['Vol']), dim=1)
         # per-step incremental vol, anchored at V(0)=0 so the first step evolves from today (t=0)
-        self.delta_vol = torch.sqrt(self.V - F.pad(self.V[:-1], (0, 0, 1, 0)))
+        self.delta_vol = torch.sqrt(self.V - nnf.pad(self.V[:-1], (0, 0, 1, 0)))
         # we always evolve from today: prepend 0 to the sample times so the step sizes are the diffs
         # [t_1, t_2 - t_1, ...] and each step's drift is read from the curve as-of its start node
         # [0, t_1, ..., t_{N-1}] (when t_1 = 0 the first step is a no-op and we match spot today)
@@ -538,6 +550,13 @@ class GBMPriceIndexModel(StochasticProcess):
                       'exception of modifying the scenario grid to coincide with allowable publication dates obtained',
                       'by the corresponding Price Index'])
 
+    factor_types = ('PriceIndex',)
+    fields = [
+        F('Vol', 'Float', default=0),
+        F('Drift', 'Float', default=0),
+        F('Seasonal_Adjustment', 'Text', default='')
+    ]
+
     def __init__(self, factor, param, implied_factor=None):
         super(GBMPriceIndexModel, self).__init__(factor, param)
 
@@ -634,6 +653,12 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
          '',
          'The increment is simulated using $LZ$ where $Z$ is a 2D vector of independent normals at',
          'time step $k$.'])
+
+    factor_types = ('InterestRate',)
+    fields = [
+        F('Lambda_1', 'Float', default=0),
+        F('Lambda_2', 'Float', default=0)
+    ]
 
     def __init__(self, factor, param, implied_factor):
         super(HullWhite2FactorImpliedInterestRateModel, self).__init__(factor, param)
@@ -755,7 +780,7 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         # check if the entire cholesky is +ve definite
         if (delta_CtT[:, 0] * delta_CtT[:, 3] > delta_CtT[:, 1] * delta_CtT[:, 2]).all():
             # get the correlation through time
-            C = F.pad(torch.linalg.cholesky(delta_CtT.reshape(-1, 2, 2)), (0, 0, 0, 0, 1, 0))
+            C = nnf.pad(torch.linalg.cholesky(delta_CtT.reshape(-1, 2, 2)), (0, 0, 0, 0, 1, 0))
             # all good
             self.params_ok = True
         else:
@@ -893,6 +918,15 @@ class HullWhite1FactorInterestRateModel(StochasticProcess):
         'The simulation of the random increment $Y(t_{k+1})-Y(t_k)$ (where $0=t_0,t_1,t_2,...$',
         'represents the simulation grid) is normal with zero mean and variance $J(t_{k+1})-J(t_k)$'])
 
+    factor_types = ('InterestRate', 'InflationRate', 'DividendRate')
+    fields = [
+        F('Alpha', 'Float', default=0),
+        F('Lambda', 'Float', default=0),
+        F('Sigma', 'Curve'),
+        F('Quanto_FX_Correlation', 'Float', default=0),
+        F('Quanto_FX_Volatility', 'Curve')
+    ]
+
     def __init__(self, factor, param, implied_factor=None):
         super(HullWhite1FactorInterestRateModel, self).__init__(factor, param)
 
@@ -1026,6 +1060,13 @@ class HWHazardRateModel(StochasticProcess):
                       '\\alpha})$',
                       '- $A(t,T)=\\sigma^2 B(T-t)\\Big(B(T-t)\\frac{B(2t)}{2}+B(t)^2\\Big)$'])
 
+    factor_types = ('SurvivalProb',)
+    fields = [
+        F('Alpha', 'Float', default=0),
+        F('Lambda', 'Float', default=0),
+        F('Sigma', 'Float', default=0)
+    ]
+
     def __init__(self, factor, param, implied_factor=None):
         super(HWHazardRateModel, self).__init__(factor, param)
 
@@ -1134,6 +1175,13 @@ class CSForwardPriceModel(StochasticProcess):
                       '$$S(t)=F(t,t)=F(0,t)exp\\Big(\\mu t-\\frac{1}{2}\\sigma^2v(t)+\\sigma Y(t)\\Big)$$',
                       ''])
 
+    factor_types = ('ForwardPrice',)
+    fields = [
+        F('Alpha', 'Float', default=0),
+        F('Drift', 'Float', default=0),
+        F('Sigma', 'Float', default=0)
+    ]
+
     def __init__(self, factor, param, implied_factor=None):
         super(CSForwardPriceModel, self).__init__(factor, param)
         self.base_date_excel = None
@@ -1191,7 +1239,7 @@ class CSForwardPriceModel(StochasticProcess):
                     2.0 * implied_tensor['Alpha'])
             var = torch.square(implied_tensor['Sigma']) * torch.exp(
                 -2.0 * implied_tensor['Alpha'] * tensor.new(tenors)) * var_adj
-            delta_var = torch.diff(F.pad(var, [0, 0, 1, 0]), dim=0)
+            delta_var = torch.diff(nnf.pad(var, [0, 0, 1, 0]), dim=0)
             safe_delta = torch.where(delta_var > 0.0, delta_var, torch.ones_like(delta_var))
             vol = torch.where(delta_var > 0.0, torch.sqrt(safe_delta), torch.zeros_like(delta_var))
             self.vol = torch.unsqueeze(vol, dim=2)
@@ -1252,6 +1300,10 @@ class CSImpliedForwardPriceModel(CSForwardPriceModel):
                       '',
                       '$$S(t)=F(t,t)=F(0,t)exp\\Big(-\\frac{1}{2}\\sigma^2v(t)+\\sigma Y(t)\\Big)$$',
                       ''])
+
+    factor_types = ('ForwardPrice',)
+    # the parameters are the implied factor's, not this block's - it carries none of its own
+    fields = []
 
     def __init__(self, factor, param, implied_factor=None):
         super(CSImpliedForwardPriceModel, self).__init__(factor, param)
@@ -1329,6 +1381,21 @@ class PCAInterestRateModel(StochasticProcess):
          '$$R_\\tau(t)=[e^{-\\alpha t}r_\\tau (0) + (1-e^{-\\alpha t})\\Theta_\\tau]$$',
          ''
          ])
+
+    factor_types = ('InterestRate', 'InflationRate', 'DividendRate')
+    fields = [
+        F('Reversion_Speed', 'Float', default=0),
+        F('Historical_Yield', 'Curve'),
+        F('Yield_Volatility', 'Curve'),
+        F('Eigenvectors', 'Curve', default='[{"label":"1", "data":[[0.0,0.0]]},'
+                                           '{"label":"2", "data":[[0.0,0.0]]},'
+                                           '{"label":"3", "data":[[0.0,0.0]]}]'),
+        F('Rate_Drift_Model', 'Text', default='Drift_To_Forward',
+          values=['Drift_To_Forward', 'Drift_To_Blend']),
+        F('Princ_Comp_Source', 'Text', default='Correlation',
+          values=['Correlation', 'Covariance']),
+        F('Distribution_Type', 'Text', default='Lognormal', values=['Lognormal', 'Normal'])
+    ]
 
     def __init__(self, factor, param, implied_factor=None):
         super(PCAInterestRateModel, self).__init__(factor, param)
@@ -1552,6 +1619,15 @@ class SingleRegimeOU1FactorKalmanModel(StochasticProcess):
          '',
          'One correlated Gaussian driver is consumed per time step.',
          ''])
+
+    factor_types = ('ObservedBasis',)
+    fields = [
+        F('Kappa', 'Float', default=0),
+        F('Theta', 'Float', default=0),
+        F('Sigma', 'Float', default=0),
+        F('Measurement_Var_Base', 'Float', default=0.0,
+          description='Median filtered measurement variance the calibration reports')
+    ]
 
     def __init__(self, factor, param, implied_factor=None):
         super(SingleRegimeOU1FactorKalmanModel, self).__init__(factor, param)
@@ -1941,6 +2017,13 @@ class LogOUSpotModel(StochasticProcess):
          'The stationary distribution of $\\log S$ is'
          ' $\\mathcal{N}\\!\\left(\\theta,\\,\\frac{\\sigma^2}{2\\kappa}\\right)$.'])
 
+    factor_types = ('CommodityPrice',)
+    fields = [
+        F('Kappa', 'Float', default=0),
+        F('Theta', 'Float', default=0),
+        F('Sigma', 'Float', default=0)
+    ]
+
     def __init__(self, factor, param, implied_factor=None):
         super(LogOUSpotModel, self).__init__(factor, param)
         self._validate_params()
@@ -2117,6 +2200,20 @@ class MarkovSwitchingLogOUSpotModel(StochasticProcess):
          '- **Transition_Matrix**: NxN row-stochastic matrix at the calibration step.',
          '- **Initial_State_Probs**: Initial regime distribution (length N).',
          '- **Calibration_DT_Years**: Step size $\\delta_c$ of the calibrated $P$ (default 1/252).'])
+
+    factor_types = ('CommodityPrice',)
+    fields = [
+        F('States', 'Container', default=[],
+          description='List of per-regime {Kappa, Theta, Sigma} dicts '
+                      '(must have at least 2 regimes)'),
+        F('Transition_Matrix', 'Table', default=[],
+          description='NxN row-stochastic transition matrix at the calibration time step'),
+        F('Initial_State_Probs', 'Table', default=[],
+          description='Initial regime distribution (length-N vector summing to 1)'),
+        F('Calibration_DT_Years', 'Float', default=1.0 / 252.0,
+          description='Step size (in years) of the calibrated transition matrix; the model '
+                      're-discretises P per simulation step via the CTMC generator')
+    ]
 
     def __init__(self, factor, param, implied_factor=None):
         super(MarkovSwitchingLogOUSpotModel, self).__init__(factor, param)
@@ -2351,6 +2448,20 @@ class MarkovHMMSpotModel(StochasticProcess):
          '- **Calibration_DT_Years**: Step size of $P$ (default 1/252).',
          '- **Log_Price**: bool (default False) — emit log returns instead of raw price diffs.'])
 
+    factor_types = ('CommodityPrice',)
+    fields = [
+        F('States', 'Container', default=[],
+          description='List of per-regime {Mu, Sigma} dicts - annualised drift and vol of the '
+                      'additive spot increment (must have at least 2 regimes)'),
+        F('Transition_Matrix', 'Table', default=[],
+          description='NxN row-stochastic transition matrix at the calibration time step'),
+        F('Initial_State_Probs', 'Table', default=[],
+          description='Initial regime distribution (length-N vector summing to 1)'),
+        F('Calibration_DT_Years', 'Float', default=1.0 / 252.0,
+          description='Step size (in years) of the calibrated transition matrix; the model '
+                      're-discretises P per simulation step via the CTMC generator')
+    ]
+
     def __init__(self, factor, param, implied_factor=None):
         super().__init__(factor, param)
 
@@ -2577,7 +2688,7 @@ class MarkovHMMSpotModel(StochasticProcess):
         if belief is not None and belief.dim() == regimes.dim() + 1:
             block = belief[t]                                                 # (n_states, ...batch)
         else:
-            block = F.one_hot(regimes[t].long(), num_classes=self.n_states)\
+            block = nnf.one_hot(regimes[t].long(), num_classes=self.n_states)\
                 .to(dtype=buffer[key].dtype).movedim(-1, 0)                   # (n_states, ...batch)
         return [(block, REVEAL_SUFFICIENT), (price, REVEAL_CONTINUOUS)]
 
@@ -2961,6 +3072,21 @@ class GARCHSpotModel(StochasticProcess):
          'subtracting $\\tfrac{1}{2}\\text{Var}(r_t)$ from the per-step log-drift; No leaves a '
          '$+\\tfrac{1}{2}\\text{var}$ Jensen drift.',
          '- **Log_Price**: bool (default True; the model is defined on log returns).'])
+
+    factor_types = ('CommodityPrice',)
+    fields = [
+        F('Omega', 'Float', default=0.0, description='Variance intercept omega > 0'),
+        F('Alpha', 'Float', default=0.0, description='Weight on the last squared return'),
+        F('Beta', 'Float', default=0.0, description='Weight on the last conditional variance'),
+        F('Nu', 'Float', default=0.0, description='Student-t degrees of freedom (> 2.05)'),
+        F('Mu', 'Float', default=0.0, description='Annualised log drift'),
+        F('H0', 'Float', default=0.0, description='Conditional variance at t=0'),
+        F('Calibration_DT_Years', 'Float', default=1.0 / 252.0,
+          description='Step size (in years) of the variance recursion'),
+        F('Convexity_Correction', 'Text', default='No', values=['Yes', 'No'],
+          description='Yes subtracts half the per-step variance from the log drift, making the '
+                      'PRICE the Mu-martingale')
+    ]
 
     def __init__(self, factor, param, implied_factor=None):
         super().__init__(factor, param)
@@ -3358,6 +3484,10 @@ class HestonNandiImpliedSpotModel(StochasticProcess):
          'days then the fractional remainder — so a node carries the law of its own elapsed '
          'trading time rather than a rounded number of days.'])
 
+    factor_types = ('EquityPrice', 'FxRate')
+    # the parameters live on the implied HestonNandiModelParameters factor, not in this block
+    fields = []
+
     def __init__(self, factor, param, implied_factor=None):
         super().__init__(factor, param)
         self.implied = implied_factor
@@ -3665,6 +3795,23 @@ class VARMixedFactorInterestRateModel(StochasticProcess):
          'evaluating the parametric form with linearly-interpolated $w$, but only '
          'evaluates $w$ where it is mathematically defined (at the slot τs). Innovation '
          'correlations $\\rho_\\text{innov}$ live in the global Correlations block.'])
+
+    factor_types = ('InterestRate', 'ForwardRate')
+    fields = [
+        F('Mean', 'Container', default=[],
+          description='Long-run mean vector [μ_β0, μ_β1, μ_r]'),
+        F('Phi', 'Table', default=[],
+          description='VAR(1) transition matrix Φ (3x3) at the calibration step'),
+        F('Sigma', 'Container', default=[],
+          description='Innovation standard deviations [σ_β0, σ_β1, σ_r]'),
+        F('Calibration_Tenors', 'Container', default=[],
+          description='Slot tenor vector τ_i(0) at simulation start (years)'),
+        F('Contract_Cycle_Years', 'Float', default=0.25,
+          description='Front-slot roll cycle (years) — contracts shift forward by this amount '
+                      'once the front slot expires'),
+        F('Calibration_DT_Years', 'Float', default=1.0 / 252.0,
+          description='Step size (in years) of the calibrated VAR(1)')
+    ]
 
     def __init__(self, factor, param, implied_factor=None):
         super().__init__(factor, param)
@@ -4033,6 +4180,23 @@ class BasisLinkedSpotModel(StochasticProcess):
          '- **Phi**: AR(1) coefficient',
          '- **Nu**: Student-t degrees of freedom (shared across regimes)',
          '- **Sigma_By_State**: per-regime innovation std'])
+
+    factor_types = ('ObservedBasis',)
+    fields = [
+        F('A', 'Float', default=0.0, description='Concurrent ΔS loading on the basis'),
+        F('Phi', 'Float', default=0.0, description='AR(1) coefficient on the previous basis'),
+        F('Nu', 'Float', default=5.0,
+          description='Student-t degrees of freedom (basis innovation)'),
+        F('Sigma_By_State', 'Container', default=[],
+          description='Per-regime innovation std σ_s (indexed by linked-spot HMM state) - the '
+                      'alternative to a flat Sigma'),
+        F('Sigma', 'Float', default=0.0,
+          description='Flat innovation std for a regime-free primary - the alternative to '
+                      'Sigma_By_State'),
+        F('Mu', 'Float', default=0.0, description='Long-run mean of the basis innovation'),
+        F('Calibration_DT_Years', 'Float', default=1.0 / 252.0,
+          description='Step size (in years) of the calibrated AR(1)')
+    ]
 
     def __init__(self, factor, param, implied_factor=None):
         super().__init__(factor, param)

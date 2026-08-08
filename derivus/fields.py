@@ -1,8 +1,10 @@
-from . import instruments, riskfactors
-from .schema import BLANK, emit_factor, emit_instrument
+from . import instruments, riskfactors, stochasticprocess
+from .schema import BLANK, emit_factor, emit_instrument, emit_process
 
-# the Instrument and Factor stores are VIEWS of the per-class declarations, not a second copy
+# the Instrument, Factor and Process stores are VIEWS of the per-class declarations, not a second copy
 _types, _sections = emit_instrument(instruments)
+_factor_types = emit_factor(riskfactors)
+_process_types, _process_factor_map = emit_process(stochasticprocess, _factor_types)
 
 # object list defaults, keyed by WIDGET - the shape-valued ones come from the declaration
 # vocabulary so a blank curve has one definition
@@ -192,148 +194,18 @@ mapping = {
         }
     },
     # the Factor store is a VIEW: a type IS the descriptors its class declares
-    'Factor': {'types': emit_factor(riskfactors)},
-    'Process': {
-        # All supported risk stochastic processes - need to append this once new risk processes are developed.
-        'types': {
-            "GBMAssetPriceTSModelImplied":
-                ["Risk_Premium"],
-            "HestonNandiImpliedSpotModel":
-                [],
-            "HullWhite2FactorImpliedInterestRateModel":
-                ["Lambda_1", "Lambda_2"],
-            "GBMAssetPriceModel":
-                ["Vol", "Drift"],
-            "GBMPriceIndexModel":
-                ["Vol", "Drift", "Seasonal_Adjustment"],
-            "HWHazardRateModel":
-                ["Alpha", "Lambda", "sigma"],
-            "LogOUSpotModel":
-                ["Kappa", "Theta", "sigma"],
-            "MarkovSwitchingLogOUSpotModel":
-                ["States", "Transition_Matrix", "Initial_State_Probs", "Calibration_DT_Years"],
-            "MarkovHMMSpotModel":
-                ["States", "Transition_Matrix", "Initial_State_Probs", "Calibration_DT_Years"],
-            "VARMixedFactorInterestRateModel":
-                ["Mean", "Phi", "Sigma", "Calibration_Tenors", "Contract_Cycle_Years",
-                 "Calibration_DT_Years"],
-            "BasisLinkedSpotModel":
-                ["A", "Phi", "Nu", "Sigma_By_State", "Mu", "Calibration_DT_Years"],
-            "SingleRegimeOU1FactorKalmanModel":
-                ["Kappa", "Theta", "sigma"],
-            "PCAInterestRateModel":
-                ["Reversion_Speed", "Historical_Yield", "Yield_Volatility", "Eigenvectors", "Rate_Drift_Model",
-                 "Princ_Comp_Source", "Distribution_Type"],
-            "CSForwardPriceModel":
-                ["Alpha", "Drift", "sigma"],
-            "CSImpliedForwardPriceModel":
-                [],
-            "HullWhite1FactorInterestRateModel":
-                ["Alpha", "Lambda", "Sigma", "Quanto_FX_Correlation", "Quanto_FX_Volatility"]
-        },
-
-        # field types for the various risk processes - need to explicitly mention all of them
-        'fields': {
-            'Vol': {'widget': 'Float', 'description': 'Vol', 'value': 0},
-            'Drift': {'widget': 'Float', 'description': 'Drift', 'value': 0},
-            'Alpha': {'widget': 'Float', 'description': 'Alpha', 'value': 0},
-            'Kappa': {'widget': 'Float', 'description': 'Kappa', 'value': 0},
-            'Theta': {'widget': 'Float', 'description': 'Theta', 'value': 0},
-            'Lambda': {'widget': 'Float', 'description': 'Lambda', 'value': 0},
-            'Lambda_1': {'widget': 'Float', 'description': 'Lambda 1', 'value': 0},
-            'Lambda_2': {'widget': 'Float', 'description': 'Lambda 2', 'value': 0},
-            'sigma': {'name': 'Sigma', 'widget': 'Float', 'description': 'Sigma', 'value': 0},
-            'Risk_Premium': {'widget': 'Flot', 'description': 'Risk Premium', 'value': default['Flot']},
-            'Quanto_FX_Correlation': {'widget': 'Float', 'description': 'Quanto_FX_Correlation', 'value': 0},
-            'Reversion_Speed': {'widget': 'Float', 'description': 'Reversion Speed', 'value': 0},
-            'Historical_Yield': {'widget': 'Flot', 'description': 'Historical Yield', 'value': default['Flot']},
-            'Yield_Volatility': {'widget': 'Flot', 'description': 'Yield Volatility', 'value': default['Flot']},
-            'Sigma': {'widget': 'Flot', 'description': 'Sigma', 'value': default['Flot']},
-            'Rate_Drift_Model': {'widget': 'Dropdown', 'description': 'Rate Drift Model', 'value': 'Drift_To_Forward',
-                                 'values': ['Drift_To_Forward', 'Drift_To_Blend']},
-            'Princ_Comp_Source': {'widget': 'Dropdown', 'description': 'Princ Comp Source', 'value': 'Correlation',
-                                  'values': ['Correlation', 'Covariance']},
-            'Distribution_Type': {'widget': 'Dropdown', 'description': 'Distribution Type', 'value': 'Lognormal',
-                                  'values': ['Lognormal', 'Normal']},
-            'Eigenvectors': {'widget': 'Flot', 'description': 'Eigenvectors',
-                             'value': '[{"label":"1", "data":[[0.0,0.0]]},{"label":"2", "data":[[0.0,0.0]]},{"label":"3", "data":[[0.0,0.0]]}]'},
-            'Quanto_FX_Volatility': {'widget': 'Flot', 'description': 'Quanto FX Volatility',
-                                     'value': default['Flot']},
-            'Seasonal_Adjustment': {'widget': 'Text', 'description': 'Seasonal Adjustment', 'value': ''},
-            # MarkovSwitchingLogOUSpotModel fields. The latent regime z_t follows a Markov chain
-            # with transition matrix P; conditional on z_t the log-spot follows a per-regime OU.
-            'States': {'widget': 'Container', 'description':
-                       'List of per-regime {Kappa, Theta, Sigma} dicts (must have at least 2 regimes)',
-                       'value': []},
-            'Transition_Matrix': {'widget': 'Table', 'description':
-                                  'NxN row-stochastic transition matrix at the calibration time step',
-                                  'value': []},
-            'Initial_State_Probs': {'widget': 'Table', 'description':
-                                    'Initial regime distribution (length-N vector summing to 1)',
-                                    'value': []},
-            'Calibration_DT_Years': {'widget': 'Float', 'description':
-                                     'Step size (in years) of the calibrated transition matrix; the model '
-                                     're-discretises P per simulation step via the CTMC generator',
-                                     'value': 1.0 / 252.0},
-            # MarkovHMMSpotModel: per-state {Mu, Sigma} are annualised drift/vol of additive ΔS.
-            'Mu': {'widget': 'Float', 'description': 'Annualised additive drift (per-state)', 'value': 0.0},
-            # VARMixedFactorInterestRateModel: 3-factor VAR(1) on (β_0, β_1, r) with curvature
-            # weight w from the orthogonal-to-(1,1,1)-and-τ construction.
-            'Mean': {'widget': 'Container', 'description':
-                     'Long-run mean vector [μ_β0, μ_β1, μ_r]',
-                     'value': []},
-            'Phi': {'widget': 'Table', 'description':
-                    'VAR(1) transition matrix Φ (3x3) at the calibration step',
-                    'value': []},
-            'Calibration_Tenors': {'widget': 'Container', 'description':
-                                   'Slot tenor vector τ_i(0) at simulation start (years)',
-                                   'value': []},
-            'Contract_Cycle_Years': {'widget': 'Float', 'description':
-                                     'Front-slot roll cycle (years) — contracts shift forward by this '
-                                     'amount once the front slot expires', 'value': 0.25},
-            # BasisLinkedSpotModel: lagged-AR(1) basis on a sibling commodity-spot path.
-            'A': {'widget': 'Float', 'description': 'Concurrent ΔS loading on the basis', 'value': 0.0},
-            'Nu': {'widget': 'Float', 'description': 'Student-t degrees of freedom (basis innovation)', 'value': 5.0},
-            'Sigma_By_State': {'widget': 'Container', 'description':
-                               'Per-regime innovation std σ_s (indexed by linked-spot HMM state)',
-                               'value': []},
-        },
-    },
+    'Factor': {'types': _factor_types},
+    # the Process store is a VIEW too: a process TYPE holds its own descriptors
+    'Process': {'types': _process_types},
 
     # list mapping risk factors to allowable interpolation methods
     'Interpolation_factor_map': {
         "InflationRate": ['HermiteRT','Hermite','LinearRT','Linear'],
         "InterestRate":['HermiteRT','Hermite','LinearRT','Linear']
     },
-    # list mapping risk factors to allowable stochastic processes
-    'Process_factor_map': {
-        "Correlation": [],
-        "CommodityPrice": ['LogOUSpotModel', 'MarkovSwitchingLogOUSpotModel', 'MarkovHMMSpotModel'],
-        "ObservedBasis": ["SingleRegimeOU1FactorKalmanModel", "BasisLinkedSpotModel"],
-        "InterestYieldVol": [],
-        "FuturesPrice": [],
-        "InflationRate": ["HullWhite1FactorInterestRateModel", "PCAInterestRateModel"],
-        "VolatilityGrid": [],
-        "ForwardPrice": ["CSForwardPriceModel"],
-        "ForwardRate": ["VARMixedFactorInterestRateModel"],
-        "ForwardPriceVol": [],
-        "ForwardPriceSample": [],
-        "ReferencePrice": [],
-        "ReferenceVol": [],
-        "HullWhite2FactorModelParameters": [],
-        # "GBMTSImpliedParameters": [],
-        "CSForwardPriceModelParameters": [],
-        "HestonNandiModelParameters": [],
-        "GBMAssetPriceTSModelParameters": [],
-        "EquityPrice": ["GBMAssetPriceModel", "HestonNandiImpliedSpotModel"],
-        "FxRate": ["GBMAssetPriceModel", "GBMAssetPriceTSModelImplied", "HestonNandiImpliedSpotModel"],
-        "SurvivalProb": ["HWHazardRateModel"],
-        "InterestRate": ["HullWhite1FactorInterestRateModel", "PCAInterestRateModel",
-                          "VARMixedFactorInterestRateModel"],
-        "PriceIndex": ["GBMPriceIndexModel"],
-        "InterestRateVol": [],
-        "DividendRate": ["HullWhite1FactorInterestRateModel", "PCAInterestRateModel"]
-    },
+    # the UI's valid-processes-per-factor menu, the process declarations read the other way
+    # round. Every factor type is a key, including the ones no process drives.
+    'Process_factor_map': _process_factor_map,
     'MarketPrices': {
         # logical groupings
         'groups': {

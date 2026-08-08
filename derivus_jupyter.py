@@ -714,11 +714,11 @@ class RiskFactorsPage(TreePanel):
                 value['value'] = self.get_value_for_widget(config, rf.utils.check_tuple_name(factor_data), value)
                 storage[property_name] = value
 
-        # a factor type IS its descriptors; only processes still name entries in a flat store
+        # a factor type IS its descriptors, and so is a process type
         risk_factor_fields = {factor_type: self.load_descriptors(descriptors) for factor_type,
                               descriptors in rf.fields.mapping['Factor']['types'].items()}
-        risk_process_fields = self.load_fields(
-            rf.fields.mapping['Process']['types'], rf.fields.mapping['Process']['fields'])
+        risk_process_fields = {process: self.load_descriptors(descriptors) for process,
+                               descriptors in rf.fields.mapping['Process']['types'].items()}
 
         possible_risk_process = {}
         for k, v in rf.fields.mapping['Process_factor_map'].items():
@@ -1031,9 +1031,6 @@ class SetupPage(TreePanel):
         super(SetupPage, self).__init__(config)
 
     def parse_config(self):
-
-        risk_process_fields = self.load_fields(
-            rf.fields.mapping['Process']['types'], rf.fields.mapping['Process']['fields'])
 
         # only 1 level of config parameters here - unlike the other 2
         self.sys_config = next(iter(self.load_fields(

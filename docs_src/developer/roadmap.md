@@ -18,6 +18,7 @@ Two rules apply to everything here, from [Conventions](conventions.md):
 | `pv_partial_barrier_option` | `pricing` | Excluded from the sensitivity work by decision; wants its own review. Also carries a suspected NaN — `limit` goes negative past `Barrier_Limit_Date` and is passed to `sqrt` unclamped. **Read, not run.** |
 | A sibling fallback may name a factor discovery never fetched | each deal's `calc_dependencies` | Discovery iterates `factor_fields` over the RAW field and `get_fieldname` drops blanks, so a blank reference loads no factor. A fallback is only safe if it names one something ELSE already pulled in. `Discount_Rate ← Currency` is safe — 34 sites — because `Currency` is an `FxRate` and `dependant_fields` pulls its `InterestRate` transitively. Adding a fallback to a field whose sibling has no such edge silently resolves to whatever the sibling's chain did load. The one cross-leg instance (`FXForwardDeal.Sell_Discount_Rate ← Buy_Currency`) is fixed: both rates are `default=REQUIRED` with no fallback. |
 | Four tables the Workbench cannot save | `derivus_jupyter.set_value_from_widget` | `set_repr` picks a deserializer from the `obj` token, and for an untagged table falls to a hardcoded whitelist of field NAMES. `Names`, `Sampling_Data_1`, `Sampling_Data_2` and `Barrier_Dates` are outside it and raise. The token table is per-field knowledge the `Row` now carries — the fix is to render from the declaration, not to add a fifth token. |
+| Eleven process descriptors have no widget | `stochasticprocess` (Markov / VAR / basis models) | `Transition_Matrix` is N×N, `Mean` and `Sigma_By_State` are length-N, `States` is a list of per-regime dicts — their shape is a calibration OUTPUT, and `Table` declares fixed columns while `Container` declares fixed named children. `define_input` reads `element['col_names']` / `element['sub_fields']` unchecked, so the Workbench raises the moment it renders any process in the platinum world. Shipped as a strict xfail per class. The fix wants a widget, not a schema change. |
 | Boundary scoping is not mutation-gated | `tests/test_boundary_pricer_events.py` | The fix is verified by measuring the term directly against CRN, but both two-netting-set gates measure the END-TO-END gradient, where the boundary term is a small fraction — so if it breaks later the suite stays green. Isolating it needs a portfolio where the correction dominates the smooth sensitivity, which is not a portfolio anyone runs. |
 
 ## Designed, not built
@@ -126,7 +127,36 @@ SHAPE and not a fact about either number. `get_implied_correlation` and `get_sur
 flip a quanto applies is genuinely compile-time — it follows from the two currencies sorting — so it
 travels as its own `Correlation_Sign` entry rather than pre-multiplied into a number.
 
-Also remaining: the other seven stores are untouched.
+**A process owns its parameter block, and the factor menu is the same declaration inverted.**
+Every stochastic-process class carries a flat `fields` list and a `factor_types` tuple naming the
+price factors it drives; `mapping['Process']['types']` and `Process_factor_map` are both
+`schema.emit_process(stochasticprocess, ...)`. The flat `fields` dict and the last Process alias
+(`sigma` → `Sigma`) go with it, because `Sigma` is a scalar on the OU, hazard-rate and
+Clewlow–Strickland models and a term-structure curve on Hull-White. Two more names were carrying
+two shapes each and only one descriptor: `Phi` is a 3×3 VAR transition matrix on
+`VARMixedFactorInterestRateModel` and a scalar AR(1) coefficient on `BasisLinkedSpotModel`, which
+the flat store rendered as a matrix table; and `VARMixedFactorInterestRateModel.Sigma` is a
+length-3 vector rendered as the Hull-White curve widget.
+
+The map's keys are now the factor types themselves, which is what the consumer needs: the
+Workbench indexes it by the type of the factor in front of it, so a missing key takes the page
+down rather than showing an empty menu. Inverting it also found four processes the engine
+constructs that no menu offered — `GARCHSpotModel` (in no store at all, though calibrated,
+shipped in a fixture and documented), `CSImpliedForwardPriceModel`,
+`HullWhite2FactorImpliedInterestRateModel`, and `GBMAssetPriceTSModelImplied` on equity, whose own
+`calc_references` handles `EquityPrice` and raises for anything but that or `FxRate`.
+
+`BasisLinkedSpotModel.Sigma` and `SingleRegimeOU1FactorKalmanModel.Measurement_Var_Base` are newly
+declarable: the first is one half of the exactly-one-of pair the class asserts on and the shipped
+platinum market data carries it, the second is written by the calibration into every block it
+emits.
+
+`Interpolation_factor_map` stays hand-written. It restricts a capability that is not per-class:
+`Factor1D.check_interpolation` supports all four methods for every curve factor, so there is
+nothing on a class to read the two rows off, and emitting it would either publish all four for
+every curve factor or write the same two rows onto two classes.
+
+Also remaining: the other stores are untouched.
 
 The paired naming cleanup settles first, and is now done: the `MarketPrices` types the engine
 matches, one `VolatilityGrid` in place of the three asset-class vol twins, and the IR prefix chain
