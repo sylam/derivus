@@ -235,4 +235,57 @@ top-level keys:
 - `'Results'` — the user-facing dataframes / arrays. Keys vary by calculation type; see the
   [Output](output.md) page.
 
+## The same verbs over HTTP
+
+One vocabulary, two bindings. Everything above is the in-process binding; `derivus.service` is the
+same verbs over HTTP and owns no logic of its own — every endpoint builds a `Context` from the
+posted job, calls one of the methods above, and serialises what comes back. A browser SPA, a marimo
+notebook and an Excel add-in are clients of the same four endpoints, so nothing specific to any one
+of them belongs on the surface. `fastapi` and `uvicorn` are the `service` extra, imported only
+there, so `import derivus` needs neither:
+
+```
+pip install derivus[service]
+DV_Service --port 8000
+```
+
+| | | |
+|---|---|---|
+| `GET` | `/schema` | `fields.mapping` plus `engine_version` — what a front end renders panels, tables and enums from |
+| `POST` | `/validate` | `cx.validate()` over the posted job, verbatim |
+| `POST` | `/execute` | `{"result_id": …, "status": …}` |
+| `GET` | `/results/{result_id}` | `{"status": …}`, and when done the `Results` tables plus the replay tuple |
+
+A posted job is a job *file* — the same document `load_json` reads, parsed by the same decoder, so
+its `.Curve`, `.Timestamp` and `.DateList` tokens travel as themselves. `/execute` takes one extra
+top-level key beside `Calc`:
+
+```json
+{"Calc": {"...": "..."}, "Patch": {"FxRate.ZAR": {"Spot": 19.0}}}
+```
+
+`Patch` is a values delta, exactly what `patch_market` accepts, and it is applied *before* the
+hashes are taken — so `values_hash` describes what actually ran.
+
+**Always a result_id.** There is no sync/async split at the API level. `/execute` answers
+immediately with an id and a status for every calculation, and a base valuation is simply `done` by
+the first poll. That is the one contract an Excel RTD cell and a browser poll loop can both be
+written against.
+
+**One compute lane.** All pricing goes through a single background worker. There is no cpu lane,
+because a base valuation *is* a Monte Carlo for an autocall or a TARF book; device selection stays
+where it already is, in the engine. What the queue orders is cost CLASS, read off
+`Calculation.Object`: a base valuation jumps a simulation among the jobs still **waiting**, within a
+class it is first in first out, and a running job is never preempted. `/schema` and `/validate` run
+nothing, so they answer inline and never reach the queue.
+
+**One job, one execution.** `result_id` is the content hash of the replay tuple `(plan_hash,
+values_hash, engine_version, seed)`. Submitting the same job twice returns the same id without
+re-running — while it is still queued, while it is running, and after it has finished — so dedupe
+and retry-idempotency are one feature, and two clients patching to the same market share a result.
+
+A `done` result carries `out['Results']` serialised through `CustomJsonEncoder` (a dataframe as
+`{".DataFrame": {"index": …, "columns": …, "data": …}}`) stamped with the four replay coordinates.
+An `error` result carries the message the run failed with, and nothing else.
+
 ---

@@ -167,6 +167,14 @@ class CustomJsonEncoder(json.JSONEncoder):
                 ['{}{}'.format(v, Config.reverse_offset[k]) for k, v in obj.kwds.items()])}
         elif isinstance(obj, Timestamp):
             return_value = {'.Timestamp': obj.strftime("%Y-%m-%d")}
+        elif isinstance(obj, pd.DataFrame):
+            # the two shapes a run's `Results` holds. `split` reconstructs through
+            # `pd.DataFrame(**data)` and its labels encode as themselves one level down; the object
+            # cast is what makes a missing cell `null`, since a NaN in a float column is not JSON
+            return_value = {'.DataFrame': obj.astype(object).where(
+                obj.notna(), None).to_dict(orient='split')}
+        elif isinstance(obj, np.ndarray):
+            return_value = obj.tolist()
         else:
             logging.error('Error Saving file - Encoding object ' + str(obj) + ' failed')
         return return_value

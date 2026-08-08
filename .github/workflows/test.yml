@@ -33,8 +33,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
 
+      # the service extra is a test dependency now that tests/test_service.py drives the endpoints,
+      # and httpx is what fastapi's TestClient calls them through
       - name: Install derivus
-        run: pip install -e . pytest
+        run: pip install -e '.[service]' pytest httpx
 
       - name: Confirm we are testing the repo, on CPU
         run: python -c "import derivus, torch; print(derivus.__version__, derivus.__file__, torch.__version__, torch.cuda.is_available())"

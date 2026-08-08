@@ -8,3 +8,6 @@ matplotlib>=3.0.0
 sortedcontainers>=2.0.0
 # GARCHSpotModel calibration only - lazily imported, so not needed to install or run
 # arch>=6.0
+# DV_Service only (the `service` extra) - derivus/service.py is the sole importer
+# fastapi>=0.100
+# uvicorn>=0.23

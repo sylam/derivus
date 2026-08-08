@@ -147,7 +147,7 @@ identity `(plan_hash, values_hash, engine_version, seed)` is documented for call
 [API Overview](../api_overview.md#patching-market-values-and-replaying-a-run); `engine_version` is
 `derivus/_version.py` and no second version source was invented for it.
 
-What remains is the service layer, then the live-refill EXECUTE path — in that order, re-sequenced
+What remains is the rest of the service layer, then the live-refill EXECUTE path — in that order, re-sequenced
 by decision: the derivus_jupyter successor is a web SPA (Angular/React) rendering from the schema
 over a ROBUST API, not another Python-first front end (NiceGUI was considered and rejected: AG
 Grid's tree-data mode needs an Enterprise license), and the SPA is only worth building on a solid
@@ -164,6 +164,29 @@ it must gain the verbs on the same terms when they land. The structuring calc it
 one changing input, and strike and margin are DEAL fields, structural today — such a calc either
 accepts a recompile per iterate or `bind=` eventually extends to deal fields. A vol solve already
 patches cleanly.
+
+**Service layer — slice 1 built.** `derivus/service.py` is the HTTP binding of the Context verbs and
+owns no logic of its own: `GET /schema` publishes `fields.mapping` with `engine_version`, `POST
+/validate` returns `cx.validate()` verbatim, `POST /execute` takes a job document plus an optional
+`Patch` delta and always answers `{result_id, status}`, and `GET /results/{id}` returns the run's
+`Results` tables stamped with the replay tuple. The ruling it implements is one vocabulary, two
+bindings — the SPA, marimo and Excel/xlOil are clients of the same endpoints, and nothing
+client-specific may enter the surface; anything a client needs that the verbs cannot answer is a
+missing verb on `Context`. A posted job goes through the decoder that reads a job file, so there is
+no second parser. `fastapi` is the `service` extra, imported only there. Pricing goes through ONE
+worker thread on a cost-class priority queue — no cpu lane, because base valuation IS Monte Carlo
+for an autocall or TARF book, and device selection stays in the engine — and a `result_id` is the
+content hash of the replay tuple, so an identical submission coalesces onto the queued or running
+job rather than enqueueing a second copy. The decisive gate is parity: a job over HTTP prices
+identically, table for table, to the same job through `run_job` in process. The one thing that had
+to be added elsewhere is `CustomJsonEncoder` learning the two shapes a `Results` tree holds — a
+DataFrame (as `split`, with missing cells as `null`) and an ndarray — rather than the service
+inventing a result schema of its own.
+
+Slice 2, in the order it was scoped: PREPARE and the plan cache (a content-hashed `plan_id`, so
+EXECUTE is plan + values patch), `/describe`, paged drill-down into a result rather than the whole
+table, SSE for progress, refining the cost CLASS into a batch-count x grid-size estimate, and auth
+with budget caps.
 
 **VALIDATE built**, and only that: `cx.validate()` returns `{'deals': {reference: [message]},
 'factors': [name]}` — the authoring messages of every deal in the book, and every price factor it

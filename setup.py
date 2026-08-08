@@ -40,12 +40,16 @@ setup(
         'garch': ['arch>=6.0'],
         # DV_Docs only writes mkdocs.yml; these are what building the emitted config needs
         'docs': ['mkdocs>=1.5', 'mkdocs-material>=9.0', 'pymdown-extensions>=10.0'],
+        # DV_Service only; derivus/service.py is the sole importer, so `import derivus` never
+        # needs either of these
+        'service': ['fastapi>=0.100', 'uvicorn>=0.23'],
     },
     entry_points={
         'console_scripts': [
             'DV_Bootstrap = derivus_bootstrap:main',
             'DV_Batch = derivus_batch:main',
-            'DV_Docs = derivus_docs:main'
+            'DV_Docs = derivus_docs:main',
+            'DV_Service = derivus.service:main'
         ]},
     # PolyForm is source-available rather than OSI-approved, so Other/Proprietary is the
     # closest PyPI classifier; the SPDX identifier in `license` is the precise statement
