@@ -147,13 +147,17 @@ identity `(plan_hash, values_hash, engine_version, seed)` is documented for call
 [API Overview](../api_overview.md#patching-market-values-and-replaying-a-run); `engine_version` is
 `derivus/_version.py` and no second version source was invented for it.
 
-What remains is the live-refill EXECUTE path and the service lift, and the refill is
-**deprioritised**, by measurement rather than by taste: recompiling is relatively quick, and the
-latency it would buy back is BASE VALUATION's — CMC is compute-heavy enough that compile time is
-dwarfed by the run. The case that would change that is a future **STRUCTURING** calc, solving for a
-strike, a margin or a vol: it iterates pricing on one changing input, and strike and margin are DEAL
-fields, structural today. Such a calc either accepts a recompile per iterate or `bind=` eventually
-extends to deal fields. A vol solve already patches cleanly.
+What remains is the live-refill EXECUTE path and the service lift. The verbs are
+**calculation-agnostic by design**: PREPARE/EXECUTE carry the same contract for every calculation
+type — a CMC run patches and replays exactly like a base valuation, it just runs longer. What is
+deprioritised is only the refill's URGENCY, by measurement rather than by taste: recompiling is
+relatively quick, and the latency the refill buys back is felt mainly where the run itself is
+cheap — base valuation and a future **STRUCTURING** calc (solve for a strike, a margin or a vol).
+CMC is compute-heavy enough that compile time is dwarfed by the run, so it loses nothing by waiting;
+it must gain the verbs on the same terms when they land. The structuring calc iterates pricing on
+one changing input, and strike and margin are DEAL fields, structural today — such a calc either
+accepts a recompile per iterate or `bind=` eventually extends to deal fields. A vol solve already
+patches cleanly.
 
 **VALIDATE built**, and only that: `cx.validate()` returns `{'deals': {reference: [message]},
 'factors': [name]}` — the authoring messages of every deal in the book, and every price factor it
