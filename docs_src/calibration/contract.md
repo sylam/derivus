@@ -22,7 +22,10 @@ are no other framework hooks.
 | `**kwargs` | Reserved for future framework-passed context. Existing classes ignore. |
 
 The class receives `param` at construction time (the
-[calibration_config](config.md) entry for its model class). Tuning knobs come from there.
+[calibration_config](config.md) entry for its model class). Tuning knobs come from there, and the
+class DECLARES them: a `fields` list of `schema.F` descriptors, which is what
+`mapping['Calibration']['types'][<model>]` publishes and what a gate holds to the keys the class
+actually reads, in both directions. A class that takes no tuning declares an empty list.
 
 ## Output: `CalibrationInfo`
 
@@ -93,9 +96,12 @@ To add a new calibration class:
 
 1. Define the class in `derivus/stochasticprocess.py` (or wherever the matching model
    class lives — `globals()` resolution requires same module).
-2. Add an entry under `Calibrations` in `calibration_config.json` with `Method` set to the
-   class name. Tuning parameters go in the same entry.
-3. Give the model class a `fields` list and a `factor_types` tuple naming the price factors it
+2. Give it a `model_type` naming the process it calibrates and a `fields` list declaring its
+   tuning keys. The `Calibration` schema is emitted from those, keyed by `model_type`, with
+   `Method` stamped from the class name.
+3. Add an entry under `Calibrations` in `calibration_config.json` keyed by the model class, with
+   `Method` set to the calibration class name. Tuning parameters go in the same entry.
+4. Give the model class a `fields` list and a `factor_types` tuple naming the price factors it
    drives. `Process_factor_map` and the `Price Models` schema are both emitted from those.
 
 No other registration is needed — the framework picks up the new method automatically.

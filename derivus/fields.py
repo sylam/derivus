@@ -1,12 +1,14 @@
 from . import calculation, instruments, riskfactors, stochasticprocess
-from .schema import BLANK, emit_calculation, emit_factor, emit_instrument, emit_process
+from .schema import (BLANK, emit_calculation, emit_calibration, emit_factor, emit_instrument,
+                     emit_process)
 
-# the Instrument, Factor, Process and Calculation stores are VIEWS of the per-class declarations,
-# not a second copy
+# the Instrument, Factor, Process, Calculation and Calibration stores are VIEWS of the per-class
+# declarations, not a second copy
 _types, _sections = emit_instrument(instruments)
 _factor_types = emit_factor(riskfactors)
 _process_types, _process_factor_map = emit_process(stochasticprocess, _factor_types)
 _calculation_types = emit_calculation(calculation)
+_calibration_types = emit_calibration(stochasticprocess)
 
 # object list defaults, keyed by WIDGET - the shape-valued ones come from the declaration
 # vocabulary so a blank curve has one definition
@@ -32,79 +34,9 @@ num_format = {
 
 # this whole thing could be stored as a json file . . .
 mapping = {
-    'Calibration': {
-        'fields': {
-            'MLE_Parameters': {'widget': 'Container', 'description': 'MLE Parameters',
-                               'value': {"Data_Retrieval_Parameters":
-                                             {"Start_Date": "", "End_Date": "", "Length": "", "Frequency": "1d",
-                                              "Calendar": "", "Business_Days_In_Year": 252,
-                                              "Diagnostics_Error_Level": "Info", "Data_Cleaning_Methods": "",
-                                              "Horizon": ""},
-                                         "Min_Tenor": "3M", "Reversion_Speed_Lower_Bound": 0.1,
-                                         "Reversion_Speed_Upper_Bound": 4.0, "Yield_Volatility_Upper_Bound": "",
-                                         "Exact_Solution_Optimisation_Parameters": {
-                                             "Max_Iterations": 1000, "Fractional_Tolerance": 0.00000001,
-                                             "Downhill_Simplex_Scale": 0.005}
-                                         },
-                               'sub_fields': ['Data_Retrieval_Parameters', 'Min_Tenor', 'Reversion_Speed_Fixed',
-                                              'Reversion_Speed_Lower_Bound', 'Reversion_Speed_Upper_Bound',
-                                              'Yield_Volatility_Upper_Bound',
-                                              'Exact_Solution_Optimisation_Parameters']
-                               },
-            'Data_Retrieval_Parameters': {'widget': 'Container', 'description': 'Data Retrieval Parameters',
-                                          'value': {"Start_Date": "", "End_Date": "", "Length": "", "Frequency": "1d",
-                                                    "Calendar": "", "Business_Days_In_Year": 252,
-                                                    "Diagnostics_Error_Level": "Info", "Data_Cleaning_Methods": "",
-                                                    "Horizon": ""},
-                                          'sub_fields': ['Start_Date', 'End_Date', 'Length', 'Frequency', 'Calendar',
-                                                         'Business_Days_In_Year', 'Diagnostics_Error_Level',
-                                                         'Data_Cleaning_Methods', 'Horizon']},
-            'Exact_Solution_Optimisation_Parameters': {'widget': 'Container',
-                                                       'description': 'Exact Solution Optimisation Parameters',
-                                                       'value': {'Max_Iterations': 1000,
-                                                                 'Fractional_Tolerance': 0.00000001,
-                                                                 'Downhill_Simplex_Scale': 0.005},
-                                                       'sub_fields': ['Max_Iterations', 'Fractional_Tolerance',
-                                                                      'Downhill_Simplex_Scale']},
-            'Max_Iterations': {'widget': 'Integer', 'description': 'Max Iterations', 'value': 1000},
-            'Fractional_Tolerance': {'widget': 'Float', 'description': 'Fractional Tolerance', 'value': 0.00000001},
-            'Downhill_Simplex_Scale': {'widget': 'Float', 'description': 'Downhill Simplex Scale', 'value': 0.005},
-            'Start_Date': {'widget': 'DatePicker', 'description': 'Start Date', 'value': default['DatePicker']},
-            'End_Date': {'widget': 'DatePicker', 'description': 'End Date', 'value': default['DatePicker']},
-            'Frequency': {'widget': 'Text', 'description': 'Frequency', 'value': '1d', 'obj': 'Period'},
-            'Length': {'widget': 'Text', 'description': 'Length', 'value': ''},
-            'Calendar': {'widget': 'Text', 'description': 'Calendar', 'value': ''},
-            'Horizon': {'widget': 'Text', 'description': 'Horizon', 'value': ''},
-            'Diagnostics_Error_Level': {'widget': 'Dropdown', 'description': 'Diagnostics Error Level', 'value': 'Info',
-                                        'values': ['None', 'Info', 'Warning', 'Error']},
-            'Calibration_Method': {'widget': 'Dropdown', 'description': 'Calibration Method', 'value': 'MLE',
-                                   'values': ['MLE', 'Pre_Computed_Statistics']},
-            'Data_Cleaning_Methods': {'widget': 'Text', 'description': 'Data Cleaning Methods', 'value': ''},
-            'Business_Days_In_Year': {'widget': 'Integer', 'description': 'Business Days In Year', 'value': 252},
-            'Min_Tenor': {'widget': 'Text', 'description': 'Min Tenor', 'value': '3M', 'obj': 'Period'},
-            'Reversion_Speed_Fixed': {'widget': 'Text', 'description': 'Reversion Speed Fixed', 'value': ''},
-            'Reversion_Speed_Lower_Bound': {'widget': 'Float', 'description': 'Reversion Speed Lower Bound',
-                                            'value': 0.1},
-            'Reversion_Speed_Upper_Bound': {'widget': 'Float', 'description': 'Reversion Speed Upper Bound',
-                                            'value': 3.0},
-            'Yield_Volatility_Upper_Bound': {'widget': 'Text', 'description': 'Yield Volatility Upper Bound',
-                                             'value': ''},
-            'Number_PCA_Factors': {'name': 'Number_Of_PCA_Factors', 'widget': 'Integer', 'description': 'Number Of PCA Factors', 'value': 3},
-            'Distribution_Type': {'widget': 'Dropdown', 'description': 'Distribution Type', 'value': 'Lognormal',
-                                  'values': ['Lognormal', 'Normal']},
-            'Use_Pre_Computed_Statistics': {'widget': 'Dropdown', 'description': 'Use Pre Computed Statistics',
-                                            'value': 'No', 'values': ['Yes', 'No']},
-            'Matrix_Type': {'widget': 'Dropdown', 'description': 'Matrix Type', 'value': 'Correlation',
-                            'values': ['Correlation', 'Covariance']},
-            'Rate_Drift_Model': {'widget': 'Dropdown', 'description': 'Rate Drift Model', 'value': 'Drift_To_Forward',
-                                 'values': ['Drift_To_Forward', 'Drift_To_Blend']}
-        },
-        'types': {
-            'PCAInterestRateModel': ['Calibration_Method', 'Number_PCA_Factors', 'Distribution_Type', 'Matrix_Type',
-                                     'Rate_Drift_Model', 'MLE_Parameters'],
-            'GBMAssetPriceModel': ['Use_Pre_Computed_Statistics', 'Data_Retrieval_Parameters']
-        }
-    },
+    # the Calibration store is a VIEW, keyed by the PROCESS a `Calibrations` entry is filed under
+    # while its `Method` names the calibration class the engine dispatches on
+    'Calibration': {'types': _calibration_types},
 
     # the Calculation store is a VIEW too, keyed by the `Object` string a job document writes
     'Calculation': {'types': _calculation_types},

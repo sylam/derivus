@@ -192,30 +192,51 @@ type" mean something else in that module.
 nothing on a class to read the two rows off, and emitting it would either publish all four for
 every curve factor or write the same two rows onto two classes.
 
-**`Calibration` and `MarketPrices` are enumerated and NOT migrated.** Both were candidates for the
-same recipe and neither has the correspondence it needs. The enumeration is the deliverable, so
-that picking either up later starts from evidence rather than from the assumption that a class is
-waiting for its declarations.
+**A calibration owns its tuning block, and the store is authored for the first time.** The
+enumeration said this was not a migration but an authoring job against thirteen classes whose only
+shared surface is `calibrate()`, and that is what it was. Each `*Calibration` class carries a
+`fields` list and a `model_type` naming the process it calibrates, and
+`mapping['Calibration']['types']` is `schema.emit_calibration(stochasticprocess)`.
 
-`Calibration` does not describe the calibration classes at all — it is keyed by the STOCHASTIC
-PROCESS name while `construct_calibration_config` dispatches on the entry's own `Method`, so the
-type, the block and the class carry three different names:
+The store is keyed by the PROCESS, because that is what a `Calibrations` entry is filed under —
+`Config.parse_json` keys `calibration_process_map` by it and `fetch_all_calibration_factors` looks
+a factor's model up in that map. The entry's own `Method` is the CALIBRATION class
+`construct_calibration_config` dispatches on, and it is stamped from the class name rather than
+declared, so the dispatch key cannot drift from the class it dispatches to. That resolves the
+three-name tangle without a fourth store: the process/calibration wiring IS this store's key
+paired with its `Method`. `model_type` has to be declared for the reason `calc_type` does —
+`HWInterestRateCalibration` calibrates `HullWhite1FactorInterestRateModel`, and no rule recovers
+one of those names from the other.
 
-| | |
-| --- | --- |
-| Types declared | 2 (`PCAInterestRateModel`, `GBMAssetPriceModel`) of the 12 models `calibration_config.json` configures |
-| Class the type names | a `StochasticProcess` subclass, which owns the process schema instead; the class this store describes is `*Calibration`, dispatched by `Method` |
-| `Method` and `ID` | carried by every configured entry, declared by neither type |
-| Declared and read | 3 — `Distribution_Type`, `Matrix_Type`, `Rate_Drift_Model`, all by `PCAInterestRateCalibration` |
-| Declared and read by nothing | the rest, including the whole `MLE_Parameters` tree (`Min_Tenor`, `Reversion_Speed_*`, `Exact_Solution_Optimisation_Parameters`, …), `Data_Retrieval_Parameters` and `Use_Pre_Computed_Statistics` — 19 descriptors |
-| Read and declared by nothing | every tuning key the calibrators actually take: `N_States`, `N_Iter`, `Seed`, `Tol`, `Use_Student_T`, `Nu_Min`, `Nu_Max`, `Outlier_Threshold`, `Max_Persistence`, `Convexity_Correction`, `Tau_Floor`, `Vol_Window`, `Log_Price` |
+Two types became thirteen. The declared-versus-read audit is again most of what it bought, and it
+is now a gate in both directions (`test_the_declared_tuning_keys_are_the_ones_the_class_reads`,
+which follows a local `p = self.param` alias). Nineteen descriptors were read by nothing and are
+gone — the whole `MLE_Parameters` tree, `Data_Retrieval_Parameters`, `Use_Pre_Computed_Statistics`
+and `Number_PCA_Factors`, which was also the last `ALIASED_KEYS` entry. Twenty-five tuning keys
+were read and declared by nothing: the ten Kalman knobs, the eight HMM knobs, four on GARCH, three
+on the basis model and one on the VAR model. Six classes read nothing at all and declare an empty
+list, which is the honest statement that their entry needs only a `Method`.
 
-So a migration here is not a migration: it is authoring the store for the first time, against
-thirteen classes whose only shared surface is `calibrate()`. That is a piece of work with its own
-design question — whether a calibration is a class that declares fields at all, or a `Method`
-block hung off the process — and it is not this one.
+`Boolean` joins the descriptor vocabulary, because `Use_Student_T` and `Log_Price` are read as
+`bool(param.get(...))` off a bare JSON `true` — the `'Yes'`/`'No'` string the rest of the
+vocabulary spells a flag with is truthy in both positions, so declaring them that way would have
+published a schema that authors a wrong calibration.
 
-`MarketPrices` is much closer and still not clean. Four of six types map exactly onto a
+`PCAInterestRateCalibration`'s three shape choices are `default=REQUIRED`: they are hard-keyed
+reads stamped through onto the emitted `Price Models` block, so there is no engine default to
+borrow.
+
+Also read by nothing, and therefore not declared: `ID` on every entry, and the `Vol_Shift`,
+`Kappa_Max` and `Sigma_Max` the shipped fixture carries on `LogOUSpotModel` — `calibrate_factors`
+passes `vol_shift` as its own argument and `num_business_days=252.0` hardcoded, and `LogOUSpot`'s
+two clamps are `calibrate()` keyword defaults no caller supplies.
+
+**`MarketPrices` is enumerated and NOT migrated.** It was a candidate for the same recipe and does
+not have the correspondence it needs. The enumeration is the deliverable, so that picking it up
+later starts from evidence rather than from the assumption that a class is waiting for its
+declarations.
+
+It is much closer than `Calibration` was and still not clean. Four of six types map exactly onto a
 bootstrapper class, and that half is already gated in both directions against the literals the
 engine matches. What does not map:
 

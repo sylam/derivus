@@ -9,8 +9,8 @@ schema-authored deal can emit, a widget that reads a JSON key nobody writes.
 Each test below is one leg of the class<->schema correspondence, and each exemption list names WHY
 a case is deliberate. `ALIASED_KEYS` used to be the interesting one - every field whose descriptor
 key had to be invented because a name-keyed dict cannot give two deals different descriptors for
-the same name. Instrument is keyed per SECTION and Factor per TYPE, and both their entries are
-gone; the two that remain belong to stores still keyed flat.
+the same name. It is empty: Instrument is keyed per SECTION and every other store per TYPE, so no
+descriptor has to invent a key any more.
 """
 import ast
 import inspect
@@ -34,13 +34,11 @@ UNDECLARED_DEALS = {
 
 # Descriptor keys that are NOT the JSON field name, per store -> the key they actually read.
 # A name-keyed dict admits one descriptor per name, so a field needing different valid values in
-# two deals must invent a key and carry the real name elsewhere. Instrument, Factor and Process
-# have no entries left: all three are keyed per type, so a 2D `Surface` and a 3D one each hold
-# their own and a scalar `Sigma` no longer has to be filed as `sigma` beside a curve one. Only the
-# flat stores can still need an alias.
-ALIASED_KEYS = {
-    'Calibration': {'Number_PCA_Factors': 'Number_Of_PCA_Factors'},
-}
+# two deals must invent a key and carry the real name elsewhere. It is EMPTY now: every store that
+# holds descriptors is keyed per type or per section, so a 2D `Surface` and a 3D one each hold
+# their own, a scalar `Sigma` no longer has to be filed as `sigma` beside a curve one, and the last
+# entry went with the Calibration store's `Number_PCA_Factors`, which no calibration read.
+ALIASED_KEYS = {}
 
 
 def deal_classes():

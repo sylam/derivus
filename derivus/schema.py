@@ -70,12 +70,14 @@ WIDGET_FORMAT = {
     'Basis': {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}},
     'Percent': {'type': 'numeric', 'numericFormat': {'pattern': '0.00 %'}},
     'Integer': {'type': 'numeric', 'numericFormat': {'pattern': '0.'}},
+    'Boolean': {'type': 'checkbox'},
     'Text': {}, 'Period': {}, 'Table': {},
 }
 
 #: The `obj` token `fields.mapping` uses per type, for a table declaring its columns positionally.
 OBJ_TOKEN = {'Date': 'DatePicker', 'Float': 'Float', 'Integer': 'Integer', 'Text': 'Text',
-              'Percent': 'Percent', 'Basis': 'Basis', 'Period': 'Period', 'Table': 'ResetArray'}
+              'Percent': 'Percent', 'Basis': 'Basis', 'Period': 'Period', 'Boolean': 'Boolean',
+              'Table': 'ResetArray'}
 
 
 class Row(object):
@@ -112,9 +114,13 @@ class F(object):
     nothing about discovery, tenor grids, process wiring, correlation or the code paths depends on
     it - see `partition_factor`. Declare it only from the consumption site, and leave it alone when
     unsure: a wrong structural costs a recompile, a wrong value corrupts a plan silently.
+
+    `Boolean` is a bare JSON `true`/`false`, which is NOT the `'Yes'`/`'No'` string the rest of the
+    vocabulary spells a flag with: a calibration reading `bool(param.get(...))` takes `'No'` as
+    true, so the two cannot share a descriptor.
     """
     WIDGET = {'Text': 'Text', 'Float': 'Float', 'Integer': 'Integer', 'Date': 'DatePicker',
-              'Percent': 'Float', 'Basis': 'Float', 'Period': 'Text',
+              'Percent': 'Float', 'Basis': 'Float', 'Period': 'Text', 'Boolean': 'Checkbox',
               'Table': 'Table', 'Container': 'Container',
               'Curve': 'Flot', 'Surface': 'Three', 'Space': 'Three'}
 
@@ -288,9 +294,13 @@ def emit_process(module, factor_types):
     drive; the UI wants the inverse, a menu per factor. Every factor type is a key, including the
     ones no process drives, because the Workbench indexes it by the type of the factor in front of
     it - a missing key is a KeyError, not an empty menu.
+
+    A process is a class declaring `fields` AND `factor_types`; the calibration classes share this
+    module and declare `fields` and `model_type` - see `emit_calibration`.
     """
     declared = [(name, cls) for name, cls in vars(module).items()
-                if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)]
+                if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)
+                and 'factor_types' in cls.__dict__]
     factor_map = {factor_type: [] for factor_type in factor_types}
     for name, cls in declared:
         for factor_type in cls.__dict__['factor_types']:
@@ -311,6 +321,28 @@ def emit_calculation(module):
     return {cls.__dict__['calc_type']: {f.key: f.descriptor() for f in cls.__dict__['fields']}
             for cls in vars(module).values()
             if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)}
+
+
+def emit_calibration(module):
+    """The `types` of `fields.mapping['Calibration']` - each PROCESS holding its tuning block.
+
+    Keyed by the stochastic-process class name, because that is what a `Calibrations` entry is filed
+    under, while the entry's own `Method` is the CALIBRATION class `construct_calibration_config`
+    dispatches on. The class states the process it calibrates with `model_type` for the reason a
+    calculation states its `calc_type`: `HWInterestRateCalibration` calibrates
+    `HullWhite1FactorInterestRateModel` and no rule recovers one of those names from the other.
+
+    `Method` is stamped from the class NAME rather than declared, so the dispatch key cannot drift
+    from the class it dispatches to, and the process/calibration wiring needs no map of its own -
+    it is this store's key paired with its `Method`.
+    """
+    return {cls.__dict__['model_type']: dict(
+        {'Method': F('Method', 'Text', default=name,
+                     description='The calibration class to run for this model').descriptor()},
+        **{f.key: f.descriptor() for f in cls.__dict__['fields']})
+        for name, cls in vars(module).items()
+        if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)
+        and 'model_type' in cls.__dict__}
 
 
 def partition_factor(type_name, block):

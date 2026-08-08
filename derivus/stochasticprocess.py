@@ -26,7 +26,7 @@ import torch.nn.functional as nnf
 
 # Internal modules
 from . import utils
-from .schema import F
+from .schema import F, REQUIRED
 from .instruments import get_fx_zero_rate_factor, get_equity_zero_rate_factor, get_dividend_rate_factor
 
 
@@ -363,6 +363,10 @@ class GBMAssetPriceModel(StochasticProcess):
 
 
 class GBMAssetPriceCalibration(object):
+    """Lognormal drift and volatility from `utils.calc_statistics`. Takes no tuning."""
+    model_type = 'GBMAssetPriceModel'
+    fields = []
+
     def __init__(self, model, param):
         self.model = model
         self.param = param
@@ -599,6 +603,10 @@ class GBMPriceIndexModel(StochasticProcess):
 
 
 class GBMPriceIndexCalibration(object):
+    """Lognormal drift and volatility of a price index. Takes no tuning."""
+    model_type = 'GBMPriceIndexModel'
+    fields = []
+
     def __init__(self, model, param):
         self.model = model
         self.param = param
@@ -1021,6 +1029,11 @@ class HullWhite1FactorInterestRateModel(StochasticProcess):
 
 
 class HWInterestRateCalibration(object):
+    """Mean reversion and reversion volatility averaged across the curve's tenors. Takes no
+    tuning - the name is also why a calibration has to declare the process it calibrates."""
+    model_type = 'HullWhite1FactorInterestRateModel'
+    fields = []
+
     def __init__(self, model, param):
         self.model = model
         self.param = param
@@ -1129,6 +1142,10 @@ class HWHazardRateModel(StochasticProcess):
 
 
 class HWHazardRateCalibration(object):
+    """Mean reversion and reversion volatility of a hazard rate curve. Takes no tuning."""
+    model_type = 'HWHazardRateModel'
+    fields = []
+
     def __init__(self, model, param):
         self.model = model
         self.param = param
@@ -1313,6 +1330,10 @@ class CSImpliedForwardPriceModel(CSForwardPriceModel):
 
 
 class CSForwardPriceCalibration(object):
+    """Clewlow-Strickland sigma, alpha and drift from log statistics. Takes no tuning."""
+    model_type = 'CSForwardPriceModel'
+    fields = []
+
     def __init__(self, model, param):
         self.model = model
         self.param = param
@@ -1538,6 +1559,20 @@ class PCAInterestRateModel(StochasticProcess):
 
 
 class PCAInterestRateCalibration(object):
+    """Principal components of the tenor covariance, with the three shape choices stamped through
+    onto the emitted `Price Models` block - which is why all three are hard-keyed and required."""
+    model_type = 'PCAInterestRateModel'
+    fields = [
+        F('Distribution_Type', 'Text', default=REQUIRED, values=['Lognormal', 'Normal'],
+          description='Whether the simulated rate is lognormal or normal'),
+        F('Matrix_Type', 'Text', default=REQUIRED, values=['Correlation', 'Covariance'],
+          description='The matrix the principal components are taken of - written out as '
+                      'Princ_Comp_Source'),
+        F('Rate_Drift_Model', 'Text', default=REQUIRED,
+          values=['Drift_To_Forward', 'Drift_To_Blend'],
+          description='How the mean rate is simulated - see the PCAInterestRateModel theory')
+    ]
+
     def __init__(self, model, param):
         self.model = model
         self.param = param
@@ -1719,6 +1754,24 @@ class SingleRegimeOU1FactorKalmanCalibration(object):
     corresponding stochastic process: Kappa, Theta, Sigma,
     Measurement_Var_Base.
     """
+    model_type = 'SingleRegimeOU1FactorKalmanModel'
+    fields = [
+        F('KF_Max_Iter', 'Integer', default=30, description='Quasi-EM iteration cap'),
+        F('KF_Tol', 'Float', default=1e-6,
+          description='Relative log-likelihood change that stops the EM loop'),
+        F('Kappa_Max', 'Float', default=10.0, description='Clamp on the fitted reversion speed'),
+        F('Sigma_Max', 'Float', default=2.0, description='Clamp on the fitted OU volatility'),
+        F('Tau_Floor', 'Float', default=1e-4,
+          description='Floor on the observed tenor, which divides the raw basis'),
+        F('Base_Measurement_Var', 'Float', default=1e-4,
+          description='Starting value of the tenor-independent measurement variance R_t'),
+        F('Tau_Measurement_Scale', 'Float', default=0.0,
+          description='Scale of the tenor-dependent term of R_t'),
+        F('Tau_Measurement_Power', 'Float', default=1.0,
+          description='Power of tau in the tenor-dependent term of R_t'),
+        F('Max_Measurement_Var', 'Float', default=1.0, description='Ceiling on R_t'),
+        F('Min_Measurement_Var', 'Float', default=1e-8, description='Floor on R_t')
+    ]
 
     def __init__(self, model, param):
         self.model = model
@@ -2134,6 +2187,8 @@ class LogOUSpotCalibration(object):
 
     The ``Spot`` parameter is the current market value and is not calibrated here.
     """
+    model_type = 'LogOUSpotModel'
+    fields = []
 
     def __init__(self, model, param):
         self.model = model
@@ -2902,13 +2957,22 @@ class MarkovHMMSpotCalibration(object):
     method-of-moments on the unconditional mixture kurtosis — per-state μ, σ are kept
     and ν enters the simulator's t-rescaling so marginal variance per regime stays at σ².
     States are reordered ascending by σ post-fit. `delta` is the regime-standardised
-    innovation series — approximately iid under the calibrated model.
-
-    JSON config (calibration_config.json):
-        N_States, N_Iter, Seed, Tol: EM knobs (defaults 3, 200, 42, 1e-6).
-        Log_Price: fit on log returns rather than raw diffs (default True).
-        Use_Student_T: enable t-refit (default True; False → pure Gaussian).
-        Nu_Min, Nu_Max: clamps on ν (defaults 3.0, 50.0; above max → drop t)."""
+    innovation series — approximately iid under the calibrated model."""
+    model_type = 'MarkovHMMSpotModel'
+    fields = [
+        F('N_States', 'Integer', default=3, description='Number of regimes'),
+        F('N_Iter', 'Integer', default=200, description='Baum-Welch iteration cap'),
+        F('Seed', 'Integer', default=42, description='RNG seed for the EM initialisation'),
+        F('Tol', 'Float', default=1e-6,
+          description='Relative log-likelihood change that stops the EM loop'),
+        F('Use_Student_T', 'Boolean', default=True,
+          description='Refit a shared Student-t nu; false leaves the emissions Gaussian'),
+        F('Nu_Min', 'Float', default=3.0, description='Floor on the fitted degrees of freedom'),
+        F('Nu_Max', 'Float', default=50.0,
+          description='Ceiling on the degrees of freedom, above which the t refit is dropped'),
+        F('Log_Price', 'Boolean', default=True,
+          description='Fit on log returns rather than raw price differences')
+    ]
 
     def __init__(self, model, param):
         self.model = model
@@ -3326,16 +3390,21 @@ class GARCHSpotCalibration(object):
     and `Log_Price` is always True (the model is defined on log returns).
     `delta` is the standardised residual ε_t = r_t/√h_t — approximately iid under the
     calibrated model, so the framework's correlation consolidation isn't contaminated by
-    the GARCH heteroskedasticity (the analog of the HMM's regime-standardised innovation).
-
-    JSON config (calibration_config.json):
-        Outlier_Threshold: |Δlog S| guard, returns above it are dropped (default 0.25).
-        Max_Persistence: cap on α+β; β is scaled down to hit it (default 0.999, the
-            model's own stationarity assertion).
-        Nu_Min: floor on the t degrees of freedom (default 2.05, the model's assertion).
-        Convexity_Correction: Yes/No, stamped straight onto the emitted param block
-            (default Yes — a calibrated world is a PRICE martingale, no harvestable
-            Jensen drift; the MODEL's own default stays No for bit-identity)."""
+    the GARCH heteroskedasticity (the analog of the HMM's regime-standardised innovation)."""
+    model_type = 'GARCHSpotModel'
+    fields = [
+        F('Outlier_Threshold', 'Float', default=0.25,
+          description='|d log S| guard - returns above it are dropped'),
+        F('Max_Persistence', 'Float', default=0.999,
+          description='Cap on alpha+beta; beta is scaled down to hit it - the model\'s own '
+                      'stationarity assertion'),
+        F('Nu_Min', 'Float', default=2.05,
+          description='Floor on the t degrees of freedom - the model\'s own assertion'),
+        F('Convexity_Correction', 'Text', default='Yes', values=['Yes', 'No'],
+          description='Stamped straight onto the emitted param block - a calibrated world is a '
+                      'PRICE martingale with no harvestable Jensen drift, so this defaults on '
+                      'while the MODEL\'s own default stays No for bit-identity')
+    ]
 
     def __init__(self, model, param):
         self.model = model
@@ -4061,6 +4130,11 @@ class VARMixedFactorInterestRateCalibration(object):
 
     `delta` is ε_t (3 columns); `correlation` is identity 3×3 so the framework's
     consolidation picks up the innovation cross-correlations directly."""
+    model_type = 'VARMixedFactorInterestRateModel'
+    fields = [
+        F('Tau_Floor', 'Float', default=0.03,
+          description='Floor on the observed tenor before the 3x3 design matrix is solved')
+    ]
 
     def __init__(self, model, param):
         self.model = model
@@ -4307,11 +4381,15 @@ class BasisLinkedSpotCalibration(object):
     archive-side name-prefix dependency. OLS on `b(t) = a·ΔS + φ·b(t-1) + η(t)`
     recovers (a, φ); ν from method-of-moments on the η excess kurt; per-regime σ from
     rolling-vol-tercile partitioning of η — terciles indexed in σ-ascending order to
-    match the linked spot's HMM regime convention.
-
-    JSON config (calibration_config.json):
-        Nu_Min, Nu_Max: clamps for the MoM ν solve (defaults 3.0, 50.0)
-        Vol_Window: rolling window for regime-tercile assignment (default 21 BD)"""
+    match the linked spot's HMM regime convention."""
+    model_type = 'BasisLinkedSpotModel'
+    fields = [
+        F('Nu_Min', 'Float', default=3.0,
+          description='Floor on the degrees of freedom the moment-matched nu solve returns'),
+        F('Nu_Max', 'Float', default=50.0, description='Ceiling on the same solve'),
+        F('Vol_Window', 'Integer', default=21,
+          description='Rolling window, in business days, the regime terciles are cut on')
+    ]
 
     def __init__(self, model, param):
         self.model = model
@@ -4393,13 +4471,16 @@ class MarkovSwitchingLogOUSpotCalibration(object):
         M-step: transition matrix from soft-counts; per-state OU params via weighted MLE on
                 (X_t, X_{t+1}) pairs (closed form: regress X_{t+1} = a + b X_t with weights w_t,
                 recover kappa = -log(b)/dt, theta = a/(1-b), sigma from residual variance).
-
-    Hyperparameters (read from `param` if provided, else defaults):
-        N_States   — number of regimes (default 2)
-        N_Iter     — EM iterations cap (default 200)
-        Seed       — RNG seed for the small init perturbation (default 42)
-        Tol        — relative log-likelihood change for early stopping (default 1e-6)
     """
+    model_type = 'MarkovSwitchingLogOUSpotModel'
+    fields = [
+        F('N_States', 'Integer', default=2, description='Number of regimes'),
+        F('N_Iter', 'Integer', default=200, description='Baum-Welch iteration cap'),
+        F('Seed', 'Integer', default=42,
+          description='RNG seed for the small perturbation the EM starts from'),
+        F('Tol', 'Float', default=1e-6,
+          description='Relative log-likelihood change that stops the EM loop')
+    ]
 
     def __init__(self, model, param):
         self.model = model

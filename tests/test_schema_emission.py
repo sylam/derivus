@@ -36,6 +36,7 @@ FACTOR = fields.mapping['Factor']
 PROCESS = fields.mapping['Process']
 PROCESS_FACTOR_MAP = fields.mapping['Process_factor_map']
 CALCULATION = fields.mapping['Calculation']
+CALIBRATION = fields.mapping['Calibration']
 
 # riskfactors classes that legitimately declare no schema row of their own.
 UNDECLARED_FACTORS = {
@@ -67,9 +68,14 @@ def factor_classes():
 def process_classes():
     """Stochastic-process classes carrying their own `fields`, own-attr only as `emit_process`
     reads them. `CSImpliedForwardPriceModel` subclasses `CSForwardPriceModel` and declares its own
-    empty list, so it is a type in its own right rather than an alias re-emitting the parent's."""
+    empty list, so it is a type in its own right rather than an alias re-emitting the parent's.
+
+    `factor_types` is what separates a process from a calibration: both declare `fields` in this
+    module, and a process names the factors it drives while a calibration names the process it
+    calibrates."""
     return {n: c.__dict__['fields'] for n, c in vars(stochasticprocess).items()
-            if isinstance(c, type) and isinstance(c.__dict__.get('fields'), list)}
+            if isinstance(c, type) and isinstance(c.__dict__.get('fields'), list)
+            and 'factor_types' in c.__dict__}
 
 
 def concrete_processes():
@@ -462,6 +468,117 @@ def test_the_calculation_time_grid_is_the_key_the_engine_reads():
     assert "calc_params.get('Time_Grid'" in src and 'Base_Time_Grid' not in src
 
 
+def calibration_classes():
+    """Calibration classes carrying their own `fields`, keyed by the PROCESS they calibrate rather
+    than by the class name - `HWInterestRateCalibration` calibrates
+    `HullWhite1FactorInterestRateModel`."""
+    return {c.__dict__['model_type']: c for c in vars(stochasticprocess).values()
+            if isinstance(c, type) and isinstance(c.__dict__.get('fields'), list)
+            and 'model_type' in c.__dict__}
+
+
+def calibration_source():
+    """Every class in the module whose name says it is a calibration. Named rather than typed
+    because the classes share no base - `calibrate()` is their whole surface - and `globals()`
+    dispatch means a new one is discoverable the moment it is defined."""
+    return {n: c for n, c in vars(stochasticprocess).items()
+            if isinstance(c, type) and n.endswith('Calibration')}
+
+
+def test_the_calibration_store_is_generated():
+    """The same guard again - every Calibration assertion here is vacuous over an empty
+    declaration set."""
+    assert calibration_classes(), 'no calibration class declares `fields` - these gates are vacuous'
+    assert CALIBRATION['types'] == schema.emit_calibration(stochasticprocess), (
+        'the Calibration store is not the emitted view - a hand-written copy has come back')
+    assert 'fields' not in CALIBRATION, 'a flat name-keyed store has come back beside the types'
+
+
+def test_every_calibration_class_is_declarable():
+    """A calibration class with no schema row cannot be configured from the UI or found in the
+    docs, however well it fits. The store used to describe two PROCESSES and no calibration class
+    at all: it was keyed by the process while `construct_calibration_config` dispatches on the
+    entry's own `Method`, so the type, the block and the class carried three different names."""
+    missing = sorted(set(calibration_source()) -
+                     {c.__name__ for c in calibration_classes().values()})
+    assert not missing, f'calibration classes no schema can configure: {missing}'
+
+
+def test_every_calibration_type_names_a_declared_process():
+    """A `Calibrations` entry is filed under the PROCESS it configures - `Config.parse_json` keys
+    `calibration_process_map` by it and `fetch_all_calibration_factors` looks a factor's model up
+    in that map - so a type naming no process is an entry no factor ever reaches.
+
+    The converse does NOT hold and is not gated: the implied/risk-neutral processes are
+    bootstrapped from market prices rather than calibrated from an archive, so they have no
+    calibration class and want none."""
+    unknown = sorted(set(CALIBRATION['types']) - set(PROCESS['types']))
+    assert not unknown, f'calibration types naming no declared process: {unknown}'
+
+
+def test_every_calibration_method_is_dispatchable():
+    """`construct_calibration_config` does `globals().get(param['Method'])(model, param)`, so a
+    `Method` naming no class is `None(...)` - a TypeError as the calibration config loads. The
+    descriptor's value is stamped from the class name for exactly that reason."""
+    undispatchable = sorted(
+        model for model, d in CALIBRATION['types'].items()
+        if not isinstance(getattr(stochasticprocess, d['Method']['value'], None), type))
+    assert not undispatchable, f'calibration Methods that dispatch to no class: {undispatchable}'
+
+
+@pytest.mark.parametrize('model_type', sorted(calibration_classes()))
+def test_calibration_descriptor_shape(model_type):
+    """`check_descriptor` over the calibration declarations - same tagged union, same consumers."""
+    for key, d in CALIBRATION['types'][model_type].items():
+        check_shape(f'{model_type}.{key}', d)
+
+
+@pytest.mark.parametrize('model_type', sorted(calibration_classes()))
+def test_no_calibration_declares_a_key_twice(model_type):
+    """One dict per type keyed by the JSON name, so a name declared twice loses a descriptor."""
+    keys = ['Method'] + [f.key for f in calibration_classes()[model_type].__dict__['fields']]
+    dupes = sorted({k for k in keys if keys.count(k) > 1})
+    assert not dupes, f'{model_type} declares {dupes} more than once'
+
+
+def param_reads(cls):
+    """Every `param` key a calibration class reads, hard-keyed or `.get`.
+
+    Follows a local alias (`p = self.param`), which is how the Kalman calibration reads its ten
+    knobs. Nothing else in these classes subscripts `self.param`."""
+    src = ast.parse(textwrap.dedent(inspect.getsource(cls)))
+    aliases = {'self.param'} | {t.id for n in ast.walk(src) if isinstance(n, ast.Assign)
+                                and ast.unparse(n.value) == 'self.param'
+                                for t in n.targets if isinstance(t, ast.Name)}
+    read = set()
+    for n in ast.walk(src):
+        if isinstance(n, ast.Subscript) and ast.unparse(n.value) in aliases \
+                and isinstance(n.slice, ast.Constant):
+            read.add(n.slice.value)
+        elif isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) \
+                and n.func.attr == 'get' and ast.unparse(n.func.value) in aliases \
+                and isinstance(n.args[0], ast.Constant):
+            read.add(n.args[0].value)
+    return read
+
+
+@pytest.mark.parametrize('model_type', sorted(calibration_classes()))
+def test_the_declared_tuning_keys_are_the_ones_the_class_reads(model_type):
+    """The declaration IS the tuning contract, held to the reads in both directions.
+
+    Every knob the thirteen classes take was undeclared and nineteen descriptors were read by
+    nothing - a whole `MLE_Parameters` tree, `Data_Retrieval_Parameters` and
+    `Use_Pre_Computed_Statistics` - so the panel offered fields the fit ignores and none of the
+    fields it honours. `Method` is exempt: it is stamped from the class name and read by
+    `construct_calibration_config`, not by the class."""
+    cls = calibration_classes()[model_type]
+    declared = {f.key for f in cls.__dict__['fields']}
+    read = param_reads(cls)
+    assert declared == read, (
+        f'{cls.__name__} declares {sorted(declared - read)} it never reads and reads '
+        f'{sorted(read - declared)} it never declares')
+
+
 def test_the_descriptors_with_no_widget_are_exactly_these():
     """The known defect, pinned in both directions: a new shapeless descriptor fails here, and so
     does fixing one without updating the list.
@@ -479,7 +596,7 @@ def test_the_descriptors_with_no_widget_are_exactly_these():
             found.add((type_name, key))
         for sub_key, sub in d.get('sub_fields', {}).items():
             walk(type_name, f'{key}.{sub_key}', sub)
-    for store in (PROCESS['types'], CALCULATION['types'], FACTOR['types']):
+    for store in (PROCESS['types'], CALCULATION['types'], FACTOR['types'], CALIBRATION['types']):
         for type_name, descriptors in store.items():
             for key, d in descriptors.items():
                 walk(type_name, key, d)

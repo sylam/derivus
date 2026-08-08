@@ -340,6 +340,8 @@ class TreePanel(metaclass=ABCMeta):
                 w = Three(description=element['description'], value=element['value'])
             elif element['widget'] == 'Integer':
                 w = widgets.IntText(description=element['description'], value=element['value'])
+            elif element['widget'] == 'Checkbox':
+                w = widgets.Checkbox(description=element['description'], value=element['value'])
             elif element['widget'] == 'HTML':
                 w = widgets.HTML(value=element['value'])
             elif element['widget'] == 'Table':
