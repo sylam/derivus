@@ -24,6 +24,7 @@ import torch
 
 # Internal modules
 from . import utils, pricing, instruments, riskfactors, stochasticprocess
+from .schema import F, REQUIRED, Row
 
 import scipy.optimize
 
@@ -31,6 +32,14 @@ market_swap_class = namedtuple('market_swap', 'deal_data price weight')
 date_desc = {'years': 'Y', 'months': 'M', 'days': 'D'}
 # date formatter
 date_fmt = lambda x: ''.join(['{0}{1}'.format(v, date_desc[k]) for k, v in x.kwds.items()])
+
+#: The columns every option quote carries, whatever the family: the contract, what it is worth,
+#: and how much the fit cares. `Weight` was read by two bootstrappers and declared by neither.
+OPTION_QUOTE = [F('Expiry_Date', 'Date'), F('Strike', 'Float', description='0 reads the forward'),
+                F('Option_Type', 'Text', values=['Call', 'Put']), F('Units', 'Float'),
+                F('Weight', 'Float', description='Relative weight in the objective'),
+                F('Quoted_Market_Value', 'Float',
+                  description='The quote, read per Quote_Type; 0 reads the vol surface')]
 
 
 class RiskNeutralInterestRate_State(utils.Calculation_State):
@@ -228,6 +237,23 @@ class CSForwardPriceModelParameters(object):
          ]
     )
 
+    market_factor_type = 'CSForwardPriceModelPrices'
+    fields = [
+        F('Energy', 'Text', default=REQUIRED, description='The ForwardPrice factor to calibrate'),
+        F('Forward_Volatility', 'Text', default=REQUIRED,
+          description='The ForwardPriceVol surface the quoted vols are read off'),
+        F('Discount_Rate', 'Text', default=REQUIRED,
+          description='The InterestRate curve the premiums discount on'),
+        F('Quote_Type', 'Text', default='Implied_Volatility', values=['Implied_Volatility'],
+          description='How Quoted_Market_Value reads - this family takes vols only'),
+        F('Energy_Futures_Options', 'Table', default='null',
+          row=Row(OPTION_QUOTE[:1] + [F('Settlement_Date', 'Date',
+                                        description='Futures settlement, which sets the '
+                                                    'Clewlow-Strickland decay term')] +
+                  OPTION_QUOTE[1:]),
+          description='The option quotes sigma and alpha are fitted to')
+    ]
+
     def __init__(self, param, device, dtype):
         self.device = device
         self.prec = dtype
@@ -259,7 +285,7 @@ class CSForwardPriceModelParameters(object):
             rate = utils.check_rate_name(market_price)
             market_factor = utils.Factor(rate[0], rate[1:])
 
-            if market_factor.type == 'CSForwardPriceModelPrices':
+            if market_factor.type == self.market_factor_type:
                 # get the vol surface
                 if 'ForwardPriceVol.' + implied_params['instrument']['Forward_Volatility'] in price_factors:
                     vol_factor = utils.Factor('ForwardPriceVol', utils.check_rate_name(
@@ -405,6 +431,31 @@ class HestonNandiModelParameters(object):
     # returns the parameters, not a vol), so a synthesised premium would be silently wrong.
     tabular_surfaces = ('Explicit', 'Relative_Forward', 'Malz')
 
+    market_factor_type = 'HestonNandiModelPrices'
+    # the four factor references, each with the optional `_Type` its `resolve` reads, whose valid
+    # values ARE the candidate list - one source, so a new candidate cannot miss the schema.
+    # `Yield` is the one reference the fit runs without; the rest are hard-read.
+    fields = [F(field, 'Text', default='' if field == 'Yield' else REQUIRED,
+                description='The {} factor - one of {}'.format(
+                    field.replace('_', ' ').lower(), ', '.join(types)))
+              for field, types in factor_types.items()] + [
+        F(field + '_Type', 'Text', default='', values=[''] + list(types),
+          description='Names the factor type explicitly, where the name exists under more than one')
+        for field, types in factor_types.items()] + [
+        F('Quote_Type', 'Text', default='Implied_Volatility',
+          values=['Implied_Volatility', 'Premium'],
+          description='Whether Quoted_Market_Value is a vol to price at or a premium to fit'),
+        F('Use_Forward', 'Text', default='No', values=['Yes', 'No'],
+          description='Moneyness against the forward rather than the spot'),
+        F('Invert_Moneyness', 'Text', default='No', values=['Yes', 'No'],
+          description='Moneyness as K/S rather than S/K'),
+        F('Steps_Per_Year', 'Float', default=252.0,
+          description='GARCH steps an expiry is spread over'),
+        F('Quadrature_Panels', 'Integer', default=64,
+          description='Gauss-Legendre panels the characteristic function is inverted on'),
+        F('European_Options', 'Table', default='null', row=Row(OPTION_QUOTE),
+          description='The option quotes the five parameters are fitted to')]
+
     def __init__(self, param, device, dtype):
         self.device = device
         self.param = param
@@ -495,7 +546,7 @@ class HestonNandiModelParameters(object):
             rate = utils.check_rate_name(market_price)
             market_factor = utils.Factor(rate[0], rate[1:])
 
-            if market_factor.type == 'HestonNandiModelPrices':
+            if market_factor.type == self.market_factor_type:
                 instrument = implied_params['instrument']
 
                 # resolve the underlying spot, its vol surface, the discount curve and any yield
@@ -657,6 +708,12 @@ class GBMAssetPriceTSModelParameters(object):
          ]
     )
 
+    market_factor_type = 'GBMAssetPriceTSModelPrices'
+    fields = [
+        F('Asset_Price_Volatility', 'Text', default=REQUIRED,
+          description='The VolatilityGrid whose ATM column becomes the integrated vol curve')
+    ]
+
     def __init__(self, param, device, dtype):
         self.device = device
         self.prec = dtype
@@ -672,7 +729,7 @@ class GBMAssetPriceTSModelParameters(object):
             rate = utils.check_rate_name(market_price)
             market_factor = utils.Factor(rate[0], rate[1:])
 
-            if market_factor.type == 'GBMAssetPriceTSModelPrices':
+            if market_factor.type == self.market_factor_type:
                 # get the vol surface
                 implied_param = utils.check_rate_name(implied_params['instrument']['Asset_Price_Volatility'])
                 vol_factor = utils.Factor('VolatilityGrid', implied_param)
@@ -998,9 +1055,43 @@ scipy.optimize.leastsq.html) are used.',
          ]
     )
 
+    market_factor_type = 'HullWhite2FactorModelPrices'
+    fields = [
+        F('Swaption_Volatility', 'Text', default=REQUIRED,
+          description='The InterestYieldVol surface the benchmark swaptions are priced off'),
+        F('Instrument_Definitions', 'Table', default='null', row=Row([
+            F('Start', 'Period', description='Forward start, from the base date'),
+            F('Tenor', 'Period', description='Swap tenor, from the start'),
+            F('Floating_Frequency', 'Period'), F('Fixed_Frequency', 'Period'),
+            F('Floating_Day_Count', 'Text',
+              values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+            F('Fixed_Day_Count', 'Text',
+              values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+            F('Market_Volatility', 'Percent',
+              description='The quoted ATM vol; 0 reads the swaption surface'),
+            F('Weight', 'Float', description='Relative weight in the objective')]),
+          description='The forward starting swaps the swaptions are struck on'),
+        F('Generate_Instruments', 'Text', default='No', values=['Yes', 'No'],
+          description='Unbuilt: generate the definitions from Generation_Parameters instead'),
+        F('Generation_Parameters', 'Container', default={
+            'First_Start': '1Y', 'Last_Start': '9Y', 'First_Tenor': '1Y', 'Last_Tenor': '9Y',
+            'First_Maturity': '10Y', 'Last_Maturity': '10Y', 'Fixed_Frequency': '6M',
+            'Floating_Frequency': '6M', 'Day_Count': 'ACT_365', 'Index_Offset': 0},
+          sub_fields=[
+            F('First_Start', 'Period', default='1Y'), F('Last_Start', 'Period', default='9Y'),
+            F('First_Tenor', 'Period', default='1Y'), F('Last_Tenor', 'Period', default='9Y'),
+            F('First_Maturity', 'Period', default='10Y'),
+            F('Last_Maturity', 'Period', default='10Y'),
+            F('Fixed_Frequency', 'Period', default='6M'),
+            F('Floating_Frequency', 'Period', default='6M'),
+            F('Day_Count', 'Text', default='ACT_365',
+              values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+            F('Index_Offset', 'Integer', default=0)],
+          description='Unbuilt: the grid Generate_Instruments would sweep')
+    ]
+
     def __init__(self, param, device, dtype):
         super(HullWhite2FactorModelParameters, self).__init__(param, device, dtype)
-        self.market_factor_type = 'HullWhite2FactorModelPrices'
         self.sigma_bounds = (1e-5, 0.09)
         self.alpha_bounds = (-0.5, 2.4)
         self.corr_bounds = (-.95, 0.95)
@@ -1187,6 +1278,63 @@ scipy.optimize.leastsq.html) are used.',
         price_factors[param_name] = param
         # return the final implied object
         return riskfactors.HullWhite2FactorModelParameters(param)
+
+
+class InterestRateCurveParameters(object):
+    """The quote family that is designed and not built: FRA, swap and deposit quotes bootstrapping
+    an `InterestRate` curve. See the developer note on
+    [Market Prices](../developer/market_prices.md) for the spec this is to be built to.
+
+    It declares rather than bootstraps, so that the schema states the family instead of leaving
+    half the store hand-written. `bootstrap` says so where a configured run can hear it.
+
+    Two loose ends the note records: the curve it writes is an `InterestRate`, not the
+    `<ClassName>` parameter block the other four write, so `Config.bootstrap`'s "wrote no
+    <name>.* price factor" check wants settling; and the solve wants the calibration Jacobians
+    the roadmap has yet to build.
+    """
+    market_factor_type = 'InterestRatePrices'
+    #: The instrument types a quote in this family may be. Each is a declared `Instrument` type,
+    #: so the quote's schema IS that type's declarations - reused by reference, never restated.
+    quote_instruments = ('DepositDeal', 'FRADeal', 'SwapInterestDeal')
+    fields = [
+        F('Currency', 'Text', default=REQUIRED, description='The currency of the curve to build'),
+        F('Discount_Rate', 'Text', default='',
+          description='The curve the quotes discount on, where that is not the curve being built'),
+        F('Spot_Offset', 'Integer', default=2,
+          description='Business days from the base date to the curve\'s spot'),
+        F('Zero_Rate_Grid', 'Text',
+          default='0d 1d 2d 1w 2w 1m 3m 6m 9m 1y 6m1y 2y 6m2y 3y 6m3y 4y 6m4y 5y 6y 7y 8y 9y 10y '
+                  '15y 20y 25y',
+          description='The tenor grid the bootstrapped curve is written on'),
+        F('Points', 'Container', default={
+            'Use': 'Yes', 'Deal': {}, 'Descriptor': '', 'DealType': 'DepositDeal',
+            'Quote_Type': 'Par_Rate', 'Quoted_Market_Value': 0.0},
+          sub_fields=[
+            F('Use', 'Text', default='Yes', values=['Yes', 'No'],
+              description='Whether this quote enters the solve'),
+            F('Deal', 'Container', default={},
+              description='The instrument itself, authored as a deal of type DealType'),
+            F('Descriptor', 'Text', default='', description='Free text naming the quote'),
+            F('DealType', 'Text', default='DepositDeal', values=list(quote_instruments),
+              description='The instrument type the quote is a price for'),
+            F('Quote_Type', 'Text', default='Par_Rate',
+              values=['Par_Rate', 'Rate', 'Price'],
+              description='What Quoted_Market_Value is, and therefore what repricing to par means'),
+            F('Quoted_Market_Value', 'Float', description='The quote the instrument reprices to')],
+          description='One market quote: an instrument, what kind of number is quoted, and the '
+                      'number')
+    ]
+
+    def __init__(self, param, device, dtype):
+        self.device = device
+        self.prec = dtype
+        self.param = param
+
+    def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices,
+                  calendars, debug=None):
+        logging.error('InterestRatePrices is declared and not bootstrapped - see the Market Prices '
+                      'developer note. No curve was built from these quotes.')
 
 
 def construct_bootstrapper(btype, param, dtype=torch.float32):

@@ -29,7 +29,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pytest
 
 import derivus
-from derivus import calculation, fields, instruments, riskfactors, schema, stochasticprocess
+from derivus import (bootstrappers, calculation, fields, instruments, riskfactors, schema,
+                     stochasticprocess)
 
 INSTRUMENT = fields.mapping['Instrument']
 FACTOR = fields.mapping['Factor']
@@ -38,6 +39,7 @@ PROCESS_FACTOR_MAP = fields.mapping['Process_factor_map']
 CALCULATION = fields.mapping['Calculation']
 CALIBRATION = fields.mapping['Calibration']
 INTERPOLATION_MAP = fields.mapping['Interpolation_factor_map']
+MARKET_PRICES = fields.mapping['MarketPrices']
 
 # riskfactors classes that legitimately declare no schema row of their own.
 UNDECLARED_FACTORS = {
@@ -128,10 +130,11 @@ def test_descriptor_shape(cls_name):
 
 # Descriptors whose JSON value is an array or a map whose SHAPE is an OUTPUT - an NxN transition
 # matrix, a length-N regime vector, a list of per-regime dicts, a deal map keyed by Object then by
-# Reference. `Table` declares fixed columns and `Container` fixed named children, so the
-# vocabulary cannot state any of them, and the Workbench raises on all of them. Pinned by
-# `test_the_descriptors_with_no_widget_are_exactly_these`, which is the known-defect gate: it
-# fails both when one appears and when one is fixed. Keyed (type, dotted key).
+# Reference, or a whole deal whose TYPE a sibling field names. `Table` declares fixed columns and
+# `Container` fixed named children, so the vocabulary cannot state any of them, and the Workbench
+# raises on all of them. Pinned by `test_the_descriptors_with_no_widget_are_exactly_these`, which
+# is the known-defect gate: it fails both when one appears and when one is fixed. Keyed
+# (type, dotted key).
 SHAPELESS = {
     ('MarkovSwitchingLogOUSpotModel', 'States'),
     ('MarkovSwitchingLogOUSpotModel', 'Transition_Matrix'),
@@ -151,6 +154,7 @@ SHAPELESS = {
     ('HedgeMonteCarlo', 'Hedging_Problem.Objective'),
     ('HedgeMonteCarlo', 'Hedging_Problem.Evaluator'),
     ('HedgeMonteCarlo', 'Hedging_Problem.Solver'),
+    ('InterestRatePrices', 'Points.Deal'),
 }
 
 
@@ -469,6 +473,140 @@ def test_the_calculation_time_grid_is_the_key_the_engine_reads():
     assert "calc_params.get('Time_Grid'" in src and 'Base_Time_Grid' not in src
 
 
+def market_price_classes():
+    """Bootstrapper classes carrying their own `fields`, keyed by the `Market Prices` type string
+    they select their work by. Own-attr only: `HullWhite2FactorModelParameters` subclasses
+    `RiskNeutralInterestRateModel`, which declares nothing and is no family of its own."""
+    return {c.__dict__['market_factor_type']: c for c in vars(bootstrappers).values()
+            if isinstance(c, type) and isinstance(c.__dict__.get('fields'), list)
+            and 'market_factor_type' in c.__dict__}
+
+
+def test_the_market_prices_store_is_generated():
+    """The same guard again - every MarketPrices assertion here is vacuous over an empty
+    declaration set."""
+    assert market_price_classes(), 'no bootstrapper declares `fields` - these gates are vacuous'
+    assert MARKET_PRICES['types'] == schema.emit_market_prices(bootstrappers), (
+        'the MarketPrices store is not the emitted view - a hand-written copy has come back')
+    assert set(MARKET_PRICES) == {'types'}, (
+        f'sub-stores have come back beside the types: {sorted(set(MARKET_PRICES) - {"types"})}')
+
+
+@pytest.mark.parametrize('market_type', sorted(market_price_classes()))
+def test_market_price_descriptor_shape(market_type):
+    """`check_descriptor` over the price-family declarations - same tagged union, same consumers.
+    The quote container and the generation parameters are where the nesting is."""
+    for key, d in MARKET_PRICES['types'][market_type].items():
+        check_shape(f'{market_type}.{key}', d)
+
+
+@pytest.mark.parametrize('market_type', sorted(market_price_classes()))
+def test_no_market_price_declares_a_key_twice(market_type):
+    """One dict per type keyed by the JSON name, so a name declared twice loses a descriptor. The
+    Heston-Nandi block builds its eight factor-reference fields from `factor_types`, which is
+    exactly the shape that can produce one."""
+    keys = [f.key for f in market_price_classes()[market_type].__dict__['fields']]
+    dupes = sorted({k for k in keys if keys.count(k) > 1})
+    assert not dupes, f'{market_type} declares {dupes} more than once'
+
+
+# The locals a bootstrapper binds from its own quote block, and therefore the reads that have to be
+# declared. `implied_params['instrument']` IS the block, `instrument` is its alias, and `option`
+# and `x` are one quote row - the loop and comprehension variables over the quote tables.
+QUOTE_LOCALS = ("implied_params['instrument']", 'instrument', 'option', 'x')
+
+
+def quote_reads(cls_name, module_ast):
+    """Every key a price family reads off its own quote block, hard-keyed or `.get`.
+
+    Scoped to the class, its bases in this module, and the module-level helpers any of them call -
+    which is how the Hull-White row reaches `create_market_swaps`, where its columns are consumed.
+
+    A key ASSIGNED anywhere in that scope is computed by the bootstrapper rather than authored
+    (`option['Premium']`, `option['T']`), and drops out. Subtraction is by key NAME, not by
+    (base, key): the same row is `option` where it is written and `x` where it is read back.
+    """
+    classes = {n.name: n for n in module_ast.body if isinstance(n, ast.ClassDef)}
+    funcs = {n.name: n for n in module_ast.body if isinstance(n, ast.FunctionDef)}
+    nodes = [classes[cls_name]] + [classes[ast.unparse(b)] for b in classes[cls_name].bases
+                                   if ast.unparse(b) in classes]
+    nodes += [funcs[n.func.id] for node in list(nodes) for n in ast.walk(node)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in funcs]
+    read, written = set(), set()
+    for node in nodes:
+        for n in ast.walk(node):
+            if isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant) \
+                    and isinstance(n.slice.value, str):
+                if isinstance(n.ctx, ast.Store):
+                    written.add(n.slice.value)
+                elif ast.unparse(n.value) in QUOTE_LOCALS:
+                    read.add(n.slice.value)
+            elif isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) \
+                    and n.func.attr == 'get' and ast.unparse(n.func.value) in QUOTE_LOCALS \
+                    and n.args and isinstance(n.args[0], ast.Constant):
+                read.add(n.args[0].value)
+    return read - written
+
+
+def declared_keys(descriptors):
+    """Every JSON key a family's block can carry - table columns and container children too."""
+    out = set()
+    for key, d in descriptors.items():
+        out.add(key)
+        out |= set(d.get('col_names', []))
+        out |= declared_keys(d.get('sub_fields', {}))
+    return out
+
+
+@pytest.mark.parametrize('market_type', sorted(market_price_classes()))
+def test_the_quote_block_declares_what_the_bootstrapper_reads(market_type):
+    """The declaration IS the quote block, held to the reads.
+
+    Three live defects came out of this store and two of them are exactly this gate. The
+    Hull-White row declared `Day_Count` while `create_market_swaps` hard-reads
+    `Floating_Day_Count` and `Fixed_Day_Count`, so a block authored from the schema - or copied
+    from the JSON reference's own example - raised KeyError before the first swaption priced. And
+    `Weight` is read by the Clewlow-Strickland objective and declared only by Heston-Nandi, so an
+    energy option quote had no weight column at all.
+
+    One direction only. The converse would need the four Heston-Nandi factor references and their
+    four `_Type` siblings, which `resolve` reads with a COMPUTED key off `factor_types` - the same
+    attribute the declarations are built from - and `Generate_Instruments` /
+    `Generation_Parameters`, which stay declared as unbuilt functionality."""
+    module_ast = ast.parse(inspect.getsource(bootstrappers))
+    cls_name = market_price_classes()[market_type].__name__
+    undeclared = sorted(quote_reads(cls_name, module_ast) -
+                        declared_keys(MARKET_PRICES['types'][market_type]))
+    assert not undeclared, (
+        f'{market_type} reads quote keys no schema-authored block can carry: {undeclared}')
+
+
+def test_a_quote_type_means_different_things_to_different_families():
+    """The capability the per-type store exists for, pinned so a return to a flat one fails.
+
+    The flat store published `ATM` / `Implied_Volatility` / `Premium` for every family. The
+    Clewlow-Strickland bootstrapper logs `quote_type ... not supported yet` for anything but
+    `Implied_Volatility`, Heston-Nandi takes that or `Premium`, and the unbuilt interest-rate
+    family quotes a par rate - three different questions sharing one name, which is right, because
+    the JSON is per family."""
+    def find(descriptors):
+        for key, d in descriptors.items():
+            if key == 'Quote_Type':
+                return d['values']
+            found = d.get('sub_fields') and find(d['sub_fields'])
+            if found:
+                return found
+
+    quote_type = {t: find(d) for t, d in MARKET_PRICES['types'].items()}
+    assert quote_type == {'CSForwardPriceModelPrices': ['Implied_Volatility'],
+                          'HestonNandiModelPrices': ['Implied_Volatility', 'Premium'],
+                          'GBMAssetPriceTSModelPrices': None,
+                          'HullWhite2FactorModelPrices': None,
+                          'InterestRatePrices': ['Par_Rate', 'Rate', 'Price']}, quote_type
+    assert not any('ATM' in (v or ()) for v in quote_type.values()), (
+        'ATM is back, and no family takes it')
+
+
 def interpolated_factor_types():
     """The factor types `construct_factor` routes through the `Price Factor Interpolation` section,
     read off the source.
@@ -650,7 +788,8 @@ def test_the_descriptors_with_no_widget_are_exactly_these():
             found.add((type_name, key))
         for sub_key, sub in d.get('sub_fields', {}).items():
             walk(type_name, f'{key}.{sub_key}', sub)
-    for store in (PROCESS['types'], CALCULATION['types'], FACTOR['types'], CALIBRATION['types']):
+    for store in (PROCESS['types'], CALCULATION['types'], FACTOR['types'], CALIBRATION['types'],
+                  MARKET_PRICES['types']):
         for type_name, descriptors in store.items():
             for key, d in descriptors.items():
                 walk(type_name, key, d)

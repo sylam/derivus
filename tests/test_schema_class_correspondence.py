@@ -109,51 +109,42 @@ def test_aliasing_is_declared_not_inferred(mapping_key):
             f'{aliased.get(key, key)!r}')
 
 
-# MarketPrices types that name no bootstrapper branch on purpose.
-UNMATCHED_MARKET_PRICES = {
-    'InterestRatePrices': 'the FRA/Swap/Deposit quote family, declared but not yet bootstrapped',
-    'quote': 'the shape of one quote inside a price block, not a market-factor type',
-}
+def declared_market_factor_types():
+    """The `Market Prices` type strings the schema publishes, which a bootstrapper now declares
+    with `market_factor_type` and selects its work by."""
+    return set(MAPPING['MarketPrices']['types'])
 
 
-def bootstrapped_market_factor_types():
-    """The `Market Prices` type strings the engine actually matches, read off the source.
+def test_no_bootstrapper_owns_a_market_price_literal():
+    """This replaces the pair of gates that held the declared types to the literals the engine
+    matched, in both directions. A bootstrapper selects work by `market_factor.type == <X>` with
+    no else, so a schema name matching no literal was a quote block the engine walked straight
+    past - the config looked authored, the calibration never ran, and only a downstream `wrote no
+    *.* price factor` error hinted at it. The drift had reached the published docs.
 
-    Parsed rather than listed, because a hand-kept list here would be a fourth store of the same
-    knowledge and would drift the same way the first three did."""
-    found = set()
+    The type is now declared once, as `market_factor_type`, and the engine compares against that
+    attribute - so the two cannot disagree and the old gates would be tautologies. What is
+    gateable is the discipline that makes them tautologies, which is this: no bootstrapper owns
+    the text. Same shape as `test_instruments_call_resolvers_not_factor_types`, and it is why
+    `HullWhite2FactorModelParameters` no longer sets its type in `__init__`."""
+    offenders = []
     for node in ast.walk(ast.parse(inspect.getsource(bootstrappers))):
-        # `if market_factor.type == 'X':`
         if isinstance(node, ast.Compare) and isinstance(node.left, ast.Attribute) \
                 and node.left.attr == 'type':
-            found.update(c.value for c in node.comparators
-                         if isinstance(c, ast.Constant) and isinstance(c.value, str))
-        # `self.market_factor_type = 'X'`
-        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) \
-                and any(isinstance(t, ast.Attribute) and t.attr == 'market_factor_type'
-                        for t in node.targets):
-            found.add(node.value.value)
-    return found
+            offenders += [f'{c.value} at line {node.lineno}' for c in node.comparators
+                          if isinstance(c, ast.Constant) and isinstance(c.value, str)]
+    assert not offenders, f'bootstrappers comparing market_factor.type to a literal: {offenders}'
 
 
-def test_declared_market_prices_are_bootstrapped():
-    """A bootstrapper selects work by `market_factor.type == '<literal>'` with no else, so a schema
-    name that matches no literal is a quote block the engine walks straight past - the config looks
-    authored, the calibration never runs, and only a downstream `wrote no *.* price factor` error
-    hints at it. This drift had reached the published docs: `GBMTSModelPrices` and
-    `HullWhite2FactorInterestRateModelPrices` were documented while the engine matched
-    `GBMAssetPriceTSModelPrices` and `HullWhite2FactorModelPrices`."""
-    matched = bootstrapped_market_factor_types()
-    declared = set(MAPPING['MarketPrices']['types']) - set(UNMATCHED_MARKET_PRICES)
-    assert not declared - matched, (
-        f'declared MarketPrices types no bootstrapper matches: {sorted(declared - matched)}')
-
-
-def test_bootstrapped_market_prices_are_declared():
-    """The converse: a type the engine bootstraps but no schema declares cannot be authored from the
-    UI or found in the docs. `CSForwardPriceModelPrices` sat in that state."""
-    undeclared = bootstrapped_market_factor_types() - set(MAPPING['MarketPrices']['types'])
-    assert not undeclared, f'bootstrapped types absent from the schema: {sorted(undeclared)}'
+def test_every_market_price_quote_instrument_is_a_declared_deal():
+    """A quote is a reference to an EXISTING instrument type, so the `Instrument` store's
+    declarations ARE the quote's schema and the family only names them. A name naming no deal type
+    is a quote nothing can author - and the names are what a `DealType` dropdown offers."""
+    unknown = {cls.market_factor_type: sorted(set(cls.quote_instruments) - set(INSTRUMENT['types']))
+               for cls in vars(bootstrappers).values()
+               if isinstance(cls, type) and 'quote_instruments' in cls.__dict__}
+    unknown = {k: v for k, v in unknown.items() if v}
+    assert not unknown, f'quote instruments naming no declared deal type: {unknown}'
 
 
 RETIRED_VOL_TYPES = ('FXVol', 'EquityPriceVol', 'CommodityPriceVol')
@@ -293,7 +284,7 @@ def test_docs_publish_only_real_market_price_names():
     authored a block the engine walks past. Neither the schema nor the suite looked at prose, so the
     two pages disagreed with the engine, and with each other, for as long as they existed."""
     docs = pathlib.Path(__file__).parent.parent / 'docs_src'
-    known = bootstrapped_market_factor_types() | set(MAPPING['MarketPrices']['types'])
+    known = declared_market_factor_types()
     published = {(p.relative_to(docs), n) for p in docs.rglob('*.md')
                  for n in re.findall(r'\b\w*ModelPrices\b', p.read_text())}
     unknown = sorted(f'{p}: {n}' for p, n in published if n not in known)

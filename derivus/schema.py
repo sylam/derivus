@@ -341,6 +341,23 @@ def emit_calculation(module):
             if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)}
 
 
+def emit_market_prices(module):
+    """The `types` of `fields.mapping['MarketPrices']` - each price FAMILY holding its own.
+
+    Keyed by the `Market Prices` type string the engine selects work by, which the class declares
+    as `market_factor_type` rather than the emitter recovering it from the class name: the block is
+    named for the model with a `Prices` suffix and the class with a `Parameters` one, and one
+    family is declared without being built at all.
+
+    Own-attr only, matching the other emitters. `HullWhite2FactorModelParameters` subclasses
+    `RiskNeutralInterestRateModel`, which declares nothing and is not a family of its own.
+    """
+    return {cls.__dict__['market_factor_type']: {f.key: f.descriptor() for f in cls.__dict__['fields']}
+            for cls in vars(module).values()
+            if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)
+            and 'market_factor_type' in cls.__dict__}
+
+
 def emit_calibration(module):
     """The `types` of `fields.mapping['Calibration']` - each PROCESS holding its tuning block.
 

@@ -67,8 +67,8 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
             ".DateOffset": "3M"
           },
           "Weight": 1,
-          "Holiday_Calendar": null,
-          "Day_Count": "ACT_365",
+          "Floating_Day_Count": "ACT_365",
+          "Fixed_Day_Count": "ACT_365",
           "Start": {
             ".DateOffset": "3M"
           },
@@ -78,8 +78,6 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
           "Tenor": {
             ".DateOffset": "1Y"
           },
-          "Market_Volatility_Type": "Lognormal",
-          "Index_Offset": 0,
           "Market_Volatility": {
             ".Percent": 0
           }
@@ -89,8 +87,8 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
             ".DateOffset": "3M"
           },
           "Weight": 1,
-          "Holiday_Calendar": null,
-          "Day_Count": "ACT_365",
+          "Floating_Day_Count": "ACT_365",
+          "Fixed_Day_Count": "ACT_365",
           "Start": {
             ".DateOffset": "3M"
           },
@@ -100,8 +98,6 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
           "Tenor": {
             ".DateOffset": "2Y"
           },
-          "Market_Volatility_Type": "Lognormal",
-          "Index_Offset": 0,
           "Market_Volatility": {
             ".Percent": 0
           }
@@ -111,8 +107,8 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
             ".DateOffset": "3M"
           },
           "Weight": 1,
-          "Holiday_Calendar": null,
-          "Day_Count": "ACT_365",
+          "Floating_Day_Count": "ACT_365",
+          "Fixed_Day_Count": "ACT_365",
           "Start": {
             ".DateOffset": "3M"
           },
@@ -122,8 +118,6 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
           "Tenor": {
             ".DateOffset": "5Y"
           },
-          "Market_Volatility_Type": "Lognormal",
-          "Index_Offset": 0,
           "Market_Volatility": {
             ".Percent": 0
           }
@@ -133,8 +127,8 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
             ".DateOffset": "3M"
           },
           "Weight": 1,
-          "Holiday_Calendar": null,
-          "Day_Count": "ACT_365",
+          "Floating_Day_Count": "ACT_365",
+          "Fixed_Day_Count": "ACT_365",
           "Start": {
             ".DateOffset": "3M"
           },
@@ -144,8 +138,6 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
           "Tenor": {
             ".DateOffset": "10Y"
           },
-          "Market_Volatility_Type": "Lognormal",
-          "Index_Offset": 0,
           "Market_Volatility": {
             ".Percent": 0
           }
@@ -155,8 +147,8 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
             ".DateOffset": "3M"
           },
           "Weight": 1,
-          "Holiday_Calendar": null,
-          "Day_Count": "ACT_365",
+          "Floating_Day_Count": "ACT_365",
+          "Fixed_Day_Count": "ACT_365",
           "Start": {
             ".DateOffset": "6M"
           },
@@ -166,8 +158,6 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
           "Tenor": {
             ".DateOffset": "1Y"
           },
-          "Market_Volatility_Type": "Lognormal",
-          "Index_Offset": 0,
           "Market_Volatility": {
             ".Percent": 0
           }
@@ -177,8 +167,8 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
             ".DateOffset": "3M"
           },
           "Weight": 1,
-          "Holiday_Calendar": null,
-          "Day_Count": "ACT_365",
+          "Floating_Day_Count": "ACT_365",
+          "Fixed_Day_Count": "ACT_365",
           "Start": {
             ".DateOffset": "10Y"
           },
@@ -188,8 +178,6 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
           "Tenor": {
             ".DateOffset": "2Y"
           },
-          "Market_Volatility_Type": "Lognormal",
-          "Index_Offset": 0,
           "Market_Volatility": {
             ".Percent": 0
           }
@@ -199,8 +187,8 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
             ".DateOffset": "3M"
           },
           "Weight": 1,
-          "Holiday_Calendar": null,
-          "Day_Count": "ACT_365",
+          "Floating_Day_Count": "ACT_365",
+          "Fixed_Day_Count": "ACT_365",
           "Start": {
             ".DateOffset": "10Y"
           },
@@ -210,8 +198,6 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
           "Tenor": {
             ".DateOffset": "5Y"
           },
-          "Market_Volatility_Type": "Lognormal",
-          "Index_Offset": 0,
           "Market_Volatility": {
             ".Percent": 0
           }
@@ -221,8 +207,8 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
             ".DateOffset": "3M"
           },
           "Weight": 1,
-          "Holiday_Calendar": null,
-          "Day_Count": "ACT_365",
+          "Floating_Day_Count": "ACT_365",
+          "Fixed_Day_Count": "ACT_365",
           "Start": {
             ".DateOffset": "10Y"
           },
@@ -232,8 +218,6 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
           "Tenor": {
             ".DateOffset": "10Y"
           },
-          "Market_Volatility_Type": "Lognormal",
-          "Index_Offset": 0,
           "Market_Volatility": {
             ".Percent": 0
           }
@@ -246,3 +230,8 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
 ```
 
 Note that although *Generation paramaters* can be specified, instrument definitions are preferred.
+
+- *InterestRatePrices* — a curve bootstrapped from FRA, swap and deposit quotes — is **declared and
+  not built**. Its block is in the schema so that the shape is stated, but no bootstrapper solves
+  it yet and a configured run logs an error rather than writing a curve. The specification it will
+  be built to is the developer note on Market Prices.

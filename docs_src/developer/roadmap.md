@@ -249,30 +249,64 @@ Also read by nothing, and therefore not declared: `ID` on every entry, and the `
 passes `vol_shift` as its own argument and `num_business_days=252.0` hardcoded, and `LogOUSpot`'s
 two clamps are `calibrate()` keyword defaults no caller supplies.
 
-**`MarketPrices` is enumerated and NOT migrated.** It was a candidate for the same recipe and does
-not have the correspondence it needs. The enumeration is the deliverable, so that picking it up
-later starts from evidence rather than from the assumption that a class is waiting for its
-declarations.
+**A price family owns its quote block, and the design is written down.** `mapping['MarketPrices']`
+is `schema.emit_market_prices(bootstrappers)` — one key, `types`, where there were five. The
+enumeration set the order and it held: hoist `market_factor_type` onto all four classes, settle
+where `InterestRatePrices` lives, then move the descriptors.
 
-It is much closer than `Calibration` was and still not clean. Four of six types map exactly onto a
-bootstrapper class, and that half is already gated in both directions against the literals the
-engine matches. What does not map:
+The design it is now shaped around is its own page, [Market Prices](market_prices.md): a quote is
+a reference to an EXISTING instrument type plus a `Quote_Type` and a `Quoted_Market_Value`, so the
+`Instrument` store's declarations ARE the quote's schema and a family only names the types its
+quotes may be. `InterestRatePrices` is specified there as the designed-unbuilt family — FRA, swap
+and deposit quotes solved for the curve that reprices each to par — with the calibration-Jacobians
+thread named as what makes that solve cheap.
 
-| | |
-| --- | --- |
-| `InterestRatePrices` | no bootstrapper matches it; exempted today as declared-but-not-bootstrapped, so half the store would stay hand-written |
-| `quote` | the shape of one quote inside a price block, not a market-factor type — nothing to hang on a class |
-| `market_factor_type` | set on ONE of the four classes; the other three select work by comparing `market_factor.type` to a literal, so the attribute a `calc_type`-style bridge would read does not uniformly exist yet |
-| `groups`, `sections`, `properties` | three sibling sub-stores no bootstrapper owns — a create menu, the point-field grouping, and `Locked_Dates` |
-| `Points` | declares a `Deal` sub-field with no descriptor, and no type reaches `Points` itself — one instance each of two defect classes the per-type stores made unreachable |
-| `Holiday_Calendar` | a descriptor nothing reaches (`Instrument_Definitions` has a column of that name, which is a different thing) |
-| `Instrument_Definitions` | ten columns as three parallel hand-written lists (`col_names` / `sub_types` / `obj`), which is exactly what `Row` exists to replace — the clearest single win available here |
+`market_factor_type` is a class attribute on all five families and the engine compares against it,
+so the two gates that held the declared types to the literals the engine matched would now be
+tautologies. What replaces them is the discipline that makes them tautologies: **no bootstrapper
+owns the text**, parsed by AST, the same shape as
+`test_instruments_call_resolvers_not_factor_types`. A second gate holds every `quote_instruments`
+name to a declared deal type, which is the reuse-by-reference rule made checkable.
 
-Migrating it would leave the store half emitted and half hand-written, which is worse than either
-end state. The order is: hoist `market_factor_type` onto all four classes first, decide where
-`InterestRatePrices` lives, and only then move the descriptors.
+`InterestRatePrices` is declared by `InterestRateCurveParameters`, which refuses to bootstrap with
+an error naming the design note rather than being absent from the store or half hand-written.
+`quote` is gone as a type — it was never a market-factor type, only the shape of one quote, and it
+is now the `Points` container's children. `groups`, `sections` and `properties` are gone with it:
+the create menu is the type list itself, the point-field grouping is `quote_instruments` (which
+lands as the `DealType` dropdown's values, where a UI needs it), and `properties.Locked_Dates`
+reached no read anywhere and is enumerated here instead.
 
-Also remaining: the other stores are untouched.
+Three live defects went with the move, and one of them was material:
+
+  - `Instrument_Definitions` declared ten columns as three parallel hand-written lists, and the
+    `obj` list — which is what `set_repr` picks a deserializer from — was in a **different column
+    order** from `col_names` and `sub_types`. `Weight` deserialized as a Period, `Start` as Text,
+    `Market_Volatility` as Text. A `Row` makes the three lists one declaration, so the state is
+    unreachable.
+  - The same table declared `Day_Count` while `create_market_swaps` hard-reads
+    `Floating_Day_Count` and `Fixed_Day_Count`. A block authored from the schema — or copied from
+    the JSON reference's own example, which carried `Day_Count` too — raises `KeyError` before the
+    first swaption prices. The engine is the truth: it is two columns, and the reference example
+    is corrected.
+  - `Weight` is read by the Clewlow–Strickland objective and by Heston-Nandi's, and only
+    Heston-Nandi declared it. An energy option quote authored from the schema had no weight column
+    at all.
+
+`Points` declared a `Deal` sub-field with no descriptor and no type reached `Points` itself; both
+are fixed. `Deal` joins the pinned shapeless set rather than getting a fake shape: it is a whole
+deal whose TYPE a sibling field names, which is the same class of thing as a transition matrix or
+a deal map keyed by `Object` — the vocabulary cannot state it and the fix wants a widget.
+
+Four columns and one descriptor are declared no longer, having reached no read:
+`Instrument_Definitions`' `Holiday_Calendar`, `Market_Volatility_Type` and `Index_Offset`, and the
+top-level `Holiday_Calendar` descriptor no type reached. `Generate_Instruments` and
+`Generation_Parameters` reach no read either but stay declared as unbuilt functionality, on the
+same terms as the four unread calculation fields — the JSON reference documents both.
+
+`Discount_Rate_Type` is newly declarable: `HestonNandiModelParameters.resolve` reads a
+`<field>_Type` for every one of its four references and the store declared three.
+
+Also remaining: `System` is the last hand-written store.
 
 The paired naming cleanup settles first, and is now done: the `MarketPrices` types the engine
 matches, one `VolatilityGrid` in place of the three asset-class vol twins, and the IR prefix chain

@@ -393,8 +393,15 @@ def test_fields_mapping_matches_the_factor():
     # the factor type HOLDS its descriptors, so its keys ARE the parameter set the class reads
     assert list(mapping['Factor']['types']['HestonNandiModelParameters']) == list(
         riskfactors.HestonNandiModelParameters.parameters)
-    assert all(x in mapping['MarketPrices']['fields'] for x in
-               mapping['MarketPrices']['types']['HestonNandiModelPrices'])
+    # and the price block can author every reference `resolve` looks up, each with the optional
+    # `_Type` that disambiguates a name existing under more than one factor type. `resolve` reads
+    # both with a COMPUTED key off `factor_types`, so the generic declared-versus-read gate cannot
+    # see them - this is that leg.
+    declared = mapping['MarketPrices']['types']['HestonNandiModelPrices']
+    references = bootstrappers.HestonNandiModelParameters.factor_types
+    assert all(f in declared and f + '_Type' in declared for f in references)
+    assert all(declared[f + '_Type']['values'] == [''] + list(types)
+               for f, types in references.items())
 
 
 def test_registered_as_the_implied_spot_model():
