@@ -147,7 +147,13 @@ identity `(plan_hash, values_hash, engine_version, seed)` is documented for call
 [API Overview](../api_overview.md#patching-market-values-and-replaying-a-run); `engine_version` is
 `derivus/_version.py` and no second version source was invented for it.
 
-What remains is the live-refill EXECUTE path and the service lift. The verbs are
+What remains is the service layer, then the live-refill EXECUTE path — in that order, re-sequenced
+by decision: the derivus_jupyter successor is a web SPA (Angular/React) rendering from the schema
+over a ROBUST API, not another Python-first front end (NiceGUI was considered and rejected: AG
+Grid's tree-data mode needs an Enterprise license), and the SPA is only worth building on a solid
+service underneath. marimo serves the quant WORKBENCH — the research loop — which is a different
+job; derivus_jupyter was the editor app built in notebook clothing, which is exactly why it was
+clunky. The verbs are
 **calculation-agnostic by design**: PREPARE/EXECUTE carry the same contract for every calculation
 type — a CMC run patches and replays exactly like a base valuation, it just runs longer. What is
 deprioritised is only the refill's URGENCY, by measurement rather than by taste: recompiling is
