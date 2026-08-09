@@ -3513,13 +3513,30 @@ def expected_rate_gaussian_copula(
     p_default,   # (T, Pm, S, N) marginal cumulative default probs by horizon
     c: float,
     n: int,
+    k0: int,
     rho: float,
     z: torch.Tensor,   # (G,)
     w: torch.Tensor,   # (G,)
 ):
-    """
+    """The STEP-DOWN expected rate E[c (1 - (k0+k)/n) 1_{k0+k<n}] at each horizon, under a
+    one-factor Gaussian copula on the marginal cumulative default probabilities `p_default`.
+
+    `k` is the number of the N names defaulting by the horizon and `k0` (`Defaults_So_Far`) the
+    count already lost before the valuation date, so the rate steps down from c in 1/n increments
+    and is zero once k0+k reaches `n` (`Max_Defaults`). n = 1 with k0 = 0 collapses to c P(no
+    default), the only case in which this equals c P(k < n).
+
+    Conditional on the common factor z each name defaults independently with probability
+    q_j = Φ((Φ^{-1}(p_j) - √ρ z)/√(1-ρ)), so P(k = m | z) = P0 e_m(r) with P0 = ∏(1-q_j) and e_m
+    the m-th elementary symmetric polynomial of the odds r_j = q_j/(1-q_j). Only e_0..e_{n-k0-1}
+    can carry a non-zero rate, so the recurrence stops there - it is O(N (n-k0)) and, unlike the
+    closed forms e_2 = (S_1^2 - S_2)/2, free of cancellation in float32.
+
+    The z integral is Gauss-Hermite on the caller's (`z`, `w`) nodes, which is EXACT in z at
+    ρ = 0 and progressively harder as ρ → 1 - see `Quadrature_Points`.
+
     Returns:
-      E_rate_monthly: (T, Pm, S) = E[ rate(horizon) ] at each monthly horizon point.
+      E_rate: (T, Pm, S) = E[ rate(horizon) ] at each hazard sample point.
     """
     eps = torch.finfo(shared.one.dtype).eps
 
@@ -3545,49 +3562,19 @@ def expected_rate_gaussian_copula(
     P0 = torch.exp(logP0)
 
     r = q / (1.0 - q)     # (G,T,Pm,S,N)
-    S1 = r.sum(dim=-1)    # (G,T,Pm,S)
 
-    if n == 1:
-        rate_z = c * P0
+    # elementary symmetric polynomials e_0..e_Kmax of the odds, by stable recurrence over names
+    Kmax = max(n - k0 - 1, 0)
+    e = shared.one.new_zeros((q.shape[0], Tsteps, Pm, Sscen, Kmax + 1))
+    e[..., 0] = 1.0
+    for i in range(Nnames):
+        ri = r[..., i]  # (G,T,Pm,S)
+        for k in range(min(i + 1, Kmax), 0, -1):
+            e[..., k] = e[..., k] + ri * e[..., k - 1]
 
-    elif n == 2:
-        P1 = P0 * S1
-        rate_z = c * (P0 + 0.5 * P1)
-
-    elif n == 3:
-        # For float32 MC, avoid cancellation in S1^2 - S2:
-        if shared.one.dtype == torch.float32:
-            e1 = torch.zeros_like(P0)  # (G,T,Pm,S)
-            e2 = torch.zeros_like(P0)  # (G,T,Pm,S)
-            # stable recurrence for e1,e2 over names
-            for i in range(Nnames):
-                ri = r[..., i]         # (G,T,Pm,S)
-                e2 = e2 + ri * e1
-                e1 = e1 + ri
-            P1 = P0 * e1
-            P2 = P0 * e2
-        else:
-            S2 = (r * r).sum(dim=-1)
-            P1 = P0 * S1
-            P2 = P0 * 0.5 * (S1 * S1 - S2).clamp_min(0.0)
-
-        rate_z = c * (P0 + (2.0/3.0) * P1 + (1.0/3.0) * P2)
-
-    else:
-        # Generic small-n via elementary symmetric polynomials up to k=n-1
-        G = q.shape[0]
-        Kmax = n - 1
-        e = shared.one.new_zeros((G, Tsteps, Pm, Sscen, Kmax + 1))
-        e[..., 0] = 1.0
-        for i in range(Nnames):
-            ri = r[..., i]  # (G,T,Pm,S)
-            top = min(i + 1, Kmax)
-            for k in range(top, 0, -1):
-                e[..., k] = e[..., k] + ri * e[..., k - 1]
-
-        ks = torch.arange(0, Kmax + 1, device=shared.one.device, dtype=shared.one.dtype)
-        rate_k = c * (1.0 - ks / float(n))
-        rate_z = (P0.unsqueeze(-1) * e * rate_k.view(1, 1, 1, 1, -1)).sum(dim=-1)  # (G,T,Pm,S)
+    ks = torch.arange(0, Kmax + 1, device=shared.one.device, dtype=shared.one.dtype)
+    rate_k = (c * (1.0 - (k0 + ks) / float(n))).clamp_min(0.0)
+    rate_z = (P0.unsqueeze(-1) * e * rate_k.view(1, 1, 1, 1, -1)).sum(dim=-1)  # (G,T,Pm,S)
 
     # Integrate over z with GH weights => (T,Pm,S)
     w_ = w.view(-1, 1, 1, 1)  # (G,1,1,1)
@@ -3597,9 +3584,26 @@ def expected_rate_gaussian_copula(
 
 
 def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
+    """The premium leg of an n-th-to-default basket: per payment period the expected step-down
+    rate is integrated over the accrual window by trapezoid on hazard samples 30 days apart,
+    weighted by that period's nominal and discounted at the PAY date.
+
+    TWO DAY COUNTS, doing two different jobs. The ACCRUAL measure dt is the deal's own
+    `Accrual_Day_Count` (`factor_dep['Accrual_Daycount']`), which is what the coupon is quoted
+    against; DISCOUNTING and the hazard curve lookups keep each curve's own day count, which is a
+    property of the curve and not of the contract. They coincide only when the deal is written on
+    its discount curve's convention.
+
+    The accrual window opens at the first unpaid period's own `Start_Day`, so a forward-starting
+    deal accrues from its effective date and a seasoned one from the start of the period it is in.
+    `get_cashflows` builds every period as (start_i, pay_i) = (reset_i, reset_{i+1}), so periods
+    are contiguous by construction and that one start plus the pay days ARE all the boundaries.
+    Samples before the valuation date give a negative hazard time, clipped to zero survival
+    weight: the already-accrued part of the running coupon is earned at the full rate.
+    """
     mtm_list = []
     factor_dep = deal_data.Factor_dep
-    daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
+    accrual_daycount_fn = factor_dep['Accrual_Daycount']
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     cash_start_idx = factor_dep['Cashflows'].get_cashflow_start_index(deal_time)
     rho = factor_dep['Correlation']
@@ -3609,7 +3613,7 @@ def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
     surv_base = utils.calc_time_grid_curve_rate(factor_dep['Name'], np.zeros((1, 3)), shared)
     names = [utils.calc_time_grid_curve_rate(name, deal_time, shared) for name in factor_dep['Names']]
     # calculate the gassian weights
-    x, w = np.polynomial.hermite.hermgauss(11)  # for ∫ e^{-x^2} f(x) dx
+    x, w = np.polynomial.hermite.hermgauss(factor_dep['Quadrature_Points'])  # for ∫ e^{-x^2} f(x) dx
     z = np.sqrt(2.0) * x  # transform to standard normal
     ww = w / np.sqrt(np.pi)  # weights for φ(z)
     z_t = shared.one.new(z)
@@ -3625,8 +3629,8 @@ def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
         # payment times
         time_block = discount_block.time_grid[:, utils.TIME_GRID_MTM]
         future_pmts = cash_pmts.reshape(1, -1) - time_block.reshape(-1, 1)
-        # samples for estimating default
-        samples_points = np.r_[time_block[0]+1, cash_pmts.astype(int)]
+        # samples for estimating default - the window opens at the first unpaid period's start
+        samples_points = np.r_[cashflows.np[0, utils.CASHFLOW_INDEX_Start_Day], cash_pmts].astype(np.int64)
         # note hazard_t can contain negative times - represents accrued payments
         hazard_t = (np.unique(
             np.r_[samples_points, np.concatenate(
@@ -3645,12 +3649,13 @@ def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
         S_nodes = torch.exp(-fwd_hazard_names)  # (T, M+1, S, N)
         Cum_PD = (1.0 - S_nodes)
         # allow dt to be negative (to account for accrued coupons)
-        dt = shared.one.new(np.diff(daycount_fn(hazard_t), axis=1)).unsqueeze(2)
+        dt = shared.one.new(np.diff(accrual_daycount_fn(hazard_t), axis=1)).unsqueeze(2)
         E_rate = expected_rate_gaussian_copula(
             shared=shared,
             p_default=Cum_PD,
             c=factor_dep['Coupon'],
-            n=deal_data.Instrument.field['Max_Defaults'],
+            n=factor_dep['Max_Defaults'],
+            k0=factor_dep['Defaults_So_Far'],
             rho=rho,
             z=z_t,
             w=w_t
@@ -3663,12 +3668,15 @@ def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
             [np.r_[0,hs.searchsorted(x, side='right')-1] for hs,x in zip(hazard_samples, future_pmts)],
             device=shared.one.device)
         expected_coupons = torch.segment_reduce(trapz, reduce="sum", lengths=lengths.diff(), axis=1)
+        # per-period nominal carries Principal, Buy_Sell and any Amortisation; the minus is
+        # pv_credit_cashflows' premium convention - the buyer PAYS the coupon
+        premium = -expected_coupons * cashflows.tn[cash_index, utils.CASHFLOW_INDEX_Nominal].reshape(1, -1, 1)
 
         # settle any cashflows
         cash_settle(shared, factor_dep['SettleCurrency'],
-                    np.searchsorted(time_grid.mtm_time_grid, cash_pmts[0]), expected_coupons[-1,0])
+                    np.searchsorted(time_grid.mtm_time_grid, cash_pmts[0]), premium[-1, 0])
 
-        mtm_list.append(torch.sum(expected_coupons * Dt_T, dim=1))
+        mtm_list.append(torch.sum(premium * Dt_T, dim=1))
 
     return torch.cat(mtm_list, dim=0)
 

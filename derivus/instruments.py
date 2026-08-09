@@ -14,7 +14,7 @@
 
 # import standard libraries
 import logging
-from functools import reduce
+from functools import partial, reduce
 
 # utility functions and constants
 from . import utils, pricing
@@ -5632,6 +5632,8 @@ class CreditNthToDefault(Deal):
         F('Effective_Date', 'Date', default=''),
         F('Maturity_Date', 'Date', default=''),
         F('Correlation', 'Float', default=0),
+        F('Quadrature_Points', 'Integer', default=81,
+          description='Gauss-Hermite nodes the copula common-factor integral is taken on'),
         F('Calendars', 'Text', default=''),
         F('Pay_Frequency', 'Text', default='3M', obj='Period'),
         F('Pay_Rate', 'Float', default=0.0, obj='Basis'),
@@ -5639,7 +5641,8 @@ class CreditNthToDefault(Deal):
         F('Defaults_So_Far', 'Integer', default=0),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
         F('Principal', 'Float', default=0.0),
-        F('Accrual_Day_Count', 'Text', default='ACT_365', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+        F('Accrual_Day_Count', 'Text', default='ACT_365', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', 'ACT_ACT_ICMA'],
+          description='ACT family only: the 30/360 walkers need date-anchored segments the sampled accrual grid does not carry'),
         F('Amortisation', 'Table', default='null', row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('CDS_Index', 'Text', default='', obj='Tuple')
 ])]
@@ -5649,8 +5652,29 @@ class CreditNthToDefault(Deal):
                      'CDS_Index':['SurvivalProb'],
                      'Names': ['SurvivalProb']}
 
-    documentation = ('Credit',
-                     ['This is a bilateral agreement where the buyer purchases Stuff'])
+    documentation = (
+        'Credit',
+        ['This is the PREMIUM leg of an $n$-th-to-default basket on a list of reference names: the',
+         'buyer pays a periodic coupon that STEPS DOWN as the basket loses names, and pays nothing',
+         'once $n$ (*Max_Defaults*) of them have defaulted. Writing $k$ for the number of names',
+         'defaulted by time $t$ and $k_0$ for *Defaults_So_Far*, the rate earned is',
+         '',
+         '$$c\\left(1-\\frac{k_0+k}{n}\\right)1_{\\{k_0+k<n\\}}$$',
+         '',
+         'where $c$ is *Pay_Rate*. Only at $n=1$, $k_0=0$ does this reduce to $c$ times the',
+         'probability that no name has defaulted.',
+         '',
+         'Names default under a one-factor Gaussian copula with a flat pairwise *Correlation*',
+         '$\\rho$ on marginal default probabilities read off each name\'s survival curve and scaled',
+         'by the *CDS_Index* proxy. Conditional on the common factor the names are independent, and',
+         'the factor integral is taken by Gauss-Hermite quadrature on *Quadrature_Points* nodes.',
+         '',
+         'Each period\'s expected accrual $\\int E[\\text{rate}]\\,dt$ is integrated by trapezoid on',
+         'hazard samples 30 days apart, from the period\'s own start date to its payment date, and',
+         'is measured in *Accrual_Day_Count* year fractions - the discount curve keeps its own day',
+         'count. The result is weighted by that period\'s notional, which carries *Principal*, the',
+         '*Buy_Sell* sign and any *Amortisation*, and discounted to the valuation date. Note that',
+         'the default (protection) leg is not valued here.'])
 
     def __init__(self, params, valuation_options):
         super(CreditNthToDefault, self).__init__(params, valuation_options)
@@ -5677,6 +5701,7 @@ class CreditNthToDefault(Deal):
 
         pay_rate = self.field['Pay_Rate'] / 100.0 if isinstance(
             self.field['Pay_Rate'], float) else self.field['Pay_Rate'].amount
+        accrual_daycount = utils.get_day_count(self.field['Accrual_Day_Count'])
 
         field_index = {
             'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
@@ -5688,15 +5713,21 @@ class CreditNthToDefault(Deal):
             'Names': [get_survival_factor(
                 name, static_offsets, stochastic_offsets, all_tenors) for name in field['Names']],
             'Coupon': pay_rate,
-            'Correlation': self.field.get('Correlation', 0.0)
+            'Correlation': self.field.get('Correlation', 0.0),
+            'Max_Defaults': self.field['Max_Defaults'],
+            'Defaults_So_Far': self.field.get('Defaults_So_Far', 0),
+            'Quadrature_Points': self.field.get('Quadrature_Points', 81),
+            # the accrual measure the coupon is quoted against - NOT the discount curve's
+            'Accrual_Daycount': partial(utils.get_day_count_accrual, base_date, code=accrual_daycount)
         }
 
         field_index['Cashflows'] = utils.generate_fixed_cashflows(
-            base_date, self.resetdates, 1.0,
-            self.field['Amortisation'], utils.get_day_count(self.field['Accrual_Day_Count']), 1.0)
+            base_date, self.resetdates,
+            (1 if self.field['Buy_Sell'] == 'Buy' else -1) * self.field['Principal'],
+            self.field['Amortisation'], accrual_daycount, pay_rate)
 
         # include the maturity date in the daycount
-        field_index['Cashflows'].add_maturity_accrual(base_date, utils.get_day_count(self.field['Accrual_Day_Count']))
+        field_index['Cashflows'].add_maturity_accrual(base_date, accrual_daycount)
 
         return field_index
 
