@@ -443,18 +443,6 @@ class Calculation(object):
                 self.all_tenors, self.time_grid, self.config.holidays, self.calc_stats, unit)
 
 
-def cva_per_scenario(pv_exposure, prob, recovery):
-    """CVA as a PER-SCENARIO vector, whose mean is the reported CVA.
-
-    Pulled out of Credit_Monte_Carlo.execute so a counterfactual netting-set MTM can be scored on
-    the same objective without re-deriving it. The reduction order is load-bearing: the reported
-    number is a MEAN over paths of a SUM over time, so any boundary correction assembled against
-    it must also be a mean over paths or it is silently scaled by the path count - silently,
-    because such a correction has zero forward value and only the gradients would be wrong.
-    """
-    return ((1.0 - recovery) * 0.5 * (pv_exposure[1:] + pv_exposure[:-1]) * prob).sum(axis=0)
-
-
 class CMC_State(utils.Calculation_State):
     def __init__(self, cholesky, static_buffer, batch_size, one, mcmc_sims, report_currency,
                  seed, job_id, num_jobs, scale_survival=False, nomodel='Constant', keep_tensor=False):
@@ -1529,21 +1517,15 @@ class Credit_Monte_Carlo(Calculation):
 
                 if params['Funding_Valuation_Adjustment'].get('Gradient', 'No') == 'Yes':
                     # calculate all the derivatives of fva
-                    # FVA reads the same exposure as CVA, so it drops the same boundary terms - and
-                    # the shipped batch job DELETES the CVA section, so the correction assembled
-                    # over there could never fire for it. Same estimator, same events, its own
-                    # objective: FCA_t - FBA_t is already the per-scenario vector it wants.
+                    # The shipped batch job DELETES the CVA section, so the correction assembled
+                    # over there could never fire for FVA - it carries its own objective.
                     fva_for_aad = tensors['fva']
                     if shared_mem.boundary_sets:
-                        def fva_per_scenario(mtm):
-                            pv = (mtm * fx_report * DF_base) / fx_report[0]
-                            plus, minus = torch.relu(pv), torch.relu(-pv)
-                            return (torch.sum(delta_fund_cost_rf * (plus[1:] + plus[:-1]) / 2, dim=0)
-                                    - torch.sum(delta_fund_benefit_rf * (minus[1:] + minus[:-1]) / 2,
-                                                dim=0))
-
+                        fva_objective = lambda mtm: pricing.fva_per_scenario(
+                            (mtm * fx_report * DF_base) / fx_report[0],
+                            delta_fund_cost_rf, delta_fund_benefit_rf)
                         correction = pricing.boundary_correction(
-                            shared_mem, fva_per_scenario, tensors['mtm'],
+                            shared_mem, fva_objective, tensors['mtm'],
                             float(params.get('Boundary_AAD_Bandwidth', 0.01)))
                         if correction is not None:
                             fva_for_aad = fva_for_aad + correction
@@ -1633,7 +1615,7 @@ class Credit_Monte_Carlo(Calculation):
                     # 32768 - so a thin run should widen it and expect bias rather than noise.
                     cva_for_aad = tensors['cva']
                     if shared_mem.boundary_sets:
-                        objective = lambda mtm: cva_per_scenario(
+                        objective = lambda mtm: pricing.cva_per_scenario(
                             torch.relu(mtm * fx_report * Dt_T) / fx_report[0], prob, recovery)
                         correction = pricing.boundary_correction(
                             shared_mem, objective, tensors['mtm'],

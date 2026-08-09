@@ -154,6 +154,35 @@ def boundary_correction(shared, objective, reported_mtm, bandwidth):
     return torch.stack(corrections).sum() if corrections else None
 
 
+def cva_per_scenario(pv_exposure, prob, recovery):
+    """CVA as a PER-SCENARIO vector, whose mean is the reported CVA.
+
+    Pulled out of Credit_Monte_Carlo.execute so a counterfactual netting-set MTM can be scored on
+    the same objective without re-deriving it. The reduction order is load-bearing: the reported
+    number is a MEAN over paths of a SUM over time, so any boundary correction assembled against
+    it must also be a mean over paths or it is silently scaled by the path count - silently,
+    because such a correction has zero forward value and only the gradients would be wrong.
+
+    The `<xva>_per_scenario` family grows one member per adjustment that wants a boundary
+    counterfactual; at the third member it becomes per-adjustment objects living here.
+    """
+    return ((1.0 - recovery) * 0.5 * (pv_exposure[1:] + pv_exposure[:-1]) * prob).sum(axis=0)
+
+
+def fva_per_scenario(pv, cost_spread, benefit_spread):
+    """FVA as a PER-SCENARIO vector, whose mean is the reported FCA_t - FBA_t.
+
+    `pv` is SIGNED - the funding cost rides its positive part and the benefit its negative one -
+    where `cva_per_scenario`'s exposure arrives already relu'd; the two must not share a
+    parameter name with opposite preconditions. Same estimator, same load-bearing reduction
+    order: a per-path vector of a sum over time, so a boundary correction assembled against it
+    is a mean over paths rather than silently scaled by the path count.
+    """
+    plus, minus = torch.relu(pv), torch.relu(-pv)
+    return (torch.sum(cost_spread * (plus[1:] + plus[:-1]) / 2, dim=0)
+            - torch.sum(benefit_spread * (minus[1:] + minus[:-1]) / 2, dim=0))
+
+
 class SensitivitiesEstimator(object):
     """ Implements the AAD sensitivities (both first and second derivatives)"""
 

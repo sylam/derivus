@@ -29,7 +29,7 @@ import torch
 import derivus
 from derivus import utils
 from derivus.config import Config
-from derivus import calculation
+from derivus import pricing
 from derivus.instruments import construct_instrument, scan_collateral_balance
 
 BASE = pd.Timestamp('2024-06-28')
@@ -221,9 +221,26 @@ def test_cva_per_scenario_reproduces_the_reported_cva():
     prob = torch.rand(119, 1, dtype=DTYPE) * 1e-3
     recovery = 0.4
     reported = (1.0 - recovery) * (0.5 * (pv[1:] + pv[:-1]) * prob).mean(axis=1).sum()
-    per_path = calculation.cva_per_scenario(pv, prob, recovery)
+    per_path = pricing.cva_per_scenario(pv, prob, recovery)
     assert per_path.shape == (256,), f'expected a per-path vector, got {tuple(per_path.shape)}'
     assert abs(per_path.mean() - reported) < 1e-12 * abs(reported), 'objective drifted from CVA'
+
+
+def test_fva_per_scenario_reproduces_the_reported_fva():
+    """The FVA half of the same pin, on a SIGNED pv: the cost spread rides the positive part and
+    the benefit spread the negative one. Not bitwise for the same reason as the CVA half - the
+    reported number averages over paths inside each sum - so this pins the estimator, the sign
+    convention and the per-path shape together."""
+    torch.manual_seed(0)
+    pv = (torch.rand(120, 256, dtype=DTYPE) - 0.5) * 2e7
+    cost = torch.rand(119, 1, dtype=DTYPE) * 1e-3
+    benefit = torch.rand(119, 1, dtype=DTYPE) * 1e-3
+    plus, minus = torch.relu(pv), torch.relu(-pv)
+    reported = ((cost * (plus[1:] + plus[:-1]) / 2).mean(axis=1).sum()
+                - (benefit * (minus[1:] + minus[:-1]) / 2).mean(axis=1).sum())
+    per_path = pricing.fva_per_scenario(pv, cost, benefit)
+    assert per_path.shape == (256,), f'expected a per-path vector, got {tuple(per_path.shape)}'
+    assert abs(per_path.mean() - reported) < 1e-12 * abs(reported), 'objective drifted from FVA'
 
 
 def _run_capturing_shared(min_transfer, seed=1):
