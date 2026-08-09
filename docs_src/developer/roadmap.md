@@ -28,15 +28,21 @@ produced it — a `SensitivityProfile` per pricer — so a consumer can tell a p
 one carrying a boundary term. Related and also unbuilt: **Hessian-vector products** instead of
 materialising full Hessians.
 
-**Calibration Jacobians — increment 1 in progress.** Bumping a market *quote* should flow through
-bootstrapping rather than stopping at the calibrated factor. [Quote
-Sensitivities](quote_sensitivities.md) is the page: what is built, the graph audit that made it
-possible, the solver constants, the knot rule, the precision seam and the non-goals. The t0
-benchmark closure (`bootstrappers.BenchmarkInstruments`), its audit, the damped-Newton multi-curve
-solver and the `InterestRatePrices` family have landed — round-trip fixtures recover a known curve
-to 1e-17 in the USD multi-curve world and 1e-15 in the single-curve ZAR one. The
-implicit-function-theorem wrapper, the factor-buffer attachment and the validation triangle have
-not.
+**Calibration Jacobians — increment 1 is BUILT.** Bumping a market *quote* now flows through
+bootstrapping rather than stopping at the calibrated factor: one `backward()` reports `dV/dq`
+beside `dV/dθ`. [Quote Sensitivities](quote_sensitivities.md) is the page — the graph audit that
+made it possible, the quote-side overlay, the IFT contract, the attachment, the precision seam, the
+validation triangle and the non-goals. Turned on per curve by the declared field
+`Quote_Sensitivity`; the solved numbers are bit-identical either way.
+
+What remains is increment 2: the same IFT contract around the HW2F swaption-vol calibration
+(`DV_Bootstrap`), where the fixed point is the stationarity of a least-squares loss rather than a
+root, so backward needs the Gauss–Newton Hessian and the dropped residual-curvature term has to be
+documented with its tolerance. FX vol follows the same shape. Two smaller ends left deliberately
+open and recorded on the page's non-goals: there is no report FORMAT for a quote delta (it lands on
+the leaf in `Config.quote_leaves`, and `make_factor_index` wants a tenor grid a quote does not
+have), and `CalibrationSolve.backward` does not support `create_graph`, so there is no second
+derivative in quote space.
 
 **`fields.py` is retired.** This started as 1,931 lines and three drifting stores; it ends with
 `derivus/fields.py` a 22-line deprecation shim re-exporting `mapping` and `default` from
