@@ -626,10 +626,17 @@ def declared_values(descriptors):
 
 
 def fallback_reads(cls_name, module_ast):
-    """`{key: fallback}` for every quote-block knob read as `<block>.get('Key', <constant>)`."""
+    """`{key: fallback}` for every quote-block knob read as `<block>.get('Key', <constant>)`.
+
+    Scoped to the class AND its bases in this module, the way `quote_reads` is: the swaption
+    family's closure lives on `RiskNeutralInterestRateModel`, so a knob read there and declared on
+    the subclass would otherwise publish two defaults with nothing holding them together.
+    """
     classes = {n.name: n for n in module_ast.body if isinstance(n, ast.ClassDef)}
+    nodes = [classes[cls_name]] + [classes[ast.unparse(b)] for b in classes[cls_name].bases
+                                   if ast.unparse(b) in classes]
     return {n.args[0].value: n.args[1].value
-            for n in ast.walk(classes[cls_name])
+            for node in nodes for n in ast.walk(node)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
             and n.func.attr == 'get' and ast.unparse(n.func.value) in QUOTE_LOCALS
             and len(n.args) == 2 and all(isinstance(a, ast.Constant) for a in n.args)}

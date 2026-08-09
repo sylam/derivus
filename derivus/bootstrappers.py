@@ -17,6 +17,7 @@ import copy
 import time
 import logging
 from collections import namedtuple
+from functools import partial
 
 # third party stuff
 import numpy as np
@@ -29,7 +30,53 @@ from .schema import F, OPTION_QUOTE, REQUIRED, Row
 
 import scipy.optimize
 
-market_swap_class = namedtuple('market_swap', 'deal_data price weight')
+
+class market_swap_class(namedtuple('market_swap', 'deal_data price weight quote premium',
+                                   defaults=(None, None))):
+    """One benchmark swaption of a risk-neutral IR calibration: the compiled par swap, the market
+    premium the model has to reproduce, and the weight it carries in the objective.
+
+    `quote` and `premium` are the QUOTE SIDE and are ABSENT by default - the float64 leaf the market
+    number arrived on, and the MAP from that leaf to this swaption's premium. See
+    `create_market_swaps` for what a quote is here and what the map is.
+
+    `premium` is a callable and not a tensor, so the twin is rebuilt inside every evaluation rather
+    than compiled once with the benchmark set. That is not a style choice: `make_basin_hopping_loss`
+    calls `total_loss.backward()` with no `retain_graph`, which frees the whole graph the loss was
+    built on - a compile-time subgraph hanging off the residual would be freed with the first
+    evaluation and every one after it would raise. Rebuilding costs one scalar Black per benchmark
+    per evaluation, against a Monte Carlo over the whole path set.
+    """
+
+    def error(self, model, resid):
+        """This swaption's weighted relative pricing error against its `model` price.
+
+        The quote rides in as a SPLICE, `base + (carried - detach(carried))` - the boundary
+        correction's shape, and here for its reason: worth EXACTLY zero in the forward pass, with
+        derivative one. `base` is the expression the solve always minimised, evaluated off the numpy
+        market premium in the calculation's own precision, so enabling the quote side cannot move a
+        mark by construction rather than by a claim anyone has to re-check. `carried` is that same
+        expression off the float64 twin, and only its derivative survives the subtraction.
+
+        `model` is DETACHED in the carried half and only there. The splice is worth zero in the
+        forward pass but its derivative is not selective: left attached, `carried` reaches the model
+        parameters as well as the quote and the calibration Jacobian comes out DOUBLED, which no
+        price gate can see - the residual is bit-identical and the optimizer just walks a different
+        path. The quote derivative of the error does not involve the model's own sensitivity, so
+        detaching is what the chain rule says, not a workaround.
+
+        Splicing here rather than at the price is deliberate: `price` is a numpy scalar, and torch
+        divides a tensor by a scalar at the SCALAR's precision. Replacing it with a float64 tensor
+        rounds twice where the engine rounds once, which moved the residual by an ulp - measured,
+        not feared.
+        """
+        base = self.weight * resid(100.0 * (self.price / model - 1.0))
+        if self.premium is None:
+            return base
+        carried = self.weight * resid(100.0 * (self.premium(self.quote) / model.detach() - 1.0))
+        return base + (carried - carried.detach()).to(base.dtype)
+
+
 date_desc = {'years': 'Y', 'months': 'M', 'days': 'D'}
 # date formatter
 date_fmt = lambda x: ''.join(['{0}{1}'.format(v, date_desc[k]) for k, v in x.kwds.items()])
@@ -38,7 +85,7 @@ date_fmt = lambda x: ''.join(['{0}{1}'.format(v, date_desc[k]) for k, v in x.kwd
 class RiskNeutralInterestRate_State(utils.Calculation_State):
     def __init__(self, scenario_keys, batch_size, device, dtype, nomodel='Constant'):
         super(RiskNeutralInterestRate_State, self).__init__(
-            None, torch.ones([1, 1], dtype=dtype, device=device), 2048, None, nomodel, batch_size)
+            None, torch.ones([1, 1], dtype=dtype, device=device), 2048, None, nomodel, batch_size, False)
         # these are tensors
         self.t_PreCalc = {}
         self.scenario_keys = scenario_keys
@@ -91,8 +138,44 @@ def create_float_cashflows(base_date, cashflow_obj, frequency):
     return cashflows
 
 
+def black_premium(pvbp, strike, expiry, delta, quote):
+    """One ATM swaption's premium as a differentiable function of its VOL quote.
+
+    `utils.black_european_option` is the engine's own tensor Black - what the cap/floor and swaption
+    pricers value an option with - so this is the twin of the numpy `black_european_option_price`
+    that `create_market_swaps` prices the market premium with, not a second opinion of it. At the
+    money, which is the only place this is called, the two came out bit-identical at every point
+    measured and a gate holds them to 1e-12.
+    """
+    return pvbp * utils.black_european_option(
+        quote.new_tensor(strike), quote.new_tensor(strike), quote + delta, expiry, 1.0, 1.0, None)
+
+
 def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_factor,
-                        instrument_definitions, rate=None):
+                        instrument_definitions, rate=None, unit=None):
+    """The benchmark swaptions of one risk-neutral IR calibration: a compiled par swap, the market
+    premium the model has to reproduce, and the objective weight.
+
+    THE QUOTE SIDE. `unit` is the residual's unit tensor when the block asks for `Quote_Sensitivity`
+    and `None` otherwise, so absent by default nothing outside such a solve knows this exists. The
+    market premium here is built by numpy (`utils.black_european_option_price` is scipy end to end),
+    so it crosses into the residual as a scalar and the quote behind it is severed by construction.
+    What this hands over to close that is a PAIR per swaption: the quote as a float64 leaf, and the
+    map from that leaf back to this swaption's premium. `market_swap_class.error` is where the two
+    are spliced onto the residual.
+
+    What a quote IS depends on what the block quotes. A vol-quoted swaption - `Market_Volatility` on
+    the row, or the surface's ATM read when that column is zero - carries the VOL, and the map is
+    `black_premium`, the differentiable preamble that turns a vol into a premium. A premium-quoted
+    one carries the PREMIUM itself and the map is the identity. The vol surface's own interpolation
+    is numpy (`RectBivariateSpline`), so the leaf is the ATM vol AT this swaption's expiry and
+    tenor rather than a node of the surface.
+    """
+    # a premium bumped by `Volatility_Delta` reaches the residual through a brentq implied-vol
+    # solve, and a numerical root find carries no derivative - so the quote side declines it
+    if unit is not None and vol_surface.premiums is not None and vol_surface.delta:
+        raise Exception('Quote_Sensitivity: a premium re-struck at Volatility_Delta reaches the '
+                        'residual through a brentq implied-vol solve, which carries no derivative')
     # store these benchmark swap definitions if necessary
     benchmarks = []
     # store the benchmark instruments
@@ -178,9 +261,19 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
             swaption_price = pvbp * utils.black_european_option_price(
                 shifted_strike, shifted_strike, 0.0, vol + vol_surface.delta, expiry, 1.0, 1.0)
 
+        # the quote side - a float64 leaf and the map back to this swaption's premium, see docstring
+        quote, premium = None, None
+        if unit is not None:
+            premium_quoted = vol_surface.premiums is not None
+            quote = unit.new_tensor(
+                swaption_price if premium_quoted else vol, dtype=torch.float64).requires_grad_(True)
+            premium = (lambda q: q) if premium_quoted else partial(
+                black_premium, pvbp, shifted_strike, expiry, vol_surface.delta)
+
         # store this
         all_deals[swaption_name] = market_swap_class(
-            deal_data=deal_data, price=swaption_price, weight=instrument['Weight'])
+            deal_data=deal_data, price=swaption_price, weight=instrument['Weight'],
+            quote=quote, premium=premium)
 
         # store the benchmark
         if rate is not None:
@@ -801,6 +894,29 @@ class RiskNeutralInterestRateModel(object):
 
     def calc_loss_on_ir_curve(self, implied_params, base_date, time_grid, process,
                               implied_obj, ir_factor, vol_surface, resid=lambda x: x * x, jac=False):
+        """The swaption calibration's residual closure: implied parameters in, one weighted relative
+        pricing error per benchmark out, priced by brute-force Monte Carlo through the engine's own
+        `pv_float_cashflow_list`.
+
+        COMMON RANDOM NUMBERS ARE FROZEN PER SOLVE. The Sobol engine is built once, on the state
+        this call creates - `reset` re-seeds nothing once `t_random_batch` exists - so every
+        evaluation of the closure sees the same paths and the optimizer is differencing the
+        parameters rather than the sample. What `reset` DOES clear is `t_Buffer` and `t_PreCalc`,
+        which is the memo trap: those tables are keyed by factor and time, not by the tensor's
+        identity, so a state carried across two parameter sets would answer the second call with
+        the first call's curves.
+
+        THE QUOTE SIDE severs at the market price and nowhere else. `swap.price` is a numpy scalar,
+        built out of scipy by `create_market_swaps`, so the swaption vol behind it reaches the
+        residual as a constant; `market_swap_class.error` is where the splice that closes it goes,
+        and it is absent unless the block asked for `Quote_Sensitivity`. Three severances stay open
+        deliberately, because their upstream is not a quote of THIS calibration: `get_par_swap_rate`
+        prices the strike and the pvbp in numpy off the zero curve, `set_fixed_amount` writes that
+        strike into the schedule's numpy half, and the ATM read interpolates the vol SURFACE with
+        `RectBivariateSpline`. The first two are the calibrated curve, which is increment 1's quote;
+        the third is the surface-node-to-ATM map, which is a quote of the surface rather than of the
+        swaption.
+        """
 
         def loss(implied_var):
             # first, reset the shared_mem
@@ -837,7 +953,7 @@ class RiskNeutralInterestRateModel(object):
                         tensor_swaptions[swaption_name] = sum_swaption
 
             calibrated_swaptions = {k: v / (self.batch_size * self.num_batches) for k, v in tensor_swaptions.items()}
-            errors = {k: swap.weight * resid(100.0 * (swap.price / calibrated_swaptions[k] - 1.0))
+            errors = {k: swap.error(calibrated_swaptions[k], resid)
                       for k, swap in market_swaps.items()}
             return calibrated_swaptions, errors
 
@@ -853,14 +969,17 @@ class RiskNeutralInterestRateModel(object):
         # now edit the curve indices with the correct names - one reduced, one full
         curve_index = [(c_index[utils.FACTOR_INDEX_Stoch], index_keys['full']) + c_index[2:]]
         curve_index_reduced = [(c_index[utils.FACTOR_INDEX_Stoch], index_keys['reduced']) + c_index[2:]]
-        # calc the market swap rates and instrument_definitions    
-        market_swaps, benchmarks = create_market_swaps(
-            base_date, time_grid, curve_index, vol_surface, process.factor,
-            implied_params['instrument']['Instrument_Definitions'], ir_factor.name)
-        # number of random factors to use
-        numfactors = process.num_factors()
         # set up a common context - we leave out the random numbers and pass it in explicitly below
         shared_mem = RiskNeutralInterestRate_State(index_keys, self.batch_size, self.device, self.prec)
+        # calc the market swap rates and instrument_definitions - the unit tensor is what switches
+        # the quote side on, and puts its leaves on the calculation's own device
+        market_swaps, benchmarks = create_market_swaps(
+            base_date, time_grid, curve_index, vol_surface, process.factor,
+            implied_params['instrument']['Instrument_Definitions'], ir_factor.name,
+            shared_mem.one if implied_params['instrument'].get(
+                'Quote_Sensitivity', 'No') == 'Yes' else None)
+        # number of random factors to use
+        numfactors = process.num_factors()
         # the calibration swaps are compiled here rather than by a DealStructure, so they bind here
         for market_data in market_swaps.values():
             utils.bind_schedules(market_data.deal_data.Factor_dep, shared_mem.one)
@@ -1062,6 +1181,12 @@ scipy.optimize.leastsq.html) are used.',
               description='The quoted ATM vol; 0 reads the swaption surface'),
             F('Weight', 'Float', description='Relative weight in the objective')]),
           description='The forward starting swaps the swaptions are struck on'),
+        F('Quote_Sensitivity', 'Text', default='No', values=['Yes', 'No'],
+          description='Keep each benchmark swaption connected to the quote it was priced off - the '
+                      'row\'s Market_Volatility, the surface\'s ATM read, or the premium - so the '
+                      'residual differentiates in the quote as well as in the model parameters. '
+                      'The splice is worth exactly zero in the forward pass, so the calibrated '
+                      'parameters are identical either way'),
         F('Generate_Instruments', 'Text', default='No', values=['Yes', 'No'],
           description='Unbuilt: generate the definitions from Generation_Parameters instead'),
         F('Generation_Parameters', 'Container', default={
