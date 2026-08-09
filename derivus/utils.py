@@ -532,10 +532,10 @@ def log_exception(func):
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
-        except KeyError as k:
+        except KeyError:
             # we are okay to pass keyerrors back to the calling code
             raise
-        except Exception as e:
+        except Exception:
             # Log the exception with traceback and context
             logging.exception("An error occurred in function '%s'", func.__name__)
             # Re-raise the exception
@@ -1402,7 +1402,7 @@ class TensorResets(TensorSchedule):
 
     def _bound_array(self):
         """A reset's offset IS its scenario column, written there at construction, so the schedule
-        already is the merged form."""
+        already carries it and there is nothing to splice in."""
         return self.schedule
 
     def get_simulated_resets(self, max_time, forward, shared):
@@ -3483,7 +3483,6 @@ def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True):
     def calc_fwd_interpolated_new(method, l_tnr,  l_tensor, full_tnr=None):
         is_rt = method.endswith('RT')
         is_hermite = method.startswith('Hermite')
-        is_linear = 'Linear' in method
 
         # Handle RT scaling
         tensor = scale_for_rt(l_tnr, l_tensor, is_rt)
@@ -3803,11 +3802,6 @@ def implied_correlation(factor, sign=1.0):
     `sign` is the reverse-pair flip `check_fx_name` resolved at compile: a correlation is named on
     the sorted currency pair, so a deal running the other way reads -rho off the same factor."""
     return sign * factor.current_value()[0] if factor is not None else 0.0
-
-
-def check_tensor_name(name, scope):
-    return '/'.join(name.split('/')[:2] + [scope]).translate(
-        str.maketrans({'#': '_', ':': '_', ' ': '_', '(': '_', '+': '_', ')': '_'}))
 
 
 def make_cashflow(reference_date, start_date, end_date, pay_date, nominal, daycount_code, fixed_amount, spread_or_rate):

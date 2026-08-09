@@ -67,7 +67,7 @@ SHAPED = tuple(BLANK)
 #: read the same declarations, so neither can drift from the other.
 FACTOR_FIELDS = {}
 
-#: How `fields.mapping` renders each type for Handsontable. Rendering only: derived on the way out
+#: How `mapping` renders each type for Handsontable. Rendering only: derived on the way out
 #: and never declared, which is the point - a front end that is not Handsontable ignores all of it.
 WIDGET_FORMAT = {
     'Date': {'type': 'date', 'dateFormat': 'YYYY-MM-DD'},
@@ -79,7 +79,7 @@ WIDGET_FORMAT = {
     'Text': {}, 'Period': {}, 'Table': {},
 }
 
-#: The `obj` token `fields.mapping` uses per type, for a table declaring its columns positionally.
+#: The `obj` token `mapping` uses per type, for a table declaring its columns positionally.
 OBJ_TOKEN = {'Date': 'DatePicker', 'Float': 'Float', 'Integer': 'Integer', 'Text': 'Text',
               'Percent': 'Percent', 'Basis': 'Basis', 'Period': 'Period', 'Boolean': 'Boolean',
               'Table': 'ResetArray'}
@@ -104,7 +104,7 @@ class F(object):
 
     `type` is semantic (Text/Float/Integer/Date/Percent/Basis/Period/Table/Container, plus the
     market-data shapes Curve/Surface/Space); the WIDGET name is the front end's business and is
-    only reintroduced when emitting `fields.mapping`. A choice list is not a type - it is a Text
+    only reintroduced when emitting `mapping`. A choice list is not a type - it is a Text
     whose `values` are a fixed set, and the dropdown falls out of that.
     `json_name` is the escape hatch the name-keyed dict needed constantly and a per-class list
     needs almost never - the cashflow shapes that genuinely share a JSON key.
@@ -161,7 +161,7 @@ class F(object):
         return self.json_name or self.name
 
     def descriptor(self):
-        """This field as a `fields.mapping[...]['fields']` entry.
+        """This field as a `mapping[...]['fields']` entry.
 
         `col_names`, `sub_types` and `obj` are DERIVED from the row rather than stored: they are
         Handsontable's rendering vocabulary, and a front end that is not Handsontable wants none
@@ -194,7 +194,7 @@ class F(object):
 
 
 class Group(object):
-    """A named, reusable block of fields - what `fields.mapping` calls a section.
+    """A named, reusable block of fields - what `mapping` calls a section.
 
     Shared blocks (`Admin`, `FXAdmin`) are module-level constants; a class's own block is named
     `<ClassName>.Fields` by convention and built by `own()`.
@@ -207,7 +207,7 @@ class Group(object):
 
 
 def own(cls_name, fields, role='Fields'):
-    """A class's own block, named the way `fields.mapping`'s sections are."""
+    """A class's own block, named the way `mapping`'s sections are."""
     return Group('{}.{}'.format(cls_name, role), fields)
 
 
@@ -242,7 +242,7 @@ def validate_instrument(deal):
 
 
 def emit_instrument(module):
-    """The `types` and `sections` of `fields.mapping['Instrument']`, from the classes.
+    """The `types` and `sections` of `mapping['Instrument']`, from the classes.
 
     Scans `module` for classes declaring their own `fields` list. Own-attr only, so a subclass that
     inherits its parent's declaration does not re-emit it as a second deal type. Declaration order
@@ -267,7 +267,7 @@ def emit_instrument(module):
 
 
 def emit_factor(module):
-    """The `types` of `fields.mapping['Factor']` - each factor TYPE holding its own descriptors.
+    """The `types` of `mapping['Factor']` - each factor TYPE holding its own descriptors.
 
     A price factor has no sections to compose: its `Price Factors` block is one flat dict, so a
     class declares a flat list and the type IS that list's descriptors, keyed by the JSON key.
@@ -288,7 +288,7 @@ def emit_factor(module):
 
 
 def emit_process(module, factor_types):
-    """The `types` of `fields.mapping['Process']`, and the `Process_factor_map` beside it.
+    """The `types` of `mapping['Process']`, and the `Process_factor_map` beside it.
 
     A process's `Price Models` block is one flat dict, like a price factor's, so a class declares a
     flat list and the type IS its descriptors. Own-attr only, matching the other two emitters:
@@ -333,7 +333,7 @@ def emit_interpolation(module):
 
 
 def emit_calculation(module):
-    """The `types` of `fields.mapping['Calculation']` - each calculation TYPE holding its own.
+    """The `types` of `mapping['Calculation']` - each calculation TYPE holding its own.
 
     Keyed by the `Object` string a job document writes, which is NOT the class name: `run_job`
     branches on `CreditMonteCarlo` / `BaseValuation` / `HedgeMonteCarlo` while the classes are
@@ -347,12 +347,11 @@ def emit_calculation(module):
 
 
 def emit_market_prices(module):
-    """The `types` of `fields.mapping['MarketPrices']` - each price FAMILY holding its own.
+    """The `types` of `mapping['MarketPrices']` - each price FAMILY holding its own.
 
     Keyed by the `Market Prices` type string the engine selects work by, which the class declares
     as `market_factor_type` rather than the emitter recovering it from the class name: the block is
-    named for the model with a `Prices` suffix and the class with a `Parameters` one, and one
-    family is declared without being built at all.
+    named for the model with a `Prices` suffix and the class with a `Parameters` one.
 
     Own-attr only, matching the other emitters. `HullWhite2FactorModelParameters` subclasses
     `RiskNeutralInterestRateModel`, which declares nothing and is not a family of its own.
@@ -364,7 +363,7 @@ def emit_market_prices(module):
 
 
 def emit_calibration(module):
-    """The `types` of `fields.mapping['Calibration']` - each PROCESS holding its tuning block.
+    """The `types` of `mapping['Calibration']` - each PROCESS holding its tuning block.
 
     Keyed by the stochastic-process class name, because that is what a `Calibrations` entry is filed
     under, while the entry's own `Method` is the CALIBRATION class `construct_calibration_config`

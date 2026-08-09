@@ -99,11 +99,6 @@ def create_float_cashflows(base_date, cashflow_obj, frequency):
     return cashflows
 
 
-def normalize(sample):
-    '''Simple function to ensure that the sample used for the monte carlo sim has mean 0 and var 1'''
-    return (sample - sample.mean(axis=0)) / sample.std(axis=0)
-
-
 def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_factor,
                         instrument_definitions, rate=None):
     # store these benchmark swap definitions if necessary

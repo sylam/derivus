@@ -889,7 +889,6 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     # Per-scenario flag: has the barrier been crossed at a past discrete observation date?
     # Once set, KO scenarios are worth 0 and KI scenarios are worth the vanilla European.
     barrier_hit = shared.one.new_zeros(shared.simulation_batch, dtype=torch.bool)
-    prev_sample_idx = 0
     row_ofs = 0
     # A crossing is OBSERVED, so its value jump is real and must not be smoothed; what ordinary AAD
     # drops is the flux of scenarios across the barrier. Recording the decision costs nothing when
@@ -947,7 +946,6 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                                 deal_data.Time_dep.deal_time_grid[row_ofs - 1],
                                 nominal * rebate_per_unit * newly_hit)
             barrier_hit = barrier_hit | crossed   # carry forward into the next block
-        prev_sample_idx = sample_index_t
 
         tenor_block = factor_dep['Expiry'] - t_block[:, utils.TIME_GRID_MTM]
         fixings = (dual_samples.np[np.newaxis, sample_index_t:, utils.RESET_INDEX_End_Day] -
@@ -3531,7 +3529,6 @@ def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
         # get the duel cashflow at the correct index
         cashflows = factor_dep['Cashflows'].dual(start_index[index])
         cash_pmts, cash_index = np.unique(cashflows.np[:, utils.CASHFLOW_INDEX_Pay_Day], return_index=True)
-        cash_sts = np.unique(cashflows.np[:, utils.CASHFLOW_INDEX_Start_Day])
         # payment times
         time_block = discount_block.time_grid[:, utils.TIME_GRID_MTM]
         future_pmts = cash_pmts.reshape(1, -1) - time_block.reshape(-1, 1)
