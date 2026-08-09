@@ -916,21 +916,34 @@ class SwaptionCalibration(object):
         - which is what makes the wrapper a pass-through with no edge recorded."""
         return tuple(swap.quote for swap in self.market_swaps.values() if swap.quote is not None)
 
+    @property
+    def descriptors(self):
+        """The benchmark names of `quotes`, in its order - what `quote_leaves` pairs them with."""
+        return [name for name, swap in self.market_swaps.items() if swap.quote is not None]
+
+    def split(self, theta):
+        """`{name: tensor}` in the closure's own parameter order, SHARING theta's graph.
+
+        The one place the flat vector is taken apart: `__call__` builds the residual's parameter
+        views with it and the attachment publishes theta* per named parameter with it, so a factor
+        leaf cannot be handed the wrong slice of the vector the Jacobian was read off.
+        """
+        return dict(zip(self.keys, theta.split(self.sizes)))
+
     def unflatten(self, theta):
         """`{name: numpy}` in the closure's own parameter order - the shape `save_params` takes."""
-        return dict(zip(self.keys, np.split(
-            theta.detach().cpu().numpy(), np.cumsum(self.sizes[:-1]))))
+        return {name: value.detach().cpu().numpy() for name, value in self.split(theta).items()}
 
     def __call__(self, x):
         """The residual vector at flat parameters `x`, differentiable in `x` AND in the quotes.
 
         A FRESH dict of views is handed to the closure rather than the standing `implied_var`,
-        because those are leaves whose `.data` the scipy adapters overwrite: `x.split()` keeps the
+        because those are leaves whose `.data` the scipy adapters overwrite: `split` keeps the
         graph the Jacobian is read off. `x` carries the closure's own precision, so the residual is
         the same number the solve stopped on - the float64 promotion belongs to the linear algebra
         downstream, not to the pricing.
         """
-        return torch.stack(list(self.loss_fn(dict(zip(self.keys, x.split(self.sizes))))[1].values()))
+        return torch.stack(list(self.loss_fn(self.split(x))[1].values()))
 
     def solve(self):
         """theta* as a flat tensor: the optimizer chain, run exactly as a bootstrap runs it.
@@ -1070,6 +1083,12 @@ class RiskNeutralInterestRateModel(object):
         self.batch_size = 8192
         self.device = device
         self.prec = dtype
+        #: What a block asking for `Quote_Sensitivity` leaves behind: theta* STILL CONNECTED to its
+        #: quotes, one entry per named model parameter, and the quote leaf per block.
+        #: `Config.bootstrap` harvests both - they are tensors, so they cannot live in
+        #: `Price Factors`, which is data and gets written back out as JSON.
+        self.calibrated = {}
+        self.quote_leaves = {}
 
     def calc_loss_on_ir_curve(self, implied_params, base_date, time_grid, process,
                               implied_obj, ir_factor, vol_surface, resid=lambda x: x * x, jac=False):
@@ -1251,9 +1270,22 @@ class RiskNeutralInterestRateModel(object):
                     float(implied_params['instrument'].get('Stationarity_Tol', 1e-3)),
                     *calibration.quotes)
 
-                # save this
-                final_implied_obj = self.save_params(
-                    calibration.unflatten(theta), price_factors, implied_obj, rate)
+                # save this - `unflatten` detaches, so `Price Factors` gets plain numpy
+                self.save_params(calibration.unflatten(theta), price_factors, implied_obj, rate)
+
+                # the connected half, for the calculation that consumes these parameters: one entry
+                # per named parameter under the key `_build_factor_state` mints its leaf with
+                if calibration.quotes:
+                    params_factor = utils.Factor(self.__class__.__name__, rate[1:])
+                    self.calibrated.update({
+                        utils.Factor(params_factor.type, params_factor.name + (name,)): value
+                        for name, value in calibration.split(theta).items()})
+                    # the optimizer chain called backward() on every evaluation it made, so `.grad`
+                    # standing here is the sum over its whole path - six orders out, with a NaN in
+                    # it. A calculation reports what IT accumulates, so the leaf is handed over clean
+                    for quote in calibration.quotes:
+                        quote.grad = None
+                    self.quote_leaves[market_price] = (calibration.descriptors, calibration.quotes)
 
                 # record the time
                 logging.info('This took {} seconds.'.format(time.monotonic() - time_now))

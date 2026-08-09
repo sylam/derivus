@@ -320,8 +320,9 @@ class Calculation(object):
 
         Every leaf the engine mints is `torch.tensor(factor.current_value(...))`, a fresh tensor
         built out of a numpy array, so anything that produced those numbers is severed by
-        construction: it does not raise, it reports a zero gradient. A curve the library
-        BOOTSTRAPPED and kept the graph of is offered here instead, as
+        construction: it does not raise, it reports a zero gradient. A curve - or one named
+        parameter of a calibrated model - the library BOOTSTRAPPED and kept the graph of is offered
+        here instead, as
 
             leaf + (theta - theta.detach())
 
@@ -977,8 +978,7 @@ class Credit_Monte_Carlo(Calculation):
                     calc_grad = greeks and sensitivities in ['All', 'Implied']
                     for param_name, param_value in value.implied.current_value().items():
                         factor_name = utils.Factor(value.implied.__class__.__name__, key.name + (param_name,))
-                        vars[factor_name] = torch.tensor(
-                            param_value, device=self.device, dtype=self.dtype, requires_grad=calc_grad)
+                        vars[factor_name] = self.factor_leaf(factor_name, param_value, calc_grad)
                     self.implied_var[key] = vars
 
                 # check the daycount for the tenor_offset
@@ -1013,8 +1013,8 @@ class Credit_Monte_Carlo(Calculation):
                 if isinstance(current_val, dict):
                     for k, v in current_val.items():
                         fkey = utils.Factor(key.type, key.name + (k,))
-                        self.static_var[fkey] = implied_leaves[fkey] if fkey in implied_leaves else torch.tensor(
-                            v, device=self.device, dtype=self.dtype, requires_grad=calc_grad)
+                        self.static_var[fkey] = implied_leaves[fkey] if fkey in implied_leaves else \
+                            self.factor_leaf(fkey, v, calc_grad, factor_tenor_offset)
                 else:
                     self.static_var[key] = implied_leaves[key] if key in implied_leaves else \
                         self.factor_leaf(key, current_val, calc_grad, factor_tenor_offset)
@@ -1800,8 +1800,8 @@ class Base_Revaluation(Calculation):
                 current_val = value.current_value()
                 if isinstance(current_val, dict):
                     for k, v in current_val.items():
-                        self.static_var[utils.Factor(key.type, key.name + (k,))] = torch.tensor(
-                            v, device=self.device, dtype=self.dtype, requires_grad=calc_grad)
+                        fkey = utils.Factor(key.type, key.name + (k,))
+                        self.static_var[fkey] = self.factor_leaf(fkey, v, calc_grad)
                 else:
                     self.static_var[key] = self.factor_leaf(key, current_val, calc_grad)
 
