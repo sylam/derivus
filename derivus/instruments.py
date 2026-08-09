@@ -18,7 +18,9 @@ from functools import partial, reduce
 
 # utility functions and constants
 from . import utils, pricing
-from .schema import F, Group, REQUIRED, Row, own
+from .schema import (
+    F, Group, REQUIRED, Row, own,
+    ADMIN, FX_ADMIN, CASHFLOWLISTDEAL, EQUITYOPTIONBASE, QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
 
 # specific modules
 import numpy as np
@@ -454,70 +456,6 @@ def get_commoditiy_vol_factor(fieldname, static_offsets, stochastic_offsets, all
     """Read the index of the fx vol price factor"""
     return [calc_factor_index(utils.Factor('VolatilityGrid', fieldname), static_offsets, stochastic_offsets,
                               all_tenors)]
-
-
-# Shared field blocks. The schema's inheritance is composition of named GROUPS, not the class
-# hierarchy - FXAdmin is shared by eight deals with no common base, Admin by all of them.
-CASHFLOWLISTDEAL = Group('CashflowListDeal.Fields', [
-    F('Repo_Rate', 'Text', default='', obj='Tuple'),
-    F('Recovery_Rate', 'Text', default='', obj='Tuple'),
-    F('Description', 'Text', default=''),
-    F('Survival_Probability', 'Text', default='', obj='Tuple'),
-    F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
-    F('Settlement_Date', 'Date', default=''),
-    F('Settlement_Rate', 'Text', default=''),
-    F('Currency', 'Text', default=''),
-    F('Discount_Rate', 'Text', default='', obj='Tuple'),
-    F('Investment_Horizon', 'Date', default=''),
-    F('Issuer', 'Text', default='', obj='Tuple')
-])
-
-EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', [
-    F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
-    F('Currency', 'Text', default=''),
-    F('Discount_Rate', 'Text', default='', obj='Tuple'),
-    F('Equity', 'Text', default='', obj='Tuple'),
-    F('Equity_Volatility', 'Text', default='', obj='Tuple'),
-    F('Expiry_Date', 'Date', default=''),
-    F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
-    F('Payoff_Currency', 'Text', default=''),
-    F('Strike_Price', 'Float', default=0.0),
-    F('Dividends', 'Text', default='', obj='Tuple')
-])
-
-QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
-    F('Price_Fixing', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
-    F('Settlement_Style', 'Text', default='Physical', values=['Physical', 'Cash']),
-    F('Option_On_Forward', 'Text', default='No', values=['Yes', 'No']),
-    F('Barrier', 'Float', default=0),
-    F('Option_Style', 'Text', default='European', values=['European', 'American']),
-    F('Units', 'Float', default=0.0),
-    F('Barrier_Dates', 'Table', default='null', row=Row([F('Date', 'Date')])),
-    F('Autocall_Coupons', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
-    F('Autocall_Thresholds', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
-    F('Payoff_Type', 'Text', default='Standard', values=['Standard', 'Quanto', 'Compo'])
-])
-
-QEDI_CUSTOMSWAP = Group('QEDI_CustomSwap.Fields', [
-    F('Forecast_Rate', 'Text', default='', obj='Tuple'),
-    F('Floating_Margin', 'Float', default=0.0),
-    F('Reset_Frequency', 'Text', default='3M', obj='Period'),
-    F('Autocall_Floating', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList')
-])
-
-ADMIN = Group('Admin', [
-    F('Object', 'Text', default=''),
-    F('Reference', 'Text', default=''),
-    F('Tags', 'Text', default=''),
-    F('MtM', 'Text', default='')
-])
-
-FX_ADMIN = Group('FXAdmin', [
-    F('Trade_Date', 'Date', default=''),
-    F('Delivery_Date', 'Date', default=''),
-    F('Sales_Margin', 'Float', default=0),
-    F('Structure_Reference', 'Text', default='')
-])
 
 
 class Deal(object):

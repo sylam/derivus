@@ -25,7 +25,7 @@ import torch
 
 # Internal modules
 from . import utils, pricing, instruments, riskfactors, stochasticprocess
-from .schema import F, REQUIRED, Row
+from .schema import F, OPTION_QUOTE, REQUIRED, Row
 
 import scipy.optimize
 
@@ -33,14 +33,6 @@ market_swap_class = namedtuple('market_swap', 'deal_data price weight')
 date_desc = {'years': 'Y', 'months': 'M', 'days': 'D'}
 # date formatter
 date_fmt = lambda x: ''.join(['{0}{1}'.format(v, date_desc[k]) for k, v in x.kwds.items()])
-
-#: The columns every option quote carries, whatever the family: the contract, what it is worth,
-#: and how much the fit cares. `Weight` was read by two bootstrappers and declared by neither.
-OPTION_QUOTE = [F('Expiry_Date', 'Date'), F('Strike', 'Float', description='0 reads the forward'),
-                F('Option_Type', 'Text', values=['Call', 'Put']), F('Units', 'Float'),
-                F('Weight', 'Float', description='Relative weight in the objective'),
-                F('Quoted_Market_Value', 'Float',
-                  description='The quote, read per Quote_Type; 0 reads the vol surface')]
 
 
 class RiskNeutralInterestRate_State(utils.Calculation_State):
