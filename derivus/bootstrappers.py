@@ -884,6 +884,185 @@ class GBMAssetPriceTSModelParameters(object):
                     eq_vols[rate[-1]] = [utils.check_tuple_name(price_param), implied_param[-1]]
 
 
+class SwaptionCalibration(object):
+    """One risk-neutral swaption calibration as an operand: the residual, and the solve over it.
+
+    The residual is what `calc_loss_on_ir_curve` builds - one weighted relative pricing error per
+    `Instrument_Definitions` row, priced by brute-force Monte Carlo under a FROZEN Sobol sample -
+    and the solve is the optimizer chain `calc_loss` hands over. Holding both beside the parameter
+    dict they share is what lets `LeastSquaresSolve` run the ordinary solve in its forward pass and
+    then differentiate the same residual in its backward.
+
+    The parameter vector is FLAT here and a dict everywhere else: scipy takes a vector, the process
+    takes `{name: tensor}`, and the two scipy adapters own that boundary with `tn_var.data =
+    torch.from_numpy(x)`. `__call__` is the third crossing and the only differentiable one - it
+    builds VIEWS of a flat tensor rather than writing `.data`, because an implicit function theorem
+    needs an edge from the residual back to the parameters and `.data` is exactly what severs one.
+    """
+
+    def __init__(self, name, loss_fn, implied_var, optimizers, process, market_swaps):
+        self.name = name
+        self.loss_fn = loss_fn
+        self.implied_var = implied_var
+        self.optimizers = optimizers
+        self.process = process
+        self.market_swaps = market_swaps
+        self.keys = list(implied_var)
+        self.sizes = [implied_var[key].numel() for key in self.keys]
+
+    @property
+    def quotes(self):
+        """The quote leaf per benchmark, or `()` when the block did not ask for `Quote_Sensitivity`
+        - which is what makes the wrapper a pass-through with no edge recorded."""
+        return tuple(swap.quote for swap in self.market_swaps.values() if swap.quote is not None)
+
+    def unflatten(self, theta):
+        """`{name: numpy}` in the closure's own parameter order - the shape `save_params` takes."""
+        return dict(zip(self.keys, np.split(
+            theta.detach().cpu().numpy(), np.cumsum(self.sizes[:-1]))))
+
+    def __call__(self, x):
+        """The residual vector at flat parameters `x`, differentiable in `x` AND in the quotes.
+
+        A FRESH dict of views is handed to the closure rather than the standing `implied_var`,
+        because those are leaves whose `.data` the scipy adapters overwrite: `x.split()` keeps the
+        graph the Jacobian is read off. `x` carries the closure's own precision, so the residual is
+        the same number the solve stopped on - the float64 promotion belongs to the linear algebra
+        downstream, not to the pricing.
+        """
+        return torch.stack(list(self.loss_fn(dict(zip(self.keys, x.split(self.sizes))))[1].values()))
+
+    def solve(self):
+        """theta* as a flat tensor: the optimizer chain, run exactly as a bootstrap runs it.
+
+        Basin hopping then least squares, `x0` chained from one to the next, and a candidate is
+        ACCEPTED only if it beats the running best AND the process it implies is well posed - so
+        the answer can be the seed, which is what `LeastSquaresSolve` checks stationarity for.
+        """
+        calibrated_swaptions, errors = self.loss_fn(self.implied_var)
+        batch_loss = torch.stack(list(errors.values())).sum().cpu().detach().numpy()
+        vars = {k: v.cpu().detach().numpy() for k, v in self.implied_var.items()}
+        # initialize the soln with the current values
+        soln = (batch_loss, vars)
+        logging.info('{} - Batch loss {}'.format(self.name, batch_loss))
+        for k, v in sorted(vars.items()):
+            logging.info('{} - {}'.format(k, v))
+
+        for k, v in sorted(calibrated_swaptions.items()):
+            value = v.cpu().detach().numpy()
+            price = self.market_swaps[k].price
+            logging.debug('{},market_value,{:f},sim_model_value,{:f},error,{:.0f}%'.format(
+                k, price, value, 100.0 * (price - value) / price))
+
+        # minimize
+        result = None
+        num_optimizers = len(self.optimizers)
+        for op_loop in range(num_optimizers):
+            optim = self.optimizers[op_loop % num_optimizers]
+            x0 = result['x'] if result is not None else optim[1]
+            if optim[0] == 'basin':
+                result = scipy.optimize.basinhopping(
+                    optim[2], x0=x0, take_step=optim[3], accept_test=optim[4], T=5.0, niter=50,
+                    minimizer_kwargs={"method": "L-BFGS-B", "jac": True, "bounds": optim[5]},
+                    rng=optim[6])
+                batch_loss = float(optim[2](result['x'])[0])
+            elif optim[0] == 'leastsq':
+                result = scipy.optimize.least_squares(
+                    optim[2], x0=x0, jac=optim[3], bounds=optim[4])
+                batch_loss = optim[2](result['x']).sum()
+
+            if batch_loss < soln[0] and self.process.params_ok:
+                sim_swaptions, errors = self.loss_fn(self.implied_var)
+                vars = {k: v.cpu().detach().numpy() for k, v in self.implied_var.items()}
+                soln = (batch_loss, vars)
+                logging.info('{} - run {} - Batch loss {}'.format(self.name, op_loop, batch_loss))
+                for k, v in sorted(vars.items()):
+                    logging.info('{} - {}'.format(k, v))
+                for k, v in sim_swaptions.items():
+                    value = v.cpu().detach().numpy()
+                    price = self.market_swaps[k].price
+                    logging.info('{},market_value,{:f},sim_model_value,{:f},error,{:.0f}%'.format(
+                        k, price, value, 100.0 * (price - value) / price))
+
+        theta = np.concatenate([soln[1][key] for key in self.keys])
+        return torch.tensor(theta, dtype=self.implied_var[self.keys[0]].dtype,
+                            device=self.implied_var[self.keys[0]].device)
+
+
+class LeastSquaresSolve(torch.autograd.Function):
+    """The swaption calibration as one differentiable node: quotes in, calibrated parameters out.
+
+    FORWARD IS THE ORDINARY SOLVE. It calls `SwaptionCalibration.solve` and nothing else - the same
+    optimizer chain, the same acceptance rule, the same frozen Sobol sample - so enabling quote
+    gradients cannot move theta* by construction rather than by a claim anyone has to re-check.
+    Autograd runs `forward` with grad mode off and both optimizers need it on (basin hopping calls
+    `backward()` on its loss, least squares reads its Jacobian off `autograd.grad`), so it is
+    re-enabled here and the graph each evaluation builds is discarded with the evaluation.
+
+    BACKWARD IS THE IMPLICIT FUNCTION THEOREM AT THE STATIONARITY FIXED POINT. This is a
+    least-squares minimum, not a root: `r(theta*, q)` is not zero and never will be, so what is
+    held fixed is the GRADIENT of half the sum of squares, `g = J^T r = 0`. Differentiating that
+    and dropping the term in `d(J^T)/dtheta . r` - the Gauss-Newton approximation, exact in the
+    limit of a zero residual - gives
+
+        (J^T J) dtheta/dq = -J^T dr/dq
+
+    so a cotangent `v = dL/dtheta*` contracts as `w = (J^T J)^+ v` then `dL/dq = -(dr/dq)^T (J w)`.
+    Both derivatives come from autograd on ONE fresh evaluation of the residual at `(theta*, q)`,
+    functionally through `autograd.grad` rather than off `.grad`: the scipy adapters clear `.grad`
+    per evaluation and the quote leaves accumulate across them, so a harvested `.grad` is the sum
+    over an optimizer's whole path rather than the derivative at its answer.
+
+    J^T J IS RANK DEFICIENT and that is a property of the problem, not a defect: J has one row per
+    benchmark and 23 columns, so on any block quoting fewer than 23 swaptions the null space is
+    what the quote set does not identify. The solve is therefore a PSEUDO-inverse at a declared
+    relative cutoff, and `dtheta/dq` in a null direction is the MINIMUM-NORM representative - one
+    member of a family the data cannot choose between. No ridge is added: a Tikhonov term would
+    return a unique-looking number that is a derivative of a different problem.
+
+    STATIONARITY IS CHECKED, NOT ASSUMED. `solve` accepts whatever the chain returned, which may be
+    the seed if nothing beat it, and the whole contraction above is worthless off the fixed point -
+    so `||J^T r||` above the declared tolerance RAISES, naming the norm, rather than returning a
+    quietly-wrong Jacobian.
+
+    Every `grad` here retains the graph, for the reason `CalibrationSolve` documents: the residual's
+    subgraph is shared with the evaluation the Jacobian was read off.
+    """
+
+    @staticmethod
+    def forward(ctx, calibration, rcond, stationarity, *quotes):
+        with torch.enable_grad():
+            theta = calibration.solve()
+        ctx.calibration, ctx.theta = calibration, theta
+        ctx.rcond, ctx.stationarity = rcond, stationarity
+        return theta
+
+    @staticmethod
+    def backward(ctx, cotangent):
+        # the engine runs a backward node with grad mode set to `create_graph`, so this is the
+        # second differentiation asking to be recorded - and Gauss-Newton has no second derivative
+        if torch.is_grad_enabled():
+            raise Exception('Swaption calibration: create_graph is not supported - the backward is '
+                            'a Gauss-Newton contraction and carries no second derivative')
+        calibration = ctx.calibration
+        with torch.enable_grad():
+            x = ctx.theta.detach().requires_grad_(True)
+            residual = calibration(x)
+            jacobian = torch.stack([torch.autograd.grad(residual[i], x, retain_graph=True)[0]
+                                    for i in range(residual.numel())]).double()
+            gradient = jacobian.t() @ residual.detach().double()
+            if float(gradient.norm()) > ctx.stationarity:
+                raise Exception(
+                    'Swaption calibration: theta* is not stationary - ||J^T r|| is {:.6g} against a '
+                    'Stationarity_Tol of {:.6g}, so the implicit function theorem does not hold '
+                    'there'.format(float(gradient.norm()), ctx.stationarity))
+            w = torch.linalg.pinv(jacobian.t() @ jacobian, hermitian=True,
+                                  rtol=ctx.rcond) @ cotangent.double()
+            grads = torch.autograd.grad(residual, calibration.quotes, retain_graph=True,
+                                        grad_outputs=-(jacobian @ w).to(residual.dtype))
+        return (None, None, None) + grads
+
+
 class RiskNeutralInterestRateModel(object):
     def __init__(self, param, device, dtype):
         self.param = param
@@ -1061,53 +1240,20 @@ class RiskNeutralInterestRateModel(object):
 
                 # check the time
                 time_now = time.monotonic()
-                calibrated_swaptions, errors = loss_fn(implied_var)
-                batch_loss = torch.stack(list(errors.values())).sum().cpu().detach().numpy()
-                vars = {k: v.cpu().detach().numpy() for k, v in implied_var.items()}
-                # initialize the soln with the current values
-                soln = (batch_loss, vars)
-                logging.info('{} - Batch loss {}'.format(market_factor.name[0], batch_loss))
-                for k, v in sorted(vars.items()):
-                    logging.info('{} - {}'.format(k, v))
-
-                for k, v in sorted(calibrated_swaptions.items()):
-                    value = v.cpu().detach().numpy()
-                    price = market_swaptions[k].price
-                    logging.debug('{},market_value,{:f},sim_model_value,{:f},error,{:.0f}%'.format(
-                        k, price, value, 100.0 * (price - value) / price))
-
-                # minimize
-                result = None
-                num_optimizers = len(optimizers)
-                for op_loop in range(num_optimizers):
-                    optim = optimizers[op_loop % num_optimizers]
-                    x0 = result['x'] if result is not None else optim[1]
-                    if optim[0] == 'basin':
-                        result = scipy.optimize.basinhopping(
-                            optim[2], x0=x0, take_step=optim[3], accept_test=optim[4], T=5.0, niter=50,
-                            minimizer_kwargs={"method": "L-BFGS-B", "jac": True, "bounds": optim[5]})
-                        batch_loss = float(optim[2](result['x'])[0])
-                    elif optim[0] == 'leastsq':
-                        result = scipy.optimize.least_squares(
-                            optim[2], x0=x0, jac=optim[3], bounds=optim[4])
-                        batch_loss = optim[2](result['x']).sum()
-
-                    if batch_loss < soln[0] and process.params_ok:
-                        sim_swaptions, errors = loss_fn(implied_var)
-                        vars = {k: v.cpu().detach().numpy() for k, v in implied_var.items()}
-                        soln = (batch_loss, vars)
-                        logging.info('{} - run {} - Batch loss {}'.format(
-                            market_factor.name[0], op_loop, batch_loss))
-                        for k, v in sorted(vars.items()):
-                            logging.info('{} - {}'.format(k, v))
-                        for k, v in sim_swaptions.items():
-                            value = v.cpu().detach().numpy()
-                            price = market_swaptions[k].price
-                            logging.info('{},market_value,{:f},sim_model_value,{:f},error,{:.0f}%'.format(
-                                k, price, value, 100.0 * (price - value) / price))
+                calibration = SwaptionCalibration(
+                    market_factor.name[0], loss_fn, implied_var, optimizers, process, market_swaptions)
+                # the chain goes through the implicit-function wrapper either way: with no quotes
+                # on the tape no edge is recorded and the wrapper is a pass-through, which is what
+                # makes "gradients cannot move theta*" structural rather than a claim
+                theta = LeastSquaresSolve.apply(
+                    calibration,
+                    float(implied_params['instrument'].get('Jacobian_Rcond', 1e-8)),
+                    float(implied_params['instrument'].get('Stationarity_Tol', 1e-3)),
+                    *calibration.quotes)
 
                 # save this
-                final_implied_obj = self.save_params(soln[1], price_factors, implied_obj, rate)
+                final_implied_obj = self.save_params(
+                    calibration.unflatten(theta), price_factors, implied_obj, rate)
 
                 # record the time
                 logging.info('This took {} seconds.'.format(time.monotonic() - time_now))
@@ -1181,12 +1327,31 @@ scipy.optimize.leastsq.html) are used.',
               description='The quoted ATM vol; 0 reads the swaption surface'),
             F('Weight', 'Float', description='Relative weight in the objective')]),
           description='The forward starting swaps the swaptions are struck on'),
+        F('Random_Seed', 'Integer', default=5120,
+          description='Seeds the basin-hopping random search - the step taker and the Metropolis '
+                      'accept test both draw from it. Without it the search draws from the process '
+                      'global and the calibration is a function of whatever ran before it: on the '
+                      'gate fixture theta* moves 0.93 absolute between ambient seeds. The Monte '
+                      'Carlo paths are a separately frozen Sobol sample and do not move with it'),
         F('Quote_Sensitivity', 'Text', default='No', values=['Yes', 'No'],
           description='Keep each benchmark swaption connected to the quote it was priced off - the '
                       'row\'s Market_Volatility, the surface\'s ATM read, or the premium - so the '
                       'residual differentiates in the quote as well as in the model parameters. '
                       'The splice is worth exactly zero in the forward pass, so the calibrated '
                       'parameters are identical either way'),
+        F('Jacobian_Rcond', 'Float', default=1e-8,
+          description='Relative cutoff on the eigenvalues of the Gauss-Newton matrix J\'J when the '
+                      'backward pass inverts it. J has one row per benchmark and 23 columns, so '
+                      'that matrix is rank deficient on every block quoting fewer swaptions than '
+                      'that and the inverse is a pseudo-inverse: below the cutoff a direction is '
+                      'one the quotes do not identify and its dtheta/dq is the minimum-norm '
+                      'representative. Only used when Quote_Sensitivity is Yes'),
+        F('Stationarity_Tol', 'Float', default=1e-3,
+          description='How far off stationarity theta* may be before the quote Jacobian is refused, '
+                      'as the 2-norm of J\'r. The optimizer chain accepts whatever it returned - '
+                      'possibly the seed, if nothing beat it - and the implicit function theorem '
+                      'holds only where that gradient vanishes, so above this the backward raises '
+                      'and names the norm rather than reporting a quietly wrong number'),
         F('Generate_Instruments', 'Text', default='No', values=['Yes', 'No'],
           description='Unbuilt: generate the definitions from Generation_Parameters instead'),
         F('Generation_Parameters', 'Container', default={
@@ -1220,7 +1385,13 @@ scipy.optimize.leastsq.html) are used.',
             sigmas = x[3:]
             return sigmas, alpha, corr
 
-        def make_basin_callbacks(step, sigma_min_max, alpha_min_max, corr_min_max):
+        def make_basin_callbacks(step, sigma_min_max, alpha_min_max, corr_min_max, rng):
+            """The two callbacks basin hopping needs, drawing from `rng` and never from the process
+            global. A step taken off `np.random` makes the whole calibration a function of whatever
+            ran before it in the same interpreter - measured on the gate fixture, theta* moves 0.93
+            absolute between ambient seeds - and nothing raises, so the block declares the seed and
+            the same generator serves the Metropolis test in `SwaptionCalibration.solve`."""
+
             def bounds_check(**kwargs):
                 x = kwargs["x_new"]
                 sigmas, alpha, corr = split_param(x)
@@ -1232,9 +1403,9 @@ scipy.optimize.leastsq.html) are used.',
             def basin_step(x):
                 sigmas, alpha, corr = split_param(x)
                 # update vars
-                sigmas = (sigmas * np.exp(np.random.uniform(-step, step, sigmas.size))).clip(*sigma_min_max)
-                alpha = (alpha * np.exp(np.random.uniform(-step, step, alpha.size))).clip(*alpha_min_max)
-                corr = (corr + np.random.uniform(-step, step, corr.size)).clip(*corr_min_max)
+                sigmas = (sigmas * np.exp(rng.uniform(-step, step, sigmas.size))).clip(*sigma_min_max)
+                alpha = (alpha * np.exp(rng.uniform(-step, step, alpha.size))).clip(*alpha_min_max)
+                corr = (corr + rng.uniform(-step, step, corr.size)).clip(*corr_min_max)
 
                 return np.concatenate((alpha, corr, sigmas))
 
@@ -1303,13 +1474,18 @@ scipy.optimize.leastsq.html) are used.',
                 bounds.append([self.sigma_bounds] * len(v))
 
         var_to_bounds = np.vstack(bounds)
-        bounds_ok, make_step = make_basin_callbacks(0.125, self.sigma_bounds, self.alpha_bounds, self.corr_bounds)
+        # ONE generator for the whole random search - the step taker draws from it here and basin
+        # hopping's own Metropolis test draws from it in `solve`, which is the single stream the
+        # process global used to be
+        rng = np.random.RandomState(int(implied_params['instrument'].get('Random_Seed', 5120)))
+        bounds_ok, make_step = make_basin_callbacks(
+            0.125, self.sigma_bounds, self.alpha_bounds, self.corr_bounds, rng)
 
         basin_hopper_fn_grad = make_basin_hopping_loss(loss_fn, implied_var_dict, self.device, True)
         x0 = torch.cat(list(implied_var_dict.values())).cpu().detach().numpy()
         lsq_fn, jacobian = make_least_squares_loss(loss_fn, implied_var_dict, self.device)
 
-        optimizers = [('basin', x0, basin_hopper_fn_grad, make_step, bounds_ok, var_to_bounds),
+        optimizers = [('basin', x0, basin_hopper_fn_grad, make_step, bounds_ok, var_to_bounds, rng),
                       ('leastsq', x0, lsq_fn, jacobian, list(zip(*var_to_bounds)))]
 
         return loss_fn, optimizers, implied_var_dict, market_swaptions, benchmarks
