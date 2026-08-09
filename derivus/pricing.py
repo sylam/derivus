@@ -2742,16 +2742,15 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
     | --- | --- |
     | `Include_Margin` | `total + int * (total + N)` - everything compounds |
     | `Flat` | `total + int * N + total * (int - mrg)` |
-    | `Exclude_Margin` | `total + (int - mrg) * (total + N) + mrg * N` |
+    | `Exclude_Margin` | `comp = comp + (int - mrg) * (comp + N)`; `simple += mrg * N`; pays `comp + simple` |
 
-    !!! warning "`Flat` and `Exclude_Margin` are the SAME fold"
-        Expand both: each is `total * (1 + rate * accrual) + int * N`. They are one function written
-        two ways, at every margin and not only at zero, so the two branches below cannot be told
-        apart by any test - the difference between them is floating-point reassociation, ~1e-16
-        relative. Either `Flat` is meant to compound only the BASIC period amounts (the accumulated
-        additional amounts excluded), in which case it is unimplemented, or the two conventions
-        genuinely coincide and one name is redundant. Recorded rather than guessed at: the branch
-        below states the spread-exclusive convention as it reads, which is the honest half.
+    Per the convention spec: under `Flat`, cashflow i pays `P.I_i.(1+J_{i+1})...(1+J_n)` - the FULL
+    interest enters the compounding pot and the pot grows at rate-only `J = I - m.alpha`. Under
+    `Exclude_Margin` it pays `P.m_i.alpha_i + P.J_i.(1+J_{i+1})...(1+J_n)` - each period's margin
+    is SIMPLE on the nominal and only the rate part compounds. The two therefore differ by
+    `sum_i m_i.alpha_i.N.(prod_{j>i}(1+J_j) - 1)` at any positive spread, and Exclude cannot be a
+    single-accumulator fold: a margin lump inside `total` would earn `(1+J)` in every later step,
+    which is exactly `Flat` - the trap a one-line restatement of the convention falls into.
     """
     mtm_list = []
     factor_dep = deal_data.Factor_dep
@@ -2914,6 +2913,10 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
 
                 default_offst = np.ones(cash_index.size, dtype=np.int32) * (interest.shape[1] - 1)
                 total = 0.0
+                # Exclude_Margin cannot be a single-accumulator fold: period i's margin is paid
+                # SIMPLE, and a margin lump inside `total` would earn (1+J) in every later step -
+                # which is exactly Flat. The simple pot stays outside and joins at the end.
+                simple_margin = 0.0
 
                 for i in range(cash_counts.max()):
                     offst = default_offst.copy()
@@ -2925,19 +2928,23 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                     elif factor_dep['CompoundingMethod'] == 'Include_Margin':
                         total = total + int_i * (total + nominal[offst].reshape(1, -1, 1))
                     elif factor_dep['CompoundingMethod'] == 'Flat':
+                        # spec: cashflow i pays P.I_i.(1+J_{i+1})...(1+J_n) - FULL interest enters
+                        # the pot, the pot compounds at rate-only J = I - m.alpha
                         total = total + (int_i * nominal[offst].reshape(1, -1, 1)) + total * (
                                 int_i - margin[offst].reshape(1, -1, 1))
                     elif factor_dep['CompoundingMethod'] == 'Exclude_Margin':
-                        # spread-exclusive: the RATE compounds on principal plus accrued, the margin
-                        # stays simple on the nominal. Written as the convention reads - which is
-                        # the Flat fold rearranged, see the docstring
+                        # spec: cashflow i pays P.m_i.alpha_i + P.J_i.(1+J_{i+1})...(1+J_n) - only
+                        # the rate part compounds; the margin of each period is simple on nominal
                         margin_i = margin[offst].reshape(1, -1, 1)
                         nominal_i = nominal[offst].reshape(1, -1, 1)
-                        total = total + (int_i - margin_i) * (total + nominal_i) + margin_i * nominal_i
+                        total = total + (int_i - margin_i) * (total + nominal_i)
+                        simple_margin = simple_margin + margin_i * nominal_i
                     else:
                         raise Exception(
                             'Floating cashflow list method {} not implemented'.format(
                                 factor_dep['CompoundingMethod']))
+
+                total = total + simple_margin
 
             payments.append(total + cashflows.tn[
                 pmts_offset, utils.CASHFLOW_INDEX_FixedAmt].reshape(1, -1, 1))

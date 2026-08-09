@@ -94,7 +94,7 @@ def closed_form(method, margin):
     pricer divides by the accrual and the fold multiplies back - so `int` is that number plus
     `margin * accrual`, with no rate ever formed. `mrg` is `margin * accrual`.
     """
-    total = 0.0
+    total, simple = 0.0, 0.0
     for start_m, end_m in SUB_PERIODS:
         start, end = BASE + pd.DateOffset(months=start_m), BASE + pd.DateOffset(months=end_m)
         accrual = (end - start).days / 365.0
@@ -105,7 +105,12 @@ def closed_form(method, margin):
         elif method == 'Flat':
             total = total + interest * NOTIONAL + total * (interest - mrg)
         else:
-            total = total + (interest - mrg) * (total + NOTIONAL) + mrg * NOTIONAL
+            # two accumulators, per the spec: only the rate part J compounds; each period's margin
+            # is simple on the nominal and must never enter the compounding pot
+            simple = simple + mrg * NOTIONAL
+            total = total + (interest - mrg) * (total + NOTIONAL)
+    if method == 'Exclude_Margin':
+        total = total + simple
     return total * np.exp(-RATE * (PAY_DATE - BASE).days / 365.0)
 
 
@@ -138,17 +143,27 @@ def test_every_convention_collapses_to_one_at_zero_spread(method):
     assert _price(method, 0.0) == pytest.approx(closed_form('Include_Margin', 0.0), rel=1e-11)
 
 
-def test_flat_and_exclude_margin_are_one_fold_written_twice():
-    """The finding, pinned rather than papered over.
+def test_flat_and_exclude_margin_differ_by_the_compounded_margin():
+    """The discriminating gate the spec makes writable.
 
-    `Flat` and `Exclude_Margin` expand to the same expression at EVERY margin, so the two branches
-    differ only by floating-point reassociation. Asserted tight enough that a real change to either
-    fold - the kind that would make the two conventions actually distinct - fails here and says so.
-    """
+    Per the convention spec: Flat lets period i's FULL interest (margin included) enter the
+    compounding pot, Exclude keeps each period's margin simple - so on a multi-sub-period coupon
+    with a positive spread, Flat - Exclude = sum_i m_i.alpha_i.N.(prod_{j>i}(1+J_j) - 1) > 0.
+    Before the two-accumulator fold this difference was unrepresentable: both branches were the
+    same function, and the original one-line restatement collapsed back to Flat because a margin
+    lump inside `total` earns (1+J) in every later step."""
     flat, exclude = _price('Flat', MARGIN), _price('Exclude_Margin', MARGIN)
-    assert flat == pytest.approx(exclude, rel=1e-12), (
-        'Flat and Exclude_Margin have become distinct folds - if that is deliberate, this gate and '
-        'the docstring on pv_float_cashflow_list both need rewriting: {} against {}'.format(
-            flat, exclude))
-    assert abs(_price('Include_Margin', MARGIN) - exclude) / abs(exclude) > 1e-3, (
-        'Include_Margin has to differ, or the fixture has no spread in it')
+
+    expected_gap = 0.0
+    js = []
+    for start_m, end_m in SUB_PERIODS:
+        start, end = BASE + pd.DateOffset(months=start_m), BASE + pd.DateOffset(months=end_m)
+        accrual = (end - start).days / 365.0
+        js.append((np.expm1(RATE * (end - start).days / 365.0), MARGIN * 1e-4 * accrual))
+    for i, (_, mrg) in enumerate(js):
+        compounding = np.prod([1.0 + j for j, _ in js[i + 1:]])
+        expected_gap += mrg * NOTIONAL * (compounding - 1.0)
+    expected_gap *= np.exp(-RATE * (PAY_DATE - BASE).days / 365.0)
+
+    assert flat > exclude, 'Flat must exceed Exclude at positive margin'
+    assert flat - exclude == pytest.approx(expected_gap, rel=1e-10)
