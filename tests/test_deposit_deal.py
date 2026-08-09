@@ -138,3 +138,17 @@ def test_a_forecasting_deposit_prices_to_par():
     # value has to leave par - without this the assertion above would pass on a dead pricer
     assert _price(STARTS) > 1_000.0, (
         'completing the schedule must switch to the fixed branch and move the value off par')
+
+
+def test_a_schedule_the_calculation_did_not_bind_cannot_be_priced(monkeypatch):
+    """MUTATE the lifecycle: skip the bind that rides `calc_dependencies` on the deal walk.
+
+    A deposit reaches its cashflow schedule through `Factor_dep`, so it is exactly what the walk
+    has to have bound, and the failure mode this replaces was invisible - the tensor half was
+    minted by whichever call touched it first, so a schedule the calculation never reached still
+    priced, off whatever state it happened to be in. It must now be `is_fatal_pricing_error`, or
+    `Deal.calculate`'s guard turns it into a scalar-0 mark and the deal quietly leaves the book.
+    """
+    monkeypatch.setattr(utils, 'bind_schedules', lambda compiled, unit: compiled)
+    with pytest.raises(utils.ScheduleLifecycleError, match='TensorCashFlows'):
+        _price(STARTS)

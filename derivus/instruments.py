@@ -1604,28 +1604,33 @@ class MtMCrossCurrencySwapDeal(Deal):
         deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
 
         if not self.child_map:
+            # Which child carries the MtM leg is only known once the children exist, and the
+            # principal exchange this then inserts is a schedule edit - so each child's compile
+            # CONTINUES here and its tensor half is rebuilt after (`reopen` / `bind`).
             for index, child in enumerate(child_dependencies):
                 # make the child price to the same grid as the parent
                 child.Time_dep.assign(deal_data.Time_dep)
+                cashflows = child.Factor_dep['Cashflows'].reopen()
                 # work out which leg is which
                 if child.Factor_dep['Currency'] == factor_dep[factor_dep['MTM']]['Currency']:
                     daycount = self.field.get(factor_dep['MTM'] + '_Day_Count', 'ACT_365')
                     # add a zero nominal payment at the beginning if forward starting
-                    child.Factor_dep['Cashflows'].add_mtm_payments(
+                    cashflows.add_mtm_payments(
                         factor_dep['base_date'], self.field['Principal_Exchange'],
                         self.field['Effective_Date'], daycount)
                     # make sure we calculate future fx reset dates correctly
-                    child.Factor_dep['Cashflows'].set_future_fx_resets(
+                    cashflows.set_future_fx_resets(
                         deal_time[:, utils.TIME_GRID_MTM].max(), time_grid)
                     self.child_map.setdefault('MTM', child)
                 else:
                     daycount = self.field.get(factor_dep['Other'] + '_Day_Count', 'ACT_365')
                     # get the last nominal amount
-                    capital = child.Factor_dep['Cashflows'].schedule[-1][utils.CASHFLOW_INDEX_Nominal]
-                    child.Factor_dep['Cashflows'].add_fixed_payments(
+                    capital = cashflows.schedule[-1][utils.CASHFLOW_INDEX_Nominal]
+                    cashflows.add_fixed_payments(
                         factor_dep['base_date'], self.field['Principal_Exchange'],
                         self.field['Effective_Date'], daycount, capital)
                     self.child_map.setdefault('Static', child)
+                cashflows.bind(shared.one)
 
         FX_rep = utils.calc_time_grid_spot_rate(shared.Report_Currency, deal_time, shared)
         FX_static = utils.calc_time_grid_spot_rate(

@@ -511,13 +511,19 @@ class InstrumentExpired(Exception):
         self.message = message
 
 
+class ScheduleLifecycleError(Exception):
+    """A schedule was touched out of order: priced before `bind` copied it to the device, or edited
+    after. Either says the calculation did not reach it, which is a framework fault rather than a
+    property of the deal."""
+
+
 def is_fatal_pricing_error(e):
     """Exceptions a deal-level pricing guard must NOT swallow into a scalar-0 mark: the machine
-    running out of memory. That says the FRAMEWORK is wrong rather than the deal, and it produces
-    a silently missing mark if caught — inside an inner-MC fork a missing tradable mark reads as
-    an expired contract and retires the instrument from the hedge set. Everything else keeps the
-    canonical skip."""
-    return isinstance(e, (MemoryError, torch.cuda.OutOfMemoryError)) or (
+    running out of memory, and a schedule the calculation never bound. Each says the FRAMEWORK is
+    wrong rather than the deal, and each produces a silently missing mark if caught — inside an
+    inner-MC fork a missing tradable mark reads as an expired contract and retires the instrument
+    from the hedge set. Everything else keeps the canonical skip."""
+    return isinstance(e, (MemoryError, torch.cuda.OutOfMemoryError, ScheduleLifecycleError)) or (
         isinstance(e, RuntimeError) and 'out of memory' in str(e).lower())
 
 
@@ -1102,22 +1108,81 @@ class DualArray:
         return DualArray(self.tn[x], self.np[x])
 
 
+def bind_schedules(compiled, unit):
+    """Bind every `TensorSchedule` reachable in a deal's compiled `Factor_dep`, and return it.
+
+    A deal files its schedules under whatever key it likes and nests them - a swap's two legs, a
+    collateral bond's coupons - so this reads the compiled output rather than a list of key names.
+    It WRAPS `calc_dependencies` on the walk that already builds the deal tree: binding is part of
+    compiling, not a second pass over it.
+    """
+    if isinstance(compiled, TensorSchedule):
+        compiled.bind(unit)
+    else:
+        for value in (compiled.values() if isinstance(compiled, dict) else
+                      compiled if isinstance(compiled, (list, tuple)) else ()):
+            bind_schedules(value, unit)
+    return compiled
+
+
 # Tensor specific classes that's used internally
 class TensorSchedule(object):
-    """A cashflow or reset schedule held as numpy, copied to a device tensor on demand.
+    """A cashflow or reset schedule: numpy while it compiles, a device tensor once it is BOUND.
 
     The DUAL representation is the point: the index columns - payment days, accrual days, reset
     counts - are checked in fast numpy (`np.unique`, `searchsorted`, masks) and only the copy the
     arithmetic runs on goes to the device. `carry` is the one seam where the tensor half can differ
     from that copy, and nothing on the numpy side ever sees it.
+
+    `bind` is what separates the two halves in TIME, and it is the whole lifecycle. Before it the
+    numpy half is authoritative and the compile-time edits - `overwrite_rate`, `carry`, an inserted
+    principal exchange - are the only writes; after it the device copy is authoritative, every
+    accessor serves that ONE copy, and an edit raises rather than silently failing to reach it.
+    `derived` is the run-scoped home for anything a pricer builds off the copy.
     """
 
     def __init__(self, schedule, offsets):
         self.schedule = np.array(schedule)
         self.offsets = np.array(offsets)
-        self.cache = {}
+        #: the bound tensor half, and the tensors pricers derive from it - both minted by `bind`
+        self.bound = None
+        self.derived = {}
         self.unit = None
         self.overlay = None
+
+    def __repr__(self):
+        return '{}({} rows)'.format(type(self).__name__, self.schedule.shape[0])
+
+    def bind(self, unit):
+        """Copy the numpy half to the device and make that copy authoritative - the lifecycle event.
+
+        Whatever overlay `carry` attached is spliced in HERE rather than at whichever call happened
+        to be first, and re-binding is how a second run starts clean: a fresh copy for the new unit,
+        and every tensor derived from the old one dropped with it.
+        """
+        array = self._bound_array()
+        self.unit = unit
+        self.bound = DualArray(self._spliced(unit.new_tensor(array)), array)
+        self.derived = {}
+        return self
+
+    def _bound_array(self):
+        """The numpy half the device copy is made of - schedule and offsets side by side."""
+        return np.concatenate((self.schedule, self.offsets), axis=1)
+
+    def _compiling(self):
+        """Refuse a compile-time edit once bound: the device copy is what the arithmetic reads, so
+        an edit to the numpy half here would not reach it."""
+        if self.bound is not None:
+            raise ScheduleLifecycleError(
+                '{} is bound - compile-time edits must run before bind'.format(self))
+
+    def reopen(self):
+        """Drop the binding so a compile can CONTINUE - re-bind when it has. The one caller is
+        `MtMCrossCurrencySwapDeal.post_process`, which cannot know which child carries the MtM leg
+        until the children exist; anything else reaching for this is compiling in the wrong place."""
+        self.bound = None
+        return self
 
     def carry(self, overlay):
         """Attach differentiable VALUE columns, `{column: tensor}`, to the tensor half.
@@ -1128,13 +1193,9 @@ class TensorSchedule(object):
         graph intact. Index columns are never overlaid: they are read off `.np`, which stays plain
         numpy, so every existing consumer is untouched and absent-by-default means the ordinary
         path does not know this exists.
-
-        Attaching CLEARS the cache. `dual` and `merged` memoize under one key, so an overlay
-        attached after a plain copy was taken would be silently ignored, and a plain caller must
-        never be handed a graph it did not ask for.
         """
+        self._compiling()
         self.overlay = overlay
-        self.cache = {}
         return self
 
     def _spliced(self, tensor):
@@ -1151,36 +1212,31 @@ class TensorSchedule(object):
     def __len__(self):
         return len(self.schedule)
 
-    def count(self):
-        return self.schedule.shape[0]
-
-    def reinitialize(self, unit):
-        if self.unit is None:
-            # set the unit tensor (this implicitly defines the dtype and the device)
-            self.unit = unit
-            self.cache = {}
-        return self
-
     def dual(self, index=0):
-        '''Returns just the schedule as a dual'''
-        if 'dual' not in self.cache:
-            self.cache['dual'] = DualArray(
-                self._spliced(self.unit.new_tensor(self.schedule)), self.schedule)
-        return self.cache['dual'][index:]
+        """The bound dual from row `index` on."""
+        if self.bound is None:
+            raise ScheduleLifecycleError('{} was never bound to a calculation'.format(self))
+        return self.bound[index:]
 
     def merged(self, unit, index=0):
-        '''Returns the schedule and offsets as a dual'''
-        if self.unit is None:
-            self.reinitialize(unit)
+        """`dual` under the name the cashflow pricers call it by - one copy serves both, so a plain
+        caller and an overlaid one cannot be handed different halves."""
+        return self.dual(index)
 
-        if 'dual' not in self.cache:
-            if len(self.schedule) < len(self.offsets):
-                raise Exception('Schedule and offset mismatch')
-                merged = np.concatenate((self.schedule, self.offsets[:len(self.schedule)]), axis=1)
-            else:
-                merged = np.concatenate((self.schedule, self.offsets), axis=1)
-            self.cache['dual'] = DualArray(self._spliced(self.unit.new_tensor(merged)), merged)
-        return self.cache['dual'][index:]
+    def known_resets(self, num_scenarios, index=RESET_INDEX_Value,
+                     filter_index=RESET_INDEX_Reset_Day, include_today=False):
+        """The already-fixed rows' VALUE column, one `(1, num_scenarios)` tensor each.
+
+        `include_today` keeps a row resetting today, which only an equity reset wants. A cashflow's
+        known FX reset is this same read on its own two columns.
+        """
+        key = ('known_resets', num_scenarios, index, include_today)
+        if self.derived.get(key) is None:
+            self.derived[key] = [
+                self.unit.new_full((1, num_scenarios), x[index]) for x in self.schedule
+                if ((x[filter_index] <= 0.0 and x[index] > 0) if include_today
+                    else x[filter_index] < 0.0)]
+        return self.derived[key]
 
 
 class DealTimeDependencies(object):
@@ -1349,18 +1405,10 @@ class TensorResets(TensorSchedule):
         # Assign the offsets directly to the resets
         self.schedule[:, RESET_INDEX_Scenario] = self.offsets
 
-    def known_resets(self, num_scenarios, index=RESET_INDEX_Value,
-                     filter_index=RESET_INDEX_Reset_Day, include_today=False):
-        key = ('known_resets', num_scenarios, include_today)
-        if self.cache.get(key) is None:
-            if include_today:
-                # we only include today if we are dealing with equity resets
-                self.cache[key] = [self.unit.new_full((1, num_scenarios), x[index])
-                                   for x in self.schedule if x[filter_index] <= 0.0 and x[index] > 0]
-            else:
-                self.cache[key] = [self.unit.new_full((1, num_scenarios), x[index])
-                                   for x in self.schedule if x[filter_index] < 0.0]
-        return self.cache[key]
+    def _bound_array(self):
+        """A reset's offset IS its scenario column, written there at construction, so the schedule
+        already is the merged form."""
+        return self.schedule
 
     def get_simulated_resets(self, max_time, forward, shared):
         within_horizon = (self.offsets > -1) & (self.schedule[:, RESET_INDEX_Reset_Day] <= max_time)
@@ -1396,13 +1444,13 @@ class TensorResets(TensorSchedule):
                                time_grid[:, TIME_GRID_MTM]).astype(np.int64)
 
     def split_groups(self, group_size):
-        if self.cache.get(('groups', group_size)) is None:
+        if self.derived.get(('groups', group_size)) is None:
             groups = []
             for i in range(group_size):
                 group = TensorResets(self.schedule[i::group_size], self.offsets[i::group_size])
-                groups.append(group.reinitialize(self.unit))
-            self.cache[('groups', group_size)] = groups
-        return self.cache.get(('groups', group_size))
+                groups.append(group.bind(self.unit))
+            self.derived[('groups', group_size)] = groups
+        return self.derived.get(('groups', group_size))
 
 
 class TensorCashFlows(TensorSchedule):
@@ -1422,8 +1470,11 @@ class TensorCashFlows(TensorSchedule):
         # call superclass
         super(TensorCashFlows, self).__init__(schedule, offsets)
 
-    def get_resets(self, unit):
-        return self.Resets.reinitialize(unit)
+    def bind(self, unit):
+        """A cashflow's resets are part of it, so they bind with it."""
+        if self.Resets is not None:
+            self.Resets.bind(unit)
+        return super(TensorCashFlows, self).bind(unit)
 
     def total_abs_nominal(self):
         """Summed |notional| across the schedule."""
@@ -1432,15 +1483,6 @@ class TensorCashFlows(TensorSchedule):
     def last_pay_day(self):
         """Latest payment day (offset in days from base_date)."""
         return float(self.schedule[:, CASHFLOW_INDEX_Pay_Day].max())
-
-    def known_fx_resets(self, num_scenarios, index=CASHFLOW_INDEX_FXResetValue,
-                        filter_index=CASHFLOW_INDEX_FXResetDate):
-
-        if self.cache.get(('known_fx_resets', num_scenarios)) is None:
-            self.cache[('known_fx_resets', num_scenarios)] = [
-                self.Resets.unit.new_full((1, num_scenarios), x[index])
-                for x in self.schedule if x[filter_index] < 0.0]
-        return self.cache.get(('known_fx_resets', num_scenarios))
 
     def get_par_swap_rate(self, base_date, ir_curve):
         """Used to calculate the par swap rate for these cashflows given an interest rate curve"""
@@ -1458,31 +1500,35 @@ class TensorCashFlows(TensorSchedule):
     def insert_cashflow(self, cashflow):
         """Inserts a cashflow at the beginning of the cashflow schedule - useful to model a fixed payment at the
         beginning of a schedule of cashflows"""
+        self._compiling()
         self.schedule = np.vstack((cashflow, self.schedule))
         self.offsets = np.vstack(([0, 0, 1], self.offsets))
 
     def set_fixed_amount(self, rate):
         """sets the fixed amount to the rate provided"""
+        self._compiling()
         self.schedule[:, CASHFLOW_INDEX_FixedAmt] = rate * self.schedule[:, CASHFLOW_INDEX_Nominal] * \
                                                     self.schedule[:, CASHFLOW_INDEX_Year_Frac]
 
     def add_maturity_accrual(self, reference_date, daycount_code):
         """Adjusts the last cashflow's daycount accrual fraction to include the maturity date"""
+        self._compiling()
         last_cashflow = self.schedule[-1]
         last_cashflow[CASHFLOW_INDEX_Year_Frac] = get_day_count_accrual(
             reference_date + pd.offsets.Day(last_cashflow[CASHFLOW_INDEX_End_Day]),
             last_cashflow[CASHFLOW_INDEX_End_Day] - last_cashflow[CASHFLOW_INDEX_Start_Day] + 1, daycount_code)
 
     def set_resets(self, schedule, offsets):
+        self._compiling()
         self.Resets = TensorResets(schedule, offsets)
 
     def overwrite_rate(self, attribute_index, value):
         """
         Overwrites the strike/fixed_amount/float_rate defined in the cashflow schedule
         """
+        self._compiling()
         for cashflow in self.schedule:
             cashflow[attribute_index] = value
-        self.cache = None
 
     def set_future_fx_resets(self, max_time, time_grid):
         FXResets = []
@@ -1510,6 +1556,7 @@ class TensorCashFlows(TensorSchedule):
                               -principal, 0.0))
 
         if principal_exchange in ['Start_Maturity', 'Maturity']:
+            self._compiling()
             self.schedule[-1][CASHFLOW_INDEX_FixedAmt] = principal
 
     def get_cashflow_start_index(self, time_grid, field_index=CASHFLOW_INDEX_Pay_Day, last_payment=None):
@@ -4592,11 +4639,11 @@ def compress_no_compounding(cashflows, groupsize, check_resets=True):
 
             approx_cashflows = TensorCashFlows(cash, cashflow_reset_offsets)
             approx_cashflows.set_resets(all_resets, reset_scenario_offsets)
-            if cashflows.Resets.count() == approx_cashflows.Resets.count():
-                logging.warning('Cashflows rebased from {} resets'.format(cashflows.Resets.count()))
+            if len(cashflows.Resets) == len(approx_cashflows.Resets):
+                logging.warning('Cashflows rebased from {} resets'.format(len(cashflows.Resets)))
             else:
                 logging.warning('Cashflows reduced from {} resets to {} resets'.format(
-                    cashflows.Resets.count(), approx_cashflows.Resets.count()))
+                    len(cashflows.Resets), len(approx_cashflows.Resets)))
             return approx_cashflows
 
     return cashflows

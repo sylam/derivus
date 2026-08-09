@@ -810,7 +810,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     discount = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
 
-    samples = factor_dep['Observation_Dates'].reinitialize(shared.one)
+    samples = factor_dep['Observation_Dates']
     start_idx = samples.get_start_index(deal_time)
     dual_samples = samples.dual()
     start_index, counts = np.unique(start_idx, return_counts=True)
@@ -1705,12 +1705,12 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
 
     # now precalc all past resets - Fixings includes settlement and fixings dates
-    samples = factor_dep['Fixings'].reinitialize(shared.one)
+    samples = factor_dep['Fixings']
     start_idx = samples.get_start_index(deal_time)
     start_index, counts = np.unique(start_idx, return_counts=True)
 
     # make sure we can access the numpy and tensor components
-    fx_samples = factor_dep['Price_Fixings'].reinitialize(shared.one)
+    fx_samples = factor_dep['Price_Fixings']
     known_resets = fx_samples.known_resets(shared.simulation_batch)
     sim_samples = fx_samples.schedule[
         (fx_samples.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
@@ -2089,15 +2089,15 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
 
     # set up the calculation grid
-    samples = factor_dep['Fixings'].reinitialize(shared.one)
+    samples = factor_dep['Fixings']
     start_idx = samples.get_start_index(deal_time)
     dual_samples = samples.dual()
     start_index, counts = np.unique(start_idx, return_counts=True)
 
     if factor_dep['no_averaging']:
         # resets could be prior to the coupon date - need to store this
-        equity_samples = factor_dep['Price_Fixing'].reinitialize(shared.one)
-        coupon_samples = factor_dep['Coupon_Fixing'].reinitialize(shared.one)
+        equity_samples = factor_dep['Price_Fixing']
+        coupon_samples = factor_dep['Coupon_Fixing']
         eq_start_idx = equity_samples.get_start_index(deal_time)
         cp_start_idx = coupon_samples.get_start_index(deal_time)
         # grab the known fixings and join with any potential simulated fixings
@@ -2119,7 +2119,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
     # make sure we can price the floating leg (if present)
     if 'Forward' in factor_dep:
-        resets = factor_dep['Cashflows'].get_resets(shared.one)
+        resets = factor_dep['Cashflows'].Resets
         forward = utils.calc_time_grid_curve_rate(factor_dep['Forward'], deal_time, shared)
         old_resets = resets.get_simulated_resets(
             deal_time[:, utils.TIME_GRID_MTM].max(), factor_dep['Forward'], shared)
@@ -2298,7 +2298,7 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
     b = torch.log(forward / spot) / safe_expiry
     # now precalc all past resets
     eps = torch.finfo(shared.one.dtype).eps
-    samples = factor_dep['Samples'].reinitialize(shared.one)
+    samples = factor_dep['Samples']
     known_resets = samples.known_resets(shared.simulation_batch)
     start_idx = samples.get_start_index(deal_time)
     sim_samples = samples.schedule[
@@ -2435,7 +2435,7 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
     start_samples = []
 
     for i in ['Samples_1', 'Samples_2']:
-        samples = factor_dep[i].reinitialize(shared.one)
+        samples = factor_dep[i]
         sample_idx = samples.get_start_index(deal_time, offset=1)
         known_resets = samples.known_resets(shared.simulation_batch)
         sim_samples = samples.schedule[(samples.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
@@ -2551,7 +2551,7 @@ def pv_energy_option(shared, time_grid, deal_data, nominal):
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
 
     # first precalc all past resets
-    samples = factor_dep['Cashflow'].get_resets(shared.one)
+    samples = factor_dep['Cashflow'].Resets
     known_samples = samples.known_resets(shared.simulation_batch)
     start_idx = samples.get_start_index(deal_time)
     sim_samples = samples.schedule[
@@ -2757,7 +2757,7 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
 
     # first precalc all past resets
-    resets = factor_dep['Cashflows'].get_resets(shared.one)
+    resets = factor_dep['Cashflows'].Resets
 
     if mtm_currency:
         # precalc the FX forwards
@@ -2765,7 +2765,8 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
             mtm_currency, factor_dep['Currency'], factor_dep['Cashflows'].FXResets[:, utils.RESET_INDEX_Reset_Day],
             factor_dep['Cashflows'].FXResets[:, :utils.RESET_INDEX_Scenario + 1], shared, only_diag=True)
 
-        known_fx = factor_dep['Cashflows'].known_fx_resets(shared.simulation_batch)
+        known_fx = factor_dep['Cashflows'].known_resets(
+            shared.simulation_batch, utils.CASHFLOW_INDEX_FXResetValue, utils.CASHFLOW_INDEX_FXResetDate)
 
         # fetch fx rates - note that there is a slight difference between this and the spot fx rate
         old_fx_rates = (torch.cat([torch.stack(known_fx), sim_fx_forward], dim=0)
@@ -2967,7 +2968,8 @@ def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, se
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
 
-    cash_start_idx = factor_dep['Cashflows'].get_cashflow_start_index(deal_time)
+    schedule = factor_dep['Cashflows']
+    cash_start_idx = schedule.get_cashflow_start_index(deal_time)
     settlement_amt = factor_dep.get('Settlement_Amount', 0.0)
     discounts = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
     # there could be a repo curve if this is settled in future
@@ -2980,11 +2982,11 @@ def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, se
 
     for index, [discount_block, repo_block, settle_block] in enumerate(utils.split_counts(
             [discounts, repo, settlement], counts, shared)):
-        cashflows = factor_dep['Cashflows'].merged(shared.one, start_index[index])
+        cashflows = schedule.merged(shared.one, start_index[index])
 
         cash_pmts, cash_index, cash_counts = np.unique(
             cashflows.np[:, utils.CASHFLOW_INDEX_Pay_Day], return_index=True, return_counts=True)
-        # payment times            
+        # payment times
         time_block = discount_block.time_grid[:, utils.TIME_GRID_MTM]
         future_pmts = cash_pmts.reshape(1, -1) - time_block.reshape(-1, 1)
 
@@ -3014,10 +3016,12 @@ def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, se
         all_int = (1.0 if ignore_fixed_rate else cashflows.tn[:, utils.CASHFLOW_INDEX_FixedRate]
                    ) * cashflows.tn[:, utils.CASHFLOW_INDEX_Year_Frac]
 
-        # use this to cache the payments for this call - note that we need to include ignore_fixed_rate
-        payment_key = ('Payments', index, ignore_fixed_rate)
+        # Built from the schedule's tensor half and nothing else, so it lives exactly as long as
+        # that half - not in `t_Buffer`, which clears per batch. Keyed by the slice it sums, so a
+        # deal priced on two grids (the inner-MC fork windows one) cannot read the other's.
+        payment_key = ('Payments', start_index[index], ignore_fixed_rate)
 
-        if factor_dep.get(payment_key) is None:
+        if schedule.derived.get(payment_key) is None:
             payments = 0.0
 
             if cash_counts.min() != cash_counts.max():
@@ -3041,13 +3045,12 @@ def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, se
                 else:
                     payments += int_i * nominal[offst] + fixed_amt[offst]
 
-            # cache this payment tensor
-            factor_dep[payment_key] = payments
+            schedule.derived[payment_key] = payments
 
         # add to the mtm
         mtm_list.append(
             (torch.sum(
-                discountfx * discount_rates * factor_dep[payment_key].reshape(1, -1, 1), dim=1) -
+                discountfx * discount_rates * schedule.derived[payment_key].reshape(1, -1, 1), dim=1) -
              settlement_amt) * settlement_discount)
 
         # settle any cashflows
@@ -3059,7 +3062,7 @@ def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, se
             else:
                 cash_settle(shared, factor_dep['SettleCurrency'],
                             np.searchsorted(time_grid.mtm_time_grid, cash_pmts[0]),
-                            factor_dep[payment_key][0])
+                            schedule.derived[payment_key][0])
 
     return torch.cat(mtm_list, dim=0)
 
@@ -3132,8 +3135,8 @@ def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=True):
     repo = utils.calc_time_grid_curve_rate(factor_dep['Repo_Rate'], deal_time, shared)
     settlement = utils.calc_time_grid_curve_rate(factor_dep['Settlement_Rate'], deal_time, shared)
 
-    base_resets = factor_dep['Base_Resets'].reinitialize(shared.one)
-    final_resets = factor_dep['Final_Resets'].reinitialize(shared.one)
+    base_resets = factor_dep['Base_Resets']
+    final_resets = factor_dep['Final_Resets']
 
     all_base_resets = filter_resets(base_resets, factor_dep['PriceIndex'])
     all_final_resets = filter_resets(final_resets, factor_dep['PriceIndex'])
@@ -3216,7 +3219,7 @@ def pv_energy_cashflows(shared, time_grid, deal_data):
     cash_start_idx = factor_dep['Cashflows'].get_cashflow_start_index(deal_time)
 
     # first precalc all past resets
-    resets = factor_dep['Cashflows'].get_resets(shared.one)
+    resets = factor_dep['Cashflows'].Resets
     known_resets = resets.known_resets(shared.simulation_batch)
     sim_resets = resets.schedule[
         (resets.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
@@ -3574,7 +3577,7 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
     # first precalc all past resets
     all_samples = []
 
-    for samples in cash.get_resets(shared.one).split_groups(2):
+    for samples in cash.Resets.split_groups(2):
         known_sample = samples.known_resets(shared.simulation_batch, include_today=True)
         sim_samples = samples.schedule[
             (samples.schedule[:, utils.RESET_INDEX_Value] == 0.0) &

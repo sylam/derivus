@@ -91,7 +91,7 @@ class DealStructure(object):
         return deal_time_dep
 
     def add_deal_to_structure(self, base_date, deal, static_offsets, stochastic_offsets,
-                              all_factors, all_tenors, time_grid, calendars, stats):
+                              all_factors, all_tenors, time_grid, calendars, stats, unit):
         """
         The logic is as follows: a structure contains deals - a set of deals are netted off and then the rules that the
         structure itself contains is applied.
@@ -102,9 +102,9 @@ class DealStructure(object):
             try:
                 self.dependencies.append(
                     utils.DealDataType(Instrument=deal,
-                                       Factor_dep=deal.calc_dependencies(
+                                       Factor_dep=utils.bind_schedules(deal.calc_dependencies(
                                            base_date, static_offsets, stochastic_offsets,
-                                           all_factors, all_tenors, time_grid, calendars),
+                                           all_factors, all_tenors, time_grid, calendars), unit),
                                        Time_dep=deal_time_dep,
                                        Calc_res={} if self.store_results else None))
                 stats['Deals loaded'] = stats.setdefault('Deals loaded', 0) + 1
@@ -121,16 +121,16 @@ class DealStructure(object):
         time_grid.set_report_dates(base_date, self.obj.Instrument.get_report_dates())
 
     def add_structure_to_structure(self, struct, base_date, static_offsets, stochastic_offsets,
-                                   all_factors, all_tenors, time_grid, calendars, stats):
+                                   all_factors, all_tenors, time_grid, calendars, stats, unit):
         # get the dependencies
         struct_time_dep = self.calc_time_dependency(base_date, struct.obj.Instrument, time_grid)
         if struct_time_dep is not None:
             try:
                 struct.obj = utils.DealDataType(
                     Instrument=struct.obj.Instrument,
-                    Factor_dep=struct.obj.Instrument.calc_dependencies(
+                    Factor_dep=utils.bind_schedules(struct.obj.Instrument.calc_dependencies(
                         base_date, static_offsets, stochastic_offsets,
-                        all_factors, all_tenors, time_grid, calendars),
+                        all_factors, all_tenors, time_grid, calendars), unit),
                     Time_dep=struct_time_dep,
                     Calc_res={} if self.store_results or struct.obj.Instrument.accum_dependencies else None)
                 # Structure object representing a netted set of cashflows
@@ -419,8 +419,9 @@ class Calculation(object):
 
         return df
 
-    def set_deal_structures(self, deals, output, deal_level_mtm=False):
-
+    def set_deal_structures(self, deals, output, unit, deal_level_mtm=False):
+        """Compile the deal tree. `unit` is the calculation's dtype/device anchor: a deal's
+        schedules are BOUND to it as they compile, so the tensor half's birthday is this walk."""
         for node in deals:
             # get the instrument
             instrument = node['Instrument']
@@ -433,15 +434,15 @@ class Calculation(object):
             logging.root.name = instrument.field.get('Reference', '<undefined>')
             if node.get('Children'):
                 struct = DealStructure(instrument, store_results=deal_level_mtm)
-                self.set_deal_structures(node['Children'], struct, deal_level_mtm)
+                self.set_deal_structures(node['Children'], struct, unit, deal_level_mtm)
                 output.add_structure_to_structure(
                     struct, self.base_date, self.static_factors, self.stoch_factors, self.all_factors,
-                    self.all_tenors, self.time_grid, self.config.holidays, self.calc_stats)
+                    self.all_tenors, self.time_grid, self.config.holidays, self.calc_stats, unit)
                 continue
 
             output.add_deal_to_structure(
-                self.base_date, instrument, self.static_factors, self.stoch_factors,
-                self.all_factors, self.all_tenors, self.time_grid, self.config.holidays, self.calc_stats)
+                self.base_date, instrument, self.static_factors, self.stoch_factors, self.all_factors,
+                self.all_tenors, self.time_grid, self.config.holidays, self.calc_stats, unit)
 
 
 def cva_per_scenario(pv_exposure, prob, recovery):
@@ -1323,7 +1324,8 @@ class Credit_Monte_Carlo(Calculation):
         # set up the all instruments
         self.netting_sets = DealStructure(Aggregation('root'), store_results=True)
         self.set_deal_structures(
-            self.config.deals['Deals']['Children'], self.netting_sets, deal_level_mtm=params.get('DealLevel', False))
+            self.config.deals['Deals']['Children'], self.netting_sets, shared_mem.one,
+            deal_level_mtm=params.get('DealLevel', False))
         self.netting_sets.finalize_struct(base_date, self.time_grid)
 
         # clear the output
@@ -1938,7 +1940,7 @@ class Base_Revaluation(Calculation):
         self.calc_stats['Deal_Setup_Time'] = time.monotonic()
         self.netting_sets = DealStructure(Aggregation('root'), store_results=True)
         self.set_deal_structures(
-            self.config.deals['Deals']['Children'], self.netting_sets, deal_level_mtm=True)
+            self.config.deals['Deals']['Children'], self.netting_sets, shared_mem.one, deal_level_mtm=True)
 
         # record the (pure python) dependency setup time
         self.calc_stats['Deal_Setup_Time'] = time.monotonic() - self.calc_stats['Deal_Setup_Time']
@@ -2226,11 +2228,13 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         # Build the valuation structure first; the hedging runtime will consume
         # the live factor and instrument tensors produced by this same loop.
         self.netting_sets = DealStructure(Aggregation('root'), store_results=True)
-        self.set_deal_structures(instruments, self.netting_sets, deal_level_mtm=True)
+        self.set_deal_structures(instruments, self.netting_sets, shared_mem.one, deal_level_mtm=True)
         self.netting_sets.finalize_struct(base_date, self.time_grid)
 
         self.liabilities = DealStructure(Aggregation('contracts'), store_results=False)
-        self.set_deal_structures(liabilities, self.liabilities, deal_level_mtm=False)
+        # the inner-MC fork windows `Time_dep` and shares `Factor_dep` by reference on the same
+        # `shared_mem`, so its copies price off the schedules bound here
+        self.set_deal_structures(liabilities, self.liabilities, shared_mem.one, deal_level_mtm=False)
         self.liabilities.finalize_struct(base_date, self.time_grid)
 
         t_days_arr = self.time_grid.scenario_grid[:, utils.TIME_GRID_MTM]  # [T]

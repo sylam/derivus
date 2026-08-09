@@ -253,35 +253,58 @@ def test_putting_the_quotes_on_the_tape_does_not_move_a_single_pv():
                           plain(theta(plain)).detach().numpy())
 
 
-def test_an_overlay_attached_after_a_copy_is_not_served_the_copy():
-    """The unit gate on `TensorSchedule`, both ways round.
+def test_a_schedule_has_a_birthday_and_its_edits_have_a_deadline():
+    """The unit gate on `TensorSchedule`, in the order the lifecycle runs.
 
-    `dual` and `merged` memoize under ONE key, so an overlay attached after a plain copy was taken
-    would be silently dropped, and a plain caller could be handed a graph it never asked for -
-    the same shape of trap as `t_Buffer` answering a second curve with the first one's discount
-    factors. `carry` clears the cache, and taking the copy FIRST is what says so.
+    An overlay attached after the tensor half was taken used to be silently dropped, and a plain
+    caller could be handed a graph it never asked for - the `t_Buffer` shape of trap, from the same
+    cause: the copy was minted by whichever call happened to be first. `bind` is that event made
+    explicit, so the protocol is CHECKABLE at both ends - a touch before it raises, an edit after it
+    raises - and `dual` and `merged` are one accessor over one copy rather than two memos colliding
+    under one key.
     """
     one = torch.ones([1, 1], dtype=torch.float64)
     schedule = utils.TensorSchedule([[1.0, 2.0], [3.0, 4.0]], [[0.0], [0.0]])
-    plain = schedule.merged(one).tn
+    with pytest.raises(utils.ScheduleLifecycleError, match='TensorSchedule.* never bound'):
+        schedule.merged(one)
+
+    plain = schedule.bind(one).merged(one).tn
     assert plain.grad_fn is None and not plain.requires_grad
+    # one copy: the two accessors cannot be served different halves of it
+    assert schedule.dual().tn.data_ptr() == plain.data_ptr()
+    assert schedule.merged(one, 1).tn.tolist() == plain[1:].tolist()
 
     column = torch.tensor([7.0, 8.0], dtype=torch.float64, requires_grad=True)
-    carried = schedule.carry({1: column}).merged(one).tn
+    with pytest.raises(utils.ScheduleLifecycleError, match='must run before bind'):
+        schedule.carry({1: column})
+
+    carried = schedule.reopen().carry({1: column}).bind(one).merged(one).tn
     assert carried[:, 1].tolist() == [7.0, 8.0], 'the overlay was not spliced in: {}'.format(carried)
     assert carried[:, 0].tolist() == [1.0, 3.0], 'the splice moved a column it does not own'
     assert torch.autograd.grad(carried.sum(), column)[0].tolist() == [1.0, 1.0]
 
     # and back: dropping the overlay has to drop the graph, not serve the spliced copy
-    assert schedule.carry(None).merged(one).tn.grad_fn is None
+    assert schedule.reopen().carry(None).bind(one).merged(one).tn.grad_fn is None
+
+
+def test_binding_drops_what_the_last_binding_derived():
+    """`derived` is run-scoped BY BEING minted with the copy it is derived from. A tensor built off
+    the tensor half - `pv_fixed_cashflows`' payment vector, a reset's known values - outlives its
+    copy otherwise, and a second run is then priced off the first one's numbers."""
+    one = torch.ones([1, 1], dtype=torch.float64)
+    schedule = utils.TensorSchedule([[1.0, 2.0], [3.0, 4.0]], [[0.0], [0.0]]).bind(one)
+    schedule.derived['payments'] = schedule.dual().tn.sum()
+    assert not schedule.bind(one).derived, 'a re-bound schedule kept a tensor from the old copy'
 
 
 def drop_overlays(bm):
+    """MUTANT: rebuild every schedule's tensor half with no overlay on it, which is exactly the
+    plain `new_tensor` copy `carry` exists to replace."""
     for legs in bm.benchmarks:
         for leg in legs:
             for schedule in leg.Factor_dep.values():
                 if isinstance(schedule, utils.TensorCashFlows):
-                    schedule.carry(None)
+                    schedule.reopen().carry(None).bind(bm.one)
     return bm
 
 
@@ -298,21 +321,22 @@ def test_a_schedule_copied_without_the_overlay_severs_the_quote():
         torch.autograd.grad(severed(theta(severed)).sum(), severed.quotes)
 
 
-def test_a_priced_closure_keeps_the_quote_graph_it_was_priced_with():
-    """The trap, held in place rather than fixed - the third memo table in this subsystem.
+def test_a_priced_closure_does_not_survive_its_own_rebinding():
+    """The same mutation as above, run AFTER pricing - which used to be the interesting case.
 
-    `pv_fixed_cashflows` caches its payment tensor in `Factor_dep`, and that tensor is built from
-    the schedule's tensor half, so it carries whatever overlay was attached at the FIRST
-    evaluation. Removing the overlay afterwards changes nothing: the quote gradient survives a
-    mutation that should have destroyed it. That is why the overlay is attached at construction and
-    why a moved quote needs a fresh closure rather than a re-attached one - the same rule
-    `Benchmark_State` follows for `t_Buffer`.
+    `pv_fixed_cashflows` memoized its payment tensor in `Factor_dep`, built from the schedule's
+    tensor half but outliving it, so the first evaluation froze whatever overlay was attached and
+    removing the overlay afterwards changed nothing: the quote gradient survived a mutation that
+    should have destroyed it. The memo lives on the schedule now and is minted by `bind` with the
+    copy it is derived from, so the mutation lands whenever it is run.
     """
     bm = closure(quotes=QUOTES)
-    bm(theta(bm))
+    priced = bm(theta(bm)).detach().numpy()
     drop_overlays(bm)
-    assert np.abs(quote_jacobian(bm)).max() > 0, (
-        'the payment cache is not the trap this gate claims it is - re-check the caching')
+    assert np.array_equal(bm(theta(bm)).detach().numpy(), priced), (
+        'the mutation has to reproduce the VALUE, or it is testing something else')
+    with pytest.raises(RuntimeError):
+        quote_jacobian(bm)
 
 
 def test_a_reused_pricing_state_answers_with_the_first_curve():

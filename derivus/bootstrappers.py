@@ -874,6 +874,9 @@ class RiskNeutralInterestRateModel(object):
         numfactors = process.num_factors()
         # set up a common context - we leave out the random numbers and pass it in explicitly below
         shared_mem = RiskNeutralInterestRate_State(index_keys, self.batch_size, self.device, self.prec)
+        # the calibration swaps are compiled here rather than by a DealStructure, so they bind here
+        for market_data in market_swaps.values():
+            utils.bind_schedules(market_data.deal_data.Factor_dep, shared_mem.one)
         # set up the variables
         implied_var = {}
         stoch_var = torch.tensor(
@@ -1395,6 +1398,11 @@ class BenchmarkInstruments(object):
             quotes, dtype=self.dtype, device=device, requires_grad=True)
         if self.quotes is not None:
             self._carry_quotes(bumped_nodes, base_date, calendars)
+        # the benchmark set is compiled OUTSIDE a calculation, so it binds its own schedules - and
+        # it binds them last, because the quote overlay is spliced into the copy `bind` makes
+        for legs in self.benchmarks:
+            for leg in legs:
+                utils.bind_schedules(leg.Factor_dep, self.one)
 
     def _compile(self, deal, base_date, calendars):
         """One leaf deal's compiled form - the same `Factor_dep` / `Time_dep` pair a valuation

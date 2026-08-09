@@ -61,14 +61,17 @@ def _calculate(exc):
     torch.cuda.OutOfMemoryError('CUDA out of memory. Tried to allocate 2.67 GiB'),
     RuntimeError('CUDA out of memory. Tried to allocate 2.67 GiB'),
     MemoryError('host allocation failed'),
+    utils.ScheduleLifecycleError('TensorCashFlows(4 rows) was never bound to a calculation'),
 ])
-def test_running_out_of_memory_is_re_raised(exc):
+def test_a_framework_fault_is_re_raised(exc):
     """The single-pass fork's documented contract is that a config too wide for the card raises
     CUDA OOM naming the fork. That contract only held for the liability while a tradable's OOM
     became `F_t1 = 0` — a silently smaller hedge set, or a fake one-step move when only the
-    heavier grad fork failed."""
-    with pytest.raises((torch.cuda.OutOfMemoryError, RuntimeError, MemoryError),
-                       match='out of memory|allocation failed'):
+    heavier grad fork failed. A schedule the calculation never bound says the same thing about the
+    framework, and a fork that swallowed it would price the deal out of the book instead."""
+    with pytest.raises((torch.cuda.OutOfMemoryError, RuntimeError, MemoryError,
+                        utils.ScheduleLifecycleError),
+                       match='out of memory|allocation failed|never bound'):
         _calculate(exc)
 
 
