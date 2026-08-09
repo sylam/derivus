@@ -1218,11 +1218,6 @@ class TensorSchedule(object):
             raise ScheduleLifecycleError('{} was never bound to a calculation'.format(self))
         return self.bound[index:]
 
-    def merged(self, unit, index=0):
-        """`dual` under the name the cashflow pricers call it by - one copy serves both, so a plain
-        caller and an overlaid one cannot be handed different halves."""
-        return self.dual(index)
-
     def known_resets(self, num_scenarios, index=RESET_INDEX_Value,
                      filter_index=RESET_INDEX_Reset_Day, include_today=False):
         """The already-fixed rows' VALUE column, one `(1, num_scenarios)` tensor each.

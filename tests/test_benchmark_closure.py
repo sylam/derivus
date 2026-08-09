@@ -215,9 +215,9 @@ def quote_jacobian(bm):
 
 
 def test_the_residual_is_differentiable_in_its_quotes():
-    """The other half of the tape. `TensorSchedule.merged` copies the schedule across with
-    `new_tensor` - notionals, accruals, margins and the FIXED RATE - so until the tensor half
-    carried an overlay a quote could not be differentiated through at all.
+    """The other half of the tape. `TensorSchedule.bind` mints the tensor half with `new_tensor`
+    - notionals, accruals, margins and the FIXED RATE - so until that half carried an overlay a
+    quote could not be differentiated through at all.
 
     The residual is AFFINE in its quotes (a deposit's coupons, an FRA's strike and a fixed leg's
     rate are each linear in one), so the exact derivative is a SECANT and not an approximation of
@@ -260,31 +260,31 @@ def test_a_schedule_has_a_birthday_and_its_edits_have_a_deadline():
     caller could be handed a graph it never asked for - the `t_Buffer` shape of trap, from the same
     cause: the copy was minted by whichever call happened to be first. `bind` is that event made
     explicit, so the protocol is CHECKABLE at both ends - a touch before it raises, an edit after it
-    raises - and `dual` and `merged` are one accessor over one copy rather than two memos colliding
-    under one key.
+    raises - and `dual` is the one accessor over the one copy rather than two memos colliding under
+    one key.
     """
     one = torch.ones([1, 1], dtype=torch.float64)
     schedule = utils.TensorSchedule([[1.0, 2.0], [3.0, 4.0]], [[0.0], [0.0]])
     with pytest.raises(utils.ScheduleLifecycleError, match='TensorSchedule.* never bound'):
-        schedule.merged(one)
+        schedule.dual()
 
-    plain = schedule.bind(one).merged(one).tn
+    plain = schedule.bind(one).dual().tn
     assert plain.grad_fn is None and not plain.requires_grad
-    # one copy: the two accessors cannot be served different halves of it
+    # one copy: repeated calls are served the same tensor, not fresh mints
     assert schedule.dual().tn.data_ptr() == plain.data_ptr()
-    assert schedule.merged(one, 1).tn.tolist() == plain[1:].tolist()
+    assert schedule.dual(1).tn.tolist() == plain[1:].tolist()
 
     column = torch.tensor([7.0, 8.0], dtype=torch.float64, requires_grad=True)
     with pytest.raises(utils.ScheduleLifecycleError, match='must run before bind'):
         schedule.carry({1: column})
 
-    carried = schedule.reopen().carry({1: column}).bind(one).merged(one).tn
+    carried = schedule.reopen().carry({1: column}).bind(one).dual().tn
     assert carried[:, 1].tolist() == [7.0, 8.0], 'the overlay was not spliced in: {}'.format(carried)
     assert carried[:, 0].tolist() == [1.0, 3.0], 'the splice moved a column it does not own'
     assert torch.autograd.grad(carried.sum(), column)[0].tolist() == [1.0, 1.0]
 
     # and back: dropping the overlay has to drop the graph, not serve the spliced copy
-    assert schedule.reopen().carry(None).bind(one).merged(one).tn.grad_fn is None
+    assert schedule.reopen().carry(None).bind(one).dual().tn.grad_fn is None
 
 
 def test_binding_drops_what_the_last_binding_derived():

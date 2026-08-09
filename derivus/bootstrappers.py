@@ -1337,8 +1337,8 @@ class BenchmarkInstruments(object):
       column. Those coefficients are constants in theta, and the pricing path does not use them:
       `utils.Interpolation.build` re-derives the pair from the buffer TENSOR, and `all_tenors`
       carries only the interpolation KIND and the tenor grid. A Hermite curve differentiates.
-    - `utils.TensorSchedule.merged` copies the cashflow schedule across with `new_tensor`, which is
-      where the QUOTE - a fixed rate, a margin - stops being differentiable. Severed until
+    - `utils.TensorSchedule.bind` mints the cashflow schedule's tensor half with `new_tensor`,
+      which is where the QUOTE - a fixed rate, a margin - stops being differentiable. Severed until
       `TensorSchedule.carry` gave the tensor half an overlay; `_carry_quotes` builds it, and only
       then is the residual differentiable in `q` as well as in theta.
 

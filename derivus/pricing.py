@@ -2204,7 +2204,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         ) if fixing_block.any() else fixing_block
 
         if 'Forward' in factor_dep:
-            cashflows = factor_dep['Cashflows'].merged(shared.one, cash_start_index[sample_index_t])
+            cashflows = factor_dep['Cashflows'].dual(cash_start_index[sample_index_t])
             reset_offset = factor_dep['Cashflows'].offsets[cash_start_index[sample_index_t]][1]
             reset_ofs, reset_count = np.unique(
                 np.searchsorted(
@@ -2785,7 +2785,7 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
             [forwards, discounts], start_counts, shared)):
 
         # cashflows is a dual representation
-        cashflows = factor_dep['Cashflows'].merged(shared.one, start_index[index])
+        cashflows = factor_dep['Cashflows'].dual(start_index[index])
 
         cash_pmts, cash_index, cash_counts = np.unique(
             cashflows.np[:, utils.CASHFLOW_INDEX_Pay_Day], return_index=True, return_counts=True)
@@ -2982,7 +2982,7 @@ def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, se
 
     for index, [discount_block, repo_block, settle_block] in enumerate(utils.split_counts(
             [discounts, repo, settlement], counts, shared)):
-        cashflows = schedule.merged(shared.one, start_index[index])
+        cashflows = schedule.dual(start_index[index])
 
         cash_pmts, cash_index, cash_counts = np.unique(
             cashflows.np[:, utils.CASHFLOW_INDEX_Pay_Day], return_index=True, return_counts=True)
@@ -3149,7 +3149,7 @@ def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=True):
 
         last_pub_block = last_pub_blocks[index]
         # cashflows is a dual representation (numpy and tensor) of the same cashflows
-        cashflows = factor_dep['Cashflows'].merged(shared.one, start_index[index])
+        cashflows = factor_dep['Cashflows'].dual(start_index[index])
 
         cash_pmts, cash_index, cash_counts = np.unique(
             cashflows.np[:, utils.CASHFLOW_INDEX_Pay_Day], return_index=True, return_counts=True)
@@ -3258,7 +3258,7 @@ def pv_energy_cashflows(shared, time_grid, deal_data):
     for index, (forward_block, discount_block) in enumerate(utils.split_counts(
             [forwards, discounts], start_counts, shared)):
 
-        cashflows = factor_dep['Cashflows'].merged(shared.one, start_index[index])
+        cashflows = factor_dep['Cashflows'].dual(start_index[index])
 
         cash_pmts, cash_index, cash_counts = np.unique(
             cashflows.np[:, utils.CASHFLOW_INDEX_Pay_Day], return_index=True, return_counts=True)
@@ -3347,7 +3347,7 @@ def pv_credit_cashflows(shared, time_grid, deal_data, return_par_spread=False):
     for index, (discount_block, surv_block) in enumerate(
             utils.split_counts([discounts, surv], counts, shared)):
         # get the duel cashflow at the correct index
-        cashflows = factor_dep['Cashflows'].merged(shared.one, start_index[index])
+        cashflows = factor_dep['Cashflows'].dual(start_index[index])
         cash_pmts, cash_index = np.unique(cashflows.np[:, utils.CASHFLOW_INDEX_Pay_Day], return_index=True)
         cash_sts = np.unique(cashflows.np[:, utils.CASHFLOW_INDEX_Start_Day])
 
@@ -3505,7 +3505,7 @@ def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
     for index, (discount_block, surv_block) in enumerate(
             utils.split_counts([discounts, surv], counts, shared)):
         # get the duel cashflow at the correct index
-        cashflows = factor_dep['Cashflows'].merged(shared.one, start_index[index])
+        cashflows = factor_dep['Cashflows'].dual(start_index[index])
         cash_pmts, cash_index = np.unique(cashflows.np[:, utils.CASHFLOW_INDEX_Pay_Day], return_index=True)
         cash_sts = np.unique(cashflows.np[:, utils.CASHFLOW_INDEX_Start_Day])
         # payment times
@@ -3597,7 +3597,7 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
     repo_discounts = utils.calc_time_grid_curve_rate(factor_dep['Equity_Zero'], deal_time, shared)
     eq_div_curve = utils.calc_time_grid_curve_rate(factor_dep['Dividend_Yield'], deal_time, shared)
 
-    cashflows = cash.merged(shared.one)
+    cashflows = cash.dual()
 
     all_index, all_counts = np.unique(list(
         zip(cash_start_idx, cash_end_idx, cash_pay_idx)), axis=0, return_counts=True)
