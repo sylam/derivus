@@ -452,12 +452,15 @@ class InnerBoundarySet(BoundarySet):
     reported: object                # (T, B) detached, PRICER grid: the value as reported
 
     def objective_jumps(self, score):
+        """Per decision, the gap and the objective's response to that inner path's jump.
+
+        The multiplier is d(objective)/d(this pricer row), assembled by the chain rule through the
+        deal's own map. That map is LINEAR, so the image of a unit row IS its column of the
+        Jacobian, and one backward pass through `score` supplies the other half - no bump, nothing
+        re-priced, and no random number drawn.
+        """
         for gap, row, jump in zip(self.gaps, self.rows, self.jumps):
             with torch.enable_grad():
-                # d(objective)/d(this pricer row), by the chain rule through the deal's own map.
-                # The map is linear, so the image of a unit row IS its column of the Jacobian, and
-                # one backward pass through `score` supplies the other half. No bump, nothing
-                # re-priced, and no random number drawn.
                 unit = torch.zeros_like(self.reported)
                 unit[row] = 1.0
                 weight = self.to_mtm(unit)
@@ -1970,12 +1973,12 @@ def BivN(P, Q, rho):
 
 
 def ApproxBivN(P, Q, rho):
-    # this is an approximation of the bivariate normal integral accurate to around 4 decimal
-    # places - based on the paper from A Simple Approximation for Bivariate Normal Integral
-    # Based on Error Function and its Application on Probit Model
-    # with Binary Endogenous Regressor (Wen-Jen Tsay and Peng-Hsuan Ke)
-    # might want to improve the accuracy of this but this is fast and vectorized
+    """Bivariate normal integral, approximated to around 4 decimal places.
 
+    Follows Tsay and Ke, "A Simple Approximation for Bivariate Normal Integral Based on Error
+    Function and its Application on Probit Model with Binary Endogenous Regressor". Accuracy could
+    be improved, but this form is fast and fully vectorized, which is why it is the one used.
+    """
     # work out the cases
     denom = torch.sqrt(1.0 - rho * rho)
     a = -rho / denom
@@ -3292,25 +3295,32 @@ def hermite_interpolation_tensor(t, rate_tensor):
 
 
 def make_curve_tensor(tensor, curve_component, time_grid, shared, n_batch_dims=1):
-    # n_batch_dims > 1: the curve carries multiple trailing batch axes (e.g. a nested
-    # inner-MC curve shaped (scen, n_tenors, B, B2)). Collapse them into ONE batch axis
-    # up front so the rest of the curve stack — hermite params, the Interpolation
-    # (scen*n_tenors, batch) indexing, gather_scenario_interp's rank-adaptive alpha —
-    # stays rank-agnostic and unchanged. Default 1 preserves the legacy
-    # (scen, n_tenors, B) single-batch path exactly. The caller reshapes the gathered
-    # result's trailing batch axis back to (B, B2). The (B,B2) curve gathers all happen inside a
-    # process's `generate`, i.e. BEFORE a fork publishes its block sequence, so a multi-block
-    # source never reaches here — it carries no `reshape` and would say so.
+    """Build (and cache) the interpolation for a curve, then gather it onto `time_grid`.
+
+    A None `time_grid` skips the gather and hands back the bare (unscattered) CurveTensor.
+
+    `n_batch_dims` > 1 means the curve carries multiple trailing batch axes - e.g. a nested
+    inner-MC curve shaped (scen, n_tenors, B, B2). They are collapsed into ONE batch axis up front
+    so the rest of the curve stack (hermite params, the Interpolation's (scen*n_tenors, batch)
+    indexing, gather_scenario_interp's rank-adaptive alpha) stays rank-agnostic and unchanged; the
+    caller reshapes the gathered result's trailing batch axis back to (B, B2). The default of 1
+    preserves the legacy (scen, n_tenors, B) single-batch path exactly.
+
+    Those (B, B2) curve gathers all happen inside a process's `generate`, i.e. BEFORE a fork
+    publishes its block sequence, so a multi-block source never reaches here - it carries no
+    `reshape` and would say so.
+
+    Interpolation is built by ONE recursive factory: a bare tensor becomes a leaf (or a
+    tenor-segmented composite of leaves), a fork's `ScenarioSource` becomes a scenario-routed
+    composite whose per-block children are built by the same call. Hermite coefficients are
+    DEFERRED inside the leaf - built by the first gather, for the rows that gather names.
+    """
     if n_batch_dims > 1:
         tensor = tensor.reshape(*tensor.shape[:-n_batch_dims], -1)
     curve_tenor = curve_component[FACTOR_INDEX_Tenor_Index]
     key_code = (curve_tenor.type, curve_component[:2], tuple(tensor.shape))
 
     if key_code not in shared.t_Buffer:
-        # One recursive factory: a bare tensor becomes a leaf (or a tenor-segmented composite of
-        # leaves), a fork's `ScenarioSource` becomes a scenario-routed composite whose per-block
-        # children are built by the same call. Hermite coefficients are DEFERRED inside the leaf —
-        # built by the first gather, for the rows that gather names.
         shared.t_Buffer[key_code] = build_interpolation(tensor, curve_tenor)
 
     if time_grid is not None:
@@ -3320,10 +3330,13 @@ def make_curve_tensor(tensor, curve_component, time_grid, shared, n_batch_dims=1
 
 
 def calc_time_grid_curve_rate(code, time_grid, shared, n_batch_dims=1):
-    # n_batch_dims > 1: gather a curve whose simulated state carries extra trailing batch
-    # axes (nested inner-MC: (scen, n_tenors, B, B2)). Threaded to make_curve_tensor, which
-    # collapses them to one batch axis; the gathered result's trailing axis is then B*B2,
-    # which the caller reshapes back. Default 1 = legacy single-batch behaviour, untouched.
+    """Gather every curve factor named by `code` onto `time_grid`, as one cached TensorBlock.
+
+    `n_batch_dims` > 1 gathers a curve whose simulated state carries extra trailing batch axes
+    (nested inner-MC: (scen, n_tenors, B, B2)). It is threaded straight to make_curve_tensor, which
+    collapses them to one batch axis, so the gathered result's trailing axis is B*B2 and the caller
+    reshapes it back. Default 1 is the legacy single-batch behaviour, untouched.
+    """
     time_hash = time_grid[:, TIME_GRID_MTM].tobytes()
     code_hash = tuple(x[:2] for x in code)
 
@@ -3357,11 +3370,14 @@ def calc_time_grid_curve_rate(code, time_grid, shared, n_batch_dims=1):
 
 
 def calc_time_grid_spot_rate(rate, time_grid, shared):
-    # `rate` is a CODE (list of resolved factor indices), mirroring calc_time_grid_curve_rate:
-    # element 0 is the primary spot; any tail elements are ObservedBasis components. The spot is
-    # the SUM of the gathered components (composed spot = primary + basis), the get_* layer having
-    # already turned the explicit deal fields into indices. A single-element code is the plain
-    # spot — same ops in the same order as before, so bit-identical.
+    """Gather the composed spot rate onto `time_grid`.
+
+    `rate` is a CODE (a list of resolved factor indices), mirroring calc_time_grid_curve_rate:
+    element 0 is the primary spot and any tail elements are ObservedBasis components. The spot is
+    the SUM of the gathered components (composed spot = primary + basis), the get_* layer having
+    already turned the explicit deal fields into indices. A single-element code is the plain spot -
+    the same ops in the same order as before, hence bit-identical.
+    """
     key_code = ('spot', tuple(tuple(r[:2]) for r in rate), time_grid[:, TIME_GRID_MTM].tobytes())
 
     if key_code not in shared.t_Buffer:
@@ -3383,11 +3399,14 @@ def calc_time_grid_spot_rate(rate, time_grid, shared):
 
 
 def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True):
-    # `tensor` is the curve: (n_tenors,) calibrated, or (n_tenors, B) for a BATCH of per-path
-    # curves. Every op below is elementwise or a tenor-axis gather, so the batch axis just rides
-    # along as a trailing broadcast dim — no reduction reassociates and the batched result is
-    # bitwise equal to looping the columns. `nb == 0` makes every `_bcast` a no-op reshape, so
-    # the 1-D path executes exactly the arithmetic it always did.
+    """Forward rates off a curve, for one calibrated curve or a batch of per-path curves.
+
+    `tensor` is the curve: (n_tenors,) calibrated, or (n_tenors, B) for a BATCH. Every op below is
+    elementwise or a tenor-axis gather, so the batch axis just rides along as a trailing broadcast
+    dim - no reduction reassociates, and the batched result is bitwise equal to looping the
+    columns. `nb == 0` makes every `_bcast` a no-op reshape, so the 1-D path executes exactly the
+    arithmetic it always did.
+    """
     nb = tensor.dim() - 1
 
     def _bcast(x):

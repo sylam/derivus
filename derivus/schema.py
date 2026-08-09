@@ -17,7 +17,9 @@ This is what `fields.py` was: 1,931 lines of hand-written stores keyed one descr
 NAME, so two deals needing different valid values for the same field had to invent a key and carry
 the real name elsewhere - 21 entries in `ALIASED_KEYS` at its worst. A class that owns its own
 fields has no such collision, and the alias list is empty. What is left hand-written is `System`,
-whose consumer is `Config` itself, and the create-deal menu.
+whose consumer is `Config` itself, and the create-deal menu. `System`'s one "type" is a UI panel
+name rather than anything the JSON dispatches on, and giving `Config` a `fields` list would make
+"a class that declares fields IS a type" mean something else in that module.
 
 A deal's schema is composition of named field GROUPS, not the class hierarchy: `FXAdmin` is shared
 by eight deals with no common base, and `Admin` by all 47. Groups are therefore ordinary
@@ -479,10 +481,7 @@ mapping = {
     # one, both the same declarations read the other way round
     'Process_factor_map': _process_factor_map,
     'Interpolation_factor_map': emit_interpolation(riskfactors),
-    # `System` stays hand-written. Its one "type" is a UI panel name rather than anything the JSON
-    # dispatches on, and the class that consumes `System Parameters` is `Config` itself - the whole
-    # configuration object, so giving it a `fields` list would make "a class that declares fields
-    # IS a type" mean something else in that module.
+    # hand-written: its one "type" is a UI panel, and `System Parameters` is consumed by `Config`
     'System': {
         'fields': {
             'Base_Currency': {'widget': 'Text', 'description': 'Base Currency', 'value': ''},

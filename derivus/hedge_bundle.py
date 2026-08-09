@@ -64,10 +64,12 @@ _UTILITY_OBJECTS = (
 
 
 def _is_symlog_objective(runtime):
-    # TRUE symlog only — for symlog-SPECIFIC diagnostics (e.g. the −45 saturation tripwire,
-    # the log1p-floor penalty-bite report), which don't transfer to huber/cara shapes.
-    # `objective["object"]` is canonical-lowercased at normalization time
-    # (hedge_runtime.normalize_objective), so plain equality is sufficient here.
+    """True for the TRUE symlog shape ONLY — the gate for symlog-SPECIFIC diagnostics (the −45
+    saturation tripwire, the log1p-floor penalty-bite report) that don't transfer to the huber or
+    cara shapes. Use `_is_utility_objective` for the broader "does this consume a scale c".
+
+    `objective["object"]` is canonical-lowercased at normalization time
+    (hedge_runtime.normalize_objective), so plain equality is sufficient here."""
     return (runtime.get("objective") or {}).get("object") == "asymmetricutility_symlog"
 
 
@@ -204,7 +206,14 @@ def _portfolio_value(state, runtime):
 
     Cash and margin balances are stored as raw dollars and compounded daily (each step multiplies
     by cash_tv(next)/cash_tv(curr) ≈ 1 + SOFR·dt, then adds today's flows), so each dollar earns
-    interest only from the day it landed."""
+    interest only from the day it landed.
+
+    Two accounting modes. `cash_account`: position × price × contract_size plus the cash balances.
+    Futures: cash is FROZEN at starting capital and margin carries every VM and trade-cost flow
+    since inception, so the unrealized term position × (current_price − last_settlement_price) × cs
+    is what closes the gap between the most recent settlement and the current observable price —
+    typically zero within an episode, but non-zero at t=0 when the book opens with an overnight
+    position whose prior settlement is yesterday's close."""
     hedges = runtime["names"]["hedges"]
     tradables = runtime["tradables"]
     positions, prices = state["positions"], state["tradable_values"]
@@ -219,11 +228,7 @@ def _portfolio_value(state, runtime):
             v = balance.to(dtype=torch.float32)
             cash = v if cash is None else cash + v
         return total if cash is None else total + cash
-    # Futures mode: cash = starting capital (frozen); margin = all VM and trade-cost flows since
-    # inception; the unrealized term position × (current_price - last_settlement_price) × cs
-    # captures the gap between the most recent settlement and the current observable price
-    # (typically zero within an episode, but non-zero at t=0 when the book starts with an
-    # overnight position whose prior settlement is yesterday's close).
+    # Futures mode: margin carries the flows, the unrealized term closes the settlement→price gap.
     for accounts in (state["margin_accounts"], state["cash_accounts"]):
         balances = None
         for balance in accounts.values():
@@ -255,12 +260,14 @@ def _pnl_excess(state, runtime):
 
 
 def _tracking_error_value(state, runtime):
-    # Optimal hedge keeps pnl_excess + (liability_mtm + cumulative_liability_value) ≈ 0 at every
-    # step. liability_mtm alone drops by the cashflow amount on payment dates (the cashflow moves
-    # to realized cash, summed into cumulative_liability_value), which would otherwise inject a
-    # ±cf shock unrelated to any action. The sum across the two channels is continuous across the
-    # payment boundary, matching the terminal invariant (`pnl_excess + cumulative_liability_value`
-    # once everything has been paid).
+    """The hedge-quality read — `pnl_excess + liability_mtm + cumulative_liability_value`, which
+    an optimal hedge holds at ≈0 at EVERY step.
+
+    All three channels are required because `liability_mtm` alone drops by the cashflow amount on
+    a payment date (the cashflow moves to realized cash, summed into `cumulative_liability_value`),
+    which would inject a ±cf shock unrelated to any action. The sum across the two liability
+    channels is continuous across that payment boundary and matches the terminal invariant
+    (`pnl_excess + cumulative_liability_value`, once everything has been paid)."""
     pnl_excess = _pnl_excess(state, runtime).to(dtype=torch.float32)
     liability_mtm = state["liability_mtm_value"].to(dtype=torch.float32, device=pnl_excess.device)
     cumulative = state["cumulative_liability_value"].to(dtype=torch.float32, device=pnl_excess.device)
@@ -570,7 +577,13 @@ class Bundle:
         Under a utility objective every degenerate path RAISES: a floor-c symlog silently breaks
         tail compression (log1p($1M/$1k) ≈ 7 ≈ log1p($100M/$1k) ≈ 11.5 — a 100× dollar gap
         becomes a 1.6× utility gap), which defeats the whole point. The legacy identity objective
-        doesn't consume c, so it gets the harmless $1k floor."""
+        doesn't consume c, so it gets the harmless $1k floor.
+
+        The history path reads spot and realized σ at the history/sim boundary H as a BATCH MEDIAN
+        rather than slot [H, 0]. The rolling-vol window at H spans broadcast history rows, so all
+        batch entries are equal in well-behaved cases — but `full[H]` is the FIRST sim step, and a
+        process emitting a stochastic initial draw would otherwise make c silently path-dependent
+        off path 0. Cost is negligible (one (B,) reduce)."""
         objective = runtime['objective'] or {}
         needs_scale = _is_utility_objective(runtime)   # symlog / huber / cara all consume c
 
@@ -620,10 +633,8 @@ class Bundle:
                 return _degenerate(
                     f"spot timeline for {commodity!r} has length "
                     f"{0 if full is None else int(full.shape[0])} ≤ history_lookback H={H}")
-            # Batch-median at index H rather than slot [H, 0]: the rolling-vol window at H spans
-            # broadcast history rows so all batch entries are equal in well-behaved cases — but
-            # `full[H]` is the FIRST sim step, and any process emitting a stochastic initial draw
-            # would silently make c path-dependent off slot 0. Negligible cost (one (B,) reduce).
+            # Batch-median at H, never slot [H, 0]: keeps c path-independent under a stochastic
+            # initial draw.
             initial_spot = float(full[H].median().item())
             rv = self.spot_realized_vol.get(commodity)
             sigma = float(rv[H].median().item()) if rv is not None and H < int(rv.shape[0]) else 0.0
@@ -783,6 +794,16 @@ class BundleStepper:
     ])
 
     def __init__(self, bundle, runtime, mirror_scale=True):
+        """Bind the environment to `bundle` + `runtime` and open the state at sim-day-0.
+
+        The replay's rewards are marked against THIS bundle, so `mirror_scale=True` (the default)
+        re-mirrors its scale onto the (possibly variant) runtime. TRAP: under a frozen-policy run
+        (DiffV2_Load_Value_Fn) the solver has already restored the CHECKPOINT's scale — the value
+        function's own frame — and re-mirroring overwrites it with the eval world's, so the policy
+        rollout decides under a different `c` than the solver's own verdict did. `mirror_scale`
+        =False leaves the runtime's scale alone, which is what a rollout of a FROZEN value function
+        wants (hedge_solver passes it in streaming mode). The default stays True because every
+        walk-forward anchor to date was measured through the re-mirror."""
         self.bundle = bundle
         self.runtime = runtime
         self._accounting = runtime['accounting']
@@ -795,14 +816,7 @@ class BundleStepper:
         self._batch_size = bundle.batch_size
         self._last_idx = bundle.last_index
         self._decision_set = set(int(i) for i in bundle.business_indices)
-        # The replay's rewards are marked against THIS bundle, so by default its scale is
-        # re-mirrored onto the (possibly variant) runtime. TRAP: under a frozen-policy run
-        # (DiffV2_Load_Value_Fn) the solver has already restored the CHECKPOINT's scale — the
-        # value function's own frame — and this overwrites it with the eval world's, so a policy
-        # rollout decides under a different c than the solver's own verdict did. `mirror_scale`
-        # =False leaves the runtime's scale alone, which is what a rollout of a FROZEN value
-        # function wants (hedge_solver passes it in streaming mode). The default stays True
-        # because every walk-forward anchor to date was measured through the re-mirror.
+        # Default re-mirrors THIS bundle's scale; False keeps a checkpoint's frame (see docstring).
         if mirror_scale:
             bundle.mirror_utility_scale(runtime)
         self._state = self._initial_state()
@@ -951,7 +965,13 @@ class BundleStepper:
     def _initial_state(self):
         """The opening state at sim-day-0 (bundle row `initial_time_index`) — the history prefix
         feeds features only, never the simulator. JSON-supplied positions are "today's overnight
-        book", not "H days ago"."""
+        book", not "H days ago".
+
+        `settlement_prices` are re-seated to the simulator's sim-day-0 price once the inception
+        baseline is snapshotted: the seed (yesterday's close) vs sim-day-0 forward gap has just
+        been absorbed into `initial_portfolio_value` via the unrealized-VM term, so subsequent
+        steps' VM is clean step-over-step P&L. Without the re-seat the first trade carries a
+        seed-gap noise of (price_H − seed) × delta × cs."""
         portfolio_state = self.runtime['portfolio_state']
         initial_time_index = self.bundle.initial_time_index
         fallback = self._values_at(initial_time_index)
@@ -977,10 +997,7 @@ class BundleStepper:
         # Snapshot the inception baseline (cash + margin + initial unrealized VM if positions
         # started non-zero against a stale settlement) so `_pnl_excess` returns the change.
         state['initial_portfolio_value'] = _portfolio_value(state, self.runtime).detach().clone()
-        # Re-seat settlement_prices to the simulator's price at sim-day-0: the seed (yesterday's
-        # close) vs sim-day-0 forward gap was just absorbed into initial_portfolio_value via the
-        # unrealized-VM term, so subsequent steps' VM is clean step-over-step P&L. Without this
-        # the first trade carries a seed-gap noise of (price_H − seed) × delta × cs.
+        # Re-seat settlement to the sim-day-0 price — the seed gap now lives in the baseline.
         for name, current_price in state['tradable_values'].items():
             if name in state['settlement_prices']:
                 state['settlement_prices'][name] = current_price.detach().clone()
@@ -1163,6 +1180,13 @@ class BundleStepper:
         return self._refresh(next_state, next_idx)
 
     def _futures_account_step(self, state, action):
+        """Advance one day under futures accounting: `cash_accounts` is FROZEN at starting capital
+        and only margin tracks variation margin and trade cost.
+
+        The trade is applied BEFORE VM is computed so the new delta participates in the
+        price(t)→price(t+1) accrual: the agent transacted at the decision-time price
+        (= settlement_old in steady state) and the whole post-trade position is then marked at
+        price(t+1). Positions round to integer contracts so float drift can't accumulate."""
         current = int(state['time_index'])
         last = self._last_idx
         if current >= last:
@@ -1178,11 +1202,7 @@ class BundleStepper:
         variation_margin = self._zeros_by_name(self._hedges)
         deltas = self._trade_deltas(action)
         next_values = self._values_at(settlement_idx)
-        # Futures: cash_accounts is frozen at starting capital; only margin tracks VM and trade
-        # cost. Apply the trade BEFORE computing VM so the new delta participates in the
-        # price(t)→price(t+1) accrual: the agent transacted at the decision-time price
-        # (= settlement_old in steady state) and the whole post-trade position is then marked at
-        # price(t+1). Positions round to integer contracts so float drift can't accumulate.
+        # Trade first, then mark: the new delta accrues price(t)→price(t+1) (see docstring).
         for n in self._hedges:
             cs = float(self.runtime['tradables'][n]['contract_size'])
             next_positions[n] = (next_positions[n] + deltas[n]).round()

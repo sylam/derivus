@@ -603,6 +603,13 @@ class Deal(object):
         return
 
     def calculate(self, shared, time_grid, deal_data):
+        """Generate the theo price and interpolate it onto the report grid.
+
+        A failure is logged and swallowed into a scalar-0 mark, but only for "this deal cannot
+        price on this grid". Running out of memory is the FRAMEWORK being wrong, and swallowing
+        it makes the deal VANISH from `DealStructure.tensor_marks` — which an inner-MC fork
+        reads as an expired contract, silently retiring it from the hedge set — so
+        `utils.is_fatal_pricing_error` re-raises that class of error."""
         try:
             # generate the theo price
             mtm = self.generate(shared, time_grid, deal_data)
@@ -611,10 +618,6 @@ class Deal(object):
         except Exception as e:
             logging.critical('Deal {} skipped - {}'.format(
                 deal_data.Instrument.field.get("Reference"), e.args))
-            # The skip is for "this deal cannot price on this grid". Running out of memory is the
-            # FRAMEWORK being wrong, and swallowing it into a scalar-0 mark makes the deal VANISH
-            # from `DealStructure.tensor_marks` — which an inner-MC fork reads as an expired
-            # contract, silently retiring it from the hedge set.
             if utils.is_fatal_pricing_error(e):
                 raise
             return 0.0 * shared.one
@@ -637,12 +640,13 @@ class Deal(object):
         )
 
     def hedge_features(self, shared, time_grid, deal_data):
-        # Default hedge mark, accumulated by `resolve_hedge_structure` into the liability MTM.
-        # It's the SAME price `calculate` produces — post-process-free (no per-batch GPU->CPU
-        # save_results copy). The hedge path consumes only this MTM: the diff-ML solver's inner
-        # MC marks the liability itself, and the symlog utility-scale reads its two static
-        # descriptors straight from the cashflow schedule (`_liability_schedule_scalars`). A deal
-        # type may override to expose extra hedge features if a future consumer needs them.
+        """Default hedge mark, accumulated by `resolve_hedge_structure` into the liability MTM.
+
+        It's the SAME price `calculate` produces — post-process-free (no per-batch GPU->CPU
+        save_results copy). The hedge path consumes only this MTM: the diff-ML solver's inner
+        MC marks the liability itself, and the symlog utility-scale reads its two static
+        descriptors straight from the cashflow schedule (`_liability_schedule_scalars`). A deal
+        type may override to expose extra hedge features if a future consumer needs them."""
         return {'mtm': self.calculate(shared, time_grid, deal_data)}
 
     def check_option_data(self, field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors):
@@ -1242,6 +1246,21 @@ class NettingCollateralSet(Deal):
         return field_index
 
     def post_process(self, accum, shared, time_grid, deal_data, child_dependencies):
+        """Collateralise the accumulated child MTM and report the netting set's exposure.
+
+        Under `boundary_aad` it also publishes two counterfactual closures for the
+        boundary-aware sensitivity engine. Both are built from detached captures, so a replay
+        produces a COEFFICIENT (the objective jump), not a differentiated quantity:
+
+        - MTA boundary set - the balance reaches the exposure ONLY through min_Bt, so a
+          counterfactual needs nothing re-priced: `replay_net_mtm` replays the captured
+          (balance-independent) arithmetic on a different balance path, and `rescan` restarts
+          the forward walk at a margin date from a forced opening balance.
+        - `gross_to_net` - a PRICER event moves the gross, not the balance, and the gross
+          reaches the net two ways: through Vte, and through the balance the collateral scan
+          derives from it. So the counterfactual redoes that whole chain (At, the required
+          balance, the bands, the scan) and only then the arithmetic above. Captures are
+          gross-independent; the delta arrives on the MTM grid and is clipped to the local one."""
         # calc v^t = v(te) + C(ts,te) - min(B(u); ts<=u<=tl}S(te)
         factor_dep = deal_data.Factor_dep
         deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -1431,10 +1450,7 @@ class NettingCollateralSet(Deal):
                 net_accum = net_accum * St_T
 
             if boundary_aad:
-                # The balance reaches the exposure ONLY through min_Bt, so a counterfactual needs
-                # nothing re-priced - just this arithmetic replayed on a different balance path.
-                # Everything captured here is balance-independent and detached: the replay
-                # produces a COEFFICIENT (the objective jump), not a differentiated quantity.
+                # Balance-independent, detached captures for the MTA replay (see docstring).
                 b_Vte, b_C, b_Ste = Vte.detach(), C_ts_te.detach(), Ste.detach()
                 b_fx, b_surv = fx_base.detach(), St_T.detach() if surv else None
                 b_pad = time_grid.report_index.size - net_accum.shape[0]
@@ -1466,11 +1482,8 @@ class NettingCollateralSet(Deal):
                     events=mta_events, replay=replay_net_mtm,
                     balance=boundary_balance, rescan=rescan))
 
-                # A PRICER event moves the gross, not the balance, and the gross reaches the net
-                # two ways: through Vte, and through the balance the collateral scan derives from
-                # it. So a counterfactual has to redo that whole chain - At, the required balance,
-                # the bands, the scan - and only then the arithmetic above. Everything captured is
-                # detached and gross-independent; the delta arrives on the local grid.
+                # Gross-independent, detached captures for the whole gross->net chain
+                # (At, required balance, bands, scan) - see docstring.
                 g_fx, g_fx_local = fx_base.detach(), fx_base_local.detach()
                 g_St, g_fxSt = St.detach(), (fx_agreement / St).detach()
                 g_H, g_G, g_IA = H.detach(), G.detach(), (
@@ -1481,21 +1494,23 @@ class NettingCollateralSet(Deal):
                 def net_from_gross(delta, base_i=base_i, delta_T=delta_T):
                     """Push a GROSS-mtm delta all the way to the net, collateral response included.
 
-                    The delta arrives on the MTM grid; this set runs on its own local prefix of it."""
+                    The delta arrives on the MTM grid; this set runs on its own local prefix of it.
+
+                    TRAP: Vte is built from the REPORTED b_Vte, never by re-indexing g_Vt. Under
+                    Exclude_Paid_Today the two carry DIFFERENT cashflow adjustments (the
+                    local-grid `mtm_today_adj` above vs its Te-grid twin), so re-deriving it
+                    silently rebases the counterfactual - measured at ~100x the signal it is
+                    meant to carry, with no value gate able to see it because the reported mtm is
+                    unchanged either way. From b_Vte, gross_to_net(0) == the reported net BY
+                    CONSTRUCTION."""
                     delta = delta[:g_Vt.shape[0]]
                     Vt_cf = g_Vt + delta * g_fx_local
                     At_cf = g_IA + (Vt_cf - g_H) * (Vt_cf > g_H) + (Vt_cf - g_G) * (Vt_cf < g_G)
                     req = At_cf / g_St
                     balance, _ = scan_collateral_balance(
                         g_B0, req, req - min_received * g_fxSt, min_posted * g_fxSt + req, g_mask)
-                    # Build Vte from the REPORTED b_Vte, not by re-indexing g_Vt: under
-                    # Exclude_Paid_Today the two carry DIFFERENT cashflow adjustments (a local-grid
-                    # one at :1206, a Te-grid one at :1248), so re-deriving it silently rebases the
-                    # counterfactual - measured at ~100x the signal it is meant to carry, with no
-                    # value gate able to see it because the reported mtm is unchanged either way.
-                    # From b_Vte, gross_to_net(0) == the reported net BY CONSTRUCTION.
-                    # g_fx is already the Te-grid fx (fx_base is rebound onto report_time), so only
-                    # the delta takes the Te index here.
+                    # Vte from the REPORTED b_Vte, never re-indexed off g_Vt (see docstring). g_fx
+                    # is already the Te-grid fx, so only the delta takes the Te index here.
                     return replay_net_mtm(balance, vte=b_Vte + delta[g_Te] * g_fx)
 
                 # Published, not applied. `resolve_structure` hands it to the registrations made
@@ -3884,6 +3899,16 @@ class QEDI_CustomAutoCallSwap(Deal):
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
+        """Resolve the autocall's factor dependencies, date lookups and pricing-model switches.
+
+        A check that max(all_dates) <= Expiry_Date is currently DISABLED - it only logged a
+        warning naming the max pricing date, the expiry date and the equity.
+
+        The non-GBM spot model is resolved by NAMING CONVENTION off the equity underlying (no
+        deal field): <SpotModel>ModelParameters.<equity>, pulled into the universe by the
+        EquityPrice conditional in config.py. Switch off/absent -> None (GBM, byte-identical).
+        Only the fast no_averaging OSS path carries the non-GBM branch, hence the raise.
+        See get_spot_model_params_factor."""
         field = {
             'Currency': utils.check_rate_name(self.field['Currency']),
             'Payoff_Currency': utils.check_rate_name(self.field['Payoff_Currency']),
@@ -3913,11 +3938,7 @@ class QEDI_CustomAutoCallSwap(Deal):
         af = dict(self.field.get('Autocall_Floating', []))
         ab = set(self.field.get('Barrier_Dates', []))
 
-        # check if the dates are less than or equal to the expiry date
-        # if max(all_dates) > self.field['Expiry_Date']:
-        #     logging.warning('AutoCall has max pricing date {} > Expiry Date {} for underlying {}'.format(
-        #         max(all_dates).strftime('%Y-%m-%d'), self.field['Expiry_Date'].strftime('%Y-%m-%d'),
-        #         self.field['Equity']))
+        # DISABLED: warn when max(all_dates) > self.field['Expiry_Date'] - see docstring
 
         # the most common case is that there is no averaging - i.e. just a single fixing on a coupon date
         # also check that the barrier dates correspond with the coupon dates
@@ -3991,10 +4012,7 @@ class QEDI_CustomAutoCallSwap(Deal):
 
         self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors)
 
-        # Non-GBM spot model, resolved by NAMING CONVENTION off the equity underlying (no deal field):
-        # <SpotModel>ModelParameters.<equity>, pulled into the universe by the EquityPrice conditional
-        # in config.py. Switch off/absent -> None (GBM, byte-identical). Only the fast no_averaging OSS
-        # path carries the non-GBM branch. See get_spot_model_params_factor.
+        # non-GBM spot model, by naming convention off the equity - see docstring
         spot_model = self.options.get('SpotModel', 'None')
         if spot_model != 'None' and not field_index['no_averaging']:
             raise ValueError('SpotModel=%s requires the non-averaging autocall (one fixing per '
@@ -4333,6 +4351,13 @@ class EquityBarrierOption(Deal):
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
+        """Resolve the barrier option's factor dependencies and pricing-model switches.
+
+        The non-GBM spot model is resolved by NAMING CONVENTION off the equity underlying (no
+        deal field): <SpotModel>ModelParameters.<equity>, pulled into the universe by the
+        EquityPrice conditional in config.py. Switch off/absent -> None (GBM, byte-identical).
+        Only the DISCRETE (Barrier_Dates) OSS pricer carries the non-GBM branch, hence the
+        raise. See get_spot_model_params_factor."""
 
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Equity': utils.check_rate_name(self.field['Equity']),
@@ -4383,10 +4408,7 @@ class EquityBarrierOption(Deal):
 
         self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors)
 
-        # Non-GBM spot model, resolved by NAMING CONVENTION off the equity underlying (no deal field):
-        # <SpotModel>ModelParameters.<equity>, pulled into the universe by the EquityPrice conditional
-        # in config.py. Switch off/absent -> None (GBM, byte-identical). Only the DISCRETE (Barrier_Dates)
-        # OSS pricer carries the non-GBM branch. See get_spot_model_params_factor.
+        # non-GBM spot model, by naming convention off the equity - see docstring
         spot_model = self.options.get('SpotModel', 'None')
         if spot_model != 'None' and 'Barrier_Dates' not in field_index:
             raise ValueError('SpotModel=%s requires the discrete (Barrier_Dates) barrier; the '
@@ -5395,6 +5417,15 @@ class FXTARFOptionDeal(Deal):
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
+        """Resolve the TARF's factor dependencies and the opt-in spot-model switch.
+
+        The Heston-Nandi switch mirrors FloatingEnergyDeal's ForwardCurve switch: it swaps the
+        (moneyness, vol-surface) lookup for the daily GARCH recursion in the pricer, leaving the
+        GBM field_index['Volatility'] path untouched when off/absent. NO deal field - the params
+        factor is resolved by NAMING CONVENTION off the FX underlying the deal references
+        (<SpotModel>ModelParameters.<Underlying_Currency>), pulled into the universe by the
+        FxRate conditional in config.py, exactly like the equity OSS deals.
+        See get_spot_model_params_factor."""
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Underlying_Currency': utils.check_rate_name(self.field['Underlying_Currency']),
                  'FX_Volatility': utils.check_rate_name(self.field['FX_Volatility'])}
@@ -5434,12 +5465,7 @@ class FXTARFOptionDeal(Deal):
             'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
         }
 
-        # opt-in Heston-Nandi spot model, mirroring FloatingEnergyDeal's ForwardCurve switch: swap the
-        # (moneyness, vol-surface) lookup for the daily GARCH recursion in the pricer. The GBM
-        # field_index['Volatility'] path above is untouched when the switch is off/absent. NO deal field -
-        # the params factor is resolved by NAMING CONVENTION off the FX underlying the deal references
-        # (<SpotModel>ModelParameters.<Underlying_Currency>), pulled into the universe by the FxRate
-        # conditional in config.py, exactly like the equity OSS deals. See get_spot_model_params_factor.
+        # opt-in Heston-Nandi spot model, by naming convention off the FX underlying - see docstring
         hn = get_spot_model_params_factor(
             self.options.get('SpotModel', 'None'), field['Underlying_Currency'],
             all_factors, static_offsets, stochastic_offsets, ('None', 'HestonNandi'))
@@ -5953,6 +5979,13 @@ class FloatingEnergyDeal(Deal):
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
+        """Resolve the floating energy leg's factor dependencies.
+
+        Under ForwardCurve='Components' the forward curve is constructed from the components
+        already simulated, and Commodity may name a composed spot (primary + ObservedBasis, e.g.
+        PLATINUM_CME.LME_CME): get_commodity_rate_factor is basis-aware and returns the summed
+        code, and get_factor_component resolves repo/carry off the primary. No composition
+        fields or branches on the deal."""
         field = {
             'Currency': utils.check_rate_name(self.field['Currency']),
             'Sampling_Type': utils.check_rate_name(self.field['Sampling_Type']),
@@ -5969,11 +6002,7 @@ class FloatingEnergyDeal(Deal):
         field_index = {}        
 
         if self.options.get('ForwardCurve', 'Full') == 'Components':
-            # need to construct the forwardcurve from the components already simulated
-            # Commodity may name a composed spot (primary + ObservedBasis, e.g.
-            # PLATINUM_CME.LME_CME): get_commodity_rate_factor is basis-aware and returns the
-            # summed code, and get_factor_component resolves repo/carry off the primary. No
-            # composition fields or branches on the deal.
+            # forwardcurve from the already-simulated components; Commodity may be composed - see docstring
             field["Commodity"] = utils.check_rate_name(self.field["Commodity"])
             reference_factor = get_reference_factor(field["Reference_Type"], all_factors)
             commodity_factor = get_commodity_component(field["Commodity"], all_factors)

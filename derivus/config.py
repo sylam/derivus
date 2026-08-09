@@ -195,6 +195,14 @@ class Config(object):
     reverse_offset = {'months': 'M', 'days': 'D', 'years': 'Y', 'weeks': 'W'}
 
     def __init__(self, base_currency='USD'):
+        """
+        Sets up the default state of the system.
+
+        `calibrated_factors` (`{Factor: theta*}`, still connected to its quotes) and `quote_leaves`
+        (the quote leaf per market-price block) are what a bootstrap that kept its graph leaves
+        behind - and the only thing a calculation needs to reach it. Both hold TENSORS, so they
+        cannot live in `Price Factors`: that section is data and gets written back out as JSON.
+        """
         self.file_ref = 'root'
         self.deals = {'Deals': {'Children': []}, 'Calculation':{}, 'Attributes':{}}
         self.calibrations = {'CalibrationConfig': {'MarketDataArchiveFile': {}, 'Calibrations': []}}
@@ -203,10 +211,7 @@ class Config(object):
         self.archive = None
         self.archive_columns = {}
 
-        # What a bootstrap that kept its graph leaves behind, and the only thing a calculation
-        # needs to reach it: `{Factor: theta*}` still connected to its quotes, and the quote leaf
-        # per market-price block. These are TENSORS, so they cannot live in `Price Factors` - that
-        # section is data and gets written back out as JSON.
+        # tensor outputs of a graph-keeping bootstrap - see docstring
         self.calibrated_factors = {}
         self.quote_leaves = {}
 
@@ -371,6 +376,11 @@ class Config(object):
         """
         Runs all the bootstrappers - this happens in one process with debugging on by default. For multiprocessing
         bootstrapping, call the construct_bootstrapper method directly
+
+        A bootstrapper that leaves no `<type>.*` price factor behind silently did nothing (misnamed
+        Market Prices block, or class-name mismatch), so every run is checked. Four families write a
+        block named for their own class, so the name is recoverable; a curve bootstrap writes an
+        ordinary `InterestRate` and declares that instead via `price_factor_type`.
         """
         # need to implement ordered dicts in the params obj - TODO
         for bootstrapper_name, params in sorted(self.params['Bootstrapper Configuration'].items()):
@@ -397,10 +407,7 @@ class Config(object):
             self.calibrated_factors.update(getattr(bootstrapper, 'calibrated', {}))
             self.quote_leaves.update(getattr(bootstrapper, 'quote_leaves', {}))
 
-            # empty result = the bootstrapper silently did nothing (misnamed Market Prices or
-            # class-name mismatch). Four families write a block named for their own class, so the
-            # name is recoverable; a curve bootstrap writes an ordinary `InterestRate` and declares
-            # that instead
+            # empty result = the bootstrapper silently did nothing - see docstring
             written = getattr(bootstrapper, 'price_factor_type', bootstrapper_name)
             if not [x for x in self.params['Price Factors'] if x.startswith(written + '.')]:
                 logging.error('Bootstrapper {0} wrote no {1}.* price factor - check the Market '

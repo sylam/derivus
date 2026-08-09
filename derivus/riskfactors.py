@@ -79,6 +79,19 @@ class Factor1D(object):
     """Represents a risk factor with a term structure (1D)"""
 
     def __init__(self, param):
+        """
+        Sets up the tenor grid and the interpolation scheme.
+
+        Interpolation is normally a single scheme over the whole curve. If Near_Interpolation,
+        Near_Date and a base_date are all present, two schemes are stacked instead, split on the
+        near index: the near tenor is the day count accrual to Near_Date clipped to the tenor
+        range, and near_idx_end is its right-side insertion point less one. Each scheme is fitted
+        on its own slice of tenors/rates - the near leg on [:near_idx_end+1] (the +1 keeps the
+        near tenor itself in the near leg) and the far leg on [near_idx_end:].
+
+        An alternative form, kept on record, fits both schemes on the FULL tenors/rates arrays
+        and lets the (start, end) index pair alone restrict where each applies.
+        """
         self.param = param
         self.tenors = self.get_tenor()
         self.base_date = self.param.get('base_date')
@@ -103,11 +116,7 @@ class Factor1D(object):
                     self.param.get('Interpolation'), self.tenors[near_idx_end:],
                     self.param['Curve'].array[near_idx_end:, 1]))
             ]
-            # self.interpolation = [(0, near_idx_end, self.check_interpolation(
-            #     near_interp, self.tenors, self.param['Curve'].array[:, 1])),
-            #                       (near_idx_end, self.tenors.size - 1,  self.check_interpolation(
-            #         self.param.get('Interpolation'), self.tenors, self.param['Curve'].array[:, 1]))
-            # ]
+            # the unsliced alternative (both schemes fitted on the full arrays) is in the docstring
         else:
             # regular interpolation type
             self.interpolation = [self.check_interpolation(

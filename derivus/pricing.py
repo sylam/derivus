@@ -88,14 +88,17 @@ def boundary_weights(gap, bandwidth):
 
     Returns ``(density_at_zero, weights)`` with the weights summing to one, so the caller
     multiplies rather than averages.
+
+    ONE sample has no spread for a kernel to be scaled by, and ``torch.std`` returns NaN there
+    rather than raising - which propagates into the scalar handed to ``backward()`` and is invisible
+    while the degenerate gap happens to carry no graph (``0 * NaN`` is NaN forward but reaches
+    nothing). Zero width is the right degenerate answer: the kernel admits nothing, the local-linear
+    solve is refused, and the correction is exactly zero - which is what one scenario means here.
+    That path is reached by base valuation, whose whole simulation is the pricer's own inner Monte
+    Carlo.
     """
     g = gap.detach()
-    # ONE sample has no spread for a kernel to be scaled by, and torch.std returns NaN there rather
-    # than raising - which propagates into the scalar handed to backward() and is invisible while
-    # the degenerate gap happens to carry no graph (0 * NaN is NaN forward but reaches nothing).
-    # Zero width is the right degenerate answer: the kernel admits nothing, the local-linear solve
-    # is refused, and the correction is exactly zero - which is what one scenario means here.
-    # Reached by base valuation, whose whole simulation is the pricer's own inner Monte Carlo.
+    # one sample -> zero width; std() would be NaN and the correction is exactly zero anyway
     spread = g.std() if g.numel() > 1 else torch.zeros_like(g.reshape(-1)[:1].squeeze())
     width = bandwidth * spread.clamp_min(torch.finfo(g.dtype).eps)
     k = torch.exp(-0.5 * (g / width) ** 2)
@@ -204,10 +207,13 @@ class SensitivitiesEstimator(object):
         self.P = len(self.flat_grad)
 
     def report_grad(self):
-        # np.array COPIES. .numpy() on a CPU tensor returns a VIEW of the live .grad buffer, which
-        # torch keeps accumulating into - so a second backward() through the same leaves silently
-        # rewrites a report already handed out. On CUDA .cpu() copies and hides it; on the default
-        # device it does not, and the two disagree.
+        """Per-factor gradients as numpy arrays, COPIED off the live ``.grad`` buffers.
+
+        ``np.array`` copies; ``.numpy()`` on a CPU tensor would return a VIEW of the ``.grad``
+        buffer torch keeps accumulating into, so a second ``backward()`` through the same leaves
+        silently rewrites a report already handed out. On CUDA ``.cpu()`` copies and hides that; on
+        the default device it does not, and the two disagree.
+        """
         return {utils.check_scope_name(factor): np.array(tensor.cpu().detach())
                 for factor, tensor in self.grad.items()}
 
@@ -656,10 +662,76 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
       - Lower variance: barrier-touching paths contribute analytically
       - For BARRIER_IN: the vanilla payoff when knocked in is valued with
         Black-Scholes from H using the remaining integrated variance
+
+    ``Cash_Rebate`` is an ABSOLUTE cash amount, which is how ``pv_barrier_option`` reads it - that
+    routine hands the closed form ``cash_rebate/nominal`` and multiplies the result back by nominal.
+    Everything ``sim_spot_oss`` returns is scaled by nominal too, so the rebate goes in per-unit,
+    divided by the UNSIGNED size rather than by nominal: nominal already carries Buy_Sell (which is
+    NOT true in ``pv_barrier_option``, where buy_or_sell is a separate factor), so dividing by it
+    would cancel the direction and bring every rebate leg back as +cash_rebate whichever way the deal
+    is done - a sold knock-out would book the rebate it must PAY as a receipt.
+
+    Heston-Nandi is opt-in via ``SpotModel='HestonNandi'``: the five GARCH scalars ride the AAD graph
+    out of ``t_Static_Buffer`` (identical resolution to the TARF), and when absent ``sim_spot_oss``
+    takes the byte-identical GBM path. The KI in-out-parity vanilla switches to the HN closed form.
+    Known limitation: the outer-CVA already-hit vanilla (``hit_value``) stays GBM - HN is wired into
+    the inner OSS pricing (base/CVA-inner), not the outer path-state override.
+
+    The per-row hit mask is the state carried IN: every scenario hit at a STRICTLY EARLIER
+    observation. The current observation is NOT folded in, because this block's last row IS its
+    observation date and ``sim_spot_oss`` prices that date as its own first (zero-length) step, so
+    adding it would count the same crossing twice. The barrier is observed only on its own dates: an
+    earlier form cumsum-tested EVERY mtm row of the block, so on the repo's own fixture it monitored
+    37 rows against 12 barrier dates and knocked scenarios out on dates the deal never observes - and
+    it monitored expiry too, which BarrierDates flags -1. It also missed the FIRST barrier date
+    entirely, because ``range(prev_sample_idx, sample_index_t)`` is empty for block 0 and lags one
+    block thereafter, testing block i's rows because block i-1's observation had fired.
+
+    The rebate falls due AT the knock-out. ``sim_spot_oss`` already puts it in the mtm of that row -
+    its zero-length first step gives p=0 for a crossed path, leaving ``(1-p)*L*rebate`` - but nothing
+    settled it, and from the next row on ``hit_value`` is zero, so the cash would be priced and then
+    paid nowhere; the increment is settled per date, the same way ``pv_barrier_option`` does. The
+    TERMINAL row is excluded, since the single settle after the loop already pays it in full as part
+    of ``mtm_list[-1][-1]`` - the rebate is in that mtm because ``sim_spot_oss`` accrued it.
+    ``pv_barrier_option`` guards the same double count with ``expiry[index] > 0.0``; a deal whose
+    last barrier date IS expiry hits it, and instruments.py unions Expiry_Date into the observation
+    dates, so that is common.
+
+    Under ``boundary_aad`` the recorded gap is the margin by which each decision was made, graph
+    retained - it carries every factor that moved the spot to the barrier - and is signed so
+    ``gap > 0`` means CROSSED, matching the jump ``J(crossed) - J(did not)``: a down barrier is
+    crossed from ABOVE, so its gap is ``log(barrier/spot)``. The already-hit vanilla is a closed form
+    drawing no random numbers, so building it for the counterfactual cannot shift the OSS stream and
+    cannot move the reported value. Blocks where EVERY scenario has resolved skip the OSS and so
+    carry no counterfactual - running it there would draw random numbers and move the reported value
+    - which is also where the kernel weight is negligible, every scenario being far past the barrier
+    rather than near it.
     """
 
     def sim_spot_oss(spot_prices, vols, times, carry, discount_rates, offset,
                      sobol=False, num_sims=1024 * 4):
+        """Run the OSS inner Monte Carlo and return the per-block mean PV.
+
+        BARRIER_IN is priced by in-out parity, so the leg needs a vanilla. Under HN the SMILE BITES:
+        that vanilla is the HN CLOSED FORM, not a normal at aggregate variance. It runs ``n_total``
+        daily steps to expiry from ``h1 = H0``, with a per-step carry reproducing the forward
+        ``S*exp(b*T)`` (undiscounted forward-measure value = ``hn_call * exp(b*T)``), then discounts
+        at the real curve ``D[-1]`` - forward and discount separated as in ``black_european_option``.
+        Reducing the carry to a scalar ``r_step`` is valid ONLY when carry is batch-constant
+        (deterministic rates/dividends): under stochastic-rate CVA the per-scenario carries diverge
+        and a scalar leg would misprice the KI vanilla by O(10%) of its value, silently - hence the
+        loud guard. The fix is a batched-carry ``hn_call``.
+
+        A digital's TERMINAL step is INTEGRATED, not sampled. An indicator on the drawn spot has
+        zero derivative almost everywhere, so the density term that is most of a digital's delta and
+        vega never reaches the tape: measured 10.5% low on a knock-out digital's delta and 14.7%
+        high on its vega, and once the barrier is out of reach the reported delta and vega are
+        EXACTLY zero, with the equity and vol factors absent from the greeks report rather than
+        showing zero. The survival legs are already integrated this way - this is the same idiom one
+        step later, and it also drops the last step's sampling noise. The HN branch always samples,
+        its per-path conditional variance having no scalar closed form to integrate against, so an
+        HN digital keeps the indicator.
+        """
         eps = torch.finfo(shared.one.dtype).eps
 
         # per-interval carry: [N_block, N_fix, batch]. GBM folds it with the vol into a single
@@ -712,15 +784,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                         vanilla_pv = utils.black_european_option(
                             fwd_to_T, strike, vol_to_T, 1.0, 1.0, phi, shared) * D[-1]
                 else:
-                    # HN smile bites HERE: the in-out-parity vanilla is the HN CLOSED FORM,
-                    # NOT a normal at aggregate variance. n_total daily steps
-                    # to expiry, h1=H0; the per-step carry r_step reproduces the forward S*exp(b*T)
-                    # (undiscounted forward-measure value = hn_call * exp(b*T)), then discounted at
-                    # the real curve D[-1] - forward/discount separated as in black_european_option.
-                    # r_step reduces the carry to a scalar - valid ONLY when carry is batch-constant
-                    # (deterministic rates/dividends). Under stochastic-rate CVA the per-scenario
-                    # carries diverge and a scalar leg would misprice the KI vanilla by O(10%) of its
-                    # value, silently - so guard loud; the fix is a batched-carry hn_call.
+                    # HN parity vanilla = HN closed form; scalar r_step needs batch-constant
+                    # carry, so the guard is loud rather than silent (see docstring)
                     n_total = int(sum(nj))
                     carry_total = carry_int[blk].sum(dim=0).reshape(-1)
                     if float(carry_total.max() - carry_total.min()) > 1.0e-9:
@@ -779,14 +844,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                 sig_j = sigma[j].reshape(-1, 1) # [batch, 1]
 
                 if isdigital and j == N_fix - 1:
-                    # A digital's terminal step is INTEGRATED, not sampled. An indicator on the
-                    # drawn spot has zero derivative almost everywhere, so the density term that is
-                    # most of a digital's delta and vega never reaches the tape: measured 10.5% low
-                    # on a knock-out digital's delta and 14.7% high on its vega, and once the
-                    # barrier is out of reach the reported delta and vega are EXACTLY zero, with
-                    # the equity and vol factors absent from the greeks report rather than showing
-                    # zero. The survival legs below are already integrated this way - this is the
-                    # same idiom one step later, and it also drops the last step's sampling noise.
+                    # integrate the terminal step: a sampled indicator puts no density term on the
+                    # tape, and the delta/vega it costs are measured in the docstring
                     z_pay = (torch.log(strike / Sj) - r_j) / sig_j
                     lo, hi = (z_pay, None) if phi == OPTION_CALL else (None, z_pay)
                     if isBarrierDate_block[j] > 0:
@@ -833,10 +892,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
                 Sj = Sj * torch.exp(r_j + sig_j * Z)
 
-            # terminal payoff on paths that survived all barrier dates. surv_payoff is already
-            # L-weighted when the last step was integrated rather than sampled (digitals under GBM);
-            # the HN branch always samples, its per-path conditional variance having no scalar
-            # closed form to integrate against, so an HN digital keeps the indicator.
+            # terminal payoff on paths that survived all barrier dates; surv_payoff is already
+            # L-weighted when the last step was integrated rather than sampled (GBM digitals)
             if surv_payoff is None:
                 payoff = ((phi * (Sj - strike) > 0).to(D_T.dtype) if isdigital
                           else torch.relu(phi * (Sj - strike)))
@@ -879,20 +936,11 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     size = deal_data.Instrument.field['Cash_Payoff'] if isdigital else deal_data.Instrument.field['Units']
     nominal = factor_dep['Buy_Sell'] * size
 
-    # Cash_Rebate is an ABSOLUTE cash amount, which is how pv_barrier_option reads it - it hands the
-    # closed form cash_rebate/nominal and multiplies the result back by nominal. Everything
-    # sim_spot_oss returns is scaled by nominal too, so the rebate has to go in per-unit.
-    # Divide by the UNSIGNED size, not by nominal: nominal already carries Buy_Sell (which is NOT
-    # true in pv_barrier_option, where buy_or_sell is a separate factor), so dividing by it cancels
-    # the direction and every rebate leg comes back as +cash_rebate whichever way the deal is done.
-    # A sold knock-out then books the rebate it must PAY as a receipt.
+    # per-unit because sim_spot_oss scales by nominal; divide by the UNSIGNED size or Buy_Sell,
+    # already inside nominal, cancels and a sold knock-out books the rebate it pays as a receipt
     rebate_per_unit = cash_rebate / size
 
-    # opt-in Heston-Nandi spot model (SpotModel='HestonNandi'): the five GARCH scalars ride the
-    # AAD graph out of t_Static_Buffer (identical resolution to the TARF). When absent, sim_spot_oss
-    # takes the byte-identical GBM path. The KI in-out-parity vanilla switches to the HN
-    # closed form. Known limitation: the outer-CVA already-hit vanilla (hit_value below) stays GBM -
-    # HN is wired into the inner OSS pricing (base/CVA-inner), not the outer path-state override.
+    # opt-in Heston-Nandi spot model (SpotModel='HestonNandi'); absent => byte-identical GBM path
     hn = 'HN_Params' in factor_dep
     if hn:
         hn_p = {x.name[-1]: shared.t_Static_Buffer[x].reshape(-1, 1)
@@ -931,17 +979,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         t_block = discount_block.time_grid
         sample_index_t = start_index[index]
 
-        # Per-row hit mask [N_mtm, batch] - the state carried IN, which is every scenario hit at a
-        # STRICTLY EARLIER observation. The current observation is not folded in here: this block's
-        # last row IS its observation date, and sim_spot_oss prices that date as its own first
-        # (zero-length) step, so adding it would count the same crossing twice.
-        #
-        # The barrier is observed only on its own dates. The previous form cumsum-tested EVERY mtm
-        # row of the block, so on the repo's own fixture it monitored 37 rows against 12 barrier
-        # dates and knocked scenarios out on dates the deal never observes - and it monitored expiry
-        # too, which BarrierDates flags -1. It also missed the FIRST barrier date entirely, because
-        # range(prev_sample_idx, sample_index_t) is empty for block 0 and lags one block thereafter,
-        # testing block i's rows because block i-1's observation had fired.
+        # per-row hit mask [N_mtm, batch]: hits at STRICTLY EARLIER observations only - this block's
+        # own date is priced by sim_spot_oss as its zero-length first step (see docstring)
         row_barrier_hit = barrier_hit.unsqueeze(0).expand(len(t_block), -1)
         row_ofs += len(t_block)
         if boundary_aad:
@@ -951,24 +990,13 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             crossed = ((spot_block[-1] > barrier) if eta == BARRIER_UP else
                        (spot_block[-1] < barrier))
             if boundary_aad:
-                # The margin by which the decision was made, graph retained - it carries every
-                # factor that moved the spot to the barrier. Signed so that gap > 0 means CROSSED,
-                # matching the jump below, which is J(crossed) - J(did not): a down barrier is
-                # crossed from ABOVE, so its gap is log(barrier/spot).
+                # margin of the decision, graph retained; signed so gap > 0 means CROSSED
                 b_gaps.append(torch.log(spot_block[-1] / barrier) * (
                     -1.0 if eta == BARRIER_DOWN else 1.0))
                 b_crossed.append(crossed.detach())
             if cash_rebate and direction == BARRIER_OUT:
-                # The rebate falls due AT the knock-out. sim_spot_oss already puts it in the mtm of
-                # that row - its zero-length first step gives p=0 for a crossed path, leaving
-                # (1-p)*L*rebate - but nothing settled it, and from the next row on hit_value is
-                # zero, so the cash was priced and then paid nowhere. Settle the increment here,
-                # the same way pv_barrier_option does at each date.
-                # ... except on the TERMINAL row, which the single settle after the loop already
-                # pays in full as part of mtm_list[-1][-1] - the rebate is in that mtm because
-                # sim_spot_oss accrued it. pv_barrier_option guards the same double count with
-                # `expiry[index] > 0.0`; a deal whose last barrier date IS expiry hits it, and
-                # instruments.py unions Expiry_Date into the observation dates, so that is common.
+                # settle the rebate on the date it falls due, as pv_barrier_option does; the
+                # TERMINAL row is excluded - the settle after the loop already pays it in full
                 if row_ofs < len(deal_data.Time_dep.deal_time_grid):
                     newly_hit = (crossed & ~barrier_hit).to(spot_block.dtype)
                     cash_settle(shared, factor_dep['SettleCurrency'],
@@ -1003,10 +1031,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         all_hit = row_barrier_hit.all()
         some_hit = row_barrier_hit.any()
 
-        # Compute the vanilla European value for already-hit scenarios (KI) or zeros (KO).
-        # Only needed when at least one row/scenario has hit the barrier - or when a counterfactual
-        # will want it. It is a closed form drawing no random numbers, so computing it for the
-        # boundary correction cannot shift the OSS stream and cannot move the reported value.
+        # vanilla European for already-hit scenarios (KI) or zeros (KO); also built when a
+        # counterfactual will want it - a closed form cannot perturb the OSS stream
         if some_hit or boundary_aad:
             if direction == BARRIER_IN:
                 var_per_step = (vols * vols).unsqueeze(1) * sample_ts.unsqueeze(2)  # [N_block, N_fix, batch]
@@ -1043,10 +1069,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
         if boundary_aad:
             b_dead.append(hit_value.detach())
-            # Where EVERY scenario has already resolved the OSS is skipped, and running it here
-            # would draw random numbers and move the reported value. Those blocks therefore carry
-            # no counterfactual - which is also where the kernel weight is negligible, every
-            # scenario being far past the barrier rather than near it.
+            # all_hit blocks skipped the OSS, so they carry no counterfactual
             b_alive.append((hit_value if all_hit else oss_result).detach())
 
         mtm_list.append(theo_cashflow)
@@ -1068,6 +1091,23 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
 def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
                       tau, payoff_currency, invert_moneyness=False, use_forwards=False):
+    """
+    Single-barrier option valued by closed form at each scenario date, weighted by a Brownian-bridge
+    touch probability.
+
+    A barrier is monitored CONTINUOUSLY but the scenario grid only observes its own dates, so asking
+    "is the spot beyond the barrier now" misses every path that crossed and came back - measured on a
+    quarterly grid, that overstates survival by 0.18, i.e. 61% too many paths treated as still alive.
+    ``touched`` is that probability and it WEIGHTS both branches, so it carries through with no
+    further change - which is what makes the deal value the correct expectation instead of one draw,
+    and what makes it differentiable where an indicator was not.
+
+    Discrete monitoring uses Broadie-Glasserman-Kou: a discretely monitored barrier is priced by the
+    continuous formula against a barrier shifted AWAY from the live region by the monitoring
+    interval's vol. The shift direction is the barrier TYPE, not where the spot happens to sit - the
+    older ``2 * (barrier > s_t) - 1`` evaluates to exactly this on the surviving support, and the
+    surviving support is all that is ever weighted, so dropping the indicator is inert.
+    """
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
 
     factor_dep = deal_data.Factor_dep
@@ -1107,12 +1147,7 @@ def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
 
     mtm_list = []
     prev_touched = 0.0
-    # A barrier is monitored CONTINUOUSLY but the scenario grid only observes its own dates, so
-    # asking "is the spot beyond the barrier now" misses every path that crossed and came back.
-    # Measured on a quarterly grid that overstates survival by 0.18 - 61% too many paths treated
-    # as still alive. `touched` already WEIGHTS both branches below, so it carries a probability
-    # with no further change - which is what makes the deal value the correct expectation instead
-    # of one draw, and what makes it differentiable where an indicator was not.
+    # `touched` is a bridge PROBABILITY weighting both branches, not an indicator (see docstring)
     interval_variance = utils.bridge_interval_variance(shared, factor_dep, deal_time)
     prev_spot = None
 
@@ -1122,11 +1157,8 @@ def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
         # barrier options are very sensitive to vols - so we clamp them to 5%
         sig = raw_sig.clamp(min=0.05)
 
-        # Broadie-Glasserman-Kou: a DISCRETELY monitored barrier is priced by a continuous formula
-        # against a barrier shifted AWAY from the live region, by the monitoring interval's vol. The
-        # shift direction is the barrier TYPE, not where the spot happens to sit - the old
-        # `2*(barrier > s_t) - 1` evaluates to exactly this on the surviving support, and the
-        # surviving support is all that is ever weighted, so dropping the indicator is inert.
+        # Broadie-Glasserman-Kou shift, AWAY from the live region by the monitoring interval's vol;
+        # the direction is the barrier TYPE, not the spot's side (see docstring)
         barrier_t = barrier * torch.exp(
             (1.0 if eta == BARRIER_UP else -1.0) * sig * factor_dep['Barrier_Monitoring']
         ) if factor_dep['Barrier_Monitoring'] else barrier
@@ -1178,6 +1210,15 @@ def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
 
 def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
                         tau, payoff_currency, invert_moneyness=False, use_forwards=False):
+    """
+    One-touch (or no-touch) digital valued by closed form at each scenario date, weighted by the same
+    Brownian-bridge touch probability ``pv_barrier_option`` uses.
+
+    Under ``Payment_Timing='Expiry'`` the nominal is paid at expiry if the barrier was EVER touched,
+    so between the touch and expiry the path holds a CERTAIN claim on the nominal - worth its
+    discounted value, not nothing. Carrying zero there reported a touched one-touch as worthless for
+    the rest of its life and then jumped it to the nominal on the last date.
+    """
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
@@ -1271,10 +1312,8 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
             if rebate_part.any():
                 cash_settle(shared, payoff_currency, cash_index, rebate_part)
         else:
-            # Paid at EXPIRY if ever touched, so between the touch and expiry the path holds a
-            # CERTAIN claim on the nominal - worth its discounted value, not nothing. Carrying
-            # zero here reported a touched one-touch as worthless for the rest of its life and
-            # then jumped it to the nominal on the last date.
+            # touched but paid at expiry: a CERTAIN claim on the nominal, so carry its discounted
+            # value rather than zero (see docstring)
             rebate_part = touched * buy_or_sell * nominal * torch.exp(-r_t * exp)
 
         mtm_list.append(rebate_part + one_touch_part)
@@ -1518,6 +1557,36 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
          NON-HN factors pick up this RNG noise (HN-parameter greeks are AAD and unaffected).
     (F4) h re-seeds to H0 at the start of every MTM row (static implied factor); there is no
          outer-grid variance term structure - each valuation date restarts the recursion at H0.
+
+    The HN scalars (Omega, Alpha, Beta, Gamma_Star, H0) ride the AAD graph out of
+    ``t_Static_Buffer``, unpacked exactly like the SVI wing params (utils.py:2052); when they are
+    absent ``sim_spot_tarf`` takes the byte-identical GBM path. Asset-class agnostic - it works for
+    the FX cross here and is unchanged for an equity or commodity underlying.
+
+    BOUNDARY AAD (``shared.boundary_aad``). Two decisions are taken on simulated state and jump: the
+    target filling (the deal has redeemed and is worth nothing thereafter) and the OTM leg knocking
+    in. Both jumps are real product economics, so neither may be smoothed; what ordinary AAD drops is
+    the flux of paths across them. Recording costs nothing when sensitivities are not wanted, hence
+    the gate.
+
+    The redemption gap is built from the UNCLAMPED accrual ``raw``, which is the same series with the
+    min taken off - every step's clamp is at ``targetValue`` and the increments are non-negative, so
+    ``accumulation[k] == min(raw[k], target)`` exactly. The clamp is also what kills the derivative
+    AT the decision (past it the reported accrual is a constant), so a gap built from
+    ``accumulation`` would carry no graph on the very paths that made the decision, while
+    ``raw[k] - target`` is the same test, signed the same way, and carries every factor that moved
+    the fixings there. It is in target units and deliberately NOT rescaled to be dimensionless the
+    way a barrier gap is: ``boundary_weights`` sets its kernel width to ``bandwidth * gap.std()``, so
+    the whole estimator is invariant to the gap's scale - measured, dividing through by the target
+    left every digit of the correction unchanged.
+
+    There is one redemption decision per block: ``q`` is read off that block's accrual, so it is the
+    same test for every row the block covers, and a later block's accrual can only be larger - the
+    flags latch, which is what makes this the LATCHED shape. The gaps are ``expand``-ed because block
+    0's accrual is the HISTORIC one, a single number rather than a per-scenario tensor. That decision
+    is registered like any other rather than skipped: it carries no graph, so the local-linear fit
+    degenerates and it contributes exactly zero, whereas skipping it would leave the latch
+    reconstruction wrong on a deal whose target had already filled before the base date.
     """
 
     # --- Accumulated target from past observed fixings --------------------------
@@ -1542,6 +1611,46 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
     def sim_spot_tarf(spot_prices, times, carry, prev_accum, discount_rates,
                       t_block, fixings, settlement, sobol=False, num_sims=1024 * 4):
+        """
+        Inner one-step-survival Monte Carlo over one block of MTM rows; returns the mean PV per row.
+
+        Heston-Nandi: ``h`` is re-seeded to ``H0`` at the start of each forward simulation (each MTM
+        row) and then recursed continuously - including through the truncated final draw - across
+        every daily sub-step. At the base date ``h1 = H0`` is exactly the calibrated initial
+        variance; at a future MTM row it is the base-date seed, per (F4) above. Each fixing spans
+        ``n_sub`` whole daily steps of which the first ``n_sub - 1`` are UNCONDITIONAL and
+        UNMONITORED - the TARF only accrues and knocks AT the fixing - so the OSS truncation applies
+        ONLY on the last step, where the daily log-return is conditionally Gaussian given ``h``. The
+        barrier ``B_pnl`` depends only on the remaining target ``R``, constant over the interval and
+        F-measurable at the truncation, so the scheme is EXACT (the product is unchanged). A
+        mean-matched single-step normal bridge misprices the KO probability, with the error growing
+        in ``n``; naive daily-monitored OSS prices a DIFFERENT product.
+
+        Under ``boundary_aad`` two decisions are forked here.
+
+        Redemption: a path whose accrual has reached the target has redeemed, so the jump to zero is
+        real product economics - but ``q`` is an exact float equality firing on a POSITIVE-MEASURE
+        set (``calc_accum_value`` clamps AT ``targetValue``), which makes it a knock-out decision
+        like any other, whose flux ordinary AAD drops. The counterfactual is the SAME loop on a
+        weight that was never zeroed: the weight feeds nothing back into the spot, the truncation or
+        the remaining target, so one extra accumulator answers "had it not quite filled" exactly,
+        with no re-simulation and no random number drawn. It IS the left limit - everything the
+        remaining target enters is continuous at 0.
+
+        Knock-in: decided by ``Sj``, a draw of THIS pricer's inner simulation, so it is one decision
+        per inner path and the jump it carries is the OTM leg switching on for that path alone,
+        ``J(knocked in) - J(did not) = -Dj * L * p * relu(-intr) * N_otm``, everything else being
+        shared. The gap is signed so ``gap > 0`` means KNOCKED IN, and is taken in log space so a
+        bandwidth means the same thing here as at a barrier observation. At a fixing this row has
+        ALREADY OBSERVED (``dt <= 0``), ``Sj`` is a past reset rather than an inner draw, so the
+        decision is one per SCENARIO and the gap is constant along the inner axis - which
+        ``expand_as`` says explicitly. That is not an approximation: the pooled kernel over ``B * n``
+        samples of which only ``B`` are distinct reproduces the whole-scenario estimator exactly,
+        because the ``1/n`` in the weights cancels the ``n`` copies of each jump. Under CMC every
+        fixing date IS a reporting row (a deal's own dates are folded into the grid), so skipping
+        that case leaves one decision per fixing unregistered - measured at 5.50% of the CVA delta
+        on the repo's own fixture.
+        """
 
         # Styles & shapes follow your autocall implementation
         eps = torch.finfo(shared.one.dtype).eps
@@ -1576,11 +1685,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 u = torch.concat([u,1.0-u], dim=-1)
 
             Sj = torch.unsqueeze(s, 1)  # [batch, 1] as you do
-            # Heston-Nandi predictable variance of the first daily step. h is re-seeded to H0 at the
-            # start of EACH forward simulation (each MTM row) and then recursed continuously - including
-            # the truncated final draw - through every daily sub-step below. At the base date h1=H0 is
-            # exactly the calibrated initial variance; at a future MTM row it is the base-date seed
-            # (HN is a static implied factor here, not a stochastically-simulated h on the outer grid).
+            # HN predictable variance of the first daily step; re-seeded per MTM row (see docstring)
             h = H0 if hn else None
             # Running PV and survival weight
             P = shared.one.new_zeros((shared.simulation_batch, 2*num_sims))
@@ -1589,14 +1694,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             remaining_target = targetValue-prev_accum
             # which simulations are still alive?
             q = remaining_target == 0.0
-            # The TARF has redeemed on a path whose accrual has reached the target, so the jump to
-            # zero is real product economics - but `q` is an exact float equality that fires on a
-            # POSITIVE-MEASURE set (calc_accum_value clamps AT targetValue), so it is a knock-out
-            # decision like any other and ordinary AAD drops its flux. The counterfactual is the
-            # SAME loop on a weight that was never zeroed: the weight feeds nothing back into the
-            # spot, the truncation or the remaining target, so one extra accumulator answers "had
-            # it not quite filled" exactly, with no re-simulation and no random number drawn.
-            # It IS the left limit: everything the remaining target enters is continuous at 0.
+            # redemption is a knock-out decision like any other; L_alive runs the same loop on a
+            # weight that was never zeroed - the left limit, not a re-simulation (see docstring)
             L_alive = L if not boundary_aad else torch.ones_like(L)
             P_alive = P
             L = torch.where(q, torch.zeros_like(L), L)
@@ -1638,14 +1737,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                         B_pnl = 1.0 / rhs
 
                     if hn:
-                        # --- Heston-Nandi daily sub-stepping. HN calibrates per day; this fixing spans
-                        # n_sub daily steps. The first n_sub-1 are UNCONDITIONAL and UNMONITORED (the TARF
-                        # only accrues/knocks AT the fixing), so the OSS truncation is applied ONLY on the
-                        # last step - where, given h, the daily log-return is conditionally Gaussian. The
-                        # barrier B_pnl depends only on the remaining target R, constant over the interval
-                        # and F-measurable at the truncation, so this scheme is EXACT (product unchanged).
-                        # A mean-matched single-step normal bridge mis-prices the KO probability (error grows
-                        # with n); naive daily-monitored OSS prices a DIFFERENT product.
+                        # HN calibrates per day, so this fixing spans n_sub daily steps and only the
+                        # LAST is truncated - which is what makes the scheme exact (see docstring)
                         n_sub = max(int(round(float(dt) * hn_spy)), 1)
                         b_step = fwd_carry * dt / n_sub  # per-step cost-of-carry r-q; total = fwd_carry*dt
                         # the first n_sub-1 unmonitored daily steps (shared advance; antithetic to
@@ -1708,22 +1801,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 if boundary_aad:
                     P_alive = P_alive + Dj * L_alive * p * (cf_itm - cf_otm)
                     if barrier > 0.0:
-                        # The knock-in is decided by Sj, a draw of THIS pricer's inner simulation,
-                        # so it is one decision per inner path and the jump it carries is the OTM
-                        # leg switching on for that path alone: J(knocked in) - J(did not) is
-                        # -Dj * L * p * relu(-intr) * N_otm, everything else being shared. Signed
-                        # so gap > 0 means KNOCKED IN, and taken in log space so a bandwidth means
-                        # the same thing here as at a barrier observation.
-                        #
-                        # At a fixing this row has ALREADY OBSERVED (dt <= 0) Sj is a past reset
-                        # rather than an inner draw, so the decision is one per SCENARIO and the
-                        # gap is constant along the inner axis - which `expand_as` says explicitly.
-                        # That is not an approximation: the pooled kernel over B*n samples of which
-                        # only B are distinct reproduces the whole-scenario estimator exactly,
-                        # because the 1/n in the weights cancels the n copies of each jump. Under
-                        # CMC every fixing date IS a reporting row (a deal's own dates are folded
-                        # into the grid), so skipping this case leaves one decision per fixing
-                        # unregistered - measured at 5.50% of the CVA delta on the fixture below.
+                        # one decision per inner path; gap > 0 means KNOCKED IN, in log space, and
+                        # `expand_as` also covers the already-observed fixing (see docstring)
                         jump = (-buy_sell * Dj * L * p * F.relu(-intr) * N_otm).detach()
                         b_inner.append([
                             row_ofs + len(mcmc),
@@ -1788,17 +1867,11 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     callOrPut = factor_dep['Option_Type']
     buy_sell = factor_dep['Buy_Sell']
 
-    # Two decisions in here are taken on simulated state and jump: the target filling (the deal has
-    # redeemed and is worth nothing thereafter) and the OTM leg knocking in. Both jumps are real
-    # product economics, so neither may be smoothed; what ordinary AAD drops is the flux of paths
-    # across them. Recording costs nothing when sensitivities are not wanted, hence the gate.
+    # gated: the target filling and the OTM knock-in both jump on simulated state (see docstring)
     boundary_aad = getattr(shared, 'boundary_aad', False)
     b_gaps, b_fired, b_obs_before, b_inner, alive, row_ofs = [], [], [], [], [], 0
 
-    # opt-in Heston-Nandi spot model: the (Omega, Alpha, Beta, Gamma_Star, H0) scalars ride the AAD
-    # graph out of t_Static_Buffer, unpacked exactly like the SVI wing params (utils.py:2052). When
-    # absent, sim_spot_tarf takes the byte-identical GBM path. Asset-class agnostic (works for the FX
-    # cross here, and unchanged for an equity/commodity underlying).
+    # opt-in Heston-Nandi spot model; absent => byte-identical GBM path (see docstring)
     hn = 'HN_Params' in factor_dep
     if hn:
         hn_p = {x.name[-1]: shared.t_Static_Buffer[x].reshape(-1, 1)
@@ -1818,12 +1891,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         accumulation.append(calc_accum_value(
             targetValue, accumulation[-1], sample_val, strike, callOrPut, invertedTarget))
 
-    # The UNCLAMPED accrual, which is the same series with the min taken off: every step's clamp is
-    # at targetValue and the increments are non-negative, so accumulation[k] == min(raw[k], target)
-    # exactly. The clamp is also what kills the derivative AT the decision - past it the reported
-    # accrual is a constant - so a gap built from `accumulation` would carry no graph on the very
-    # paths that made the decision. raw[k] - target is the same test, signed the same way, and it
-    # carries every factor that moved the fixings there.
+    # the UNCLAMPED accrual: the clamp kills the derivative AT the decision, so a gap needs `raw`
     if boundary_aad:
         raw = [acc]
         for sample_val in next_samples:
@@ -1861,19 +1929,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             t_block, fixing_block, settlement, sobol=sobol, num_sims=shared.MCMC_sims)
 
         if boundary_aad:
-            # One redemption decision per block: `q` is read off this block's accrual, so it is
-            # the same test for every row the block covers, and a later block's accrual can only
-            # be larger - the flags latch, which is what makes this the LATCHED shape.
-            #
-            # `expand` because block 0's accrual is the HISTORIC one, a single number rather than a
-            # per-scenario tensor. That decision is registered like any other rather than skipped:
-            # it carries no graph, so the local-linear fit degenerates and it contributes exactly
-            # zero, while skipping it would leave the latch reconstruction wrong on a deal whose
-            # target had already filled before the base date.
-            # In target units, and deliberately not rescaled to be dimensionless the way a barrier
-            # gap is: `boundary_weights` sets its kernel width to bandwidth * gap.std(), so the
-            # whole estimator is invariant to the gap's scale. Measured - dividing through by the
-            # target left every digit of the correction unchanged.
+            # one latched redemption decision per block; `expand` because block 0's accrual is the
+            # HISTORIC one, a single number rather than a per-scenario tensor (see docstring)
             b_gaps.append((raw[settle_index_local] - targetValue).squeeze(dim=1).expand(
                 shared.simulation_batch))
             b_fired.append((targetValue - accumulation[settle_index_local] == 0.0).squeeze(
@@ -1957,6 +2014,21 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
     def sim_spot(spot_prices, vols, times, carry, offset, terminationDate, discount_rates,
                  t_block, fixings, t_tenor, last_fixing, sobol=False, num_sims=1024 * 4):
+        """
+        Inner one-step-survival Monte Carlo over one block of MTM rows; returns the mean PV per row.
+
+        Under ``boundary_aad`` a row whose autocall is OBSERVED forks a counterfactual. ``dt == 0``
+        means the fixing date IS this reporting row, so ``Sj`` is the scenario's own spot rather than
+        an inner draw and no smoothing can be justified - the note really has redeemed; what the tape
+        drops is the flux of scenarios across the threshold. The gap is signed so ``gap > 0`` means
+        the trigger FIRED (spot at or above ``K``, hence ``p == 0``), matching
+        ``jump = J(fired) - J(did not)``. Firing zeroes the weight, so every later term of the row
+        vanishes and the fired branch is exactly that coupon, while the surviving branch forks there
+        with the weight intact: ``P_cf``/``L_cf`` are the same accumulation on a survival weight the
+        trigger never touched. They do not exist until the trigger is met, which happens at most once
+        per row - a fixing lands on the last row of its block, and its first coupon is the only one
+        that can be time-aligned.
+        """
 
         timesteps, num_samples = times.shape
 
@@ -1994,10 +2066,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
                 P = torch.zeros((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
                 L = torch.ones((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
-                # The counterfactual world for this row's OBSERVED autocall - the same accumulation
-                # on a survival weight the trigger never touched. It does not exist until the
-                # trigger is met, which is at most once per row (a fixing lands on the last row of
-                # its block, and its first coupon is the only one that can be time-aligned).
+                # counterfactual for this row's OBSERVED autocall; it does not exist until the
+                # trigger is met, at most once per row (see docstring)
                 P_cf = L_cf = None
                 # which simulations are still alive?
                 q = terminationDate != -1
@@ -2050,14 +2120,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             P_cf = P_cf + fx * (1 - p) * L_cf * coup * D[j]
                             L_cf = p * L_cf
                         elif boundary_aad and dt <= 0:
-                            # The autocall is OBSERVED here: dt == 0 means the fixing date IS this
-                            # reporting row, so Sj is the scenario's own spot, not an inner draw,
-                            # and no smoothing can be justified - the note really has redeemed.
-                            # What the tape drops is the flux of scenarios across the threshold.
-                            # gap > 0 means the trigger FIRED (spot at or above K, so p == 0),
-                            # matching jump = J(fired) - J(did not). Firing zeroes the weight, so
-                            # every later term of this row vanishes and the fired branch is exactly
-                            # this coupon; the surviving branch forks here with the weight intact.
+                            # the autocall is OBSERVED here (dt == 0), so Sj is the scenario's own
+                            # spot and gap > 0 means the trigger FIRED (see docstring)
                             b_events.append([row_ofs + len(mcmc), torch.log(Sj / K).squeeze(dim=1),
                                              (P + fx * L * coup * D[j]).mean(axis=1).detach(), None])
                             P_cf, L_cf = P, L

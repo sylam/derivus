@@ -195,7 +195,32 @@ def _spot_price_history(hedging_problem: Mapping[str, Any], lookback: int,
 
 def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
     """Normalize the `Solver` block (Execution_Mode='solve_hedge'). Accepts None (non-solve
-    modes); requires `Object` — one of 'diffsolverv2' | 'hindsightdpsolver'."""
+    modes); requires `Object` — one of 'diffsolverv2' | 'hindsightdpsolver'.
+
+    DiffSolverV2 (the clean-room differential-ML solver) knobs, beyond the per-t residual-net Adam
+    iters / lr: `DiffV2_Bank_Noise_Frac` is bank q-exploration noise as a fraction of each
+    instrument's [Min,Max] range, and `Active_Hedge_Indices` selects the subset of hedge
+    instruments whose action axis VARIES in the grid (others pinned to 0); None = all vary.
+
+    `DiffV2_Risk_Kappa` — downside-aware action SELECTION: at the argmax, score each action by
+    mean(C) - kappa · downside-semidev(C) over the inner-MC, de-risking ONLY the bad-tail actions
+    (keeps upside). 0 = off (plain E[C] argmax, bit-identical). Tune ~0.5, scaling with the
+    regime-drift magnitude. (Toy: RISK_KAPPA beat the uniform min-var blend.)
+
+    `DiffV2_Per_Column_Grad_Norm` — twin-loss differential normalization: Huge-Savine's official
+    implementation normalizes greeks PER INPUT COLUMN (a lambda_j vector), validated at
+    +0.01-0.017 u on every 8k seed versus the pooled scalar. 'No' = the legacy pooled variance,
+    where one fat-tailed column deflates the constraint for all columns.
+
+    `DiffV2_Save_Value_Fn` / `DiffV2_Load_Value_Fn` — value-function persistence: save the fitted
+    nets (+ standardization stats + utility scale) after the backward sweep, or load them and SKIP
+    training for a frozen-policy eval, e.g. OOD stress gates (train under the calibrated world,
+    evaluate the frozen policy under a stressed one). Load accepts a LIST of checkpoint paths for
+    an ENSEMBLE-argmax eval: each member is evaluated in its own standardization frame and the
+    continuations are averaged before the argmax (cross-fit winner's-curse reduction). Train and
+    evaluate are SEPARATE runs: loading skips every fit step under streaming too
+    (`DiffSolverV2.step` no-ops), so a frozen policy stays frozen batch after batch, and setting
+    both keys at once raises rather than silently discarding a retrained net."""
     if solver_config is None:
         return None
     if "Object" not in solver_config:
@@ -212,10 +237,7 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         "training_action_chunk_size": int(solver_config.get("Training_Action_Chunk_Size", 64)),
         # Advantage decomposition: fit A = C - u(W) (NN residual over the bounded-utility anchor).
         "use_advantage_decomp": solver_config.get("Use_Advantage_Decomp", "Yes") == "Yes",
-        # --- DiffSolverV2 (clean-room differential-ML solver) knobs ---
-        # Per-t residual-net Adam iters / lr; bank q-exploration noise as a fraction of each
-        # instrument's [Min,Max] range; the subset of hedge instruments whose action axis VARIES
-        # in the grid (others pinned to 0). None = all vary.
+        # DiffSolverV2 knobs (see docstring): per-t residual-net Adam iters / lr, bank noise.
         "diffv2_fit_iters": int(solver_config.get("DiffV2_Fit_Iters", 150)),
         "diffv2_lr": float(solver_config.get("DiffV2_LR", 2.0e-3)),
         "diffv2_bank_noise_frac": float(solver_config.get("DiffV2_Bank_Noise_Frac", 0.15)),
@@ -225,10 +247,7 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         "diffv2_weight_decay": float(solver_config.get("DiffV2_Weight_Decay", 0.0)),
         "diffv2_hidden": int(solver_config.get("DiffV2_Hidden", 32)),
         "diffv2_lambda_grad": float(solver_config.get("DiffV2_Lambda_Grad", 1.0)),
-        # Downside-aware action SELECTION: at the argmax, score each action by
-        # mean(C) - DiffV2_Risk_Kappa * downside-semidev(C) over the inner-MC, de-risking ONLY the
-        # bad-tail actions (keeps upside). 0 = off (plain E[C] argmax, bit-identical). Tune ~0.5;
-        # scale with regime-drift magnitude. (Toy: RISK_KAPPA beat the uniform min-var blend.)
+        # Downside-aware SELECTION: mean(C) - kappa · semidev(C) at the argmax. 0 = off.
         "diffv2_risk_kappa": float(solver_config.get("DiffV2_Risk_Kappa", 0.0)),
         # Cost-aware EXECUTION: the verdict rollout charges the L1 repositioning cost
         # (Transaction_Cost_Per_Unit + half Bid_Offer_Spread_Bps) at the argmax, trading
@@ -240,21 +259,10 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         # own wealth). Exposes diagnostics['stepper_verdict']. 'No' = only the fast _verdict.
         "diffv2_stepper_rollout":
             solver_config.get("DiffV2_Stepper_Rollout", "No") == "Yes",
-        # Twin-loss differential normalization: Huge-Savine's official implementation
-        # normalizes greeks PER INPUT COLUMN (lambda_j vector) — validated +0.01-0.017 u
-        # on every 8k seed vs the pooled scalar. 'No' = legacy pooled variance (one
-        # fat-tailed column deflates the constraint for all columns).
+        # Per-input-column greek normalization in the twin loss. 'No' = legacy pooled variance.
         "diffv2_per_column_grad_norm":
             solver_config.get("DiffV2_Per_Column_Grad_Norm", "Yes") == "Yes",
-        # Value-function persistence: save the fitted nets (+ standardization stats + utility
-        # scale) after the backward sweep, or load them and SKIP training — a frozen-policy
-        # eval, e.g. OOD stress gates (train under the calibrated world, evaluate the frozen
-        # policy under a stressed one). Load accepts a LIST of checkpoint paths for an
-        # ENSEMBLE-argmax eval: each member evaluated in its own standardization frame, the
-        # continuations averaged before the argmax (cross-fit winner's-curse reduction).
-        # Train and evaluate are SEPARATE runs: loading skips every fit step under streaming too
-        # (`DiffSolverV2.step` no-ops), so a frozen policy stays frozen batch after batch, and
-        # setting both keys at once raises rather than silently discarding a retrained net.
+        # Save the fitted nets, or load (a path, or a LIST for ensemble-argmax) and skip training.
         "diffv2_save_value_fn": str(solver_config.get("DiffV2_Save_Value_Fn", "") or ""),
         "diffv2_load_value_fn":
             ([str(p) for p in solver_config["DiffV2_Load_Value_Fn"]]
@@ -279,7 +287,19 @@ def construct_hedge_runtime(
     stoch_factors: Optional[Mapping[Any, Any]] = None,
 ) -> Dict[str, Any]:
     """The JSON → runtime boundary: read `Hedging_Problem`, validate it, and return the runtime
-    dict every consumer indexes directly. Nothing downstream re-validates."""
+    dict every consumer indexes directly. Nothing downstream re-validates.
+
+    The objective's utility SHAPE params are DIMENSIONLESS, in units of the utility scale c
+    (applied to x = W/c). Huber: linear gains, quadratic small losses with curvature
+    `huber_aversion`, a linear deep tail beyond the knee `huber_delta`. CARA: u = (1−e^{−γx})/γ.
+    Symlog ignores all three. See hedge_bundle._utility_wrap_signed for the exact forms.
+
+    `im_funding_*` is a vol-linked initial-margin FUNDING charge on the post-trade book (realized
+    accounting only — see hedge_bundle._im_funding_charge). Per hedge leg i at step t the desk
+    posts IM_i = IM_Vol_Multiplier·(σ_t/IM_Ref_Vol)·F_i·|q_i^post|·cs_i and pays
+    IM_Funding_Spread_Bps·1e-4·dt to FUND it over the calendar step (above the risk-free the
+    margin ledger already earns). Spread default 0.0 ⇒ the term is exactly 0 and never executes;
+    IM_Ref_Vol default 1.0 is inert (only divided when the spread is on)."""
     config = config if "Hedging_Problem" in config else config["Calc"]["Calculation"]
     hedging_problem = config["Hedging_Problem"]
     evaluator_config = hedging_problem["Evaluator"]
@@ -417,10 +437,7 @@ def construct_hedge_runtime(
             "utility_scale_explicit":
                 (None if objective_config.get("Utility_Scale_Explicit") is None
                  else float(objective_config["Utility_Scale_Explicit"])),
-            # Utility SHAPE params (DIMENSIONLESS, in units of c — applied to x = W/c). Huber:
-            # linear gains, quadratic small losses with curvature `huber_aversion`, linear deep
-            # tail beyond the knee `huber_delta`. CARA: u = (1−e^{−γx})/γ. Symlog ignores all
-            # three. See hedge_bundle._utility_wrap_signed for the exact forms.
+            # Utility SHAPE params (dimensionless, in units of c); Symlog ignores all three.
             "huber_aversion": float(objective_config.get("Huber_Aversion", 2.5)),
             "huber_delta": float(objective_config.get("Huber_Delta", 1.0)),
             "cara_gamma": float(objective_config.get("CARA_Gamma", 1.0)),
@@ -469,12 +486,8 @@ def construct_hedge_runtime(
             "calendar_spread_bps": (float(evaluator_config["Calendar_Spread_Bps"])
                                     if evaluator_config.get("Calendar_Spread_Bps") is not None
                                     else None),
-            # Vol-linked initial-margin FUNDING charge on the post-trade book (realized accounting
-            # only — see hedge_bundle._im_funding_charge). Per hedge leg i at step t the desk posts
-            # IM_i = IM_Vol_Multiplier·(σ_t/IM_Ref_Vol)·F_i·|q_i^post|·cs_i and pays
-            # IM_Funding_Spread_Bps·1e-4·dt to FUND it over the calendar step (above the risk-free
-            # the margin ledger already earns). Spread default 0.0 ⇒ the term is exactly 0 and never
-            # executes; IM_Ref_Vol default 1.0 is inert (only divided when the spread is on).
+            # Vol-linked IM funding charge on the post-trade book (realized accounting only).
+            # Spread 0.0 ⇒ the term is exactly 0 and never executes.
             "im_funding_spread_bps": float(evaluator_config.get("IM_Funding_Spread_Bps", 0.0)),
             "im_vol_multiplier": float(evaluator_config.get("IM_Vol_Multiplier", 0.0)),
             "im_ref_vol": float(evaluator_config.get("IM_Ref_Vol", 1.0)),

@@ -1768,7 +1768,14 @@ class InterestRateCurveParameters(object):
 
     def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices,
                   calendars, debug=None):
-        """Solve each block for the zero curve that reprices every used quote to par."""
+        """Solve each block for the zero curve that reprices every used quote to par.
+
+        The seed theta is read off the CONSTRUCTED factor rather than off the authored block, so it
+        is aligned with the tenor grid the pricers gather against, whatever `get_tenor` made of the
+        block. The solve goes through the implicit-function wrapper either way: with no quotes on
+        the tape its forward IS `damped_newton` and no edge is recorded, which is what makes
+        "gradients cannot move a mark" structural rather than a claim.
+        """
         base_date = sys_params['Base_Date']
 
         for market_price, implied_params in self.in_dependency_order(market_prices):
@@ -1797,11 +1804,7 @@ class InterestRateCurveParameters(object):
                 [curve], self.device,
                 quotes=[point['Quoted_Market_Value'] for point in quotes] if connect else None,
                 bumped_nodes=quote_nodes(quotes, discount_rate, 1.0) if connect else None)
-            # theta off the CONSTRUCTED factor, so it is aligned with the tenor grid the pricers
-            # gather against whatever `get_tenor` did to the authored block. The solve goes through
-            # the implicit-function wrapper either way - with no quotes on the tape its forward IS
-            # `damped_newton` and no edge is recorded, which is what makes "gradients cannot move a
-            # mark" structural rather than a claim
+            # seed theta off the CONSTRUCTED factor - see the docstring on grid alignment
             theta = CalibrationSolve.apply(
                 benchmarks,
                 {curve: torch.tensor(benchmarks.factors[curve].current_value(),

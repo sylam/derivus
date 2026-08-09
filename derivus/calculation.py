@@ -446,23 +446,31 @@ class Calculation(object):
 class CMC_State(utils.Calculation_State):
     def __init__(self, cholesky, static_buffer, batch_size, one, mcmc_sims, report_currency,
                  seed, job_id, num_jobs, scale_survival=False, nomodel='Constant', keep_tensor=False):
+        """Per-calculation Monte Carlo state: correlated random numbers, scenario buffers and the
+        caches a batched exposure run needs on top of `Calculation_State`.
+
+        The `t_PreCalc` memo is deliberately NOT on `Calculation_State`: `t_Buffer` is the
+        per-batch eval cache that `reset` clears, and this is the per-CALCULATION one — which only
+        earns its keep where a calculation spans many batches. Its presence is therefore the marker
+        for "exposure-based", and pricers read it that way rather than inventing a switch.
+
+        `t_Bridge_Variance_Rate` holds the per-factor annualized log-variance RATE, published once
+        the processes are precalculated. A barrier is monitored continuously while a deal grid only
+        observes its own dates, so a crossing in between is a conditional probability needing the
+        variance of the interval it spans - and it must be the SIMULATION variance, not a pricing
+        implied vol.
+        """
         super(CMC_State, self).__init__(
             static_buffer, one, mcmc_sims, report_currency, nomodel, batch_size, keep_tensor=keep_tensor)
         # these are tensors
-        # The precalc memo is deliberately NOT on Calculation_State: t_Buffer is the per-batch
-        # eval cache that `reset` clears, and this is the per-CALCULATION one — which only earns
-        # its keep where a calculation spans many batches. Its presence is therefore the marker
-        # for "exposure-based", and pricers read it that way rather than inventing a switch.
+        # per-CALCULATION memo (vs the per-batch t_Buffer); its presence marks "exposure-based"
         self.t_PreCalc = {}
         # Discontinuous decisions recorded during the forward pass so their derivative can be
         # restored before the single reverse sweep. Per BATCH, like t_Buffer — backward() runs
         # once per batch, so a correction assembled from a previous batch's graph is stale.
         self.boundary_aad = False
         self.boundary_sets = []
-        # Per-factor annualized log-variance RATE, published once the processes are precalculated.
-        # A barrier is monitored continuously while a deal grid only observes its own dates, so a
-        # crossing in between is a conditional probability needing the variance of the interval it
-        # spans - and it must be the SIMULATION variance, not a pricing implied vol.
+        # per-factor annualized log-variance RATE, published once the processes are precalculated
         self.t_Bridge_Variance_Rate = {}
         self.t_cholesky = cholesky
         self.t_random_numbers = None
@@ -570,6 +578,22 @@ class CMC_State_Inner(CMC_State):
 
     def reset_inner(self, num_factors, time_grid: utils.TimeGrid, use_antithetic=False,
                     use_random=False):
+        """Draw the inner-mode correlated Gaussians, shaped
+        `(num_factors, T, simulation_batch, simulation_sub_batch)`, and clear the per-batch caches.
+
+        `use_random` (`Inner_Draws='random'`) swaps the shared Sobol tensor for plain iid
+        Gaussians. One low-discrepancy stream strided across (T,B,B2) loses its uniformity
+        guarantees on the per-(t,b) B2-slices as B grows - the measured B=512 label/argmax
+        degradation. iid draws have no cross-(B,B2) coupling, so per-fork label noise is
+        B-independent.
+
+        `use_antithetic` (`Inner_Antithetic='Yes'`) draws B2/2 quasi-normals per (t, outer-path)
+        and mirrors them (z, -z) on the inner axis. This halves the label/argmax variance of the
+        inner-MC E[C] estimate - the diff-ML winner's-curse lever validated in the toy - and stays
+        unbiased because the emissions are symmetric in z. Only the symmetric emissions are folded:
+        auxiliary streams (e.g. a discrete-state transition) draw from a separate quasi_rng stream
+        and stay iid.
+        """
         if self.simulation_sub_batch <= 1:
             raise ValueError(
                 f'reset_inner requires simulation_sub_batch > 1; got {self.simulation_sub_batch}. '
@@ -580,11 +604,7 @@ class CMC_State_Inner(CMC_State):
         if use_antithetic and B2 % 2:
             raise ValueError(f'Inner_Antithetic requires an even Inner_Sub_Batch; got {B2}.')
         if use_random:
-            # Pseudo-random inner draws (Inner_Draws='random'): plain iid Gaussians instead of
-            # the shared Sobol tensor. One low-discrepancy stream strided across (T,B,B2)
-            # loses its uniformity guarantees on the per-(t,b) B2-slices as B grows — the
-            # measured B=512 label/argmax degradation. iid draws have no cross-(B,B2)
-            # coupling: per-fork label noise is B-independent.
+            # iid inner draws: no cross-(B,B2) coupling, unlike one Sobol stream strided over them
             half = B2 // 2 if use_antithetic else B2
             z = torch.randn(num_factors, T, B, half, dtype=self.one.dtype, device=self.one.device)
             z = torch.einsum('fg,gtbi->ftbi', self.t_cholesky, z)
@@ -595,13 +615,7 @@ class CMC_State_Inner(CMC_State):
         # Sobol-based correlated Gaussian: draw T*B*B2 quasi-normal vectors of dim num_factors,
         # transpose to (num_factors, T*B*B2), correlate via cholesky, reshape.
         if use_antithetic:
-            # Antithetic on the inner Gaussian emissions (Inner_Antithetic='Yes'): draw B2/2
-            # Sobol quasi-normals per (t, outer-path) and mirror them (z, -z) on the inner
-            # axis. Halves the label/argmax variance of the inner-MC E[C] estimate — the
-            # diff-ML winner's-curse lever validated in the toy. Any auxiliary sampling
-            # streams (e.g. a discrete-state transition) come from a separate quasi_rng stream
-            # and stay iid — only the symmetric emissions are folded. Folding a Sobol sequence
-            # with its mirror preserves unbiasedness (emissions are symmetric in z).
+            # mirror B2/2 Sobol quasi-normals on the inner axis; auxiliary streams stay iid
             Z_normal, _ = self.quasi_rng(num_factors, T * B * (B2 // 2))
             half = torch.matmul(
                 self.t_cholesky, Z_normal.transpose(0, 1)
@@ -891,6 +905,20 @@ class Credit_Monte_Carlo(Calculation):
         Called by update_factors after the time grid and dependency sets are known.
         Subclasses that build their own dependency sets (e.g. HedgeMonteCarlo) can
         call this directly instead of going through calculate_dependencies.
+
+        IMPLIED-LEAF INVARIANT: a factor can be BOTH a static dependent factor (e.g. the OSS
+        pricer's HestonNandiModelParameters, pulled in via the EquityPrice/FxRate conditional
+        field) AND a spot process's implied factor (implied_var, e.g. HestonNandiImpliedSpotModel).
+        With greeks on, minting a fresh static leaf for it would create a SECOND AAD leaf under the
+        exact scope name the implied leaf already owns: the pricer (t_Static_Buffer) and the
+        scenario path (implied_tensor) would then read different tensors, splitting the gradient
+        and desyncing a bump. The single implied leaf is reused so one tensor serves both consumers
+        and `value.backward()` sums both paths' sensitivities into it.
+
+        `_factor_precalc_args` caches per-factor (ScenarioTimeGrid, implied_tensor) so consumers
+        that need to re-precalculate with a per-path initial state (e.g. the diff-ML t=0 burn-in in
+        HedgeMonteCarlo.execute) can call precalculate again without re-deriving the
+        dependent_factors / time-grid plumbing.
         """
         # now construct the stochastic factors and static factors for the simulation
         self.stoch_factors.clear()
@@ -969,14 +997,7 @@ class Credit_Monte_Carlo(Calculation):
 
         # and then get the static risk factors ready - these will just be looked up
         calc_grad = greeks and sensitivities in ['All', 'Factors']
-        # A factor can be BOTH a static dependent factor (e.g. the OSS pricer's
-        # HestonNandiModelParameters, pulled in via the EquityPrice/FxRate conditional field) AND
-        # a spot process's implied factor (implied_var, e.g. HestonNandiImpliedSpotModel). With
-        # greeks on, minting a fresh static leaf here would create a SECOND AAD leaf under the
-        # exact scope name the implied leaf already owns: the pricer (t_Static_Buffer) and the
-        # scenario path (implied_tensor) would then read different tensors, splitting the gradient
-        # and desyncing a bump. Reuse the single implied leaf so one tensor serves both consumers
-        # and `value.backward()` sums both paths' sensitivities into it.
+        # reuse the single implied leaf (implied-leaf invariant) - never mint a second one here
         implied_leaves = {fk: t for vars in self.implied_var.values() for fk, t in vars.items()}
         for key, value in self.static_factors.items():
             if key.type not in utils.DimensionLessFactors:
@@ -1007,11 +1028,7 @@ class Credit_Monte_Carlo(Calculation):
         # calculate a reverse lookup for the tenors and store the daycount code
         self.all_tenors = utils.update_tenors(self.base_date, self.all_factors)
 
-        # now initialize all stochastic factors
-        # Cache per-factor (ScenarioTimeGrid, implied_tensor) so consumers that need to
-        # re-precalculate with a per-path initial state (e.g. diff-ML t=0 burn-in in
-        # HedgeMonteCarlo.execute) can call precalculate again without re-deriving the
-        # dependent_factors / time-grid plumbing.
+        # now initialize all stochastic factors, caching the per-factor precalculate plumbing
         self._factor_precalc_args = {}
         for key, value in self.stoch_factors.items():
             if key.type not in utils.DimensionLessFactors:
@@ -1146,6 +1163,15 @@ class Credit_Monte_Carlo(Calculation):
         return torch.linalg.cholesky(correlation_matrix)
 
     def _init_shared_mem(self, seed, nomodel, reporting_currency, mcmc_sim, job_id, num_jobs, calc_greeks=None):
+        """Allocate the CMC_State for this run (correlation cholesky, static buffer, reporting FX)
+        and, when greeks are requested, build the flat AAD variable index over `calc_greeks`.
+
+        `boundary_aad` deliberately has no JSON switch: wanting sensitivities IS the switch. The
+        correction is worth exactly zero in the forward pass, so it can only ever change a
+        derivative - there is nothing a user could sensibly turn off, and recording events nobody
+        differentiates would just be memory held across a batch. Without greeks this runs as it
+        always did.
+        """
         # Single-underscore (overridable): HedgeMonteCarlo overrides to construct
         # CMC_State_Inner with simulation_sub_batch from params.
         if calc_greeks is not None:
@@ -1171,10 +1197,7 @@ class Credit_Monte_Carlo(Calculation):
                 utils.check_rate_name(reporting_currency), self.static_factors, self.stoch_factors),
             seed, job_id, num_jobs, scale_by_survival, nomodel=self.params.get('NoModel', 'Constant'),
             keep_tensor=self.params.get('Keep_Tensor', 'No') == 'Yes')
-        # No JSON switch: wanting sensitivities IS the switch. The correction is worth exactly
-        # zero in the forward pass, so it can only ever change a derivative - there is nothing a
-        # user could sensibly turn off, and recording events nobody differentiates would just be
-        # memory held across a batch. Without greeks this runs as it always did.
+        # wanting sensitivities IS the switch (worth zero forward; only a derivative can move)
         shared_mem.boundary_aad = calc_greeks is not None
         return shared_mem
 
@@ -1260,6 +1283,23 @@ class Credit_Monte_Carlo(Calculation):
         return self.output
 
     def execute(self, params, job_id=0, num_jobs=1):
+        """Run the batched exposure simulation plus whichever sub-calculations `params` enables
+        (collateral, CVA, FVA, scenarios, cashflows) and return netting sets, stats and reports.
+
+        The CVA reduction is left in its original grouping deliberately: a per-path vector cannot
+        be reduced back to `mean over paths of a sum over time` in the same float order, and the
+        reported number must not move by even an ULP. `pricing.cva_per_scenario` is the same
+        quantity for the COUNTERFACTUALS, where only internal consistency matters.
+
+        BOUNDARY AAD (CVA gradient): a hard transfer decision contributes a derivative that the
+        frozen-decision graph does not carry. The correction is worth exactly zero in the forward
+        pass, so tensors['cva'] - the REPORTED number - is untouched; only the scalar being
+        differentiated gains a term. `Boundary_AAD_Bandwidth` defaults to 0.01: the estimate
+        converges monotonically as the bandwidth shrinks and is still stable across seeds there,
+        where 0.05 upward is visibly biased. It needs enough paths for the near-boundary band to be
+        populated - measured at 32768 - so a thin run should widen it and expect bias rather than
+        noise.
+        """
         # get the rundate
         base_date = pd.Timestamp(params['Run_Date'])
 
@@ -1576,10 +1616,7 @@ class Credit_Monte_Carlo(Calculation):
                         shared_mem, mtm_grid.reshape(1, -1), multiply_by_time=False)), dim=0)
 
                 prob = St_T[:-1] - St_T[1:]
-                # Left in its original grouping deliberately: a per-path vector cannot be
-                # reduced back to `mean over paths of a sum over time` in the same float order,
-                # and the reported number must not move by even an ULP. cva_per_scenario is the
-                # same quantity for the COUNTERFACTUALS, where only internal consistency matters.
+                # this grouping is float-order load-bearing - do not reduce it differently
                 tensors['cva'] = (1.0 - recovery) * (
                         0.5 * (pv_exposure[1:] + pv_exposure[:-1]) * prob).mean(axis=1).sum()
 
@@ -1605,14 +1642,8 @@ class Credit_Monte_Carlo(Calculation):
 
                     # calculate all the derivatives of cva
                     hessian = params['Credit_Valuation_Adjustment'].get('Hessian', 'No') == 'Yes'
-                    # A hard transfer decision contributes a derivative that the frozen-decision
-                    # graph does not carry. The correction is worth exactly zero in the forward
-                    # pass, so tensors['cva'] - the REPORTED number - is untouched; only the
-                    # scalar being differentiated gains a term.
-                    # Bandwidth 0.01: the estimate converges monotonically as it shrinks and is
-                    # still stable across seeds there, where 0.05 upward is visibly biased. It
-                    # needs enough paths for the near-boundary band to be populated - measured at
-                    # 32768 - so a thin run should widen it and expect bias rather than noise.
+                    # boundary correction is zero forward; only the differentiated scalar gains a
+                    # term. Bandwidth 0.01 (see docstring) needs ~32768 paths to be noise, not bias
                     cva_for_aad = tensors['cva']
                     if shared_mem.boundary_sets:
                         objective = lambda mtm: pricing.cva_per_scenario(
@@ -1678,15 +1709,19 @@ class Credit_Monte_Carlo(Calculation):
 
 class Base_Reval_State(utils.Calculation_State):
     def __init__(self, static_buffer, one, mcmc_sims, report_currency, calc_greeks, gamma, nomodel='Constant'):
+        """Single-date, single-scenario valuation state (base MtM and its greeks).
+
+        `boundary_aad` follows the same contract as CMC_State: a decision taken on simulated state
+        is recorded during the forward pass so its derivative can be restored before the reverse
+        sweep. Base valuation has one date and one scenario, but a Monte Carlo pricer still runs a
+        full INNER simulation underneath it - which is where a TARF's knock-in is decided - so the
+        defect and the estimator are the same ones, only the objective is simpler.
+        """
         super(Base_Reval_State, self).__init__(
             static_buffer, one, mcmc_sims, report_currency, nomodel, 1, False)
         self.calc_greeks = calc_greeks
         self.gamma = gamma
-        # Same contract as CMC_State: a decision taken on simulated state is recorded during the
-        # forward pass so its derivative can be restored before the reverse sweep. Base valuation
-        # has one date and one scenario, but a Monte Carlo pricer still runs a full INNER
-        # simulation underneath it - which is where a TARF's knock-in is decided - so the defect
-        # and the estimator are the same ones, only the objective is simpler.
+        # same boundary-AAD contract as CMC_State - the inner MC is where decisions are taken
         self.boundary_aad = calc_greeks is not None
         self.boundary_sets = []
 
@@ -2103,18 +2138,19 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
     def update_factors(self, params, base_date, job_id, num_jobs, end_date):
         """Override: deal-driven dependencies plus the calc's explicit Scenario_Factors list —
         factors no deal reaches directly (e.g. a basis consumed only by a composed spot)
-        are declared in the JSON, not discovered through schema edges."""
+        are declared in the JSON, not discovered through schema edges.
+
+        The horizon is the max tradable reset date capped at `end_date` (the liability terminal):
+        hedge maturities past liability end are dropped from the simulation horizon; the hedges
+        themselves are priced through liability end and any residual position closes out at fair
+        value there."""
         dependent_factors, stochastic_factors, _, reset_dates, settlement_currencies = self.config.calculate_dependencies(
             params, base_date, self.input_time_grid)
         for name in params.get('Scenario_Factors', []):
             factor_type, factor_name = name.split('.', 1)
             dependent_factors.setdefault(utils.Factor(factor_type, utils.check_rate_name(factor_name)), [])
 
-        # Size the time grid from the max tradable reset date, capped at liability end.
-        # If a liability-end cap was set upstream, clip max_expiry there — hedge maturities
-        # past liability end are dropped from the simulation horizon; the hedges
-        # themselves will be priced through liability end and any residual position
-        # closes out at fair value there.
+        # horizon = max tradable reset date, capped at the liability terminal
         max_expiry = min(max(reset_dates), end_date)
         reset_dates = self.config.parse_grid(base_date, max_expiry, self.input_time_grid, past_max_date=True)
         reset_dates.update({base_date, max_expiry})
@@ -2143,10 +2179,57 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         """Simulate the scenario engine over batches, building the tensor bundle (tradable
         prices, liability MtM, factor paths). Returns a HedgeRuntimeExecutionResult.
 
-        `solve_hedge` builds a Bundle PER BATCH and hands it to a persistent solver as it is built
-        (warmup / step / finish on a held-out final batch), so the inner-MC forks are only ever
-        `Batch_Size` wide and every fit step sees fresh paths. `simulate_only` instead accumulates
-        every batch into one bundle and exposes it for stepping."""
+        A SOLVE IS A STREAM: `solve_hedge` builds a Bundle PER BATCH inside the batch loop and
+        hands it to a persistent solver as it is built (warmup on batch 1, step on each later
+        batch, finish on a held-out final batch), so the inner-MC forks are only ever `Batch_Size`
+        wide and every fit step sees fresh paths. `simulate_only` instead accumulates every batch
+        into one bundle and exposes it for stepping, for which Simulation_Batches is a path
+        multiplier rather than a stream length.
+
+        LIABILITY-DRIVEN TIME-GRID CAP (design choice, not a bug): historically the simulator
+        priced every hedge instrument to its own maturity, which extended the time grid to the
+        latest hedge expiry. For hedge-MC that is wasteful - past the liability terminal there is
+        nothing to hedge, and any residual hedge position is closed out at fair value at that
+        point. The global grid is capped at the liability's last cashflow / reval date so outer and
+        inner sim both stop there (`max_settlement_date` resets each liability from its `field`
+        first, which is idempotent with the reset `set_deal_structures` does).
+
+        INNER-MC SETUP: the process copies are forked only after outer setup precalc has populated
+        `factor_key` / `spot0` / etc., so inner-mode precalc on the copies cannot clobber
+        outer-instance attrs that outer generate reads each batch. `shared_mem` is a
+        CMC_State_Inner: outer batches use the inherited `reset()`, inner uses `reset_inner()`.
+
+        `Randomize_Initial_State='Yes'`: Huge-Savine diff-ML needs variance in z_0 for the
+        differential label at the boundary to be well-posed, obtained here via a per-batch burn-in
+        - run each process once from the calibrated t=0, snapshot the terminal state per path, then
+        re-precalculate with that snapshot as the new t=0. The designer distribution is the
+        process's own T-step pushforward, so there is no separate sampler. Every factor gets the
+        burn-in, in the same iteration order as the main generate loop; each process's
+        `simulated[-1]` is the per-path shape its precalculate accepts as `tensor` (a curve process
+        gets an (n_tenors, B) snapshot, a spot a (B,) one) - the identical contract
+        `_run_inner_mc_at_t` forks on. Paths are published to the buffer as they are generated
+        because linked factors (e.g. BasisLinkedSpotModel) read their underlying's path out of
+        t_Scenario_Buffer during their own generate, and stoch_factors is in topological order.
+
+        Batch k+1 REWINDS to the calibrated t=0 before its own burn-in: the burn-in leaves each
+        process precalculated from ITS OWN terminal state, so without the rewind the batch sequence
+        becomes a random walk away from the calibrated world instead of N independent draws from
+        it. Measured before the rewind, over 5 streaming batches of one walk-forward month, the
+        symlog scale drifted 592k -> 1.15M (+94%), so later batches trained on a materially
+        different world than the one the frame was locked on, and on some months the drift ran
+        until the sweep went NaN. Single-batch runs never rewind anything (`run == 0`), so every
+        Simulation_Batches=1 job is bit-identical.
+
+        `Observed_Scenario` (walk-forward backtest): a driver prepares grid-aligned realized paths
+        (an .npz keyed by factor name) and the simulated draw is replaced by the observed one - the
+        deal pricers then produce the realized tradable / liability marks the stepper replays. All
+        preparation (archive read, interpolation, state source) lives in the driver; here we only
+        substitute and let each process reseed its own state.
+
+        The declared underlying(s) are leafed so the base-delta / conditional-feature pass can read
+        d(value)/d(spot) via AAD. The diff-ML solver differentiates the continuation inside the
+        inner MC off its own fresh state-at-t leaves (see Bundle.inner_mc_grad), so it needs no
+        outer leaf."""
         base_date = pd.Timestamp(params['Run_Date'])
         self.input_time_grid = params['Time_Grid']
         params['Simulation_Batches'] = params['Simulation_Batches'] // num_jobs
@@ -2171,14 +2254,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         liabilities = self.config.deals_from_object_map(hedging_problem.get('Liabilities', {}))
         # store it away for deal resolution
         self.config.set_calculation_children(instruments + liabilities)
-        # Liability-driven time-grid cap. Design choice (not a bug): historically the
-        # simulator priced every hedge instrument to its own maturity, which extended
-        # the time grid to the latest hedge expiry. For hedge-MC that's wasteful —
-        # past the liability terminal there is nothing to hedge, and any residual
-        # hedge position is closed out at fair value at that point. Cap the global
-        # time grid at the liability's last cashflow / reval date so outer and inner
-        # sim both stop there (`max_settlement_date` resets each liability from its
-        # `field` first — idempotent with the reset `set_deal_structures` does below).
+        # cap the grid at the liability terminal - past it there is nothing to hedge
         end_date = DealStructure.max_settlement_date(liabilities, self.config.holidays)
         shared_mem = self.update_factors(params, base_date, job_id, num_jobs, end_date=end_date)
         # Build the valuation structure first; the hedging runtime will consume
@@ -2205,10 +2281,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         # (mapping back to the live key object via stoch_factors) — no divergent re-derivation.
         self._underlying_names = set(normalized_runtime['referenced_commodities'])
 
-        # Inner-MC setup. Copies are forked after outer setup precalc has populated
-        # `factor_key`/`spot0`/etc., so inner-mode precalc on the copies doesn't clobber
-        # outer-instance attrs read by outer generate each batch. `shared_mem` is a
-        # CMC_State_Inner — outer batches use inherited `reset()`, inner uses `reset_inner()`.
+        # Inner-MC setup; the copies below are forked only after outer setup precalc has run
         inner_mc_enabled = params.get('Inner_MC_Enabled', 'No') == 'Yes'
         tradable_refs = sorted(normalized_runtime['names']['hedges']) if inner_mc_enabled else ()
 
@@ -2217,11 +2290,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         solve_hedge_mode = str(execution_mode).lower() == 'solve_hedge'
         if inner_mc_enabled:
             self.stoch_factors_inner = {k: proc.copy() for k, proc in self.stoch_factors.items()}
-        # A SOLVE IS A STREAM: build a Bundle per batch INSIDE this loop and hand it to a
-        # persistent solver — warmup on batch 1, step on each later batch, finish on the held-out
-        # last one. Fork width follows Batch_Size rather than the whole run, and each fit step sees
-        # fresh paths. `simulate_only` instead accumulates every batch into one bundle, for which
-        # Simulation_Batches is a path multiplier rather than a stream length.
+        # A SOLVE IS A STREAM: one Bundle per batch, handed to a persistent solver in-loop
         streaming_solve = StreamingSolve(normalized_runtime) if solve_hedge_mode else None
         held_out = None
 
@@ -2242,17 +2311,9 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         # get the calendar for business day
         bus_day = self.config.holidays.get(
             self.params['Calendar'], {'businessday': pd.offsets.BDay(1)})['businessday']
-        # Huge-Savine diff-ML needs variance in z_0 for the differential label at the
-        # boundary to be well-posed. We obtain it via a per-batch burn-in: run each
-        # process once from the calibrated t=0, snapshot the terminal state per path,
-        # then re-precalculate with that snapshot as the new t=0. The designer
-        # distribution is the process's own T-step pushforward — no separate sampler.
+        # per-batch burn-in: variance in z_0 for the diff-ML boundary label
         randomize_t0 = hedging_problem.get('Randomize_Initial_State', 'No') == 'Yes'
-        # Observed factor paths (walk-forward backtest): a driver prepares grid-aligned
-        # realized paths (an .npz keyed by factor name) and the simulated draw is replaced
-        # by the observed one — the deal pricers then produce the realized tradable/liability
-        # marks the stepper replays. All prep (archive read, interpolation, state source)
-        # lives in the driver; here we only substitute + let each process reseed its own state.
+        # walk-forward replay: substitute observed paths; the driver owns all the prep
         observed = None
         if params.get('Observed_Scenario'):
             npz = np.load(params['Observed_Scenario'])
@@ -2273,39 +2334,21 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 use_antithetic=params.get('Antithetic', 'No') == 'Yes')
 
             if randomize_t0:
-                # REWIND to the calibrated t=0 first. The burn-in below leaves each process
-                # precalculated from ITS OWN terminal state, so batch k+1 would otherwise push
-                # forward from batch k's endpoint and the batch sequence becomes a random walk
-                # away from the calibrated world instead of N independent draws from it. The
-                # designer distribution is ONE T-step pushforward of the calibrated state — the
-                # same one for every batch. Measured before this rewind, over 5 streaming
-                # batches of one walk-forward month: the symlog scale drifted 592k -> 1.15M
-                # (+94%), so later batches trained on a materially different world than the one
-                # the frame was locked on, and on some months the drift ran until the sweep went
-                # NaN. Single-batch runs never rewind anything (`run == 0`), so every
-                # Simulation_Batches=1 job is bit-identical.
+                # REWIND to the calibrated t=0 first, or the batch sequence random-walks away from
+                # it (measured: symlog scale 592k -> 1.15M over 5 batches, NaN sweeps some months)
                 if run:
                     for key, proc in self.stoch_factors.items():
                         scenario_grid, implied_tensor = self._factor_precalc_args[key]
                         proc.precalculate(
                             self.base_date, scenario_grid, self.stoch_var[key], shared_mem,
                             self.process_ofs[key], implied_tensor=implied_tensor)
-                # Every factor gets the burn-in — same iteration as the main
-                # generate loop below. Each process's `simulated[-1]` is the
-                # per-path shape its precalculate accepts as `tensor`; the
-                # inner-MC fork at `_run_inner_mc_at_t` uses exactly this
-                # contract (terminal slice `outer_buf[key][t]`,
-                # re-precalc with it as init_state), so a curve process gets a
-                # (n_tenors, B) snapshot, a spot a (B,) snapshot, and so on.
+                # burn-in for every factor; `simulated[-1]` is the per-path shape precalculate
+                # accepts - the same contract `_run_inner_mc_at_t` forks on
                 initial_t0 = {}
                 outer_reseeds = {}
                 for key, proc in self.stoch_factors.items():
                     simulated = proc.generate(shared_mem)
-                    # Publish to the buffer as we go — linked factors (e.g.
-                    # BasisLinkedSpotModel) read their underlying's path from
-                    # t_Scenario_Buffer during their own generate. stoch_factors
-                    # is in topological order, so the underlying is present
-                    # before the linked factor runs (same as the main loop below).
+                    # publish as we go: linked factors read their underlying's path here (topo order)
                     shared_mem.t_Scenario_Buffer[key] = simulated
                     initial_t0[key] = simulated[-1].detach()
                     # Each process owns its t=0 seed for the next run (regime / variance / none);
@@ -2335,10 +2378,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                     # The process re-derives & publishes its own path-dependent revealed state
                     # along the replayed path (belief, log-variance, …); base processes no-op.
                     proc.reseed_from_path(simulated, shared_mem)
-                # Leaf the declared underlying(s) so the base-delta / conditional-feature pass can
-                # read ∂value/∂spot via AAD. The diff-ML solver differentiates the continuation
-                # inside the inner MC off its own fresh state-at-t leaves (see Bundle.inner_mc_grad),
-                # so it needs no outer leaf.
+                # leaf the declared underlying(s) for the base-delta / conditional-feature pass
                 if utils.check_tuple_name(key) in self._underlying_names:
                     simulated = simulated.detach().requires_grad_(True)
                 shared_mem.t_Scenario_Buffer[key] = simulated
@@ -2568,7 +2608,67 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         card raises CUDA OOM naming this fork; that is the contract, not a knob. The old
         outer-path chunk loop is gone: the stream caps fork width at
         Batch_Size rather than the whole simulation — see the doc attr for the measured
-        operating point."""
+        operating point.
+
+        THE WINDOW. The inner grid is truncated to {t, t+1} and every deal's Time_dep windowed to
+        those two rows (`copy_window` via `window_end_idx`), so the pricing chain runs for real on
+        a 2-row grid - exact per-tradable F_t1 and liability L_t / L_t1, which is every field the
+        diff-ML bootstrap reads, and correct on mixed strips (each future prices its own
+        basis+carry; the old market-only short-circuit broadcast SPOT as every F_t1). Restricting
+        the AAD tape to a single forward step is what keeps its memory bounded - a full t->T_dec
+        horizon multiplies tape and pricing by the remaining rows for no use. The scenario buffer
+        only reaches row t+1, and the windowed Time_dep rebuilds `interp` up to its last kept
+        event, so nothing indexes past it.
+
+        TWO COORDINATE SYSTEMS: processes generate against the shifted-base `inner_time_grid`;
+        pricers run against the full outer `self.time_grid` with each deal's Time_dep restricted
+        via `copy_restricted`. Buffer stuffing prepends the outer-realized past (broadcast across
+        B_inner) so path-dependent payoffs see the realized fixings. That past is a slice of the
+        outer snapshot, already resident at B_outer, and every one of its rows is identical across
+        the B_inner draws - the `cat` that used to join them wrote it out B_inner times (98% of the
+        stuffed buffer at 1280x64, dragging a same-shaped slab of Hermite g,c with it), so it is
+        published as its own `ScenarioBlock` carrying the `past_columns` index instead.
+        `ScenarioSource` is the same sequence-of-row-blocks the outer loop publishes with one
+        block, so the pricer reads both through one mechanism; a fork at t=0 has no past and
+        publishes one block.
+
+        PER-PROCESS HOOKS, no isinstance branch anywhere - a factor without a revealed sufficient
+        statistic returns an empty dict and the forker's single uniform loop covers every model
+        world. `inner_fork_seed` supplies the per-outer-path t=0 privileged-state seed the inner
+        generate reads (regime for the HMM, conditional variance h0 for GARCH).
+        `reseed_inner_state` restores post-generate coherence: the process publishes whatever
+        path-dependent revealed state its `reveal_state_at` needs at t+1 (e.g. a filtered belief)
+        and returns differentiable leaves for the twin loss; `self._inner_state_opts` is forwarded
+        to it opaquely, and base / GARCH processes are no-ops because their revealed state is
+        already published by generate, or detached by design. `reveal_state_at` then yields each
+        factor's informative segments from the live buffer (factor path plus any aux just
+        published); this method owns the (factor_flat, B, SB) reshape and concatenates in reveal
+        order.
+
+        `L_t` / `L_t1` are the `resolve_hedge_structure` marks themselves, time-indexed exactly as
+        F_t1 (mtm[cutoff_idx:][0] is outer-t, [1] is outer-t+1). They replace the Jacobian
+        linearization of the liability in the diff-ML one-step bootstrap, so the bootstrap value
+        marks the liability EXACTLY at each inner draw.
+
+        Under `with_grad`, `state_t_leaf_widths` pairs each leaf with the market_t column width it
+        occupies: the differential-label projection in the diff-ML solver needs this to write
+        per-leaf gradients into the right deep-state columns without re-deriving factor widths,
+        which would silently drift if a process's `reveal_state_at` packing changed.
+
+        FAIL LOUDLY, both halves. `_restricted_struct` drops fully-expired deals, so a tradable
+        still in `dependencies` but missing from `tensor_marks()` can only mean its pricing was
+        skipped; that reads downstream as F_t1 = 0, i.e. an expired contract, and the solver's
+        `live` mask retires it from the hedge set - a wrong number, not a crash. The liability half
+        is the same defect arriving through the canonical deal guard, which swallows exceptions
+        (e.g. CUDA OOM) into a scalar-0 mark and so silently corrupts the solver's LABELS.
+
+        The fork BORROWS `shared_mem` (`borrowed_batch` / `borrowed_fill`), so the `finally`
+        restores on ANY exit: without it a mid-fork raise (CUDA OOM, a degenerate-pricing
+        RuntimeError) left the state flat-sized and the NEXT t-step failed on shapes instead of the
+        real cause. The Sobol sample cache is dropped there too - it is keyed by sample_size and
+        would otherwise grow unbounded across t-steps. Each fork re-draws a fresh, independent
+        quasi-MC stream (the engine advances); the pricer's per-pass `reset_qrg` caching is intact
+        within a fork, only cleared between them."""
         spot_key = self._find_spot_key()
         if outer_rows is not None:
             lo, hi = outer_rows
@@ -2589,15 +2689,8 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         cutoff_idx = t
         inner_base_date = base_date + pd.Timedelta(days=t_days)
 
-        # THE WINDOW. The inner grid is truncated to {t, t+1} and every deal's Time_dep windowed
-        # to those two rows (`copy_window` via `window_end_idx`), so the pricing chain runs for
-        # real on a 2-row grid — exact per-tradable F_t1 and liability L_t/L_t1, which is every
-        # field the diff-ML bootstrap reads, and correct on mixed strips (each future prices its
-        # own basis+carry; the old market-only short-circuit broadcast SPOT as every F_t1).
-        # Restricting the AAD tape to a single forward step is what keeps its memory bounded — a
-        # full t→T_dec horizon multiplies tape and pricing by the remaining rows for no use. The
-        # scenario buffer only reaches row t+1, and the windowed Time_dep rebuilds `interp` up to
-        # its last kept event, so nothing indexes past it.
+        # THE WINDOW: inner grid + every deal's Time_dep truncated to {t, t+1}, so the pricing
+        # chain runs for real on 2 rows and the AAD tape stays bounded
         window_end_idx = min(cutoff_idx + 1, self.time_grid.mtm_time_grid.size - 1)
         if inner_time_grid.scen_time_grid.size > 2:
             kept = set(sorted(inner_time_grid.scenario_dates)[:2])
@@ -2607,12 +2700,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 kept & set(inner_time_grid.base_MTM_dates))
             inner_time_grid.set_base_date(inner_base_date)
 
-        # Generation, buffer stuffing, a single pricing pass, extraction — all at
-        # `B_outer x B_inner` flat, in ONE pass. Two coordinate systems: processes generate
-        # against the shifted-base `inner_time_grid`; pricers run against the full outer
-        # `self.time_grid` with each deal's Time_dep restricted via `copy_restricted`. Buffer
-        # stuffing prepends the outer-realized past (broadcast across B_inner) so
-        # path-dependent payoffs see the realized fixings.
+        # generation, stuffing, pricing and extraction all at `B_outer x B_inner` flat, ONE pass
         B_flat = B_outer * B_inner
 
         grad_ctx = (torch.enable_grad() if with_grad else torch.no_grad())
@@ -2649,40 +2737,22 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                         shared_mem, self.process_ofs[key],
                         implied_tensor=self._factor_precalc_args[key][1],
                     )
-                    # Per-outer-path t=0 privileged-state seed read by this process's inner generate
-                    # (regime for the HMM, conditional variance h0 for GARCH). Capability lives on the
-                    # process — a no-op dict for factors without a revealed sufficient statistic — so
-                    # the forker runs one uniform loop across model worlds (no isinstance branch).
+                    # per-outer-path t=0 privileged-state seed for this process's inner generate
                     for seed_key, seed_val in proc_inner.inner_fork_seed(key, outer_scenario_buffer, t).items():
                         shared_mem.t_Scenario_Buffer[seed_key] = seed_val
                     simulated = proc_inner.generate(shared_mem)
                     shared_mem.t_Scenario_Buffer[key] = simulated
-                    # Post-generate inner-fork state coherence: the process publishes any path-
-                    # dependent revealed state its `reveal_state_at` needs at t+1 (e.g. a filtered
-                    # belief) and returns differentiable leaves for the twin loss. Opts are forwarded
-                    # opaquely; base/GARCH processes are no-ops (their revealed state is already
-                    # published by generate, or detached by design).
+                    # post-generate coherence: publish revealed state at t+1, return twin-loss leaves
                     inner_leaves = proc_inner.reseed_inner_state(
                         key, simulated, outer_scenario_buffer, t, shared_mem, self._inner_state_opts, with_grad)
                     if with_grad:
                         state_t_leaves.update(inner_leaves)
-                    # Market state at outer t+1 (inner-time index 1): each factor reveals its
-                    # informative segments (its sufficient statistic + price/curve) from the live
-                    # buffer (factor path + any aux its generate()/reseed just published). The calc
-                    # owns the (factor_flat, B, SB) reshape and concatenates in reveal order.
+                    # market state at outer t+1 (inner-time index 1), in reveal order
                     for block, _kind in proc_inner.reveal_state_at(1, shared_mem.t_Scenario_Buffer):
                         market_t1_parts.append(block.reshape(-1, B_outer, B_inner))
 
-                # Publish each factor's grid as the outer-realized past followed by the forked rows
-                # + flatten (B,SB)→B*SB. The past is a slice of the outer snapshot, already
-                # resident at B_outer, and every one of its rows is identical across the B_inner
-                # draws — the `cat` that used to join them wrote it out B_inner times (98% of the
-                # stuffed buffer at 1280x64, dragging a same-shaped slab of Hermite g,c with it).
-                # `ScenarioSource` is the same sequence-of-row-blocks the outer loop publishes with
-                # one block, so the pricer reads both through one mechanism. A fork at t=0 has no
-                # past and publishes one block.
-                # the past holds one OUTER column per B_inner flat columns; this is the map the
-                # flatten below performs, handed over as data rather than re-derived downstream
+                # publish past-then-forked rows; the past keeps ONE outer column per B_inner flat
+                # columns, handed over as data rather than re-derived downstream
                 past_columns = torch.arange(
                     B_flat, device=shared_mem.one.device) // B_inner
                 for key in self.stoch_factors_inner:
@@ -2709,11 +2779,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 inner_netting_sets = self._restricted_struct(self.netting_sets, cutoff_idx, window_end_idx)
                 inner_liabilities = self._restricted_struct(self.liabilities, cutoff_idx, window_end_idx)
                 inner_netting_sets.resolve_structure(shared_mem, self.time_grid)
-                # TRADABLE half of the same guard: `_restricted_struct` drops fully-expired deals,
-                # so a tradable still in `dependencies` but missing from `tensor_marks()` can only
-                # mean its pricing was skipped. That reads downstream as F_t1 = 0, i.e. an expired
-                # contract, and the solver's `live` mask retires it from the hedge set — a wrong
-                # number, not a crash. Fail loudly instead, exactly as the liability does.
+                # TRADABLE half of the fail-loudly guard: live in this fork but no mark => skipped
                 priced = set(inner_netting_sets.tensor_marks())
                 skipped = sorted(
                     dd.Instrument.field['Reference'] for dd in inner_netting_sets.dependencies
@@ -2774,11 +2840,8 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                     # label projection, so it maps leaf grads → market columns with no model concept.
                     market_t_widths.append((key, width, tuple(proc_inner.diff_state_leaves())))
                 market_t = torch.cat(market_t_parts, dim=0).permute(1, 0).contiguous()
-                # Exact liability MTM at the fork (outer-t) and outer-t+1, on the inner draws —
-                # the resolve_hedge_structure marks themselves (same time-indexing as F_t1:
-                # mtm[cutoff_idx:][0] is outer-t, [1] is outer-t+1). These replace the Jacobian
-                # linearization of the liability in the diff-ML one-step bootstrap, so the
-                # bootstrap value marks the liability EXACTLY at each inner draw.
+                # exact liability MTM at outer-t and outer-t+1 on the inner draws (same time
+                # indexing as F_t1) - not a Jacobian linearization
                 mtm_fwd = inner_mtm[cutoff_idx:]                            # (T_inner, B_outer, B_inner)
                 L_t_inner = mtm_fwd[0].clone()                             # outer-t (shared across draws)
                 L_t1_inner = (mtm_fwd[1] if mtm_fwd.shape[0] >= 2
@@ -2788,28 +2851,16 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                     L_t=L_t_inner, L_t1=L_t1_inner, F_t1=F_t1,
                     market_t=market_t, market_t1=market_t1)
                 if with_grad:
-                    # Pair each leaf with the market_t column width it occupies — the
-                    # differential-label projection in the differential-ML solver needs
-                    # this to write per-leaf gradients into the right deep-state columns
-                    # without re-deriving factor widths (which would silently drift
-                    # if a process's `reveal_state_at` packing changes).
+                    # pair each leaf with the market_t column width it occupies
                     result['state_t_leaves'] = state_t_leaves
                     result['state_t_leaf_widths'] = market_t_widths
             finally:
-                # Restore on ANY exit: the fork borrows `shared_mem`, mutating simulation_batch
-                # (B_outer -> B_flat for pricing) and `fillvalue` in place. Without this a
-                # mid-fork raise (CUDA OOM, a degenerate-pricing RuntimeError) left the state
-                # flat-sized, so the NEXT chunk / t-step failed on shapes instead of the real cause.
-                # Restored to what the fork FOUND, not to this fork's own width: outer generation
-                # resumes on the same state under streaming.
+                # restore on ANY exit - a mid-fork raise must not leave the state flat-sized
                 shared_mem.simulation_batch = borrowed_batch
                 shared_mem.fillvalue = borrowed_fill
                 shared_mem.t_Buffer.clear()
                 shared_mem.t_Scenario_Buffer.clear()
-                # Drop the Sobol sample cache — it is keyed by sample_size and would otherwise
-                # grow unbounded across chunks / t-steps. Each chunk re-draws a fresh,
-                # independent quasi-MC stream (the engine advances); the pricer's per-pass
-                # `reset_qrg` caching is intact within a chunk — only cleared between them.
+                # drop the Sobol sample cache (keyed by sample_size; unbounded across t-steps)
                 shared_mem.t_quasi_rng.clear()
 
         return result

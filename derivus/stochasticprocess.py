@@ -510,6 +510,16 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
         return 'LognormalDiffusionProcess', [()]
 
     def generate(self, shared_mem):
+        """
+        Simulate the asset price path; drift comes from the foreign/domestic (or dividend/repo)
+        zero curves.
+
+        Dual-mode on Z.ndim — outer (T, B) or inner MC (T, B, B2). Under inner MC the rate curves
+        are simulated to (scen, n_tenors, B, B2) and gathered with n_batch_dims=2, which collapses
+        the curve stack (B,B2) -> B*B2, so the drift returns (T, B*B2) and is reshaped to
+        (T, B, B2). Own per-step arrays (T,1) -> (T,1,1) and the per-outer-path spot (B,)/(1,) ->
+        (1,B,1)/(1,1,1) so both broadcast across the B2 fan-out.
+        """
         Z = shared_mem.t_random_numbers[self.z_offset, :self.scenario_horizon]
         if Z.ndim == 2:
             # Outer: drift from the foreign/domestic (or div/repo) zero curves; single batch.
@@ -520,10 +530,7 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
             drift = torch.cumsum(torch.squeeze(rt_rates - qt_rates, dim=1), dim=0)
             f1 = torch.cumsum(self.delta_vol * Z, dim=0)
             return self.spot * torch.exp(drift - self.rho * self.C - 0.5 * self.V + f1)
-        # Inner MC (T, B, B2): the rate curves are simulated to (scen, n_tenors, B, B2).
-        # Gather them with n_batch_dims=2 — the curve stack collapses (B,B2)->B*B2 — so the
-        # drift comes back (T, B*B2); reshape to (T, B, B2). Own per-step arrays (T,1) ->
-        # (T,1,1) and per-outer-path spot (B,)/(1,) -> (1,B,1)/(1,1,1) broadcast across B2.
+        # Inner MC (T, B, B2): the n_batch_dims=2 gather returns drift (T, B*B2) — reshape it.
         B, B2 = Z.shape[1], Z.shape[2]
         rt = utils.calc_time_grid_curve_rate(self.r_t, self.scen_grid, shared_mem, n_batch_dims=2)
         qt = utils.calc_time_grid_curve_rate(self.q_t, self.scen_grid, shared_mem, n_batch_dims=2)
@@ -847,6 +854,16 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         return 'HWImpliedInterestRate', [('F1',), ('F2',)]
 
     def generate(self, shared_mem):
+        """
+        Simulate the implied 2-factor Hull-White curve.
+
+        Dual-mode on the random-number rank: outer (T,B) or inner MC (T,B,B2). Under inner MC the
+        per-tenor coefficients (n_tenors,1) -> (n_tenors,1,1) so they broadcast against the
+        (T,1,B,B2) factor tensors, and drift is rank-aligned inside sim_curve (a per-outer-path
+        curve (T,n_tenors,B) broadcasts across the B2 fan-out). Stochastic-deflation (grid_index)
+        mode returns a dict of curves and is incompatible with nested simulation — the fork stores
+        a single tensor per factor — so it raises there.
+        """
 
         def sim_curve(drift, Bt0, Bt1, f1, f2, factor_tenor):
             stoch_component = Bt0 * f1 + Bt1 * f2
@@ -857,11 +874,7 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
             rng1, shared_mem.t_random_numbers[self.z_offset:self.z_offset + 2, :self.scenario_horizon])
 
         if rng1.ndim == 3:
-            # Inner MC (T,B,B2). Stochastic-deflation (dict-returning) mode is incompatible
-            # with nested simulation — the fork stores a single tensor per factor. Per-tenor
-            # coefficients (n_tenors,1) -> (n_tenors,1,1) to broadcast against the (T,1,B,B2)
-            # factor tensors; drift is rank-aligned inside sim_curve (per-outer-path curve
-            # (T,n_tenors,B) broadcasts across the B2 fan-out).
+            # Inner MC (T,B,B2): per-tenor coeffs unsqueeze to broadcast; deflation unsupported.
             if self.grid_index is not None:
                 raise NotImplementedError(
                     "HullWhite2FactorImpliedInterestRateModel stochastic-deflation (grid_index) "
@@ -1216,12 +1229,17 @@ class CSForwardPriceModel(StochasticProcess):
         return mu, np.sqrt(var)
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
-        # tensor: (n_tenors,) calibrated / (n_tenors, B) per-path (inner-MC or t=0
-        # burn-in). Store `initial_curve` in a generate-mode-agnostic canonical form
-        # (leading time-broadcast axis + n_tenors[, B]); the mode-specific trailing
-        # axes are appended in `generate`, which knows outer vs inner from Z.ndim.
-        # precalc can't make that call — a per-path burn-in init and an inner-MC init
-        # are both (n_tenors, B). vol/drift are time-grid + param functions, (T, n_tenors, 1).
+        """
+        Build the per-step vol/drift and the initial curve for the CS forward-price process.
+
+        `tensor` is (n_tenors,) calibrated or (n_tenors, B) per-path (inner-MC fork or diff-ML t=0
+        burn-in). `initial_curve` is stored in a generate-mode-agnostic canonical form — a leading
+        time-broadcast axis plus n_tenors[, B]; the mode-specific trailing axes are appended in
+        `generate`, which knows outer from inner via Z.ndim. precalc cannot make that call, since a
+        per-path burn-in init and an inner-MC init are both (n_tenors, B). vol/drift are functions
+        of the time grid and the params only, shaped (T, n_tenors, 1).
+        """
+        # canonical initial_curve: leading time-broadcast axis; generate appends the mode axis.
         if tensor.ndim == 1:
             self.initial_curve = tensor.reshape(1, -1)                      # (1, n_tenors)
         else:
@@ -1440,6 +1458,19 @@ class PCAInterestRateModel(StochasticProcess):
         return fwd_curve, std_dev
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
+        """
+        Precompute the exact-OU step coefficients, Ito drift and forward curve for the PCA model.
+
+        Steps are anchored at time_grid_years[0] so the per-step dt and `elapsed` (time since sim
+        start) are correct under both outer mode (anchor = 0) and inner-MC kept-base mode
+        (anchor > 0). Exact OU discretisation:
+            Y_{k+1} = exp(-α Δt_k) Y_k + sqrt((1-exp(-2α Δt_k))/(2α)) Z_{k+1}
+
+        `fwd_component` is stored in a canonical, generate-mode-agnostic form: (T, n_tenors)
+        calibrated or (T, n_tenors, B) per-path. The mode-specific trailing axis is appended in
+        `generate`, which knows outer from inner via the factor rank; precalc cannot make that
+        call, since a per-path burn-in init and an inner-MC init are both (n_tenors, B).
+        """
         # ensures that tenors used are the same as the price factor
         factor_tenor = self.factor.get_tenor()
 
@@ -1463,10 +1494,7 @@ class PCAInterestRateModel(StochasticProcess):
         self.vols = np.interp(factor_tenor, *self.param['Yield_Volatility'].array.T)
         alpha = self.param['Reversion_Speed']
 
-        # Anchor at time_grid_years[0] so per-step dt and elapsed time are correct in both
-        # outer mode (time_grid_years[0] = 0) and inner-MC kept-base mode (> 0). `elapsed`
-        # is time since sim start.
-        # Exact OU discretisation: Y_{k+1} = exp(-α Δt_k) Y_k + sqrt((1-exp(-2α Δt_k))/(2α)) Z_{k+1}
+        # Anchored at time_grid_years[0]; exact OU discretisation.
         dt_steps   = np.diff(np.append([time_grid_years[0]], time_grid_years))  # [T]
         elapsed    = dt_steps.cumsum()                                        # [T] — time since sim start
         ou_decay   = np.exp(-alpha * dt_steps)                               # [T]
@@ -1509,20 +1537,21 @@ class PCAInterestRateModel(StochasticProcess):
             factor_tenor_t = shared.one.new_tensor(factor_tenor.reshape(1, -1))                 # [1, n_tenors]
             fwd_curve = fwd / self.align_rank(factor_tenor_t, fwd.ndim)
 
-        # Canonical (mode-agnostic) form: (T, n_tenors) calibrated / (T, n_tenors, B)
-        # per-path. The mode-specific trailing axis is appended in generate (it knows
-        # outer vs inner from the factor rank); precalc can't, since a per-path burn-in
-        # init and an inner-MC init are both (n_tenors, B).
+        # Canonical mode-agnostic form; generate appends the mode-specific trailing axis.
         self.fwd_component = fwd_curve
 
     def calc_factors(self, factors):
-        # factors: [n_factors, T, B] outer / [n_factors, T, B, B2] inner. Branch on ndim;
-        # closed-form OU vectorisation is identical, only the broadcasting shapes differ.
-        #
-        # Closed-form vectorisation of Y_{k+1} = d_k * Y_k + n_k * Z_k  (Y_0 = 0):
-        #   Y_out[k] = D[k] * cumsum( n[i]/D[i] * Z[i] )[k],  D[k] = cumprod(d)[k]
-        # Two O(T) CUDA-native ops (cumprod, cumsum) replace the T-step Python loop.
-        # Numerically stable for typical PCA α (0.01–0.3); avoid α >> 1 on long grids.
+        """
+        Project the OU factor innovations onto the (normalised) PCA eigenvectors.
+
+        `factors` is [n_factors, T, B] outer or [n_factors, T, B, B2] inner MC; the branch on ndim
+        changes only the broadcasting shapes, the vectorisation is identical.
+
+        Closed-form vectorisation of Y_{k+1} = d_k * Y_k + n_k * Z_k  (Y_0 = 0):
+            Y_out[k] = D[k] * cumsum( n[i]/D[i] * Z[i] )[k],  D[k] = cumprod(d)[k]
+        Two O(T) CUDA-native ops (cumprod, cumsum) replace the T-step Python loop. Numerically
+        stable for typical PCA α (0.01–0.3); avoid α >> 1 on long grids.
+        """
         evecs_mat = self.evecs                                         # [n_factors, n_tenors]
         D = torch.cumprod(self.ou_decay, dim=0)                         # [T, 1]
 
@@ -2095,6 +2124,14 @@ class LogOUSpotModel(StochasticProcess):
         return 1
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
+        """
+        Precompute the exact-OU step coefficients, the initial log-spot and the reversion target.
+
+        θ is anchored at the current spot rather than at the calibrated long-run mean: production
+        hedging should not bet that today's price reverts to a historical average — the agent
+        hedges variance around the current regime, not directional drift toward a stale θ. Set
+        `Anchor_Theta_At_Spot: false` for backtests that want the absolute calibrated θ.
+        """
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
 
@@ -2112,10 +2149,7 @@ class LogOUSpotModel(StochasticProcess):
         # calibrated, or (B,) per-path (inner-MC fork / diff-ML t=0 burn-in). reshape(-1)
         # keeps the batch axis (a calibrated (1,) broadcasts like the old 0-d scalar).
         self.log_spot0 = torch.log(tensor).reshape(-1)
-        # Anchor theta at the current spot rather than the calibrated long-run mean. Production
-        # hedging shouldn't bet that today's price will revert to a historical average — the agent
-        # should hedge variance around the current regime, not directional drift toward a stale θ.
-        # Disable via `Anchor_Theta_At_Spot: false` for backtests that want absolute calibrated θ.
+        # θ anchored at the current spot unless Anchor_Theta_At_Spot is disabled.
         if bool(self.param.get('Anchor_Theta_At_Spot', True)):
             self.theta = self.log_spot0                                                # 0-d tensor, on graph
         else:
@@ -2304,6 +2338,22 @@ class MarkovSwitchingLogOUSpotModel(StochasticProcess):
         return 1
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
+        """
+        Precompute the per-state exact-OU coefficients, the CTMC transition ladder and the initial
+        log-spot for the regime-switching model.
+
+        Regime means are anchored at the current spot rather than at the calibrated long-run mean:
+        production hedging should not bet that today's price reverts to a stale historical average
+        — the agent hedges variance around the current regime, not directional drift. The
+        calibrated *relative* spread between regime means is preserved (state 1 stays hotter than
+        state 0) while the stationary log-mean is re-centred at log(current_spot). Set
+        `Anchor_Theta_At_Spot: false` for backtests that want the absolute calibrated θ.
+
+        `tensor` is the factor's `Spot`: (1,) calibrated, or (B,) per-path (inner-MC fork or
+        diff-ML t=0 burn-in). `log_spot0` keeps that batch axis and stays on the autograd graph
+        (AAD), while the per-state θ anchor stays scalar (mean over paths) — so paths share
+        reversion targets but each starts at its own log-spot.
+        """
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
 
@@ -2325,12 +2375,7 @@ class MarkovSwitchingLogOUSpotModel(StochasticProcess):
 
         pi0 = np.array(self.param.get('Initial_State_Probs', [1.0 / self.n_states] * self.n_states))
 
-        # Anchor theta at current spot rather than the calibrated long-run mean. Production
-        # hedging shouldn't bet that today's price will revert to a stale historical average —
-        # the agent should hedge variance around the current regime, not directional drift.
-        # Preserve the calibrated *relative* spread between regime means (state 1 still hotter
-        # than state 0, etc.) but center the stationary log-mean at log(current_spot).
-        # Disable via `Anchor_Theta_At_Spot: false` for backtests that want absolute calibrated θ.
+        # θ anchored at the current spot, preserving the calibrated inter-regime spread.
         if bool(self.param.get('Anchor_Theta_At_Spot', True)):
             log_spot_scalar = float(torch.log(tensor).mean().item()) if tensor.numel() > 1 else float(torch.log(tensor).item())
             calibrated_log_mean = float((pi0 * thetas).sum())
@@ -2361,10 +2406,7 @@ class MarkovSwitchingLogOUSpotModel(StochasticProcess):
         self.P_cum = _t(P_cum)
         self.pi0_cum = _t(pi0_cum)
 
-        # Initial log-spot. AAD: keep on graph. `tensor` is the factor's `Spot`: (1,)
-        # calibrated, or (B,) per-path (inner-MC fork / diff-ML t=0 burn-in). reshape(-1)
-        # keeps the batch axis; the per-state θ anchor above stays scalar (mean over paths),
-        # so paths share reversion targets but each starts at its own log-spot.
+        # reshape(-1) keeps the batch axis; AAD keeps log_spot0 on the graph.
         self.log_spot0 = torch.log(tensor).reshape(-1)
 
     @property
@@ -2372,17 +2414,23 @@ class MarkovSwitchingLogOUSpotModel(StochasticProcess):
         return 'MarkovSwitchingLogOUProcess', [()]
 
     def generate(self, shared_mem):
+        """
+        Sample the regime path and simulate the exact-OU log-spot under it.
+
+        Dual-mode on Z.ndim — outer (T, B) or inner MC (T, B, B2).
+
+        Canonical Sobol orientation: dimension = the per-path coordinates (T+1 uniforms — one
+        initial draw plus one per transition), samples = paths, i.e. draw(B) -> (B, T+1)
+        transposed to (T+1, B). The TRANSPOSED form (dim=B, samples=T+1) is a defect at large B: a
+        B-dimensional Sobol sequence with only ~T points has badly-distributed cross-dimension
+        (= cross-PATH) projections, correlating regime transitions across outer paths — measured
+        as the B=512 policy collapse (worse even in-sample).
+        """
         Z = shared_mem.t_random_numbers[self.z_offset, :self.scenario_horizon]
         device = Z.device
 
         if Z.ndim == 2:
             T, B = Z.shape
-            # Canonical Sobol orientation: dimension = per-path coordinates (T+1 uniforms — one
-            # initial draw plus one per transition), samples = paths. draw(B) -> (B, T+1),
-            # transposed to (T+1, B). The TRANSPOSED form (dim=B, samples=T+1) is a defect at
-            # large B: a B-dimensional Sobol sequence with only ~T points has badly-distributed
-            # cross-dimension (= cross-PATH) projections, correlating regime transitions across
-            # outer paths — measured as the B=512 policy collapse (worse even in-sample).
             u_regime = shared_mem.quasi_rng(T + 1, B)[1].transpose(0, 1).contiguous()
             # Per-outer-path regime0 override (diff-ML t=0 randomization): honour the
             # `(factor_key, 'regime0_outer')` the burn-in publishes, mirroring the inner
@@ -2525,6 +2573,14 @@ class MarkovHMMSpotModel(StochasticProcess):
         return 1
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
+        """
+        Precompute the per-state emission moments, the CTMC transition ladder and the initial spot.
+
+        AAD: `spot0` is kept on the autograd graph so payoff sensitivities w.r.t. the initial spot
+        flow through, and is stored unreshaped so inner-MC mode can pass a `(B,)` vector of
+        per-outer-path initial spots; outer mode is the framework's usual `(1,)` scalar, broadcast
+        at generate-time.
+        """
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
 
@@ -2570,10 +2626,7 @@ class MarkovHMMSpotModel(StochasticProcess):
         self.pi0_cum = _t(np.cumsum(self.param['Initial_State_Probs']))
         self.pi0_probs = _t(np.array(self.param['Initial_State_Probs'], dtype=np.float64))
 
-        # Initial spot. AAD: keep spot0 on the autograd graph so payoff sensitivities
-        # w.r.t. the initial spot flow through. Stored as-is so inner-MC mode can pass
-        # a `(B,)` vector of per-outer-path initial spots; outer mode is the framework's
-        # usual `(1,)` scalar (broadcast at generate-time).
+        # Stored as-is (no reshape) so inner MC can pass per-outer-path spots.
         self.spot0 = tensor
 
     @property
@@ -2581,6 +2634,22 @@ class MarkovHMMSpotModel(StochasticProcess):
         return 'MarkovHMMSpotProcess', [()]
 
     def generate(self, shared_mem):
+        """
+        Sample the regime path and simulate the HMM emission path (log returns or price diffs).
+
+        Outer mode honours a per-path t=0 regime override published by the diff-ML burn-in under
+        `(factor_key, 'regime0_outer')`, mirroring the inner-mode `regime0_inner` pattern; absent
+        it, the t=0 regime is drawn from the calibrated π_0.
+
+        Outer mode also runs the forward HMM belief filter: the differential-ML build uses
+        `P(regime_t | prices_{0..t})` as the regime coordinate of `market_t`, because the
+        privileged true regime is unavailable to a decision rule at runtime. Belief is detached
+        from autograd — it is consumed as a state coordinate, not a quantity we differentiate
+        through, and the price-path autograd graph is preserved separately for the deal pricer.
+        It is published to BOTH `privileged_factors()` (B-axis dim=1, so the concat works) AND
+        `t_Scenario_Buffer` with a B-LAST shape (T, n_states, B) so the buffer's dim=-1 concat
+        works, enabling `reveal_state_at` to route belief into the V̂ deep-state market block.
+        """
         # Z is (T, B) in outer mode, (T, B, B2) in inner mode. Everything runs at the
         # calculation's global precision (shared.one): the precalc tensors were built with
         # shared.one.new_tensor, so they already carry the right dtype/device — no casts.
@@ -2600,10 +2669,7 @@ class MarkovHMMSpotModel(StochasticProcess):
             # transposed-form defect this replaces (cross-path regime correlation at large B).
             T, B = Z.shape
             u_regime = shared_mem.quasi_rng(T + 1, B)[1].transpose(0, 1).contiguous()
-            # Per-path regime0 override (diff-ML t=0 randomization): if the buffer
-            # carries `(self.factor_key, 'regime0_outer')`, use it as the t=0
-            # regime sample instead of the calibrated π_0 draw. Mirrors the
-            # existing inner-mode `regime0_inner` pattern.
+            # Per-path t=0 regime override from the diff-ML burn-in; else the π_0 draw.
             regime0_override = shared_mem.t_Scenario_Buffer.get(
                 (self.factor_key, 'regime0_outer'))
             if regime0_override is not None:
@@ -2641,16 +2707,7 @@ class MarkovHMMSpotModel(StochasticProcess):
                 spot_path = log_path.clamp_min(-10.0).exp()
             else:
                 spot_path = s0.unsqueeze(0) + ds.cumsum(dim=0)                       # (T, B)
-            # Forward HMM belief filter — outer-mode only. The differential-ML build
-            # uses `P(regime_t | prices_{0..t})` as the regime coordinate of `market_t`
-            # (the privileged true regime is unavailable to a decision rule at runtime).
-            # Detach from autograd: belief is consumed as a state coordinate, not a
-            # quantity we differentiate through; the simulator's price-path autograd
-            # graph is preserved separately for the deal pricer.
-            # Published to BOTH `privileged_factors()` (B-axis dim=1 → ok concat)
-            # AND `t_Scenario_Buffer` with B-LAST shape (T, n_states, B) so the buffer's
-            # dim=-1 concat works, enabling `reveal_state_at` to route belief into the V̂
-            # deep-state market block.
+            # Forward HMM belief filter — outer-mode only; detached, published B-last.
             with torch.no_grad():
                 belief_path = self._forward_belief(spot_path.detach(), device)
             self.last_regime_belief = belief_path
@@ -2987,6 +3044,15 @@ class MarkovHMMSpotCalibration(object):
                 - 0.5 * (diffs[:, None] - means) ** 2 / var)
 
     def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
+        """
+        Fit the regime-switching HMM by EM, then derive the shared Student-t tail parameter.
+
+        ν is a method-of-moments estimate off the unconditional kurtosis of the regime mixture,
+        K = (3 + 6/(ν-4)) · Σπ_s σ_s⁴ / Var² - 3, inverted for ν as
+            ν = 4 + 6 / [(K_emp + 3)·Var² / Σπ_s σ_s⁴ - 3]
+        It uses the *model's* stationary variance rather than the sample variance, so the
+        simulator round-trips on kurtosis — EM convergence may underfit the empirical Var.
+        """
         from scipy import stats as scipy_stats
 
         n_states = int(self.param.get('N_States', 3))
@@ -3045,11 +3111,7 @@ class MarkovHMMSpotCalibration(object):
         occ = np.bincount(regimes, minlength=n_states) / len(regimes)
         nus = [None] * n_states
 
-        # Method-of-moments shared ν, derived from the unconditional kurt of the
-        # regime mixture: K = (3 + 6/(ν-4)) · Σπ_s σ_s⁴ / Var² - 3. Inverting for ν:
-        #     ν = 4 + 6 / [(K_emp + 3)·Var² / Σπ_s σ_s⁴ - 3]
-        # Use the *model's* stationary variance (not the sample variance) so the
-        # simulator round-trips on kurt — EM convergence may underfit empirical Var.
+        # Method-of-moments shared ν off the mixture's stationary variance.
         if use_t:
             emp_kurt = float(scipy_stats.kurtosis(x, fisher=True))
             mu_total = float((occ * means).sum())
@@ -3173,6 +3235,20 @@ class GARCHSpotModel(StochasticProcess):
         return 'GARCHSpotProcess', [()]
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
+        """
+        Precompute the fractional-trading-clock step schedule and the GARCH recursion parameters.
+
+        The recursion is calibrated per business day (dt_c) while the sim grid runs in CALENDAR
+        time (Time_Grid "0d 1d(1d)" ⇒ dt=1/365.25, NOT business-day adjusted), so f_t = dt_t/dt_c
+        is the trading-time length of a grid step (≈0.69 on the production grid). `generate` scales
+        the per-step variance by f_t, which makes the annualized vol and the mean-reversion RATE
+        grid-invariant. A step spanning more than one calibration step walks its own sub-steps
+        (utils.garch_correlated_substeps); one sub-step is the exact fractional step.
+
+        AAD: `spot0` is kept on the autograd graph. In log mode h depends only on the generated
+        innovations, never on spot0, so price-AAD w.r.t. spot0 is unaffected by the vol recursion.
+        Outer mode passes a (1,) scalar; inner-MC mode a (B,) per-outer-path vector.
+        """
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
 
@@ -3191,13 +3267,7 @@ class GARCHSpotModel(StochasticProcess):
         self.nu = _t(float(self.param['Nu']))
         self.h0_default = _t(float(self.param['H0']))
         self.drift = _t(float(self.param.get('Mu', 0.0)) * dt_arr)               # (T,) μ·dt per step
-        # Fractional trading clock. The recursion is calibrated per business day (dt_c);
-        # the sim grid runs in CALENDAR time (Time_Grid "0d 1d(1d)" ⇒ dt=1/365.25, NOT
-        # business-day adjusted), so f_t = dt_t/dt_c is the trading-time length of a grid
-        # step (≈0.69 on the production grid). generate scales per-step variance by f_t so
-        # the annualized vol and the mean-reversion RATE are grid-invariant. A step spanning
-        # more than one calibration step walks its own sub-steps
-        # (utils.garch_correlated_substeps); one sub-step is the exact fractional step.
+        # f_t = dt_t/dt_c, the trading-time length of a calendar grid step.
         self.f = _t(dt_arr / dt_c)                                               # (T,) trading-time step length
         self.sub_dt = utils.substep_schedule(dt_arr / dt_c)
         self.n_sub = np.array([len(s) for s in self.sub_dt])
@@ -3208,9 +3278,7 @@ class GARCHSpotModel(StochasticProcess):
                          int(self.n_sub.max()))
         self._log_lr_var = float(np.log(self.param['Omega'] / (1.0 - self.param['Alpha'] - self.param['Beta'])))
 
-        # AAD: keep spot0 on the autograd graph. In log mode h depends only on generated
-        # innovations, never on spot0, so price-AAD w.r.t. spot0 is unaffected by the vol
-        # recursion. Outer mode passes a (1,) scalar; inner-MC mode a (B,) per-outer-path vector.
+        # AAD: spot0 stays on the graph, unreshaped so inner MC can pass (B,).
         self.spot0 = tensor
 
     def _simulate_returns(self, eps, z, h):
@@ -3263,11 +3331,15 @@ class GARCHSpotModel(StochasticProcess):
         return h + ft * (self.omega - (1.0 - self.beta) * h) + self.alpha * r * r, var_step, r
 
     def generate(self, shared_mem):
-        # Z is (T, B) outer, (T, B, B2) inner. One framework Gaussian per step; the
-        # standardised-t rescale draws its own Gamma (no regime sampling → no quasi_rng).
-        # ε is unit-variance and independent of h, so it precomputes fully vectorised — but
-        # only the fine steps read it (a coarse interval t-scales its own sub-step normals),
-        # so an all-coarse PFE grid skips the draw rather than allocating a dead (T,B) pair.
+        """
+        Simulate the GARCH spot path; Z is (T, B) outer, (T, B, B2) inner.
+
+        One framework Gaussian per step; the standardised-t rescale draws its own Gamma (there is
+        no regime sampling, hence no quasi_rng). ε is unit-variance and independent of h, so it
+        precomputes fully vectorised — but only the fine steps read it (a coarse interval t-scales
+        its own sub-step normals), so an all-coarse PFE grid skips the draw rather than allocating
+        a dead (T,B) pair.
+        """
         Z = shared_mem.t_random_numbers[self.z_offset, :self.scenario_horizon]
         nu = self.nu
         if (self.n_sub[1:] <= 1).any():                                          # t=0 is the anchor
@@ -3573,13 +3645,24 @@ class HestonNandiImpliedSpotModel(StochasticProcess):
         return 'HestonNandiSpotProcess', [()]
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
+        """
+        Precompute the fractional trading clock, the HN recursion parameters and the drift plumbing.
+
+        dt is anchored at time_grid_years[0] so the per-step spacing is correct under BOTH outer
+        mode (scen_time_grid[0]=0) and inner-MC kept-base mode (>0), mirroring GARCHSpotModel.
+        dt_c is the calibration (trading-day) step; the option bootstrapper works at
+        Steps_Per_Year (default 252), so the same convention drives the sim.
+
+        Parameters are read out of the HestonNandiModelParameters factor block by the canonical
+        `utils.HN_PARAM_NAMES` (single source, mirroring CS's implied_tensor consumption): the
+        implied_tensor branch when greeks are on (0-dim AAD leaves), else the calibrated scalars.
+        The five scalars feed the explicit-arg utils.hn_* functions; H0 is the variance state
+        (it seeds h), the rest are the recursion params.
+        """
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
 
-        # Fractional trading clock. Anchor dt at time_grid_years[0] so the per-step spacing is
-        # correct under BOTH outer mode (scen_time_grid[0]=0) and inner-MC kept-base mode (>0),
-        # mirroring GARCHSpotModel. dt_c is the calibration (trading-day) step; the option
-        # bootstrapper works at Steps_Per_Year (default 252), so the same convention drives the sim.
+        # Fractional trading clock, anchored at time_grid_years[0].
         tg_years = time_grid.time_grid_years
         dt_arr = np.diff(np.hstack(([tg_years[0]], tg_years)))
         dt_c = 1.0 / float(self.implied.param.get('Steps_Per_Year', 252.0))
@@ -3597,10 +3680,7 @@ class HestonNandiImpliedSpotModel(StochasticProcess):
         # branch); otherwise the calibrated scalars from the implied factor. Either way they are 0-dim
         # and broadcast against the (…B) variance state.
         p = self.implied.param
-        # Read the HestonNandiModelParameters factor block by the canonical HN_PARAM_NAMES (single
-        # source, mirrors CS's implied_tensor consumption): the implied_tensor branch when greeks are
-        # on (0-dim AAD leaves), else the calibrated scalars. The five scalars feed the explicit-arg
-        # utils.hn_* functions; H0 is the variance state (seeds h), the rest the recursion params.
+        # Read the factor block by the canonical HN_PARAM_NAMES (single source).
         if implied_tensor is not None:
             vals = [implied_tensor[k].reshape(()) for k in utils.HN_PARAM_NAMES]
         else:
@@ -3893,6 +3973,89 @@ class VARMixedFactorInterestRateModel(StochasticProcess):
         return 'VARMixedFactorInterestRateProcess', [('B0',), ('B1',), ('R',)]
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
+        """
+        Build the per-step VAR(1) coefficients, the rolling slot ladder and the latent state X_0.
+
+        Steps are anchored at sim_t[0] so the per-step dt is correct under both outer mode
+        (sim_t[0] = 0) and inner-MC kept-base mode (sim_t[0] > 0); the slot-ladder roll count
+        deliberately uses absolute sim_t, since rolls happen at physical calendar dates.
+
+        σ-step approximation
+            σ_step uses a Brownian approximation σ_calib·√(δ/δ_calib), which assumes i.i.d.
+            innovations. The exact VAR(1) per-step covariance is V_stat − Φ^(δ/δ_calib) V_stat
+            (Φ^(δ/δ_calib))ᵀ (Lyapunov), reducing to Σ_calib at δ = δ_calib. The Brownian form is
+            first-order in (1−Φ); the error is small for a daily sim against a daily-calibrated
+            model (including the 0.69 calendar/business-day ratio) and grows on slow eigenmodes at
+            long sim steps, so weekly+ steps are rejected rather than allowed to silently mis-price
+            innovation variance. dt = 0 (the initial sim point, not a stochastic step) is excluded
+            from that check.
+
+            `Sigma` is the calibrated *marginal* std per latent component (post-correlation), NOT a
+            Cholesky factor. The framework's global Cholesky supplies pre-correlated Z to
+            `generate`; multiplying by sigma_per_step recovers Σ_calib = diag(σ)·ρ·diag(σ) at
+            δ = δ_calib (ρ comes from the Correlations block).
+
+        Slot ladder and interpolation
+            The slot-interpolation bracket is data-independent (calibration τs + sim grid only), so
+            idx/α are resolved once here rather than per-step in the hot `generate` loop: the slot
+            tenors are the middle column of D_slot_per_step, each contract_T is bracketed into
+            [idx-1, idx] (clamped to the 3-slot ladder), and the linear interpolation weight is
+            stored.
+
+        X_0 recovery
+            X_0 is the latent state whose slot values c_slot = D_slot[0] @ X, linearly interpolated
+            from the slot τs onto the contract Ts, reproduce today's curve. That interp/extrap
+            operator is a row-mixing of D_slot[0] — for contract j in bracket [slot k, slot k+1]:
+                M[j, :] = (1-α_j) D_slot[0, k, :] + α_j D_slot[0, k+1, :]
+            which matches the runtime interp in `generate` exactly, extrapolation included.
+
+            AAD: M is data-independent, so it is built as a constant tensor, while `tensor` (the
+            live curve, possibly requires_grad) stays a torch tensor through the solve —
+            ∂X_0/∂curve_0 = M⁻¹ then flows via autograd's standard linear-solve adjoint, and
+            downstream `out` retains the gradient back to the input curve.
+
+            Only a 3-knot factor is accepted. TODO: relax to N≥3 by switching torch.linalg.solve to
+            torch.linalg.lstsq below and warning when the round-trip residual is non-negligible
+            (which is expected for N>3 — 3 latent factors cannot exactly span an N-dim curve).
+            Runtime `generate` already supports arbitrary N via slot interpolation / linear
+            extrapolation; for N>3 with the cross-product w, calibrating on >3 archive anchors
+            needs an anchor-choice convention (or a switch to an NS basis).
+
+        Conditioning and the round-trip guard
+            M goes singular when the contract ladder degenerates: fewer than 3 live contracts (e.g.
+            an inner-MC fork started late in the horizon, after the front contracts have expired)
+            collapse the bracketing onto coincident rows. There, X_0 is recovered by a
+            ridge-regularised least-squares solve and the exact round-trip check is skipped, the
+            recovery being approximate by construction. The cond gate is dtype-aware because the
+            round-trip residual scales like cond(M)·eps·‖curve‖, so the float32 gate must sit ~the
+            eps ratio below the float64 one (measured: cond ~1e6 at float32 passes 1e8 but leaves a
+            0.13 residual on a late-horizon degenerate ladder — an expected geometry, not a
+            bracketing bug).
+
+            WHAT THE ROUND-TRIP GUARD ACTUALLY TESTS: that the solve inverted. On a SQUARE system
+            `M @ solve(M, c) == c` holds for any invertible M, so it cannot — and never could —
+            detect a mis-bracketing: a wrong-but-invertible bracket reproduces the curve just as
+            exactly (measured: bracketing [1,1,2] -> [2,1,2] changes M by 4.0 and leaves the
+            residual at 4e-8). What it does detect is a ladder so degenerate that the solve stops
+            inverting — which is real and worth failing on, and is why the message reports the
+            geometry as CONTEXT rather than as a diagnosis.
+
+            The residual is measured in float64 (a 3x3 @ (3,B) product, free), RELATIVE to the
+            curve level, and against the solve's OWN backward-stability bound rather than a
+            constant. A linear solve cannot do better than ~cond(M)·eps·‖curve‖, so any fixed
+            number is wrong in two directions at once: on this ladder (cond ~1e3, float32) it
+            demanded better-than-achievable and fired on 9 of the 2022-23 walk-forward months at
+            1.1e-6 relative — 9 ulp, a correct answer — while on a well-conditioned ladder it would
+            have let a decade of genuine error through. Scaling by cond·eps makes the check dtype-
+            and geometry-aware for free; the factor 64 is margin over the growth factor of a 3x3
+            solve. Quality is the cond_gate's job; this asks only whether the solve inverted.
+
+            The SOLVE deliberately stays in the curve's dtype. Doing it in float64 and casting back
+            is strictly more accurate, but measured on the golden worlds it moves every downstream
+            value by ~1 ulp (tradables 2.4e-4 on 2050, liability_mtm 0.6 on 3.5e6, V_0 by 1.1e-5) —
+            a revalidation event to schedule deliberately, not to slip into a running campaign
+            whose earlier trades were priced with the float32 solve.
+        """
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
 
@@ -3903,14 +4066,7 @@ class VARMixedFactorInterestRateModel(StochasticProcess):
         # absolute sim_t intentionally — rolls happen at physical calendar dates.
         dt_arr = np.diff(np.hstack(([sim_t[0]], sim_t)))                                # (T,)
 
-        # σ_step uses a Brownian approximation σ_calib·√(δ/δ_calib) which assumes i.i.d.
-        # innovations. The exact VAR(1) per-step covariance is V_stat − Φ^(δ/δ_calib)
-        # V_stat (Φ^(δ/δ_calib))ᵀ (Lyapunov), reducing to Σ_calib at δ = δ_calib. The
-        # Brownian form is first-order in (1−Φ); error is small for daily sim against a
-        # daily-calibrated model (including the 0.69 calendar/business-day ratio) and
-        # grows on slow eigenmodes at long sim steps. Reject weekly+ steps to prevent
-        # silent mis-pricing of innovation variance. dt = 0 (the initial sim point, not
-        # a stochastic step) is excluded from the check.
+        # The Brownian σ-step is only valid near δ_calib; reject weekly+ grids (dt=0 exempt).
         nonzero_dt = dt_arr[dt_arr > 1.0e-12]
         if nonzero_dt.size and np.any((nonzero_dt / dt_calib > 2.0)
                                        | (nonzero_dt / dt_calib < 0.5)):
@@ -3927,10 +4083,7 @@ class VARMixedFactorInterestRateModel(StochasticProcess):
         eigvals, eigvecs = np.linalg.eig(Phi_calib)
         eigvecs_inv = np.linalg.inv(eigvecs)
         Phi_per_step = np.zeros((len(dt_arr), 3, 3))
-        # `Sigma` is the calibrated *marginal* std per latent component (post-correlation),
-        # NOT a Cholesky factor. The framework's global Cholesky supplies pre-correlated Z
-        # to `generate`; multiplying by sigma_per_step recovers Σ_calib = diag(σ)·ρ·diag(σ)
-        # at δ = δ_calib (where ρ comes from the Correlations block).
+        # `Sigma` is the marginal std per latent component, NOT a Cholesky factor.
         sigma_calib = np.array(self.param['Sigma'], dtype=np.float64)                  # (3,)
         sigma_per_step = np.zeros((len(dt_arr), 3))
         for t_idx, dt in enumerate(dt_arr):
@@ -3976,10 +4129,7 @@ class VARMixedFactorInterestRateModel(StochasticProcess):
         self.contract_expired = shared.one.new_tensor(
             (contract_T <= 0.0).astype(np.float64)).bool()                             # (T, n_contracts)
         self.contract_T = shared.one.new_tensor(np.maximum(contract_T, 0.0))           # (T, n_contracts)
-        # Slot-interpolation bracket is data-independent (calibration τs + sim grid only),
-        # so resolve idx/α once here, not per-step in the hot generate loop. The slot tenors
-        # are the middle column of D_slot_per_step; bracket each contract_T into [idx-1, idx]
-        # (clamped to the 3-slot ladder) and store the linear interpolation weight.
+        # Bracket is data-independent — resolve idx/α once, not in the hot generate loop.
         ts_t = self.D_slot_per_step[:, :, 1].contiguous()                              # (T, 3) slot tenors
         idx = torch.clamp(torch.searchsorted(ts_t, self.contract_T, right=False), 1, 2)
         ts_lo = torch.gather(ts_t, 1, idx - 1)
@@ -3987,26 +4137,10 @@ class VARMixedFactorInterestRateModel(StochasticProcess):
         self.idx_per_step = idx                                                        # (T, n_contracts)
         self.alpha_per_step = (self.contract_T - ts_lo) / (ts_hi - ts_lo)              # (T, n_contracts)
 
-        # X_0 from t=0 carries: find X such that linearly-interpolating the slot values
-        # c_slot = D_slot[0] @ X at slot τs onto contract Ts reproduces today's curve.
-        # The linear-interp/extrap operator is captured by row-mixing of D_slot[0] —
-        # for contract j in bracket [slot k, slot k+1]:
-        #   M[j, :] = (1-α_j) D_slot[0, k, :] + α_j D_slot[0, k+1, :]
-        # This matches the runtime interp in `generate` exactly (including extrapolation
-        # outside the slot range).
-        #
-        # AAD: M is data-independent (built from calibration tenors + sim time grid only),
-        # so build it as a constant tensor. `tensor` carries the live curve and may have
-        # requires_grad — keep it as a torch tensor through the solve so ∂X_0/∂curve_0 = M⁻¹
-        # flows via autograd's standard linear-solve adjoint, and downstream `out` retains
-        # the gradient through to the input curve.
+        # X_0 solves M @ X_0 = curve_0, M being the interp row-mixing of D_slot[0];
+        # M is a constant, `tensor` stays torch so the solve adjoint carries the AAD.
         if factor_tenor.size != 3:
-            # TODO: relax to N≥3 by switching torch.linalg.solve → torch.linalg.lstsq below
-            # and warning when the round-trip residual is non-negligible (which is
-            # expected for N>3: 3 latent factors can't exactly span an N-dim curve).
-            # Runtime generate() already supports arbitrary N via slot interpolation /
-            # linear extrapolation. For N>3 with cross-product w, calibration on >3
-            # archive anchors needs an anchor-choice convention (or switch to NS basis).
+            # TODO: relax to N≥3 via torch.linalg.lstsq + a residual warning.
             raise ValueError(
                 f'VARMixedFactorInterestRateModel expects a 3-knot factor (front/mid/back '
                 f'contract ladder); got factor_tenor of size {factor_tenor.size}.')
@@ -4021,42 +4155,14 @@ class VARMixedFactorInterestRateModel(StochasticProcess):
         # treats 1D RHS as a vector and N-D RHS as a batch of column-vector solves
         # (PyTorch's natural broadcasting), so X0 inherits tensor's batch dims.
         curve0 = tensor
-        # M_t goes singular when the contract ladder degenerates — fewer than 3 live
-        # contracts (e.g. an inner-MC fork started late in the horizon, after the front
-        # contracts have expired) collapse the bracketing onto coincident rows. In that
-        # case recover X_0 by a ridge-regularised least-squares solve and skip the exact
-        # round-trip check (the recovery is approximate by construction). When the ladder
-        # is well-conditioned, keep the exact solve + round-trip guard (it catches genuine
-        # searchsorted/clip bracketing bugs).
-        # Dtype-aware conditioning gate: the exact-solve round-trip residual scales like
-        # cond(M)·eps·‖curve‖, so the float32 gate must sit ~eps ratio below the float64
-        # one (measured: cond ~1e6 at float32 passes 1e8 but leaves a 0.13 residual on a
-        # late-horizon degenerate ladder — an expected geometry, not a bracketing bug).
+        # A degenerate ladder (<3 live contracts) makes M_t singular — ridge-LSQ fallback below.
+        # The gate is dtype-aware: the round-trip residual scales like cond(M)·eps·‖curve‖.
         cond_gate = 1.0e8 if M_t.dtype == torch.float64 else 1.0e4
         if float(torch.linalg.cond(M_t)) < cond_gate:
             X0 = torch.linalg.solve(M_t, curve0)                                       # (3,) or (3, B)
-            # WHAT THIS GUARD ACTUALLY TESTS: that the solve inverted. On a SQUARE system
-            # `M @ solve(M, c) == c` holds for any invertible M, so it cannot — and never could —
-            # detect a mis-bracketing: a wrong-but-invertible bracket reproduces the curve just
-            # as exactly (measured: bracketing [1,1,2] -> [2,1,2] changes M by 4.0 and leaves the
-            # residual at 4e-8). What it does detect is a ladder so degenerate that the solve
-            # stops inverting — which is real and worth failing on, and is why the message below
-            # reports the geometry as CONTEXT rather than as a diagnosis.
-            # The residual is measured in float64 (a 3x3 @ (3,B) product, free), RELATIVE to the
-            # curve level, and against the solve's OWN backward-stability bound rather than a
-            # constant. A linear solve cannot do better than ~cond(M)·eps·‖curve‖, so any fixed
-            # number is wrong in two directions at once: on this ladder (cond ~1e3, float32) it
-            # demanded better-than-achievable and fired on 9 of the 2022-23 walk-forward months
-            # at 1.1e-6 relative — 9 ulp, a correct answer — while on a well-conditioned ladder
-            # it would have let a decade of genuine error through. Scaling by cond·eps makes the
-            # check dtype- and geometry-aware for free; the factor 64 is margin over the growth
-            # factor of a 3x3 solve. Quality is the cond_gate's job (above); this asks only
-            # whether the solve that ran actually inverted.
-            # The SOLVE deliberately stays in the curve's dtype. Doing it in float64 and casting
-            # back is strictly more accurate, but measured on the golden worlds it moves every
-            # downstream value by ~1 ulp (tradables 2.4e-4 on 2050, liability_mtm 0.6 on 3.5e6,
-            # V_0 by 1.1e-5) — a revalidation event to schedule deliberately, not to slip into a
-            # running campaign whose earlier trades were priced with the float32 solve.
+            # Asks ONLY whether the solve inverted — a square system round-trips under any
+            # invertible M, so it cannot detect mis-bracketing. Tolerance is the solve's own
+            # backward-stability bound; the solve stays in the curve's dtype deliberately.
             cond_M = float(torch.linalg.cond(M_t))
             rt_rel = float(((M_t.to(torch.float64) @ X0.detach().to(torch.float64)
                              - curve0.detach().to(torch.float64)).abs().max())
@@ -4284,10 +4390,14 @@ class BasisLinkedSpotModel(StochasticProcess):
         return 'BasisLinkedSpotProcess', [()]
 
     def calc_references(self, factor, static_ofs, stoch_ofs, all_tenors, all_factors):
-        # The linked parent is the name minus its last period (positional, like the InterestRate
-        # parent chain): ObservedBasis if that parent is itself a basis, else the one composable
-        # spot type it resolves under (loud if not exactly one). Set here (before generate) since
-        # the type needs all_factors; the graph stays acyclic (parent -> basis).
+        """
+        Resolve `linked_key`, the primary spot factor this basis rides.
+
+        The linked parent is the name minus its last period (positional, like the InterestRate
+        parent chain): ObservedBasis if that parent is itself a basis, else the one composable spot
+        type it resolves under — loud if not exactly one. It is resolved here rather than in
+        `generate` because the type needs all_factors; the graph stays acyclic (parent -> basis).
+        """
         parent = factor.name[:-1]
         if len(parent) > 1:
             self.linked_key = utils.Factor('ObservedBasis', parent)
@@ -4299,38 +4409,49 @@ class BasisLinkedSpotModel(StochasticProcess):
             self.linked_key = utils.Factor(types[0], parent)
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
+        """
+        Precompute the OU basis parameters and the observed initial basis.
+
+        Two innovation forms, chosen by whichever key the JSON block carries (exactly one):
+            Sigma_By_State — regime-conditional σ_s, indexed by the primary's HMM regime path;
+            Sigma          — flat single-vol OU, no regime read (for a regime-free primary, e.g.
+                             the GARCH martingale primary).
+
+        AAD: `b0` is kept on the autograd graph so payoff sensitivities w.r.t. the observed initial
+        basis flow through, and is stored unreshaped so inner-MC mode can pass a `(B,)` vector of
+        per-outer-path initial bases; outer mode is `(1,)`.
+        """
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
         self.A = float(self.param['A'])
         self.Phi = float(self.param['Phi'])
         self.Nu = float(self.param['Nu'])
-        # Two innovation forms, chosen by which key the JSON block carries (exactly one):
-        #   Sigma_By_State — regime-conditional σ_s, indexed by the primary's HMM regime path;
-        #   Sigma          — flat single-vol OU, no regime read (for a regime-free primary,
-        #                    e.g. the GARCH martingale primary).
+        # Exactly one of Sigma_By_State / Sigma must be present.
         has_flat, has_regime = ('Sigma' in self.param), ('Sigma_By_State' in self.param)
         assert has_flat != has_regime, \
             f"BasisLinkedSpotModel needs exactly one of 'Sigma' / 'Sigma_By_State': {self.param}"
         self.sigma_by_state = (shared.one.new_tensor(np.array(self.param['Sigma_By_State'], dtype=np.float64))
                                if has_regime else None)
         self.sigma_flat = None if has_regime else shared.one.new_tensor(float(self.param['Sigma']))
-        # AAD: keep b0 on the autograd graph so sensitivities of payoffs w.r.t. the
-        # observed initial basis flow through. Stored as-is so inner-MC mode can pass
-        # a `(B,)` vector of per-outer-path initial bases; outer mode is `(1,)`.
+        # AAD: b0 stays on the graph, unreshaped so inner MC can pass (B,).
         self.b0 = tensor
 
     def generate(self, shared_mem):
+        """
+        Simulate the OU basis on top of the linked primary spot path.
+
+        The linked spot must have been generated first: the `dependant_fields` declaration on
+        ObservedBasis makes CommodityPrice a dependency, so the simulator topo-orders it before
+        us. The linked spot path is read in *price level* (dollars), not log-space — the HMM
+        process exp()s its log-cumsum before publishing — and its path/regime shapes match this
+        process's Z, since both processes ran in the same inner/outer mode.
+        """
         # Z is (T, B) outer / (T, B, B2) inner, correlated.
         Z = shared_mem.t_random_numbers[self.z_offset, :self.scenario_horizon]
         device = Z.device
         dtype = Z.dtype
 
-        # Cross-process reads. The linked spot must have been generated first; the
-        # `dependant_fields` declaration on ObservedBasis enforces the ordering by
-        # making CommodityPrice a dependency, so the simulator topo-orders it before us.
-        # The linked spot path is in *price level* (dollars), not log-space — the HMM
-        # process exp()s its log-cumsum before publishing. Path/regime shapes match
-        # this process's Z, since both processes ran in the same inner/outer mode.
+        # Cross-process read; the linked spot is generated before us.
         linked_path = shared_mem.t_Scenario_Buffer[self.linked_key]
         assert (linked_path > 0).all(), 'linked_path expected to be all positive'
 

@@ -250,16 +250,18 @@ def run_textbook_benchmark(bundle, runtime):
 
     The turnover a real execution of this constant hold would pay — entry from the OPENING
     book `q0` (not from flat) + terminal unwind — is a shared-kappa net-of-cost DIAGNOSTIC
-    (`turnover_cost_mean` / `v0_mean_net`), never charged against the V_0 track."""
+    (`turnover_cost_mean` / `v0_mean_net`), never charged against the V_0 track.
+
+    The corridor filter is the ENTRY-step one, `grid_at(0)`: the hold is chosen ONCE at entry, and a
+    per-t corridor is a dynamic constraint a constant hold cannot track, so the entry-step grid is
+    the single well-defined filter (no schedule ⇒ the base grid, unchanged). Keeps textbook a
+    within-entry-mandate static lower bound and shares the one filter site."""
     F, L_T, t_outer = bundle.realized_paths(runtime)
     device = F.device
     acc = runtime["accounting"]
     aspace = HedgeActionSpace(runtime, device, bundle.vol_sim)
     tradables_sim = bundle.tradables_sim
-    # The static hold is chosen ONCE at entry and held; a per-t corridor is a dynamic constraint a
-    # constant hold can't track, so the single well-defined filter is the entry-step corridor
-    # grid_at(0) (no schedule ⇒ the base grid, unchanged). Keeps textbook a within-entry-mandate
-    # static lower bound and shares the one filter site.
+    # Entry-step corridor only — a constant hold can't track a per-t one (see docstring).
     grid = aspace.grid_at(0)                                           # (n_actions, n_hedge)
     b_outer = F.shape[-1]
     q0 = aspace.initial_q(b_outer, device)                            # (B, n_hedge) opening book
@@ -479,6 +481,16 @@ class DiffSolverV2:
     ])
 
     def __init__(self, bundle, runtime):
+        """Build the solver against `bundle`: the shared action universe, the config knobs, the
+        bank RNG and the still-unlocked frame, then `_bind` to the bundle's sim views.
+
+        The decision horizon `T_dec` is the last LIVE liability mark, not the last row. The time
+        grid appends one post-settlement clean-exit row (the deal pays out — the platinum
+        average-rate forward marks its realised payoff at T-1, then 0 at the payment date T), so
+        the meaningful terminal is the bundle's `last_live_mtm_index` (the structural
+        pre-settlement `[-2]`). Telescoping wealth THROUGH the settlement drop cancels the
+        liability's settlement risk (no-hedge W_T≡0). Decisions run 0..T_dec-1; the terminal
+        continuation marks at T_dec."""
         self.bundle = bundle
         self.runtime = runtime
         self.cfg = runtime["solver"]
@@ -522,12 +534,7 @@ class DiffSolverV2:
         self._bounds_frozen = False
         self._breaches = []
         self._bind(bundle)
-        # Effective terminal = the last LIVE liability mark. The time grid appends one
-        # post-settlement clean-exit row (the deal pays out — the platinum average-rate forward
-        # marks its realised payoff at T-1, then 0 at the payment date T), so the meaningful
-        # terminal is the bundle's `last_live_mtm_index` (the structural pre-settlement `[-2]`).
-        # Telescoping wealth THROUGH the settlement drop cancels the liability's settlement risk
-        # (no-hedge W_T≡0). Decisions run 0..T_dec-1; the terminal continuation marks at T_dec.
+        # Effective terminal = the last LIVE liability mark, not the last row (see docstring).
         self.T_dec = int(bundle.last_live_mtm_index)
         if self.t_min >= self.T_dec:
             raise ValueError(
@@ -632,16 +639,19 @@ class DiffSolverV2:
           dF   (B_outer, B_inner, n_hedge)  per-instrument futures move t→t+1
           dL   (B_outer, B_inner)           liability mark change t→t+1
           m1   (B_outer, B_inner, market_dim) market state at t+1
-        plus the bank-state market at t (B_outer, market_dim)."""
+        plus the bank-state market at t (B_outer, market_dim).
+
+        EXPIRED-CONTRACT GUARD (the returned `live` mask): the framework returns inner F_t1=0 for
+        a tradable that has expired before the fork's t+1, while the OUTER `tradables_sim` FREEZES
+        at the last traded price. So a naive F_t1−F_t mints a spurious ~−F_t "move" on a dead
+        contract — shorting it would mine fake P&L, which is exactly what drove the
+        corner-saturation and value inflation. A dead contract can't be traded ⇒ its one-step move
+        is 0 (matching the outer's frozen convention); `live_i` = the contract still prices at
+        t+1."""
         inner = self.bundle.inner_mc(t)
         F_t = torch.stack([self.tradables_sim[ref][t] for ref in self.hedges], dim=-1)   # (B_outer, n_hedge)
         F_t1 = torch.stack([inner["F_t1"][ref] for ref in self.hedges], dim=-1)          # (B_outer, B_inner, n_hedge)
-        # EXPIRED-CONTRACT GUARD: the framework returns inner F_t1=0 for a tradable that has
-        # expired before the fork's t+1, while the OUTER tradables_sim FREEZES at the last
-        # traded price. So a naive F_t1−F_t mints a spurious ~−F_t "move" on a dead contract
-        # — shorting it would mine fake P&L, which is exactly what drove the corner-saturation
-        # and value inflation. A dead contract can't be traded ⇒ its one-step move is 0
-        # (matching the outer's frozen convention). `live_i` = the contract still prices at t+1.
+        # EXPIRED-CONTRACT GUARD: a dead contract's one-step move is forced to 0 (see docstring).
         live = (F_t1.abs().amax(dim=(0, 1)) > 0).to(F_t1.dtype)                          # (n_hedge,)
         dF = (F_t1 - F_t.unsqueeze(1)) * live
         dL = inner["L_t1"] - inner["L_t"]                                                # (B_outer, B_inner)
@@ -793,6 +803,14 @@ class DiffSolverV2:
 
     # ---- one backward step: bootstrap + advantage twin fit -------------------
     def _fit_step(self, nets, W_bank, t, inner, rows=slice(None)):
+        """One backward step at t: bootstrap the value target off the cached inner draws, then fit
+        `nets[t]` to it through `_fit_from_labels`.
+
+        The GRAD inner-MC fork returns AAD-live one-step F_t1/L_t1/market_t1 plus the per-process
+        state-at-t LEAVES, so the bootstrap value Y AND its pathwise gradients w.r.t. W0 (wealth)
+        and the market state (spot/state) come from the SAME forward — the full Huge–Savine twin
+        loss. ∂Y/∂market_t is the differential constraint that regularizes the market dimension,
+        where a value-only / W-only fit overfits the few outer paths."""
         dF_ng, dL_ng, m1_ng, market0, live = inner                                       # no-grad cache
         market0 = market0[rows]
         W0_bank = W_bank[t][rows]
@@ -801,11 +819,7 @@ class DiffSolverV2:
         q_star, _ = self._decide(nets, m1_ng[rows], dF_ng[rows], dL_ng[rows], W0_bank, t, live=live)
         q_star = q_star * live          # expired contracts: dF=0 ⇒ wealth-neutral; report 0, not the tie
 
-        # GRAD inner-MC fork: AAD-live one-step F_t1/L_t1/market_t1 + per-process state-at-t
-        # LEAVES. Bootstrap value Y AND its pathwise gradients w.r.t. W0 (wealth) and the
-        # market state (spot/state) come from the SAME forward — the full Huge–Savine twin
-        # loss. ∂Y/∂market_t is the differential constraint that regularizes the market
-        # dimension (where a value-only / W-only fit overfits the few outer paths).
+        # GRAD inner-MC fork: AAD-live t→t+1 quantities + state-at-t leaves (see docstring).
         ig = self.bundle.inner_mc_grad(t)
         leaves, widths = ig["state_t_leaves"], ig["state_t_leaf_widths"]
         if not getattr(self, "_proj_checked", False):
@@ -860,7 +874,17 @@ class DiffSolverV2:
     def _fit_from_labels(self, nets, W0_bank, market0, Y, gW, g_market, t, q_star):
         """Shared fit tail: advantage decomposition + standardized twin loss on the
         (value, wealth-grad, market-grad) labels. Called by both the single-fork and the
-        sub-sliced large-B label paths of `_fit_step`."""
+        sub-sliced large-B label paths of `_fit_step`.
+
+        The twin loss matches gradients in STANDARDIZED space (g_zn = std·g_raw). Raw-space
+        matching is mis-scaled: ∂A/∂W ~ 1e-6 in dollars, ∂A/∂spot ~ 1e-4 — both inert against the
+        O(0.1) value term. Standardized, ∂A/∂wn and ∂A/∂mn are O(1) and the gradient match
+        actually regularizes — the principled regularizer of differential ML (NOT weight decay).
+
+        Huge–Savine term BALANCING: with W~$1e6 and utility~O(1) the standardized W-gradient label
+        is ~600× the value label, so an unnormalized sum lets the W-gradient drown the value fit
+        AND the market gradient. Each term is normalized by its label variance so all are O(1) and
+        `lam_g` balances value-vs-gradient as intended."""
         # Advantage decomposition: fit A = C − u(W0); subtract the anchor's wealth slope.
         if self.use_adv:
             Wb = W0_bank.clone().requires_grad_(True)
@@ -871,17 +895,11 @@ class DiffSolverV2:
             a_val, a_gW = Y, gW
 
         net = nets[t]
-        # Twin loss in STANDARDIZED space (g_zn = std·g_raw). Raw-space matching is mis-scaled:
-        # ∂A/∂W ~ 1e-6 in dollars, ∂A/∂spot ~ 1e-4 — both inert against the O(0.1) value term.
-        # Standardized, ∂A/∂wn and ∂A/∂mn are O(1) and the gradient match actually regularizes
-        # — the principled regularizer of differential ML (NOT weight decay).
+        # Twin loss in STANDARDIZED space: g_zn = std·g_raw (see docstring).
         lam_g = float(self.cfg.get("diffv2_lambda_grad", 1.0))
         g_zn_W = self.w_std * a_gW                                                       # (B,)
         g_zn_m = self.m_std * g_market                                                   # (B,md); u indep of market
-        # Huge–Savine term BALANCING: with W~$1e6 and utility~O(1) the standardized W-gradient
-        # label is ~600× the value label, so an unnormalized sum lets the W-gradient drown the
-        # value fit AND the market gradient. Normalize each term by its label variance so all
-        # are O(1) and lam_g balances value-vs-gradient as intended.
+        # Per-term label-variance normalization — the Huge–Savine balancing (see docstring).
         nrm_v = a_val.var() + 1e-8
         nrm_w = g_zn_W.var() + 1e-8
         # Per-column lambda_j (Huge-Savine official): each market column normalized by its
@@ -942,17 +960,19 @@ class DiffSolverV2:
         Returns per-policy {u_mean (the objective), wT_mean, wT_p5, wT_cvar5}. The verdict:
         the greedy policy should DOMINATE no-hedge on downside and be competitive with
         textbook — a SPECULATING policy (the old solver's failure) shows up as worse p5/CVaR
-        than textbook and a wide wT spread."""
+        than textbook and a wide wT spread.
+
+        Turnover cost is accounted in PARALLEL: Transaction_Cost_Per_Unit + half the
+        Bid_Offer_Spread_Bps on |Δq| each rebalance, entry measured from the OPENING book q0 — not
+        from flat. The wealth recursion itself stays cost-free (the position-free value design
+        assumes free repositioning), so these are DIAGNOSTICS quantifying that approximation per
+        policy."""
         L = self.liability_sim
         t0 = self.t_min
         n = L[t0][rows].shape[0]
         W = {p: L[t0][rows].clone() for p in ("greedy", "textbook", "nohedge")}
         q_traj = {"greedy": [], "textbook": []}                                          # mean |q| per step
-        # Parallel turnover-cost accounting (Transaction_Cost_Per_Unit + half the
-        # Bid_Offer_Spread_Bps on |Δq| each rebalance, entry measured from the OPENING book
-        # q0 — not from flat). The wealth recursion itself stays cost-free (the position-free
-        # value design assumes free repositioning) — these are DIAGNOSTICS quantifying that
-        # approximation per policy.
+        # Parallel turnover-cost DIAGNOSTIC; entry measured from the opening book (see docstring).
         cost = {p: torch.zeros(n, device=self.device) for p in ("greedy", "textbook")}
         q0 = self.aspace.initial_q(n, self.device)
         q_prev = {p: q0.clone() for p in ("greedy", "textbook")}
@@ -1020,10 +1040,12 @@ class DiffSolverV2:
         q_log = {"greedy": [], "t": []}
 
         def roll(policy):
-            # mirror_scale=False: this rollout is only ever reached with a checkpoint loaded, and
-            # that checkpoint's utility scale is the value function's own frame — the argmax below
-            # must read the same `c` the nets were fitted against. Re-mirroring would replace it
-            # with this world's `c` and decide under a different scale than `_verdict` did.
+            """Roll `policy` day-by-day through a fresh `BundleStepper`; returns terminal P&L.
+
+            `mirror_scale=False`: this rollout is only ever reached with a checkpoint loaded, and
+            that checkpoint's utility scale is the value function's own frame — the argmax below
+            must read the same `c` the nets were fitted against. Re-mirroring would replace it
+            with this world's `c` and decide under a different scale than `_verdict` did."""
             stepper = BundleStepper(self.bundle, self.runtime, mirror_scale=False)
             # Seed the cost-aware decision q_prev from the OPENING book (the stepper's own
             # positions already open here too, so its realized first-step turnover is measured
@@ -1087,7 +1109,25 @@ class DiffSolverV2:
         mismatched frames.
 
         Bank RNG is deterministic; multi-seed repeats (N solvers, each warmed up once) advance the
-        framework's inner-MC Sobol stream, so V_0 spread reflects inner-MC noise."""
+        framework's inner-MC Sobol stream, so V_0 spread reflects inner-MC noise.
+
+        `DiffV2_Load_Value_Fn` makes this a FROZEN-POLICY EVAL instead: restore the fitted nets AND
+        each function's frame — the train-time standardization stats and utility scale are part of
+        the value function, and recomputing them from the (possibly stressed) eval world would
+        silently change what the nets compute. Every eval path is unseen by the nets, so the
+        verdict rolls over all paths. A LIST of checkpoints = ensemble argmax: each member
+        evaluated in its own frame, continuations averaged (cross-fit winner's-curse reduction on
+        top of antithetic).
+
+        Two provenance guards run per member. CORRIDOR: a value fn trained INSIDE a
+        `Total_Position_Schedule` fit only the wealth states that corridor makes reachable, and the
+        wealth support is monotone in the corridor — training UNCONSTRAINED spans the widest
+        support, so rolling that policy inside ANY corridor only restricts to a learned subset
+        (valid — this is the roll-only-on-corridor-free validation path), whereas a policy trained
+        in a specific corridor is queried off-support under a DIFFERENT or absent one, so that
+        fails loud. FRAME: this frame is locked on the warmup batch, a pre-stream checkpoint's on a
+        whole fixed simulation, so the two standardize off different path populations — it still
+        evaluates (the checkpoint's own frame is restored), but it is worth saying out loud."""
         if bundle is not None:
             self._bind(bundle)
         logging.info(
@@ -1132,13 +1172,8 @@ class DiffSolverV2:
                               else ([str(load_cfg)] if load_cfg else [])))
         loaded = None
         if load_members:
-            # Frozen-policy eval: restore the fitted nets AND each function's frame — the
-            # train-time standardization stats and utility scale are part of the value
-            # function; recomputing them from the (possibly stressed) eval world would
-            # silently change what the nets compute. EVERY eval path is unseen by the nets,
-            # so the verdict rolls over all paths. A LIST of checkpoints = ensemble argmax:
-            # each member evaluated in its own frame, continuations averaged (cross-fit
-            # winner's-curse reduction on top of antithetic).
+            # Frozen-policy eval: restore the fitted nets AND each member's own frame; a LIST of
+            # checkpoints is an ensemble argmax (see docstring).
             members = []
             for member in load_members:
                 # Pre-contract checkpoints predate active_hedge_indices / solver_version /
@@ -1151,12 +1186,8 @@ class DiffSolverV2:
                         raise ValueError(
                             f"DiffV2_Load_Value_Fn checkpoint mismatch on {key!r}: "
                             f"{src} saved {ck[key]!r} vs this run {want!r}")
-                # Corridor provenance: a value fn trained INSIDE a Total_Position_Schedule fit only
-                # the wealth states that corridor makes reachable. The wealth support is monotone in
-                # the corridor: training UNCONSTRAINED spans the widest support, so rolling that
-                # policy inside ANY corridor only restricts to a learned subset (valid — this is the
-                # roll-only-on-corridor-free validation path). But a policy trained in a specific
-                # corridor is queried off-support under a DIFFERENT or absent one → fail loud.
+                # Corridor provenance (see docstring): corridor-free training spans the widest
+                # wealth support, so it rolls under any corridor; a different one → fail loud.
                 want_sched = self.aspace.schedule_key(self.aspace.schedule)
                 if "total_position_schedule" in ck:
                     saved_sched = self.aspace.schedule_key(ck["total_position_schedule"])
@@ -1180,10 +1211,7 @@ class DiffSolverV2:
                         "total_position_schedule stamp) but this run sets a Total_Position_Schedule "
                         "— cannot verify the frozen policy was trained in it; roll validity "
                         "unverified.", src)
-                # Frame provenance, same idiom as the corridor guard above: this frame is locked
-                # on the warmup batch, a pre-stream checkpoint's on a whole fixed simulation, so
-                # the two standardize off different path populations. It still evaluates (the
-                # checkpoint's own frame is restored), but it is worth saying out loud.
+                # Frame provenance, same idiom as the corridor guard above (see docstring).
                 if "streaming" in ck and not ck["streaming"]:
                     logging.warning(
                         "DiffV2_Load_Value_Fn: %s carries a pre-stream frame, locked on a whole "
@@ -1333,13 +1361,32 @@ class DiffSolverV2:
     def finish(self, bundle):
         """Verdict, benchmarks-facing headline and the policy artifact. STREAMING passes the
         HELD-OUT batch — a world no fit step ever saw, so the whole batch is out-of-sample. A
-        frozen eval is the stream of length one: warmup's batch is handed straight back here."""
+        frozen eval is the stream of length one: warmup's batch is handed straight back here.
+
+        A newly bound (held-out) world needs its OWN inner-MC forks: the argmax reads
+        E_inner[C_{t+1}] at each swept t, and the cached ones belong to the last TRAINING batch. A
+        stream of length 1 — a frozen eval, where warmup's batch IS the held-out one — is already
+        bound to it, and re-forking would advance the Sobol stream and move the verdict.
+
+        The POLICY ARTIFACT is built ONCE, here: the fitted value function + its frame + the
+        provenance stamps. It is the single source returned via `SolverResult` (→
+        `HedgeRuntimeExecutionResult.policy_artifact`) AND torch.saved to `DiffV2_Save_Value_Fn` —
+        the file and the in-memory dict are byte-for-byte the same object, so the
+        eval-from-artifact path (load member = this dict) is identical to loading the file. A
+        LOADED run produces none: nothing was fitted, so the only policy in play is the file's and
+        re-emitting it would claim this run as its provenance. The JSON boundary rejects a config
+        that asks to save one anyway, so `save_path` is empty whenever `loaded` is set.
+
+        The downside verdict — greedy policy vs textbook delta hedge vs no hedge — is OUT-OF-SAMPLE
+        by construction: `finish` always runs on a world no fit step saw (the held-out batch, or,
+        with a checkpoint loaded, every path, since frozen nets saw none of them). There is no
+        in-sample counterpart to report a gap against; the training batches are already gone. With
+        a checkpoint loaded and `DiffV2_Stepper_Rollout` set, `_rollout_on_stepper` adds the
+        deployment-faithful backtest — the trustworthy P&L for a walk-forward, since the simplified
+        `_verdict` wealth recursion mis-accrues expiry."""
         if bundle is not self.bundle:
             self._bind(bundle)
-            # The held-out world needs its own forks: the argmax reads E_inner[C_{t+1}] at each
-            # swept t, and the cached ones belong to the last TRAINING batch. A stream of length 1
-            # — a frozen eval, where warmup's batch IS the held-out one — is already bound to it,
-            # and re-forking would advance the Sobol stream and move the verdict.
+            # The held-out world needs its OWN forks (see docstring).
             self.inner_cache = {t: self._inner_step(t) for t in self.sweep_ts}
         nets, sweep_ts, inner_cache = self.nets, self.sweep_ts, self.inner_cache
         loaded, rows, worst, root = self.loaded, self.rows, self.worst, self.root
@@ -1353,15 +1400,7 @@ class DiffSolverV2:
                 "DiffSolverV2 sweep complete: t=%d→%d | max|Y_boot|=%.4g (%s) | "
                 "V_0=%+.6g | n_star@t=%d=%s", self.T_dec - 1, self.t_min, worst,
                 "BOUNDED" if bounded else "EXPLODED", V_0, root["t"], n_star_0)
-        # POLICY ARTIFACT (built ONCE, here): the fitted value function + its frame + the
-        # provenance stamps. This is the single source returned via SolverResult (→
-        # HedgeRuntimeExecutionResult.policy_artifact) AND torch.saved to DiffV2_Save_Value_Fn
-        # — the file and the in-memory dict are byte-for-byte the same object, so the
-        # eval-from-artifact path (load member = this dict) is identical to loading the file.
-        # A LOADED run produces none: nothing was fitted, so the only policy in play is the
-        # file's and re-emitting it would claim this run as its provenance. The JSON boundary
-        # rejects a config that asks to save one anyway, so `save_path` is empty here whenever
-        # `loaded` is set.
+        # POLICY ARTIFACT, built ONCE here; a LOADED run produces none (see docstring).
         artifact = None
         save_path = str(self.cfg.get("diffv2_save_value_fn", "") or "")
         if loaded is None:
@@ -1394,16 +1433,10 @@ class DiffSolverV2:
                 os.replace(tmp, save_path)                       # atomic on POSIX
                 logging.info("DiffSolverV2 SAVED value fn to %s (V_0=%+.6g)", save_path, V_0)
 
-        # Downside verdict: greedy policy vs textbook delta hedge vs no hedge. HEADLINE is the
-        # OUT-OF-SAMPLE rollout (held-out paths the nets never saw); in-sample reported too.
-        # `finish` always runs on a world no fit step saw: the held-out batch, or — with a
-        # checkpoint loaded — every path, since frozen nets saw none of them. There is no
-        # in-sample counterpart to report a gap against; the training batches are already gone.
+        # Downside verdict, OUT-OF-SAMPLE by construction: all rows, held-out world (see docstring).
         verdict = self._verdict(nets, inner_cache, sweep_ts, rows=slice(None))
-        # Deployment-faithful backtest: when a frozen policy is loaded and stepper rollout is
-        # requested, roll it day-by-day on the (observed) path via BundleStepper — real futures
-        # accounting + decisions off the stepper's own wealth. This is the trustworthy P&L for a
-        # walk-forward backtest (the simplified _verdict wealth recursion mis-accrues expiry).
+        # Deployment-faithful backtest through BundleStepper — real futures accounting, decisions
+        # off the stepper's own wealth (see docstring).
         stepper_verdict = None
         if loaded is not None and bool(self.cfg.get("diffv2_stepper_rollout", False)):
             stepper_verdict = self._rollout_on_stepper(nets, inner_cache, sweep_ts)
