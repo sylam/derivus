@@ -35,6 +35,15 @@ made it possible, the quote-side overlay, the IFT contract, the attachment, the 
 validation triangle and the non-goals. Turned on per curve by the declared field
 `Quote_Sensitivity`; the solved numbers are bit-identical either way.
 
+It shipped carrying two known traps, and both are now **unrepresentable** rather than fixed, because
+`TensorSchedule.bind` gave the tensor half a birthday — see
+[the schedule lifecycle](calc_lifecycle.md#the-schedule-lifecycle). `dual` and `merged` memoized
+under one key and could serve each other's copy: they are now one accessor over one bound copy, so
+there is no second memo to collide with. `pv_fixed_cashflows` memoized its payment tensor in
+`Factor_dep`, which outlives the copy it was built from and froze the first evaluation's overlay:
+it lives in the schedule's `derived`, which `bind` mints and re-mints with that copy. The two gates
+that held them in place assert the design instead.
+
 What remains is increment 2: the same IFT contract around the HW2F swaption-vol calibration
 (`DV_Bootstrap`), where the fixed point is the stationarity of a least-squares loss rather than a
 root, so backward needs the Gauss–Newton Hessian and the dropped residual-curvature term has to be

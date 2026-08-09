@@ -60,6 +60,15 @@ Constructs the factor objects, mints the AAD leaves, and builds the processes. K
 - `Factor_dep` is the compiled factor-offset lookup a deal builds once in `calc_dependencies`, via the generic `get_*` layer → `calc_factor_code_chain` → `calc_factor_index`. It is stored verbatim as `DealDataType.Factor_dep` and consumed unchanged by `generate`. See [Resolver Layer](resolver_layer.md).
 - `Time_dep` (`DealTimeDependencies`) precomputes interp indices/alphas against the mtm grid; `calculate` prices on the deal grid, `pricing.interpolate` gathers to the mtm grid and saves `Calc_res['Value']` (and, when `shared.keep_tensor`, `Calc_res['tensor']`).
 
+### The schedule lifecycle {#the-schedule-lifecycle}
+
+A `TensorSchedule` is a **dual**: `.np` for the index columns, which are checked in kernel-free numpy at compile time, and a device copy for the value arithmetic. `bind` is what separates the two halves in TIME, and it rides the deal walk — `utils.bind_schedules` wraps `calc_dependencies` inside `add_deal_to_structure` / `add_structure_to_structure`, walking the compiled output so a schedule is reached wherever a deal filed it. Before it the numpy half is authoritative and only the compile-time edits write (`overwrite_rate`, `carry`, `compress_no_compounding`, an inserted principal exchange); after it the device copy is, `dual` and `merged` are one accessor over that one copy, and an edit raises `ScheduleLifecycleError`. `derived` is the run-scoped home for anything a pricer builds off the copy — `pv_fixed_cashflows`' payment vector, a reset's known values — and `bind` mints it with the copy, so a re-bind drops it.
+
+Two deals compile outside a `DealStructure` and therefore bind for themselves: `bootstrappers.BenchmarkInstruments` (last, once the quote overlay is on) and the HW2F calibration's `create_market_swaps`. The inner-MC fork windows `Time_dep` and shares `Factor_dep` by reference on the same `shared_mem`, so it prices off schedules the outer walk already bound.
+
+!!! warning "Invariant — `derived` is run-scoped, `t_Buffer` is batch-scoped"
+    A tensor derived from a schedule's device copy belongs in `derived`, never in `Factor_dep` (whose contract is compile output consumed verbatim) and never in `t_Buffer`, which is cleared per batch — the payment vector is deliberately batch-independent and rebuilding it every batch is pure cost. A schedule the walk did not reach raises on first touch and is `is_fatal_pricing_error`, so `Deal.calculate`'s guard cannot turn it into a scalar-0 mark.
+
 ## Valuation modes
 
 **`Base_Revaluation`** is the degenerate lifecycle: a single time point (`TimeGrid({base_date}, …)`), no stochastic factors, everything a static leaf — no cholesky, no generate loop. `resolve_structure` runs once; greeks via `pricing.greeks`. It is the compile-plus-single-eval reference for reconciliation.
