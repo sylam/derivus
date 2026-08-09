@@ -195,7 +195,7 @@ It has its own lifecycle, and it straddles the phases above:
   registrations made beneath it. It has to ride on the set: `boundary_sets` accumulates across every
   netting set, so one slot on `shared` would push an uncollateralised set's deal through a
   collateralised set's collateral scan.
-- **At the objective** — CVA, FVA or base valuation — `calculation.boundary_correction` walks the
+- **At the objective** — CVA, FVA or base valuation — `pricing.boundary_correction` walks the
   registrations, and each converts its own decisions into **portfolio** deltas.
 
 !!! warning "Invariant — a counterfactual is scored on the PORTFOLIO"

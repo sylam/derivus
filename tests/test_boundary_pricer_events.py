@@ -332,7 +332,7 @@ def test_the_netting_set_a_registration_sits_under_is_the_one_that_scores_it():
                 netting('NS_COL_A', 'True', 'B_COL_A'),
                 netting('NS_COL_B', 'True', 'B_COL_B')]
 
-    import derivus.calculation as C
+    import derivus.pricing as C
     seen = {}
     original = C.boundary_correction
 
@@ -412,7 +412,7 @@ def test_a_netting_set_is_scored_on_the_portfolio_not_on_itself():
 
     The one-set companion run is the parameter this varies: the SAME registrations, the same draws,
     the second set removed, and a gradient that is legitimately non-zero."""
-    import derivus.calculation as C
+    import derivus.pricing as C
     seen = {}
     original = C.boundary_correction
 
@@ -725,7 +725,7 @@ def test_a_zero_gross_delta_reproduces_the_reported_net(exclude_paid_today):
     unchanged, which is what let it hide. Note Exclude_Paid_Today is read from the VALUATION
     CONFIGURATION, not the deal's fields; setting it on the netting dict is silently ignored and
     makes this test vacuous."""
-    import derivus.calculation as C
+    import derivus.pricing as C
     seen = {}
     original = C.boundary_correction
 

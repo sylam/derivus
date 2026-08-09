@@ -457,30 +457,6 @@ def cva_per_scenario(pv_exposure, prob, recovery):
     return ((1.0 - recovery) * 0.5 * (pv_exposure[1:] + pv_exposure[:-1]) * prob).sum(axis=0)
 
 
-def boundary_correction(shared, objective, reported_mtm, bandwidth):
-    """Total boundary correction for every recorded decision - a margin call's transfer, a barrier
-    crossing, an autocall trigger, any observed event whose value jump is real.
-
-    They are one defect: a decision taken on simulated state whose derivative the frozen-decision
-    graph drops. They differ only in how the counterfactual is produced - a replayed balance scan,
-    branches the pricer already evaluated - and that half belongs to the set that recorded it,
-    along with the netting arithmetic that carries its decision out to the portfolio.
-
-    This half is `score`: the reported PORTFOLIO plus a change to it. Never a set's own level,
-    because the objective is applied to `resolve_structure`'s root sum over every netting set, and
-    a collateralised set's post-collateral net sits at the relu kink by construction - which is
-    where scoring it in isolation goes furthest wrong. `gap > 0` means the trigger fired, matching
-    a jump of J(fired) - J(did not).
-    """
-    def score(delta):
-        return objective(reported_mtm + delta)
-
-    corrections = [pricing.stochastic_boundary_correction(gap, jump, bandwidth)
-                   for bset in shared.boundary_sets
-                   for gap, jump in bset.objective_jumps(score)]
-    return torch.stack(corrections).sum() if corrections else None
-
-
 class CMC_State(utils.Calculation_State):
     def __init__(self, cholesky, static_buffer, batch_size, one, mcmc_sims, report_currency,
                  seed, job_id, num_jobs, scale_survival=False, nomodel='Constant', keep_tensor=False):
@@ -1568,7 +1544,7 @@ class Credit_Monte_Carlo(Calculation):
                                     - torch.sum(delta_fund_benefit_rf * (minus[1:] + minus[:-1]) / 2,
                                                 dim=0))
 
-                        correction = boundary_correction(
+                        correction = pricing.boundary_correction(
                             shared_mem, fva_per_scenario, tensors['mtm'],
                             float(params.get('Boundary_AAD_Bandwidth', 0.01)))
                         if correction is not None:
@@ -1661,7 +1637,7 @@ class Credit_Monte_Carlo(Calculation):
                     if shared_mem.boundary_sets:
                         objective = lambda mtm: cva_per_scenario(
                             torch.relu(mtm * fx_report * Dt_T) / fx_report[0], prob, recovery)
-                        correction = boundary_correction(
+                        correction = pricing.boundary_correction(
                             shared_mem, objective, tensors['mtm'],
                             float(params.get('Boundary_AAD_Bandwidth', 0.01)))
                         if correction is not None:
@@ -1964,7 +1940,7 @@ class Base_Revaluation(Calculation):
                 # The portfolio value IS the objective, so the per-scenario vector is the value
                 # itself - one scenario, whose mean is the reported number. Worth exactly zero in
                 # the forward pass, so `mtm` here is untouched and only the tape gains a term.
-                correction = boundary_correction(
+                correction = pricing.boundary_correction(
                     shared_mem, lambda value: value.sum(axis=0), mtm,
                     float(params.get('Boundary_AAD_Bandwidth', 0.01)))
                 if correction is not None:
