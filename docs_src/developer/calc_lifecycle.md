@@ -170,6 +170,76 @@ Two deals compile outside a `DealStructure` and therefore bind for themselves: `
     bootstrap reads. A wider fork should be justified by being the right fork, not by the reader
     hedging against one nobody measured.
 
+## Recomputing the inner Monte Carlo {#recompute-inner-mc}
+
+An MC-priced deal builds one autograd graph per pricing, and the terminal `backward()` holds every
+one of them at once — every fixing of every reporting row of every deal — while the simulation that
+built them is cheap. `Recompute_Inner_MC` (a `Calculation` field, `No` by default, on
+`BaseValuation` and `CreditMonteCarlo`) trades the tape for a second forward pass:
+`pricing.InnerMCRecompute` runs its forward under `no_grad` and leaves nothing behind but its
+inputs, and its backward re-runs **the same callable** under `enable_grad` and contracts the
+cotangent through that one graph, which dies as soon as it has. Peak is one inner graph rather than
+all of them; wired on `pv_MC_Tarf`, and shaped so the other MC pricers can adopt it.
+
+**The counter is the storage.** What is saved is where each random stream stood
+(`utils.rng_position`), never what it produced — the numbers are exactly what is too big to keep.
+Sobol draws are memoized per `(dimension, sample_size, batch)`, so rewinding the counter hands the
+replay the very same tensor; the regular generator (`torch.rand`, taken at 16 scenarios or fewer
+where the Sobol cache is not worth it, and every Heston–Nandi unmonitored sub-step) has no memo, so
+its own state is saved and restored. The live
+position is put back after the replay: a backward runs long after the forward finished, and a node
+that left the streams where its replay ended would move the next node's draws.
+
+Three contracts fall out of it, and each is a way to be silently wrong:
+
+- **One function, called twice** — not a fast forward beside a differentiable copy of it. Two
+  spellings of one simulation agree until the day one is edited, and the failure is a wrong
+  gradient beside a right price.
+- **Pure in everything but its return.** A side effect inside the simulation — a cashflow settled,
+  a decision registered — fires a second time in the backward, so the pricer RETURNS those and the
+  caller performs them once off the forward's result.
+- **Its inputs are its whole theta surface.** Autograd only returns a gradient for a tensor passed
+  to `apply`, so anything the simulation reads out of a closure is differentiated as a constant.
+  `pv_MC_Tarf` therefore hoists its vol strip out of the fixing loop (`forward_vols`) to pass it in.
+
+**It is a FIRST-ORDER node and it says so.** The replay is rooted at *detached* copies of the saved
+inputs — that is what stops the inner `autograd.grad` walking back into the outer graph and
+double-counting — and a second derivative taken through a detached leaf is severed from the graph
+the outer pass holds. The failure is silent: the entries needing that path come back **zero**, which
+is a Hessian that looks like a Hessian (measured, `Greeks: 'All'` on the TARF fixture: −1.74e6 /
+−4.03e5 / −1.67e4 taped, all three zero recomputed). So `backward` refuses `create_graph` naming the
+switch, on the `LeastSquaresSolve` precedent. Keeping the inputs attached instead was tried and
+breaks the first derivative outright.
+
+!!! warning "Invariant — ask `torch.is_grad_enabled()` BEFORE `enable_grad`"
+    The engine runs a backward node with grad mode set to `create_graph`, so that flag is how a
+    node learns it is being differentiated twice — but asked from *inside* the `enable_grad` block
+    it always answers True. Getting it the wrong way round here did not raise: it passed
+    `create_graph=True` to the inner `autograd.grad`, RETAINED every recomputed graph for the whole
+    reverse sweep, and gave the entire saving back and then some — 5.0 GiB taped against 7.4 GiB
+    recomputed, on a forward pass that peaked at 0.6.
+
+Measured (`gates/recompute_inner_mc.py`, RTX 3090, float64, CVA gradient on, a never-filling TARF
+reported monthly, 3 runs each, CVA and gradient bit-identical throughout):
+
+| fixings × scenarios × inner | taped peak | recomputed peak | taped wall | recomputed wall |
+| --- | --- | --- | --- | --- |
+| 6 × 128 × 32 | 101.5 MiB | 66.3 MiB (1.5×) | 0.19 s | 0.20 s (1.02×) |
+| 12 × 256 × 64 | 1229.6 MiB | 405.1 MiB (3.0×) | 1.13 s | 0.75 s (0.66×) |
+| 24 × 256 × 64 | 5266.2 MiB | 1391.0 MiB (3.8×) | 16.39 s | 3.42 s (0.21×) |
+| 24 × 512 × 64 | 11481.0 MiB | 3731.4 MiB (3.1×) | 17.66 s | 3.61 s (0.20×) |
+| 24 × 512 × 128 | **out of memory** | 8384.5 MiB | — | 3.86 s |
+
+The last row is the number that matters: the taped path cannot price that shape on a 24 GiB device
+at all and the node prices it in under four seconds. The second forward pass costs **2%** where
+neither path is near the device (top row, which is what the wall column is honestly measuring);
+everywhere above that the taped path is memory-bound before it is compute-bound and the node is
+3-5× *faster*. The whole-run drop (3-4×) is smaller than the forward-pass drop (8.5×, probed
+separately at 24 × 256 × 64: 5023 → 592 MiB) for two reasons, and both are inherent: the backward
+holds one recomputed block graph live at a time, and with sensitivities on the per-inner-path
+`jumps` are retained exactly as they were before — the boundary registration's own storage, which
+this changes nothing about.
+
 ## Boundary corrections — the sensitivity subsystem
 
 Some deals take a decision on **simulated state**: a barrier crosses, an autocall triggers, a
@@ -213,6 +283,15 @@ why one class with a mode flag would be the wrong shape:
 | `LatchedBoundarySet` | read by every row from the decision onward (barrier, swaption) | two whole-profile branches, shared across decisions |
 | `RowBoundarySet` | lands on its own row and no other (autocall coupon) | a pair of `(B,)` values per decision |
 | `InnerBoundarySet` | a decision inside a pricer's inner MC | the objective's *derivative*, not a difference — one inner path moves the row by `1/n`, a jump the value never takes |
+
+!!! note "Under a recompute node, a `gap` is an OUTPUT"
+    `stochastic_boundary_correction` needs `gap` to carry a graph and an untaped forward pass has
+    none to give it (see [Recomputing the inner Monte Carlo](#recompute-inner-mc)). So the
+    registration SPLITS: the gap's value is computed under `no_grad` for the set to report, the
+    node is what connects it, and the correction's coefficient — assembled at the objective exactly
+    as before — arrives as that output's cotangent, so the graph-carrying half of the correction is
+    built during the backward, inside the recompute. The contract is unchanged, and it is the same
+    contract the whole subsystem has: what reaches `backward()` differs, what is reported does not.
 
 There is **no JSON switch**: `shared_mem.boundary_aad = calc_greeks is not None`. Wanting
 sensitivities *is* the switch, and registration is gated on it so the cost is zero when greeks are

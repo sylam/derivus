@@ -12,6 +12,7 @@
 ########################################################################
 
 import math
+from functools import partial
 
 import numpy as np
 import torch
@@ -155,6 +156,106 @@ def boundary_correction(shared, objective, reported_mtm, bandwidth):
                    for bset in shared.boundary_sets
                    for gap, jump in bset.objective_jumps(score)]
     return torch.stack(corrections).sum() if corrections else None
+
+
+class InnerMCRecompute(torch.autograd.Function):
+    """A pricer's inner Monte Carlo as one node: simulated untaped, RE-simulated to differentiate.
+
+    An MC-priced deal builds a graph per pricing that the terminal backward holds until it runs -
+    every fixing of every reporting row of every deal, all resident at once. The simulation itself
+    is cheap and the tape is what does not fit, so this trades the tape for a second forward: the
+    node's own forward runs under `no_grad` and leaves NOTHING behind but its inputs, and its
+    backward re-runs the same simulation under `enable_grad` and contracts the cotangent through
+    that one graph, which dies as soon as it has. Peak is one inner graph rather than all of them.
+
+    THE COUNTER IS THE STORAGE. A recompute is only a recompute if the second pass draws the same
+    numbers, and the numbers are exactly what is too big to keep - so what is saved is where each
+    stream STOOD (`utils.rng_position`), not what it produced. Sobol draws are memoized
+    per (dimension, sample_size, batch), so rewinding the counter makes the replay return the very
+    same tensor; the regular generator has no memo, so its own state is saved and restored. The
+    live position is put back afterwards: a backward runs long after the forward pass finished, and
+    a node that left the streams where its replay ended would move the next node's draws.
+
+    ONE FUNCTION, CALLED TWICE. `simulate` is the same object in both passes - not a differentiable
+    copy of a fast forward - because two spellings of one simulation agree until the day one of
+    them is edited, and the failure is a wrong gradient beside a right price, which no price gate
+    sees. For the same reason it must be PURE in everything but its return: a side effect (a
+    cashflow accrued, a decision registered) would fire a second time in the backward, so a pricer
+    RETURNS those instead and the caller performs them once, off the forward's result.
+
+    ITS INPUTS ARE ITS WHOLE THETA SURFACE. Autograd can only return a gradient for a tensor that
+    was passed to `apply`, so anything `simulate` reads out of a closure is differentiated as a
+    constant - silently. A pricer therefore hoists every graph-carrying quantity into `theta`,
+    including ones it would otherwise compute inside the loop (a vol strip off the surface, say).
+
+    A DECISION'S GAP IS AN OUTPUT, which is what makes it survive the untaped forward. Boundary
+    corrections need `gap` to carry a graph (`stochastic_boundary_correction` is `gap -
+    gap.detach()` times a detached coefficient) and the forward pass here has none to give: the
+    gap's VALUE is computed under `no_grad` for the registration to report, and the node is what
+    connects it. The coefficient is assembled at the objective, exactly as before, and arrives as
+    that output's cotangent - so the graph-carrying half of the correction is built during the
+    backward, inside the recompute, and the split costs the estimator nothing. The contract is
+    unchanged: what reaches `backward()` differs, what is reported does not.
+
+    A registration held on `shared` makes shared -> boundary_sets -> gap -> this node -> `simulate`
+    -> shared, a cycle refcounting cannot break; `reset()` clearing `boundary_sets` per batch drops
+    one edge and frees it deterministically. With sensitivities off nothing outside the graph holds
+    the node at all.
+
+    SECOND DERIVATIVES ARE REFUSED, on the `LeastSquaresSolve` precedent and for a sharper reason.
+    The replay is rooted at DETACHED copies of the saved inputs - that is what stops `autograd.grad`
+    walking back into the outer graph and double-counting the first derivative - and a second
+    derivative taken through a detached leaf is severed from the graph the outer pass holds. It does
+    not raise on its own: it comes back with the entries that needed that path set to ZERO, which is
+    a Hessian that looks like a Hessian. Measured on the TARF fixture, `Greeks: 'All'`: three
+    leading entries of -1.74e6 / -4.03e5 / -1.67e4 taped, all three zero recomputed, and a fourth
+    that merely disagreed. Keeping the inputs attached instead was tried and breaks the FIRST
+    derivative outright, so the honest node is a first-order one that says so.
+    """
+
+    @staticmethod
+    def forward(ctx, simulate, position, shared, *theta):
+        # undefined cotangents stay undefined: most outputs (detached jumps, counterfactual
+        # branches) are coefficients nothing differentiates, and materializing zeros for them
+        # would allocate in backward exactly what this node exists to avoid
+        ctx.set_materialize_grads(False)
+        with torch.no_grad():
+            outputs = simulate(*theta)
+        ctx.simulate, ctx.position, ctx.shared = simulate, position, shared
+        ctx.save_for_backward(*theta)
+        return outputs
+
+    @staticmethod
+    def backward(ctx, *cotangents):
+        # ASKED HERE, not inside the `enable_grad` block below: the engine runs a backward node
+        # with grad mode set to `create_graph`, and in there the answer is always True
+        if torch.is_grad_enabled():
+            raise Exception(
+                'Recompute_Inner_MC: create_graph is not supported - the recompute is rooted at '
+                'DETACHED copies of its inputs, so a second derivative taken through it is severed '
+                'from the graph the outer pass holds and comes back partly zero. Ask for the '
+                'second-order block with the switch off.')
+        wanted = [i for i, t in enumerate(ctx.saved_tensors) if t.requires_grad]
+        if not wanted:
+            return (None, None, None) + (None,) * len(ctx.saved_tensors)
+        theta = [t.detach() for t in ctx.saved_tensors]
+        for i in wanted:
+            theta[i].requires_grad_(True)
+        with torch.enable_grad():
+            live = utils.rng_position(ctx.shared, ctx.position)
+            try:
+                outputs = ctx.simulate(*theta)
+            finally:
+                utils.rng_position(ctx.shared, live)
+            paired = [(out, cotangent) for out, cotangent in zip(outputs, cotangents)
+                      if cotangent is not None and out.requires_grad]
+            grads = torch.autograd.grad(
+                [out for out, _ in paired], [theta[i] for i in wanted],
+                [cotangent for _, cotangent in paired], allow_unused=True) if paired else ()
+        theta_grads = [None] * len(theta)
+        for i, grad in zip(wanted, grads):
+            theta_grads[i] = grad
+        return (None, None, None) + tuple(theta_grads)
 
 
 def cva_per_scenario(pv_exposure, prob, recovery):
@@ -1563,6 +1664,14 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     absent ``sim_spot_tarf`` takes the byte-identical GBM path. Asset-class agnostic - it works for
     the FX cross here and is unchanged for an equity or commodity underlying.
 
+    RECOMPUTE (``shared.recompute_inner_mc``, the ``Recompute_Inner_MC`` calculation field). Off,
+    ``sim_spot_tarf`` is called once and taped. On, it is called through ``InnerMCRecompute`` -
+    untaped to price, re-run under ``enable_grad`` to differentiate - and the peak becomes one
+    block's graph rather than every block's. That is why the vol strip is hoisted into
+    ``forward_vols`` and why the simulation returns its settled cashflows and boundary registrations
+    instead of performing them: the node's inputs must be its whole theta surface, and a side effect
+    inside it would fire twice. Off is bit-identical, price and gradient.
+
     BOUNDARY AAD (``shared.boundary_aad``). Two decisions are taken on simulated state and jump: the
     target filling (the deal has redeemed and is worth nothing thereafter) and the OTM leg knocking
     in. Both jumps are real product economics, so neither may be smoothed; what ordinary AAD drops is
@@ -1609,10 +1718,40 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         call =  D * (F * utils.norm_cdf(d1) - K * utils.norm_cdf(d2))
         return call, call - D * (F - K)
 
-    def sim_spot_tarf(spot_prices, times, carry, prev_accum, discount_rates,
-                      t_block, fixings, settlement, sobol=False, num_sims=1024 * 4):
+    def forward_vols(s, carry_rate, delta_t, full_t):
+        """The per-fixing forward vol strip for one MTM row, off the deal's own vol surface.
+
+        HOISTED OUT of the simulation: it is the only thing the fixing loop read from the surface,
+        and `InnerMCRecompute`'s inputs have to be the simulation's whole theta surface or the vol
+        sensitivity is silently differentiated as a constant. It is [fixings, 1, batch] against the
+        loop's [batch, 2 * sims], so the strip is cheap to keep taped while the loop is not.
+        """
+        fixing_t = delta_t.cumsum(0).unsqueeze(-1)
+        forward = s.unsqueeze(0) * torch.exp((carry_rate * fixing_t))
+        # calculate the moneyness based on the forwards
+        moneyness = strike / forward if factor_dep['Invert_Moneyness'] else forward / strike
+        return torch.stack([utils.calc_time_grid_vol_rate(
+            factor_dep['Volatility'], mon, s_tau, shared)
+            for mon, s_tau in zip(moneyness, full_t.reshape(-1, 1))])
+
+    def sim_spot_tarf(fixings, settlement, sobol, num_sims,
+                      spot_prices, times, carry, prev_accum, discount_rates, vols_all,
+                      past_fixings, *hn_scalars):
         """
         Inner one-step-survival Monte Carlo over one block of MTM rows; returns the mean PV per row.
+
+        PURE, and split into a bound half and a theta half, because `InnerMCRecompute` calls it
+        TWICE - once untaped to price and once taped to differentiate - whenever
+        `Recompute_Inner_MC` is on. The leading arguments are the block's shape and are bound per
+        block; the trailing ones are every tensor it reads that can carry a graph, which is what
+        the node can return a gradient for. Its by-products are RETURNED rather than performed:
+        a settled cashflow and a boundary registration must happen once, off the forward's result,
+        and the caller is the only place that knows which call it is looking at.
+
+        Returns `(mtm, untriggered, settled) + gaps + jumps`: the block's rows, the counterfactual
+        rows the redemption latch needs, the first-fixing cashflow of every row that settles today,
+        and then one knock-in gap and one knock-in jump per (row, fixing). The gaps are the outputs
+        whose cotangent carries the boundary correction back into the simulation.
 
         Heston-Nandi: ``h`` is re-seeded to ``H0`` at the start of each forward simulation (each MTM
         row) and then recursed continuously - including through the truncated final draw - across
@@ -1656,22 +1795,19 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         eps = torch.finfo(shared.one.dtype).eps
         # easier to type
         K = strike
-        # Per-block results
-        mcmc = []
+        hn = bool(hn_scalars)
+        if hn:
+            *hn_params, H0 = hn_scalars
+        # Per-block results, and the by-products the caller performs once (see docstring)
+        mcmc, alive, settled, gaps, jumps = [], [], [], [], []
         # Loop over block rows (same zipped signature you use)
-        for t, D, s, carry_rate, delta_t, full_t, tau in zip(
-                t_block, discount_rates, spot_prices, carry, times, fixings, settlement):
+        for i, (D, s, carry_rate, delta_t, full_t, tau) in enumerate(zip(
+                discount_rates, spot_prices, carry, times, fixings, settlement)):
 
             # reduced_samples = number of GBM “substeps” in this coupon/fixing leg
             reduced_samples = len(delta_t)
             if not hn:
-                # calculate the total forward rate
-                fixing_t = delta_t.cumsum(0).unsqueeze(-1)
-                forward = s.unsqueeze(0) * torch.exp((carry_rate * fixing_t))
-                # calculate the moneyness based on the forwards
-                moneyness = strike / forward if factor_dep['Invert_Moneyness']  else forward / strike
-                vols = torch.stack([utils.calc_time_grid_vol_rate(
-                    factor_dep['Volatility'], mon, s_tau, shared) for mon, s_tau in zip(moneyness, full_t.reshape(-1,1))])
+                vols = vols_all[i]
             # RNG (uniforms for truncated draws)
             if reduced_samples:
                 if sobol:
@@ -1775,7 +1911,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                         # GBM increment
                         Sj = Sj * (torch.exp(fwd_drift + vol_dt * Z) if dt > 0 else 1.0)
                 else:
-                    Sj = all_samples[-min(reduced_samples, num_samples)].reshape(-1, 1)
+                    Sj = past_fixings[-min(reduced_samples, num_samples)].reshape(-1, 1)
                     p = 1.0
                 # ---- Economic PV for this fixing -----------------------------------------
                 # compute effective intrinsic in the correct measure
@@ -1804,9 +1940,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                         # one decision per inner path; gap > 0 means KNOCKED IN, in log space, and
                         # `expand_as` also covers the already-observed fixing (see docstring)
                         jump = (-buy_sell * Dj * L * p * F.relu(-intr) * N_otm).detach()
-                        b_inner.append([
-                            row_ofs + len(mcmc),
-                            (callOrPut * torch.log(barrier / Sj)).expand_as(jump), jump])
+                        gaps.append((callOrPut * torch.log(barrier / Sj)).expand_as(jump))
+                        jumps.append(jump)
                 # ---- Update remaining target R on survivors ------------------------------
                 accr = cf_itm  # = F.relu(intr) * N_itm, correct for both standard and inverted
                 R = torch.where(itm_mask, R - accr, R)  # survival construction ensures no overshoot
@@ -1814,18 +1949,20 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 L = p * L
                 if boundary_aad:
                     L_alive = p * L_alive
-                # (Optional) settlement at tau==0
-                if j == 0 and tau[0]==0:
-                    cash_settle(
-                        shared, factor_dep['SettleCurrency'],
-                        np.searchsorted(time_grid.mtm_time_grid, t[utils.TIME_GRID_MTM]),
-                        cf_step.mean(axis=1))
+                # (Optional) settlement at tau==0 - RETURNED, because a recompute would settle twice
+                if j == 0 and tau[0] == 0:
+                    settled.append(cf_step.mean(axis=1))
             # End-of-block: push mean PV over sims
             mcmc.append(P.mean(axis=1))
             if boundary_aad:
                 alive.append(P_alive.mean(axis=1))
 
-        return torch.stack(mcmc)
+        # a fresh empty each time, never one tensor returned twice - an autograd.Function output
+        # list is positional and the same object in two slots is one output with two names
+        return (torch.stack(mcmc),
+                torch.stack(alive) if alive else prev_accum.new_empty(0),
+                torch.stack(settled) if settled else prev_accum.new_empty(0)
+                ) + tuple(gaps) + tuple(jumps)
 
     # --- Main block loop --------------------------------
     mtm_list = []
@@ -1923,12 +2060,30 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         sample_ts = drifts.new(
             np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)]))
         discount_rates = utils.calc_discount_rate(discount_block, settlement, shared)
+        # the vol strip is theta, not loop state - see `forward_vols`
+        vols = torch.stack([forward_vols(*row) for row in zip(
+            spot_block, drifts, sample_ts, fixing_block)]) if not hn else spot_block.new_empty(0)
 
-        theo_price = buy_sell * sim_spot_tarf(
-            spot_block, sample_ts, drifts, accumulation[settle_index_local], discount_rates,
-            t_block, fixing_block, settlement, sobol=sobol, num_sims=shared.MCMC_sims)
+        simulate = partial(sim_spot_tarf, fixing_block, settlement, sobol, shared.MCMC_sims)
+        theta = (spot_block, sample_ts, drifts, accumulation[settle_index_local], discount_rates,
+                 vols, all_samples) + (tuple(hn_params) + (H0,) if hn else ())
+        # the SAME callable either way: under the node it is called twice (see InnerMCRecompute)
+        outputs = (InnerMCRecompute.apply(simulate, utils.rng_position(shared), shared, *theta)
+                   if shared.recompute_inner_mc else simulate(*theta))
+        block_mtm, block_alive, block_settled = outputs[:3]
+        theo_price = buy_sell * block_mtm
+
+        # the by-products, performed once off the forward's result (see sim_spot_tarf)
+        for row, value in zip(np.flatnonzero(settlement[:, 0] == 0), block_settled):
+            cash_settle(shared, factor_dep['SettleCurrency'], np.searchsorted(
+                time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]), value)
 
         if boundary_aad:
+            alive.append(block_alive)
+            # one knock-in decision per (row, fixing), appended row-major by the simulation
+            n_inner = (len(outputs) - 3) // 2
+            b_inner.extend([[row_ofs + k // sample_ts.shape[1], outputs[3 + k],
+                             outputs[3 + n_inner + k]] for k in range(n_inner)])
             # one latched redemption decision per block; `expand` because block 0's accrual is the
             # HISTORIC one, a single number rather than a per-scenario tensor (see docstring)
             b_gaps.append((raw[settle_index_local] - targetValue).squeeze(dim=1).expand(
@@ -1947,7 +2102,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         if b_gaps:
             # Redemption: `triggered` is worth zero for every row the decision reaches, and
             # `untriggered` is the SAME loop run on a weight that was never zeroed.
-            untriggered = buy_sell * torch.stack(alive, dim=0).detach()
+            untriggered = buy_sell * torch.cat(alive, dim=0).detach()
             shared.boundary_sets.append(utils.LatchedBoundarySet(
                 gaps=b_gaps, fired=b_fired, obs_before=np.array(b_obs_before),
                 untriggered=untriggered, triggered=torch.zeros_like(untriggered),

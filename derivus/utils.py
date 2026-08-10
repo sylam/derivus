@@ -1099,6 +1099,42 @@ class Calculation_State(object):
         self.MCMC_sims = mcmc_sims
         # keep individual calculation results per dependency?
         self.keep_tensor = keep_tensor
+        # Recompute a Monte Carlo pricer's inner simulation in backward() rather than taping it
+        # (`Recompute_Inner_MC`); off is the taped path, bit for bit. Declared here rather than by
+        # the calculations that set it so every pricer can read it without a fallback.
+        self.recompute_inner_mc = False
+        # where the memoized quasi-random stream stands, per (dimension, sample_size) - only
+        # `CMC_State.quasi_rng` advances it, but `rng_position` seeks every state's streams
+        self.t_quasi_rng_batch = {}
+
+
+def rng_position(shared, position=None):
+    """Where every random stream a calculation draws from STANDS, and optionally a seek.
+
+    Returns the position it was at, and seeks to `position` FIRST if one is given - so a single
+    call both rewinds and records where to rewind back to, which is the whole idiom a recompute
+    needs (`pricing.InnerMCRecompute`). A free function rather than a method because
+    `Calculation_State` is `torch.jit.script`ed and none of this compiles.
+
+    Two streams reach a pricer and both are here because both are read inside one inner Monte
+    Carlo. The Sobol draws are MEMOIZED, so their position is a counter per (dimension,
+    sample_size) and seeking it makes the next draw return the very same tensor rather than an
+    equal one - the replay is exact by identity. The regular generator has no memo, so its position
+    is its own state; `torch.rand` (small batches, where `quasi_rng` is not worth its cache) and the
+    Heston-Nandi unmonitored sub-steps both draw from it.
+
+    The device generator is only asked for its state when the calculation is on a device. That is a
+    copy back to the host and it synchronises, which is why this is taken once per pricing block.
+    """
+    was = (dict(shared.t_quasi_rng_batch), torch.get_rng_state(),
+           torch.cuda.get_rng_state(shared.one.device) if shared.one.is_cuda else None)
+    if position is not None:
+        counters, cpu_state, device_state = position
+        shared.t_quasi_rng_batch = dict(counters)
+        torch.set_rng_state(cpu_state)
+        if device_state is not None:
+            torch.cuda.set_rng_state(device_state, shared.one.device)
+    return was
 
 
 # often we need a numpy array and its tensor equivalent at the same time

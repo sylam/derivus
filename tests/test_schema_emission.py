@@ -494,6 +494,60 @@ def test_no_calculation_declares_a_key_twice(calc_type):
     assert not dupes, f'{calc_type} declares {dupes} more than once'
 
 
+#: Calculation knobs whose declared default is NOT what the engine falls back to, pinned so the
+#: gate below covers everything else. Each is a real mismatch and each changes what a job means
+#: depending on whether it was hand-written or authored from the schema, so none of them is
+#: "fine" - they are recorded rather than fixed because moving either side moves a shipped
+#: default, which is a decision about behaviour and not about the store.
+KNOWN_CALCULATION_DEFAULT_DRIFT = {
+    ('BaseValuation', 'Random_Seed'): (5120, 1),
+    ('CreditMonteCarlo', 'Generate_Cashflows'): ('Yes', 'No'),
+    ('CreditMonteCarlo', 'Dynamic_Scenario_Dates'): ('Yes', 'No'),
+}
+
+
+def calculation_fallback_reads(cls_name, module_ast):
+    """`{key: fallback}` for every calc knob read as `params.get('Key', <constant>)`.
+
+    Scoped to the class AND its bases in this module, the way `fallback_reads` is: the exposure
+    engine reads most of its knobs on `Credit_Monte_Carlo` and a subclass declaring one of them
+    would otherwise publish two defaults with nothing holding them together.
+    """
+    classes = {n.name: n for n in module_ast.body if isinstance(n, ast.ClassDef)}
+    nodes = [classes[cls_name]] + [classes[ast.unparse(b)] for b in classes[cls_name].bases
+                                   if ast.unparse(b) in classes]
+    locals_ = ('params', 'self.params', 'calc_params')
+    return {n.args[0].value: n.args[1].value
+            for node in nodes for n in ast.walk(node)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == 'get' and ast.unparse(n.func.value) in locals_
+            and len(n.args) == 2 and all(isinstance(a, ast.Constant) for a in n.args)}
+
+
+@pytest.mark.parametrize('calc_type', sorted(calculation_classes()))
+def test_a_declared_calculation_default_is_the_default_the_engine_falls_back_to(calc_type):
+    """The market-price gate one store over: a knob read with `.get(key, fallback)` publishes TWO
+    defaults, and they have to be one.
+
+    An author who fills the Workbench panel in gets the DECLARED value; a job that omits the key
+    gets the engine's FALLBACK. Where they disagree the same job means two different things
+    depending on how it was written, and nothing raises - `Recompute_Inner_MC` off in the panel and
+    on in the engine would silently change which path every MC pricing takes.
+
+    Scoped to keys the type DECLARES. A knob read but never declared is a different defect - the
+    panel cannot write it at all - and `HedgeMonteCarlo` reads a dozen of the exposure engine's
+    without declaring any, so folding the two questions together would bury this one.
+    """
+    module_ast = ast.parse(inspect.getsource(calculation))
+    cls_name = calculation_classes()[calc_type].__name__
+    declared = declared_values(CALCULATION['types'][calc_type])
+    drift = {key: (declared[key], fallback)
+             for key, fallback in calculation_fallback_reads(cls_name, module_ast).items()
+             if key in declared and declared[key] != fallback
+             and KNOWN_CALCULATION_DEFAULT_DRIFT.get((calc_type, key)) != (declared[key], fallback)}
+    assert not drift, f'{calc_type} declares one default and falls back to another: {drift}'
+
+
 def test_the_calculation_time_grid_is_the_key_the_engine_reads():
     """The drift this migration fixed. The store declared `Base_Time_Grid`; `run_cmc` and
     `run_hedgemontecarlo` read `calc_params.get('Time_Grid', ...)` and every fixture and doc

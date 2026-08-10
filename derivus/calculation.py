@@ -819,6 +819,9 @@ class Credit_Monte_Carlo(Calculation):
           description='Which leaves the sensitivity engine differentiates'),
         F('Boundary_AAD_Bandwidth', 'Float', default=0.01,
           description='Kernel bandwidth of the boundary correction assembled into backward()'),
+        F('Recompute_Inner_MC', 'Text', default='No', values=['Yes', 'No'],
+          description='Re-simulate a Monte Carlo pricer\'s inner paths in backward() rather than '
+                      'taping them; trades a second forward pass for the graph of every pricing'),
         F('Credit_Valuation_Adjustment', 'Container',
           default={"Calculate": "No", "Counterparty": "", "Bank": "",
                    "Deflate_Stochastically": "Yes", "Stochastic_Hazard_Rates": "No",
@@ -1201,6 +1204,7 @@ class Credit_Monte_Carlo(Calculation):
             keep_tensor=self.params.get('Keep_Tensor', 'No') == 'Yes')
         # wanting sensitivities IS the switch (worth zero forward; only a derivative can move)
         shared_mem.boundary_aad = calc_greeks is not None
+        shared_mem.recompute_inner_mc = self.params.get('Recompute_Inner_MC', 'No') == 'Yes'
         return shared_mem
 
     def report(self, output):
@@ -1760,7 +1764,10 @@ class Base_Revaluation(Calculation):
         F('Random_Seed', 'Integer', default=5120),
         F('Greeks', 'Text', default='No', values=['First', 'No']),
         F('Boundary_AAD_Bandwidth', 'Float', default=0.01,
-          description='Kernel bandwidth of the boundary correction assembled into backward()')
+          description='Kernel bandwidth of the boundary correction assembled into backward()'),
+        F('Recompute_Inner_MC', 'Text', default='No', values=['Yes', 'No'],
+          description='Re-simulate a Monte Carlo pricer\'s inner paths in backward() rather than '
+                      'taping them; trades a second forward pass for the graph of every pricing')
     ]
 
     def __init__(self, config, **kwargs):
@@ -1841,10 +1848,12 @@ class Base_Revaluation(Calculation):
             self.make_factor_index(list(self.static_var.items()))
 
         # allocate memory on the device
-        return Base_Reval_State(
+        shared_mem = Base_Reval_State(
             self.static_var, torch.ones([1, 1], dtype=self.dtype, device=self.device),
             mcmc_sim, get_fxrate_factor(utils.check_rate_name(reporting_currency), self.static_factors, {}),
             all_vars_concat, self.params['Greeks'] == 'All')
+        shared_mem.recompute_inner_mc = self.params.get('Recompute_Inner_MC', 'No') == 'Yes'
+        return shared_mem
 
     def report(self):
 
