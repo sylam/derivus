@@ -57,22 +57,28 @@ def pkey(name):
     return utils.Factor('HullWhite2FactorModelParameters', (CURVE, name))
 
 
-def block(connect, bumps=()):
+def block(connect, bumps=(), benchmarks=None, **declared):
     return {'Swaption_Volatility': VOL, 'Generate_Instruments': 'No', 'Random_Seed': 5120,
             'Quote_Sensitivity': 'Yes' if connect else 'No',
-            'Instrument_Definitions': definitions(bumps)}
+            'Instrument_Definitions': definitions(bumps) if benchmarks is None
+            else definitions(bumps, benchmarks), **declared}
 
 
-def world(connect, bumps=()):
+def world(connect, bumps=(), benchmarks=None, **declared):
     """A bootstrapped ZAR world whose curve is simulated by the HW2F process the block calibrated.
 
     `Price Models` carries the process explicitly rather than leaning on the dummy entry
     `find_models` injects, because that dummy is `None` and the process reads `Lambda_1` off it.
+
+    `benchmarks` selects the quote set - the four-swaption default, or stage D's identified grid -
+    and `declared` is any other field of the block, which is how that grid declares the two cutoffs
+    the rank-deficient defaults are wrong for.
     """
     config = Config(base_currency=CCY)
     config.params['System Parameters']['Base_Date'] = BASE
     config.params['Price Factors'] = price_factors()
-    config.params['Market Prices'] = {BLOCK: {'instrument': block(connect, bumps), 'Children': []}}
+    config.params['Market Prices'] = {
+        BLOCK: {'instrument': block(connect, bumps, benchmarks, **declared), 'Children': []}}
     config.params['Bootstrapper Configuration'] = {'HullWhite2FactorModelParameters': {}}
     config.bootstrap()
     config.params['Price Models'] = {

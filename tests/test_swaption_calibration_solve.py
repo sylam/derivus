@@ -42,17 +42,20 @@ PARAMS = 'HullWhite2FactorModelParameters.' + CURVE
 RCOND, STATIONARITY, SEED = 1e-8, 1e-3, 5120
 
 
-def block(connect=True, bumps=(), seed=SEED):
+def block(connect=True, bumps=(), seed=SEED, benchmarks=None):
     return {'Swaption_Volatility': VOL, 'Generate_Instruments': 'No', 'Random_Seed': seed,
             'Quote_Sensitivity': 'Yes' if connect else 'No',
-            'Instrument_Definitions': definitions(bumps)}
+            'Instrument_Definitions': definitions(bumps) if benchmarks is None
+            else definitions(bumps, benchmarks)}
 
 
-def calibration(connect=True, bumps=(), seed=SEED, optimizers=('basin', 'leastsq')):
+def calibration(connect=True, bumps=(), seed=SEED, optimizers=('basin', 'leastsq'),
+                benchmarks=None):
     """The calibration as an operand, built the way `bootstrap` builds it.
 
     `optimizers` selects the chain, and a SHORTER chain is how a gate stops the solve early without
     reaching inside anything: basin hopping alone leaves theta* at the seed on this fixture.
+    `benchmarks` selects the quote set - the four-swaption default, or stage D's identified grid.
     """
     factors, interp = price_factors(), ModelParams()
     boot = bootstrappers.construct_bootstrapper('HullWhite2FactorModelParameters', {}, torch.float32)
@@ -63,7 +66,7 @@ def calibration(connect=True, bumps=(), seed=SEED, optimizers=('basin', 'leastsq
     ir_curve = riskfactors.construct_factor(ir_factor, factors, interp)
     surface.set_premiums(None, ir_curve.get_currency())
     implied_obj, process, vol_tenors = boot.implied_process(CCY, factors, {}, ir_curve, rate)
-    instrument = block(connect, bumps, seed)
+    instrument = block(connect, bumps, seed, benchmarks)
     mtm_dates = set([BASE + x['Start'] for x in instrument['Instrument_Definitions']])
     time_grid = utils.TimeGrid(mtm_dates, mtm_dates, mtm_dates)
     time_grid.set_base_date(BASE, delta=(10, vol_tenors * utils.DAYS_IN_YEAR))

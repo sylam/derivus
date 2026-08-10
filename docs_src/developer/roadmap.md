@@ -28,14 +28,16 @@ produced it — a `SensitivityProfile` per pricer — so a consumer can tell a p
 one carrying a boundary term. Related and also unbuilt: **Hessian-vector products** instead of
 materialising full Hessians.
 
-**Calibration Jacobians — increment 1 is BUILT.** Bumping a market *quote* now flows through
-bootstrapping rather than stopping at the calibrated factor: one `backward()` reports `dV/dq`
-beside `dV/dθ`. [Quote Sensitivities](quote_sensitivities.md) is the page — the graph audit that
-made it possible, the quote-side overlay, the IFT contract, the attachment, the precision seam, the
-validation triangle and the non-goals. Turned on per curve by the declared field
-`Quote_Sensitivity`; the solved numbers are bit-identical either way.
+**Calibration Jacobians — BOTH increments are BUILT.** Bumping a market *quote* now flows through
+the calibration rather than stopping at the calibrated factor: one `backward()` reports `dV/dq`
+beside `dV/dθ`, for a zero curve solved from deposits, FRAs and swaps and for the HW2F model
+parameters fitted to swaption vols alike. [Quote Sensitivities](quote_sensitivities.md) is the
+page — the graph audit that made it possible, the quote-side overlay, the IFT contract, the
+stationarity contract, the attachment, the precision seams, the validation triangles and the
+non-goals. Turned on per block by the declared field `Quote_Sensitivity`; the solved numbers are
+bit-identical either way.
 
-It shipped carrying two known traps, and both are now **unrepresentable** rather than fixed, because
+Increment 1 shipped carrying two known traps, and both are now **unrepresentable** rather than fixed, because
 `TensorSchedule.bind` gave the tensor half a birthday — see
 [the schedule lifecycle](calc_lifecycle.md#the-schedule-lifecycle). `dual` and `merged` memoized
 under one key and could serve each other's copy: `bind` mints the one copy and `merged` is deleted —
@@ -44,14 +46,41 @@ under one key and could serve each other's copy: `bind` mints the one copy and `
 it lives in the schedule's `derived`, which `bind` mints and re-mints with that copy. The two gates
 that held them in place assert the design instead.
 
-What remains is increment 2: the same IFT contract around the HW2F swaption-vol calibration
-(`DV_Bootstrap`), where the fixed point is the stationarity of a least-squares loss rather than a
-root, so backward needs the Gauss–Newton Hessian and the dropped residual-curvature term has to be
-documented with its tolerance. FX vol follows the same shape. Two smaller ends left deliberately
-open and recorded on the page's non-goals: there is no report FORMAT for a quote delta (it lands on
-the leaf in `Config.quote_leaves`, and `make_factor_index` wants a tenor grid a quote does not
-have), and `CalibrationSolve.backward` does not support `create_graph`, so there is no second
-derivative in quote space.
+Increment 2 put the same contract around the HW2F swaption-vol calibration, where the fixed point is
+the **stationarity** of a least-squares loss rather than a root: backward is Gauss–Newton at
+`J'r = 0`, above a declared `Stationarity_Tol` it refuses rather than reporting a Jacobian of
+nothing, and the dropped residual-curvature term is
+[measured](quote_sensitivities.md#the-dropped-term) exactly rather than assumed away — on **both**
+sides, which is what settles it. The block's residual is already a square, so neither dropped term is
+second-order small: the Hessian-side one is half `J'J` (0.500064 measured) and the cross-side one is
+half `J'(∂r/∂q)` (0.4953–0.5115 measured, cosine 1.000000). **They cancel.** Squaring a residual
+row-scales `J` and `∂r/∂q` by the same diagonal and the normal equations are invariant under that, so
+Gauss–Newton is the exact leading-order derivative and **no correction is owed**. Correcting one side
+only is what makes a spurious factor 3/2 appear — 1.4974 measured — and that is now the gate's
+own mutation. The two
+answers separate only where the `O(f³)` remainder overtakes the eigenvalue it corrects — the same
+directions `Jacobian_Rcond` already declines to differentiate.
+
+It also carried a finding larger than the increment. **Bump-and-recalibrate — the reference this
+workstream was briefed to validate against — is ill posed for this calibration**, and was refuted
+three times: on four quotes the solution is a 19-dimensional MANIFOLD so the finite-difference `dθ/dq`
+diverges as `1/h` and the re-bootstrapped CVA delta reverses sign; on a 25-quote fixture with `J` at
+full column rank it fails anyway, because the optimizer stops seven and a half of the eight orders
+short of stationarity and `θ*` is its stopping point rather than the argmin. One diagnosis covers all
+three: the solve wanders in the directions the objective is flat in, which are exactly the ones the
+pseudo-inverse declines to differentiate. The implicit-function derivative is the better-behaved
+object, the value-space reference that IS well posed is a step along what the quotes identify with no
+re-solve, and every refutation is pinned as a gate so nobody later tunes the derivative against an
+oracle with no limit. See [the re-solve reference](quote_sensitivities.md#the-manifold-finding).
+
+**What remains is FX vol**, which follows the same shape:
+`GBMAssetPriceTSModelParameters` fits an integrated vol curve to an ATM vol column — a quote leaf
+per column entry, the same `LeastSquaresSolve` contract, the same attachment through `factor_leaf`.
+Three smaller ends stay deliberately open and are recorded on the page's non-goals: there is no
+report FORMAT for a quote delta (it lands on the leaves in `Config.quote_leaves`, in one of
+[two shapes](quote_sensitivities.md#the-attachment), and `make_factor_index` wants a tenor grid a
+quote does not have); neither backward supports `create_graph`, so there is no second derivative in
+quote space; and no vol-surface parameterisation (SABR, SSVI) is in scope.
 
 **`fields.py` is retired.** This started as 1,931 lines and three drifting stores; it ends with
 `derivus/fields.py` a 22-line deprecation shim re-exporting `mapping` and `default` from

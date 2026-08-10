@@ -62,14 +62,25 @@ def price_factors():
             'Shift': utils.Percent(0), 'Surface': utils.Curve([], quads)}}
 
 
-def definitions(bumps=()):
-    """The `Instrument_Definitions` table, with `bumps` a `{row: shift in percent}` on the quote."""
-    return [{'Start': pd.DateOffset(years=start), 'Tenor': pd.DateOffset(years=tenor),
+def offset(years):
+    """A whole number of years as one, a fraction of one as months - `date_fmt` names the swaption
+    off whichever it gets, so an integer keeps the `1Y` names every fixture here already uses."""
+    return pd.DateOffset(years=int(years)) if float(years).is_integer() else pd.DateOffset(
+        months=round(years * 12))
+
+
+def definitions(bumps=(), benchmarks=BENCHMARKS):
+    """The `Instrument_Definitions` table, with `bumps` a `{row: shift in percent}` on the quote.
+
+    `benchmarks` is the `(start, tenor, quoted vol)` set the rows are built from - the four-swaption
+    default here, or stage D's identified grid.
+    """
+    return [{'Start': offset(start), 'Tenor': offset(tenor),
              'Floating_Frequency': pd.DateOffset(months=3),
              'Fixed_Frequency': pd.DateOffset(months=3),
              'Floating_Day_Count': 'ACT_365', 'Fixed_Day_Count': 'ACT_365',
              'Market_Volatility': utils.Percent(vol + dict(bumps).get(row, 0.0)), 'Weight': 1.0}
-            for row, (start, tenor, vol) in enumerate(BENCHMARKS)]
+            for row, (start, tenor, vol) in enumerate(benchmarks)]
 
 
 def premium_file(prices):
