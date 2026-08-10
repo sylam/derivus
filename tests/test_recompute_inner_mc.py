@@ -92,8 +92,9 @@ def cmc(deal, gradient=False, recompute='No', batches=1, batch=512, mcmc=128):
         tarf._cfg(deal, tarf.SPOT, counterparty=True, simulate_fx=True),
         prec=DTYPE, overrides=overrides)
     grad = out['Results']['grad_cva']['Gradient'].values.astype(np.float64) if gradient else None
-    cashflows = [np.asarray(frame) for frames in out['Results'].get('cashflows', {}).values()
-                 for frame in frames]
+    # .values per currency FRAME - iterating a DataFrame yields its column labels, and a gate
+    # built on those cannot fail (verified against a zeroed-cashflow run)
+    cashflows = [frames.values for frames in out['Results'].get('cashflows', {}).values()]
     return float(out['Results']['cva']), out['Results']['mtm'].values, grad, cashflows
 
 

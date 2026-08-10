@@ -179,7 +179,25 @@ built them is cheap. `Recompute_Inner_MC` (a `Calculation` field, `No` by defaul
 `pricing.InnerMCRecompute` runs its forward under `no_grad` and leaves nothing behind but its
 inputs, and its backward re-runs **the same callable** under `enable_grad` and contracts the
 cotangent through that one graph, which dies as soon as it has. Peak is one inner graph rather than
-all of them; wired on `pv_MC_Tarf`, and shaped so the other MC pricers can adopt it.
+all of them.
+
+**One switch, three adopters, one line.** `pv_MC_Tarf`, `pv_MC_AutoCallSwap` and
+`pv_discrete_barrier_option` all reach it through `InnerMCRecompute.run(shared, simulate, *theta)`
+— the node when the switch is on, the callable when it is off, with the RNG position taken at the
+call site. There is no per-pricer flag: which pricings a run can afford to tape is a property of
+the valuation engine and the machine, not of the trade. `run` uses `cls.apply`, so a gate that
+mutates the node by subclassing it actually gets its mutation.
+
+The **adopter's shape** is the rest of the contract:
+
+- `simulate(*bound)(*theta)` — leading arguments are the block's SHAPE, bound per block with
+  `partial` (numpy, ints, flags); trailing ones are every tensor that can carry a graph.
+- It returns a **tuple**: element 0 is the block's marks, the rest are by-products the caller
+  performs once, each accompanied by the plain-Python row index that places it. Non-tensors pass
+  through and take a `None` cotangent. A pricer with no by-products returns `(mtm,)`.
+- Every graph-carrying by-product is a **top-level** element of that tuple. A tensor nested inside
+  a returned list is *not* an output — measured: `requires_grad False`, no `grad_fn` — so its half
+  of a correction would be silently zero.
 
 **The counter is the storage.** What is saved is where each random stream stood
 (`utils.rng_position`), never what it produced — the numbers are exactly what is too big to keep.
@@ -200,7 +218,21 @@ Three contracts fall out of it, and each is a way to be silently wrong:
   caller performs them once off the forward's result.
 - **Its inputs are its whole theta surface.** Autograd only returns a gradient for a tensor passed
   to `apply`, so anything the simulation reads out of a closure is differentiated as a constant.
-  `pv_MC_Tarf` therefore hoists its vol strip out of the fixing loop (`forward_vols`) to pass it in.
+  `pv_MC_Tarf` hoists its vol strip out of the fixing loop (`forward_vols`); the autocall hoists its
+  floating leg and its past equity fixings; all three pass in the Heston–Nandi scalars they used to
+  read off `t_Static_Buffer` in the enclosing scope. That last one is what
+  `test_the_heston_nandi_theta_survives_the_node` exists for — reverting the barrier's hoist turns
+  it red and nothing about the GBM fixtures notices.
+
+!!! warning "Invariant — the settle-outside rule is gated on a COLLATERALISED gradient, not on cashflows"
+    A cashflow settled inside the callable is settled twice, and the reported cashflows **cannot
+    see it**: the replay runs in `backward()` while `save_cashflows` runs inside `resolve_structure`,
+    in the forward pass, so the second settlement lands after the snapshot. Measured with
+    `cash_settle` put back inside the autocall's loop — every reported cashflow bit-identical,
+    gradient on or off. What is observable is the cashflow's GRAPH: booked under the node's
+    `no_grad` forward it reaches `t_Cashflows` carrying nothing, so a collateralised exposure
+    reading that ledger through `C_ts_te` loses the channel — 8.7% of the CVA gradient on the
+    autocall fixture (max |delta| 7.585e-05 on 8.678e-04).
 
 **It is a FIRST-ORDER node and it says so.** The replay is rooted at *detached* copies of the saved
 inputs — that is what stops the inner `autograd.grad` walking back into the outer graph and
@@ -239,6 +271,32 @@ separately at 24 × 256 × 64: 5023 → 592 MiB) for two reasons, and both are i
 holds one recomputed block graph live at a time, and with sensitivities on the per-inner-path
 `jumps` are retained exactly as they were before — the boundary registration's own storage, which
 this changes nothing about.
+
+The other two adopters, same harness, same question — monthly coupons / monthly barrier
+observations reported monthly, CVA gradient on, CVA bit-identical throughout:
+
+| shape | rows × scenarios × inner | taped peak | recomputed peak | taped wall | recomputed wall |
+| --- | --- | --- | --- | --- | --- |
+| autocall | 6 × 128 × 32 | 45.0 MiB | 39.6 MiB (1.1×) | 0.19 s | 0.26 s (1.41×) |
+| autocall | 24 × 256 × 64 | 1093.2 MiB | 281.3 MiB (3.9×) | 2.85 s | 2.91 s (1.02×) |
+| autocall | 24 × 512 × 128 | 4693.6 MiB | 1448.7 MiB (3.2×) | 3.61 s | 3.45 s (0.95×) |
+| barrier | 6 × 128 × 32 | 68.5 MiB | 45.7 MiB (1.5×) | 0.20 s | 0.21 s (1.07×) |
+| barrier | 24 × 256 × 64 | 2227.8 MiB | 361.7 MiB (6.2×) | 2.62 s | 1.35 s (0.52×) |
+| barrier | 24 × 512 × 128 | 9239.1 MiB | 1781.4 MiB (5.2×) | 1.66 s | 1.00 s (0.60×) |
+
+Same story as the TARF and for the same reason: the second forward pass is what the top rows are
+measuring (41% on a shape too small to care, on a 0.19 s run) and everywhere the tape is large the
+node is level or faster. The barrier drops furthest because its OSS keeps nothing per inner path —
+no boundary registration rides its node at all — while the autocall's `fired`/`survived` branches
+are retained exactly as before.
+
+!!! warning "A measurement taken beside an out-of-memory run is a measurement of that run"
+    `torch.cuda.reset_peak_memory_stats` takes the CURRENT allocation as its floor, and a boundary
+    registration holds `shared → boundary_sets → gap → node → simulate → shared` — a cycle
+    refcounting cannot break, so the previous shape is still resident until the cyclic collector
+    runs. Measured: a 6-coupon autocall read a peak of 20 105 MiB, which was the graduation row
+    above it that had just gone out of memory. `gc.collect()` before the reset, and `sys.argv[1]`
+    to run one adopter's shapes on their own.
 
 ## Boundary corrections — the sensitivity subsystem
 
@@ -284,7 +342,7 @@ why one class with a mode flag would be the wrong shape:
 | `RowBoundarySet` | lands on its own row and no other (autocall coupon) | a pair of `(B,)` values per decision |
 | `InnerBoundarySet` | a decision inside a pricer's inner MC | the objective's *derivative*, not a difference — one inner path moves the row by `1/n`, a jump the value never takes |
 
-!!! note "Under a recompute node, a `gap` is an OUTPUT"
+!!! note "Under a recompute node, a `gap` is an OUTPUT — when the simulation is what decided it"
     `stochastic_boundary_correction` needs `gap` to carry a graph and an untaped forward pass has
     none to give it (see [Recomputing the inner Monte Carlo](#recompute-inner-mc)). So the
     registration SPLITS: the gap's value is computed under `no_grad` for the set to report, the
@@ -292,6 +350,17 @@ why one class with a mode flag would be the wrong shape:
     as before — arrives as that output's cotangent, so the graph-carrying half of the correction is
     built during the backward, inside the recompute. The contract is unchanged, and it is the same
     contract the whole subsystem has: what reaches `backward()` differs, what is reported does not.
+
+    The converse is the rule, and it is about **where the graph lives** rather than about symmetry.
+    A decision taken on OUTER state keeps its own graph whatever the node does to the inner pass,
+    so its registration stays outside it. The three adopters split both ways and each way is
+    measured: the TARF's knock-in (decided on `Sj`, an inner draw) and the autocall's coupon trigger
+    (decided on `Sj` selected by loop state) are node outputs — dropping that cotangent is
+    bit-identical to removing the correction outright; the TARF's redemption latch (the block
+    loop's own accrual series) and the discrete barrier's crossing latch (`spot_block[-1]` at an
+    observation date) are built outside — for the barrier, dropping every cotangent reproduces the
+    corrected gradient bit for bit while suppressing the correction moves it 0.30%, which is what
+    says the latch is live and simply does not ride the node.
 
 There is **no JSON switch**: `shared_mem.boundary_aad = calc_greeks is not None`. Wanting
 sensitivities *is* the switch, and registration is gated on it so the cost is zero when greeks are
