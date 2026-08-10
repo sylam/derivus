@@ -4453,7 +4453,9 @@ class BasisLinkedSpotModel(StochasticProcess):
 
         # Cross-process read; the linked spot is generated before us.
         linked_path = shared_mem.t_Scenario_Buffer[self.linked_key]
-        assert (linked_path > 0).all(), 'linked_path expected to be all positive'
+        # Device-side: a python `assert` on this would truth-test the tensor, i.e. one full
+        # pipeline sync per generate() call (1125 per wf-gate solve). The invariant stays.
+        torch._assert_async((linked_path > 0).all(), 'linked_path expected to be all positive')
 
         if self.sigma_by_state is not None:
             regimes = shared_mem.t_Scenario_Buffer.get((self.linked_key, 'regimes'))

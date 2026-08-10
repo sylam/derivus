@@ -57,7 +57,9 @@ class Aggregation(object):
         self.reval_dates = reval_dates
 
     def post_process(self, accum, shared, time_grid, deal_data, child_dependencies):
-        shared.save_results(deal_data.Calc_res, {'Value': accum})
+        # Honour store_results=False (Calc_res is None) exactly as pricing.interpolate does.
+        if deal_data.Calc_res is not None:
+            shared.save_results(deal_data.Calc_res, {'Value': accum})
         return accum
 
 class DealStructure(object):
@@ -2547,8 +2549,16 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         inner-MC); Calc_res is fresh so inner pricing doesn't clobber outer storage.
         Returns a DealStructure with possibly fewer dependencies (deals fully in
         the past are dropped). Does not recurse into sub_structures — inner-MC use
-        case has a flat dependency list."""
-        inner = DealStructure(outer_struct.obj.Instrument, store_results=outer_struct.store_results)
+        case has a flat dependency list.
+
+        AGGREGATION STORAGE IS OFF (`store_results=False`) while the per-deal `Calc_res`
+        below stays. The fork harvests on the DEVICE — `tensor_marks()` for the tradables
+        (which needs the per-deal dict, since `pricing.interpolate` stashes 'tensor' there)
+        and `resolve_hedge_structure()` for the liability — and nothing reads the
+        aggregate's stored 'Value'. Storing it cost a pageable D2H copy of the FULL-width
+        mtm grid (127 x B_outer*B_inner fp32 = 16.6 MB on the wf-gate world) per fork, 93%
+        of the fork's host egress, for a number the fork discards."""
+        inner = DealStructure(outer_struct.obj.Instrument, store_results=False)
         for dd in outer_struct.dependencies:
             new_td = (dd.Time_dep.copy_restricted(cutoff_mtm_idx) if window_end_idx is None
                       else dd.Time_dep.copy_window(cutoff_mtm_idx, window_end_idx))
