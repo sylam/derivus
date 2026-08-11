@@ -567,9 +567,13 @@ class Config(object):
         options = self.deals['Calculation']
         factors, skipped, _, _ = self.discover_factors(options, options['Base_Date'], '0d', False)
         names = set(map(utils.check_tuple_name, factors))
+        # resolved through the same lookup `construct_factor` uses, or a vol surface written under
+        # its pre-tag name would be reported missing and then built anyway
+        present = {utils.check_tuple_name(f) for f in factors if utils.resolve_factor_key(
+            f, self.params['Price Factors']) in self.params['Price Factors']}
 
-        return {'resolved': sorted(names.intersection(self.params['Price Factors'])),
-                'missing': sorted(skipped.union(names.difference(self.params['Price Factors'])))}
+        return {'resolved': sorted(present),
+                'missing': sorted(skipped.union(names.difference(present)))}
 
     def validate(self):
         """What stops this job running, as data: the authoring messages of every deal in the book,
@@ -798,11 +802,12 @@ class Config(object):
                 ['Currency'], instrument.field['Currency'], instrument.field['Reference_Type']).split('.')))] if
             instrument.field['Currency'] != params[utils.check_tuple_name(
                 utils.Factor('ForwardPrice', (instrument.field['Reference_Type'],)))]['Currency'] else [],
-            'ForwardPrice': lambda instrument, factor_fields, params: [utils.Factor('VolatilityGrid', tuple(
+            'ForwardPrice': lambda instrument, factor_fields, params: [utils.Factor('FXVol', tuple(
                 sorted([instrument.field['Currency'], factor_fields['Currency']])))] if
             instrument.field['Currency'] != factor_fields['Currency'] else [],
             # SpotModel params, plus the quanto pair's vol and correlation. Keyed on the
-            # UNDERLYING like ForwardPrice above: one VolatilityGrid serves every asset class.
+            # UNDERLYING like ForwardPrice above - and the surface these two name is the CURRENCY
+            # PAIR's, so it is an FXVol whatever asset class the underlying belongs to.
             'EquityPrice': lambda instrument, factor_fields, params:
             ([utils.Factor(instrument.options['SpotModel'] + 'ModelParameters',
                            utils.check_rate_name(instrument.field['Equity']))]
@@ -812,7 +817,7 @@ class Config(object):
                 instrument.field['Equity_Volatility'],
                 '.'.join(sorted([instrument.field['Currency'], utils.payoff_currency(instrument.field)]))
             ).split('.'))),
-              utils.Factor('VolatilityGrid', tuple(
+              utils.Factor('FXVol', tuple(
                   sorted([instrument.field['Currency'], utils.payoff_currency(instrument.field)])))]
              if instrument.field.get('Equity_Volatility') is not None
              and instrument.field['Currency'] != utils.payoff_currency(instrument.field) else []),

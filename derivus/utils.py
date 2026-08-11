@@ -161,8 +161,38 @@ Collateral = namedtuple('Collateral', 'Haircut Amount Currency Funding_Rate Coll
 # define 1, 2 and 3d risk factors - add more as development proceeds
 DimensionLessFactors = ['ReferenceVol', 'Correlation']
 OneDimensionalFactors = ['InterestRate', 'InflationRate', 'DividendRate', 'SurvivalProb', 'ForwardPrice', 'ForwardRate']
-TwoDimensionalFactors = ['VolatilityGrid']
+#: Every (moneyness, expiry) vol surface. ONE implementation - `riskfactors.VolatilityGrid` - and
+#: an asset-class TAG per member, because the risk-class partition below is a pure function of the
+#: factor type and a factor-keyed gradient has nothing else to read the asset class off. The
+#: untagged name is transitional: see `resolve_factor_key`.
+TwoDimensionalFactors = ['FXVol', 'EquityPriceVol', 'CommodityPriceVol', 'VolatilityGrid']
 ThreeDimensionalFactors = ['InterestRateVol', 'InterestYieldVol', 'ForwardPriceVol']
+
+#: The CRIF-style risk class of every declared factor type, as data. A sensitivity is reported
+#: under the class of the factor it is taken with respect to, so the partition has to be TOTAL over
+#: the Factor store and a pure function of `factor.type` - which is why the vol surfaces carry an
+#: asset-class tag rather than sharing one untagged name. `CrossClass` is the honest bucket for a
+#: factor whose asset class is a property of what it REFERENCES, not of itself: `Correlation` names
+#: a pair, `ObservedBasis` follows whichever spot it hangs off, and the two spot-model parameter
+#: blocks are fitted against any of FX/equity/commodity.
+FactorRiskClass = {
+    'InterestRate': 'InterestRate', 'InflationRate': 'InterestRate', 'PriceIndex': 'InterestRate',
+    'InterestRateVol': 'InterestRate', 'InterestYieldVol': 'InterestRate',
+    'HullWhite2FactorModelParameters': 'InterestRate',
+    'FxRate': 'FX', 'FXVol': 'FX',
+    'EquityPrice': 'Equity', 'EquityPriceVol': 'Equity', 'DividendRate': 'Equity',
+    'CommodityPrice': 'Commodity', 'CommodityPriceVol': 'Commodity', 'FuturesPrice': 'Commodity',
+    'ForwardPrice': 'Commodity', 'ForwardRate': 'Commodity', 'ForwardPriceVol': 'Commodity',
+    'ForwardPriceSample': 'Commodity', 'ReferencePrice': 'Commodity', 'ReferenceVol': 'Commodity',
+    'CSForwardPriceModelParameters': 'Commodity',
+    'SurvivalProb': 'Credit',
+    'Correlation': 'CrossClass', 'ObservedBasis': 'CrossClass',
+    'GBMAssetPriceTSModelParameters': 'CrossClass', 'HestonNandiModelParameters': 'CrossClass',
+    # TRANSITIONAL, and the reason the tags came back: an untagged surface cannot decide its own
+    # class. It is here only because the store still declares the name `resolve_factor_key` reads,
+    # and it retires with that shim.
+    'VolatilityGrid': 'CrossClass'
+}
 
 # weekends and weekdays
 WeekendMap = {'Friday and Saturday': 'Sun Mon Tue Wed Thu',
@@ -3861,6 +3891,32 @@ def check_rate_name(name):
 def check_tuple_name(factor):
     """Opposite of check_rate_name - used to make sure the name is a flat name"""
     return '.'.join((factor.type,) + factor.name) if type(factor.name) == tuple else factor
+
+
+def resolve_factor_key(factor, price_factors):
+    """The `Price Factors` key holding this factor's block, which is its own name unless a vol
+    surface was written under a SIBLING 2D name.
+
+    TRANSITIONAL, ONE RELEASE. The three asset-class vol tags were merged into an untagged
+    `VolatilityGrid` and are now restored as aliases over that single implementation, so market
+    data exists under both spellings. A 2D factor therefore reads a block written under any 2D
+    name; the requested type still decides which class is built, so the typed name stays canonical
+    on write. The fallback is to the PRE-TAG spelling ONLY - never to a sibling tag, which would
+    let one asset class price off another's surface - and every other factor type reads its own
+    name and nothing else.
+
+    RETIREMENT: once no market data carries `VolatilityGrid.*`, delete this function, drop
+    `VolatilityGrid` from `TwoDimensionalFactors` and `FactorRiskClass`, and put
+    `check_tuple_name` back in its two callers - `riskfactors.construct_factor` and
+    `Config.factor_universe`.
+    """
+    name = check_tuple_name(factor)
+    if name in price_factors or factor.type not in TwoDimensionalFactors:
+        return name
+    # PRE-TAG spelling only: a cross-tag fallback would let an FX request silently price off an
+    # equity block - right gradient label, wrong number (measured)
+    legacy = check_tuple_name(Factor('VolatilityGrid', factor.name))
+    return legacy if legacy in price_factors else name
 
 
 def payoff_currency(field):

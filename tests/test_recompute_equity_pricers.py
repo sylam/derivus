@@ -589,7 +589,7 @@ def test_the_collateralised_averaging_gradient_is_the_taped_one_to_the_last_bit(
     (`pv`, one node with two consumers) instead of a second `.mean` of the quantity it marked, which
     is what the one-step-survival branch does and what earns the 1 ulp there. The node agrees with
     both, but not reproducibly - measured over 6 repeats, 1 float64 step on entry 13
-    (`VolatilityGrid.EQ` 1.2/2.0, the smallest of the fourteen) on 2 of them and 0 on the other 4,
+    (`EquityPriceVol.EQ` 1.2/2.0, the smallest of the fourteen) on 2 of them and 0 on the other 4,
     while the taped side moved 0 on all 6, uncollateralised readings moved 0 on all 6, and HEAD
     moved 0. The step is therefore the replayed backward disagreeing with ITSELF under collateral -
     nondeterminism in a reduction - and the defect it has to stay separable from is 8.7%. One step

@@ -990,9 +990,9 @@ class RiskFactorsPage(TreePanel):
                             
                     elif frame_name == 'Factor':
                         # filter out unnecessary fields
-                        # one VolatilityGrid for every asset class, so the surface-type rules that
+                        # one implementation for every asset class, so the surface-type rules that
                         # used to be split across the equity and fx/commodity branches both apply
-                        if key.startswith('VolatilityGrid'):
+                        if factor.type in rf.utils.TwoDimensionalFactors:
                             for sub_field in frame_value.values():
                                 sub_field['isvisible'] = 'True'
                             surface_type = frame_value['Surface_Type']['value']

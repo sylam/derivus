@@ -1311,13 +1311,19 @@ class HullWhite2FactorModelParameters(Factor1D):
 
 
 class VolatilityGrid(Factor2D):
-    """A (moneyness, expiry) vol surface, whatever the underlying asset class.
+    """A (moneyness, expiry) vol surface - the ONE implementation, shared by every asset class.
 
     FXVol, EquityPriceVol and CommodityPriceVol were three empty `Factor2D` subclasses differing
     only in their docstring, and three schema declarations that had drifted apart - FX and commodity
-    could not author the SVI/Skew surfaces the class has always supported. The variation that
-    matters is the SUBTYPE, `(Surface_Type, Moneyness_Rule)`, not the asset class: asset class is a
-    property of the UNDERLYING, which keeps its own distinct factor types."""
+    could not author the SVI/Skew surfaces the class has always supported. The behaviour that varies
+    is the SUBTYPE, `(Surface_Type, Moneyness_Rule)`, so there is one body and it lives here.
+
+    The asset-class TAG is a different question and it was wrong to erase it. A sensitivity is
+    reported under the risk class of the factor it is taken with respect to, CRIF names those
+    surfaces `Risk_FXVol`/`Risk_EquityVol`/`Risk_CommodityVol`, and a factor-keyed gradient carries
+    nothing but `Factor(type, name)` - so `utils.FactorRiskClass` has to be a pure function of the
+    type, and one untagged name makes it undecidable. The three aliases below restore the tag over
+    this body: same fields, same code path, three types."""
     fields = [
         F('Surface_Type', 'Text', default='Explicit',
           values=['Explicit', 'SVI', 'Skew', 'Malz', 'Relative_Forward']),
@@ -1346,6 +1352,25 @@ class VolatilityGrid(Factor2D):
         F('Currency', 'Text', default='')
     ]
 
+
+# The asset-class tags: the type a deal's vol surface is authored and keyed under, and what
+# `utils.FactorRiskClass` partitions on. `fields` is re-declared as the SAME list object, which is
+# the whole per-type declaration the emitters need - `emit_factor` is own-attr only, so an alias
+# that merely inherited would not reach the Factor store and could not be authored at all.
+
+class FXVol(VolatilityGrid):
+    """The vol surface of an FX pair - CRIF `Risk_FXVol`."""
+    fields = VolatilityGrid.fields
+
+
+class EquityPriceVol(VolatilityGrid):
+    """The vol surface of an equity or equity index - CRIF `Risk_EquityVol`."""
+    fields = VolatilityGrid.fields
+
+
+class CommodityPriceVol(VolatilityGrid):
+    """The vol surface of a commodity or energy reference price - CRIF `Risk_CommodityVol`."""
+    fields = VolatilityGrid.fields
 
 
 class InterestYieldVol(Factor3D):
@@ -1517,7 +1542,7 @@ class ForwardPriceVol(Factor3D):
 @utils.log_exception
 def construct_factor(factor, price_factors, factor_interp, base_date=None):
     # now lookup the params of the factor
-    pf = price_factors[utils.check_tuple_name(factor)]
+    pf = price_factors[utils.resolve_factor_key(factor, price_factors)]
     # change the logging name in case there are any errors
     logging.root.name = '.'.join(factor.name)
     # check the interpolation on interest Rates - can add more methods/price factors as desired

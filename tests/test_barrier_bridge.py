@@ -347,7 +347,10 @@ def test_digital_reports_its_equity_and_vol_factors():
             'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
             'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes'}})
     factors = {str(i[0]).split('.')[0] for i in out['Results']['grad_cva']['Gradient'].index}
-    for needed in ('EquityPrice', 'VolatilityGrid'):
+    # the surface above is authored under the PRE-TAG name and the gradient comes back tagged:
+    # `resolve_factor_key` accepts the old spelling on read, and the type the resolver asked for is
+    # what the factor-keyed gradient is filed under. Both halves of the leniency, in one assertion.
+    for needed in ('EquityPrice', 'EquityPriceVol'):
         assert needed in factors, f'{needed} missing from the greeks report; got {sorted(factors)}'
 
 

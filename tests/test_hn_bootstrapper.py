@@ -4,9 +4,10 @@ factor (derivus/riskfactors.py).
 The KEY test is the round trip: synthesise European option quotes FROM a known set of
 risk-neutral HN parameters with the validated pricer (derivus.utils, tests/test_hn_garch.py), hand them
 to the bootstrapper as market prices, and recover the parameters. It runs for THREE asset
-classes - an FX rate (VolatilityGrid, no yield), an equity (VolatilityGrid + DividendRate) and a
-commodity (VolatilityGrid + a carry InterestRate) - because the factor is asset class
-agnostic and nothing else pins that.
+classes - an FX rate (FXVol, no yield), an equity (EquityPriceVol + DividendRate) and a
+commodity (CommodityPriceVol + a carry InterestRate) - because the factor is asset class
+agnostic and nothing else pins that. The vol surfaces are ONE implementation under three type
+tags, so this also pins that the candidate-list resolve reads all three.
 
 Everything else pins the plumbing: dispatch by class name, the tenor-index/current-value key
 parity that utils.get_tenors + make_factor_index rely on, the end-to-end Config.bootstrap()
@@ -45,11 +46,11 @@ H0_TRUTH = 1.3 * utils.hn_stationary_var(TRUTH['omega'], TRUTH['alpha'], TRUTH['
 # class agnostic, so the round trip runs for all of these
 ASSET_CLASSES = [
     ('AUD', 0.65, 'FxRate', {'Domestic_Currency': 'USD', 'Interest_Rate': 'AUD', 'Priority': 1},
-     'VolatilityGrid', None, {}),
+     'FXVol', None, {}),
     ('TEST_EQ', 1000.0, 'EquityPrice', {'Currency': 'USD', 'Interest_Rate': 'USD'},
-     'VolatilityGrid', 'DividendRate', {'Currency': 'USD'}),
+     'EquityPriceVol', 'DividendRate', {'Currency': 'USD'}),
     ('TEST_COM', 950.0, 'CommodityPrice', {'Currency': 'USD', 'Interest_Rate': 'USD'},
-     'VolatilityGrid', 'InterestRate', {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None}),
+     'CommodityPriceVol', 'InterestRate', {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None}),
 ]
 YIELD = 0.02
 
@@ -192,7 +193,7 @@ def skewed_factors(surface_type, nodes, centre):
     vol at any lookup point is exactly ATM_VOL + SKEW_SLOPE*(m - centre) and can be hand computed.
     The yield makes the forward differ from the spot, so Use_Forward is observable."""
     return {'CommodityPrice.SKEW': {'Currency': 'USD', 'Interest_Rate': 'USD', 'Spot': 1000.0},
-            'VolatilityGrid.SKEW': {
+            'CommodityPriceVol.SKEW': {
                 'Surface_Type': surface_type, 'Moneyness_Rule': 'Sticky_Moneyness', 'Currency': 'USD',
                 'Surface': utils.Curve([], [[m, t, ATM_VOL + SKEW_SLOPE * (m - centre)]
                                             for m in nodes for t in (0.02, 0.25)])},

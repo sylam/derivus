@@ -124,7 +124,7 @@ def equity_cfg(r=0.0, q=0.0, spot=SPOT, vol=VOL):
                            'Respect_Default': 'No', 'Jump_Level': 0.0},
         'DividendRate.EQ': {'Currency': 'USD', 'Floor': None,
                             'Curve': utils.Curve([], [[0.0, q], [5.0, q]])},
-        'VolatilityGrid.EQ': {
+        'EquityPriceVol.EQ': {
             'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
             'Surface': utils.Curve([], [[m, t, vol] for m in MONEYNESS for t in (0.02, 2.0)])}}
     c.deals = {'Attributes': {'Reference': 'test', 'Tag_Titles': ''},
@@ -286,8 +286,8 @@ def test_the_second_order_block_is_reported_under_a_stable_key_beside_the_first(
         'the second-order rows are not (Rate, Tenor, Tenor2, Tenor3)')
 
     second_only = sorted(set(second.index) - set(first.index))
-    assert second_only == [('VolatilityGrid.EQ', 1.2, 0.02, 0.0),
-                           ('VolatilityGrid.EQ', 1.2, 2.0, 0.0)], (
+    assert second_only == [('EquityPriceVol.EQ', 1.2, 0.02, 0.0),
+                           ('EquityPriceVol.EQ', 1.2, 2.0, 0.0)], (
         f'the second-order-only rows are not the ones the surface explains: {second_only}')
     for row in second_only:
         assert row not in first.index and abs(entry(second, EQUITY, row)) > 0.9
@@ -364,7 +364,7 @@ def test_the_spot_vol_cross_terms_sum_to_the_closed_form_vanna():
     _, first, second = valued(equity_cfg(r=0.0, q=0.0))
     _, _, _, vanna = black_scholes_call(SPOT, STRIKE, 1.0, 0.0, 0.0, VOL)
 
-    vol_rows = [r for r in second.index if r[0] == 'VolatilityGrid.EQ']
+    vol_rows = [r for r in second.index if r[0] == 'EquityPriceVol.EQ']
     total = sum(entry(second, EQUITY, row) for row in vol_rows)
     assert abs(total / vanna - 1.0) < 1e-6, (
         f'the spot-vol column sums to {total}, not the closed-form vanna {vanna}')

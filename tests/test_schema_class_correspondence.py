@@ -146,32 +146,102 @@ def test_every_market_price_quote_instrument_is_a_declared_deal():
     assert not unknown, f'quote instruments naming no declared deal type: {unknown}'
 
 
-RETIRED_VOL_TYPES = ('FXVol', 'EquityPriceVol', 'CommodityPriceVol')
+VOL_TAGS = ('FXVol', 'EquityPriceVol', 'CommodityPriceVol')
 
 
-def test_the_retired_vol_types_stay_retired():
-    """Three empty `Factor2D` subclasses whose bodies differed only in a docstring, and three schema
-    declarations that had drifted apart - FX and commodity could not author the SVI/Skew surfaces
-    `Factor2D.get_subtype` has always supported, and only commodity declared Currency.
+def test_the_vol_tags_are_aliases_over_one_implementation():
+    """The merge of the three asset-class vol twins was HALF right. Three empty `Factor2D`
+    subclasses differing only in a docstring, over three schema declarations that had drifted apart
+    - FX and commodity could not author the SVI/Skew surfaces `Factor2D.get_subtype` has always
+    supported - is one implementation's worth of behaviour, and it is now one implementation.
 
-    What varies is the SUBTYPE, not the asset class: asset class belongs to the UNDERLYING, whose
-    types (FxRate / EquityPrice / CommodityPrice) stay distinct and are what the bootstrapper reads
-    it from. One `VolatilityGrid` replaces all three, in the classes, the schema, the discovery
-    registries and the deals' `factor_fields`."""
-    assert hasattr(riskfactors, 'VolatilityGrid')
-    back = [n for n in RETIRED_VOL_TYPES if hasattr(riskfactors, n)]
-    assert not back, f'retired vol classes are back in riskfactors: {back}'
+    Erasing the TYPE TAG was the wrong half. A sensitivity is reported under the risk class of the
+    factor it is taken with respect to; a factor-keyed gradient carries nothing but
+    `Factor(type, name)`; and CRIF names these surfaces per asset class. So the partition has to be
+    a pure function of the type, which one untagged name makes undecidable.
 
-    declared = {n for n in RETIRED_VOL_TYPES
-                if n in MAPPING['Factor']['types'] or n in MAPPING['Process_factor_map']}
-    assert not declared, f'retired vol types are back in the schema: {sorted(declared)}'
+    Hence: three ALIASES, no second body. This pins both halves - each tag is a subclass of
+    `VolatilityGrid` that adds no method of its own, and each is a real type in the Factor store
+    (`emit_factor` is own-attr only, so `fields` must be re-declared or the tag cannot be
+    authored)."""
+    for name in VOL_TAGS:
+        cls = getattr(riskfactors, name, None)
+        assert cls is not None, f'{name} is missing from riskfactors'
+        assert issubclass(cls, riskfactors.VolatilityGrid), f'{name} is not a VolatilityGrid alias'
+        own = set(cls.__dict__) - {'fields', '__module__', '__qualname__', '__doc__'}
+        assert not own, f'{name} carries an implementation of its own: {sorted(own)}'
+        assert cls.__dict__['fields'] is riskfactors.VolatilityGrid.fields, (
+            f'{name} re-declares fields instead of sharing the one list')
+        assert name in MAPPING['Factor']['types'], f'{name} is not in the Factor store'
+        assert MAPPING['Factor']['types'][name] == MAPPING['Factor']['types']['VolatilityGrid'], (
+            f'{name} emits a block that differs from the implementation it aliases')
 
-    referenced = sorted({f'{n}.{f}' for n, c in deal_classes().items()
-                         for f, types in getattr(c, 'factor_fields', {}).items()
-                         if set(types) & set(RETIRED_VOL_TYPES)})
-    assert not referenced, f'deals still reference a retired vol type: {referenced}'
-    assert utils.TwoDimensionalFactors == ['VolatilityGrid'], (
+    assert utils.TwoDimensionalFactors == list(VOL_TAGS) + ['VolatilityGrid'], (
         f'the 2D factor registry disagrees: {utils.TwoDimensionalFactors}')
+
+    untagged = sorted({f'{n}.{f}' for n, c in deal_classes().items()
+                       for f, types in getattr(c, 'factor_fields', {}).items()
+                       if 'VolatilityGrid' in types})
+    assert not untagged, f'deals still reference the untagged vol type: {untagged}'
+
+
+def test_the_risk_class_partition_is_total_over_the_factor_store():
+    """The reason the tags exist, as a gate. `utils.FactorRiskClass` is the CRIF-style risk class of
+    a factor type, declared as data, and it has to be TOTAL: a factor the store can author but the
+    partition cannot classify is a sensitivity with nowhere to be reported, and a dict lookup that
+    raises somewhere downstream rather than here.
+
+    `VolatilityGrid` is in the partition as an explicit TRANSITIONAL entry, not as a risk class of
+    its own - it is the untagged spelling `utils.resolve_factor_key` still accepts on read, and it
+    retires with that shim. The three tags carry the real classes, and each sits with its
+    underlying: FX with FxRate, Equity with EquityPrice, Commodity with CommodityPrice - which is
+    the partition the merged type could not express."""
+    declared = set(MAPPING['Factor']['types'])
+    unmapped = sorted(declared - set(utils.FactorRiskClass))
+    assert not unmapped, f'factor types no risk class claims: {unmapped}'
+    stale = sorted(set(utils.FactorRiskClass) - declared)
+    assert not stale, f'risk classes for factor types the store does not declare: {stale}'
+
+    classes = set(utils.FactorRiskClass.values())
+    assert classes == {'InterestRate', 'FX', 'Equity', 'Commodity', 'Credit', 'CrossClass'}, (
+        f'the risk classes changed: {sorted(classes)}')
+
+    # a tagged surface belongs to its UNDERLYING's class, which is the whole point of the tag
+    for vol, underlying in [('FXVol', 'FxRate'), ('EquityPriceVol', 'EquityPrice'),
+                            ('CommodityPriceVol', 'CommodityPrice')]:
+        assert utils.FactorRiskClass[vol] == utils.FactorRiskClass[underlying], (
+            f'{vol} does not partition with {underlying}')
+
+    assert utils.FactorRiskClass['VolatilityGrid'] == 'CrossClass', (
+        'the untagged spelling claims a real risk class - it cannot decide one')
+
+
+def test_a_vol_surface_reads_either_spelling_for_one_release():
+    """`resolve_factor_key` is the whole leniency, and it is deliberately narrow: a 2D factor finds
+    a block written under any 2D name, and NOTHING else falls back to anything. Market data written
+    since the merge says `VolatilityGrid.X` and a deal now asks for `FXVol.X`; both have to land on
+    the same block, and the typed name stays canonical on write."""
+    old, new = {'VolatilityGrid.USD.ZAR': {}}, {'FXVol.USD.ZAR': {}}
+    fx = utils.Factor('FXVol', ('USD', 'ZAR'))
+
+    assert utils.resolve_factor_key(fx, old) == 'VolatilityGrid.USD.ZAR'
+    assert utils.resolve_factor_key(fx, new) == 'FXVol.USD.ZAR'
+    # the typed name wins where both are present, so a migrated block shadows the one it replaces
+    assert utils.resolve_factor_key(fx, {**old, **new}) == 'FXVol.USD.ZAR'
+    # the fallback is to the PRE-TAG spelling ONLY. A cross-tag fallback would let an FX request
+    # price off an equity or commodity surface - right gradient label, wrong number (measured
+    # 23.58 against 9.95 on the adversarial fixture) - so a sibling tag is a MISS, not a match
+    assert utils.resolve_factor_key(fx, {'CommodityPriceVol.USD.ZAR': {}}) == 'FXVol.USD.ZAR'
+    assert utils.resolve_factor_key(fx, {'EquityPriceVol.USD.ZAR': {}}) == 'FXVol.USD.ZAR'
+    # and the untagged request does not chase typed blocks either - same ambiguity, no caller
+    # builds one after the migration
+    assert utils.resolve_factor_key(utils.Factor('VolatilityGrid', ('USD', 'ZAR')), new) == \
+        'VolatilityGrid.USD.ZAR'
+    # a miss reports the name that was ASKED for, which is what the KeyError has to say
+    assert utils.resolve_factor_key(fx, {}) == 'FXVol.USD.ZAR'
+    # not a general fuzzy lookup: no other type falls back to a sibling
+    assert utils.resolve_factor_key(utils.Factor('EquityPrice', ('ACME',)),
+                                    {'FxRate.ACME': {}}) == 'EquityPrice.ACME'
 
 
 def json_names(cls):

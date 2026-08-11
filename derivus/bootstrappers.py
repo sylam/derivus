@@ -31,6 +31,18 @@ from .schema import F, OPTION_QUOTE, REQUIRED, Row
 import scipy.optimize
 
 
+def resolve_factor(name, price_factors, candidates):
+    """The factor `name` refers to, typed by the first candidate the price factors hold a block for.
+
+    A market-price block names its inputs by NAME - the type is the market data's business, not the
+    quote author's - so a bootstrapper declares the candidate types and this picks between them.
+    That is also how the asset-class vol tags and the untagged name they replace are both readable:
+    `utils.TwoDimensionalFactors` IS the candidate list for a vol surface."""
+    rate = utils.check_rate_name(name)
+    return utils.Factor(next(x for x in candidates if utils.check_tuple_name(
+        utils.Factor(x, rate)) in price_factors), rate)
+
+
 class market_swap_class(namedtuple('market_swap', 'deal_data price weight quote premium',
                                    defaults=(None, None))):
     """One benchmark swaption of a risk-neutral IR calibration: the compiled par swap, the market
@@ -451,8 +463,8 @@ class HestonNandiModelParameters(object):
         ['For Risk Neutral simulation, the Heston-Nandi GARCH(1,1) model is calibrated to a set of European',
          'options $J$ on a spot underlying. The model is ASSET CLASS AGNOSTIC - the *Underlying* may be any',
          'spot (0D) price factor (**FxRate**, **EquityPrice**, **CommodityPrice**, **FuturesPrice**) and the',
-         '*Volatility* any (moneyness, expiry) vol surface (**VolatilityGrid**, whatever the asset',
-         'class); the type of each is looked up from the price factors, or named explicitly',
+         '*Volatility* any (moneyness, expiry) vol surface (**FXVol**, **EquityPriceVol**,',
+         '**CommodityPriceVol**); the type of each is looked up from the price factors, or named explicitly',
          'with *Underlying_Type* / *Volatility_Type*. Under the locally risk neutral valuation relationship',
          '(LRNVR) $\\lambda^*=-\\frac{1}{2}$, so the model is parameterised directly in $\\gamma^*$:',
          '',
@@ -504,7 +516,7 @@ class HestonNandiModelParameters(object):
     # factor and the volatility any (moneyness, expiry) surface, so one instrument definition
     # serves FX, equity and commodity underlyings
     factor_types = {'Underlying': ['FxRate', 'EquityPrice', 'CommodityPrice', 'FuturesPrice'],
-                    'Volatility': ['VolatilityGrid'],
+                    'Volatility': utils.TwoDimensionalFactors,
                     'Discount_Rate': ['InterestRate'],
                     'Yield': ['DividendRate', 'InterestRate']}
     # Surface_Types whose vol at a strike is a TABLE LOOKUP, hence usable here. SVI/Skew are
@@ -547,10 +559,8 @@ class HestonNandiModelParameters(object):
         price factors, or by an explicit instrument[field + '_Type']. None if the field is unset."""
         if not instrument.get(field):
             return None
-        rate = utils.check_rate_name(instrument[field])
-        types = [instrument[field + '_Type']] if instrument.get(field + '_Type') else cls.factor_types[field]
-        return utils.Factor(next(x for x in types if utils.check_tuple_name(
-            utils.Factor(x, rate)) in price_factors), rate)
+        return resolve_factor(instrument[field], price_factors, [instrument[field + '_Type']]
+                              if instrument.get(field + '_Type') else cls.factor_types[field])
 
     @staticmethod
     def reparam(x):
@@ -790,9 +800,10 @@ class GBMAssetPriceTSModelParameters(object):
     )
 
     market_factor_type = 'GBMAssetPriceTSModelPrices'
+    factor_types = {'Asset_Price_Volatility': utils.TwoDimensionalFactors}
     fields = [
         F('Asset_Price_Volatility', 'Text', default=REQUIRED,
-          description='The VolatilityGrid whose ATM column becomes the integrated vol curve')
+          description='The vol surface whose ATM column becomes the integrated vol curve')
     ]
 
     def __init__(self, param, device, dtype):
@@ -812,11 +823,11 @@ class GBMAssetPriceTSModelParameters(object):
 
             if market_factor.type == self.market_factor_type:
                 # get the vol surface
-                implied_param = utils.check_rate_name(implied_params['instrument']['Asset_Price_Volatility'])
-                vol_factor = utils.Factor('VolatilityGrid', implied_param)
-                # asset class is a property of the UNDERLYING, not of its vol surface: one
-                # VolatilityGrid serves every asset class, so this asks whether the thing being
-                # modelled is an fx rate rather than which type its surface was declared under
+                vol_factor = resolve_factor(implied_params['instrument']['Asset_Price_Volatility'],
+                                            price_factors, self.factor_types['Asset_Price_Volatility'])
+                implied_param = vol_factor.name
+                # this asks whether the thing being MODELLED is an fx rate - the surface's own tag
+                # says which asset class it belongs to, but the model is named after the underlying
                 is_fx = utils.check_tuple_name(utils.Factor('FxRate', rate[1:])) in price_factors
 
                 # this shouldn't fail - if it does, need to log it and move on

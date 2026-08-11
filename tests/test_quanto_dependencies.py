@@ -6,12 +6,15 @@ and the equity/fx correlation, and NEITHER is reachable from the deal's own `fac
 
 Ten deal types declare both `Equity_Volatility` and `Payoff_Currency` and no fixture had ever set
 them to different currencies, so this whole branch ran in no test. That mattered when the three
-asset-class vol types collapsed into one `VolatilityGrid`: the rule had been keyed on
-`EquityPriceVol`, which fired only for equity deals, and the surviving key now sees every vol
-surface - so what used to be implied by the factor type has to be asked of the instrument.
+asset-class vol types collapsed into one implementation: the rule had been keyed on
+`EquityPriceVol`, which fired only for equity deals, and the surviving key sees every vol surface -
+so what used to be implied by the factor type has to be asked of the instrument. The tag is back
+(`FXVol` / `EquityPriceVol` / `CommodityPriceVol` alias that one implementation) but the rule stays
+keyed on the UNDERLYING, `EquityPrice`, and the guard stays: what the rule needs to know is whether
+this instrument has an equity volatility, and no factor type answers that.
 
 The correlation names the equity by its VOLATILITY field, which is correct: a vol surface is named
-after the underlying it belongs to (`EquityPrice.EQ` / `VolatilityGrid.EQ`), so the two are the
+after the underlying it belongs to (`EquityPrice.EQ` / `EquityPriceVol.EQ`), so the two are the
 same string by convention.
 """
 import os
@@ -40,7 +43,7 @@ def _cfg(payoff_currency):
                                        'Sub_Type': None,
                                        'Curve': utils.Curve([], [[0.0, 0.0], [5.0, 0.0]])},
         # the pair's vol surface and the equity/fx correlation: the two the rule must reach
-        'VolatilityGrid.USD.' + PAYOFF_CCY: {
+        'FXVol.USD.' + PAYOFF_CCY: {
             'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
             'Surface': utils.Curve([], [[m, t, 0.15] for m in (0.8, 1.0, 1.2) for t in (0.02, 2.0)])},
         'Correlation.EquityPrice.EQ/FxRate.USD.' + PAYOFF_CCY: {'Value': 0.3},
@@ -67,7 +70,7 @@ def test_a_quanto_equity_pulls_the_pair_vol_and_the_correlation():
     """Neither is named by any field of the deal - `factor_fields` gives Equity, Dividends,
     Discount_Rate and Equity_Volatility, and none of them mentions ZAR."""
     found = _discovered(PAYOFF_CCY)
-    assert 'VolatilityGrid.USD.' + PAYOFF_CCY in found, sorted(f for f in found if 'Vol' in f)
+    assert 'FXVol.USD.' + PAYOFF_CCY in found, sorted(f for f in found if 'Vol' in f)
     assert 'Correlation.EquityPrice.EQ/FxRate.USD.' + PAYOFF_CCY in found, (
         sorted(f for f in found if f.startswith('Correlation')))
 
@@ -76,7 +79,7 @@ def test_a_same_currency_equity_pulls_neither():
     """The discriminating half: the rule must fire on the currencies differing, not merely on the
     deal being an equity option. Without this the test above passes for a rule that always fires."""
     found = _discovered('USD')
-    assert 'VolatilityGrid.USD.' + PAYOFF_CCY not in found
+    assert 'FXVol.USD.' + PAYOFF_CCY not in found
     assert not [f for f in found if f.startswith('Correlation')], (
         f'same-currency deal pulled a correlation: {sorted(f for f in found if f.startswith("Correlation"))}')
 
@@ -123,8 +126,8 @@ def test_equity_collateral_reaches_the_rule_without_a_deal_currency():
 def test_a_non_equity_quanto_referencing_a_vol_grid_does_not_raise():
     """The regression the collapse could have introduced, and it needs the RIGHT deal to show it.
 
-    One VolatilityGrid now serves every asset class, so the rule is handed FX and commodity surfaces
-    too - and reading `Equity_Volatility` off those instruments is a KeyError during discovery. But
+    The rule is keyed on the UNDERLYING (`EquityPrice`), so it is handed every instrument that
+    references one - and reading `Equity_Volatility` off those is a KeyError during discovery. But
     the currency comparison short-circuits first, so any deal whose payoff currency defaults to its
     own currency never reaches that read and cannot expose the defect. It takes a deal that declares
     `Payoff_Currency`, references a vol grid, has NO `Equity_Volatility`, and sets the two
@@ -136,7 +139,7 @@ def test_a_non_equity_quanto_referencing_a_vol_grid_does_not_raise():
         'InterestRate.' + PAYOFF_CCY: {'Currency': PAYOFF_CCY, 'Day_Count': 'ACT_365',
                                        'Sub_Type': None,
                                        'Curve': utils.Curve([], [[0.0, 0.0], [5.0, 0.0]])},
-        'VolatilityGrid.USD.' + PAYOFF_CCY: {
+        'FXVol.USD.' + PAYOFF_CCY: {
             'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
             'Surface': utils.Curve([], [[m, t, 0.15] for m in (0.8, 1.0, 1.2) for t in (0.02, 2.0)])},
     })
@@ -151,4 +154,4 @@ def test_a_non_equity_quanto_referencing_a_vol_grid_does_not_raise():
     c.deals['Deals']['Children'] = [{'Instrument': construct_instrument(fx_barrier, {})}]
     found = {utils.check_tuple_name(f) for f in c.calculate_dependencies(
         {'Currency': 'USD', 'Base_Date': bb.BASE}, bb.BASE, '0d 2y(3m)', False)[0]}
-    assert 'VolatilityGrid.USD.' + PAYOFF_CCY in found
+    assert 'FXVol.USD.' + PAYOFF_CCY in found

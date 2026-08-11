@@ -384,7 +384,10 @@ and `Swaption_Premiums` are read by the bootstrappers and declared by nothing, a
 data and reach no read. That audit is the one piece of this work still owed.
 
 The paired naming cleanup settles first, and is now done: the `MarketPrices` types the engine
-matches, one `VolatilityGrid` in place of the three asset-class vol twins, and the IR prefix chain
+matches, one `VolatilityGrid` BODY in place of the three asset-class vol twins — with
+`FXVol`/`EquityPriceVol`/`CommodityPriceVol` restored over it as alias subclasses, because the
+CRIF-style risk-class partition (`utils.FactorRiskClass`) is a pure function of `factor.type` and
+one untagged name makes it undecidable — and the IR prefix chain
 (`InterestRate.USD.LIBOR`) **grandfathered** by decision rather than migrated to explicit spread
 declarations. `Observed_Factor` and the type-switched `ObservedBasis` tail closed themselves —
 `nested_fields` already wires FX and equity alongside commodity, and all four
