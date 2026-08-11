@@ -49,7 +49,7 @@ The six families, and what each fits:
 
 | Family | Quotes | Writes |
 | --- | --- | --- |
-| `GBMAssetPriceTSModelPrices` | a vol surface, ATM column only | `GBMAssetPriceTSModelParameters` — an integrated vol curve |
+| `GBMAssetPriceTSModelPrices` | a vol surface, ATM column only — or, where `FXVolPrices` built that surface, [its ATM rows](#fxvolprices) | `GBMAssetPriceTSModelParameters` — an integrated vol curve |
 | `CSForwardPriceModelPrices` | European energy futures options | `CSForwardPriceModelParameters` — sigma, alpha |
 | `HestonNandiModelPrices` | European options on any spot | `HestonNandiModelParameters` — omega, alpha, beta, gamma\*, H0 |
 | `HullWhite2FactorModelPrices` | forward-starting swaps against a swaption surface | `HullWhite2FactorModelParameters` — two sigma curves, two alphas, a correlation |
@@ -165,6 +165,16 @@ a value the engine cannot honour is the same defect as a field nothing reads. Th
 maths rather than as strings: the surface must carry the pillar's vol at the strike whose
 premium-adjusted forward delta IS the pillar, and must fail the same statement under the
 unadjusted delta.
+
+**The ATM row is the surface's ATM vol, and a second family reads it as one.** `malz_skew` places
+the ±0.5 label's vol at the delta-neutral straddle strike, so the ATM vol of the surface this
+family writes IS the quoted number — nothing has to be read back off the refined grid to recover
+it. `FXVolSurfaceParameters.atm_quotes` is the one reader of that rule (`smile` builds the wings
+around the same dict), and `GBMAssetPriceTSModelParameters` takes those rows as its ATM column
+wherever the surface it is integrating is one this family **wrote** — evidenced by the same
+fingerprint `pinned_grid` reads back, never by the name alone. That is what makes a vol delta land
+on the number a desk edits — see
+[the quote sources](quote_sensitivities.md#the-atm-column), and the defect named beside them.
 
 **Timestamps are data the engine stores and reports.** Each quote row carries when it was seen;
 the written surface carries the latest of the rows that built it as `Quote_Timestamp`, its own

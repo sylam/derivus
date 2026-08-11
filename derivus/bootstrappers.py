@@ -785,9 +785,10 @@ class GBMAssetPriceTSModelParameters(object):
          '$V(0)=0, V(t_i)=\\bar{\\sigma}(t_i)^2 t_i$ and $V(t)=\\bar{\\sigma}(t_n)^2 t$ for $t>t_n$ where',
          '$t_1,...,t_n$ are discrete points on the ATM volatility curve.',
          '',
-         'Points on the curve that imply a decrease in variance (i.e. $V(t_i)<V(t_{i-1})$) are adjusted to',
-         '$V(t_i)=\\bar\\sigma(t_i)^2t_i=V(t_{i-1})$. This curve is then used to construct *instantaneous* curves',
-         'that are then input to the corresponding stochastic process.',
+         'Points on the curve that imply a DECREASE in forward variance are adjusted up to the least',
+         'variance that step can reach, which is the one a zero instantaneous vol over it leaves:',
+         '$V(t_i)=V(t_{i-1})+\\frac{t_i-t_{i-1}}{3}\\sigma(t_{i-1})^2$. This curve is then used to construct',
+         '*instantaneous* curves that are then input to the corresponding stochastic process.',
          '',
          'The relationship between integrated $F(t)=\\int_0^t f_1(s)f_2(s)ds$ and instantaneous curves $f_1, f_2$',
          'where the instantaneous curves are defined on discrete points $P={t_0,t_1,..,t_n}$ with $t_0=0$ is defined',
@@ -801,22 +802,183 @@ class GBMAssetPriceTSModelParameters(object):
 
     market_factor_type = 'GBMAssetPriceTSModelPrices'
     factor_types = {'Asset_Price_Volatility': utils.TwoDimensionalFactors}
+    #: The precision the TAPE runs in - the value path is numpy and has no dtype to pick. It is
+    #: float64 on the CPU whatever the job asked for: `construct_bootstrapper`'s dtype does not
+    #: reach it, and a handful of scalar operations has nothing to gain from a device whose
+    #: rounding is its own.
+    dtype = torch.float64
     fields = [
         F('Asset_Price_Volatility', 'Text', default=REQUIRED,
-          description='The vol surface whose ATM column becomes the integrated vol curve')
+          description='The vol surface whose ATM column becomes the integrated vol curve'),
+        F('Quote_Sensitivity', 'Text', default='No', values=['Yes', 'No'],
+          description='Keep the integrated vol curve connected to the ATM vols it was built from, '
+                      'so a calculation\'s backward pass reports dV/dq beside dV/dtheta. The '
+                      'written curve is identical either way')
     ]
 
     def __init__(self, param, device, dtype):
         self.device = device
         self.prec = dtype
         self.param = param
+        #: What a block asking for `Quote_Sensitivity` leaves behind: the integrated vol curve STILL
+        #: CONNECTED to its ATM quotes, under the key `_build_factor_state` mints its `Vol` leaf
+        #: with, and the quote leaf per block. `Config.bootstrap` harvests both - they are tensors,
+        #: so they cannot live in `Price Factors`, which is data and gets written back out as JSON.
+        self.calibrated = {}
+        self.quote_leaves = {}
+
+    @staticmethod
+    def atm_column(vol_factor, vol_surface, market_prices, price_factors):
+        """The ATM vol per surface expiry, and where each number came from.
+
+        TWO SOURCES, and which one a config gets is a property of the surface's PROVENANCE rather
+        than a switch. Where this same market data carries an `FXVolPrices` block for the surface
+        being integrated AND that surface is the one the block WROTE, its ATM rows ARE its ATM vols
+        - `Factor2D.malz_skew` puts the +-0.5 label's vol at the delta-neutral straddle strike, so
+        the identity is the surface's own construction - and the quotes are taken straight off it:
+        exact, and the coordinate a desk explains a vol P&L in. Reading them back off the refined
+        log-moneyness grid instead would recover the same numbers to the grid's own tolerance and no
+        better, and it would put the Malz delta solve on the tape to say so.
+
+        PROVENANCE IS EVIDENCE, NOT A NAME. A hand-authored surface can sit under a name a quote
+        block also uses, and then the two are simply different market data: the pricers read the
+        authored surface and preferring the quotes would integrate a curve nothing else agrees with.
+        What is checked is the fingerprint `FXVolSurfaceParameters` leaves on what it writes and
+        `pinned_grid` reads back - the `Malz` subtype beside the `Grid_Tolerance` the grid was built
+        at - so the preference follows the surface rather than the string.
+
+        Anything else is authored data, and the ATM column is what `np.interp` reads off it at
+        moneyness 1 - unchanged, and the entries it returns ARE the quotes. Where the surface
+        carries a node AT moneyness 1 that read is the node itself, so dV/d(ATM column) is
+        dV/d(surface node) there.
+
+        KNOWN, AND NOT FIXED HERE: moneyness 1 is the ATM coordinate of a RATIO surface (F/K), and
+        a `Malz` surface's axis is log(F/K), whose ATM is at 0. A hand-authored Malz surface
+        therefore reads its last log-moneyness node - a wing - and has done since before quotes had
+        derivatives. The preferred path above is the one Malz surfaces reach in practice, so this
+        increment names the defect rather than moving a shipped forward for it.
+        """
+        family = FXVolSurfaceParameters
+        quoted = market_prices.get(utils.check_tuple_name(utils.Factor(
+            family.market_factor_type, vol_factor.name)))
+        written = price_factors.get(utils.check_tuple_name(vol_factor), {})
+        if quoted is not None and written.get('Surface_Type') == family.surface_type and \
+                'Grid_Tolerance' in written:
+            atm = family.atm_quotes(family.used(quoted['instrument']))
+            if set(atm) != set(vol_surface.expiry):
+                raise ValueError(
+                    '{} is quoted at expiries {} and carries a surface over {} - the quotes moved '
+                    'since it was built, so re-bootstrap the surface before integrating it'.format(
+                        utils.check_tuple_name(vol_factor),
+                        ', '.join('{:g}'.format(T) for T in sorted(atm)),
+                        ', '.join('{:g}'.format(T) for T in sorted(vol_surface.expiry))))
+            return [atm[expiry] for expiry in vol_surface.expiry], 'its own ATM quotes'
+
+        mn_ix = np.searchsorted(vol_surface.moneyness, 1.0)
+        return [np.interp(1, vol_surface.moneyness[mn_ix - 1:mn_ix + 1], y) for y in
+                vol_surface.get_vols()[:, mn_ix - 1:mn_ix + 1]], 'the surface at moneyness 1'
+
+    @staticmethod
+    def integrated_vol(atm_vol, expiry):
+        """The ATM column as the integrated vol curve the process reads - THE VALUE PATH.
+
+        `V(t_i) = sigma_bar(t_i)^2 t_i` is the total variance the column implies, and the walk is
+        Simpson's rule inverted for the instantaneous vol over each step,
+
+            V(t_i) - V(t_{i-1}) = (dt/3)(sigma_{i-1}^2 + sigma_{i-1} sigma_i + sigma_i^2)
+
+        a quadratic in `sigma_i` whose positive root is taken. Returns the curve and the expiries
+        the repair below fired at.
+
+        This is the numpy walk this family has always shipped, arithmetic untouched, and it is the
+        only thing a mark is ever built from - see `carried_vol` for the derivative twin and for why
+        the two are not one function.
+
+        THE MAP IS PIECEWISE, and the switch is a KINK. A column implying a DECLINING forward
+        variance has no root, so `V(t_i)` is floored at the least variance the step can reach - the
+        one `sigma_i = 0` leaves - and the written vol is that floor rather than the quote. On the
+        smooth side the written vol is the quote and `d/dq` is 1; on the floored side the floor does
+        not involve that quote at all and `d/dq` is 0, in that column AND in every later one.
+
+        ONLY `sigma_bar` IS WRITTEN. `sigma` is the walk's own state - it sizes the next step's
+        floor and is never published - so where no repair fires the curve is `sqrt(q^2 t / t)`, which
+        is `q` up to the rounding of a square and its root and is exactly `q` on most columns. The
+        arithmetic only bites where variance declines, which is where the gates put it.
+        """
+        if expiry.size == 1:
+            return list(atm_vol), []
+
+        dt = np.diff(np.append(0, expiry))
+        var = expiry * np.array(atm_vol) ** 2
+        sig, vol, var_tm1, floored = atm_vol[:1], atm_vol[:1], var[0], []
+
+        for var_t, delta_t, t_i in zip(var[1:], dt[1:] / 3.0, expiry[1:]):
+            M = var_tm1 + delta_t * (sig[-1] ** 2)
+            if var_t < M:
+                floored.append(t_i)
+                var_t = M
+
+            a, b, c = delta_t, sig[-1] * delta_t, M - var_t
+            sig.append((-b + np.sqrt(b * b - 4.0 * a * c)) / (2.0 * a))
+            vol.append(np.sqrt(var_t / t_i))
+            var_tm1 = var_t
+
+        return vol, floored
+
+    @staticmethod
+    def carried_vol(atm_vol, expiry):
+        """The same walk on a tape - A DERIVATIVE CARRIER, and never a value.
+
+        It rides in as the splice `integrated_vol + (carried - carried.detach())`, the shape the
+        rest of the quote side uses: worth exactly zero in the forward pass, derivative one. So the
+        curve a job ships is the numpy walk's, bit for bit, whatever this returns.
+
+        THAT SEPARATION IS THE POINT, and it is measured rather than assumed. Every operation here
+        is correctly rounded under IEEE-754, which makes it tempting to have one walk; `torch.sqrt`
+        is still one ulp below `np.sqrt` on better than one float64 in a hundred on this box, and a
+        torch walk re-associates the expression tree besides. Letting it write the curve moved the
+        shipped vols on 24% of 4000 random ATM columns. An ulp of a shipped vol is not a rounding
+        question, it is a different number in a report.
+
+        THE DISCRIMINANT IS GUARDED, and only here. `sqrt` has an INFINITE derivative at zero, and
+        the floored branch walks straight into it: one repair leaves `sigma` exactly zero, so a
+        second reaches `b = 0` beside a `c` that cancels to zero and the discriminant IS zero. The
+        forward value is fine - the root is zero - but the backward pass multiplies that infinity by
+        the zero `d(b^2)/db` and reports NaN, which then eats the whole Jacobian rather than one
+        entry. The root there is zero, so it is written as zero and the `sqrt` never sees the point.
+        """
+        third = np.diff(np.append(0.0, expiry)) / 3.0
+        variance = atm_vol * atm_vol * atm_vol.new_tensor(expiry)
+        sigma, curve, previous = atm_vol[0], [atm_vol[0]], variance[0]
+
+        for i in range(1, expiry.size):
+            floor = previous + third[i] * sigma * sigma
+            previous = floor if variance[i] < floor else variance[i]
+            b = sigma * third[i]
+            disc = b * b - 4.0 * third[i] * (floor - previous)
+            real = disc > 0
+            root = torch.where(real, torch.sqrt(torch.where(real, disc, torch.ones_like(disc))),
+                               torch.zeros_like(disc))
+            sigma = (-b + root) / (2.0 * third[i])
+            curve.append(torch.sqrt(previous / expiry[i]))
+
+        return torch.stack(curve)
 
     def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices, calendars, debug=None):
         '''
-        Checks for Declining variance in the ATM vols of the relevant price factor and corrects accordingly.
+        Turns the ATM column of the named vol surface into the integrated vol curve the risk neutral
+        process reads, repairing any declining variance on the way - see `integrated_vol`.
+
+        A block asking for `Quote_Sensitivity` leaves that curve behind still connected to the ATM
+        vols it was built from, so `Calculation.factor_leaf` can offer the connected tensor where it
+        would otherwise mint a `Vol` leaf out of numpy. The map is explicit, so there is no solve
+        here and no implicit function theorem: the curve IS a differentiable function of the quotes
+        and autograd walks it.
+
+        The tape is a SPLICE over the shipped walk and not a replacement for it - see `carried_vol`
+        - so what a block asking for quote sensitivities changes is what `backward()` can reach and
+        nothing else. Every number written below comes out of `integrated_vol` either way.
         '''
-        eq_vols = {}
-        fx_vols = {}
         for market_price, implied_params in market_prices.items():
             rate = utils.check_rate_name(market_price)
             market_factor = utils.Factor(rate[0], rate[1:])
@@ -837,62 +999,45 @@ class GBMAssetPriceTSModelParameters(object):
                     logging.error('Unable to bootstrap {0} - skipping'.format(market_price), exc_info=True)
                     continue
 
-                mn_ix = np.searchsorted(vol_surface.moneyness, 1.0)
-                atm_vol = [np.interp(1, vol_surface.moneyness[mn_ix - 1:mn_ix + 1], y) for y in
-                           vol_surface.get_vols()[:, mn_ix - 1:mn_ix + 1]]
+                connect = implied_params['instrument'].get('Quote_Sensitivity', 'No') == 'Yes'
+                atm_vol, source = self.atm_column(
+                    vol_factor, vol_surface, market_prices, price_factors)
+                curve, floored = self.integrated_vol(atm_vol, vol_surface.expiry)
 
                 # store the output
                 price_param = utils.Factor(self.__class__.__name__, market_factor.name)
                 model_param = utils.Factor('GBMAssetPriceTSModelImplied', market_factor.name)
-
-                if vol_surface.expiry.size > 1:
-                    dt = np.diff(np.append(0, vol_surface.expiry))
-                    var = vol_surface.expiry * np.array(atm_vol) ** 2
-                    sig = atm_vol[:1]
-                    vol = atm_vol[:1]
-                    var_tm1 = var[0]
-                    fixed_variance = False
-
-                    for var_t, delta_t, t_i in zip(var[1:], dt[1:] / 3.0, vol_surface.expiry[1:]):
-                        M = var_tm1 + delta_t * (sig[-1] ** 2)
-                        if var_t < M:
-                            fixed_variance = True
-                            var_t = M
-
-                        a = delta_t
-                        b = sig[-1] * delta_t
-                        c = M - var_t
-
-                        sig.append((-b + np.sqrt(b * b - 4.0 * a * c)) / (2.0 * a))
-                        vol.append(np.sqrt(var_t / t_i))
-                        var_tm1 = var_t
-
-                    if fixed_variance:
-                        logging.warning('Fixed declining variance for {0}'.format(market_price))
-                else:
-                    vol = atm_vol
+                vol = utils.Curve(['Integrated'], list(zip(vol_surface.expiry, curve)))
 
                 if is_fx:
-                    fx_vols[rate[-1]] = [utils.Curve(['Integrated'], list(zip(vol_surface.expiry, vol))), implied_param]
-                    price_factors[utils.check_tuple_name(price_param)] = {
-                        'Property_Aliases': None,
-                        'Vol': fx_vols[rate[-1]][0],
-                        'Quanto_FX_Volatility': None,
-                        'Quanto_FX_Correlation': 0.0}
-                    price_models[utils.check_tuple_name(model_param)] = {'Risk_Premium': None}
+                    quanto_fx_corr = 0.0
                 else:
                     quanto_fx_corr = price_factors.get(
                         'Correlation.EquityPrice.{}.{}/FxRate.{}.{}'.format(
                             rate[-1], implied_param[-1], *sorted([sys_params['Base_Currency'], implied_param[-1]])),
                         {'Value': 0.0})['Value']
-                    price_factors[utils.check_tuple_name(price_param)] = {
-                        'Property_Aliases': None,
-                        'Vol': utils.Curve(['Integrated'], list(zip(vol_surface.expiry, vol))),
-                        'Quanto_FX_Volatility': None,
-                        'Quanto_FX_Correlation': quanto_fx_corr}
-                    price_models[utils.check_tuple_name(model_param)] = {'Risk_Premium': None}
-                    # store this for later quanto correction
-                    eq_vols[rate[-1]] = [utils.check_tuple_name(price_param), implied_param[-1]]
+
+                price_factors[utils.check_tuple_name(price_param)] = {
+                    'Property_Aliases': None,
+                    'Vol': vol,
+                    'Quanto_FX_Volatility': None,
+                    'Quanto_FX_Correlation': quanto_fx_corr}
+                price_models[utils.check_tuple_name(model_param)] = {'Risk_Premium': None}
+
+                if connect:
+                    quotes = torch.tensor(atm_vol, dtype=self.dtype, requires_grad=True)
+                    carried = self.carried_vol(quotes, vol_surface.expiry)
+                    self.calibrated[utils.Factor(
+                        price_param.type, price_param.name + ('Vol',))] = torch.tensor(
+                        curve, dtype=self.dtype) + (carried - carried.detach())
+                    self.quote_leaves[market_price] = (
+                        ['ATM {:g}'.format(expiry) for expiry in vol_surface.expiry], quotes)
+
+                logging.info('{} built from {} ATM vols off {}'.format(
+                    utils.check_tuple_name(price_param), len(atm_vol), source))
+                if floored:
+                    logging.warning('Fixed declining variance for {} at {}'.format(
+                        market_price, ', '.join('{:g}'.format(expiry) for expiry in floored)))
 
 
 class SwaptionCalibration(object):
@@ -2279,7 +2424,24 @@ class FXVolSurfaceParameters(object):
         self.param = param
 
     @staticmethod
-    def smile(quotes):
+    def used(block):
+        """The block's quotes that enter the surface - `Use` holds one out without deleting it."""
+        return [point for point in block['Points'] if point['Use'] == 'Yes']
+
+    @staticmethod
+    def atm_quotes(quotes):
+        """`{expiry: ATM vol}` - the ATM row per expiry, the number that expiry's wings sit around.
+
+        The surface's ATM vol at an expiry IS this number: `Factor2D.malz_skew` places it at the
+        delta-neutral straddle strike and every other node is quoted relative to it. So it is what
+        `smile` builds the wings off, and it is what `GBMAssetPriceTSModelParameters` takes as the
+        ATM column when a surface this family built is the one being integrated.
+        """
+        return {point['Expiry']: point['Quoted_Market_Value']
+                for point in quotes if point['Quote_Type'] == 'ATM'}
+
+    @classmethod
+    def smile(cls, quotes):
         """The quotes as a `(delta, expiry, vol)` surface - the strangle pair, per expiry pillar.
 
         `vol(call) = ATM + BF + RR/2` and `vol(put) = ATM + BF - RR/2`, with the ATM vol itself
@@ -2294,8 +2456,7 @@ class FXVolSurfaceParameters(object):
         coordinate and the surface would silently carry whichever survived the sort. A 50 delta
         pair is quoted as the ATM row by convention, which is where it has to be authored.
         """
-        atm = {point['Expiry']: point['Quoted_Market_Value']
-               for point in quotes if point['Quote_Type'] == 'ATM'}
+        atm = cls.atm_quotes(quotes)
         wings = {(point['Expiry'], point['Pillar'], point['Quote_Type']):
                  point['Quoted_Market_Value'] for point in quotes if point['Quote_Type'] != 'ATM'}
         pillars = sorted({key[:2] for key in wings})
@@ -2361,7 +2522,7 @@ class FXVolSurfaceParameters(object):
                         'terminate there'.format(market_price, tolerance,
                                                  *self.grid_tolerance_bounds))
 
-                quotes = [point for point in block['Points'] if point['Use'] == 'Yes']
+                quotes = self.used(block)
                 delta_surface = self.smile(quotes)
                 expiries = np.unique(delta_surface[:, 1])
                 skews = riskfactors.Factor2D.malz_skews(delta_surface, expiries)

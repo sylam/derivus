@@ -1,13 +1,13 @@
 # Quote Sensitivities
 
-!!! note "Both increments are complete"
+!!! note "All three increments are complete"
     Increment 1 — the t0 benchmark closure and its graph audit, the multi-curve solver, the
     `InterestRatePrices` family, the quote-side graph, the implicit-function-theorem wrapper, the
     factor-buffer attachment and the validation triangle — is built. So is increment 2: the same
     contract around the HW2F swaption-vol calibration, where the fixed point is the
-    [stationarity](#the-stationarity-contract) of a least-squares loss rather than a root. What
-    remains of the workstream is **FX vol**, which follows the same shape — see
-    [the non-goals](#non-goals).
+    [stationarity](#the-stationarity-contract) of a least-squares loss rather than a root. And so is
+    increment 3, **FX vol** — which turned out to need neither, because
+    [the map is closed form](#the-closed-form-map).
 
 The autograd tape started at *calibrated* factors, so a greek was reported in zero-curve-node or
 model-parameter space. Desks explain P&L in **quote** space — par swap rates, FRA strips, OIS
@@ -22,8 +22,10 @@ q (leaves)  ->  calibration solve  ->  θ*  ->  factor buffers  ->  scenarios  -
 ```
 
 and the only new arithmetic is the middle arrow. Everything downstream of θ* is the engine that
-already exists. The two solves put different things in that arrow — a damped Newton on a root, and
-a Monte Carlo least squares on a stationarity point — and the page reads in that order.
+already exists. The three calibrations put different things in that arrow — a damped Newton on a
+root, a Monte Carlo least squares on a stationarity point, and
+[an explicit map with no solve in it at all](#the-closed-form-map) — and the page reads in that
+order.
 
 ## The residual is priced by the engine's own pricers {#the-residual}
 
@@ -447,6 +449,152 @@ surprises, and so nobody later "fixes" the derivative against an oracle that is 
 *failing* to agree; if any flips, the solve has started returning a function of its quotes and the
 comparison has become available.
 
+## The closed-form map — increment 3 {#the-closed-form-map}
+
+`GBMAssetPriceTSModelParameters` turns the ATM column of a vol surface into the integrated vol curve
+a risk-neutral GBM reads, and **it does not fit anything**. Earlier drafts of the roadmap said this
+increment would need "the same `LeastSquaresSolve` contract"; it needs no contract at all, because
+the map is explicit:
+
+$$V(t_i) = \bar\sigma(t_i)^2 t_i
+\qquad
+V(t_i) - V(t_{i-1}) = \tfrac{\Delta t}{3}\big(\sigma_{i-1}^2 + \sigma_{i-1}\sigma_i + \sigma_i^2\big)$$
+
+the second being Simpson's rule solved for the instantaneous vol over each step — a quadratic whose
+positive root is taken. There is no fixed point, so there is no implicit function theorem, no
+stationarity tolerance, no pseudo-inverse and no dropped Gauss–Newton term. `integrated_vol` is the
+whole of it, and autograd walks it.
+
+**A twin, spliced — not a replacement.** `integrated_vol` is the numpy walk this family has always
+shipped, arithmetic untouched, and it is what every written mark comes out of. `carried_vol` is the
+same walk in float64 torch and it rides in as
+`integrated_vol + (carried - carried.detach())` — the shape [the rest of this page's
+attachments](#the-attachment) use, worth exactly zero in the forward pass with derivative one. So
+the curve a job ships is bit-identical with the quote side on or off, and identical to what the
+family shipped before this increment, *by construction* rather than by a claim.
+
+The tempting simplification is to have one walk. Every operation here is `+ - * /` and `sqrt`, all
+of which IEEE-754 requires to be **correctly rounded**, so torch and numpy in float64 "cannot
+disagree" — and that is false. `torch.sqrt` is one ulp below `np.sqrt` on **1.4%** of float64
+inputs on this box, and a torch walk re-associates the expression tree besides. Measured on 4000
+random ATM columns: letting torch write the curve moves the **shipped** vols on 24.3% of them, by
+up to 2 ulp. An ulp of a shipped vol is not a rounding question, it is a different number in a
+report. With the splice the written curve moves on **none** of them while the twin still differs on
+the same 971 — which is the diagnostic saying the splice is load-bearing rather than ceremonial.
+
+!!! warning "The map is the IDENTITY wherever forward variance rises"
+    Only $\bar\sigma$ is written. $\sigma$ is the walk's own state — it sizes the next step's floor
+    and is never published — so on a well-behaved column the curve that comes back is
+    $\sqrt{q^2t/t}$: the column back, up to the rounding of a square and its root, and *exactly* it
+    on the fixtures gated here but **not as a property of the map** — a round trip returns a
+    different last bit somewhere on 5.7% of random rising columns over the gated expiries and on
+    23.1% over a ten-point desk grid. Either way `dV/dq` is `dV/dθ` relabelled and a round trip
+    on such a fixture passes whatever the walk does. Every derivative gate here therefore runs on a
+    **declining** column, and the rising one is kept only to pin the identity as the property it is.
+
+### The repair is a kink {#the-repair-kink}
+
+A column implying a *falling* forward variance has no real root, so $V(t_i)$ is floored at the least
+variance the step can reach — the one $\sigma_i = 0$ leaves, $V(t_{i-1}) + \tfrac{\Delta t}{3}
+\sigma_{i-1}^2$ — and the written vol is that floor rather than the quote. The map is piecewise and
+the switch is a **kink**: $d\bar\sigma_i/dq_i$ is $1$ on the smooth side and $0$ on the floored one,
+and autograd reports the one-sided derivative of the branch the column is in, which is the only
+quotient a piecewise map has a limit for. Measured at $\pm10^{-3}$ either side of the switch:
+**1.0** and **0.0**, each against a one-sided difference taken inside its own branch. Straddling the
+switch instead reports **exactly 0.5 at every $h$** — one side moves with the quote and the other
+does not — so a symmetric bump ladder converges here to a number that is nobody's derivative. That
+is gated too, because it is the reading a ladder would quietly have produced.
+
+The severance is a whole **column** of the Jacobian, not a diagonal entry. The floor is built out of
+the walk's state *before* that expiry, and $\sigma$ over the floored step is zero, so the next
+step's floor does not carry the quote either — a repaired quote reaches no written vol at all. The
+quadratic is written with $c = \text{floor} - V(t_i)$ so that branch cancels to an exact zero rather
+than to a rounding of one.
+
+!!! danger "The discriminant is guarded, and that cancellation is why it has to be"
+    The floored branch leaves $c$ at exactly zero, so $\sigma_i = (-b + \sqrt{b^2})/2a$ is exactly
+    **zero** — `sqrt(x*x) == |x|` holds in round-to-nearest float64. A *second* consecutive repair
+    then arrives with $b = 0$ beside that same zero $c$, so the discriminant is exactly $0$. The
+    forward value is right (the root is zero); the backward pass is not. $\sqrt{}$ has an
+    **infinite** derivative at zero, $d(b^2)/db$ is zero beside it, and $\infty \times 0$ is NaN —
+    which does not land on one entry but on **every** entry of the Jacobian, the identity rows
+    included. A *third* repair is what pulls a gradient back through the second and detonates it;
+    two in a row look clean, which is how it survived a gate suite. So the root at a zero
+    discriminant is written as zero and `sqrt` never sees the point, and the gate is a five-expiry
+    hump column that repairs three steps running.
+
+### Two quote sources, and which one a config gets {#the-atm-column}
+
+The leaves are the **ATM column, one per surface expiry** — the same vocabulary either way — but
+where those numbers come from is a property of the surface's PROVENANCE rather than a switch.
+
+**Preferred: the surface's own `FXVolPrices` quotes.** Where this market data also carries an
+[`FXVolPrices`](market_prices.md#fxvolprices) block for the surface being integrated **and that
+block is what wrote the surface**, its ATM rows **are** the quotes. That is an identity rather than
+a convenience: `Factor2D.malz_skew` places the ±0.5 label's vol at the delta-neutral straddle
+strike, so the ATM vol of that surface *is* the quoted number. Reading it back off the refined
+log-moneyness grid would recover it to the grid's own tolerance and no better, and it would put the
+Malz delta solve on the tape to say so.
+
+!!! warning "Provenance is evidence, not a name"
+    A name is not enough to prefer the quotes over the surface, and keying on one is a **silent
+    desync**: a hand-authored surface can sit under a name a quote block also uses, the pricers read
+    the surface, and the integrated curve would then be built off numbers nothing else in the config
+    agrees with — **20–26 vols against a 39–45 vol surface** on the gated fixture, with both halves
+    individually valid and neither raising. What is checked is the fingerprint
+    `FXVolSurfaceParameters` leaves on what it writes and
+    [`pinned_grid`](market_prices.md#fxvolprices) reads back — the `Malz` subtype beside the
+    `Grid_Tolerance` the grid was refined at — so the preference follows the surface. A surface the
+    family *did* write whose quotes have since moved off its expiries is the other half of the same
+    desync, and it **raises, naming both expiry sets**, rather than dying on a `KeyError` out of a
+    dict comprehension.
+
+**Fallback: the surface, at moneyness 1.** Anything else is authored data, and the ATM column is
+what `np.interp` reads off it — unchanged, and the entries it returns are the quotes. Where the
+surface carries a node AT moneyness 1, that read *is* the node, so `dV/d(ATM column)` is
+`dV/d(surface node)` there.
+
+!!! warning "A hand-authored `Malz` surface reads a wing — named, not fixed"
+    Moneyness 1 is the ATM coordinate of a **ratio** surface. A `Malz` surface's axis is
+    $\log(F/K)$, whose ATM is at 0 and whose grid stops at ±0.5, so `searchsorted` lands on the last
+    node and the "ATM column" is a deep wing — **0.194 against a quoted 0.200**, 0.6 vol points, on
+    the gated fixture, and a full vol point at three months on a USDZAR-shaped smile. This predates
+    quote derivatives and is a defect of the *read*, in nobody's gate; the preferred path above is
+    the one such a surface reaches in practice, so this increment names it rather than moving a
+    shipped forward for it. The two sources being **different numbers** is itself gated, so
+    preferring one of them is known to decide something.
+
+### The attachment, and the triangle {#the-gbm-attachment}
+
+Nothing new. `Quote_Sensitivity` is the declared field, default `No`; `Config.bootstrap` harvests
+`calibrated` and `quote_leaves` off the bootstrapper exactly as it does for the other two families;
+and θ\* reaches the calculation through [`factor_leaf`](#the-attachment), under the key
+`_build_factor_state` mints the implied model's `Vol` leaf with. `quote_leaves` publishes **one
+vector leaf** per block — the curve family's shape, because the whole ATM column enters one map,
+rather than the swaption family's tuple of scalars.
+
+| gate | what it isolates | result |
+| --- | --- | --- |
+| written curve, gradients on vs off | the forward, on the authored-surface path | `np.array_equal`; a basis point on one quote moves it |
+| written curve, gradients on vs off, **family-quoted** | the forward where the switch has two sources to pick from | `np.array_equal` |
+| reference exposure run, on vs off | the whole job | CVA, profile and the whole gradient frame `np.array_equal` |
+| the shipped walk vs the numpy loop it always was | the value path | `np.array_equal` on 5 fixtures, incl. a double repair |
+| the torch twin vs the shipped walk | why there are two | ≤ **1 ulp** — a diagnostic on a number that reaches no mark |
+| written curve vs the column authored | the round trip | **identity** on this fixture — and different on a declining column |
+| Simpson identity, inverted independently | the walk's algebra | closes to **1.2e-16** relative; every root real and non-negative |
+| `J` vs central FD of the **whole family** | the quote Jacobian | **2.4e-4 / 2.4e-6 / 2.4e-8** at h = 1e-2 / 1e-3 / 1e-4 — $h^2$ |
+| three repairs running, on a 5-expiry hump | the guarded discriminant | `J` **finite**, identity rows intact, FD **1.3e-8 / 1.3e-10** |
+| one-sided FD either side of the switch | the kink | **1.0** above, **0.0** below; **0.500000000** straddling it |
+| a surface the family did not write | the provenance | the quote block decides nothing; the authored read is what lands |
+| quotes that moved off their own surface | the other desync | raises, naming both expiry sets |
+| `dV/dq` vs `J' dV/dθ`, one backward | the attachment | **1.1e-16** absolute; the repaired quote's delta is **exactly 0** while its factor delta is 0.524 |
+
+The FD rung is taken through the **whole family** — re-authored surface, re-read ATM column,
+re-walked — so what converges is the derivative of the thing the job runs, not of the closure the
+derivative was taken on. The identity rows carry no $h^2$ term, so what is left in them is the
+difference quotient's own rounding, which *grows* as $h$ shrinks (8.9e-16 to 1.1e-13); they are
+asserted exact-to-rounding rather than put on the ladder.
+
 ## The attachment {#the-attachment}
 
 θ\* still carrying its graph has to become the `InterestRate` factor leaf a calculation consumes,
@@ -668,7 +816,9 @@ differentiation**: neither `CalibrationSolve.backward` nor `LeastSquaresSolve.ba
 `create_graph`, and the second refuses it explicitly — a Gauss–Newton contraction carries no second
 derivative, so a quote-space Hessian off that node would be the curvature of a different problem.
 
-**FX vol follows the same shape and is not built.** `GBMAssetPriceTSModelParameters` fits an
-integrated vol curve to an ATM vol column, which is the same least-squares fixed point with a
-smaller residual: the work is a quote leaf per column entry, the same `LeastSquaresSolve` contract,
-and the same attachment through `factor_leaf`. Nothing on this page needs to change for it.
+**No differentiable Malz solve.** A `Malz` surface's log-moneyness nodes are a fixed point of a
+bisection per node, and going from a broker's ATM/RR/BF quotes to *those* would put that solve on
+the tape. It is not needed for the ATM row — [that number is the surface's ATM vol by
+construction](#the-atm-column) — so what stays out of scope is `dV/d(risk reversal)` and
+`dV/d(butterfly)`, which are the wings' coordinates and reach a valuation only through the surface
+the option pricers read.

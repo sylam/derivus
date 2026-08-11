@@ -28,10 +28,11 @@ produced it — a `SensitivityProfile` per pricer — so a consumer can tell a p
 one carrying a boundary term. Related and also unbuilt: **Hessian-vector products** instead of
 materialising full Hessians.
 
-**Calibration Jacobians — BOTH increments are BUILT.** Bumping a market *quote* now flows through
-the calibration rather than stopping at the calibrated factor: one `backward()` reports `dV/dq`
-beside `dV/dθ`, for a zero curve solved from deposits, FRAs and swaps and for the HW2F model
-parameters fitted to swaption vols alike. [Quote Sensitivities](quote_sensitivities.md) is the
+**Calibration Jacobians — ALL THREE increments are BUILT.** Bumping a market *quote* now flows
+through the calibration rather than stopping at the calibrated factor: one `backward()` reports
+`dV/dq` beside `dV/dθ`, for a zero curve solved from deposits, FRAs and swaps, for the HW2F model
+parameters fitted to swaption vols, and for the integrated vol curve an ATM vol column walks into.
+[Quote Sensitivities](quote_sensitivities.md) is the
 page — the graph audit that made it possible, the quote-side overlay, the IFT contract, the
 stationarity contract, the attachment, the precision seams, the validation triangles and the
 non-goals. Turned on per block by the declared field `Quote_Sensitivity`; the solved numbers are
@@ -73,9 +74,20 @@ object, the value-space reference that IS well posed is a step along what the qu
 re-solve, and every refutation is pinned as a gate so nobody later tunes the derivative against an
 oracle with no limit. See [the re-solve reference](quote_sensitivities.md#the-manifold-finding).
 
-**What remains is FX vol**, which follows the same shape:
-`GBMAssetPriceTSModelParameters` fits an integrated vol curve to an ATM vol column — a quote leaf
-per column entry, the same `LeastSquaresSolve` contract, the same attachment through `factor_leaf`.
+Increment 3 is **FX vol, and it needed no solver at all** — which corrects what this page said it
+would need. `GBMAssetPriceTSModelParameters` does not *fit* an integrated vol curve to an ATM vol
+column; it **computes** one, by a forward-variance walk that is closed form end to end, so there is
+no `LeastSquaresSolve` contract in it, no implicit function theorem and no stationarity to check.
+Autograd walks the expression — a torch twin spliced in for its derivative alone, so the shipped
+curve is still the numpy walk's, bit for bit — and the validation triangle the two solves could not
+close, one-pass `dV/dq` against `dV/dθ · J` against a central difference converging as `h²`, closes
+here. Two
+properties carry the increment: the map is the **identity** wherever forward variance rises (only
+`σ̄` is written; the instantaneous vol is the walk's own state), so every gate runs on a fixture that
+declines; and the declining-variance repair is a **kink**, where a quote's delta drops from 1 to 0
+and is severed from every later expiry. See
+[the closed-form map](quote_sensitivities.md#the-closed-form-map).
+
 Three smaller ends stay deliberately open and are recorded on the page's non-goals: there is no
 report FORMAT for a quote delta (it lands on the leaves in `Config.quote_leaves`, in one of
 [two shapes](quote_sensitivities.md#the-attachment), and `make_factor_index` wants a tenor grid a
