@@ -749,6 +749,54 @@ def test_the_surface_carries_the_latest_contributing_timestamp():
     assert bootstrapped(market_prices(undated))['FXVol.USD.ZAR']['Quote_Timestamp'] == ''
 
 
+def test_an_intraday_timestamp_survives_the_json_round_trip():
+    """The encoder writes a midnight stamp as the plain date it always did - old files re-encode
+    byte-stable - and a non-midnight one in ISO form with its time, which the decoder always
+    parsed. Before this, `%Y-%m-%d` destroyed the hour on save and the 09:15 and 16:30 snapshots
+    reloaded as the same market event; the replay-identity claim was only true per DAY."""
+    import json
+    from derivus.config import Config, CustomJsonEncoder
+
+    def round_trip(stamp):
+        encoded = json.dumps(stamp, cls=CustomJsonEncoder)
+        return encoded, json.loads(encoded, object_hook=lambda d: (
+            pd.Timestamp(d['.Timestamp']) if '.Timestamp' in d else d))
+
+    # a date stays a date, byte-stable against the old format
+    encoded, back = round_trip(BASE)
+    assert encoded == '{".Timestamp": "2026-06-30"}' and back == BASE
+
+    # intraday and sub-second stamps keep their time exactly
+    for stamp in (SEEN, LATEST, pd.Timestamp('2026-06-30 16:30:00.500123')):
+        _, back = round_trip(stamp)
+        assert back == stamp, f'{stamp} reloaded as {back}'
+
+    # an OLD file's plain-date string still parses to the same midnight stamp
+    assert pd.Timestamp('2026-06-30') == BASE
+
+
+def test_two_intraday_snapshots_are_two_market_events():
+    """The point of the capability: two quote sets differing ONLY in the hour of their stamps must
+    hash as different values AFTER A SAVE - the save is where the old encoder truncated to the
+    day and the 09:15 and 16:30 snapshots reloaded as one market event. In-memory they always
+    differed; the round trip is what this gate holds open."""
+    import json
+    from derivus import content_hash
+    from derivus.config import CustomJsonEncoder
+
+    def hash_after_save(stamp):
+        factors = {}
+        FXVolSurfaceParameters({}, DEVICE, DTYPE).bootstrap(
+            {'Base_Date': BASE}, {}, factors, INTERP,
+            market_prices([dict(p, Timestamp=stamp) for p in quotes()]), {})
+        # the encoded STRING is what a save persists; hashing its parse is the F1 measurement
+        return content_hash(json.loads(json.dumps(factors, cls=CustomJsonEncoder)))
+
+    morning, close = hash_after_save(SEEN), hash_after_save(LATEST)
+    assert morning != close, 'the 09:15 and 16:30 snapshots hashed identically after a save'
+    assert hash_after_save(SEEN) == morning, 'the hash is not a function of the quotes'
+
+
 def test_the_timestamp_is_a_value_and_not_a_plan():
     """A stamp that recompiled the plan on every tick would be worse than no stamp at all, so it is
     declared `bind='value'` and travels in the values patch beside the vols it dates."""

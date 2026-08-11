@@ -2351,8 +2351,9 @@ class FXVolSurfaceParameters(object):
     a spot delta or an ATMF quote would need different algebra, and a value the engine cannot
     honour is the same defect as a field nothing reads.
 
-    A quote `Timestamp` survives a save at DAY resolution and no finer - `CustomJsonEncoder` writes
-    a `Timestamp` as `%Y-%m-%d` - so a stamped surface round-trips to the day its quotes were seen.
+    A quote `Timestamp` survives a save at the resolution it was authored: a plain date stays a
+    date and an intraday stamp keeps its time, so a stamped surface round-trips to the moment its
+    quotes were seen.
 
     Like `InterestRatePrices` this writes a typed price factor rather than a `<ClassName>`
     parameter block, which is what `price_factor_type` declares.

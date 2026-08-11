@@ -167,7 +167,11 @@ class CustomJsonEncoder(json.JSONEncoder):
             return_value = {'.DateOffset': ''.join(
                 ['{}{}'.format(v, Config.reverse_offset[k]) for k, v in obj.kwds.items()])}
         elif isinstance(obj, Timestamp):
-            return_value = {'.Timestamp': obj.strftime("%Y-%m-%d")}
+            # a date stays a date - old files re-encode byte-stable - and a non-midnight stamp
+            # keeps its time: an intraday quote Timestamp must survive the round trip or
+            # values_hash cannot tell the 09:15 snapshot from the 16:30 one
+            return_value = {'.Timestamp': obj.strftime('%Y-%m-%d')
+                            if obj == obj.normalize() else obj.isoformat()}
         elif isinstance(obj, pd.DataFrame):
             # the two shapes a run's `Results` holds. `split` reconstructs through
             # `pd.DataFrame(**data)` and its labels encode as themselves one level down; the object

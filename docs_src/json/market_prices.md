@@ -279,8 +279,8 @@ Note that although *Generation paramaters* can be specified, instrument definiti
   is written on, and that grid is PINNED: re-bootstrapping the same expiries at the same tolerance
   over a surface this already wrote moves the vols and leaves the grid alone, so a vol tick is a
   value patch rather than a new plan - while a changed tolerance refines a new one. A `Timestamp`
-  is written back out as a DATE (`CustomJsonEncoder` uses `%Y-%m-%d`), so authoring an hour in it is
-  authoring something a save will not preserve.
+  keeps whatever resolution it was authored at: a plain date stays a date, an intraday stamp is
+  written in ISO form with its time and survives the save.
 
 ```json
 {

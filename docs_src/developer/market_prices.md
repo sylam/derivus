@@ -201,10 +201,8 @@ tick. It enters `values_hash` and therefore the replay identity, which is right:
 read off a different snapshot are a different market event. **Nothing in pricing reads it.** What
 counts as too old is a policy, and policy belongs to the consumer, not to the surface.
 
-**That identity is DAY resolution, and the limit is the JSON encoder's.** `CustomJsonEncoder`
-writes a `Timestamp` as `%Y-%m-%d`, so a stamp survives a save to the day and no finer: the 09:15
-and the 16:30 snapshots of a quote reload as the same date, and `values_hash` separates them only
-when they fall on different days. In-process the hour is there — `max(stamps)` picks the later of two
-intraday quotes, and the gates measure that — but it does not round-trip. Intraday replay identity
-is an **owed encoder capability**, named here rather than assumed: it is one `strftime` and a
-decoder that already parses whatever it is handed, and it is not this family's to change.
+**That identity is FULL resolution.** `CustomJsonEncoder` writes a midnight `Timestamp` as the
+plain date it always did — old files re-encode byte-stable — and a non-midnight one in ISO form
+with its time, which the decoder always parsed. So the 09:15 and the 16:30 snapshots of a quote
+survive a save as themselves and `values_hash` separates them, which closes the capability this
+field was first to depend on.
