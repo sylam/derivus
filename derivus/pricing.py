@@ -364,6 +364,20 @@ class SensitivitiesEstimator(object):
                 for factor, tensor in self.grad.items()}
 
     def report_hessian(self, allow_unused=False):
+        """The full (P, P) Hessian as a numpy array, in the same flat factor order as
+        ``report_grad`` concatenates - which is what lets the report label both of its axes off
+        the first-order index.
+
+        Assembled UPPER-TRIANGLE-ONLY and mirrored: ``get_H_op`` differentiates factor i's
+        gradient against factors i onwards, so the blocks below the diagonal are never computed,
+        and the strict lower triangle is wiped before the mirror so the diagonal block's own
+        sub-diagonal is not counted twice. Symmetry is therefore exact by construction rather
+        than approximately - a gate reading ``H - H.T`` measures the assembly, not the AAD.
+
+        ``allow_unused`` is what a portfolio needs and a single objective does not: a factor the
+        value depends on LINEARLY has no second-order path at all, and autograd returns None
+        rather than zeros for it.
+        """
         h_op = self.get_H_op(allow_unused)
         hessian = np.zeros((self.P, self.P))
 
@@ -446,11 +460,28 @@ class SensitivitiesEstimator(object):
 
 
 def greeks(shared, deal_data, mtm):
+    """`Greeks_First` always, `Greeks_Second` when `Greeks: 'All'` asked for it - the two blocks
+    the base valuation reports, in that order because the second-order report labels its axes off
+    the first-order index (`Calculation.gradients_as_df`)."""
     greeks_calc = SensitivitiesEstimator(mtm, shared.calc_greeks, create_graph=shared.gamma)
     deal_data.Calc_res['Greeks_First'] = greeks_calc.report_grad()
     # use this only when all the vols and curves are sparsely represented (check greeks_calc.P)
     if shared.gamma:
         deal_data.Calc_res['Greeks_Second'] = greeks_calc.report_hessian(allow_unused=True)
+        # `create_graph` leaves every leaf holding a `.grad` whose own graph reaches back to it -
+        # a cycle refcounting cannot break, so the whole second-order tape survives the run and
+        # waits for a gc pass to free it (on CUDA, holding device memory). Both reports are
+        # numpy copies by now, so dropping the buffers costs nothing and is what torch's own
+        # create_graph warning prescribes.
+        # PARTIAL, and honestly so: this reaches the tensors the estimator was OFFERED. A
+        # bootstrapped factor is offered `leaf + (theta - theta.detach())` (`factor_leaf`), a
+        # NON-leaf with `retain_grad`, and the true leaf inside it - and every leaf upstream
+        # through theta, the quotes included - keeps its own `.grad` and its own cycle until gc
+        # gets there. Chasing them would mean walking `grad_fn` from a reported tensor, which is
+        # more machinery than the residue is worth: it costs memory only, gc recovers it, and no
+        # reported number depends on it either way.
+        for tensor in greeks_calc.params.values():
+            tensor.grad = None
 
 
 def interp_to_mtm_grid(mtm, time_grid, deal_data, interpolate_grid=True):
@@ -1242,10 +1273,12 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
         mtm_list.append(theo_cashflow)
 
-    if boundary_aad and b_gaps and getattr(time_grid, 'report_index', None) is not None:
+    if boundary_aad and b_gaps and time_grid.report_index is not None:
         # Branches stay on THIS pricer's grid and in its own currency; `to_mtm` is the deal's own
         # map onto the MTM grid, which the collateral chain consumes. report_index rides along so
-        # the additive route can go on to the reporting grid at the point of use.
+        # the additive route can go on to the reporting grid at the point of use - and is None on
+        # a grid nobody reports off (an HMC tradable, a calibration's benchmark grid), which is
+        # what makes the registration not worth making.
         shared.boundary_sets.append(utils.LatchedBoundarySet(
             gaps=b_gaps, fired=b_crossed, obs_before=np.array(b_obs_before),
             untriggered=torch.cat(b_alive, dim=0), triggered=torch.cat(b_dead, dim=0),
@@ -2168,7 +2201,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     # Reporting currency MTM
     mtm = torch.cat(mtm_list, dim=0)
 
-    if boundary_aad and getattr(time_grid, 'report_index', None) is not None:
+    # report_index is None on a grid nobody reports off - an HMC tradable, a calibration's
+    # benchmark grid - and there is no reporting row for a counterfactual to land on
+    if boundary_aad and time_grid.report_index is not None:
         to_mtm = deal_to_mtm_grid(time_grid, deal_data, fx_rep)
         if b_gaps:
             # Redemption: `triggered` is worth zero for every row the decision reaches, and
@@ -2668,10 +2703,11 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     # mtm in reporting currency
     mtm = torch.cat(mtm_list, dim=0)
 
-    if b_events and getattr(time_grid, 'report_index', None) is not None:
+    if b_events and time_grid.report_index is not None:
         # Branches stay on THIS pricer's grid and in its own currency; `to_mtm` is the deal's own
         # map onto the MTM grid, which the collateral chain consumes. report_index rides along so
-        # the additive route can go on to the reporting grid at the point of use.
+        # the additive route can go on to the reporting grid at the point of use - and is None on
+        # a grid nobody reports off (an HMC tradable, a calibration's benchmark grid).
         rows, gaps, fired, survived = zip(*b_events)
         shared.boundary_sets.append(utils.RowBoundarySet(
             gaps=list(gaps), rows=list(rows),

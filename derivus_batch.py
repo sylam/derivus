@@ -171,7 +171,16 @@ class CollateralBaseVal(JOB):
         self.params.update({'Currency': self.agreement_currency, 'Greeks': 'All'})
 
         try:
-            _, out = self.cx.Base_Valuation(overrides=self.params)
+            try:
+                _, out = self.cx.Base_Valuation(overrides=self.params)
+            except rf.utils.SecondOrderRefused as refused:
+                # only the SECOND order block is refused - the mark and the first order one are
+                # unaffected - so this set gets them rather than nothing. The message names the
+                # deals the refusal is over, which is what a book owner needs to act on.
+                self.logger(self.netting_set, 'Warning: {} Falling back to Greeks: First for '
+                                              'this netting set.'.format(refused))
+                self.params['Greeks'] = 'First'
+                _, out = self.cx.Base_Valuation(overrides=self.params)
             out['Results']['mtm'].to_csv(os.path.join(self.outputdir, 'Greeks', filename))
         except Exception as e:
             exc_type, exc_value, exc_traceback = sys.exc_info()

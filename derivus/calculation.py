@@ -175,7 +175,10 @@ class DealStructure(object):
 
             for deal_data in self.dependencies:
                 logging.root.name = deal_data.Instrument.field.get('Reference', 'root')
+                deal_mark = len(shared.boundary_sets) if mark is not None else None
                 mtm = deal_data.Instrument.calculate(shared, time_grid, deal_data)
+                if deal_mark is not None:
+                    utils.stamp_boundary_sets(shared, deal_mark, logging.root.name)
                 deal_tensors = deal_tensors + mtm
 
             accum = accum + deal_tensors
@@ -194,6 +197,9 @@ class DealStructure(object):
             finally:
                 if mark is not None:
                     utils.claim_boundary_sets(shared, mark)
+                    # whatever post_process itself registered (a margin call) has no deal to
+                    # name it, so the structure does
+                    utils.stamp_boundary_sets(shared, mark, logging.root.name)
 
         return accum
 
@@ -1738,7 +1744,33 @@ class Base_Reval_State(utils.Calculation_State):
 
 
 class Base_Revaluation(Calculation):
-    """Simple deal revaluation - Use this to reconcile with the source system"""
+    """Simple deal revaluation - Use this to reconcile with the source system.
+
+    SECOND DERIVATIVES LIVE HERE AND NOWHERE ELSE. `Greeks: 'All'` asks the reverse sweep for
+    `create_graph`, and what comes back is reported as `out['Results']['Greeks_Second']` beside
+    the first-order `Greeks_First` - a stable key, always accompanied by the first-order block
+    because the row labels are built off it.
+
+    THE SHAPE IS THE FULL HESSIAN, not a Hessian-vector product, and the reason is what the
+    number is FOR. `Greeks_Second` is a report - a cross-gamma matrix a risk system reads, whose
+    off-diagonal is the whole point (spot-vol, spot-curve) - so no caller arrives with a
+    direction to contract along, and an HVP interface would only mean forming the same matrix a
+    column at a time outside the engine. The cost is what makes that affordable: one date, one
+    scenario, and P = the number of factor KNOTS the portfolio depends on (5-11 across this
+    repo's fixtures), against which `report_hessian` runs P double-backward passes - measured at
+    0.9x to 10x the first-order pass, 0.002s to 0.07s. An exposure-sized P is what would flip
+    that argument, and exposure does not come here - `Credit_Monte_Carlo` has its own
+    CVA-Hessian route.
+
+    The frame is the Hessian's SUPPORT: rows and columns that are identically zero are dropped
+    (a factor the portfolio does not touch at second order), so it is square and symmetric but
+    smaller than P, indexed on both axes by (Rate, Tenor, Tenor2, Tenor3) - the columns carrying
+    the reporting reference as an outer level, the way `Greeks_First` does.
+
+    TWO THINGS REFUSE RATHER THAN REPORT, both because the failure would otherwise be a plausible
+    number: a deal that registered a `BoundarySet` (`execute` below) and `Recompute_Inner_MC`
+    (`pricing.InnerMCRecompute.backward`).
+    """
     documentation = ('Calculations',
                      ['This applies the valuation models mentioned earlier to the portfolio per deal.',
                       '',
@@ -1749,8 +1781,9 @@ class Base_Revaluation(Calculation):
                       '- **MCMC Simulations** the number of Monte Carlo simulations to use for deals that require ',
                       '  Monte Carlo pricing (e.g. Autocalls, TARF\'s etc.)',
                       '- **Random Seed** the seed for the Monte Carlo Pricer',
-                      '- **Greeks** calculate all First order sensitivities (partial derivatives) of the portfolio ',
-                      '  with respect to the relevant Price Factors (Default is not to calculate this)',
+                      '- **Greeks** `First` calculates all first order sensitivities (partial derivatives) of ',
+                      '  the portfolio with respect to the relevant Price Factors; `All` adds the second order ',
+                      '  block (the full factor Hessian, reported as `Greeks_Second`). Default is neither.',
                       '',
                       'The output is a dictionary containing the DealStructure and the calculation computation ',
                       'statistics.'
@@ -1762,7 +1795,9 @@ class Base_Revaluation(Calculation):
         F('Currency', 'Text', default='ZAR'),
         F('MCMC_Simulations', 'Integer', default=2048),
         F('Random_Seed', 'Integer', default=5120),
-        F('Greeks', 'Text', default='No', values=['First', 'No']),
+        F('Greeks', 'Text', default='No', values=['All', 'First', 'No'],
+          description='First order factor sensitivities, or `All` for the second order block '
+                      '(`Greeks_Second`) as well - see the class docstring for its shape'),
         F('Boundary_AAD_Bandwidth', 'Float', default=0.01,
           description='Kernel bandwidth of the boundary correction assembled into backward()'),
         F('Recompute_Inner_MC', 'Text', default='No', values=['Yes', 'No'],
@@ -1963,6 +1998,19 @@ class Base_Revaluation(Calculation):
             # record the cuda execution stats
             self.calc_stats['Greek_Execution_Time'] = time.monotonic()
             if shared_mem.boundary_sets:
+                if shared_mem.gamma:
+                    raise utils.SecondOrderRefused(
+                        "Greeks: 'All' is refused - these deals take a decision on simulated "
+                        'state and registered a boundary correction: {}. That correction is what '
+                        'makes their FIRST derivative right, and it is (gap - gap.detach()) times '
+                        'a DETACHED coefficient - differentiate it a second time and the '
+                        'coefficient cannot move, so what comes back is the smooth part of the '
+                        'second derivative with the density-derivative term silently missing: a '
+                        'plausible wrong gamma rather than a failure. The honest route for these '
+                        'is to bump the ADJOINT under common random numbers - re-run '
+                        "Greeks: 'First' on ONE seed at S+h and S-h and difference the reported "
+                        "delta. Ask for 'All' on a portfolio without them.".format(
+                            ', '.join(sorted({str(b.deal) for b in shared_mem.boundary_sets}))))
                 # The portfolio value IS the objective, so the per-scenario vector is the value
                 # itself - one scenario, whose mean is the reported number. Worth exactly zero in
                 # the forward pass, so `mtm` here is untouched and only the tape gains a term.
@@ -2241,6 +2289,15 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         d(value)/d(spot) via AAD. The diff-ML solver differentiates the continuation inside the
         inner MC off its own fresh state-at-t leaves (see Bundle.inner_mc_grad), so it needs no
         outer leaf."""
+        # `.get` with no fallback on purpose: HedgeMonteCarlo declares no `Greeks` field and has no
+        # default to publish for one - it only refuses the value that would silently do nothing
+        if params.get('Greeks') == 'All':
+            raise Exception(
+                "Greeks: 'All' is not a HedgeMonteCarlo parameter - this calculation reports a "
+                'hedge, not a sensitivity block, and nothing here reads Greeks at all, so the key '
+                'would be silently ignored rather than honoured. The second-order block is '
+                "BaseValuation's ('Greeks': 'All' there); the AAD this calculation does run is the "
+                'solver\'s own pathwise gradient, configured under Hedging_Problem.')
         base_date = pd.Timestamp(params['Run_Date'])
         self.input_time_grid = params['Time_Grid']
         params['Simulation_Batches'] = params['Simulation_Batches'] // num_jobs

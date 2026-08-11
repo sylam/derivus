@@ -191,6 +191,11 @@ class MTABoundarySet:
     balance: object                 # the realised path, detached; the prefix a replay keeps
     rescan: object                  # callable: (opening, start) -> the balance path from there on
 
+    # Who registered it - `BoundarySet.deal`'s slot, carried here too because this is not one of
+    # those (it shares only `objective_jumps`) and `boundary_sets` holds both. A netting set is
+    # what stamps itself here: the decision is the SET's, not any one deal's.
+    deal = None
+
     def objective_jumps(self, score):
         """Per margin call, the gap and the change in the OBJECTIVE its transfer decision produces.
 
@@ -266,6 +271,11 @@ class BoundarySet:
     # measured from. Cached on first use rather than precomputed: it costs one balance scan per
     # registration and needs no assumption about a delta's shape.
     net_at_zero = None
+    # Who registered it, stamped by `stamp_boundary_sets` off the structure walk - the pricers do
+    # not name themselves. A slot rather than a field because the subclasses declare non-default
+    # fields of their own, which cannot follow a defaulted one. Read by the second-derivative
+    # refusal, which owes the caller the deals it is refusing over.
+    deal = None
 
     def branch_deltas(self):
         raise NotImplementedError
@@ -490,6 +500,19 @@ def claim_boundary_sets(shared, mark):
                 bset.net_from_gross = chain
 
 
+def stamp_boundary_sets(shared, mark, name):
+    """Name the registrations made since `mark`, the same tail-since-a-mark idiom as the claim.
+
+    A pricer knows nothing about the tree it is in and the registration carries no reference, so
+    the WALK names it: the deal loop stamps each deal as it prices, and the structure stamps
+    whatever its own `post_process` went on to add (a margin call's transfer decision). Innermost
+    wins - already-named sets are left alone - so a name is the closest thing that made it.
+    """
+    for bset in shared.boundary_sets[mark:]:
+        if bset.deal is None:
+            bset.deal = name
+
+
 @dataclass
 class MTABoundaryEvent:
     """One margin call's transfer decision, recorded so its derivative can be recovered.
@@ -518,6 +541,16 @@ class ScheduleLifecycleError(Exception):
     """A schedule was touched out of order: priced before `bind` copied it to the device, or edited
     after. Either says the calculation did not reach it, which is a framework fault rather than a
     property of the deal."""
+
+
+class SecondOrderRefused(Exception):
+    """`Greeks: 'All'` will not be answered on this portfolio, because the answer would be a
+    plausible wrong number rather than a failure (`Base_Revaluation.execute`).
+
+    Named so a caller can FALL BACK rather than lose the run: the value and the first-order block
+    are unaffected, so re-running the same job at `Greeks: 'First'` keeps everything except the
+    thing that was refused. That is a different response from the one any other exception out of a
+    valuation deserves, and a blanket `except` cannot tell them apart."""
 
 
 def is_fatal_pricing_error(e):
@@ -1103,6 +1136,10 @@ class Calculation_State(object):
         # (`Recompute_Inner_MC`); off is the taped path, bit for bit. Declared here rather than by
         # the calculations that set it so every pricer can read it without a fallback.
         self.recompute_inner_mc = False
+        # Second derivatives are wanted (`Greeks: 'All'`, base valuation only), so the reverse
+        # sweep runs with `create_graph`. Declared here for the same reason as the switch above -
+        # a pricer that has to avoid a first-order-only kernel reads it without a fallback.
+        self.gamma = False
         # where the memoized quasi-random stream stands, per (dimension, sample_size) - only
         # `CMC_State.quasi_rng` advances it, but `rng_position` seeks every state's streams
         self.t_quasi_rng_batch = {}
@@ -2384,7 +2421,11 @@ def hn_log_substep(log_S, h, z, b_step, omega, alpha, beta, gamma_star):
             hn_variance_step(h, sh, z, omega, alpha, beta, gamma_star))
 
 
-hn_log_substep = torch.compile(hn_log_substep, dynamic=True)
+#: The fused build, and the one every ordinary run takes. It is NOT twice differentiable:
+#: AOTAutograd's compiled backward raises `does not currently support double backward`, so a
+#: `Greeks: 'All'` valuation walks the eager function above instead - same numbers, ~5.9x slower
+#: on the sub-step, and only for the run that asked for a second derivative.
+hn_log_substep_fused = torch.compile(hn_log_substep, dynamic=True)
 
 
 def declared_spot(code, name):
@@ -2474,12 +2515,15 @@ def hn_unmonitored_substeps(Sj, h, b_step, n_steps, hn_params, shared, num_sims,
     """
     if not n_steps:                                              # a daily fixing walks nothing
         return Sj, h
+    # picked once per interval, not per step: the fused kernel has no double backward (see
+    # `hn_log_substep_fused`), so a second-derivative run walks the eager spelling of it
+    substep = hn_log_substep if shared.gamma else hn_log_substep_fused
     log_S = torch.zeros_like(b_step)
     for _ in range(n_steps):
         zc = torch.randn([shared.simulation_batch, num_sims],
                          dtype=shared.one.dtype, device=shared.one.device)
         z = torch.cat([zc, -zc], dim=-1) if antithetic else zc
-        log_S, h = hn_log_substep(log_S, h, z, b_step, *hn_params)
+        log_S, h = substep(log_S, h, z, b_step, *hn_params)
     return Sj * log_S.exp(), h
 
 

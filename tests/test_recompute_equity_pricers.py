@@ -309,15 +309,35 @@ def test_the_cva_gradient_is_bit_identical_with_the_node_on(pricer):
             pricer, grad_off, grad_on))
 
 
-@pytest.mark.parametrize('pricer', PRICERS)
-def test_the_second_derivative_is_refused_rather_than_reported_wrong(pricer):
+def test_the_second_derivative_is_refused_rather_than_reported_wrong():
     """The node is FIRST ORDER whichever pricer holds it, and one switch governs them all, so the
     refusal has to reach every adopter rather than the one it was measured on. The taped reading
-    beside it is what says the refused path is a path anyone would take."""
-    taped = base_hessian(pricer, 'No')
-    assert np.abs(taped).max() > 0.0, f'{pricer}: no second derivative even with the node off'
+    beside it is what says the refused path is a path anyone would take.
+
+    The AUTOCALL is where that can be said, and it is the only fixture in this repo that can say
+    it. Base valuation gives it one reporting row, so no coupon is OBSERVED and it registers no
+    boundary correction - which leaves the node as the only thing standing between `Greeks: 'All'`
+    and a second derivative. Every other adopter registers one and is refused a step earlier (see
+    `test_a_registered_boundary_correction_is_refused_first`), which is a different finding, not
+    this one.
+    """
+    taped = base_hessian('autocall', 'No')
+    assert np.abs(taped).max() > 0.0, 'no second derivative even with the node off'
     with pytest.raises(Exception, match='create_graph is not supported'):
-        base_hessian(pricer, 'Yes')
+        base_hessian('autocall', 'Yes')
+
+
+def test_a_registered_boundary_correction_is_refused_first():
+    """The barrier's half of the statement above, and why the gate could not stay parametrized.
+
+    `pv_discrete_barrier_option` registers its latch on the OUTER scenario spot, at base valuation
+    as much as under exposure, and a second derivative taken through that correction silently
+    drops the density-derivative term. So the refusal that fires is the outer one, whichever way
+    `Recompute_Inner_MC` is set - the node is never asked. It names the deal.
+    """
+    for recompute in ('No', 'Yes'):
+        with pytest.raises(Exception, match=r"Greeks: 'All' is refused.*BARR1"):
+            base_hessian('barrier', recompute)
 
 
 @pytest.mark.parametrize('pricer', PRICERS)

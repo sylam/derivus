@@ -548,6 +548,82 @@ def test_a_declared_calculation_default_is_the_default_the_engine_falls_back_to(
     assert not drift, f'{calc_type} declares one default and falls back to another: {drift}'
 
 
+def declared_menus(descriptors):
+    """`{key: [choice, ...]}` for every declared knob that offers a menu, containers flattened."""
+    out = {}
+    for key, d in descriptors.items():
+        if 'values' in d:
+            out[key] = d['values']
+        out.update(declared_menus(d.get('sub_fields', {})))
+    return out
+
+
+def compared_constants(cls_name, module_ast):
+    """`{key: {constant, ...}}` for every calc knob the engine tests against a string LITERAL.
+
+    Both spellings of the test, because the engine uses both: `params['Key'] == 'X'` and
+    `params.get('Key', d) == 'X'`, plus the `in ('X', 'Y')` form. Scoped to the class and its
+    bases in this module, exactly as `calculation_fallback_reads` is.
+    """
+    classes = {n.name: n for n in module_ast.body if isinstance(n, ast.ClassDef)}
+    nodes = [classes[cls_name]] + [classes[ast.unparse(b)] for b in classes[cls_name].bases
+                                   if ast.unparse(b) in classes]
+    locals_ = ('params', 'self.params', 'calc_params')
+
+    def key_read(node):
+        if isinstance(node, ast.Subscript) and ast.unparse(node.value) in locals_ \
+                and isinstance(node.slice, ast.Constant):
+            return node.slice.value
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == 'get' and ast.unparse(node.func.value) in locals_ \
+                and node.args and isinstance(node.args[0], ast.Constant):
+            return node.args[0].value
+        return None
+
+    out = {}
+    for node in nodes:
+        for n in ast.walk(node):
+            if not (isinstance(n, ast.Compare) and len(n.ops) == 1):
+                continue
+            key, right = key_read(n.left), n.comparators[0]
+            if key is None:
+                continue
+            if isinstance(n.ops[0], (ast.Eq, ast.NotEq)) and isinstance(right, ast.Constant) \
+                    and isinstance(right.value, str):
+                out.setdefault(key, set()).add(right.value)
+            elif isinstance(n.ops[0], ast.In) and isinstance(right, (ast.List, ast.Tuple, ast.Set)):
+                out.setdefault(key, set()).update(
+                    e.value for e in right.elts
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str))
+    return out
+
+
+@pytest.mark.parametrize('calc_type', sorted(calculation_classes()))
+def test_every_value_the_engine_tests_for_is_one_the_menu_offers(calc_type):
+    """The sibling of the default gate, and the same defect one level down: a `values` list IS the
+    menu, so a setting the engine acts on but the menu does not offer is UNREACHABLE from the
+    schema - no panel, no validator and no schema-authored job can ask for it.
+
+    This is how the second-order block sat dormant. `BaseValuation.Greeks` declared
+    `['First', 'No']` while `__init_shared_mem` tests `== 'All'` for `Base_Reval_State.gamma`, so
+    the entire `Greeks_Second` path was engine behaviour nothing in the store could reach, and it
+    had no coverage because it had no way in. Hand-written JSON could still say `'All'`, which is
+    exactly why it is a silent gap rather than a broken run.
+
+    Scoped to keys the type declares WITH a menu, for the reason the default gate is scoped the
+    same way: `HedgeMonteCarlo` tests a dozen of the exposure engine's knobs without declaring
+    any of them, and folding that in would bury this.
+    """
+    module_ast = ast.parse(inspect.getsource(calculation))
+    cls_name = calculation_classes()[calc_type].__name__
+    menus = declared_menus(CALCULATION['types'][calc_type])
+    unreachable = {key: sorted(set(constants) - set(menus[key]))
+                   for key, constants in compared_constants(cls_name, module_ast).items()
+                   if key in menus and not set(constants) <= set(menus[key])}
+    assert not unreachable, (
+        f'{calc_type} acts on settings its menu cannot author: {unreachable}')
+
+
 def test_the_calculation_time_grid_is_the_key_the_engine_reads():
     """The drift this migration fixed. The store declared `Base_Time_Grid`; `run_cmc` and
     `run_hedgemontecarlo` read `calc_params.get('Time_Grid', ...)` and every fixture and doc

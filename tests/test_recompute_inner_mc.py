@@ -103,9 +103,11 @@ def base_hessian(recompute, sims=1 << 10):
     `SensitivitiesEstimator` runs with `create_graph=True` and the node is asked to be
     differentiated twice.
 
-    `'All'` is NOT in what `BaseValuation` declares (`values=['First', 'No']`) - a reachability gap
-    of the `Barrier` kind, recorded here rather than fixed: the second-order block is engine
-    behaviour nothing in the schema can ask for."""
+    On THIS fixture it never gets that far, which is the point of the gate below: the TARF
+    registers a boundary correction and base valuation refuses a second derivative over one
+    before any node is reached (`tests/test_base_valuation_gamma.py` owns that refusal). The
+    autocall in `test_recompute_equity_pricers` registers none at base valuation and is where the
+    node's OWN refusal is measured."""
     _, out = run_baseval(tarf._cfg(KNOCK_IN, tarf.SPOT), overrides={
         'MCMC_Simulations': sims, 'Random_Seed': 1, 'Greeks': 'All',
         'Recompute_Inner_MC': recompute})
@@ -187,9 +189,11 @@ def test_the_cva_gradient_is_bit_identical_with_the_node_on(deal, label):
 
 
 def test_the_second_derivative_is_refused_rather_than_reported_wrong():
-    """The node is FIRST ORDER and says so, which is the whole finding of this gate.
+    """A second derivative over this fixture is REFUSED, whichever of the two reasons gets there
+    first - and on the TARF there are two.
 
-    The replay is rooted at detached copies of the saved inputs - that is what stops `autograd.grad`
+    THE NODE'S REASON, which is what this file is about and what it was measured on. The replay is
+    rooted at detached copies of the saved inputs - that is what stops `autograd.grad`
     walking back into the outer graph and double-counting the first derivative - and a second
     derivative taken through a detached leaf is severed from the graph the outer pass holds. The
     failure is silent: it comes back with the entries that needed that path set to ZERO, which is a
@@ -198,12 +202,19 @@ def test_the_second_derivative_is_refused_rather_than_reported_wrong():
     and a fourth that merely disagreed.
 
     So the gate is the RAISE, and it names the switch - a caller who wanted gamma has to be told to
-    turn it off rather than handed a plausible zero. The taped reading beside it is what says the
-    refused path is a path anyone would take.
+    turn it off rather than handed a plausible zero.
+
+    ON THIS FIXTURE THE OUTER REFUSAL COMES FIRST, and both spellings are asserted because that
+    ordering is itself a statement. The TARF registers a boundary correction, and a second
+    derivative taken through THAT is wrong for a different reason - the correction's coefficient
+    is detached, so differentiating it twice drops the density-derivative term - so base valuation
+    refuses over the deal before the node is ever asked. Nothing is lost: the node's own refusal
+    is measured in `test_recompute_equity_pricers`, on the autocall, which registers nothing at
+    base valuation and does reach it.
     """
-    taped = base_hessian('No')
-    assert np.abs(taped).max() > 0.0, 'no second derivative was reported even with the node off'
-    with pytest.raises(Exception, match='create_graph is not supported'):
+    with pytest.raises(Exception, match="Greeks: 'All' is refused"):
+        base_hessian('No')
+    with pytest.raises(Exception, match="Greeks: 'All' is refused"):
         base_hessian('Yes')
 
 
