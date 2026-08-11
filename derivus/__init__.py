@@ -307,8 +307,9 @@ class Context:
 
         # check we need to set the base_date
         if new_cfg.params['System Parameters'].get('Base_Date') is None:
-            # set it to now
-            new_cfg.params['System Parameters']['Base_Date'] = pd.Timestamp.now()
+            # today as a DATE: a wall-clock default is a nondeterministic plan input - two loads
+            # of one job must hash the same, and Base_Date is a date everywhere it is read
+            new_cfg.params['System Parameters']['Base_Date'] = pd.Timestamp.now().normalize()
 
         # set its version
         new_cfg.version = ['JSONVersion', '22.05.30']
