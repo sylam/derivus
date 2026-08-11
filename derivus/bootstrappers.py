@@ -2375,6 +2375,10 @@ class FXVolSurfaceParameters(object):
     #: refining is a no-op, so 1 is where the knob stops meaning anything rather than where it
     #: breaks.
     grid_tolerance_bounds = (1e-8, 1.0)
+    #: The precision the TAPE runs in - the value path is numpy and has no dtype to pick. The twin
+    #: divides by the residual's own slope at the root, so it is float64 on the CPU whatever the job
+    #: asked for: `construct_bootstrapper`'s dtype does not reach it.
+    dtype = torch.float64
     fields = [
         F('Currency', 'Text', default='',
           description='The currency stamped on the surface this builds'),
@@ -2396,6 +2400,10 @@ class FXVolSurfaceParameters(object):
                       'resolves the quotes to. Changing it is STRUCTURAL - it breaks the pin and '
                       'refines a new grid. Bounded because refinement does not terminate below '
                       'the floor'),
+        F('Quote_Sensitivity', 'Text', default='No', values=['Yes', 'No'],
+          description='Keep the log-moneyness surface connected to the ATM / RR / BF quotes it was '
+                      'built from, so a calculation\'s backward pass reports dV/dq beside '
+                      'dV/dtheta. The written surface is identical either way'),
         F('Points', 'Table', default='null', row=Row([
             F('Use', 'Text', default='Yes', values=['Yes', 'No'],
               description='Whether this quote enters the surface'),
@@ -2422,11 +2430,24 @@ class FXVolSurfaceParameters(object):
         self.device = device
         self.prec = dtype
         self.param = param
+        #: What a block asking for `Quote_Sensitivity` leaves behind: the log-moneyness surface
+        #: STILL CONNECTED to the quotes it was built from, under the key `_build_factor_state`
+        #: mints the `FXVol` leaf with, and the quote leaf per block. `Config.bootstrap` harvests
+        #: both - they are tensors, so they cannot live in `Price Factors`, which is data and gets
+        #: written back out as JSON.
+        self.calibrated = {}
+        self.quote_leaves = {}
 
     @staticmethod
     def used(block):
         """The block's quotes that enter the surface - `Use` holds one out without deleting it."""
         return [point for point in block['Points'] if point['Use'] == 'Yes']
+
+    @staticmethod
+    def descriptor(point):
+        """What a quote is CALLED where `dV/dq` is reported: its type, its pillar, its expiry."""
+        return ('ATM {:g}'.format(point['Expiry']) if point['Quote_Type'] == 'ATM' else
+                '{} {:g} {:g}'.format(point['Quote_Type'], point['Pillar'], point['Expiry']))
 
     @staticmethod
     def atm_quotes(quotes):
@@ -2474,6 +2495,159 @@ class FXVolSurfaceParameters(object):
             surface.append([-pillar, expiry, atm[expiry] + bf - 0.5 * rr])
         return np.array(sorted(surface))
 
+    @staticmethod
+    def carried_smile(quotes, values):
+        """`smile`'s vol column on a tape - the strangle algebra, mirrored, and nothing else.
+
+        Row for row and in `smile`'s own order, so the frozen structure the solve reads off the
+        value path addresses this vector. The algebra is `+`, `*` and a sort, all of which torch
+        and numpy agree on to the last bit in float64 - there is no `sqrt` here to disagree over -
+        so the mirror is bit-identical rather than close, and gated as such.
+        """
+        atm = {point['Expiry']: value for point, value in zip(quotes, values)
+               if point['Quote_Type'] == 'ATM'}
+        wings = {(point['Expiry'], point['Pillar'], point['Quote_Type']): value
+                 for point, value in zip(quotes, values) if point['Quote_Type'] != 'ATM'}
+
+        zero = values.new_zeros(())
+        rows = [(0.5, expiry, vol) for expiry, vol in atm.items()]
+        for expiry, pillar in sorted({key[:2] for key in wings}):
+            rr = wings.get((expiry, pillar, 'RR'), zero)
+            bf = wings.get((expiry, pillar, 'BF'), zero)
+            rows.append((pillar, expiry, atm[expiry] + bf + 0.5 * rr))
+            rows.append((-pillar, expiry, atm[expiry] + bf - 0.5 * rr))
+        return torch.stack([vol for _, _, vol in sorted(rows, key=lambda row: row[:2])])
+
+    @classmethod
+    def carried_skews(cls, delta_surface, expiries, vols):
+        """`Factor2D.malz_skews` on a tape - `vols` is that surface's vol column, still connected."""
+        return {T: cls.carried_skew(delta_surface[delta_surface[:, 1] == T][:, 0],
+                                    vols[delta_surface[:, 1] == T].clamp(min=1e-4), T)
+                for T in expiries}
+
+    @staticmethod
+    def carried_skew(delta, vols, T):
+        """`Factor2D.malz_skew` on a tape - the same wing pair, node for node, still connected.
+
+        WHAT IS TAPED AND WHAT IS FROZEN. The wing vols are, and so is `delta_atm`: the ATM quote
+        says where the delta-neutral straddle sits, so it MOVES the two ATM nodes of the delta grid
+        the wings are indexed by, and a twin that treated those deltas as constants would silently
+        drop that channel. What is read off the numbers rather than differentiated is the LAYOUT -
+        the ordering, which node carries the +-0.5 label, and which side had its ATM node mirrored
+        in - because a permutation has no derivative, and because the layout is exactly what the
+        value path's frozen indices address.
+        """
+        d = np.asarray(delta, dtype=float)
+        order = np.argsort(d)
+        d, v = d[order], list(vols[order])
+
+        atm = np.isclose(np.abs(d), 0.5)
+        sigma_atm = v[np.flatnonzero(atm)[-1]]  # ascending d, so the PREFERRED +0.5 label
+        delta_atm = 0.5 * torch.exp(-0.5 * sigma_atm * sigma_atm * T)
+        label = float(delta_atm.detach())
+        nodes = [np.sign(di) * delta_atm if a else sigma_atm.new_tensor(di)
+                 for di, a in zip(d, atm)]
+        d = np.where(atm, np.sign(d) * label, d)
+
+        # both wings need the ATM node - a smile quoted on one side only is mirrored onto the other
+        for side in (-1.0, 1.0):
+            if not np.any(np.isclose(d, side * label)):
+                d, nodes, v = np.append(d, side * label), nodes + [side * delta_atm], v + [sigma_atm]
+
+        order = np.argsort(d)
+        d = d[order]
+        deltas = torch.stack([nodes[i] for i in order])
+        vols = torch.stack([v[i] for i in order])
+        return {'d_put': deltas[d <= 0.0], 'v_put': vols[d <= 0.0],
+                'd_call': deltas[d >= 0.0], 'v_call': vols[d >= 0.0],
+                'sigma_atm': sigma_atm, 'delta_atm': delta_atm}
+
+    @classmethod
+    def carried_sigma(cls, skew, carried, T, x):
+        """`Factor2D.malz_sigma` on a tape - AND THE BISECTION IS NOT ON IT.
+
+        The 64 halvings are a fixed-length loop of correctly-rounded arithmetic and every operation
+        in them tapes, which is exactly the trap. A bisection's iterates are DYADIC combinations of
+        the two bracket endpoints - `left` and `right` are only ever `lo`, `hi` or a midpoint of
+        two such - so what a tape through the loop differentiates is where the BRACKET is, not
+        where the root is. On the call wing `lo` is a quoted pillar delta and `hi` is `delta_atm`,
+        so that derivative carries the ATM quote and no risk reversal or butterfly at all, while
+        the true root moves with the wing vols the residual is built from. It is the workstream's
+        own failure mode: a number that is right and a gradient that is not.
+
+        So the tape starts at the CONVERGED root. `delta*` is a constant here and the differentiable
+        one is one Newton step off it, `delta - R(delta, q) / (dR/ddelta)`, which is the implicit
+        function theorem written as an expression: worth the solve's own residual forward (nothing,
+        and it reaches no mark either way) and exactly `-R_q / R_delta` backward. WHAT MAKES IT THE
+        THEOREM IS THAT `delta*` IS THE ROOT, not that the slope is detached - the detach is
+        conceptual hygiene, and measured to be nothing else (see below).
+
+        The CLAMPED nodes take the other branch, and it is not a repair. Where the fixed point
+        falls outside the wing's bracket there is no root to differentiate: the vol IS the endpoint
+        knot's, which is what flat-extrapolating a smile beyond its widest quoted delta means, so
+        the taped delta is that knot and the derivative is the knot vol's own - `1` in that wing's
+        ATM quote, `1` in its butterfly, `+-1/2` in its risk reversal, and zero in everything else.
+        The two branches meet where the root arrives AT the endpoint, so the switch is a kink and
+        what autograd reports is the one-sided derivative of the branch the node is in.
+
+        THE WING SPAN IS GUARDED, and an ordinary config reaches it: an ATM-only smile has
+        `malz_skew` mirror its ONE node onto both sides, so each wing is a single knot whose span
+        is exactly zero. Dividing before selecting puts a NaN on every entry of the Jacobian while
+        the value path writes a perfectly good flat surface.
+        """
+        delta_star, is_call, bracketed = riskfactors.Factor2D.malz_delta(skew, T, x)
+        sigma = carried['sigma_atm'].new_zeros(np.shape(x))
+
+        for side, wing in ((1.0, 'call'), (-1.0, 'put')):
+            on_wing = is_call if side > 0 else ~is_call
+            if not on_wing.any():
+                continue
+            knots, values, grid = carried['d_' + wing], carried['v_' + wing], skew['d_' + wing]
+            xs, root, live = x[on_wing], delta_star[on_wing], bracketed[on_wing]
+            # the SEGMENT the root sits in and, for a clamped node, the endpoint knot it sits ON -
+            # both frozen, because an interval index is not a differentiable quantity
+            seg = np.clip(np.searchsorted(grid, root, side='right') - 1,
+                          0, max(grid.size - 2, 0))
+            top = np.minimum(seg + 1, grid.size - 1)
+            near = np.abs(root[:, None] - grid[None, :]).argmin(1)
+            span = knots[top] - knots[seg]
+            wide = values.new_tensor(grid[top] != grid[seg], dtype=torch.bool)
+            k_over_f, log_mny = values.new_tensor(np.exp(-xs)), values.new_tensor(xs)
+
+            def wing_vol(delta):
+                # the double where over a ONE-KNOT wing's zero span - see the docstring
+                low = values[seg]
+                rise = torch.where(wide, (values[top] - low) / torch.where(
+                    wide, span, torch.ones_like(span)), torch.zeros_like(span))
+                return low + (delta - knots[seg]) * rise
+
+            def residual(delta):
+                vol = wing_vol(delta)
+                d2 = (log_mny - 0.5 * vol * vol * T) / (vol * np.sqrt(T))
+                return k_over_f * side * utils.norm_cdf(side * d2) - delta
+
+            # THREE HONEST NEGATIVES on the next two lines, all measured and all no-ops. `base` is
+            # minted from numpy and carries no graph, so its `.detach()` is dead; asking the slope
+            # for `create_graph` changes no reported number either, because `R(delta*)` is ~1e-17
+            # and multiplies the extra term away - the theorem holds off the ROOT, not off the
+            # detach. And nothing CANCELS an unbracketed node's slope to zero the way a one-knot
+            # wing cancels its span, so the `on_tape` guard below is idiom rather than a measured
+            # hazard: a 375-point sweep drives |dR/ddelta| no lower than 0.948.
+            base = values.new_tensor(root)
+            probe = base.detach().requires_grad_(True)
+            d_delta = torch.autograd.grad(residual(probe).sum(), probe)[0]
+            on_tape = values.new_tensor(live, dtype=torch.bool)
+            step = residual(base) / torch.where(on_tape, d_delta, torch.ones_like(d_delta))
+            sigma[on_wing] = wing_vol(torch.where(on_tape, base - step, knots[near]))
+
+        return sigma
+
+    @classmethod
+    def carried_surface(cls, skews, carried, grid):
+        """`Factor2D.malz_surface`'s vol column on a tape, row for row and in its order."""
+        return torch.cat([cls.carried_sigma(skews[T], carried[T], T, nodes)
+                          for T, nodes in grid.items()])
+
     @classmethod
     def pinned_grid(cls, written, expiries, tolerance):
         """The log-moneyness grid a previously written surface already carries, or None.
@@ -2504,6 +2678,18 @@ class FXVolSurfaceParameters(object):
         The x-grid is taken from the factor this wrote last if it is still describing the same
         expiries at the same tolerance - see the class docstring on pinning - and refined from
         scratch otherwise.
+
+        A block asking for `Quote_Sensitivity` leaves that surface behind still connected to the
+        ATM / RR / BF quotes it was built from, so `Calculation.factor_leaf` can offer the connected
+        tensor where it would otherwise mint an `FXVol` leaf out of numpy. The tape is a SPLICE over
+        the shipped conversion and not a replacement for it - see `carried_sigma` - so what the
+        switch changes is what `backward()` can reach and nothing else. Every number written below
+        comes out of `Factor2D.malz_surface` either way.
+
+        THE GRID IS NOT DIFFERENTIATED. It is refined against the quotes when it is BUILT and
+        pinned from then on, which is what makes a tick a values patch; the twin moves the VOLS on
+        frozen nodes. A rebuild is a new plan, and a derivative across two plans is not a
+        derivative.
         """
         for market_price, implied_params in market_prices.items():
             rate = utils.check_rate_name(market_price)
@@ -2532,6 +2718,7 @@ class FXVolSurfaceParameters(object):
                 if not pinned:
                     grid = riskfactors.Factor2D.malz_grid(skews, tolerance)
 
+                surface = riskfactors.Factor2D.malz_surface(skews, grid)
                 stamps = [point['Timestamp'] for point in quotes if point['Timestamp']]
                 price_factors[vol_name] = {
                     'Property_Aliases': None, 'Surface_Type': self.surface_type,
@@ -2539,8 +2726,23 @@ class FXVolSurfaceParameters(object):
                     'Currency': block.get('Currency', ''),
                     'Grid_Tolerance': tolerance,
                     'Quote_Timestamp': max(stamps) if stamps else '',
-                    'Surface': utils.Curve(
-                        [], riskfactors.Factor2D.malz_surface(skews, grid))}
+                    'Surface': utils.Curve([], surface)}
+
+                if block.get('Quote_Sensitivity', 'No') == 'Yes':
+                    leaves = torch.tensor([point['Quoted_Market_Value'] for point in quotes],
+                                          dtype=self.dtype, requires_grad=True)
+                    carried = self.carried_surface(skews, self.carried_skews(
+                        delta_surface, expiries, self.carried_smile(quotes, leaves)), grid)
+                    # `Factor2D` sorts what it is handed by (expiry, moneyness) and mints a leaf
+                    # out of THAT column, so the twin is put in the same order rather than assumed
+                    # to be in it
+                    rows = np.array(surface)
+                    order = np.lexsort((rows[:, 0], rows[:, 1]))
+                    self.calibrated[utils.Factor(self.price_factor_type, market_factor.name)] = \
+                        torch.tensor(rows[order, 2], dtype=self.dtype) + (
+                            carried[order] - carried[order].detach())
+                    self.quote_leaves[market_price] = (
+                        [self.descriptor(point) for point in quotes], leaves)
 
                 logging.info('{} built from {} quotes on a {} grid of {} nodes as at {}'.format(
                     vol_name, len(quotes), 'pinned' if pinned else 'refined',

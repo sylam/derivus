@@ -328,20 +328,27 @@ class Factor2D(object):
                 'sigma_atm': sigma_atm, 'delta_atm': delta_atm}
 
     @staticmethod
-    def malz_sigma(skew, T, x, iterations=64):
-        """The Malz vol at EVERY log-moneyness x = log(F/K) of a grid, in one vectorized solve.
+    def malz_delta(skew, T, x, iterations=64):
+        """The delta each log-moneyness x = log(F/K) resolves to, and how it got there.
 
-        The vol at x is the fixed point of sigma = skew(delta(sigma, x)): the wing is a piecewise
-        linear vol in delta, and the delta of the strike x names depends on the vol being looked
-        up. x <= sigma_atm^2 T / 2 is the call wing (K at or below the delta-neutral straddle
-        strike), and each side is bracketed by its own extreme deltas - where the fixed point
-        falls outside that bracket the wing is CLAMPED to the endpoint that misses by less, which
-        is what flat-extrapolates a smile beyond its widest quoted delta.
+        Returns `(delta*, is_call, bracketed)`. The vol at x is the fixed point of
+        sigma = skew(delta(sigma, x)): the wing is a piecewise linear vol in delta, and the delta
+        of the strike x names depends on the vol being looked up. x <= sigma_atm^2 T / 2 is the
+        call wing (K at or below the delta-neutral straddle strike), and each side is bracketed by
+        its own extreme deltas - where the fixed point falls outside that bracket the wing is
+        CLAMPED to the endpoint that misses by less, which is what flat-extrapolates a smile
+        beyond its widest quoted delta.
 
         Bisection rather than a per-point `brentq`: it is one array of brackets closed 64 times
-        instead of a Python loop over a scalar root find, it converges to the bracket's own
-        machine precision (tighter than brentq's 2e-12 xtol), and every operation in it is one an
-        autograd tape can carry - which the scipy call is not.
+        instead of a Python loop over a scalar root find, and it converges to the bracket's own
+        machine precision (tighter than brentq's 2e-12 xtol).
+
+        SPLIT OUT OF `malz_sigma` because these three ARE the structure of the solve - which wing
+        a node reads, whether its fixed point exists inside that wing's bracket, and where it sits.
+        A derivative twin needs exactly them and none of the arithmetic: the iterates of a
+        bisection are dyadic combinations of the two ENDPOINTS, so their derivative is the
+        bracket's rather than the root's, and a tape run through this loop reports a number that
+        does not converge to anything. See `FXVolSurfaceParameters.carried_sigma`.
         """
         x = np.asarray(x, dtype=float)
         sqrt_t = np.sqrt(T)
@@ -368,7 +375,14 @@ class Factor2D(object):
             left = np.where(below, left, middle)
             f_left = np.where(below, f_left, f_middle)
 
-        delta_star = np.where(f_lo * f_hi > 0.0, clamped, 0.5 * (left + right))
+        bracketed = f_lo * f_hi <= 0.0
+        return np.where(bracketed, 0.5 * (left + right), clamped), is_call, bracketed
+
+    @classmethod
+    def malz_sigma(cls, skew, T, x, iterations=64):
+        """The Malz vol at EVERY log-moneyness x = log(F/K) of a grid - the wing read at `delta*`.
+        `malz_delta` is the solve; this is the piecewise linear lookup on the side it names."""
+        delta_star, is_call, _ = cls.malz_delta(skew, T, x, iterations)
         return np.where(is_call, np.interp(delta_star, skew['d_call'], skew['v_call']),
                         np.interp(delta_star, skew['d_put'], skew['v_put']))
 

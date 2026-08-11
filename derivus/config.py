@@ -403,12 +403,21 @@ class Config(object):
 
             # a family that kept its calibration on the tape hands the leaves over here, which is
             # what lets `_build_factor_state` offer an already-connected tensor instead of minting
-            # a fresh one out of numpy
+            # a fresh one out of numpy. Its OWN keys are dropped first - the factor type it writes
+            # and the Market Prices type it reads - so a run that stops publishing takes back what
+            # the last one left: `Quote_Sensitivity` flipped to No would otherwise leave a stale
+            # connected tensor standing and a backward would report the previous surface's
+            # Jacobian against quotes that have since moved.
+            written = getattr(bootstrapper, 'price_factor_type', bootstrapper_name)
+            block = getattr(bootstrapper, 'market_factor_type', bootstrapper_name)
+            self.calibrated_factors = {factor: theta for factor, theta
+                                       in self.calibrated_factors.items() if factor.type != written}
+            self.quote_leaves = {name: leaf for name, leaf in self.quote_leaves.items()
+                                 if utils.check_rate_name(name)[0] != block}
             self.calibrated_factors.update(getattr(bootstrapper, 'calibrated', {}))
             self.quote_leaves.update(getattr(bootstrapper, 'quote_leaves', {}))
 
             # empty result = the bootstrapper silently did nothing - see docstring
-            written = getattr(bootstrapper, 'price_factor_type', bootstrapper_name)
             if not [x for x in self.params['Price Factors'] if x.startswith(written + '.')]:
                 logging.error('Bootstrapper {0} wrote no {1}.* price factor - check the Market '
                               'Prices section'.format(bootstrapper_name, written))

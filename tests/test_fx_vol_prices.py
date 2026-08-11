@@ -779,7 +779,7 @@ def test_the_family_is_in_the_market_prices_store():
     assert FXVolSurfaceParameters.market_factor_type in types
     block = types['FXVolPrices']
     assert set(block) == {'Currency', 'Delta_Type', 'Premium_Adjusted', 'ATM_Convention',
-                          'Grid_Tolerance', 'Points'}
+                          'Grid_Tolerance', 'Quote_Sensitivity', 'Points'}
     assert block['Points']['col_names'] == [
         'Use', 'Expiry', 'Pillar', 'Quote_Type', 'Quoted_Market_Value', 'Timestamp']
     # one value per convention, because the solve implements one of each

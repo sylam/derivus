@@ -176,6 +176,23 @@ fingerprint `pinned_grid` reads back, never by the name alone. That is what make
 on the number a desk edits — see
 [the quote sources](quote_sensitivities.md#the-atm-column), and the defect named beside them.
 
+**The smile differentiates in its own quotes.** `Quote_Sensitivity` — declared here, default `No` —
+leaves the written surface connected to the ATM / RR / BF numbers it was built from, so a backward
+pass reports `dV/d(risk reversal)` beside `dV/d(surface node)`. The written surface is bit-identical
+either way; what the conversion has that the other families do not is a **root find**, and the tape
+does not enter it. See
+[increment 4](quote_sensitivities.md#the-delta-solve) for the boundary and what taping the
+bisection instead would have reported.
+
+!!! warning "One ATM quote, two families, two partial derivatives"
+    The two paragraphs above stack: this block's ATM row is also `GBMAssetPriceTSModelPrices`'
+    ATM column, so with **both** blocks asking for `Quote_Sensitivity` a single JSON number reaches
+    a valuation through two independent maps and its `dV/dq` arrives split over two `quote_leaves`
+    entries — under the *same* descriptor string, because a quote is named by what it is and not by
+    which family read it. Each half is correct and neither is the total. A consumer must group by
+    descriptor across blocks and **sum**; see
+    [the collision](quote_sensitivities.md#the-attachment) for the measured numbers.
+
 **Timestamps are data the engine stores and reports.** Each quote row carries when it was seen;
 the written surface carries the latest of the rows that built it as `Quote_Timestamp`, its own
 as-of. It is declared `bind='value'` because it travels with the vols — a tick delivers new numbers

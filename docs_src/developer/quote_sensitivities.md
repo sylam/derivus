@@ -1,13 +1,20 @@
 # Quote Sensitivities
 
-!!! note "All three increments are complete"
+!!! note "All four increments are complete, and the chain closes"
     Increment 1 — the t0 benchmark closure and its graph audit, the multi-curve solver, the
     `InterestRatePrices` family, the quote-side graph, the implicit-function-theorem wrapper, the
     factor-buffer attachment and the validation triangle — is built. So is increment 2: the same
     contract around the HW2F swaption-vol calibration, where the fixed point is the
-    [stationarity](#the-stationarity-contract) of a least-squares loss rather than a root. And so is
-    increment 3, **FX vol** — which turned out to need neither, because
-    [the map is closed form](#the-closed-form-map).
+    [stationarity](#the-stationarity-contract) of a least-squares loss rather than a root. So is
+    increment 3, the ATM column, which turned out to need neither because
+    [the map is closed form](#the-closed-form-map). And so is increment 4,
+    [the delta solve](#the-delta-solve) — which puts the root find back, in its own quotes: a
+    ticked risk reversal now reaches a valuation as a number rather than as a recompile.
+
+    **What that closes.** A vol tick arrives as ATM / RR / BF, becomes a log-moneyness surface on a
+    pinned grid, integrates into a GBM vol curve, and reaches `V` — and one backward pass reports
+    `dV/dq` at every one of those coordinates. The last non-goal of increment 3, "no differentiable
+    Malz solve", is [retracted below](#the-retraction).
 
 The autograd tape started at *calibrated* factors, so a greek was reported in zero-curve-node or
 model-parameter space. Desks explain P&L in **quote** space — par swap rates, FRA strips, OIS
@@ -22,10 +29,11 @@ q (leaves)  ->  calibration solve  ->  θ*  ->  factor buffers  ->  scenarios  -
 ```
 
 and the only new arithmetic is the middle arrow. Everything downstream of θ* is the engine that
-already exists. The three calibrations put different things in that arrow — a damped Newton on a
-root, a Monte Carlo least squares on a stationarity point, and
-[an explicit map with no solve in it at all](#the-closed-form-map) — and the page reads in that
-order.
+already exists. The four calibrations put different things in that arrow — a damped Newton on a
+root, a Monte Carlo least squares on a stationarity point,
+[an explicit map with no solve in it at all](#the-closed-form-map), and
+[a bisection per node that the tape refuses to enter](#the-delta-solve) — and the page reads in
+that order.
 
 ## The residual is priced by the engine's own pricers {#the-residual}
 
@@ -595,6 +603,253 @@ derivative was taken on. The identity rows carry no $h^2$ term, so what is left 
 difference quotient's own rounding, which *grows* as $h$ shrinks (8.9e-16 to 1.1e-13); they are
 asserted exact-to-rounding rather than put on the ladder.
 
+## The delta solve — increment 4 {#the-delta-solve}
+
+`FXVolSurfaceParameters` turns a broker's smile — one ATM vol per expiry and, per delta pillar, the
+risk reversal and butterfly around it — into the log-moneyness surface the option pricers read.
+Increment 3 took the ATM row and [said so](#the-atm-column); this one takes **all** of it, so
+`dV/d(RR)` and `dV/d(BF)` exist and the wings stop being a coordinate nothing can be explained in.
+
+The chain has four links and only one of them is hard:
+
+```
+q  ->  the strangle pair  ->  the Malz wing pair  ->  a bisection per PINNED x-node  ->  surface
+```
+
+The first is `vol(call) = ATM + BF + RR/2`, `vol(put) = ATM + BF − RR/2`: linear, exactly
+invertible, and the twin of it is bit-identical to the shipped `smile` because there is no `sqrt`
+in it for two implementations to disagree over. The second places the ±0.5 label at the
+delta-neutral straddle and mirrors a one-sided smile onto the other wing. The third is the root
+find, and it is the whole design decision.
+
+### The tape boundary, and why it is not where it looks {#the-tape-boundary}
+
+`Factor2D.malz_sigma` closes an array of brackets 64 times. Every operation in that loop is
+`+`, `*`, a comparison and a `torch.where`, so **a tape runs straight through it and reports a
+number** — which is exactly the trap, because the number is wrong.
+
+A bisection's iterates are **dyadic combinations of the two bracket endpoints**. `left` and `right`
+are only ever `lo`, `hi`, or a midpoint of two such, so after any number of halvings
+`δ_n = α·lo + (1−α)·hi` with α a step function of the data: α has zero derivative almost
+everywhere, and what the tape carries is `d(endpoint)/dq`, not `d(root)/dq`. On the call wing `lo`
+is a quoted pillar delta and `hi` is `delta_atm`, so the reported derivative is a function of the
+**ATM quote and of nothing else the root actually moves with** — the risk reversal and butterfly
+reach the answer only through the final lookup, and their effect on *where* the root is vanishes.
+
+That is measured, not asserted. Mirroring the shipped loop literally gives the same forward number
+to **2.8e-17** and a Jacobian **0.135** out on entries of order one — 6.5% in Frobenius norm — with
+`dσ/d(ATM)` reported as a plausible-looking **1.000137** where the truth is **0.865559**. A price
+gate cannot see it, which is the failure mode this workstream exists to prevent.
+
+So **the tape starts at the converged root.** δ\* is a constant, and the differentiable object is
+one Newton step off it:
+
+$$\delta = \delta^* - \frac{R(\delta^*, q)}{\texttt{detach}\big(\partial R/\partial\delta\big)}
+\qquad\Longrightarrow\qquad
+\frac{d\delta}{dq} = -\Big(\frac{\partial R}{\partial\delta}\Big)^{-1}\frac{\partial R}{\partial q}$$
+
+which is the [implicit function theorem](#the-ift-contract) written as an expression rather than as
+a `Function`. **What makes it the theorem is that δ\* is the root**, not the `detach` on the slope:
+`R(δ*)` is a rounding, so anything the slope's own graph would contribute is multiplied away, and
+asking for `create_graph` there changes no reported number — [measured](#the-clamp), and the detach
+kept for what it says rather than for what it does. `R` is the residual the value path solves,
+mirrored once and differentiated by autograd for **both** the slope and the quote side — written
+once, differentiated twice, so it cannot drift from the root it was taken at.
+
+The mirror is a mirror and not the same function: the value path's normal CDF is
+`scipy.special.ndtr` and the twin's is `utils.norm_cdf`, the engine's own `erfc`. So `R(δ*)` is a
+rounding rather than a zero, the Newton step is worth about `1e-16/R_δ` forward, and the twin's
+surface sits **2.8e-17** off the shipped one. That number reaches no mark: the splice is
+`value + (carried − carried.detach())`, so the written surface is the numpy one bit for bit — the
+[increment-3 lesson](#the-closed-form-map), which is load-bearing here for the same reason.
+
+**The grid is not on the tape at all, and that is a property rather than an omission.** The
+x-grid is refined against the quotes when it is BUILT and
+[pinned](market_prices.md#fxvolprices) from then on, which is what makes a tick a values patch
+instead of a recompile. The twin therefore moves the **vols on frozen nodes**; a rebuild is a new
+plan, and a difference quotient across two plans is not a difference quotient. Everything else the
+solve decides discretely — the ordering, the ±0.5 label mask, which side had its ATM node mirrored
+in, which wing a node reads, whether it is bracketed, which linear segment the root sits in — is
+read off the value path for the same reason a permutation has no derivative.
+
+!!! warning "What *is* taped that looks like a coordinate"
+    `delta_atm` is. The ATM quote sets the delta-neutral straddle,
+    `|δ| = ½exp(−σ_atm²T/2)`, which is **where the two ATM nodes of the wing grid sit** — so the
+    wing's knot *positions* are a function of a quote, not constants. A twin that treated the
+    deltas as coordinates loses that channel silently: the forward is untouched, the ladder breaks
+    at h², and the ATM column comes back looking almost right. Detaching them is a gated mutation.
+
+### Four discrete choices, and the fourth is a jump {#the-four-choices}
+
+Increment 3 had one piecewise switch. This map makes **four** discrete choices per node, and every
+one of them is a property of the shipped conversion rather than an artefact of the twin:
+
+| switch | where | what it does to the surface |
+| --- | --- | --- |
+| the **wing** | `x = σ_atm²T/2` | which wing the node reads — the two agree in value at the straddle strike, not in slope. A kink |
+| the **bracket** | where the root arrives AT the wing's endpoint | the flat extrapolation takes over. A kink |
+| the **segment** | where δ\* crosses a quoted pillar delta | the wing is piecewise LINEAR in delta. A kink |
+| the **clamp endpoint** | where the two endpoint residuals swap which is smaller | a clamped node steps from one endpoint knot's vol to the other's. A **JUMP** |
+
+The first three are kinks: the map is continuous across them and only its slope jumps. Autograd
+reports the one-sided derivative of the branch a node is in, which is the only quotient a piecewise
+map has a limit for, and a central difference **straddling** one converges to the average of two
+one-sided derivatives — which is nobody's: **0.9403** between a clamped `1.0` and a bracketed
+`0.8806047`, at h = 1e-6 and again at 1e-8.
+
+**The fourth is a discontinuity, and it was found by mutating the instrument rather than the code.**
+A clamped node takes whichever end of the bracket its residual misses by less — `|f_lo| < |f_hi|` —
+and the two ends are *different knots carrying different vols*, so where those magnitudes cross the
+written number steps. On a single-expiry smile whose risk reversal is 2.5× its ATM vol, a **2e-6**
+move in the ATM quote jumps one node by **0.1199** of vol, δ\* going −0.496413 (the mirrored ATM
+knot, at 0.12) to −0.250000 (the quoted pillar, floored at 1e-4). The flip is not confined to a
+smile that steep — it starts around RR ≈ 1.5 × ATM, where the same bump is worth 0.086. Nothing
+here needs repairing: the flat extrapolation is changing its mind about which knot to extrapolate
+*from*, no derivative exists at the crossing, and autograd's one-sided answer is correct on each
+side of it.
+
+What was wrong was the **measurement**. Wing, bracket and segment are all *identical* either side of
+that flip — the node is clamped both times, a two-knot wing has only segment 0, and both endpoints
+are on the put side — so a three-part fingerprint scores the rung, and scores a jump divided by 2h:
+**6.0e+04** at h = 1e-6, ten times that at 1e-7, which is the signature of a step rather than an
+error in anything. So the fingerprint carries the endpoint as a fourth mark, **on the clamped branch
+alone**, which is the branch that reads it — recording it unconditionally would exclude rungs where
+nothing happened, five more at h = 1e-3. On the gated fixture no clamped node flips and the census
+is unchanged: **24** straddles at h = 1e-3, **5** at 1e-4, **none** at 1e-5.
+
+### The clamp is flat extrapolation, and its derivative is exact {#the-clamp}
+
+A third of the grid — **32 of 97 nodes** on the gated fixture, and 20–43% per expiry — has no fixed
+point inside its wing's bracket. That is not a repair and nothing is wrong with it: beyond the
+widest quoted delta the smile is **flat**, so the vol at such a node IS the endpoint knot's.
+
+Its derivative is therefore that knot's own quote algebra and nothing else — `1` in the expiry's
+ATM quote, `1` in the pillar's butterfly, `±½` in its risk reversal, and **exactly zero** in
+everything else. All 32 rows, to the last bit, which is a stronger statement than a tolerance and
+the one the extrapolation actually makes. The taped δ on that branch is the knot itself, so the
+`(δ − d_j)·slope` term cancels to an exact zero rather than to a rounding of one — the same
+discipline [the floored branch](#the-repair-kink) needed in increment 3.
+
+**The row is asserted as a set, and the difference is what a gate can see.** Walking the row's
+non-zero entries visits the columns that *are* live and can never notice one that is **missing** —
+a family that dropped the risk reversals from the tape publishes a shorter row of perfectly correct
+entries and walks straight through, which is measured: that mutation passes the entry-by-entry form
+and fails the set. The clamp lands on the widest quoted pillar at every expiry and on both wings
+here (`d_call` runs 0.10, 0.25, δ_atm), so the whole row is known and equality is available.
+
+!!! warning "`dσ/d(ATM) == 1` is not the clamped branch's signature"
+    It is the signature of a node whose vol does not move with delta, and a **bracketed** node can
+    be one of those: where two adjacent pillars' wing vols coincide the segment between them is
+    **flat**, the wing reads back the same vol from either end, and sliding `delta_atm` under the
+    node changes nothing — so the level follows the ATM quote exactly. `ATM + BF + RR/2` = 0.1396
+    at *both* the 0.35 and the 0.25 delta of an ordinary mildly-inverted three-year does it: **1 of
+    that smile's 16 nodes**, and 5 of 90 on the two-expiry version it was cut from. The gate that
+    says a bracketed row's ATM entry is never 1 was passing on fixture luck; it is now conditioned
+    on the segment not being flat, with a second gate that reaches the excluded case so the
+    condition is exercised rather than asserted.
+
+!!! danger "A flat smile divides zero by zero, and only in the backward"
+    Quote the ATM row and nothing else — a legitimate config, and one the value path handles
+    without comment. `malz_skew` mirrors the single ATM node onto **both** sides, so each wing is
+    **one knot**: its span is exactly zero, and so is its slope. Dividing first and selecting after
+    puts a NaN on **every** entry of the Jacobian while the written surface is a perfectly good
+    flat one. Guarded with the double-where, the flat smile's Jacobian is the **expiry indicator** —
+    `dσ/d(ATM)` exactly one at every node of its own expiry and exactly zero elsewhere, which is
+    what a flat smile means. This is increment 4's version of
+    [the guarded discriminant](#the-repair-kink), and it is reachable from the schema rather than
+    from a pathological fixture.
+
+!!! note "Honest negative results — three no-ops in `carried_sigma`, all measured"
+    Recorded so that they stay known properties rather than being read as tested ones. Each was
+    mutated and every gate stayed green.
+
+    **The second guard is idiom, not a measured hazard.** The same double-where sits on the Newton
+    step's own slope, and **nothing cancels that one to zero**: `∂R/∂δ = k φ(d₂)(∂d₂/∂σ)W′(δ) − 1`
+    is `−1` wherever the wing is flat and a transcendental coincidence otherwise. A 375-point sweep
+    over x ∈ [−0.6, 0.6] drives it no lower than **0.948** — 0.948 / 0.958 / 0.968 / 0.965 at the
+    four expiries — which is not close to zero at all, and strengthens rather than weakens the
+    point. Removing the guard leaves every gate green.
+
+    **Detaching the slope is conceptual hygiene, not the mechanism.** The theorem holds because
+    δ\* is *at the root*: `R(δ*)` is ~1e-17, so a graph carried through `∂R/∂δ` contributes
+    `−R·∂(1/R_δ)/∂q` and is multiplied away. Asking `torch.autograd.grad` for `create_graph`
+    changes no reported number.
+
+    **`base.detach()` is dead.** `base` is minted from a numpy array and carries no graph, so the
+    detach in front of `requires_grad_(True)` removes nothing. Both lines stay as written because
+    they say what the expression *means*; neither is load-bearing.
+
+### What the Jacobian has to look like {#the-jacobian-structure}
+
+The quote algebra is visible in `J`, and the gates assert it as arithmetic rather than as a shape
+somebody eyeballed.
+
+**Block diagonal in expiry, exactly.** Each expiry's smile is built from its own rows onto its own
+refined nodes, so a quote reaches no node of any other expiry: `max|J|` off the block is **0.0**.
+
+**`RR = ±½ BF`, wing by wing, exactly.** A node's vol depends on the quotes only through its own
+wing's knot vols (and, through `delta_atm`, on the ATM quote). Those knots are `ATM + BF ± RR/2`,
+so BF and RR enter through the *same* channel with coefficients 1 and ±½ — the two columns are in
+exact ratio, and the sign is which wing the node reads. `np.array_equal`, not `allclose`. That one
+identity is what "the risk reversal is antisymmetric and the butterfly is symmetric" means, said so
+that floating point can check it: the butterfly's column is same-signed on both wings (≥ 0
+everywhere, reaching exactly 1.0 on the clamped 10-delta wing) and the risk reversal's flips at the
+wing boundary — largest **+0.436 … +0.500** on the call side against **−0.483 … −0.509** on the put
+side, across the four expiries.
+
+**The ATM column lands near one, not on it.** Every wing knot carries the ATM quote with
+coefficient one, so the level follows it; but `delta_atm` moves too, sliding the delta each
+log-moneyness node resolves to. Measured **0.8656 … 1.0537**, everywhere positive — and asserted
+*not* to be exactly one, because exactly one is what the frozen-`delta_atm` mutation produces.
+
+### The gates {#the-fx-vol-gates}
+
+| gate | what it isolates | result |
+| --- | --- | --- |
+| written surface, gradients on vs off, and vs c77740e | the forward | `np.array_equal`; SHA-256 of the parent commit's surface |
+| a reference FX option valuation, on vs off | the whole job | MTM and the whole `Greeks_First` frame `np.array_equal` |
+| the carried smile vs `smile` | the strangle algebra | `np.array_equal` — no `sqrt` to disagree over |
+| the carried skew vs `malz_skew`, on the fixture and on a smile that desyncs `exp` | the LAYOUT the frozen indices address | wing vols `np.array_equal`; wing deltas **≤ 1 ulp** |
+| the twin's forward vs the shipped conversion | why there are two | **2.8e-17** — a Newton step at a converged root |
+| **the bisection taped literally** | the tape boundary | same forward, `J` **0.135** out, 6.5% Frobenius, 1.000137 against 0.865559 |
+| `J` vs central FD of the **whole family** | the quote Jacobian | **9.8e-5 / 9.8e-7 / 9.8e-9** at h = 1e-3 / 1e-4 / 1e-5 — $h^2$ |
+| the same FD on the clamped nodes | the linear branch | exact to rounding, **1.3e-14 → 1.8e-12** — it GROWS as h shrinks |
+| the fingerprint census per rung | the four discrete choices | **24 / 5 / 0** straddles at h = 1e-3 / 1e-4 / 1e-5 |
+| block diagonality, `RR = ±½ BF`, the ATM column | the quote algebra in `J` | **0.0** off-block; `array_equal` on the ratio; 0.866–1.054 |
+| every clamped row, as a SET | flat extrapolation | **32 / 32** exactly `{ATM: 1, BF: 1, RR: ±½}` and nothing else |
+| one-sided FD either side of the bracket switch | the kink | **1.0** clamped, **0.8806047** bracketed; **0.9403** straddling it |
+| **a 2.5× risk reversal, bumped 2e-6** | the clamp-endpoint JUMP | the node steps **0.1199** vol; a three-mark fingerprint scores **6.0e+04**, growing as 1/h |
+| a wing with a flat segment | why the bracketed anti-assertion is conditioned | a BRACKETED node reads exactly **1.0** — 1 of 16 here, 5 of 90 on the fuller smile |
+| an ATM-only smile | the one-knot wing | `J` finite and equal to the **expiry indicator** |
+| `dV/dq` vs `J' dV/dθ`, one backward | the attachment | **1.0e-16** relative; vega chain 7.039e6 against a Black vega of 7.032e6 |
+| `market_patch` round trip, then re-bootstrap | the pin the derivative rides | grid `array_equal`, `J` `array_equal` |
+| `Quote_Sensitivity` Yes → No, re-bootstrapped | the publish seam | the connected tensor and its leaf are **gone**, not stale |
+
+The FD rung is taken through the **whole family** — re-authored smile, re-prepared wings, re-solved
+onto the same pinned grid — so what converges is the derivative of the thing the job runs.
+
+!!! note "Honest negative result — the reorder is insurance"
+    Three orders are in play: `malz_surface` **emits** expiry-major, `utils.Curve` stores what it
+    is handed sorted by **moneyness** first, and `Factor2D` lexsorts back to expiry-major before
+    minting a leaf. The twin follows the emission and is paired against the emission, so the
+    permutation the bootstrap applies is the **identity** — on this fixture and on every quote set
+    the family can build. Deleting it leaves every gate green. It is there because the emission
+    order and the lexsort could drift apart and nothing else would notice, and the identity is
+    asserted so that the day it stops being one is visible.
+
+### The retraction {#the-retraction}
+
+Increment 3's non-goals closed with **"No differentiable Malz solve"**, on the grounds that a
+bisection per node would put that solve on the tape. That was right about the cost and wrong about
+the conclusion, and it is retracted: the solve does not go on the tape. The root is found exactly as
+it always was, in numpy, and the derivative comes from **one Newton step at the answer** — two
+residual evaluations against 64 halvings, and the value path untouched. `dV/d(risk reversal)` and
+`dV/d(butterfly)` are in scope and built.
+
+What increment 3 said about the **ATM row** stands unchanged: that number is the surface's ATM vol
+by construction, `GBMAssetPriceTSModelParameters` still takes it straight off the quote block, and
+nothing was put on the tape to recover it.
+
 ## The attachment {#the-attachment}
 
 θ\* still carrying its graph has to become the `InterestRate` factor leaf a calculation consumes,
@@ -617,6 +872,24 @@ constant. `Config.bootstrap` harvests `calibrated_factors` and `quote_leaves` of
 they are tensors, so they cannot live in `Price Factors`, which is data and gets written back out as
 JSON.
 
+**The harvest removes as well as adds, and it has to.** A run that publishes nothing for a factor it
+owns takes back what the last run left: flip `Quote_Sensitivity` to `No`, re-bootstrap with quotes
+that have since moved, and an update-only harvest leaves the *previous* connected tensor standing
+under the same key — the old surface, against the old quotes, reported by a backward as today's. It
+raises nothing, because a splice worth zero in the forward is invisible to every price gate. So each
+family drops its own keys before publishing: the **factor type it writes** and the **Market Prices
+type it reads**, both already declared, and scoped because `Config.bootstrap` runs one family at a
+time and the others' entries have to survive it.
+
+**An ordinary price factor attaches at the same seam too, and nothing had to move for it.** An
+`FXVol` surface is a *static* factor: `current_value()` hands back the flat vol column of the
+surface sorted by (expiry, moneyness), and `factor_leaf` mints one leaf out of it — so increment 4
+publishes its connected tensor under `Factor('FXVol', name)` and is offered where that leaf is
+born, on both the `_build_factor_state` path and `Base_Revaluation.update_factors`. Three of the
+four families now write a `<ClassName>` parameter block and one writes an ordinary typed factor,
+and the attachment does not distinguish them. `Gradient_Variables` governs it as `Factors` or
+`All` here rather than `Implied` or `All`, for the same reason: it is a factor, not a model.
+
 **A calibrated model's parameters attach at the same seam**, which is why the seam is a method and
 not four call sites. `Credit_Monte_Carlo._build_factor_state` mints one leaf per *named* parameter of
 an implied model — `Alpha_1`, `Alpha_2`, `Correlation`, `Sigma_1`, `Sigma_2` for HW2F — and all
@@ -630,6 +903,12 @@ that go wrong, because the splice is worth zero *whatever* is attached.
     A non-zero offset shifts every tenor before the leaf is minted, so the curve the calculation
     consumes is a **different** one and $d\theta_{\text{shifted}}/dq$ is not $d\theta/dq$. Attaching
     anyway would report a plausible number that is the derivative of something nobody priced.
+
+    **A parked ruling, stated rather than fixed:** the decline is unconditional, and a `Factor2D`
+    surface's `current_value()` *ignores* the offset — so under a non-zero `Tenor_Offset` an FX vol
+    quote delta is dropped for a surface that did not move. Refusing is the conservative direction
+    and a wrong number is the failure this workstream exists to prevent, so it stays as it is until
+    the offset's own semantics per factor type are worth writing down.
 
 !!! warning "`Gradient_Variables` must be `All` or `Implied`"
     An implied model's leaves are only differentiable under those two — `Factors` reaches the zero
@@ -646,12 +925,33 @@ that go wrong, because the splice is worth zero *whatever* is attached.
     collision is authored in the gate rather than waited for.
 
 **Two `quote_leaves` shapes, and a reporting layer has to honour both.** The value is
-`(descriptors, leaves)` in both families, but the second half is not the same object: a curve solve
+`(descriptors, leaves)` in every family, but the second half is not the same object: a curve solve
 publishes **one vector leaf** whose entries are the block's `Points`, and a swaption calibration
 publishes a **tuple of scalar leaves**, one per `Instrument_Definitions` row. The two shapes are the
 quotes' own — a curve's quotes enter one residual as a vector, a swaption's quote is a leaf per
 benchmark because each carries its own Black preamble — so anything reading `dV/dq` off them
-iterates rather than assumes.
+iterates rather than assumes. **There are still two.** Increments 3 and 4 both publish the vector
+shape and neither invented a third: an ATM column enters one map, and an FX smile's whole
+`Points` table enters one conversion. The FX descriptors name the pillar as well as the expiry —
+`ATM 1`, `RR 0.25 1`, `BF 0.1 1` — because a quote there is identified by three things rather than
+two.
+
+!!! danger "Descriptors collide across families, and the truth is the SUM"
+    One JSON number can feed **two** chains. `FXVolPrices` writes the log-moneyness surface an option
+    pricer reads, and `GBMAssetPriceTSModelPrices` integrates *that surface's ATM column* into the
+    vol curve the FX rate is simulated with — so with both blocks asking for `Quote_Sensitivity`, a
+    single ATM quote reaches `V` twice, and `dV/dq` for it is **split across two `quote_leaves`
+    entries whose descriptors are the same string**. Measured on a CVA over a stacked pair: `ATM 0.5`
+    reads **2.243453e4** on the `FXVolPrices` leaf and **8.071709e4** on the `GBMAssetPriceTSModelPrices`
+    leaf. Each partial is correct — each is the derivative through its own family — and neither is
+    the answer. Bumping the JSON number confirms the total is **1.031516e5**, to 3.2e-11 relative;
+    reading the surface's leaf alone is 78% short.
+
+    There is no engine defect here and nothing to merge in the engine: the two families are
+    genuinely two maps, and which of them a consumer wants is a reporting question. **A consumer
+    that reports per-quote deltas must group by descriptor across blocks and sum**, not pick a
+    block. That is the one rule the shapes above do not already imply, and it is why there is still
+    no report FORMAT for a quote delta.
 
 ## The precision seam {#the-precision-seam}
 
@@ -816,9 +1116,18 @@ differentiation**: neither `CalibrationSolve.backward` nor `LeastSquaresSolve.ba
 `create_graph`, and the second refuses it explicitly — a Gauss–Newton contraction carries no second
 derivative, so a quote-space Hessian off that node would be the curvature of a different problem.
 
-**No differentiable Malz solve.** A `Malz` surface's log-moneyness nodes are a fixed point of a
-bisection per node, and going from a broker's ATM/RR/BF quotes to *those* would put that solve on
-the tape. It is not needed for the ATM row — [that number is the surface's ATM vol by
-construction](#the-atm-column) — so what stays out of scope is `dV/d(risk reversal)` and
-`dV/d(butterfly)`, which are the wings' coordinates and reach a valuation only through the surface
-the option pricers read.
+~~**No differentiable Malz solve.**~~ **BUILT — see [increment 4](#the-delta-solve).** This said
+that a bisection per node would have to go on the tape, and that `dV/d(risk reversal)` and
+`dV/d(butterfly)` were therefore out of scope. The premise was wrong: the solve does *not* go on
+the tape — differentiating a bisection reports the bracket's derivative and not the root's, which
+is [measured](#the-tape-boundary) — and the implicit function theorem needs the answer rather than
+the iteration. The struck sentence is kept rather than deleted, because it is the reasoning the
+increment refuted.
+
+**No surface parameterisation still stands.** SABR and SSVI remain out of scope; a Malz smile is
+the one delta parameterisation built, and the quotes are its ATM / RR / BF rows.
+
+**No differentiable x-grid.** The log-moneyness nodes are refined against the quotes ONCE and
+pinned; the tape moves the vols on them. A grid that followed its quotes would make every tick a
+recompile — which is what [pinning](market_prices.md#fxvolprices) exists to prevent — and a
+derivative taken across two grids is a derivative of two different plans.

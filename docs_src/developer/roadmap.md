@@ -28,10 +28,11 @@ produced it — a `SensitivityProfile` per pricer — so a consumer can tell a p
 one carrying a boundary term. Related and also unbuilt: **Hessian-vector products** instead of
 materialising full Hessians.
 
-**Calibration Jacobians — ALL THREE increments are BUILT.** Bumping a market *quote* now flows
+**Calibration Jacobians — ALL FOUR increments are BUILT.** Bumping a market *quote* now flows
 through the calibration rather than stopping at the calibrated factor: one `backward()` reports
 `dV/dq` beside `dV/dθ`, for a zero curve solved from deposits, FRAs and swaps, for the HW2F model
-parameters fitted to swaption vols, and for the integrated vol curve an ATM vol column walks into.
+parameters fitted to swaption vols, for the integrated vol curve an ATM vol column walks into, and
+for the log-moneyness FX surface a broker's ATM / risk reversal / butterfly quotes convert to.
 [Quote Sensitivities](quote_sensitivities.md) is the
 page — the graph audit that made it possible, the quote-side overlay, the IFT contract, the
 stationarity contract, the attachment, the precision seams, the validation triangles and the
@@ -88,11 +89,41 @@ declines; and the declining-variance repair is a **kink**, where a quote's delta
 and is severed from every later expiry. See
 [the closed-form map](quote_sensitivities.md#the-closed-form-map).
 
+Increment 4 is **the delta solve**, and it retracts increment 3's last non-goal. That page said a
+differentiable Malz solve was out of scope because a bisection per node would have to go on the
+tape; the premise was wrong. **Differentiating the bisection is the defect, not the cost** — the
+iterates are dyadic combinations of the two bracket ENDPOINTS, so a tape through the loop reports
+`d(bracket)/dq` and not `d(root)/dq`: measured, the same forward number to 2.8e-17 beside a
+Jacobian 0.135 out, reporting a plausible 1.000137 for a `dσ/d(ATM)` whose truth is 0.865559. So
+the tape starts at the converged root and takes one Newton step off it, which is the implicit
+function theorem written as an expression, and `dV/d(risk reversal)` is now an ordinary number. The
+x-grid stays [pinned](market_prices.md#fxvolprices) and undifferentiated — the twin moves the vols
+on frozen nodes, because a grid that followed its quotes is a recompile per tick. The chain closes
+end to end: a tick in ATM / RR / BF reaches `V` through the surface *and*, where the two families
+are stacked, through the integrated vol curve as well. See
+[the delta solve](quote_sensitivities.md#the-delta-solve).
+
+Its own findings are worth carrying. **Four things are discrete here**, not one — which wing a node
+reads, whether its root is bracketed or flat-extrapolated, which linear segment it sits in, and
+which END of the bracket a clamped node takes — so the FD ladder carries a fingerprint per node and
+scores only the rungs it held still across. Three of the four are kinks, where straddling converges
+to the average of two one-sided derivatives, 0.9403 between a 1.0 and a 0.8806047; **the fourth is
+a JUMP**, because the two endpoints are different knots carrying different vols, and on a steep
+smile a 2e-6 bump steps a node 0.1199 of vol while the first three marks hold perfectly still. That
+one was found by mutating the instrument: an unmarked endpoint makes the ladder score a step
+divided by 2h, 6.0e+04 at h = 1e-6 and growing as 1/h. And **a flat smile divides zero by zero in
+the backward alone**: an ATM-only block mirrors one node onto both wings, each wing is a single
+knot, its span is exactly zero, and the unguarded Jacobian is NaN everywhere while the written
+surface is a perfectly good flat one. Guarded, it comes back as the expiry indicator.
+
 Three smaller ends stay deliberately open and are recorded on the page's non-goals: there is no
 report FORMAT for a quote delta (it lands on the leaves in `Config.quote_leaves`, in one of
-[two shapes](quote_sensitivities.md#the-attachment), and `make_factor_index` wants a tenor grid a
-quote does not have); neither backward supports `create_graph`, so there is no second derivative in
-quote space; and no vol-surface parameterisation (SABR, SSVI) is in scope.
+[two shapes](quote_sensitivities.md#the-attachment) — increments 3 and 4 both reused the vector
+one — `make_factor_index` wants a tenor grid a quote does not have, and where two families read the
+same JSON number its `dV/dq` arrives as **two partials under one descriptor** that a consumer has to
+sum: 2.243453e4 + 8.071709e4 on a stacked FX pair, measured); neither backward supports
+`create_graph`, so there is no second derivative in quote space; and no vol-surface
+parameterisation (SABR, SSVI) is in scope — a Malz smile is the one delta parameterisation built.
 
 **`fields.py` is retired.** This started as 1,931 lines and three drifting stores; it ends with
 `derivus/fields.py` a 22-line deprecation shim re-exporting `mapping` and `default` from
@@ -547,7 +578,11 @@ compiled cashflow object would say the same thing without the inference.
 `GARCHSpotModel` and the Heston-Nandi stack are built end to end; what remains is narrow:
 batched-carry `hn_call` (stochastic-rate CVA raises loud today rather than mispricing silently),
 `hit_value` staying GBM under HN in scenario mode (a documented discontinuity),
-`HN_Steps_Per_Year` hardcoded to 252, and the Malz surface lookup untested.
+`HN_Steps_Per_Year` hardcoded to 252, and the Malz surface lookup thinly tested. That last one has
+moved: `test_fx_vol_prices` prices an FX option off a `Malz` surface against the hand-authored one
+it replaces, and increment 4's vega-chain gate now holds the vol the pricer reads at the option's
+own log-moneyness against an independent Black vega — 7.039e6 against 7.032e6. What is still
+untested is the lookup ACROSS expiries, where the term interpolation runs in total variance.
 
 !!! warning "The cleanup punchlist is stale by design"
     A separate, older sweep list exists outside the docs. Much of its target code was deleted with
