@@ -267,3 +267,64 @@ Note that although *Generation paramaters* can be specified, instrument definiti
   }
 }
 ```
+
+- *FXVolPrices* builds an *FXVol* log-moneyness surface from the delta quotes an FX smile ticks in
+  as. Each `Points` row is an `Expiry` in years, a delta `Pillar`, a `Quote_Type` of `ATM`, `RR` or
+  `BF`, the number, and the `Timestamp` it was seen at; the surface carries the latest of those as
+  its `Quote_Timestamp`. The wings come from the strangle pair, `ATM + BF + RR/2` for the call and
+  `ATM + BF - RR/2` for the put, and the pillar delta is a premium-adjusted FORWARD delta with the
+  ATM quote at the delta-neutral straddle strike - which is what the three convention fields
+  declare, each offering the one value the solve implements. A `Pillar` of 0.5 is refused: a 50
+  delta pair is quoted as the ATM row. `Grid_Tolerance` sizes the log-moneyness grid the surface
+  is written on, and that grid is PINNED: re-bootstrapping the same expiries at the same tolerance
+  over a surface this already wrote moves the vols and leaves the grid alone, so a vol tick is a
+  value patch rather than a new plan - while a changed tolerance refines a new one. A `Timestamp`
+  is written back out as a DATE (`CustomJsonEncoder` uses `%Y-%m-%d`), so authoring an hour in it is
+  authoring something a save will not preserve.
+
+```json
+{
+  "FXVolPrices.USD.ZAR": {
+    "instrument": {
+      "Currency": "ZAR",
+      "Delta_Type": "Forward",
+      "Premium_Adjusted": "Yes",
+      "ATM_Convention": "Delta_Neutral_Straddle",
+      "Grid_Tolerance": 0.0001,
+      "Points": [
+        {
+          "Use": "Yes",
+          "Expiry": 1.0,
+          "Pillar": 0.0,
+          "Quote_Type": "ATM",
+          "Quoted_Market_Value": 0.161,
+          "Timestamp": {
+            ".Timestamp": "2026-06-30"
+          }
+        },
+        {
+          "Use": "Yes",
+          "Expiry": 1.0,
+          "Pillar": 0.25,
+          "Quote_Type": "RR",
+          "Quoted_Market_Value": 0.019,
+          "Timestamp": {
+            ".Timestamp": "2026-06-30"
+          }
+        },
+        {
+          "Use": "Yes",
+          "Expiry": 1.0,
+          "Pillar": 0.25,
+          "Quote_Type": "BF",
+          "Quoted_Market_Value": 0.0041,
+          "Timestamp": {
+            ".Timestamp": "2026-06-30"
+          }
+        }
+      ]
+    },
+    "Children": []
+  }
+}
+```

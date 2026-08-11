@@ -20,9 +20,7 @@ import pandas as pd
 from . import utils
 from .schema import F
 from scipy.interpolate import RectBivariateSpline
-from scipy.stats import norm
-from scipy.optimize import brentq
-from sortedcontainers import sorteddict
+from scipy.special import ndtr
 
 #: The methods `Factor1D.check_interpolation` implements, which is what a curve factor routed
 #: through `Price Factor Interpolation` may be set to. One object listed by the classes that opt
@@ -212,6 +210,11 @@ class Factor2D(object):
     """Represents a risk factor that's a surface (2D) - Currently this is only vol surfaces"""
     svi_params = ['ATM_Ref', 'a', 'b', 'rho', 'm', 'sigma']
     skew_params = ['ATM_Vol', 'ATM_Ref', 's', 'L', 'R', 'C', 'D', 'lam', 'rho']
+    #: The log-moneyness nodes every Malz x-grid refines FROM.
+    malz_seed_grid = np.array([-0.5, -0.25, -0.1, 0.0, 0.1, 0.25, 0.5], dtype=float)
+    #: The vol error the refinement drives each midpoint below. `FXVolSurfaceParameters` lets a
+    #: block override it and falls back to THIS, so the two cannot be different numbers.
+    malz_tol = 1e-4
 
     def __init__(self, param):
         # default empty surfaces to 1%
@@ -240,34 +243,12 @@ class Factor2D(object):
 
     def update(self):
         self.expiry = self.get_expiry()
-        if self.get_subtype()[0]=='Malz':
-            # run the malz solver to turn the maltz into a regular log moneyness surface
-            surface = self.param['Delta_Surface'].array
-
-            # Build a dict expiry -> (delta, vol) arrays
-            malz_skews = {}
-            for T in self.expiry:
-                row = surface[surface[:, 1] == T]
-                # row[:,0] = delta, row[:,2] = vol(Δ)
-                # sort by delta for safety
-                # clip the vols to 1e-4 in case they 0/negative
-                idx = np.argsort(row[:, 0])
-                malz_skews[T] = self._prepare_malz_skew({
-                    'delta': row[idx, 0],
-                    'vol': row[idx, 2].clip(min=1e-4)
-                }, T)
-
-            # 2) Build an x-grid with adaptive refinement
-            w_table = self._build_maltz_x_grid(malz_skews, self.expiry)
-
-            # store the surface
-            malz_surface = []
-            for i, T in enumerate(self.expiry):
-                w = w_table[T]
-                x_nodes, variance = np.array(w.keys()), np.array(w.values())
-                malz_surface.extend([[x, T, v] for x, v in zip(x_nodes, np.sqrt(variance / T))])
-                # maltz_surface.extend([[x, T, v] for x, v in zip(x_nodes, variance)])
-            self.param['Surface'] = utils.Curve([], malz_surface)
+        if self.solves_delta_surface():
+            # a block carrying deltas is UNSOLVED: run the solver here, on a grid refined against
+            # these numbers. A block bootstrapped by `FXVolSurfaceParameters` arrives solved, on
+            # the grid its plan was compiled against, and falls straight through
+            skews = self.malz_skews(self.param['Delta_Surface'].array, self.expiry)
+            self.param['Surface'] = utils.Curve([], self.malz_surface(skews, self.malz_grid(skews)))
 
         self.moneyness = self.get_moneyness()
         self.vols = self.get_vols()
@@ -279,170 +260,160 @@ class Factor2D(object):
 
     def get_expiry(self):
         """Gets the expiry points stored in the Surface attribute"""
-        # just need to check if the surface type is a Delta surface (for malz)
-        return np.unique(self.param['Delta_Surface' if self.get_subtype()[0] == 'Malz' else 'Surface'].array[:, 1])
+        # an UNSOLVED Malz block carries its expiries on the delta surface; a solved one on the
+        # log-moneyness Surface, like every other subtype
+        return np.unique(self.param['Delta_Surface' if self.solves_delta_surface()
+                                    else 'Surface'].array[:, 1])
 
-    def _compute_w_table(self, malz_skews, expiries, x_nodes):
+    def solves_delta_surface(self):
+        """Whether this block still has to run the Malz solver - a Malz surface CARRYING deltas.
+
+        `Surface_Type` says two things, and only one of them is about the solver. It names the
+        MONEYNESS CONVENTION the engine reads the surface at (`calc_moneyness` returns log(F/K)
+        and the term interpolation runs in total variance), and it says a delta smile is the form
+        the block was authored in. A block bootstrapped by `FXVolSurfaceParameters` is the first
+        without the second: it carries the solved log-moneyness `Surface` on the x-grid its plan
+        was compiled against, and re-solving it here would move that grid every time a quote
+        ticked - which is exactly what pinning the grid at bootstrap is for.
         """
-        For each expiry T and each x in x_nodes, compute exact Malz vol sigma(T,x),
-        then return w[i,j] = sigma^2 * T.
+        deltas = self.param.get('Delta_Surface')
+        return self.get_subtype()[0] == 'Malz' and deltas is not None and deltas.array.any()
+
+    @classmethod
+    def malz_skews(cls, delta_surface, expiries):
+        """`{T: skew}` - one prepared wing pair per expiry of a (delta, expiry, vol) surface.
+
+        Vols are clipped to 1e-4 so a zero or negative quote cannot divide by zero downstream.
         """
-        w = {T: sorteddict.SortedDict() for T in expiries}
+        return {T: cls.malz_skew(delta_surface[delta_surface[:, 1] == T][:, 0],
+                                 delta_surface[delta_surface[:, 1] == T][:, 2].clip(min=1e-4), T)
+                for T in expiries}
 
-        for T in expiries:
-            for x in x_nodes:
-                sigma = self._maltz_sigma_exact(malz_skews[T], T, x)
-                w[T][x] = sigma * sigma * T
+    @staticmethod
+    def malz_skew(delta, vol, T):
+        """One expiry's delta smile, split into the two wings `malz_sigma` interpolates over.
 
-        return w
+        THE DELTA CONVENTION, which is what the +-0.5 label means and what the wings are indexed
+        by: a PREMIUM-ADJUSTED FORWARD delta (a call's is (K/F)N(d2), a put's -(K/F)N(-d2)), and
+        an ATM quote that is the DELTA-NEUTRAL STRADDLE of that convention, K = F exp(-sigma^2 T/2)
+        and hence |delta| = 0.5 exp(-sigma^2 T/2). So +-0.5 is a LABEL rather than a delta, and it
+        is replaced here by the delta the label actually stands for. A wing missing its ATM node
+        gets it mirrored from the other side.
 
-    def _prepare_malz_skew(self, skew, T):
-        d = np.asarray(skew["delta"], dtype=float)
-        v = np.asarray(skew["vol"], dtype=float)
+        A smile carrying BOTH labels at different vols is quoting two ATM numbers, and the +0.5
+        one wins: it sets `delta_atm`, and hence where every other node sits. The -0.5 vol is
+        still read - it is that wing's node - so both numbers reach the surface, but only one of
+        them can say what strike the straddle is at.
+        """
+        d, v = np.asarray(delta, dtype=float), np.asarray(vol, dtype=float)
+        order = np.argsort(d)
+        d, v = d[order], v[order]
 
-        # 1) Extract ATM vol from the vendor’s "0.5" node (acts as ATM label here)
-        # (If you have an explicit ATM column, use that instead.)
-        p05_idx = np.where(np.isclose(d, 0.5))[0]
-        m05_idx = np.where(np.isclose(d, -0.5))[0]
-        if p05_idx.size:
-            sigma_atm = float(v[p05_idx[0]])
-        elif m05_idx.size:
-            sigma_atm = float(v[m05_idx[0]])
-        else:
-            raise ValueError("Malz skew missing ATM label (±0.5).")
-
-        # 2) Compute the correct ATM delta magnitude for pct-of-foreign forward
+        atm = np.isclose(np.abs(d), 0.5)
+        if not atm.any():
+            raise ValueError('Malz skew missing ATM label (+-0.5).')
+        sigma_atm = float(v[atm][-1])  # ascending d, so [-1] is the PREFERRED +0.5 label
         delta_atm = 0.5 * np.exp(-0.5 * sigma_atm * sigma_atm * T)
+        d = np.where(atm, np.sign(d) * delta_atm, d)
 
-        # 3) Ensure both sides exist, and replace ±0.5 with ±delta_atm
-        new_d = []
-        new_v = []
-        for di, vi in zip(d, v):
-            if np.isclose(di, 0.5):
-                new_d.append(+delta_atm)
-                new_v.append(vi)
-            elif np.isclose(di, -0.5):
-                new_d.append(-delta_atm)
-                new_v.append(vi)
-            else:
-                new_d.append(di)
-                new_v.append(vi)
+        # both wings need the ATM node - a smile quoted on one side only is mirrored onto the other
+        for side in (-1.0, 1.0):
+            if not np.any(np.isclose(d, side * delta_atm)):
+                d, v = np.append(d, side * delta_atm), np.append(v, sigma_atm)
+        order = np.argsort(d)
+        d, v = d[order], v[order]
 
-        d = np.asarray(new_d, dtype=float)
-        v = np.asarray(new_v, dtype=float)
+        return {'d_put': d[d <= 0.0], 'v_put': v[d <= 0.0],
+                'd_call': d[d >= 0.0], 'v_call': v[d >= 0.0],
+                'sigma_atm': sigma_atm, 'delta_atm': delta_atm}
 
-        # If vendor only supplied +0.5 (common), add the mirrored -delta_atm
-        if not np.any(d < 0) or not np.any(np.isclose(d, -delta_atm)):
-            d = np.append(d, -delta_atm)
-            v = np.append(v, sigma_atm)
+    @staticmethod
+    def malz_sigma(skew, T, x, iterations=64):
+        """The Malz vol at EVERY log-moneyness x = log(F/K) of a grid, in one vectorized solve.
 
-        # If vendor only supplied -0.5, add +delta_atm
-        if not np.any(d > 0) or not np.any(np.isclose(d, +delta_atm)):
-            d = np.append(d, +delta_atm)
-            v = np.append(v, sigma_atm)
+        The vol at x is the fixed point of sigma = skew(delta(sigma, x)): the wing is a piecewise
+        linear vol in delta, and the delta of the strike x names depends on the vol being looked
+        up. x <= sigma_atm^2 T / 2 is the call wing (K at or below the delta-neutral straddle
+        strike), and each side is bracketed by its own extreme deltas - where the fixed point
+        falls outside that bracket the wing is CLAMPED to the endpoint that misses by less, which
+        is what flat-extrapolates a smile beyond its widest quoted delta.
 
-        # 4) Sort
-        idx = np.argsort(d)
-        d, v = d[idx], v[idx]
-
-        # 5) Split wings
-        put_mask = d <= 0.0
-        call_mask = d >= 0.0
-        d_put, v_put = d[put_mask], v[put_mask]
-        d_call, v_call = d[call_mask], v[call_mask]
-
-        return {
-            "d_put": d_put, "v_put": v_put,
-            "d_call": d_call, "v_call": v_call,
-            "sigma_atm": sigma_atm,
-            "delta_atm": delta_atm,
-        }
-
-    def _maltz_sigma_exact(self, skew, T, x):
-        sqrtT = np.sqrt(T)
-        d_put, v_put = skew["d_put"], skew["v_put"]
-        d_call, v_call = skew["d_call"], skew["v_call"]
-
-        sigma_atm = skew['sigma_atm']
-        x_atm = 0.5 * sigma_atm * sigma_atm * T
-        is_call = (x <= x_atm)
-
-        def sigma_skew(delta):
-            if is_call:
-                return np.interp(delta, d_call, v_call)
-            else:
-                return np.interp(delta, d_put, v_put)
-
-        def fwd_delta_pct_foreign_from_sigma(sigma):
-            d1 = (x + 0.5 * sigma * sigma * T) / (sigma * sqrtT) # ln(F/K)=x
-            d2 = d1 - sigma * sqrtT
-            k_over_f = np.exp(-x) # K/F
-            if is_call:
-                return k_over_f * norm.cdf(d2)
-            else:
-                return -k_over_f * norm.cdf(-d2)
-
-        def f(delta):
-            return fwd_delta_pct_foreign_from_sigma(sigma_skew(delta)) - delta
-
-        # bracket limited to available wing deltas
-        if is_call:
-            a = max(0.0, d_call.min())
-            b = d_call.max()  # typically 0.5
-        else:
-            a = d_put.min()  # typically -0.5
-            b = min(0.0, d_put.max())
-
-        fa, fb = f(a), f(b)
-        if fa * fb > 0:
-            delta_star = a if abs(fa) < abs(fb) else b
-        else:
-            delta_star = brentq(f, a, b)
-
-        return sigma_skew(delta_star)
-
-    def _interp_sigma_from_w_row(self, nodes, w_row, T):
+        Bisection rather than a per-point `brentq`: it is one array of brackets closed 64 times
+        instead of a Python loop over a scalar root find, it converges to the bracket's own
+        machine precision (tighter than brentq's 2e-12 xtol), and every operation in it is one an
+        autograd tape can carry - which the scipy call is not.
         """
-        Given one expiry row (fixed T), interpolate total variance in x
-        and convert back to sigma.
-        """
-        x_sorted, y_sorted = zip(*w_row.items())
-        interpolated = np.sqrt(np.interp(nodes[:, 0], x_sorted, y_sorted) / T)
-        return np.abs(interpolated - nodes[:,1])
+        x = np.asarray(x, dtype=float)
+        sqrt_t = np.sqrt(T)
+        is_call = x <= 0.5 * skew['sigma_atm'] * skew['sigma_atm'] * T
+        k_over_f = np.exp(-x)
 
-    def _build_maltz_x_grid(self, malz_skews, expiries, tol=1e-4):
-        """
-        Build a global x-grid (log(K/F)) and total variance table w[i,j]
-        that approximates the Malz surface within tol vol error.
+        def residual(delta):
+            sigma = np.where(is_call, np.interp(delta, skew['d_call'], skew['v_call']),
+                             np.interp(delta, skew['d_put'], skew['v_put']))
+            d2 = (x - 0.5 * sigma * sigma * T) / (sigma * sqrt_t)
+            return k_over_f * np.where(is_call, ndtr(d2), -ndtr(-d2)) - delta
 
-        malz_skews[T] = {'delta': array([...]), 'vol': array([...])}
-        expiries: 1D array of T_i (in years)
-        tol: max acceptable |sigma_exact - sigma_interp| at midpoints.
-        """
-        # 1) initial symmetric grid
-        x_grid = np.array([-0.5, -0.25, -0.1, 0.0, 0.1, 0.25, 0.5], dtype=float)
-        # 2) initial exact total variance table
-        w_table = self._compute_w_table(malz_skews, expiries, x_grid)
+        lo = np.where(is_call, max(0.0, skew['d_call'].min()), skew['d_put'].min())
+        hi = np.where(is_call, skew['d_call'].max(), min(0.0, skew['d_put'].max()))
+        f_lo, f_hi = residual(lo), residual(hi)
+        clamped = np.where(np.abs(f_lo) < np.abs(f_hi), lo, hi)
 
-        for i, T in enumerate(expiries):
-            m = malz_skews[T]
-            w = w_table[T]
-            x_nodes = x_grid.copy()
+        left, f_left, right = lo.copy(), f_lo.copy(), hi.copy()
+        for _ in range(iterations):
+            middle = 0.5 * (left + right)
+            f_middle = residual(middle)
+            below = f_left * f_middle <= 0.0
+            right = np.where(below, middle, right)
+            left = np.where(below, left, middle)
+            f_left = np.where(below, f_left, f_middle)
+
+        delta_star = np.where(f_lo * f_hi > 0.0, clamped, 0.5 * (left + right))
+        return np.where(is_call, np.interp(delta_star, skew['d_call'], skew['v_call']),
+                        np.interp(delta_star, skew['d_put'], skew['v_put']))
+
+    @classmethod
+    def malz_error(cls, skew, T, nodes):
+        """The vol error interpolating between `nodes` makes at each interval's midpoint.
+
+        In TOTAL VARIANCE, because that is what the pricing path interpolates a Malz surface in.
+        It is both the criterion `malz_grid` refines against and the measurement of how well a
+        PINNED grid still resolves a smile that has ticked since the grid was built.
+        """
+        middles = 0.5 * (nodes[:-1] + nodes[1:])
+        variance = cls.malz_sigma(skew, T, nodes) ** 2 * T
+        return np.abs(np.sqrt(np.interp(middles, nodes, variance) / T) -
+                      cls.malz_sigma(skew, T, middles))
+
+    @classmethod
+    def malz_grid(cls, skews, tol=None):
+        """`{T: x nodes}` - the log-moneyness grid the smile is resolved to `tol` vol on.
+
+        Refinement is COMPILE-TIME work and the grid it produces is part of the plan: a midpoint
+        the current nodes cannot interpolate to `tol` becomes a node. Each expiry refines its own
+        grid - a one-week smile needs nodes a ten-year one does not - which the flat surface
+        carries as ragged rows.
+        """
+        grid = {}
+        for T, skew in skews.items():
+            nodes = cls.malz_seed_grid.copy()
             while True:
-                text_x = []
-                for xl, xr in zip(x_nodes[:-1], x_nodes[1:]):
-                    xm = 0.5 * (xl + xr)
-                    text_x.append([xm, self._maltz_sigma_exact(m, T, xm)])
-                candidates = np.array(text_x)
-                err = self._interp_sigma_from_w_row(candidates, w, T)
-                if err.max() > tol:
-                    updates = candidates[np.where(err>tol)[0]]
-                    x_nodes = np.union1d(x_nodes, updates[:,0])
-                    w.update({k:T*v*v for k,v in updates})
-                else:
+                missed = cls.malz_error(skew, T, nodes) > (cls.malz_tol if tol is None else tol)
+                if not missed.any():
                     break
+                nodes = np.sort(np.append(nodes, 0.5 * (nodes[:-1] + nodes[1:])[missed]))
+            grid[T] = nodes
+        return grid
 
-        return w_table
+    @classmethod
+    def malz_surface(cls, skews, grid):
+        """`[[x, T, vol], ...]` - the smile evaluated on a GIVEN log-moneyness grid.
+
+        Split from `malz_grid` because the two run at different times: the grid is refined once,
+        when the plan is compiled, and this runs again on every tick that moves the quotes.
+        """
+        return [[x, T, vol] for T, nodes in grid.items()
+                for x, vol in zip(nodes, cls.malz_sigma(skews[T], T, nodes))]
 
     def get_vols(self):
         """Uses flat extrapolation along moneyness and then linear interpolation along expiry"""
@@ -1349,7 +1320,18 @@ class VolatilityGrid(Factor2D):
         F('rho', 'Curve', description='Skew and SVI parameter'),
         F('m', 'Curve', description='SVI parameter'),
         F('sigma', 'Curve', description='SVI parameter'),
-        F('Currency', 'Text', default='')
+        F('Currency', 'Text', default=''),
+        # bind='value' because it TRAVELS WITH THE VOLS: a tick delivers new numbers and the time
+        # it saw them, and a stamp that invalidated the plan would recompile on every tick
+        F('Quote_Timestamp', 'Date', default='', bind='value',
+          description='When the quotes this surface was bootstrapped from were observed - the '
+                      'latest contributing one. Reported for staleness, never read by pricing'),
+        # STRUCTURAL, unlike the stamp beside it: it says what the moneyness grid IS, so a
+        # re-bootstrap asking for another one is asking for another grid
+        F('Grid_Tolerance', 'Float', default=0.0,
+          description='The vol error the moneyness grid of a bootstrapped surface was refined to. '
+                      '0 on a surface no bootstrapper built. Never read by pricing - it is what a '
+                      're-bootstrap checks before reusing these nodes')
     ]
 
 

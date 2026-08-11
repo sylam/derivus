@@ -804,11 +804,22 @@ def test_a_quote_type_means_different_things_to_different_families():
     `InterestRatePrices` declares the one convention it implements. It used to offer `Rate` and
     `Price` as well, which nothing read: a futures price and a money-market rate on a different
     basis are conventions the family would have to author differently, and a value the solve does
-    not implement is the same defect as a field nothing reads."""
+    not implement is the same defect as a field nothing reads.
+
+    `ATM` came BACK, and the note it replaces is the reason the search below had to grow a leg. It
+    is a real quote type to exactly one family - an FX smile is an ATM vol and the risk reversal
+    and butterfly around it - and it is declared on a TABLE COLUMN, which this searched right past
+    while reporting `None` for the family as a whole. A gate that cannot see a declaration cannot
+    hold it to anything."""
     def find(descriptors):
         for key, d in descriptors.items():
             if key == 'Quote_Type':
                 return d['values']
+            # a table declares its columns positionally: `sub_types` carries a dropdown's choices
+            # under `source`, matched to `col_names` by index
+            for name, sub in zip(d.get('col_names', []), d.get('sub_types', [])):
+                if name == 'Quote_Type':
+                    return sub['source']
             found = d.get('sub_fields') and find(d['sub_fields'])
             if found:
                 return found
@@ -818,9 +829,10 @@ def test_a_quote_type_means_different_things_to_different_families():
                           'HestonNandiModelPrices': ['Implied_Volatility', 'Premium'],
                           'GBMAssetPriceTSModelPrices': None,
                           'HullWhite2FactorModelPrices': None,
+                          'FXVolPrices': ['ATM', 'RR', 'BF'],
                           'InterestRatePrices': ['Par_Rate']}, quote_type
-    assert not any('ATM' in (v or ()) for v in quote_type.values()), (
-        'ATM is back, and no family takes it')
+    assert [t for t, v in quote_type.items() if 'ATM' in (v or ())] == ['FXVolPrices'], (
+        'ATM belongs to the FX smile family and to no other')
 
 
 def interpolated_factor_types():

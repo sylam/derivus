@@ -2177,6 +2177,222 @@ class InterestRateCurveParameters(object):
         return False
 
 
+class FXVolSurfaceParameters(object):
+    """An `FXVol` surface bootstrapped from the ATM / risk-reversal / butterfly quotes it ticks in as.
+
+    An FX smile is quoted in DELTA - one ATM vol per expiry and, per delta pillar, the risk
+    reversal and butterfly that say how the two wings sit around it - so the quote set is three
+    numbers per (expiry, pillar) and the surface the engine prices off is a log-moneyness one. The
+    algebra between them is the strangle pair, `vol(call) = ATM + BF + RR/2` and
+    `vol(put) = ATM + BF - RR/2`, followed by the delta-to-log-moneyness solve `Factor2D` has
+    always carried for a `Malz` surface. Neither half is new here; what is new is WHERE they run.
+
+    **The x-grid is pinned.** The solve does not evaluate a smile at prescribed strikes - it
+    refines a log-moneyness grid until interpolating between its nodes resolves the smile, so the
+    grid is a function of the quotes. Run at factor-construction time that makes every vol tick
+    potentially STRUCTURAL: a moved node is a moved tenor grid, a new plan, and a recompile per
+    tick. So the refinement runs HERE, once, and the grid it produced is part of the written
+    factor. A re-bootstrap that finds a surface already written for the same expiries at the same
+    tolerance reuses that grid and moves only the vols on it - which is what makes a tick a
+    `bind='value'` patch. `Grid_Tolerance` counts because it SIZES the grid, so it is written
+    beside the grid it built and it is structural: asking for a different one is not asking for
+    this grid, and the pin breaks. The cost of the pin is measured rather than hidden - the log
+    says what the pinned grid resolves the CURRENT quotes to, beside the tolerance it was built at.
+
+    **The conventions are declared because the solve implements exactly one of each.** The delta a
+    pillar names is a PREMIUM-ADJUSTED FORWARD delta ((K/F)N(d2) for a call), and the ATM quote is
+    that convention's DELTA-NEUTRAL STRADDLE, K = F exp(-sigma^2 T / 2). Those are the two
+    conventions `Factor2D.malz_skew` implements, so they are the only values these fields offer -
+    a spot delta or an ATMF quote would need different algebra, and a value the engine cannot
+    honour is the same defect as a field nothing reads.
+
+    A quote `Timestamp` survives a save at DAY resolution and no finer - `CustomJsonEncoder` writes
+    a `Timestamp` as `%Y-%m-%d` - so a stamped surface round-trips to the day its quotes were seen.
+
+    Like `InterestRatePrices` this writes a typed price factor rather than a `<ClassName>`
+    parameter block, which is what `price_factor_type` declares.
+    """
+    market_factor_type = 'FXVolPrices'
+    #: The `Price Factors` type this family writes - a `Malz` `FXVol`, the same block a delta
+    #: surface authored by hand builds, minus the delta surface: it arrives SOLVED, so
+    #: `Factor2D.solves_delta_surface` is false and the pinned grid survives construction.
+    price_factor_type = 'FXVol'
+    #: What the written block says beyond its surface. `Surface_Type` names the moneyness
+    #: convention the engine reads it at (log(F/K), interpolated in total variance);
+    #: `Moneyness_Rule` is the factor's own declared default and no Malz code path reads it.
+    surface_type, moneyness_rule = 'Malz', 'Sticky_Moneyness'
+    #: The tolerances a grid can actually be BUILT at, declared on the field below and read back by
+    #: `bootstrap` - the one `bounds=` in the schema the engine enforces rather than publishes,
+    #: because outside it there is no grid to write. Refinement halves an interval until the
+    #: midpoint's vol error falls under the tolerance, so at 0.0 no midpoint ever qualifies (7.6M
+    #: nodes on one expiry after 21 passes, still doubling); 1e-8 is 4599 nodes for a four-expiry
+    #: smile, which is a large plan but a plan. At the top the seed grid already passes and
+    #: refining is a no-op, so 1 is where the knob stops meaning anything rather than where it
+    #: breaks.
+    grid_tolerance_bounds = (1e-8, 1.0)
+    fields = [
+        F('Currency', 'Text', default='',
+          description='The currency stamped on the surface this builds'),
+        F('Delta_Type', 'Text', default='Forward', values=['Forward'],
+          description='The delta a Pillar names. The solve inverts a FORWARD delta - there is no '
+                      'spot-delta discounting in it - so that is the one convention offered'),
+        F('Premium_Adjusted', 'Text', default='Yes', values=['Yes'],
+          description='Whether the pillar delta is premium adjusted. The solve inverts '
+                      '(K/F)N(d2), which is the premium-adjusted (percentage-foreign) delta'),
+        F('ATM_Convention', 'Text', default='Delta_Neutral_Straddle',
+          values=['Delta_Neutral_Straddle'],
+          description='What an ATM quote is the vol of. The solve places it at the strike whose '
+                      'premium-adjusted straddle is delta neutral, K = F exp(-sigma^2 T/2); an '
+                      'ATMF quote would sit at a different strike and is not built'),
+        F('Grid_Tolerance', 'Float', default=1e-4, bounds=grid_tolerance_bounds,
+          description='The vol error the log-moneyness grid is refined to when it is BUILT. Not '
+                      'reached again per tick: the grid is pinned, so this sizes the plan rather '
+                      'than the quote fit, and the log reports what the pinned grid still '
+                      'resolves the quotes to. Changing it is STRUCTURAL - it breaks the pin and '
+                      'refines a new grid. Bounded because refinement does not terminate below '
+                      'the floor'),
+        F('Points', 'Table', default='null', row=Row([
+            F('Use', 'Text', default='Yes', values=['Yes', 'No'],
+              description='Whether this quote enters the surface'),
+            F('Expiry', 'Float',
+              description='Expiry in YEARS - the surface\'s own expiry axis, so no day count '
+                          'stands between the quote and the coordinate it lands on'),
+            F('Pillar', 'Float',
+              description='The delta the wings are quoted at, as a magnitude (0.25 is the 25 '
+                          'delta pair). Not read on an ATM row, which is quoted at no pillar'),
+            F('Quote_Type', 'Text', default='ATM', values=['ATM', 'RR', 'BF'],
+              description='The ATM vol, the risk reversal (call less put) or the butterfly (the '
+                          'wing pair\'s average over ATM)'),
+            F('Quoted_Market_Value', 'Float',
+              description='The quote, in the surface\'s own units - 0.12 for 12 vols, and a risk '
+                          'reversal of -0.35 vols is -0.0035'),
+            F('Timestamp', 'Date', default='',
+              description='When this quote was observed. Stored and reported - the surface '
+                          'carries the latest of them - and never read by pricing')]),
+          description='One quote: an expiry, a delta pillar, what kind of number is quoted, the '
+                      'number, and when it was seen')
+    ]
+
+    def __init__(self, param, device, dtype):
+        self.device = device
+        self.prec = dtype
+        self.param = param
+
+    @staticmethod
+    def smile(quotes):
+        """The quotes as a `(delta, expiry, vol)` surface - the strangle pair, per expiry pillar.
+
+        `vol(call) = ATM + BF + RR/2` and `vol(put) = ATM + BF - RR/2`, with the ATM vol itself
+        carried at the +-0.5 LABEL the delta solve reads it off (0.5 is not a delta there, and the
+        solve replaces the label with the delta-neutral straddle's own delta). A pillar quoted
+        with only one of the two is read with the other at zero, which is how a symmetric smile is
+        authored; an expiry with wings but no ATM quote raises `KeyError` on that expiry, because
+        the wings are quoted AROUND a number that is not there.
+
+        A `Pillar` of 0.5 is refused. It is the one delta that is not a delta here - it is the ATM
+        label - so a wing quoted at it would land a second, different vol on the ATM row's own
+        coordinate and the surface would silently carry whichever survived the sort. A 50 delta
+        pair is quoted as the ATM row by convention, which is where it has to be authored.
+        """
+        atm = {point['Expiry']: point['Quoted_Market_Value']
+               for point in quotes if point['Quote_Type'] == 'ATM'}
+        wings = {(point['Expiry'], point['Pillar'], point['Quote_Type']):
+                 point['Quoted_Market_Value'] for point in quotes if point['Quote_Type'] != 'ATM'}
+        pillars = sorted({key[:2] for key in wings})
+
+        surface = [[0.5, expiry, vol] for expiry, vol in atm.items()]
+        for expiry, pillar in pillars:
+            if np.isclose(pillar, 0.5):
+                raise ValueError(
+                    'the {} quote at expiry {:g} is on Pillar {:g}, which collides with the ATM '
+                    'label - a 50 delta pair is quoted as the ATM row'.format(
+                        '/'.join(sorted(k[2] for k in wings if k[:2] == (expiry, pillar))),
+                        expiry, pillar))
+            rr, bf = wings.get((expiry, pillar, 'RR'), 0.0), wings.get((expiry, pillar, 'BF'), 0.0)
+            surface.append([pillar, expiry, atm[expiry] + bf + 0.5 * rr])
+            surface.append([-pillar, expiry, atm[expiry] + bf - 0.5 * rr])
+        return np.array(sorted(surface))
+
+    @classmethod
+    def pinned_grid(cls, written, expiries, tolerance):
+        """The log-moneyness grid a previously written surface already carries, or None.
+
+        `written` is the PRICE FACTOR block this family wrote last, not a quote block. Four ways to
+        get None, and each is a grid that is not the one the quotes are asking for: nothing to pin
+        to; a surface on a different SUBTYPE, whose moneyness axis is S/K rather than log(F/K) and
+        whose nodes therefore mean something else entirely; a surface over a different set of
+        EXPIRIES, which a rebuild answers and stretching a grid does not; and a surface refined to
+        a different TOLERANCE, which is the knob that sizes the grid - honouring it on the values
+        while ignoring it on the nodes would make it a field nothing reads.
+        """
+        surface = written.get('Surface') if written else None
+        if surface is None or not surface.array.any():
+            return None
+        if written.get('Surface_Type') != cls.surface_type:
+            return None
+        if not np.array_equal(np.unique(surface.array[:, 1]), expiries):
+            return None
+        if written.get('Grid_Tolerance') != tolerance:
+            return None
+        return {T: surface.array[surface.array[:, 1] == T][:, 0] for T in expiries}
+
+    def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices,
+                  calendars, debug=None):
+        """Turn each block's quotes into the log-moneyness `FXVol` surface the pricers read.
+
+        The x-grid is taken from the factor this wrote last if it is still describing the same
+        expiries at the same tolerance - see the class docstring on pinning - and refined from
+        scratch otherwise.
+        """
+        for market_price, implied_params in market_prices.items():
+            rate = utils.check_rate_name(market_price)
+            market_factor = utils.Factor(rate[0], rate[1:])
+
+            if market_factor.type == self.market_factor_type:
+                block = implied_params['instrument']
+                vol_name = utils.check_tuple_name(
+                    utils.Factor(self.price_factor_type, market_factor.name))
+
+                tolerance = float(block.get('Grid_Tolerance', riskfactors.Factor2D.malz_tol))
+                # the one bounds= the engine reads: outside it there is no grid to refine to
+                if not self.grid_tolerance_bounds[0] <= tolerance <= self.grid_tolerance_bounds[1]:
+                    raise ValueError(
+                        '{}: Grid_Tolerance {:g} is outside [{:g}, {:g}] - the refinement does not '
+                        'terminate there'.format(market_price, tolerance,
+                                                 *self.grid_tolerance_bounds))
+
+                quotes = [point for point in block['Points'] if point['Use'] == 'Yes']
+                delta_surface = self.smile(quotes)
+                expiries = np.unique(delta_surface[:, 1])
+                skews = riskfactors.Factor2D.malz_skews(delta_surface, expiries)
+
+                grid = self.pinned_grid(price_factors.get(vol_name), expiries, tolerance)
+                pinned = grid is not None
+                if not pinned:
+                    grid = riskfactors.Factor2D.malz_grid(skews, tolerance)
+
+                stamps = [point['Timestamp'] for point in quotes if point['Timestamp']]
+                price_factors[vol_name] = {
+                    'Property_Aliases': None, 'Surface_Type': self.surface_type,
+                    'Moneyness_Rule': self.moneyness_rule,
+                    'Currency': block.get('Currency', ''),
+                    'Grid_Tolerance': tolerance,
+                    'Quote_Timestamp': max(stamps) if stamps else '',
+                    'Surface': utils.Curve(
+                        [], riskfactors.Factor2D.malz_surface(skews, grid))}
+
+                logging.info('{} built from {} quotes on a {} grid of {} nodes as at {}'.format(
+                    vol_name, len(quotes), 'pinned' if pinned else 'refined',
+                    sum(len(nodes) for nodes in grid.values()),
+                    price_factors[vol_name]['Quote_Timestamp'] or 'no stated time'))
+                for T, nodes in grid.items():
+                    logging.info('  expiry {:.4f}: {} nodes resolving the smile to {:.3g} vol, '
+                                 'built at {:.3g}'.format(
+                                     T, len(nodes),
+                                     float(riskfactors.Factor2D.malz_error(
+                                         skews[T], T, nodes).max()), tolerance))
+
+
 def construct_bootstrapper(btype, param, dtype=torch.float32):
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     return globals().get(btype)(param, device, dtype)

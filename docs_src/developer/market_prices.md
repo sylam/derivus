@@ -45,7 +45,7 @@ A bootstrapper class is one price family. It declares:
 declarations, and `construct_bootstrapper` resolves the class by name from the
 `Bootstrapper Configuration` section.
 
-The five families, and what each fits:
+The six families, and what each fits:
 
 | Family | Quotes | Writes |
 | --- | --- | --- |
@@ -54,6 +54,7 @@ The five families, and what each fits:
 | `HestonNandiModelPrices` | European options on any spot | `HestonNandiModelParameters` — omega, alpha, beta, gamma\*, H0 |
 | `HullWhite2FactorModelPrices` | forward-starting swaps against a swaption surface | `HullWhite2FactorModelParameters` — two sigma curves, two alphas, a correlation |
 | `InterestRatePrices` | deposits, FRAs and swaps | an `InterestRate` zero curve |
+| `FXVolPrices` | ATM vols, risk reversals and butterflies | an `FXVol` log-moneyness surface |
 
 ## `InterestRatePrices` — a curve solved from its quotes {#interestrateprices}
 
@@ -118,3 +119,65 @@ parameter block the other four write, so the class declares `price_factor_type` 
 `Config.bootstrap`'s "wrote no `<name>.*` price factor" check reads it. And the interpolation of a
 solved curve comes from `Price Factor Interpolation` rather than from the block — see the
 `Interpolation` note in [Conventions](conventions.md#registries-not-functions).
+
+## `FXVolPrices` — a smile quoted in delta, and where the conversion runs {#fxvolprices}
+
+An FX smile ticks in as DELTA quotes: an ATM vol per expiry and, per delta pillar, the risk
+reversal and the butterfly around it. The surface the pricers read is a log-moneyness one. Both
+halves of the conversion between them already existed — the strangle pair
+`vol(call) = ATM + BF + RR/2`, `vol(put) = ATM + BF − RR/2`, and the delta-to-strike solve
+`Factor2D` runs for a `Malz` surface — so this family is not new maths. **It is the same
+conversion moved, and the move is the point.**
+
+**The x-grid is pinned, because refinement is compile-time work.** The delta solve does not
+evaluate a smile at prescribed strikes; it refines a log-moneyness grid until interpolating total
+variance between the nodes resolves the smile to `Grid_Tolerance`. That grid is a function of the
+quotes. Run at factor-construction time — which is where it ran — every vol tick was potentially
+STRUCTURAL: a moved node is a moved tenor grid, a new plan and a recompile, for a number that
+changed. So the refinement runs in the bootstrap, once, and the grid it produced is part of the
+written factor. A re-bootstrap that finds a surface already written **for the same expiries at the
+same `Grid_Tolerance`** reuses its grid and moves only the vols on it, which is exactly a
+`bind='value'` patch; a quote set whose expiries have changed is not that plan's, and is refined
+from scratch. So is one asking for a different tolerance — the tolerance is what SIZES the grid,
+and honouring it on the vols while ignoring it on the nodes would make it a field nothing reads.
+It is written onto the surface it built and it is structural, unlike the stamp beside it. What the
+pin costs is measured rather than hidden: the log says what the pinned grid resolves the CURRENT
+quotes to, beside the tolerance it was built at.
+
+`Surface_Type` was doing two jobs and only one of them is about the solver. It names the moneyness
+convention the engine reads a surface at — `calc_moneyness` returns log(F/K), and the term
+interpolation runs in total variance — and it said a delta smile is the form the block was authored
+in. `Factor2D.solves_delta_surface` separates them: a `Malz` block **carrying deltas** is unsolved
+and gets solved on construction, as before; one carrying only the solved `Surface` is what this
+family writes, and it falls straight through with its grid intact.
+
+**The conversion is vectorized.** It was a Python loop over the x-grid with a scalar `brentq`
+inside it, per point, per expiry, per refinement pass. It is now one bisection over the whole grid
+(`Factor2D.malz_sigma`), which refines the identical grid, agrees with the loop to 5e-14 vol —
+well inside `brentq`'s own 2e-12 `xtol` — and is made of operations an autograd tape can carry,
+which the scipy call is not. `tests/test_fx_vol_prices.py` keeps the loop as its oracle.
+
+**The conventions are declared, and each offers exactly one value**, because the solve implements
+exactly one: `Delta_Type` `Forward`, `Premium_Adjusted` `Yes` — the pillar delta is `(K/F)N(d₂)` —
+and `ATM_Convention` `Delta_Neutral_Straddle`, the strike `K = F exp(−σ²T/2)` at which that
+convention's straddle is delta neutral. A spot delta or an ATMF quote needs different algebra, and
+a value the engine cannot honour is the same defect as a field nothing reads. They are gated as
+maths rather than as strings: the surface must carry the pillar's vol at the strike whose
+premium-adjusted forward delta IS the pillar, and must fail the same statement under the
+unadjusted delta.
+
+**Timestamps are data the engine stores and reports.** Each quote row carries when it was seen;
+the written surface carries the latest of the rows that built it as `Quote_Timestamp`, its own
+as-of. It is declared `bind='value'` because it travels with the vols — a tick delivers new numbers
+and the time it saw them together, and a stamp that invalidated the plan would recompile on every
+tick. It enters `values_hash` and therefore the replay identity, which is right: the same numbers
+read off a different snapshot are a different market event. **Nothing in pricing reads it.** What
+counts as too old is a policy, and policy belongs to the consumer, not to the surface.
+
+**That identity is DAY resolution, and the limit is the JSON encoder's.** `CustomJsonEncoder`
+writes a `Timestamp` as `%Y-%m-%d`, so a stamp survives a save to the day and no finer: the 09:15
+and the 16:30 snapshots of a quote reload as the same date, and `values_hash` separates them only
+when they fall on different days. In-process the hour is there — `max(stamps)` picks the later of two
+intraday quotes, and the gates measure that — but it does not round-trip. Intraday replay identity
+is an **owed encoder capability**, named here rather than assumed: it is one `strftime` and a
+decoder that already parses whatever it is handed, and it is not this family's to change.
