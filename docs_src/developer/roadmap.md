@@ -448,6 +448,14 @@ identity `(plan_hash, values_hash, engine_version, seed)` is documented for call
 [API Overview](../api_overview.md#patching-market-values-and-replaying-a-run); `engine_version` is
 `derivus/_version.py` and no second version source was invented for it.
 
+The same plan/values split now has a MARKET-DATA half: a calibration artifact is a slow object
+named by plan-side coordinates with a fast path over it, so a quote that moves between bootstraps
+reaches a valuation as a matvec rather than a recompile — see
+[Quote Propagation](quote_propagation.md). It also names the one place the split does not yet
+reach: `Market Prices` is inside `plan_hash` whole, so a moved QUOTE is a new plan id even though
+the engine now carries it without recompiling anything. Closing that means partitioning a market-
+price block the way `partition_factor` partitions a factor, for every family at once.
+
 What remains is the rest of the service layer, then the live-refill EXECUTE path — in that order, re-sequenced
 by decision: the derivus_jupyter successor is a web SPA (Angular/React) rendering from the schema
 over a ROBUST API, not another Python-first front end (NiceGUI was considered and rejected: AG

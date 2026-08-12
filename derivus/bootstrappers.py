@@ -16,7 +16,8 @@
 import copy
 import time
 import logging
-from collections import namedtuple
+import threading
+from collections import namedtuple, OrderedDict
 from functools import partial
 
 # third party stuff
@@ -27,6 +28,7 @@ import torch
 # Internal modules
 from . import utils, pricing, instruments, riskfactors, stochasticprocess
 from .schema import F, OPTION_QUOTE, REQUIRED, Row
+from ._version import __version__
 
 import scipy.optimize
 
@@ -1938,6 +1940,34 @@ class BenchmarkInstruments(object):
     def _column(self, values):
         return torch.tensor(values, dtype=self.dtype, device=self.one.device)
 
+    def reads(self, theta):
+        """The factors OUTSIDE `solve_for` this residual ACTUALLY reads, measured rather than
+        declared - the coupling detector a multi-curve set is grouped by.
+
+        `_carry_quotes`'s idiom applied to the other side of the residual: instead of asking a block
+        what it says it discounts on, make every constant a leaf, evaluate the residual once and see
+        which ones a backward pass reaches. One residual and one backward, so it costs a fraction of
+        a Newton iteration - and it catches the coupling a `Discount_Rate` field cannot state,
+        because what a benchmark PROJECTS off is authored inside its own deal block. A block whose
+        `Discount_Rate` is blank but whose swaps forecast off another curve reads that curve, and
+        the declaration says self-discounting.
+
+        A residual with no graph at all reads nothing, which is the self-discounting single-curve
+        case: its only curve is the one being solved for and every constant is unreachable.
+        """
+        constants = list(self.constants)
+        with torch.enable_grad():
+            for factor in constants:
+                self.constants[factor].requires_grad_(True)
+            residual = self(theta)
+            gradients = torch.autograd.grad(
+                residual.sum(), [self.constants[factor] for factor in constants],
+                allow_unused=True) if residual.requires_grad else [None] * len(constants)
+            for factor in constants:
+                self.constants[factor].requires_grad_(False)
+        return {factor for factor, gradient in zip(constants, gradients)
+                if gradient is not None and gradient.abs().max() > 0}
+
     def __call__(self, theta):
         """The benchmark PV vector at curve nodes `theta`, a `{Factor: tensor}` over `solve_for`."""
         shared = Benchmark_State({**self.constants, **theta}, self.one, self.report_currency)
@@ -1998,6 +2028,57 @@ def damped_newton(residual, theta, n_iter, tol, halvings):
     raise Exception('Curve bootstrap: {} Newton iterations without converging'.format(n_iter))
 
 
+def split_theta(benchmarks, theta):
+    """The flat solved vector back as the `{Factor: nodes}` the residual takes, in `solve_for`
+    order - which is the order `CalibrationSolve` concatenated it in."""
+    sizes = [benchmarks.tenors[factor].size for factor in benchmarks.solve_for]
+    return dict(zip(benchmarks.solve_for, theta.split(sizes)))
+
+
+def residual_jacobians(benchmarks, theta):
+    """The residual at `theta` and both its Jacobians: `dF/dtheta` (n x n) and `dF/dq` (n x m).
+
+    ONE backward pass per benchmark gives both, off a forward pass the residual itself comes out of.
+    The quote side is another output of the pass the theta side already needs, so materialising the
+    whole `dF/dq` costs nothing over contracting one cotangent through it - which is why
+    `CalibrationSolve.backward`, the artifact's calibration Jacobian and its drift metric read the
+    same function rather than each writing the derivative out again.
+
+    Every `grad` retains the graph: the residual's subgraph is shared with the forward pass -
+    `pv_fixed_cashflows` memoizes its payment tensor in `Factor_dep` - so freeing it would take the
+    forward pass's graph with it. A quote that writes into no schedule column raises here rather
+    than reporting a zero row, which is the same failure `_carry_quotes` refuses to guess at.
+    """
+    x = torch.cat([theta[factor] for factor in benchmarks.solve_for]).detach().requires_grad_(True)
+    residual = benchmarks(split_theta(benchmarks, x))
+    rows = [torch.autograd.grad(residual[i], [x, benchmarks.quotes], retain_graph=True)
+            for i in range(residual.numel())]
+    return (residual, torch.stack([row[0] for row in rows]),
+            torch.stack([row[1] for row in rows]))
+
+
+def calibration_jacobian(benchmarks, theta):
+    """`dtheta/dq` at the fixed point.
+
+    The implicit function theorem in its MATRIX form - `dtheta/dq = -(dF/dtheta)^-1 (dF/dq)` - which
+    is `CalibrationSolve.backward`'s own arithmetic with every cotangent solved at once instead of
+    one. There is NO SECOND SOLVE: the fixed point is where the forward pass left it and only the
+    residual is differentiated, so this costs one Newton iteration's worth of work whatever m is.
+
+    `dF/dtheta` has to be invertible, which is a ROOT FIND's property and not this family's alone -
+    a least-squares fixed point would contract a pseudo-inverse here instead. `J` itself is n x m
+    and the artifact does not assume the two are equal, even though the knot rule makes them so.
+
+    Over a COUPLED SET this is the whole block matrix: `solve_for` holds every curve of the set, so
+    `dF/dtheta` carries the cross terms the residual reads and `dtheta_2/dq_1` falls out of the one
+    inverse. That is the difference between an operator that carries a multi-curve tick and one that
+    silently drops a first-order term - see `coupled_sets`.
+    """
+    with torch.enable_grad():
+        _, d_theta, d_quote = residual_jacobians(benchmarks, theta)
+    return -torch.linalg.solve(d_theta, d_quote)
+
+
 class CalibrationSolve(torch.autograd.Function):
     """The bootstrap as one differentiable node: quotes in, calibrated nodes out.
 
@@ -2013,18 +2094,15 @@ class CalibrationSolve(torch.autograd.Function):
 
         w = (dF/dtheta)^-T v      then      dL/dq = -(dF/dq)^T w
 
-    Both come from autograd on the residual closure itself, evaluated once at `(theta*, q)`: the
-    n x n matrix by one backward pass per benchmark, the q side as a single vector-Jacobian product
-    with `-w` as its cotangent. So the residual is WRITTEN ONCE AND DIFFERENTIATED TWICE, and the
-    quote derivative cannot drift from the one the solve converged on.
+    Both come from `residual_jacobians`, autograd on the residual closure itself evaluated once at
+    `(theta*, q)` - one backward pass per benchmark, giving a row of each. So the residual is
+    WRITTEN ONCE AND DIFFERENTIATED TWICE, and the quote derivative cannot drift from the one the
+    solve converged on; nor can it drift from the `dtheta/dq` a calibration artifact publishes,
+    which is the same two pieces with every cotangent solved at once.
 
     The Jacobian is recomputed at theta* rather than reused from the last Newton step, which was
     taken at the iterate BEFORE it. Cost is one iteration's worth on a system whose dimension is
     the benchmark count.
-
-    Every `grad` here retains the graph. The residual's own subgraph is shared with the forward
-    pass - `pv_fixed_cashflows` memoizes its payment tensor in `Factor_dep` - so freeing it would
-    take the forward pass's graph with it.
     """
 
     @staticmethod
@@ -2036,18 +2114,177 @@ class CalibrationSolve(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, cotangent):
-        benchmarks, theta = ctx.benchmarks, ctx.theta
-        keys = list(benchmarks.solve_for)
-        sizes = [theta[factor].numel() for factor in keys]
         with torch.enable_grad():
-            x = torch.cat([theta[factor] for factor in keys]).requires_grad_(True)
-            residual = benchmarks(dict(zip(keys, x.split(sizes))))
-            jacobian = torch.stack([torch.autograd.grad(residual[i], x, retain_graph=True)[0]
-                                    for i in range(residual.numel())])
-            w = torch.linalg.solve(jacobian.t(), cotangent)
-            quote_grad, = torch.autograd.grad(
-                residual, benchmarks.quotes, grad_outputs=-w.detach(), retain_graph=True)
-        return None, None, None, None, None, quote_grad
+            _, d_theta, d_quote = residual_jacobians(ctx.benchmarks, ctx.theta)
+            w = torch.linalg.solve(d_theta.t(), cotangent)
+        return None, None, None, None, None, -(d_quote.t() @ w)
+
+
+class CalibrationArtifact(object):
+    """ONE CALIBRATION OF ONE COUPLED SET, FROZEN AS AN OPERATOR - `(theta*, J, q0, timestamp)` and
+    the compiled benchmark set the first two were read off.
+
+    THE CONTRACT. `theta*` is the solved node vector in `solve_for` order, `J` is `dtheta/dq` at
+    that fixed point from `calibration_jacobian` (exact by the implicit function theorem - the
+    curve family's solve is a unique root and the knot rule makes `J` square, though nothing here
+    assumes it is), and `q0` is the quote vector it was fitted at in percent. Between two fits, a
+    small tick propagates LINEARLY: `theta ~ theta* + J (q_now - q0)`, one matvec.
+
+    IT COVERS THE SET, NOT THE BLOCK. `members` are the `Market Prices` blocks that solve as ONE
+    system, in the order their quotes and nodes are concatenated in, and `J` is the whole block
+    matrix - so `dtheta_2/dq_1` is a column of it rather than a term nobody carried. A partial ride
+    is unrepresentable: there is one theta, one q0 and one drift number for the set, and
+    `coupled_sets` refuses to publish an operator over part of one.
+
+    `timestamp` is when the fit happened, and it is REPORTED rather than read: every ride, every
+    refusal and every refit names the artifact it rode and when that artifact was fitted, because
+    "how stale" is the question the drift number is an answer to. It reaches no number and no hash,
+    so a wall clock cannot make two runs disagree.
+
+    IT IS PLAN-SIDE AND CONTENT-ADDRESSED. `key` is the SLOT - every member block's declarations,
+    the base date, the interpolation scheme and the engine version, with the quote NUMBERS shadowed
+    out (`plan_key`), so every tick of one strip lands on the same slot and a re-authored strip
+    addresses a different one. `artifact_id` is the artifact's OWN identity - the slot plus the
+    quotes it was fitted at - so it MOVES with every refit, is REPORTED in the results of every run
+    that rides it, and is a replay coordinate rather than a timestamp anyone has to trust.
+
+    NOTHING HERE MUTATES. There is no `theta_current`: `ride` is a pure function of this artifact
+    and the quotes it is handed, evaluated per EXECUTE and stored nowhere, so two EXECUTEs off one
+    `(artifact, q_now)` are bit-identical by construction. The artifact is replaced, never edited -
+    a refit publishes a new one into the same slot under a new `artifact_id`.
+
+    It holds TENSORS and a compiled deal tree, so it cannot live in `Price Factors` and it cannot
+    be serialised: it lives in `ARTIFACTS`, in process, beside the plan cache. A cold start has no
+    artifact and the first tick REFUSES rather than pricing something else - which is the honest
+    statelessness, since a re-bootstrap rederives the artifact from the job document and a plan
+    that is not in the cache is a 404 rather than a different number.
+    """
+
+    def __init__(self, key, members, theta, jacobian, quotes, benchmarks, drift=None):
+        # `config` imports from this module, so the package edge runs one way only and the hash is
+        # reached from inside the call
+        from . import content_hash
+
+        self.key = key
+        self.members = tuple(members)
+        self.theta = theta
+        self.jacobian = jacobian
+        self.quotes = quotes
+        self.benchmarks = benchmarks
+        self.drift = drift
+        self.timestamp = pd.Timestamp.utcnow()
+        self.artifact_id = content_hash({'key': key, 'quotes': quotes.tolist()})
+
+    @property
+    def factors(self):
+        """The curves this operator carries, in the order `theta` concatenates them."""
+        return self.benchmarks.solve_for
+
+    @property
+    def jacobian_norm(self):
+        """`||J||inf`, the induced max-row-sum norm - the CONVERSION between the quote-space units
+        `Drift_Tolerance` is declared in and the curve units a desk reads a staleness in, since
+        `||theta_ridden - theta_refit||inf <= ||J||inf ||r||inf` to first order."""
+        return float(self.jacobian.abs().sum(dim=1).max())
+
+    def ride(self, quotes):
+        """`theta* + J (q_now - q0)` - the operator. Pure, and a matvec."""
+        return self.theta + self.jacobian @ (quotes - self.quotes)
+
+    def nodes(self, theta, factor):
+        """One member curve's slice of a set-wide theta, as the numpy column a price factor is."""
+        return split_theta(self.benchmarks, theta)[factor].detach().cpu().numpy()
+
+    def mispricing(self, theta, quotes):
+        """Every benchmark's residual at `(theta, quotes)`, IN QUOTE SPACE: the move in that
+        benchmark's own quote, in percent, that would close it. EXACT, at any theta and any quote.
+
+        The set was compiled at `q0`, so pricing it at a moved quote would need a re-authoring and a
+        re-compile - a refit's cost, and a drift gate that costs a refit is pointless. It does not
+        need one: a benchmark's PV is AFFINE in its own quote at fixed theta (measured in
+        `_carry_quotes`, second difference exactly zero), so
+
+            F(theta, q) = F(theta, q0) + (dF/dq)(q - q0)
+
+        holds with no remainder - PROVIDED `dF/dq` is taken at the theta being scored. It is:
+        `residual_jacobians` re-differentiates the residual HERE, at the ridden theta, one backward
+        pass per benchmark off the forward pass the residual itself comes out of. That is 71.7ms
+        against a 594ms refit on the ZAR strip - 97% of what a ride costs, and what makes this a
+        measurement rather than an estimate.
+
+        Reusing the `dF/dq` stored at `theta*` would be cheaper by one backward and WRONG in the
+        direction that matters: its miss is `(d2F/dtheta dq) dtheta dq`, the same order as the
+        residual it estimates, and it reads LOW on tick shapes that excite the Jacobian's small
+        singular values - 0.886 of the truth at worst over a scan of sign patterns, which admits a
+        ride the tolerance was written to refuse.
+
+        Dividing each row by its own quote sensitivity is what makes `Drift_Tolerance` a number a
+        desk can set: a PV depends on the benchmark's notional and a quote does not. It is the same
+        normaliser the self-delta identity uses, and it is a row max rather than a diagonal so that
+        a family whose benchmarks are not one-quote-each stays expressible.
+        """
+        with torch.enable_grad():
+            residual, _, d_quote = residual_jacobians(
+                self.benchmarks, split_theta(self.benchmarks, theta))
+        d_quote = d_quote.detach()
+        return ((residual.detach() + d_quote @ (quotes - self.quotes)) /
+                d_quote.abs().amax(dim=1))
+
+
+class ArtifactStore(object):
+    """Calibration artifacts under their plan keys - the PlanCache's discipline for the other half
+    of a prepared job.
+
+    Bounded and least-recently-used for the reason the plan cache is: an artifact is a refit, and
+    never the record of anything - the replay tuple is. Locked because a slot is written by
+    whatever thread ran the bootstrap and read by whatever thread runs the EXECUTE.
+
+    Content-addressed, so an entry is IMMUTABLE under its key: a refit REPLACES the artifact in a
+    slot rather than editing one. A moved quote NUMBER keeps the slot - that is the whole point of
+    `plan_key`, and what makes a ride possible - while a re-authored quote SET addresses a
+    different one and finds it empty.
+
+    `covering` is the lookup a valuation needs, because a valuation holds a FACTOR and not a set. It
+    returns CANDIDATES - every artifact holding that curve, most-recently-used first - and never
+    picks one: the caller recomputes each candidate's slot off the market data standing now and
+    takes the one that still addresses it, so content addressing decides and the scan only narrows.
+    Two artifacts can cover one curve at once (a Hermite job and a linear one), and a lookup that
+    returned the first would hide the second behind it.
+
+    Scanning a bounded store rather than keeping a factor index is deliberate - an index is a thing
+    that can disagree with the store it indexes, and the store is 32 entries.
+    """
+
+    def __init__(self, size=32):
+        self.size = size
+        self.artifacts = OrderedDict()
+        self.lock = threading.Lock()
+
+    def put(self, artifact):
+        with self.lock:
+            self.artifacts[artifact.key] = artifact
+            self.artifacts.move_to_end(artifact.key)
+            if len(self.artifacts) > self.size:
+                self.artifacts.popitem(last=False)
+            return artifact.key
+
+    def get(self, key):
+        with self.lock:
+            if key not in self.artifacts:
+                return None
+            self.artifacts.move_to_end(key)
+            return self.artifacts[key]
+
+    def covering(self, factor):
+        with self.lock:
+            return [self.artifacts[key] for key in reversed(self.artifacts)
+                    if factor in self.artifacts[key].factors]
+
+
+#: Where a published calibration artifact lives - in process, beside the service's plan cache and
+#: for the same reasons. It holds tensors and a compiled benchmark set, so `Price Factors` (which
+#: is data, and gets written back out as JSON) is not an option and neither is a file.
+ARTIFACTS = ArtifactStore()
 
 
 def quote_nodes(points, discount_rate, shift=0.0):
@@ -2171,6 +2408,13 @@ class InterestRateCurveParameters(object):
     #: `StructuredDeal` is how a two-leg benchmark is authored - an OIS swap is its compounded
     #: floating leg and its fixed leg, composed by `Children`.
     quote_instruments = ('DepositDeal', 'FRADeal', 'SwapInterestDeal', 'StructuredDeal')
+    #: Block fields a calibration artifact is NOT a function of - the LIFECYCLE switches, read when
+    #: one is published or ridden rather than when it is fitted. `plan_key` shadows them out for one
+    #: reason: a knob that governs the ride must not also hide the artifact it governs, or loosening
+    #: `Drift_Tolerance` would silently mean "refit" instead of "allow more". `Quote_Sensitivity`
+    #: joins them because it provably moves neither theta* nor J - that is what its bit-identity
+    #: gate says. Everything else on the block is an input to the solve.
+    lifecycle_fields = ('Quote_Sensitivity', 'Quote_Propagation', 'Drift_Tolerance')
     fields = [
         F('Currency', 'Text', default=REQUIRED, description='The currency of the curve to build'),
         F('Day_Count', 'Text', default='ACT_365',
@@ -2197,6 +2441,25 @@ class InterestRateCurveParameters(object):
                       'pass reports dV/dq beside dV/dtheta. Costs one extra compile of the '
                       'benchmark set and holds the residual graph for the life of the config; the '
                       'solved numbers are identical either way'),
+        F('Quote_Propagation', 'Text', default='No', values=['No', 'Linear'],
+          description='How a quote that moves between bootstraps reaches the curve. No re-solves, '
+                      'which is what a job does today. Linear publishes a calibration artifact '
+                      '(theta*, dtheta/dq, q0) at each bootstrap and RIDES it at every calculation '
+                      'after - theta* + dtheta/dq (q_now - q0), a matvec instead of a solve - '
+                      'refusing when the ridden curve no longer reprices the benchmarks inside '
+                      'Drift_Tolerance, and refusing when no artifact answers to the plan. It is a '
+                      'property of a COUPLED SET rather than of a block: blocks whose residuals '
+                      'read each other\'s curves are solved as one system and ridden as one '
+                      'operator, so every block of such a set must declare it or none may. Costs '
+                      'one extra compile and one backward pass per block to measure the set, plus '
+                      'the compile Quote_Sensitivity costs'),
+        F('Drift_Tolerance', 'Float', default=1e-3,
+          description='How far out of par a ridden curve may leave this block\'s own benchmarks '
+                      'before Quote_Propagation refuses and asks for a refit, measured in PERCENT '
+                      'OF QUOTE - so 1e-3 is a tenth of a basis point of mispricing. The ride is '
+                      'second-order accurate, so this is a bound on the SQUARE of the tick: on the '
+                      'round-trip worlds it admits about 11bp and refuses a 25bp move. Only read '
+                      'when Quote_Propagation is Linear'),
         F('Points', 'Container', default={
             'Use': 'Yes', 'Deal': {}, 'Descriptor': '', 'DealType': 'DepositDeal',
             'Quote_Type': 'Par_Rate', 'Quoted_Market_Value': 0.0},
@@ -2249,66 +2512,189 @@ class InterestRateCurveParameters(object):
 
     def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices,
                   calendars, debug=None):
-        """Solve each block for the zero curve that reprices every used quote to par.
+        """Solve every block for the zero curve that reprices its used quotes to par, one COUPLED
+        SET at a time.
+
+        A set is the group of blocks whose residuals read each other's curves, and it is MEASURED
+        rather than declared - see `coupled_sets`. Forming one costs a compile and a backward pass
+        per block, and it buys exactly one thing: an operator whose Jacobian carries the coupling.
+        So it is only formed where an operator was asked for; with `Quote_Propagation` nowhere in
+        the section, every block is its own group and this is the dependency-ordered loop it has
+        always been, bit for bit.
+        """
+        base_date = sys_params['Base_Date']
+        blocks = self.in_dependency_order(market_prices)
+        groups = self.coupled_sets(blocks, price_factors, factor_interp, base_date, calendars) \
+            if any(entry['instrument'].get('Quote_Propagation', 'No') == 'Linear'
+                   for _, entry in blocks) else [[block] for block in blocks]
+
+        for group in groups:
+            self.solve_set(group, price_factors, factor_interp, base_date, calendars)
+
+    def seed(self, market_price, block, price_factors, base_date, calendars):
+        """Write this block's par-rate seed curve into `Price Factors`, and give back what the solve
+        reads off it: `(curve factor, used quotes, deal nodes, discount rate)`.
+
+        Seeding comes first because the benchmark closure constructs the curve factor OUT of
+        `Price Factors` - and a par rate is within a few basis points of the zero rate at the same
+        maturity, so it is also the seed the solve starts from. `Curve` sorts the pairs, so each
+        knot keeps the quote that identifies it.
+        """
+        curve = utils.Factor('InterestRate', utils.check_rate_name(market_price)[1:])
+        discount_rate = block['Discount_Rate'] or '.'.join(curve.name)
+        points = self.used_quotes(block, market_price)
+        nodes = quote_nodes(points, discount_rate)
+        price_factors[utils.check_tuple_name(curve)] = {
+            'Property_Aliases': None, 'Sub_Type': None, 'Currency': block['Currency'],
+            'Day_Count': block['Day_Count'], 'Curve': utils.Curve([], list(zip(
+                quote_knots(nodes, base_date, block['Day_Count'], calendars),
+                [point['Quoted_Market_Value'] / 100.0 for point in points])))}
+        return curve, points, nodes, discount_rate
+
+    def coupled_sets(self, blocks, price_factors, factor_interp, base_date, calendars):
+        """This family's blocks grouped into the SETS that have to solve as one system - MEASURED.
+
+        Two blocks are coupled when one's residual READS the curve the other builds, and that is not
+        the question `Discount_Rate` answers. What a benchmark projects off is authored inside its
+        own deal block, so a strip declaring a blank `Discount_Rate` - self-discounting, by the
+        declaration - can still forecast off a neighbour's curve. Measured on such a world, a 10bp
+        tick moved the "independent" curve by 568 basis points while every declaration said it stood
+        alone. `BenchmarkInstruments.reads` answers by differentiation instead: one compile and one
+        backward pass per block, and it cannot be fooled by what a field says.
+
+        The groups are the connected components of that relation, in dependency order, and a group
+        is solved and ridden WHOLE. That is what puts `dtheta_2/dq_1` inside `J` rather than leaving
+        it to the order the blocks were solved in - an ordering carries a coupling through a
+        bootstrap and carries nothing at all through a ride.
+
+        Every block is seeded before anything is measured, because a block that forecasts off a
+        curve nobody has built yet cannot be compiled - and an undeclared dependency is exactly the
+        case `in_dependency_order` cannot order.
+        """
+        seeded, builds, ordered = {}, {}, dict(blocks)
+        for market_price, entry in blocks:
+            curve, points, nodes, _ = self.seed(
+                market_price, entry['instrument'], price_factors, base_date, calendars)
+            seeded[market_price] = (curve, nodes)
+            builds[curve] = market_price
+
+        components = {market_price: {market_price} for market_price in ordered}
+        for market_price, entry in blocks:
+            curve, nodes = seeded[market_price]
+            benchmarks = BenchmarkInstruments(
+                nodes, price_factors, factor_interp, base_date,
+                entry['instrument']['Currency'], calendars, [curve], self.device)
+            reads = benchmarks.reads({curve: torch.tensor(
+                benchmarks.factors[curve].current_value(),
+                dtype=BenchmarkInstruments.dtype, device=self.device)})
+            for factor in reads & set(builds):
+                merged = components[market_price] | components[builds[factor]]
+                for name in merged:
+                    components[name] = merged
+
+        groups, seen = [], set()
+        for market_price in ordered:
+            if market_price not in seen:
+                seen |= components[market_price]
+                groups.append([(name, ordered[name]) for name in ordered
+                               if name in components[market_price]])
+        return groups
+
+    def solve_set(self, group, price_factors, factor_interp, base_date, calendars):
+        """Solve one coupled set: ONE Newton system over every curve in it, one Jacobian, one
+        artifact.
+
+        A set of one is the single-curve solve this family has always done. A set of more is the
+        multi-curve one, and flattening it is `damped_newton`'s own shape rather than a new solver -
+        `solve_for` is a list, the residual takes a `{Factor: nodes}` over it, and the block
+        Jacobian that falls out is what `calibration_jacobian` inverts in one go.
 
         The seed theta is read off the CONSTRUCTED factor rather than off the authored block, so it
         is aligned with the tenor grid the pricers gather against, whatever `get_tenor` made of the
         block. The solve goes through the implicit-function wrapper either way: with no quotes on
         the tape its forward IS `damped_newton` and no edge is recorded, which is what makes
         "gradients cannot move a mark" structural rather than a claim.
+
+        Solver knobs are declared PER BLOCK, and a set takes the STRICTEST of them: a system is only
+        as converged as its tightest member asked to be.
         """
-        base_date = sys_params['Base_Date']
+        members = [(market_price, entry['instrument']) for market_price, entry in group]
+        propagate = [block.get('Quote_Propagation', 'No') == 'Linear' for _, block in members]
+        connect = [block.get('Quote_Sensitivity', 'No') == 'Yes' for _, block in members]
+        if any(propagate) and not all(propagate):
+            raise Exception(
+                'Quote_Propagation is a property of a COUPLED SET, and {} solve as one system - '
+                'measured, not declared. {} declares it while {} does not, and a partial ride is '
+                'the one configuration this operator cannot express: the declining block would be '
+                'priced off the curve the last bootstrap wrote while its partner rode the tick, '
+                'and the drift metric would report the ridden half as perfectly fresh. Measured on '
+                'the USD world at a 10bp OIS tick, that reads a PV of 9829.62 where the refit says '
+                '9621.25, against a true move of -23.36 - wrong sign, 8.9x the size, drift 4.5e-4. '
+                'Declare Quote_Propagation on every block of the set, or on none.'.format(
+                    ' + '.join(name for name, _ in members),
+                    ' + '.join(name for (name, _), asks in zip(members, propagate) if asks),
+                    ' + '.join(name for (name, _), asks in zip(members, propagate) if not asks)))
+        currencies = {block['Currency'] for _, block in members}
+        if len(currencies) > 1:
+            raise Exception(
+                'Quote_Propagation: {} are coupled but priced in {} - a benchmark set has one '
+                'reporting currency, so this set cannot be compiled as one system. Leave '
+                'Quote_Propagation at No on a cross-currency curve set.'.format(
+                    ' + '.join(name for name, _ in members), ' and '.join(sorted(currencies))))
 
-        for market_price, implied_params in self.in_dependency_order(market_prices):
-            block = implied_params['instrument']
-            curve = utils.Factor('InterestRate', utils.check_rate_name(market_price)[1:])
-            curve_name = utils.check_tuple_name(curve)
-            discount_rate = block['Discount_Rate'] or '.'.join(curve.name)
+        seeded = [self.seed(market_price, block, price_factors, base_date, calendars)
+                  for market_price, block in members]
+        # both switches want the quote side of the residual - one to report through it, one to
+        # publish it as an operator - and it is one extra compile either way
+        carry = any(connect) or any(propagate)
+        points = [point for _, block_points, _, _ in seeded for point in block_points]
+        curves = [curve for curve, _, _, _ in seeded]
 
-            quotes = [point for point in block['Points'] if point['Use'] == 'Yes'
-                      and self.takes(point, market_price)]
-            nodes = quote_nodes(quotes, discount_rate)
-            connect = block.get('Quote_Sensitivity', 'No') == 'Yes'
+        time_now = time.monotonic()
+        benchmarks = BenchmarkInstruments(
+            [node for _, _, nodes, _ in seeded for node in nodes], price_factors, factor_interp,
+            base_date, members[0][1]['Currency'], calendars, curves, self.device,
+            quotes=[point['Quoted_Market_Value'] for point in points] if carry else None,
+            bumped_nodes=[node for _, block_points, _, discount_rate in seeded
+                          for node in quote_nodes(block_points, discount_rate, 1.0)]
+            if carry else None)
+        # seed theta off the CONSTRUCTED factor - see the docstring on grid alignment
+        theta = CalibrationSolve.apply(
+            benchmarks,
+            {curve: torch.tensor(benchmarks.factors[curve].current_value(),
+                                 dtype=BenchmarkInstruments.dtype, device=self.device)
+             for curve in curves},
+            max(int(block.get('N_Iter', 50)) for _, block in members),
+            min(float(block.get('Tol', 1e-14)) for _, block in members),
+            max(int(block.get('Damping_Halvings', 6)) for _, block in members),
+            benchmarks.quotes)
 
-            # seed the block first: the closure constructs the curve factor out of `Price Factors`,
-            # and a par rate is within a few basis points of the zero rate at the same maturity.
-            # `Curve` sorts the pairs, so each knot keeps the quote that identifies it
-            price_factors[curve_name] = {
-                'Property_Aliases': None, 'Sub_Type': None, 'Currency': block['Currency'],
-                'Day_Count': block['Day_Count'], 'Curve': utils.Curve([], list(zip(
-                    quote_knots(nodes, base_date, block['Day_Count'], calendars),
-                    [point['Quoted_Market_Value'] / 100.0 for point in quotes])))}
+        solved = split_theta(benchmarks, theta)
+        # a set-wide quote leaf reports dV/dq across the whole system, so its descriptors have to
+        # name the block each quote came off; a set of one is the block's own list unchanged
+        descriptors = [point['Descriptor'] if len(members) == 1 else
+                       '{}: {}'.format(market_price, point['Descriptor'])
+                       for (market_price, _), (_, block_points, _, _) in zip(members, seeded)
+                       for point in block_points]
+        for curve, (market_price, _), wants in zip(curves, members, connect):
+            price_factors[utils.check_tuple_name(curve)]['Curve'] = utils.Curve(
+                [], list(zip(benchmarks.tenors[curve], solved[curve].detach().cpu().numpy())))
+            if wants:
+                self.calibrated[curve] = solved[curve]
+                self.quote_leaves[market_price] = (descriptors, benchmarks.quotes)
+        if all(propagate):
+            self.publish(members, factor_interp, base_date, benchmarks, theta.detach())
 
-            time_now = time.monotonic()
-            benchmarks = BenchmarkInstruments(
-                nodes, price_factors, factor_interp, base_date, block['Currency'], calendars,
-                [curve], self.device,
-                quotes=[point['Quoted_Market_Value'] for point in quotes] if connect else None,
-                bumped_nodes=quote_nodes(quotes, discount_rate, 1.0) if connect else None)
-            # seed theta off the CONSTRUCTED factor - see the docstring on grid alignment
-            theta = CalibrationSolve.apply(
-                benchmarks,
-                {curve: torch.tensor(benchmarks.factors[curve].current_value(),
-                                     dtype=BenchmarkInstruments.dtype, device=self.device)},
-                int(block.get('N_Iter', 50)), float(block.get('Tol', 1e-14)),
-                int(block.get('Damping_Halvings', 6)), benchmarks.quotes)
-
-            price_factors[curve_name]['Curve'] = utils.Curve(
-                [], list(zip(benchmarks.tenors[curve], theta.detach().cpu().numpy())))
-            if connect:
-                self.calibrated[curve] = theta
-                self.quote_leaves[market_price] = ([point['Descriptor'] for point in quotes],
-                                                   benchmarks.quotes)
-
-            residuals = benchmarks({curve: theta.detach()}).detach()
-            logging.info('{} bootstrapped from {} quotes in {:.2f} seconds, residual {:.3g}'.format(
-                curve_name, len(quotes), time.monotonic() - time_now,
-                float(residuals.abs().max())))
-            for point, residual in zip(quotes, residuals):
+        residuals = benchmarks(split_theta(benchmarks, theta.detach())).detach()
+        logging.info('{} bootstrapped from {} quotes in {:.2f} seconds, residual {:.3g}'.format(
+            ' + '.join(utils.check_tuple_name(curve) for curve in curves), len(points),
+            time.monotonic() - time_now, float(residuals.abs().max())))
+        for point, residual in zip(points, residuals):
                 logging.info('  {} at {:.4f} reprices to {:.3g}'.format(
                     point['Descriptor'], point['Quoted_Market_Value'], float(residual)))
 
-    def takes(self, point, market_price):
+    @classmethod
+    def takes(cls, point, market_price):
         """Whether this family prices the quote, the way Clewlow-Strickland says so of a vol type.
 
         `Par_Rate` is the only convention built: every increment-1 benchmark is held at PV zero.
@@ -2320,6 +2706,178 @@ class InterestRateCurveParameters(object):
         logging.error('{} quote {} - Quote_Type {} not supported yet'.format(
             market_price, point['Descriptor'], point['Quote_Type']))
         return False
+
+    @classmethod
+    def used_quotes(cls, block, market_price):
+        """The quotes that enter the solve, in the order theta, `J` and `q0` are all indexed by.
+
+        A classmethod because the RIDE needs the same list off a block nobody is bootstrapping, and
+        a second filter written beside this one is how a ridden theta ends up indexed by a
+        different quote vector than the artifact was fitted with.
+        """
+        return [point for point in block['Points']
+                if point['Use'] == 'Yes' and cls.takes(point, market_price)]
+
+    @classmethod
+    def plan_key(cls, members, factor_interp, base_date):
+        """The SLOT an artifact lives in: every member block of the coupled set, the base date, the
+        interpolation scheme and the engine version - with the quote NUMBERS and the
+        `lifecycle_fields` shadowed out.
+
+        Plan-side coordinates, and the same split `Config.plan_hash` takes over a price factor - a
+        value is shadowed to `None` rather than dropped, so the key SET stays structural and adding
+        a quote is a different plan. Every tick of one strip therefore lands on the SAME slot,
+        which is what makes a ride possible at all, while a re-authored instrument, a flipped
+        `Use`, a different `Day_Count`, a different solver knob or a new engine build lands on a
+        different one and finds nothing to ride.
+
+        The key names the SET rather than the block, so re-authoring a discount strip moves the slot
+        of every curve solved against it - which is the point: a projection curve riding a `J` fitted
+        against quotes that no longer exist is exactly the artifact that must not be findable.
+
+        `base_date` and `Price Factor Interpolation` are in it because the SOLVE reads them and the
+        block does not carry them. Both were measured riding each other's theta* out of one slot
+        before they were named here: two jobs 45 days apart shared a slot, and a Linear job rode a
+        Hermite solve 0.53bp away from its own.
+        """
+        # `config` imports from this module, so the package edge runs one way only and the hash is
+        # reached from inside the call
+        from . import content_hash
+
+        return content_hash({
+            'engine_version': __version__, 'base_date': base_date, 'interpolation': factor_interp,
+            'set': [{'market_price': market_price,
+                     'block': dict(block, Points=[dict(point, Quoted_Market_Value=None)
+                                                  for point in block['Points']],
+                                   **{field: None for field in cls.lifecycle_fields})}
+                    for market_price, block in members]})
+
+    @classmethod
+    def slot(cls, names, market_prices, factor_interp, base_date):
+        """The key those member blocks address in `market_prices` NOW, or `None` if one is gone.
+
+        What turns `ArtifactStore.find`'s scan back into content addressing: an artifact answers for
+        a curve only if the plan it was fitted against is still the plan standing.
+        """
+        members = [(name, market_prices.get(name, {}).get('instrument')) for name in names]
+        if any(block is None for _, block in members):
+            return None
+        return cls.plan_key(members, factor_interp, base_date)
+
+    @classmethod
+    def publish(cls, members, factor_interp, base_date, benchmarks, theta):
+        """Freeze this solve as an artifact, and MEASURE what the last one would have been worth.
+
+        The drift is the whole point of refitting on a schedule rather than on every tick: with the
+        previous artifact still in the slot, `theta_refit - theta_ridden` says how far the linear
+        operator had drifted by the time it was replaced, and the ridden theta's benchmark residual
+        says the same thing in the space the tolerance is declared in. Both are logged against the
+        set's own solver `Tol`, and both are published ON the new artifact - so the record of how
+        stale the last calibration got travels with the calibration that replaced it.
+
+        The refreshed artifact takes the old one's SLOT and carries a new `artifact_id`, because
+        the id is the slot plus the quotes it was fitted at.
+        """
+        key = cls.plan_key(members, factor_interp, base_date)
+        artifact = CalibrationArtifact(
+            key, [market_price for market_price, _ in members], theta,
+            calibration_jacobian(benchmarks, split_theta(benchmarks, theta)),
+            benchmarks.quotes.detach(), benchmarks)
+        name = ' + '.join(market_price for market_price, _ in members)
+
+        previous = ARTIFACTS.get(key)
+        if previous is not None:
+            ridden = previous.ride(artifact.quotes)
+            artifact.drift = {
+                'tick': float((artifact.quotes - previous.quotes).abs().max()),
+                'theta': float((theta - ridden).abs().max()),
+                'quote': float(artifact.mispricing(ridden, artifact.quotes).abs().max()),
+                'rode': previous.artifact_id, 'fitted': previous.timestamp}
+            logging.info(
+                '{} refit: artifact {} (fitted {}) rode a {:.4g}% tick to a drift of {:.3g} in '
+                'theta and {:.3g}% in quote space (solver Tol {:.3g}), replaced by {}'.format(
+                    name, previous.artifact_id[:12], previous.timestamp, artifact.drift['tick'],
+                    artifact.drift['theta'], artifact.drift['quote'],
+                    min(float(block.get('Tol', 1e-14)) for _, block in members),
+                    artifact.artifact_id[:12]))
+        else:
+            logging.info('{} refit: artifact {} published, nothing in the slot to score'.format(
+                name, artifact.artifact_id[:12]))
+        ARTIFACTS.put(artifact)
+
+    @classmethod
+    def propagate(cls, factor, market_prices, factor_interp, base_date):
+        """The curve `factor` RIDDEN to the quotes standing in `market_prices` now, or `None` where
+        no block asks for one - the operator, evaluated per EXECUTE and storing nothing.
+
+        Two ways to get `None`, and each is today's path unchanged: a factor this family does not
+        write, and a block that did not ask for `Quote_Propagation`.
+
+        A BLOCK THAT DID ASK AND FINDS NO ARTIFACT REFUSES. That is the house rule for a plan the
+        cache cannot answer - a miss is a 404, never a different number - and it is what closes the
+        replay hole: a silent fall back to `theta*` reprices the book (13.4% on the eviction probe)
+        while `plan_hash`, `values_hash`, the engine version and the seed all stay identical, so
+        nothing in the replay tuple could tell the two runs apart. A refusal is not a number, so it
+        cannot be mistaken for one. A cold process therefore rides nothing and says so out loud: an
+        artifact holds tensors and a compiled deal tree, cannot be serialised, and a re-bootstrap
+        rederives it from the job document.
+
+        A ride that would leave the benchmarks further out of par than `Drift_Tolerance` refuses for
+        the same reason - the alternative is a plausible wrong curve. The tolerance is the SET's
+        strictest, so a coupled set rides or refuses whole; and the artifact it is scored against
+        is the one whose plan is still standing, which `slot` rechecks rather than trusts.
+        """
+        if factor.type != cls.price_factor_type:
+            return None
+        market_price = utils.check_tuple_name(utils.Factor(cls.market_factor_type, factor.name))
+        block = market_prices.get(market_price, {}).get('instrument')
+        if block is None or block.get('Quote_Propagation', 'No') != 'Linear':
+            return None
+
+        covering = ARTIFACTS.covering(factor)
+        artifact = next((found for found in covering if found.key == cls.slot(
+            found.members, market_prices, factor_interp, base_date)), None)
+        if artifact is None:
+            raise utils.CalibrationStale(
+                '{}: Quote_Propagation is Linear and no calibration artifact answers to this plan '
+                '- {}. Bootstrap the job and the same EXECUTE runs off the artifact that publishes; '
+                'an artifact holds tensors and a compiled benchmark set, so it cannot be serialised '
+                'and a fresh process has none. A plan the store cannot answer is a MISS, and a miss '
+                'is not permission to price off the curve the last bootstrap wrote.'.format(
+                    market_price, 'the store holds none for this curve' if not covering else
+                    '{} cover it, each fitted against a different plan ({})'.format(
+                        len(covering), '; '.join(' + '.join(found.members) for found in covering))))
+        # a ride is a USE: the slot a tick stream keeps riding must not age out under one that is
+        # merely published beside it
+        ARTIFACTS.get(artifact.key)
+
+        tolerance = min(float(market_prices[name]['instrument'].get('Drift_Tolerance', 1e-3))
+                        for name in artifact.members)
+        quotes = torch.tensor(
+            [point['Quoted_Market_Value'] for name in artifact.members
+             for point in cls.used_quotes(market_prices[name]['instrument'], name)],
+            dtype=artifact.theta.dtype, device=artifact.theta.device)
+        theta = artifact.ride(quotes)
+        drift = float(artifact.mispricing(theta, quotes).abs().max())
+        tick = float((quotes - artifact.quotes).abs().max())
+        # the tolerance is declared in percent of quote; ||J||inf converts it into the curve units
+        # the staleness is actually felt in, which is what a desk sets the number against
+        curve_units = tolerance * artifact.jacobian_norm * 1e4
+        if drift > tolerance:
+            raise utils.CalibrationStale(
+                '{}: Quote_Propagation refused - riding artifact {} (fitted {}) over a {:.4g}% '
+                'tick leaves its benchmarks {:.3g}% of quote out of par, past the declared '
+                'Drift_Tolerance {:.3g} (at most {:.3g}bp of zero rate on this set, ||J||inf '
+                '{:.4g}). The linear operator is only second-order accurate and this move is too '
+                'big for it, so re-bootstrap and the same job runs off the refit.'.format(
+                    market_price, artifact.artifact_id[:12], artifact.timestamp, tick, drift,
+                    tolerance, curve_units, artifact.jacobian_norm))
+        logging.info(
+            '{}: rode artifact {} (fitted {}) over a {:.4g}% tick, benchmarks {:.3g}% of quote out '
+            'of par against a tolerance of {:.3g} ({:.3g}bp of zero rate, ||J||inf {:.4g})'.format(
+                market_price, artifact.artifact_id[:12], artifact.timestamp, tick, drift,
+                tolerance, curve_units, artifact.jacobian_norm))
+        return artifact.nodes(theta, factor), artifact.artifact_id
 
 
 class FXVolSurfaceParameters(object):

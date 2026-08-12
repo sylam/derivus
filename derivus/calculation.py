@@ -343,7 +343,34 @@ class Calculation(object):
         A non-zero `Tenor_Offset` declines the attachment: the curve the calculation consumes is
         then a SHIFTED one, and dtheta_shifted/dq is not dtheta/dq. Quote sensitivities are t0
         risk; a tenor offset is a different curve, so it gets the leaf it always got.
+
+        THE SAME SEAM CARRIES A PROPAGATED CALIBRATION, and that one changes the VALUE. A block
+        asking for `Quote_Propagation` rides its last artifact to the quotes standing now -
+        `theta* + dtheta/dq (q_now - q0)` - so the leaf is minted out of the ridden nodes instead
+        of the ones the last bootstrap wrote. That is the point: a tick reaches a valuation without
+        a re-solve. It is derived here rather than stored, so nothing about it survives the call.
+
+        A `Tenor_Offset` REFUSES the ride rather than declining it. `current_value(offset)`
+        interpolates off coefficients fitted on the numpy rate column at construction, so the
+        shifted curve cannot be ridden without refitting them - and declining would silently price
+        the STALE curve, which is a wrong number rather than a missing derivative.
+
+        Every ride LEAVES ITS ARTIFACT'S ID IN `calc_stats`, so the run reports which calibration
+        produced the curve it priced. Nothing else in the replay tuple can say: a ride and a refit
+        of the same plan at the same quotes agree on `plan_hash`, `values_hash`, the version and
+        the seed, and differ only in which artifact was in the store.
         """
+        ridden = self.config.propagated_factor(factor)
+        if ridden is not None:
+            if offset:
+                raise Exception(
+                    'Quote_Propagation: {} carries a Tenor_Offset, so the curve the calculation '
+                    'consumes is interpolated off coefficients fitted before the ride - riding it '
+                    'would price a curve nobody solved for. Run the offset off a re-bootstrap, or '
+                    'set Quote_Propagation to No.'.format(utils.check_tuple_name(factor)))
+            current_val, artifact_id = ridden
+            self.calc_stats.setdefault('Calibrations', {})[
+                utils.check_tuple_name(factor)] = artifact_id
         leaf = torch.tensor(current_val, device=self.device, dtype=self.dtype,
                             requires_grad=requires_grad)
         theta = self.config.calibrated_factors.get(factor)

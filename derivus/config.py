@@ -32,7 +32,7 @@ from pyparsing import Literal, Word, nums, OneOrMore, delimitedList, oneOf, Opti
 # import libraries
 from . import utils
 from . import schema
-from .bootstrappers import construct_bootstrapper
+from .bootstrappers import construct_bootstrapper, InterestRateCurveParameters
 from .instruments import construct_instrument, Deal
 from .stochasticprocess import construct_calibration_config, construct_process
 
@@ -425,6 +425,30 @@ class Config(object):
             if not [x for x in self.params['Price Factors'] if x.startswith(written + '.')]:
                 logging.error('Bootstrapper {0} wrote no {1}.* price factor - check the Market '
                               'Prices section'.format(bootstrapper_name, written))
+
+    def propagated_factor(self, factor):
+        """`(nodes, artifact_id)` for the factor `Calculation.factor_leaf` should mint instead of
+        the one in `Price Factors`, or `None` where nothing asks - a calibration RIDDEN to the
+        quotes standing right now, and the identity of the calibration it rode.
+
+        The id travels with the numbers because a ride is the one thing in a run that the replay
+        tuple cannot name: `plan_hash`, `values_hash`, the engine version and the seed are all
+        blind to WHICH artifact was in the store. Reporting it is what makes a propagated valuation
+        reproducible; refusing on a miss is what makes the absence of one unambiguous.
+
+        Pure: it reads `Market Prices`, the base date, the interpolation scheme and a
+        content-addressed artifact, and writes none of them - so two EXECUTEs over one
+        `(artifact, quotes)` mint the same leaf. There is no `theta_current` anywhere for it to
+        consult, which is the property the whole operator is built around.
+
+        One family answers today, because one family has an operator whose fixed point is a unique
+        root. This becomes a dispatch when a second one earns it; it is not one now, because a
+        least-squares calibration's drift has to be scored in value space and that is a different
+        contract, not a second caller of this one.
+        """
+        return InterestRateCurveParameters.propagate(
+            factor, self.params['Market Prices'], self.params['Price Factor Interpolation'],
+            self.params['System Parameters']['Base_Date'])
 
     def calibrate_factors(self, from_date, to_date, factors, smooth=0.0, correlation_cuttoff=0.2,
                           overwrite_correlations=True, vol_shift=0.0):

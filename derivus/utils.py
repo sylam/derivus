@@ -583,6 +583,24 @@ class SecondOrderRefused(Exception):
     valuation deserves, and a blanket `except` cannot tell them apart."""
 
 
+class CalibrationStale(Exception):
+    """`Quote_Propagation: 'Linear'` will not carry this tick, for one of the two reasons a ride
+    can fail to be a number (`InterestRateCurveParameters.propagate`): the ridden theta no longer
+    reprices the set's own benchmarks inside its `Drift_Tolerance`, or NO ARTIFACT answers to the
+    plan at all - a cold process, an evicted slot, a re-authored strip.
+
+    Both refuse rather than falling back, because the fallback is a plausible wrong curve and the
+    replay tuple cannot tell it from the right one: two runs agreeing on `plan_hash`,
+    `values_hash`, the version and the seed disagreed by 13.4% on a mark once one of them lost its
+    artifact. A refusal is not a number, so it cannot be mistaken for one.
+
+    Named so a caller can REFIT rather than lose the run: nothing about the job is wrong and no
+    number has been reported, the artifact is simply missing or older than the move it was asked to
+    carry. `Config.bootstrap()` publishes a fresh one under the same slot and the same EXECUTE then
+    runs. That is a different response from the one any other exception out of a valuation
+    deserves, and a blanket `except` cannot tell them apart."""
+
+
 def is_fatal_pricing_error(e):
     """Exceptions a deal-level pricing guard must NOT swallow into a scalar-0 mark: the machine
     running out of memory, and a schedule the calculation never bound. Each says the FRAMEWORK is

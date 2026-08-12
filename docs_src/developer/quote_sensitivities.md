@@ -217,11 +217,11 @@ $$\Big(\frac{\partial F}{\partial \theta}\Big)^{\!\top} w = v
 \frac{\partial L}{\partial q} = -\Big(\frac{\partial F}{\partial q}\Big)^{\!\top} w$$
 
 Both derivatives come from **autograd on the residual closure itself**, evaluated once at
-$(\theta^*, q)$: the $n \times n$ matrix by one backward pass per benchmark, the $q$ side as a
-single vector-Jacobian product with $-w$ as its cotangent. The residual is therefore *written once
-and differentiated twice*, and the quote derivative cannot drift from the one the solve converged
-on. $n$ is the benchmark count, so the linear solve is small by construction — the
-[knot rule](#the-knot-rule) is what makes it square.
+$(\theta^*, q)$: `residual_jacobians` takes a row of each out of one backward pass per benchmark,
+because the $q$ side is another output of the pass the $\theta$ side already needs. The residual is
+therefore *written once and differentiated twice*, and the quote derivative cannot drift from the
+one the solve converged on. $n$ is the benchmark count, so the linear solve is small by
+construction — the [knot rule](#the-knot-rule) is what makes it square.
 
 The Jacobian is recomputed at $\theta^*$ rather than reused from the last Newton step, which was
 taken at the iterate *before* it. That costs one iteration's worth of work.
@@ -230,6 +230,16 @@ taken at the iterate *before* it. That costs one iteration's worth of work.
     The residual's subgraph is **shared with the forward pass** — `pv_fixed_cashflows` memoizes its
     payment tensor on the schedule — so freeing it in the backward would take the forward pass's
     graph with it.
+
+!!! note "The same two pieces are also an OPERATOR"
+    Solve every cotangent at once instead of one and $d\theta/dq$ comes out whole, with no second
+    solve — which is what lets a quote that moves between bootstraps carry the curve with it rather
+    than trigger one. That lifecycle — the calibration artifact, the ride, the drift metric and the
+    refusal — is [Quote Propagation](quote_propagation.md), built for this family only. Its unit is
+    the **coupled set** rather than the block: blocks whose residuals read each other's curves are
+    solved as one Newton system so that $d\theta_2/dq_1$ is a column of the published $J$, and the
+    coupling is measured by differentiating the residual against the curves it treats as constants
+    rather than read off a `Discount_Rate` field.
 
 ## The stationarity contract — increment 2 {#the-stationarity-contract}
 
