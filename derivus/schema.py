@@ -40,6 +40,7 @@ See `partition_factor`.
 here and the edge only runs one way.
 """
 
+import copy
 import logging
 
 import numpy as np
@@ -217,6 +218,20 @@ def required_fields(cls):
     """Every field a class declares REQUIRED, inherited declarations included."""
     return [f.key for group in getattr(cls, 'fields', []) for f in group.fields
             if f.default is REQUIRED]
+
+
+def declared_defaults(cls, params):
+    """A calculation block completed by its own declarations - the F defaults under every key the
+    author omitted, so the schema is the single source of an engine default and a stale `.get`
+    fallback cannot disagree with it. Reads inside `execute` may then index directly.
+
+    Mutable defaults are copied per call: a run edits its params freely without writing into the
+    class declaration. `REQUIRED` and `None` defaults are skipped - the first has nothing to offer,
+    the second declares a field the engine is content to find missing."""
+    merged = {f.key: copy.deepcopy(f.default) for f in cls.fields
+              if f.default is not REQUIRED and f.default is not None}
+    merged.update(params)
+    return merged
 
 
 def validate_instrument(deal):

@@ -175,7 +175,7 @@ def _run(curve=CURVE, gradient=False, batch=1024, batches=1, rate=SWAP_RATE, ban
     derivative the CRN ladder measures is their SUM."""
     c = _cfg(curve, rate, collateralised)
     overrides = {
-        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': GRID, 'Batch_Size': batch,
+        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': GRID, 'Batch_Size': batch,
         'Simulation_Batches': batches, 'Random_Seed': seed, 'Currency': 'USD', 'Tenor_Offset': 0.0,
         'Deflation_Interest_Rate': 'USD', 'Gradient_Variables': 'Factors',
         'Credit_Valuation_Adjustment': {

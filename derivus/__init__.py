@@ -146,7 +146,8 @@ def run_baseval(context, prec=torch.float64, overrides=None):
         device = torch.device("cpu")
 
     rundate = calc_params['Base_Date'].strftime('%Y-%m-%d')
-    params_bv = {'Run_Date': rundate, 'MCMC_Simulations': 4096 * 8, 'Greeks': 'No'}
+    # only the runtime-derived key is injected; every declared default comes from the schema
+    params_bv = {'Run_Date': rundate}
     params_bv.update(calc_params)
 
     if overrides is not None:
@@ -158,7 +159,8 @@ def run_baseval(context, prec=torch.float64, overrides=None):
 
 
 def run_hedgemontecarlo(context, prec=torch.float32, overrides=None):
-    from .calculation import construct_calculation
+    from .calculation import construct_calculation, HedgeMonteCarlo
+    from .schema import declared_defaults
 
     calc_params = context.deals.get(
         'Calculation',
@@ -175,10 +177,10 @@ def run_hedgemontecarlo(context, prec=torch.float32, overrides=None):
         device = torch.device("cpu")
 
     rundate = calc_params['Base_Date'].strftime('%Y-%m-%d')
-    time_grid = str(calc_params.get('Time_Grid', '0d 1d(1d) 4m'))
+    time_grid = str(declared_defaults(HedgeMonteCarlo, calc_params)['Time_Grid'])
 
-    params_mc = {'Time_grid': time_grid, 'Run_Date': rundate,
-                 'Tenor_Offset': 0.0, 'Batch_Size': 1024, 'Simulation_Batches': 1}
+    # only the runtime-derived keys are injected; every declared default comes from the schema
+    params_mc = {'Time_grid': time_grid, 'Run_Date': rundate}
 
     params_mc.update(calc_params)
 
@@ -203,7 +205,8 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
     :param prec: the numerical precision to use (default float32)
     :return: a tuple containing the calculation object, output dictionary and exposure profile
     """
-    from .calculation import construct_calculation
+    from .calculation import construct_calculation, Credit_Monte_Carlo
+    from .schema import declared_defaults
     calc_params = context.deals.get(
         'Calculation',
         {'Base_Date': context.params['System Parameters']['Base_Date'],
@@ -219,10 +222,10 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
         device = torch.device("cpu")
 
     rundate = calc_params['Base_Date'].strftime('%Y-%m-%d')
-    time_grid = str(calc_params.get('Time_Grid', '0d 2d 1w(1w) 1m(1m) 3m(3m)'))
+    time_grid = str(declared_defaults(Credit_Monte_Carlo, calc_params)['Time_Grid'])
 
-    params_mc = {'Time_grid': time_grid, 'Run_Date': rundate,
-                 'Tenor_Offset': 0.0, 'Batch_Size': 1024, 'Simulation_Batches': 1}
+    # only the runtime-derived keys are injected; every declared default comes from the schema
+    params_mc = {'Time_grid': time_grid, 'Run_Date': rundate}
 
     params_mc.update(calc_params)
 

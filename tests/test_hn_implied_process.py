@@ -40,7 +40,8 @@ from scipy.stats import skew, kurtosis
 import derivus
 from derivus import utils
 import hn_reference as hnref
-from derivus.calculation import CMC_State, CMC_State_Inner, construct_calculation, construct_process
+from derivus.calculation import CMC_State, CMC_State_Inner, Credit_Monte_Carlo, construct_calculation, construct_process
+from derivus.schema import declared_defaults
 from derivus.config import Config
 from derivus.instruments import construct_instrument
 from derivus.stochasticprocess import (
@@ -490,9 +491,11 @@ def _dedupe_calc(gradient_variables=None):
     calc = construct_calculation('Credit_Monte_Carlo', c, device=torch.device('cpu'), prec=DTYPE)
     calc.input_time_grid = '0d 2d(1w) 1m'
     calc.batch_size = 64
-    params = {'Run_Date': '2024-06-28', 'Time_grid': '0d 2d(1w) 1m', 'Batch_Size': 64,
-              'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'MCMC_Simulations': 0,
-              'Tenor_Offset': 0.0, 'CVA': {'Gradient': 'Yes'}}         # a Gradient='Yes' dict ⇒ greeks on
+    # completed through the seam `execute` runs, because this harness calls update_factors directly
+    params = declared_defaults(Credit_Monte_Carlo, {
+        'Run_Date': '2024-06-28', 'Time_grid': '0d 2d(1w) 1m', 'Batch_Size': 64,
+        'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'MCMC_Simulations': 0,
+        'Tenor_Offset': 0.0, 'CVA': {'Gradient': 'Yes'}})              # a Gradient='Yes' dict ⇒ greeks on
     if gradient_variables is not None:
         params['Gradient_Variables'] = gradient_variables
     calc.params = params

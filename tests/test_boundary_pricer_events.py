@@ -135,7 +135,7 @@ def _run(deal, spot=bb.SPOT, gradient=False, batch=512, mcmc=128, collateralised
     else:
         c.deals['Deals']['Children'] = kids
     _, out = derivus.run_cmc(c, prec=bb.DTYPE, overrides={
-        'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
+        'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
         'Simulation_Batches': batches, 'Random_Seed': 1, 'Currency': report_currency,
         'Tenor_Offset': 0.0,
         'MCMC_Simulations': mcmc, 'Deflation_Interest_Rate': 'USD', 'Generate_Cashflows': 'Yes',
@@ -608,7 +608,7 @@ def _fva(spot, gradient, batch=1024, mcmc=192):
         'Curve': utils.Curve([], [[0.0, 0.02], [10.0, 0.02]])}
     c.deals['Deals']['Children'] = [{'Instrument': construct_instrument(DISCRETE_BARRIER, {})}]
     _, out = derivus.run_cmc(c, prec=bb.DTYPE, overrides={
-        'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
+        'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
         'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
         'MCMC_Simulations': mcmc, 'Deflation_Interest_Rate': 'USD', 'Gradient_Variables': 'Factors',
         'Funding_Valuation_Adjustment': {
@@ -673,7 +673,7 @@ def test_the_correction_covers_heston_nandi_barriers():
         c.params['Price Factors']['SurvivalProb.CPTY'] = {
             'Recovery_Rate': 0.4, 'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.4]])}
         _, out = derivus.run_cmc(c, prec=hb.DTYPE, overrides={
-            'Run_Date': hb.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': 512,
+            'Run_Date': hb.BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': '0d 3m(3m)', 'Batch_Size': 512,
             'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
             'MCMC_Simulations': 256, 'Deflation_Interest_Rate': 'USD',
             'Gradient_Variables': 'Factors',

@@ -181,12 +181,14 @@ SHAPELESS = {
     ('VARMixedFactorInterestRateModel', 'Calibration_Tenors'),
     ('BasisLinkedSpotModel', 'Sigma_By_State'),
     ('CreditMonteCarlo', 'Credit_Valuation_Adjustment.CDS_Tenors'),
+    # Objective / Evaluator / Solver left this list when they declared their knobs - see
+    # test_hmc_declared_knobs. What remains here is either a map keyed by a NAME the author
+    # invents (deal Object then Reference; instrument or commodity) or a plain list of factor
+    # name strings (Scenario_Factors) - the shapes the vocabulary cannot state.
     ('HedgeMonteCarlo', 'Hedging_Problem.Tradable_Instruments'),
     ('HedgeMonteCarlo', 'Hedging_Problem.Liabilities'),
     ('HedgeMonteCarlo', 'Hedging_Problem.Portfolio_State'),
-    ('HedgeMonteCarlo', 'Hedging_Problem.Objective'),
-    ('HedgeMonteCarlo', 'Hedging_Problem.Evaluator'),
-    ('HedgeMonteCarlo', 'Hedging_Problem.Solver'),
+    ('HedgeMonteCarlo', 'Scenario_Factors'),
     ('InterestRatePrices', 'Points.Deal'),
 }
 
@@ -626,14 +628,16 @@ def test_every_value_the_engine_tests_for_is_one_the_menu_offers(calc_type):
 
 def test_the_calculation_time_grid_is_the_key_the_engine_reads():
     """The drift this migration fixed. The store declared `Base_Time_Grid`; `run_cmc` and
-    `run_hedgemontecarlo` read `calc_params.get('Time_Grid', ...)` and every fixture and doc
-    writes `Time_Grid`, so the Workbench's grid field wrote a key nobody reads and a
+    `run_hedgemontecarlo` read `Time_Grid` - now through `declared_defaults`, so the omitted-key
+    grid is the declared one rather than a literal that can disagree with it - and every fixture
+    and doc writes `Time_Grid`, so the Workbench's grid field wrote a key nobody reads and a
     Workbench-authored run silently took the hardcoded default grid."""
     assert 'Time_Grid' in CALCULATION['types']['CreditMonteCarlo']
     assert 'Time_Grid' in CALCULATION['types']['HedgeMonteCarlo']
     assert 'Base_Time_Grid' not in CALCULATION['types']['CreditMonteCarlo']
     src = inspect.getsource(derivus)
-    assert "calc_params.get('Time_Grid'" in src and 'Base_Time_Grid' not in src
+    assert src.count("declared_defaults(") >= 2 and "['Time_Grid']" in src
+    assert "calc_params.get('Time_Grid'" not in src and 'Base_Time_Grid' not in src
 
 
 def market_price_classes():

@@ -34,7 +34,7 @@ from .instruments import get_fxrate_factor, get_survival_component, get_interest
 from .pricing import SensitivitiesEstimator
 # import the documentation and utils modules
 from . import utils, pricing
-from .schema import F
+from .schema import F, REQUIRED, Row, declared_defaults
 from .hedge_runtime import construct_hedge_runtime
 from .hedge_bundle import Bundle, run_hedge_execution, HedgeRuntimeExecutionResult
 from .hedge_solver import StreamingSolve
@@ -932,7 +932,7 @@ class Credit_Monte_Carlo(Calculation):
             self.config.calculate_dependencies(params, base_date, self.input_time_grid)
 
         self.update_time_grid(base_date, reset_dates, settlement_currencies,
-                              dynamic_scenario_dates=params.get('Dynamic_Scenario_Dates', 'No') == 'Yes')
+                              dynamic_scenario_dates=params['Dynamic_Scenario_Dates'] == 'Yes')
 
         return self._build_factor_state(
             dependent_factors, stochastic_factors, implied_factors, params, base_date, job_id, num_jobs)
@@ -1059,8 +1059,8 @@ class Credit_Monte_Carlo(Calculation):
 
         # set up the device and allocate memory
         shared_mem = self._init_shared_mem(
-            int(params['Random_Seed']), params.get('NoModel', 'Constant'),
-            params['Currency'], params.get('MCMC_Simulations', 2048),
+            int(params['Random_Seed']), params['NoModel'],
+            params['Currency'], params['MCMC_Simulations'],
             job_id, num_jobs, calc_greeks=sensitivities if greeks else None)
 
         # calculate a reverse lookup for the tenors and store the daycount code
@@ -1227,7 +1227,7 @@ class Credit_Monte_Carlo(Calculation):
             self.make_factor_index(self.all_var)
 
         scale_by_survival = (
-            self.params.get('Funding_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes')
+            self.params['Funding_Valuation_Adjustment'].get('Calculate', 'No') == 'Yes')
 
         shared_mem = CMC_State(
             self.get_cholesky_decomp(), self.static_var, self.batch_size,
@@ -1339,6 +1339,8 @@ class Credit_Monte_Carlo(Calculation):
         populated - measured at 32768 - so a thin run should widen it and expect bias rather than
         noise.
         """
+        # the declaration is the single source of an omitted field's default
+        params = declared_defaults(type(self), params)
         # get the rundate
         base_date = pd.Timestamp(params['Run_Date'])
 
@@ -1408,7 +1410,7 @@ class Credit_Monte_Carlo(Calculation):
                 shared_mem.Report_Currency, base_ccy, self.time_grid.time_grid[time_index], shared_mem)
 
             # now calculate all the valuation adjustments (if necessary)
-            if params.get('Collateral_Valuation_Adjustment', {}).get(
+            if params['Collateral_Valuation_Adjustment'].get(
                     'Calculate', 'No') == 'Yes' and shared_mem.simulation_batch > 1:
 
                 if params['Collateral_Valuation_Adjustment'].get('Gradient', 'No') == 'Yes':
@@ -1423,7 +1425,7 @@ class Credit_Monte_Carlo(Calculation):
                         # store the size of the Gradient
                         self.calc_stats['Gradient_Vector_Size'] = sensitivity.P
 
-            if params.get('Initial_Margin', {}).get('Calculate', 'No') == 'Yes':
+            if params['Initial_Margin'].get('Calculate', 'No') == 'Yes':
                 def calc_buckets(liq_w, tenor):
                     liquidity = {}
                     for col in liq_w.T.iterrows():
@@ -1520,7 +1522,7 @@ class Credit_Monte_Carlo(Calculation):
 
                 tensors['LCH_Margin'] = params['Initial_Margin']['Delta_Factor']*IM_delta_charge+IM_liquidity_charge
 
-            if params.get('Funding_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
+            if params['Funding_Valuation_Adjustment'].get('Calculate', 'No') == 'Yes':
                 mtm_grid = self.time_grid.mtm_time_grid[time_index]
 
                 funding_cost = get_interest_factor(
@@ -1615,7 +1617,7 @@ class Credit_Monte_Carlo(Calculation):
                         # store the size of the Gradient
                         self.calc_stats['Gradient_Vector_Size'] = sensitivity.P
 
-            if params.get('Credit_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
+            if params['Credit_Valuation_Adjustment'].get('Calculate', 'No') == 'Yes':
                 discount = get_interest_factor(
                     utils.check_rate_name(params['Deflation_Interest_Rate']),
                     self.static_factors, self.stoch_factors, self.all_tenors)
@@ -1701,7 +1703,7 @@ class Credit_Monte_Carlo(Calculation):
                         self.calc_stats['Gradient_Vector_Size'] = sensitivity.P
 
                         # now fetch the CDS tenors and calculate the CDS spreads
-                        CDS_tenors = params.get('Credit_Valuation_Adjustment', {}).get('CDS_Tenors')
+                        CDS_tenors = params['Credit_Valuation_Adjustment'].get('CDS_Tenors')
                         if CDS_tenors and recovery < 1.0:
                             # calculate cds sensitivities
                             CDS_rates, shifted_tenor, shifted_curves = utils.calc_cds_rates(
@@ -1723,7 +1725,7 @@ class Credit_Monte_Carlo(Calculation):
                 output[k].append(v.cpu().detach().numpy())
 
             # fetch cashflows if necessary
-            if self.params.get('Generate_Cashflows', 'No') == 'Yes':
+            if self.params['Generate_Cashflows'] == 'Yes':
                 dates = np.array(sorted(self.time_grid.mtm_dates))
                 for currency, values in shared_mem.t_Cashflows.items():
                     cash_index = dates[sorted(values.keys())]
@@ -1820,7 +1822,9 @@ class Base_Revaluation(Calculation):
     fields = [
         F('Base_Date', 'Date', default=''),
         F('Currency', 'Text', default='ZAR'),
-        F('MCMC_Simulations', 'Integer', default=2048),
+        # 4096 * 8 is what run_baseval always injected while the store said 2048 and nothing read
+        # it; the declaration records the behaviour production has, so no realized number moves
+        F('MCMC_Simulations', 'Integer', default=4096 * 8),
         F('Random_Seed', 'Integer', default=5120),
         F('Greeks', 'Text', default='No', values=['All', 'First', 'No'],
           description='First order factor sensitivities, or `All` for the second order block '
@@ -1878,7 +1882,7 @@ class Base_Revaluation(Calculation):
 
         # set up the device and allocate memory
         shared_mem = self.__init_shared_mem(
-            params['Currency'], params.get('MCMC_Simulations', 8 * 4096), calc_grad, params.get('Random_Seed', 1))
+            params['Currency'], params['MCMC_Simulations'], calc_grad, params['Random_Seed'])
 
         # calculate a reverse lookup for the tenors and store the daycount code
         self.all_tenors = utils.update_tenors(self.base_date, self.all_factors)
@@ -1993,6 +1997,8 @@ class Base_Revaluation(Calculation):
         return self.output
 
     def execute(self, params):
+        # the declaration is the single source of an omitted field's default
+        params = declared_defaults(type(self), params)
         # get the rundate
         base_date = pd.Timestamp(params['Run_Date'])
         # store the params
@@ -2173,6 +2179,11 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         F('Simulation_Batches', 'Integer', default=1),
         F('Batch_Size', 'Integer', default=1024),
         F('Random_Seed', 'Integer', default=5120),
+        F('Tenor_Offset', 'Float', default=0.0,
+          description='Years to shift every factor tenor by before the run'),
+        F('MCMC_Simulations', 'Integer', default=2048),
+        F('NoModel', 'Text', default='Constant', values=['Constant', 'RiskNeutral'],
+          description='How a factor with no stochastic process evolves'),
         F('Antithetic', 'Text', default='No', values=['Yes', 'No']),
         F('Execution_Mode', 'Text', default='simulate_only',
           values=['simulate_only', 'solve_hedge']),
@@ -2184,6 +2195,9 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
           description='Mirror the inner Sobol draws as (z, -z) pairs - needs an even '
                       'Inner_Sub_Batch'),
         F('Inner_Draws', 'Text', default='sobol', values=['sobol', 'random']),
+        F('Scenario_Factors', 'Container', default=[],
+          description='Price factors no deal reaches but the scenario set must simulate, named '
+                      'as `type.name` strings'),
         F('Observed_Scenario', 'Text', default='',
           description='Path to an npz of realized factor paths that replace the simulated draw'),
         F('Hedging_Problem', 'Container', default={},
@@ -2191,6 +2205,9 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
           sub_fields=[
               F('History_Lookback_Business_Days', 'Integer', default=30),
               F('Randomize_Initial_State', 'Text', default='No', values=['Yes', 'No']),
+              F('Inner_Belief_Filter', 'Text', default='Yes', values=['Yes', 'No'],
+                description='Publish a one-step filtered belief into the inner fork instead of '
+                            'the privileged true-regime one-hot'),
               F('Tradable_Instruments', 'Container', default={},
                 description='Deal blocks keyed by Object then by Reference'),
               F('Liabilities', 'Container', default={},
@@ -2198,11 +2215,99 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
               F('Portfolio_State', 'Container', default={},
                 description='Opening positions, cash balances and posted margin'),
               F('Objective', 'Container', default={},
-                description='The utility SHAPE and its parameters, dispatched on Object'),
+                description='The utility SHAPE and its parameters, dispatched on Object',
+                sub_fields=[
+                    F('Object', 'Text', default=REQUIRED,
+                      values=['AsymmetricUtility_Symlog', 'AsymmetricUtility_Huber',
+                              'AsymmetricUtility_CARA'],
+                      description='The utility shape the DP recursion works in'),
+                    F('Utility_Scale_Mode', 'Text', default='vol_scaled_notional',
+                      values=['vol_scaled_notional'],
+                      description='How the utility scale c is derived from the book'),
+                    F('Utility_Scale_Explicit', 'Float', default=None,
+                      description='Literal dollar c, overriding the formula'),
+                    F('Huber_Aversion', 'Float', default=2.5,
+                      description='Curvature of the quadratic loss arm, in units of c'),
+                    F('Huber_Delta', 'Float', default=1.0,
+                      description='Knee beyond which the loss arm goes linear, in units of c'),
+                    F('CARA_Gamma', 'Float', default=1.0,
+                      description='Absolute risk aversion of u = (1-exp(-gamma x))/gamma')]),
               F('Evaluator', 'Container', default={},
-                description='Accounting mode and cash instruments, dispatched on Object'),
+                description='Accounting mode and cash instruments, dispatched on Object',
+                sub_fields=[
+                    F('Accounting_Mode', 'Text', default='futures',
+                      values=['futures', 'cash_account'],
+                      description='Whether a rebalance settles variation margin or moves cash'),
+                    F('Transaction_Cost_Per_Unit', 'Float', default=0.0,
+                      description='Flat turnover cost per contract, before the spread charge'),
+                    F('Bid_Offer_Spread_Bps', 'Float', default=0.0,
+                      description='Half-spread bps on notional; a spec dict may replace the '
+                                  'scalar for maturity- and vol-dependent spreads'),
+                    F('Roll_As_Calendar_Spread', 'Text', default='No', values=['Yes', 'No'],
+                      description='Charge a matched roll one calendar half-cost instead of two '
+                                  'outright half-spreads'),
+                    F('Calendar_Spread_Bps', 'Float', default=None,
+                      description='Half-spread bps of the calendar roll leg'),
+                    F('IM_Funding_Spread_Bps', 'Float', default=0.0,
+                      description='Spread paid to fund initial margin; 0 switches the term off'),
+                    F('IM_Vol_Multiplier', 'Float', default=0.0,
+                      description='Initial margin as a multiple of notional at the reference vol'),
+                    F('IM_Ref_Vol', 'Float', default=1.0,
+                      description='Vol the margin multiplier is quoted at'),
+                    F('Force_Flat_At_End', 'Text', default='Yes', values=['Yes', 'No'],
+                      description='Close any residual book at the liability terminal'),
+                    F('Total_Position_Abs_Limit', 'Float', default=0.0,
+                      description='Cap on the absolute signed book total; 0 = uncapped'),
+                    F('Total_Position_Schedule', 'Table', default=None,
+                      row=Row([F('Step', 'Integer', default=0),
+                               F('Min_Total', 'Float', default=0.0),
+                               F('Max_Total', 'Float', default=0.0)]),
+                      description='Piecewise-constant corridor on the signed book total, by '
+                                  'decision step')]),
               F('Solver', 'Container', default={},
-                description='The value-function solver and its schedule, dispatched on Object')])
+                description='The value-function solver and its schedule, dispatched on Object',
+                sub_fields=[
+                    F('Object', 'Text', default=REQUIRED,
+                      values=['DiffSolverV2', 'HindsightDpSolver'],
+                      description='The value-function solver; solve_hedge requires DiffSolverV2'),
+                    F('Multi_Seed_Count', 'Integer', default=1,
+                      description='Independent training seeds the artifact is selected across'),
+                    F('T_Min', 'Integer', default=0,
+                      description='Earliest step the backward sweep fits; 0 = full sweep'),
+                    F('Training_Action_Grid_Levels_Per_Axis', 'Integer', default=11,
+                      description='Levels per hedge axis in the greedy action grid'),
+                    F('Training_Action_Chunk_Size', 'Integer', default=64,
+                      description='Actions scored per batched argmax pass'),
+                    F('Use_Advantage_Decomp', 'Text', default='Yes', values=['Yes', 'No'],
+                      description='Fit the NN residual over the bounded-utility anchor rather '
+                                  'than the continuation itself'),
+                    F('DiffV2_Fit_Iters', 'Integer', default=150,
+                      description='Adam iterations per residual net'),
+                    F('DiffV2_LR', 'Float', default=2.0e-3, description='Adam learning rate'),
+                    F('DiffV2_Bank_Noise_Frac', 'Float', default=0.15,
+                      description='Bank q-exploration noise as a fraction of each [Min,Max] range'),
+                    F('DiffV2_Weight_Decay', 'Float', default=0.0,
+                      description='Residual-net weight decay; a crutch for path-starved problems'),
+                    F('DiffV2_Hidden', 'Integer', default=32,
+                      description='Hidden width of each residual net'),
+                    F('DiffV2_Lambda_Grad', 'Float', default=1.0,
+                      description='Twin-loss weight on the pathwise-gradient term'),
+                    F('DiffV2_Risk_Kappa', 'Float', default=0.0,
+                      description='Downside semideviation penalty at the argmax; 0 = plain E[C]'),
+                    F('DiffV2_Cost_Aware_Argmax', 'Text', default='No', values=['Yes', 'No'],
+                      description='Charge the L1 repositioning cost at the verdict argmax'),
+                    F('DiffV2_Stepper_Rollout', 'Text', default='No', values=['Yes', 'No'],
+                      description='Roll a frozen policy day-by-day through the real accounting'),
+                    F('DiffV2_Per_Column_Grad_Norm', 'Text', default='Yes', values=['Yes', 'No'],
+                      description='Normalize twin-loss greeks per input column; No = pooled'),
+                    F('DiffV2_Save_Value_Fn', 'Text', default='',
+                      description='Path the fitted nets and their frame are written to'),
+                    F('DiffV2_Load_Value_Fn', 'Text', default='',
+                      description='Checkpoint to evaluate frozen; a LIST loads an ensemble'),
+                    F('Run_Hindsight_Diagnostic', 'Text', default='No', values=['Yes', 'No'],
+                      description='Assemble the clairvoyant upper-bound benchmark track'),
+                    F('Run_Textbook_Benchmark', 'Text', default='No', values=['Yes', 'No'],
+                      description='Assemble the averaging-hedge lower-bound benchmark track')])])
     ]
 
     @staticmethod
@@ -2316,6 +2421,8 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         d(value)/d(spot) via AAD. The diff-ML solver differentiates the continuation inside the
         inner MC off its own fresh state-at-t leaves (see Bundle.inner_mc_grad), so it needs no
         outer leaf."""
+        # the declaration is the single source of an omitted field's default
+        params = declared_defaults(type(self), params)
         # `.get` with no fallback on purpose: HedgeMonteCarlo declares no `Greeks` field and has no
         # default to publish for one - it only refuses the value that would silently do nothing
         if params.get('Greeks') == 'All':

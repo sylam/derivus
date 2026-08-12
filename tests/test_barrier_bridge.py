@@ -82,7 +82,7 @@ ONE_TOUCH = {
 
 
 def _profile(grid, seed=1, batch=8192, deal=None):
-    params = {'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': grid, 'Batch_Size': batch,
+    params = {'Run_Date': BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': grid, 'Batch_Size': batch,
               'Simulation_Batches': 1, 'Random_Seed': seed, 'Currency': 'USD',
               'Tenor_Offset': 0.0, 'Deflation_Interest_Rate': 'USD'}
     c = _cfg()
@@ -102,7 +102,7 @@ def _cva(spot, deal, gradient, batch=4096, mcmc=None):
         'Recovery_Rate': 0.4, 'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.4]])}
     c.deals['Deals']['Children'] = [{'Instrument': construct_instrument(deal, {})}]
     _, out = derivus.run_cmc(c, prec=DTYPE, overrides={
-        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
+        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
         'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
         'Deflation_Interest_Rate': 'USD', 'Gradient_Variables': 'Factors',
         **({'MCMC_Simulations': mcmc} if mcmc else {}),
@@ -252,7 +252,7 @@ def test_discrete_barrier_is_observed_only_on_its_own_dates():
     c.deals['Deals']['Children'] = [{'Instrument': construct_instrument(
         dict(BARRIER_DEAL, Barrier_Dates=MONTHLY_BARRIER), {})}]
     _, out = derivus.run_cmc(c, prec=DTYPE, overrides={
-        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 2d 1w(1w) 3m(1m)',
+        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': '0d 2d 1w(1w) 3m(1m)',
         'Batch_Size': 4096, 'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD',
         'Tenor_Offset': 0.0, 'MCMC_Simulations': 256, 'Deflation_Interest_Rate': 'USD'})
     v = out['Results']['mtm'].values.mean(axis=1)
@@ -269,7 +269,7 @@ def _rebate_run(rebate, units):
         BARRIER_DEAL, Barrier_Price=95.0, Cash_Rebate=rebate, Units=units,
         Barrier_Dates=[BASE + pd.Timedelta(days=d) for d in range(30, 366, 30)]), {})}]
     _, out = derivus.run_cmc(c, prec=DTYPE, overrides={
-        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 1m(1m)', 'Batch_Size': 2048,
+        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': '0d 1m(1m)', 'Batch_Size': 2048,
         'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
         'MCMC_Simulations': 256, 'Generate_Cashflows': 'Yes', 'Deflation_Interest_Rate': 'USD'})
     cf = out['Results']['cashflows']
@@ -340,7 +340,7 @@ def test_digital_reports_its_equity_and_vol_factors():
         'Recovery_Rate': 0.4, 'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.4]])}
     c.deals['Deals']['Children'] = [{'Instrument': construct_instrument(_digital(1e-6), {})}]
     _, out = derivus.run_cmc(c, prec=DTYPE, overrides={
-        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': 256,
+        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': '0d 3m(3m)', 'Batch_Size': 256,
         'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
         'MCMC_Simulations': 128, 'Deflation_Interest_Rate': 'USD', 'Gradient_Variables': 'Factors',
         'Credit_Valuation_Adjustment': {
@@ -359,7 +359,7 @@ def _settled(deal_overrides, batch=512):
     c.deals['Deals']['Children'] = [{'Instrument': construct_instrument(
         dict(BARRIER_DEAL, **deal_overrides), {})}]
     _, out = derivus.run_cmc(c, prec=DTYPE, overrides={
-        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 1m(1m)', 'Batch_Size': batch,
+        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': '0d 1m(1m)', 'Batch_Size': batch,
         'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
         'MCMC_Simulations': 128, 'Generate_Cashflows': 'Yes', 'Deflation_Interest_Rate': 'USD'})
     cf = out['Results']['cashflows']

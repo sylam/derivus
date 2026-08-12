@@ -18,7 +18,8 @@ Two rules apply to everything here, from [Conventions](conventions.md):
 | `pv_partial_barrier_option` | `pricing` | Excluded from the sensitivity work by decision; wants its own review. Also carries a suspected NaN — `limit` goes negative past `Barrier_Limit_Date` and is passed to `sqrt` unclamped. **Read, not run.** |
 | A sibling fallback may name a factor discovery never fetched | each deal's `calc_dependencies` | Discovery iterates `factor_fields` over the RAW field and `get_fieldname` drops blanks, so a blank reference loads no factor. A fallback is only safe if it names one something ELSE already pulled in. `Discount_Rate ← Currency` is safe — 34 sites — because `Currency` is an `FxRate` and `dependant_fields` pulls its `InterestRate` transitively. Adding a fallback to a field whose sibling has no such edge silently resolves to whatever the sibling's chain did load. The one cross-leg instance (`FXForwardDeal.Sell_Discount_Rate ← Buy_Currency`) is fixed: both rates are `default=REQUIRED` with no fallback. |
 | Four tables the Workbench cannot save | `derivus_jupyter.set_value_from_widget` | `set_repr` picks a deserializer from the `obj` token, and for an untagged table falls to a hardcoded whitelist of field NAMES. `Names`, `Sampling_Data_1`, `Sampling_Data_2` and `Barrier_Dates` are outside it and raise. The token table is per-field knowledge the `Row` now carries — the fix is to render from the declaration, not to add a fifth token. |
-| Eighteen descriptors have no widget | `stochasticprocess` (Markov / VAR / basis models), `calculation` (`Hedging_Problem`, `CDS_Tenors`) | `Transition_Matrix` is N×N, `Mean` and `Sigma_By_State` are length-N, `States` is a list of per-regime dicts, `Tradable_Instruments` is a deal map keyed by `Object` then by `Reference` — every one of those shapes is an OUTPUT, and `Table` declares fixed columns while `Container` declares fixed named children. `define_input` reads `element['col_names']` / `element['sub_fields']` unchecked, so the Workbench raises the moment it renders any process in the platinum world, or the hedging problem itself. Pinned by an exact-set gate that fails in both directions. The fix wants a widget, not a schema change. |
+| Seventeen descriptors have no widget | `stochasticprocess` (Markov / VAR / basis models), `calculation` (`Hedging_Problem` maps, `CDS_Tenors`, `Scenario_Factors`) | `Transition_Matrix` is N×N, `Mean` and `Sigma_By_State` are length-N, `States` is a list of per-regime dicts, `Tradable_Instruments` is a deal map keyed by `Object` then by `Reference` — every one of those shapes is an OUTPUT, and `Table` declares fixed columns while `Container` declares fixed named children. `define_input` reads `element['col_names']` / `element['sub_fields']` unchecked, so the Workbench raises the moment it renders any process in the platinum world, or the hedging problem itself. Pinned by an exact-set gate that fails in both directions (the `Objective` / `Evaluator` / `Solver` blocks left the set when they declared their knobs — see `test_hmc_declared_knobs`). The fix wants a widget, not a schema change. |
+| The boundary stack under a dynamic scenario grid | `pricing` barrier paths, `utils.BoundarySet` | Found the day `Dynamic_Scenario_Dates` became the declared default: with deal dates ON the scenario grid, the discrete barrier's profile drifts **−1.40%** from inception ("observed on the wrong dates" — a PRICE error), the Heston–Nandi barrier's CVA gradient sits **72.8%** from a FLAT CRN oracle (adjacent to the known `hit_value`-stays-GBM-under-HN discontinuity), and the collateralised-latch CRN ladders stop converging (decisions sit on grid rows, so a bump ladder differences across the jump). The measured boundary/quote gates pin `'No'` explicitly — the grid they were built and measured under — so these are OPEN defects of the now-default world, not gate artifacts. |
 | Boundary scoping is not mutation-gated | `tests/test_boundary_pricer_events.py` | The fix is verified by measuring the term directly against CRN, but both two-netting-set gates measure the END-TO-END gradient, where the boundary term is a small fraction — so if it breaks later the suite stays green. Isolating it needs a portfolio where the correction dominates the smooth sensitivity, which is not a portfolio anyone runs. |
 
 ## Designed, not built
@@ -279,8 +280,19 @@ Workbench-authored run silently took the hardcoded default grid. Eight more keys
 never declared: `Tenor_Offset`, `Keep_Tensor`, `NoModel`, `Gradient_Variables`,
 `Boundary_AAD_Bandwidth` (also on base valuation), the whole `Initial_Margin` block, and
 `Hessian` / `CDS_Tenors` inside the CVA block — the last already published in the JSON reference's
-example. Their descriptor defaults are the engine's own `.get` defaults, which is the only
-defensible source for them.
+example. Their descriptor defaults were sourced from the engine's own `.get` defaults — and the
+audit's leftover disagreements were then RULED the other way: **the declaration is the single
+source of an omitted field's default.** `schema.declared_defaults` completes the params dict at
+the top of every `execute`, `run_*` inject only runtime-derived keys, and the fallbacks that could
+lie are direct reads now, with an AST gate holding any survivor to equality with its declaration
+(`tests/test_calculation_defaults.py`). Four disagreements surfaced and settled: `Random_Seed`
+(engine said 1, declaration says **5120**), `Dynamic_Scenario_Dates` and `Generate_Cashflows`
+(engine said `'No'`, declarations say **`'Yes'`** — a results-changing event for any job omitting
+them, and the flip is what exposed the dynamic-grid boundary defects in the table above), and
+`MCMC_Simulations` on base valuation, where the declaration moved to the **32768** that
+`run_baseval` had always injected past the store's unread 2048. The `Hedging_Problem`
+`Objective` / `Evaluator` / `Solver` blocks declare their ~40 knobs on the same terms
+(`test_hmc_declared_knobs` holds declared-vs-read in both directions, engine side included).
 
 Four are declared and NOT read, and stay declared as unbuilt functionality:
 `Credit_Valuation_Adjustment.Bank`, `Funding_Valuation_Adjustment.Bank` and

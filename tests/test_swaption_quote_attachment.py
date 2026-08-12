@@ -35,9 +35,10 @@ import torch
 
 import derivus
 from derivus import utils
-from derivus.calculation import construct_calculation
+from derivus.calculation import Credit_Monte_Carlo, construct_calculation
 from derivus.config import Config
 from derivus.instruments import construct_instrument
+from derivus.schema import declared_defaults
 
 from rates_world import par_swap
 from test_swaption_quote_graph import BASE, BLOCK, CCY, CURVE, VOL, definitions, price_factors
@@ -102,7 +103,7 @@ def world(connect, bumps=(), benchmarks=None, **declared):
 
 
 def overrides(gradient_variables='All', greeks=True):
-    return {'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': TIME_GRID, 'Batch_Size': 64,
+    return {'Run_Date': BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': TIME_GRID, 'Batch_Size': 64,
             'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': CCY, 'MCMC_Simulations': 0,
             'Tenor_Offset': 0.0, 'Deflation_Interest_Rate': CURVE,
             'Gradient_Variables': gradient_variables,
@@ -257,7 +258,8 @@ def both_consumers():
     edge case: minting a second leaf splits the quote gradient across two tensors, silently.
     """
     config = job(True)[0]
-    params = dict(overrides(), Base_Date=BASE)
+    # completed through the seam `execute` runs, because this harness calls the build directly
+    params = declared_defaults(Credit_Monte_Carlo, dict(overrides(), Base_Date=BASE))
     calc = construct_calculation('Credit_Monte_Carlo', config, device=torch.device('cpu'),
                                  prec=DTYPE)
     calc.input_time_grid, calc.batch_size, calc.params = TIME_GRID, 64, params

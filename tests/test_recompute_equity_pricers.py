@@ -138,7 +138,7 @@ def cmc(pricer, gradient=False, recompute='No', batch=256, mcmc=64, collateralis
     takes the Sobol branch - the memoized half of the stream contract - and the boundary
     registration has a population to fit a kernel to."""
     overrides = {
-        'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
+        'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
         'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
         'MCMC_Simulations': mcmc, 'Deflation_Interest_Rate': 'USD', 'Generate_Cashflows': 'Yes',
         'Gradient_Variables': 'Factors', 'Recompute_Inner_MC': recompute,
