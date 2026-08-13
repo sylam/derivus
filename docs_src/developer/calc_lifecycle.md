@@ -218,7 +218,8 @@ Three contracts fall out of it, and each is a way to be silently wrong:
   caller performs them once off the forward's result.
 - **Its inputs are its whole theta surface.** Autograd only returns a gradient for a tensor passed
   to `apply`, so anything the simulation reads out of a closure is differentiated as a constant.
-  `pv_MC_Tarf` hoists its vol strip out of the fixing loop (`forward_vols`); the autocall hoists its
+  all three pricers build their vol strip at the call site (`forward_vol_strip` differenced by
+  `forward_vol_rate`) rather than in the fixing loop; the autocall hoists its
   floating leg and its past equity fixings; all three pass in the Heston–Nandi scalars they used to
   read off `t_Static_Buffer` in the enclosing scope. That last one is what
   `test_the_heston_nandi_theta_survives_the_node` exists for — reverting the barrier's hoist turns

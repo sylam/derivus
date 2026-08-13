@@ -29,7 +29,7 @@ WHAT THIS GATE IS. A taint pass, per function, over ``derivus/``: a name that ho
 carry rate may not reach ``exp`` without being multiplied by a year fraction first. Taint is seeded
 where a carry-vocabulary name is bound from a ``multiply_by_time=False`` rate gather, and wherever a
 carry-vocabulary name is bound at all - a PARAMETER (the strip crosses into ``sim_spot_oss`` /
-``sim_spot_tarf`` / ``sim_spot`` / ``forward_vols`` inside a ``theta`` tuple, and no AST can follow
+``sim_spot_tarf`` / ``sim_spot`` / ``forward_vol_strip`` inside a ``theta`` tuple, and no AST can follow
 it there) or a ``for`` target (the per-row strip inside the fixing loops). The name is the handoff,
 so the gate holds the name to its meaning. Taint is discharged by a product with a time-like name,
 or by ``total_log_forward``, the one sanctioned consumer.
@@ -44,7 +44,7 @@ MUTATION MATRIX (applied to the current tree's source, scanned, discarded):
     mutation                                                            verdict
     (1)  total_log_forward inlined back to a bare `.sum()`              KILLED (the shipped defect)
     (2)  sim_spot_oss builds carry_int without dt                       KILLED
-    (3)  forward_vols drops fixing_t                                    KILLED
+    (3)  forward_vol_strip drops cum_t from its exponent                KILLED
     (4)  CommodityFutureDeal's forward drops T_t_years                  KILLED
     (5)  pv_MC_Tarf's fwd_drift drops dt                                KILLED
     (6)  pv_MC_Tarf's HN b_step drops dt                                KILLED

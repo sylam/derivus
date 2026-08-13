@@ -594,45 +594,56 @@ def test_the_averaging_gradient_is_bit_identical_with_the_node_on(run, stream):
 
 
 def test_the_collateralised_averaging_gradient_is_the_taped_one_to_the_last_bit():
-    """ONE ENTRY, FOUR STEPS, AND THE TAPED SIDE SPENDS THEM TOO - which is why this gate is a
-    statement about the SHAPE of the disagreement rather than a tolerance on its size.
+    """TWO ENTRIES, SIXTY-FOUR STEPS, AND THE TAPED SIDE SPENDS THEM TOO - which is why this gate
+    is a statement about the SHAPE of the disagreement rather than a tolerance on its size.
 
-    THE MEASURED DISTRIBUTION, on the grid this gate now runs on (three processes, 32 paired
-    off/on readings and 30 taped-against-itself readings, `Random_Seed` fixed at 1 throughout so
-    every input to every one of them is identical):
+    RE-MEASURED when the vol strip became per-fixing. The simulation now reads the surface once per
+    fixing instead of once at expiry, so the vol factor's cotangent arrives as a sum over the whole
+    strip rather than a single term, and the collateral chain's nondeterministic reduction has more
+    to be nondeterministic about: it moved from ONE unstable entry at four steps to TWO at sixty
+    four, on the SAME `('EquityPriceVol.EQ', 1.2, .)` moneyness column, and the strip is why there
+    are now two of them (0.02 and 2.0, the two tenor nodes a per-fixing read touches; only the 2.0
+    node was reachable when every interval was read at expiry).
 
-      off vs on      16 readings at 0 steps, 16 at 4. Never 1, 2 or 3, never above 4.
-      off vs off     25 at 0, 5 at 4.  <- the TAPED path, no node anywhere in it
-      on  vs on      17 at 0, 13 at 4.
-      moved entries  always at most ONE, always the same one, in all three comparisons.
+    THE MEASURED DISTRIBUTION, `Random_Seed` fixed at 1 throughout so every input to every reading
+    is identical - 10 off and 10 on in one process, giving 45 + 45 self-paired and 100 crossed:
 
-    The unstable entry is `('EquityPriceVol.EQ', 1.2, 0.02, 0.0)` and it takes exactly TWO float64
-    values from identical inputs - 6.7924190320794677577e-06 and 6.7924190320794711458e-06, four
-    steps apart because the low two mantissa bits are zero in both. Uncollateralised, both switch
-    settings read one value 15 times out of 15 and no entry is unstable at all.
+      off vs off     36 readings at 0 steps, 9 at (2 entries, 64).  <- the TAPED path, no node
+      on  vs on       9 at 0, 12 at (1, 16), 12 at (1, 64), 12 at (2, 64)
+      off vs on      38 at 0, 20 at (1, 16), 20 at (1, 64), 22 at (2, 64)
+      moved entries  always inside {7, 8}, in all three comparisons. Never a third.
 
-    SO THE ATTRIBUTION IN THE PROSE THIS REPLACES WAS WRONG, and the old bound of 2 was measured on
-    a grid this file no longer runs. It read "the taped side moved 0 on all 6 ... the replayed
-    backward disagreeing with ITSELF"; six repeats is simply too few to see a state that shows up
-    on 5 of 30. The taped backward disagrees with itself on the same entry by the same quantum, so
-    this is a nondeterministic reduction in the COLLATERAL chain's backward, present with
-    `Recompute_Inner_MC` off, and no node-against-taped comparison can be tighter than it. It is
-    not this file's defect and this file cannot fix it - what this file can do is refuse to let it
-    buy any slack anywhere else.
+    Entry 8 moves by 16 steps and entry 7 by 64; no reading has ever landed between the quanta.
+    UNCOLLATERALISED, the taped path reads one value 6 times out of 6 and no entry is unstable at
+    all - the instability is the collateral chain's, as it was before, and it is present with the
+    node OFF, which is what says the node did not lose a channel.
 
-    HENCE THE TWO CLAUSES. At most one entry may move (13 of the 14 are held at ZERO, which the old
-    blanket `steps.max() <= 2` did not do), and that one by at most the observed quantum. The bound
-    is a measurement, not a choice: no reading has ever landed between 0 and 4.
+    AT HEAD (0d965d2, one implied vol per row) the same measurement read: off-vs-off 15 of 15 at
+    zero, off-vs-on 6 of 36 at (1 entry, 4 steps). The bound below moved because the graph did, and
+    the number that justifies it is the off-vs-off row above and nothing else.
 
-    Mutation-verified against the settle-inside-the-loop form. Settled inside `sim_autocall` the
+    THE ATTRIBUTION. The taped backward disagrees with ITSELF on the same entries by the same
+    quanta, so this is a nondeterministic reduction in the COLLATERAL chain's backward, present
+    with `Recompute_Inner_MC` off, and no node-against-taped comparison can be tighter than it. It
+    is not this file's defect and this file cannot fix it - what this file can do is refuse to let
+    it buy any slack anywhere else. (Six repeats is too few to see a state that shows up on 9 of
+    45, which is how an earlier version of this prose came to attribute it to the node.)
+
+    HENCE THE TWO CLAUSES. At most TWO entries may move (12 of the 14 are held at ZERO, which a
+    blanket `steps.max() <= 64` would not do), and those by at most the observed quantum. The bound
+    is a measurement, not a choice: no reading has ever landed between 0, 16 and 64.
+
+    Mutation-verified against the settle-inside-the-loop form, RE-RUN at the new bound. Settled
+    inside `sim_autocall` the
     booked value carries a graph with the switch OFF (`simulate` is called and taped) and none with
     it ON (the node's forward is `no_grad`), so the mutation is `cash_settle` booking
     `value.detach()` EXACTLY WHEN `shared.recompute_inner_mc` is set. It moves 11 of the 14 entries,
-    indices 0-8/10/11, by up to 7746860219243370 float64 steps - max |d| 4.28e-05 on a gradient of
+    indices 0-8/10/11, by up to 6.81e+15 float64 steps - max |d| 4.28e-05 on a gradient of
     6.26e-04 = 6.85%, this branch's analogue of the autocall's 8.7% above. `mtm`, `cva` and every
     reported cashflow stay bit-identical under it, so the kill lands on the clause below and not on
-    an earlier assertion, and the entry-count clause fails on its own (11 <= 1). Four steps against
-    7.75e+15 is 15.3 orders of margin.
+    an earlier assertion, and the entry-count clause fails on its own (11 <= 2). Sixty-four steps
+    against 7.75e+15 is 14.1 orders of margin - the bound grew by 1.2 orders and the margin by
+    none that matters.
 
     THE CONTROL, which is the limit of the form and not a hole in this gate: detaching on BOTH runs
     survives, green. A source edit moves both switch settings alike and a bit-identity gate is a
@@ -647,10 +658,10 @@ def test_the_collateralised_averaging_gradient_is_the_taped_one_to_the_last_bit(
     assert np.abs(grad_off).max() > 0.0, 'no gradient was reported'
     steps = _ulps(grad_off, grad_on)
     moved = np.nonzero(steps)[0]
-    assert len(moved) <= 1 and steps.max() <= 4, (
+    assert len(moved) <= 2 and steps.max() <= 64, (
         'the collateralised averaging gradient moved on {} of {} entries (indices {}) by up to {} '
-        'float64 steps (max |d| {:.6g} on {:.6g}) - the collateral reduction is one entry at four '
-        'steps, so this is a channel the node lost:\n{}\n{}'.format(
+        'float64 steps (max |d| {:.6g} on {:.6g}) - the collateral reduction is two entries at '
+        'sixty-four steps, so this is a channel the node lost:\n{}\n{}'.format(
             len(moved), len(steps), moved.tolist(), int(steps.max()),
             float(np.abs(grad_off - grad_on).max()), float(np.abs(grad_off).max()),
             grad_off, grad_on))

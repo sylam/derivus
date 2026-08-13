@@ -153,6 +153,99 @@ def total_log_forward(carry_rate, times):
     return (carry_rate * times.unsqueeze(-1)).sum(dim=-2)
 
 
+def forward_vol_strip(deal_data, strike, spot, carry_rate, cum_t, shared,
+                      invert_moneyness=False, use_forwards=False):
+    """The implied vol read at EVERY fixing's own tenor, at the moneyness the DEAL declares.
+
+    An implied surface is quoted against an option's EXPIRY, so a simulation that steps a fixing
+    strip has to read it once per fixing - at ``T_j``, and at the moneyness an option expiring
+    ``T_j`` would be quoted at. ``carry_rate`` is therefore the ZERO carry
+    (the raw ``calc_eq_drift``/``calc_fx_drift`` gather at each tenor, NOT the interval strip
+    ``forward_carry_rate`` builds), because a forward wants the cumulative integral: ``F_j =
+    S * exp(c_j * T_j)``. ``cum_t`` is that cumulative tenor and arrives as NUMPY - it is the
+    surface's expiry KEY as well as the exponent's year fraction, and the key has to be hashable.
+
+    Rank-polymorphic on the same rule as ``forward_carry_rate``: ``[N_fix, batch]`` for one MTM row
+    and ``[N_block, N_fix, batch]`` for a whole block, ``cum_t`` carrying no batch axis, and the
+    fixing axis returned at ``-2`` either way so the strip drops straight into ``forward_vol_rate``.
+
+    ``use_forwards`` IS THE DEAL'S, not this function's. It was hard-coded ``True`` here, mirroring
+    ``pv_MC_Tarf`` - the sibling that already read the surface per fixing and has no European limit
+    to violate. Its two other adopters DO have one, and they declare ``use_forwards = False``, so a
+    forward read made the simulation step a different law from the quote the same pricer marks its
+    own European legs with. Measured on a smiley surface (``vol = 0.2479 + 0.35*(m-1)^2``, ten
+    seeds, 65536 inner paths): a never-knocking ``Down_And_Out`` read 1175.00 against Black at the
+    declared quote 1163.96, ``+0.948%`` and 8.3 standard errors, and in-out parity read ``-11.03``
+    where it must read zero. INTERNAL CONSISTENCY WINS: the strip reads what the deal declares, and
+    per-fixing SMILE - a real modelling question, since a desk quoting sticky-forward moneyness
+    wants the other convention - is open in ``roadmap.md`` with those numbers on it. The TERM
+    STRUCTURE half is untouched by the choice: alternating only this flag on the smile-free sloped
+    surface leaves the prices agreeing to 2.274e-13.
+
+    The moneyness goes through ``calc_moneyness``, the one place that knows what a surface's
+    subtype wants (SVI/Skew take a log, Malz its own ratio) - ``pv_MC_Tarf`` had its own
+    ``forward / strike`` inline, which is that function's ``else`` branch and silently the wrong
+    query on any surface that is not a plain 2d grid. The SPOT is broadcast onto the fixing axis
+    first: a declared spot read is one moneyness for the whole strip, and without the expand
+    ``calc_moneyness`` returns a tensor one rank short and the per-fixing loop indexes off the end.
+    """
+    forward = spot.unsqueeze(-2) * torch.exp(carry_rate * carry_rate.new(cum_t).unsqueeze(-1))
+    moneyness = calc_moneyness(strike, spot.unsqueeze(-2).expand_as(forward), forward, deal_data,
+                               use_forward=use_forwards, invert_moneyness=invert_moneyness)
+    return torch.stack([utils.calc_time_grid_vol_rate(
+        deal_data.Factor_dep['Volatility'], moneyness[..., j, :],
+        np.atleast_1d(cum_t[..., j]), shared).reshape(moneyness[..., j, :].shape)
+        for j in range(cum_t.shape[-1])], dim=-2)
+
+
+def forward_vol_rate(vols, cum_t, dt):
+    """The annualised vol over EACH fixing INTERVAL, from implied vols read at the fixing tenors.
+
+    An implied vol is CUMULATIVE by definition - ``sigma(T)^2 * T`` is the total variance to ``T``
+    - so the variance of the interval ending at ``T_j`` is a DIFFERENCE of cumulative variances,
+    ``(sigma_j^2 T_j - sigma_j-1^2 T_j-1) / dt_j``, and not ``sigma_j^2``. The two agree only for
+    the FIRST interval, where the cumulative window IS the interval, and on a FLAT surface. This is
+    ``forward_carry_rate``'s statement one factor over, and it has the same failure mode: the
+    wrong allocation TELESCOPES to the right total variance, so the terminal distribution, every
+    European limit, in-out parity and every CRN gradient gate stay exactly right and only the
+    path-dependent MONITORING is biased.
+
+    Measured on two surfaces carrying the same 1y implied vol (flat 0.2479 against a term
+    structure running 0.10 to 0.32 at 2y): the true interval strip runs 0.111 -> 0.336 against the
+    single 0.2479 that ``pv_discrete_barrier_option`` and ``pv_MC_AutoCallSwap`` applied to every
+    interval, and the two surfaces priced ``Down_And_Out``/``Down_And_In``/``Up_And_Out`` BITWISE
+    IDENTICALLY. Against a fine-step oracle under the surface's own instantaneous vol the sloped
+    world read -1.46%, +11.53% and -11.07%.
+
+    ``clamp(min=eps)`` handles a DECLINING cumulative variance - an arbitrageable surface, or the
+    same interpolation kink the GBM term-structure quote work documents - by flooring the interval
+    at one eps rather than taking the square root of a negative. IT DOES NOT TELESCOPE, and that is
+    a disclosure and not a bug: a floored interval contributes ~0 where the surface says it should
+    contribute a NEGATIVE variance, so the strip's total EXCEEDS the surface's own total and the
+    simulation no longer reproduces the European quote the same pricer marks with. Measured on a
+    monthly barrier fixture whose surface runs 0.30 at 6m into 0.20 at 9m - three intervals of
+    declining cumulative variance - in-out parity against the simulated vanilla reads -101.08 +/-
+    1.37 on ten seeds, -7.99% of that vanilla, where an arbitrage-free surface reads -0.19. The
+    analytic half is unaffected (KO + KI is still Black at the declared quote to 2.3e-12), which is
+    exactly why this shows up as a parity break rather than as a wrong-looking price. It is inherent
+    to flooring:
+    ``pv_MC_Tarf`` has carried the same clamp since it was written. The fix is an arbitrage-free
+    surface, not a different floor. ``j == 0`` takes ``vols[0]`` directly, that window being the
+    interval itself. Both are ``pv_MC_Tarf``'s semantics, term for term, because they were its
+    expression before they were this one.
+
+    Rank-polymorphic exactly as ``forward_carry_rate``, and a ZERO-LENGTH interval divides by one
+    rather than by zero for the same reason: it is a fixing the row has already observed and every
+    caller skips it. A FLAT surface does NOT come back bit-identical and no gate on this may use
+    ``torch.equal`` - differencing amplifies the rounding of a cumulative time by ``T_j/dt_j``.
+    """
+    cum_var = vols * vols * cum_t.unsqueeze(-1)
+    step = dt[..., 1:].unsqueeze(-1)
+    fwd = torch.sqrt(cum_var.diff(dim=-2).clamp(min=torch.finfo(vols.dtype).eps) /
+                     torch.where(step > 0, step, torch.ones_like(step)))
+    return torch.cat([vols[..., :1, :], fwd], dim=-2)
+
+
 def boundary_weights(gap, bandwidth):
     """Density at the boundary and local-linear regression weights, estimated SEPARATELY.
 
@@ -970,8 +1063,28 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     ``drift``; that round trip leaked the ``1e-4`` VARIANCE FLOOR into the DRIFT, adding exactly
     ``5e-5`` to the log-forward on every row whose first fixing interval has zero length - which is
     every row that IS an observation date. Measured: 13 of 37 rows on the repo's monthly fixture,
-    worth -0.025% of EPE. The floor's variance leak is untouched and still there: a zero-length
-    interval is simulated with 1% of lognormal vol.
+    worth -0.025% of EPE.
+
+    THAT FLOOR IS NOW THE ZERO-LENGTH INTERVAL'S AND NOTHING ELSE'S. It was unconditional, which was
+    harmless only while the defect below handed every interval ``sigma(T)^2`` - the largest vol on
+    an upward surface. A correct forward-variance strip hands it genuinely small numbers and it
+    binds wherever ``sigma_fwd < 0.01/sqrt(dt)``, 19.1% annualised at daily monitoring: 114 of 365
+    daily intervals on an upward 0.12 -> 0.24 surface, against 0 of 53 weekly and 0 of 13 monthly,
+    which is every barrier fixture in this repo. Measured there against a floor-free oracle, eight
+    seeds: the SHIPPED spelling read +1.584% on a ``Down_And_Out`` and -6.870% on an ``Up_And_Out``,
+    the floor alone +0.049% and -5.576%, and this one +0.183% (1.7 se) and +0.403% (0.9 se). The
+    weekly and monthly readings are bitwise identical under all three, and the repo's own monthly
+    exposure grid is bitwise identical - value, CVA and all 13 CVA-gradient entries - whether the
+    floor is conditioned or not, which is why the density gate had to be written rather than
+    inherited. ``drift`` and ``vol`` now read ONE ``var``, so a floored
+    interval is a martingale under the law it is actually drawn from; the old spelling took the
+    drift from the unclamped variance and moves that exposure grid +0.0215% and its CVA +0.0240%
+    with no gate anywhere able to see it. WHAT THE ``dt == 0`` CLAMP BUYS is the GRADIENT, measured
+    by deleting it: every value stays finite (the profile moves -0.046%) and 11 of the 13
+    CVA-gradient entries go NaN, ``sqrt`` having an infinite derivative at zero and the variance
+    carrying the surface's graph. The remaining inconsistency is that a zero-length interval is
+    still SIMULATED with 1% of lognormal vol rather than resolved by an exact indicator, which
+    would consume a Sobol draw and move every barrier constant - open in the roadmap.
 
     AND THAT FORWARD IS BUILT FROM INTERVAL CARRY, which is the seam's other half and was the
     defect one layer down: the strip handed in is ``forward_carry_rate``'s, not the zero rates the
@@ -979,6 +1092,33 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     average times another window's length. It drives ``drift``, so on a sloped curve the OSS
     simulation's own ``E[S_T]`` was not ``F(t,T)`` either - measured -4.28% on the repo's sloped
     fixture, exactly 0 on every flat one, which is why no fixture here had ever seen it.
+
+    AND THE VOL IS TWO QUANTITIES, both legitimate, deliberately not unified into one read. The
+    SIMULATION wants the per-INTERVAL strip: the surface read at every fixing's own TENOR
+    (``forward_vol_strip``), differenced into forward variance (``forward_vol_rate``), because an
+    implied vol is cumulative and the variance of ``[T_j-1, T_j]`` is a difference and not
+    ``sigma(T_j)^2 * dt_j``. The EUROPEAN legs - the already-hit KI mark and the in-out-parity
+    vanilla - want ``sigma(K, tau) * sqrt(tau)``, the surface's own quote for the option being
+    valued, and they share it as ``sd_to_expiry`` for the same reason both read one forward.
+
+    TWO READS OF ONE SURFACE MUST AGREE ON THE MONEYNESS, and this pricer's two did not. The strip
+    read every fixing at its own FORWARD moneyness, hard-coded, mirroring ``pv_MC_Tarf`` - which has
+    no European limit to violate. This one does, and it declares ``use_forwards`` (False on every
+    fixture here), so on a smiley surface the simulation stepped a law the pricer's own European
+    legs disagreed with: a never-knocking ``Down_And_Out`` read +0.948% and 8.3 standard errors from
+    Black at the declared quote, and in-out parity -11.03 instead of -0.19. The strip now takes the
+    deal's flag. What that costs is the per-fixing SMILE, which is a genuine modelling question and
+    is open in the roadmap with those numbers; the TERM STRUCTURE half is untouched by the choice
+    (1.1e-15 relative, alternating only the flag on a smile-free sloped surface).
+
+    THE DEFECT THIS REPLACED read ONE implied vol per MTM row - at the strike's moneyness and the
+    EXPIRY tenor - and applied it to every monitoring interval. The wrong allocation telescopes to
+    the right total variance, so the terminal distribution, every European limit, in-out parity and
+    every CRN gradient gate were EXACTLY right and only the barrier MONITORING was biased. Two
+    surfaces carrying the same 1y implied vol (flat 0.2479 against 0.10 rising to 0.32 at 2y)
+    priced ``Down_And_Out``/``Down_And_In``/``Up_And_Out`` BITWISE IDENTICALLY, while the true
+    interval strip ran 0.111 -> 0.336. Against a fine-step oracle the sloped world read -1.46%,
+    +11.53% and -11.07%.
 
     AND THE VOL STRIP IS NOT BUILT UNDER HN, as in ``pv_MC_Tarf``. Nothing correct reads the implied
     surface under a non-GBM spot model - the OSS steps the recursion, the already-hit leg is the same
@@ -1032,7 +1172,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     """
 
     def sim_spot_oss(offset, sobol, num_sims,
-                     spot_prices, vols, times, carry, discount_rates, *hn_scalars):
+                     spot_prices, vols, sd_to_expiry, times, carry, discount_rates, *hn_scalars):
         """Run the OSS inner Monte Carlo and return the per-block mean PV.
 
         PURE, and split into a bound half and a theta half, because `InnerMCRecompute` calls it
@@ -1041,6 +1181,12 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         block; the trailing ones are every tensor it reads that can carry a graph, which is what the
         node can return a gradient for. It has no by-products, so it returns the one-element tuple
         `(mtm,)` - the tuple is the node's contract, not a shape it happens to have here.
+
+        IT TAKES BOTH VOL QUANTITIES, because there are two and they are not the same read (see the
+        pricer docstring): ``vols`` is the per-INTERVAL strip the simulation steps on, shaped
+        ``[N_block, N_fix, batch]`` like the carry beside it, and ``sd_to_expiry`` is the EUROPEAN
+        standard deviation ``sigma(K, tau) * sqrt(tau)`` the parity vanilla is valued at, shaped
+        ``[N_block, batch]`` and shared with the already-hit leg outside.
 
         BARRIER_IN is priced by in-out parity, so the leg needs a vanilla. Under HN the SMILE BITES:
         that vanilla is the HN CLOSED FORM, not a normal at aggregate variance. It runs ``n_total``
@@ -1072,9 +1218,15 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         dt = times.unsqueeze(axis=2)                        # [N_block, N_fix, 1]
         carry_int = carry * dt                              # [N_block, N_fix, batch]
         if not hn:
-            var = (vols * vols).unsqueeze(axis=1) * dt      # [N_block, N_fix, batch]
+            # `vols` is the INTERVAL vol strip (forward_vol_rate), so this product is the interval
+            # variance - one implied vol applied to every interval is the defect one factor over
+            var = vols * vols * dt                          # [N_block, N_fix, batch]
+            # the floor is the ZERO-LENGTH interval's survival width and only that (see docstring);
+            # a real interval simulates at its own dispersion, and both consumers read the SAME
+            # variance so every interval is a martingale under the law it is actually drawn from
+            var = torch.where(dt > 0, var, var.clamp(min=1e-4))
             drift = carry_int - 0.5 * var                   # [N_block, N_fix, batch]
-            vol = torch.sqrt(var.clamp(min=1e-4))           # [N_block, N_fix, batch]
+            vol = torch.sqrt(var)                           # [N_block, N_fix, batch]
 
         isBarrierDate_block = BarrierDates[offset:]
 
@@ -1105,9 +1257,10 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             if direction == BARRIER_IN:
                 if not hn:
                     # Precompute analytic vanilla for parity: KI = Vanilla - KO_pure + rebate * E[L_T]
-                    total_var = (sigma * sigma).sum(dim=0)                 # [batch]
+                    # ONE VOL prices every European leg, as ONE FORWARD does: this is the same
+                    # `sd_to_expiry` the already-hit leg marks with, not the strip's own total.
                     fwd_to_T = s * torch.exp(total_log_forward(carry[blk], times[blk]))
-                    vol_to_T = torch.sqrt(total_var.clamp(min=eps))
+                    vol_to_T = sd_to_expiry[blk]
                     if isdigital:
                         vanilla_pv = utils.black_european_option(
                             fwd_to_T, strike, vol_to_T, 1.0, 1.0, phi, shared, cash_payoff=1.0) * D[-1]
@@ -1345,23 +1498,38 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
         fixing_block = daycount_fn(fixings)
         expiry = daycount_fn(tenor_block)
-        # the implied surface has NO consumer under a non-GBM spot model - the OSS steps the
-        # recursion and the already-hit leg is the same closed form - so it is not built, and a
-        # leg that reaches for it fails on the shape instead of quietly pricing another model
-        vols = utils.calc_time_grid_vol_rate(
+        # the EUROPEAN read: the surface's own vol at (K, remaining expiry). The implied surface
+        # has NO consumer under a non-GBM spot model - the OSS steps the recursion and the
+        # already-hit leg is the same closed form - so neither vol quantity is built there, and a
+        # leg that reaches for one fails on the shape instead of quietly pricing another model
+        expiry_vols = utils.calc_time_grid_vol_rate(
             factor_dep['Volatility'], moneyness_block, expiry,
             shared) if not hn else spot_block.new_empty(0)
 
         if factor_dep.get('Check_Payoff_Type', False):
-            adj = calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared)
-            vols = adj['vol']
+            # a DEAL-LEVEL drift adjustment, so its input stays the expiry read; the strip below
+            # then rides the adjusted carry. Compo is unreachable here - `b_adj` is a python float
+            # on that branch and `torch.unsqueeze` refuses it - so `adj['vol']` is `vols` identity.
+            adj = calc_vol_adjustment(factor_dep, deal_time, expiry, expiry_vols, shared)
+            expiry_vols = adj['vol']
             drifts = drifts + torch.unsqueeze(adj['b_adj'], 1)
 
         sample_ts = drifts.new(
             np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)]))
+        cum_t = drifts.new(fixing_block)
         # the carry over each INTERVAL, which is not the zero carry to each fixing (see
         # forward_carry_rate); `fixing_block` is the cumulative strip the difference needs
-        fwd_drifts = forward_carry_rate(drifts, drifts.new(fixing_block), sample_ts)
+        fwd_drifts = forward_carry_rate(drifts, cum_t, sample_ts)
+        # the SIMULATION read: the surface at every fixing's own TENOR and the deal's own declared
+        # moneyness, differenced into forward variance. An implied vol is cumulative, so an
+        # interval's variance is a DIFFERENCE and not sigma(T)^2*dt - which telescopes to the same
+        # total and is therefore invisible to every European limit (see forward_vol_rate).
+        interval_vols = forward_vol_rate(forward_vol_strip(
+            deal_data, shared.one * strike, spot_block, drifts, fixing_block, shared,
+            invert_moneyness, use_forwards), cum_t, sample_ts) if not hn else spot_block.new_empty(0)
+        # sigma(K, tau) * sqrt(tau): the ONE European standard deviation, marked by the already-hit
+        # leg below and by the in-out-parity vanilla inside `sim_spot_oss`
+        sd_to_expiry = expiry_vols * torch.sqrt(rem_exp.clamp(min=1e-4)) if not hn else expiry_vols
 
         # discount rates per fixing: [N_block, N_fix, batch]
         discount_rates = utils.calc_discount_rate(discount_block, fixings, shared)
@@ -1405,7 +1573,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                     vanilla = torch.stack(rows)
                 else:
                     fwd_to_expiry = spot_block * torch.exp(log_fwd)                     # [N_block, batch]
-                    vol_to_T = vols * torch.sqrt(rem_exp.clamp(min=1e-4))               # [N_block, batch]
+                    vol_to_T = sd_to_expiry                                             # [N_block, batch]
                     if isdigital:
                         vanilla = utils.black_european_option(
                             fwd_to_expiry, strike, vol_to_T, 1.0, 1.0, phi, shared, cash_payoff=1.0)
@@ -1423,8 +1591,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             theo_cashflow = hit_value
         else:
             simulate = partial(sim_spot_oss, sample_index_t, sobol, shared.MCMC_sims)
-            theta = (spot_block, vols, sample_ts, fwd_drifts, discount_rates) + (
-                tuple(hn_params) + (H0,) if hn else ())
+            theta = (spot_block, interval_vols, sd_to_expiry, sample_ts, fwd_drifts,
+                     discount_rates) + (tuple(hn_params) + (H0,) if hn else ())
             # the SAME callable either way: under the node it is called twice (see InnerMCRecompute)
             oss_result, = InnerMCRecompute.run(shared, simulate, *theta)
             oss_result = nominal * oss_result
@@ -1933,10 +2101,11 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     RECOMPUTE (``shared.recompute_inner_mc``, the ``Recompute_Inner_MC`` calculation field). Off,
     ``sim_spot_tarf`` is called once and taped. On, it is called through ``InnerMCRecompute`` -
     untaped to price, re-run under ``enable_grad`` to differentiate - and the peak becomes one
-    block's graph rather than every block's. That is why the vol strip is hoisted into
-    ``forward_vols`` and why the simulation returns its settled cashflows and boundary registrations
-    instead of performing them: the node's inputs must be its whole theta surface, and a side effect
-    inside it would fire twice. Off is bit-identical, price and gradient.
+    block's graph rather than every block's. That is why the vol strip is built at the call site
+    (``forward_vol_strip`` into ``forward_vol_rate``) and why the simulation returns its settled
+    cashflows and boundary registrations instead of performing them: the node's inputs must be its
+    whole theta surface, and a side effect inside it would fire twice. Off is bit-identical, price
+    and gradient.
 
     BOUNDARY AAD (``shared.boundary_aad``). Two decisions are taken on simulated state and jump: the
     target filling (the deal has redeemed and is worth nothing thereafter) and the OTM leg knocking
@@ -1984,23 +2153,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         call =  D * (F * utils.norm_cdf(d1) - K * utils.norm_cdf(d2))
         return call, call - D * (F - K)
 
-    def forward_vols(s, carry_rate, delta_t, full_t):
-        """The per-fixing forward vol strip for one MTM row, off the deal's own vol surface.
-
-        HOISTED OUT of the simulation: it is the only thing the fixing loop read from the surface,
-        and `InnerMCRecompute`'s inputs have to be the simulation's whole theta surface or the vol
-        sensitivity is silently differentiated as a constant. It is [fixings, 1, batch] against the
-        loop's [batch, 2 * sims], so the strip is cheap to keep taped while the loop is not.
-        """
-        fixing_t = delta_t.cumsum(0).unsqueeze(-1)
-        forward = s.unsqueeze(0) * torch.exp((carry_rate * fixing_t))
-        # calculate the moneyness based on the forwards
-        moneyness = strike / forward if factor_dep['Invert_Moneyness'] else forward / strike
-        return torch.stack([utils.calc_time_grid_vol_rate(
-            factor_dep['Volatility'], mon, s_tau, shared)
-            for mon, s_tau in zip(moneyness, full_t.reshape(-1, 1))])
-
-    def sim_spot_tarf(fixings, settlement, sobol, num_sims,
+    def sim_spot_tarf(settlement, sobol, num_sims,
                       spot_prices, times, carry, prev_accum, discount_rates, vols_all,
                       past_fixings, *hn_scalars):
         """
@@ -2069,8 +2222,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         mcmc, alive, settled, gaps, jumps = [], [], [], [], []
         settle_rows, knock_rows = [], []
         # Loop over block rows (same zipped signature you use)
-        for i, (D, s, carry_rate, delta_t, full_t, tau) in enumerate(zip(
-                discount_rates, spot_prices, carry, times, fixings, settlement)):
+        for i, (D, s, carry_rate, delta_t, tau) in enumerate(zip(
+                discount_rates, spot_prices, carry, times, settlement)):
 
             # reduced_samples = number of GBM “substeps” in this coupon/fixing leg
             reduced_samples = len(delta_t)
@@ -2110,8 +2263,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             N_otm = notional2
             # Iterate over fixings within this block using your “coupon_index”-like stepper
             for j in range(reduced_samples):
-                # `carry` arrives as the INTERVAL strip (forward_carry_rate); the VOL strip is
-                # still differenced here, `full_t` being the tenor its surface was read at
+                # `carry` and `vols` both arrive as INTERVAL strips (forward_carry_rate,
+                # forward_vol_rate) - the differencing they need is the same statement twice
                 dt = delta_t[j]
                 Dj = D[j].reshape(-1, 1)
                 use_past_fixing = False
@@ -2119,8 +2272,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 if dt > 0:
                     fwd_carry = carry_rate[j].reshape(-1, 1)  # [batch,1]
                     if not hn:
-                        safe_fwd_vol = (full_t[j] * vols[j] ** 2 - full_t[j - 1] * vols[j - 1] ** 2).clamp(min=eps)
-                        fwd_vol = (torch.sqrt(safe_fwd_vol/dt) if j > 0 else vols[j]).T
+                        fwd_vol = vols[j].reshape(-1, 1)      # [batch,1]
                         vol_dt = fwd_vol * torch.sqrt(dt)
                 else:
                     #use past fixing
@@ -2330,15 +2482,18 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         sample_ts = drifts.new(
             np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)]))
         discount_rates = utils.calc_discount_rate(discount_block, settlement, shared)
-        # the vol strip is theta, not loop state - see `forward_vols`
-        vols = torch.stack([forward_vols(*row) for row in zip(
-            spot_block, drifts, sample_ts, fixing_block)]) if not hn else spot_block.new_empty(0)
+        cum_t = drifts.new(fixing_block)
+        # the interval carry and vol strips, both theta rather than loop state, and both built
+        # where their siblings build theirs (forward_carry_rate, forward_vol_rate). Both take the
+        # ZERO carry `drifts`: a forward to each tenor is the CUMULATIVE integral. This pricer
+        # reads the surface NOWHERE else, so the forward moneyness IS what it declares.
+        fwd_drifts = forward_carry_rate(drifts, cum_t, sample_ts)
+        vols = forward_vol_rate(forward_vol_strip(
+            deal_data, strike, spot_block, drifts, fixing_block, shared,
+            factor_dep['Invert_Moneyness'], use_forwards=True), cum_t,
+            sample_ts) if not hn else spot_block.new_empty(0)
 
-        # the interval carry strip, built where its two siblings build theirs (forward_carry_rate);
-        # `forward_vols` above wants the ZERO carry, being a cumulative forward to each tenor
-        fwd_drifts = forward_carry_rate(drifts, drifts.new(fixing_block), sample_ts)
-
-        simulate = partial(sim_spot_tarf, fixing_block, settlement, sobol, shared.MCMC_sims)
+        simulate = partial(sim_spot_tarf, settlement, sobol, shared.MCMC_sims)
         theta = (spot_block, sample_ts, fwd_drifts, accumulation[settle_index_local],
                  discount_rates, vols, all_samples) + (tuple(hn_params) + (H0,) if hn else ())
         # the SAME callable either way: under the node it is called twice (see InnerMCRecompute)
@@ -2405,6 +2560,35 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     twice. ON reproduces the pre-refactor gradients bit for bit; the refactored OFF path is 1 ulp
     from them under collateral - the stacked settle reorders that chain's backward accumulation -
     which the ulp gate pins by name.
+
+    THE VOL IS AN INTERVAL STRIP, in BOTH branches, and it used to be one implied vol read at the
+    expiry moneyness and the expiry tenor - the pricer's own comment said so and asked for the fix.
+    An implied vol is cumulative, so an interval's variance is a DIFFERENCE of cumulative variances
+    (``forward_vol_rate``) off a surface read at each fixing's own forward moneyness
+    (``forward_vol_strip``); ``pv_MC_Tarf`` differenced and this pricer did not, in the same file.
+    Because the wrong allocation telescopes to the right TOTAL variance and every fixture here is
+    flat, the correction leaves this repo's autocall value and exposure profile BITWISE UNCHANGED
+    and moves six of thirteen CVA-gradient entries - the vol surface's own nodes, by up to 157%,
+    with their SUM bit-invariant. The quanto/compo adjustment keeps the EXPIRY read: it is a
+    deal-level drift adjustment, not a step of the simulation.
+
+    WHAT IT IS WORTH, since no fixture here can show it. On two surfaces carrying the same 1y
+    implied vol - flat 0.2479 against a term structure running 0.10 to 0.32 - a quarterly autocall
+    struck 2% out of the money priced 0.034026629996 on BOTH, bitwise, and the sloped one is worth
+    0.037094 by brute-force Monte Carlo: -8.27%, 207 standard errors. The strip reads 0.037064.
+    Twice the barrier's percentage on the same surfaces, because a digital trigger observed
+    quarterly is all monitoring and has no terminal payoff to telescope back into.
+
+    TWO MONEYNESS CONVENTIONS LIVE HERE, and this pricer is where the difference is exactly
+    measurable. ``forward_vol_strip`` read each fixing at its own FORWARD moneyness, mirroring
+    ``pv_MC_Tarf``; the deal declares ``use_forwards = False``, so the expiry read above - and every
+    value this pricer returned before the port - is the SPOT read. A ONE-COUPON autocall is a
+    closed-form digital, which makes that gap noise-free: on a surface flat in tenor and smiley in
+    moneyness the forward read is 0.024428368300 against the declared 0.024490310460, -0.2529%,
+    both exact. The strip now takes the DECLARED read, so this pricer reproduces its own European
+    quote to 0 ULP; whether a simulation should instead read the quote its own forward implies is a
+    modelling decision and it is open in the roadmap. It is NOT a consequence of the interval strip,
+    which prices identically to 6.9e-18 under either convention on a smile-free surface.
 
     BOUNDARY AAD (``shared.boundary_aad``). The coupon trigger observed on its own fixing date is a
     real redemption, so the value is not what is wrong; what ordinary AAD drops is the flux of
@@ -2544,9 +2728,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 q = terminationDate != -1
                 # update the Live matrix
                 L = torch.where(q, torch.zeros_like(L), L)
-                # set the correct shapes for discounting and vols
+                # set the correct shape for discounting; the vol is per INTERVAL, so it is picked
+                # off the strip at the coupon's own index rather than hoisted out of the loop
                 D = df.unsqueeze(2)
-                vol = v.unsqueeze(1)
 
                 coupon_index = 0
 
@@ -2575,6 +2759,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                 sh = torch.sqrt(h)
                                 p = utils.norm_cdf((torch.log(K / Sj) - (b_step - 0.5 * h)) / sh)
                             else:
+                                vol = v[coupon_index].reshape(-1, 1)  # [batch,1]
                                 vol_dt = vol * torch.sqrt(dt)
                                 p = utils.norm_cdf(
                                     (torch.log(K / Sj) - (forward_carry - 0.5 * vol * vol) * dt) / vol_dt)
@@ -2635,11 +2820,14 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         else:
             isFixingDate = FixingDates[offset:]
             dt = times.unsqueeze(axis=2)
-            var = (vols * vols).unsqueeze(axis=1) * dt
-            # store params in tensors
+            # `vols` is the INTERVAL strip (forward_vol_rate), so this product is the interval
+            # variance rather than one implied vol applied to every interval. The floor is the
+            # ZERO-LENGTH interval's width and only that - `sim_spot_oss` carries the same
+            # expression and the same statement - and both consumers read the SAME variance
+            var = vols * vols * dt
+            var = torch.where(dt > 0, var, var.clamp(min=1e-4))
             drift = carry * dt - 0.5 * var
-            # not strictly speaking correct, but we need to do this to prevent gradients from blowing up
-            vol = torch.sqrt(var.clamp(min=1e-4))
+            vol = torch.sqrt(var)
 
             mcmc = []
             for i, (tau, D, s, r, sigma, floating) in enumerate(zip(
@@ -2776,16 +2964,16 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             fixings, t_block, shared, multiply_by_time=False)
         fixing_block = daycount_fn(fixings)
 
-        # note that we're using just 1 vol moneyness - the one at expiry (the last date of the Option)
-        # this should actually be the moneyness for each settlement date - TODO!
+        # the EXPIRY read - a deal-level quantity, which is all the quanto/compo adjustment wants.
+        # It is NOT what the simulation steps on: that is the interval strip below.
         expiry = daycount_fn(tenor_block)
-        vols = utils.calc_time_grid_vol_rate(
+        expiry_vols = utils.calc_time_grid_vol_rate(
             factor_dep['Volatility'], moneyness_block, expiry, shared)
 
         if factor_dep.get('Check_Payoff_Type', False):
             # need quanto/compo adjustments
-            adj = calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared)
-            vols = adj['vol']
+            adj = calc_vol_adjustment(factor_dep, deal_time, expiry, expiry_vols, shared)
+            expiry_vols = adj['vol']
             drifts = drifts + torch.unsqueeze(adj['b_adj'], 1)
 
         sample_ts = drifts.new(
@@ -2840,13 +3028,21 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 last_fixing = None if fixing_index == eq_start_index[index] else fixing_index
             else:
                 last_fixing = None
-            # the interval carry strip, built where its two siblings build theirs - which is also
-            # what puts the AVERAGING branch's `carry * dt` on an interval integral
+            # the interval carry and vol strips, built where their siblings build theirs - which is
+            # also what puts the AVERAGING branch's `carry * dt` and `vols * vols * dt` on interval
+            # integrals. Both take the ZERO carry `drifts`; a forward to a tenor is cumulative. The
+            # strip takes the default (spot) moneyness because that is what `moneyness` above - the
+            # quote this pricer marks its own Europeans with - was built with.
+            cum_t = drifts.new(fixing_block) if fixing_block.any() else fixing_block
             fwd_drifts = forward_carry_rate(
-                drifts, drifts.new(fixing_block), sample_ts) if fixing_block.any() else drifts
+                drifts, cum_t, sample_ts) if fixing_block.any() else drifts
+            interval_vols = forward_vol_rate(forward_vol_strip(
+                deal_data, strike * shared.one, spot_block, drifts, fixing_block, shared),
+                cum_t, sample_ts) if fixing_block.any() else expiry_vols.unsqueeze(-2)
             simulate = partial(sim_spot, sample_index_t, sample_ts,
                                all_fixings[:, 0], last_fixing, sobol, shared.MCMC_sims)
-            theta = (spot_block, vols, fwd_drifts, terminationDate, discount_rates, floating_leg,
+            theta = (spot_block, interval_vols, fwd_drifts, terminationDate, discount_rates,
+                     floating_leg,
                      all_eq_samples if factor_dep['no_averaging'] else spot_block.new_empty(0)
                      ) + (tuple(hn_params) + (H0,) if hn else ())
             # the SAME callable either way: under the node it is called twice (see InnerMCRecompute)

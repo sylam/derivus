@@ -28,6 +28,8 @@ WHAT IS ASSERTED, in rising order of how much of the pricer it reaches:
      original defect on its own, and it needs no hit, no barrier crossing and no second model.
   4. The same, on a SLOPED carry curve.
   5. The strip primitive against its own definition - pure algebra, no pricer.
+  6. The VOL strip's last forward is that same forward. Its fixings are read at their own forwards
+     and the last fixing is expiry, so the surface's per-fixing route has to land on the payoff's.
 
 Assertion (3) is EXACT (``torch.equal``) on a flat curve and it is not a placebo there: ``r = 5%``
 against ``q = 1%`` makes the forward 1.0408 at the first row, not 1.0, so a dropped ``dt`` or a
@@ -45,13 +47,18 @@ after.
 MUTATION MATRIX (each applied to derivus/pricing.py or its module globals, run, reverted; all six
 re-measured against the five gates as they stand):
 
-    mutation                                                    1    2    3    4    5
-    (1) total_log_forward drops `times` (the original defect)  DIED  --  DIED DIED DIED
-    (2) it sums over the batch axis instead of the fixings     DIED DIED DIED DIED DIED
-    (3) already-hit call site scales sample_ts by 1.001         --  DIED   --   --    --
-    (4) parity call site scales carry by 1.001                  --  DIED DIED DIED   --
-    (5) forward_carry_rate returns carry_rate (the 2nd defect)  --   --    --  DIED DIED
-    (6) barrier theta passes `drifts` for `fwd_drifts`          --  DIED   --  DIED   --
+    mutation                                                    1    2    3    4    5    6
+    (1) total_log_forward drops `times` (the original defect)  DIED  --  DIED DIED DIED DIED
+    (2) it sums over the batch axis instead of the fixings     DIED DIED DIED DIED DIED DIED
+    (3) already-hit call site scales sample_ts by 1.001         --  DIED   --   --    --   --
+    (4) parity call site scales carry by 1.001                  --  DIED DIED DIED   --   --
+    (5) forward_carry_rate returns carry_rate (the 2nd defect)  --   --    --  DIED DIED  --
+    (6) barrier theta passes `drifts` for `fwd_drifts`          --  DIED   --  DIED   --   --
+    (7) the VOL strip built on the INTERVAL carry               --   --    --   --    --  DIED
+
+(7) is the sibling gate 6 exists for and it is caught by NOTHING else in the repo: the strip drives
+the surface read, not the payoff, so every price gate on a flat-in-moneyness fixture is blind to it
+and the carry gates above never look at it. 8.963e-02 on the sloped fixture, 0.0 on the flat one.
 
 (1) is the one worth reading twice: both legs share the wrong expression, so gate 2 - the sibling
 gate proper - stays GREEN. Only the gates that compare against a route which does not go through
@@ -152,7 +159,10 @@ def _run_recording(monkeypatch, cfg, batch=8, sims=64):
               'MCMC_Simulations': sims, 'Tenor_Offset': 0.0, 'Deflation_Interest_Rate': 'USD'}
     derivus.run_cmc(cfg, prec=DTYPE, overrides=params)
     spot, fwd = surface[0]
-    return fwd / spot, payoff              # surface growth exp(b*tau) [N_mtm, batch], payoff calls
+    # the STRIP's calls are rank 3 ([N_block, N_fix, batch]) and the preamble's expiry read rank 2,
+    # so the two routes into `calc_moneyness` separate on shape alone
+    strip = [(s, f) for s, f in surface if f.dim() == 3]
+    return fwd / spot, payoff, strip       # surface growth exp(b*tau) [N_mtm, batch], payoff calls
 
 
 def _aligned(rows, growth):
@@ -202,7 +212,7 @@ def test_both_barrier_legs_read_one_forward(monkeypatch):
     the refactor, and this gate is what notices the day one of them is inlined again. It dies on any
     edit to either call site: dropping ``sample_ts`` at one of them, or passing the block's slice
     where the strip belongs."""
-    _, payoff = _run_recording(monkeypatch, _cfg('Down_And_In', 90.0))
+    _, payoff, _ = _run_recording(monkeypatch, _cfg('Down_And_In', 90.0))
 
     groups, current = [], None
     for rec in payoff:
@@ -242,7 +252,7 @@ def test_payoff_forward_equals_the_forward_the_surface_is_read_at(monkeypatch):
     leg is never built and every one of the 37 rows is carried by the parity leg alone. The gate
     wants a forward, not a crossing - it is discriminating without any hit at all, which is exactly
     what a consistency gate buys over an oracle one."""
-    growth, payoff = _run_recording(monkeypatch, _cfg('Down_And_In', 40.0))
+    growth, payoff, _ = _run_recording(monkeypatch, _cfg('Down_And_In', 40.0))
     rows = [r for r in payoff if r.dim() == 1]
     assert len(rows) == growth.shape[0], (
         'parity leg ran on %d rows, the deal grid has %d' % (len(rows), growth.shape[0]))
@@ -277,7 +287,7 @@ def test_payoff_forward_survives_a_sloped_carry_curve(monkeypatch):
     THE MUTATION THAT MUST KILL IT is the defect itself - passing ``drifts`` where ``fwd_drifts``
     goes at either barrier call site, or making ``forward_carry_rate`` return ``carry_rate``.
     Verified: 4.276e-02 against a 1e-12 bar."""
-    growth, payoff = _run_recording(
+    growth, payoff, _ = _run_recording(
         monkeypatch, _cfg('Down_And_In', 40.0, rate=SLOPED_R, div=SLOPED_Q))
     rows = [r for r in payoff if r.dim() == 1]
     payoff_fwd, surface_fwd = _aligned(rows, growth)
@@ -285,6 +295,40 @@ def test_payoff_forward_survives_a_sloped_carry_curve(monkeypatch):
         'the sloped fixture reproduced the flat one exactly - the curve has no shape and the '
         'assertion below is the flat-curve gate a second time')
     assert torch.allclose(payoff_fwd, surface_fwd, rtol=1e-12, atol=0.0), _disagreement(rows, growth)
+
+
+def test_the_vol_strips_last_forward_is_the_payoff_forward(monkeypatch):
+    """A THIRD ROUTE, and the one the vol strip added. Every fixing of ``forward_vol_strip`` is
+    read at its own forward; the LAST fixing is expiry (``instruments.py`` unions ``Expiry_Date``
+    into the observation dates), so that forward must be the one the payoff is valued at.
+
+    The routes really are different arithmetic. The strip builds ``S * exp(c_N * T_N)`` from the
+    ZERO carry gathered at ``T_N`` times the cumulative tenor - one product. The payoff builds it
+    by DIFFERENCING those cumulative integrals into an interval strip and summing the strip back
+    up. They agree because differencing then telescoping is the identity, and nothing but that
+    makes them agree: the vol surface is read at one and the option is paid at the other.
+
+    WHY IT IS NOT THE SAME GATE AS (3) ABOVE. That one compares the payoff forward with the
+    PREAMBLE's ``spot * exp(b * tau)``, a single gather at the deal's own tenor. This one compares
+    it with the strip's, which rides the fixing schedule - so a strip built on the wrong tenors, or
+    on the interval carry where the cumulative belongs, dies here and nowhere else. Measured: the
+    strip handed the INTERVAL carry instead of the cumulative one reads 8.963e-02 against a 1e-13
+    bar on the sloped fixture and passes clean on the flat one, where the two carries are the same
+    number - which is why this runs on both and why a flat-only version would be a placebo.
+    """
+    for tag, kw in [('flat', {}), ('sloped', dict(rate=SLOPED_R, div=SLOPED_Q))]:
+        growth, payoff, strip = _run_recording(monkeypatch, _cfg('Down_And_In', 40.0, **kw))
+        assert strip, 'no vol strip was built - the pricer never read the surface per fixing'
+        last = torch.cat([f[..., -1, :] / s[..., 0, :] for s, f in strip], dim=0)
+        assert last.shape == growth.shape, (
+            '%s: the strip covers %r rows and the deal grid has %r' % (
+                tag, last.shape, growth.shape))
+        rows = [r for r in payoff if r.dim() == 1]
+        payoff_fwd, _ = _aligned(rows, growth)
+        rel = (payoff_fwd / last - 1.0).abs().max()
+        assert float(rel) < 1e-13, (
+            '%s: the payoff forward and the vol strip\'s expiry forward disagree by %.3e' % (
+                tag, float(rel)))
 
 
 def test_the_interval_carry_strip_is_the_difference_of_cumulative_integrals():
