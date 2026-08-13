@@ -133,6 +133,64 @@ def hmm_forward_backward(log_pi, log_P, log_emit):
     return gamma, xi, log_lik
 
 
+def garch11_t_mle(x):
+    """Zero-mean GARCH(1,1) with standardised Student-t innovations, MLE on the series `x`.
+    Returns `(omega, alpha, beta, nu, h, se)` in the UNITS OF `x` — the caller owns any rescaling
+    (`GARCHSpotCalibration` fits percent log returns and converts back; a basis innovation is
+    already in the units its σ is quoted in). `h` is the filtered conditional-variance path off
+    the fitted parameters, seeded at the sample variance, so `h[-1]` is the variance OF the last
+    observation — one step stale as a "today's state" stamp, which is what both callers stamp.
+
+    Uses `arch` if importable, else scipy L-BFGS-B on the identical log-likelihood, with
+    asymptotic standard errors from a central-difference numerical Hessian (per-coordinate step,
+    since ω~1e-2 and ν~7.5 differ by orders of magnitude)."""
+    from scipy.special import gammaln
+    var0 = float(np.var(x))
+
+    def filtered(omega, alpha, beta):
+        h = np.empty_like(x)
+        h[0] = var0
+        for i in range(1, len(x)):
+            h[i] = omega + alpha * x[i - 1] ** 2 + beta * h[i - 1]
+        return h
+
+    def negll(th):
+        omega, alpha, beta, nu = th
+        if omega <= 0.0 or nu <= 2.0 or alpha < 0.0 or beta < 0.0:
+            return 1.0e10
+        h = filtered(omega, alpha, beta)
+        ne = nu - 2.0
+        ll = (gammaln((nu + 1) / 2) - gammaln(nu / 2) - 0.5 * np.log(ne * np.pi)
+              - 0.5 * np.log(h) - (nu + 1) / 2 * np.log1p(x ** 2 / (h * ne)))
+        return -ll.sum()
+
+    try:
+        from arch import arch_model
+        res = arch_model(x, mean='Zero', vol='GARCH', p=1, q=1, dist='t').fit(disp='off')
+        omega, alpha, beta, nu = (float(res.params[k]) for k in ('omega', 'alpha[1]', 'beta[1]', 'nu'))
+        se = {k: float(v) for k, v in zip(('omega', 'alpha', 'beta', 'nu'), res.std_err[
+            ['omega', 'alpha[1]', 'beta[1]', 'nu']].values)}
+        h = np.asarray(res.conditional_volatility, dtype=np.float64) ** 2
+    except ImportError:
+        from scipy.optimize import minimize
+        opt = minimize(negll, np.array([0.01, 0.05, 0.90, 8.0]), method='L-BFGS-B',
+                       bounds=[(1e-8, None), (0.0, 0.999), (0.0, 0.999), (2.05, 200.0)],
+                       options={'maxiter': 1000, 'ftol': 1e-12, 'gtol': 1e-8})
+        omega, alpha, beta, nu = opt.x
+        step = 1e-4 * (np.abs(opt.x) + 1e-3)
+        H = np.zeros((4, 4))
+        for i in range(4):
+            for j in range(i, 4):
+                ei, ej = np.zeros(4), np.zeros(4)
+                ei[i], ej[j] = step[i], step[j]
+                H[i, j] = H[j, i] = (negll(opt.x + ei + ej) - negll(opt.x + ei - ej)
+                                     - negll(opt.x - ei + ej) + negll(opt.x - ei - ej)
+                                     ) / (4 * step[i] * step[j])
+        se = dict(zip(('omega', 'alpha', 'beta', 'nu'), np.sqrt(np.abs(np.diag(np.linalg.inv(H))))))
+        h = filtered(omega, alpha, beta)
+    return float(omega), float(alpha), float(beta), float(nu), h, se
+
+
 # State-reveal tags for `reveal_state_at`: a CONTINUOUS segment is a first-order-differentiable
 # risk factor (the diff-PCA pool); a SUFFICIENT segment is a minimal sufficient statistic (regime
 # belief) revealed verbatim, bypassing PCA.
@@ -3484,8 +3542,6 @@ class GARCHSpotCalibration(object):
         self.num_factors = 1
 
     def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
-        from scipy.special import gammaln
-
         outlier = float(self.param.get('Outlier_Threshold', 0.25))
         max_persistence = float(self.param.get('Max_Persistence', 0.999))
         nu_min = float(self.param.get('Nu_Min', 2.05))
@@ -3496,52 +3552,9 @@ class GARCHSpotCalibration(object):
         r = np.log(px).diff().dropna()
         r = r[r.abs() < outlier]                                                # outlier guard
         x = 100.0 * r.values                                                    # percent units
-        var0 = float(np.var(x))
 
-        def negll(th):
-            omega, alpha, beta, nu = th
-            if omega <= 0.0 or nu <= 2.0 or alpha < 0.0 or beta < 0.0:
-                return 1.0e10
-            h = np.empty_like(x)
-            h[0] = var0
-            for i in range(1, len(x)):
-                h[i] = omega + alpha * x[i - 1] ** 2 + beta * h[i - 1]
-            ne = nu - 2.0
-            ll = (gammaln((nu + 1) / 2) - gammaln(nu / 2) - 0.5 * np.log(ne * np.pi)
-                  - 0.5 * np.log(h) - (nu + 1) / 2 * np.log1p(x ** 2 / (h * ne)))
-            return -ll.sum()
-
-        try:
-            from arch import arch_model
-            res = arch_model(x, mean='Zero', vol='GARCH', p=1, q=1, dist='t').fit(disp='off')
-            omega, alpha, beta, nu = (float(res.params[k]) for k in ('omega', 'alpha[1]', 'beta[1]', 'nu'))
-            se = {k: float(v) for k, v in zip(('omega', 'alpha', 'beta', 'nu'), res.std_err[
-                ['omega', 'alpha[1]', 'beta[1]', 'nu']].values)}
-            h = np.asarray(res.conditional_volatility, dtype=np.float64) ** 2
-            h_last = float(h[-1])
-        except ImportError:
-            from scipy.optimize import minimize
-            opt = minimize(negll, np.array([0.01, 0.05, 0.90, 8.0]), method='L-BFGS-B',
-                           bounds=[(1e-8, None), (0.0, 0.999), (0.0, 0.999), (2.05, 200.0)],
-                           options={'maxiter': 1000, 'ftol': 1e-12, 'gtol': 1e-8})
-            omega, alpha, beta, nu = opt.x
-            # Numerical Hessian → asymptotic standard errors (central second differences,
-            # per-coordinate step since ω~1e-2 and ν~7.5 differ by orders of magnitude).
-            step = 1e-4 * (np.abs(opt.x) + 1e-3)
-            H = np.zeros((4, 4))
-            for i in range(4):
-                for j in range(i, 4):
-                    ei, ej = np.zeros(4), np.zeros(4)
-                    ei[i], ej[j] = step[i], step[j]
-                    H[i, j] = H[j, i] = (negll(opt.x + ei + ej) - negll(opt.x + ei - ej)
-                                         - negll(opt.x - ei + ej) + negll(opt.x - ei - ej)
-                                         ) / (4 * step[i] * step[j])
-            se = dict(zip(('omega', 'alpha', 'beta', 'nu'), np.sqrt(np.abs(np.diag(np.linalg.inv(H))))))
-            h = np.empty_like(x)
-            h[0] = var0
-            for i in range(1, len(x)):
-                h[i] = omega + alpha * x[i - 1] ** 2 + beta * h[i - 1]
-            h_last = float(h[-1])
+        omega, alpha, beta, nu, h, se = garch11_t_mle(x)
+        h_last = float(h[-1])
 
         if alpha + beta > max_persistence:
             logging.warning('GARCH persistence %.5f > %.5f — scaling beta down.',
@@ -4326,22 +4339,53 @@ class VARMixedFactorInterestRateCalibration(object):
 class BasisLinkedSpotModel(StochasticProcess):
     """Lagged-AR(1) basis driven by a sibling commodity-spot path and its HMM regime:
 
-        b(t) = a · ΔS(t) + φ · b(t-1) + η(t)
-        η(t) = σ(s_t) · √((ν-2)/ν) · ε_t,    ε_t ~ t_ν
+        b(t) = μ_t + a · ΔS(t) + φ · (b(t-1) − μ_t) + η(t)
+        η(t) = σ_t · √((ν-2)/ν) · ε_t,    ε_t ~ t_ν
 
-    ΔS is the linked spot's per-step diff, s_t is the linked spot's HMM regime, and σ(s)
-    is the regime-keyed innovation std. Innovation is built from a framework-correlated
-    Gaussian Z plus an internal Chi²(ν) draw; the √((ν-2)/ν) rescaling makes σ(s) the
-    realised std of η regardless of ν. The linked spot's path and regime path are read
-    from `shared_mem.t_Scenario_Buffer`; the linked parent is this factor's own name minus its
-    last period, and sim ordering is enforced by the name-prefix chain (parent -> basis).
+    ΔS is the linked spot's per-step diff and σ_t the innovation std — regime-keyed σ(s_t) off
+    the linked spot's HMM state, or flat, or its own GARCH (below). Innovation is built from a
+    framework-correlated Gaussian Z plus an internal Chi²(ν) draw; the √((ν-2)/ν) rescaling
+    makes σ_t the realised std of η regardless of ν. The linked spot's path and regime path are
+    read from `shared_mem.t_Scenario_Buffer`; the linked parent is this factor's own name minus
+    its last period, and sim ordering is enforced by the name-prefix chain (parent -> basis).
     Initial b(0) is taken from the factor's `Spot` value.
+
+    μ_t and a time-varying σ_t are the two OPTIONAL extensions, both OFF at their 0.0 defaults,
+    both deterministic recursions on the realised path (the `GARCHSpotModel` observable-`h`
+    idiom) — so neither consumes any randomness and the seeded draw order is the same on or off:
+
+        μ_{t+1} = λ·μ_t + (1−λ)·b(t)                  `Slow_Mean_Lambda` λ, seeded by `Mu_0`
+        σ_t² = ω_b + α_b·η(t−1)² + β_b·σ_{t−1}²       `G_Omega`/`G_Alpha`/`G_Beta`, seed `Sig2_0`
+
+    λ = 0 is NOT the shipped model — it would make μ_t = b(t−1) — so the mean switch is
+    STRUCTURAL rather than arithmetic: at the default the mean term is absent from the
+    expression and the loop re-executes `b(t) = a·ΔS(t) + φ·b(t-1) + η(t)` in the shipped
+    order, bitwise.
+
+    Innovation precedence is `Sigma_By_State` > GARCH > flat `Sigma`. The regime branch is
+    untouched and still wins, so GARCH fields declared beside `Sigma_By_State` are inert; against
+    a flat `Sigma`, ω_b > 0 replaces it (and `Sigma` stays the value the model falls back to when
+    the GARCH fields are deleted). `Sigma_By_State` and `Sigma` remain mutually exclusive.
+
+    Both seeds follow the `H0` pattern — `Mu_0` is the mean the FIRST simulated step reverts to,
+    `Sig2_0` the variance of the FIRST innovation, each stamped by the calibration from the end
+    of the sample. Both recursions are per-path state and fork with the path: `(key,'basis_mu')`
+    and `(key,'basis_sig2')` publish `state[t]` = what the step t→t+1 consumes, which is exactly
+    what `inner_fork_seed` hands an inner run as ITS t=0.
+
+    Declared and read by nothing, both pre-existing: `Mu` (the shipped AR reverts to zero, and
+    `Mu_0` seeds the recursion instead) and `Calibration_DT_Years` (the AR is per calibration
+    STEP; nothing rescales it to the sim grid). `reseed_from_path` has no spelling for either
+    recursion and RAISES rather than leave the discarded simulated path's state published.
 
     JSON config:
         A: concurrent ΔS loading
         Phi: AR(1) coefficient on b(t-1)
         Nu: Student-t degrees of freedom (shared across regimes)
         Sigma_By_State: list of σ_s indexed by linked-spot HMM state
+        Sigma: flat innovation std (the alternative to Sigma_By_State)
+        Slow_Mean_Lambda, Mu_0: the slow observable mean (0.0 = off)
+        G_Omega, G_Alpha, G_Beta, Sig2_0: the own-GARCH innovation vol (0.0 = off)
         Mu: long-run mean of η (typically 0)
         Calibration_DT_Years: float (default 1/252)"""
 
@@ -4356,10 +4400,18 @@ class BasisLinkedSpotModel(StochasticProcess):
          'Reads the linked spot path and its HMM regime path from the simulator shared '
          'buffer; the linked spot is simulated first (enforced via `dependant_fields`).',
          '',
+         'Two optional extensions ride the same draws, each a deterministic recursion on the '
+         'realised path and each off at its 0.0 default: a slow observable mean the AR reverts '
+         'to, $\\mu_{t+1} = \\lambda\\mu_t + (1-\\lambda)b(t)$, and the basis\'s own GARCH(1,1) '
+         'innovation variance $\\sigma_t^2 = \\omega_b + \\alpha_b\\eta_{t-1}^2 + '
+         '\\beta_b\\sigma_{t-1}^2$. Innovation precedence is Sigma_By_State > GARCH > Sigma.',
+         '',
          '- **A**: concurrent ΔS loading',
          '- **Phi**: AR(1) coefficient',
          '- **Nu**: Student-t degrees of freedom (shared across regimes)',
-         '- **Sigma_By_State**: per-regime innovation std'])
+         '- **Sigma_By_State**: per-regime innovation std',
+         '- **Slow_Mean_Lambda, Mu_0**: decay and seed of the slow observable mean',
+         '- **G_Omega, G_Alpha, G_Beta, Sig2_0**: the own-GARCH innovation variance and its seed'])
 
     factor_types = ('ObservedBasis',)
     fields = [
@@ -4374,6 +4426,22 @@ class BasisLinkedSpotModel(StochasticProcess):
           description='Flat innovation std for a regime-free primary - the alternative to '
                       'Sigma_By_State'),
         F('Mu', 'Float', default=0.0, description='Long-run mean of the basis innovation'),
+        F('Slow_Mean_Lambda', 'Float', default=0.0,
+          description='Per-step decay of the slow observable mean the AR reverts to - 0 turns '
+                      'the recursion off and the AR reverts to zero, as it always has'),
+        F('Mu_0', 'Float', default=0.0,
+          description='Mean the first simulated step reverts to - the slow-mean recursion\'s '
+                      'seed, stamped from the end of the calibration sample'),
+        F('G_Omega', 'Float', default=0.0,
+          description='Variance intercept of the innovation\'s own GARCH(1,1) - > 0 turns it on '
+                      'and it replaces the flat Sigma'),
+        F('G_Alpha', 'Float', default=0.0,
+          description='Weight on the last squared innovation'),
+        F('G_Beta', 'Float', default=0.0,
+          description='Weight on the last innovation variance'),
+        F('Sig2_0', 'Float', default=0.0,
+          description='Variance of the first simulated innovation - the GARCH recursion\'s seed, '
+                      'stamped from the end of the calibration sample'),
         F('Calibration_DT_Years', 'Float', default=1.0 / 252.0,
           description='Step size (in years) of the calibrated AR(1)')
     ]
@@ -4417,6 +4485,11 @@ class BasisLinkedSpotModel(StochasticProcess):
             Sigma          — flat single-vol OU, no regime read (for a regime-free primary, e.g.
                              the GARCH martingale primary).
 
+        `self.garch` is the third form and the whole of the documented precedence: it can only be
+        selected against a flat Sigma, so a regime-switching primary keeps today's behaviour even
+        with the GARCH fields declared. `self.slow_mean` is likewise the mean term's structural
+        switch — λ = 0 means "no mean term", not "λ = 0 in the recursion".
+
         AAD: `b0` is kept on the autograd graph so payoff sensitivities w.r.t. the observed initial
         basis flow through, and is stored unreshaped so inner-MC mode can pass a `(B,)` vector of
         per-outer-path initial bases; outer mode is `(1,)`.
@@ -4433,6 +4506,14 @@ class BasisLinkedSpotModel(StochasticProcess):
         self.sigma_by_state = (shared.one.new_tensor(np.array(self.param['Sigma_By_State'], dtype=np.float64))
                                if has_regime else None)
         self.sigma_flat = None if has_regime else shared.one.new_tensor(float(self.param['Sigma']))
+        self.lam = float(self.param.get('Slow_Mean_Lambda', 0.0))
+        self.g_omega = float(self.param.get('G_Omega', 0.0))
+        self.g_alpha = float(self.param.get('G_Alpha', 0.0))
+        self.g_beta = float(self.param.get('G_Beta', 0.0))
+        self.slow_mean = self.lam != 0.0
+        self.garch = self.sigma_by_state is None and self.g_omega > 0.0
+        self.mu0 = shared.one.new_tensor(float(self.param.get('Mu_0', 0.0)))
+        self.sig20 = shared.one.new_tensor(float(self.param.get('Sig2_0', 0.0)))
         # AAD: b0 stays on the graph, unreshaped so inner MC can pass (B,).
         self.b0 = tensor
 
@@ -4445,6 +4526,15 @@ class BasisLinkedSpotModel(StochasticProcess):
         us. The linked spot path is read in *price level* (dollars), not log-space — the HMM
         process exp()s its log-cumsum before publishing — and its path/regime shapes match this
         process's Z, since both processes ran in the same inner/outer mode.
+
+        ONE loop covers outer (T, B) and inner (T, B, B2) — every expression in it broadcasts, so
+        only `b_init` (a `(1,)` spot against a `(B,)` per-outer-path fork vector) needs the mode.
+        The two extensions are the two `if`s inside it, and with both off the else arms are the
+        shipped expression in the shipped order: nothing new is evaluated, not even at zero.
+
+        Neither recursion draws: `W` is sampled once, in the shape and order it always was, and
+        the GARCH arm reuses the SAME `Z`/`W` element it would have used flat — it only rescales
+        it, so every seeded number in a world with the extensions off is untouched.
         """
         # Z is (T, B) outer / (T, B, B2) inner, correlated.
         Z = shared_mem.t_random_numbers[self.z_offset, :self.scenario_horizon]
@@ -4475,27 +4565,81 @@ class BasisLinkedSpotModel(StochasticProcess):
         phi = self.Phi
         a = self.A
 
-        if Z.ndim == 2:
-            # Outer mode: (T, B). Bit-exact preserve of legacy behavior.
-            T, B = Z.shape
-            # Floor the chi-square draw — same inf/NaN guard as the linked spot.
-            W = torch.distributions.Chi2(shared_mem.one.new_tensor(nu)).sample((T, B)).clamp_min(1.0e-6)
-            eta = sigma_t * Z * torch.sqrt((nu - 2.0) / W)
-            b_init = self.b0.expand(B)
-            out = torch.empty((T, B), device=device, dtype=dtype)
-            out[0] = b_init
-            for t in range(1, T):
-                out[t] = a * (linked_path[t] - linked_path[t - 1]) + phi * out[t - 1] + eta[t]
-        else:
-            # Inner mode: (T, B, B2).
-            T, B, B2 = Z.shape
-            W = torch.distributions.Chi2(shared_mem.one.new_tensor(nu)).sample((T, B, B2)).clamp_min(1.0e-6)
-            eta = sigma_t * Z * torch.sqrt((nu - 2.0) / W)
-            out = torch.empty((T, B, B2), device=device, dtype=dtype)
-            out[0] = self.b0.unsqueeze(-1).expand(B, B2)
-            for t in range(1, T):
-                out[t] = a * (linked_path[t] - linked_path[t - 1]) + phi * out[t - 1] + eta[t]
+        inner = Z.ndim == 3
+        T, batch = Z.shape[0], Z.shape[1:]
+        # Floor the chi-square draw — same inf/NaN guard as the linked spot.
+        W = torch.distributions.Chi2(shared_mem.one.new_tensor(nu)).sample(Z.shape).clamp_min(1.0e-6)
+        scale = torch.sqrt((nu - 2.0) / W)
+        eta = None if self.garch else sigma_t * Z * scale
+        out = torch.empty(Z.shape, device=device, dtype=dtype)
+        out[0] = self.b0.unsqueeze(-1).expand(batch) if inner else self.b0.expand(batch)
+        # Per-path recursion state, seeded from the inner fork / burn-in when either published one.
+        mu = self._recursion_seed(shared_mem, 'mu0', self.mu0, inner)
+        sig2 = self._recursion_seed(shared_mem, 'sig20', self.sig20, inner)
+        mu_path = sig2_path = None
+        if self.slow_mean:
+            mu_path = torch.empty_like(out)
+            mu_path[0] = mu
+        if self.garch:
+            sig2_path = torch.empty_like(out)
+            sig2_path[0] = sig2
+        for t in range(1, T):
+            eta_t = sig2.sqrt() * Z[t] * scale[t] if self.garch else eta[t]
+            ds = a * (linked_path[t] - linked_path[t - 1])
+            if self.slow_mean:
+                out[t] = mu + ds + phi * (out[t - 1] - mu) + eta_t
+                mu = self.lam * mu + (1.0 - self.lam) * out[t]
+                mu_path[t] = mu
+            else:
+                out[t] = ds + phi * out[t - 1] + eta_t
+            if self.garch:
+                sig2 = self.g_omega + self.g_alpha * eta_t * eta_t + self.g_beta * sig2
+                sig2_path[t] = sig2
+        self.last_mu, self.last_sig2 = mu_path, sig2_path
+        for kind, path in (('basis_mu', mu_path), ('basis_sig2', sig2_path)):
+            if path is not None:
+                shared_mem.t_Scenario_Buffer[(self.factor_key, kind)] = path
         return out
+
+    def _recursion_seed(self, shared_mem, kind, calibrated, inner):
+        """t=0 state for one observable recursion: the inner fork's `<kind>_inner` (a `(B,)`
+        per-outer-path vector, unsqueezed so it broadcasts across the B2 fan-out), or the diff-ML
+        burn-in's `<kind>_outer`, else the calibrated scalar. Mirrors GARCH's `h0_inner`/
+        `h0_outer` pair; a scalar broadcasts against either mode, so nothing is expanded."""
+        seed = shared_mem.t_Scenario_Buffer.get(
+            (self.factor_key, kind + ('_inner' if inner else '_outer')))
+        return calibrated if seed is None else (seed.unsqueeze(-1) if inner else seed)
+
+    def inner_fork_seed(self, factor_key, outer_buf, t):
+        """Per-outer-path seeds for the two observable recursions, read at the fork row so the
+        inner fan-out continues the forked path's mean / innovation-variance state instead of
+        restarting from the calibrated `Mu_0`/`Sig2_0`. Both published arrays hold the state the
+        step t→t+1 consumes, which IS the inner run's step 0→1 — so the fork is an index read,
+        with no re-derivation to keep in step with `generate`. Detached: the inner tape
+        differentiates back to its own `state_t` leaves, never through the outer path."""
+        return {(factor_key, seed): outer_buf[(factor_key, kind)][t].detach()
+                for kind, seed in (('basis_mu', 'mu0_inner'), ('basis_sig2', 'sig20_inner'))
+                if (factor_key, kind) in outer_buf}
+
+    def outer_reseed(self):
+        """t=0 seeds for the next outer run's burn-in: this run's terminal mean / variance state,
+        so a burn-in that carries the terminal basis LEVEL over carries the state that level was
+        generated under with it. Nothing to seed when both recursions are off."""
+        return {(self.factor_key, seed): path[-1].detach()
+                for seed, path in (('mu0_outer', self.last_mu), ('sig20_outer', self.last_sig2))
+                if path is not None}
+
+    def reseed_from_path(self, simulated, shared_mem):
+        """Observed-path replay. The two observable recursions have no replay spelling yet: μ_t
+        is a pure function of the supplied basis path, but σ_t² needs the AR residual against the
+        replayed linked spot, which is a second copy of `generate`'s arithmetic — the sibling this
+        change does not absorb. Raise rather than leave `basis_mu`/`basis_sig2` published from the
+        DISCARDED simulated path, which is a wrong number with a plausible shape."""
+        if self.slow_mean or self.garch:
+            raise ValueError(
+                f'{utils.check_tuple_name(self.factor_key)}: Observed_Scenario replay is not '
+                f'defined for Slow_Mean_Lambda / G_Omega — the published mean and innovation '
+                f'variance would be the simulated path\'s, not the replayed one\'s.')
 
 
 class BasisLinkedSpotCalibration(object):
@@ -4504,14 +4648,36 @@ class BasisLinkedSpotCalibration(object):
     archive-side name-prefix dependency. OLS on `b(t) = a·ΔS + φ·b(t-1) + η(t)`
     recovers (a, φ); ν from method-of-moments on the η excess kurt; per-regime σ from
     rolling-vol-tercile partitioning of η — terciles indexed in σ-ascending order to
-    match the linked spot's HMM regime convention."""
+    match the linked spot's HMM regime convention.
+
+    Two declared switches fit the model's two optional extensions; neither is touched when the
+    switch is at its default, so the block above is stamped byte-for-byte as it always was.
+
+    `Slow_Mean_Span > 0` regresses the DEVIATION from the slow observable mean, `b(t) − μ_t = a·ΔS
+    + φ·(b(t-1) − μ_t) + η(t)`, with μ_t the span's EWMA of the basis through t−1 — strictly
+    lagged, so the regressor is F_{t-1}-measurable exactly as it is in the simulator. It stamps
+    `Slow_Mean_Lambda = 1 − 2/(span+1)` and `Mu_0`, the mean the NEXT observation would revert to.
+
+    `GARCH_Innovation = 'Yes'` fits the innovation's own GARCH(1,1)-t (`garch11_t_mle`, the same
+    estimator `GARCHSpotCalibration` uses) on η and stamps `G_Omega`/`G_Alpha`/`G_Beta`/`Sig2_0`.
+    It stamps a flat `Sigma` INSTEAD of `Sigma_By_State`, because the model's precedence puts the
+    regime form first: stamping both would leave the GARCH inert. `Sigma` is then η's
+    unconditional std — the model's behaviour if the four GARCH fields are deleted — and `Nu` is
+    re-read off the GARCH fit's own standardised residual, whose excess kurtosis is what is left
+    once the vol dynamics are modelled rather than absorbed into the tail."""
     model_type = 'BasisLinkedSpotModel'
     fields = [
         F('Nu_Min', 'Float', default=3.0,
           description='Floor on the degrees of freedom the moment-matched nu solve returns'),
         F('Nu_Max', 'Float', default=50.0, description='Ceiling on the same solve'),
         F('Vol_Window', 'Integer', default=21,
-          description='Rolling window, in business days, the regime terciles are cut on')
+          description='Rolling window, in business days, the regime terciles are cut on'),
+        F('Slow_Mean_Span', 'Integer', default=0,
+          description='EWMA span, in business days, of the slow observable mean the AR reverts '
+                      'to - 0 fits the shipped zero-mean AR and stamps neither new field'),
+        F('GARCH_Innovation', 'Text', default='No', values=['Yes', 'No'],
+          description='Yes fits the innovation\'s own GARCH(1,1)-t and stamps a flat Sigma in '
+                      'place of Sigma_By_State, which would otherwise take precedence over it')
     ]
 
     def __init__(self, model, param):
@@ -4525,6 +4691,8 @@ class BasisLinkedSpotCalibration(object):
         nu_min = float(self.param.get('Nu_Min', 3.0))
         nu_max = float(self.param.get('Nu_Max', 50.0))
         vol_window = int(self.param.get('Vol_Window', 21))
+        span = int(self.param.get('Slow_Mean_Span', 0))
+        fit_garch = self.param.get('GARCH_Innovation', 'No') == 'Yes'
         dt_calib = 1.0 / float(num_business_days)
 
         # Basis col is `ObservedBasis.<primary>.<basis>`; the linked parent is the name minus the
@@ -4543,8 +4711,13 @@ class BasisLinkedSpotCalibration(object):
         b = joint[basis_col].values
         lme_v = joint[linked_col].values
         dlme = np.diff(lme_v)
-        y = b[1:]
-        X = np.column_stack([dlme, b[:-1]])
+        # The slow mean is a level SHIFT of both sides: regress the deviation, and the same
+        # (a, φ) OLS recovers the same coefficients against a moving rather than a zero mean.
+        # `ewm(adjust=False)` IS the simulator's recursion; `[:-1]` lags it, `[-1]` is Mu_0.
+        ewm = pd.Series(b).ewm(span=span, adjust=False).mean().values if span else None
+        mu = 0.0 if ewm is None else ewm[:-1]
+        y = b[1:] - mu
+        X = np.column_stack([dlme, b[:-1] - mu])
 
         coef, *_ = np.linalg.lstsq(X, y, rcond=None)
         a_hat, phi_hat = float(coef[0]), float(coef[1])
@@ -4553,32 +4726,48 @@ class BasisLinkedSpotCalibration(object):
         eta_kurt = float(scipy_stats.kurtosis(eta, fisher=True))
         nu_hat = float(np.clip(4.0 + 6.0 / max(eta_kurt, 1.0e-3), nu_min, nu_max))
 
-        # Rolling-21d vol of ΔLME → tercile bins (low/mid/high). Index ascending in
-        # vol matches the production HMM's σ-ascending state ordering, so per-regime σ
-        # values are positionally consistent with the HMM regime path read at sim time.
-        rolling_vol = pd.Series(dlme).rolling(vol_window, min_periods=vol_window).std()
-        # Align rolling_vol to η (same length n-1)
-        rolling_vol = rolling_vol.values
-        valid = ~np.isnan(rolling_vol)
-        if valid.sum() < 100:
-            sigma_by_state = [float(eta.std())] * 3
+        if fit_garch:
+            # Own GARCH(1,1)-t on η. Its ν is the dof LEFT once the vol dynamics are modelled;
+            # the moment-matched one above absorbs them into the tail, so it is the one to drop.
+            g_omega, g_alpha, g_beta, nu_hat, h_eta, _ = garch11_t_mle(eta)
+            nu_hat = float(np.clip(nu_hat, nu_min, nu_max))
+            vol = {'Sigma': float(eta.std()), 'G_Omega': g_omega, 'G_Alpha': g_alpha,
+                   'G_Beta': g_beta, 'Sig2_0': float(h_eta[-1])}
+            eta = eta / np.sqrt(h_eta)                                    # standardised for `delta`
+            logging.info('basis GARCH(1,1)-t: omega=%.4f alpha=%.4f beta=%.4f nu=%.2f | '
+                         'persistence=%.4f LR-sigma=%.4f Sig2_0=%.4f (flat Sigma %.4f)',
+                         g_omega, g_alpha, g_beta, nu_hat, g_alpha + g_beta,
+                         np.sqrt(g_omega / (1.0 - g_alpha - g_beta)), h_eta[-1], vol['Sigma'])
         else:
-            quantiles = np.quantile(rolling_vol[valid], [1.0 / 3, 2.0 / 3])
-            tercile = np.zeros(len(eta), dtype=int)
-            tercile[rolling_vol > quantiles[0]] = 1
-            tercile[rolling_vol > quantiles[1]] = 2
-            tercile[~valid] = 1                                                       # leading NaN → mid
-            sigma_by_state = [float(eta[tercile == s].std()) if (tercile == s).sum() > 1
-                              else float(eta.std()) for s in range(3)]
+            # Rolling-21d vol of ΔLME → tercile bins (low/mid/high). Index ascending in
+            # vol matches the production HMM's σ-ascending state ordering, so per-regime σ
+            # values are positionally consistent with the HMM regime path read at sim time.
+            rolling_vol = pd.Series(dlme).rolling(vol_window, min_periods=vol_window).std()
+            # Align rolling_vol to η (same length n-1)
+            rolling_vol = rolling_vol.values
+            valid = ~np.isnan(rolling_vol)
+            if valid.sum() < 100:
+                sigma_by_state = [float(eta.std())] * 3
+            else:
+                quantiles = np.quantile(rolling_vol[valid], [1.0 / 3, 2.0 / 3])
+                tercile = np.zeros(len(eta), dtype=int)
+                tercile[rolling_vol > quantiles[0]] = 1
+                tercile[rolling_vol > quantiles[1]] = 2
+                tercile[~valid] = 1                                                   # leading NaN → mid
+                sigma_by_state = [float(eta[tercile == s].std()) if (tercile == s).sum() > 1
+                                  else float(eta.std()) for s in range(3)]
+            vol = {'Sigma_By_State': sigma_by_state}
 
         param = {
             'A': a_hat,
             'Phi': phi_hat,
             'Nu': nu_hat,
             'Mu': 0.0,
-            'Sigma_By_State': sigma_by_state,
+            **vol,
             'Calibration_DT_Years': dt_calib,
         }
+        if span:
+            param.update({'Slow_Mean_Lambda': 1.0 - 2.0 / (span + 1.0), 'Mu_0': float(ewm[-1])})
         delta = pd.DataFrame({basis_col: eta}, index=joint.index[1:])
         return utils.CalibrationInfo(param, [[1.0]], delta)
 
