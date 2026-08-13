@@ -10,14 +10,22 @@ THE COUNTER IS THE STORAGE. What is saved is where each random stream stood
 (`utils.rng_position`), never what it produced. Sobol draws are memoized per
 (dimension, sample_size, batch), so rewinding the counter hands the replay the very same tensor;
 the regular generator - `torch.rand` at small batches, and every Heston-Nandi unmonitored sub-step
-- has no memo, so its own state is saved and restored. Both streams are exercised here: base
-valuation runs one scenario and takes the `torch.rand` branch, exposure runs 512 and takes Sobol.
+- has no memo, so its own state is saved and restored. Both streams are exercised here, and which
+one each fixture reads is ATTRIBUTED rather than asserted: `pv_MC_Tarf` takes Sobol above 16
+scenarios, so base valuation's one scenario reads `torch.rand` and the 512-scenario exposure reads
+Sobol, and desynchronising ONE of them moves that fixture's gradient and the other fixture's by
+exactly zero (`test_each_fixture_reads_the_stream_it_claims`, measured 2.80e+05 and 1.17e+03).
 
 WHY THE GRADIENT GATE IS `array_equal` AND NOT A TOLERANCE. The replay is the same kernels on the
 same inputs in the same order, so nothing about it is approximate, and a tolerance would let a
 desynchronised stream through as "close enough" - which is exactly what a wrong replay looks like
 at 8192 paths. Measured: the whole gradient vector is bit-identical on both paths, base valuation
-(7 factors) and CVA (14), so no tolerance is owed and none is offered.
+(7 factors) and CVA (14), so no tolerance is owed and none is offered - and the smallest of the
+mutations below moves the gradient by 1.5e-04 relative, so a tolerance loose enough to be called
+one would pass it. The identity is also GRID-INVARIANT, which is what says it is exactness and not
+a coincidence of one grid: re-taken on `0d 1m(1m)`, `0d 2m(2m)` and `0d 3m(3m)` (18, 12 and 10
+reporting rows), and with `Dynamic_Scenario_Dates` pinned off as well as on the declared default,
+every one of cva, profile, cashflows and gradient is equal to the last bit on both deals.
 
 THE BOUNDARY DECISIONS RIDE THE NODE'S OUTPUTS. `stochastic_boundary_correction` is
 `gap - gap.detach()` times a detached coefficient, and the untaped forward has no graph to give
@@ -26,10 +34,24 @@ is what connects it: the correction's coefficient arrives as that output's cotan
 graph-carrying half is built inside the recompute. `NoBoundaryInjection` below drops exactly that
 cotangent and the gradient moves, which is what says the correction is live rather than assumed.
 
-The three mutations are the point of the file. Bit-identity gates pass trivially against a node
-that quietly reuses the forward's own graph, or one that never rewinds anything - so the counter is
+The mutations are the point of the file. Bit-identity gates pass trivially against a node that
+quietly reuses the forward's own graph, or one that never rewinds anything - so the counter is
 desynchronised by one draw, the boundary cotangent is dropped, and the replay is fed stale inputs,
-and each must break the gradient it is supposed to break, on BOTH streams.
+and each must break the gradient it is supposed to break, on BOTH streams (measured, as a fraction
+of the gradient's own largest entry: 7.5e-02 / 3.5e-01 / 1.5e-04 on base valuation and
+1.4e-02 / 2.8e-01 / 8.4e-05 on the CVA). That division of labour is itself measured: a
+`Recompute_Inner_MC: 'Yes'` that silently kept taping - the switch dead, the node never engaged -
+leaves every bit-identity gate here green and fails ten, all of them scored on a mutation.
+
+WHERE THE REPLAY RUNS IS WHERE ITS DEFECTS ARE VISIBLE, and only there. `backward()` runs once per
+pricing block and only when a gradient is asked for - measured on this fixture, the node's forward
+runs 1 time under base valuation and 6 under exposure, and its backward runs the same number of
+times WITH sensitivities on and zero times with them off. So the by-product law (a settled cashflow
+is an output the caller performs once, never a side effect of `simulate`) is gated at
+`Gradient: 'Yes'`, where a replay that books settles 36 extra cashflows and the reported frame
+moves by 6.0e+06 while the cva, the profile AND the whole CVA gradient stay bit-identical - the
+cashflow assertion is the only detector there is, and at `Gradient: 'No'` it detects nothing
+because nothing replayed.
 
 WHAT THE NODE CANNOT DO is gated too. Detaching the saved inputs is what stops the replay walking
 back into the outer graph, and it is also why a SECOND derivative through it is severed and comes
@@ -81,7 +103,7 @@ def cmc(deal, gradient=False, recompute='No', batches=1, batch=512, mcmc=128):
     takes the Sobol branch - the memoized half of the stream contract - and the boundary
     correction has a population to fit a kernel to."""
     overrides = {
-        'Run_Date': tarf.BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': '0d 2m(2m)', 'Batch_Size': batch,
+        'Run_Date': tarf.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 2m(2m)', 'Batch_Size': batch,
         'Simulation_Batches': batches, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
         'MCMC_Simulations': mcmc, 'Deflation_Interest_Rate': 'USD', 'Generate_Cashflows': 'Yes',
         'Gradient_Variables': 'Factors', 'Recompute_Inner_MC': recompute,
@@ -148,13 +170,23 @@ def test_the_base_price_is_bit_identical_with_the_node_on(greeks):
     assert off == on, f'price moved with the node on: {off!r} -> {on!r}'
 
 
+@pytest.mark.parametrize('gradient', [False, True])
 @pytest.mark.parametrize('deal,label', [(KNOCK_IN_CMC, 'knock-in'), (PIN_CMC, 'pin')])
-def test_the_exposure_and_its_cashflows_are_bit_identical_with_the_node_on(deal, label):
+def test_the_exposure_and_its_cashflows_are_bit_identical_with_the_node_on(deal, label, gradient):
     """The whole profile and the settled cashflows, because the by-products are where an untaped
     forward goes wrong quietly: the simulation is called TWICE under the node, and a cashflow
-    accrued inside it would be settled twice - visible here and invisible in the price."""
-    cva_off, mtm_off, _, cash_off = cmc(deal)
-    cva_on, mtm_on, _, cash_on = cmc(deal, recompute='Yes')
+    accrued inside it rather than returned would be settled twice.
+
+    BOTH sensitivity settings, because the second call only happens under one of them. With them
+    off the node's backward never runs (measured: 6 forwards, 0 backwards), so this is the untaped
+    forward's by-product plumbing alone; with them on the replay fires once per block (6) and the
+    double-settle is reachable - `test_a_cashflow_settled_inside_the_replay_moves_only_the_frame`
+    is the mutation that proves the cashflow assertion sees it, and that nothing else in this file
+    does. The reporting order is what makes that true: `Credit_Monte_Carlo` harvests
+    `t_Cashflows` AFTER the batch's backward (calculation.py:1727), so a booking made in the replay
+    is still in the frame when it is read."""
+    cva_off, mtm_off, _, cash_off = cmc(deal, gradient=gradient)
+    cva_on, mtm_on, _, cash_on = cmc(deal, gradient=gradient, recompute='Yes')
     assert np.array_equal(mtm_off, mtm_on), f'{label}: exposure moved with the node on'
     assert cva_off == cva_on, f'{label}: cva moved: {cva_off!r} -> {cva_on!r}'
     assert cash_off and all(np.array_equal(a, b) for a, b in zip(cash_off, cash_on)), (
@@ -234,28 +266,67 @@ class AheadByOne(dict):
         return super().setdefault(key, default + 1)
 
 
-class DesyncedStreams(RECOMPUTE):
-    """The node replaying ONE DRAW off the position it saved, on both streams.
+def desynced_node(quasi, regular):
+    """The node replaying ONE DRAW off the position it saved, on the streams named.
 
-    Both, because which one a run reads is a function of its batch size - the memoized Sobol stream
-    above 16 scenarios and the regular generator below it - and a mutation that moved only one
-    would be a no-op on half the fixtures here.
+    Parameterised rather than written three times because the halves are the interesting objects:
+    which stream a run reads is a function of its batch size - the memoized Sobol counter above 16
+    scenarios (`pv_MC_Tarf`) and the regular generator below it - so a mutation of BOTH kills every
+    fixture without saying which stream that fixture actually read, and the file would keep passing
+    if one of them silently stopped being covered. The halves attribute it; the pair is the
+    mutation the gradient gate is scored on.
 
     The forward pass is untouched, so every reported number is identical and only the derivative is
     wrong. That is the failure a recompute has and a tape does not, and it is the whole reason the
     position is saved; one draw is the smallest desynchronisation there is.
     """
 
+    class Desynced(RECOMPUTE):
+        @staticmethod
+        def backward(ctx, *cotangents):
+            simulate = ctx.simulate
+
+            def replay(*theta):
+                if quasi:
+                    ctx.shared.t_quasi_rng_batch = AheadByOne(ctx.shared.t_quasi_rng_batch)
+                if regular:
+                    torch.rand(1, dtype=ctx.shared.one.dtype, device=ctx.shared.one.device)
+                return simulate(*theta)
+
+            ctx.simulate = replay
+            return RECOMPUTE.backward(ctx, *cotangents)
+
+    Desynced.__name__ = 'Desynced' + ''.join(
+        [n for n, on in (('Sobol', quasi), ('Generator', regular)) if on])
+    return Desynced
+
+
+DesyncedStreams = desynced_node(True, True)
+SOBOL_AHEAD = desynced_node(True, False)
+GENERATOR_AHEAD = desynced_node(False, True)
+
+
+class BookingReplay(RECOMPUTE):
+    """The replay with a SIDE EFFECT: it settles a cashflow, which is what a pricer that accrued
+    inside `simulate` instead of returning it would do on the second call.
+
+    The one mutation in this file that leaves the whole gradient alone - it is the by-product law
+    being broken rather than the derivative, and the cashflow frame is where it shows.
+    """
+
     @staticmethod
     def backward(ctx, *cotangents):
         simulate = ctx.simulate
 
-        def desynced(*theta):
-            ctx.shared.t_quasi_rng_batch = AheadByOne(ctx.shared.t_quasi_rng_batch)
-            torch.rand(1, dtype=ctx.shared.one.dtype, device=ctx.shared.one.device)
-            return simulate(*theta)
+        def booking(*theta):
+            outputs = simulate(*theta)
+            for currency, by_time in ctx.shared.t_Cashflows.items():
+                for time_index in by_time:
+                    pricing.cash_settle(ctx.shared, currency, time_index, ctx.shared.one.new_full(
+                        [ctx.shared.simulation_batch], 1e6))
+            return outputs
 
-        ctx.simulate = desynced
+        ctx.simulate = booking
         return RECOMPUTE.backward(ctx, *cotangents)
 
 
@@ -304,7 +375,9 @@ def test_a_mutated_node_fails_the_gradient_gate(mutant, run, stream, monkeypatch
 
     Scored on the gradient alone: all three leave the forward pass untouched, so the reported value
     agrees in every digit under each of them - which is the point, and the reason a price gate over
-    this subsystem is worth nothing.
+    this subsystem is worth nothing. As a fraction of the gradient's largest entry (3.73e+06 base,
+    8.22e+04 CVA) the kills are 7.5e-02 / 3.5e-01 / 1.5e-04 and 1.4e-02 / 2.8e-01 / 8.4e-05, in the
+    order they are parametrized.
     """
     value_off, grad_off = run('No')
     monkeypatch.setattr(pricing, 'InnerMCRecompute', mutant)
@@ -315,15 +388,73 @@ def test_a_mutated_node_fails_the_gradient_gate(mutant, run, stream, monkeypatch
         'fail measures nothing:\n{}'.format(mutant.__name__, stream, grad_off))
 
 
+@pytest.mark.parametrize('run,stream,kills,spectates', [
+    (base_gradient, 'torch.rand', GENERATOR_AHEAD, SOBOL_AHEAD),
+    (cva_gradient, 'Sobol', SOBOL_AHEAD, GENERATOR_AHEAD)], ids=['torch.rand', 'Sobol'])
+def test_each_fixture_reads_the_stream_it_claims(run, stream, kills, spectates, monkeypatch):
+    """One HALF of the desynchronisation at a time, so the file states which stream each fixture
+    covers instead of assuming it.
+
+    The mutation of both streams above kills everything and would go on killing everything if a
+    fixture quietly stopped reading one of them - move `pv_MC_Tarf`'s Sobol threshold past 512, or
+    the exposure's batch under 16, and the memoized counter is no longer exercised anywhere while
+    every test still passes. Here the OTHER half must be a NO-OP, bit for bit, which is a claim
+    only the fixture that reads exactly one stream can make.
+
+    Measured: the regular generator one draw ahead moves the base gradient by 2.80e+05 and the CVA
+    gradient by exactly 0.0; the Sobol counter one batch ahead moves the CVA gradient by 1.17e+03
+    and the base gradient by exactly 0.0.
+    """
+    _, grad_off = run('No')
+    monkeypatch.setattr(pricing, 'InnerMCRecompute', kills)
+    _, grad_desynced = run('Yes')
+    monkeypatch.setattr(pricing, 'InnerMCRecompute', spectates)
+    _, grad_other = run('Yes')
+    assert not np.array_equal(grad_off, grad_desynced), (
+        f'{stream} is not the stream the {run.__name__} fixture reads: desynchronising it '
+        f'changed nothing')
+    assert np.array_equal(grad_off, grad_other), (
+        f'the {run.__name__} fixture also reads the other stream, so {stream} is not what the '
+        f'combined mutation kills it on:\n{grad_off}\n{grad_other}')
+
+
+def test_a_cashflow_settled_inside_the_replay_moves_only_the_frame(monkeypatch):
+    """The by-product law, gated: a `simulate` that BOOKS instead of returning is caught by the
+    cashflow assertion and by nothing else in this file.
+
+    Measured on the knock-in at `Gradient: 'Yes'`, 36 extra settlements over the 6 blocks: the cva,
+    the exposure profile and the whole 14-entry CVA gradient are bit-identical, and the reported
+    frame moves by 6.0e+06. That asymmetry is the reason the exposure gate carries a cashflow
+    comparison at all, and the reason it is taken with sensitivities ON - with them off the replay
+    never runs, the booking never happens, and every one of the four channels agrees.
+    """
+    cva_off, mtm_off, grad_off, cash_off = cmc(KNOCK_IN_CMC, gradient=True, recompute='Yes')
+    monkeypatch.setattr(pricing, 'InnerMCRecompute', BookingReplay)
+    cva_on, mtm_on, grad_on, cash_on = cmc(KNOCK_IN_CMC, gradient=True, recompute='Yes')
+    assert cva_off == cva_on and np.array_equal(mtm_off, mtm_on), (
+        'the booking reached the reported exposure - this mutation is meant to be a by-product one')
+    assert np.array_equal(grad_off, grad_on), 'the booking reached the CVA gradient'
+    assert not all(np.array_equal(a, b) for a, b in zip(cash_off, cash_on)), (
+        'a cashflow settled inside the replay did not move the reported frame, so the cashflow '
+        'half of the exposure gate measures nothing')
+
+
 def test_the_boundary_correction_is_what_the_injection_carries(monkeypatch):
     """Names the size of what `NoBoundaryInjection` drops, so the mutation above is not merely
     "different" - the gap cotangent IS the knock-in's boundary correction, and dropping it leaves
     the uncorrected AAD gradient that `test_boundary_tarf_events` measures as short.
+
+    Measured: 1.32e+06 on a gradient whose largest entry is 3.73e+06, and all 7 entries move. The
+    floor is one percent of that gradient's own scale rather than zero, because a correction that
+    arrived at 1e-300 would satisfy "moved" and mean the cotangent had been all but lost; 35x is
+    the margin it currently clears by.
     """
     _, corrected = baseval(KNOCK_IN, greeks=True, recompute='Yes')
     monkeypatch.setattr(pricing, 'InnerMCRecompute', NoBoundaryInjection)
     _, uncorrected = baseval(KNOCK_IN, greeks=True, recompute='Yes')
     moved = np.abs(corrected - uncorrected)
-    assert moved.max() > 0.0, 'the boundary correction reaches nothing through the node'
+    assert moved.max() > 0.01 * np.abs(corrected).max(), (
+        'the boundary correction reaches all but nothing through the node: {:.6g} on {:.6g}'.format(
+            moved.max(), np.abs(corrected).max()))
     print('\nboundary correction through the node: max |delta| = {:.6g} on a gradient of '
           '{:.6g}'.format(moved.max(), np.abs(corrected).max()))

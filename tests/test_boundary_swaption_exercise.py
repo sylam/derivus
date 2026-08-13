@@ -21,7 +21,26 @@ differencing across the jump rather than converging on a derivative.
 
 Both netting shapes are measured, and the collateralised one is the larger defect rather than the
 harder one - unlike the barrier's, whose collateralised ladder is still a strict xfail in
-test_boundary_pricer_events.
+test_boundary_pricer_events. Uncorrected the reported delta is 19.96-21.46% low uncollateralised
+and 156.9-167.4% low collateralised, over four seeds on the grid below.
+
+WHAT THE ORACLE COSTS, because this file was red for five tests on exactly that. A CRN central
+difference of a CVA is a difference of two Monte Carlo means divided by a bump of 1e-4, so its
+variance goes like sigma^2/h^2 and the SMALL rungs are the noisy end, not the accurate one. At 1024
+paths the 5e-5 rung read 9.7% away from a ladder that was otherwise flat to 1.2%, and `flatness`
+did what it is for and refused to quote any of it - a NOISE FLOOR presenting as a convergence
+failure. It is noise: over rungs 2e-5 to 2e-3 the flatness falls 11.22% -> 5.97% -> 8.07% -> 3.74%
+-> 2.44% at 1k, 2k, 4k, 8k and 16k paths, and the outlying rung is the smallest one at every count.
+So the fix is paths and a rung window that starts above the floor, never a wider tolerance: at
+32768 paths over rungs 1e-4 to 2e-3 the AAD lands within 1.56% of the ladder on four seeds
+uncollateralised and 2.13% collateralised, against tolerances of 3% and 4%.
+
+MUTATIONS, all three run against the file as it stands:
+    suppress `pricing.boundary_correction` entirely      -> 7 killed, the 6 structural and safety
+                                                            tests correctly untouched
+    strike the always-exercises control AT the money,    -> killed at 20.93%, so the control is a
+        correction suppressed                               control and not a vacuous pass
+    scale every requested bandwidth by 100               -> 4 of 5 killed, see that test's docstring
 """
 import os
 import sys
@@ -38,17 +57,11 @@ import derivus
 from derivus import utils
 from derivus.config import Config
 from derivus.instruments import construct_instrument
-from crn_ladder import ladder
+from crn_ladder import Ladder, ladder
 
 BASE = pd.Timestamp('2024-06-28')
 DTYPE = torch.float64
 
-# Unlike the barrier gates this oracle DOES converge off CUDA (1.42% flatness), so the ladder is
-# readable - but the narrowest bandwidth is a deliberately tight 1.5% and CPU float64 reduction
-# order moves it to 1.59%. The tolerance is the gate here, so loosening it to accommodate a second
-# backend would spend the thing being measured. Run it where it was calibrated.
-needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(),
-                                reason='bandwidth gate is calibrated on CUDA reduction order')
 CURVE = 0.03            # flat continuously-compounded zero curve
 SWAP_RATE = 3.05        # % - near the money, so the exercise boundary is populated
 VOL = 0.20
@@ -56,6 +69,11 @@ PRINCIPAL = 10000000.0
 EXPIRY = BASE + pd.DateOffset(years=1)
 MATURITY = BASE + pd.DateOffset(years=6)
 GRID = '0d 6y(6m)'
+# 32768 paths and a rung window that starts above the noise floor - see the module docstring. Both
+# backends read the same ladder: CUDA 2.213e6 at 0.70% flatness, CPU 2.221e6 at 1.02%, 0.36% apart
+# against tolerances of 3%, so there is nothing left for the reduction order to spend.
+BATCH, BATCHES = 4096, 8
+RUNGS = (1e-4, 2e-4, 5e-4, 1e-3, 2e-3)
 
 
 def _legs(rate):
@@ -175,7 +193,7 @@ def _run(curve=CURVE, gradient=False, batch=1024, batches=1, rate=SWAP_RATE, ban
     derivative the CRN ladder measures is their SUM."""
     c = _cfg(curve, rate, collateralised)
     overrides = {
-        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': GRID, 'Batch_Size': batch,
+        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': GRID, 'Batch_Size': batch,
         'Simulation_Batches': batches, 'Random_Seed': seed, 'Currency': 'USD', 'Tenor_Offset': 0.0,
         'Deflation_Interest_Rate': 'USD', 'Gradient_Variables': 'Factors',
         'Credit_Valuation_Adjustment': {
@@ -191,6 +209,19 @@ def _run(curve=CURVE, gradient=False, batch=1024, batches=1, rate=SWAP_RATE, ban
         g = out['Results']['grad_cva']['Gradient']
         grad = float(sum(g.loc[i] for i in g.index if str(i[0]).startswith('InterestRate.EUR')))
     return out['Results']['mtm'].values, float(out['Results']['cva']), grad
+
+
+@pytest.fixture(scope='module')
+def crn_curve():
+    """The uncollateralised CRN central differences, priced once.
+
+    The bump-and-reprice side knows nothing about the AAD it will be scored against, and the
+    acceptance test and every bandwidth case difference the SAME prices at the same seed - so this
+    is one ladder read six times, not six ladders. Ten 32768-path valuations at 0.79s each;
+    recomputing it per case would add ~40s and buy another sample of the same estimator, which is
+    what the four-seed calibration in the docstrings is for and a rerun of one seed is not."""
+    return ladder(price=lambda x: _run(curve=x, batch=BATCH, batches=BATCHES)[1], aad=1.0,
+                  base=CURVE, rungs=RUNGS, absolute=True).crn
 
 
 # ------------------------------------------------------------------ the fixture reaches the site
@@ -324,40 +355,46 @@ def test_the_frozen_exercise_is_what_the_residual_is():
     acceptance tolerance below means something.
 
     Struck at 1% against a 3% curve, every scenario exercises: the indicator is CONSTANT, there is
-    no flux across the boundary, and the same machinery already agrees. Measured 0.00% at 0.02%
-    flatness, which is what makes the 2.46% seen at the money signal rather than Monte Carlo error.
-    Any claimed fix has to close the second reading without disturbing this one."""
-    kw = dict(batch=1024, rate=1.0)
+    almost no flux across the boundary, and the same machinery already agrees. On the acceptance
+    grid, four seeds: 0.040-0.215% from the ladder at 0.045-0.308% flatness, with the correction
+    itself worth 0.428-0.716% of the reported delta - against 19.96-21.46% at the money. That ratio
+    is what makes the at-the-money reading signal rather than Monte Carlo error, and it is also
+    this fixture's noise floor: the acceptance tolerance below is an order of magnitude above it.
+
+    Run on the SAME paths as the acceptance test, because a noise floor measured on a different
+    grid calibrates nothing. It stops at the 5e-4 rung: the ladder is already inside 0.31% there,
+    so the two wide rungs would only be measuring this fixture's curvature. Any claimed fix has to
+    close the at-the-money reading without disturbing this one."""
+    kw = dict(batch=BATCH, batches=BATCHES, rate=1.0)
     aad = _run(gradient=True, **kw)[2]
     r = ladder(price=lambda x: _run(curve=x, **kw)[1], aad=aad, base=CURVE,
-               rungs=(1e-4, 2e-4, 5e-4), absolute=True)
+               rungs=RUNGS[:3], absolute=True)
     assert r.agrees(tol=0.005), f'a swaption that always exercises should already agree\n{r}'
 
 
 # ------------------------------------------------------------------------------------- acceptance
 
-def test_physical_exercise_gradient_matches_bump_and_reprice():
+def test_physical_exercise_gradient_matches_bump_and_reprice(crn_curve):
     """The frozen exercise indicator in SwaptionDeal.post_process.
 
     A physically settled swaption really is worth the swap or nothing from expiry on, so the jump
     is genuine product economics and must not be smoothed - the flux of scenarios across the
     exercise boundary is what has to reach the tape.
 
-    Uncorrected this reads 2.06-2.92% LOW across four seeds, always the same sign, against a ladder
-    that is already flat (0.38-1.14%) - so this defect does NOT announce itself by scattering the
-    way the barrier's did, and the always-exercises control above is what separates it from noise.
-    Corrected: 0.02-0.49% on the same four seeds. 1.5% sits between the two, three times the worst
-    corrected reading and below the best uncorrected one.
+    Uncorrected this reads 19.96-21.46% LOW across four seeds, always the same sign, against a
+    ladder that is already flat (0.63-2.10%) - so this defect does NOT announce itself by
+    scattering the way the barrier's did, and the always-exercises control above is what separates
+    it from noise. Corrected: 0.14-1.56% on the same four seeds. 3% sits between the two, 1.9x the
+    worst corrected reading and 6.7x below the best uncorrected one.
 
-    The rungs stop at 5e-4 (5bp on a 3% curve) because the CVA's curvature in a parallel shift
-    starts to show above that; the reading is quoted where the ladder is flat, which is the whole
-    point of measuring flatness separately."""
-    kw = dict(batch=1024)
-    aad = _run(gradient=True, **kw)[2]
+    The rungs start at 1e-4 because the oracle is variance-limited below that (5e-5 read 9.7% away
+    at 1024 paths) and stop at 2e-3 because the CVA's curvature in a parallel shift takes over
+    above it; the reading is quoted where the ladder is flat, which is the whole point of measuring
+    flatness separately."""
+    aad = _run(gradient=True, batch=BATCH, batches=BATCHES)[2]
     assert abs(aad) > 1e-6, 'a swaption CVA must have an interest rate delta'
-    r = ladder(price=lambda x: _run(curve=x, **kw)[1], aad=aad, base=CURVE,
-               rungs=(5e-5, 1e-4, 2e-4, 5e-4), absolute=True)
-    assert r.agrees(tol=0.015), f'{r}'
+    r = Ladder(aad, CURVE, RUNGS, crn_curve)
+    assert r.agrees(tol=0.03), f'{r}'
 
 
 def test_collateralised_physical_exercise_gradient_matches_bump_and_reprice():
@@ -366,33 +403,48 @@ def test_collateralised_physical_exercise_gradient_matches_bump_and_reprice():
     correction that only handles the additive path passes the test above and fails this one.
 
     It is also the LARGER half. Collateral removes most of the smooth exposure and leaves the
-    boundary term as a much bigger share of what is left: uncorrected 8.13-8.80% low across three
-    seeds against 2.06-2.92% uncollateralised. Corrected 0.72-1.31% on the same seeds, at 3.6-5.5%
-    flatness - the residual CVA here is ~440x smaller, so the ladder is correspondingly noisier and
-    needs the extra paths to hold still at all. 4% is three times the worst corrected reading and
-    less than half the best uncorrected one."""
-    kw = dict(batch=1024, batches=2, collateralised=True)
+    boundary term as a much bigger share of what is left: uncorrected 156.9-167.4% low across four
+    seeds against 19.96-21.46% uncollateralised. Corrected 0.16-2.13% on the same seeds, at
+    1.02-5.33% flatness - the residual CVA here is ~19x smaller, so the ladder is correspondingly
+    noisier and this is the one place the path count has to double again to hold still: at 32768 it
+    read 3.79-6.38% flat and 0.79-3.79% from the AAD, at 16384 one seed reached 9.13% flat, which
+    is the verdict about to refuse to quote. 4% is twice the worst corrected reading and a factor
+    of thirty-nine below the best uncorrected one.
+
+    It does not share `crn_curve`: this is a different portfolio at a different path count, so
+    there is no ladder here to reuse."""
+    kw = dict(batch=2 * BATCH, batches=BATCHES, collateralised=True)
     aad = _run(gradient=True, **kw)[2]
     r = ladder(price=lambda x: _run(curve=x, **kw)[1], aad=aad, base=CURVE,
-               rungs=(5e-5, 1e-4, 2e-4, 5e-4), absolute=True)
+               rungs=RUNGS, absolute=True)
     assert r.agrees(tol=0.04), f'{r}'
 
 
-@needs_cuda
-@pytest.mark.parametrize('bandwidth', [0.005, 0.01, 0.02])
-def test_the_correction_holds_still_across_the_usable_bandwidth(bandwidth):
+@pytest.mark.parametrize('bandwidth', [0.01, 0.02, 0.05, 0.1, 0.2])
+def test_the_correction_holds_still_across_the_usable_bandwidth(bandwidth, crn_curve):
     """No single bandwidth can be argued for on its own, so the estimate has to hold still over a
     range of them - that is what the local-linear weights buy and the only acceptance criterion
     worth having for the kernel itself.
 
-    It holds on 0.005-0.02 (0.10-0.32% from the oracle at 4096 paths) and NOT beyond: 0.05 reads
-    +1.5%, 0.10 +3.5%, 0.20 +7.3%, and quadrupling the paths does not shrink any of them, so that
-    is estimator BIAS and not Monte Carlo error. The swaption's jump curves in its gap much more
-    sharply than a barrier's does - the exercised branch keeps growing with the swap value - so the
-    local-linear residual bites at a narrower bandwidth here than at the barrier site, which stayed
-    inside 1% out to 0.20. The default of 0.01 sits in the middle of the usable range."""
-    kw = dict(batch=1024)
-    aad = _run(gradient=True, bandwidth=bandwidth, **kw)[2]
-    r = ladder(price=lambda x: _run(curve=x, **kw)[1], aad=aad, base=CURVE,
-               rungs=(5e-5, 1e-4, 2e-4, 5e-4), absolute=True)
-    assert r.agrees(tol=0.015), f'bandwidth {bandwidth}\n{r}'
+    Over four seeds it holds across the twenty-fold span asserted here: 0.01 reads 0.14-1.56% from
+    the ladder, 0.02 0.16-0.38%, 0.05 0.00-0.22%, 0.10 0.26-0.84%, 0.20 0.59-1.60%. The flattest
+    part is 0.02-0.05 and the ends are where it costs something: BELOW the asserted range the
+    kernel runs out of points and the estimator turns variance-limited - 0.005 reads 0.06-2.63% and
+    0.002 0.29-4.23%, and both shrink with paths, so that is noise and not the local-linear
+    residual. The default of 0.01 is the bottom of the asserted range for that reason.
+
+    This supersedes an earlier reading of +1.5%/+3.5%/+7.3% at 0.05/0.10/0.20, called estimator
+    BIAS on the strength of not shrinking when the paths were quadrupled. It was measured at 1024
+    paths against a ladder whose own flatness was 10.85%; at 32768 the same three bandwidths read
+    0.22%, 0.84% and 1.60% at worst. The bias diagnosis was the oracle's noise.
+
+    A gate that passes at every bandwidth is worth asking whether the knob is connected. Scaling
+    every requested bandwidth by 100 kills four of the five cases and walks the disagreement
+    monotonically toward the suppressed value: 1.0 -> 0.09% (the one survivor), 2.0 -> 5.48%,
+    5.0 -> 13.08%, 10.0 -> 16.56%, 20.0 -> 18.45%, against 20.43% with no correction at all. So the
+    knob is live, the plateau really does reach 1.0 on seed 1 (0.5 reads 1.61%), and what a
+    too-wide kernel does is wash the density out until the correction stops arriving rather than
+    diverge. The asserted range stops at 0.2 because that is where four seeds were measured."""
+    aad = _run(gradient=True, bandwidth=bandwidth, batch=BATCH, batches=BATCHES)[2]
+    r = Ladder(aad, CURVE, RUNGS, crn_curve)
+    assert r.agrees(tol=0.03), f'bandwidth {bandwidth}\n{r}'

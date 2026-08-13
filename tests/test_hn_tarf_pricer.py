@@ -177,16 +177,20 @@ def test_options_switch_routes_the_factor_dependency():
     assert param_keys == ['Omega', 'Alpha', 'Beta', 'Gamma_Star', 'H0']
 
 
-def test_unknown_spot_model_fails_loudly(caplog):
+def test_unknown_spot_model_fails_loudly():
     """A typo'd SpotModel (e.g. 'Heston_Nandi') must raise ValueError naming the offending value and
-    the accepted set, NOT silently fall back to GBM with the HN factor present. The calc engine's
-    dependency loop logs+skips the raising deal (framework behaviour), so we assert the logged error
-    carries both. Only 'None' (default/absent) and 'HestonNandi' are accepted."""
-    cfg = _cfg(True, 0.10, _MONTHLY, hn_params=_DEGENERATE, steps_per_year=_SPY_ONE_SUBSTEP,
-               spot_model='Heston_Nandi')
-    with caplog.at_level(logging.ERROR):
-        run_baseval(cfg, overrides={'MCMC_Simulations': 64, 'Random_Seed': 1})
-    assert 'Heston_Nandi' in caplog.text and "('None', 'HestonNandi')" in caplog.text
+    the accepted set, NOT silently fall back to GBM with the HN factor present. Only 'None'
+    (default/absent) and 'HestonNandi' are accepted.
+
+    The refusal MOVED (V6): the value is checked against the deal class's `spot_models` declaration
+    in `Deal.__init__`, so it raises out of `construct_instrument` rather than out of the dependency
+    loop (which used to log+skip the deal). `SpotModel` is keyed by deal TYPE, so a bad value
+    mis-declares the model for every deal of that type - a config error, not one skippable deal.
+    See tests/test_spot_model_declaration.py."""
+    with pytest.raises(ValueError) as e:
+        _cfg(True, 0.10, _MONTHLY, hn_params=_DEGENERATE, steps_per_year=_SPY_ONE_SUBSTEP,
+             spot_model='Heston_Nandi')
+    assert 'Heston_Nandi' in str(e.value) and "('None', 'HestonNandi')" in str(e.value)
 
 
 def test_non_degenerate_hn_actually_changes_the_price():

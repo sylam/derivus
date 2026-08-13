@@ -28,6 +28,26 @@ BARRIER_OUT = 1.0
 OPTION_PUT = -1.0
 OPTION_CALL = 1.0
 
+BOUNDARY_MAX_AMPLIFICATION = 25.0
+"""Largest ``||weights||_1`` a local-linear boundary solve may return before it is refused.
+
+The weights sum to one by construction, so their L1 norm is EXACTLY the factor by which the fit
+can amplify the jumps it is averaging: 1.0 when no weight is negative, unbounded as the kernel's
+first two moments collapse onto each other. It is scale-free in the gap, in the jump and in the
+sample size, which a threshold on the solve's determinant is not - by Cauchy-Schwarz that
+determinant over ``s0 * s2`` lies in [0, 1] whatever the units, and the pathology and a legitimate
+solve straddle any level fitted to one of them.
+
+Measured over 2685 solves in 82 runs - every boundary registration in the repo (discrete barrier,
+collateralised latch, FVA, multi-batch, swaption exercise, autocall, TARF, MTA), 512 to 4096
+paths, five seeds, bandwidths 0.005 to 0.2. Of the 2424 that carry any density at all, every one
+reads 1.00 to 8.06 but the single decision that broke the Heston-Nandi barrier gradient, which
+reads 99.9: a kernel holding exactly two points, 1.20 widths out and 0.021 apart, weighted +50.4
+and -49.5, contributing 112% of a coefficient it had no business dominating. 25 sits 3.1x above
+the largest legitimate reading and 4.0x below that one. The other six solves above 8 are collateral
+transfer decisions whose kernel mass is 1e-9 or less, which the estimator was already returning
+essentially nothing for."""
+
 
 # ======================================================================================
 # Heston-Nandi GARCH(1,1) OSS pricers (TARF, discrete barrier, autocall). Opt-in per deal via
@@ -73,6 +93,29 @@ def calc_moneyness(strike, spot, forward, deal_data, use_forward=False, invert_m
         return strike / forward_or_spot if invert_moneyness else forward_or_spot / strike
 
 
+def total_log_forward(carry_rate, times):
+    """``log F(t,T) / S(t)``: the carry integrated over a fixing strip.
+
+    THE forward to expiry, for every leg that needs one. ``carry_rate`` is the annualised r-q per
+    fixing (``calc_eq_drift``/``calc_fx_drift`` with ``multiply_by_time=False``) and ``times`` the
+    year-fraction of each fixing INTERVAL, so the integral is their product summed over the fixing
+    axis - the axis ``times`` names by carrying no batch dimension. Rank-polymorphic on purpose:
+    ``[N_fix, batch]`` for one MTM row and ``[N_block, N_fix, batch]`` for a whole block are the
+    same expression, so the leg that values one row and the leg that values the block cannot spell
+    it differently.
+
+    That is the point of the function existing at all. Two legs of ``pv_discrete_barrier_option``
+    value the SAME European on the SAME state - a knocked-in barrier - and the already-hit one
+    carried a second spelling that summed annualised RATES with no ``dt`` and added a half-variance
+    whose cancelling subtraction lives on the other branch. It read 106.7% high in log-forward on
+    this repo's own fixture and no gate saw it: base valuation never evaluates the leg, the one
+    exposure-grid barrier is the model-free zeros branch, and ``r = q = 0`` everywhere zeroes the
+    missing ``dt``. A shared expression makes the divergence unrepresentable rather than merely
+    detected, which is why this is a function and not a comment.
+    """
+    return (carry_rate * times.unsqueeze(-1)).sum(dim=-2)
+
+
 def boundary_weights(gap, bandwidth):
     """Density at the boundary and local-linear regression weights, estimated SEPARATELY.
 
@@ -90,6 +133,17 @@ def boundary_weights(gap, bandwidth):
     Returns ``(density_at_zero, weights)`` with the weights summing to one, so the caller
     multiplies rather than averages.
 
+    THAT SUM IS ALSO THE ACCEPTANCE TEST. Cancelling the first-order term is what makes the
+    weights signed, and a kernel that admits two neighbouring points a long way out cancels it by
+    subtracting two enormous numbers - measured, +50.4 and -49.5 on two points 0.02 widths apart,
+    whose differing jumps then did not cancel and supplied 112% of that gradient. Since the
+    weights sum to one, ``||weights||_1`` is exactly that amplification, so the solve is refused
+    on what it PRODUCED rather than on its determinant: the determinant over ``s0 * s2`` is
+    Cauchy-Schwarz-bounded into [0, 1] and the pathology (8.6e-05) sits beside a legitimate solve
+    (6.2e-03) close enough that no level separates them. See ``BOUNDARY_MAX_AMPLIFICATION``.
+    Refusing costs one reduction and lands on the branch a degenerate gap already takes - weights
+    zero, correction exactly zero, which is also what an empty kernel returns.
+
     ONE sample has no spread for a kernel to be scaled by, and ``torch.std`` returns NaN there
     rather than raising - which propagates into the scalar handed to ``backward()`` and is invisible
     while the degenerate gap happens to carry no graph (``0 * NaN`` is NaN forward but reaches
@@ -104,12 +158,14 @@ def boundary_weights(gap, bandwidth):
     width = bandwidth * spread.clamp_min(torch.finfo(g.dtype).eps)
     k = torch.exp(-0.5 * (g / width) ** 2)
     s0, s1, s2 = k.sum(), (k * g).sum(), (k * g * g).sum()
-    # degenerate when almost nothing sits near the boundary; the density is then ~0 anyway, and
-    # this stops a near-singular solve turning that into a large arbitrary number
+    # nothing at all near the boundary makes this exactly 0; float64 cannot land it any nearer
     denominator = s2 * s0 - s1 * s1
-    usable = denominator.abs() > 1e-30 * (s0 * s2).abs().clamp_min(1e-300)
-    weights = torch.where(usable, k * (s2 - g * s1) / torch.where(
-        usable, denominator, torch.ones_like(denominator)), torch.zeros_like(k))
+    solvable = denominator != 0
+    weights = torch.where(solvable, k * (s2 - g * s1) / torch.where(
+        solvable, denominator, torch.ones_like(denominator)), torch.zeros_like(k))
+    # the solve is refused on what it PRODUCED, which is the only thing that separates the two
+    weights = torch.where(weights.abs().sum() <= BOUNDARY_MAX_AMPLIFICATION,
+                          weights, torch.zeros_like(weights))
     density = s0 / (g.numel() * math.sqrt(2.0 * math.pi) * width)
     return density, weights
 
@@ -219,11 +275,15 @@ class InnerMCRecompute(torch.autograd.Function):
       returned list is NOT an output: measured, it comes back with `requires_grad False` and no
       `grad_fn`, so its half of a correction would be silently zero.
     - A settled cashflow is one of those outputs, not a side effect. A replay would settle it twice,
-      but that is not the failure anyone would notice: the replay runs in `backward()` and
-      `save_cashflows` runs in the forward pass, so every REPORTED cashflow survives the defect
-      unchanged. What breaks is the graph - booked inside, the cashflow is booked under `no_grad`,
-      and a collateralised exposure reading `t_Cashflows` through `C_ts_te` loses that whole channel
-      (measured, 8.7% of the autocall's CVA gradient).
+      and WHICH harvest sees that depends on when it reads the buffer: the per-netting-set
+      `save_cashflows` snapshot is taken in the forward pass and survives the defect, while
+      `Credit_Monte_Carlo` builds its REPORTED frame from `t_Cashflows` after the batch's backward
+      (calculation.py:1727) and does not - measured on the TARF fixture, a replay that books moves
+      that frame by 6.0e+06 while the cva, the profile and the whole CVA gradient stay bit-identical
+      (`tests/test_recompute_inner_mc.py`, and it is only reachable with sensitivities on, since
+      with them off no backward runs at all). What ALSO breaks is the graph - booked inside, the
+      cashflow is booked under `no_grad`, and a collateralised exposure reading `t_Cashflows`
+      through `C_ts_te` loses that whole channel (measured, 8.7% of the autocall's CVA gradient).
 
     A registration held on `shared` makes shared -> boundary_sets -> gap -> this node -> `simulate`
     -> shared, a cycle refcounting cannot break; `reset()` clearing `boundary_sets` per batch drops
@@ -850,9 +910,37 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
     Heston-Nandi is opt-in via ``SpotModel='HestonNandi'``: the five GARCH scalars ride the AAD graph
     out of ``t_Static_Buffer`` (identical resolution to the TARF), and when absent ``sim_spot_oss``
-    takes the byte-identical GBM path. The KI in-out-parity vanilla switches to the HN closed form.
-    Known limitation: the outer-CVA already-hit vanilla (``hit_value``) stays GBM - HN is wired into
-    the inner OSS pricing (base/CVA-inner), not the outer path-state override.
+    takes the byte-identical GBM path.
+
+    ONE MODEL PRICES EVERY LEG. Both vanillas switch: the KI in-out-parity vanilla inside
+    ``sim_spot_oss`` AND the already-hit ``hit_value`` this loop overrides it with. They are the SAME
+    state - a knocked-in barrier is a European - so a Black vanilla beside an HN one is a model mix
+    inside one payoff, and at 1y ATM on the repo's fixture the two disagree by 15.8%. Worse, the
+    ``torch.where(row_barrier_hit, hit_value, oss_result)`` selection puts both models in one tensor,
+    element by element. The already-hit leg therefore runs the parity leg's own algebra on the parity
+    leg's own discretisation: the same per-row ``n_total`` summed from the same ``sample_ts`` daily
+    sub-step counts, and the same scalar per-step carry - which is why it raises the same
+    batch-constant-carry refusal, in its own name. ``n_steps`` drives the variance recursion so it is
+    scalar per MTM row and the leg is a Python loop over the block's rows; ``rem_exp`` is
+    batch-constant (it is the deal clock, shape ``[N_block, 1]``), so nothing is averaged away.
+
+    AND ONE FORWARD PRICES EVERY LEG, for the same reason and by the same means: both vanillas call
+    ``total_log_forward``, so a second spelling is unrepresentable rather than merely wrong. There
+    was one - the already-hit leg summed annualised RATES with no ``dt`` and added a half-variance
+    whose cancelling subtraction lives on the parity branch - and it read 106.7% high in log-forward
+    while every gate in the suite stayed green. The parity leg's own spelling was
+    ``(r + 0.5 * sigma^2)``, which reconstructs the carry by undoing the ``-0.5 * var`` folded into
+    ``drift``; that round trip leaked the ``1e-4`` VARIANCE FLOOR into the DRIFT, adding exactly
+    ``5e-5`` to the log-forward on every row whose first fixing interval has zero length - which is
+    every row that IS an observation date. Measured: 13 of 37 rows on the repo's monthly fixture,
+    worth -0.025% of EPE. The floor's variance leak is untouched and still there: a zero-length
+    interval is simulated with 1% of lognormal vol.
+
+    AND THE VOL STRIP IS NOT BUILT UNDER HN, as in ``pv_MC_Tarf``. Nothing correct reads the implied
+    surface under a non-GBM spot model - the OSS steps the recursion, the already-hit leg is the same
+    closed form, and quanto/compo (the third reader, ``Check_Payoff_Type``) is refused at compile
+    time - so ``vols`` is an empty tensor there. That is what stops this recurring: the next leg that
+    reaches for the surface under HN dies on the shape rather than pricing a second model quietly.
 
     The per-row hit mask is the state carried IN: every scenario hit at a STRICTLY EARLIER
     observation. The current observation is NOT folded in, because this block's last row IS its
@@ -973,10 +1061,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             if direction == BARRIER_IN:
                 if not hn:
                     # Precompute analytic vanilla for parity: KI = Vanilla - KO_pure + rebate * E[L_T]
-                    # carry_contrib[j] = carry*dt = r[j] + 0.5*sigma[j]^2
-                    total_log_fwd = (r + 0.5 * sigma * sigma).sum(dim=0)  # [batch]
                     total_var = (sigma * sigma).sum(dim=0)                 # [batch]
-                    fwd_to_T = s * torch.exp(total_log_fwd)
+                    fwd_to_T = s * torch.exp(total_log_forward(carry[blk], times[blk]))
                     vol_to_T = torch.sqrt(total_var.clamp(min=eps))
                     if isdigital:
                         vanilla_pv = utils.black_european_option(
@@ -988,8 +1074,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                     # HN parity vanilla = HN closed form; scalar r_step needs batch-constant
                     # carry, so the guard is loud rather than silent (see docstring)
                     n_total = int(sum(nj))
-                    carry_total = carry_int[blk].sum(dim=0).reshape(-1)
-                    if float(carry_total.max() - carry_total.min()) > 1.0e-9:
+                    carry_total = total_log_forward(carry[blk], times[blk]).reshape(-1)
+                    if float(carry_total.detach().max() - carry_total.detach().min()) > 1.0e-9:
                         raise ValueError(
                             'HN KI closed-form leg needs batch-constant carry; carry varies across '
                             'scenarios by {:.2e} (stochastic rates?) - extend hn_call to batched '
@@ -1215,8 +1301,12 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
         fixing_block = daycount_fn(fixings)
         expiry = daycount_fn(tenor_block)
+        # the implied surface has NO consumer under a non-GBM spot model - the OSS steps the
+        # recursion and the already-hit leg is the same closed form - so it is not built, and a
+        # leg that reaches for it fails on the shape instead of quietly pricing another model
         vols = utils.calc_time_grid_vol_rate(
-            factor_dep['Volatility'], moneyness_block, expiry, shared)
+            factor_dep['Volatility'], moneyness_block, expiry,
+            shared) if not hn else spot_block.new_empty(0)
 
         if factor_dep.get('Check_Payoff_Type', False):
             adj = calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared)
@@ -1236,19 +1326,48 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         # counterfactual will want it - a closed form cannot perturb the OSS stream
         if some_hit or boundary_aad:
             if direction == BARRIER_IN:
-                var_per_step = (vols * vols).unsqueeze(1) * sample_ts.unsqueeze(2)  # [N_block, N_fix, batch]
-                total_log_fwd = (drifts + 0.5 * var_per_step).sum(dim=1)            # [N_block, batch]
-                fwd_to_expiry = spot_block * torch.exp(total_log_fwd)               # [N_block, batch]
-                vol_to_T = vols * torch.sqrt(rem_exp.clamp(min=1e-4))               # [N_block, batch]
-                if isdigital:
-                    vanilla_bs = utils.black_european_option(
-                        fwd_to_expiry, strike, vol_to_T, 1.0, 1.0, phi, shared, cash_payoff=1.0)
+                # ONE forward, shared with the in-out-parity leg inside sim_spot_oss - the two
+                # value the same European on the same state, so they read one expression
+                log_fwd = total_log_forward(drifts, sample_ts)                  # [N_block, batch]
+                if hn:
+                    # an already-knocked-in KI IS a vanilla, and it is priced under the DECLARED
+                    # model on the parity leg's own discretisation - same per-row n_total, same
+                    # scalar carry - so one law prices both legs of this pricer (see sim_spot_oss)
+                    carry_det = log_fwd.detach()  # a guard reads a magnitude, not the tape
+                    carry_spread = float((carry_det.amax(dim=1) - carry_det.amin(dim=1)).max())
+                    if carry_spread > 1.0e-9:
+                        raise ValueError(
+                            'HN already-hit KI leg needs batch-constant carry; carry varies across '
+                            'scenarios by {:.2e} (stochastic rates?) - extend hn_call to batched '
+                            'carry or price this barrier under GBM'.format(carry_spread))
+                    om, al, be, ga = (v.reshape(-1)[0] for v in hn_params)
+                    H0_s = H0.reshape(-1)[0]
+                    rows = []
+                    for row, spot_row in enumerate(spot_block):
+                        # n_steps drives the variance recursion, so it is a scalar per MTM row
+                        n_total = sum(max(int(round(float(t) * hn_spy)), 1) for t in sample_ts[row])
+                        r_step = log_fwd[row][0] / n_total
+                        if isdigital:
+                            q_below = utils.hn_cdf_logret(
+                                torch.log(strike / spot_row), n_total, H0_s, om, al, be, ga, r_step)
+                            rows.append((1.0 - q_below) if phi == OPTION_CALL else q_below)
+                        else:
+                            rows.append((utils.hn_call if phi == OPTION_CALL else utils.hn_put)(
+                                spot_row, strike, n_total, H0_s, om, al, be, ga, r_step
+                            ) * torch.exp(r_step * n_total))
+                    vanilla = torch.stack(rows)
                 else:
-                    vanilla_bs = utils.black_european_option(
-                        fwd_to_expiry, strike, vol_to_T, 1.0, 1.0, phi, shared)
+                    fwd_to_expiry = spot_block * torch.exp(log_fwd)                     # [N_block, batch]
+                    vol_to_T = vols * torch.sqrt(rem_exp.clamp(min=1e-4))               # [N_block, batch]
+                    if isdigital:
+                        vanilla = utils.black_european_option(
+                            fwd_to_expiry, strike, vol_to_T, 1.0, 1.0, phi, shared, cash_payoff=1.0)
+                    else:
+                        vanilla = utils.black_european_option(
+                            fwd_to_expiry, strike, vol_to_T, 1.0, 1.0, phi, shared)
                 terminal_df = torch.squeeze(utils.calc_discount_rate(
                     discount_block, tenor_block.reshape(-1, 1), shared), dim=1)     # [N_block, batch]
-                hit_value = nominal * vanilla_bs * terminal_df
+                hit_value = nominal * vanilla * terminal_df
             else:
                 hit_value = shared.one.new_zeros(len(t_block), shared.simulation_batch)
 

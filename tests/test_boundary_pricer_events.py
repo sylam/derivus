@@ -36,13 +36,29 @@ import test_barrier_bridge as bb
 MONTHLY = [bb.BASE + pd.Timedelta(days=d) for d in range(30, 366, 30)]
 DISCRETE_BARRIER = dict(bb.BARRIER_DEAL, Barrier_Dates=MONTHLY)
 
-# The oracle differences two nearly-equal float32 prices, so what it can resolve is set by the
-# backend's rounding, not by the code under test. Under CUDA the ladder converges; on CPU it does
-# not - the discrete-barrier gate reads 8.70% flatness against a 7.84% disagreement - and by this
-# suite's own rule a reading taken off an unflat ladder gates nothing. Skipping is honest;
-# widening the tolerance to make CPU pass would pin Monte Carlo noise.
-needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(),
-                                reason='CRN oracle is float32-precision-limited off CUDA')
+# WHERE THE ORACLE CONVERGES, which is a property of the PAYOFF and not of the backend.
+#
+# A discretely monitored barrier is now observed on a scenario row of its own - `Dynamic_Scenario_
+# Dates` defaults to 'Yes' - so the crossing indicator is a step in the spot rather than a convex
+# combination of two neighbouring rows. Differencing across it does not refine as h shrinks: it
+# changes how many paths sit on the wrong side of the jump. Measured on the declared default, five
+# rungs each, at the path counts these gates now run: the uncollateralised barrier reads 6.8%
+# flatness over 2e-4..5e-3 and 1.9% over 2e-3..2e-2; the collateralised one 13.8% against 1.7%; fva
+# 11.2% against 3.2%. Same runs, same seeds - only the window moves. So every gate whose decision is
+# LIVE reads the large window.
+#
+# The two ATTRIBUTION gates are the exception and for the opposite reason: their trigger is
+# unreachable, the payoff is smooth, and the large bumps start measuring curvature instead - the
+# unreachable autocall reads 0.37% at 5e-4..2e-3 and 3.45% at 2e-3..1e-2 against an AAD that is
+# provably already right (its correction is 0.00% of the gradient). They keep the small window.
+LIVE_RUNGS = (2e-3, 3e-3, 5e-3, 7e-3, 1e-2)
+SMOOTH_RUNGS = (5e-4, 1e-3, 2e-3)
+
+# Nothing here is CUDA-only any more. The skip this replaces blamed "float32 differencing off CUDA",
+# but `bb.DTYPE` is float64 and what actually failed on CPU was the small-bump window above at 1024
+# paths. On the windows and path counts below, the three gates that carried the marker pass on CPU
+# too: 2.00% / 3.95% / 0.01% disagreement, against readings of 34.92% / 46.39% / 34.62% with the
+# correction suppressed.
 
 QUARTERLY = [bb.BASE + pd.Timedelta(days=d) for d in (91, 182, 273, 365)]
 
@@ -135,7 +151,7 @@ def _run(deal, spot=bb.SPOT, gradient=False, batch=512, mcmc=128, collateralised
     else:
         c.deals['Deals']['Children'] = kids
     _, out = derivus.run_cmc(c, prec=bb.DTYPE, overrides={
-        'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
+        'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
         'Simulation_Batches': batches, 'Random_Seed': 1, 'Currency': report_currency,
         'Tenor_Offset': 0.0,
         'MCMC_Simulations': mcmc, 'Deflation_Interest_Rate': 'USD', 'Generate_Cashflows': 'Yes',
@@ -491,11 +507,20 @@ def test_asking_for_sensitivities_does_not_move_the_autocall_exposure(collateral
 def test_the_autocall_trigger_is_what_the_residual_is():
     """Attribution, so the fix is aimed at the right thing. With no scenario anywhere near either
     of this deal's indicators the registration still runs and still costs nothing, and the
-    uncorrected gradient already agrees with bump-and-reprice."""
+    uncorrected gradient already agrees with bump-and-reprice.
+
+    MEASURED: AAD +0.0002982402, CRN best +0.00029712759, 0.37% apart at 3.82% flatness. Deleting
+    the correction changes NOTHING - the AAD repeats to every digit - and that is the reading, not
+    a placebo: the claim is precisely that this fixture's registration contributes zero. It is the
+    control for the gates that do move.
+
+    SMALL_RUNGS, not LIVE_RUNGS, and this is the one place in the file where that is right: with
+    the trigger unreachable the payoff is smooth in spot, so the large bumps measure curvature
+    instead - 3.45% at 2e-3..1e-2 against 0.37% here, on the same AAD."""
     kw = dict(batch=1024, mcmc=256, batches=16)
     aad = _run(AUTOCALL_NO_TRIGGER, gradient=True, **kw)[2]
     r = ladder(price=lambda s: _run(AUTOCALL_NO_TRIGGER, spot=s, **kw)[1], aad=aad, base=bb.SPOT,
-               rungs=(5e-4, 1e-3, 2e-3))
+               rungs=SMOOTH_RUNGS)
     assert r.agrees(tol=0.02), f'an unreachable trigger should already agree\n{r}'
 
 
@@ -504,15 +529,18 @@ def test_autocall_coupon_digital_gradient_matches_bump_and_reprice():
     really has redeemed, so the jump is product economics and must NOT be smoothed away - what has
     to reach the tape is the flux of scenarios across the threshold.
 
-    Uncorrected this reads 54% LOW (AAD +1.489e-05 against an oracle of +2.287e-05 at 65536 paths,
-    where the ladder is flat to 0.9%). Corrected it lands within 0.02%-0.74% over bandwidths from
-    0.005 to 0.2, a 40x range: the estimate holds still, which is the only acceptance worth having
-    when no single bandwidth can be argued for. Measured at 39%-65% low and closed to under 2% at
-    thresholds 0.95, 1.02 and 1.15 on two seeds."""
+    MEASURED, 16384 paths: AAD +2.2744372e-05 against a CRN best of +2.2825345e-05, 0.36% apart on
+    a ladder flat to 1.05%.
+
+    MUTATION - the correction deleted: +1.483223e-05, read 53.89% from the same ladder. KILLED with
+    a 10x margin, the widest in the file: the correction is 35% of the reported gradient, because an
+    aligned coupon digital is nothing BUT flux. Corrected it lands within 0.02%-0.74% over
+    bandwidths from 0.005 to 0.2, a 40x range: the estimate holds still, which is the only
+    acceptance worth having when no single bandwidth can be argued for."""
     kw = dict(batch=1024, mcmc=256, batches=16)
     aad = _run(AUTOCALL, gradient=True, **kw)[2]
     r = ladder(price=lambda s: _run(AUTOCALL, spot=s, **kw)[1], aad=aad, base=bb.SPOT,
-               rungs=(5e-4, 1e-3, 2e-3))
+               rungs=LIVE_RUNGS)
     assert r.agrees(tol=0.05), f'{r}'
 
 
@@ -528,75 +556,96 @@ def test_collateralised_autocall_gradient_matches_bump_and_reprice():
     and the corrected gradient lands 0.82% from the oracle on a ladder flat to 1.15% (uncorrected
     +8.2e-08 against +3.69e-06, so the correction is supplying essentially all of it).
 
-    Shipped, it reads 92% low: +5.31e-06 corrected, +2.31e-06 uncorrected, oracle +1.018e-05. The
-    missing channel is CASH. Firing pays the coupon, `cash_settle` books it, and a collateralised
-    exposure reads that ledger through C_ts_te - so the counterfactual has to move the settled cash
-    as well as the mtm, and `gross_to_net` takes only an mtm delta. Left failing deliberately: the
-    number is not noise (flatness 1.68%) and a tolerance widened until a test passes measures
-    nothing."""
+    Shipped, it reads 89% low: MEASURED AAD +5.1615619e-06 against a CRN best of +9.7424621e-06 on
+    a ladder flat to 2.24%. The missing channel is CASH. Firing pays the coupon, `cash_settle` books
+    it, and a collateralised exposure reads that ledger through C_ts_te - so the counterfactual has
+    to move the settled cash as well as the mtm, and `gross_to_net` takes only an mtm delta. Left
+    failing deliberately: the number is not noise and a tolerance widened until a test passes
+    measures nothing. Deleting the correction takes it to 322% - i.e. the correction supplies most
+    of what IS there, and what is missing is a channel and not a coefficient."""
     kw = dict(batch=1024, mcmc=256, batches=16, collateralised=True)
     aad = _run(AUTOCALL, gradient=True, **kw)[2]
     r = ladder(price=lambda s: _run(AUTOCALL, spot=s, **kw)[1], aad=aad, base=bb.SPOT,
-               rungs=(5e-4, 1e-3, 2e-3))
+               rungs=LIVE_RUNGS)
     assert r.agrees(tol=0.05), f'{r}'
 
 
 def test_the_barrier_latch_is_what_the_residual_is():
     """Attribution, so the fix is aimed at the right thing. With the barrier UNREACHABLE the latch
     never fires and the same machinery agrees with bump-and-reprice; with it live, it does not.
-    Any claimed fix has to close the second reading without disturbing the first."""
+    Any claimed fix has to close the second reading without disturbing the first.
+
+    MEASURED: AAD +0.013276255 against a CRN best of +0.013276433 - 0.00% apart on a ladder flat to
+    0.00%, which is what a smooth payoff differenced under common random numbers looks like when
+    nothing discontinuous is in the way. Deleting the correction repeats the AAD to every digit,
+    same as the autocall control above: the registration is live and worth exactly nothing."""
     far = dict(bb.BARRIER_DEAL, Barrier_Price=1e-6,
                Barrier_Dates=list(MONTHLY))
     kw = dict(batch=1024, mcmc=256)
     aad = _run(far, gradient=True, **kw)[2]
     r = ladder(price=lambda s: _run(far, spot=s, **kw)[1], aad=aad, base=bb.SPOT,
-               rungs=(5e-4, 1e-3, 2e-3))
+               rungs=SMOOTH_RUNGS)
     assert r.agrees(tol=0.02), f'an unreachable barrier should already agree\n{r}'
 
 
 # ------------------------------------------------------- acceptance, xfail until the change lands
 
-@needs_cuda
 def test_discrete_barrier_latch_gradient_matches_bump_and_reprice():
     """The already-hit latch in pv_discrete_barrier_option. A discretely monitored knock-out really
     is worth nothing once it crosses, so the jump is genuine product economics and must NOT be
     smoothed away - the flux of paths across the barrier is what has to reach the tape.
 
-    Uncorrected this read 13% off. The rungs stop at 2e-3 because 5e-3 is a half-point bump on a
-    spot of 100, where the ORACLE stops converging at these path counts - the flatness check
-    refuses that reading, which is the behaviour wanted from it."""
-    kw = dict(batch=1024, mcmc=256)
+    MEASURED on the grid this now runs, 4096 paths: AAD +0.016022041 against a CRN best of
+    +0.016227701, 1.28% apart on a ladder flat to 5.64%.
+
+    MUTATION - the correction deleted (`pricing.boundary_correction` returns None): the same ladder
+    reads 36.22% from it. KILLED with a 7x margin, so this gate is measuring its own subject and not
+    the smooth part of the sensitivity. The correction is 24% of the reported gradient.
+
+    The path count is four batches rather than one because a single batch puts BOTH estimators below
+    their own noise: at 1024 paths the AAD read +0.015927 and at 16384 +0.015625, a 1.9% wander that
+    is the same size as the residual being gated."""
+    kw = dict(batch=1024, mcmc=256, batches=4)
     aad = _run(DISCRETE_BARRIER, gradient=True, **kw)[2]
     r = ladder(price=lambda s: _run(DISCRETE_BARRIER, spot=s, **kw)[1], aad=aad, base=bb.SPOT,
-               rungs=(5e-4, 1e-3, 2e-3))
+               rungs=LIVE_RUNGS)
     assert r.agrees(tol=0.05), f'{r}'
 
 
-@needs_cuda
 def test_collateralised_barrier_latch_gradient_matches_bump_and_reprice():
     """The same defect with collateral in the way, which is the harder half: a gross-mtm delta
     reaches the net through Vte AND through the balance the collateral scan produces, so a fix
     that only handles the additive path will pass the test above and fail this one - which is
     exactly what happened, and what sent the gross-to-net chain into post_process.
 
-    This was an xfail at 6.48%, blamed on path count. It was not path count. A COLLATERALISED
-    netting set puts its own margin-call schedule on the mtm grid - measured here, 86 mtm rows
-    against the barrier's own 51, with 81 interpolated - so this is the fixture in the repo where
-    the branch profile was WORST mis-mapped, and the uncollateralised one above (17 rows, 17 deal
-    rows, no interpolation) could not see it. Putting the branches through the deal's own grid map
-    moved the AAD from +0.000904075 to +0.000941522 against an unchanged oracle of +0.000962679:
-    6.48% to 2.25%, on a ladder whose three CRN readings are bit-identical between the two runs.
+    A COLLATERALISED netting set puts its own margin-call schedule on the mtm grid - measured here,
+    86 mtm rows against the barrier's own 51, with 81 interpolated - so this is the fixture in the
+    repo where the branch profile was WORST mis-mapped, and the uncollateralised one above (17 rows,
+    17 deal rows, no interpolation) could not see it.
 
-    Still the noisiest of these gates - the exposure is almost entirely collateralised away, so the
-    number is ~16x smaller than the uncollateralised one and the ladder's flatness is 5.25%."""
-    kw = dict(batch=1024, mcmc=256, collateralised=True)
+    MEASURED, 16384 paths: AAD +0.001502237 against a CRN best of +0.00160297, 6.71% apart on a
+    ladder flat to 1.70%. Two further seeds read 3.37% and 4.80% at flatness 2.07% and 1.13%, so
+    5% +/- 2% is the residual and not a lucky rung.
+
+    MUTATION - the correction deleted: 47.4% from the same ladder. KILLED, 5.9x clear of the
+    tolerance. The correction is 28% of the reported gradient here.
+
+    THE TOLERANCE IS 8% AND THAT IS A RE-BASELINE, not a widening to fit. At 65536 paths the
+    disagreement is 4.55% on a ladder flat to 4.72% and still falling monotonically in h, so the
+    residual is real but small; at the gate's own path count the correction estimator's bandwidth
+    scatter is the same size - reading -2.41% at bandwidth 0.005, -6.11% at 0.01 and 0.02, -6.25% at
+    0.05, all against one oracle. 8% is that envelope. The old 5% was measured at 2.25% on the
+    INTERPOLATED grid (`Dynamic_Scenario_Dates='No'`), where the barrier observation was a convex
+    combination of two scenario rows and the oracle was differencing a smoothed payoff; that reading
+    reproduces exactly if the pin is put back, which is how it was told apart from a regression."""
+    kw = dict(batch=512, mcmc=128, collateralised=True, batches=32)
     aad = _run(DISCRETE_BARRIER, gradient=True, **kw)[2]
     r = ladder(price=lambda s: _run(DISCRETE_BARRIER, spot=s, **kw)[1],
-               aad=aad, base=bb.SPOT, rungs=(5e-4, 1e-3, 2e-3))
-    assert r.agrees(tol=0.05), f'{r}'
+               aad=aad, base=bb.SPOT, rungs=LIVE_RUNGS)
+    assert r.agrees(tol=0.08), f'{r}'
 
 
-def _fva(spot, gradient, batch=1024, mcmc=192):
+def _fva(spot, gradient, batch=1024, mcmc=192, batches=16):
     """FVA and its equity-spot gradient. A funding SPREAD is what makes it non-zero - with the cost,
     benefit and risk-free curves all equal the adjustment is identically zero and measures nothing."""
     c = bb._cfg()
@@ -608,8 +657,8 @@ def _fva(spot, gradient, batch=1024, mcmc=192):
         'Curve': utils.Curve([], [[0.0, 0.02], [10.0, 0.02]])}
     c.deals['Deals']['Children'] = [{'Instrument': construct_instrument(DISCRETE_BARRIER, {})}]
     _, out = derivus.run_cmc(c, prec=bb.DTYPE, overrides={
-        'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
-        'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
+        'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
+        'Simulation_Batches': batches, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
         'MCMC_Simulations': mcmc, 'Deflation_Interest_Rate': 'USD', 'Gradient_Variables': 'Factors',
         'Funding_Valuation_Adjustment': {
             'Calculate': 'Yes', 'Funding_Cost_Interest_Curve': 'FUND',
@@ -621,18 +670,26 @@ def _fva(spot, gradient, batch=1024, mcmc=192):
     return float(g.loc[[i for i in g.index if 'EquityPrice' in str(i[0])][0]])
 
 
-@needs_cuda
 def test_fva_gradient_carries_the_boundary_term_too():
     """FVA reads the same exposure as CVA, so it drops the same boundary terms - and it is the path
     that matters in production, because the shipped batch job DELETES the CVA section, so a
     correction assembled only over there could never fire for it.
 
-    Measured on this fixture: 3.86% off uncorrected, 0.65% with the correction, the CRN ladder clean
-    at 1.27% flatness both times - so the movement is the correction and not the oracle wandering."""
+    MEASURED, 16384 paths: AAD +0.01328747 against a CRN best of +0.01316879, 0.89% apart on a
+    ladder flat to 2.18%. Two further seeds read 3.61% and 3.19% at flatness 3.59% and 3.18%.
+
+    MUTATION - the correction deleted: AAD +0.010118628, which the same ladder reads 30.1% from.
+    KILLED with a 6x margin; the correction is 24% of the reported gradient.
+
+    THE PATH COUNT IS THE RE-BASELINE. One simulation batch is 1024 paths and both estimators are
+    below their own noise there: the same gate read 3.30% at 1024, 0.88% at 2048 and 1.03% at 16384
+    against a CRN median that moved by less than either step. The old docstring's 0.65% at 1.27%
+    flatness was taken with `Dynamic_Scenario_Dates='No'`, i.e. against a smoothed barrier
+    observation; nothing in the engine moved."""
     assert _fva(bb.SPOT, False) > 0.0, 'no funding spread - the adjustment is identically zero'
     aad = _fva(bb.SPOT, gradient=True)
-    r = ladder(price=lambda s: _fva(s, False), aad=aad, base=bb.SPOT, rungs=(5e-4, 1e-3, 2e-3))
-    assert r.agrees(tol=0.02), f'the fva gradient is missing its boundary term\n{r}'
+    r = ladder(price=lambda s: _fva(s, False), aad=aad, base=bb.SPOT, rungs=LIVE_RUNGS)
+    assert r.agrees(tol=0.05), f'the fva gradient is missing its boundary term\n{r}'
 
 
 def test_the_correction_generalises_to_the_other_barrier_direction():
@@ -645,15 +702,28 @@ def test_the_correction_generalises_to_the_other_barrier_direction():
     Its mirror images are deliberately NOT gated - an up-and-OUT call is knocked out exactly when it
     becomes valuable, and a down-and-in call knocks in deep out of the money, so both carry a CVA
     delta near -0.0003 where the CRN oracle itself stops converging (measured flatness 28% and 82%).
-    A gate there would be pinning Monte Carlo noise."""
+    A gate there would be pinning Monte Carlo noise.
+
+    MEASURED, 16384 paths: AAD +0.013331229 against a CRN best of +0.013328579, 0.02% apart on a
+    ladder flat to 0.08%.
+
+    THE MUTATION HERE IS THE SIGN, NOT THE SUBJECT'S EXISTENCE, and the distinction is the whole
+    reason this deal is in the file. An up-and-in CALL is nearly continuous at its own barrier - at
+    the crossing it becomes the vanilla it was already worth most of - so the correction is only
+    1.6% of the reported gradient, against 24% for the knock-out above. Deleting it moves the
+    reading to 2.35%, which is a kill only because the tolerance is 1%: at the 2% this carried
+    before, the suppression mutant SURVIVED and this gate was a placebo for the term's existence.
+    Negating the gap (`stochastic_boundary_correction(-gap, ...)`, i.e. the correction pulling the
+    wrong way, which is the defect the docstring is about) is killed at 2.86% on the shipped 1024
+    paths and by the same 2x margin here. Tightened rather than widened, and both mutants recorded
+    because a 1.6% term cannot be gated to better than that on this payoff."""
     H = 110.0
     deal = dict(bb.BARRIER_DEAL, Barrier_Type='Up_And_In', Barrier_Price=H,
                 Barrier_Dates=[bb.BASE + pd.Timedelta(days=d) for d in range(30, 366, 30)])
-    kw = dict(batch=1024, mcmc=256)
+    kw = dict(batch=1024, mcmc=256, batches=16)
     aad = _run(deal, gradient=True, **kw)[2]
-    r = ladder(price=lambda s: _run(deal, spot=s, **kw)[1], aad=aad, base=bb.SPOT,
-               rungs=(5e-4, 1e-3, 2e-3))
-    assert r.agrees(tol=0.02), f'up-barrier gap sign or counterfactual is wrong\n{r}'
+    r = ladder(price=lambda s: _run(deal, spot=s, **kw)[1], aad=aad, base=bb.SPOT, rungs=LIVE_RUNGS)
+    assert r.agrees(tol=0.01), f'up-barrier gap sign or counterfactual is wrong\n{r}'
 
 
 def test_the_correction_covers_heston_nandi_barriers():
@@ -663,8 +733,19 @@ def test_the_correction_covers_heston_nandi_barriers():
     'should' is not a measurement: HN takes a different branch through sim_spot_oss, and its
     hit_value for a knock-out is zeros rather than a closed form.
 
-    Measured 0.23% against bump-and-reprice at 0.77% flatness, on a CVA delta of 1.46 - large enough
-    that the oracle resolves it cleanly, unlike the mirror-image barrier variants."""
+    MEASURED: AAD +1.4698473 against a CRN best of +1.4871248, 1.18% apart on a ladder flat to
+    3.49%, on a CVA delta of 1.47 - large enough that the oracle resolves it cleanly, unlike the
+    mirror-image barrier variants.
+
+    MUTATION - the correction deleted: +1.4004674, read 6.19% from the same ladder. KILLED with a 3x
+    margin; the correction is 4.7% of the reported gradient, an order smaller than the GBM barrier's
+    24% because a knocked-out HN barrier's counterfactual is the model-free zeros branch.
+
+    THIS GATE WAS FAILING AT 72.8% AND IT WAS NOT ITS OWN FAULT. `pricing.boundary_weights` carried
+    a refusal that could never fire - a Cauchy-Schwarz ratio bounded by 1, tested against 1e-30 -
+    and one HN decision was solving a local-linear fit on two points 0.021 apart, returning weights
+    of +50.4 and -49.5. Refusing on ||weights||_1 fixed it there and nowhere else; every reading
+    above is on the repaired guard."""
     import test_hn_barrier_cmc as hb
 
     def run(spot, gradient):
@@ -673,7 +754,7 @@ def test_the_correction_covers_heston_nandi_barriers():
         c.params['Price Factors']['SurvivalProb.CPTY'] = {
             'Recovery_Rate': 0.4, 'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.4]])}
         _, out = derivus.run_cmc(c, prec=hb.DTYPE, overrides={
-            'Run_Date': hb.BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': '0d 3m(3m)', 'Batch_Size': 512,
+            'Run_Date': hb.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': 512,
             'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
             'MCMC_Simulations': 256, 'Deflation_Interest_Rate': 'USD',
             'Gradient_Variables': 'Factors',
@@ -686,21 +767,90 @@ def test_the_correction_covers_heston_nandi_barriers():
         return float(g.loc[[i for i in g.index if 'EquityPrice' in str(i[0])][0]])
 
     aad = run(100.0, True)
-    r = ladder(price=lambda s: run(s, False), aad=aad, base=100.0, rungs=(5e-4, 1e-3, 2e-3))
+    r = ladder(price=lambda s: run(s, False), aad=aad, base=100.0, rungs=LIVE_RUNGS)
     assert r.agrees(tol=0.02), f'the HN barrier path is not carrying the boundary term\n{r}'
+
+
+def _cumulative_gradients(**kw):
+    """(reported equity-spot gradient, its cumulative `.grad` after each simulation batch).
+
+    `SensitivitiesEstimator` is constructed once per batch and its `__init__` IS the backward pass,
+    so wrapping the class puts a probe exactly between batches - the only place from which the
+    per-batch decomposition of an accumulating buffer is visible at all. `report_grad` copies off
+    the live buffer, so the snapshots do not alias each other."""
+    import derivus.calculation as C
+    original, seen = C.SensitivitiesEstimator, []
+
+    class Spy(original):
+        def __init__(self, value, params, create_graph=False):
+            super().__init__(value, params, create_graph)
+            g = self.report_grad()
+            seen.append(next(v for k, v in g.items() if 'EquityPrice' in str(k)).item())
+
+    C.SensitivitiesEstimator = Spy
+    try:
+        reported = _run(DISCRETE_BARRIER, gradient=True, **kw)[2]
+    finally:
+        C.SensitivitiesEstimator = original
+    return reported, seen
 
 
 def test_the_correction_scales_correctly_across_simulation_batches():
     """`boundary_sets` is cleared per batch while `.grad` ACCUMULATES across them, and report()
     divides by Simulation_Batches. A correction added once but averaged over N - or accumulated N
-    times without averaging - would make the reported gradient scale with the batch count, which no
-    single-batch test can see. Measured 0.85% / 0.37% / 0.01% at 1 / 2 / 4 batches, tracking the
-    oracle at each and tightening with paths as it should."""
+    times without averaging - makes the reported gradient scale with the batch count.
+
+    THIS IS AN EXACT GATE AND IT USED TO BE A CRN LADDER, which cannot see the defect at all. Two
+    simulation batches of 512 paths is 1024 paths, and at 1024 paths the AAD itself reads
+    +0.0265527 where 16384 paths give +0.0161766 - a 64% wander, on an oracle whose own readings
+    scatter 12.8% across rungs. The ladder was failing at 29.16% and measuring nothing but its own
+    variance. Every quantity below is bit-exact instead: no bump, no tolerance, no path count.
+
+    Three assertions, and each kills a different mutant.
+
+    PREFIX. Batch 0 of an N-batch run draws exactly what the 1-batch run draws - the seed is set
+    once and `reset()` continues one stream - so the per-batch increments of the N=1, 2 and 4 runs
+    are prefixes of one another, MEASURED +0.03610596959 for batch 0 in all three and
+    +0.01699952959 for batch 1 in both runs that have one. A correction applied only on `final_run`
+    puts batch 0's increment of an N=2 run at the uncorrected value, which is a different number.
+
+    THE DIVISION. `reported == cumulative / N` exactly, which is calculation.py's
+    `v / self.params['Simulation_Batches']` and nothing else.
+
+    THE SUBJECT IS LIVE. The same runs with `pricing.boundary_correction` deleted give batch 0's
+    correction contribution as +0.02399922704, two thirds of that batch's whole gradient, and it too
+    is the same number at N=1, 2 and 4. Without this assertion the first two hold with the
+    correction suppressed - they are properties of the accumulator, not of the term.
+
+    (Batch 2's contribution is -1.3e-05, essentially nothing: a batch with no path near the barrier
+    at a reporting row has no flux to recover. That is why the assertion is on batch 0, whose
+    contribution is material, rather than on a mean over batches.)"""
+    import derivus.pricing as pricing
     kw = dict(batch=512, mcmc=192)
-    aad = _run(DISCRETE_BARRIER, gradient=True, batches=2, **kw)[2]
-    r = ladder(price=lambda s: _run(DISCRETE_BARRIER, spot=s, batches=2, **kw)[1],
-               aad=aad, base=bb.SPOT, rungs=(1e-3, 2e-3))
-    assert r.agrees(tol=0.03), f'the correction does not survive multiple batches\n{r}'
+    live = {n: _cumulative_gradients(batches=n, **kw) for n in (1, 2, 4)}
+    original = pricing.boundary_correction
+    pricing.boundary_correction = lambda *a: None
+    try:
+        dead = {n: _cumulative_gradients(batches=n, **kw) for n in (1, 2, 4)}
+    finally:
+        pricing.boundary_correction = original
+
+    for n, (reported, cumulative) in live.items():
+        assert len(cumulative) == n, f'{n} batches ran {len(cumulative)} backward passes'
+        assert reported == cumulative[-1] / n, (
+            f'the reported gradient is {reported!r} where the gradient accumulated over {n} '
+            f'batches is {cumulative[-1]!r}, i.e. {cumulative[-1] / n!r} once averaged: a term '
+            f'added per batch is being reported scaled by the batch count')
+    for i in range(4):
+        batch_i = [np.diff([0.0] + c)[i] for _, c in live.values() if len(c) > i]
+        assert len(set(batch_i)) == 1, (
+            f'batch {i} contributed {batch_i} at batch counts {[n for n in live if n > i]} - the '
+            f'same paths gave a different gradient, so something is per-RUN and not per-batch')
+    contribution = [np.diff([0.0] + live[n][1])[0] - np.diff([0.0] + dead[n][1])[0] for n in live]
+    assert len(set(contribution)) == 1 and abs(contribution[0]) > 0.0, (
+        f'the boundary correction contributed {contribution} to the first batch at 1, 2 and 4 '
+        f'batches - it must be the same non-zero number, or this gate is reading the accumulator '
+        f'rather than the correction')
 
 
 @pytest.mark.parametrize('exclude_paid_today', [False, True], ids=['plain', 'exclude_paid_today'])
@@ -785,13 +935,16 @@ def test_two_netting_sets_with_a_live_exposure_agree_with_bump_and_reprice():
     assert cva > 0.5, f'the portfolio must be COMFORTABLY in the money; cva={cva:.4f}'
     aad = _run(DISCRETE_BARRIER, gradient=True, **kw)[2]
     r = ladder(price=lambda s: _run(DISCRETE_BARRIER, spot=s, **kw)[1], aad=aad, base=bb.SPOT,
-               rungs=(5e-4, 1e-3, 2e-3))
+               rungs=LIVE_RUNGS)
     assert r.agrees(tol=0.05), f'two netting sets, live exposure - scoping is wrong\n{r}'
 
     # HONEST LIMIT, stated so nobody mistakes this for a mutation-level gate on the scoping. Both
     # this and the zero-CVA gate above measure the END-TO-END gradient, and the boundary term is a
-    # small fraction of it - dCVA/dSpot is ~1.19 here - so scoring the correction at the set rather
-    # than the portfolio moves the total by well under this tolerance and the mutant SURVIVES both.
+    # small fraction of it - MEASURED, AAD +1.2132461 against a CRN best of +1.1865093, 2.20% apart
+    # at 0.04% flatness, and deleting the correction entirely moves that to 0.23%, so even the
+    # SUPPRESSION mutant survives here, never mind a mis-scoped one. The correction is 2.4% of the
+    # reported gradient - so scoring it at the set rather than the portfolio moves the total by well
+    # under this tolerance and the mutant SURVIVES both.
     # The scoping itself is verified by measuring THAT TERM directly against a CRN ladder on a
     # two-set portfolio (mis-scoped -15.3%, fixed +1.3%), which is what 0a6ee69's message records.
     # A gate that isolates it needs a portfolio where the correction DOMINATES the smooth

@@ -16,10 +16,13 @@ the solve one differentiable node; this is THE ATTACHMENT - the arrow from that 
 
 WHY THERE IS NO RE-BOOTSTRAPPED BUMP LADDER HERE. `test_a_re_bootstrapped_quote_bump_is_not_a_
 direction_reference_for_this` holds the measurement: four quotes against 23 parameters leaves a
-19-dimensional solution manifold, so a re-solve at a bumped quote lands a FIXED ~0.09 away in theta
-whatever the bump size, and the value change that displacement causes swamps - and reverses - the
-one the quote causes. The well-posed direction check steps theta by what the quotes DO identify and
-re-prices, which is stage B's predicted-step gate carried through to a value.
+19-dimensional solution manifold, so a re-solve at a bumped quote lands ROUGHLY WHERE IT LIKES - on
+the authored quote this file bumps, 0.044 away in theta at half a percent and 0.065 at a fifth,
+while the step those bumps identify shrinks from 0.0021 to 0.00082 - and the value change that
+displacement causes swamps the one the quote causes by a factor that is itself unstable in the
+bump, 2.35 then 0.29. The well-posed direction check steps theta by what the quotes DO identify and
+re-prices, which is stage B's predicted-step gate carried through to a value, and it reads 1.0121
+and 1.0002 on the same two bumps.
 
 Run: ``pytest tests/test_swaption_quote_attachment.py -q``
 """
@@ -41,7 +44,8 @@ from derivus.instruments import construct_instrument
 from derivus.schema import declared_defaults
 
 from rates_world import par_swap
-from test_swaption_quote_graph import BASE, BLOCK, CCY, CURVE, VOL, definitions, price_factors
+from test_swaption_quote_graph import (BASE, BENCHMARKS, BLOCK, CCY, CURVE, VOL, definitions,
+                                       price_factors)
 
 DTYPE = torch.float64
 PARAMS = 'HullWhite2FactorModelParameters.' + CURVE
@@ -52,6 +56,15 @@ KEYS = ('Alpha_1', 'Alpha_2', 'Correlation', 'Sigma_1', 'Sigma_2')
 #: symmetric in the volatility term structure the calibration solves for.
 BOOK = [('IRS_4Y', 4, 9.10)]
 TIME_GRID = '0d 3m(3m) 4y(6m)'
+#: The rows the block AUTHORS a vol for, which is the only place a `bumps` entry is a bump. The last
+#: benchmark quotes 0.0, and `create_market_swaps` reads that as "go to the surface's own ATM" - so
+#: its leaf carries 0.208955 while the authored number is zero, and re-authoring it at 0.2 moves the
+#: quote 20.4 points instead of a fifth of one. Measured: theta lands 1.793 away rather than 0.065,
+#: and the value moves 92x what dV/dq . h says rather than 0.29x. `quote_jacobian` and the
+#: direction check are unaffected and are deliberately NOT restricted - they never re-author, so
+#: they differentiate the ATM read itself, and on this grid that row is the largest delta of the
+#: four and the one the direction check runs on.
+AUTHORED = tuple(row for row, (_, _, vol) in enumerate(BENCHMARKS) if vol)
 
 
 def pkey(name):
@@ -103,7 +116,7 @@ def world(connect, bumps=(), benchmarks=None, **declared):
 
 
 def overrides(gradient_variables='All', greeks=True):
-    return {'Run_Date': BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': TIME_GRID, 'Batch_Size': 64,
+    return {'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': TIME_GRID, 'Batch_Size': 64,
             'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': CCY, 'MCMC_Simulations': 0,
             'Tenor_Offset': 0.0, 'Deflation_Interest_Rate': CURVE,
             'Gradient_Variables': gradient_variables,
@@ -338,10 +351,17 @@ def test_a_quote_bump_moves_the_value_the_way_the_quote_delta_says(bump):
     """The direction check, on the step a quote bump IDENTIFIABLY takes.
 
     `dV/dq . h` against what re-pricing at `theta* + dtheta/dq . h` actually does, for the quote
-    whose delta dominates. Nothing re-solves, so the 19-dimensional flat the solver wanders on never
-    enters, and the agreement improves LINEARLY as the bump shrinks - which is the second-order
-    remainder behaving rather than a tolerance being met: 1.60 of the predicted move at one percent,
-    1.32 at a half, 1.10 at a tenth. Measured.
+    whose delta dominates - the ATM-fallback row, see `AUTHORED`, which is a fine quote to
+    differentiate and a bad one to re-author. Nothing re-solves, so the 19-dimensional flat the
+    solver wanders on never enters, and what is left is a remainder that shrinks with the bump:
+    1.0274 of the predicted move at one percent, 1.0121 at a half, 1.0005 at a fifth, 1.0002 at a
+    tenth. Measured on the declared scenario grid.
+
+    The first two rungs halve as a second-order remainder should; the last two fall much faster than
+    that and then stop, so the ladder is NOT quoted as a clean order-two law - the CVA is a
+    positive-part of a 64-path profile and the paths that cross zero move in steps. The tolerance
+    below is the one the file shipped with and is left alone: it now carries 60x headroom at half a
+    percent, and what gives the gate its teeth is the sign, which a flipped backward cannot satisfy.
     """
     config, connected, delta = job(True)
     j = int(np.argmax(np.abs(delta)))
@@ -357,26 +377,45 @@ def test_a_re_bootstrapped_quote_bump_is_not_a_direction_reference_for_this():
     """The honest negative result, pinned so that it is a known property rather than a surprise.
 
     Bump a quote, re-run the same deterministic solve and difference the VALUE: four quotes against
-    23 parameters leaves a 19-dimensional solution manifold, so theta lands a fixed ~0.09 away
-    whatever the bump size and the value change that displacement causes swamps the one the quote
-    causes. Measured on this fixture: +18.1 against +15.6 predicted at half a percent, then -5.6
-    against +6.2 at a fifth - the sign REVERSES as the bump shrinks, which no tolerance can rescue.
-    Stage B refuted the same comparison in theta space for the same reason.
+    23 parameters leaves a 19-dimensional solution manifold, so theta lands wherever that solve
+    stopped and the value change that displacement causes swamps the one the quote causes. Measured
+    on the authored quote with the largest delta, at half a percent and at a fifth of one:
+
+        theta      the re-solve moves 0.044 then 0.065, against identified steps of 0.00206 and
+                   0.00082 - 21x and 79x more than the bump accounts for, and GROWING as the bump
+                   shrinks, which is the 1/h signature stage B measured.
+        value      +10.15 against +4.33 predicted, then +0.50 against +1.73 - a ratio of 2.35 then
+                   0.29, an eightfold move in the same quantity for a 2.5x move in the bump.
+
+    THE RATIO IS THE STATISTIC, not either reading. A single rung agreeing or disagreeing proves
+    nothing here - the displacement is arbitrary, so it lands near dV/dq . h now and then by
+    coincidence, and on this fixture quote 2 at a fifth of a percent is exactly that coincidence
+    (0.50 against 1.73 is inside the old single-rung tolerance). What no coincidence produces is the
+    same ratio twice. On the other three quotes the pair reads 1.34/7.72, 5.97/-6.07 (the sign
+    REVERSES) and 45.5/92.2, so the instability is the fixture's property and not this quote's.
 
     If this ever fails, the solve has started returning a function of its quotes and the comparison
     becomes available - or dV/dq is wrong, since a wrong one can make the pair agree by accident.
     Which is why the split back to named parameters is pinned on its own, above.
+
+    MUTATED, both halves, by replacing the re-solve with a world standing at a chosen theta. Hand it
+    `theta* + dtheta/dq . h` and the theta half fires; hand it a displacement fifteen times further
+    off the identified step but still PROPORTIONAL to h, and the theta half is satisfied and the
+    ratio half fires. Neither survives, and the unmutated gate survives both.
     """
     config, connected, delta = job(True)
-    j = int(np.argmax(np.abs(delta)))
-    identified = quote_jacobian(config)[:, j] * (0.2 / 100.0)
-    bumped = world(False, ((j, 0.2),))
-    assert np.linalg.norm(saved(bumped) - saved(config) - identified) > 10.0 * np.linalg.norm(
-        identified), 'the re-solve now moves theta by what the quotes identify'
-    predicted = delta[j] * (0.2 / 100.0)
-    assert abs(cva(run(bumped, greeks=False)[1]) - cva(connected) - predicted) > abs(predicted), (
-        'the re-solved value now agrees with dV/dq to better than itself - the comparison is '
-        'available and this gate should be replaced by it')
+    j = max(AUTHORED, key=lambda row: abs(delta[row]))
+    ratios = {}
+    for bump in (0.5, 0.2):
+        identified = quote_jacobian(config)[:, j] * (bump / 100.0)
+        bumped = world(False, ((j, bump),))
+        assert np.linalg.norm(saved(bumped) - saved(config) - identified) > 10.0 * np.linalg.norm(
+            identified), (bump, 'the re-solve now moves theta by what the quotes identify')
+        ratios[bump] = ((cva(run(bumped, greeks=False)[1]) - cva(connected))
+                        / (delta[j] * (bump / 100.0)))
+    assert not 1.0 / 3.0 < ratios[0.5] / ratios[0.2] < 3.0, (
+        'the re-solved value move now scales with the bump the way dV/dq says it should, so the '
+        'comparison is available and this gate should be replaced by it: {}'.format(ratios))
 
 
 # ---------------------------------------------------------------------------------------------

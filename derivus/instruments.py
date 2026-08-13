@@ -416,17 +416,16 @@ def get_equity_price_vol_factor(fieldname, static_offsets, stochastic_offsets, a
         raise Exception('Cannot find {}'.format(utils.check_tuple_name(factor_name)))
 
 
-def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, stochastic_offsets, accepted):
+def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, stochastic_offsets):
     """Resolve a non-GBM spot model's parameter factor by NAMING CONVENTION off the underlying the
     deal already references: <spot_model>ModelParameters.<name>. Model-agnostic - HestonNandi today,
     Heston/SLV/... add zero code here (only a <Model>ModelParameters factor + a pricer branch).
     Returns the SVI-shaped index [(stoch, [per-parameter sub-factors], spot_model)] - subtype tagged
     with spot_model for the pricer's branch - or None for spot_model=='None' (GBM, byte-identical).
-    Unknown model -> ValueError naming the accepted set; switch on but the factor absent from the
-    market data -> KeyError. Both propagate to the engine's dependency loop (deal skipped, ERROR
-    logged), never a silent GBM fallback."""
-    if spot_model not in accepted:
-        raise ValueError('SpotModel=%r not recognised; expected one of %s' % (spot_model, accepted))
+    The VALUE is already validated against the deal type's `Deal.spot_models` declaration at
+    construction, so what is left here is presence: switch on but the factor absent from the market
+    data -> KeyError, propagated to the engine's dependency loop (deal skipped, ERROR logged),
+    never a silent GBM fallback."""
     if spot_model == 'None':
         return None
     mp = utils.Factor(spot_model + 'ModelParameters', name)
@@ -477,7 +476,18 @@ class Deal(object):
     #: The engine itself recurses on `Children` being PRESENT, never on the type.
     accepts_children = False
 
+    #: The `SpotModel` values this deal type HONOURS - the class declares its own capability, the
+    #: same way a process declares `factor_types`. The base declares GBM only, so a deal type that
+    #: never wrote a non-GBM pricer refuses the switch instead of pricing GBM under its name.
+    #: A type that grows one adds its model here and reads `self.spot_models` in calc_dependencies.
+    spot_models = ('None',)
+
     def __init__(self, params, valuation_options):
+        # a declared model this type cannot honour is a malformed program, not a market-data miss
+        spot_model = valuation_options.get('SpotModel', 'None')
+        if spot_model not in self.spot_models:
+            raise ValueError('{0} does not honour SpotModel={1!r}; it accepts {2}'.format(
+                type(self).__name__, spot_model, self.spot_models))
         # valuation options
         self.options = valuation_options
         # instrument parameters
@@ -3531,6 +3541,8 @@ class EquityBarrierBinaryOption(Deal):
         F('Settlement_Date', 'Date', default='')
 ])]
 
+    spot_models = ('None', 'HestonNandi')
+
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
                      'Equity': ['EquityPrice', 'DividendRate'],
@@ -3606,7 +3618,7 @@ class EquityBarrierBinaryOption(Deal):
         # in config.py. Switch off/absent -> None (GBM, byte-identical). See get_spot_model_params_factor.
         hn = get_spot_model_params_factor(
             self.options.get('SpotModel', 'None'), field['Equity'],
-            all_factors, static_offsets, stochastic_offsets, ('None', 'HestonNandi'))
+            all_factors, static_offsets, stochastic_offsets)
         if hn is not None:
             field_index['HN_Params'] = hn
             field_index['HN_Steps_Per_Year'] = self.options.get('Steps_Per_Year', 252.0)
@@ -3779,6 +3791,8 @@ class EquityBinaryOption(EquityOptionDeal):
 class QEDI_CustomAutoCallSwap(Deal):
     fields = [ADMIN, EQUITYOPTIONBASE, QEDI_CUSTOMAUTOCALLSWAP]
 
+    spot_models = ('None', 'HestonNandi')
+
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
                      'Equity': ['EquityPrice', 'DividendRate'],
@@ -3827,7 +3841,9 @@ class QEDI_CustomAutoCallSwap(Deal):
                       '`<SpotModel>ModelParameters.<underlying>` price factor (e.g.',
                       '`HestonNandiModelParameters.SPX`). Switching the model on without that factor in the',
                       'market data is a loud skip, never a silent lognormal fallback. Requires the',
-                      'non-averaging autocall (one fixing per coupon).',
+                      'non-averaging autocall (one fixing per coupon) and a single-currency payoff: a',
+                      'Quanto/Compo carry is a lognormal quantity, so declaring one alongside a non-`None`',
+                      'SpotModel is the same loud skip.',
                       '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH steps',
                       '(default 252; only read when SpotModel is not `None`).'
                       ])
@@ -3851,8 +3867,12 @@ class QEDI_CustomAutoCallSwap(Deal):
         The non-GBM spot model is resolved by NAMING CONVENTION off the equity underlying (no
         deal field): <SpotModel>ModelParameters.<equity>, pulled into the universe by the
         EquityPrice conditional in config.py. Switch off/absent -> None (GBM, byte-identical).
-        Only the fast no_averaging OSS path carries the non-GBM branch, hence the raise.
-        See get_spot_model_params_factor."""
+        Only the fast no_averaging OSS path carries the non-GBM branch, hence the raise. A
+        Quanto/Compo payoff raises for the same reason: `calc_vol_adjustment` derives its carry
+        from a LOGNORMAL implied ATM vol, and no leg of the non-GBM branch reads the compo vol
+        it returns. Both refusals land in the engine's deal-skip path (ERROR logged, deal
+        dropped) - a refused deal is a loudly attributable value loss rather than a wrong
+        number. See get_spot_model_params_factor."""
         field = {
             'Currency': utils.check_rate_name(self.field['Currency']),
             'Payoff_Currency': utils.check_rate_name(self.field['Payoff_Currency']),
@@ -3961,9 +3981,14 @@ class QEDI_CustomAutoCallSwap(Deal):
         if spot_model != 'None' and not field_index['no_averaging']:
             raise ValueError('SpotModel=%s requires the non-averaging autocall (one fixing per '
                              'coupon); the averaging (full-path) sim has no non-GBM path' % spot_model)
+        if spot_model != 'None' and field_index['Check_Payoff_Type']:
+            raise ValueError('SpotModel=%s cannot price Payoff_Type=%s settled in %s; the quanto/compo '
+                             'carry is a lognormal implied-ATM-vol adjustment with no %s equivalent - '
+                             'settle the autocall in %s or drop the SpotModel'
+                             % (spot_model, self.field['Payoff_Type'], self.field['Payoff_Currency'],
+                                spot_model, self.field['Currency']))
         hn = get_spot_model_params_factor(
-            spot_model, field['Equity'], all_factors, static_offsets, stochastic_offsets,
-            ('None', 'HestonNandi'))
+            spot_model, field['Equity'], all_factors, static_offsets, stochastic_offsets)
         if hn is not None:
             field_index['HN_Params'] = hn
             field_index['HN_Steps_Per_Year'] = self.options.get('Steps_Per_Year', 252.0)
@@ -4205,6 +4230,8 @@ class EquityBarrierOption(Deal):
         F('Payoff_Type', 'Text', default='Standard', values=['Standard', 'Quanto', 'Compo'])
 ])]
 
+    spot_models = ('None', 'HestonNandi')
+
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
                      'Equity': ['EquityPrice', 'DividendRate'],
@@ -4261,7 +4288,9 @@ class EquityBarrierOption(Deal):
                      'of Black-Scholes). Parameters are resolved by naming convention from the',
                      '`<SpotModel>ModelParameters.<underlying>` price factor (e.g.',
                      '`HestonNandiModelParameters.SPX`). Switching the model on without that factor in the',
-                     'market data is a loud skip, never a silent lognormal fallback.',
+                     'market data is a loud skip, never a silent lognormal fallback. Requires a',
+                     'single-currency payoff: a Quanto/Compo carry is a lognormal quantity, so declaring',
+                     'one alongside a non-`None` SpotModel is the same loud skip.',
                      '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH steps',
                      '(default 252; only read when SpotModel is not `None`).'
                      ])
@@ -4301,7 +4330,11 @@ class EquityBarrierOption(Deal):
         deal field): <SpotModel>ModelParameters.<equity>, pulled into the universe by the
         EquityPrice conditional in config.py. Switch off/absent -> None (GBM, byte-identical).
         Only the DISCRETE (Barrier_Dates) OSS pricer carries the non-GBM branch, hence the
-        raise. See get_spot_model_params_factor."""
+        raise. A Quanto/Compo payoff raises for the same reason: `calc_vol_adjustment` derives
+        its carry from a LOGNORMAL implied ATM vol, and there is no non-GBM equivalent to feed
+        the diffusion's drift. Both refusals land in the engine's deal-skip path (ERROR logged,
+        deal dropped) - a refused deal is a loudly attributable value loss rather than a wrong
+        number. See get_spot_model_params_factor."""
 
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Equity': utils.check_rate_name(self.field['Equity']),
@@ -4357,9 +4390,14 @@ class EquityBarrierOption(Deal):
         if spot_model != 'None' and 'Barrier_Dates' not in field_index:
             raise ValueError('SpotModel=%s requires the discrete (Barrier_Dates) barrier; the '
                              'continuous Barrier_Monitoring variant has no non-GBM path' % spot_model)
+        if spot_model != 'None' and field_index['Check_Payoff_Type']:
+            raise ValueError('SpotModel=%s cannot price Payoff_Type=%s settled in %s; the quanto/compo '
+                             'carry is a lognormal implied-ATM-vol adjustment with no %s equivalent - '
+                             'settle the barrier in %s or drop the SpotModel'
+                             % (spot_model, self.field['Payoff_Type'], self.payoff_ccy,
+                                spot_model, self.field['Currency']))
         hn = get_spot_model_params_factor(
-            spot_model, field['Equity'], all_factors, static_offsets, stochastic_offsets,
-            ('None', 'HestonNandi'))
+            spot_model, field['Equity'], all_factors, static_offsets, stochastic_offsets)
         if hn is not None:
             field_index['HN_Params'] = hn
             field_index['HN_Steps_Per_Year'] = self.options.get('Steps_Per_Year', 252.0)
@@ -5313,6 +5351,8 @@ class FXTARFOptionDeal(Deal):
         F('Barrier', 'Float', default=0)
 ])]
 
+    spot_models = ('None', 'HestonNandi')
+
     factor_fields = {'Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
@@ -5412,7 +5452,7 @@ class FXTARFOptionDeal(Deal):
         # opt-in Heston-Nandi spot model, by naming convention off the FX underlying - see docstring
         hn = get_spot_model_params_factor(
             self.options.get('SpotModel', 'None'), field['Underlying_Currency'],
-            all_factors, static_offsets, stochastic_offsets, ('None', 'HestonNandi'))
+            all_factors, static_offsets, stochastic_offsets)
         if hn is not None:
             field_index['HN_Params'] = hn
             # HN is calibrated on a per-DAY clock; a weekly/monthly fixing spans this many daily sub-steps

@@ -369,6 +369,18 @@ deal's own map (`pricing.deal_to_mtm_grid` — fx into reporting, then interpola
 grid, the MTM grid and the report grid are three different axes and interpolation inserts rows in
 the middle.
 
+!!! warning "A decision whose solve amplifies is refused, not smoothed"
+    `boundary_weights` fits a local **linear** kernel, so its weights are signed and sum to one —
+    and a kernel admitting two neighbouring points a long way out cancels the first-order term by
+    subtracting two enormous numbers. Measured on the Heston-Nandi barrier at 512 paths: two points
+    1.20 widths out and 0.021 apart, weighted +50.4 / −49.5, supplying 112% of the coefficient and
+    the whole of a 73% gradient error. Since the weights sum to one, `||weights||_1` **is** that
+    amplification, and `pricing.BOUNDARY_MAX_AMPLIFICATION` bounds it; past the bound the weights
+    go to zero and the decision contributes exactly what an empty kernel would.
+    Gated by `tests/test_boundary_weight_amplification.py`, whose first job is to prove the refusal
+    is *reachable* — the constant it replaced (`1e-30` on a Cauchy-Schwarz ratio pinned into
+    `[0, 1]`) never refused anything and could not.
+
 Acceptance is AAD against a common-random-numbers bump ladder (`tests/crn_ladder.py`), which reports
 agreement **and flatness** separately. Agreement at one bump size proves nothing; a ladder that
 scatters with `h` is differencing across a jump. Note flatness measures the *oracle's* spread only —

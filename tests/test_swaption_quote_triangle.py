@@ -25,15 +25,23 @@ What the file therefore gates is everything that does NOT need that oracle:
       terms       square, so neither half is second-order small - each is HALF what it corrects -
                   and they CANCEL, so Gauss-Newton is the exact leading-order derivative here.
     the chain     dV/dtheta contracted with the displacement the re-solve actually made reproduces
-                  the CVA it actually moved - which puts the failure in the SOLVE and nowhere else.
+                  the CVA it actually moved - as a SLOPE of one across the rungs, never rung by
+                  rung, because the displacement wanders. That puts the failure in the SOLVE.
     the identity  the benchmark self-delta, through the full chain and with no bump in it - its
                   TRACE counts the directions the quote set identifies, and lands on the integer.
     the direction the well-posed value check: step theta by what the quotes identify, re-price, and
                   compare against dV/dq. A sign flip in the backward has to fail it.
 
 COST. The six re-solves behind the divergence measurement dominate: a 25-benchmark solve is about
-two and a half minutes, and the file runs ten of them. Measured at 24 minutes, of which the
-divergence gate alone is eleven.
+two and a half minutes, and the file runs ten of them. Measured at 30 minutes 27 seconds on the
+declared scenario grid, of which the divergence gate alone is eleven.
+
+WHAT THE EXPOSURE RUN IS ALLOWED TO CHOOSE. `biggest()` is an argmax over dV/dq off a 64-path
+profile, so it is not stable under anything that redraws the paths - changing the declared scenario
+grid moved it from quote 12 to quote 2. That is fine for the gates it belongs in, the direction
+check and the ladder, which want the loudest quote and hold whichever one they get. It is not fine
+for a gate whose reading depends on WHICH quote, and two here used to be exposed to it: the dropped
+term's `COLUMNS` (now declared) and the value chain's per-rung ordering (now a slope).
 
 Run: ``pytest tests/test_swaption_quote_triangle.py -q``
 """
@@ -74,9 +82,22 @@ RUNGS = (5e-3, 2e-3, 1e-3)
 #: Measured, each with headroom. `DROPPED_TERM` is the tight one and the point of the file: the
 #: dropped Gauss-Newton term is half the Gauss-Newton matrix to 0.15%.
 DROPPED_TERM, CANCELLATION, SELF_DELTA, DIRECTION = 0.02, 0.02, 0.05, 1.5
+#: The band the value chain's through-origin slope has to sit in, and it is WIDE on purpose - the
+#: displacement it regresses against is the solve's own wander, so the scatter is the fixture's and
+#: not the chain's. Measured 1.41 on the quote this grid picks and 0.71 on the one the previous grid
+#: picked, against 3 and its reciprocal.
+CHAIN = 3.0
 #: The q-side finite difference's rung, in the PERCENT the `Instrument_Definitions`
 #: column is authored in - the leaf carries that over a hundred.
 DROPPED_BUMP = 1e-3
+#: The quote columns the dropped q-side term is measured on: the first, middle and last row of the
+#: 5 x 5 grid, so 1Yx1Y, 3Yx3Y and 10Yx10Y. DECLARED, and that is the point. This measurement is
+#: pure calibration algebra - `J`, `r` and `dr/dq` at theta*, none of which the exposure run touches
+#: - but the columns used to be `{argmax|dV/dq|, argmin|dV/dq|, 6}`, which let a 64-path Monte Carlo
+#: argmax choose the fixture. It does not choose it stably: the file's degradation reading at k=12
+#: is 1.87 here, 1.20 on the columns one scenario grid picks, 1.97 on the columns another picks,
+#: 1.44 on a five-column spread and 1.18 on all twenty-five. Measured, all five.
+COLUMNS = (0, 12, 24)
 #: The direction check's step, in the decimal vol the leaf carries - a thousandth of a vol point.
 #: `dtheta/dq` has entries of order 60 here, so a bump any larger walks a sigma knot through its own
 #: 1e-5 lower bound and the re-price is of a process nobody calibrated.
@@ -239,9 +260,8 @@ def dropped_terms():
         theta_side = torch.stack([torch.autograd.grad(gradient[k], x, retain_graph=True)[0]
                                   for k in range(x.numel())]).double()
 
-        columns = sorted({int(np.abs(base()[2]).argmax()), int(np.abs(base()[2]).argmin()), 6})
         q_side = []
-        for j in columns:
+        for j in COLUMNS:
             halves = []
             for shift in (DROPPED_BUMP, -DROPPED_BUMP):
                 bumped = calibration(False, ((j, shift),), benchmarks=GRID)
@@ -252,7 +272,7 @@ def dropped_terms():
                 halves.append(Jb.t() @ r)
             q_side.append((halves[0] - halves[1]) / (2.0 * DROPPED_BUMP / 100.0))
         CACHE['dropped'] = (theta_side, torch.stack(q_side, dim=1), J.t() @ J, J.t() @ drdq,
-                            columns)
+                            COLUMNS)
     return CACHE['dropped']
 
 
@@ -294,10 +314,27 @@ def test_the_squared_residual_doubles_both_dropped_terms_and_they_cancel():
     care. Measuring only the Hessian side and correcting only that is what makes a 3/2 appear, and
     the gate below runs exactly that as its mutation.
 
-    Where the two DO disagree is where the `O(f^3)` remainder overtakes the eigenvalue it corrects -
-    the same directions `Jacobian_Rcond` already declines to differentiate, which is this file's
-    theme rather than an exception to it. So the ratio is asserted tight in the top four directions
-    and its DEGRADATION is asserted as a property further down.
+    MEASURED on the declared `COLUMNS`. The theta side is 0.500064 of `J'J` and what is left after
+    subtracting half of it is 0.15% of `J'J`; the q side is 0.4785, 0.5115 and 0.5065 of its own
+    column with cosine 1.0 to six figures; and Gauss-Newton over the both-corrected solve is 1.0022
+    with cosine 0.99994 in the top four directions. Correcting ONLY the Hessian side - the mutation
+    the last paragraph names - reads 1.4989 there, so the 2% band is 25 times inside the thing it
+    has to see.
+
+    Where the two DO disagree is where the `O(f^3)` remainder overtakes the eigenvalue it corrects.
+    That is NOT confined to the five directions `Jacobian_Rcond` discards, and the file used to
+    imply it was: the ratio is already 1.11 by the eighth direction and 1.87 by the twelfth, both
+    well inside the eighteen the cutoff keeps. What collapses on schedule is the DIRECTION, and it
+    is the robust reading - the cosine holds above 0.9999 through k=6, is 0.321 at k=12 and turns
+    NEGATIVE, -0.476, across the whole kept subspace. Across the five column sets measured while the
+    columns were being declared the k=12 norm ratio ranged 1.18 to 1.97, and the k=18 cosine stayed
+    below 0.23 in every one of them - which is why the property is asserted on the cosine as well as
+    on the ratio.
+
+    MUTATED, two ways, both KILLED. Correct only the Hessian side and the top-four ratio reads
+    1.4989 against a 2% band. Delete the `O(f^3)` remainder outright - set both dropped terms to
+    exactly half of their Gauss-Newton counterparts - and every k reads (1.0, 1.0), which the
+    degradation assertion catches on the norm. The unmutated gate survives both.
     """
     theta_side, q_side, gn, gn_cross, columns = dropped_terms()
     halves = {j: (float(q_side[:, i].norm() / gn_cross[:, j].norm()),
@@ -313,12 +350,12 @@ def test_the_squared_residual_doubles_both_dropped_terms_and_they_cancel():
     for j, (ratio, cosine) in halves.items():
         assert abs(ratio - 0.5) < 2 * DROPPED_TERM and cosine > 0.999, (j, ratio, cosine)
 
-    ratios = {k: restricted_ratio(gn + theta_side, q_side, columns, k) for k in (4, 6, 8, 12)}
+    ratios = {k: restricted_ratio(gn + theta_side, q_side, columns, k) for k in (4, 6, 8, 12, 18)}
     logging.info('GN over both-corrected, restricted to the top k directions: %s',
                  {k: (round(a, 4), round(b, 6)) for k, (a, b) in ratios.items()})
     assert abs(ratios[4][0] - 1.0) < CANCELLATION and ratios[4][1] > 1.0 - CANCELLATION, ratios[4]
-    assert ratios[12][0] > 1.0 + 10 * CANCELLATION, (
-        'the O(f^3) remainder has stopped mattering in the directions the cutoff discards, so the '
+    assert ratios[12][0] > 1.0 + 10 * CANCELLATION and ratios[18][1] < 0.5, (
+        'the O(f^3) remainder has stopped mattering by the edge of the kept subspace, so the '
         'unification with the rank story no longer holds: {}'.format(ratios))
 
 
@@ -386,22 +423,46 @@ def test_the_displacement_wanders_in_the_directions_the_cutoff_discards():
 def test_the_value_chain_tracks_the_theta_move_the_re_solve_made():
     """The gate that puts the failure in the SOLVE and nowhere else.
 
-    The re-solve moves theta somewhere; contract the reported factor greek with that displacement and
-    it reproduces the CVA the job actually moved, better as the bump shrinks. So `dV/dtheta` is right,
-    the attachment is right, and the pricing chain between them is right - what is not a function of
-    the quotes is `theta*` itself. Without this, a scattering ladder would be evidence against
-    everything at once.
+    The re-solve moves theta somewhere; contract the reported factor greek with that displacement
+    and it reproduces the CVA the job actually moved. So `dV/dtheta` is right, the attachment is
+    right, and the pricing chain between them is right - what is not a function of the quotes is
+    `theta*` itself. Without this, a scattering ladder would be evidence against everything at once.
+
+    IT DOES NOT GET BETTER AS THE BUMP SHRINKS, and this gate used to assert that it did. There is
+    no mechanism for it: this file's own thesis is that the displacement is set by where each solve
+    stopped rather than by the bump, so `|theta*(q+h) - theta*(q-h)|` has no limit to refine toward
+    and neither does the remainder of a linearisation taken over it. Measured, the displacement
+    wanders - 0.076, 0.165, 0.030 down the rungs at the quote this grid picks, 0.037, 0.021, 0.013
+    at the one the previous grid picked - and so does the per-rung relative error, 0.0011, 0.611,
+    0.579 on the first and 14.67, 0.149, 0.0995 on the second. Either ordering is a coin toss; the
+    old assertion passed on the second quote and failed on the first, and NOTHING about the engine
+    differs between them.
+
+    THE STATISTIC WITH A MECHANISM is the one the claim is actually about: regress the CVA the
+    re-solve moved on the CVA the greek predicts, through the origin, over the three rungs. A right
+    chain gives slope one whatever the displacements are, and the scatter around it is the solve's.
+    Measured 1.4141 at cosine 0.9053 on this grid's quote and 0.7060 at cosine 0.8157 on the other -
+    both inside a band of 3, both with a cosine that a sign error cannot reach. Reversing the sign
+    of `dV/dtheta` reads -1.4141 at cosine -0.9053, so the gate dies on both halves at once, where
+    the old per-rung comparison it replaces read 1.999, 1.389, 1.421 - three numbers whose only
+    property was being above 0.5, which two of the three unmutated readings also are.
+
+    IT IS A DIRECTION GATE AND NOT A SCALE GATE, deliberately. Scaling `dV/dtheta` by 1.5 or by 4
+    SURVIVES here - the slope only falls to 0.943 and 0.354, and 0.354 clears the 1/3 floor - which
+    is all a three-rung regression against a wandering displacement can be asked for. The greek's
+    scale is pinned to a tenth of a percent by the sign-flip gate at the end of the file, on its
+    reconstruction assertion, where both of those mutants die: 186908 and 498422 against 124605.
     """
     j = biggest()
-    errors = {}
-    for h in RUNGS:
-        up, down = rung(j, h * 100.0), rung(j, -h * 100.0)
-        predicted = float(factor_greek() @ (up[0] - down[0]))
-        errors[h] = abs(predicted - (up[1] - down[1])) / abs(up[1] - down[1])
-    logging.info('value chain vs the re-solve displacement, relative error per rung %s',
-                 {h: round(v, 4) for h, v in errors.items()})
-    assert errors[RUNGS[-1]] < errors[RUNGS[0]], errors
-    assert errors[RUNGS[-1]] < 0.5, errors
+    ends = [(rung(j, h * 100.0), rung(j, -h * 100.0)) for h in RUNGS]
+    predicted = np.array([float(factor_greek() @ (up[0] - down[0])) for up, down in ends])
+    actual = np.array([up[1] - down[1] for up, down in ends])
+    slope = float(predicted @ actual / (predicted @ predicted))
+    cosine = float(predicted @ actual / (np.linalg.norm(predicted) * np.linalg.norm(actual)))
+    logging.info('value chain: predicted %s against actual %s, through-origin slope %.4f, '
+                 'cosine %.4f', np.array2string(predicted, precision=4),
+                 np.array2string(actual, precision=4), slope, cosine)
+    assert cosine > 0.5 and 1.0 / CHAIN < slope < CHAIN, (slope, cosine, predicted, actual)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -478,7 +539,8 @@ def direction_check(dtheta, delta, bump=DIRECTION_BUMP):
 
 def test_a_quote_bump_moves_the_value_the_way_the_quote_delta_says():
     """The direction check, on the step a quote bump identifiably takes - the value-space reference
-    a non-stationary solve does not spoil, because nothing here re-solves."""
+    a non-stationary solve does not spoil, because nothing here re-solves. Measured 1.0382 on the
+    declared scenario grid, against a band of 1.5 and its reciprocal."""
     ratio = direction_check(quote_jacobian(base()[0]), base()[2])
     logging.info('direction check: re-priced move is %.4f of the predicted one', ratio)
     assert 1.0 / DIRECTION < ratio < DIRECTION, ratio
@@ -514,6 +576,10 @@ def test_a_sign_flip_in_the_backward_fails_the_direction_check(wrapper, should_a
     the one-pass `dV/dq` in the same breath, and that check is what stops this being a placebo: a
     reconstruction that had drifted from the number the job reports would pass both arms while
     measuring nothing.
+
+    Measured on the declared scenario grid: the reconstruction is 124605 against a one-pass 124605
+    and the direction check reads 1.0382, while the flip reconstructs -124605 and re-prices at
+    -0.9796. The band is 1.5 and its reciprocal, so the mutant misses it by the whole sign.
     """
     j, delta = biggest(), base()[2]
     cal = calibration(benchmarks=GRID)

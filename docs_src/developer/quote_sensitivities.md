@@ -424,20 +424,25 @@ The reference this workstream was briefed to validate against — bump a quote, 
 difference θ\* — was **refuted with evidence**, three times.
 
 **In θ space, on four quotes.** On a 19-dimensional solution manifold a re-solve lands *somewhere
-else on the manifold*, a roughly fixed displacement of about 0.1 whatever the bump size, so
+else on the manifold*, a displacement of 0.044 at half a percent and 0.065 at a fifth against identified steps of
+0.00206 and 0.00082, so
 $(\theta^*(q+h) - \theta^*(q-h))/2h$ **diverges as $1/h$** — measured cold-started and warm-started
 alike, with the unidentified part of that difference an order of magnitude larger than the identified
 part.
 
 **In value space, on four quotes.** The CVA change that displacement causes swamps the one the quote
-causes, and **the sign reverses as the bump shrinks** — +18.1 against +15.6 predicted at half a
-percent, then −5.6 against +6.2 at a fifth. No tolerance rescues a sign.
+causes, and **by a factor that is itself unstable in the bump** — on the authored quote with the
+largest delta, +10.15 against +4.33 predicted at half a percent and +0.50 against +1.73 at a fifth,
+a ratio of 2.35 then 0.29. On the neighbouring quote the same pair **reverses sign**, +21.46 against
++3.60 then −8.73 against +1.44. No tolerance rescues either, and no single rung is evidence: the
+displacement is arbitrary, so it lands near `dV/dq · h` now and then by coincidence.
 
 **In both, on twenty-five quotes.** The obvious repair is to quote more swaptions than the model has
 parameters, and [the identified fixture](#the-identified-fixture) does exactly that: `J` is 25 × 23
 with rank 23 and there is no manifold left. It fails anyway. Full column rank makes `θ*(q)` a
 function only if the solve *reaches* the minimum, and this one stops seven and a half orders in. The
-displacement is again roughly fixed as the bump shrinks — 0.037, 0.021, 0.013 at half, a fifth and a
+displacement is again set by where each solve stopped rather than by the bump — 0.076, 0.165, 0.030
+at half, a fifth and a
 tenth of a vol point — so the quotient again grows rather than converging, and the ladder built on
 those re-solves scatters against a one-pass number two orders larger.
 
@@ -455,11 +460,11 @@ implicit-function derivative is the better-behaved object of the two, and it is 
 the question the desk was really asking.
 
 What *is* well posed is the direction the quotes **do** identify: step the parameters by
-$d\theta/dq \cdot h$ and re-price **without re-solving**. On four quotes that recovers 1.60 of the
-predicted move at one percent, 1.32 at a half and 1.10 at a tenth — a second-order remainder
-behaving — and the wrong-signed step lands the bumped problem's residual three to four times further
-out than doing nothing. On the identified fixture it lands at 1.0333, and the mandated sign-flip
-mutation turns it into −0.9489. That check is what the quote delta is gated on in value space, and it
+$d\theta/dq \cdot h$ and re-price **without re-solving**. On four quotes that recovers 1.0274 of the
+predicted move at one percent, 1.0121 at a half, 1.0005 at a fifth and 1.0002 at a tenth — and the
+wrong-signed step lands the bumped problem's residual three to four times further out than doing
+nothing. On the identified fixture it lands at 1.0382, and the mandated sign-flip mutation turns it
+into −0.9796. That check is what the quote delta is gated on in value space, and it
 is what the ladder would have been if a ladder were available.
 
 All three refutations are pinned as gates of their own, so they stay known properties rather than
@@ -1052,8 +1057,8 @@ gates hold is everything that does not need it.
 | --- | --- | --- |
 | singular spectrum of `J` (25 × 23) | the fixture — is anything unidentified? | rank **23**, σ from 5.65e4 down to **0.258**, `σ_min/σ_max` **4.57e-6**; the declared 1e-8 cutoff keeps **18** of 23 |
 | stationarity of the accepted θ\* | the fixed point the theorem needs | `‖J'r‖` **8.6e3** at θ\*, **2.9e11** at the seed, `‖r‖` 46.1 — worst benchmark 4.3% out |
-| the two dropped Gauss–Newton terms | the approximation, measured on **both** sides | θ side **0.500064** of `J'J`; q side **0.4953 / 0.5115 / 0.4992** of `J'(∂r/∂q)` on columns 6/12/22, cosine **1.000000** |
-| GN against both corrections applied | does the 3/2 cancel? | **0.9908** (cos 0.999996) in the top 4 directions; 0.9941 / 1.0423 / **1.9738** at top 6 / 8 / 12 |
+| the two dropped Gauss–Newton terms | the approximation, measured on **both** sides | θ side **0.500064** of `J'J`; q side **0.4785 / 0.5115 / 0.5065** of `J'(∂r/∂q)` on the declared columns 0/12/24, cosine **1.000000** |
+| GN against both corrections applied | does the 3/2 cancel? | **1.0022** (cos 0.999940) in the top 4 directions; 1.0136 / 1.1098 / **1.8743** at top 6 / 8 / 12, and cosine **−0.4765** across the kept 18 |
 | re-solve at a bumped quote | the classic oracle | `‖Δθ‖` **0.037 / 0.021 / 0.013** at h = 0.5 / 0.2 / 0.1 vol points, so the quotient **grows**: 3.7 / 5.3 / 6.7 |
 | CRN quote-bump ladder on those re-solves | the whole job, re-bootstrapped per rung | CRN **1294 / 2900 / 4189** against a one-pass **1.80e5** — agreement 99%, flatness 100% |
 | where the displacement points | which cause | **0.26 / 0.70 / 0.44** of it inside the subspace the cutoff keeps |

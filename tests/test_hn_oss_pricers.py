@@ -12,6 +12,9 @@ EquityPrice conditional in config.py when the switch is on. So the HN path is ac
   * switch on + factor present   -> HN
   * switch on + factor MISSING   -> loud failure (deal skipped with ERROR naming the factor)
   * unknown SpotModel value       -> ValueError naming the value + accepted set (deal skipped)
+  * switch on + CROSS-CURRENCY payoff -> ValueError naming the payoff type + the model (deal
+    skipped): the quanto/compo carry is a lognormal implied-ATM-vol adjustment, so riding it on a
+    non-GBM diffusion mixes two models inside one payoff. EITHER/OR, never a silent mix.
 
 SHARED PER-STEP HELPER + MUTATION KILL MATRIX. All three pricers route every daily HN step -
 the unmonitored sub-steps AND the survival-truncated final step of each interval - through the
@@ -40,6 +43,7 @@ import sys
 # reference-derivus shadow-import guard (MEMORY): pin the package under test to THIS repo.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import numpy as np
 import pandas as pd
 import pytest
 import torch
@@ -68,12 +72,18 @@ STRONG = {'Omega': float(_STRONG['omega']), 'Alpha': float(_STRONG['alpha']), 'B
 _H0_DAY = SIGMA ** 2 / 365.0
 DEGEN = {'Omega': _H0_DAY, 'Alpha': 0.0, 'Beta': 0.0, 'Gamma_Star': 0.0, 'H0': _H0_DAY}
 
+# the second currency a quanto/compo payoff settles in, and the two market quantities its carry
+# adjustment is built from (b_adj = -atm_vol * fx_vol * rho)
+FX_SPOT = 18.5
+FX_SIGMA = 0.15
+RHO = 0.3
+
 
 def _flat_vol(sig):
     return utils.Curve([], [[m, t, sig] for m in (0.8, 1.0, 1.2) for t in (0.02, 2.0)])
 
 
-def _price_factors(sig, hn_params, r, q):
+def _price_factors(sig, hn_params, r, q, payoff_ccy=None, rho=RHO):
     pf = {
         'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Priority': 1, 'Spot': 1.0},
         'InterestRate.USD': {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
@@ -87,18 +97,40 @@ def _price_factors(sig, hn_params, r, q):
     }
     if hn_params is not None:
         pf['HestonNandiModelParameters.EQ'] = dict(hn_params, Property_Aliases=None)
+    if payoff_ccy not in (None, 'USD'):
+        pair = '.'.join(sorted(['USD', payoff_ccy]))
+        pf.update({
+            'FxRate.{}'.format(payoff_ccy): {'Domestic_Currency': None, 'Priority': 1,
+                                             'Interest_Rate': payoff_ccy, 'Spot': FX_SPOT},
+            'InterestRate.{}'.format(payoff_ccy): {'Currency': payoff_ccy, 'Sub_Type': None,
+                                                   'Day_Count': 'ACT_365',
+                                                   'Curve': utils.Curve([], [[0.0, r], [5.0, r]])},
+            'FXVol.{}'.format(pair): {'Surface_Type': 'Explicit',
+                                      'Moneyness_Rule': 'Sticky_Moneyness',
+                                      'Surface': _flat_vol(FX_SIGMA)},
+            'Correlation.EquityPrice.EQ/FxRate.{}'.format(pair): {'Value': rho},
+        })
     return pf
 
 
-def _cfg(field, ref, sig=SIGMA, hn_params=None, r=0.0, q=0.0, spot_model='auto'):
+def _cfg(field, ref, sig=SIGMA, hn_params=None, r=0.0, q=0.0, spot_model='auto',
+         payoff=None, rho=RHO):
     """spot_model='auto' turns the switch on iff hn_params is supplied; pass an explicit string
-    (incl. 'None') to decouple the switch from factor presence for the resolution-semantics tests."""
+    (incl. 'None') to decouple the switch from factor presence for the resolution-semantics tests.
+
+    payoff=(currency, Payoff_Type) settles the deal in a SECOND currency, which is the only way
+    `Check_Payoff_Type` (the quanto/compo carry) turns on - it reads the currency PAIR, not the
+    payoff type alone. `rho` is that carry's only free parameter, so it is the knob the refusal
+    gate varies to prove its fixture is not zeroing the quantity under test."""
+    if payoff is not None:
+        field = dict(field, Payoff_Currency=payoff[0], Payoff_Type=payoff[1])
     if spot_model == 'auto':
         spot_model = 'HestonNandi' if hn_params is not None else None
     c = Config()
     c.params['System Parameters']['Base_Currency'] = 'USD'
     c.params['System Parameters']['Base_Date'] = BASE
-    c.params['Price Factors'] = _price_factors(sig, hn_params, r, q)
+    c.params['Price Factors'] = _price_factors(
+        sig, hn_params, r, q, payoff[0] if payoff else None, rho)
     c.params['Price Models'] = {}
     val = {field['Object']: {'SpotModel': spot_model}} if spot_model else {}
     c.params['Valuation Configuration'] = val
@@ -216,12 +248,15 @@ def test_switch_routes_the_factor_dependency(build):
     (lambda **kw: _autocall_cfg([30], [1.05], [0.05], 30, **kw), 'QEDI_CustomAutoCallSwap'),
 ])
 def test_unknown_spot_model_fails_loudly(build, name):
-    """A typo'd SpotModel raises ValueError naming the value and the accepted set; the engine's
-    dependency loop logs+skips the raising deal (never a silent GBM fallback)."""
-    txt = _capture_errors(lambda: run_baseval(
-        build(hn_params=STRONG, spot_model='Heston_Nandi')[0],
-        overrides={'MCMC_Simulations': 64, 'Random_Seed': 1}))
-    assert 'Heston_Nandi' in txt and "('None', 'HestonNandi')" in txt
+    """A typo'd SpotModel raises ValueError naming the deal type, the value and the accepted set
+    (never a silent GBM fallback). The refusal MOVED (V6) from the dependency loop, which logged
+    and skipped the deal, to `Deal.__init__` checking the class's `spot_models` declaration - the
+    switch is keyed by deal TYPE, so a bad value mis-declares every deal of that type rather than
+    breaking one. See tests/test_spot_model_declaration.py."""
+    with pytest.raises(ValueError) as e:
+        build(hn_params=STRONG, spot_model='Heston_Nandi')
+    assert name in str(e.value)
+    assert 'Heston_Nandi' in str(e.value) and "('None', 'HestonNandi')" in str(e.value)
 
 
 @pytest.mark.parametrize('build', [
@@ -247,6 +282,60 @@ def test_switch_off_with_factor_present_is_gbm(build):
     gbm = _mtm(build(), sims=1 << 12)
     off = _mtm(build(hn_params=STRONG, spot_model='None'), sims=1 << 12)
     assert off == gbm
+
+
+# ======================================================================================
+# EITHER/OR: a quanto/compo payoff is a LOGNORMAL carry, so it cannot ride a non-GBM model
+# ======================================================================================
+
+# both OSS deals, each with the reference its price is filtered by
+QUANTO_BUILDS = [
+    (lambda **kw: _barrier_cfg('Down_And_Out', 92.0, BDAYS30, 30, **kw), 'BARR1'),
+    (lambda **kw: _autocall_cfg([5, 10, 15], [1.02] * 3, [0.05] * 3, 15, **kw), 'AC1'),
+]
+QUANTO_IDS = ['barrier', 'autocall']
+
+
+@pytest.mark.parametrize('build,ref', QUANTO_BUILDS, ids=QUANTO_IDS)
+@pytest.mark.parametrize('ptype', ['Quanto', 'Compo'])
+def test_cross_currency_payoff_under_non_gbm_is_refused(build, ref, ptype):
+    """`calc_vol_adjustment` builds the quanto/compo carry from a LOGNORMAL implied ATM vol and
+    hands it to the drift unconditionally, so under HN a GBM quantity would set the GARCH
+    diffusion's drift (and the compo vol it returns is read by no HN leg at all). Both deals must
+    refuse at COMPILE, naming the payoff type and the model - the message is the one the engine's
+    deal-skip path logs at ERROR, which is what makes the loss attributable."""
+    cfg = build(hn_params=STRONG, payoff=('ZAR', ptype))[0]
+    txt = _capture_errors(lambda: run_baseval(
+        cfg, overrides={'MCMC_Simulations': 64, 'Random_Seed': 1}))
+    assert 'SpotModel=HestonNandi cannot price Payoff_Type={}'.format(ptype) in txt
+    assert _mtm(build(hn_params=STRONG, payoff=('ZAR', ptype)), sims=64) is None, \
+        'refused deal still produced a mark'
+
+
+@pytest.mark.parametrize('build,ref', QUANTO_BUILDS, ids=QUANTO_IDS)
+@pytest.mark.parametrize('ptype', ['Quanto', pytest.param('Compo', marks=pytest.mark.xfail(
+    strict=True, reason='Compo is broken in BOTH OSS pricers independently of any spot model: '
+                        'calc_vol_adjustment returns the python float 0.0 as its Compo b_adj and '
+                        'pricing.py:1257/2651 call torch.unsqueeze on it (TypeError -> deal '
+                        'skipped). They also drop its s_adj forward scaling entirely.'))])
+def test_cross_currency_payoff_under_gbm_still_prices(build, ref, ptype):
+    """The refusal is the MODEL's, not the payoff type's: the same deal under GBM prices. And the
+    quantity it refuses is live in this fixture - rho is the carry's only free parameter, so a
+    price that ignored rho would make the gate above a placebo over a zeroed adjustment.
+
+    The Compo leg is xfail-STRICT, not deleted: it pins a defect this gate found, and it turns the
+    suite red the moment Compo starts pricing so the fix has to come back and re-read this."""
+    price = _mtm(build(payoff=('ZAR', ptype)), sims=1 << 12)
+    assert price is not None and np.isfinite(price) and price != 0.0
+    assert abs(price - _mtm(build(payoff=('ZAR', ptype), rho=-RHO), sims=1 << 12)) > 1e-8
+
+
+@pytest.mark.parametrize('build,ref', QUANTO_BUILDS, ids=QUANTO_IDS)
+def test_non_gbm_prices_when_the_payoff_settles_in_its_own_currency(build, ref):
+    """The cross-check reads the currency PAIR (`Check_Payoff_Type`), which is what the pricer
+    branches on - a Payoff_Type declared alongside a same-currency payoff is inert and must not
+    cost the desk an HN price."""
+    assert _mtm(build(hn_params=STRONG, payoff=('USD', 'Quanto')), sims=1 << 12) != 0.0
 
 
 # ======================================================================================

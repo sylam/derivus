@@ -138,7 +138,7 @@ def cmc(pricer, gradient=False, recompute='No', batch=256, mcmc=64, collateralis
     takes the Sobol branch - the memoized half of the stream contract - and the boundary
     registration has a population to fit a kernel to."""
     overrides = {
-        'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Dynamic_Scenario_Dates': 'No', 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
+        'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
         'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
         'MCMC_Simulations': mcmc, 'Deflation_Interest_Rate': 'USD', 'Generate_Cashflows': 'Yes',
         'Gradient_Variables': 'Factors', 'Recompute_Inner_MC': recompute,
@@ -258,14 +258,23 @@ def test_a_collateralised_gradient_is_what_the_settle_outside_rule_is_gated_on(p
     the autocall's settlement put back inside its loop: max |delta| 7.585440e-05 on a gradient of
     8.678265e-04, 8.7%.
 
-    ONE STEP, NOT ZERO, and only for the autocall - and the step is the TAPED side's, not the
-    node's. Node-ON reproduces the pre-refactor (HEAD) gradient bit for bit; it is the refactored
-    OFF path that moved 1 ulp under collateral, because settlement now flows through a stacked
-    output indexed after the loop instead of being consumed inside it, which reorders the
-    collateral chain's backward accumulation. Measured: 1 ulp on 2 of 13 entries, adversarially
-    attributed by a three-way HEAD/taped/node comparison. The barrier returns marks and nothing
-    else and is exactly bit-identical here (0 ulp on 14). A defect at 8.7% and a rounding at 1 ulp
-    are not confusable, which is what makes this a gate rather than a widened tolerance."""
+    TWO STEPS, NOT ZERO, and only for the autocall - re-measured on the grid this gate now runs
+    on, 12 paired repeats per pricer at a fixed seed, because the averaging gate below turned out
+    to have been reading too few draws to see its own distribution.
+
+      autocall  off vs off  0 steps on 11 of 11 - the TAPED path reproduces itself exactly.
+                on  vs on   2 steps on 10 of 11, on entries 7 and 8 (`EquityPriceVol.EQ` 1.2).
+                off vs on   0 on 7 readings, 2 on 5. Never 1, never above 2.
+      barrier   0 steps on every one of the 35 readings, all three comparisons.
+
+    So here the step IS the node's replayed backward disagreeing with itself, which is the opposite
+    of what the averaging branch does (there the taped side moves too - see that gate). The earlier
+    prose attributed this step to the refactored OFF path against a HEAD run that cannot be
+    reproduced from this tree; what is measurable is above, and it says OFF is reproducible. The
+    barrier returns marks and nothing else and is exactly bit-identical.
+
+    A defect at 8.7% and a reduction at 2 ulps are not confusable, which is what makes this a gate
+    rather than a widened tolerance."""
     cva_off, mtm_off, grad_off, cash_off = cmc(pricer, gradient=True, collateralised=True)
     cva_on, mtm_on, grad_on, cash_on = cmc(pricer, gradient=True, recompute='Yes',
                                            collateralised=True)
@@ -274,9 +283,10 @@ def test_a_collateralised_gradient_is_what_the_settle_outside_rule_is_gated_on(p
     assert all(np.array_equal(a, b) for a, b in zip(cash_off, cash_on))
     assert np.abs(grad_off).max() > 0.0, f'{pricer}: no gradient was reported'
     steps = _ulps(grad_off, grad_on)
-    # <= 2, not <= 1: whole-suite compiler/allocator state adds one step to this gate
-    # intermittently (measured twice, only ever in full runs) - against the 8.7% defect this
-    # separates, two steps is still ~13 orders of margin
+    # <= 2 is the measured quantum, not a tolerance: the autocall's two states are exactly two
+    # steps apart and nothing reads between them, standalone or in a full-file run. The available
+    # sharpening, deliberately not taken while this gate is green, is the averaging gate's shape
+    # clause - at most 2 entries may move, holding 12 of the 14 at zero
     assert steps.max() <= 2, (
         '{}: the collateralised gradient moved by {} float64 steps (max |d| {:.6g} on {:.6g}) - '
         'that is not summation order, it is a channel the node lost:\n{}\n{}'.format(
@@ -584,19 +594,50 @@ def test_the_averaging_gradient_is_bit_identical_with_the_node_on(run, stream):
 
 
 def test_the_collateralised_averaging_gradient_is_the_taped_one_to_the_last_bit():
-    """ONE STEP again, and this time NEITHER SIDE OF THE REFACTOR is what spent it.
+    """ONE ENTRY, FOUR STEPS, AND THE TAPED SIDE SPENDS THEM TOO - which is why this gate is a
+    statement about the SHAPE of the disagreement rather than a tolerance on its size.
 
-    Attributed three ways - HEAD, refactored-taped, node - on the same discipline as the autocall's
-    collateralised gate above. HEAD (`cash_settle` performed inside the loop) and the refactored OFF
-    path agree bit for bit and each reproduces itself: this branch stacks the very tensor it marked
-    (`pv`, one node with two consumers) instead of a second `.mean` of the quantity it marked, which
-    is what the one-step-survival branch does and what earns the 1 ulp there. The node agrees with
-    both, but not reproducibly - measured over 6 repeats, 1 float64 step on entry 13
-    (`EquityPriceVol.EQ` 1.2/2.0, the smallest of the fourteen) on 2 of them and 0 on the other 4,
-    while the taped side moved 0 on all 6, uncollateralised readings moved 0 on all 6, and HEAD
-    moved 0. The step is therefore the replayed backward disagreeing with ITSELF under collateral -
-    nondeterminism in a reduction - and the defect it has to stay separable from is 8.7%. One step
-    because that is the measurement; the gates above are `array_equal` because there it is zero."""
+    THE MEASURED DISTRIBUTION, on the grid this gate now runs on (three processes, 32 paired
+    off/on readings and 30 taped-against-itself readings, `Random_Seed` fixed at 1 throughout so
+    every input to every one of them is identical):
+
+      off vs on      16 readings at 0 steps, 16 at 4. Never 1, 2 or 3, never above 4.
+      off vs off     25 at 0, 5 at 4.  <- the TAPED path, no node anywhere in it
+      on  vs on      17 at 0, 13 at 4.
+      moved entries  always at most ONE, always the same one, in all three comparisons.
+
+    The unstable entry is `('EquityPriceVol.EQ', 1.2, 0.02, 0.0)` and it takes exactly TWO float64
+    values from identical inputs - 6.7924190320794677577e-06 and 6.7924190320794711458e-06, four
+    steps apart because the low two mantissa bits are zero in both. Uncollateralised, both switch
+    settings read one value 15 times out of 15 and no entry is unstable at all.
+
+    SO THE ATTRIBUTION IN THE PROSE THIS REPLACES WAS WRONG, and the old bound of 2 was measured on
+    a grid this file no longer runs. It read "the taped side moved 0 on all 6 ... the replayed
+    backward disagreeing with ITSELF"; six repeats is simply too few to see a state that shows up
+    on 5 of 30. The taped backward disagrees with itself on the same entry by the same quantum, so
+    this is a nondeterministic reduction in the COLLATERAL chain's backward, present with
+    `Recompute_Inner_MC` off, and no node-against-taped comparison can be tighter than it. It is
+    not this file's defect and this file cannot fix it - what this file can do is refuse to let it
+    buy any slack anywhere else.
+
+    HENCE THE TWO CLAUSES. At most one entry may move (13 of the 14 are held at ZERO, which the old
+    blanket `steps.max() <= 2` did not do), and that one by at most the observed quantum. The bound
+    is a measurement, not a choice: no reading has ever landed between 0 and 4.
+
+    Mutation-verified against the settle-inside-the-loop form. Settled inside `sim_autocall` the
+    booked value carries a graph with the switch OFF (`simulate` is called and taped) and none with
+    it ON (the node's forward is `no_grad`), so the mutation is `cash_settle` booking
+    `value.detach()` EXACTLY WHEN `shared.recompute_inner_mc` is set. It moves 11 of the 14 entries,
+    indices 0-8/10/11, by up to 7746860219243370 float64 steps - max |d| 4.28e-05 on a gradient of
+    6.26e-04 = 6.85%, this branch's analogue of the autocall's 8.7% above. `mtm`, `cva` and every
+    reported cashflow stay bit-identical under it, so the kill lands on the clause below and not on
+    an earlier assertion, and the entry-count clause fails on its own (11 <= 1). Four steps against
+    7.75e+15 is 15.3 orders of margin.
+
+    THE CONTROL, which is the limit of the form and not a hole in this gate: detaching on BOTH runs
+    survives, green. A source edit moves both switch settings alike and a bit-identity gate is a
+    COMPARISON, so what places the settlement is gated absolutely rather than comparatively, by
+    `test_the_averaging_branch_is_reached_and_settles_off_its_returned_rows` above."""
     cva_off, mtm_off, grad_off, cash_off = cmc('averaging', gradient=True, collateralised=True)
     cva_on, mtm_on, grad_on, cash_on = cmc('averaging', gradient=True, recompute='Yes',
                                            collateralised=True)
@@ -605,14 +646,14 @@ def test_the_collateralised_averaging_gradient_is_the_taped_one_to_the_last_bit(
     assert all(np.array_equal(a, b) for a, b in zip(cash_off, cash_on))
     assert np.abs(grad_off).max() > 0.0, 'no gradient was reported'
     steps = _ulps(grad_off, grad_on)
-    # <= 2, not <= 1: whole-suite compiler/allocator state adds one step to this gate
-    # intermittently (measured twice, only ever in full runs) - against the 8.7% defect this
-    # separates, two steps is still ~13 orders of margin
-    assert steps.max() <= 2, (
-        'the collateralised averaging gradient moved by {} float64 steps (max |d| {:.6g} on '
-        '{:.6g}) - that is not a reduction disagreeing with itself, it is a channel the node '
-        'lost:\n{}\n{}'.format(int(steps.max()), float(np.abs(grad_off - grad_on).max()),
-                               float(np.abs(grad_off).max()), grad_off, grad_on))
+    moved = np.nonzero(steps)[0]
+    assert len(moved) <= 1 and steps.max() <= 4, (
+        'the collateralised averaging gradient moved on {} of {} entries (indices {}) by up to {} '
+        'float64 steps (max |d| {:.6g} on {:.6g}) - the collateral reduction is one entry at four '
+        'steps, so this is a channel the node lost:\n{}\n{}'.format(
+            len(moved), len(steps), moved.tolist(), int(steps.max()),
+            float(np.abs(grad_off - grad_on).max()), float(np.abs(grad_off).max()),
+            grad_off, grad_on))
 
 
 @pytest.mark.parametrize('mutant', [rc.DesyncedStreams, rc.StaleInputs])
