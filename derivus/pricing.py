@@ -897,8 +897,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
       - No smooth_heaviside approximation needed — the analytic probability is
         exact and differentiable via norm_cdf/norm_icdf
       - Lower variance: barrier-touching paths contribute analytically
-      - For BARRIER_IN: the vanilla payoff when knocked in is valued with
-        Black-Scholes from H using the remaining integrated variance
+      - For BARRIER_IN: in-out parity's vanilla is valued from the block spot forwarded
+        by ``total_log_forward``, in the DECLARED model - Black or the HN closed form
 
     ``Cash_Rebate`` is an ABSOLUTE cash amount, which is how ``pv_barrier_option`` reads it - that
     routine hands the closed form ``cash_rebate/nominal`` and multiplies the result back by nominal.

@@ -31,8 +31,10 @@ tests/_stepper_out*/
 # harnesses themselves stay local.
 /gates/*
 !/gates/wf_smoke_gate.sh
+!/gates/pricer_branch_census.py
 !/gates/golden_worlds.py
 !/gates/boundary_aad_crn.py
+!/gates/fixture_degeneracy.py
 
 # Reference notebooks from Huge & Savine (github.com/differential-machine-learning/notebooks).
 # Third-party work under its own licence - kept locally, not redistributed here.
