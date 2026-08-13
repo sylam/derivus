@@ -26,29 +26,43 @@ WHAT IS ASSERTED, in rising order of how much of the pricer it reaches:
      genuinely independent routes: one gathers the carry curve once at ``tau``, the other gathers it
      at every fixing and integrates over the strip. This is the assertion that would have killed the
      original defect on its own, and it needs no hit, no barrier crossing and no second model.
+  4. The same, on a SLOPED carry curve.
+  5. The strip primitive against its own definition - pure algebra, no pricer.
 
 Assertion (3) is EXACT (``torch.equal``) on a flat curve and it is not a placebo there: ``r = 5%``
 against ``q = 1%`` makes the forward 1.0408 at the first row, not 1.0, so a dropped ``dt`` or a
-spurious half-variance moves it. On a SLOPED carry curve the same assertion fails by 2.85% - a
-second, independent defect that this gate found and did not fix, carried below as a strict xfail
-(``test_payoff_forward_is_wrong_when_the_carry_curve_slopes``) so that fixing it turns this file red
-until the note is retired.
+spurious half-variance moves it.
 
-MUTATION MATRIX (each applied to derivus/pricing.py, run, reverted):
+(4) WAS A STRICT XFAIL: a second, independent defect this gate found and did not fix. The
+per-interval carry was built as ``drifts * sample_ts`` - the AVERAGE rate to a fixing times the
+length of a different, shorter window - which is only the interval integral on a flat curve or at
+the first fixing. Measured 4.276e-02 on this fixture. ``pricing.forward_carry_rate`` now builds the
+strip by differencing the cumulative integrals, which is what the two siblings always did and what
+all FOUR adopters now read; the disagreement is 2.220e-16 and the xfail is a live assertion. In
+PRICE, on a never-knocking barrier against Black on the same sloped world: -20.10% before, +0.045%
+after.
 
-    mutation                                                    1    2    3    4(xfail)
-    (1) total_log_forward drops `times` (the original defect)  DIED  --  DIED    --
-    (2) it sums over the batch axis instead of the fixings     DIED DIED DIED    --
-    (3) already-hit call site scales sample_ts by 1.001         --  DIED   --     --
-    (4) parity call site inlined back to (r + 0.5*sigma^2)      --  DIED DIED    --
-    (4b) parity call site scales carry by 1.001                 --  DIED DIED    --
-    (5) the enumerated fix: strip built by differencing        DIED  --   --   XPASS(strict)
-    (6) the product commuted - must move nothing                --   --   --     --
+MUTATION MATRIX (each applied to derivus/pricing.py or its module globals, run, reverted; all six
+re-measured against the five gates as they stand):
+
+    mutation                                                    1    2    3    4    5
+    (1) total_log_forward drops `times` (the original defect)  DIED  --  DIED DIED DIED
+    (2) it sums over the batch axis instead of the fixings     DIED DIED DIED DIED DIED
+    (3) already-hit call site scales sample_ts by 1.001         --  DIED   --   --    --
+    (4) parity call site scales carry by 1.001                  --  DIED DIED DIED   --
+    (5) forward_carry_rate returns carry_rate (the 2nd defect)  --   --    --  DIED DIED
+    (6) barrier theta passes `drifts` for `fwd_drifts`          --  DIED   --  DIED   --
 
 (1) is the one worth reading twice: both legs share the wrong expression, so gate 2 - the sibling
-gate proper - stays GREEN. Only gate 3, which compares against a route that does not go through the
-helper at all, dies. A consistency gate between two spellings cannot catch a defect they agree on;
-it needs a third route that was never a sibling.
+gate proper - stays GREEN. Only the gates that compare against a route which does not go through
+the helper at all die. A consistency gate between two spellings cannot catch a defect they agree
+on; it needs a third route that was never a sibling.
+
+(5) and (6) are the same lesson at the seam below, and they are why gate 4 exists as its own test
+rather than as a tolerance on gate 3: gate 3 stays GREEN under both, because a FLAT fixture makes
+the wrong strip equal to the right one to within a few ULPs. (6) is caught by gate 2 as well only
+because it desynchronises the two legs - mutate BOTH call sites, as (5) does, and every flat gate
+in this file goes green on a pricer whose simulated E[S_T] is not F(t,T).
 """
 import os
 import sys
@@ -236,26 +250,75 @@ def test_payoff_forward_equals_the_forward_the_surface_is_read_at(monkeypatch):
     assert torch.equal(*_aligned(rows, growth)), _disagreement(rows, growth)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    'LIVE DEFECT, enumerated not fixed: pv_discrete_barrier_option builds its per-interval carry as '
-    'carry_int = drifts * sample_ts (pricing.py, sim_spot_oss), which multiplies the AVERAGE rate '
-    'from t to fixing T_j by the length of the interval ENDING at T_j. That is only the interval '
-    'integral when the carry curve is flat. pv_MC_Tarf and pv_MC_AutoCallSwap both difference the '
-    'cumulative carry instead - (b_j*T_j - b_j-1*T_j-1)/dt - and are correct. Measured 2.85% on the '
-    'first row of this fixture. Fix: build the strip by differencing, after which the sum telescopes '
-    'to b_N*T_N and the disagreement falls to 2.2e-16, which this 1e-12 assertion passes.'))
-def test_payoff_forward_is_wrong_when_the_carry_curve_slopes(monkeypatch):
-    """The same assertion as above on a sloped carry curve. It fails, and the failure is the finding.
+def test_payoff_forward_survives_a_sloped_carry_curve(monkeypatch):
+    """The same assertion on a SLOPED carry curve, which is where the strip's shape is observable.
 
-    Kept strict so that fixing the per-interval carry flips this red-to-green and forces the note to
-    be retired rather than left to rot. The tolerance is 1e-12 rather than exact because the two
-    routes do genuinely different float work once the curve has shape - measured: building the strip
-    by differencing brings the disagreement from 2.85e-2 to 2.22e-16, ten thousand times below the
-    bar and fourteen orders below the defect, so the tolerance cannot launder the defect it is
-    written for. Verified by applying that fix: this test XPASSes, and being strict that is a
-    failure until the reason above is retired."""
+    This was a strict xfail carrying a second, independent defect this file found and did not fix:
+    ``sim_spot_oss`` built its per-interval carry as ``drifts * sample_ts``, multiplying the AVERAGE
+    rate over ``[t, T_j]`` by the length of the interval ENDING at ``T_j``. Those are the same
+    number for the first interval and on a flat curve, and every barrier fixture in this repo is
+    flat, so nothing here could see it. ``pricing.forward_carry_rate`` now builds the strip by
+    DIFFERENCING the cumulative integrals, which is what ``pv_MC_Tarf`` and ``pv_MC_AutoCallSwap``
+    always did, and all four adopters read it from one expression.
+
+    MEASURED on this fixture: the payoff forward ran 4.276e-02 below the reference before, and
+    2.220e-16 after - fourteen orders, and four below the 1e-12 bar, which is why the tolerance
+    cannot launder the defect it is written for. It is a tolerance rather than ``torch.equal``
+    because the two routes genuinely do different float work once the curve has shape: one gathers
+    the curve once at ``tau``, the other gathers at twelve fixings and telescopes.
+
+    THE FORWARD IS NOT THE PRICE, and the strip drives the pricer's own simulation, so the number
+    that settles it is a VALUE against a closed form: a never-knocking ``Down_And_Out`` call on
+    this same sloped world is a European, and against Black at ``F = S*exp(0.065)``, ``DF =
+    exp(-0.07)`` the pricer read **-20.10%** before and **+0.045%** after, at 65536 inner paths.
+    That gate is not here because a Black oracle on a barrier fixture belongs beside the barrier's
+    own suite; this file's job is the consistency statement, which needs no reference value.
+
+    THE MUTATION THAT MUST KILL IT is the defect itself - passing ``drifts`` where ``fwd_drifts``
+    goes at either barrier call site, or making ``forward_carry_rate`` return ``carry_rate``.
+    Verified: 4.276e-02 against a 1e-12 bar."""
     growth, payoff = _run_recording(
         monkeypatch, _cfg('Down_And_In', 40.0, rate=SLOPED_R, div=SLOPED_Q))
     rows = [r for r in payoff if r.dim() == 1]
     payoff_fwd, surface_fwd = _aligned(rows, growth)
+    assert float((payoff_fwd / surface_fwd - 1.0).abs().max()) > 0.0, (
+        'the sloped fixture reproduced the flat one exactly - the curve has no shape and the '
+        'assertion below is the flat-curve gate a second time')
     assert torch.allclose(payoff_fwd, surface_fwd, rtol=1e-12, atol=0.0), _disagreement(rows, growth)
+
+
+def test_the_interval_carry_strip_is_the_difference_of_cumulative_integrals():
+    """``forward_carry_rate`` against the definition, with no pricer and no market data.
+
+    ``carry_rate[j]`` is a ZERO rate at tenor ``T_j``, so the carry over the interval ending there
+    is ``(c_j*T_j - c_{j-1}*T_{j-1}) / dt_j``, and its integral summed over the strip telescopes to
+    ``c_N*T_N`` - ONE gather at expiry. Both statements are asserted, the second being what makes
+    ``total_log_forward`` of this strip the forward the vol surface is read at.
+
+    The first interval is the one place where the wrong expression is right (the cumulative window
+    IS the interval), which is why a single-fixing fixture cannot see the defect; the flat-curve row
+    is why no fixture in this repo could either. Both degeneracies are asserted so that a fixture
+    built on either one is recognisable as a placebo."""
+    g = torch.Generator().manual_seed(11)
+    dt = torch.rand(4, 6, generator=g, dtype=DTYPE) * 0.3 + 0.05
+    cum_t = dt.cumsum(dim=-1)
+    carry = torch.rand(4, 6, 3, generator=g, dtype=DTYPE) * 0.08 - 0.02
+
+    strip = pricing.forward_carry_rate(carry, cum_t, dt)
+    integral = carry * cum_t.unsqueeze(-1)
+    assert torch.equal(strip[..., 0, :], carry[..., 0, :])
+    # rtol, not exact: the strip is a RATE, so re-multiplying by dt is a division round trip
+    assert torch.allclose(strip[..., 1:, :] * dt[..., 1:].unsqueeze(-1),
+                          integral.diff(dim=-2), rtol=1e-14, atol=0)
+    # the sum telescopes to the last cumulative integral - the whole point of the shared strip
+    assert torch.allclose(pricing.total_log_forward(strip, dt), integral[..., -1, :],
+                          rtol=1e-14, atol=0)
+    # and on a FLAT curve the defect's expression is exactly right, which is the blindness - but
+    # NOT bitwise: differencing amplifies the rounding of a cumulative time by T_j/dt_j, so a flat
+    # fixture moves in the last bits and cannot be gated with torch.equal. Measured 5.0 eps here
+    # and 6.0 eps on the engine's monthly ACT/365 strip, against the bound below.
+    flat = torch.full_like(carry, 0.037)
+    rel = (pricing.forward_carry_rate(flat, cum_t, dt) / flat - 1.0).abs()
+    bound = torch.finfo(DTYPE).eps * (cum_t / dt).max()
+    assert float(rel.max()) <= float(bound), '%.3e against the T/dt bound %.3e' % (
+        float(rel.max()), float(bound))

@@ -53,15 +53,17 @@ MUTATION MATRIX (applied to the current tree's source, scanned, discarded):
     (9)  CONTROL: a legitimate `carry * step_years`                     KILLED - the vocabulary cost
     (10) the sloped-carry strip: `carry * dt` vs differencing           SURVIVED - see below
     (11) total_log_forward's OWN body drops `times`                     SURVIVED - see below
-    (12) pv_MC_Tarf's fwd_carry stops differencing the integrals        SURVIVED - see below
+    (12) forward_carry_rate returns its `carry_rate` undifferenced      SURVIVED - see below
 
 WHAT IT CANNOT SEE, stated so nobody trusts it further than it goes:
 
   * VALUE errors that keep the units. (10) and (12) are the same shape - the interval carry built as
     ``b(T_j) * dt_j`` rather than ``b(T_j)T_j - b(T_j-1)T_j-1``, correct only on a flat curve. Both
-    spellings are a rate times a time, so no units check can separate them. That defect is live in
-    ``sim_spot_oss``, enumerated and pinned by a CONSISTENCY assertion in
-    ``test_sibling_forward_agreement.py``, which is the right instrument for it.
+    spellings are a rate times a time, so no units check can separate them. That defect WAS live in
+    ``sim_spot_oss`` and worth -20.10% of a never-knocking barrier on a sloped curve; it is now
+    ``pricing.forward_carry_rate``, and it is pinned by a CONSISTENCY assertion in
+    ``test_sibling_forward_agreement.py``, which is the right instrument for it. This gate is blind
+    to it either way, and that is why the two live side by side.
   * ``total_log_forward`` itself: it is the discharger, so the gate stops at its call. Its body is
     held by ``test_total_log_forward_is_rank_polymorphic``'s einsum assertion instead.
   * The mirror error - integrating twice. No site in the tree binds a carry-vocabulary name from an
@@ -74,9 +76,9 @@ import os
 PKG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'derivus')
 
 RATE_GATHERS = {'calc_eq_drift', 'calc_fx_drift', 'gather_weighted_curve'}
-CARRY_VOCAB = {'carry', 'carry_rate', 'carry_rates', 'drifts'}
+CARRY_VOCAB = {'carry', 'carry_rate', 'carry_rates', 'drifts', 'fwd_drifts'}
 TIME_NAMES = {'dt', 'times', 'sample_ts', 'delta_t', 'full_t', 'fixing_t', 'tau', 'expiry',
-              'expiry_years', 'T_t_years', 'tenor_in_days', 'year_frac', 'rem_exp'}
+              'expiry_years', 'T_t_years', 'tenor_in_days', 'year_frac', 'rem_exp', 'cum_t'}
 FACTORY_ATTRS = {'new', 'new_tensor', 'new_zeros', 'new_ones', 'new_empty', 'new_full',
                  'zeros_like', 'ones_like', 'empty_like', 'full_like',
                  'shape', 'dtype', 'device', 'size', 'numel', 'dim'}

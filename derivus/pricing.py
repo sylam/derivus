@@ -93,13 +93,50 @@ def calc_moneyness(strike, spot, forward, deal_data, use_forward=False, invert_m
         return strike / forward_or_spot if invert_moneyness else forward_or_spot / strike
 
 
+def forward_carry_rate(carry_rate, cum_t, dt):
+    """The annualised carry over EACH fixing INTERVAL, from zero rates read at the fixing tenors.
+
+    ``carry_rate[j]`` is what ``calc_eq_drift``/``calc_fx_drift`` return with
+    ``multiply_by_time=False``: the curve gathered AT tenor ``T_j``, which is an AVERAGE over
+    ``[t, T_j]`` measured from the valuation row. The carry over the interval ENDING at ``T_j`` is
+    therefore a DIFFERENCE OF CUMULATIVE INTEGRALS, ``(c_j*T_j - c_{j-1}*T_{j-1}) / dt_j``, and not
+    ``c_j`` - the two agree only for the FIRST interval, where the cumulative window IS the
+    interval, and on a FLAT curve. Both degeneracies hold in every barrier fixture in this repo,
+    which is why ``pv_discrete_barrier_option`` multiplied one window's average by another window's
+    length for as long as it existed while ``pv_MC_Tarf`` and ``pv_MC_AutoCallSwap`` differenced.
+    Measured on a 2%->5% curve with quarterly fixings, the strip's total ran -1.12% on the forward
+    factor; on this repo's own sloped fixture the forward to expiry ran -4.28%.
+
+    All FOUR adopters now read the strip from here - ``sim_spot_oss``, ``pv_MC_Tarf``, and both
+    branches of ``pv_MC_AutoCallSwap``, the averaging one having its own ``carry * dt`` that the
+    defect report did not name - so the drift of their simulations and the forward their
+    closed-form legs are valued at cannot be spelled differently again. Summing the strip
+    telescopes to ``c_N*T_N`` - see ``total_log_forward``, which is that sum.
+
+    Rank-polymorphic on the same rule as ``total_log_forward``: ``[N_fix, batch]`` for one MTM row
+    and ``[N_block, N_fix, batch]`` for a whole block, with ``cum_t`` and ``dt`` carrying no batch
+    axis. A ZERO-LENGTH interval is a fixing the row has already observed and every caller skips
+    it, so it divides by one rather than by zero - which keeps the unread entries out of the
+    backward pass as well as the forward one.
+
+    A FLAT curve does NOT come back bit-identical, and no gate on this may be written with
+    ``torch.equal``: differencing amplifies the rounding of a cumulative time by ``T_j/dt_j``,
+    measured at 6 eps on the engine's monthly ACT/365 strip against that bound of 12.
+    """
+    cum = carry_rate * cum_t.unsqueeze(-1)
+    step = dt[..., 1:].unsqueeze(-1)
+    return torch.cat([carry_rate[..., :1, :], cum.diff(dim=-2) /
+                      torch.where(step > 0, step, torch.ones_like(step))], dim=-2)
+
+
 def total_log_forward(carry_rate, times):
     """``log F(t,T) / S(t)``: the carry integrated over a fixing strip.
 
-    THE forward to expiry, for every leg that needs one. ``carry_rate`` is the annualised r-q per
-    fixing (``calc_eq_drift``/``calc_fx_drift`` with ``multiply_by_time=False``) and ``times`` the
-    year-fraction of each fixing INTERVAL, so the integral is their product summed over the fixing
-    axis - the axis ``times`` names by carrying no batch dimension. Rank-polymorphic on purpose:
+    THE forward to expiry, for every leg that needs one. ``carry_rate`` is the annualised carry per
+    fixing INTERVAL - what ``forward_carry_rate`` builds, NOT the raw zero rates the curve is
+    gathered at - and ``times`` the year-fraction of each interval, so the integral is their
+    product summed over the fixing axis, the axis ``times`` names by carrying no batch dimension.
+    That sum telescopes to ``c_N*T_N``, one gather at expiry. Rank-polymorphic on purpose:
     ``[N_fix, batch]`` for one MTM row and ``[N_block, N_fix, batch]`` for a whole block are the
     same expression, so the leg that values one row and the leg that values the block cannot spell
     it differently.
@@ -936,6 +973,13 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     worth -0.025% of EPE. The floor's variance leak is untouched and still there: a zero-length
     interval is simulated with 1% of lognormal vol.
 
+    AND THAT FORWARD IS BUILT FROM INTERVAL CARRY, which is the seam's other half and was the
+    defect one layer down: the strip handed in is ``forward_carry_rate``'s, not the zero rates the
+    curve is gathered at, so ``carry * dt`` is an interval integral rather than one window's
+    average times another window's length. It drives ``drift``, so on a sloped curve the OSS
+    simulation's own ``E[S_T]`` was not ``F(t,T)`` either - measured -4.28% on the repo's sloped
+    fixture, exactly 0 on every flat one, which is why no fixture here had ever seen it.
+
     AND THE VOL STRIP IS NOT BUILT UNDER HN, as in ``pv_MC_Tarf``. Nothing correct reads the implied
     surface under a non-GBM spot model - the OSS steps the recursion, the already-hit leg is the same
     closed form, and quanto/compo (the third reader, ``Check_Payoff_Type``) is refused at compile
@@ -1023,8 +1067,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         if hn:
             *hn_params, H0 = hn_scalars
 
-        # per-interval carry: [N_block, N_fix, batch]. GBM folds it with the vol into a single
-        # drift/vol per interval; HN keeps the RAW carry (the daily recursion supplies variance).
+        # `carry` is the INTERVAL carry rate (forward_carry_rate), so this product is the interval
+        # integral. GBM folds it with the vol; HN keeps it raw (its recursion supplies variance).
         dt = times.unsqueeze(axis=2)                        # [N_block, N_fix, 1]
         carry_int = carry * dt                              # [N_block, N_fix, batch]
         if not hn:
@@ -1315,6 +1359,9 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
         sample_ts = drifts.new(
             np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)]))
+        # the carry over each INTERVAL, which is not the zero carry to each fixing (see
+        # forward_carry_rate); `fixing_block` is the cumulative strip the difference needs
+        fwd_drifts = forward_carry_rate(drifts, drifts.new(fixing_block), sample_ts)
 
         # discount rates per fixing: [N_block, N_fix, batch]
         discount_rates = utils.calc_discount_rate(discount_block, fixings, shared)
@@ -1328,7 +1375,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             if direction == BARRIER_IN:
                 # ONE forward, shared with the in-out-parity leg inside sim_spot_oss - the two
                 # value the same European on the same state, so they read one expression
-                log_fwd = total_log_forward(drifts, sample_ts)                  # [N_block, batch]
+                log_fwd = total_log_forward(fwd_drifts, sample_ts)              # [N_block, batch]
                 if hn:
                     # an already-knocked-in KI IS a vanilla, and it is priced under the DECLARED
                     # model on the parity leg's own discretisation - same per-row n_total, same
@@ -1376,7 +1423,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             theo_cashflow = hit_value
         else:
             simulate = partial(sim_spot_oss, sample_index_t, sobol, shared.MCMC_sims)
-            theta = (spot_block, vols, sample_ts, drifts, discount_rates) + (
+            theta = (spot_block, vols, sample_ts, fwd_drifts, discount_rates) + (
                 tuple(hn_params) + (H0,) if hn else ())
             # the SAME callable either way: under the node it is called twice (see InnerMCRecompute)
             oss_result, = InnerMCRecompute.run(shared, simulate, *theta)
@@ -2063,14 +2110,14 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             N_otm = notional2
             # Iterate over fixings within this block using your “coupon_index”-like stepper
             for j in range(reduced_samples):
-                # dt and forward-carry consistent with your autocall code
+                # `carry` arrives as the INTERVAL strip (forward_carry_rate); the VOL strip is
+                # still differenced here, `full_t` being the tenor its surface was read at
                 dt = delta_t[j]
                 Dj = D[j].reshape(-1, 1)
                 use_past_fixing = False
 
                 if dt > 0:
-                    fwd_carry = ((carry_rate[j] * full_t[j] - carry_rate[j - 1] * full_t[j - 1]) / dt
-                                 if j > 0 else carry_rate[j]).reshape(-1, 1)  # [batch,1]
+                    fwd_carry = carry_rate[j].reshape(-1, 1)  # [batch,1]
                     if not hn:
                         safe_fwd_vol = (full_t[j] * vols[j] ** 2 - full_t[j - 1] * vols[j - 1] ** 2).clamp(min=eps)
                         fwd_vol = (torch.sqrt(safe_fwd_vol/dt) if j > 0 else vols[j]).T
@@ -2287,9 +2334,13 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         vols = torch.stack([forward_vols(*row) for row in zip(
             spot_block, drifts, sample_ts, fixing_block)]) if not hn else spot_block.new_empty(0)
 
+        # the interval carry strip, built where its two siblings build theirs (forward_carry_rate);
+        # `forward_vols` above wants the ZERO carry, being a cumulative forward to each tenor
+        fwd_drifts = forward_carry_rate(drifts, drifts.new(fixing_block), sample_ts)
+
         simulate = partial(sim_spot_tarf, fixing_block, settlement, sobol, shared.MCMC_sims)
-        theta = (spot_block, sample_ts, drifts, accumulation[settle_index_local], discount_rates,
-                 vols, all_samples) + (tuple(hn_params) + (H0,) if hn else ())
+        theta = (spot_block, sample_ts, fwd_drifts, accumulation[settle_index_local],
+                 discount_rates, vols, all_samples) + (tuple(hn_params) + (H0,) if hn else ())
         # the SAME callable either way: under the node it is called twice (see InnerMCRecompute)
         outputs = InnerMCRecompute.run(shared, simulate, *theta)
         block_mtm, block_alive, block_settled, settle_rows, knock_rows = outputs[:5]
@@ -2412,7 +2463,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
         return mtm_list.mean(axis=2)
 
-    def sim_spot(offset, times, fixings, t_tenor, last_fixing, sobol, num_sims,
+    def sim_spot(offset, times, t_tenor, last_fixing, sobol, num_sims,
                  spot_prices, vols, carry, terminationDate, discount_rates, floating_leg,
                  past_fixings, *hn_scalars):
         """
@@ -2463,8 +2514,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             eps = torch.finfo(shared.one.dtype).eps
             fx = isQuanto * (fixFXRate - 1.0) + 1.0
             mcmc = []
-            for i, (tau, df, s, v, carry_rate, delta_t, full_t, floating) in enumerate(zip(
-                    t_tenor, discount_rates, spot_prices, vols, carry, times, fixings, floating_leg)):
+            for i, (tau, df, s, v, carry_rate, delta_t, floating) in enumerate(zip(
+                    t_tenor, discount_rates, spot_prices, vols, carry, times, floating_leg)):
 
                 reduced_samples = len(delta_t)
                 # reduced samples can be zero if there's just the floating leg left
@@ -2511,9 +2562,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         K = thresh * strike
                         dt = delta_t[coupon_index] if fixing_aligned else 0.0
                         if dt > 0:
-                            forward_carry = ((carry_rate[coupon_index] * full_t[coupon_index] -
-                            carry_rate[coupon_index - 1] * full_t[coupon_index - 1]) / delta_t[coupon_index] \
-                                if coupon_index > 0 else carry_rate[coupon_index]).reshape(-1, 1)
+                            # `carry` arrives as the INTERVAL carry strip (forward_carry_rate)
+                            forward_carry = carry_rate[coupon_index].reshape(-1, 1)
                             if hn:
                                 # HN daily sub-stepping to the coupon date (autocall knocks out only
                                 # AT the coupon observation, so the OSS truncation - survival = spot
@@ -2790,9 +2840,13 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 last_fixing = None if fixing_index == eq_start_index[index] else fixing_index
             else:
                 last_fixing = None
-            simulate = partial(sim_spot, sample_index_t, sample_ts, fixing_block,
+            # the interval carry strip, built where its two siblings build theirs - which is also
+            # what puts the AVERAGING branch's `carry * dt` on an interval integral
+            fwd_drifts = forward_carry_rate(
+                drifts, drifts.new(fixing_block), sample_ts) if fixing_block.any() else drifts
+            simulate = partial(sim_spot, sample_index_t, sample_ts,
                                all_fixings[:, 0], last_fixing, sobol, shared.MCMC_sims)
-            theta = (spot_block, vols, drifts, terminationDate, discount_rates, floating_leg,
+            theta = (spot_block, vols, fwd_drifts, terminationDate, discount_rates, floating_leg,
                      all_eq_samples if factor_dep['no_averaging'] else spot_block.new_empty(0)
                      ) + (tuple(hn_params) + (H0,) if hn else ())
             # the SAME callable either way: under the node it is called twice (see InnerMCRecompute)
