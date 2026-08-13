@@ -187,6 +187,17 @@
                     "Calendar": "",
                     "Business_Days_In_Year": 252
                 }
+            },
+            "QuadraticCarryCurveModel": {
+                "ID": "",
+                "Method": "QuadraticCarryCurveCalibration",
+                "Nu_Min": 3.0,
+                "Nu_Max": 50.0,
+                "Data_Retrieval_Parameters": {
+                    "Frequency": "1d",
+                    "Calendar": "",
+                    "Business_Days_In_Year": 252
+                }
             }
         },
         "BootstrappingPriceFactorSelections": {

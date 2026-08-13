@@ -191,6 +191,89 @@ def garch11_t_mle(x):
     return float(omega), float(alpha), float(beta), float(nu), h, se
 
 
+def arx1_t_mle(equations, nu_bounds=(3.0, 50.0)):
+    """Joint MLE of a SYSTEM of AR(1)/ARX(1) equations sharing one Student-t degrees of freedom:
+
+        y_t = mu + phi(y_{t-1} - mu) + gamma*x_t + sigma*e_t,   e_t ~ standardised t_nu (unit var)
+
+    `equations` is `[(y, x), ...]`, `x` None for a plain AR(1) and otherwise aligned to the TARGET
+    rows (`len(x) == len(y) - 1`), so a same-step regressor is `np.diff(other)`. Returns
+    `([(phi, mu, sigma, gamma, standardised_resid), ...], nu, se)` with `sigma` the innovation
+    STANDARD DEVIATION - the model's own convention, and NOT the raw t scale, which is smaller by
+    sqrt((nu-2)/nu) and is what a t fit usually reports.
+
+    ONE nu, fitted jointly, because the process it calibrates draws ONE chi2 per step and shares it
+    across its factors: the innovation vector is an elliptical multivariate t rather than t
+    marginals under a Gaussian copula. Fitting the marginals separately and reconciling their two
+    nu's afterwards would estimate a model nobody wrote.
+
+    scipy L-BFGS-B on the exact log-likelihood from an OLS start, with asymptotic standard errors
+    from a central-difference numerical Hessian (per-coordinate step, since phi ~ 1 and nu ~ 5
+    differ by orders of magnitude) - the construction `garch11_t_mle` uses.
+
+    ONE caller today, and the sibling it does not absorb is named on purpose:
+    `BasisLinkedSpotCalibration` fits `b(t) = a*dS + phi*b(t-1) + eta` - an ARX(1) with a Student-t
+    innovation, i.e. exactly this estimator - by OLS plus a moment-matched nu. Moving it here would
+    change every number in the shipped basis block and in the platinum world calibrated from it,
+    which is a revalidation event and not a refactor."""
+    from scipy.optimize import minimize
+    from scipy.special import gammaln
+
+    prepared, th0, bounds = [], [], []
+    for y, x in equations:
+        y = np.asarray(y, dtype=np.float64)
+        design = np.column_stack([np.ones(y.size - 1), y[:-1]] + ([] if x is None else [x]))
+        ols = np.linalg.lstsq(design, y[1:], rcond=None)[0]
+        prepared.append((y[1:], y[:-1], x))
+        th0 += [ols[1], ols[0] / (1.0 - ols[1]), np.log((y[1:] - design @ ols).std())]
+        bounds += [(-0.9999, 0.9999), (None, None), (None, None)]
+        if x is not None:
+            th0.append(ols[2])
+            bounds.append((None, None))
+    starts = np.cumsum([0] + [3 + (x is not None) for _, _, x in prepared])
+    th0.append(min(max(6.0, nu_bounds[0]), nu_bounds[1]))
+    bounds.append(nu_bounds)
+
+    def residual(th, i):
+        y1, y0, x = prepared[i]
+        phi, mu, log_s = th[starts[i]:starts[i] + 3]
+        e = y1 - (mu + phi * (y0 - mu))
+        return (e if x is None else e - th[starts[i] + 3] * x), np.exp(log_s)
+
+    def negll(th):
+        nu, ne = th[-1], th[-1] - 2.0
+        const = gammaln((nu + 1) / 2) - gammaln(nu / 2) - 0.5 * np.log(ne * np.pi)
+        out = 0.0
+        for i in range(len(prepared)):
+            e, sigma = residual(th, i)
+            out -= (const - np.log(sigma)
+                    - (nu + 1) / 2 * np.log1p(e * e / (sigma * sigma * ne))).sum()
+        return out
+
+    th = minimize(negll, np.array(th0), method='L-BFGS-B', bounds=bounds,
+                  options={'maxiter': 4000, 'ftol': 1e-14, 'gtol': 1e-10}).x
+    n = th.size
+    step = 1.0e-5 * (np.abs(th) + 1.0e-3)
+    H = np.zeros((n, n))
+    for i in range(n):
+        for j in range(i, n):
+            ei, ej = np.zeros(n), np.zeros(n)
+            ei[i], ej[j] = step[i], step[j]
+            H[i, j] = H[j, i] = (negll(th + ei + ej) - negll(th + ei - ej)
+                                 - negll(th - ei + ej) + negll(th - ei - ej)) / (4 * step[i] * step[j])
+    se = np.sqrt(np.abs(np.diag(np.linalg.inv(H))))
+    fits = []
+    for i, (_, _, x) in enumerate(prepared):
+        e, sigma = residual(th, i)
+        phi, mu = th[starts[i]], th[starts[i] + 1]
+        gamma = float(th[starts[i] + 3]) if x is not None else 0.0
+        fits.append((float(phi), float(mu), float(sigma), gamma, e / sigma))
+    return fits, float(th[-1]), {
+        'phi': [float(se[s]) for s in starts[:-1]], 'nu': float(se[-1]),
+        'gamma': [float(se[s + 3]) if x is not None else 0.0
+                  for s, (_, _, x) in zip(starts[:-1], prepared)]}
+
+
 # State-reveal tags for `reveal_state_at`: a CONTINUOUS segment is a first-order-differentiable
 # risk factor (the diff-PCA pool); a SUFFICIENT segment is a minimal sufficient statistic (regime
 # belief) revealed verbatim, bypassing PCA.
@@ -4334,6 +4417,329 @@ class VARMixedFactorInterestRateCalibration(object):
         correlation_coef = np.eye(3).tolist()
 
         return utils.CalibrationInfo(param, correlation_coef, delta)
+
+
+class QuadraticCarryCurveModel(StochasticProcess):
+    """Two-factor continuous carry curve on a `ForwardRate` factor. The quadratic log-futures curve
+
+        F(t,T) = S(t)·exp(c(t)·τ + a(t)·τ²),    τ = (T − t) / DAYS_IN_YEAR
+
+    is carried as the AVERAGE CARRY TO MATURITY, z(t,τ) = (c·τ + a·τ²)/τ = c + a·τ, because that is
+    the quantity `utils.DerivedForwardCurve` already prices off: it gathers the carry curve at the
+    query DATE with `multiply_by_time=False` and multiplies by τ, so a curve holding z reproduces
+    the quadratic through ZERO new read code. z is AFFINE in τ and the gather interpolates linearly
+    in the query date — affine in τ at a fixed row — so TWO knots reproduce the whole curve exactly
+    between them, and the three listed futures that identified it come back to float precision.
+
+    NOT beyond them. `utils.CurveTenor.get_index` CLIPS a query to [first knot, last knot], so the
+    read outside the bracket is FLAT in z, i.e. the log-carry continues LINEARLY rather than
+    quadratically. Measured on S=950, c=0.0163, a=−0.0011 with knots at τ = 0.5 and 1.0: exact to
+    0 ULP for τ ∈ [0.5, 1.0], −2.5e−5 relative at τ = 0.05 and +8.3e−4 at τ = 1.5. The knots are
+    DATES and the clip is in date space, so the rule the market data has to honour is: the first
+    knot at or before the base date, the last at or after the longest fixing — then every (row
+    date, query date) pair the book reaches is inside. They are the FACTOR's own knots and this
+    process never chooses them; it publishes z at whatever τ each has aged to, negative τ included,
+    which is a perfectly good value of an affine function and is what keeps the live reads exact.
+
+    STATE. The polynomial coefficients are ill-conditioned (ρ(Δc,Δa) ≈ −0.96 on three nearby
+    maturities: curvature and front slope trade off to hold the same observed futures), so the
+    driven pair is the level/shape rotation at the declared `Reference_Tenors` τ_A < τ_B:
+
+        L = (z(τ_A) + z(τ_B))/2      the carry LEVEL, mid-tenor average carry
+        D =  z(τ_B) − z(τ_A)         the carry SHAPE, the knot spread
+
+    invertibly, with τ̄ = (τ_A+τ_B)/2 and Δτ = τ_B−τ_A:
+
+        z(τ) = L + D·(τ − τ̄)/Δτ,     a = D/Δτ,   c = L − D·τ̄/Δτ
+
+    At the shipped τ_A, τ_B = 0.5, 1.0 that is L = c + 0.75a and D = 0.5a — the handover's
+    carry-level and carry-shape factors, and the two archive columns' mean and difference.
+
+    NO HIDDEN STATE, and that is the whole reason the fork verbs are inert here. The published
+    curve IS the state: `precalculate` recovers (L,D) from the initial curve `tensor` by the same
+    affine map, so the inner-MC fork (whose init is the outer path's curve at the fork row), the
+    diff-ML burn-in (whose init is the terminal curve) and the observed-path replay all carry the
+    state without a single private buffer key. A declared `L_0`/`D_0` pair would be a SECOND source
+    for a number the factor already holds, and the market curve has to win — row 0 is published as
+    `tensor` itself, so the t=0 forwards are the market's own.
+
+    DYNAMICS per step, on the framework-correlated Z and one internal chi²:
+
+        L_t = μ_L + φ_L(L_{t-1} − μ_L) + σ_L·ε^L_t
+        D_t = μ_D + φ_D(D_{t-1} − μ_D) + Γ·(L_t − L_{t-1}) + σ_D·ε^D_t
+
+    ΔL is the SAME step's level change — known once L_t is drawn, so this is a contemporaneous
+    loading and not a lookahead; reading L_{t+1} − L_t would need the next step's draw. ONE
+    Chi²(ν) is drawn per (step, path) and SHARED by both factors, so (ε^L, ε^D) is an elliptical
+    bivariate t rather than two t marginals under a Gaussian copula — which is what the data shows,
+    the largest ΔL days being the largest ΔD days.
+
+    Γ AND THE DECLARED L/D CORRELATION ARE THE SAME COUPLING, twice: the one-step covariance is
+    Cov(ΔL, ΔD) = Γ·σ_L² + ρ·σ_L·σ_D, one equation in two unknowns, and no fit can separate them.
+    That is not a defect and it is not double counting — the calibration fits Γ on the conditional
+    mean and hands the framework the RESIDUAL correlation, so the two always sum to the observed
+    covariance and only their split moves. It does move: the sample's own Γ swings from −0.019 to
+    −0.45 with the tail weight of the likelihood while ρ walks the other way, −0.22 to −0.06, which
+    makes Γ the one number in this block a reader must not interpret on its own.
+
+    THE CLOCK. φ and σ are calibrated per `Calibration_DT_Years` step while the sim grid runs in
+    calendar time, so a step of length f = dt/dt_c takes φ_f = φ^f and σ_f = σ·√((1−φ_f²)/(1−φ²)):
+    the exact stationary AR(1) aggregation, which makes the reversion RATE and the stationary
+    variance grid-invariant and degrades to the random-walk σ·√f as φ → 1. Γ is not rescaled — it
+    loads on whatever ΔL the step produced, exact at f = 1.
+
+    A MODELLING CAVEAT WITH A NUMBER. φ_L is a NEAR-UNIT ROOT (0.9962 fitted, 2.3 s.e. from 1), so
+    nothing may lean on carry reversion for value: over three months the conditional mean gives up
+    only 1 − φ^63 ≈ 19% of a level deviation, and the level is statistically indistinguishable from
+    a random walk. `tests/test_quadratic_carry_curve.py` holds that as a gate rather than a note.
+
+    JSON config:
+        Phi_L, Mu_L, Sigma_L: AR(1) coefficient, long-run mean and innovation STD of the level.
+        Phi_D, Mu_D, Sigma_D: the same for the shape.
+        Gamma: loading of the shape on the same step's level change.
+        Nu: Student-t degrees of freedom, shared by both factors (> 2).
+        Reference_Tenors: [τ_A, τ_B] in years — the tenors (L, D) are defined at.
+        Calibration_DT_Years: step size (in years) of the calibrated recursions."""
+
+    documentation = (
+        'Energy Pricing',
+        ['A two-factor continuous carry curve for a commodity futures curve. The quadratic '
+         'log-futures curve $F(t,T) = S_t\\exp(c_t\\tau + a_t\\tau^2)$ is carried as the average '
+         'carry to maturity',
+         '',
+         '$$ z(t,\\tau) = \\frac{c_t\\tau + a_t\\tau^2}{\\tau} = c_t + a_t\\tau, \\qquad '
+         '\\log F(t,T) = \\log S_t + z(t,\\tau)\\,\\tau $$',
+         '',
+         'which is affine in $\\tau$, so two curve knots reproduce the whole quadratic exactly '
+         'between them and the forward-curve reader needs no new code. The driven state is the '
+         'well-conditioned level/shape rotation at two reference tenors $\\tau_A<\\tau_B$ '
+         '(the raw polynomial coefficients have $\\rho(\\Delta c,\\Delta a)\\approx-0.96$):',
+         '',
+         '$$ L = \\tfrac{1}{2}(z(\\tau_A)+z(\\tau_B)), \\quad D = z(\\tau_B)-z(\\tau_A), \\quad '
+         'z(\\tau) = L + D\\frac{\\tau-\\bar\\tau}{\\Delta\\tau} $$',
+         '',
+         'with dynamics',
+         '',
+         '$$ L_t = \\mu_L + \\phi_L(L_{t-1}-\\mu_L) + \\sigma_L\\varepsilon^L_t $$',
+         '$$ D_t = \\mu_D + \\phi_D(D_{t-1}-\\mu_D) + \\Gamma(L_t-L_{t-1}) + '
+         '\\sigma_D\\varepsilon^D_t $$',
+         '',
+         'where $(\\varepsilon^L,\\varepsilon^D)$ is a standardised bivariate Student-t: the '
+         'framework supplies the correlated Gaussians and ONE $\\chi^2(\\nu)$ per step is shared '
+         'by both factors, so the tails are jointly heavy rather than independently so.',
+         '',
+         '- **Phi_L, Mu_L, Sigma_L**: level AR(1) coefficient, mean and innovation std.',
+         '- **Phi_D, Mu_D, Sigma_D**: the same for the shape.',
+         '- **Gamma**: shape loading on the same step\'s level change.',
+         '- **Nu**: Student-t degrees of freedom, shared by both factors.',
+         '- **Reference_Tenors**: the two tenors (years) L and D are defined at.',
+         '- **Calibration_DT_Years**: step size (in years) of the calibrated recursions.'])
+
+    factor_types = ('ForwardRate',)
+    fields = [
+        F('Phi_L', 'Float', default=0.0, description='AR(1) coefficient of the carry level'),
+        F('Mu_L', 'Float', default=0.0, description='Long-run mean of the carry level'),
+        F('Sigma_L', 'Float', default=0.0,
+          description='Innovation standard deviation of the carry level'),
+        F('Phi_D', 'Float', default=0.0, description='AR(1) coefficient of the carry shape'),
+        F('Mu_D', 'Float', default=0.0, description='Long-run mean of the carry shape'),
+        F('Sigma_D', 'Float', default=0.0,
+          description='Innovation standard deviation of the carry shape'),
+        F('Gamma', 'Float', default=0.0,
+          description='Loading of the carry shape on the same step\'s change in the level'),
+        F('Nu', 'Float', default=5.0,
+          description='Student-t degrees of freedom (> 2), shared by both factors'),
+        F('Reference_Tenors', 'Container', default=[0.5, 1.0],
+          description='The two tenors (in years) the level and shape are defined at - z(tau_A) '
+                      'and z(tau_B) - stamped from the archive column sub-keys'),
+        F('Calibration_DT_Years', 'Float', default=1.0 / 252.0,
+          description='Step size (in years) of the calibrated AR(1) recursions')
+    ]
+
+    def __init__(self, factor, param, implied_factor=None):
+        super().__init__(factor, param)
+        # 0 <= phi < 1 rather than |phi| < 1: the fractional-step aggregation below is phi^f, which
+        # has no real value for a negative coefficient, and neither carry factor is anti-persistent.
+        assert (0.0 <= param['Phi_L'] < 1.0 and 0.0 <= param['Phi_D'] < 1.0 and param['Nu'] > 2.0
+                and param['Sigma_L'] > 0.0 and param['Sigma_D'] > 0.0), \
+            f'QuadraticCarryCurveModel invalid params: {param}'
+
+    @staticmethod
+    def num_factors():
+        return 2
+
+    @property
+    def correlation_name(self):
+        return 'QuadraticCarryCurveProcess', [('L',), ('D',)]
+
+    def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
+        """
+        Age the factor's dated knots onto the sim grid, rescale the recursions to it, and recover
+        the initial (L, D) from the initial curve.
+
+        `k[t]` is the knot's shape coordinate (τ − τ̄)/Δτ at row t, so a published row is
+        `L + D·k[t]` — one expression covering the interpolation between the knots and the
+        extrapolation of a knot whose date the simulation has passed (τ < 0, which is a perfectly
+        good value of an affine function and is what keeps the read exact for live query dates).
+
+        The per-step AR coefficients are anchored at `time_grid_years[0]`, so the step lengths are
+        right under both outer mode (row 0 at the base date) and an inner-MC fork (row 0 at the
+        fork date, its own `ref_date`).
+
+        AAD: the recovery is a matmul by a CONSTANT 2x2, so ∂(published curve)/∂(market curve)
+        flows without a solve; `tensor` is stored unreshaped so inner MC can pass `(2, B)`.
+        """
+        self.z_offset = process_ofs
+        self.scenario_horizon = time_grid.scen_time_grid.size
+        knots = np.asarray(self.factor.get_tenor(), dtype=np.float64)
+        if knots.size != 2:
+            raise ValueError(
+                f'QuadraticCarryCurveModel needs exactly 2 curve knots holding the average carry '
+                f'z(tau) = c + a*tau (they identify the quadratic and must BRACKET the tenors the '
+                f'book prices); the factor declares {knots.size}.')
+
+        tau_a, tau_b = (float(x) for x in self.param['Reference_Tenors'])
+        excel_offset = (ref_date - utils.excel_offset).days
+        tau = (knots.reshape(1, -1) - (time_grid.scen_time_grid + excel_offset).reshape(-1, 1)
+               ) / utils.DAYS_IN_YEAR                                        # (T, 2) ageing knots
+        k = (tau - 0.5 * (tau_a + tau_b)) / (tau_b - tau_a)                  # (T, 2) shape coords
+        self.k = shared.one.new_tensor(k)
+
+        # Exact stationary AR(1) aggregation to a step of f calibration steps.
+        tg_years = time_grid.time_grid_years
+        f = np.diff(np.hstack(([tg_years[0]], tg_years))) / float(self.param['Calibration_DT_Years'])
+
+        def _ar(phi, sigma):
+            phi_f = phi ** f
+            return (shared.one.new_tensor(phi_f),
+                    shared.one.new_tensor(sigma * np.sqrt((1.0 - phi_f * phi_f) / (1.0 - phi * phi))))
+
+        self.phi_L, self.sig_L = _ar(float(self.param['Phi_L']), float(self.param['Sigma_L']))
+        self.phi_D, self.sig_D = _ar(float(self.param['Phi_D']), float(self.param['Sigma_D']))
+        self.mu_L = float(self.param['Mu_L'])
+        self.mu_D = float(self.param['Mu_D'])
+        self.gamma = float(self.param['Gamma'])
+        self.nu = float(self.param['Nu'])
+
+        # (L, D) from the initial curve: z = M @ (L, D) with M = [[1, k], ...] at row 0.
+        self.z0 = tensor
+        self.state0 = shared.one.new_tensor(
+            np.linalg.inv(np.column_stack([np.ones(2), k[0]]))) @ tensor
+
+    def generate(self, shared_mem):
+        """
+        Simulate the two carry factors and publish the curve they imply; Z is (2, T, B) outer and
+        (2, T, B, B2) inner.
+
+        ONE loop covers both modes — every expression broadcasts, and only the initial state needs
+        the mode, a `(2,)` calibrated pair against a `(2, B)` per-outer-path fork vector whose
+        column must land on the MIDDLE axis and spread across the B2 fan-out.
+        """
+        Z = shared_mem.t_random_numbers[self.z_offset:self.z_offset + 2, :self.scenario_horizon]
+        inner = Z.ndim == 4
+        T, batch = Z.shape[1], Z.shape[2:]
+        # ONE chi2 per (step, path), SHARED by the two factors, so the innovation pair is an
+        # elliptical bivariate t; the √((ν-2)/W) rescale makes σ its realised std for any ν.
+        W = torch.distributions.Chi2(
+            shared_mem.one.new_tensor(self.nu)).sample(Z.shape[1:]).clamp_min(1.0e-6)
+        eps = Z * torch.sqrt((self.nu - 2.0) / W)                            # (2, T, ...batch)
+        k = self.k.reshape(T, 2, *([1] * len(batch)))
+        out = torch.empty((T, 2, *batch), device=Z.device, dtype=Z.dtype)
+        out[0] = self.z0.unsqueeze(-1).expand(2, *batch)
+        state = self.state0.unsqueeze(-1) if inner else self.state0
+        L, D = state[0], state[1]
+        for t in range(1, T):
+            L_next = self.mu_L + self.phi_L[t] * (L - self.mu_L) + self.sig_L[t] * eps[0, t]
+            D = (self.mu_D + self.phi_D[t] * (D - self.mu_D) + self.gamma * (L_next - L)
+                 + self.sig_D[t] * eps[1, t])
+            L = L_next
+            out[t] = L + D * k[t]
+        return out
+
+
+class QuadraticCarryCurveCalibration(object):
+    """Calibration of QuadraticCarryCurveModel from two archive columns of the average carry to
+    maturity, `ForwardRate.<name>,<tau>` at the two reference tenors — whose sub-keys ARE the
+    `Reference_Tenors` the fit stamps, so the state definition cannot drift from the data it was
+    identified on.
+
+    `L` and `D` are the two columns' mean and difference; the level is fitted as an AR(1)-t and the
+    shape as an ARX(1)-t on the same step's ΔL, jointly and with ONE ν (`arx1_t_mle`), because the
+    model shares one chi² draw between them. `delta` is the pair of standardised residuals, so the
+    framework's correlation consolidation sees innovations that are approximately iid rather than
+    the raw heteroskedastic changes; `correlation` is the 2x2 identity, each column mapping 1-1 to
+    a primitive factor.
+
+    WHAT THE TAIL WEIGHT DECIDES, this estimator's own output on data/plat_archive_sync.csv
+    (3786 rows, 2010-2026). `Nu_Min` is a MODELLING choice and not a guard rail: it decides how
+    much weight the likelihood puts on the tail, and the tail is where the level/shape coupling
+    lives. Γ and the residual correlation ρ move in LOCKSTEP and in opposite directions —
+
+        ν      φ_L      σ_L       φ_D      σ_D        Γ         ρ(δ_L, δ_D)
+        2.05   0.9967   0.004672  0.9521   0.009989   +0.0063   −0.2367
+        3.00   0.9962   0.001480  0.9468   0.003085   −0.0194   −0.2245
+        6.00   0.9948   0.001336  0.9369   0.002678   −0.0710   −0.1996
+        50.0   0.9897   0.001687  0.9077   0.003271   −0.2505   −0.1098
+        200    0.9878   0.001857  0.8937   0.003568   −0.3559   −0.0553
+        OLS    —        —         0.8841   —          −0.4469   (ΔR² 0.0545)
+
+    — and that is the point, not a defect. Γ and ρ are COLLINEAR: they enter the one-step
+    Cov(ΔL, ΔD) as Γ·σ_L² + ρ·σ_L·σ_D, one equation in two unknowns, so the fit slides along a line
+    and only the SUM is identified. Both ends are stamped consistently — Γ off the conditional
+    mean, ρ off the `delta` the framework consolidates — so the simulated coupling is the observed
+    one wherever the fit lands. `tests/test_quadratic_carry_curve.py` generates the same market
+    twice, once as pure Γ and once as pure ρ, and gets the same Γ back from both.
+
+    The default `Nu_Min = 3.0` is the lowest ν whose innovation variance exists, matching
+    `BasisLinkedSpotCalibration`. The unconstrained MLE runs to the floor (these series have excess
+    kurtosis ~50), which is where the completed study's φ_L = 0.9967 and φ_D = 0.9521 come from —
+    it reported the raw t SCALE, smaller than σ by √((ν−2)/ν), hence its 0.00073 against the
+    0.004672 above."""
+    model_type = 'QuadraticCarryCurveModel'
+    fields = [
+        F('Nu_Min', 'Float', default=3.0,
+          description='Floor on the shared degrees of freedom - 3.0 is the lowest value whose '
+                      'innovation variance exists, and it sets how much weight the fit puts on '
+                      'the tail where the level/shape coupling lives'),
+        F('Nu_Max', 'Float', default=50.0, description='Ceiling on the same fit')
+    ]
+
+    def __init__(self, model, param):
+        self.model = model
+        self.param = param
+        self.num_factors = 2
+
+    def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
+        nu_bounds = (float(self.param.get('Nu_Min', 3.0)), float(self.param.get('Nu_Max', 50.0)))
+        if len(data_frame.columns) != 2:
+            raise ValueError(
+                f'QuadraticCarryCurveCalibration needs exactly two average-carry columns '
+                f'`ForwardRate.<name>,<tau>`; got {list(data_frame.columns)}.')
+        cols = sorted(data_frame.columns, key=lambda c: float(c.split(',', 1)[1]))
+        tenors = [float(c.split(',', 1)[1]) for c in cols]
+        joint = data_frame[cols].astype(np.float64).dropna()
+        z_a, z_b = joint[cols[0]].values, joint[cols[1]].values
+        L, D = 0.5 * (z_a + z_b), z_b - z_a
+
+        (fit_L, fit_D), nu, se = arx1_t_mle([(L, None), (D, np.diff(L))], nu_bounds=nu_bounds)
+        phi_L, mu_L, sigma_L, _, res_L = fit_L
+        phi_D, mu_D, sigma_D, gamma, res_D = fit_D
+        logging.info(
+            'carry curve (L, D)-t fit: phi_L=%.4f (%.2f se from a unit root) mu_L=%.5f '
+            'sigma_L=%.6f | phi_D=%.4f mu_D=%.6f sigma_D=%.6f gamma=%+.4f (t=%.1f) | nu=%.2f',
+            phi_L, (1.0 - phi_L) / se['phi'][0], mu_L, sigma_L, phi_D, mu_D, sigma_D,
+            gamma, gamma / se['gamma'][1], nu)
+
+        param = {
+            'Phi_L': phi_L, 'Mu_L': mu_L, 'Sigma_L': sigma_L,
+            'Phi_D': phi_D, 'Mu_D': mu_D, 'Sigma_D': sigma_D,
+            'Gamma': gamma, 'Nu': nu, 'Reference_Tenors': tenors,
+            'Calibration_DT_Years': 1.0 / float(num_business_days),
+        }
+        archive_name = cols[0].split(',', 1)[0]
+        delta = pd.DataFrame(
+            {f'{archive_name},L': res_L, f'{archive_name},D': res_D}, index=joint.index[1:])
+        return utils.CalibrationInfo(param, np.eye(2).tolist(), delta)
 
 
 class BasisLinkedSpotModel(StochasticProcess):

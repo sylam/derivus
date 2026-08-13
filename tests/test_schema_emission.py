@@ -179,6 +179,7 @@ SHAPELESS = {
     ('VARMixedFactorInterestRateModel', 'Phi'),
     ('VARMixedFactorInterestRateModel', 'Sigma'),
     ('VARMixedFactorInterestRateModel', 'Calibration_Tenors'),
+    ('QuadraticCarryCurveModel', 'Reference_Tenors'),
     ('BasisLinkedSpotModel', 'Sigma_By_State'),
     ('CreditMonteCarlo', 'Credit_Valuation_Adjustment.CDS_Tenors'),
     # Objective / Evaluator / Solver left this list when they declared their knobs - see

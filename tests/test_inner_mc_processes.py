@@ -145,6 +145,14 @@ def _var_factor(ref_date):
     return types.SimpleNamespace(get_tenor=lambda: factor_tenor)
 
 
+def _carry_curve_factor(ref_date):
+    # Two dated knots bracketing a one-year book — QuadraticCarryCurveModel publishes the average
+    # carry to maturity at whatever tenor each has aged to.
+    excel_ref = (ref_date - utils.excel_offset).days
+    factor_tenor = excel_ref + np.array([0.0, 400.0], dtype=np.float64)
+    return types.SimpleNamespace(get_tenor=lambda: factor_tenor)
+
+
 REF_DATE = pd.Timestamp('2026-04-10')
 
 
@@ -765,6 +773,7 @@ from derivus.stochasticprocess import (                                       # 
     SingleRegimeOU1FactorKalmanModel, HWHazardRateModel,
     HullWhite2FactorImpliedInterestRateModel, CSForwardPriceModel,
     PCAInterestRateModel, GARCHSpotModel, HestonNandiImpliedSpotModel,
+    QuadraticCarryCurveModel,
 )
 
 
@@ -834,6 +843,21 @@ def _hn_static_rate_code(name):
     td = utils.tenor_diff(tp, 'Linear')
     dc = (lambda days: utils.get_day_count_accrual(REF_DATE, days, utils.DAYCOUNT_ACT365))
     return [(False, factor, None, td, dc)], factor, torch.zeros(tp.size, dtype=DTYPE, device=DEVICE)
+
+
+def _setup_carrycurve_inner(B, B2, T=10):
+    sh = _inner_shared(2, B, B2)
+    p = QuadraticCarryCurveModel(
+        factor=_carry_curve_factor(REF_DATE),
+        param={'Phi_L': 0.9962, 'Mu_L': 0.0169, 'Sigma_L': 0.00148, 'Phi_D': 0.9468,
+               'Mu_D': -0.00054, 'Sigma_D': 0.00308, 'Gamma': -0.451, 'Nu': 3.0,
+               'Reference_Tenors': [0.5, 1.0], 'Calibration_DT_Years': 1.0 / 252.0})
+    p.factor_key = utils.Factor('ForwardRate', ('CARRY',))
+    # per-outer-path init CURVE: two average-carry knots, monotone in b
+    base = torch.tensor([0.0175, 0.0160], dtype=DTYPE, device=DEVICE).view(-1, 1)
+    bumps = torch.linspace(-0.004, 0.004, B, dtype=DTYPE, device=DEVICE).view(1, -1)
+    p.precalculate(REF_DATE, _time_grid(T), base + bumps, sh, process_ofs=0)
+    return p, sh
 
 
 def _setup_hn_implied_inner(B, B2, T=10):
@@ -932,6 +956,7 @@ def _setup_hw2f_inner(B, B2, T=10):
     (_setup_hw1f_inner, True),
     (_setup_hwhazard_inner, True),
     (_setup_hw2f_inner, True),
+    (_setup_carrycurve_inner, True),
 ])
 def test_inner_mc_shape_and_init_on_correct_axis(setup, is_curve):
     B, B2, T = 5, 8, 10
