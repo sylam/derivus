@@ -136,10 +136,15 @@ def hmm_forward_backward(log_pi, log_P, log_emit):
 def garch11_t_mle(x):
     """Zero-mean GARCH(1,1) with standardised Student-t innovations, MLE on the series `x`.
     Returns `(omega, alpha, beta, nu, h, se)` in the UNITS OF `x` — the caller owns any rescaling
-    (`GARCHSpotCalibration` fits percent log returns and converts back; a basis innovation is
-    already in the units its σ is quoted in). `h` is the filtered conditional-variance path off
-    the fitted parameters, seeded at the sample variance, so `h[-1]` is the variance OF the last
-    observation — one step stale as a "today's state" stamp, which is what both callers stamp.
+    (`GARCHSpotCalibration` fits percent log returns and converts back). `h` is the filtered
+    conditional-variance path off the fitted parameters, seeded at the sample variance, so `h[-1]`
+    is the variance OF the last observation — one step stale as a "today's state" stamp, which is
+    what `H0` carries.
+
+    ONE caller now: `BasisLinkedSpotCalibration` used to fit its innovation here, on the residual of
+    a separately estimated conditional mean, and that two-likelihood split is what
+    `arx1_t_mle(..., garch=True)` absorbed. The recursion and the `h[0]` seeding convention there are
+    this function's, deliberately, so the two estimators stamp seeds that mean the same thing.
 
     Uses `arch` if importable, else scipy L-BFGS-B on the identical log-likelihood, with
     asymptotic standard errors from a central-difference numerical Hessian (per-coordinate step,
@@ -191,54 +196,92 @@ def garch11_t_mle(x):
     return float(omega), float(alpha), float(beta), float(nu), h, se
 
 
-def arx1_t_mle(equations, nu_bounds=(3.0, 50.0)):
+def arx1_t_mle(equations, nu_bounds=(3.0, 50.0), mean=None, garch=False):
     """Joint MLE of a SYSTEM of AR(1)/ARX(1) equations sharing one Student-t degrees of freedom:
 
-        y_t = mu + phi(y_{t-1} - mu) + gamma*x_t + sigma*e_t,   e_t ~ standardised t_nu (unit var)
+        y_t = mu_t + phi(y_{t-1} - mu_t) + gamma*x_t + sigma_t*e_t,  e_t ~ standardised t_nu
 
     `equations` is `[(y, x), ...]`, `x` None for a plain AR(1) and otherwise aligned to the TARGET
     rows (`len(x) == len(y) - 1`), so a same-step regressor is `np.diff(other)`. Returns
-    `([(phi, mu, sigma, gamma, standardised_resid), ...], nu, se)` with `sigma` the innovation
-    STANDARD DEVIATION - the model's own convention, and NOT the raw t scale, which is smaller by
-    sqrt((nu-2)/nu) and is what a t fit usually reports.
+    `([ARX1Fit, ...], nu, se)`.
 
     ONE nu, fitted jointly, because the process it calibrates draws ONE chi2 per step and shares it
     across its factors: the innovation vector is an elliptical multivariate t rather than t
     marginals under a Gaussian copula. Fitting the marginals separately and reconciling their two
-    nu's afterwards would estimate a model nobody wrote.
+    nu's afterwards would estimate a model nobody wrote. The same argument is why the two optional
+    switches exist rather than a second estimator beside this one - a mean fitted under one loss and
+    a variance under another is the same defect one level down:
+
+    `mean` is the level the AR reverts to. None fits a scalar intercept per equation (the AR's own
+    long-run mean). An ARRAY makes mu_t an OBSERVABLE the caller supplies, aligned to the target
+    rows and applied to BOTH sides of the AR, and no intercept is fitted - which is the shape of a
+    slow-mean model whose mu_t is a declared recursion on the realised path rather than a parameter
+    (a zero array is then "no intercept"). It must be the mean the SIMULATOR will revert to at the
+    same row, i.e. strictly lagged, or the fit is done against a filtration the model does not have.
+
+    `garch` replaces the per-equation constant sigma with its own GARCH(1,1),
+    sigma_t^2 = omega + alpha*e_{t-1}^2 + beta*sigma_{t-1}^2, seeded at the OLS residual variance -
+    `garch11_t_mle`'s recursion and seeding convention, fitted HERE inside the same likelihood as
+    the conditional mean instead of afterwards on the mean fit's residual.
 
     scipy L-BFGS-B on the exact log-likelihood from an OLS start, with asymptotic standard errors
     from a central-difference numerical Hessian (per-coordinate step, since phi ~ 1 and nu ~ 5
     differ by orders of magnitude) - the construction `garch11_t_mle` uses.
 
-    ONE caller today, and the sibling it does not absorb is named on purpose:
-    `BasisLinkedSpotCalibration` fits `b(t) = a*dS + phi*b(t-1) + eta` - an ARX(1) with a Student-t
-    innovation, i.e. exactly this estimator - by OLS plus a moment-matched nu. Moving it here would
-    change every number in the shipped basis block and in the platinum world calibrated from it,
-    which is a revalidation event and not a refactor."""
+    Two callers: `QuadraticCarryCurveCalibration` (both switches off, bit-identically) and
+    `BasisLinkedSpotCalibration`'s EXTENDED path, the sibling this estimator was written next to
+    and which it now absorbs. That calibration's DEFAULT path is still OLS plus a moment-matched
+    nu, and stays so by rule: it is what every shipped platinum world was calibrated with."""
     from scipy.optimize import minimize
     from scipy.special import gammaln
 
-    prepared, th0, bounds = [], [], []
+    prepared, th0, bounds, var0 = [], [], [], []
+    n_scale = 3 if garch else 1
     for y, x in equations:
         y = np.asarray(y, dtype=np.float64)
-        design = np.column_stack([np.ones(y.size - 1), y[:-1]] + ([] if x is None else [x]))
-        ols = np.linalg.lstsq(design, y[1:], rcond=None)[0]
+        if mean is None:
+            design = np.column_stack([np.ones(y.size - 1), y[:-1]] + ([] if x is None else [x]))
+            target = y[1:]
+        else:
+            design = np.column_stack([y[:-1] - mean] + ([] if x is None else [x]))
+            target = y[1:] - mean
+        ols = np.linalg.lstsq(design, target, rcond=None)[0]
+        resid0 = target - design @ ols
         prepared.append((y[1:], y[:-1], x))
-        th0 += [ols[1], ols[0] / (1.0 - ols[1]), np.log((y[1:] - design @ ols).std())]
-        bounds += [(-0.9999, 0.9999), (None, None), (None, None)]
-        if x is not None:
-            th0.append(ols[2])
+        var0.append(resid0.var())
+        th0.append(ols[1] if mean is None else ols[0])
+        bounds.append((-0.9999, 0.9999))
+        if mean is None:
+            th0.append(ols[0] / (1.0 - ols[1]))
             bounds.append((None, None))
-    starts = np.cumsum([0] + [3 + (x is not None) for _, _, x in prepared])
+        if garch:
+            th0 += [np.log(0.05 * var0[-1]), 0.05, 0.90]
+            bounds += [(None, None), (0.0, 0.999), (0.0, 0.999)]
+        else:
+            th0.append(np.log(resid0.std()))
+            bounds.append((None, None))
+        if x is not None:
+            th0.append(ols[-1])
+            bounds.append((None, None))
+    n_mean = int(mean is None)
+    starts = np.cumsum([0] + [1 + n_mean + n_scale + (x is not None) for _, _, x in prepared])
     th0.append(min(max(6.0, nu_bounds[0]), nu_bounds[1]))
     bounds.append(nu_bounds)
 
     def residual(th, i):
         y1, y0, x = prepared[i]
-        phi, mu, log_s = th[starts[i]:starts[i] + 3]
+        s = starts[i] + 1 + n_mean
+        phi, mu = th[starts[i]], th[starts[i] + 1] if mean is None else mean
         e = y1 - (mu + phi * (y0 - mu))
-        return (e if x is None else e - th[starts[i] + 3] * x), np.exp(log_s)
+        e = e if x is None else e - th[s + n_scale] * x
+        if not garch:
+            return e, np.exp(th[s])
+        omega, alpha, beta = np.exp(th[s]), th[s + 1], th[s + 2]
+        h = np.empty_like(e)
+        h[0] = var0[i]
+        for k in range(1, e.size):
+            h[k] = omega + alpha * e[k - 1] ** 2 + beta * h[k - 1]
+        return e, np.sqrt(h)
 
     def negll(th):
         nu, ne = th[-1], th[-1] - 2.0
@@ -265,12 +308,15 @@ def arx1_t_mle(equations, nu_bounds=(3.0, 50.0)):
     fits = []
     for i, (_, _, x) in enumerate(prepared):
         e, sigma = residual(th, i)
-        phi, mu = th[starts[i]], th[starts[i] + 1]
-        gamma = float(th[starts[i] + 3]) if x is not None else 0.0
-        fits.append((float(phi), float(mu), float(sigma), gamma, e / sigma))
+        s = starts[i] + 1 + n_mean
+        fits.append(utils.ARX1Fit(
+            float(th[starts[i]]), float(th[starts[i] + 1]) if mean is None else mean,
+            sigma if garch else float(sigma),
+            float(th[s + n_scale]) if x is not None else 0.0, e / sigma,
+            (float(np.exp(th[s])), float(th[s + 1]), float(th[s + 2])) if garch else None))
     return fits, float(th[-1]), {
         'phi': [float(se[s]) for s in starts[:-1]], 'nu': float(se[-1]),
-        'gamma': [float(se[s + 3]) if x is not None else 0.0
+        'gamma': [float(se[s + 1 + n_mean + n_scale]) if x is not None else 0.0
                   for s, (_, _, x) in zip(starts[:-1], prepared)]}
 
 
@@ -4722,8 +4768,8 @@ class QuadraticCarryCurveCalibration(object):
         L, D = 0.5 * (z_a + z_b), z_b - z_a
 
         (fit_L, fit_D), nu, se = arx1_t_mle([(L, None), (D, np.diff(L))], nu_bounds=nu_bounds)
-        phi_L, mu_L, sigma_L, _, res_L = fit_L
-        phi_D, mu_D, sigma_D, gamma, res_D = fit_D
+        phi_L, mu_L, sigma_L, res_L = fit_L.phi, fit_L.mu, fit_L.sigma, fit_L.resid
+        phi_D, mu_D, sigma_D, gamma, res_D = fit_D.phi, fit_D.mu, fit_D.sigma, fit_D.gamma, fit_D.resid
         logging.info(
             'carry curve (L, D)-t fit: phi_L=%.4f (%.2f se from a unit root) mu_L=%.5f '
             'sigma_L=%.6f | phi_D=%.4f mu_D=%.6f sigma_D=%.6f gamma=%+.4f (t=%.1f) | nu=%.2f',
@@ -4781,8 +4827,9 @@ class BasisLinkedSpotModel(StochasticProcess):
 
     Declared and read by nothing, both pre-existing: `Mu` (the shipped AR reverts to zero, and
     `Mu_0` seeds the recursion instead) and `Calibration_DT_Years` (the AR is per calibration
-    STEP; nothing rescales it to the sim grid). `reseed_from_path` has no spelling for either
-    recursion and RAISES rather than leave the discarded simulated path's state published.
+    STEP; nothing rescales it to the sim grid). `reseed_from_path` runs both recursions along an
+    observed path — η_t recovered as b_t minus the conditional mean the same `_advance` computes —
+    so an `Observed_Scenario` replay publishes the REPLAYED path's state, not the discarded one's.
 
     JSON config:
         A: concurrent ΔS loading
@@ -4968,7 +5015,6 @@ class BasisLinkedSpotModel(StochasticProcess):
         # Identity: ε_t = Z · √(ν/W) where W ~ Chi²(ν). Combine the rescaling so the
         # marginal variance of η_t is sigma_t² regardless of ν.
         nu = self.Nu
-        phi = self.Phi
         a = self.A
 
         inner = Z.ndim == 3
@@ -4980,32 +5026,62 @@ class BasisLinkedSpotModel(StochasticProcess):
         out = torch.empty(Z.shape, device=device, dtype=dtype)
         out[0] = self.b0.unsqueeze(-1).expand(batch) if inner else self.b0.expand(batch)
         # Per-path recursion state, seeded from the inner fork / burn-in when either published one.
+        mu, sig2, mu_path, sig2_path = self._recursion_state(shared_mem, out, inner)
+
+        def drawn(mean, s2):
+            """Forward sim: η is DRAWN — rescaled by the live σ² under GARCH, else already
+            scaled — and the level follows from it."""
+            eta_t = s2.sqrt() * Z[t] * scale[t] if self.garch else eta[t]
+            return eta_t, mean + eta_t
+
+        for t in range(1, T):
+            out[t], mu, sig2 = self._advance(
+                mu, sig2, out[t - 1], a * (linked_path[t] - linked_path[t - 1]), drawn)
+            if self.slow_mean:
+                mu_path[t] = mu
+            if self.garch:
+                sig2_path[t] = sig2
+        self._publish_recursions(shared_mem, mu_path, sig2_path)
+        return out
+
+    def _advance(self, mu, sig2, prev, ds, innovation):
+        """ONE step of the coupled (b, μ, σ²) recursion, shared by the forward sim and the
+        observed-path replay so the forward ≡ replay invariant is STRUCTURAL rather than maintained
+        by copying — `GARCHSpotModel._advance_variance`'s construction. The only thing that differs
+        between the two is `innovation(mean, sig2) -> (η_t, b_t)`: the forward sim DRAWS η and
+        derives the level, while replay is handed the level and derives η as its deviation from
+        this same conditional mean. Returning both is what makes the replayed μ exact — a replay
+        that rebuilt `b` as `mean + (b − mean)` would be one rounding off the observed level.
+
+        Returns `(b_t, μ_{t+1}, σ²_{t+1})`, both states in the published fork-index convention: what
+        the step t→t+1 consumes. Each extension's OFF arm returns its state untouched, so with both
+        off the two expressions evaluated are the shipped ones, in the shipped order."""
+        mean = mu + ds + self.Phi * (prev - mu) if self.slow_mean else ds + self.Phi * prev
+        eta, b = innovation(mean, sig2)
+        return (b,
+                self.lam * mu + (1.0 - self.lam) * b if self.slow_mean else mu,
+                self.g_omega + self.g_alpha * eta * eta + self.g_beta * sig2 if self.garch else sig2)
+
+    def _recursion_state(self, shared_mem, out, inner):
+        """`(μ_0, σ²_0, μ path, σ² path)` at t=0: the seeds (fork / burn-in / calibrated) and the
+        per-path buffers each live recursion publishes — `None` for one that is off, which is what
+        keeps an OFF world from allocating a `(T, B)` array nothing reads."""
         mu = self._recursion_seed(shared_mem, 'mu0', self.mu0, inner)
         sig2 = self._recursion_seed(shared_mem, 'sig20', self.sig20, inner)
-        mu_path = sig2_path = None
-        if self.slow_mean:
-            mu_path = torch.empty_like(out)
-            mu_path[0] = mu
-        if self.garch:
-            sig2_path = torch.empty_like(out)
-            sig2_path[0] = sig2
-        for t in range(1, T):
-            eta_t = sig2.sqrt() * Z[t] * scale[t] if self.garch else eta[t]
-            ds = a * (linked_path[t] - linked_path[t - 1])
-            if self.slow_mean:
-                out[t] = mu + ds + phi * (out[t - 1] - mu) + eta_t
-                mu = self.lam * mu + (1.0 - self.lam) * out[t]
-                mu_path[t] = mu
-            else:
-                out[t] = ds + phi * out[t - 1] + eta_t
-            if self.garch:
-                sig2 = self.g_omega + self.g_alpha * eta_t * eta_t + self.g_beta * sig2
-                sig2_path[t] = sig2
+        paths = [None, None]
+        for i, (on, seed) in enumerate(((self.slow_mean, mu), (self.garch, sig2))):
+            if on:
+                paths[i] = torch.empty_like(out)
+                paths[i][0] = seed
+        return (mu, sig2, *paths)
+
+    def _publish_recursions(self, shared_mem, mu_path, sig2_path):
+        """Publish whichever recursions ran, and stash them for `outer_reseed` — so a replayed run's
+        terminal state is the REPLAYED path's, not the discarded simulated one's."""
         self.last_mu, self.last_sig2 = mu_path, sig2_path
         for kind, path in (('basis_mu', mu_path), ('basis_sig2', sig2_path)):
             if path is not None:
                 shared_mem.t_Scenario_Buffer[(self.factor_key, kind)] = path
-        return out
 
     def _recursion_seed(self, shared_mem, kind, calibrated, inner):
         """t=0 state for one observable recursion: the inner fork's `<kind>_inner` (a `(B,)`
@@ -5036,16 +5112,41 @@ class BasisLinkedSpotModel(StochasticProcess):
                 if path is not None}
 
     def reseed_from_path(self, simulated, shared_mem):
-        """Observed-path replay. The two observable recursions have no replay spelling yet: μ_t
-        is a pure function of the supplied basis path, but σ_t² needs the AR residual against the
-        replayed linked spot, which is a second copy of `generate`'s arithmetic — the sibling this
-        change does not absorb. Raise rather than leave `basis_mu`/`basis_sig2` published from the
-        DISCARDED simulated path, which is a wrong number with a plausible shape."""
-        if self.slow_mean or self.garch:
-            raise ValueError(
-                f'{utils.check_tuple_name(self.factor_key)}: Observed_Scenario replay is not '
-                f'defined for Slow_Mean_Lambda / G_Omega — the published mean and innovation '
-                f'variance would be the simulated path\'s, not the replayed one\'s.')
+        """Observed-path replay: rerun both observable recursions ALONG the supplied basis path and
+        republish `basis_mu` / `basis_sig2`, so a fork or a reveal at any row reads the REPLAYED
+        path's state instead of the discarded simulated one's.
+
+        Both are pure functions of the realised path. μ_t needs only b; σ_t² needs η_t, which IS
+        b_t minus the model's own conditional mean at t — so the replay is `_advance` again with the
+        innovation handed in rather than drawn, and no second copy of the arithmetic exists to drift
+        from. ΔS is read from the buffer, which is the REPLAYED linked path when the world replays
+        the parent too: the calc publishes each factor's path before the next process generates.
+
+        Exactness is asymmetric, and MEASURED: replaying a path a seeded run produced reproduces
+        that run's μ BITWISE — μ is a function of the observed level, which replay is handed rather
+        than rebuilding — but its σ² only to 1e-15 relative in float64 and 6e-7 in float32, because
+        σ² is a function of η and `fl(b_t − mean)` differs from the η that was drawn by the rounding
+        error of the forward pass's own final addition. No spelling of this replay recovers η
+        exactly from a rounded sum; what it can do is not compound the error, which is why
+        `_advance` takes the level from the innovation supplier instead of re-deriving it."""
+        if not (self.slow_mean or self.garch):
+            return
+        obs = simulated.detach()
+        linked_path = shared_mem.t_Scenario_Buffer[self.linked_key]
+        mu, sig2, mu_path, sig2_path = self._recursion_state(shared_mem, obs, obs.ndim == 3)
+
+        def realised(mean, s2):
+            """Replay: the level is DATA and η is its deviation from the conditional mean."""
+            return obs[t] - mean, obs[t]
+
+        for t in range(1, obs.shape[0]):
+            _, mu, sig2 = self._advance(
+                mu, sig2, obs[t - 1], self.A * (linked_path[t] - linked_path[t - 1]), realised)
+            if self.slow_mean:
+                mu_path[t] = mu
+            if self.garch:
+                sig2_path[t] = sig2
+        self._publish_recursions(shared_mem, mu_path, sig2_path)
 
 
 class BasisLinkedSpotCalibration(object):
@@ -5056,25 +5157,57 @@ class BasisLinkedSpotCalibration(object):
     rolling-vol-tercile partitioning of η — terciles indexed in σ-ascending order to
     match the linked spot's HMM regime convention.
 
-    Two declared switches fit the model's two optional extensions; neither is touched when the
-    switch is at its default, so the block above is stamped byte-for-byte as it always was.
+    That default path is FROZEN: it is what every calibrated platinum world in the repo carries,
+    and `tests/test_basis_slow_mean_garch.py` holds it to the estimator above byte-for-byte, on the
+    real archive and on a synthetic one. Declaring either switch below moves the whole system onto
+    ONE likelihood instead.
 
     `Slow_Mean_Span > 0` regresses the DEVIATION from the slow observable mean, `b(t) − μ_t = a·ΔS
     + φ·(b(t-1) − μ_t) + η(t)`, with μ_t the span's EWMA of the basis through t−1 — strictly
     lagged, so the regressor is F_{t-1}-measurable exactly as it is in the simulator. It stamps
     `Slow_Mean_Lambda = 1 − 2/(span+1)` and `Mu_0`, the mean the NEXT observation would revert to.
 
-    `GARCH_Innovation = 'Yes'` fits the innovation's own GARCH(1,1)-t (`garch11_t_mle`, the same
-    estimator `GARCHSpotCalibration` uses) on η and stamps `G_Omega`/`G_Alpha`/`G_Beta`/`Sig2_0`.
-    It stamps a flat `Sigma` INSTEAD of `Sigma_By_State`, because the model's precedence puts the
-    regime form first: stamping both would leave the GARCH inert. `Sigma` is then η's
-    unconditional std — the model's behaviour if the four GARCH fields are deleted — and `Nu` is
-    re-read off the GARCH fit's own standardised residual, whose excess kurtosis is what is left
-    once the vol dynamics are modelled rather than absorbed into the tail."""
+    `GARCH_Innovation = 'Yes'` fits the innovation's own GARCH(1,1) and stamps
+    `G_Omega`/`G_Alpha`/`G_Beta`/`Sig2_0`. It stamps a flat `Sigma` INSTEAD of `Sigma_By_State`,
+    because the model's precedence puts the regime form first: stamping both would leave the GARCH
+    inert. `Sigma` is then η's unconditional std — the model's behaviour if the four GARCH fields
+    are deleted.
+
+    ONE LIKELIHOOD, and what it cost to find out. Either switch routes the fit to `arx1_t_mle` with
+    the EWMA handed in as `mean` and `garch` on, so (a, φ, ω_b, α_b, β_b, ν) are estimated together
+    against the same Student-t. The path it replaces fitted the conditional mean by OLS — a Gaussian
+    loss — and then a GARCH-t on that fit's residual, which is two halves under two likelihoods:
+    the defect `QuadraticCarryCurveCalibration` names one factor over, and the reason a scratch
+    study and this class reported different numbers from the same archive. Measured on
+    `data/plat_archive_sync.csv` (3786 rows, 2010-2026, span 63):
+
+        estimator                       a         φ       ν      ω_b     α_b     β_b
+        OLS + GARCH-t on the residual   -0.0461   0.7593  5.01   0.1068  0.1183  0.8714
+        joint, this class               -0.0227   0.6505  4.94   0.0793  0.1097  0.8830
+        joint, with a held at 0         0         0.6433  5.06   0.0687  0.1016  0.8925
+
+    THE IDENTIFIABILITY FINDING, and it is the carry curve's Γ-versus-ρ one factor over: `A` and the
+    spot/basis entry of the framework's R matrix are the same coupling written twice. The one-step
+    covariance is Cov(b_t − E_{t-1}[b_t], ΔS) = A·Var(ΔS) + Cov(η, ΔS), one equation in two
+    unknowns, and the LOSS decides where on that line the fit lands: OLS is orthogonal to ΔS by
+    construction, so it puts all −26.51 of the coupling in A and leaves the R channel exactly zero;
+    the t likelihood downweights the tail days where the coupling is largest, halves A, and leaves
+    −13.29 of −26.36 for the innovation. The totals differ by 0.6%. Neither is wrong and the split
+    does not matter — what matters is that BOTH ends come from the same fit, because `delta` is what
+    the framework consolidates into R while `A` is stamped in the block. Take one estimator's A
+    beside another's residual and the simulated coupling is 150% of the observed one.
+
+    `Nu` is the joint fit's, not a moment match: the ν ladder 3.0 (no GARCH) → 4.94 (GARCH) says the
+    extreme tails were mostly unmodelled vol dynamics, the same reading `GARCHSpotCalibration` gets.
+    `Sig2_0` is `garch11_t_mle`'s convention — the conditional variance OF the last observation,
+    one step stale as a "today's state" stamp, shared with `GARCHSpotCalibration`'s `H0` so the two
+    seeds mean the same thing (advancing one more step would read 17.25 against the stamped
+    19.36; moving one without the other is what this file exists to prevent)."""
     model_type = 'BasisLinkedSpotModel'
     fields = [
         F('Nu_Min', 'Float', default=3.0,
-          description='Floor on the degrees of freedom the moment-matched nu solve returns'),
+          description='Floor on the degrees of freedom - the moment-matched solve at the defaults, '
+                      'the joint likelihood once either switch below is declared'),
         F('Nu_Max', 'Float', default=50.0, description='Ceiling on the same solve'),
         F('Vol_Window', 'Integer', default=21,
           description='Rolling window, in business days, the regime terciles are cut on'),
@@ -5117,33 +5250,40 @@ class BasisLinkedSpotCalibration(object):
         b = joint[basis_col].values
         lme_v = joint[linked_col].values
         dlme = np.diff(lme_v)
-        # The slow mean is a level SHIFT of both sides: regress the deviation, and the same
-        # (a, φ) OLS recovers the same coefficients against a moving rather than a zero mean.
-        # `ewm(adjust=False)` IS the simulator's recursion; `[:-1]` lags it, `[-1]` is Mu_0.
+        # The slow mean is a level SHIFT of both sides: the deviation is regressed against a moving
+        # rather than a zero mean. `ewm(adjust=False)` IS the simulator's recursion; `[:-1]` lags it
+        # to the filtration the step it drives actually has, and `[-1]` is Mu_0.
         ewm = pd.Series(b).ewm(span=span, adjust=False).mean().values if span else None
-        mu = 0.0 if ewm is None else ewm[:-1]
-        y = b[1:] - mu
-        X = np.column_stack([dlme, b[:-1] - mu])
 
-        coef, *_ = np.linalg.lstsq(X, y, rcond=None)
-        a_hat, phi_hat = float(coef[0]), float(coef[1])
-        eta = y - X @ coef
-
-        eta_kurt = float(scipy_stats.kurtosis(eta, fisher=True))
-        nu_hat = float(np.clip(4.0 + 6.0 / max(eta_kurt, 1.0e-3), nu_min, nu_max))
+        if span or fit_garch:
+            # ONE likelihood for the whole system: (a, φ, ω_b, α_b, β_b, ν) fitted together, with
+            # μ_t entering as the OBSERVABLE the simulator will run rather than as a parameter.
+            (fit,), nu_hat, se = arx1_t_mle(
+                [(b, dlme)], nu_bounds=(nu_min, nu_max), garch=fit_garch,
+                mean=ewm[:-1] if span else np.zeros(b.size - 1))
+            a_hat, phi_hat, sigma_t = fit.gamma, fit.phi, fit.sigma
+            eta = fit.resid * sigma_t                                     # raw innovation
+            logging.info('basis ARX(1)-t joint fit: a=%+.5f (%.1f se) phi=%.4f nu=%.2f | '
+                         'sigma=%.4f corr(delta, dS)=%+.4f', a_hat, a_hat / se['gamma'][0],
+                         phi_hat, nu_hat, float(eta.std()), float(np.corrcoef(fit.resid, dlme)[0, 1]))
+        else:
+            y = b[1:]
+            X = np.column_stack([dlme, b[:-1]])
+            coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+            a_hat, phi_hat = float(coef[0]), float(coef[1])
+            eta = y - X @ coef
+            eta_kurt = float(scipy_stats.kurtosis(eta, fisher=True))
+            nu_hat = float(np.clip(4.0 + 6.0 / max(eta_kurt, 1.0e-3), nu_min, nu_max))
 
         if fit_garch:
-            # Own GARCH(1,1)-t on η. Its ν is the dof LEFT once the vol dynamics are modelled;
-            # the moment-matched one above absorbs them into the tail, so it is the one to drop.
-            g_omega, g_alpha, g_beta, nu_hat, h_eta, _ = garch11_t_mle(eta)
-            nu_hat = float(np.clip(nu_hat, nu_min, nu_max))
+            g_omega, g_alpha, g_beta = fit.garch
             vol = {'Sigma': float(eta.std()), 'G_Omega': g_omega, 'G_Alpha': g_alpha,
-                   'G_Beta': g_beta, 'Sig2_0': float(h_eta[-1])}
-            eta = eta / np.sqrt(h_eta)                                    # standardised for `delta`
+                   'G_Beta': g_beta, 'Sig2_0': float(sigma_t[-1] ** 2)}
+            eta = fit.resid                                               # standardised for `delta`
             logging.info('basis GARCH(1,1)-t: omega=%.4f alpha=%.4f beta=%.4f nu=%.2f | '
                          'persistence=%.4f LR-sigma=%.4f Sig2_0=%.4f (flat Sigma %.4f)',
                          g_omega, g_alpha, g_beta, nu_hat, g_alpha + g_beta,
-                         np.sqrt(g_omega / (1.0 - g_alpha - g_beta)), h_eta[-1], vol['Sigma'])
+                         np.sqrt(g_omega / (1.0 - g_alpha - g_beta)), vol['Sig2_0'], vol['Sigma'])
         else:
             # Rolling-21d vol of ΔLME → tercile bins (low/mid/high). Index ascending in
             # vol matches the production HMM's σ-ascending state ordering, so per-regime σ

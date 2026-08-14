@@ -154,6 +154,12 @@ FACTOR_SIZE_RATE = 2
 Factor = namedtuple('Factor', 'type name')
 RateInfo = namedtuple('RateInfo', 'model_name archive_name calibration')
 CalibrationInfo = namedtuple('CalibrationInfo', 'param correlation delta')
+# One equation's fit from `stochasticprocess.arx1_t_mle`. `sigma` is the innovation STANDARD
+# DEVIATION - a scalar under constant variance, the conditional path sigma_t under `garch=True`,
+# where `garch` is (omega, alpha, beta) and `sigma[-1]**2` is the variance of the NEXT observation
+# (the `H0` stamping convention). `resid` is standardised by `sigma` either way, so it is the column
+# a correlation consolidation reads as is; the raw innovation is `resid * sigma`.
+ARX1Fit = namedtuple('ARX1Fit', 'phi mu sigma gamma resid garch')
 DealDataType = namedtuple('DealDataType', 'Instrument Factor_dep Time_dep Calc_res')
 Partition = namedtuple('Partition', 'DealMTMs Collateral_Cash Funding_Cost Cashflows')
 Collateral = namedtuple('Collateral', 'Haircut Amount Currency Funding_Rate Collateral_Rate Collateral')
