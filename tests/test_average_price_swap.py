@@ -252,7 +252,16 @@ class Reference(object):
         forward = self.spot[t] * np.exp(
             z * days / utils.DAYS_IN_YEAR + self._rate(self.repo, days / 365.0) * days / 365.0)
         n = self.grid.index(date) - t
-        return forward + self.mu[t] + self.phi ** n * (self.basis[t] - self.mu[t])
+        return forward + self.mu[t] + self.decay(n) * (self.basis[t] - self.mu[t])
+
+    def decay(self, n):
+        """The simulated law's own deviation decay: with the slow mean on, the (b, mu) pair is
+        row-stochastic (eigenvalues 1 and lam*phi) and keeps pi_b of a deviation forever; with it
+        off there is one AR and the plain phi^n is exact."""
+        if not self.lam:
+            return self.phi ** n
+        pi_b = (1.0 - self.lam) * self.phi / ((1.0 - self.lam) * self.phi + 1.0 - self.phi)
+        return pi_b + (1.0 - pi_b) * (self.lam * self.phi) ** n
 
     def average(self, t):
         return sum(w * self.sample(t, j) for j, w in enumerate(self.weight))
@@ -301,7 +310,9 @@ def test_the_inception_value_is_the_closed_form_off_the_market_data(buy, incepti
     assert ref.realised_count(0) == (0 if inception else 2)
     assert np.abs(got / want - 1.0).max() < 1e-12, (
         f'inception mark {got[0]:.6f} vs closed form {want[0]:.6f}')
-    assert got.std() == 0.0, 'the t=0 mark is not path-independent'
+    # BITWISE path-independence, not std == 0: on a non-dyadic path count numpy's mean rounds a
+    # half ULP away from identical values and std reads ~3.6e-12 on marks that are equal to the bit
+    assert np.unique(got).size == 1, 'the t=0 mark is not path-independent'
     # the fixture has something to see: the basis is a live part of the mark
     assert abs(ref.basis[0, 0]) > 5.0 and abs(ref.mu[0, 0] - ref.basis[0, 0]) > 1.0
 
@@ -525,7 +536,9 @@ def test_the_exposure_profile_runs_through_run_job_and_freezes_when_the_last_fix
 
     spread = mtm.std(axis=1).values
     last_fix = 12                                     # 2026-05-15, the sixth sampling date
-    assert spread[0] == 0.0, 'the t0 mark disperses'
+    # bitwise, not std == 0: the mean's own rounding on a non-dyadic path count reads ~1e-12 of
+    # dispersion on marks that are equal to the bit (see the inception gate)
+    assert np.unique(mtm.iloc[0].values).size == 1, 'the t0 mark disperses'
     assert (np.diff(spread[:last_fix + 1]) > 0.0).all(), (
         f'the profile stops growing before the last fixing: {np.round(spread)}')
     assert spread[last_fix] > 1e5, spread[last_fix]
@@ -538,6 +551,32 @@ def test_the_exposure_profile_runs_through_run_job_and_freezes_when_the_last_fix
     discount = np.exp(-np.interp(tau, sofr[:, 0], sofr[:, 1]) * tau)
     assert np.abs(spread[last_fix:15] / spread[last_fix] - discount / discount[0]).max() < 1e-6, (
         f'the frozen tail is not pure discounting: {spread[last_fix:15]}')
+
+
+def test_the_projection_decay_is_the_simulated_recursions_own_conditional_mean():
+    """The closed form against the process's own two lines (`BasisLinkedSpotModel._advance` in
+    means: `b <- mu + phi (b - mu)`, then `mu <- lam mu + (1 - lam) b`), propagated step by step
+    from the fixture's `(b0, Mu_0)`. This loop is the INDEPENDENT oracle - it mirrors the
+    recursion, not the pricer's formula - and it is what the naive `phi^n` decay fails: the pair
+    is row-stochastic, so a deviation keeps `pi_b = (1-lam)phi/((1-lam)phi+1-phi)` of itself
+    forever instead of dying into the mean. On the campaign's 2026 world that is $0.086/oz of
+    strike = 5e-5 of notional, INSIDE Monte Carlo noise at any feasible path count - which is why
+    only an exact-mean oracle can hold it, and why the MC gates above never saw it."""
+    _, _, factors, models = _parts(world())
+    m = models['BasisLinkedSpotModel.PLATINUM_CME.LBMA']
+    phi, lam = m['Phi'], m['Slow_Mean_Lambda']
+    b0, mu0 = factors['ObservedBasis.PLATINUM_CME.LBMA']['Spot'], m['Mu_0']
+    assert abs(b0 - mu0) > 1.0, 'degenerate fixture: b0 == mu0 blinds every decay'
+    pi_b = (1.0 - lam) * phi / ((1.0 - lam) * phi + 1.0 - phi)
+    b, mu = b0, mu0
+    for n in range(1, 201):
+        b = mu + phi * (b - mu)
+        mu = lam * mu + (1.0 - lam) * b
+        closed = mu0 + (pi_b + (1.0 - pi_b) * (lam * phi) ** n) * (b0 - mu0)
+        assert abs(b - closed) < 1e-9, f'closed form off the recursion at n={n}: {b} vs {closed}'
+    naive = mu0 + phi ** 200 * (b0 - mu0)
+    assert abs(b - naive) > 0.9 * abs(pi_b * (b0 - mu0)), (
+        'the naive decay agrees with the law - the unit root left the fixture')
 
 
 # ---------------------------------------------------------------------------
@@ -570,7 +609,10 @@ MUTANTS = [
      'torch.sum(utils.calc_time_grid_spot_rate(factor_dep[\'Commodity\'], deal_time, shared)'
      '.unsqueeze(1) * weight[:, :n] * past[:, :n], dim=1))'),
     ('decay in calendar days',
-     "factor_dep['Basis_Phi'] ** steps", "factor_dep['Basis_Phi'] ** tau"),
+     '(lam * phi) ** steps', '(lam * phi) ** tau'),
+    ('deviation decays to the mean, not to the conserved mixture',
+     'decay = pi_b + (1.0 - pi_b) * (lam * phi) ** steps',
+     'decay = phi ** steps'),
     ('realised read drops the basis',
      "factor_dep['Commodity'], sim_samples", "factor_dep['Spot'], sim_samples"),
     ('composed spot under the carry exponential',

@@ -128,9 +128,15 @@ def listed_expiries(expiry_csv, trade_date, n=3):
 # ---------------------------------------------------------------------------------------------
 # the guard: E[dF | state] on every tradable, against every simulated state coordinate
 # ---------------------------------------------------------------------------------------------
-def guard_e_df_state(arch, cal_end, taus):
+def guard_e_df_state(arch, cal_end, taus, mats=()):
     """`{leg: {state: (slope, t)}}` - the one-step change of each tradable's reconstructed forward
-    regressed on each state coordinate the world simulates, on data up to `cal_end`.
+    regressed on each state coordinate the world simulates, on data up to `cal_end`, PLUS a
+    `drift` row (the regression's discarded intercept: mean dF per day and its t) and, per listed
+    expiry, a FIXED-EXPIRY leg on the trailing two years. The constant-maturity legs isolate
+    state-dependence and are blind to roll-down BY CONSTRUCTION (tau never shrinks); the
+    fixed-expiry legs are what the book actually trades, and their drift row is where a modelled
+    roll-down would show against the data. Both are reported because they answer different
+    halves of the basis-saga question.
 
     A tradable references the martingale PRIMARY, so every slope must be statistically zero: a
     non-zero one is reversion the policy can see and cannot execute, which is the failure the
@@ -140,14 +146,23 @@ def guard_e_df_state(arch, cal_end, taus):
     state = pd.DataFrame({'b': sub[BASIS_COL],
                           'L': 0.5 * (sub[CARRY_COLS[0]] + sub[CARRY_COLS[1]]),
                           'D': sub[CARRY_COLS[1]] - sub[CARRY_COLS[0]]})
-    legs = {f'F({tau:.2f}y)': forward(sub[CME_COL].to_numpy(),
-                                      (state['L'].to_numpy(), state['D'].to_numpy()), tau)
-            for tau in taus}
-    legs['S_LBMA (control)'] = (sub[CME_COL] + sub[BASIS_COL]).to_numpy()
+    LD = (state['L'].to_numpy(), state['D'].to_numpy())
+    legs = {f'F({tau:.2f}y)': (forward(sub[CME_COL].to_numpy(), LD, tau), sub.index) for tau in taus}
+    tail = sub.tail(504)
+    LD_t = (0.5 * (tail[CARRY_COLS[0]] + tail[CARRY_COLS[1]]).to_numpy(),
+            (tail[CARRY_COLS[1]] - tail[CARRY_COLS[0]]).to_numpy())
+    for mat in mats:
+        tau_t = np.array([(pd.Timestamp(mat) - d).days for d in tail.index]) / DAYS_IN_YEAR
+        legs[f'F(exp {pd.Timestamp(mat).date()})'] = (
+            forward(tail[CME_COL].to_numpy(), LD_t, tau_t), tail.index)
+    legs['S_LBMA (control)'] = ((sub[CME_COL] + sub[BASIS_COL]).to_numpy(), sub.index)
     out = {}
-    for leg, series in legs.items():
-        y = pd.Series(series, index=sub.index).diff().shift(-1)
+    for leg, (series, idx) in legs.items():
+        y = pd.Series(series, index=idx).diff().shift(-1)
         out[leg] = {}
+        yv = y.dropna().values
+        se_d = yv.std(ddof=1) / np.sqrt(len(yv)) if len(yv) > 2 else np.nan
+        out[leg]['drift'] = (float(yv.mean()), float(yv.mean() / se_d) if se_d else float('nan'))
         for name, x in state.items():
             d = pd.DataFrame({'y': y, 'x': x}).dropna()
             X = np.column_stack([np.ones(len(d)), d['x'].values])
@@ -192,17 +207,25 @@ def price_factors(row, trade_date, last_query, sofr_cols):
 
 
 def fair_strike(row, trade_date, fixings, basis_model):
-    """The average-price swap's own closed form at inception, written from the deal's documented
-    formula: `sum_j w_j (P exp(z tau_j) tau_j + mu + phi^n_j (b - mu))`, equal weights.
+    """The average-price swap's own closed form at inception, matching `pv_average_price_swap`:
+    `sum_j w_j (P exp(z tau_j) tau_j + E[b_n_j])`, equal weights, where E[b] is the SIMULATED
+    law's conditional mean - with the slow mean on, the (b, mu) pair is row-stochastic and keeps
+    `pi_b` of a deviation forever, so the decay is `pi_b + (1-pi_b)(lam phi)^n`, not `phi^n`.
 
     `n_j` is SIMULATION STEPS, and the grid is `0d 1d(1d)` - one row per calendar day - so it is
     the day count. Reading it in years, or from the calibration clock, prices a different model
     from the one that gets simulated."""
     p0, b0, state = float(row[CME_COL]), float(row[BASIS_COL]), carry_state(row)
-    mu = float(basis_model.get('Mu_0', 0.0)) if basis_model.get('Slow_Mean_Lambda') else 0.0
     phi = float(basis_model['Phi'])
+    lam = float(basis_model.get('Slow_Mean_Lambda') or 0.0)
+    mu = float(basis_model.get('Mu_0', 0.0)) if lam else 0.0
     days = np.array([(pd.Timestamp(f) - pd.Timestamp(trade_date)).days for f in fixings], dtype=float)
-    return float((forward(p0, state, days / DAYS_IN_YEAR) + mu + phi ** days * (b0 - mu)).mean())
+    if lam:
+        pi_b = (1.0 - lam) * phi / ((1.0 - lam) * phi + 1.0 - phi)
+        decay = pi_b + (1.0 - pi_b) * (lam * phi) ** days
+    else:
+        decay = phi ** days
+    return float((forward(p0, state, days / DAYS_IN_YEAR) + mu + decay * (b0 - mu)).mean())
 
 
 def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_corridor=None):
@@ -216,6 +239,8 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
     calc['Base_Date'] = _ts(trade_date)
     merge['MarketDataFile'] = calibrated_md
     hp['Objective'] = dict(OBJECTIVE)
+    if getattr(args, 'huber_aversion', None) is not None:
+        hp['Objective']['Huber_Aversion'] = float(args.huber_aversion)
 
     p0, state = float(row[CME_COL]), carry_state(row)
     basis_model = json.load(open(calibrated_md))['MarketData']['Price Models'][
@@ -268,6 +293,52 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
     return cfg, {'k_fair': k_fair, 'mats': mats, 'pay': pay, 'fixings': fixings}
 
 
+def restamp_state_seeds(arch, trade_date, calibrated_md, out_path, window=750):
+    """The three state SEEDS re-stamped at the trade date into a per-trade copy of the calibrated
+    market data: `Mu_0` (the basis's observable EWMA mean), `Sig2_0` (its GARCH state) and `H0`
+    (the spot's). The calibration stamps them at the RECAL date, 0-2 months before the trade,
+    while every market LEVEL beside them is read off the trade-date row; `Mu_0` alone drifts
+    $1.20/oz per stale month (p95 $8.24 against an $8 margin) and exists only in this deck, so
+    the staleness was also an arm asymmetry. Deterministic filters on the archive up to the trade
+    date - the model's own `_advance` recursions run forward - no refit, no lookahead. A separate
+    per-trade FILE rather than an ExplicitMarketData override, so the world a trade priced
+    against is one self-contained artifact."""
+    md = json.load(open(calibrated_md))
+    models = md['MarketData']['Price Models']
+    sub = arch.loc[:trade_date].iloc[-window:]
+    b = sub[BASIS_COL].to_numpy(float)
+    p = sub[CME_COL].to_numpy(float)
+
+    bm = models[f'BasisLinkedSpotModel.{BASIS_COL.split(".", 1)[1]}']
+    lam, phi, a = float(bm.get('Slow_Mean_Lambda') or 0.0), float(bm['Phi']), float(bm.get('A', 0.0))
+    garch = bm.get('G_Omega') is not None
+    mu = b[0]
+    sig2 = float(bm['G_Omega']) / max(1.0 - float(bm['G_Alpha']) - float(bm['G_Beta']), 1e-6) \
+        if garch else 0.0
+    for t in range(1, len(b)):
+        ds = a * (p[t] - p[t - 1])
+        mean = (mu + ds + phi * (b[t - 1] - mu)) if lam else (ds + phi * b[t - 1])
+        if garch:
+            eta = b[t] - mean
+            sig2 = float(bm['G_Omega']) + float(bm['G_Alpha']) * eta * eta + float(bm['G_Beta']) * sig2
+        if lam:
+            mu = lam * mu + (1.0 - lam) * b[t]
+    if lam:
+        bm['Mu_0'] = float(mu)
+    if garch:
+        bm['Sig2_0'] = float(sig2)
+
+    sm = models[f'GARCHSpotModel.{CME_COL.split(".", 1)[1]}']
+    r = np.diff(np.log(p))
+    h = float(sm['Omega']) / max(1.0 - float(sm['Alpha']) - float(sm['Beta']), 1e-6)
+    for x in r:
+        h = float(sm['Omega']) + float(sm['Alpha']) * x * x + float(sm['Beta']) * h
+    sm['H0'] = float(h)
+
+    _atomic_write_json(out_path, md)
+    return out_path
+
+
 def resolved_calibration_config(source, archive, out_path):
     """The calibration config with an ABSOLUTE archive path, written to `out_path`.
 
@@ -280,33 +351,64 @@ def resolved_calibration_config(source, archive, out_path):
     return out_path
 
 
-def observed_scenario_npz(arch, base_date, path, max_gap=5):
-    """Dense daily realized (CME primary, published basis) from the base date, forward-filled.
-    The framework composes the LBMA fixing S = P + b itself. The realized CARRY is available in
-    this archive and deliberately not substituted - see the module docstring.
+def observed_scenario_npz(arch, base_date, path, horizon_days, knots, max_gap=5):
+    """Dense daily realized (CME primary, published basis, CARRY CURVE) from the base date,
+    forward-filled. The framework composes the LBMA fixing S = P + b itself. The carry rides as
+    the `(T, 2)` curve tensor the job's own two DATED knots imply: z at each knot's aged tenor,
+    off the realized (L, D) - the affine map, negative tau included - so the roll marks every
+    futures leg and the liability's forwards on the REALIZED curve rather than on one simulated
+    draw (worth ~$5/oz of independent noise per trade, and it made `bound_pass` compare a
+    realized-carry bound against simulated-carry P&L). The engine substitutes any factor whose
+    npz array matches the sim tensor's leading shape, curve factors included.
 
-    TWO gap guards, and the second one is the whole reason this function has a parameter. Running
-    past the archive END fabricates flat prices, which the old driver already refuses; a hole in
-    the MIDDLE fabricates exactly the same flat prices and nothing refused it. The synchronized
-    archive is built from intraday ticks that pass a quality filter, so it HAS holes - 78 gaps
-    over four days, the largest 29 - and the biggest one covers the whole first half of April
-    2020, which is the averaging month of the 2020-01 trade the smoke gate anchors on. Measured
-    there: the realized average comes out $26.02/oz below the EOD archive's, i.e. the roll marks a
-    crash that the forward fill flattened. `--max-gap 999` to run anyway and own the number."""
+    `horizon_days` is the trade's own need (settlement + slack), not a fixed 220: a shorter
+    window is fewer chances for a mid-window hole, and it is what lets trades run to the archive
+    end. TWO gap guards: past the archive END fabricates flat prices, which the old driver
+    already refuses; a hole in the MIDDLE fabricates exactly the same flat prices and nothing
+    refused it. The synchronized archive is built from intraday ticks that pass a quality filter,
+    so it HAS holes - the largest 29 days covering the first half of April 2020, the averaging
+    month of the 2020-01 trade. Measured there: the realized average comes out $26.02/oz below
+    the EOD archive's. `--max-gap 999` to run anyway and own the number."""
     base = pd.Timestamp(base_date)
-    dates = pd.DatetimeIndex([base + pd.Timedelta(days=i) for i in range(220)])
+    dates = pd.DatetimeIndex([base + pd.Timedelta(days=i) for i in range(int(horizon_days))])
     if dates.max() > arch.index[-1]:
         raise ValueError(
-            f'Observed window {base.date()}+220d ends {dates.max().date()} past archive end '
-            f'{arch.index[-1].date()}: the realized roll would run on fabricated flat prices')
+            f'Observed window {base.date()}+{horizon_days}d ends {dates.max().date()} past '
+            f'archive end {arch.index[-1].date()}: the roll would run on fabricated flat prices')
     window = pd.Series(arch.index[(arch.index >= base) & (arch.index <= dates.max())])
     gap = int(max(window.diff().dt.days.max(), (window.iloc[0] - base).days))
     if gap > max_gap:
         raise ValueError(
-            f'Observed window {base.date()}+220d has a {gap}-day hole in the archive (max_gap='
-            f'{max_gap}): the roll would replay forward-filled flat prices through it')
+            f'Observed window {base.date()}+{horizon_days}d has a {gap}-day hole in the archive '
+            f'(max_gap={max_gap}): the roll would replay forward-filled flat prices through it')
     rows = arch.reindex(arch.index.union(dates)).ffill().loc[dates]
-    np.savez(path, **{CME_COL: rows[CME_COL].to_numpy(), BASIS_COL: rows[BASIS_COL].to_numpy()})
+    L = 0.5 * (rows[CARRY_COLS[0]] + rows[CARRY_COLS[1]]).to_numpy()
+    D = (rows[CARRY_COLS[1]] - rows[CARRY_COLS[0]]).to_numpy()
+    carry = np.stack([z_of((L, D), (pd.Timestamp(k) - dates).days / DAYS_IN_YEAR)
+                      for k in knots], axis=1)
+    np.savez(path, **{CME_COL: rows[CME_COL].to_numpy(), BASIS_COL: rows[BASIS_COL].to_numpy(),
+                      'ForwardRate.PLATINUM_CARRY': carry})
+
+
+def static_short_usd_oz(arch, trade_date, mats, pay, volume):
+    """Frictionless realized P&L per oz of the FULL STATIC SHORT - `-volume` oz of the mid leg
+    held from trade to settlement, marks off the realized (spot, carry) reconstruction. The
+    benchmark the trained policy must beat: the simulated world pays a max short a MODELLED
+    roll-down (the spot is a price martingale while every futures leg carries z > 0), so a policy
+    can win in-sim by drift harvesting alone - the basis-saga failure shape. On the realized
+    path that drift either was or was not there; this column is what it was worth. Costs are
+    deliberately excluded (one round trip at 10 bps is ~$0.6/oz; churn already reports the
+    policies' own turnover)."""
+    bdays = pd.bdate_range(trade_date, pay)
+    sub = arch.reindex(arch.index.union(bdays)).ffill().loc[bdays]
+    state = (0.5 * (sub[CARRY_COLS[0]] + sub[CARRY_COLS[1]]).to_numpy(),
+             (sub[CARRY_COLS[1]] - sub[CARRY_COLS[0]]).to_numpy())
+    mat = mats[min(1, len(mats) - 1)]
+    tau = np.array([(mat - d).days for d in bdays]) / DAYS_IN_YEAR
+    F = forward(sub[CME_COL].to_numpy(), state, np.clip(tau, 0.0, None))
+    live = tau > 0
+    f_end = F[live][-1] if live.any() else F[0]
+    return float(-(f_end - F[0]))
 
 
 def pf_bound(arch, trade_date, mats, pay):
@@ -345,6 +447,8 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     slot could expire between the calibration and trade dates (tau -> 0), and a continuous curve
     has no slots to expire."""
     bands = args.corridor_sweep or [args.delta_corridor]
+    calibrated_md = restamp_state_seeds(
+        arch, trade_date, calibrated_md, os.path.join(run_dir, f'md_{tag}_restamp.json'))
     cfg, info = build_deal_config(template, arch, trade_date, calibrated_md, args,
                                   delta_corridor=None if args.corridor_sweep else args.delta_corridor)
     ckpts, train_us, v0s, market_dim = [], [], [], None
@@ -369,7 +473,11 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
         market_dim = tdiag.get('market_dim')
 
     obs_npz = os.path.abspath(os.path.join(run_dir, f'obs_{tag}.npz'))
-    observed_scenario_npz(arch, trade_date, obs_npz, max_gap=args.max_gap)
+    # the same knot rule as price_factors, so the npz carry rows are the job's own curve tensor
+    knots = [pd.Timestamp(trade_date),
+             pd.Timestamp(max(max(info['fixings']), max(info['mats']))) + pd.Timedelta(days=30)]
+    horizon = (info['pay'] - pd.Timestamp(trade_date)).days + 10
+    observed_scenario_npz(arch, trade_date, obs_npz, horizon, knots, max_gap=args.max_gap)
     bound = pf_bound(arch, trade_date, info['mats'], info['pay'])
     rows = []
     for band in bands:
@@ -390,8 +498,11 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
         greedy = (sv.get('greedy') or {}).get('wT_mean')
         nohedge = (sv.get('nohedge') or {}).get('wT_mean')
         q = np.array(sv.get('greedy_q_traj') or [[0.0]])
+        st_short = static_short_usd_oz(arch, trade_date, info['mats'], info['pay'], args.volume)
         rows.append({
             'trade': tag, 'world': 'sync', 'corridor': band,
+            'static_short_usd_oz': (None if nohedge is None
+                                    else round(nohedge / args.volume + st_short, 2)),
             'fair': round(info['k_fair'], 2), 'strike': round(info['k_fair'] - args.margin, 2),
             'n_seeds': len(args.seeds), 'market_dim': market_dim,
             'train_u': train_us[0], 'train_u_seeds': train_us, 'V_0': v0s[0],
@@ -466,6 +577,9 @@ def main():
                     help='Largest hole (days) allowed in the realized window - see '
                          'observed_scenario_npz. 999 runs on forward-filled prices.')
     ap.add_argument('--fit-iters', type=int, default=None)
+    ap.add_argument('--huber-aversion', type=float, default=None,
+                    help='Override Objective.Huber_Aversion (deck default 6.0) - the risk-'
+                         'aversion axis of the mean/std sweep; trains a different policy.')
     ap.add_argument('--delta-corridor', type=float, default=None,
                     help='Causal delta-ramp corridor band on the SIGNED total position, applied '
                          'to BOTH train and roll (the old deck\'s behaviour).')
@@ -514,9 +628,9 @@ def main():
                 calibrated_md = os.path.abspath(os.path.join(run_dir, f'md_{tag}_sync.json'))
                 cal_end = trade_date.strftime('%Y-%m-%d')
                 calibrate(os.path.abspath(args.marketdata), cal_cfg, cal_end, calibrated_md)
-                taus = [(e - trade_date).days / DAYS_IN_YEAR
-                        for e in listed_expiries(args.expiries, trade_date)]
-                for leg, by_state in guard_e_df_state(arch, cal_end, taus).items():
+                mats_g = listed_expiries(args.expiries, trade_date)
+                taus = [(e - trade_date).days / DAYS_IN_YEAR for e in mats_g]
+                for leg, by_state in guard_e_df_state(arch, cal_end, taus, mats=mats_g).items():
                     logging.info('GUARD %s %-18s %s', cal_end, leg, '  '.join(
                         f'd~{k}: {v[0]:+.5f} (t {v[1]:+.2f})' for k, v in by_state.items()))
             if tag in done:
@@ -541,11 +655,15 @@ def main():
 
     df = pd.DataFrame(rows)
     g = df['greedy_usd_oz']
+    n_ok = int(g.notna().sum())
     print('\n===== SYNCHRONIZED WALK-FORWARD ($/oz) =====')
     print(df.to_string(index=False))
+    # denominators are COMPLETED trades: g.mean() skips NaN, so counting failed rows in the
+    # denominator reports a pass-rate over trades the mean never saw
     print(f"\ngreedy  mean {g.mean():+.2f}  min {g.min():+.2f}  max {g.max():+.2f}  "
-          f"positives {int((g > 0).sum())}/{len(df)}  |  nohedge mean {df['nohedge_usd_oz'].mean():+.2f}"
-          f"  |  bound-PASS {int(df['bound_pass'].sum())}/{len(df)}  |  margin {args.margin:+.2f}"
+          f"positives {int((g > 0).sum())}/{n_ok}  |  nohedge mean {df['nohedge_usd_oz'].mean():+.2f}"
+          f"  |  bound-PASS {int(df['bound_pass'].fillna(False).sum())}/{n_ok}"
+          f"  |  FAILED {len(df) - n_ok}  |  margin {args.margin:+.2f}"
           f"  |  seeds {args.seeds}  |  corridor {args.delta_corridor}")
     print('run dir:', run_dir)
 

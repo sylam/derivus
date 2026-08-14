@@ -4155,17 +4155,24 @@ def pv_average_price_swap(shared, time_grid, deal_data):
     **Projected, `T_j > t`.** `F_primary(t, T_j) + E_t[b(T_j)]`. The forward is the cost-of-carry
     read `CommodityFutureDeal` makes - the carry gathered at the fixing's ABSOLUTE date times the
     remaining tenor in years, plus the integrated repo - taken on the PRIMARY spot alone, because
-    the basis is not a traded carry and does not belong under the exponential. The basis decays on
-    its own AR instead:
+    the basis is not a traded carry and does not belong under the exponential. The basis projects
+    under ITS OWN simulated law instead. With the slow mean on, that law is the coupled pair
+    `b_t = mu_{t-1} + phi (b_{t-1} - mu_{t-1})`, `mu_t = lam mu_{t-1} + (1-lam) b_t`, whose mean
+    matrix is ROW-STOCHASTIC - eigenvalues 1 and `lam*phi` - so the conditional mean is
 
-    $$E_t[b(T_j)] = \\mu_t + \\phi^{n_j}\\,(b_t - \\mu_t)$$
+    $$E_t[b(T_j)] = \\mu_t + \\big(\\pi_b + (1-\\pi_b)(\\lambda\\phi)^{n_j}\\big)(b_t - \\mu_t),
+    \\qquad \\pi_b = \\tfrac{(1-\\lambda)\\phi}{(1-\\lambda)\\phi + 1 - \\phi}$$
 
-    `Phi` is the simulated basis model's declared coefficient and `mu_t` its published slow mean,
-    read per path off `(key, 'basis_mu')` in the fork-index convention the model publishes it in
-    (`state[t]` is what the step t->t+1 consumes, which is exactly the mean the projection from row
-    t reverts to). With the slow-mean extension off there is no published series and the AR reverts
-    to zero, which is what the shipped dynamics do - `Mu` is declared on that model and read by
-    nothing.
+    A deviation does NOT die: the pair has a unit root and keeps `pi_b` of it forever (5.5% at the
+    shipped parameters). The naive `phi^n` decay converges to `mu_t` instead and misprices every
+    unrealised fixing by `pi_b (b_t - mu_t)` - $0.086/oz on the 2026 world, invisible to an MC
+    gate because that is 5e-5 of the notional. `Phi`/`lam` are the simulated model's declared
+    coefficients and `mu_t` its published slow mean, read per path off `(key, 'basis_mu')` in the
+    fork-index convention the model publishes it in (`state[t]` is what the step t->t+1 consumes,
+    which is exactly the mean the projection from row t reverts toward). With the slow-mean
+    extension off there is no published series, no second recursion and no unit root: the AR
+    reverts to zero through the plain `phi^{n_j}`, which is exact there - `Mu` is declared on that
+    model and read by nothing.
 
     `n_j` counts SIMULATION STEPS between the two rows, fractionally, because a simulation step is
     what the basis model applies `Phi` to: its loop is one step per scenario row and it rescales
@@ -4219,10 +4226,18 @@ def pv_average_price_swap(shared, time_grid, deal_data):
             (deal_time[:, utils.TIME_GRID_ScenarioPriorIndex] +
              deal_time[:, utils.TIME_GRID_PriorScenarioDelta]).reshape(-1, 1), 0.0, None)
         basis = utils.calc_time_grid_spot_rate(factor_dep['Basis'], deal_time, shared).unsqueeze(1)
-        mean = utils.calc_time_grid_spot_rate(
-            factor_dep['Basis_Mu'], deal_time, shared).unsqueeze(1) if factor_dep['Basis_Mu'] else 0.0
-        projected = projected + mean + spot.new_tensor(
-            factor_dep['Basis_Phi'] ** steps).unsqueeze(-1) * (basis - mean)
+        phi = factor_dep['Basis_Phi']
+        if factor_dep['Basis_Mu']:
+            mean = utils.calc_time_grid_spot_rate(
+                factor_dep['Basis_Mu'], deal_time, shared).unsqueeze(1)
+            # the simulated (b, mu) pair is row-stochastic - eigenvalues 1 and lam*phi - so a
+            # deviation keeps the unit root's share pi_b of itself forever rather than dying
+            lam = factor_dep['Basis_Lambda']
+            pi_b = (1.0 - lam) * phi / ((1.0 - lam) * phi + 1.0 - phi)
+            decay = pi_b + (1.0 - pi_b) * (lam * phi) ** steps
+        else:
+            mean, decay = 0.0, phi ** steps
+        projected = projected + mean + spot.new_tensor(decay).unsqueeze(-1) * (basis - mean)
 
     n = realised.shape[0]
     average = (torch.sum(projected * weight * (1.0 - past), dim=1) +

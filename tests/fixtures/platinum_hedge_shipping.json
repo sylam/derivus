@@ -50,6 +50,7 @@
      "CashAccountDeal": {
       "USD_CASH": {
        "Currency": "USD",
+       "Units": 1.0,
        "Investment_Horizon": {
         ".Timestamp": "2026-04-05"
        },

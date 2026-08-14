@@ -3023,10 +3023,19 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                         f'{tuple(mtm_flat.shape)}, expected (*, {B_outer * B_inner})) — a deal '
                         f'was skipped inside the fork; see the CRITICAL log above for the cause.')
                 inner_mtm = mtm_flat.reshape(*mtm_flat.shape[:-1], B_outer, B_inner)
+
+                def _fan(t):
+                    # A STATIC tradable (a cash account off an unsimulated curve) marks with a
+                    # 1-wide batch - path-independent is a legitimate mark, not a skip - so
+                    # broadcast it over the fan-out rather than demanding the flat batch of it.
+                    # Any OTHER width is a genuine shape error and expand fails loud.
+                    if t.shape[-1] == B_outer * B_inner:
+                        return t.reshape(*t.shape[:-1], B_outer, B_inner)
+                    core = t.squeeze(-1) if t.shape[-1] == 1 else t
+                    return core.reshape(*core.shape, 1, 1).expand(*core.shape, B_outer, B_inner)
+
                 inner_trade_tensors = {
-                    ref: t.reshape(*t.shape[:-1], B_outer, B_inner)
-                    for ref, t in inner_netting_sets.tensor_marks().items()
-                }
+                    ref: _fan(t) for ref, t in inner_netting_sets.tensor_marks().items()}
                 # The window prices {t, t+1}, so no terminal row exists to read: `L_T` is None
                 # and the horizon stats are simply not produced.
                 result = {}

@@ -309,7 +309,11 @@ def get_forward_rate_factor(fieldname, static_offsets, stochastic_offsets, all_t
 
 
 def get_observed_basis_decay(commodity, all_factors):
-    """`(phi, mu code)` - how the tail of a composed spot's code decays away from its current level.
+    """`(phi, lam, mu code)` - how the tail of a composed spot's code decays away from its current
+    level. `lam` is the slow mean's own EWMA coefficient, `0.0` when the extension is off: the
+    projection needs BOTH, because with the mean recursion on, the simulated `(b, mu)` pair is
+    row-stochastic and a deviation decays at `lam*phi` toward the pair's conserved mixture rather
+    than at `phi` toward the mean - see `pricing.pv_average_price_swap`.
 
     A pricer that projects a composed spot forward needs the basis model's OWN dynamics, and the
     Heston-Nandi rule applies: the process object stays out of `pricing`, so the declared parameter
@@ -340,12 +344,12 @@ def get_observed_basis_decay(commodity, all_factors):
     (`tests/test_fork_published_state.py`, $0 bitwise on CUDA).
     """
     if len(commodity) < 2 or not commodity[-1][utils.FACTOR_INDEX_Stoch]:
-        return 1.0, None
+        return 1.0, 0.0, None
     key = commodity[-1][utils.FACTOR_INDEX_Offset]
     param = all_factors[key].param
     # `.get` on the extension exactly as the model's own precalculate reads it: absent IS off
-    return float(param['Phi']), ([(True, (key, 'basis_mu'), None)]
-                                 if param.get('Slow_Mean_Lambda', 0.0) else None)
+    lam = float(param.get('Slow_Mean_Lambda', 0.0) or 0.0)
+    return float(param['Phi']), lam, ([(True, (key, 'basis_mu'), None)] if lam else None)
 
 
 def get_equity_rate_factor(fieldname, static_offsets, stochastic_offsets):
@@ -4745,7 +4749,7 @@ class CommodityAveragePriceSwapDeal(Deal):
             'Discount_Rate'] else field['Currency']
 
         commodity = get_commodity_rate_factor(field['Commodity'], static_offsets, stochastic_offsets)
-        phi, mu = get_observed_basis_decay(commodity, all_factors)
+        phi, lam, mu = get_observed_basis_decay(commodity, all_factors)
 
         field_index = {
             'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
@@ -4753,6 +4757,7 @@ class CommodityAveragePriceSwapDeal(Deal):
             'Spot': commodity[:1],
             'Basis': commodity[1:],
             'Basis_Phi': phi,
+            'Basis_Lambda': lam,
             'Basis_Mu': mu,
             'Repo': get_commodity_zero_rate_factor(
                 field['Commodity'], static_offsets, stochastic_offsets, all_tenors, all_factors),

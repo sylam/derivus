@@ -137,6 +137,19 @@ def _realized_vol_series(spot, window=PRICE_ZSCORE_WINDOW):
     return rv.mean(dim=-1).clamp_min(1e-6)                                            # (T,)
 
 
+def _history_key(commodity_field):
+    """The `spot_price_history` key for a deal's raw `Commodity` field: the PRIMARY spot's full
+    factor name, which is the key space `_spot_price_history` validates the dict against
+    (`check_tuple_name` over the live `CommodityPrice` factors). The deal carries the bare name
+    (`'PLATINUM_CME'`, or a composed `'PLATINUM_CME.LME_CME'` whose history is its primary's by
+    the resolver layer's ultimate-primary rule); keying the lookup by that raw field can never
+    match, and every tradable then silently takes the flat first-row prefix."""
+    if not commodity_field:
+        return None
+    return utils.check_tuple_name(
+        utils.Factor('CommodityPrice', utils.check_rate_name(commodity_field)[:1]))
+
+
 def _roll_rebate(deltas, prices, runtime, vol=None):
     """Calendar-spread rebate for a step's turnover (Evaluator.Roll_As_Calendar_Spread='Yes').
     A rebalance that REDUCES one contract month and INCREASES an adjacent month is a roll: the
@@ -414,8 +427,8 @@ class Bundle:
                 for commodity, payload in history.items()}
             tradables = {
                 n: torch.cat([self._history_prefix(
-                    t, self.spot_price_history.get(
-                        runtime['tradables'][n]['params'].get('Commodity'))), t], dim=0)
+                    t, self.spot_price_history.get(_history_key(
+                        runtime['tradables'][n]['params'].get('Commodity')))), t], dim=0)
                 for n, t in tradables.items()}
         self.time_grid_days = grid
         self.tradables = tradables

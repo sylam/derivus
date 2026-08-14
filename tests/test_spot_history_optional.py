@@ -43,6 +43,76 @@ def _cfg_without_history():
     return cfg
 
 
+def test_the_realized_history_reaches_the_tradable_prefix():
+    """The companion POSITIVE case: with `Spot_Price_History` present, a commodity tradable's
+    history prefix must BE the realized series, not the flat first-row broadcast. The lookup
+    resolves the deal's raw `Commodity` field (`'PLATINUM_LME.LME_CME'`, a composed name) to the
+    primary spot's full factor name - the key space `_spot_price_history` validates the dict
+    against. Keyed by the raw field it can never match: `.get()` -> None -> `tensor[:1].expand`
+    -> thirty rows of zero variation ahead of every rolling feature, silently, for every config
+    that passes validation - which is why this asserts variation AND the values."""
+    cfg = jsonlib.load(open(FIXTURE))
+    calc = cfg['Calc']['Calculation']
+    calc['Execution_Mode'] = 'solve_hedge'
+    calc['Batch_Size'], calc['Simulation_Batches'] = 24, 2
+    calc['Inner_Sub_Batch'] = 8
+    calc['Inner_MC_Enabled'] = 'Yes'
+    calc['Random_Seed'] = 1234
+    hp = calc['Hedging_Problem']
+    hp['Solver'] = {'Object': 'DiffSolverV2', 'Training_Action_Grid_Levels_Per_Axis': 5,
+                    'Training_Action_Chunk_Size': 64, 'T_Min': 100, 'DiffV2_Fit_Iters': 5}
+    cx = rf.Context()
+    cx.load_json((jsonlib.dumps(cfg), 'spot_history_prefix.json'))
+    _, result = cx.run_job()
+    bundle, runtime = result.bundle, result.runtime
+
+    H = bundle.history_rows
+    assert H > 0 and bundle.initial_time_index == H, (H, bundle.initial_time_index)
+    declared = {k: [float(p) for p in v['Prices'][-H:]]
+                for k, v in hp['Portfolio_State']['Spot_Price_History'].items()}
+    checked = 0
+    for n, meta in runtime['tradables'].items():
+        raw = (meta.get('params') or {}).get('Commodity')
+        key = 'CommodityPrice.' + raw.split('.')[0] if raw else None
+        if key not in declared:
+            continue
+        got = bundle.tradables[n][:H, 0].detach().cpu().numpy()
+        assert np.ptp(got) > 0.0, f'{n}: flat prefix - the realized branch never engaged'
+        assert np.allclose(got, declared[key], rtol=1e-5), (n, got[:3], declared[key][:3])
+        checked += 1
+    assert checked > 0, 'no tradable reached the realized-prefix assertion'
+
+
+def test_the_cash_account_prices_and_its_mark_accrues():
+    """`CashAccountDeal` is a PRICED tradable - `Units / D(t)` - and its mark ratio is the ONLY
+    financing path: `_growth_factors` reads consecutive marks, and variation margin routes off the
+    runtime config, so a skipped cash deal loses interest on cash AND margin while everything else
+    stays plausible. The template's block lacked `Units`: `KeyError` -> the canonical deal guard
+    -> no tensor mark -> `_growth_factors` {} -> every balance passed through flat, in every run
+    of this fixture, with a repeated CRITICAL as the only evidence. Worth $0.54/oz at 2026 rates.
+    Any non-zero `Units` restores it - only the mark RATIO is consumed."""
+    cfg = jsonlib.load(open(FIXTURE))
+    calc = cfg['Calc']['Calculation']
+    calc['Execution_Mode'] = 'solve_hedge'
+    calc['Batch_Size'], calc['Simulation_Batches'] = 24, 2
+    calc['Inner_Sub_Batch'] = 8
+    calc['Inner_MC_Enabled'] = 'Yes'
+    calc['Random_Seed'] = 1234
+    calc['Hedging_Problem']['Solver'] = {
+        'Object': 'DiffSolverV2', 'Training_Action_Grid_Levels_Per_Axis': 5,
+        'Training_Action_Chunk_Size': 64, 'T_Min': 100, 'DiffV2_Fit_Iters': 5}
+    cx = rf.Context()
+    cx.load_json((jsonlib.dumps(cfg), 'cash_account_prices.json'))
+    _, result = cx.run_job()
+    bundle = result.bundle
+    assert 'USD_CASH' in bundle.tradables, 'the cash account produced no mark - financing is off'
+    cash = bundle.tradables['USD_CASH'][bundle.initial_time_index:, 0].detach().cpu().numpy()
+    d = np.diff(cash)
+    # strictly accruing while live, END-PADDED flat past the Investment_Horizon by the grid align
+    assert np.all(d >= 0.0) and d.max() > 0.0, 'the cash mark does not accrue'
+    assert cash[-1] / cash[0] > 1.001, f'no visible funding growth: {cash[0]} -> {cash[-1]}'
+
+
 def test_spot_price_history_optional_trains_via_calibrated_scale():
     # the package under test must be this checkout, not another copy earlier on sys.path
     assert os.path.dirname(os.path.dirname(os.path.abspath(__file__))) in rf.__file__, rf.__file__
