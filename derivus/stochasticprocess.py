@@ -4691,7 +4691,10 @@ class QuadraticCarryCurveModel(StochasticProcess):
         eps = Z * torch.sqrt((self.nu - 2.0) / W)                            # (2, T, ...batch)
         k = self.k.reshape(T, 2, *([1] * len(batch)))
         out = torch.empty((T, 2, *batch), device=Z.device, dtype=Z.dtype)
-        out[0] = self.z0.unsqueeze(-1).expand(2, *batch)
+        # `align_rank` rather than one `unsqueeze`: the initial curve is `(2,)` calibrated and
+        # `(2, B)` per path, and the per-path one arrives in BOTH modes - an inner fork's row and
+        # the diff-ML burn-in's terminal curve, which is a (2, B) pair in OUTER mode.
+        out[0] = self.align_rank(self.z0, 1 + len(batch)).expand(2, *batch)
         state = self.state0.unsqueeze(-1) if inner else self.state0
         L, D = state[0], state[1]
         for t in range(1, T):

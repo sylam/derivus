@@ -329,14 +329,15 @@ def get_observed_basis_decay(commodity, all_factors):
     (`NoModel='Constant'`), so a base valuation and a simulated row 0 differ by exactly the decay
     term - gated, with its size, in `tests/test_average_price_swap.py`.
 
-    NOT SUPPORTED INSIDE AN INNER-MC FORK, and unmeasured. `_run_inner_mc_at_t` republishes every
-    FACTOR grid as a `ScenarioSource` spanning the outer past plus the forked rows, but a
-    `(key, kind)` series is republished by the inner `generate` alone, at the fork's own two rows
-    and its own `(B, B2)` shape - so this read is handed a two-row tensor and asked for an outer
-    row index. This deal has no optionality and no pricer-level inner MC, so the only route to it
-    is a `Hedge_Monte_Carlo` liability, which this increment does not wire; measuring it takes one
-    HMC world carrying this deal, and closing it takes the fork publishing `(key, kind)` series as
-    sources too, which is engine work with its own gates.
+    SUPPORTED INSIDE AN INNER-MC FORK, and measured. `_run_inner_mc_at_t` publishes every path
+    series the fork produced - a factor's grid and a process's own `(key, kind)` alike - as a
+    `ScenarioSource` spanning the outer past plus the forked rows, so this read lands on the fork's
+    own row through exactly the seam a factor read uses. Before that it was handed the fork's two
+    rows and asked for an outer row index, which is not a wrong number but an unrunnable
+    configuration: the `IndexError` becomes a scalar-0 mark and the fork's shape check stops the
+    run. The fork's row t is the outer path's row t, so an average-price swap - no optionality, so
+    a fork adds it no information - marks IDENTICALLY in both, which is the gate
+    (`tests/test_fork_published_state.py`, $0 bitwise on CUDA).
     """
     if len(commodity) < 2 or not commodity[-1][utils.FACTOR_INDEX_Stoch]:
         return 1.0, None
@@ -4773,6 +4774,16 @@ class CommodityAveragePriceSwapDeal(Deal):
                 ', '.join([str(x[0]) for x in missing_fixings])))
 
         return field_index
+
+    def leg_descriptors(self, deal_data):
+        """`(|Units|, settlement day offset)` — the pair `Bundle`'s utility scale reads, off THIS
+        deal's own resolved dependencies rather than a `Cashflows` schedule it does not build.
+
+        The base implementation's `(0.0, None)` default is right for a deal with no schedule and
+        wrong for this one: it pays exactly one cashflow, of `Units` ounces, at `Settlement`. As a
+        `Hedge_Monte_Carlo` liability the default made `c` unresolvable and every utility objective
+        RAISED — the campaign's own liability could not be hedged at all."""
+        return abs(self.field['Units']), float(deal_data.Factor_dep['Settlement'])
 
     def generate(self, shared, time_grid, deal_data):
         return pricing.pv_average_price_swap(shared, time_grid, deal_data)

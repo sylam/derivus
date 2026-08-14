@@ -2840,7 +2840,11 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         published as its own `ScenarioBlock` carrying the `past_columns` index instead.
         `ScenarioSource` is the same sequence-of-row-blocks the outer loop publishes with one
         block, so the pricer reads both through one mechanism; a fork at t=0 has no past and
-        publishes one block.
+        publishes one block. EVERY path series goes through that publication, not every factor: a
+        process's own `(key, kind)` series is read through the same seam as a factor (a pricer
+        cannot tell them apart), so one the outer snapshot also carries is per-path state that
+        forked with the path and gets the same logical grid. The fork's own seeds are excluded by
+        that rule rather than by a name test - the outer path does not carry them.
 
         PER-PROCESS HOOKS, no isinstance branch anywhere - a factor without a revealed sufficient
         statistic returns an empty dict and the forker's single uniform loop covers every model
@@ -2930,6 +2934,9 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                                        use_random=str(self.params.get('Inner_Draws', 'sobol')).lower() == 'random')
 
                 market_t1_parts = []
+                # The fork BORROWS this buffer, so an entry it does not rewrite is still the outer
+                # run's - references only, read once by the publication below.
+                outer_entries = dict(shared_mem.t_Scenario_Buffer)
                 for key, proc_inner in self.stoch_factors_inner.items():
                     if key.type in utils.DimensionLessFactors:
                         continue
@@ -2965,9 +2972,13 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 # columns, handed over as data rather than re-derived downstream
                 past_columns = torch.arange(
                     B_flat, device=shared_mem.one.device) // B_inner
-                for key in self.stoch_factors_inner:
-                    if key.type in utils.DimensionLessFactors:
-                        continue
+                # EVERY path series this fork WROTE and the outer path also carries - a factor's
+                # grid and a process's own `(key, kind)` series alike, because a pricer reads both
+                # through one seam and they cannot be on different logical grids. Each half of the
+                # test excludes one thing: an outer entry the fork never rewrote (a dimensionless
+                # factor, a burn-in seed), and this fork's own `<kind>_inner` seed.
+                for key in [k for k, v in shared_mem.t_Scenario_Buffer.items()
+                            if v is not outer_entries.get(k) and k in outer_scenario_buffer]:
                     inner_path = shared_mem.t_Scenario_Buffer[key]                  # (T_inner, ..., B, SB)
                     past = [utils.ScenarioBlock(outer_scenario_buffer[key][:cutoff_idx],
                                                 batch_index=past_columns)] if cutoff_idx else []

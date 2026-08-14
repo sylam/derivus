@@ -506,6 +506,40 @@ def test_the_fork_recovers_the_outer_state_at_the_fork_row():
         'the fork does not start on the curve it was forked from')
 
 
+def test_a_per_path_initial_curve_starts_every_path_on_its_own_curve():
+    """The OUTER per-path initial curve — the diff-ML burn-in, where `Randomize_Initial_State`
+    hands the next batch `simulated[-1]`, a `(2, B)` pair, in OUTER mode.
+
+    Three initial shapes reach `generate` and only two were covered: `(2,)` calibrated (outer) and
+    `(2, B)` per path (INNER, where the fan-out adds the axis the broadcast needed). The third is
+    this one, and it did not raise a wrong number — it raised, at the first burn-in batch of every
+    `Hedge_Monte_Carlo` solve on a world whose carry is this process:
+    `expand(FloatTensor{[2, B, 1]}, size=[2, B])`. Found by running the walk-forward, not by a
+    gate, which is why it is one here."""
+    T, B, B2 = 12, 6, 3
+    k0 = _k(KNOT_DAYS, FITTED['Reference_Tenors'])
+    # a per-path terminal curve: every path on its own (L, D), so a broadcast of ONE path's curve
+    # over the batch would be visible rather than a tie
+    per_path = torch.stack([_curve((L0 + 0.001 * i, D0 - 0.0005 * i), k0) for i in range(B)], dim=-1)
+    assert per_path.shape == (2, B)
+
+    shared = _shared(B, T)
+    outer = _process(FITTED, shared, T, per_path)
+    torch.manual_seed(5)
+    path = outer.generate(shared)
+    assert path.shape == (T, 2, B)
+    assert torch.equal(path[0], per_path), 'row 0 is not each path\'s own initial curve'
+    # …and the state recovered from it is per path too, so the dynamics continue from B curves
+    assert not torch.equal(outer.state0[0], outer.state0[0].roll(1))
+
+    # the same tensor in INNER mode still fans out across the sub-batch, unchanged
+    inner_shared = _shared(B, T, sub=B2)
+    inner = _process(FITTED, inner_shared, T, per_path)
+    torch.manual_seed(5)
+    inner_path = inner.generate(inner_shared)
+    assert torch.equal(inner_path[0], per_path.unsqueeze(-1).expand(2, B, B2))
+
+
 def test_the_level_does_not_mean_revert_materially_over_a_quarter():
     """The documented modelling caveat, made checkable. phi_L = 0.9962 is 2.3 s.e. from a unit root,
     so nothing may lean on carry reversion for value: over a quarter the conditional mean gives up
