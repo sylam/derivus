@@ -1152,6 +1152,14 @@ class CurveTenor(object):
             delta = self.delta
             index = tenor.searchsorted(clipped_points, side='right') - 1
 
+        if 'Extrapolate' in self.type:
+            # extend the end segments: clamp the index to a real segment and leave alpha
+            # unclipped - a linear blend with alpha outside [0, 1] IS linear extrapolation
+            index = index.clip(0, max(self.max_index - 1, 0))
+            index_next = (index + 1).clip(0, self.max_index)
+            alpha = (tenor_points_in_years - tenor[index]) / delta[index]
+            return index, index_next, alpha
+
         index_next = (index + 1).clip(0, self.max_index)
 
         if self.type == 'Dividend':
@@ -2861,7 +2869,7 @@ def update_tenors(base_date, all_factors):
 
             if factor.type == 'DividendRate':
                 tenor_data = tenor_diff(tenor_points, 'Dividend')
-            elif factor.type in ['InterestRate', 'InflationRate']:
+            elif factor.type in ['InterestRate', 'InflationRate', 'ForwardRate']:
                 if len(risk_factor.interpolation)>1:
                     interpolation_type = tuple([(x[0], x[1], x[2][0]) for x in risk_factor.interpolation])
                 else:

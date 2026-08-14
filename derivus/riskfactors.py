@@ -40,7 +40,8 @@ factor_interp_map = {
     'HermiteRT': 'HermiteRT',
     'Hermite': 'Hermite',
     'LinearRT': 'LinearRT',
-    'Linear': 'Linear'
+    'Linear': 'Linear',
+    'LinearExtrapolate': 'LinearExtrapolate'
 }
 
 
@@ -158,6 +159,8 @@ class Factor1D(object):
             return 'Hermite', g, c
         elif interpolation == 'LinearRT':
             return ('LinearRT',)
+        elif interpolation == 'LinearExtrapolate':
+            return ('LinearExtrapolate',)
         else:
             return ('Linear',)
 
@@ -176,6 +179,12 @@ class Factor1D(object):
             return val / denom
         elif interp[0] == 'LinearRT':
             return np.interp(tenors, tenor_segment, tenor_segment * values)/tenors
+        elif interp[0] == 'LinearExtrapolate' and tenor_segment.size > 1:
+            val = np.interp(tenors, tenor_segment, values)
+            s0 = (values[1] - values[0]) / (tenor_segment[1] - tenor_segment[0])
+            s1 = (values[-1] - values[-2]) / (tenor_segment[-1] - tenor_segment[-2])
+            val = np.where(tenors < tenor_segment[0], values[0] + s0 * (tenors - tenor_segment[0]), val)
+            return np.where(tenors > tenor_segment[-1], values[-1] + s1 * (tenors - tenor_segment[-1]), val)
         else:
             return np.interp(tenors, tenor_segment, values)
 
@@ -1039,7 +1048,13 @@ class ForwardRate(ForwardPrice):
     expiry dates — same tenor convention as `ForwardPrice` (Excel date offsets), but
     semantically a rate rather than a price. Distinct from `InterestRate` (which is
     quoted at relative year-tenors); used for forward-curve dynamics where each curve
-    knot is tied to a specific dated contract."""
+    knot is tied to a specific dated contract.
+
+    Routed through `Price Factor Interpolation`: a carry curve whose rate is linear in
+    tenor (z = c + a*tau) is identified exactly by two knots, and `LinearExtrapolate`
+    extends that line outside them — the flat-clipping `Linear` default loses the
+    curvature term wherever a contract trades in front of the first knot."""
+    interpolation_methods = ('Linear', 'LinearExtrapolate')
     fields = [
         F('Currency', 'Text', default='', description='The associated currency for this curve'),
         F('Curve', 'Curve', bind='value',
@@ -1528,7 +1543,7 @@ def construct_factor(factor, price_factors, factor_interp, base_date=None):
     logging.root.name = '.'.join(factor.name)
     # check the interpolation on interest Rates - can add more methods/price factors as desired
     pf_local = dict(pf)  # shallow copy
-    if factor.type in ['InterestRate', 'InflationRate']:
+    if factor.type in ['InterestRate', 'InflationRate', 'ForwardRate']:
         interp_method = factor_interp.search(factor, pf, True)
         pf_local.update(
             {'Interpolation' : factor_interp_map.get(interp_method, 'Linear'),

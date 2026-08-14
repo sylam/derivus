@@ -3308,7 +3308,13 @@ class GARCHSpotModel(StochasticProcess):
           description='Step size (in years) of the variance recursion'),
         F('Convexity_Correction', 'Text', default='No', values=['Yes', 'No'],
           description='Yes subtracts half the per-step variance from the log drift, making the '
-                      'PRICE the Mu-martingale')
+                      'PRICE the Mu-martingale'),
+        F('Carry_Drift', 'Text', default='No', values=['Yes', 'No'],
+          description="Yes drifts the simulated log-spot each step at the FRONT of the "
+                      "commodity's own carry curve (the factor's declared Forward_Rate, whose "
+                      "process must publish (key, 'z0')) - cost-of-carry real-world dynamics, "
+                      "under which every futures leg is near-driftless in the training world "
+                      "instead of rolling down the curve with certainty")
     ]
 
     def __init__(self, factor, param, implied_factor=None):
@@ -3316,6 +3322,7 @@ class GARCHSpotModel(StochasticProcess):
         assert (param['Omega'] > 0.0 and param['Alpha'] >= 0.0 and param['Beta'] >= 0.0
                 and param['Alpha'] + param['Beta'] <= 0.999 and param['Nu'] > 2.05
                 and param['H0'] > 0.0), f'GARCHSpotModel invalid params: {param}'
+        self.carry_drift = str(param.get('Carry_Drift', 'No')) == 'Yes'
         # Convexity_Correction=Yes makes the PRICE the martingale (E[S_{t+1}/S_t]=exp(Mu·dt))
         # by subtracting ½·Var(r_t) from the per-step log-drift; No (default) is today's
         # log-space-zero-mean (E[Δlog S]=Mu·dt, so the price carries a +½·var Jensen drift).
@@ -3364,6 +3371,7 @@ class GARCHSpotModel(StochasticProcess):
         self.nu = _t(float(self.param['Nu']))
         self.h0_default = _t(float(self.param['H0']))
         self.drift = _t(float(self.param.get('Mu', 0.0)) * dt_arr)               # (T,) μ·dt per step
+        self.dt_t = _t(dt_arr)                                                   # (T,) dt per step, for Carry_Drift
         # f_t = dt_t/dt_c, the trading-time length of a calendar grid step.
         self.f = _t(dt_arr / dt_c)                                               # (T,) trading-time step length
         self.sub_dt = utils.substep_schedule(dt_arr / dt_c)
@@ -3378,7 +3386,48 @@ class GARCHSpotModel(StochasticProcess):
         # AAD: spot0 stays on the graph, unreshaped so inner MC can pass (B,).
         self.spot0 = tensor
 
-    def _simulate_returns(self, eps, z, h):
+    def calc_references(self, factor, static_ofs, stoch_ofs, all_tenors, all_factors):
+        """Resolve the carry-curve factor Carry_Drift reads - the factor's own declared
+        Forward_Rate. Fail-loud here rather than silently pricing without the drift: a missing
+        or unsimulated carry with the switch on is exactly the phantom (model-data drift
+        mismatch) the switch exists to remove."""
+        if not self.carry_drift:
+            return
+        name = self.factor.param.get('Forward_Rate')
+        if not name:
+            raise Exception(f'GARCHSpotModel {utils.check_tuple_name(factor)}: Carry_Drift=Yes '
+                            f'but the factor declares no Forward_Rate to read the carry from')
+        self.carry_key = utils.Factor('ForwardRate', utils.check_rate_name(name))
+        if self.carry_key not in all_factors:
+            raise Exception(f'GARCHSpotModel {utils.check_tuple_name(factor)}: Carry_Drift=Yes '
+                            f'but {utils.check_tuple_name(self.carry_key)} is not in the factor '
+                            f'universe')
+
+    def _carry_drift(self, shared_mem, ndim):
+        """The (T, ...) per-step log-drift with the carry term folded in, or the plain (T,) Mu
+        drift when the switch is off. The carry process publishes `(key, 'z0')` in the fork-index
+        convention (row t = what step t->t+1 consumes), (T, 1, ...batch); it simulates BEFORE
+        this spot (Forward_Rate is a dependency of CommodityPrice, so topological order provides
+        it) in the outer loop, the inner fork and the observed-path replay alike."""
+        if not self.carry_drift:
+            return self.drift
+        z0 = shared_mem.t_Scenario_Buffer.get((self.carry_key, 'z0'))
+        if z0 is None:
+            raise Exception(
+                f'GARCHSpotModel {utils.check_tuple_name(self.factor_key)}: Carry_Drift=Yes but '
+                f'{utils.check_tuple_name(self.carry_key)} published no (key, \'z0\') series - '
+                f'its process must simulate (and publish the front carry) before this spot')
+        zt = z0.squeeze(1)
+        # Per-factor scenario grids are PREFIXES of one master grid, each cut one row past its
+        # own last dependent date - a composed spot can outlive its carry by a trailing row.
+        # The missing tail is the front carry held flat at its last simulated value.
+        pad = self.dt_t.shape[0] - zt.shape[0]
+        if pad > 0:
+            zt = torch.cat([zt, zt[-1:].expand(pad, *zt.shape[1:])])
+        shape = (-1,) + (1,) * (ndim - 1)
+        return self.drift.view(shape) + zt * self.dt_t.view(shape)
+
+    def _simulate_returns(self, eps, z, h, drift=None):
         """Shared GARCH recursion (outer/inner) on the FRACTIONAL TRADING CLOCK. `eps` (T, ...)
         unit-variance standardised-t innovations, `z` (T, ...) the raw framework Gaussians they
         were scaled from (a coarse interval's sub-steps re-derive their own t-innovations from
@@ -3399,8 +3448,11 @@ class GARCHSpotModel(StochasticProcess):
         PRICE (not the log-price) is the Mu-martingale: E[exp(r_t − ½Var(r_t))] = 1 for Gaussian
         r_t. The correction touches ONLY ds (the log-price shift); the innovation r_t and the h
         recursion — hence revealed log_h — are untouched. (Student-t r has E[exp(r)]=∞, so −½Var
-        slightly under-corrects, leaving a small positive residual price drift on the fat tail.)"""
-        drift = self.drift
+        slightly under-corrects, leaving a small positive residual price drift on the fat tail.)
+
+        `drift` overrides the flat Mu·dt schedule with a per-(step, path) tensor — the
+        Carry_Drift composite from `_carry_drift`; both index as drift[t]."""
+        drift = self.drift if drift is None else drift
         log_h = torch.empty_like(eps)
         ds = torch.zeros_like(eps)
         log_h[0] = h.log()
@@ -3445,12 +3497,13 @@ class GARCHSpotModel(StochasticProcess):
         else:
             eps = Z
 
+        drift = self._carry_drift(shared_mem, Z.ndim)
         if Z.ndim == 2:
             T, B = Z.shape
             # h0: the diff-ML t=0 randomization hook (mirrors regime0_outer); else H0 expanded.
             h0 = shared_mem.t_Scenario_Buffer.get((self.factor_key, 'h0_outer'))
             h = h0 if h0 is not None else torch.zeros_like(Z[0]) + self.h0_default
-            ds, log_h = self._simulate_returns(eps, Z, h)
+            ds, log_h = self._simulate_returns(eps, Z, h, drift)
             s0 = self.spot0.expand(B)                                            # (1,) -> (B,)
             log_path = s0.log().unsqueeze(0) + ds.cumsum(dim=0)                  # (T, B)
         else:
@@ -3458,7 +3511,7 @@ class GARCHSpotModel(StochasticProcess):
             # h0: per-outer-path fork seed (mirrors regime0_inner), expanded across B2; else H0.
             h0 = shared_mem.t_Scenario_Buffer.get((self.factor_key, 'h0_inner'))
             h = h0.view(B, 1).expand(B, B2) if h0 is not None else torch.zeros_like(Z[0]) + self.h0_default
-            ds, log_h = self._simulate_returns(eps, Z, h)
+            ds, log_h = self._simulate_returns(eps, Z, h, drift)
             s0 = self.spot0                                                      # (B,)
             log_path = s0.view(B, 1).log() + ds.cumsum(dim=0)                    # (T, B, B2)
         # Floor the log-path before exp(): a fat-tailed Student-t innovation can drive it below
@@ -3521,7 +3574,10 @@ class GARCHSpotModel(StochasticProcess):
                              f'the trading day (n_sub up to {int(self.n_sub.max())})')
         obs = simulated.detach()
         logret = obs.clamp_min(1.0e-30).log()
-        drift = self.drift
+        # The SAME composite drift as the forward sim, so the recovered innovation - hence the
+        # replayed h - is identical between forward and replay with Carry_Drift on. The carry's
+        # own reseed republishes the REALIZED z0 before this runs (topological order).
+        drift = self._carry_drift(shared_mem, obs.dim())
         h = torch.zeros_like(obs[0]) + self.h0_default                       # (…B) = H0
         log_h = torch.empty_like(obs)
         log_h[0] = h.log()
@@ -4560,6 +4616,9 @@ class QuadraticCarryCurveModel(StochasticProcess):
                ) / utils.DAYS_IN_YEAR                                        # (T, 2) ageing knots
         k = (tau - 0.5 * (tau_a + tau_b)) / (tau_b - tau_a)                  # (T, 2) shape coords
         self.k = shared.one.new_tensor(k)
+        # z(0) = L + D*(0 - taubar)/dtau: the FRONT carry. Published per (step, path) as
+        # (key, 'z0') for a spot whose Carry_Drift consumes it as its own log-drift rate.
+        self.z0_coeff = -0.5 * (tau_a + tau_b) / (tau_b - tau_a)
 
         # Exact stationary AR(1) aggregation to a step of f calibration steps.
         tg_years = time_grid.time_grid_years
@@ -4607,13 +4666,33 @@ class QuadraticCarryCurveModel(StochasticProcess):
         out[0] = self.align_rank(self.z0, 1 + len(batch)).expand(2, *batch)
         state = self.state0.unsqueeze(-1) if inner else self.state0
         L, D = state[0], state[1]
+        front = torch.empty((T, *batch), device=Z.device, dtype=Z.dtype)
+        front[0] = torch.broadcast_to(L + self.z0_coeff * D, batch)
         for t in range(1, T):
             L_next = self.mu_L + self.phi_L[t] * (L - self.mu_L) + self.sig_L[t] * eps[0, t]
             D = (self.mu_D + self.phi_D[t] * (D - self.mu_D) + self.gamma * (L_next - L)
                  + self.sig_D[t] * eps[1, t])
             L = L_next
             out[t] = L + D * k[t]
+            front[t] = L + self.z0_coeff * D
+        # ATTACHED, not detached: a Carry_Drift spot consumes this as DYNAMICS, so the gradient
+        # of its path with respect to the market carry curve flows through here by design -
+        # unlike log_h/basis_mu, which are detached state COORDINATES. Fork-index convention:
+        # front[t] is what the spot's step t->t+1 drifts at.
+        shared_mem.t_Scenario_Buffer[(self.factor_key, 'z0')] = front.unsqueeze(1)
         return out
+
+    def reseed_from_path(self, simulated, shared_mem):
+        """Observed-path replay: the curve IS the state (no hidden recursions), so the only
+        republication owed is the derived front carry `(key, 'z0')` a Carry_Drift spot consumes -
+        recomputed per row from the SUBSTITUTED curve by the same affine inversion precalculate
+        uses, before the spot's own reseed runs (topological order provides that)."""
+        z = simulated.detach()                                       # (T, 2, ...batch)
+        k = self.k.reshape(self.k.shape[0], 2, *([1] * (z.dim() - 2)))
+        D = (z[:, 1] - z[:, 0]) / (k[:, 1] - k[:, 0])
+        L = z[:, 0] - D * k[:, 0]
+        shared_mem.t_Scenario_Buffer[(self.factor_key, 'z0')] = (
+            L + self.z0_coeff * D).unsqueeze(1)
 
 
 class QuadraticCarryCurveCalibration(object):
@@ -4660,7 +4739,13 @@ class QuadraticCarryCurveCalibration(object):
           description='Floor on the shared degrees of freedom - 3.0 is the lowest value whose '
                       'innovation variance exists, and it sets how much weight the fit puts on '
                       'the tail where the level/shape coupling lives'),
-        F('Nu_Max', 'Float', default=50.0, description='Ceiling on the same fit')
+        F('Nu_Max', 'Float', default=50.0, description='Ceiling on the same fit'),
+        F('Location_Window', 'Integer', default=0,
+          description='When > 0, the LEVEL location (Mu_L, Phi_L) is refitted on this many '
+                      'trailing rows while scale, tails and the shape equation keep the full '
+                      'window - the carry level is the fast-moving component (a stale mean '
+                      'forecasts worse than a random walk) while its scale and nu want the '
+                      'longer sample. 0 = single-window legacy fit')
     ]
 
     def __init__(self, model, param):
@@ -4683,6 +4768,13 @@ class QuadraticCarryCurveCalibration(object):
         (fit_L, fit_D), nu, se = arx1_t_mle([(L, None), (D, np.diff(L))], nu_bounds=nu_bounds)
         phi_L, mu_L, sigma_L, res_L = fit_L.phi, fit_L.mu, fit_L.sigma, fit_L.resid
         phi_D, mu_D, sigma_D, gamma, res_D = fit_D.phi, fit_D.mu, fit_D.sigma, fit_D.gamma, fit_D.resid
+        loc_window = int(self.param.get('Location_Window', 0))
+        if 0 < loc_window < len(L):
+            (fit_Lt,), nu_t, se_t = arx1_t_mle([(L[-loc_window:], None)], nu_bounds=nu_bounds)
+            logging.info('carry level location from trailing %d rows: mu_L %.5f -> %.5f, '
+                         'phi_L %.4f -> %.4f (scale/tails keep the full window)',
+                         loc_window, mu_L, fit_Lt.mu, phi_L, fit_Lt.phi)
+            phi_L, mu_L = fit_Lt.phi, fit_Lt.mu
         logging.info(
             'carry curve (L, D)-t fit: phi_L=%.4f (%.2f se from a unit root) mu_L=%.5f '
             'sigma_L=%.6f | phi_D=%.4f mu_D=%.6f sigma_D=%.6f gamma=%+.4f (t=%.1f) | nu=%.2f',
