@@ -607,7 +607,8 @@ mapping = {
                  'FXDiscreteExplicitDoubleAsianOption', 'FXPartialTimeBarrierOption'],
             'New Energy Derivative':
                 ['FloatingEnergyDeal', 'FixedEnergyDeal', 'EnergySingleOption',
-                 'CommodityForwardDeal', 'CommodityFutureDeal'],
+                 'CommodityForwardDeal', 'CommodityFutureDeal',
+                 'CommodityAveragePriceSwapDeal'],
             'New Equity Derivative':
                 ['EquityDeal', 'EquitySwapLeg', 'EquityForwardDeal',
                  'EquityOptionDeal', 'EquityBinaryOption',

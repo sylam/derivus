@@ -308,6 +308,45 @@ def get_forward_rate_factor(fieldname, static_offsets, stochastic_offsets, all_t
     return [calc_factor_index(utils.Factor('ForwardRate', fieldname), static_offsets, stochastic_offsets, all_tenors)]
 
 
+def get_observed_basis_decay(commodity, all_factors):
+    """`(phi, mu code)` - how the tail of a composed spot's code decays away from its current level.
+
+    A pricer that projects a composed spot forward needs the basis model's OWN dynamics, and the
+    Heston-Nandi rule applies: the process object stays out of `pricing`, so the declared parameter
+    is resolved HERE and rides `Factor_dep` as a plain float. It is not an AAD leaf, unlike the HN
+    scalars - nothing differentiates a mean-reversion speed - so it needs no `ModelParameters`
+    block, and inventing one would be a second source for a number `Price Models` already carries.
+
+    The slow mean is per PATH, so it cannot ride the compile output; what rides is the spot-shaped
+    code that reads the `(key, 'basis_mu')` series the model publishes. The published-state key
+    sits in the code tuple's `FACTOR_INDEX_Offset` slot, which the `x[:2]` cache-key discipline
+    requires only to be hashable. `None` when the recursion is off, and the AR then reverts to zero
+    - which is what the shipped dynamics do.
+
+    A tail nothing simulates has no dynamics to decay, so it is a level that stays where it is:
+    `phi = 1`, which is that statement written in the projection's own arithmetic rather than as a
+    branch in the pricer. That is also the framework's own answer for an unmodelled factor
+    (`NoModel='Constant'`), so a base valuation and a simulated row 0 differ by exactly the decay
+    term - gated, with its size, in `tests/test_average_price_swap.py`.
+
+    NOT SUPPORTED INSIDE AN INNER-MC FORK, and unmeasured. `_run_inner_mc_at_t` republishes every
+    FACTOR grid as a `ScenarioSource` spanning the outer past plus the forked rows, but a
+    `(key, kind)` series is republished by the inner `generate` alone, at the fork's own two rows
+    and its own `(B, B2)` shape - so this read is handed a two-row tensor and asked for an outer
+    row index. This deal has no optionality and no pricer-level inner MC, so the only route to it
+    is a `Hedge_Monte_Carlo` liability, which this increment does not wire; measuring it takes one
+    HMC world carrying this deal, and closing it takes the fork publishing `(key, kind)` series as
+    sources too, which is engine work with its own gates.
+    """
+    if len(commodity) < 2 or not commodity[-1][utils.FACTOR_INDEX_Stoch]:
+        return 1.0, None
+    key = commodity[-1][utils.FACTOR_INDEX_Offset]
+    param = all_factors[key].param
+    # `.get` on the extension exactly as the model's own precalculate reads it: absent IS off
+    return float(param['Phi']), ([(True, (key, 'basis_mu'), None)]
+                                 if param.get('Slow_Mean_Lambda', 0.0) else None)
+
+
 def get_equity_rate_factor(fieldname, static_offsets, stochastic_offsets):
     """Read the (basis-aware) code of the equity spot price factor"""
     return calc_factor_code_chain('EquityPrice', 'ObservedBasis', fieldname, static_offsets, stochastic_offsets)
@@ -4619,6 +4658,124 @@ class CommodityFutureDeal(Deal):
             carry_rate * T_t_years + repo.gather_weighted_curve(shared, T_t)).squeeze(1)
 
         return mtm * fx_rep
+
+
+class CommodityAveragePriceSwapDeal(Deal):
+    fields = [ADMIN, own('CommodityAveragePriceSwapDeal', [
+        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
+        F('Commodity', 'Text', default=REQUIRED, obj='Tuple'),
+        F('Carry', 'Text', default=REQUIRED, obj='Tuple'),
+        F('Currency', 'Text', default=REQUIRED),
+        F('Discount_Rate', 'Text', default='', obj='Tuple'),
+        F('Units', 'Float', default=0.0),
+        F('Fixed_Price', 'Float', default=0.0),
+        F('Settlement_Date', 'Date', default=REQUIRED),
+        F('Sampling_Data', 'Table', default=REQUIRED, description='Sampling_Data',
+          row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')]))
+])]
+
+    factor_fields = {'Currency': ['FxRate'],
+                     'Commodity': ['CommodityPrice'],
+                     'Carry': ['ForwardRate'],
+                     'Discount_Rate': ['InterestRate']}
+
+    documentation = ('Energy', [
+        'A cash-settled average-price swap on a commodity fix. **Commodity** is the sampled spot -',
+        'a plain name, or a composed one (primary + `ObservedBasis` chain, e.g.',
+        '`PLATINUM_CME.LBMA`) whose periods the basis-aware spot lookup sums.',
+        '',
+        '$$V(t)=\\omega N D(t,T_{pay})\\Big(\\sum_j w_j \\tilde S(t,T_j) - K\\Big)$$',
+        '',
+        'where $\\omega=\\pm1$ is **Buy_Sell**, $N$ is **Units**, $K$ is **Fixed_Price** and the',
+        'weights come from **Sampling_Data**, normalised. A fixing already observed at $t$ enters',
+        'at its realised level - the declared `Price` before the base date, the simulated spot at',
+        'that fixing\'s own scenario row after it. One still to come enters as the cost-of-carry',
+        'forward on the PRIMARY spot plus the conditional mean of the basis,',
+        '',
+        '$$\\tilde S(t,T_j)=S(t)e^{c(T_j)(T_j-t)+\\int_t^{T_j}r}+\\mu_t+\\phi^{n_j}(b_t-\\mu_t)$$',
+        '',
+        'with $c$ from **Carry**, $r$ the primary\'s own repo curve, and $(\\phi,\\mu_t)$ the basis',
+        'model\'s declared AR coefficient and published slow mean. $n_j$ is measured in SIMULATION',
+        'STEPS, which is what that model applies $\\phi$ to.',
+    ])
+
+    def __init__(self, params, valuation_options):
+        super(CommodityAveragePriceSwapDeal, self).__init__(params, valuation_options)
+
+    def validate(self):
+        """Settlement cannot precede the average it settles.
+
+        `calc_dependencies` measures the discount tenor from `Settlement_Date` and `reset` makes it
+        the deal grid's last row, so a settlement inside the sampling window discounts the later
+        fixings from BEFORE they fix and stops the grid short of them - a wrong number on a deal
+        that prices, which is the only reason this is worth stating.
+        """
+        dates = [x[0] for x in self.field.get('Sampling_Data') or []]
+        if dates and self.field.get('Settlement_Date') and self.field['Settlement_Date'] < max(dates):
+            yield 'Settlement_Date must be on or after the last Sampling_Data date'
+
+    def reset(self, calendars=None):
+        super(CommodityAveragePriceSwapDeal, self).reset()
+        # the fixings are reval dates so every one of them is a row: the realised half of the
+        # average is read AT them, and a grid that steps over a fixing interpolates across it
+        self.add_reval_dates({x[0] for x in self.field['Sampling_Data']})
+        self.add_reval_dates({self.field['Settlement_Date']}, self.field['Currency'])
+
+    def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
+                          calendars):
+        """Resolve the average-price swap's dependencies.
+
+        `Commodity` may name a composed spot; `get_commodity_rate_factor` is basis-aware, so the
+        code is one element for a plain spot and primary + basis chain for a composed one. The
+        pricer needs the two halves separately - the whole chain for a realised fixing, the primary
+        alone under the forward's exponential - so both slices are filed rather than re-derived.
+        The repo curve comes off the primary spot (`get_factor_component`'s ultimate-primary rule)
+        while the carry is declared, matching `CommodityFutureDeal`.
+
+        This deal inherits the carry curve's market-data rule and cannot check it: `CurveTenor`
+        CLIPS a query to the knot bracket, so a `Carry` whose last knot is before the last fixing
+        prices that fixing off a flat log-carry rather than the curve's own continuation, silently.
+        Bracket the fixings - see `QuadraticCarryCurveModel` and its bracket gate.
+        """
+        field = {'Currency': utils.check_rate_name(self.field['Currency']),
+                 'Commodity': utils.check_rate_name(self.field['Commodity']),
+                 'Carry': utils.check_rate_name(self.field['Carry'])}
+        field['Discount_Rate'] = utils.check_rate_name(self.field['Discount_Rate']) if self.field[
+            'Discount_Rate'] else field['Currency']
+
+        commodity = get_commodity_rate_factor(field['Commodity'], static_offsets, stochastic_offsets)
+        phi, mu = get_observed_basis_decay(commodity, all_factors)
+
+        field_index = {
+            'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
+            'Commodity': commodity,
+            'Spot': commodity[:1],
+            'Basis': commodity[1:],
+            'Basis_Phi': phi,
+            'Basis_Mu': mu,
+            'Repo': get_commodity_zero_rate_factor(
+                field['Commodity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
+            'Carry': get_forward_rate_factor(
+                field['Carry'], static_offsets, stochastic_offsets, all_tenors),
+            'Discount': get_interest_factor(
+                field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
+            'Samples': utils.make_sampling_data(base_date, time_grid, self.field['Sampling_Data']),
+            'base_index': (base_date - utils.excel_offset).days,
+            'Settlement': (self.field['Settlement_Date'] - base_date).days,
+            'Strike': self.field['Fixed_Price'],
+            'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
+            'SettleCurrency': self.field['Currency']
+        }
+
+        missing_fixings = [x for x in self.field['Sampling_Data'] if x[0] < base_date and not x[1]]
+        if missing_fixings:
+            logging.error('Past fixings not defined - please specify fixings for {}'.format(
+                ', '.join([str(x[0]) for x in missing_fixings])))
+
+        return field_index
+
+    def generate(self, shared, time_grid, deal_data):
+        return pricing.pv_average_price_swap(shared, time_grid, deal_data)
 
 
 class EquityForwardDeal(Deal):

@@ -4137,6 +4137,111 @@ def pv_energy_cashflows(shared, time_grid, deal_data):
     return torch.cat(mtm_list, dim=0)
 
 
+@utils.log_exception
+def pv_average_price_swap(shared, time_grid, deal_data):
+    """A commodity average-price swap: `(A - K) * Buy_Sell * Units` paid at `Settlement_Date`,
+    where `A = sum_j w_j S(T_j)` samples a possibly COMPOSED spot (primary + `ObservedBasis`).
+
+    Closed form conditional on the path - no inner MC, because nothing here decides on simulated
+    state. Per reporting row the average splits at that row, and the two halves are read from
+    genuinely different places:
+
+    **Realised, `T_j <= t`.** The composed spot gathered at the FIXING's own scenario row - a reset
+    row's first three columns are a time-grid triple by construction (`utils.RESET_INDEX_Time_Grid`
+    / `_Reset_Day` / `_Scenario`), so `calc_time_grid_spot_rate` reads the path where the fixing
+    happened. A fixing before the base date is its declared `Price` instead. Re-reading the CURRENT
+    row's spot is the stale-read defect and is worth the whole drift between the two dates.
+
+    **Projected, `T_j > t`.** `F_primary(t, T_j) + E_t[b(T_j)]`. The forward is the cost-of-carry
+    read `CommodityFutureDeal` makes - the carry gathered at the fixing's ABSOLUTE date times the
+    remaining tenor in years, plus the integrated repo - taken on the PRIMARY spot alone, because
+    the basis is not a traded carry and does not belong under the exponential. The basis decays on
+    its own AR instead:
+
+    $$E_t[b(T_j)] = \\mu_t + \\phi^{n_j}\\,(b_t - \\mu_t)$$
+
+    `Phi` is the simulated basis model's declared coefficient and `mu_t` its published slow mean,
+    read per path off `(key, 'basis_mu')` in the fork-index convention the model publishes it in
+    (`state[t]` is what the step t->t+1 consumes, which is exactly the mean the projection from row
+    t reverts to). With the slow-mean extension off there is no published series and the AR reverts
+    to zero, which is what the shipped dynamics do - `Mu` is declared on that model and read by
+    nothing.
+
+    `n_j` counts SIMULATION STEPS between the two rows, fractionally, because a simulation step is
+    what the basis model applies `Phi` to: its loop is one step per scenario row and it rescales
+    nothing (`Calibration_DT_Years` is declared on it and read by nothing either). Decaying in
+    calendar days, or in calibration steps, projects a different model from the one being
+    simulated - the two coincide only on a calendar-daily grid, which is why the gate's grid is not
+    one.
+
+    Both halves carry the same normalised weights, so `K` comes off the average once. The
+    settlement is booked once, at the deal grid's last row - which is `Settlement_Date`, that being
+    the deal's latest reval date.
+    """
+    factor_dep = deal_data.Factor_dep
+    deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
+    samples = factor_dep['Samples']
+    dual = samples.dual()
+
+    # realised fixings: the declared past values, then the composed spot at each fixing's OWN row
+    known = samples.known_resets(shared.simulation_batch)
+    sim_samples = samples.schedule[
+        (samples.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
+        (samples.schedule[:, utils.RESET_INDEX_Reset_Day] <= deal_time[:, utils.TIME_GRID_MTM].max())]
+    simulated = utils.calc_time_grid_spot_rate(
+        factor_dep['Commodity'], sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)
+    realised = torch.cat([torch.cat(known, dim=0), simulated], dim=0) if known else simulated
+
+    # the split is a MASK over (row, fixing) rather than a block loop - the payoff has no branch
+    # for a block boundary to serve, and every projected term is well defined at a realised fixing
+    t_mtm = deal_time[:, utils.TIME_GRID_MTM].reshape(-1, 1)
+    # make_sampling_data writes reset == start == end, so one column is both "has it fixed" and
+    # "what date is being sampled"
+    fixing_day = dual.np[:, utils.RESET_INDEX_End_Day].reshape(1, -1)
+    past = shared.one.new_tensor(1.0 * (fixing_day < t_mtm)).unsqueeze(-1)
+    weight = dual.tn[:, utils.RESET_INDEX_Weight].reshape(1, -1, 1)
+    tau = np.clip(fixing_day - t_mtm, 0.0, None)
+
+    spot = utils.calc_time_grid_spot_rate(factor_dep['Spot'], deal_time, shared)
+    carry = utils.calc_time_grid_curve_rate(factor_dep['Carry'], deal_time, shared)
+    repo = utils.calc_time_grid_curve_rate(factor_dep['Repo'], deal_time, shared)
+    projected = spot.unsqueeze(1) * torch.exp(
+        carry.gather_weighted_curve(
+            shared, np.tile(factor_dep['base_index'] + fixing_day, (t_mtm.size, 1)),
+            multiply_by_time=False) * spot.new_tensor(tau / utils.DAYS_IN_YEAR).unsqueeze(-1) +
+        repo.gather_weighted_curve(shared, tau))
+
+    if factor_dep['Basis']:
+        # steps, not days: the fractional scenario position of the fixing less that of the row
+        steps = np.clip(
+            (dual.np[:, utils.RESET_INDEX_Scenario] +
+             dual.np[:, utils.RESET_INDEX_Time_Grid]).reshape(1, -1) -
+            (deal_time[:, utils.TIME_GRID_ScenarioPriorIndex] +
+             deal_time[:, utils.TIME_GRID_PriorScenarioDelta]).reshape(-1, 1), 0.0, None)
+        basis = utils.calc_time_grid_spot_rate(factor_dep['Basis'], deal_time, shared).unsqueeze(1)
+        mean = utils.calc_time_grid_spot_rate(
+            factor_dep['Basis_Mu'], deal_time, shared).unsqueeze(1) if factor_dep['Basis_Mu'] else 0.0
+        projected = projected + mean + spot.new_tensor(
+            factor_dep['Basis_Phi'] ** steps).unsqueeze(-1) * (basis - mean)
+
+    n = realised.shape[0]
+    average = (torch.sum(projected * weight * (1.0 - past), dim=1) +
+               torch.sum(realised.unsqueeze(0) * weight[:, :n] * past[:, :n], dim=1))
+
+    nominal = factor_dep['Buy_Sell'] * deal_data.Instrument.field['Units']
+    cash = nominal * (average - factor_dep['Strike'])
+    discount = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
+    discount_rates = torch.squeeze(utils.calc_discount_rate(
+        discount, (factor_dep['Settlement'] - deal_time[:, utils.TIME_GRID_MTM]).reshape(-1, 1),
+        shared), dim=1)
+
+    cash_settle(shared, factor_dep['SettleCurrency'],
+                deal_data.Time_dep.deal_time_grid[-1], cash[-1])
+
+    return cash * discount_rates * utils.calc_fx_cross(
+        factor_dep['Currency'], shared.Report_Currency, deal_time, shared)
+
+
 def pv_credit_cashflows(shared, time_grid, deal_data, return_par_spread=False):
     mtm_list = []
     factor_dep = deal_data.Factor_dep

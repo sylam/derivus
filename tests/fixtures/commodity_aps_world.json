@@ -1,0 +1,251 @@
+{
+  "Calc": {
+    "Calculation": {
+      "Object": "CreditMonteCarlo",
+      "Base_Date": {
+        ".Timestamp": "2026-01-15"
+      },
+      "Currency": "USD",
+      "Batch_Size": 4096,
+      "Simulation_Batches": 1,
+      "Random_Seed": 1234,
+      "Deflation_Interest_Rate": "USD-SOFR",
+      "Generate_Cashflows": "Yes",
+      "Time_Grid": "0d 2w(2w)"
+    },
+    "Deals": {
+      "Tag_Titles": "",
+      "Reference": "aps",
+      "Deals": {
+        "Children": [
+          {
+            "Instrument": {
+              ".Deal": {
+                "Object": "NettingCollateralSet",
+                "Reference": "NS",
+                "Netted": "True",
+                "Collateralized": "False"
+              }
+            },
+            "Children": [
+              {
+                "Instrument": {
+                  ".Deal": {
+                    "Object": "CommodityAveragePriceSwapDeal",
+                    "Reference": "APS1",
+                    "Currency": "USD",
+                    "Commodity": "PLATINUM_CME.LBMA",
+                    "Carry": "PLATINUM_CARRY",
+                    "Discount_Rate": "USD-SOFR",
+                    "Buy_Sell": "Buy",
+                    "Units": 2500.0,
+                    "Fixed_Price": 1650.0,
+                    "Settlement_Date": {
+                      ".Timestamp": "2026-05-29"
+                    },
+                    "Sampling_Data": [
+                      [
+                        {
+                          ".Timestamp": "2025-11-14"
+                        },
+                        1580.25,
+                        1.0
+                      ],
+                      [
+                        {
+                          ".Timestamp": "2025-12-15"
+                        },
+                        1622.75,
+                        2.0
+                      ],
+                      [
+                        {
+                          ".Timestamp": "2026-02-16"
+                        },
+                        0.0,
+                        3.0
+                      ],
+                      [
+                        {
+                          ".Timestamp": "2026-03-16"
+                        },
+                        0.0,
+                        1.0
+                      ],
+                      [
+                        {
+                          ".Timestamp": "2026-04-15"
+                        },
+                        0.0,
+                        2.0
+                      ],
+                      [
+                        {
+                          ".Timestamp": "2026-05-15"
+                        },
+                        0.0,
+                        3.0
+                      ]
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "MergeMarketData": {
+      "ExplicitMarketData": {
+        "System Parameters": {
+          "Base_Currency": "USD",
+          "Base_Date": {
+            ".Timestamp": "2026-01-15"
+          }
+        },
+        "Model Configuration": {
+          ".ModelParams": {
+            "modeldefaults": {
+              "CommodityPrice": "GARCHSpotModel",
+              "ObservedBasis": "BasisLinkedSpotModel",
+              "ForwardRate": "QuadraticCarryCurveModel"
+            },
+            "modelfilters": {}
+          }
+        },
+        "Price Factors": {
+          "FxRate.USD": {
+            "Domestic_Currency": null,
+            "Interest_Rate": "USD-SOFR",
+            "Spot": 1.0
+          },
+          "InterestRate.USD-SOFR": {
+            "Currency": "USD",
+            "Day_Count": "ACT_365",
+            "Sub_Type": null,
+            "Curve": {
+              ".Curve": {
+                "meta": [],
+                "data": [
+                  [
+                    0.0,
+                    0.041
+                  ],
+                  [
+                    1.0,
+                    0.0347
+                  ],
+                  [
+                    5.0,
+                    0.033
+                  ]
+                ]
+              }
+            }
+          },
+          "InterestRate.USD-REPO": {
+            "Currency": "USD",
+            "Day_Count": "ACT_365",
+            "Sub_Type": null,
+            "Curve": {
+              ".Curve": {
+                "meta": [],
+                "data": [
+                  [
+                    0.0,
+                    0.012
+                  ],
+                  [
+                    1.0,
+                    0.019
+                  ],
+                  [
+                    5.0,
+                    0.022
+                  ]
+                ]
+              }
+            }
+          },
+          "CommodityPrice.PLATINUM_CME": {
+            "Spot": 1661.4839212399793,
+            "Currency": "USD",
+            "Interest_Rate": "USD-REPO",
+            "Forward_Rate": "PLATINUM_CARRY"
+          },
+          "ObservedBasis.PLATINUM_CME.LBMA": {
+            "Spot": 9.5646587191794
+          },
+          "ForwardRate.PLATINUM_CARRY": {
+            "Currency": "USD",
+            "Curve": {
+              ".Curve": {
+                "meta": [],
+                "data": [
+                  [
+                    46037.0,
+                    0.0191018627817144
+                  ],
+                  [
+                    46203.0,
+                    0.0105299353468363
+                  ]
+                ]
+              }
+            }
+          }
+        },
+        "Price Models": {
+          "GARCHSpotModel.PLATINUM_CME": {
+            "Omega": 9.17774951127383e-07,
+            "Alpha": 0.027616302198889837,
+            "Beta": 0.9690723589689383,
+            "Nu": 7.566473643035478,
+            "Mu": 0.0,
+            "H0": 0.0007421267821501396,
+            "Calibration_DT_Years": 0.003968253968253968,
+            "Convexity_Correction": "Yes"
+          },
+          "BasisLinkedSpotModel.PLATINUM_CME.LBMA": {
+            "A": -0.02270837039894683,
+            "Phi": 0.6505398690713546,
+            "Nu": 4.9433208837818565,
+            "Sigma": 3.7630499724163147,
+            "Calibration_DT_Years": 0.003968253968253968,
+            "Slow_Mean_Lambda": 0.96875,
+            "Mu_0": 6.25
+          },
+          "QuadraticCarryCurveModel.PLATINUM_CARRY": {
+            "Phi_L": 0.9962113396325056,
+            "Mu_L": 0.01689104937046463,
+            "Sigma_L": 0.0014804094084155447,
+            "Phi_D": 0.946836023305215,
+            "Mu_D": -0.0005376203971516502,
+            "Sigma_D": 0.003084555637141874,
+            "Gamma": -0.01939550349433441,
+            "Nu": 3.0,
+            "Reference_Tenors": [
+              0.5,
+              1.0
+            ],
+            "Calibration_DT_Years": 0.003968253968253968
+          }
+        },
+        "Correlations": {
+          "GARCHSpotProcess.PLATINUM_CME": {
+            "QuadraticCarryCurveProcess.PLATINUM_CARRY.L": -0.3167,
+            "QuadraticCarryCurveProcess.PLATINUM_CARRY.D": 0.0157,
+            "BasisLinkedSpotProcess.PLATINUM_CME.LBMA": -0.1524
+          },
+          "QuadraticCarryCurveProcess.PLATINUM_CARRY.L": {
+            "QuadraticCarryCurveProcess.PLATINUM_CARRY.D": -0.2245,
+            "BasisLinkedSpotProcess.PLATINUM_CME.LBMA": 0.2278
+          },
+          "QuadraticCarryCurveProcess.PLATINUM_CARRY.D": {
+            "BasisLinkedSpotProcess.PLATINUM_CME.LBMA": -0.271
+          }
+        }
+      }
+    }
+  }
+}
