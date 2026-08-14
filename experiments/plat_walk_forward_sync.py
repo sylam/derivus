@@ -451,6 +451,13 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
         arch, trade_date, calibrated_md, os.path.join(run_dir, f'md_{tag}_restamp.json'))
     cfg, info = build_deal_config(template, arch, trade_date, calibrated_md, args,
                                   delta_corridor=None if args.corridor_sweep else args.delta_corridor)
+    # the observed window BEFORE the training loop: a month the gap guard refuses must refuse in
+    # seconds, not after ten minutes of training a policy whose roll can never run
+    obs_npz = os.path.abspath(os.path.join(run_dir, f'obs_{tag}.npz'))
+    knots = [pd.Timestamp(trade_date),
+             pd.Timestamp(max(max(info['fixings']), max(info['mats']))) + pd.Timedelta(days=30)]
+    horizon = (info['pay'] - pd.Timestamp(trade_date)).days + 10
+    observed_scenario_npz(arch, trade_date, obs_npz, horizon, knots, max_gap=args.max_gap)
     ckpts, train_us, v0s, market_dim = [], [], [], None
     for seed in args.seeds:
         ckpt = os.path.abspath(os.path.join(run_dir, f'value_fn_{tag}_s{seed}.pt'))
@@ -472,12 +479,6 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
         v0s.append(tdiag.get('V_0'))
         market_dim = tdiag.get('market_dim')
 
-    obs_npz = os.path.abspath(os.path.join(run_dir, f'obs_{tag}.npz'))
-    # the same knot rule as price_factors, so the npz carry rows are the job's own curve tensor
-    knots = [pd.Timestamp(trade_date),
-             pd.Timestamp(max(max(info['fixings']), max(info['mats']))) + pd.Timedelta(days=30)]
-    horizon = (info['pay'] - pd.Timestamp(trade_date)).days + 10
-    observed_scenario_npz(arch, trade_date, obs_npz, horizon, knots, max_gap=args.max_gap)
     bound = pf_bound(arch, trade_date, info['mats'], info['pay'])
     rows = []
     for band in bands:
