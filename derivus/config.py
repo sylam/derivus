@@ -22,7 +22,6 @@ from collections import Counter
 from functools import reduce
 
 # import parsing libraries
-from typing import Dict, Any, Union
 from xml.etree.ElementTree import ElementTree, SubElement, Element, tostring
 
 import numpy as np
@@ -235,7 +234,7 @@ class Config(object):
             'Market Prices': {},
             'Valuation Configuration': {},
             'Bootstrapper Configuration': {}
-        }  # type: Dict[str, Union[ModelParams, Dict[Any, Any]]]
+        }
 
         # make sure that there are no default calibration mappings
         self.calibration_process_map = {}
@@ -1125,22 +1124,6 @@ class Config(object):
 
         # restore state
         self.params['Correlations'] = old_correlations
-
-    def write_tradedata_json(self, json_filename):
-        with open(json_filename, 'wt') as f:
-            f.write(json.dumps(self.deals, separators=(',', ':'), cls=CustomJsonEncoder))
-
-    def write_calibration_json(self, json_filename):
-        with open(json_filename, 'wt') as f:
-            f.write(json.dumps(self.calibrations, separators=(',', ':'), cls=CustomJsonEncoder))
-
-    def write_ada(self):
-        r, c = self.archive.shape
-
-        with open(self.calibrations['MarketDataArchiveFile']['name'], 'wt') as f:
-            f.writelines(['First two lines must be comments.\n', '#Columns\t#Rows\n', '{}\t{}\n'.format(c, r)])
-
-        self.archive.to_csv(self.calibrations['MarketDataArchiveFile']['name'], sep='\t', mode='a')
 
 
 if __name__ == '__main__':

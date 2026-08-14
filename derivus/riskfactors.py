@@ -818,17 +818,6 @@ class InterestRateJacobian(object):
     def benchmark_tenors(self):
         return np.sort([x.array[-1, 0] for x in self.param.values()])
 
-    def reduce_curve(self, factor, price_factors, interpolation='Hermite'):
-        tenors = self.benchmark_tenors()
-        factor_name = utils.check_tuple_name(factor)
-        # fetch the actual rates
-        rates = np.interp(tenors, *price_factors[factor_name]['Curve'].array.T)
-        # overwrite the 'Curve'
-        price_factors[factor_name]['Curve'] = utils.Curve(
-            [], np.dstack((tenors, rates))[-1])
-        # set the interpolation
-        price_factors[factor_name]['Interpolation'] = interpolation
-
     def current_value(self):
         """Returns the value of the vol surface"""
 
@@ -1040,10 +1029,6 @@ class ForwardPrice(Factor1D):
 
     def get_currency(self):
         return utils.check_rate_name(self.param['Currency'])
-
-    def get_relative_tenor(self, reference_date):
-        reference_date_excel = (reference_date - utils.excel_offset).days
-        return self.get_tenor() - reference_date_excel
 
     def get_day_count(self):
         return utils.DAYCOUNT_None

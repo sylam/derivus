@@ -3672,36 +3672,24 @@ def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True):
     elif len(factor.interpolation)==2:
         cuttoff_index = factor.interpolation[0][1]
         cuttoff_tenor = tnr[cuttoff_index]
-        if False:
-            # near leg
-            n = calc_fwd_interpolated_new(interp_method[0][0], tnr, tensor)
-            near_tT = n(M, indices_t)
-            near_t = n(time_grid, indices_time)
-            # far leg
-            f = calc_fwd_interpolated_new(interp_method[1][0], tnr, tensor)
-            far_tT = f(M, indices_t)
-            far_t = f(time_grid, indices_time)
-            mask_near = M < cuttoff_tenor
-            time_t = torch.where(time_grid < cuttoff_tenor, near_t, far_t)
-        else:
-            # near leg
-            n = calc_fwd_interpolated_new(interp_method[0][0], tnr[:cuttoff_index+1], tensor[:cuttoff_index+1])
-            near_tT = n(
-                M,
-                (indices_t[0],indices_t[1].clamp(max=cuttoff_index), indices_t[2].clamp(max=cuttoff_index)))
-            near_t = n(
-                time_grid,
-                (indices_time[0], indices_time[1].clamp(max=cuttoff_index), indices_time[2].clamp(max=cuttoff_index)))
-            # far leg
-            f = calc_fwd_interpolated_new(interp_method[1][0], tnr[cuttoff_index:], tensor[cuttoff_index:])
-            far_tT = f(
-                M,
-                (indices_t[0],(indices_t[1]-cuttoff_index).clamp(min=0), (indices_t[2]-cuttoff_index).clamp(min=0)))
-            far_t = f(
-                time_grid,
-                (indices_time[0], (indices_time[1]-cuttoff_index).clamp(min=0), (indices_time[2]-cuttoff_index).clamp(min=0)))
-            mask_near = _bcast(M <= cuttoff_tenor)
-            time_t = torch.where(_bcast(time_grid <= cuttoff_tenor), near_t, far_t)
+        # near leg
+        n = calc_fwd_interpolated_new(interp_method[0][0], tnr[:cuttoff_index+1], tensor[:cuttoff_index+1])
+        near_tT = n(
+            M,
+            (indices_t[0],indices_t[1].clamp(max=cuttoff_index), indices_t[2].clamp(max=cuttoff_index)))
+        near_t = n(
+            time_grid,
+            (indices_time[0], indices_time[1].clamp(max=cuttoff_index), indices_time[2].clamp(max=cuttoff_index)))
+        # far leg
+        f = calc_fwd_interpolated_new(interp_method[1][0], tnr[cuttoff_index:], tensor[cuttoff_index:])
+        far_tT = f(
+            M,
+            (indices_t[0],(indices_t[1]-cuttoff_index).clamp(min=0), (indices_t[2]-cuttoff_index).clamp(min=0)))
+        far_t = f(
+            time_grid,
+            (indices_time[0], (indices_time[1]-cuttoff_index).clamp(min=0), (indices_time[2]-cuttoff_index).clamp(min=0)))
+        mask_near = _bcast(M <= cuttoff_tenor)
+        time_t = torch.where(_bcast(time_grid <= cuttoff_tenor), near_t, far_t)
         return (torch.where(mask_near, near_tT, far_tT)
                 - time_t.reshape(time_t.shape[0], 1, *time_t.shape[1:]))
     else:
@@ -4513,55 +4501,6 @@ def compress_deal_data(deals):
             (filtered if deal['Instrument'].field['Reference'] in values else unfiltered).append(deal)
         return filtered, unfiltered
 
-    def compress_CFFixedInterestListDeal(unders, ref, use_ref_as_tag=False):
-        compressed = []
-        all_rate = {}
-        all_notional = {}
-        for deal in unders:
-            buy_sell = 1.0 if deal['Instrument'].field['Buy_Sell'] == 'Buy' else -1.0
-            prop_key = tuple(sorted(
-                [(k, v) for k, v in deal['Instrument'].field['Cashflows'].items() if k != 'Items']))
-            rate_list = all_rate.setdefault(prop_key, {})
-            notional_list = all_notional.setdefault(prop_key, {})
-            for cf in deal['Instrument'].field['Cashflows']['Items']:
-                key = tuple(sorted(
-                    [(k, v) for k, v in cf.items() if k not in ['Notional', 'Rate']]))
-                notional = buy_sell * cf['Notional']
-                rate_list[key] = rate_list.setdefault(key, 0.0) + cf['Rate'] * notional
-                notional_list[key] = notional_list.setdefault(key, 0.0) + notional
-
-        # finish this off
-        for prop_index, (cf_prop, rate_list) in enumerate(all_rate.items()):
-            leg = []
-            notional_list = all_notional[cf_prop]
-            for key, val in rate_list.items():
-                notional = notional_list[key]
-                cashflow = dict(key)
-                if notional:
-                    cashflow['Notional'] = notional
-                    cashflow['Rate'] = Percent(100.0 * val / notional)
-                else:
-                    cashflow['Notional'] = val
-                    cashflow['Rate'] = Percent(100.0)
-                leg.append(cashflow)
-
-            # sort it
-            final = sorted(leg, key=lambda x: (x['Payment_Date'], x['Accrual_Start_Date'], x['Accrual_End_Date']))
-            # use an exisiting deal to edit the cashflows
-            deal = unders[prop_index]
-            deal['Instrument'].field['Buy_Sell'] = 'Buy'
-            deal['Instrument'].field['Cashflows'] = dict(cf_prop)
-            deal['Instrument'].field['Cashflows']['Items'] = final
-            if use_ref_as_tag:
-                deal['Instrument'].field['Reference'] = 'Compressed_CFFixed_{}_{}'.format(
-                    'Buy', deal['Instrument'].field['Currency'])
-                deal['Instrument'].field['Tags'] = list(ref)
-            else:
-                deal['Instrument'].field['Reference'] = 'Compressed_CFFixed_{}_{}'.format('Buy', ref)
-            compressed.append(deal)
-
-        return compressed
-
     def compress_CFFloatingInterestListDeal(unders, ref, use_ref_as_tag=False):
         compressed = []
         all_margin = {}
@@ -4687,45 +4626,6 @@ def compress_deal_data(deals):
         for k, v in eq_compressed.items():
             all_other.extend(v)
             all_other.extend(ir_compressed[k])
-
-        reduced_deals = all_other
-
-    # now try and compress ir_swaps - not ideal looking for ',Swap,' in tags - TODO!
-    ir_swaps = [x for x in reduced_deals if x['Instrument'].field['Object'] == 'StructuredDeal'
-                and ',Swap,' in x['Instrument'].field['Tags'][0]]
-
-    # switched off - need to test and improve this
-    if False and ir_swaps and len(ir_swaps) > 200:
-        logging.info('Compressing {} IR Swaps'.format(len(ir_swaps)))
-        float_unders = {}
-        fixed_unders = {}
-        swap_refs = [x['Instrument'].field['Reference'] for x in ir_swaps]
-        all_ir_swap, all_other = filter_deals(reduced_deals, swap_refs)
-
-        # first load all compressible deals
-        for structure in all_ir_swap:
-            tags = tuple(structure['Instrument'].field['Tags'])
-            for k in structure['Children']:
-                key = tuple(
-                    sorted([(field, value) for field, value in k['Instrument'].field.items()
-                            if field not in ['Reference', 'Tags', 'Buy_Sell', 'Cashflows']])) + (tags,)
-
-                if k['Instrument'].field['Object'] == 'CFFloatingInterestListDeal':
-                    float_unders.setdefault(key, []).append(k)
-                else:
-                    fixed_unders.setdefault(key, []).append(k)
-
-        fixed_compressed = []
-        for k, unders in fixed_unders.items():
-            fixed_compressed.extend(compress_CFFixedInterestListDeal(unders, k[-1], use_ref_as_tag=True))
-
-        float_compressed = []
-        for k, unders in float_unders.items():
-            float_compressed.extend(compress_CFFloatingInterestListDeal(unders, k[-1], use_ref_as_tag=True))
-
-        # add it and continue
-        all_other.extend(fixed_compressed)
-        all_other.extend(float_compressed)
 
         reduced_deals = all_other
 

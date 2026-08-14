@@ -100,10 +100,6 @@ UNREACHED = {
     ('pv_american_option', 'def pv_american_option', 'never-called'):
         "an EquityOptionDeal with Option_Style != 'European'. Every equity option fixture is "
         "European, so the Barone-Adesi-Whaley branch of EquityOptionDeal is never priced.",
-    ('pv_MC_Tarf.bs_call_put_fwd', 'def bs_call_put_fwd', 'never-called'):
-        "a TARF row whose remaining strip is valued by the closed form rather than simulated - "
-        "defined in the pricer and called from nowhere in it. Read it as a dead helper first and a "
-        "coverage gap second.",
 
     # ---- getbarrierpayoff: 7 of the 8 closed-form payoffs -----------------------------------
     # The selector is (direction, eta, phi, strike vs H). Every fixture that reaches it is

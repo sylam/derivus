@@ -19,7 +19,7 @@ from functools import partial, reduce
 # utility functions and constants
 from . import utils, pricing
 from .schema import (
-    F, Group, REQUIRED, Row, own,
+    F, REQUIRED, Row, own,
     ADMIN, FX_ADMIN, CASHFLOWLISTDEAL, EQUITYOPTIONBASE, QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
 
 # specific modules
@@ -591,14 +591,6 @@ class Deal(object):
         deals with no cashflow schedule."""
         cf = deal_data.Factor_dep.get('Cashflows')
         return (cf.total_abs_nominal(), cf.last_pay_day()) if cf is not None else (0.0, None)
-
-    def refresh_dependencies(self, base_date, time_grid, deal_data):
-        """Inner-MC hook: rebase any date-anchored entries in `deal_data.Factor_dep` /
-        `deal_data.Time_dep` to a new (base_date, time_grid). Default is a no-op for
-        deals whose dependencies don't carry the outer base date. Overrides should
-        mutate the existing dicts in place (DealDataType is a NamedTuple, so the
-        Factor_dep / Time_dep references themselves cannot be reassigned)."""
-        return
 
     def calculate(self, shared, time_grid, deal_data):
         """Generate the theo price and interpolate it onto the report grid.

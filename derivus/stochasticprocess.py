@@ -527,12 +527,6 @@ class GBMAssetPriceModel(StochasticProcess):
         """Lognormal with a constant vol, so the bridge applies exactly between any two dates."""
         return float(self.param['Vol']) ** 2
 
-
-    def theoretical_mean_std(self, t):
-        mu = self.factor.current_value() * np.exp(self.param['Drift'] * t)
-        var = mu * mu * (np.exp(t * self.param['Vol'] ** 2) - 1.0)
-        return mu, np.sqrt(var)
-
     @property
     def correlation_name(self):
         return 'LognormalDiffusionProcess', [()]
@@ -873,10 +867,6 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
     @staticmethod
     def num_factors():
         return 2
-
-    def reset_implied_factor(self, implied_factor):
-        self.implied = implied_factor
-        self.cache = {}
 
     def link_references(self, implied_tensor, implied_var, implied_factors):
         """link market variables across different risk factors"""
@@ -1401,19 +1391,10 @@ class CSForwardPriceModel(StochasticProcess):
 
     def __init__(self, factor, param, implied_factor=None):
         super(CSForwardPriceModel, self).__init__(factor, param)
-        self.base_date_excel = None
 
     @staticmethod
     def num_factors():
         return 1
-
-    def theoretical_mean_std(self, t):
-        Tmt = np.clip((self.factor.get_tenor() - self.base_date_excel) / utils.DAYS_IN_YEAR - t, 0, np.inf)
-        ln_var = np.square(self.param['Sigma']) * np.exp(-2.0 * self.param['Alpha'] * Tmt) * (
-                1.0 - np.exp(-2.0 * self.param['Alpha'] * t)) / (2.0 * self.param['Alpha'])
-        mu = self.factor.current_value() * np.exp(self.param['Drift'] * t + 0.5 * ln_var)
-        var = mu * mu * (np.exp(ln_var) - 1.0)
-        return mu, np.sqrt(var)
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
         """
@@ -1436,7 +1417,6 @@ class CSForwardPriceModel(StochasticProcess):
         self.scenario_horizon = time_grid.scen_time_grid.size
         #  rebase the dates
         excel_offset = (ref_date - utils.excel_offset).days
-        self.base_date_excel = excel_offset
         excel_date_time_grid = time_grid.scen_time_grid + excel_offset
         tenors = (self.factor.get_tenor().reshape(1, -1) -
                   excel_date_time_grid.reshape(-1, 1)).clip(0.0, np.inf) / utils.DAYS_IN_YEAR
@@ -1631,18 +1611,6 @@ class PCAInterestRateModel(StochasticProcess):
 
     def num_factors(self):
         return len(self.param['Eigenvectors'])
-
-    def theoretical_mean_std(self, ref_date, time_in_days):
-        t = self.factor.get_day_count_accrual(ref_date, time_in_days)
-        # only works for drift to forward - todo - extend to other cases
-        fwd_curve = (self.factor.current_value(t + self.factor.tenors) * (
-                t + self.factor.tenors) - self.factor.current_value(
-            t) * t) / self.factor.tenors
-        sigma = np.interp(self.factor.get_tenor(), *self.param['Yield_Volatility'].array.T)
-        sigma2 = (1.0 - np.exp(-2.0 * self.param['Reversion_Speed'] * t)) / (
-                2.0 * self.param['Reversion_Speed']) * sigma * sigma
-        std_dev = np.sqrt(np.exp(sigma2) - 1.0) * fwd_curve
-        return fwd_curve, std_dev
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
         """
@@ -2341,20 +2309,6 @@ class LogOUSpotModel(StochasticProcess):
             self.theta = self.log_spot0                                                # 0-d tensor, on graph
         else:
             self.theta = tensor.new_tensor(float(self.param['Theta']))                 # constant, no grad
-
-    def theoretical_mean_std(self, t):
-        """Theoretical mean and std of S_t = exp(X_t) under the exact OU distribution."""
-        kappa = self.param['Kappa']
-        sigma = self.param['Sigma']
-        theta = self.param['Theta']
-        e_kt  = np.exp(-kappa * t)
-        # Analytical path — pull log_spot0 to numpy at use site (no AAD here).
-        mu_X  = theta + e_kt * (float(self.log_spot0) - theta)
-        var_X = sigma ** 2 * (1.0 - np.exp(-2.0 * kappa * t)) / (2.0 * kappa)
-        # lognormal moments of exp(X) where X ~ N(mu_X, var_X)
-        mean_S = np.exp(mu_X + 0.5 * var_X)
-        std_S  = mean_S * np.sqrt(np.exp(var_X) - 1.0)
-        return mean_S, std_S
 
     @property
     def correlation_name(self):
@@ -3055,25 +3009,6 @@ class MarkovHMMSpotModel(StochasticProcess):
             sigma = sigma / spot if spot > 0.0 else 0.0
         return sigma
 
-    def reseed_one_step(self, spot_t_leaf, spot_t_realized, spot_t1_realized):
-        """Analytic one-step transition re-seed for the diff-ML bootstrap.
-
-        Given the t-spot as an autograd LEAF and the realized (spot_t, spot_{t+1}) endpoints
-        from the stored outer path, return a spot_{t+1} that lands EXACTLY on the realized
-        value (so the bootstrap stays on the simulated path, not a fresh draw) but is
-        differentiable in the leaf, with the EXACT one-step derivative. This is the whole of
-        what the inner-MC fork's `generate()` provided — a live tape through one transition —
-        reconstructed analytically, because the spot is a regime random walk: the increment
-        `ds = μ[r]·dt + σ[r]·√dt·Z` is independent of spot_t, so the step is purely
-        multiplicative (Log_Price) or additive:
-            Log_Price:  spot_{t+1} = spot_t · (spot_{t+1}/spot_t)   ⇒ ∂/∂spot_t = spot_{t+1}/spot_t
-            level:      spot_{t+1} = spot_t + (spot_{t+1} − spot_t) ⇒ ∂/∂spot_t = 1
-        The realized ratio/increment carries the realized regime AND shock, so no re-draw and
-        no re-simulation — the buffer endpoints pin the transition exactly."""
-        if self.log_price:
-            return spot_t_leaf * (spot_t1_realized / spot_t_realized).detach()
-        return spot_t_leaf + (spot_t1_realized - spot_t_realized).detach()
-
     def _forward_belief(self, spot_path, device):
         """Forward HMM belief filter — outer-mode only. Returns belief (T, B, n_states)
         where `belief[t, b, r] = P(regime_t = r | observed diffs through time t, path b)`,
@@ -3167,31 +3102,6 @@ class MarkovHMMSpotModel(StochasticProcess):
             log_unnorm = log_b_pred + self._emission_log_likelihood(diffs[tau - 1], tau)
             log_b.append(log_unnorm - torch.logsumexp(log_unnorm, dim=-1, keepdim=True))
         return torch.stack(log_b, dim=0).exp().movedim(-1, 1)              # (T, n, B, B2)
-
-    def forward_belief_onestep(self, belief_prev, spot_prev, spot_cur, t_idx):
-        """One OUTER-grid filter step belief[t_idx-1] → belief[t_idx] on the REALIZED price
-        move, for the diff-ML bootstrap (the fork-free belief differential). Replicates
-        `_forward_belief`'s arrival-`t_idx` step EXACTLY — transition `P_per_step[t_idx-1]`,
-        emission at `t_idx`, same `dt[t_idx]<ε` predict-only guard — so the result equals the
-        belief the outer filter already published to the buffer (value-coherent), but seeded
-        from a `belief_prev` LEAF so the twin loss gets ∂belief[t_idx]/∂belief[t_idx-1] through
-        the predict step. The observed diff is DETACHED: belief stays independent of the spot
-        leaf (the price-column gradient is unchanged), exactly as the inner fork did. Shapes:
-        `belief_prev` and the return are `(n_states, B)` (the buffer's B-last convention);
-        `spot_prev`/`spot_cur` are `(B,)`; `t_idx` is the arrival outer index."""
-        obs_p = spot_prev.clamp_min(1.0e-30).log() if self.log_price else spot_prev
-        obs_c = spot_cur.clamp_min(1.0e-30).log() if self.log_price else spot_cur
-        diff = (obs_c - obs_p).detach()                                    # (B,)
-        log_b = belief_prev.movedim(0, -1).clamp_min(1.0e-30).log()        # (B, n)
-        log_P = self.P_per_step[t_idx - 1].clamp_min(1.0e-30).log()        # (n, n)
-        log_b_pred = torch.logsumexp(
-            log_b.unsqueeze(-1) + log_P.unsqueeze(0), dim=-2)             # (B, n)
-        if float(self.dt_per_step[t_idx]) < 1.0e-12:
-            log_b_cur = log_b_pred - torch.logsumexp(log_b_pred, dim=-1, keepdim=True)
-        else:
-            log_unnorm = log_b_pred + self._emission_log_likelihood(diff, t_idx)
-            log_b_cur = log_unnorm - torch.logsumexp(log_unnorm, dim=-1, keepdim=True)
-        return log_b_cur.exp().movedim(-1, 0)                              # (n_states, B)
 
 
 class MarkovHMMSpotCalibration(object):

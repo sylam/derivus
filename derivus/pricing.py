@@ -2144,15 +2144,6 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     def calc_accum_value(targetValue, accumulated, s, k, C, inverted):
         return (accumulated + accrued(s, k, C, inverted)).clamp(max=targetValue)
 
-    def bs_call_put_fwd(F, K, sdt, D):
-        """
-        Put via parity in forward measure.
-        """
-        d1 = (torch.log(F / K) + 0.5 * sdt * sdt) / sdt
-        d2 = d1 - sdt
-        call =  D * (F * utils.norm_cdf(d1) - K * utils.norm_cdf(d2))
-        return call, call - D * (F - K)
-
     def sim_spot_tarf(settlement, sobol, num_sims,
                       spot_prices, times, carry, prev_accum, discount_rates, vols_all,
                       past_fixings, *hn_scalars):
