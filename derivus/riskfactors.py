@@ -755,7 +755,13 @@ class ObservedBasis(Factor0D):
     is observed against CommodityPrice.PLATINUM_CME). The state is exposed as the spot value.
     """
     fields = [F('Spot', 'Float', default=0, bind='value',
-                description='Initial basis level $b_0$')]
+                description='Initial basis level $b_0$'),
+              F('Chained_Basis', 'Text', default='',
+                description='Name of the factor this one is chained to - another basis (a chain '
+                            'may run link to link and may or may not close a loop) or the '
+                            'primary itself. The declaration is the whole contract: whenever '
+                            'this factor enters a calculation\'s universe its link follows, '
+                            'and a chained process reads exactly the link it declares')]
 
     def __init__(self, param):
         super(ObservedBasis, self).__init__(param)

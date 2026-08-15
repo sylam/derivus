@@ -692,11 +692,57 @@ class Config(object):
             if nested != factor.type and len(factor.name) > 1:
                 rates_to_add.pop(factor, None)
 
+        def add_chained_bases(head_type, rates_to_add):
+            """A basis block may declare `Chained_Basis`: the next link of a chain that must
+            CLOSE - that is what 'chained' means; an open link riding another factor's finished
+            path is the linked-parent family (BasisLinkedSpotModel) and does not declare this
+            field. The whole loop is a first-class fact of the market data: whenever any member
+            enters the universe, every member follows, under EVERY calculation - a session
+            structure cannot be silently dropped by a book that prices only one side. Inclusion
+            only: ordering still comes from the positional chain, so the sort is untouched.
+            Links must stay on one primary; a self-reference, a foreign root, an open chain or
+            a lasso (a walk that revisits without returning to its start) is a config error,
+            loud."""
+            for start in [f for f in rates_to_add if f.type == 'ObservedBasis']:
+                if not self.params['Price Factors'].get(
+                        utils.check_tuple_name(start), {}).get('Chained_Basis'):
+                    continue
+                members, cur = [start], start
+                while True:
+                    name = self.params['Price Factors'].get(
+                        utils.check_tuple_name(cur), {}).get('Chained_Basis')
+                    if not name:
+                        raise Exception(
+                            'Chained_Basis chain through {0} does not close - {1} declares no '
+                            'link back. An open link is the linked-parent family '
+                            '(BasisLinkedSpotModel), not a chain'.format(
+                                utils.check_tuple_name(start), utils.check_tuple_name(cur)))
+                    nxt = utils.Factor('ObservedBasis', utils.check_rate_name(name))
+                    if nxt.name[:1] != cur.name[:1] or nxt == cur:
+                        raise Exception(
+                            'Chained_Basis on {0} names {1} - a chained link must be a '
+                            'different factor on the same primary'.format(
+                                utils.check_tuple_name(cur), utils.check_tuple_name(nxt)))
+                    if nxt == start:
+                        break
+                    if nxt in members:
+                        raise Exception(
+                            'Chained_Basis chain through {0} revisits {1} without closing on '
+                            'its start'.format(
+                                utils.check_tuple_name(start), utils.check_tuple_name(nxt)))
+                    members.append(nxt)
+                    cur = nxt
+                for member in members:
+                    if member not in rates_to_add:
+                        update_nested_rates(utils.Factor(head_type, member.name), rates_to_add)
+
         def get_rates(factor, instrument):
             rates_to_add = {factor: []}
             # pull the name-prefix chain first; the head period carries the dependant/conditional fields
             if factor.type in nested_fields and len(factor.name) > 1:
                 update_nested_rates(factor, rates_to_add)
+                if nested_fields[factor.type] == 'ObservedBasis':
+                    add_chained_bases(factor.type, rates_to_add)
                 factor = utils.Factor(factor.type, factor.name[:1])
             factor_name = utils.check_tuple_name(factor)
 
