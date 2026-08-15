@@ -4901,7 +4901,29 @@ class BasisLinkedSpotModel(StochasticProcess):
           description='Variance of the first simulated innovation - the GARCH recursion\'s seed, '
                       'stamped from the end of the calibration sample'),
         F('Calibration_DT_Years', 'Float', default=1.0 / 252.0,
-          description='Step size (in years) of the calibrated AR(1)')
+          description='Step size (in years) of the calibrated AR(1)'),
+        F('Reversion_Model', 'Text', default='Linear', values=['Linear', 'Band_Mixture'],
+          description='Linear = the AR(1) deviation (the default, everything above). '
+                      'Band_Mixture = dead-zone reversion around the slow level with 2-state '
+                      'Markov mixture innovations - the Q-Q-ruled law for a physically '
+                      'arbitraged spread'),
+        F('Band_Kappa', 'Float', default=0.0,
+          description='Half-width of the no-arbitrage dead zone around the slow level - '
+                      'inside it the deviation feels no pull at all'),
+        F('Band_Beta', 'Float', default=0.0,
+          description='Per-step pull on the deviation beyond the band edge'),
+        F('Mix_Q_Stress', 'Float', default=0.0,
+          description='Stationary probability of the stress innovation state'),
+        F('Mix_Sigma_Quiet', 'Float', default=0.0,
+          description='Innovation std in the quiet state'),
+        F('Mix_Sigma_Stress', 'Float', default=0.0,
+          description='Innovation std in the stress state'),
+        F('Mix_Stay_Stress', 'Float', default=0.0,
+          description='P(stress tomorrow | stress today) - quiet persistence follows from '
+                      'stationarity'),
+        F('Mix_P0_Stress', 'Float', default=0.0,
+          description='P(stress) at the first simulated step - the filtered posterior at the '
+                      'end of the calibration sample')
     ]
 
     def __init__(self, factor, param, implied_factor=None):
@@ -4972,6 +4994,22 @@ class BasisLinkedSpotModel(StochasticProcess):
         self.garch = self.sigma_by_state is None and self.g_omega > 0.0
         self.mu0 = shared.one.new_tensor(float(self.param.get('Mu_0', 0.0)))
         self.sig20 = shared.one.new_tensor(float(self.param.get('Sig2_0', 0.0)))
+        # Band+mixture reversion (the Q-Q-ruled law): a dead zone of width Band_Kappa around the
+        # slow level with pull Band_Beta outside it, and Gaussian innovations whose scale is a
+        # 2-state Markov mixture (quiet/stress) - the mixture supplies the tails, so no t-scale
+        # and no GARCH recursion. Requires the slow mean (the band is a deviation from it).
+        self.band = str(self.param.get('Reversion_Model', 'Linear')) == 'Band_Mixture'
+        if self.band:
+            assert self.slow_mean, 'Band_Mixture reversion needs Slow_Mean_Lambda > 0'
+            self.garch = False
+            self.band_kappa = float(self.param['Band_Kappa'])
+            self.band_beta = float(self.param['Band_Beta'])
+            q, stay = float(self.param['Mix_Q_Stress']), float(self.param['Mix_Stay_Stress'])
+            self.mix_sig2 = shared.one.new_tensor(
+                [float(self.param['Mix_Sigma_Quiet']) ** 2, float(self.param['Mix_Sigma_Stress']) ** 2])
+            self.mix_stay_s = stay
+            self.mix_enter = q * (1.0 - stay) / (1.0 - q)          # quiet->stress, stationarity
+            self.mix_q, self.p0_stress = q, float(self.param.get('Mix_P0_Stress', q))
         # AAD: b0 stays on the graph, unreshaped so inner MC can pass (B,).
         self.b0 = tensor
 
@@ -5027,26 +5065,51 @@ class BasisLinkedSpotModel(StochasticProcess):
         # Floor the chi-square draw — same inf/NaN guard as the linked spot.
         W = torch.distributions.Chi2(shared_mem.one.new_tensor(nu)).sample(Z.shape).clamp_min(1.0e-6)
         scale = torch.sqrt((nu - 2.0) / W)
-        eta = None if self.garch else sigma_t * Z * scale
+        eta = None if self.garch or self.band else sigma_t * Z * scale
         out = torch.empty(Z.shape, device=device, dtype=dtype)
         out[0] = self.b0.unsqueeze(-1).expand(batch) if inner else self.b0.expand(batch)
         # Per-path recursion state, seeded from the inner fork / burn-in when either published one.
         mu, sig2, mu_path, sig2_path = self._recursion_state(shared_mem, out, inner)
 
+        s = regime_path = u_regime = None
+        if self.band:
+            # Regime uniforms off the independent quasi stream — the HMM's own convention — so
+            # the mixture switch never consumes (or correlates with) the Gaussian innovation.
+            if inner:
+                u_regime = shared_mem.quasi_rng(T + 1, batch[0] * batch[1])[1].transpose(
+                    0, 1).contiguous().reshape(T + 1, *batch)
+            else:
+                u_regime = shared_mem.quasi_rng(T + 1, batch[0])[1].transpose(0, 1).contiguous()
+            seed = shared_mem.t_Scenario_Buffer.get(
+                (self.factor_key, 'regime0' + ('_inner' if inner else '_outer')))
+            if seed is None:
+                s = (u_regime[0] < self.p0_stress).to(dtype)
+            else:
+                s = (seed.unsqueeze(-1).expand(batch) if inner else seed).to(dtype)
+            regime_path = torch.empty(Z.shape, device=device, dtype=dtype)
+            regime_path[0] = s
+
         def drawn(mean, s2):
-            """Forward sim: η is DRAWN — rescaled by the live σ² under GARCH, else already
-            scaled — and the level follows from it."""
-            eta_t = s2.sqrt() * Z[t] * scale[t] if self.garch else eta[t]
+            """Forward sim: η is DRAWN — regime-scaled Gaussian under the band mixture, rescaled
+            by the live σ² under GARCH, else already scaled — and the level follows from it."""
+            if self.band:
+                eta_t = self.mix_sig2[s.long()].sqrt() * Z[t]
+            else:
+                eta_t = s2.sqrt() * Z[t] * scale[t] if self.garch else eta[t]
             return eta_t, mean + eta_t
 
         for t in range(1, T):
+            if self.band:
+                s = torch.where(s > 0.5, (u_regime[t] < self.mix_stay_s).to(dtype),
+                                (u_regime[t] < self.mix_enter).to(dtype))
+                regime_path[t] = s
             out[t], mu, sig2 = self._advance(
                 mu, sig2, out[t - 1], a * (linked_path[t] - linked_path[t - 1]), drawn)
             if self.slow_mean:
                 mu_path[t] = mu
             if self.garch:
                 sig2_path[t] = sig2
-        self._publish_recursions(shared_mem, mu_path, sig2_path)
+        self._publish_recursions(shared_mem, mu_path, sig2_path, regime_path)
         return out
 
     def _advance(self, mu, sig2, prev, ds, innovation):
@@ -5061,7 +5124,11 @@ class BasisLinkedSpotModel(StochasticProcess):
         Returns `(b_t, μ_{t+1}, σ²_{t+1})`, both states in the published fork-index convention: what
         the step t→t+1 consumes. Each extension's OFF arm returns its state untouched, so with both
         off the two expressions evaluated are the shipped ones, in the shipped order."""
-        mean = mu + ds + self.Phi * (prev - mu) if self.slow_mean else ds + self.Phi * prev
+        if self.band:
+            d = prev - mu
+            mean = prev + ds - self.band_beta * torch.sign(d) * (d.abs() - self.band_kappa).clamp_min(0.0)
+        else:
+            mean = mu + ds + self.Phi * (prev - mu) if self.slow_mean else ds + self.Phi * prev
         eta, b = innovation(mean, sig2)
         return (b,
                 self.lam * mu + (1.0 - self.lam) * b if self.slow_mean else mu,
@@ -5080,11 +5147,12 @@ class BasisLinkedSpotModel(StochasticProcess):
                 paths[i][0] = seed
         return (mu, sig2, *paths)
 
-    def _publish_recursions(self, shared_mem, mu_path, sig2_path):
+    def _publish_recursions(self, shared_mem, mu_path, sig2_path, regime_path=None):
         """Publish whichever recursions ran, and stash them for `outer_reseed` — so a replayed run's
         terminal state is the REPLAYED path's, not the discarded simulated one's."""
-        self.last_mu, self.last_sig2 = mu_path, sig2_path
-        for kind, path in (('basis_mu', mu_path), ('basis_sig2', sig2_path)):
+        self.last_mu, self.last_sig2, self.last_regime = mu_path, sig2_path, regime_path
+        for kind, path in (('basis_mu', mu_path), ('basis_sig2', sig2_path),
+                           ('basis_regime', regime_path)):
             if path is not None:
                 shared_mem.t_Scenario_Buffer[(self.factor_key, kind)] = path
 
@@ -5105,7 +5173,8 @@ class BasisLinkedSpotModel(StochasticProcess):
         with no re-derivation to keep in step with `generate`. Detached: the inner tape
         differentiates back to its own `state_t` leaves, never through the outer path."""
         return {(factor_key, seed): outer_buf[(factor_key, kind)][t].detach()
-                for kind, seed in (('basis_mu', 'mu0_inner'), ('basis_sig2', 'sig20_inner'))
+                for kind, seed in (('basis_mu', 'mu0_inner'), ('basis_sig2', 'sig20_inner'),
+                                   ('basis_regime', 'regime0_inner'))
                 if (factor_key, kind) in outer_buf}
 
     def outer_reseed(self):
@@ -5113,7 +5182,8 @@ class BasisLinkedSpotModel(StochasticProcess):
         so a burn-in that carries the terminal basis LEVEL over carries the state that level was
         generated under with it. Nothing to seed when both recursions are off."""
         return {(self.factor_key, seed): path[-1].detach()
-                for seed, path in (('mu0_outer', self.last_mu), ('sig20_outer', self.last_sig2))
+                for seed, path in (('mu0_outer', self.last_mu), ('sig20_outer', self.last_sig2),
+                                   ('regime0_outer', self.last_regime))
                 if path is not None}
 
     def reseed_from_path(self, simulated, shared_mem):
@@ -5138,11 +5208,35 @@ class BasisLinkedSpotModel(StochasticProcess):
             return
         obs = simulated.detach()
         linked_path = shared_mem.t_Scenario_Buffer[self.linked_key]
-        mu, sig2, mu_path, sig2_path = self._recursion_state(shared_mem, obs, obs.ndim == 3)
+        inner = obs.ndim == 3
+        mu, sig2, mu_path, sig2_path = self._recursion_state(shared_mem, obs, inner)
+
+        regime_path = None
+        if self.band:
+            # The regime is UNOBSERVED on a realised path: forward-filter P(stress | η_1..t) with
+            # the mixture likelihoods and DRAW the published state off the quasi stream — the same
+            # source generate uses, so the replayed regime is reproducible under the seed.
+            T, batch = obs.shape[0], obs.shape[1:]
+            if inner:
+                u = shared_mem.quasi_rng(T + 1, batch[0] * batch[1])[1].transpose(
+                    0, 1).contiguous().reshape(T + 1, *batch)
+            else:
+                u = shared_mem.quasi_rng(T + 1, batch[0])[1].transpose(0, 1).contiguous()
+            seed = shared_mem.t_Scenario_Buffer.get(
+                (self.factor_key, 'regime0' + ('_inner' if inner else '_outer')))
+            p = obs.new_full(batch, self.p0_stress) if seed is None else \
+                (seed.unsqueeze(-1).expand(batch) if inner else seed).to(obs.dtype)
+            regime_path = torch.empty_like(obs)
+            regime_path[0] = (u[0] < p).to(obs.dtype)
+            sq2, ss2 = self.mix_sig2[0], self.mix_sig2[1]
+            last_eta = [None]
 
         def realised(mean, s2):
             """Replay: the level is DATA and η is its deviation from the conditional mean."""
-            return obs[t] - mean, obs[t]
+            eta_t = obs[t] - mean
+            if self.band:
+                last_eta[0] = eta_t
+            return eta_t, obs[t]
 
         for t in range(1, obs.shape[0]):
             _, mu, sig2 = self._advance(
@@ -5151,7 +5245,14 @@ class BasisLinkedSpotModel(StochasticProcess):
                 mu_path[t] = mu
             if self.garch:
                 sig2_path[t] = sig2
-        self._publish_recursions(shared_mem, mu_path, sig2_path)
+            if self.band:
+                eta2 = last_eta[0] * last_eta[0]
+                prior = p * self.mix_stay_s + (1.0 - p) * self.mix_enter
+                lq = torch.exp(-0.5 * eta2 / sq2) / sq2.sqrt()
+                ls = torch.exp(-0.5 * eta2 / ss2) / ss2.sqrt()
+                p = prior * ls / (prior * ls + (1.0 - prior) * lq)
+                regime_path[t] = (u[t] < p).to(obs.dtype)
+        self._publish_recursions(shared_mem, mu_path, sig2_path, regime_path)
 
 
 class BasisLinkedSpotCalibration(object):
@@ -5226,7 +5327,12 @@ class BasisLinkedSpotCalibration(object):
                       'to - 0 fits the shipped zero-mean AR and stamps neither new field'),
         F('GARCH_Innovation', 'Text', default='No', values=['Yes', 'No'],
           description='Yes fits the innovation\'s own GARCH(1,1)-t and stamps a flat Sigma in '
-                      'place of Sigma_By_State, which would otherwise take precedence over it')
+                      'place of Sigma_By_State, which would otherwise take precedence over it'),
+        F('Reversion_Model', 'Text', default='Linear', values=['Linear', 'Band_Mixture'],
+          description='Band_Mixture fits dead-band reversion around the slow level with 2-state '
+                      'Markov mixture innovations (alternating least squares + EM) in place of '
+                      'the AR(1)/GARCH path - the Q-Q-ruled law for a physically arbitraged '
+                      'spread. Needs Slow_Mean_Span > 0')
     ]
 
     def __init__(self, model, param):
@@ -5264,6 +5370,11 @@ class BasisLinkedSpotCalibration(object):
         # rather than a zero mean. `ewm(adjust=False)` IS the simulator's recursion; `[:-1]` lags it
         # to the filtration the step it drives actually has, and `[-1]` is Mu_0.
         ewm = pd.Series(b).ewm(span=span, adjust=False).mean().values if span else None
+
+        if str(self.param.get('Reversion_Model', 'Linear')) == 'Band_Mixture':
+            assert span, 'Band_Mixture calibration needs Slow_Mean_Span > 0 (the band is a ' \
+                         'deviation from the slow level)'
+            return self._calibrate_band_mixture(basis_col, b, dlme, ewm, joint.index, dt_calib)
 
         if span or fit_garch:
             # ONE likelihood for the whole system: (a, φ, ω_b, α_b, β_b, ν) fitted together, with
@@ -5333,6 +5444,76 @@ class BasisLinkedSpotCalibration(object):
         if span:
             param.update({'Slow_Mean_Lambda': 1.0 - 2.0 / (span + 1.0), 'Mu_0': float(ewm[-1])})
         delta = pd.DataFrame({basis_col: eta}, index=joint.index[1:])
+        return utils.CalibrationInfo(param, [[1.0]], delta)
+
+    def _calibrate_band_mixture(self, basis_col, b, dlme, ewm, index, dt_calib):
+        """The Q-Q-ruled law: dead-band reversion around the lagged slow level plus a 2-state
+        Gaussian scale mixture. Location (A, kappa, beta) by alternating least squares, the
+        mixture by EM, stress persistence from the posterior state runs, and Mix_P0_Stress from
+        the forward filter at the sample end. FIT on adjacent business days only (a hole spanning
+        several days is one observation of a different law); the delta residuals cover every row
+        so the correlation consolidation stays date-aligned with the other factors."""
+        from scipy import optimize
+        span = int(self.param.get('Slow_Mean_Span', 0))
+        d = b[1:] - ewm[:-1]                                    # deviation from the LAGGED level
+        dd, d0, ds = np.diff(d), d[:-1], dlme[1:]               # aligned to targets d[1:]
+        gaps = np.asarray((pd.DatetimeIndex(index[2:]) - pd.DatetimeIndex(index[1:-1])).days)
+        fit_m = gaps <= 4                                       # adjacent business days (weekends ok)
+
+        a_hat, kappa, beta = 0.0, 5.0, 0.2
+        x, y, s_ = d0[fit_m], dd[fit_m], ds[fit_m]
+        for _ in range(3):
+            pull = -beta * np.sign(x) * np.clip(np.abs(x) - kappa, 0.0, None)
+            a_hat = float((s_ * (y - pull)).sum() / max((s_ * s_).sum(), 1.0e-12))
+            res = optimize.minimize(
+                lambda p: (((y - a_hat * s_) + p[1] * np.sign(x) * np.clip(np.abs(x) - p[0], 0.0, None)) ** 2).sum(),
+                [kappa, beta], bounds=[(0.0, 25.0), (0.0, 1.0)])
+            kappa, beta = float(res.x[0]), float(res.x[1])
+
+        pull_all = -beta * np.sign(d0) * np.clip(np.abs(d0) - kappa, 0.0, None)
+        eta_all = dd - a_hat * ds - pull_all
+        eta = eta_all[fit_m]
+        p_q, s1, s2 = 0.7, eta.std() * 0.4, eta.std() * 1.8
+        for _ in range(300):
+            f1 = p_q * np.exp(-0.5 * (eta / s1) ** 2) / s1
+            f2 = (1.0 - p_q) * np.exp(-0.5 * (eta / s2) ** 2) / s2
+            w = f1 / (f1 + f2)
+            p_q = float(w.mean())
+            s1 = float(np.sqrt((w * eta ** 2).sum() / w.sum()))
+            s2 = float(np.sqrt(((1.0 - w) * eta ** 2).sum() / (1.0 - w).sum()))
+        stress = w < 0.5
+        stay = float((stress[1:] & stress[:-1]).sum() / max(stress[:-1].sum(), 1))
+        q = 1.0 - p_q
+        # forward filter over the full series for the t0 stress posterior
+        enter = q * (1.0 - stay) / (1.0 - q)
+        p = q
+        for e_t in eta_all:
+            prior = p * stay + (1.0 - p) * enter
+            lq = np.exp(-0.5 * (e_t / s1) ** 2) / s1
+            ls = np.exp(-0.5 * (e_t / s2) ** 2) / s2
+            p = prior * ls / (prior * ls + (1.0 - prior) * lq)
+        phi_eff = float((d0[fit_m] * d[1:][fit_m]).sum() / max((d0[fit_m] ** 2).sum(), 1.0e-12))
+        logging.info(
+            'basis band+mixture fit: kappa=$%.2f beta=%.3f A=%+.4f | quiet %.0f%% sd %.2f, '
+            'stress %.0f%% sd %.2f, stay=%.2f p0=%.2f | phi_eff=%.3f (n_fit=%d of %d)',
+            kappa, beta, a_hat, 100 * p_q, s1, 100 * (1 - p_q), s2, stay, p, phi_eff,
+            fit_m.sum(), len(dd))
+
+        sig_blend = np.sqrt(w * s1 ** 2 + (1.0 - w) * s2 ** 2)   # posterior-blended per-obs scale
+        z_all = np.empty_like(eta_all)
+        z_all[fit_m] = eta / sig_blend
+        z_all[~fit_m] = eta_all[~fit_m] / float(np.sqrt(p_q * s1 ** 2 + (1 - p_q) * s2 ** 2))
+        param = {
+            'A': a_hat, 'Phi': phi_eff, 'Nu': 0.0, 'Mu': 0.0,
+            'Sigma': float(eta.std()),
+            'Reversion_Model': 'Band_Mixture',
+            'Band_Kappa': kappa, 'Band_Beta': beta,
+            'Mix_Q_Stress': q, 'Mix_Sigma_Quiet': s1, 'Mix_Sigma_Stress': s2,
+            'Mix_Stay_Stress': stay, 'Mix_P0_Stress': float(p),
+            'Slow_Mean_Lambda': 1.0 - 2.0 / (span + 1.0), 'Mu_0': float(ewm[-1]),
+            'Calibration_DT_Years': dt_calib,
+        }
+        delta = pd.DataFrame({basis_col: z_all}, index=index[2:])
         return utils.CalibrationInfo(param, [[1.0]], delta)
 
 
