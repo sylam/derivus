@@ -4793,6 +4793,358 @@ class QuadraticCarryCurveCalibration(object):
         return utils.CalibrationInfo(param, np.eye(2).tolist(), delta)
 
 
+class ChainedBasisModel(StochasticProcess):
+    """A basis on a CLOSED chain — that is what 'chained' means: the `Chained_Basis`
+    declarations walk back to their start (the AM/PM session pair is the 2-cycle), and an open
+    link riding another factor's finished path is the linked-parent family
+    (`BasisLinkedSpotModel`), not this class. This factor draws as a BRIDGE between consecutive
+    observations of its declared link's finished path:
+
+        b(t) = P(t) + w·(P(t+1) − P(t)) + premium + σ·Z(t)
+
+    The source is the declared `Chained_Basis` and nothing else — no naming convention — and it
+    must have generated first (the read fails loud naming both when it has not). Because the
+    loop's other members generate earlier in the positional order, the bridge is the acyclic
+    spelling of the closed chain: it reproduces both measured links and the lag-1 news channel
+    (corr(η_pm(t), η_am(t+1)) > 0) by construction, which same-row correlation alone cannot
+    (measured: +0.29 in the data, ≈0 under R-only).
+
+    MEMORYLESS given the source path — the data killed the reversal term (R² = 0.005) — so
+    there is no sequential loop, no extra fork seed and no replay recursion: row 0 is the
+    declared `Spot` (observed, like every factor's), a fork's row 0 is the forked value the
+    calc already hands `precalculate`, and the burn-in's terminal carry rides the generic
+    initial-state seam. Rows draw vectorised; the LAST bracketed row is decided by
+    source-bracket availability (`t+1` beyond the source's grid → the forward half alone).
+
+    The block declares the two LINK residuals — the measured objects of the chain — and the
+    bridge derives: w = σ_ID²/(σ_ID²+σ_ON²), σ = σ_ID·σ_ON/√(σ_ID²+σ_ON²), σ_half = σ_ID.
+
+    JSON config:
+        Link_ID_Sigma, Link_ON_Sigma: the chain-link residual stds, $/oz
+        Bridge_Premium: mean offset net of the bridge, $/oz"""
+
+    documentation = (
+        'Asset Pricing',
+        ['A basis on a CLOSED chain (the `Chained_Basis` declarations walk back to their '
+         'start — the AM/PM session pair is the 2-cycle), drawn as a bridge between '
+         'consecutive observations of its declared link\'s finished path:',
+         '',
+         '$$ b_t = P_t + w\\,(P_{t+1} - P_t) + \\text{premium} + \\sigma Z_t $$',
+         '',
+         'with w and σ derived from the two declared chain-link residuals. The bridge is the '
+         'acyclic spelling of the closed chain, reproducing the measured links and the lag-1 '
+         'news channel by construction. An open link riding another factor\'s path is the '
+         'linked-parent family (`BasisLinkedSpotModel`), not this class.',
+         '',
+         '- **Link_ID_Sigma, Link_ON_Sigma**: the chain-link residual stds',
+         '- **Bridge_Premium**: mean offset net of the bridge'])
+
+    factor_types = ('ObservedBasis',)
+    fields = [
+        F('Link_ID_Sigma', 'Float', default=0.0,
+          description='Residual std of the intraday link (source(t) to this(t)), $/oz - the '
+                      'bridge weight and residual derive from the two links'),
+        F('Link_ON_Sigma', 'Float', default=0.0,
+          description='Residual std of the overnight link (this(t) to source(t+1)), $/oz'),
+        F('Bridge_Premium', 'Float', default=0.0,
+          description='Mean offset net of the bridge, $/oz')
+    ]
+
+    def __init__(self, factor, param, implied_factor=None):
+        super().__init__(factor, param)
+
+    @staticmethod
+    def num_factors():
+        return 1
+
+    @property
+    def correlation_name(self):
+        return 'ChainedBasisProcess', [()]
+
+    def calc_references(self, factor, static_ofs, stoch_ofs, all_tenors, all_factors):
+        """The bridge source is the declared `Chained_Basis` — the WHOLE contract, no naming
+        convention: a chain can run basis to basis (to basis…) and may or may not close a
+        loop; this factor reads only its own declared link. The name resolves to whichever
+        factor type carries it in the universe — a basis, or a composable primary for the Log
+        bridge — loud when absent, unresolvable or ambiguous."""
+        name = (self.factor.param or {}).get('Chained_Basis') if self.factor else None
+        if not name:
+            raise Exception(f'ChainedBasisModel {utils.check_tuple_name(factor)}: the factor '
+                            f'block declares no Chained_Basis - the source is the declared '
+                            f'link, never a naming convention')
+        tup = utils.check_rate_name(name)
+        types = [t for t in ('ObservedBasis',) + utils.BASIS_COMPOSABLE_TYPES
+                 if utils.Factor(t, tup) in all_factors]
+        if len(types) != 1:
+            raise Exception(f'ChainedBasisModel {utils.check_tuple_name(factor)}: Chained_Basis '
+                            f'{name!r} must resolve under exactly one factor type in the '
+                            f'universe, found {types}')
+        self.source_key = utils.Factor(types[0], tup)
+
+    def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
+        self.z_offset = process_ofs
+        self.scenario_horizon = time_grid.scen_time_grid.size
+        p = self.param
+        self.premium = float(p.get('Bridge_Premium', 0.0))
+        sig_id, sig_on = float(p['Link_ID_Sigma']), float(p['Link_ON_Sigma'])
+        assert sig_id > 0.0 and sig_on > 0.0, \
+            f'ChainedBasisModel needs both link sigmas > 0: {p}'
+        s2 = sig_id * sig_id + sig_on * sig_on
+        self.w = sig_id * sig_id / s2
+        self.sigma = sig_id * sig_on / np.sqrt(s2)
+        self.sigma_half = sig_id
+        self.b0 = tensor
+
+    def generate(self, shared_mem):
+        """Vectorised bridge off the source's finished path; Z is (T, B) outer, (T, B, B2)
+        inner and every expression broadcasts. `k` is the last bracketed row: source rows
+        beyond this factor's grid keep the true bridge alive to the shared cutoff; past the
+        source's own end the forward half draws alone."""
+        Z = shared_mem.t_random_numbers[self.z_offset, :self.scenario_horizon]
+        T, batch = Z.shape[0], Z.shape[1:]
+        inner = Z.ndim == 3
+        P = shared_mem.t_Scenario_Buffer.get(self.source_key)
+        if P is None:
+            raise Exception(
+                f'ChainedBasisModel {utils.check_tuple_name(self.factor_key)}: chained source '
+                f'{utils.check_tuple_name(self.source_key)} has not generated - the declared '
+                f'link must be simulated before this factor')
+        k = min(T, P.shape[0] - 1)                       # rows 1..k-1 bracket; k..T-1 are open
+        out = torch.empty(Z.shape, device=Z.device, dtype=Z.dtype)
+        out[0] = self.b0.unsqueeze(-1).expand(batch) if inner else self.b0.expand(batch)
+        if k > 1:
+            out[1:k] = (P[1:k] + self.w * (P[2:k + 1] - P[1:k])
+                        + self.premium + self.sigma * Z[1:k])
+        if k < T:
+            out[k:] = P[k:T] + self.premium + self.sigma_half * Z[k:]
+        return out
+
+
+class FixingBridgeModel(StochasticProcess):
+    """An intraday fixing bridged between consecutive observations of its parent price — the
+    linked-parent family (an OPEN link, so no `Chained_Basis`: the parent's law never reads
+    this factor back, which the data confirms — the overnight move is unpredictable from the
+    intraday one, slope +0.006, R² 0.0000). The factor is the level basis (fixing − parent)
+    whose composed name IS the fixing; the law, in the parent's log space:
+
+        log B(t) = log P(t) + W·(log P(t+1) − log P(t)) + premium + σ_t·Z(t)
+        σ_t² = W(1−W)·h_t·f_{t+1}       h_t from the parent's published garch_log_h
+
+    The bracket placement is the point, not a nicety: it is what makes
+    Var(P(t+1) | P(t), fixing(t)) = (1−W)·h — the measured 25% variance reduction the data
+    carries (sd ratio 0.868, slope 1.006 on the intraday move) — exist in the simulated world
+    at all. An independent draw of the same marginal (√(W·h)·ε, the Q-Q-equivalent law) scores
+    ZERO on that conditional, and a solver cannot infer structure the world does not contain.
+
+    MEMORYLESS given the parent path (the reversal term died in the data, R² = 0.005): no
+    loop, no extra fork seed, no replay recursion — row 0 is the declared Spot, a fork's row 0
+    is the value the calc hands `precalculate`, the burn-in rides the generic seam. The last
+    bracketed row is decided by parent-bracket availability; past the parent's grid the
+    forward intraday half draws alone (W·h·f_bd). Exact only where every step is one sub-step
+    — a coarser grid is refused loud, the same bound GARCH replay enforces. The calendar
+    grid's weekend convention is the parent's own accepted one and this law inherits it.
+
+    JSON config:
+        Bridge_Weight: intraday share of the day's variance (≈ 0.25)
+        Bridge_Premium: mean log(fixing/parent) net of the bridge (≈ −6e-4)
+        Calibration_DT_Years: the parent recursion's clock (default 1/252)"""
+
+    documentation = (
+        'Asset Pricing',
+        ['An intraday fixing bridged between consecutive observations of its parent price '
+         '(the linked-parent family — an open link, unlike the closed-chain '
+         '`ChainedBasisModel`):',
+         '',
+         '$$ \\log B_t = \\log P_t + W(\\log P_{t+1} - \\log P_t) + \\text{premium} '
+         '+ \\sigma_t Z_t, \\quad \\sigma_t^2 = W(1-W)h_t f_{t+1} $$',
+         '',
+         'published as the level basis whose composed name is the fixing. The bracket '
+         'placement makes the measured conditional-variance reduction of the next parent '
+         'observation given the fixing exist in the simulated world.',
+         '',
+         '- **Bridge_Weight**: intraday share of the day\'s variance',
+         '- **Bridge_Premium**: mean log offset net of the bridge'])
+
+    factor_types = ('ObservedBasis',)
+    fields = [
+        F('Bridge_Weight', 'Float', default=0.0,
+          description='Intraday share of the day\'s variance - the bridge weight'),
+        F('Bridge_Premium', 'Float', default=0.0,
+          description='Mean log(fixing/parent) net of the bridge'),
+        F('Calibration_DT_Years', 'Float', default=1.0 / 252.0,
+          description='Step size (in years) of the parent\'s calibrated recursion')
+    ]
+
+    def __init__(self, factor, param, implied_factor=None):
+        super().__init__(factor, param)
+
+    @staticmethod
+    def num_factors():
+        return 1
+
+    @property
+    def correlation_name(self):
+        return 'FixingBridgeProcess', [()]
+
+    def calc_references(self, factor, static_ofs, stoch_ofs, all_tenors, all_factors):
+        """The parent price: the name minus its last period — the linked-parent family's own
+        documented convention (this is the open-link class; a declared link is the chained
+        one's contract)."""
+        parent = factor.name[:-1]
+        types = [t for t in utils.BASIS_COMPOSABLE_TYPES if utils.Factor(t, parent) in all_factors]
+        if len(types) != 1:
+            raise Exception('FixingBridgeModel {0}: parent {1} must resolve under exactly one '
+                            'composable spot type, found {2}'.format(
+                                utils.check_tuple_name(factor), '.'.join(parent), types))
+        self.linked_key = utils.Factor(types[0], parent)
+
+    def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
+        self.z_offset = process_ofs
+        self.scenario_horizon = time_grid.scen_time_grid.size
+        p = self.param
+        self.w = float(p['Bridge_Weight'])
+        assert 0.0 < self.w < 1.0, f'FixingBridgeModel needs Bridge_Weight in (0,1): {p}'
+        self.premium = float(p.get('Bridge_Premium', 0.0))
+        tg_years = time_grid.time_grid_years
+        dt_arr = np.diff(np.hstack(([tg_years[0]], tg_years)))
+        dt_c = float(p.get('Calibration_DT_Years', 1.0 / 252.0))
+        if any(len(s) > 1 for s in utils.substep_schedule(dt_arr / dt_c)):
+            raise ValueError('FixingBridgeModel: the bridge needs a grid no coarser than the '
+                             'trading day - h*f is not the interval variance across sub-steps '
+                             '(the same bound GARCH replay enforces)')
+        # one flat-tail pad row: a parent outliving this grid brackets the LAST row against a
+        # step whose length lives on the parent's grid - held at the last own step (the carry
+        # pad's convention)
+        f = dt_arr / dt_c
+        self.f = shared.one.new_tensor(np.hstack([f, f[-1:]]))
+        self.f_bd = (1.0 / utils.DAYS_IN_YEAR) / dt_c
+        self.b0 = tensor
+
+    def generate(self, shared_mem):
+        """Vectorised bridge off the parent's finished path; Z is (T, B) outer, (T, B, B2)
+        inner. `k` is the last bracketed row (parent-bracket availability, not the factor's
+        own horizon); the open rows draw the forward intraday half alone."""
+        Z = shared_mem.t_random_numbers[self.z_offset, :self.scenario_horizon]
+        T, batch = Z.shape[0], Z.shape[1:]
+        inner = Z.ndim == 3
+        P = shared_mem.t_Scenario_Buffer[self.linked_key]
+        h = shared_mem.t_Scenario_Buffer[(self.linked_key, 'garch_log_h')].squeeze(1)[:T].exp()
+        k = min(T, P.shape[0] - 1)
+        log_p = P[:T].clamp_min(1.0e-30).log()
+        out = torch.empty(Z.shape, device=Z.device, dtype=Z.dtype)
+        out[0] = self.b0.unsqueeze(-1).expand(batch) if inner else self.b0.expand(batch)
+        if k > 1:
+            lp_next = P[2:k + 1].clamp_min(1.0e-30).log()
+            sd = (self.w * (1.0 - self.w) * h[1:k]
+                  * self.f[2:k + 1].view((-1,) + (1,) * len(batch))).sqrt()
+            log_b = log_p[1:k] + self.w * (lp_next - log_p[1:k]) + self.premium + sd * Z[1:k]
+            out[1:k] = log_b.clamp_min(-10.0).exp() - P[1:k]
+        if k < T:
+            sd = (self.w * h[k:] * self.f_bd).sqrt()
+            log_b = log_p[k:] + self.premium + sd * Z[k:]
+            out[k:] = log_b.clamp_min(-10.0).exp() - P[k:T]
+        return out
+
+
+class FixingBridgeCalibration(object):
+    """Calibration of FixingBridgeModel: the pooled bracket OLS on 1-CALENDAR-day pairs (a
+    weekend bracket has a different clock share; the data reads flat W on clean pairs) —
+    slope = Bridge_Weight, intercept = Bridge_Premium; the variance is the model's h·f,
+    nothing to stamp. The frame carries the own basis column and the parent price column
+    through the existing ObservedBasis prefix pull."""
+    model_type = 'FixingBridgeModel'
+    fields = []
+
+    def __init__(self, model, param):
+        self.model = model
+        self.param = param
+        self.num_factors = 1
+
+    def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
+        own_col = next(c for c in data_frame.columns if c.split('.', 1)[0] == 'ObservedBasis')
+        parent = '.'.join(own_col.split(',', 1)[0].split('.')[1:-1])
+        src_col = next((c for c in data_frame.columns if c.split(',', 1)[0] in
+                        (f'CommodityPrice.{parent}', f'EquityPrice.{parent}',
+                         f'FxRate.{parent}')), None)
+        if src_col is None:
+            raise ValueError(f'FixingBridgeCalibration: no parent price column for {parent!r} '
+                             f'in the frame (have {list(data_frame.columns)})')
+        panel = data_frame[[own_col, src_col]].astype(np.float64)
+        idx = panel.index
+        days = np.asarray((idx - utils.excel_offset).days
+                          if isinstance(idx, pd.DatetimeIndex) else idx, dtype=np.int64)
+        dd = np.diff(days)
+        b, P = panel[own_col].values, panel[src_col].values
+        m = (dd == 1) & np.isfinite(b[:-1]) & np.isfinite(P[:-1]) & np.isfinite(P[1:]) \
+            & (P[:-1] + b[:-1] > 0)
+        y = np.log((P[:-1] + b[:-1]) / P[:-1])[m]
+        x = np.log(P[1:] / P[:-1])[m]
+        X = np.column_stack([np.ones(y.size), x])
+        beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+        prem, w = float(beta[0]), float(beta[1])
+        resid = y - X @ beta
+        param = {'Bridge_Weight': w, 'Bridge_Premium': prem,
+                 'Calibration_DT_Years': 1.0 / float(num_business_days)}
+        logging.info('fixing bridge fit: W=%.3f premium=%+.6f (n=%d, resid sd %.5f)',
+                     w, prem, m.sum(), resid.std())
+        delta = pd.DataFrame({own_col: resid / resid.std()}, index=idx[:-1][m])
+        return utils.CalibrationInfo(param, [[1.0]], delta)
+
+
+class ChainedBasisCalibration(object):
+    """Calibration of ChainedBasisModel from the archive panel: own column + the chain source's
+    column. The frame's source column is found structurally (the other ObservedBasis column the
+    prefix pull delivered — for a session pair the chain source IS the positional parent, so
+    the existing pull suffices; a chain whose link is not in the frame raises loud).
+
+    Fits the two chain-link OLS residuals — the measured objects, from which the model derives
+    the bridge — and the premium net of the derived weight. `delta` is the standardized ID-link
+    residual on its own dates, `correlation` [[1.0]], `num_factors` 1."""
+    model_type = 'ChainedBasisModel'
+    fields = [
+        F('Max_Session_Gap_Days', 'Integer', default=4,
+          description='Largest calendar gap, in days, an overnight link pair may span')]
+
+    def __init__(self, model, param):
+        self.model = model
+        self.param = param
+        self.num_factors = 1
+
+    def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
+        own_col = next(c for c in data_frame.columns if c.split('.', 1)[0] == 'ObservedBasis')
+        src_col = next((c for c in data_frame.columns
+                        if c != own_col and c.split('.', 1)[0] == 'ObservedBasis'), None)
+        if src_col is None:
+            raise ValueError(f'ChainedBasisCalibration: no chain-source basis column in the '
+                             f'frame (have {list(data_frame.columns)})')
+
+        panel = data_frame[[own_col, src_col]].astype(np.float64)
+        idx = panel.index
+        days = np.asarray((idx - utils.excel_offset).days
+                          if isinstance(idx, pd.DatetimeIndex) else idx, dtype=np.int64)
+        dd = np.diff(days)
+        max_gap = int(self.param.get('Max_Session_Gap_Days', 4))
+        b, P = panel[own_col].values, panel[src_col].values
+
+        def ols(X, y):
+            beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+            return beta, y - X @ beta
+
+        m_id = np.isfinite(b) & np.isfinite(P)
+        _, r_id = ols(np.column_stack([np.ones(m_id.sum()), P[m_id]]), b[m_id])
+        m_on = (dd <= max_gap) & np.isfinite(b[:-1]) & np.isfinite(P[1:])
+        _, r_on = ols(np.column_stack([np.ones(m_on.sum()), b[:-1][m_on]]), P[1:][m_on])
+        sig_id, sig_on = float(r_id.std()), float(r_on.std())
+        w = sig_id ** 2 / (sig_id ** 2 + sig_on ** 2)
+        m_br = (dd <= max_gap) & np.isfinite(b[:-1]) & np.isfinite(P[:-1]) & np.isfinite(P[1:])
+        prem = float((b[:-1] - P[:-1] - w * (P[1:] - P[:-1]))[m_br].mean())
+        param = {'Link_ID_Sigma': sig_id, 'Link_ON_Sigma': sig_on, 'Bridge_Premium': prem}
+        logging.info('chained bridge fit: ID $%.2f ON $%.2f -> w=%.3f premium=%+.3f '
+                     '(n_id=%d n_on=%d)', sig_id, sig_on, w, prem, m_id.sum(), m_on.sum())
+        delta = pd.DataFrame({own_col: r_id / sig_id}, index=idx[m_id])
+        return utils.CalibrationInfo(param, [[1.0]], delta)
+
+
 class BasisLinkedSpotModel(StochasticProcess):
     """Lagged-AR(1) basis driven by a sibling commodity-spot path and its HMM regime:
 
