@@ -17,8 +17,13 @@ SAME-DAY observation:
                                         (fix_am + b)*exp(z(tau)*tau) reproduces F_i(am) exactly
     ObservedBasis.LBMA_AM.CME.PM        fix_pm*(exp(e_pm)-1): PM-session CME basis in the same
                                         (own-fix-anchored) convention
-    ForwardRate.PLATINUM_CARRY,0.5      z(0.5) = c + 0.5a   (AM solve; z(tau)*tau = c*tau +
-    ForwardRate.PLATINUM_CARRY,1.0      z(1.0) = c + a       a*tau^2, total carry incl. financing)
+    ForwardRate.PLATINUM_CARRY,0.5      z(0.5) = c + 0.5a   (z(tau)*tau = c*tau + a*tau^2,
+    ForwardRate.PLATINUM_CARRY,1.0      z(1.0) = c + a       total carry incl. financing)
+
+The carry columns are the per-day AVERAGE of the two sessions' solves — each session's
+three-futures snapshot is an independent read of the same slow curve, so the mean halves the
+snapshot noise (the 1/2(AM+PM) convention the slow basis level already uses) — falling back to
+whichever session solved when the other's snapshot failed quality.
 
 Rows where a snapshot fails quality (crossed, wide, missing contract, tau <= 2d) leave that
 session's solved column NaN; the fixes are always carried. Tenors use days/365.25 (the framework's
@@ -95,12 +100,12 @@ def solve_session(df, expiry, session, anchor):
 
 
 def build_archive(df, expiry):
-    """Solve both sessions and shape the wide CSV. The AM solve carries the carry curve; each
-    session's e lands as that session's own-fix-anchored CME basis."""
+    """Solve both sessions and shape the wide CSV. The carry columns average the two sessions'
+    curve reads per day; each session's e lands as that session's own-fix-anchored CME basis."""
     fix = pd.to_numeric(df['AM'], errors='coerce')
     pm = pd.to_numeric(df['PM'], errors='coerce')
-    c, a, e_am = solve_session(df, expiry, 'AM', fix)
-    _, _, e_pm = solve_session(df, expiry, 'PM', pm)
+    c_am, a_am, e_am = solve_session(df, expiry, 'AM', fix)
+    c_pm, a_pm, e_pm = solve_session(df, expiry, 'PM', pm)
 
     out = pd.DataFrame(index=df['DATE'].rename('Date'))
     out[FIX_COL] = fix.values
@@ -108,7 +113,16 @@ def build_archive(df, expiry):
     out[AM_CME_COL] = fix.values * np.expm1(e_am)
     out[PM_CME_COL] = pm.values * np.expm1(e_pm)
     for tau in REF_TENORS:
-        out[f'{CARRY_COL},{tau}'] = c + a * tau
+        z_am, z_pm = c_am + a_am * tau, c_pm + a_pm * tau
+        both = ~np.isnan(z_am) & ~np.isnan(z_pm)
+        m = both & (np.abs(z_am - z_pm) < 1.0)
+        logging.info('carry z(%.1f): both sessions %d, corr %.3f, AM-PM read spread sd %.2f%%, '
+                     'step sd AM-only %.3f%% -> averaged %.3f%%', tau, both.sum(),
+                     np.corrcoef(z_am[m], z_pm[m])[0, 1], 100 * (z_am - z_pm)[m].std(),
+                     100 * np.nanstd(np.diff(z_am)), 100 * np.nanstd(np.diff(np.where(
+                         both, 0.5 * (z_am + z_pm), np.where(np.isnan(z_am), z_pm, z_am)))))
+        out[f'{CARRY_COL},{tau}'] = np.where(
+            both, 0.5 * (z_am + z_pm), np.where(np.isnan(z_am), z_pm, z_am))
     return out
 
 
