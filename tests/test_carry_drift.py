@@ -21,6 +21,10 @@ WHAT EACH GATE HOLDS
      mean futures mark is flat, without it the mark rolls down at `−z(0)·F_0` per year.
   4. FAIL LOUD. `Carry_Drift='Yes'` on a spot with no `Forward_Rate` link, or whose carry factor
      has no process to publish `z0`, raises naming the factor rather than pricing driftlessly.
+  5. THE STEP DRIFTS AT THE CARRY ITS START KNEW. On a `z0` that JUMPS at the first simulated
+     row, the paired per-step carry term puts the pre-jump rate on step 1 and the plateau on
+     every later step — the fork-index contract (`front[t]` feeds t→t+1) made step-visible.
+     Every other gate here runs a frozen carry and is structurally blind to a one-row shift.
 
 THE TWO CONVENTIONS ARE DIFFERENT GATES, deliberately. `Convexity_Correction` is orthogonal to
 this switch and each gate takes the spelling in which its statement is exact: gate 2 runs
@@ -54,14 +58,17 @@ Control: 7 passed, 1 xfailed, 0 failing. Zero survivors.
 | `z0` added without `dt` | six, the OFF-identity gate included | 6 |
 | the `z0` row shifted one step (the fork-index convention broken) | the same six | 6 |
 | both fail-louds softened to a zero drift | everything but the OFF-identity gate | 6 |
+| the carry folded at the row the move LANDS on (end-of-step read) | **the timing gate ONLY** — every frozen-carry gate survives it, which is how it shipped once | 1 |
 
 The one-gate kill is the entry worth reading twice, and it is why the third parametrisation
 exists: on a FLAT carry `D = 0`, so `L`, `z(0)`, `z(0.5)` and `z(1)` are all the same number and a
 process publishing any of them passes both flat gates. Only a curve with a slope can tell the front
 from the level — one fixture property, one gate, one mutant.
 
-A KNOWN DEFECT IS PINNED HERE, as a strict xfail rather than as a note — see
-`test_the_carry_must_be_simulated_as_far_as_the_spot`.
+THE COMPOSED-NAME DEFECT THIS FILE ONCE PINNED IS CLOSED — the flat-tail pad in `_carry_drift`
+holds the front carry at its last simulated value for the trailing row a composed spot can
+outlive its carry by, and `test_the_carry_must_be_simulated_as_far_as_the_spot` now asserts the
+run rather than xfailing it.
 """
 import json
 
@@ -81,7 +88,8 @@ SPOT = 1661.4839212399793
 
 
 def _world(front=0.03, slope=0.0, switch=None, convexity='No', months=12,
-           commodity='PLATINUM_CME', forward_rate=True, carry_model=True, seed=1234):
+           commodity='PLATINUM_CME', forward_rate=True, carry_model=True, seed=1234,
+           mu_l=None, phi_l=None):
     """`commodity_aps_world.json`'s world, inline, with a `CommodityFutureDeal` in place of the
     average-price swap and a carry curve held still at a declared front rate and slope.
 
@@ -110,7 +118,8 @@ def _world(front=0.03, slope=0.0, switch=None, convexity='No', months=12,
             'Sigma': 3.7630499724163147, 'Calibration_DT_Years': DT_C,
             'Slow_Mean_Lambda': 0.96875, 'Mu_0': 6.25},
         'QuadraticCarryCurveModel.PLATINUM_CARRY': {
-            'Phi_L': 0.9962113396325056, 'Mu_L': front + 0.75 * slope, 'Sigma_L': 1.0e-12,
+            'Phi_L': 0.9962113396325056 if phi_l is None else phi_l,
+            'Mu_L': (front + 0.75 * slope) if mu_l is None else mu_l, 'Sigma_L': 1.0e-12,
             'Phi_D': 0.946836023305215, 'Mu_D': 0.5 * slope, 'Sigma_D': 1.0e-12,
             'Gamma': 0.0, 'Nu': 3.0, 'Reference_Tenors': [0.5, 1.0],
             'Calibration_DT_Years': DT_C}}
@@ -240,6 +249,41 @@ def test_the_carry_drift_is_the_front_of_the_curve(front, slope):
     assert abs((on.mean() - off.mean()) / target - 1.0) < 1.0e-5, (on.mean() - off.mean(), target)
 
 
+def test_the_step_drifts_at_the_carry_its_start_knew():
+    """THE TIMING GATE — the statement every frozen-carry gate in this file is structurally
+    blind to (on a constant `z0` a one-row shift is invisible, which is how the end-of-step
+    read shipped and rolled back once already). `Phi_L = 0` snaps `L` to `Mu_L` at the first
+    simulated row, and with a flat initial curve, `Mu_D = 0` and `Gamma = 0` the published
+    front IS `L` — so `z0` is a pure step: 6.00% at row 0, pinned near 1% from row 1 on,
+    with no model-internal rotation in the target.
+
+    The per-step paired difference (ON − OFF, one seed) is exactly the carry term, so the move
+    landing at row 1 must accrue the 6% its step STARTED at — the fork-index contract
+    `front[t] feeds t→t+1` — and the plateau steps must accrue the declared `Mu_L`.
+
+    KILLED BY: folding the carry at the row the move lands on (the one-row lookahead — reading
+    `front[t]` into `ds[t]`), which puts ~1% on step 1 where 6% belongs. Self-checked: the
+    late steps must sit far from 6%·dt, or the carry never jumped and the gate is measuring a
+    frozen fixture.
+    """
+    kw = dict(front=0.06, months=6, mu_l=0.01, phi_l=0.0)
+    on = _run(_world(switch='Yes', **kw))
+    off = _run(_world(switch='No', **kw))
+
+    def steps(results):
+        frame = results['scenarios']['CommodityPrice.PLATINUM_CME'].xs(0.0, level='tenor')
+        dts = (frame.columns[1:] - frame.columns[:-1]).days.values / utils.DAYS_IN_YEAR
+        return np.diff(np.log(frame.values.T), axis=0), dts
+
+    ds_on, dts = steps(on)
+    ds_off, _ = steps(off)
+    paired = (ds_on - ds_off).mean(axis=1)                # (T-1,) the exact carry term per step
+    assert abs(paired[0] - 0.06 * dts[0]) < 2.0e-6, (paired[0], 0.06 * dts[0])
+    late = paired[5:20] / dts[5:20]
+    assert np.all(np.abs(late - 0.06) > 0.02), 'the carry never jumped - the fixture went flat'
+    assert np.all(np.abs(late - 0.01) < 1.0e-3), late
+
+
 # ---------------------------------------------------------------------------
 # 3. the future goes driftless
 # ---------------------------------------------------------------------------
@@ -299,17 +343,12 @@ def test_a_carry_drift_spot_without_a_carry_raises(missing, message):
 
 
 def test_the_carry_must_be_simulated_as_far_as_the_spot():
-    """A DEFECT, pinned. Every stochastic factor gets its own `ScenarioTimeGrid`, cut one row past
-    its own last dependent date, so the spot's step schedule and the carry's published `z0` need
-    not have the same number of rows — and `_carry_drift` adds them elementwise. Pricing the
-    COMPOSED spot name (`PLATINUM_CME.LBMA`, the platinum book's own `Commodity`) puts the
-    `CommodityPrice` cutoff one row past the `ForwardRate`'s and the run dies inside torch:
-
-        RuntimeError: The size of tensor a (182) must match the size of tensor b (183) at
-        non-singleton dimension 0
-
-    Not a tolerance and not a fixture accident: 6, 9 and 12 month contracts all fail, always by
-    exactly one row, and the same world on the plain primary name runs. Whatever the fix, this
-    file's `xfail` must come off with it (`strict`, so a fix that lands turns this red).
+    """CLOSED — this once pinned a defect as a strict xfail. Every stochastic factor gets its own
+    `ScenarioTimeGrid`, cut one row past its own last dependent date, so pricing the COMPOSED
+    spot name (`PLATINUM_CME.LBMA`, the platinum book's own `Commodity`) put the
+    `CommodityPrice` cutoff one row past the `ForwardRate`'s and `_carry_drift`'s elementwise
+    add died inside torch, always by exactly one row. The flat-tail pad in `_carry_drift` closes
+    it — the missing trailing row is the front carry held at its last simulated value — and this
+    test now asserts the composed run prices.
     """
     _run(_world(switch='Yes', months=6, commodity='PLATINUM_CME.LBMA'))

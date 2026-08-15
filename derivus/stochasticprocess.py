@@ -2748,6 +2748,10 @@ class GARCHSpotModel(StochasticProcess):
         pad = self.dt_t.shape[0] - zt.shape[0]
         if pad > 0:
             zt = torch.cat([zt, zt[-1:].expand(pad, *zt.shape[1:])])
+        # front[t] is what step t->t+1 drifts at (the publisher's contract), and ds[t] is the
+        # move LANDING at t - so the composite shifts one row: ds[t] accrues front[t-1]. Row 0
+        # rides dt_t[0] = 0, the anchor. Holds in the outer loop, the fork and the replay alike.
+        zt = torch.cat([zt[:1], zt[:-1]])
         shape = (-1,) + (1,) * (ndim - 1)
         return self.drift.view(shape) + zt * self.dt_t.view(shape)
 

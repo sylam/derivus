@@ -613,6 +613,12 @@ exception: `get_implied_correlation`'s two callers build type-prefixed correlati
 no-abstraction-ahead-of-a-second-caller rule — held until a third correlation pair shows up or the
 rule is judged to outrank it. The gate does not cover tuple literals, so this stays a note.
 
+**`Flot` is a plotting library, not a type.** The widget token the schema vocabulary files a
+`Curve` descriptor under (`schema.py`) is the jQuery-Flot chart widget's name, surviving from the
+`fields.py` era. What it denotes is a curve OBJECT — a 1d list of indexed numbers (an
+interest-rate curve, a commodity curve, a vol column) — and the token should say so, with any
+legacy spelling owned by the front-end mapping. Lands with the next schema-design pass.
+
 **Inline comment density.** The boundary-correction work left ~12 inline blocks of 4-11 comment
 lines, several outweighing the code beneath them. House style is detailed docstrings, 2-3 lines
 maximum inline, and never more comments than code. The material is right - the reasoning, the trap,
