@@ -346,10 +346,10 @@ def get_observed_basis_decay(commodity, all_factors):
     if len(commodity) < 2 or not commodity[-1][utils.FACTOR_INDEX_Stoch]:
         return 1.0, 0.0, None
     key = commodity[-1][utils.FACTOR_INDEX_Offset]
-    param = all_factors[key].param
-    # `.get` on the extension exactly as the model's own precalculate reads it: absent IS off
-    lam = float(param.get('Slow_Mean_Lambda', 0.0) or 0.0)
-    return float(param['Phi']), lam, ([(True, (key, 'basis_mu'), None)] if lam else None)
+    # the PROCESS declares its own decay pair (`basis_decay`) - one model per payoff: a basis
+    # law that cannot state the (phi, lam) projection raises there, never prices as another's
+    phi, lam = all_factors[key].basis_decay()
+    return phi, lam, ([(True, (key, 'basis_mu'), None)] if lam else None)
 
 
 def get_equity_rate_factor(fieldname, static_offsets, stochastic_offsets):

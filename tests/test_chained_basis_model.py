@@ -185,6 +185,19 @@ def test_the_source_is_the_declared_link_and_nothing_else():
         q.generate(shared)
 
 
+def test_the_chain_refuses_the_decay_projection():
+    """One model per payoff: this basis re-anchors to its declared link's own path (E[b]
+    tracks the source basis plus the premium), which the own-level (phi, lam) decay cannot
+    state — so a deal pricing the PM-session composed name refuses loud instead of pricing
+    under another law's projection. The PM-session marks increment defines it, if ever."""
+    from derivus.instruments import get_observed_basis_decay
+    p = ChainedBasisModel(factor=types.SimpleNamespace(param={}), param=dict(CHAIN))
+    key = utils.Factor('ObservedBasis', ('LBMA_AM', 'CME', 'PM'))
+    code = [(True, utils.Factor('ObservedBasis', ('LBMA_AM', 'CME')), None), (True, key, None)]
+    with pytest.raises(Exception, match='basis-decay'):
+        get_observed_basis_decay(code, {key: p})
+
+
 def test_the_calibration_round_trips():
     # a panel drawn from the model's own law at the anti-correlated triple: the source walks
     # at SIG_D, and Var(ID) = w²s² + σ² = σ_ID², Var(ON) = (1−w)²s² + σ² = σ_ON² close by the

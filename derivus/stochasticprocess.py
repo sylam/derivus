@@ -351,6 +351,16 @@ class StochasticProcess(object):
     def calc_references(self, factor, static_ofs, stoch_ofs, all_tenors, all_factors):
         pass
 
+    def basis_decay(self):
+        """`(phi, lam)` — how a composed spot's basis tail decays away from its current level,
+        consumed at compile by `instruments.get_observed_basis_decay` for pricers that project a
+        composed spot forward (`pv_average_price_swap`). `lam` is the slow-mean EWMA coefficient,
+        0.0 when off. One model per payoff: the base REFUSES rather than lending another law's
+        projection — a basis process either states its own pair or its legs do not price."""
+        raise Exception(f'{type(self).__name__} declares no basis-decay projection - a deal '
+                        f'pricing a composed spot through this basis needs the law to state its '
+                        f'own (phi, lam), never another model\'s')
+
     @classmethod
     def privileged_layout(cls, param):
         """Static {name: dim} schema of privileged factors this process emits, derivable from
@@ -3698,11 +3708,10 @@ class ChainedBasisModel(StochasticProcess):
     The source is the declared `Chained_Basis` and nothing else — no naming convention — and it
     must have generated first (the read fails loud naming both when it has not). Because the
     loop's other members generate earlier in the positional order, the bridge is the acyclic
-    spelling of the closed chain: it reproduces both measured links and the lag-1 news channel
-    (corr(η_pm(t), η_am(t+1)) > 0) by construction, which same-row correlation alone cannot
-    (measured: +0.29 in the data, ≈0 under R-only).
+    spelling of the closed chain: it reproduces both declared links and the lag-1 news channel
+    (corr(η_pm(t), η_am(t+1)) > 0) by construction, which same-row correlation alone cannot.
 
-    MEMORYLESS given the source path — the data killed the reversal term (R² = 0.005) — so
+    MEMORYLESS given the source path — the law carries no reversal term — so
     there is no sequential loop, no extra fork seed and no replay recursion: row 0 is the
     declared `Spot` (observed, like every factor's), a fork's row 0 is the forked value the
     calc already hands `precalculate`, and the burn-in's terminal carry rides the generic
@@ -3715,11 +3724,10 @@ class ChainedBasisModel(StochasticProcess):
         w = 1/2 + (σ_ID² − σ_ON²) / (2·σ_D²),   σ² = σ_ID² − w²·σ_D²,   σ_half = σ_ID
 
     which reproduce all three at the source's own scale. The independence recomposition
-    (w = σ_ID²/(σ_ID²+σ_ON²), σ_D² = σ_ID²+σ_ON²) is the ρ(ID,ON) = 0 special case and the
-    data refutes it: the half-steps are ANTI-correlated (ρ ≈ −0.4 on the calibration window
-    and on 2020+, the AM transient partially reverting overnight), so σ_ID²+σ_ON² overstates
-    the daily step and an independence-derived bridge under-sizes both links ~10% at the true
-    source scale. An infeasible triple (σ² ≤ 0, or w outside (0,1)) raises at precalculate.
+    (w = σ_ID²/(σ_ID²+σ_ON²), σ_D² = σ_ID²+σ_ON²) is the ρ(ID,ON) = 0 special case: wherever
+    the half-steps are correlated, that recomposition mis-states the daily step and an
+    independence-derived bridge mis-sizes both links at the true source scale. An infeasible
+    triple (σ² ≤ 0, or w outside (0,1)) raises at precalculate.
 
     JSON config:
         Link_ID_Sigma, Link_ON_Sigma: the chain-link residual stds, $/oz
@@ -3737,7 +3745,7 @@ class ChainedBasisModel(StochasticProcess):
          'with w and σ derived by the exact bridge identities from the two chain-link '
          'residuals and the source\'s daily step std — the half-steps are anti-correlated in '
          'the data, so the ρ = 0 recomposition is not used. The bridge is the acyclic '
-         'spelling of the closed chain, reproducing the measured links and the lag-1 '
+         'spelling of the closed chain, reproducing the declared links and the lag-1 '
          'news channel by construction. An open link riding another factor\'s path is the '
          'linked-parent family (`BasisLinkedSpotModel`), not this class.',
          '',
@@ -3835,20 +3843,19 @@ class ChainedBasisModel(StochasticProcess):
 class FixingBridgeModel(StochasticProcess):
     """An intraday fixing bridged between consecutive observations of its parent price — the
     linked-parent family (an OPEN link, so no `Chained_Basis`: the parent's law never reads
-    this factor back, which the data confirms — the overnight move is unpredictable from the
-    intraday one, slope +0.006, R² 0.0000). The factor is the level basis (fixing − parent)
-    whose composed name IS the fixing; the law, in the parent's log space:
+    this factor back). The factor is the level basis (fixing − parent) whose composed name IS
+    the fixing; the law, in the parent's log space:
 
         log B(t) = log P(t) + W·(log P(t+1) − log P(t)) + premium + σ_t·Z(t)
         σ_t² = W(1−W)·h_t·f_{t+1}       h_t from the parent's published garch_log_h
 
     The bracket placement is the point, not a nicety: it is what makes
-    Var(P(t+1) | P(t), fixing(t)) = (1−W)·h — the measured 25% variance reduction the data
-    carries (sd ratio 0.868, slope 1.006 on the intraday move) — exist in the simulated world
-    at all. An independent draw of the same marginal (√(W·h)·ε, the Q-Q-equivalent law) scores
-    ZERO on that conditional, and a solver cannot infer structure the world does not contain.
+    Var(P(t+1) | P(t), fixing(t)) = (1−W)·h — the conditional-variance reduction knowing the
+    fixing buys — exist in the simulated world at all. An independent draw of the same
+    marginal (√(W·h)·ε, the Q-Q-equivalent law) scores ZERO on that conditional, and a solver
+    cannot infer structure the world does not contain.
 
-    MEMORYLESS given the parent path (the reversal term died in the data, R² = 0.005): no
+    MEMORYLESS given the parent path (the law carries no reversal term): no
     loop, no extra fork seed, no replay recursion — row 0 is the declared Spot, a fork's row 0
     is the value the calc hands `precalculate`, the burn-in rides the generic seam. The last
     bracketed row is decided by parent-bracket availability; past the parent's grid the
@@ -3857,8 +3864,8 @@ class FixingBridgeModel(StochasticProcess):
     grid's weekend convention is the parent's own accepted one and this law inherits it.
 
     JSON config:
-        Bridge_Weight: intraday share of the day's variance (≈ 0.25)
-        Bridge_Premium: mean log(fixing/parent) net of the bridge (≈ −6e-4)
+        Bridge_Weight: the fixing's intraday share of the day's variance, in (0, 1)
+        Bridge_Premium: mean log(fixing/parent) net of the bridge
         Calibration_DT_Years: the parent recursion's clock (default 1/252)"""
 
     documentation = (
@@ -3871,7 +3878,7 @@ class FixingBridgeModel(StochasticProcess):
          '+ \\sigma_t Z_t, \\quad \\sigma_t^2 = W(1-W)h_t f_{t+1} $$',
          '',
          'published as the level basis whose composed name is the fixing. The bracket '
-         'placement makes the measured conditional-variance reduction of the next parent '
+         'placement makes the conditional-variance reduction of the next parent '
          'observation given the fixing exist in the simulated world.',
          '',
          '- **Bridge_Weight**: intraday share of the day\'s variance',
@@ -3897,6 +3904,12 @@ class FixingBridgeModel(StochasticProcess):
     @property
     def correlation_name(self):
         return 'FixingBridgeProcess', [()]
+
+    def basis_decay(self):
+        """MEMORYLESS: a future fixing's basis does not remember today's, so the projection is
+        (0, 0) — the level decays to zero within a step. The dropped mean offset is the bridge
+        premium, negligible by this law's own contract (a per-step log offset)."""
+        return 0.0, 0.0
 
     def calc_references(self, factor, static_ofs, stoch_ofs, all_tenors, all_factors):
         """The parent price: the name minus its last period — the linked-parent family's own
@@ -4225,6 +4238,11 @@ class BasisLinkedSpotModel(StochasticProcess):
                 raise Exception('ObservedBasis {0}: parent {1} must resolve under exactly one composable '
                                 'spot type, found {2}'.format(utils.check_tuple_name(factor), '.'.join(parent), types))
             self.linked_key = utils.Factor(types[0], parent)
+
+    def basis_decay(self):
+        """AR(1) toward the (possibly slow-moving) mean: the declared Phi, and the slow mean's
+        own lambda when that extension is on — absent IS off, as precalculate reads it."""
+        return float(self.param['Phi']), float(self.param.get('Slow_Mean_Lambda', 0.0) or 0.0)
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
         """

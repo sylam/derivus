@@ -174,6 +174,19 @@ def test_the_parent_resolves_loud():
                           None, None, None, {})
 
 
+def test_the_composed_fixing_projects_memoryless():
+    """`instruments.get_observed_basis_decay` — the APS projection resolver — reads the
+    process's own `basis_decay` verb: this law is memoryless (a future fixing's basis does not
+    remember today's, R² = 0.005), so the pair is (0, 0) and no slow-mean series rides. Killed
+    by the resolver reading another model's Phi off the param block — the shape that silently
+    skipped the PM leg of a hedge liability before the verb existed."""
+    from derivus.instruments import get_observed_basis_decay
+    p = FixingBridgeModel(factor=None, param={'Bridge_Weight': 0.2})
+    key = utils.Factor('ObservedBasis', ('LBMA_AM', 'PM'))
+    code = [(True, utils.Factor('CommodityPrice', ('LBMA_AM',)), None), (True, key, None)]
+    assert get_observed_basis_decay(code, {key: p}) == (0.0, 0.0, None)
+
+
 def test_the_calibration_round_trips():
     rng = np.random.default_rng(11)
     n = 3000

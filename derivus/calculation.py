@@ -2326,6 +2326,22 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
             simulation_sub_batch=int(self.params.get('Inner_Sub_Batch', 0)),
             keep_tensor=self.params.get('Keep_Tensor', 'No') == 'Yes')
 
+    @staticmethod
+    def _require_all_compiled(declared, structure, role):
+        """A hedge book must compile WHOLE. The pricing walk's skip-and-continue is the right
+        contract for a reporting book — one broken deal should not lose the run — but here a
+        skipped tradable silently shrinks the solver's menu and a skipped liability halves the
+        target it is hedging, and the solve then reports a confident answer to a different
+        problem. Measured: an APS leg whose basis law failed to compile dropped n* from −44.8
+        to −22.1 with nothing but an ERROR log."""
+        loaded = ({d.Instrument.field.get('Reference') for d in structure.dependencies} |
+                  {s.obj.Instrument.field.get('Reference') for s in structure.sub_structures})
+        missing = [n['Instrument'].field.get('Reference') for n in declared
+                   if n['Instrument'].field.get('Reference') not in loaded]
+        if missing:
+            raise Exception(f'HedgeMonteCarlo: {role} legs failed to compile and were skipped: '
+                            f'{missing} — a hedge book prices whole or not at all')
+
     def update_factors(self, params, base_date, job_id, num_jobs, end_date):
         """Override: deal-driven dependencies plus the calc's explicit Scenario_Factors list —
         factors no deal reaches directly (e.g. a basis consumed only by a composed spot)
@@ -2463,12 +2479,14 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         # the live factor and instrument tensors produced by this same loop.
         self.netting_sets = DealStructure(Aggregation('root'), store_results=True)
         self.set_deal_structures(instruments, self.netting_sets, shared_mem.one, deal_level_mtm=True)
+        self._require_all_compiled(instruments, self.netting_sets, 'tradable')
         self.netting_sets.finalize_struct(base_date, self.time_grid)
 
         self.liabilities = DealStructure(Aggregation('contracts'), store_results=False)
         # the inner-MC fork windows `Time_dep` and shares `Factor_dep` by reference on the same
         # `shared_mem`, so its copies price off the schedules bound here
         self.set_deal_structures(liabilities, self.liabilities, shared_mem.one, deal_level_mtm=False)
+        self._require_all_compiled(liabilities, self.liabilities, 'liability')
         self.liabilities.finalize_struct(base_date, self.time_grid)
 
         t_days_arr = self.time_grid.scenario_grid[:, utils.TIME_GRID_MTM]  # [T]

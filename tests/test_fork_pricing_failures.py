@@ -147,6 +147,28 @@ def _run(cfg, name, forks=None):
         HedgeMonteCarlo._run_inner_mc_at_t = original_fork
 
 
+def test_a_hedge_book_leg_that_fails_to_compile_kills_the_run():
+    """The COMPILE-level arm of this module's statement. `add_deal_to_structure`'s
+    skip-and-continue is the reporting book's contract — one broken deal must not lose a CVA
+    run — but on a hedge book a skipped tradable shrinks the solver's menu and a skipped
+    liability halves the target, and the solve then reports a confident answer to a different
+    problem. Measured live before the guard: an APS leg whose basis law could not state its
+    projection dropped n* from −44.8 to −22.1 with nothing but an ERROR log. Both roles raise,
+    naming the leg. Killed by removing either `_require_all_compiled` call."""
+    for role, block, patch in (
+            ('liability', 'Liabilities', {'Currency': 'XXX'}),
+            ('tradable', 'Tradable_Instruments', {'Sampling_Type': 'NOPE', 'Currency': 'XXX'})):
+        cfg = _cfg(t_min=113)
+        hp = cfg['Calc']['Calculation']['Hedging_Problem']
+        src = hp[block].setdefault('FloatingEnergyDeal', {})
+        leg = copy.deepcopy(cfg['Calc']['Calculation']['Hedging_Problem']['Liabilities']
+                            ['FloatingEnergyDeal']['PLAT_JUL29'])
+        leg.update(patch)
+        src['BROKEN_LEG'] = leg
+        with pytest.raises(Exception, match=f'{role} legs failed to compile.*BROKEN_LEG'):
+            _run(copy.deepcopy(cfg), f'broken_{role}')
+
+
 def test_an_averaging_tradable_is_priced_not_retired():
     """An averaging swap hedging an averaging offtake — the obvious hedge for this book — reads
     further back than the liability does. The window was derived from the liability alone, so the
