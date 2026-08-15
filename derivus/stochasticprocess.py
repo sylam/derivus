@@ -5216,6 +5216,11 @@ class BasisLinkedSpotCalibration(object):
         F('Nu_Max', 'Float', default=50.0, description='Ceiling on the same solve'),
         F('Vol_Window', 'Integer', default=21,
           description='Rolling window, in business days, the regime terciles are cut on'),
+        F('Max_Persistence', 'Float', default=0.999,
+          description='Cap on G_Alpha + G_Beta of the basis GARCH - an escalating-variance '
+                      'window can drive the MLE past a unit root, and an explosive basis '
+                      'random-walks the simulation; beta is scaled down to the cap, matching '
+                      'the spot calibration'),
         F('Slow_Mean_Span', 'Integer', default=0,
           description='EWMA span, in business days, of the slow observable mean the AR reverts '
                       'to - 0 fits the shipped zero-mean AR and stamps neither new field'),
@@ -5282,6 +5287,14 @@ class BasisLinkedSpotCalibration(object):
 
         if fit_garch:
             g_omega, g_alpha, g_beta = fit.garch
+            max_persistence = float(self.param.get('Max_Persistence', 0.999))
+            if g_alpha + g_beta > max_persistence:
+                # An escalating-variance window (2026 squeeze on a 3y fit) drives the MLE past
+                # a unit root, and an explosive basis GARCH random-walks the simulated basis to
+                # +/- hundreds of $/oz. Same projection as GARCHSpotCalibration's.
+                logging.warning('basis GARCH persistence %.5f > %.5f - scaling beta down.',
+                                g_alpha + g_beta, max_persistence)
+                g_beta = max_persistence - g_alpha
             vol = {'Sigma': float(eta.std()), 'G_Omega': g_omega, 'G_Alpha': g_alpha,
                    'G_Beta': g_beta, 'Sig2_0': float(sigma_t[-1] ** 2)}
             eta = fit.resid                                               # standardised for `delta`
