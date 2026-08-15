@@ -7,22 +7,33 @@ and this class refuses to exist without its declaration.
 
 Gates and their killing mutations:
 
+The fixture triple is the archive's own (3y window): ID 5.06 / ON 5.58 / daily 5.99, which is
+ANTI-correlated (ρ(ID,ON) ≈ −0.41 — the AM transient partially reverting overnight). On an
+independent triple (s² = σ_ID²+σ_ON²) the exact identities and the ρ=0 recomposition coincide
+and a reverted-derivation mutant SURVIVES — the anti-correlation is what makes every gate
+below able to see the derivation at all.
+
 1. THE LAW IS THE DECLARED BRIDGE — pooled regression on (P_t, P_{t+1}) recovers (1−w, w) with
-   the residual the links derive; the open last row carries σ_ID alone; row 0 is the declared
-   Spot exactly. Killed by a wrong weight derivation, swapped link sigmas, a drawn row 0, or
-   the open row reading the bridge σ.
-2. THE NEWS CHANNEL IS THE CONSTRUCTION — corr(b−P, the NEXT source move) sits where w and the
+   the residual the identities derive; the open last row carries σ_ID alone; row 0 is the
+   declared Spot exactly. Killed by a wrong weight derivation, swapped link sigmas, a drawn
+   row 0, or the open row reading the bridge σ.
+2. THE LINKS CLOSE AT THE DECLARED SOURCE SCALE — the simulated ID and ON link residuals
+   reproduce the DECLARED Link_ID/ON sigmas when the source steps at Link_Daily_Sigma. The
+   independence derivation under-sizes both ~10% here (sim 4.62/4.99 against 5.06/5.58) and
+   dies at the 3% tolerance.
+3. THE NEWS CHANNEL IS THE CONSTRUCTION — corr(b−P, the NEXT source move) sits where w and the
    scales put it; a same-row-only law (what an R-only world expresses) scores ≈ 0 here, which
    is this class's reason to exist. Killed by the bracket read dropped to same-row.
-3. BRACKET AVAILABILITY DECIDES THE OPEN ROWS — a source outliving the grid bridges every row
+4. BRACKET AVAILABILITY DECIDES THE OPEN ROWS — a source outliving the grid bridges every row
    (the last against the row past the grid); an equal-length source leaves the last row open.
    Killed by keying the test on the factor's own horizon.
-4. INNER MODE BROADCASTS — (T, B, B2) end to end, with the fork's per-path (B,) row 0.
-5. THE SOURCE IS THE DECLARED LINK AND NOTHING ELSE — no positional fallback (a naming
+5. INNER MODE BROADCASTS — (T, B, B2) end to end, with the fork's per-path (B,) row 0.
+6. THE SOURCE IS THE DECLARED LINK AND NOTHING ELSE — no positional fallback (a naming
    convention is not a contract); absent declaration and absent-from-universe both raise.
-6. THE CALIBRATION ROUND-TRIPS — on a panel whose source step variance satisfies the
-   recomposition identity s² = σ_ID² + σ_ON² (the battery's own gate), the link residuals,
-   derived weight and premium come back.
+7. THE CALIBRATION ROUND-TRIPS — a panel drawn from the model's own law at the anti-correlated
+   triple returns all three sigmas, the derived weight and the premium; and its delta (the
+   standardized bridge residual) is uncorrelated with the source's step, so an estimated
+   correlation matrix cannot double-count the news channel.
 
 Sim harness copied from tests/test_basis_band_mixture.py (the unit idiom for basis processes).
 """
@@ -39,10 +50,11 @@ from derivus.stochasticprocess import ChainedBasisCalibration, ChainedBasisModel
 
 DEVICE = torch.device('cpu')
 REF_DATE = pd.Timestamp('2026-04-10')
-SIG_ID, SIG_ON = 4.53, 4.96
-W_LVL = SIG_ID ** 2 / (SIG_ID ** 2 + SIG_ON ** 2)
-SIG_BR = SIG_ID * SIG_ON / np.sqrt(SIG_ID ** 2 + SIG_ON ** 2)
-CHAIN = {'Link_ID_Sigma': SIG_ID, 'Link_ON_Sigma': SIG_ON, 'Bridge_Premium': -0.8}
+SIG_ID, SIG_ON, SIG_D = 5.06, 5.58, 5.99          # the archive's 3y triple: rho(ID,ON) = -0.41
+W_LVL = 0.5 + (SIG_ID ** 2 - SIG_ON ** 2) / (2.0 * SIG_D ** 2)
+SIG_BR = np.sqrt(SIG_ID ** 2 - W_LVL ** 2 * SIG_D ** 2)
+CHAIN = {'Link_ID_Sigma': SIG_ID, 'Link_ON_Sigma': SIG_ON, 'Link_Daily_Sigma': SIG_D,
+         'Bridge_Premium': -0.8}
 B0 = -10.65
 
 
@@ -80,8 +92,12 @@ def _run(T=120, B=8192, rows_extra=0, seed=42):
     key = utils.Factor('ObservedBasis', ('LBMA_AM', 'CME'))
     Z = shared.t_random_numbers[0, :T]
     g = torch.Generator(device=DEVICE).manual_seed(7)
-    P = -7.0 + torch.randn((T + rows_extra,) + tuple(Z.shape[1:]), generator=g,
-                           dtype=Z.dtype) * 6.0
+    # the source walks at the DECLARED daily scale, so the closure gate can hold the sim
+    # link residuals to the declared targets
+    steps = torch.randn((T + rows_extra - 1,) + tuple(Z.shape[1:]), generator=g,
+                        dtype=Z.dtype) * SIG_D
+    P = -7.0 + torch.cat([torch.zeros((1,) + tuple(Z.shape[1:]), dtype=Z.dtype),
+                          steps.cumsum(0)])
     shared.t_Scenario_Buffer[key] = P
     p = _proc(CHAIN, shared, T, key)
     return p, shared, P, p.generate(shared)
@@ -99,6 +115,19 @@ def test_the_law_is_the_declared_bridge():
     assert 0.95 * SIG_BR < resid.std() < 1.05 * SIG_BR
     open_sd = (b[-1] - Pn[119] - (-0.8)).std()
     assert 0.95 * SIG_ID < open_sd < 1.05 * SIG_ID        # the open row is the ID half alone
+
+
+def test_the_links_close_at_the_declared_source_scale():
+    """Sim ID/ON link residuals reproduce the DECLARED sigmas when the source steps at
+    Link_Daily_Sigma — the whole point of the exact identities. Mutation: the independence
+    derivation (w = ID²/(ID²+ON²), σ = ID·ON/√(ID²+ON²)) puts them at 4.62/4.99 against
+    5.06/5.58 declared, −9%/−11%, killed at the 3% tolerance."""
+    p, shared, P, out = _run()
+    b, Pn = out.cpu().numpy(), P.cpu().numpy()
+    id_link = (b[1:-1] - Pn[1:-1]).ravel().std()
+    on_link = (Pn[2:120] - b[1:-1]).ravel().std()
+    assert abs(id_link - SIG_ID) / SIG_ID < 0.03, id_link
+    assert abs(on_link - SIG_ON) / SIG_ON < 0.03, on_link
 
 
 def test_the_news_channel_is_the_construction():
@@ -157,23 +186,28 @@ def test_the_source_is_the_declared_link_and_nothing_else():
 
 
 def test_the_calibration_round_trips():
+    # a panel drawn from the model's own law at the anti-correlated triple: the source walks
+    # at SIG_D, and Var(ID) = w²s² + σ² = σ_ID², Var(ON) = (1−w)²s² + σ² = σ_ON² close by the
+    # same identities the model derives with — no constraint between s and the link sigmas
     rng = np.random.default_rng(11)
     n = 3000
     idx = pd.bdate_range('2014-01-01', periods=n)
-    # the source's step sd must satisfy the recomposition identity s² = σ_ID² + σ_ON², or the
-    # link-derived weight is not the generative one - the same identity the battery gates
-    s = np.sqrt(SIG_ID ** 2 + SIG_ON ** 2)
-    P = -7.0 + np.cumsum(rng.standard_normal(n)) * s
+    P = -7.0 + np.cumsum(rng.standard_normal(n)) * SIG_D
     b = np.empty(n)
     b[:-1] = P[:-1] + W_LVL * (P[1:] - P[:-1]) - 0.8 + SIG_BR * rng.standard_normal(n - 1)
     b[-1] = P[-1] - 0.8 + SIG_ID * rng.standard_normal()
     frame = pd.DataFrame({'ObservedBasis.X.CME.PM': b, 'ObservedBasis.X.CME': P}, index=idx)
     cal = ChainedBasisCalibration('ChainedBasisModel', {})
     res = cal.calibrate(frame, 0.0)
-    w = res.param['Link_ID_Sigma'] ** 2 / (
-        res.param['Link_ID_Sigma'] ** 2 + res.param['Link_ON_Sigma'] ** 2)
-    assert abs(w - W_LVL) < 0.03
-    assert abs(res.param['Link_ID_Sigma'] - SIG_ID) < 0.25
-    assert abs(res.param['Link_ON_Sigma'] - SIG_ON) < 0.25
+    sid, son, sd = (res.param['Link_ID_Sigma'], res.param['Link_ON_Sigma'],
+                    res.param['Link_Daily_Sigma'])
+    assert abs(sid - SIG_ID) < 0.25
+    assert abs(son - SIG_ON) < 0.25
+    assert abs(sd - SIG_D) < 0.25
+    assert abs(0.5 + (sid ** 2 - son ** 2) / (2 * sd ** 2) - W_LVL) < 0.03
     assert abs(res.param['Bridge_Premium'] - (-0.8)) < 0.3
     assert res.delta.shape[1] == 1 and cal.num_factors == 1
+    # the delta is the BRIDGE residual: uncorrelated with the source's step, so a correlation
+    # estimate off it cannot double-count the news channel (the ID-link residual would)
+    dP = pd.Series(np.diff(P), index=idx[:-1]).reindex(res.delta.index)
+    assert abs(np.corrcoef(res.delta.values[:, 0], dP.values)[0, 1]) < 0.05

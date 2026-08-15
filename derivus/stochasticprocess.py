@@ -3705,11 +3705,21 @@ class ChainedBasisModel(StochasticProcess):
     initial-state seam. Rows draw vectorised; the LAST bracketed row is decided by
     source-bracket availability (`t+1` beyond the source's grid → the forward half alone).
 
-    The block declares the two LINK residuals — the measured objects of the chain — and the
-    bridge derives: w = σ_ID²/(σ_ID²+σ_ON²), σ = σ_ID·σ_ON/√(σ_ID²+σ_ON²), σ_half = σ_ID.
+    The block declares the two LINK residuals and the source's DAILY step std — the three
+    measured objects of the chain — and the bridge derives the exact identities
+
+        w = 1/2 + (σ_ID² − σ_ON²) / (2·σ_D²),   σ² = σ_ID² − w²·σ_D²,   σ_half = σ_ID
+
+    which reproduce all three at the source's own scale. The independence recomposition
+    (w = σ_ID²/(σ_ID²+σ_ON²), σ_D² = σ_ID²+σ_ON²) is the ρ(ID,ON) = 0 special case and the
+    data refutes it: the half-steps are ANTI-correlated (ρ ≈ −0.4 on the calibration window
+    and on 2020+, the AM transient partially reverting overnight), so σ_ID²+σ_ON² overstates
+    the daily step and an independence-derived bridge under-sizes both links ~10% at the true
+    source scale. An infeasible triple (σ² ≤ 0, or w outside (0,1)) raises at precalculate.
 
     JSON config:
         Link_ID_Sigma, Link_ON_Sigma: the chain-link residual stds, $/oz
+        Link_Daily_Sigma: the source's daily step std on the same window, $/oz
         Bridge_Premium: mean offset net of the bridge, $/oz"""
 
     documentation = (
@@ -3720,12 +3730,15 @@ class ChainedBasisModel(StochasticProcess):
          '',
          '$$ b_t = P_t + w\\,(P_{t+1} - P_t) + \\text{premium} + \\sigma Z_t $$',
          '',
-         'with w and σ derived from the two declared chain-link residuals. The bridge is the '
-         'acyclic spelling of the closed chain, reproducing the measured links and the lag-1 '
+         'with w and σ derived by the exact bridge identities from the two chain-link '
+         'residuals and the source\'s daily step std — the half-steps are anti-correlated in '
+         'the data, so the ρ = 0 recomposition is not used. The bridge is the acyclic '
+         'spelling of the closed chain, reproducing the measured links and the lag-1 '
          'news channel by construction. An open link riding another factor\'s path is the '
          'linked-parent family (`BasisLinkedSpotModel`), not this class.',
          '',
          '- **Link_ID_Sigma, Link_ON_Sigma**: the chain-link residual stds',
+         '- **Link_Daily_Sigma**: the source\'s daily step std on the same window',
          '- **Bridge_Premium**: mean offset net of the bridge'])
 
     factor_types = ('ObservedBasis',)
@@ -3735,6 +3748,9 @@ class ChainedBasisModel(StochasticProcess):
                       'bridge weight and residual derive from the two links'),
         F('Link_ON_Sigma', 'Float', default=0.0,
           description='Residual std of the overnight link (this(t) to source(t+1)), $/oz'),
+        F('Link_Daily_Sigma', 'Float', default=0.0,
+          description='Daily step residual std of the chain source on the same window, $/oz '
+                      '- closes the bridge identities at the source\'s own scale'),
         F('Bridge_Premium', 'Float', default=0.0,
           description='Mean offset net of the bridge, $/oz')
     ]
@@ -3776,11 +3792,14 @@ class ChainedBasisModel(StochasticProcess):
         p = self.param
         self.premium = float(p.get('Bridge_Premium', 0.0))
         sig_id, sig_on = float(p['Link_ID_Sigma']), float(p['Link_ON_Sigma'])
-        assert sig_id > 0.0 and sig_on > 0.0, \
-            f'ChainedBasisModel needs both link sigmas > 0: {p}'
-        s2 = sig_id * sig_id + sig_on * sig_on
-        self.w = sig_id * sig_id / s2
-        self.sigma = sig_id * sig_on / np.sqrt(s2)
+        sig_d = float(p['Link_Daily_Sigma'])
+        assert sig_id > 0.0 and sig_on > 0.0 and sig_d > 0.0, \
+            f'ChainedBasisModel needs all three link sigmas > 0: {p}'
+        self.w = 0.5 + (sig_id * sig_id - sig_on * sig_on) / (2.0 * sig_d * sig_d)
+        s2 = sig_id * sig_id - self.w * self.w * sig_d * sig_d
+        assert 0.0 < self.w < 1.0 and s2 > 0.0, \
+            f'ChainedBasisModel: infeasible link triple (w={self.w:.4f}, sigma^2={s2:.4f}): {p}'
+        self.sigma = np.sqrt(s2)
         self.sigma_half = sig_id
         self.b0 = tensor
 
@@ -3986,9 +4005,12 @@ class ChainedBasisCalibration(object):
     prefix pull delivered — for a session pair the chain source IS the positional parent, so
     the existing pull suffices; a chain whose link is not in the frame raises loud).
 
-    Fits the two chain-link OLS residuals — the measured objects, from which the model derives
-    the bridge — and the premium net of the derived weight. `delta` is the standardized ID-link
-    residual on its own dates, `correlation` [[1.0]], `num_factors` 1."""
+    Fits the two chain-link OLS residuals and the source's daily step std — the three measured
+    objects from which the model derives the bridge — and the premium net of the derived
+    weight. `delta` is the standardized BRIDGE residual (b − P − w·ΔP) on its own dates:
+    uncorrelated with the source's step by construction, so an estimated correlation matrix
+    cannot double-count the news channel the bridge already carries. `correlation` [[1.0]],
+    `num_factors` 1."""
     model_type = 'ChainedBasisModel'
     fields = [
         F('Max_Session_Gap_Days', 'Integer', default=4,
@@ -4024,13 +4046,18 @@ class ChainedBasisCalibration(object):
         m_on = (dd <= max_gap) & np.isfinite(b[:-1]) & np.isfinite(P[1:])
         _, r_on = ols(np.column_stack([np.ones(m_on.sum()), b[:-1][m_on]]), P[1:][m_on])
         sig_id, sig_on = float(r_id.std()), float(r_on.std())
-        w = sig_id ** 2 / (sig_id ** 2 + sig_on ** 2)
         m_br = (dd <= max_gap) & np.isfinite(b[:-1]) & np.isfinite(P[:-1]) & np.isfinite(P[1:])
-        prem = float((b[:-1] - P[:-1] - w * (P[1:] - P[:-1]))[m_br].mean())
-        param = {'Link_ID_Sigma': sig_id, 'Link_ON_Sigma': sig_on, 'Bridge_Premium': prem}
-        logging.info('chained bridge fit: ID $%.2f ON $%.2f -> w=%.3f premium=%+.3f '
-                     '(n_id=%d n_on=%d)', sig_id, sig_on, w, prem, m_id.sum(), m_on.sum())
-        delta = pd.DataFrame({own_col: r_id / sig_id}, index=idx[m_id])
+        step = (P[1:] - P[:-1])[m_br]
+        sig_d = float(step.std())
+        w = 0.5 + (sig_id ** 2 - sig_on ** 2) / (2.0 * sig_d ** 2)
+        bridge = (b[:-1] - P[:-1] - w * (P[1:] - P[:-1]))[m_br]
+        prem = float(bridge.mean())
+        param = {'Link_ID_Sigma': sig_id, 'Link_ON_Sigma': sig_on, 'Link_Daily_Sigma': sig_d,
+                 'Bridge_Premium': prem}
+        logging.info('chained bridge fit: ID $%.2f ON $%.2f daily $%.2f -> w=%.3f '
+                     'premium=%+.3f (n_id=%d n_on=%d)', sig_id, sig_on, sig_d, w, prem,
+                     m_id.sum(), m_on.sum())
+        delta = pd.DataFrame({own_col: (bridge - prem) / bridge.std()}, index=idx[:-1][m_br])
         return utils.CalibrationInfo(param, [[1.0]], delta)
 
 
