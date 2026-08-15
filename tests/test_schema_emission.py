@@ -169,16 +169,9 @@ def test_descriptor_shape(cls_name):
 # is the known-defect gate: it fails both when one appears and when one is fixed. Keyed
 # (type, dotted key).
 SHAPELESS = {
-    ('MarkovSwitchingLogOUSpotModel', 'States'),
-    ('MarkovSwitchingLogOUSpotModel', 'Transition_Matrix'),
-    ('MarkovSwitchingLogOUSpotModel', 'Initial_State_Probs'),
     ('MarkovHMMSpotModel', 'States'),
     ('MarkovHMMSpotModel', 'Transition_Matrix'),
     ('MarkovHMMSpotModel', 'Initial_State_Probs'),
-    ('VARMixedFactorInterestRateModel', 'Mean'),
-    ('VARMixedFactorInterestRateModel', 'Phi'),
-    ('VARMixedFactorInterestRateModel', 'Sigma'),
-    ('VARMixedFactorInterestRateModel', 'Calibration_Tenors'),
     ('QuadraticCarryCurveModel', 'Reference_Tenors'),
     ('BasisLinkedSpotModel', 'Sigma_By_State'),
     ('CreditMonteCarlo', 'Credit_Valuation_Adjustment.CDS_Tenors'),
@@ -413,18 +406,14 @@ def test_every_process_reaches_a_factor_menu():
 def test_one_name_may_carry_two_shapes_in_different_processes():
     """The capability the per-type store exists for, pinned so a return to a flat one fails.
 
-    Three names carry two shapes each. `Sigma` is a scalar on the OU/hazard/Clewlow-Strickland
-    models and a term-structure curve on Hull-White - under the flat store the scalar had to be
-    filed as `sigma` and carry `Sigma` as an alias, which is the last Process entry in
-    `ALIASED_KEYS`. `Phi` is a 3x3 VAR transition matrix on `VARMixedFactorInterestRateModel` and a
-    scalar AR(1) coefficient on `BasisLinkedSpotModel`; the flat store rendered the basis
-    coefficient as a matrix table. And `VARMixedFactorInterestRateModel.Sigma` is a length-3 vector,
-    which the flat store rendered as the Hull-White curve widget."""
+    `Sigma` carries two shapes: a scalar on the OU/hazard/Clewlow-Strickland models and a
+    term-structure curve on Hull-White - under the flat store the scalar had to be filed as
+    `sigma` and carry `Sigma` as an alias, which was the last Process entry in `ALIASED_KEYS`.
+    (The retired VAR carry model's 3x3 `Phi` was the third double-shaped name; its removal
+    leaves `Phi` a scalar everywhere.)"""
     types = PROCESS['types']
     assert types['LogOUSpotModel']['Sigma']['widget'] == 'Float'
     assert types['HullWhite1FactorInterestRateModel']['Sigma']['widget'] == 'Flot'
-    assert types['VARMixedFactorInterestRateModel']['Sigma']['widget'] == 'Container'
-    assert types['VARMixedFactorInterestRateModel']['Phi']['widget'] == 'Table'
     assert types['BasisLinkedSpotModel']['Phi']['widget'] == 'Float'
     assert not any('sigma' in d for d in types.values()), 'the lowercase alias key is back'
 

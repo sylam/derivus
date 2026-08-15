@@ -62,10 +62,10 @@
                     "Tenor": "3M",
                     "Alpha_Fixed": null,
                     "Optimization_Parameters": {
-                        "Alpha_Lower_Bound": 0.000001,
+                        "Alpha_Lower_Bound": 1e-06,
                         "Sigma_Lower_Bound": 0.0001,
                         "Max_Iterations": 1000,
-                        "Fractional_Tolerance": 1e-8
+                        "Fractional_Tolerance": 1e-08
                     }
                 }
             },
@@ -92,30 +92,6 @@
                 "Sigma_Max": 2.0,
                 "Vol_Shift": 0.0
             },
-            "SingleRegimeOU1FactorKalmanModel": {
-                "ID": "",
-                "Method": "SingleRegimeOU1FactorKalmanCalibration",
-                "Use_Pre_Computed_Statistics": "Yes",
-                "Data_Retrieval_Parameters": {
-                    "Frequency": "1d",
-                    "Calendar": "",
-                    "Business_Days_In_Year": 252,
-                    "Diagnostics_Error_Level": "Info"
-                },
-                "KF_Max_Iter": 25,
-                "KF_Tol": 0.00001,
-                "Kappa_Max": 10.0,
-                "Sigma_Max": 2.0,
-                "Tau_Floor": 0.0001,
-                "KY_Scale": 0.2,
-                "Theta_Y_Default": 0.0,
-                "Sigma_Y_Default": 0.0,
-                "Beta_Default": 0.0,
-                "Rho_Default": 0.0,
-                "Min_Measurement_Var": 0.000001,
-                "Proxy_Clip_Std": 4.0,
-                "Vol_Shift": 0.0
-            },
             "PCAInterestRateModel": {
                 "ID": "",
                 "Method": "PCAInterestRateCalibration",
@@ -137,7 +113,7 @@
                     "Yield_Volatility_Upper_Bound": null,
                     "Exact_Solution_Optimisation_Parameters": {
                         "Max_Iterations": 1000,
-                        "Fractional_Tolerance": 1e-8,
+                        "Fractional_Tolerance": 1e-08,
                         "Downhill_Simplex_Scale": 0.005
                     }
                 }
@@ -161,15 +137,6 @@
                 "N_States": 3,
                 "N_Iter": 200,
                 "Seed": 42,
-                "Data_Retrieval_Parameters": {
-                    "Frequency": "1d",
-                    "Calendar": "",
-                    "Business_Days_In_Year": 252
-                }
-            },
-            "VARMixedFactorInterestRateModel": {
-                "ID": "",
-                "Method": "VARMixedFactorInterestRateCalibration",
                 "Data_Retrieval_Parameters": {
                     "Frequency": "1d",
                     "Calendar": "",

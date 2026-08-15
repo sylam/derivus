@@ -81,14 +81,16 @@ def test_simulate_only_and_stepper_both_worlds():
     assert layouts['GARCH'] == {'platinum_cme_log_h': 1}, layouts['GARCH']
 
 
-def test_solve_reveal_width_9_vs_7():
+def test_solve_reveal_width_resizes_with_model():
     dims = {}
     for name, mkt in (('HMM', HMM_MKT), ('GARCH', GARCH_MKT)):
         diag = (_run(mkt, 'solve_hedge').evaluation_summary or {}).get('diagnostics') or {}
         assert diag.get('bounded') is True, f'{name}: solve not bounded'
         dims[name] = diag.get('market_dim')
-    # V̂ market width resizes with the model: HMM belief(3)+price(1)+shared(4)=8; GARCH log_h(1)+price(1)+4=6.
-    # (shared is 4, not 5, since the CME_FLAT identity basis was removed — a composed name needs no +0 factor.)
-    assert dims['HMM'] == 8, dims['HMM']
-    assert dims['GARCH'] == 6, dims['GARCH']
+    # V̂ market width resizes with the model: HMM belief(3)+price(1)+shared(3)=7; GARCH log_h(1)+price(1)+3=5.
+    # (shared dropped 4 -> 3 when the retired VAR carry model (3 revealed coordinates) gave way
+    # to QuadraticCarryCurveModel's 2-knot curve; earlier it dropped 5 -> 4 when the CME_FLAT
+    # identity basis was removed — a composed name needs no +0 factor.)
+    assert dims['HMM'] == 7, dims['HMM']
+    assert dims['GARCH'] == 5, dims['GARCH']
     assert dims['HMM'] - dims['GARCH'] == 2, dims

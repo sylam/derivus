@@ -37,12 +37,12 @@ DEVICE = torch.device('cpu')
 REF_DATE = pd.Timestamp('2026-04-10')
 DT_C = 1.0 / 252.0
 
-BAND = {'A': 0.0075, 'Sigma': 5.79, 'Nu': 0.0, 'Mu': 0.0, 'Phi': 0.78,
+BAND = {'A': 0.0075, 'Sigma': 5.79, 'Nu': 0.0, 'Phi': 0.78,
         'Reversion_Model': 'Band_Mixture', 'Band_Kappa': 3.5, 'Band_Beta': 0.24,
         'Mix_Q_Stress': 0.26, 'Mix_Sigma_Quiet': 2.22, 'Mix_Sigma_Stress': 9.63,
         'Mix_Stay_Stress': 0.45, 'Mix_P0_Stress': 0.26,
         'Slow_Mean_Lambda': 1.0 - 2.0 / 64.0, 'Mu_0': -9.57, 'Calibration_DT_Years': DT_C}
-LINEAR = {'A': 0.0075, 'Sigma': 5.79, 'Nu': 5.31, 'Mu': 0.0, 'Phi': 0.78,
+LINEAR = {'A': 0.0075, 'Sigma': 5.79, 'Nu': 5.31, 'Phi': 0.78,
           'Slow_Mean_Lambda': 1.0 - 2.0 / 64.0, 'Mu_0': -9.57, 'Calibration_DT_Years': DT_C}
 
 

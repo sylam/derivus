@@ -2,13 +2,12 @@
 plus the new `CMC_State_Inner` shared-state subclass.
 
 Coverage:
-- Outer-mode regression for HMM / Basis / VAR via direct instantiation against
+- Outer-mode regression for HMM / Basis via direct instantiation against
   frozen legacy `generate` reproductions (bit-exact for HMM/Basis where draws are
-  fully deterministic given a manual seed; allclose-at-fp32 for VAR where the
+  fully deterministic given a manual seed; allclose-at-fp32 where the
   operator swap `@` → einsum can permute summation order).
 - Inner-mode shape/initial-state/independence for each process.
 - HMM `regime0_inner` override in `t_Scenario_Buffer`.
-- VAR einsum-vs-`@` operator regression in isolation.
 - End-to-end smoke through cx.run_job on the existing simulate_only fixture, to
   verify the framework still wires through unchanged in the live JSON path.
 """
@@ -27,7 +26,6 @@ from derivus.calculation import CMC_State, CMC_State_Inner
 from derivus.stochasticprocess import (
     BasisLinkedSpotModel,
     MarkovHMMSpotModel,
-    VARMixedFactorInterestRateModel,
 )
 
 
@@ -117,32 +115,10 @@ def _basis_param():
     }
 
 
-def _var_param():
-    # Mild VAR(1) with positive eigenvalues so matrix-power per-step Phi is stable.
-    return {
-        'Mean': [0.0, 0.0, 0.0],
-        'Phi': [[0.9, 0.05, 0.0],
-                [-0.02, 0.92, 0.03],
-                [0.0, 0.01, 0.88]],
-        'Sigma': [0.001, 0.005, 0.002],
-        'Calibration_Tenors': [0.08, 0.33, 0.58],
-        'Contract_Cycle_Years': 0.25,
-        'Calibration_DT_Years': 1.0 / 252.0,
-    }
-
-
 def _hmm_factor():
     return types.SimpleNamespace(param={})
 
 
-
-
-def _var_factor(ref_date):
-    # Three contract knots roughly 1m / 4m / 7m forward, in excel-date offsets.
-    excel_ref = (ref_date - utils.excel_offset).days
-    days_forward = np.array([30, 120, 215], dtype=np.float64)
-    factor_tenor = excel_ref + days_forward
-    return types.SimpleNamespace(get_tenor=lambda: factor_tenor)
 
 
 def _carry_curve_factor(ref_date):
@@ -222,28 +198,6 @@ def _legacy_basis_generate(p, shared_mem, lme_path, regimes):
     out[0] = b_init
     for t in range(1, T):
         out[t] = a * (lme_path[t] - lme_path[t - 1]) + phi * out[t - 1] + eta[t]
-    return out
-
-
-def _legacy_var_generate(p, shared_mem):
-    """Outer-mode VAR generate as of pre-refactor: uses `@` rather than einsum."""
-    Z = shared_mem.t_random_numbers[p.z_offset:p.z_offset + 3, :p.scenario_horizon]
-    _, T, B = Z.shape
-    n_contracts = p.contract_T.shape[1]
-    mean = p.mean_vec.view(3, 1)
-    X = p.X0.view(3, 1).expand(3, B).clone()
-    out = torch.empty((T, n_contracts, B), dtype=Z.dtype, device=Z.device)
-    for t in range(T):
-        X = mean + p.Phi_per_step[t] @ (X - mean) \
-            + p.sigma_per_step[t].view(3, 1) * Z[:, t, :]
-        c_slot = p.D_slot_per_step[t] @ X
-        ts = p.D_slot_per_step[t, :, 1].contiguous()
-        cT_t = p.contract_T[t]
-        idx = torch.clamp(torch.searchsorted(ts, cT_t, right=False), 1, 2)
-        alpha = ((cT_t - ts[idx - 1]) / (ts[idx] - ts[idx - 1])).unsqueeze(-1)
-        out_t = (1.0 - alpha) * c_slot[idx - 1] + alpha * c_slot[idx]
-        out[t] = torch.where(p.contract_expired[t].unsqueeze(-1),
-                             torch.zeros_like(out_t), out_t)
     return out
 
 
@@ -402,81 +356,6 @@ def test_basis_inner_shape_init_and_independence():
 
 
 # ---------------------------------------------------------------------------
-# VAR
-# ---------------------------------------------------------------------------
-
-def _setup_var(*, batch_size, T=10, inner_sub=None, seed=42):
-    tg = _time_grid(T)
-    shared = _build_shared(num_factors=3, batch_size=batch_size, seed=seed,
-                           simulation_sub_batch=inner_sub)
-    _do_reset(shared, 3, tg)
-    p = VARMixedFactorInterestRateModel(factor=_var_factor(REF_DATE), param=_var_param())
-    p.factor_key = utils.Factor('InterestRate', ('TEST_CARRY',))
-    if inner_sub is None:
-        tensor = torch.tensor([0.01, 0.012, 0.014], dtype=DTYPE, device=DEVICE)        # (3,)
-    else:
-        # Per-outer-path curve fan-out: (3, B) with slight variation per b.
-        base = torch.tensor([0.01, 0.012, 0.014], dtype=DTYPE, device=DEVICE).view(3, 1)
-        bumps = torch.linspace(-0.001, 0.001, batch_size, dtype=DTYPE, device=DEVICE).view(1, -1)
-        tensor = base + bumps                                                          # (3, B)
-    p.precalculate(REF_DATE, tg, tensor, shared, process_ofs=0)
-    return p, shared, tensor
-
-
-def test_var_outer_numerical_eq_einsum_vs_legacy():
-    """New (einsum) outer-mode generate ≈ legacy (@) outer-mode generate at fp32
-    precision. Bit-exact is not guaranteed because einsum may permute summation."""
-    p, shared, _ = _setup_var(batch_size=32, T=10)
-    expected = _legacy_var_generate(p, shared)
-    got = p.generate(shared)
-    assert got.shape == expected.shape
-    assert torch.allclose(got, expected, rtol=1e-5, atol=1e-6), (
-        f'VAR outer-mode einsum drift: max |Δ|={(got - expected).abs().max().item():.2e}')
-
-
-def test_var_einsum_vs_matmul_identity():
-    """Direct micro-check: einsum('ij,j...->i...', A, X) ≡ A @ X for the
-    outer-mode shape (3,3) × (3, B), independently of process internals."""
-    torch.manual_seed(0)
-    A = torch.randn(3, 3, dtype=DTYPE, device=DEVICE)
-    X = torch.randn(3, 17, dtype=DTYPE, device=DEVICE)
-    via_einsum = torch.einsum('ij,j...->i...', A, X)
-    via_matmul = A @ X
-    assert torch.allclose(via_einsum, via_matmul, rtol=1e-5, atol=1e-6)
-
-
-def test_var_inner_shape_init_and_independence():
-    B, B2, T = 4, 8, 10
-    p, shared, tensor = _setup_var(batch_size=B, T=T, inner_sub=B2)
-    out = p.generate(shared)
-    n_contracts = p.contract_T.shape[1]
-    assert out.shape == (T, n_contracts, B, B2), (
-        f'expected (T,n_c,B,B2)=({T},{n_contracts},{B},{B2}), got {tuple(out.shape)}')
-
-    # X0 was solved per-b from the (3, B) tensor. At t=0 the curve reconstruction
-    # for contract knots that coincide with calibration slots should reproduce
-    # tensor[contract, b] within numerical precision — and be identical across the
-    # B2 fan-out (no inner-sample noise has fired yet beyond Phi/sigma at t=0).
-    # Use t=0 of the output and check independence across B2 first.
-    t0 = out[0]                                                                      # (n_contracts, B, B2)
-    # Across B2 within fixed b: VAR's t=0 evaluation applies one step of Phi+sigma
-    # from X0, so paths within B2 differ. Just check they don't collapse to 0.
-    per_b_std = out[-1].std(dim=-1)                                                  # (n_contracts, B)
-    assert (per_b_std > 0).all(), 'VAR inner paths collapsed at terminal'
-
-    # Per-b X0 differentiation: at t=0 in the outer/inner case, the mean of the
-    # B2 paths for each (contract, b) should be ordered by b (since tensor[:, b]
-    # is monotone in b via the linspace bumps). Verify monotonicity of the
-    # contract-wise average across b.
-    t0_mean_b = t0.mean(dim=-1)                                                      # (n_contracts, B)
-    # Across b, contract-0 should track the level component; check b-axis ordering.
-    diffs = t0_mean_b[:, 1:] - t0_mean_b[:, :-1]                                     # (n_contracts, B-1)
-    assert (diffs >= -1e-3).all() or (diffs <= 1e-3).all(), (
-        'X0 fan-out across b not propagating to t=0 evaluation — contract means '
-        'are not monotone in b for monotone tensor[:, b] input')
-
-
-# ---------------------------------------------------------------------------
 # Inner-mode antithetic (Inner_Antithetic='Yes'): mirrored (z, -z) pairs on the
 # inner axis; odd sub-batch rejected; default path unchanged.
 # ---------------------------------------------------------------------------
@@ -559,7 +438,6 @@ from derivus.stochasticprocess import (                                       # 
     HullWhite1FactorInterestRateModel,
     HWHazardRateModel,
     LogOUSpotModel,
-    MarkovSwitchingLogOUSpotModel,
 )
 
 
@@ -645,35 +523,7 @@ def _setup_logou(*, batch_size, T=10, per_path=None, seed=42):
     return p, shared
 
 
-def _mslogou_param():
-    return {
-        'States': [{'Kappa': 1.0, 'Sigma': 0.15, 'Theta': 7.6},
-                   {'Kappa': 2.0, 'Sigma': 0.30, 'Theta': 7.7}],
-        'Transition_Matrix': [[0.97, 0.03], [0.05, 0.95]],
-        'Initial_State_Probs': [0.6, 0.4],
-        'Calibration_DT_Years': 1.0 / 252.0,
-    }
-
-
-def _setup_mslogou(*, batch_size, T=10, per_path=None, seed=42):
-    tg = _time_grid(T)
-    shared = _build_shared(num_factors=1, batch_size=batch_size, seed=seed)
-    _do_reset(shared, 1, tg)
-    p = MarkovSwitchingLogOUSpotModel(factor=types.SimpleNamespace(param={}), param=_mslogou_param())
-    p.factor_key = utils.Factor('CommodityPrice', ('MSOU',))
-    spot = 2000.0
-    if per_path is None:
-        tensor = torch.tensor([spot], dtype=DTYPE, device=DEVICE)
-    elif per_path == 'replicated':
-        tensor = torch.full((batch_size,), spot, dtype=DTYPE, device=DEVICE)
-    else:
-        bumps = torch.linspace(-50.0, 50.0, batch_size, dtype=DTYPE, device=DEVICE)
-        tensor = spot + bumps
-    p.precalculate(REF_DATE, tg, tensor, shared, process_ofs=0)
-    return p, shared
-
-
-@pytest.mark.parametrize('setup', [_setup_logou, _setup_mslogou])
+@pytest.mark.parametrize('setup', [_setup_logou])
 def test_ou_spot_perpath_replicated_equals_calibrated(setup):
     """Per-path init of B replicated spots == calibrated single-spot output
     (same Z, same per-column log_spot0 ⇒ byte-equal reduction)."""
@@ -687,7 +537,7 @@ def test_ou_spot_perpath_replicated_equals_calibrated(setup):
         f'(max |Δ|={(out_r - out_c).abs().max().item():.2e})')
 
 
-@pytest.mark.parametrize('setup', [_setup_logou, _setup_mslogou])
+@pytest.mark.parametrize('setup', [_setup_logou])
 def test_ou_spot_perpath_distinct_flows_through_monotonically(setup):
     """Distinct per-path spots (monotone in b) propagate to the t=0 level. With Z
     held fixed across the two runs, out_distinct[0]/out_replicated[0] is exp of a
@@ -770,7 +620,7 @@ def test_hw1f_perpath_distinct_carries_batch():
 
 from derivus.stochasticprocess import (                                       # noqa: E402
     GBMAssetPriceModel, GBMPriceIndexModel, GBMAssetPriceTSModelImplied,
-    SingleRegimeOU1FactorKalmanModel, HWHazardRateModel,
+    HWHazardRateModel,
     HullWhite2FactorImpliedInterestRateModel, CSForwardPriceModel,
     PCAInterestRateModel, GARCHSpotModel, HestonNandiImpliedSpotModel,
     QuadraticCarryCurveModel,
@@ -798,15 +648,6 @@ def _setup_logou_inner(B, B2, T=10):
     sh = _inner_shared(1, B, B2)
     p = LogOUSpotModel(factor=types.SimpleNamespace(param={}), param=_logou_param())
     p.factor_key = utils.Factor('CommodityPrice', ('OU',))
-    spot = torch.linspace(1800.0, 2200.0, B, dtype=DTYPE, device=DEVICE)
-    p.precalculate(REF_DATE, _time_grid(T), spot, sh, process_ofs=0)
-    return p, sh
-
-
-def _setup_mslogou_inner(B, B2, T=10):
-    sh = _inner_shared(1, B, B2)
-    p = MarkovSwitchingLogOUSpotModel(factor=types.SimpleNamespace(param={}), param=_mslogou_param())
-    p.factor_key = utils.Factor('CommodityPrice', ('MSOU',))
     spot = torch.linspace(1800.0, 2200.0, B, dtype=DTYPE, device=DEVICE)
     p.precalculate(REF_DATE, _time_grid(T), spot, sh, process_ofs=0)
     return p, sh
@@ -876,16 +717,6 @@ def _setup_hn_implied_inner(B, B2, T=10):
     return p, sh
 
 
-def _setup_singleregime_inner(B, B2, T=10):
-    sh = _inner_shared(1, B, B2)
-    p = SingleRegimeOU1FactorKalmanModel(factor=types.SimpleNamespace(param={}),
-                                         param={'Kappa': 1.5, 'Theta': 0.01, 'Sigma': 0.02})
-    p.factor_key = utils.Factor('InterestRate', ('OU_CARRY',))
-    x0 = torch.linspace(0.008, 0.012, B, dtype=DTYPE, device=DEVICE)            # (B,) distinct
-    p.precalculate(REF_DATE, _time_grid(T), x0, sh, process_ofs=0)
-    return p, sh
-
-
 def _setup_hwhazard_inner(B, B2, T=10):
     sh = _inner_shared(1, B, B2)
     p = HWHazardRateModel(factor=_curve_factor(),
@@ -948,11 +779,9 @@ def _setup_hw2f_inner(B, B2, T=10):
 @pytest.mark.parametrize('setup,is_curve', [
     (_setup_gbm_inner, False),
     (_setup_gbmindex_inner, False),
-    (_setup_singleregime_inner, False),
     (_setup_garch_inner, False),
     (_setup_hn_implied_inner, False),
     (_setup_logou_inner, False),
-    (_setup_mslogou_inner, False),
     (_setup_hw1f_inner, True),
     (_setup_hwhazard_inner, True),
     (_setup_hw2f_inner, True),
@@ -977,42 +806,6 @@ def test_inner_mc_shape_and_init_on_correct_axis(setup, is_curve):
     assert (d >= -1e-3).all(), (
         f'{setup.__name__}: t=0 level not monotone in outer-path init — init landed on '
         f'the wrong axis. level0={level0.tolist()}')
-
-
-def test_mslogou_inner_fork_seed_and_outer_reseed():
-    """MSLogOU's reseed verbs (added to mirror MarkovHMMSpotModel exactly): inner_fork_seed
-    publishes the regime AT the fork step t under (factor_key, 'regime0_inner'); outer_reseed
-    publishes the terminal regime under (factor_key, 'regime0_outer'). Before this migration
-    MSLogOU inherited the base no-ops, so nothing produced these keys and generate()'s existing
-    consumer reads (regime0_inner/regime0_outer) silently fell back to a pi0 redraw. Round-trip:
-    the seed produced here, fed into an inner-mode generate, must start every B2 inner path in
-    the per-outer-path forked regime (no redraw)."""
-    B, B2, T = 4, 8, 10
-    # outer run populates last_regime_path + (factor_key, 'regimes')
-    p_o, sh_o = _setup_mslogou(batch_size=B, T=T)
-    p_o.generate(sh_o)
-    regimes = p_o.last_regime_path                                                # (T, B)
-    assert regimes.shape == (T, B)
-
-    # inner_fork_seed at an interior fork step returns the regime AT t, keyed for the inner read.
-    t_fork = 5
-    seed = p_o.inner_fork_seed(p_o.factor_key, sh_o.t_Scenario_Buffer, t_fork)
-    assert set(seed) == {(p_o.factor_key, 'regime0_inner')}
-    assert torch.equal(seed[(p_o.factor_key, 'regime0_inner')], regimes[t_fork])
-
-    # outer_reseed returns the TERMINAL regime for the next burn-in's t=0.
-    reseed = p_o.outer_reseed()
-    assert set(reseed) == {(p_o.factor_key, 'regime0_outer')}
-    assert torch.equal(reseed[(p_o.factor_key, 'regime0_outer')], regimes[-1])
-
-    # round-trip: feed the fork seed into an inner-mode generate; every B2 inner path for
-    # outer b must start in regimes[t_fork][b] instead of drawing from pi0.
-    p_i, sh_i = _setup_mslogou_inner(B, B2, T)
-    sh_i.t_Scenario_Buffer[(p_i.factor_key, 'regime0_inner')] = regimes[t_fork]
-    p_i.generate(sh_i)
-    got_regime0 = p_i.last_regime_path[0]                                         # (B, B2)
-    expected = regimes[t_fork].view(B, 1).expand(B, B2)
-    assert torch.equal(got_regime0, expected), 'MSLogOU regime0_inner seed not honored by generate'
 
 
 # --- GBMTSImplied: the one process that gathers OTHER (rate) factors during generate. ---

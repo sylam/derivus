@@ -1003,7 +1003,6 @@ class InflationRate(Factor1D):
     fields = [
         F('Price_Index', 'Text', default='', obj='Tuple',
           description='Name of the associated PriceIndex factor'),
-        F('Seasonal_Adjustment', 'Text', default=''),
         F('Reference_Name', 'Text', default='IndexReferenceInterpolated3M',
           description='Price index reference rule',
           values=['IndexReferenceInterpolated1M', 'IndexReferenceInterpolated2M',

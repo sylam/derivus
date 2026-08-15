@@ -114,7 +114,7 @@ DT_C = 1.0 / 252.0
 #: `BasisLinkedSpotModel.PLATINUM_CME.LME_CME` out of tests/fixtures/data/MarketDataRF_platinum_garch.json
 #: — the shipping world's own flat-Sigma block, so the OFF gate is that world's arithmetic.
 PLATINUM = {'A': -0.6090393403931138, 'Phi': 0.35795333829682124, 'Nu': 5.3936611012885685,
-            'Mu': 0.0, 'Sigma': 8.079302632269696, 'Calibration_DT_Years': DT_C}
+            'Sigma': 8.079302632269696, 'Calibration_DT_Years': DT_C}
 
 #: The completed basis study's fitted numbers (data/plat_marketdata_draft.json), plus the two
 #: seeds `BasisLinkedSpotCalibration` stamps for them on data/plat_archive_sync.csv. `A` is the
@@ -696,13 +696,13 @@ def _head_calibrate(df):
     terc[~valid] = 1
     sbs = [float(eta[terc == s].std()) if (terc == s).sum() > 1 else float(eta.std())
            for s in range(3)]
-    return {'A': float(coef[0]), 'Phi': float(coef[1]), 'Nu': nu, 'Mu': 0.0,
+    return {'A': float(coef[0]), 'Phi': float(coef[1]), 'Nu': nu,
             'Sigma_By_State': sbs, 'Calibration_DT_Years': 1.0 / 252.0}, eta
 
 
 def test_calibration_at_its_defaults_stamps_exactly_the_shipped_block():
     out = BasisLinkedSpotCalibration(model=None, param={}).calibrate(_archive(), 0.0)
-    assert list(out.param) == ['A', 'Phi', 'Nu', 'Mu', 'Sigma_By_State', 'Calibration_DT_Years']
+    assert list(out.param) == ['A', 'Phi', 'Nu', 'Sigma_By_State', 'Calibration_DT_Years']
 
 
 @pytest.mark.parametrize('archive', ['synthetic', 'platinum'])

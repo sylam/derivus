@@ -21,9 +21,9 @@ object as the MarketData JSON via a second `parse_json` call.
         "Use_Student_T": true,
         "Log_Price": true
       },
-      "VARMixedFactorInterestRateModel": {
+      "QuadraticCarryCurveModel": {
         "ID": "",
-        "Method": "VARMixedFactorInterestRateCalibration"
+        "Method": "QuadraticCarryCurveCalibration"
       },
       "BasisLinkedSpotModel": {
         "ID": "",
