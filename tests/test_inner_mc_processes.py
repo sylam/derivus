@@ -608,6 +608,56 @@ def test_hw1f_perpath_distinct_carries_batch():
     assert not torch.allclose(out_d, out_r), 'HW1F per-path init did not flow through'
 
 
+def test_hw1f_lambda_and_quanto_legs_decay_once():
+    """The joint fixture the whole suite lacked: non-zero Lambda AND non-zero
+    Quanto_FX_Correlation together, against brute-force quadrature of the exact drift
+    x(t) = e^{-at}(lambda*H(t) - rho*K(t)), H = int e^{+as} sigma ds, K = int e^{+as} sigma v ds.
+
+    The state variables already carry e^{+as} in their integrands (hw_calc_H/hw_calc_IJK run
+    with a = +alpha), so each leg is decayed EXACTLY ONCE, at assembly. The killing mutation is
+    the shipped-for-years spelling: pre-decaying the levels inside the diff (cumsum of
+    diff(e^{-as}*K)) telescopes to e^{-at}K(t) and the terminal multiply makes the leg
+    e^{-2at} - a ratio-to-truth of exactly e^{-at}, which this gate reads directly and every
+    Lambda=0, quanto=0 fixture cannot. Alpha is large (2.0) so the mutant's attenuation is
+    ~5-14% across this short grid, orders above float32 noise."""
+    T, B = 10, 3
+    alpha, lam, rho = 2.0, 0.05, 0.35
+    tg = _time_grid(T)
+    shared = _build_shared(num_factors=1, batch_size=B, seed=11)
+    _do_reset(shared, 1, tg)
+    param = {'Alpha': alpha,
+             'Sigma': utils.Curve([], [(0.0, 0.008), (2.0, 0.012)]),
+             'Lambda': lam,
+             'Quanto_FX_Volatility': utils.Curve([], [(0.0, 0.14), (2.0, 0.10)]),
+             'Quanto_FX_Correlation': rho}
+    p = HullWhite1FactorInterestRateModel(factor=_curve_factor(), param=param)
+    p.factor_key = utils.Factor('InterestRate', ('HW1F',))
+    calib = torch.tensor([0.01, 0.012, 0.015, 0.02, 0.025], dtype=DTYPE, device=DEVICE)
+    p.precalculate(REF_DATE, tg, calib, shared, process_ofs=0)
+
+    # the deterministic drift legs, exactly as generate assembles them at Z = 0
+    f1_det = ((-p.delta_KtT + p.delta_HtT).cumsum(dim=0) * p.exp_minus_alpha_t) \
+        .squeeze(1).cpu().numpy()
+
+    t_grid = tg.time_grid_years
+    s = np.linspace(0.0, float(t_grid[-1]), 200001)
+    sig = np.interp(s, [0.0, 2.0], [0.008, 0.012])
+    qv = np.interp(s, [0.0, 2.0], [0.14, 0.10])
+    eas = np.exp(alpha * s)
+    H = np.concatenate([[0.0], np.cumsum(0.5 * (eas[1:] * sig[1:] + eas[:-1] * sig[:-1])
+                                         * np.diff(s))])
+    K = np.concatenate([[0.0], np.cumsum(0.5 * (eas[1:] * sig[1:] * qv[1:]
+                                                + eas[:-1] * sig[:-1] * qv[:-1]) * np.diff(s))])
+    # the state conditions on x(t0) = 0 at the grid's FIRST row (the fork convention), so the
+    # quadrature's lower limit is t0, not 0 - an oracle integrating from 0 reads ~10% high here
+    H0, K0 = np.interp(t_grid[0], s, H), np.interp(t_grid[0], s, K)
+    exact = np.array([np.exp(-alpha * t) * (lam * (np.interp(t, s, H) - H0)
+                                            - rho * (np.interp(t, s, K) - K0))
+                      for t in t_grid])
+    rel = np.abs(f1_det - exact) / np.abs(exact).max()
+    assert rel.max() < 5.0e-4, (rel.max(), f1_det[-3:], exact[-3:])
+
+
 # ===========================================================================
 # Inner-MC (nested simulation, Z.ndim==3) support for the newly-enabled
 # processes + the base-class enforcement contract.

@@ -1106,7 +1106,7 @@ class HullWhite1FactorInterestRateModel(StochasticProcess):
         'Where:',
         '',
         '- $B(t) = \\frac{(1-e^{-\\alpha t})}{\\alpha}, Y(t)=\\int\\limits_0^t e^{\\alpha s}\\sigma (s) dW$',
-        '- $A(t,T)=\\frac{B(T-t)e^{-\\alpha T}}{\\alpha}(2I(t)-(e^{-\\alpha t}+e^{-\\alpha T})J(t))$',
+        '- $A(t,T)=\\frac{B(T-t)e^{-\\alpha t}}{\\alpha}(2I(t)-(e^{-\\alpha t}+e^{-\\alpha T})J(t))$',
         '- $H(t) = \\int\\limits_0^t e^{\\alpha s}\\sigma (s)ds$',
         '- $I(t) = \\int\\limits_0^t e^{\\alpha s}{\\sigma (s)}^2ds$',
         '- $J(t) = \\int\\limits_0^t e^{2\\alpha s}{\\sigma (s)}^2ds$',
@@ -1145,8 +1145,11 @@ class HullWhite1FactorInterestRateModel(StochasticProcess):
             ref_date, t) for t in time_grid.scen_time_grid])
         self.fwd_curve = self.forward_curve(tensor, time_grid_years, shared)
 
-        # Really should implement this . . .
-        quantofx = self.param['Quanto_FX_Volatility'].array.T if self.param['Quanto_FX_Volatility'] else np.zeros(
+        # (N,2) knot pairs, the same layout Sigma is read in below and the zeros fallback
+        # carries - the transposed read this replaces handed integrate_piecewise_linear the
+        # PAIRS as (tenors, values), garbage for any real curve and invisible to every
+        # quanto=0 fixture
+        quantofx = self.param['Quanto_FX_Volatility'].array if self.param['Quanto_FX_Volatility'] else np.zeros(
             (1, 2))
         quantofxcorr = self.param.get('Quanto_FX_Correlation', 0.0)
 
@@ -1172,14 +1175,18 @@ class HullWhite1FactorInterestRateModel(StochasticProcess):
                 2.0 * It - (np.exp(-alpha * t) + np.exp(-alpha * (t + factor_tenor))) * Jt) for (It, Jt, t) in
                         zip(I, J, time_grid_years)])
 
-        # get the deltas
+        # The increments fed to the cumsum must be of the RAW levels K, H - hw_calc_H/hw_calc_IJK
+        # already carry e^{+alpha*s} in their integrands, and the single e^{-alpha*t} decay is
+        # applied once at assembly in generate (exp_minus_alpha_t), exactly as HW2F and the
+        # hazard model spell it. Pre-decaying the levels inside the diff telescopes the cumsum
+        # to e^{-alpha*t}K(t), and the terminal multiply then made these two legs e^{-2alpha*t}:
+        # measured ratio-to-exact of exactly e^{-alpha*t} at every node (12 digits, 10y grid),
+        # invisible to every fixture because Lambda and Quanto_FX_Correlation are 0 everywhere.
         self.delta_KtT = shared.one.new_tensor(
-            np.hstack((0.0, quantofxcorr * np.diff(np.exp(-alpha * time_grid_years) * K)))
-        ).reshape(-1, 1)
+            np.hstack((0.0, quantofxcorr * np.diff(K)))).reshape(-1, 1)
 
         self.delta_HtT = shared.one.new_tensor(np.hstack(
-            (0.0, self.param['Lambda'] * np.diff(np.exp(-alpha * time_grid_years) * H)))
-        ).reshape(-1, 1)
+            (0.0, self.param['Lambda'] * np.diff(H)))).reshape(-1, 1)
 
         delta_var = np.diff(J)
         self.exp_minus_alpha_t = shared.one.new(np.exp(-alpha * time_grid_years)).reshape(-1, 1)
