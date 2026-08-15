@@ -585,6 +585,22 @@ both; `validate` reads its `missing`, and the deal walk `Config.walk_deals` is s
 Accounting) with `_UTILITY_OBJECTS` duplicated — the shape [Conventions](conventions.md) calls a
 class waiting to happen. `DealStructure`'s recursions are in the same category.
 
+## Test selection
+
+`gates/impacted.py` selects the tests a change can actually reach: an execution-coverage map
+(per-test contexts, recorded as a byproduct of a campaign-boundary run via
+`pytest --cov=derivus --cov-context=test`, then `--build-map`) joined with a static, always-fresh
+fixture map — tests depend on JSON fixtures at runtime, fixtures chain through `MarketDataFile`,
+and no import graph can see either. Selection is file-granular and FAILS OPEN, loudly, for
+anything the map has not seen; `derivus/__init__`, `utils`, `calculation` and `conftest` are
+whole-suite modules by construction. The full suite still runs at campaign boundaries — for
+map staleness (the snapshot only the next instrumented run refreshes) and whole-tree
+interactions no subset sees — and the TREE HOLDS STILL while it runs: two full runs each
+failed one mutation gate purely because source was edited mid-run (`inspect`-based gates read
+the file on disk at imported line numbers, so a shifted tree pulls the wrong text under them).
+The inner loop uses `--dirty --run`; the boundary run certifies and re-records the map in one
+pass.
+
 ## Tidy-ups
 
 **`get_implied_correlation` makes its callers own factor types.** The resolver rule — the `get_*`
