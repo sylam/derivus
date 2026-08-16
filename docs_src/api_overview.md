@@ -130,7 +130,7 @@ visible CUDA devices and merges the results.
 A specialisation of Credit Monte Carlo wired into a differential-ML hedging solver (DiffSolverV2).
 The same scenario engine generates trajectories which are consumed by a backward-DP value-function
 solver that hedges a portfolio of liabilities by trading a configured set of futures or other
-instruments. See the [Hedging_Problem](../json/index.md#calculation) JSON section for the
+instruments. See the [Hedging_Problem](json/index.md#calculation) JSON section for the
 configuration contract.
 
 ```python
