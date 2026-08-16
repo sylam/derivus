@@ -14,6 +14,8 @@ import json as jsonlib
 import math
 import os
 
+import pytest
+
 import numpy as np
 
 import derivus as rf
@@ -41,6 +43,35 @@ def _cfg_without_history():
         'DiffV2_Fit_Iters': 5,
     }
     return cfg
+
+
+def test_a_history_row_at_the_base_date_is_refused():
+    """History must be STRICTLY before the base date. A base-date row duplicates sim day 0 in
+    the bundle timeline and shifts every *_sim view one row back — the solver then scores each
+    decision against the step ENDING at its fork's anchor, a full day of lookahead per
+    decision. Measured before the guard: the in-sim greedy verdict read +$982/oz expected on a
+    fair three-month book (fork E[dF] correlated +0.89 with the realized outer step at β≈1),
+    and the fork's L_t equalled liability_sim[t+1] BITWISE. Killed by removing the refusal —
+    the run then completes with a confidently wrong verdict and nothing but this gate sees it."""
+    cfg = jsonlib.load(open(FIXTURE))
+    calc = cfg['Calc']['Calculation']
+    calc['Execution_Mode'] = 'solve_hedge'
+    calc['Batch_Size'], calc['Simulation_Batches'] = 24, 2
+    calc['Inner_Sub_Batch'] = 8
+    calc['Inner_MC_Enabled'] = 'Yes'
+    hp = calc['Hedging_Problem']
+    hp['Solver'] = {'Object': 'DiffSolverV2', 'Training_Action_Grid_Levels_Per_Axis': 3,
+                    'Training_Action_Chunk_Size': 64, 'T_Min': 100, 'DiffV2_Fit_Iters': 2}
+    sph = hp['Portfolio_State']['Spot_Price_History']
+    fac = next(iter(sph))
+    base = calc['Base_Date']['.Timestamp'] if isinstance(calc['Base_Date'], dict) \
+        else calc['Base_Date']
+    sph[fac]['Dates'].append({'.Timestamp': base})
+    sph[fac]['Prices'].append(sph[fac]['Prices'][-1])
+    cx = rf.Context(path_transform={}, file_transform={})
+    cx.load_json((jsonlib.dumps(cfg), 'history_at_base.json'))
+    with pytest.raises(Exception, match='STRICTLY before'):
+        cx.run_job()
 
 
 def test_the_realized_history_reaches_the_tradable_prefix():

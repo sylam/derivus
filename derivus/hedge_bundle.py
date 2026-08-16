@@ -416,6 +416,15 @@ class Bundle:
         base_ts = pd.Timestamp(self.base_date)
         if H > 0 and history:
             batch_size = int(next(iter(tradables.values())).shape[1])
+            for commodity, payload in history.items():
+                late = [d for d in payload['dates'] if pd.Timestamp(d) >= base_ts]
+                if late:
+                    raise ValueError(
+                        f"Spot_Price_History for {commodity!r} carries {len(late)} row(s) at/after "
+                        f"the base date ({min(late)}): history must be STRICTLY before it. A "
+                        f"base-date row duplicates sim day 0 in the bundle timeline and shifts "
+                        f"every *_sim view one row - the solver then scores each decision "
+                        f"against the step ENDING at its fork's anchor, a full day of lookahead")
             ref_dates = history[next(iter(history))]['dates'][-H:]
             prefix_days = torch.tensor([int((d - base_ts).days) for d in ref_dates],
                                        dtype=grid.dtype, device=grid.device)
