@@ -66,10 +66,9 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s %(message
 FIX_COL = 'CommodityPrice.LBMA_AM'              # the AM fix: primary, liability reference
 B_PM = 'ObservedBasis.LBMA_AM.PM'               # PM fix - AM fix (FixingBridgeModel)
 B_CME = 'ObservedBasis.LBMA_AM.CME'             # AM-session CME basis (BasisLinkedSpotModel)
-B_CME_PM = 'ObservedBasis.LBMA_AM.CME.PM'       # PM-session CME basis (ChainedBasisModel)
+B_CME_PM = 'ObservedBasis.LBMA_AM.PM.CME'       # PM-session CME basis (ChainedBasisModel,
+                                                # PM-branch tail: composes the PM futures spot)
 SCALAR_COLS = (FIX_COL, B_PM, B_CME, B_CME_PM)  # the four scalar factors; the carry is the fifth
-ALIAS_PM_CME = 'ObservedBasis.LBMA_AM.PM.CME'   # AliasBasisModel: the CME.PM path under the
-                                                # PM-anchored prefix (PM-session futures marks)
 HEDGE_COLS = (FIX_COL, B_PM, B_CME_PM)          # the futures' Commodity 'LBMA_AM.PM.CME'
                                                 # = PM fix + PM-session basis (execution at the
                                                 # day's LAST event - no intra-row lookahead)
@@ -91,8 +90,6 @@ def price_factors(row, trade_date, last_query, sofr_cols):
         B_CME: {'Spot': float(row[B_CME]), 'Chained_Basis': B_CME_PM.split('.', 1)[1]},
         B_CME_PM: {'Spot': float(row[B_CME_PM]), 'Chained_Basis': B_CME.split('.', 1)[1]},
         B_PM: {'Spot': float(row[B_PM])},
-        ALIAS_PM_CME: {'Spot': float(row[B_CME_PM]),
-                       'Alias_Of': B_CME_PM.split('.', 1)[1]},
         f'ForwardRate.{CARRY}': {
             'Currency': 'USD',
             'Curve': carry_curve(state, trade_date, carry_knots(trade_date, last_query))},
@@ -210,9 +207,6 @@ def trade_world(arch, trade_date, calibrated_md, out_path, carry_drift):
     md = json.load(open(out_path))
     spot = md['MarketData']['Price Models'][f'GARCHSpotModel.{FIX_COL.split(".", 1)[1]}']
     spot['Carry_Drift'] = carry_drift
-    # the alias has no archive column, so the calibration runner never emits its (empty)
-    # model block - stamped back here, like Carry_Drift
-    md['MarketData']['Price Models'][f'AliasBasisModel.{ALIAS_PM_CME.split(".", 1)[1]}'] = {}
     _atomic_write_json(out_path, md)
     return out_path
 
@@ -231,10 +225,6 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     horizon = (info['pay'] - pd.Timestamp(trade_date)).days + 10
     observed_scenario_npz(arch, trade_date, obs_npz, horizon, knots, max_gap=args.max_gap,
                           cols=SCALAR_COLS)
-    # the alias factor replays its SOURCE's realized series under its own name
-    _npz = dict(np.load(obs_npz, allow_pickle=True))
-    _npz[ALIAS_PM_CME] = _npz[B_CME_PM]
-    np.savez(obs_npz, **_npz)
 
     ckpts, train_us, v0s, market_dim = [], [], [], None
     for seed in args.seeds:

@@ -28,7 +28,7 @@ from derivus import utils
 BASE = pd.Timestamp('2026-01-15')
 
 
-def _world(entry_name, chained=True, partner_of_cme='LBMA_AM.CME.PM', cross_chain=False,
+def _world(entry_name, chained=True, partner_of_cme='LBMA_AM.PM.CME', cross_chain=False,
            open_chain=False):
     """One future on `entry_name`. `chained` pairs the two CME bases; `cross_chain` instead
     pairs LBMA_AM.PM with LBMA_AM.CME.PM — two different BRANCHES of the name tree, so neither
@@ -39,11 +39,11 @@ def _world(entry_name, chained=True, partner_of_cme='LBMA_AM.CME.PM', cross_chai
     pm_diff = {'Spot': -12.4}
     if chained and not cross_chain:
         cme['Chained_Basis'] = partner_of_cme
-        if partner_of_cme == 'LBMA_AM.CME.PM' and not open_chain:
+        if partner_of_cme == 'LBMA_AM.PM.CME' and not open_chain:
             cme_pm['Chained_Basis'] = 'LBMA_AM.CME'
     if cross_chain:
-        pm_diff['Chained_Basis'] = 'LBMA_AM.CME.PM'
-        cme_pm['Chained_Basis'] = 'LBMA_AM.PM'
+        pm_diff['Chained_Basis'] = 'LBMA_AM.CME'
+        cme['Chained_Basis'] = 'LBMA_AM.PM'
     return {'Calc': {
         'Calculation': {
             'Object': 'CreditMonteCarlo', 'Base_Date': {'.Timestamp': '2026-01-15'},
@@ -71,7 +71,7 @@ def _world(entry_name, chained=True, partner_of_cme='LBMA_AM.CME.PM', cross_chai
                     'Forward_Rate': 'PLATINUM_CARRY'},
                 'ObservedBasis.LBMA_AM.PM': pm_diff,
                 'ObservedBasis.LBMA_AM.CME': cme,
-                'ObservedBasis.LBMA_AM.CME.PM': cme_pm,
+                'ObservedBasis.LBMA_AM.PM.CME': cme_pm,
                 'ForwardRate.PLATINUM_CARRY': {'Currency': 'USD', 'Curve': {'.Curve': {
                     'meta': [], 'data': [[46213.0, 0.031], [46395.0, 0.033]]}}}},
             'Price Models': {},
@@ -86,53 +86,36 @@ def _discover(cfg):
 
 
 CME = utils.Factor('ObservedBasis', ('LBMA_AM', 'CME'))
-CME_PM = utils.Factor('ObservedBasis', ('LBMA_AM', 'CME', 'PM'))
+PM_CME = utils.Factor('ObservedBasis', ('LBMA_AM', 'PM', 'CME'))
 
 
 def test_the_declaration_pulls_the_partner():
     dependent = _discover(_world('LBMA_AM.CME'))
-    assert CME_PM in dependent                           # not positionally required by the entry
+    assert PM_CME in dependent                           # not positionally required by the entry
     order = list(dependent)
-    assert order.index(CME) < order.index(CME_PM)        # positional order, no cycle in the sort
-
-
-def test_an_alias_pulls_its_source_and_orders_after_it():
-    """`Alias_Of` is the second inclusion declaration: a book naming only the PM-session
-    composed name must discover the alias's SOURCE — with the source's own chain closure
-    following (the CME pair enters whole) — and the alias must sort AFTER its source, because
-    unlike the chained loop this declaration IS an ordering edge (a source never reads its
-    alias, so the edge is acyclic). Killed by dropping the pull (the source never enters) or
-    by inclusion-without-edge (insertion order could put the alias first)."""
-    cfg = _world('LBMA_AM.PM.CME')
-    pf = cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
-    pf['ObservedBasis.LBMA_AM.PM.CME'] = {'Spot': -10.65, 'Alias_Of': 'LBMA_AM.CME.PM'}
-    dependent = _discover(cfg)
-    alias = utils.Factor('ObservedBasis', ('LBMA_AM', 'PM', 'CME'))
-    assert CME_PM in dependent and CME in dependent      # source + its closed chain, whole
-    order = list(dependent)
-    assert order.index(CME_PM) < order.index(alias)      # the alias generates after its source
-
-    pf['ObservedBasis.LBMA_AM.PM.CME']['Alias_Of'] = 'LBMA_AM.PM.CME'
-    with pytest.raises(Exception, match='names itself'):
-        _discover(cfg)
+    assert order.index(CME) < order.index(PM_CME)        # depth orders the source (1) before
+                                                         # the bridge (2); no cycle in the sort
 
 
 def test_the_pull_crosses_branches_both_ways():
-    """LBMA_AM.PM ↔ LBMA_AM.CME.PM sit on different branches of the name tree — neither is the
-    other's prefix, so only the declaration can pull one from the other. The reverse direction
-    on the nested CME pair would be a PLACEBO (the prefix enters positionally regardless)."""
+    """LBMA_AM.PM ↔ LBMA_AM.CME sit on different branches of the name tree — neither is the
+    other's prefix, so only the declaration can pull one from the other, in BOTH directions.
+    (The production pair CME ↔ PM.CME is itself cross-branch under the ruled naming, so the
+    declaration is load-bearing both ways there too — gate 1 covers it.)"""
     pm_diff = utils.Factor('ObservedBasis', ('LBMA_AM', 'PM'))
     fwd = _discover(_world('LBMA_AM.PM', cross_chain=True))
-    assert CME_PM in fwd and CME in fwd                  # partner + its positional intermediate
-    rev = _discover(_world('LBMA_AM.CME.PM', cross_chain=True))
+    assert CME in fwd                                    # declared pull, no prefix relation
+    rev = _discover(_world('LBMA_AM.CME', cross_chain=True))
     assert pm_diff in rev
 
 
 def test_the_omitted_field_changes_nothing():
     with_field = set(_discover(_world('LBMA_AM.CME')))
     without = _discover(_world('LBMA_AM.CME', chained=False))
-    assert CME_PM not in without
-    assert with_field - set(without) == {CME_PM}
+    assert PM_CME not in without
+    # the pulled partner enters WITH its own positional chain (the PM-branch prefix)
+    assert with_field - set(without) == {
+        PM_CME, utils.Factor('ObservedBasis', ('LBMA_AM', 'PM'))}
 
 
 @pytest.mark.parametrize('bad,match', [
@@ -152,5 +135,5 @@ def test_a_chain_must_close():
 
 def test_the_partner_inherits_a_horizon():
     dependent = _discover(_world('LBMA_AM.CME'))
-    assert dependent[CME_PM] is not None
-    assert dependent[CME_PM] >= BASE
+    assert dependent[PM_CME] is not None
+    assert dependent[PM_CME] >= BASE

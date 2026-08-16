@@ -81,7 +81,7 @@ def _shared(B, T, seed=42, dtype=torch.float32):
 
 def _proc(param, shared, T, source_key, b0=B0):
     p = ChainedBasisModel(factor=types.SimpleNamespace(param={}), param=dict(param))
-    p.factor_key = utils.Factor('ObservedBasis', ('LBMA_AM', 'CME', 'PM'))
+    p.factor_key = utils.Factor('ObservedBasis', ('LBMA_AM', 'PM', 'CME'))
     p.source_key = source_key
     p.precalculate(REF_DATE, _time_grid(T), torch.tensor([b0]), shared, process_ofs=0)
     return p
@@ -192,7 +192,7 @@ def test_the_chain_refuses_the_decay_projection():
     under another law's projection. The PM-session marks increment defines it, if ever."""
     from derivus.instruments import get_observed_basis_decay
     p = ChainedBasisModel(factor=types.SimpleNamespace(param={}), param=dict(CHAIN))
-    key = utils.Factor('ObservedBasis', ('LBMA_AM', 'CME', 'PM'))
+    key = utils.Factor('ObservedBasis', ('LBMA_AM', 'PM', 'CME'))
     code = [(True, utils.Factor('ObservedBasis', ('LBMA_AM', 'CME')), None), (True, key, None)]
     with pytest.raises(Exception, match='basis-decay'):
         get_observed_basis_decay(code, {key: p})
@@ -209,7 +209,7 @@ def test_the_calibration_round_trips():
     b = np.empty(n)
     b[:-1] = P[:-1] + W_LVL * (P[1:] - P[:-1]) - 0.8 + SIG_BR * rng.standard_normal(n - 1)
     b[-1] = P[-1] - 0.8 + SIG_ID * rng.standard_normal()
-    frame = pd.DataFrame({'ObservedBasis.X.CME.PM': b, 'ObservedBasis.X.CME': P}, index=idx)
+    frame = pd.DataFrame({'ObservedBasis.X.PM.CME': b, 'ObservedBasis.X.CME': P}, index=idx)
     cal = ChainedBasisCalibration('ChainedBasisModel', {})
     res = cal.calibrate(frame, 0.0)
     sid, son, sd = (res.param['Link_ID_Sigma'], res.param['Link_ON_Sigma'],

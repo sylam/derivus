@@ -15,7 +15,7 @@ SAME-DAY observation:
                                         IS the PM fixing)
     ObservedBasis.LBMA_AM.CME           fix_am*(exp(e_am)-1): AM-session CME basis, so
                                         (fix_am + b)*exp(z(tau)*tau) reproduces F_i(am) exactly
-    ObservedBasis.LBMA_AM.CME.PM        fix_pm*(exp(e_pm)-1): PM-session CME basis in the same
+    ObservedBasis.LBMA_AM.PM.CME        fix_pm*(exp(e_pm)-1): PM-session CME basis in the same
                                         (own-fix-anchored) convention
     ForwardRate.PLATINUM_CARRY,0.5      z(0.5) = c + 0.5a   (z(tau)*tau = c*tau + a*tau^2,
     ForwardRate.PLATINUM_CARRY,1.0      z(1.0) = c + a       total carry incl. financing)
@@ -50,7 +50,7 @@ REF_TENORS = (0.5, 1.0)
 FIX_COL = 'CommodityPrice.LBMA_AM'
 PM_DIFF_COL = 'ObservedBasis.LBMA_AM.PM'
 AM_CME_COL = 'ObservedBasis.LBMA_AM.CME'
-PM_CME_COL = 'ObservedBasis.LBMA_AM.CME.PM'
+PM_CME_COL = 'ObservedBasis.LBMA_AM.PM.CME'
 CARRY_COL = 'ForwardRate.PLATINUM_CARRY'
 
 

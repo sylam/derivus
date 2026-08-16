@@ -761,12 +761,7 @@ class ObservedBasis(Factor0D):
                             'may run link to link and may or may not close a loop) or the '
                             'primary itself. The declaration is the whole contract: whenever '
                             'this factor enters a calculation\'s universe its link follows, '
-                            'and a chained process reads exactly the link it declares'),
-              F('Alias_Of', 'Text', default='',
-                description='Name of the basis whose simulated path this factor IS - pure name '
-                            'composition (one series priced under a second positional chain), '
-                            'consumed by AliasBasisModel; empty for every factor with its own '
-                            'law')]
+                            'and a chained process reads exactly the link it declares')]
 
     def __init__(self, param):
         super(ObservedBasis, self).__init__(param)
