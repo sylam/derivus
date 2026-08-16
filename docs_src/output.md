@@ -1,42 +1,50 @@
-## Notebook
+## The output dictionary
 
-The outputs obtained from running the jupyter extensions for derivus are self-explanatory and can be 
-downloaded by right-clicking and selecting "Save As". (see [here](../quickstart))
+Every calculation method returns `(calc, out)`, and `out` is a dict with three top-level keys:
+
+- **Netting** — the internal `DealStructure` tree, intended for developers walking the hierarchy.
+- **Stats** — timing and counter statistics (deals loaded/skipped, execution time, and — when a
+  calibration was ridden rather than refitted — the `Calibrations` entry naming the artifact each
+  curve rode, which completes the replay identity).
+- **Results** — the user-facing tables. Keys vary by calculation; `out['Results'].keys()`
+  enumerates what a run actually produced.
 
 ## Base Revaluation
-
-Assuming a correct JSON file was loaded, a base valuation (theoretical price) calculation can be
-explicitly run by 
 
 ```python
 calc, out = cx.Base_Valuation(overrides={})
 ```
 
-The out variable is a dictionary containing 3 items:
+`Results` contains:
 
-- Netting - this contains the derivus internal calculation structure and is intended for Developers
-- Stats - a dictionary containing statistics (Deals loaded/skipped and execution time etc.)
-- Results - the dictionary that contains the results seen in the GUI. 
-  - mtm - the mark to market of all instruments loaded along with any tagged data
-  - Greeks_First - the analytic sensitivities of the portfolio by risk factor
+- `mtm` — the mark-to-market of all instruments loaded, along with any tagged data
+- `Greeks_First` — analytic sensitivities of the portfolio by risk factor, when `Greeks` is on
+  (`Greeks_Second` appears when second-order sensitivities are requested)
 
 ## Credit Monte Carlo
-
-Once again, assuming a valid JSON file, a Monte Carlo calculation can be explicitly run by:
 
 ```python
 calc, out = cx.Credit_Monte_Carlo(overrides={})
 ```
 
-The out variable will contain the same 3 dictionary items as before except that the Results key will 
-contain more information depending on the sub calculations requested
+`Results` may contain, depending on the sub-calculations requested:
 
-The Results dictionary may contain:
+- `mtm` — theoretical prices per scenario per time point
+- `exposure_profile` — percentiles of the mtm calculation (EE and PFE)
+- `scenarios` — the simulated factor paths themselves (`Calc_Scenarios`), one table per factor
+- `cashflows` — simulated cashflow ledgers per currency (`Generate_Cashflows`)
+- `cva` / `grad_cva` — the credit valuation adjustment and its sensitivities
+- `fva` / `grad_fva` — the funding valuation adjustment and its sensitivities
+- `collva` and initial-margin tables, when the collateral / IM blocks request them
 
-  - mtm - the calculated theoretical prices per scenario per time point
-  - exposure_profile - the percentiles of the mtm calculation
-  - fva - the funding valuation adjustment 
-  - grad_fva - the sensitivities of the fva
-  - cva - the credit valuation adjustment
-  - grad_cva - the sensitivities of the cva
+## Hedge Monte Carlo
 
+`Results` carries the solver's outputs: the fitted value-function artifact, the greedy-policy
+verdict and the benchmark comparison (see the [Hedging](hedging/overview.md) section).
+
+## Over HTTP
+
+The service returns the same tables paged: `GET /results/{id}` answers the run's replay
+coordinates plus each table's shape, and `GET /results/{id}/{table}?offset=&limit=` returns the
+cells — see [the service verbs](api_overview.md#the-same-verbs-over-http). A notebook client can
+also right-click any rendered table and "Save As" (see [Quick Start](quickstart.md)).

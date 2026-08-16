@@ -1,63 +1,39 @@
 # Requirements
 
-In order to run Derivus, an nvidia video card with compute capability 6.1 or above (and 
-corresponding drivers) is strongly recommended. Most of the modules listed here can simply be installed via pip but may require a full build environment (with a C/C++ compiler). The
-[Anaconda](https://www.continuum.io/anaconda-overview) python distribution already comes with many
-of the below packages already installed. The required packages are:
+Derivus runs on any machine with Python **3.8+**; an NVIDIA GPU (with current drivers and a
+CUDA-enabled PyTorch build) is strongly recommended for Monte Carlo work, but everything runs on
+CPU. Installing the package brings the core dependencies with it:
 
-[Python](http://www.python.org/)>=3.6
+```
+pip install derivus
+```
 
-- Only python 3.6 and above is supported
+The core dependencies, and what each is for:
 
-[Numpy](http://numpy.scipy.org/)>=1.16.1
+- [PyTorch](https://pytorch.org/) >= 2.0 — the computational library that evaluates tensors on
+  CPU or GPU, and the automatic-differentiation engine every sensitivity comes from.
+- [NumPy](https://numpy.org/) >= 1.16.1 and [SciPy](https://scipy.org/) >= 1.2.2 — array
+  plumbing, interpolation and numerical integration.
+- [Pandas](https://pandas.pydata.org/) >= 1.0 — every tabular input and result.
+- [pyparsing](https://github.com/pyparsing/pyparsing) >= 2.4.7 — the time-grid grammar.
+- [sortedcontainers](https://grantjenks.com/docs/sortedcontainers/) > 2.0 — the ordered
+  tenor/expiry maps a volatility surface is built from.
 
-- Earlier versions could work but have not been tested.
+## Extras
 
-[Scipy](http://scipy.org/)>=1.2.2
+Optional capability is grouped into pip extras, so the core library installs lean:
 
-- Currently only required for interpolation and numerical integration. Again, earlier versions could
-work but have not been tested.
+| extra | installs | when you want it |
+|---|---|---|
+| `derivus[interactive]` | jupyter, matplotlib | the notebook Workbench and plotting; pairs with [riskflow_widgets](https://github.com/sylam/riskflow_widgets) |
+| `derivus[garch]` | arch >= 6.0 | CALIBRATING `GARCHSpotModel` — the import is lazy, so simulation never needs it |
+| `derivus[docs]` | mkdocs >= 1.5, mkdocs-material, pymdown-extensions | building this documentation (`DV_Docs` emits the tree, mkdocs renders it) |
+| `derivus[service]` | fastapi, uvicorn | the HTTP service (`DV_Service`) — `derivus/service.py` is the sole importer |
 
-[Pandas](http://pandas.pydata.org/)>=1.0
+## GPU notes
 
-- Earlier versions could work but have not been tested.
-
-[Pytorch](https://pytorch.org/)>=2.0
-
-- This is the computational library that evaluates tensors either on CPU or GPU.
-
-[pyparsing](https://github.com/pyparsing/pyparsing)
-
-- Required for simple parsing of time grids. Not declared directly: it arrives as a dependency of
-  matplotlib, which `setup.py` installs.
-
-[sortedcontainers](https://grantjenks.com/docs/sortedcontainers/)>2.0
-
-- Required for the ordered tenor/expiry maps a volatility surface is built from.
-
-## Optional requirements
-
-[NVIDIA CUDA drivers and SDK](http://developer.nvidia.com/object/gpucomputing.html)
-
-- Needed for GPU code execution. This is needed by Pytorch if GPU computation is required
-
-[Matplotlib](https://matplotlib.org/)>=3.0.0
-
-- Needed for generating plots of risk factors and simulated paths
-
-[arch](https://arch.readthedocs.io/)>=6.0
-
-- Only needed to CALIBRATE `GARCHSpotModel`. The import is lazy, so the library installs and
-  simulates without it; `pip install derivus[garch]` adds it.
-
-[mkdocs](http://www.mkdocs.org/)>=0.16
-
-- Needed for building this documentation.
-- Additional documentation dependencies are 
-  - Math formatting is done via [pymdown-extensions](https://facelessuser.github.io/pymdown-extensions/) (specifically the `pymdownx.arithmatex` extension).
-  - Theming is done via [mkdocs-material](https://squidfunk.github.io/mkdocs-material/)
-
-[jupyter](https://jupyter.org/)
-
-- An interactive notebook environment that's useful for interacting with derivus via a 
-jupyter plugin called [riskflow_widgets](https://github.com/sylam/riskflow_widgets).
+[CUDA](https://developer.nvidia.com/cuda-zone) execution needs an NVIDIA card with drivers
+matching your PyTorch build — `torch.cuda.is_available()` is the check that settles it. On a
+CPU-only machine, install the CPU wheel explicitly
+(`pip install torch --index-url https://download.pytorch.org/whl/cpu`) to avoid downloading the
+much larger CUDA build.

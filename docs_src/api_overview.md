@@ -1,8 +1,12 @@
 # API
 
-Everything in Derivus is based off a *Context*. All calculations are constructed with reference to one.
-Note that the interest rate curves start one day from now i.e. $1/365\approx 0.00274$. No interest rate
-curve can start at time 0 (although the rate at time 0 is flat extrapolated from the first timepoint).
+Everything in Derivus is based off a *Context*. All calculations are constructed with reference
+to one.
+
+!!! note "Curve convention"
+    Interest rate curves start one day from now, i.e. $1/365\approx 0.00274$. No interest rate
+    curve carries a knot at time 0 — the rate there is flat-extrapolated from the first
+    timepoint, and its discount factor is 1 by identity.
 
 ## The Context
 
