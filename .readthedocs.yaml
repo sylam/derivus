@@ -1,0 +1,27 @@
+# Read the Docs requires this file (builds without one fail since late 2023).
+# The docs tree is GENERATED: docs/ and mkdocs.yml are gitignored and DV_Docs emits them
+# by importing the package (schema harvest), so the build installs derivus and runs the
+# generator before mkdocs ever looks for a config.
+version: 2
+
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.11"
+  jobs:
+    pre_install:
+      # PyPI's default linux torch wheel is the CUDA build and blows the build limits;
+      # the CPU wheel satisfies the requirement before `pip install .` resolves it
+      - pip install torch --index-url https://download.pytorch.org/whl/cpu
+    pre_build:
+      - python derivus_docs.py
+
+python:
+  install:
+    - method: pip
+      path: .
+      extra_requirements:
+        - docs
+
+mkdocs:
+  configuration: mkdocs.yml
