@@ -181,6 +181,16 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
             trade_date, fixings, delta_corridor)
     if args.max_trade is not None:
         hp['Evaluator']['Max_Trade_Per_Step'] = float(args.max_trade)
+    if args.long_cap is not None:
+        # the ruled asymmetric NET range [-60, +long_cap]: per-leg boxes open on the long
+        # side, the flat schedule is the binding net object, and the abs limit widens to
+        # match the short floor. Writes the same field the corridor writes - one or the other.
+        assert args.delta_corridor is None, 'long-cap and delta-corridor both write the schedule'
+        for lim in limits.values():
+            lim['Max_Position'] = int(args.long_cap)
+        hp['Evaluator']['Total_Position_Abs_Limit'] = 60.0
+        hp['Evaluator']['Total_Position_Schedule'] = [
+            {'Step': 0, 'Min_Total': -60.0, 'Max_Total': float(args.long_cap)}]
 
     # No Spot_Price_History: its only live consumer is the utility-scale formula, which the
     # template's Utility_Scale_Explicit overrides; the policy's features are process-revealed
@@ -246,6 +256,9 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
         tcalc['Inner_Sub_Batch'] = args.inner_sub_batch
         if args.fit_iters is not None:
             tcalc['Hedging_Problem']['Solver']['DiffV2_Fit_Iters'] = args.fit_iters
+        if args.grid_levels is not None:
+            tcalc['Hedging_Problem']['Solver']['Training_Action_Grid_Levels_Per_Axis'] = \
+                args.grid_levels
         logging.info('=== TRAIN %s seed=%d (fair=%.2f, strike=%.2f, bridge premium=%+.6f) ===',
                      tag, seed, info['k_fair'], info['k_fair'] - args.margin, info['premium'])
         tdiag = run(train, f'train_{tag}_s{seed}')
@@ -257,6 +270,9 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     roll = apply_config(copy.deepcopy(cfg), batch=1, seed=args.seeds[0], load=ckpts,
                         stepper_rollout=True, randomize_initial_state=False)
     roll['Calc']['Calculation']['Inner_Sub_Batch'] = args.roll_inner
+    if args.grid_levels is not None:
+        roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
+            'Training_Action_Grid_Levels_Per_Axis'] = args.grid_levels
     roll['Calc']['Calculation']['Observed_Scenario'] = obs_npz
     logging.info('=== ROLL %s (stepper, realized path, %d-seed ensemble, inner=%d) ===',
                  tag, len(ckpts), args.roll_inner)
@@ -337,6 +353,13 @@ def main():
     ap.add_argument('--max-trade', type=float, default=None,
                     help='Evaluator Max_Trade_Per_Step: per-leg |dq| cap per decision step '
                          'at the argmax (execution only; checkpoints re-rollable under it).')
+    ap.add_argument('--long-cap', type=float, default=None,
+                    help='Open the NET range to [-60, +long_cap] (flat Total_Position_Schedule '
+                         '+ per-leg boxes). Changes the action space: a RETRAIN, never a '
+                         're-roll. Mutually exclusive with --delta-corridor.')
+    ap.add_argument('--grid-levels', type=int, default=None,
+                    help='Override Solver Training_Action_Grid_Levels_Per_Axis (train AND '
+                         'roll argmax). Changes the action space: a retrain.')
     ap.add_argument('--delta-corridor', type=float, default=None,
                     help='Causal delta-ramp corridor band on the SIGNED total position, applied '
                          'to BOTH train and roll.')
