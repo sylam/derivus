@@ -62,10 +62,9 @@ def _cfg(*nodes):
     """An equity world whose every factor has a block, so an empty want-list is the clean answer.
 
     `EquityPrice` resolves to an IMPLIED process whose `GBMAssetPriceTSModelParameters` block is
-    present while `Price Models` has no entry for it - the one configuration in which `find_models`
-    injects a dummy. Without it `calculate_dependencies` would be idempotent here and
-    `test_validate_leaves_the_job_exactly_as_it_found_it` would pass for a validate that called it.
-    """
+    present while `Price Models` has no entry for it - the one configuration the old `find_models`
+    wrote a dummy entry for, and therefore the fixture that catches any code that starts writing
+    into params again (`test_validate_leaves_the_job_exactly_as_it_found_it`)."""
     c = Config()
     c.params['System Parameters'].update({'Base_Currency': 'USD', 'Base_Date': BASE})
     c.params['Price Factors'] = {
@@ -169,13 +168,11 @@ def _mtm(c):
 
 
 def test_validate_leaves_the_job_exactly_as_it_found_it():
-    """`calculate_dependencies` is not idempotent - `find_models` injects
-    `Price Models[model] = None` for an implied model - so validate calls `discover_factors`,
-    the half before that, and writes nothing at all.
-
-    The run is asserted to make that injection, which is what stops this being a placebo: on a
-    config where no dummy is ever minted, a validate that called `calculate_dependencies` would
-    pass this too."""
+    """validate writes nothing — and since `find_models` stopped minting implied dummies,
+    neither does a full run: the implied model prices with NO `Price Models` entry at all.
+    The after-the-run arm is what holds that: this fixture's implied model is exactly the
+    one the old code wrote a dummy for, so any code that starts writing into params again
+    fails here, and the valuation itself proves the entry was never needed."""
     c = _cfg(_node(OPTION))
     factors = list(c.params['Price Factors'].items())
 
@@ -185,5 +182,5 @@ def test_validate_leaves_the_job_exactly_as_it_found_it():
     assert [(k, v) for k, v in c.params['Price Factors'].items()] == factors
 
     assert _mtm(c) == _mtm(_cfg(_node(OPTION))), 'the valuation moved'
-    assert c.params['Price Models'] == {'GBMAssetPriceTSModelImplied.EQ': None}, (
-        'the run mints no dummy model, so this fixture cannot tell the two calls apart')
+    assert c.params['Price Models'] == {}, 'the run wrote into Price Models'
+    assert [(k, v) for k, v in c.params['Price Factors'].items()] == factors

@@ -982,7 +982,8 @@ class Credit_Monte_Carlo(Calculation):
 
             self.stoch_factors[price_factor] = construct_process(
                 price_model.type, factor_obj,
-                self.config.params['Price Models'][utils.check_tuple_name(price_model)], implied_obj)
+                self.config.params['Price Models'].get(utils.check_tuple_name(price_model)),
+                implied_obj)
 
         self.static_factors = {}
         for price_factor in set(dependent_factors).difference(stochastic_factors.values()):

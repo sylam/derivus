@@ -5,8 +5,8 @@ its own underlying (CVA / credit-MC).
 
 Covered:
   (a) construct_process dispatches the class by name; find_models routes EquityPrice ->
-      HestonNandiImpliedSpotModel with the implied HestonNandiModelParameters additional factor and
-      the dummy Price Models entry.
+      HestonNandiImpliedSpotModel with the implied HestonNandiModelParameters additional factor,
+      writing nothing (idempotent — an implied model needs no Price Models entry).
   (b) PRICE-space martingale: E[S_t e^{-∫(r-q)}] flat (carry=0 ⇒ E[S_t]=S_0), AND the by-log-h-state
       version (the LOG-space test is structurally blind to a Jensen price drift — the platinum lesson).
   (c) HN CLOSED-FORM ORACLE: the simulated terminal distribution matches the closed-form
@@ -147,8 +147,10 @@ def test_construct_process_dispatch():
 
 def test_find_models_routes_implied_process():
     """A market-data JSON where EquityPrice is mapped to HestonNandiImpliedSpotModel and the
-    HestonNandiModelParameters factor is present routes the factor to the implied process, resolves
-    the implied additional factor by naming convention, and stamps the dummy Price Models entry."""
+    HestonNandiModelParameters factor is present routes the factor to the implied process and
+    resolves the implied additional factor by naming convention — WITHOUT writing anything: an
+    implied model needs no Price Models entry, and `find_models` is idempotent (a second call
+    returns the identical split off pristine params)."""
     c = Config()
     c.params['System Parameters']['Base_Currency'] = 'USD'
     c.params['Model Configuration'].append('EquityPrice', (), 'HestonNandiImpliedSpotModel')
@@ -163,7 +165,8 @@ def test_find_models_routes_implied_process():
     proc_key = utils.Factor('HestonNandiImpliedSpotModel', ('EQ',))
     assert stoch.get(proc_key) == spot, 'EquityPrice not routed to HestonNandiImpliedSpotModel'
     assert add.get(proc_key) == utils.Factor('HestonNandiModelParameters', ('EQ',))
-    assert utils.check_tuple_name(proc_key) in c.params['Price Models'], 'no dummy Price Models entry'
+    assert c.params['Price Models'] == {}, 'find_models wrote into Price Models'
+    assert c.find_models([spot]) == (stoch, add), 'find_models is not idempotent'
 
 
 # ---------------------------------------------------------------------------

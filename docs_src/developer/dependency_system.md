@@ -2,7 +2,7 @@
 
 `Context.calculate_dependencies` (`config.py`) is the compiler front end: it discovers every price factor the book touches, wires each to its sub-factor dependencies, orders them, and splits stochastic vs static. Discovery is table-driven — three plain-dict **registries** decide which factors exist; the code around them just walks the tables.
 
-It is two methods: `discover_factors` does everything above except the split, and `find_models` does the split. They are separate because only the second one **writes** (see the idempotency box on [Calc Lifecycle](calc_lifecycle.md#compile-phase-1-calculate_dependencies)), which is what lets `Context.validate` ask what the book needs without disturbing it. Iterating the `dependent_factors` dict `discover_factors` returns is iterating the topological order — the order everything below depends on.
+It is two methods: `discover_factors` does everything above except the split, and `find_models` does the split. Both read the loaded config and write nothing — `calculate_dependencies` is idempotent (see the box on [Calc Lifecycle](calc_lifecycle.md#compile-phase-1-calculate_dependencies)) — and they stay separate because `Context.validate` / `factor_universe` want the universe without resolving models. Iterating the `dependent_factors` dict `discover_factors` returns is iterating the topological order — the order everything below depends on.
 
 The already-present [Cross Factor](../calibration/cross_factor.md) page covers the composed-spot name-prefix chain and the sim-time buffer publish/consume from the calibration angle; this page is the discovery/ordering intro. Read them together — do not expect either to restate the other.
 
@@ -55,7 +55,7 @@ Edges collected as `dependent_factors` (factor → list-of-prerequisites) are `t
 
 ## Stochastic vs static split — `find_models`
 
-`find_models` walks the topo order, resolving each factor's process via `Model Configuration.search` (`modelfilters` first-match, else `modeldefaults`; subtype-aware). A factor is **stochastic** iff a process was found, `name[0] != Base_Currency`, and `Factor(stoch_proc, name)` is in `Price Models`. Implied models pull an additional static factor and inject a dummy `Price Models[model] = None`. Downstream, `static_factors = set(dependent_factors) - stochastic_factors.values()`.
+`find_models` walks the topo order, resolving each factor's process via `Model Configuration.search` (`modelfilters` first-match, else `modeldefaults`; subtype-aware). A factor is **stochastic** iff a process was found, `name[0] != Base_Currency`, and the model's parameters are available — a `Factor(stoch_proc, name)` entry in `Price Models`, or for an implied model the `Price Factors` block of the factor it implies off (an implied model needs no `Price Models` entry; the process constructor reads that section with `.get`). Implied models also pull their parameter factor as an additional static factor. Downstream, `static_factors = set(dependent_factors) - stochastic_factors.values()`.
 
 !!! warning "Invariant — a lost process silently becomes static"
     A factor that resolves to a process but whose `Factor(stoch_proc, name)` is **absent** from `Price Models` is not added to `stochastic_factors`; via the set-difference it falls into `static_factors` and is frozen at its current value. Only a warning (`len(name)>1`) / error (`len==1`) log distinguishes "intended static" from "lost its process."

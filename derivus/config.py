@@ -597,11 +597,9 @@ class Config(object):
         """Every price factor the deal walk reaches, split by whether the market data has a block
         for it: `resolved` is what a run would build, `missing` is the want-list.
 
-        Read-only, and it has to be: `calculate_dependencies` is not idempotent, because
-        `find_models` injects a dummy `Price Models` entry for every implied model. So this calls
-        `discover_factors`, the half before that, which reads the market data and writes nothing.
-        Dates are taken the way `Base_Revaluation` takes them (`calc_dates=False`), so no
-        instrument accumulates a reval-date offset either.
+        This calls `discover_factors` rather than `calculate_dependencies` because the want-list
+        needs no model resolution. Dates are taken the way `Base_Revaluation` takes them
+        (`calc_dates=False`), so no instrument accumulates a reval-date offset either.
 
         A factor goes missing in two ways, and the want-list is the union. A type carrying
         dependants (`FxRate`, `CommodityPrice`, ...) raises `KeyError` on the absent block and
@@ -667,11 +665,12 @@ class Config(object):
         Returns the dependant factors, the stochastic models, the full list of
         reset dates and optionally the potential currency settlements.
 
-        Discovery and model resolution are separate methods because only the second one writes:
-        `find_models` injects a dummy `Price Models` entry for an implied model, which is what
-        makes this method non-idempotent. `validate` wants discovery alone. Iterating the
-        `dependent_factors` dict is iterating the topological order `discover_factors` sorted it
-        into, which is the RNG-substream order every process reads from.
+        Idempotent: both halves read the loaded config and write nothing, so calling it twice
+        returns identical output and leaves `params` pristine. Discovery and model resolution
+        stay separate methods because `validate` / `factor_universe` want the universe without
+        resolving models. Iterating the `dependent_factors` dict is iterating the topological
+        order `discover_factors` sorted it into, which is the RNG-substream order every process
+        reads from.
         """
         dependent_factors, _, reset_dates, currency_settlement_dates = self.discover_factors(
             options, base_date, base_MTM_dates, calc_dates)
@@ -937,7 +936,7 @@ class Config(object):
         }
 
         # the list of returned factors
-        dependent_factors = set()
+        dependent_factors = {}
         # the factors the walk asked the market data for and did not find
         skipped_factors = set()
         # complete list of reset dates referenced
@@ -1009,7 +1008,6 @@ class Config(object):
             # update the linked factor max tenors
             missing_tenors = {}
             for k, v in dependent_factor_tenors.items():
-                # v = (d for d in v if d is not None)
                 for linked_factor in utils.traverse_dependents(k, dependent_factors):
                     missing_tenors.setdefault(linked_factor, set()).update(v)
 
@@ -1030,6 +1028,12 @@ class Config(object):
         return dependent_factors, skipped_factors, reset_dates, currency_settlement_dates
 
     def find_models(self, sorted_factors):
+        """Splits the ordered factor universe into stochastic and (by set difference) static.
+        A factor is stochastic iff `Model Configuration` resolves it to a process, it is not
+        the base currency, and the model's parameters are available - a `Price Models` block,
+        or for an implied model the `Price Factors` block of the factor it implies off (the
+        process constructor reads `Price Models` with `.get`, so an implied model needs no
+        entry). Reads the loaded config and writes nothing, so it can be called repeatedly."""
         stochastic_factors = {}
         additional_factors = {}
         for factor in sorted_factors:
@@ -1039,16 +1043,9 @@ class Config(object):
             additional_factor = self.params['Model Configuration'].additional_factors(stoch_proc, factor)
             if stoch_proc and factor.name[0] != self.params['System Parameters']['Base_Currency']:
                 factor_model = utils.Factor(stoch_proc, factor.name)
-                if additional_factor and self.params['Price Factors'].get(
-                        utils.check_tuple_name(additional_factor)) is not None and utils.check_tuple_name(
-                    factor_model) not in self.params['Price Models']:
-                    # need a dummy stochastic process
-                    self.params['Price Models'][utils.check_tuple_name(factor_model)] = None
-                    logging.info(
-                        'Risk Factor {0} set to implied stochastic process {1}'.format(
-                            utils.check_tuple_name(factor), stoch_proc))
-
-                if utils.check_tuple_name(factor_model) in self.params['Price Models']:
+                implied = additional_factor is not None and self.params['Price Factors'].get(
+                    utils.check_tuple_name(additional_factor)) is not None
+                if implied or utils.check_tuple_name(factor_model) in self.params['Price Models']:
                     stochastic_factors.setdefault(factor_model, factor)
                     if additional_factor:
                         additional_factors.setdefault(factor_model, additional_factor)

@@ -595,7 +595,8 @@ class StressedContext(Context):
         factors_to_override, models_to_override = self.calc_stress_config(rate_group)
         # back up the old factors and models
         self.current_factors = {k: self.current_cfg.params['Price Factors'][k] for k in factors_to_override.keys()}
-        self.current_models = {k: self.current_cfg.params['Price Models'][k] for k in models_to_override.keys()}
+        # .get: an implied model may be overridden without carrying an entry of its own
+        self.current_models = {k: self.current_cfg.params['Price Models'].get(k) for k in models_to_override.keys()}
         # override the models
         self.current_cfg.params['Price Factors'].update(factors_to_override)
         self.current_cfg.params['Price Models'].update(models_to_override)
