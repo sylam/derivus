@@ -179,6 +179,8 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
     if delta_corridor is not None:
         hp['Evaluator']['Total_Position_Schedule'] = delta_corridor_schedule(
             trade_date, fixings, delta_corridor)
+    if args.max_trade is not None:
+        hp['Evaluator']['Max_Trade_Per_Step'] = float(args.max_trade)
 
     # No Spot_Price_History: its only live consumer is the utility-scale formula, which the
     # template's Utility_Scale_Explicit overrides; the policy's features are process-revealed
@@ -332,6 +334,9 @@ def main():
                          'policy).')
     ap.add_argument('--utility-scale', type=float, default=None,
                     help='Override the template Objective\'s Utility_Scale_Explicit.')
+    ap.add_argument('--max-trade', type=float, default=None,
+                    help='Evaluator Max_Trade_Per_Step: per-leg |dq| cap per decision step '
+                         'at the argmax (execution only; checkpoints re-rollable under it).')
     ap.add_argument('--delta-corridor', type=float, default=None,
                     help='Causal delta-ramp corridor band on the SIGNED total position, applied '
                          'to BOTH train and roll.')

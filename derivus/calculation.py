@@ -2259,6 +2259,10 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                       description='Close any residual book at the liability terminal'),
                     F('Total_Position_Abs_Limit', 'Float', default=0.0,
                       description='Cap on the absolute signed book total; 0 = uncapped'),
+                    F('Max_Trade_Per_Step', 'Float', default=0.0,
+                      description='Per-leg cap on |position change| per decision step at the '
+                                  'argmax; 0 = uncapped. Execution policy only - training is '
+                                  'unaffected, so a trained policy can be re-rolled under it'),
                     F('Total_Position_Schedule', 'Table', default=None,
                       row=Row([F('Step', 'Integer', default=0),
                                F('Min_Total', 'Float', default=0.0),

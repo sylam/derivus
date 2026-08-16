@@ -118,6 +118,11 @@ class HedgeActionSpace:
         # Optional per-decision-step corridor on the SIGNED total position Σq_i (sorted
         # (step, min_total, max_total) knots or None). `grid_at(t)` filters the base grid to it.
         self.schedule = acc.get("total_position_schedule")
+        # Optional per-leg rate limit on |Δq| per decision step (0 = off). EXECUTION policy
+        # only: the argmax penalises actions further than this from the standing book, so a
+        # noisy value surface produces ramps instead of full-position flips. Training labels
+        # never see it (their _decide passes no q_prev).
+        self.max_trade = float(acc.get("max_trade_per_step", 0.0))
         self._grid_cache = None
         solver_cfg = runtime["solver"]
         self.levels = int(solver_cfg["training_action_grid_levels_per_axis"])
@@ -667,18 +672,24 @@ class DiffSolverV2:
         `q_prev`+`kappa` (cost-aware execution): charge the L1 repositioning cost
         κ·|q − q_prev| against the wealth entering the continuation, so the argmax trades
         off expected value against the cost of getting there (hysteresis instead of churn).
-        The value function itself stays cost-free; this is a decision-time correction."""
+        `q_prev` alone also arms the `Max_Trade_Per_Step` rate limit: the argmax takes the
+        best action INSIDE the band around the standing book, and a path with nothing inside
+        it (a corridor-forced jump) takes the unrestricted best — the corridor wins. The value
+        function itself stays cost-free; both are decision-time corrections."""
         grid = self.aspace.grid_at(t, live)
+        limit = q_prev is not None and self.aspace.max_trade > 0.0
         with torch.no_grad():
             B, Bi, md = market_t1.shape
             best_val = None
             best_q = None
+            band_val = None
+            band_q = None
             for s in range(0, grid.shape[0], self.chunk):
                 acts = grid[s:s + self.chunk]                                            # (c, n_hedge)
                 c = acts.shape[0]
                 q = acts[None, :, None, :]                                               # (1,c,1,n_hedge)
                 W1 = self._wealth_step(W[:, None, None], q, dF[:, None], dL[:, None])     # (B,c,Bi)
-                if q_prev is not None:
+                if q_prev is not None and kappa is not None:
                     tc = ((acts[None, :, :] - q_prev[:, None, :]).abs() * kappa).sum(-1)  # (B,c) $
                     W1 = W1 - tc[:, :, None]
                 C1f = self._continuation(
@@ -689,6 +700,17 @@ class DiffSolverV2:
                 if self.risk_kappa > 0.0:        # downside-aware: penalise per-action downside dispersion
                     dev = (C1f - C1.unsqueeze(-1)).clamp(max=0.0)                         # negatives only
                     C1 = C1 - self.risk_kappa * (dev ** 2).mean(-1).sqrt()
+                if limit:
+                    infeas = ((acts[None, :, :] - q_prev[:, None, :]).abs()
+                              > self.aspace.max_trade).any(-1)                            # (B,c)
+                    bv, ba = C1.masked_fill(infeas, float('-inf')).max(dim=1)
+                    bq = acts[ba]                          # index 0 on an all-infeasible chunk;
+                    if band_val is None:                   # discarded by the isfinite mask below
+                        band_val, band_q = bv, bq
+                    else:
+                        upd = bv > band_val
+                        band_val = torch.where(upd, bv, band_val)
+                        band_q = torch.where(upd.unsqueeze(-1), bq, band_q)
                 cval, carg = C1.max(dim=1)
                 cact = acts[carg]                                                        # (B,n_hedge)
                 if best_val is None:
@@ -697,6 +719,10 @@ class DiffSolverV2:
                     upd = cval > best_val
                     best_val = torch.where(upd, cval, best_val)
                     best_q = torch.where(upd.unsqueeze(-1), cact, best_q)
+            if limit:
+                ok = torch.isfinite(band_val)
+                best_q = torch.where(ok.unsqueeze(-1), band_q, best_q)
+                best_val = torch.where(ok, band_val, best_val)
             return best_q, best_val
 
     # ---- operating-region bank ----------------------------------------------
@@ -986,7 +1012,7 @@ class DiffSolverV2:
                 kappa_t = self.aspace.kappa(self.tradables_sim, t)
                 q_g, _ = self._decide(
                     nets, m1[rows], dF[rows], dL[rows], W["greedy"], t,
-                    q_prev=q_prev["greedy"] if self.cost_aware else None,
+                    q_prev=q_prev["greedy"],
                     kappa=kappa_t if self.cost_aware else None, live=live)
                 q_g = q_g * live          # zero positions on expired contracts (wealth-neutral)
                 # Textbook = diagonal min-var, PROJECTED into the corridor (no schedule ⇒ identity)
@@ -1074,8 +1100,7 @@ class DiffSolverV2:
                     else:
                         dF, dL, m1, _, live = inner_cache[t]
                         kappa_t = self.aspace.kappa(self.tradables_sim, t)
-                        q, _ = self._decide(nets, m1, dF, dL, W, t,
-                                            q_prev=q_prev if self.cost_aware else None,
+                        q, _ = self._decide(nets, m1, dF, dL, W, t, q_prev=q_prev,
                                             kappa=kappa_t if self.cost_aware else None, live=live)
                         q = q * live
                         q_log["greedy"].append(q.mean(0).detach().cpu().tolist())

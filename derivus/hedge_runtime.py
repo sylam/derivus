@@ -495,6 +495,9 @@ def construct_hedge_runtime(
             "total_position_abs_limit":
                 float(evaluator_config.get("Total_Position_Abs_Limit", 0.0)),
             "total_position_schedule": _position_schedule(evaluator_config),
+            # Per-leg |Δq| cap per decision step at the ARGMAX (0 = off). Execution policy
+            # only — training labels never see it.
+            "max_trade_per_step": float(evaluator_config.get("Max_Trade_Per_Step", 0.0)),
         },
         "privileged_layout": derive_privileged_layout(stoch_factors),
     }
