@@ -96,6 +96,27 @@ def test_the_declaration_pulls_the_partner():
     assert order.index(CME) < order.index(CME_PM)        # positional order, no cycle in the sort
 
 
+def test_an_alias_pulls_its_source_and_orders_after_it():
+    """`Alias_Of` is the second inclusion declaration: a book naming only the PM-session
+    composed name must discover the alias's SOURCE — with the source's own chain closure
+    following (the CME pair enters whole) — and the alias must sort AFTER its source, because
+    unlike the chained loop this declaration IS an ordering edge (a source never reads its
+    alias, so the edge is acyclic). Killed by dropping the pull (the source never enters) or
+    by inclusion-without-edge (insertion order could put the alias first)."""
+    cfg = _world('LBMA_AM.PM.CME')
+    pf = cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    pf['ObservedBasis.LBMA_AM.PM.CME'] = {'Spot': -10.65, 'Alias_Of': 'LBMA_AM.CME.PM'}
+    dependent = _discover(cfg)
+    alias = utils.Factor('ObservedBasis', ('LBMA_AM', 'PM', 'CME'))
+    assert CME_PM in dependent and CME in dependent      # source + its closed chain, whole
+    order = list(dependent)
+    assert order.index(CME_PM) < order.index(alias)      # the alias generates after its source
+
+    pf['ObservedBasis.LBMA_AM.PM.CME']['Alias_Of'] = 'LBMA_AM.PM.CME'
+    with pytest.raises(Exception, match='names itself'):
+        _discover(cfg)
+
+
 def test_the_pull_crosses_branches_both_ways():
     """LBMA_AM.PM ↔ LBMA_AM.CME.PM sit on different branches of the name tree — neither is the
     other's prefix, so only the declaration can pull one from the other. The reverse direction

@@ -736,12 +736,40 @@ class Config(object):
                     if member not in rates_to_add:
                         update_nested_rates(utils.Factor(head_type, member.name), rates_to_add)
 
+        def add_alias_sources(head_type, rates_to_add):
+            """A basis block may declare `Alias_Of`: the factor whose simulated path this one
+            IS (`AliasBasisModel` — pure name composition). The source is the alias's real
+            dependency, so it enters the universe with the alias — with its own positional
+            chain — and the alias gains an ordering edge to it, which is safe where the
+            chained loop is not: a source never reads its alias, so the edge is acyclic.
+            Loud on a self-reference."""
+            queue = [f for f in list(rates_to_add) if f.type == 'ObservedBasis']
+            seen = set()
+            while queue:
+                cur = queue.pop()
+                if cur in seen:
+                    continue
+                seen.add(cur)
+                name = self.params['Price Factors'].get(
+                    utils.check_tuple_name(cur), {}).get('Alias_Of')
+                if not name:
+                    continue
+                src = utils.Factor('ObservedBasis', utils.check_rate_name(name))
+                if src == cur:
+                    raise Exception('Alias_Of on {0} names itself'.format(
+                        utils.check_tuple_name(cur)))
+                if src not in rates_to_add:
+                    update_nested_rates(utils.Factor(head_type, src.name), rates_to_add)
+                rates_to_add.setdefault(cur, []).append(src)
+                queue.append(src)
+
         def get_rates(factor, instrument):
             rates_to_add = {factor: []}
             # pull the name-prefix chain first; the head period carries the dependant/conditional fields
             if factor.type in nested_fields and len(factor.name) > 1:
                 update_nested_rates(factor, rates_to_add)
                 if nested_fields[factor.type] == 'ObservedBasis':
+                    add_alias_sources(factor.type, rates_to_add)
                     add_chained_bases(factor.type, rates_to_add)
                 factor = utils.Factor(factor.type, factor.name[:1])
             factor_name = utils.check_tuple_name(factor)
