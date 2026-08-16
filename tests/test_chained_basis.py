@@ -1,7 +1,8 @@
 """`Chained_Basis` — the declared session pair: each partner's ObservedBasis block names the
 other, and discovery pulls the partner into the factor universe whenever either side enters,
-under every calculation. Inclusion only: ordering still comes from the positional name chain,
-so the sort sees no cycle even though the declaration spells one.
+under every calculation. A member whose model routes to ChainedBasisModel is a BRIDGE off its
+declared link's finished path, and that read enters the graph as an edge (bridge <- link);
+the sort sees no cycle because a chain's source member contributes no edge.
 
 Gates and their killing mutations:
 
@@ -16,6 +17,13 @@ Gates and their killing mutations:
    recurse forever (gates 1-2 hang rather than fail if this breaks, so the guard IS the gate).
 5. THE PARTNER INHERITS A HORIZON — the pulled factor carries a max date (its parent's), so
    construction does not die on a dateless factor.
+6. THE BRIDGE ENTRY ORDERS ITS SOURCE FIRST — the production book enters from the bridge side
+   only, and the pulled source is inserted last; positional depth cannot order it because the
+   sort emits whole chains within a pass in insertion order. Killed by the edge dropped — the
+   pre-fix engine emitted the source last and every walk-forward trade died at generate.
+7. A CHAIN OF BRIDGES REFUSES — every member routing to ChainedBasisModel leaves no member
+   generating a path of its own, and the edges would hand the sort the declaration's cycle.
+   Killed by the guard softened to a skip.
 """
 import json
 
@@ -29,11 +37,14 @@ BASE = pd.Timestamp('2026-01-15')
 
 
 def _world(entry_name, chained=True, partner_of_cme='LBMA_AM.PM.CME', cross_chain=False,
-           open_chain=False):
+           open_chain=False, all_bridges=False):
     """One future on `entry_name`. `chained` pairs the two CME bases; `cross_chain` instead
     pairs LBMA_AM.PM with LBMA_AM.CME.PM — two different BRANCHES of the name tree, so neither
     is the other's positional prefix and only the declaration can pull one from the other;
-    `open_chain` leaves the back-pointer off, which must refuse (a chain closes)."""
+    `open_chain` leaves the back-pointer off, which must refuse (a chain closes). The model
+    routing mirrors production: the PM-session basis is the ChainedBasisModel bridge, so its
+    declared link is a generation edge; `all_bridges` routes BOTH members to the bridge model,
+    which must refuse (a chain needs a source)."""
     cme = {'Spot': -7.35}
     cme_pm = {'Spot': -10.65}
     pm_diff = {'Spot': -12.4}
@@ -44,6 +55,9 @@ def _world(entry_name, chained=True, partner_of_cme='LBMA_AM.PM.CME', cross_chai
     if cross_chain:
         pm_diff['Chained_Basis'] = 'LBMA_AM.CME'
         cme['Chained_Basis'] = 'LBMA_AM.PM'
+    filters = {'ObservedBasis': [[['ID', 'LBMA_AM.PM.CME'], 'ChainedBasisModel']]}
+    if all_bridges:
+        filters['ObservedBasis'].append([['ID', 'LBMA_AM.CME'], 'ChainedBasisModel'])
     return {'Calc': {
         'Calculation': {
             'Object': 'CreditMonteCarlo', 'Base_Date': {'.Timestamp': '2026-01-15'},
@@ -59,7 +73,8 @@ def _world(entry_name, chained=True, partner_of_cme='LBMA_AM.PM.CME', cross_chai
         'MergeMarketData': {'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD',
                                   'Base_Date': {'.Timestamp': '2026-01-15'}},
-            'Model Configuration': {'.ModelParams': {'modeldefaults': {}, 'modelfilters': {}}},
+            'Model Configuration': {'.ModelParams': {'modeldefaults': {},
+                                                     'modelfilters': filters}},
             'Price Factors': {
                 'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD-SOFR',
                                'Spot': 1.0},
@@ -137,3 +152,22 @@ def test_the_partner_inherits_a_horizon():
     dependent = _discover(_world('LBMA_AM.CME'))
     assert dependent[PM_CME] is not None
     assert dependent[PM_CME] >= BASE
+
+
+def test_the_bridge_entry_orders_its_source_first():
+    """The production book enters from the BRIDGE side only (PM-session tradables), so the
+    source is pulled by the declaration and inserted last. Positional depth cannot order it —
+    the sort emits whole chains within a pass in insertion order — so the bridge's read of its
+    link's finished path must be a graph edge. Killed by the edge dropped: the pre-fix engine
+    emitted the source LAST and every walk-forward trade died in ChainedBasisModel.generate."""
+    order = list(_discover(_world('LBMA_AM.PM.CME')))
+    assert CME in order                                  # the pull itself, from the bridge side
+    assert order.index(CME) < order.index(PM_CME)
+
+
+def test_a_chain_of_bridges_refuses():
+    """Every member routing to ChainedBasisModel leaves no member generating a path of its own,
+    and the declared edges would hand the sort the declaration's cycle. Refuse loud, naming the
+    chain, before the sort turns it into a bare RuntimeError."""
+    with pytest.raises(Exception, match='all bridges'):
+        _discover(_world('LBMA_AM.PM.CME', all_bridges=True))
