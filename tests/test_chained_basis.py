@@ -1,8 +1,8 @@
 """`Chained_Basis` — the declared session pair: each partner's ObservedBasis block names the
 other, and discovery pulls the partner into the factor universe whenever either side enters,
-under every calculation. A member whose model routes to ChainedBasisModel is a BRIDGE off its
-declared link's finished path, and that read enters the graph as an edge (bridge <- link);
-the sort sees no cycle because a chain's source member contributes no edge.
+under every calculation. The declared `Chained_Lag` states where each link binds: a same-row
+link (lag 0) enters the graph as an edge — the link simulates first — and a lagged link is
+the chain's day boundary and orders nothing, which is what keeps the loop out of the sort.
 
 Gates and their killing mutations:
 
@@ -17,14 +17,14 @@ Gates and their killing mutations:
    recurse forever (gates 1-2 hang rather than fail if this breaks, so the guard IS the gate).
 5. THE PARTNER INHERITS A HORIZON — the pulled factor carries a max date (its parent's), so
    construction does not die on a dateless factor.
-6. THE BRIDGE ENTRY ORDERS ITS SOURCE FIRST — the production book enters from the bridge side
-   only, and the pulled source is inserted last; positional depth cannot order it because the
-   sort emits whole chains within a pass in insertion order. Killed by the edge dropped — the
-   pre-fix engine emitted the source last and every walk-forward trade died at generate.
-7. A CHAIN OF BRIDGES REFUSES — every member routing to ChainedBasisModel leaves no member
-   generating a path of its own; the edges hand the sort the declaration's cycle and its own
-   refusal is the guard. Killed by the edge dropped (the cycle dissolves and the misconfig
-   simulates).
+6. THE SAME-ROW ENTRY ORDERS ITS LINK FIRST — the production book enters from the same-row
+   side only, and its pulled link is inserted last; positional depth cannot order it because
+   the sort emits whole chains within a pass in insertion order. Killed by the lag-0 edge
+   dropped — the pre-fix engine emitted the link last and every walk-forward trade died at
+   generate — or by the lag declared on the wrong member.
+7. A CHAIN THAT LAGS NOWHERE REFUSES — every link same-row is a same-instant loop with no
+   member generating a path of its own. Killed by the refusal softened to a skip (the edges
+   then hand the sort a nameless cycle).
 """
 import json
 
@@ -38,27 +38,27 @@ BASE = pd.Timestamp('2026-01-15')
 
 
 def _world(entry_name, chained=True, partner_of_cme='LBMA_AM.PM.CME', cross_chain=False,
-           open_chain=False, all_bridges=False):
+           open_chain=False, no_lag=False):
     """One future on `entry_name`. `chained` pairs the two CME bases; `cross_chain` instead
     pairs LBMA_AM.PM with LBMA_AM.CME.PM — two different BRANCHES of the name tree, so neither
     is the other's positional prefix and only the declaration can pull one from the other;
-    `open_chain` leaves the back-pointer off, which must refuse (a chain closes). The model
-    routing mirrors production: the PM-session basis is the ChainedBasisModel bridge, so its
-    declared link is a generation edge; `all_bridges` routes BOTH members to the bridge model,
-    which must refuse (a chain needs a source)."""
+    `open_chain` leaves the back-pointer off, which must refuse (a chain closes). The lags
+    mirror production: the AM basis lags its link (the day boundary), so the PM side's
+    same-row link is the one generation edge; `no_lag` omits the day boundary, which must
+    refuse (a same-instant loop)."""
     cme = {'Spot': -7.35}
     cme_pm = {'Spot': -10.65}
     pm_diff = {'Spot': -12.4}
     if chained and not cross_chain:
         cme['Chained_Basis'] = partner_of_cme
+        if not no_lag:
+            cme['Chained_Lag'] = 1
         if partner_of_cme == 'LBMA_AM.PM.CME' and not open_chain:
             cme_pm['Chained_Basis'] = 'LBMA_AM.CME'
     if cross_chain:
         pm_diff['Chained_Basis'] = 'LBMA_AM.CME'
+        pm_diff['Chained_Lag'] = 1
         cme['Chained_Basis'] = 'LBMA_AM.PM'
-    filters = {'ObservedBasis': [[['ID', 'LBMA_AM.PM.CME'], 'ChainedBasisModel']]}
-    if all_bridges:
-        filters['ObservedBasis'].append([['ID', 'LBMA_AM.CME'], 'ChainedBasisModel'])
     return {'Calc': {
         'Calculation': {
             'Object': 'CreditMonteCarlo', 'Base_Date': {'.Timestamp': '2026-01-15'},
@@ -74,8 +74,7 @@ def _world(entry_name, chained=True, partner_of_cme='LBMA_AM.PM.CME', cross_chai
         'MergeMarketData': {'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD',
                                   'Base_Date': {'.Timestamp': '2026-01-15'}},
-            'Model Configuration': {'.ModelParams': {'modeldefaults': {},
-                                                     'modelfilters': filters}},
+            'Model Configuration': {'.ModelParams': {'modeldefaults': {}, 'modelfilters': {}}},
             'Price Factors': {
                 'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD-SOFR',
                                'Spot': 1.0},
@@ -155,20 +154,21 @@ def test_the_partner_inherits_a_horizon():
     assert dependent[PM_CME] >= BASE
 
 
-def test_the_bridge_entry_orders_its_source_first():
-    """The production book enters from the BRIDGE side only (PM-session tradables), so the
-    source is pulled by the declaration and inserted last. Positional depth cannot order it —
-    the sort emits whole chains within a pass in insertion order — so the bridge's read of its
-    link's finished path must be a graph edge. Killed by the edge dropped: the pre-fix engine
-    emitted the source LAST and every walk-forward trade died in ChainedBasisModel.generate."""
+def test_the_same_row_entry_orders_its_link_first():
+    """The production book enters from the same-row side only (PM-session tradables), so its
+    link is pulled by the declaration and inserted last. Positional depth cannot order it —
+    the sort emits whole chains within a pass in insertion order — so the same-row (lag-0)
+    link must be a graph edge. Killed by the edge dropped, or by the day-boundary lag declared
+    on the wrong member: the pre-fix engine emitted the link LAST and every walk-forward trade
+    died in ChainedBasisModel.generate."""
     order = list(_discover(_world('LBMA_AM.PM.CME')))
-    assert CME in order                                  # the pull itself, from the bridge side
+    assert CME in order                                # the pull itself, from the same-row side
     assert order.index(CME) < order.index(PM_CME)
 
 
-def test_a_chain_of_bridges_refuses():
-    """Every member routing to ChainedBasisModel leaves no member generating a path of its own,
-    and the declared edges hand the sort the declaration's cycle — its own refusal is the
-    guard, so this gate pins that the misconfig refuses rather than generating garbage."""
-    with pytest.raises(RuntimeError, match='cyclic'):
-        _discover(_world('LBMA_AM.PM.CME', all_bridges=True))
+def test_a_chain_that_lags_nowhere_refuses():
+    """Every link same-row is a same-instant loop — no member generates a path of its own for
+    the others to ride. Refuse loud, naming the chain, before the sort refuses its cycle
+    namelessly."""
+    with pytest.raises(Exception, match='lags nowhere'):
+        _discover(_world('LBMA_AM.PM.CME', no_lag=True))

@@ -177,6 +177,10 @@ def test_the_source_is_the_declared_link_and_nothing_else():
     bare = ChainedBasisModel(factor=types.SimpleNamespace(param={}), param=dict(CHAIN))
     with pytest.raises(Exception, match='no Chained_Basis'):
         bare.calc_references(me, None, None, None, {cme: object()})   # NO positional fallback
+    lagged = ChainedBasisModel(factor=types.SimpleNamespace(
+        param={'Chained_Basis': 'LBMA_AM.CME', 'Chained_Lag': 1}), param=dict(CHAIN))
+    with pytest.raises(Exception, match='SAME row'):
+        lagged.calc_references(me, None, None, None, {cme: object()})  # a bridge never lags
 
     # an ungenerated source fails loud at generate, naming both
     shared = _shared(4, 8, seed=1)

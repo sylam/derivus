@@ -708,11 +708,12 @@ class Config(object):
             path is the linked-parent family (BasisLinkedSpotModel) and does not declare this
             field. The whole loop is a first-class fact of the market data: whenever any member
             enters the universe, every member follows, under EVERY calculation - a session
-            structure cannot be silently dropped by a book that prices only one side. A member
-            routed to ChainedBasisModel rides its declared link's finished path, so that link
-            is a real graph edge (the sort emits by insertion order within a pass, so depth
-            alone cannot order a late-pulled member); the source member rides its own law and
-            contributes no edge, which is what keeps the declared cycle out of the sort.
+            structure cannot be silently dropped by a book that prices only one side. The
+            declared `Chained_Lag` states where each link binds: a same-row link (lag 0) is a
+            real graph edge - the link simulates first, which insertion order alone cannot
+            guarantee for a late-pulled member - and a lagged link is the chain's day boundary
+            and orders nothing. A closed chain must lag somewhere; all same-row is a
+            same-instant loop, refused here before the sort refuses its cycle namelessly.
             Links must stay on one primary; a self-reference, a foreign root, an open chain or
             a lasso (a walk that revisits without returning to its start) is a config error,
             loud."""
@@ -745,12 +746,18 @@ class Config(object):
                                 utils.check_tuple_name(start), utils.check_tuple_name(nxt)))
                     members.append(nxt)
                     cur = nxt
+                if not any(int(self.params['Price Factors'][utils.check_tuple_name(m)].get(
+                        'Chained_Lag', 0)) for m in members):
+                    raise Exception(
+                        'Chained_Basis chain through {0} lags nowhere - a closed chain must '
+                        'declare Chained_Lag on the link that crosses the day boundary, or it '
+                        'is a same-instant loop'.format(utils.check_tuple_name(start)))
                 for member in members:
                     if member not in rates_to_add:
                         update_nested_rates(utils.Factor(head_type, member.name), rates_to_add)
-                    # a bridge rides its declared link's finished path - a real edge
+                    # a same-row link is read off the link's finished path - a real edge
                     block = self.params['Price Factors'][utils.check_tuple_name(member)]
-                    if self.params['Model Configuration'].search(member, block) == 'ChainedBasisModel':
+                    if not int(block.get('Chained_Lag', 0)):
                         rates_to_add[member].append(utils.Factor(
                             'ObservedBasis', utils.check_rate_name(block['Chained_Basis'])))
 

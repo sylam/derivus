@@ -80,14 +80,17 @@ def price_factors(row, trade_date, last_query, sofr_cols):
     LEVEL, so no trade sees a level it could not have observed.
 
     The two CME bases declare each other as `Chained_Basis`: that 2-cycle IS the session chain,
-    and `ChainedBasisModel` reads the declaration and nothing else. The PM fixing basis declares
+    and `ChainedBasisModel` reads the declaration and nothing else. The AM basis lags its link
+    (`Chained_Lag` 1 - it steps off YESTERDAY's PM basis, the chain's day boundary), so the
+    same-row link on the PM side is the one generation edge. The PM fixing basis declares
     nothing - `FixingBridgeModel` is the open-link family and takes its parent from the name."""
     p0, state = float(row[FIX_COL]), carry_state(row)
     return {
         'FxRate.USD': {'Domestic_Currency': '', 'Interest_Rate': 'USD-SOFR', 'Spot': 1.0},
         FIX_COL: {'Currency': 'USD', 'Interest_Rate': ZERO_CURVE, 'Forward_Rate': CARRY,
                   'Spot': p0, 'Property_Aliases': ''},
-        B_CME: {'Spot': float(row[B_CME]), 'Chained_Basis': B_CME_PM.split('.', 1)[1]},
+        B_CME: {'Spot': float(row[B_CME]), 'Chained_Basis': B_CME_PM.split('.', 1)[1],
+                'Chained_Lag': 1},
         B_CME_PM: {'Spot': float(row[B_CME_PM]), 'Chained_Basis': B_CME.split('.', 1)[1]},
         B_PM: {'Spot': float(row[B_PM])},
         f'ForwardRate.{CARRY}': {

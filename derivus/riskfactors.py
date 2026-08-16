@@ -761,7 +761,13 @@ class ObservedBasis(Factor0D):
                             'may run link to link and may or may not close a loop) or the '
                             'primary itself. The declaration is the whole contract: whenever '
                             'this factor enters a calculation\'s universe its link follows, '
-                            'and a chained process reads exactly the link it declares')]
+                            'and a chained process reads exactly the link it declares'),
+              F('Chained_Lag', 'Integer', default=0,
+                description='Rows back at which this factor\'s law references its declared '
+                            'link. 0 (same row) makes the link a generation dependency - the '
+                            'link simulates first; 1 marks the chain\'s day boundary (this '
+                            'factor steps off the link\'s PREVIOUS row) and orders nothing. '
+                            'A closed chain must lag somewhere, or it is a same-instant loop')]
 
     def __init__(self, param):
         super(ObservedBasis, self).__init__(param)

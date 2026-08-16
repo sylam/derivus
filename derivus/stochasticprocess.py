@@ -3796,6 +3796,10 @@ class ChainedBasisModel(StochasticProcess):
             raise Exception(f'ChainedBasisModel {utils.check_tuple_name(factor)}: the factor '
                             f'block declares no Chained_Basis - the source is the declared '
                             f'link, never a naming convention')
+        if int((self.factor.param or {}).get('Chained_Lag', 0)):
+            raise Exception(f'ChainedBasisModel {utils.check_tuple_name(factor)}: a bridge reads '
+                            f'its link on the SAME row - a lagged link is the chain\'s day '
+                            f'boundary and rides its own law, never a bridge')
         tup = utils.check_rate_name(name)
         types = [t for t in ('ObservedBasis',) + utils.BASIS_COMPOSABLE_TYPES
                  if utils.Factor(t, tup) in all_factors]
