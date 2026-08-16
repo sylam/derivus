@@ -1,0 +1,10 @@
+/* Fourteen top-level sections do not fit one tab row at ordinary widths, and Material's
+   tab bar clips silently - Developer and the JSON reference vanished off the right edge.
+   Let the bar wrap instead. */
+.md-tabs {
+  overflow: visible;
+  height: auto;
+}
+.md-tabs__list {
+  flex-wrap: wrap;
+}
