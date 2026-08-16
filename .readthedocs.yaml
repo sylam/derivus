@@ -10,6 +10,10 @@ build:
     python: "3.11"
   jobs:
     pre_install:
+      # The venv's bundled pip (23.1) rejects wheels over the underscore/hyphen metadata
+      # normalization and falls back to sdists, whose build deps do not exist on the
+      # torch-only index below - a modern pip takes the wheels and never looks
+      - pip install --upgrade pip
       # PyPI's default linux torch wheel is the CUDA build and blows the build limits;
       # the CPU wheel satisfies the requirement before `pip install .` resolves it
       - pip install torch --index-url https://download.pytorch.org/whl/cpu
