@@ -22,8 +22,9 @@ Gates and their killing mutations:
    sort emits whole chains within a pass in insertion order. Killed by the edge dropped — the
    pre-fix engine emitted the source last and every walk-forward trade died at generate.
 7. A CHAIN OF BRIDGES REFUSES — every member routing to ChainedBasisModel leaves no member
-   generating a path of its own, and the edges would hand the sort the declaration's cycle.
-   Killed by the guard softened to a skip.
+   generating a path of its own; the edges hand the sort the declaration's cycle and its own
+   refusal is the guard. Killed by the edge dropped (the cycle dissolves and the misconfig
+   simulates).
 """
 import json
 
@@ -167,7 +168,7 @@ def test_the_bridge_entry_orders_its_source_first():
 
 def test_a_chain_of_bridges_refuses():
     """Every member routing to ChainedBasisModel leaves no member generating a path of its own,
-    and the declared edges would hand the sort the declaration's cycle. Refuse loud, naming the
-    chain, before the sort turns it into a bare RuntimeError."""
-    with pytest.raises(Exception, match='all bridges'):
+    and the declared edges hand the sort the declaration's cycle — its own refusal is the
+    guard, so this gate pins that the misconfig refuses rather than generating garbage."""
+    with pytest.raises(RuntimeError, match='cyclic'):
         _discover(_world('LBMA_AM.PM.CME', all_bridges=True))

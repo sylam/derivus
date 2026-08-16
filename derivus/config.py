@@ -709,20 +709,18 @@ class Config(object):
             field. The whole loop is a first-class fact of the market data: whenever any member
             enters the universe, every member follows, under EVERY calculation - a session
             structure cannot be silently dropped by a book that prices only one side. A member
-            whose model routes to ChainedBasisModel is a BRIDGE off its declared link's finished
-            path, and that read is a real generation dependency: it enters the graph as an edge
-            (bridge <- link). Positional depth alone cannot order it - the sort emits whole
-            chains within a pass in insertion order, so a member pulled late leapfrogs its
-            depth. The declaration's cycle never reaches the sort because a chain's source
-            member rides its own law and contributes no edge; a chain that is all bridges has
-            no source and refuses here. Links must stay on one primary; a self-reference, a
-            foreign root, an open chain or a lasso (a walk that revisits without returning to
-            its start) is a config error, loud."""
+            routed to ChainedBasisModel rides its declared link's finished path, so that link
+            is a real graph edge (the sort emits by insertion order within a pass, so depth
+            alone cannot order a late-pulled member); the source member rides its own law and
+            contributes no edge, which is what keeps the declared cycle out of the sort.
+            Links must stay on one primary; a self-reference, a foreign root, an open chain or
+            a lasso (a walk that revisits without returning to its start) is a config error,
+            loud."""
             for start in [f for f in rates_to_add if f.type == 'ObservedBasis']:
                 if not self.params['Price Factors'].get(
                         utils.check_tuple_name(start), {}).get('Chained_Basis'):
                     continue
-                members, links, cur = [start], {}, start
+                members, cur = [start], start
                 while True:
                     name = self.params['Price Factors'].get(
                         utils.check_tuple_name(cur), {}).get('Chained_Basis')
@@ -738,7 +736,6 @@ class Config(object):
                             'Chained_Basis on {0} names {1} - a chained link must be a '
                             'different factor on the same primary'.format(
                                 utils.check_tuple_name(cur), utils.check_tuple_name(nxt)))
-                    links[cur] = nxt
                     if nxt == start:
                         break
                     if nxt in members:
@@ -751,18 +748,11 @@ class Config(object):
                 for member in members:
                     if member not in rates_to_add:
                         update_nested_rates(utils.Factor(head_type, member.name), rates_to_add)
-                # the bridge's read of its link's finished path is a generation dependency
-                bridges = [m for m in members if self.params['Model Configuration'].search(
-                    m, self.params['Price Factors'].get(utils.check_tuple_name(m), {})
-                ) == 'ChainedBasisModel']
-                if bridges and len(bridges) == len(members):
-                    raise Exception(
-                        'Chained_Basis chain through {0} is all bridges - every member '
-                        'routes to ChainedBasisModel, so no member generates a path of its '
-                        'own for the others to ride'.format(utils.check_tuple_name(start)))
-                for member in bridges:
-                    if links[member] not in rates_to_add[member]:
-                        rates_to_add[member].append(links[member])
+                    # a bridge rides its declared link's finished path - a real edge
+                    block = self.params['Price Factors'][utils.check_tuple_name(member)]
+                    if self.params['Model Configuration'].search(member, block) == 'ChainedBasisModel':
+                        rates_to_add[member].append(utils.Factor(
+                            'ObservedBasis', utils.check_rate_name(block['Chained_Basis'])))
 
         def get_rates(factor, instrument):
             rates_to_add = {factor: []}
