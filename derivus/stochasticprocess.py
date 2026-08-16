@@ -2966,7 +2966,12 @@ class GARCHSpotCalibration(object):
         F('Convexity_Correction', 'Text', default='Yes', values=['Yes', 'No'],
           description='Stamped straight onto the emitted param block - a calibrated world is a '
                       'PRICE martingale with no harvestable Jensen drift, so this defaults on '
-                      'while the MODEL\'s own default stays No for bit-identity')
+                      'while the MODEL\'s own default stays No for bit-identity'),
+        F('Carry_Drift', 'Text', default='No', values=['Yes', 'No'],
+          description='Stamped straight onto the emitted param block, like '
+                      'Convexity_Correction - without a passthrough a recalibration silently '
+                      'DROPS the switch that keeps futures near-driftless in the simulated '
+                      'world, which is the exact phantom the switch exists to remove')
     ]
 
     def __init__(self, model, param):
@@ -2979,6 +2984,7 @@ class GARCHSpotCalibration(object):
         max_persistence = float(self.param.get('Max_Persistence', 0.999))
         nu_min = float(self.param.get('Nu_Min', 2.05))
         convexity = self.param.get('Convexity_Correction', 'Yes')
+        carry_drift = self.param.get('Carry_Drift', 'No')
 
         dt_c = 1.0 / float(num_business_days)
         px = data_frame.iloc[:, 0].astype(np.float64).dropna()
@@ -3010,6 +3016,7 @@ class GARCHSpotCalibration(object):
             'Omega': omega_f, 'Alpha': float(alpha), 'Beta': float(beta), 'Nu': float(nu),
             'Mu': 0.0, 'H0': H0, 'Log_Price': True, 'Calibration_DT_Years': dt_c,
             'Convexity_Correction': convexity,
+            'Carry_Drift': carry_drift,
         }
 
         # delta = standardised residual ε_t = r_t/√h_t off the filtered variance path (both in
@@ -3694,6 +3701,70 @@ class QuadraticCarryCurveCalibration(object):
         delta = pd.DataFrame(
             {f'{archive_name},L': res_L, f'{archive_name},D': res_D}, index=joint.index[1:])
         return utils.CalibrationInfo(param, np.eye(2).tolist(), delta)
+
+
+class AliasBasisModel(StochasticProcess):
+    """A basis whose simulated path IS another basis's, under a second composable name. The
+    factor block declares `Alias_Of` — the source basis — and this factor consumes no
+    randomness and adds no law: it exists for NAME COMPOSITION. A positional chain can only
+    compose factors whose names extend its own prefix, so a series that belongs in two chains
+    (a session basis pricing both the AM-anchored and the PM-anchored composed spot) is
+    simulated once and read here under the second prefix. The source must have generated
+    first (loud when it has not), and the alias's grid may not outlive its source's."""
+
+    documentation = (
+        'Asset Pricing',
+        ['A basis whose simulated path IS another basis\'s, under a second composable name — '
+         'the declared `Alias_Of` names the source. No randomness, no law: pure name '
+         'composition, so one simulated series can price two positional chains (e.g. a '
+         'session basis entering both the AM-anchored and PM-anchored composed spots).'])
+
+    factor_types = ('ObservedBasis',)
+    fields = []
+
+    def __init__(self, factor, param, implied_factor=None):
+        super().__init__(factor, param)
+
+    @staticmethod
+    def num_factors():
+        return 0
+
+    @property
+    def correlation_name(self):
+        return 'AliasBasisProcess', []
+
+    def calc_references(self, factor, static_ofs, stoch_ofs, all_tenors, all_factors):
+        name = (self.factor.param or {}).get('Alias_Of') if self.factor else None
+        if not name:
+            raise Exception(f'AliasBasisModel {utils.check_tuple_name(factor)}: the factor '
+                            f'block declares no Alias_Of - the source is the declared name, '
+                            f'never a naming convention')
+        tup = utils.check_rate_name(name)
+        types = [t for t in ('ObservedBasis',) + utils.BASIS_COMPOSABLE_TYPES
+                 if utils.Factor(t, tup) in all_factors]
+        if len(types) != 1:
+            raise Exception(f'AliasBasisModel {utils.check_tuple_name(factor)}: Alias_Of '
+                            f'{name!r} must resolve under exactly one factor type in the '
+                            f'universe, found {types}')
+        self.source_key = utils.Factor(types[0], tup)
+
+    def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
+        self.z_offset = process_ofs
+        self.scenario_horizon = time_grid.scen_time_grid.size
+
+    def generate(self, shared_mem):
+        src = shared_mem.t_Scenario_Buffer.get(self.source_key)
+        if src is None:
+            raise Exception(
+                f'AliasBasisModel {utils.check_tuple_name(self.factor_key)}: source '
+                f'{utils.check_tuple_name(self.source_key)} has not generated - the declared '
+                f'Alias_Of must be simulated before this factor')
+        if src.shape[0] < self.scenario_horizon:
+            raise Exception(
+                f'AliasBasisModel {utils.check_tuple_name(self.factor_key)}: source grid '
+                f'({src.shape[0]} rows) is shorter than this factor\'s '
+                f'({self.scenario_horizon}) - an alias may not outlive its source')
+        return src[:self.scenario_horizon]
 
 
 class ChainedBasisModel(StochasticProcess):
