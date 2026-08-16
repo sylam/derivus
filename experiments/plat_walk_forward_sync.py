@@ -109,6 +109,21 @@ def forward(p0, state, tau):
     return p0 * np.exp(z_of(state, tau) * np.asarray(tau))
 
 
+def carry_knots(trade_date, last_query):
+    """The two DATED knots the carry curve is published on: the first AT the base date, the last
+    past the longest query the book makes. `CurveTenor` clips a query to the knots' bracket, and
+    the affine z is exact between them, so two knots reproduce the whole curve."""
+    return [pd.Timestamp(trade_date), pd.Timestamp(last_query) + pd.Timedelta(days=30)]
+
+
+def carry_curve(state, trade_date, knots):
+    """The `.Curve` block for `ForwardRate.PLATINUM_CARRY`: z at each knot's AGED tenor, which is
+    what `QuadraticCarryCurveModel` inverts its (L, D) state from at row 0."""
+    return {'.Curve': {'meta': [], 'data': [
+        [float((k - EXCEL).days),
+         float(z_of(state, (k - pd.Timestamp(trade_date)).days / DAYS_IN_YEAR))] for k in knots]}}
+
+
 def sofr_curve(row, columns):
     """`[[tenor_years, rate], ...]` off one archive row, in the shape a `.Curve` carries."""
     return [[t, float(row[c])] for t, c in
@@ -128,7 +143,8 @@ def listed_expiries(expiry_csv, trade_date, n=3):
 # ---------------------------------------------------------------------------------------------
 # the guard: E[dF | state] on every tradable, against every simulated state coordinate
 # ---------------------------------------------------------------------------------------------
-def guard_e_df_state(arch, cal_end, taus, mats=()):
+def guard_e_df_state(arch, cal_end, taus, mats=(), hedge_cols=(CME_COL,), state_cols=None,
+                     control_cols=(CME_COL, BASIS_COL), control='S_LBMA (control)'):
     """`{leg: {state: (slope, t)}}` - the one-step change of each tradable's reconstructed forward
     regressed on each state coordinate the world simulates, on data up to `cal_end`, PLUS a
     `drift` row (the regression's discarded intercept: mean dF per day and its t) and, per listed
@@ -141,21 +157,27 @@ def guard_e_df_state(arch, cal_end, taus, mats=()):
     A tradable references the martingale PRIMARY, so every slope must be statistically zero: a
     non-zero one is reversion the policy can see and cannot execute, which is the failure the
     basis saga was. `dS~b` on the composed LBMA leg is the control - the catch-up lives there, by
-    construction, and it is NOT tradable."""
+    construction, and it is NOT tradable.
+
+    A COMPOSED commodity name is a SUM of archive columns, which is the only thing that varies
+    between worlds here: `hedge_cols` sum to the tradables' pricing spot, `control_cols` to the
+    untradable reference, and `state_cols` is `{label: column}` for the basis coordinates the
+    world simulates beside the carry's (L, D)."""
     sub = arch.loc[:cal_end]
-    state = pd.DataFrame({'b': sub[BASIS_COL],
-                          'L': 0.5 * (sub[CARRY_COLS[0]] + sub[CARRY_COLS[1]]),
-                          'D': sub[CARRY_COLS[1]] - sub[CARRY_COLS[0]]})
+    hedge_spot = sub[list(hedge_cols)].sum(axis=1).to_numpy()
+    state = pd.DataFrame({k: sub[v] for k, v in (state_cols or {'b': BASIS_COL}).items()})
+    state['L'] = 0.5 * (sub[CARRY_COLS[0]] + sub[CARRY_COLS[1]])
+    state['D'] = sub[CARRY_COLS[1]] - sub[CARRY_COLS[0]]
     LD = (state['L'].to_numpy(), state['D'].to_numpy())
-    legs = {f'F({tau:.2f}y)': (forward(sub[CME_COL].to_numpy(), LD, tau), sub.index) for tau in taus}
+    legs = {f'F({tau:.2f}y)': (forward(hedge_spot, LD, tau), sub.index) for tau in taus}
     tail = sub.tail(504)
     LD_t = (0.5 * (tail[CARRY_COLS[0]] + tail[CARRY_COLS[1]]).to_numpy(),
             (tail[CARRY_COLS[1]] - tail[CARRY_COLS[0]]).to_numpy())
     for mat in mats:
         tau_t = np.array([(pd.Timestamp(mat) - d).days for d in tail.index]) / DAYS_IN_YEAR
         legs[f'F(exp {pd.Timestamp(mat).date()})'] = (
-            forward(tail[CME_COL].to_numpy(), LD_t, tau_t), tail.index)
-    legs['S_LBMA (control)'] = ((sub[CME_COL] + sub[BASIS_COL]).to_numpy(), sub.index)
+            forward(tail[list(hedge_cols)].sum(axis=1).to_numpy(), LD_t, tau_t), tail.index)
+    legs[control] = (sub[list(control_cols)].sum(axis=1).to_numpy(), sub.index)
     out = {}
     for leg, (series, idx) in legs.items():
         y = pd.Series(series, index=idx).diff().shift(-1)
@@ -178,23 +200,18 @@ def guard_e_df_state(arch, cal_end, taus, mats=()):
 # the world and the job
 # ---------------------------------------------------------------------------------------------
 def price_factors(row, trade_date, last_query, sofr_cols):
-    """The complete `Price Factors` block off ONE archive row.
-
-    THE CARRY KNOTS ARE DATES and `CurveTenor` CLIPS a query to their bracket, so the rule
-    `QuadraticCarryCurveModel` states is honoured here and nowhere else: the first knot AT the base
-    date, the last at or after the longest query the book makes (the later of the last fixing and
-    the last tradable expiry). Between them the linear interpolation in date IS the affine z, so
-    two knots reproduce the whole curve exactly."""
+    """The complete `Price Factors` block off ONE archive row. `last_query` is the longest query
+    the book makes (the later of the last fixing and the last tradable expiry) - see
+    `carry_knots` for why the carry curve is published on exactly those two dates."""
     p0, state = float(row[CME_COL]), carry_state(row)
-    knots = [pd.Timestamp(trade_date), pd.Timestamp(last_query) + pd.Timedelta(days=30)]
     return {
         'FxRate.USD': {'Domestic_Currency': '', 'Interest_Rate': 'USD-SOFR', 'Spot': 1.0},
         CME_COL: {'Currency': 'USD', 'Interest_Rate': ZERO_CURVE,
                   'Forward_Rate': 'PLATINUM_CARRY', 'Spot': p0, 'Property_Aliases': ''},
         BASIS_COL: {'Spot': float(row[BASIS_COL])},
-        'ForwardRate.PLATINUM_CARRY': {'Currency': 'USD', 'Curve': {'.Curve': {'meta': [], 'data': [
-            [float((k - EXCEL).days), float(z_of(state, (k - pd.Timestamp(trade_date)).days / DAYS_IN_YEAR))]
-            for k in knots]}}},
+        'ForwardRate.PLATINUM_CARRY': {
+            'Currency': 'USD',
+            'Curve': carry_curve(state, trade_date, carry_knots(trade_date, last_query))},
         'InterestRate.USD-SOFR': {'Day_Count': 'ACT_365', 'Currency': 'USD', 'Sub_Type': None,
                                   'Curve': {'.Curve': {'meta': [], 'data': sofr_curve(row, sofr_cols)}}},
         # The primary's repo. z already carries financing, so adding a rate under the same
@@ -293,7 +310,8 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
     return cfg, {'k_fair': k_fair, 'mats': mats, 'pay': pay, 'fixings': fixings}
 
 
-def restamp_state_seeds(arch, trade_date, calibrated_md, out_path, window=750):
+def restamp_state_seeds(arch, trade_date, calibrated_md, out_path, window=750,
+                        spot_col=CME_COL, basis_col=BASIS_COL):
     """The three state SEEDS re-stamped at the trade date into a per-trade copy of the calibrated
     market data: `Mu_0` (the basis's observable EWMA mean), `Sig2_0` (its GARCH state) and `H0`
     (the spot's). The calibration stamps them at the RECAL date, 0-2 months before the trade,
@@ -302,14 +320,18 @@ def restamp_state_seeds(arch, trade_date, calibrated_md, out_path, window=750):
     the staleness was also an arm asymmetry. Deterministic filters on the archive up to the trade
     date - the model's own `_advance` recursions run forward - no refit, no lookahead. A separate
     per-trade FILE rather than an ExplicitMarketData override, so the world a trade priced
-    against is one self-contained artifact."""
+    against is one self-contained artifact.
+
+    The filters run on a FORWARD-FILLED window: a single missing observation is a hole in the
+    clock, not a zero innovation, and one NaN anywhere in it takes both recursions to NaN. The
+    synchronized archive has none, so this is a no-op there."""
     md = json.load(open(calibrated_md))
     models = md['MarketData']['Price Models']
-    sub = arch.loc[:trade_date].iloc[-window:]
-    b = sub[BASIS_COL].to_numpy(float)
-    p = sub[CME_COL].to_numpy(float)
+    sub = arch.loc[:trade_date].ffill().iloc[-window:]
+    b = sub[basis_col].to_numpy(float)
+    p = sub[spot_col].to_numpy(float)
 
-    bm = models[f'BasisLinkedSpotModel.{BASIS_COL.split(".", 1)[1]}']
+    bm = models[f'BasisLinkedSpotModel.{basis_col.split(".", 1)[1]}']
     lam, phi, a = float(bm.get('Slow_Mean_Lambda') or 0.0), float(bm['Phi']), float(bm.get('A', 0.0))
     garch = bm.get('G_Omega') is not None
     mu = b[0]
@@ -328,7 +350,7 @@ def restamp_state_seeds(arch, trade_date, calibrated_md, out_path, window=750):
     if garch:
         bm['Sig2_0'] = float(sig2)
 
-    sm = models[f'GARCHSpotModel.{CME_COL.split(".", 1)[1]}']
+    sm = models[f'GARCHSpotModel.{spot_col.split(".", 1)[1]}']
     r = np.diff(np.log(p))
     h = float(sm['Omega']) / max(1.0 - float(sm['Alpha']) - float(sm['Beta']), 1e-6)
     for x in r:
@@ -351,7 +373,8 @@ def resolved_calibration_config(source, archive, out_path):
     return out_path
 
 
-def observed_scenario_npz(arch, base_date, path, horizon_days, knots, max_gap=5):
+def observed_scenario_npz(arch, base_date, path, horizon_days, knots, max_gap=5,
+                          cols=(CME_COL, BASIS_COL)):
     """Dense daily realized (CME primary, published basis, CARRY CURVE) from the base date,
     forward-filled. The framework composes the LBMA fixing S = P + b itself. The carry rides as
     the `(T, 2)` curve tensor the job's own two DATED knots imply: z at each knot's aged tenor,
@@ -386,11 +409,13 @@ def observed_scenario_npz(arch, base_date, path, horizon_days, knots, max_gap=5)
     D = (rows[CARRY_COLS[1]] - rows[CARRY_COLS[0]]).to_numpy()
     carry = np.stack([z_of((L, D), (pd.Timestamp(k) - dates).days / DAYS_IN_YEAR)
                       for k in knots], axis=1)
-    np.savez(path, **{CME_COL: rows[CME_COL].to_numpy(), BASIS_COL: rows[BASIS_COL].to_numpy(),
-                      'ForwardRate.PLATINUM_CARRY': carry})
+    # `cols` are the SCALAR factors replayed - one npz key per simulated factor name, which is
+    # what the archive columns already are; the carry rides as its own (T, 2) curve tensor
+    np.savez(path, **{c: rows[c].to_numpy() for c in cols},
+             **{'ForwardRate.PLATINUM_CARRY': carry})
 
 
-def static_short_usd_oz(arch, trade_date, mats, pay, volume):
+def static_short_usd_oz(arch, trade_date, mats, pay, volume, spot_cols=(CME_COL,)):
     """Frictionless realized P&L per oz of the FULL STATIC SHORT - `-volume` oz of the mid leg
     held from trade to settlement, marks off the realized (spot, carry) reconstruction. The
     benchmark the trained policy must beat: the simulated world pays a max short a MODELLED
@@ -405,16 +430,17 @@ def static_short_usd_oz(arch, trade_date, mats, pay, volume):
              (sub[CARRY_COLS[1]] - sub[CARRY_COLS[0]]).to_numpy())
     mat = mats[min(1, len(mats) - 1)]
     tau = np.array([(mat - d).days for d in bdays]) / DAYS_IN_YEAR
-    F = forward(sub[CME_COL].to_numpy(), state, np.clip(tau, 0.0, None))
+    F = forward(sub[list(spot_cols)].sum(axis=1).to_numpy(), state, np.clip(tau, 0.0, None))
     live = tau > 0
     f_end = F[live][-1] if live.any() else F[0]
     return float(-(f_end - F[0]))
 
 
-def pf_bound(arch, trade_date, mats, pay):
+def pf_bound(arch, trade_date, mats, pay, spot_cols=(CME_COL,)):
     """Portfolio causal bound, sum_t max_leg max(0, -dF_obs), on the reconstructed observed CME
     strip ($/oz): a hedge can only lose versus no-hedge by the worst adverse forward move it could
-    be caught in, summed over days."""
+    be caught in, summed over days. `spot_cols` sum to the tradables' pricing spot - a composed
+    commodity name is a sum of its archive columns."""
     bdays = pd.bdate_range(trade_date, pay)
     if bdays.max() > arch.index[-1]:
         raise ValueError(
@@ -422,10 +448,11 @@ def pf_bound(arch, trade_date, mats, pay):
     sub = arch.reindex(arch.index.union(bdays)).ffill().loc[bdays]
     state = (0.5 * (sub[CARRY_COLS[0]] + sub[CARRY_COLS[1]]).to_numpy(),
              (sub[CARRY_COLS[1]] - sub[CARRY_COLS[0]]).to_numpy())
+    spot = sub[list(spot_cols)].sum(axis=1).to_numpy()
     legs = []
     for mat in mats:
         tau = np.array([(mat - d).days for d in bdays]) / DAYS_IN_YEAR
-        legs.append(np.where(tau > 0, forward(sub[CME_COL].to_numpy(), state, np.clip(tau, 0, None)), np.nan))
+        legs.append(np.where(tau > 0, forward(spot, state, np.clip(tau, 0, None)), np.nan))
     dF = np.diff(np.array(legs), axis=1)
     worst = np.nanmax(np.where(np.isnan(dF), -np.inf, np.maximum(0.0, -dF)), axis=0)
     return float(np.where(np.isfinite(worst), worst, 0.0).sum())
@@ -454,8 +481,7 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     # the observed window BEFORE the training loop: a month the gap guard refuses must refuse in
     # seconds, not after ten minutes of training a policy whose roll can never run
     obs_npz = os.path.abspath(os.path.join(run_dir, f'obs_{tag}.npz'))
-    knots = [pd.Timestamp(trade_date),
-             pd.Timestamp(max(max(info['fixings']), max(info['mats']))) + pd.Timedelta(days=30)]
+    knots = carry_knots(trade_date, max(max(info['fixings']), max(info['mats'])))
     horizon = (info['pay'] - pd.Timestamp(trade_date)).days + 10
     observed_scenario_npz(arch, trade_date, obs_npz, horizon, knots, max_gap=args.max_gap)
     ckpts, train_us, v0s, market_dim = [], [], [], None

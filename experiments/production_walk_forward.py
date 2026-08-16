@@ -350,12 +350,17 @@ def _atomic_write_json(path, obj):
     os.replace(tmp, path)
 
 
-def calibrate(marketdata, cal_config, cal_end, out_md):
-    """Calibrate the corrected models on the archive up to cal_end (no lookahead)."""
-    logging.info('=== CALIBRATE through %s ===', cal_end)
+def calibrate(marketdata, cal_config, cal_end, out_md, start=None):
+    """Calibrate the corrected models on the archive up to cal_end (no lookahead). `start` bounds
+    the fit window from below (a ROLLING window; omitted, the calibrator expands from the archive
+    start). PYTHONPATH is stamped at the repo root because the subprocess runs from `experiments/`
+    and derivus is not installed — a relative one would resolve against the wrong directory."""
+    logging.info('=== CALIBRATE %s through %s ===', start or 'archive start', cal_end)
     subprocess.run([sys.executable, 'calibrate_platinum.py', '--marketdata', marketdata,
-                    '--calibration-config', cal_config, '--end', cal_end, '--out', out_md],
-                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+                    '--calibration-config', cal_config, '--end', cal_end, '--out', out_md]
+                   + (['--start', start] if start else []),
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL,
+                   env={**os.environ, 'PYTHONPATH': os.path.dirname(ROOT)})
 
 
 def garchify_md(hmm_md, arch, cal_end, out_md):
