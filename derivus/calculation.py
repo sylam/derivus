@@ -2273,8 +2273,9 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 description='The value-function solver and its schedule, dispatched on Object',
                 sub_fields=[
                     F('Object', 'Text', default=REQUIRED,
-                      values=['DiffSolverV2', 'HindsightDpSolver'],
-                      description='The value-function solver; solve_hedge requires DiffSolverV2'),
+                      values=['DiffSolverV2', 'CoupledDiffSolver', 'HindsightDpSolver'],
+                      description='The value-function solver; solve_hedge requires DiffSolverV2 '
+                                  'or its temporally-coupled sibling CoupledDiffSolver'),
                     F('Multi_Seed_Count', 'Integer', default=1,
                       description='Independent training seeds the artifact is selected across'),
                     F('T_Min', 'Integer', default=0,
@@ -2301,6 +2302,9 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                       description='Downside semideviation penalty at the argmax; 0 = plain E[C]'),
                     F('DiffV2_Cost_Aware_Argmax', 'Text', default='No', values=['Yes', 'No'],
                       description='Charge the L1 repositioning cost at the verdict argmax'),
+                    F('DiffV2_Temporal_Proximity', 'Float', default=0.0,
+                      description='Weight pulling each net\'s parameters toward its fitted '
+                                  'successor\'s during the fit; 0 = off'),
                     F('DiffV2_Churn_Lambda', 'Float', default=0.0,
                       description='Quadratic repositioning charge in currency per contract^2, '
                                   'subtracted from the wealth entering the continuation at the '

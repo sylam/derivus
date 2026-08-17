@@ -834,6 +834,11 @@ class DiffSolverV2:
         return g
 
     # ---- one backward step: bootstrap + advantage twin fit -------------------
+    def _coupling_ref(self, nets, t):
+        """The net this step's fit couples to. The base solver couples to nothing - every
+        step is an independent fit; `CoupledDiffSolver` returns the fitted successor."""
+        return None
+
     def _fit_step(self, nets, W_bank, t, inner, rows=slice(None), q_bank=None):
         """One backward step at t: bootstrap the value target off the cached inner draws, then fit
         `nets[t]` to it through `_fit_from_labels`.
@@ -930,6 +935,12 @@ class DiffSolverV2:
             a_val, a_gW = Y, gW
 
         net = nets[t]
+        ref = self._coupling_ref(nets, t)
+        if ref is not None and self._opts.get(t) is None:
+            net.load_state_dict(ref.state_dict())     # adjacent days start as one surface
+        prox = float(self.cfg.get("diffv2_temporal_proximity", 0.0))
+        prox_ref = ([p.detach().clone() for p in ref.parameters()]
+                    if ref is not None and prox > 0.0 else None)
         # Twin loss in STANDARDIZED space: g_zn = std·g_raw (see docstring).
         lam_g = float(self.cfg.get("diffv2_lambda_grad", 1.0))
         g_zn_W = self.w_std * a_gW                                                       # (B,)
@@ -958,6 +969,9 @@ class DiffSolverV2:
             loss = (((a - a_val) ** 2).mean() / nrm_v
                     + lam_g * ((da_w - g_zn_W) ** 2).mean() / nrm_w
                     + lam_g * (((da_m - g_zn_m) ** 2) / nrm_m).mean())
+            if prox_ref is not None:
+                loss = loss + prox * torch.stack(
+                    [(p - pr).pow(2).mean() for p, pr in zip(net.parameters(), prox_ref)]).mean()
             opt.zero_grad(); loss.backward(); opt.step()
 
         with torch.no_grad():
@@ -1540,6 +1554,19 @@ class DiffSolverV2:
 # clairvoyant `HindsightDpSolver` is kept as the upper-bound (oracle) benchmark
 # track. `run_textbook_benchmark` supplies the lower-bound (min-var / averaging)
 # track.
+class CoupledDiffSolver(DiffSolverV2):
+    """DiffSolverV2 with the per-step value nets COUPLED across time: each decision step's
+    net initializes from its already-fitted successor (the backward sweep fits t+1 first),
+    and `DiffV2_Temporal_Proximity` optionally holds its parameters near the successor's
+    during the fit. One value surface evolving smoothly in t instead of independent fits
+    free to disagree - so the day-over-day action drift reflects state change, not the
+    fit lottery between adjacent days' nets. Same architecture, same sweep, same wall time;
+    the coupling is an inductive bias, not capacity."""
+
+    def _coupling_ref(self, nets, t):
+        return nets[t + 1] if t + 1 < self.T_dec else None
+
+
 class StreamingSolve:
     """The solve driver: one `Bundle` per simulation batch, handed over as it is built.
 
@@ -1590,7 +1617,9 @@ class StreamingSolve:
         """Batch 1: build the solver(s) and fit the first backward sweep. The frame (utility
         scale, z-frame, trust region) is locked here and frozen for every later batch."""
         n_seed = max(1, int(self.cfg.get("multi_seed_count", 1)))
-        self.solvers = [DiffSolverV2(bundle, self.runtime) for _ in range(n_seed)]
+        cls = {"diffsolverv2": DiffSolverV2, "coupleddiffsolver": CoupledDiffSolver}[
+            self.cfg["object"]]
+        self.solvers = [cls(bundle, self.runtime) for _ in range(n_seed)]
         for solver in self.solvers:
             solver.warmup(bundle)
         # same rule as `step`: a loaded checkpoint fits nothing, so this batch was not a training one
@@ -1632,8 +1661,8 @@ def assemble_hedge_result(primary_runs, bundle, runtime):
     primary = primary_runs[0]
     comparison = {primary.solver_name: SolverResult.multiseed_summary(primary_runs)}
 
-    # Benchmark tracks — assembled alongside the DiffSolverV2 deliverable.
-    if obj == "diffsolverv2":
+    # Benchmark tracks — assembled alongside the DiffSolverV2-family deliverable.
+    if obj in ("diffsolverv2", "coupleddiffsolver"):
         for flag, label in (("run_hindsight_diagnostic", "hindsight"),
                              ("run_textbook_benchmark", "textbook")):
             if solver_cfg.get(flag) and not have_liability:

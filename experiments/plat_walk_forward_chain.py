@@ -265,6 +265,11 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
                 args.grid_levels
         if args.churn_lambda is not None:
             tcalc['Hedging_Problem']['Solver']['DiffV2_Churn_Lambda'] = args.churn_lambda
+        if args.solver is not None:
+            tcalc['Hedging_Problem']['Solver']['Object'] = args.solver
+        if args.temporal_proximity is not None:
+            tcalc['Hedging_Problem']['Solver']['DiffV2_Temporal_Proximity'] = \
+                args.temporal_proximity
         logging.info('=== TRAIN %s seed=%d (fair=%.2f, strike=%.2f, bridge premium=%+.6f) ===',
                      tag, seed, info['k_fair'], info['k_fair'] - args.margin, info['premium'])
         tdiag = run(train, f'train_{tag}_s{seed}')
@@ -282,6 +287,11 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     if args.churn_lambda is not None:
         roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
             'DiffV2_Churn_Lambda'] = args.churn_lambda
+    if args.solver is not None:
+        roll['Calc']['Calculation']['Hedging_Problem']['Solver']['Object'] = args.solver
+    if args.temporal_proximity is not None:
+        roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
+            'DiffV2_Temporal_Proximity'] = args.temporal_proximity
     roll['Calc']['Calculation']['Observed_Scenario'] = obs_npz
     logging.info('=== ROLL %s (stepper, realized path, %d-seed ensemble, inner=%d) ===',
                  tag, len(ckpts), args.roll_inner)
@@ -366,6 +376,11 @@ def main():
                     help='Open the NET range to [-60, +long_cap] (flat Total_Position_Schedule '
                          '+ per-leg boxes). Changes the action space: a RETRAIN, never a '
                          're-roll. Mutually exclusive with --delta-corridor.')
+    ap.add_argument('--solver', default=None,
+                    help="Solver Object override, e.g. CoupledDiffSolver (the temporally-"
+                         "coupled DiffSolverV2 sibling).")
+    ap.add_argument('--temporal-proximity', type=float, default=None,
+                    help='Solver DiffV2_Temporal_Proximity (CoupledDiffSolver only).')
     ap.add_argument('--churn-lambda', type=float, default=None,
                     help='Solver DiffV2_Churn_Lambda: quadratic repositioning charge '
                          '$/(contract^2) at the argmax and the training labels.')
