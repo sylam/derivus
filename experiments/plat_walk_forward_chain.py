@@ -140,8 +140,14 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
     # axes are overridable
     if args.huber_aversion is not None:
         hp['Objective']['Huber_Aversion'] = float(args.huber_aversion)
+    if args.huber_delta is not None:
+        hp['Objective']['Huber_Delta'] = float(args.huber_delta)
     if args.utility_scale is not None:
         hp['Objective']['Utility_Scale_Explicit'] = float(args.utility_scale)
+    if args.objective is not None:
+        hp['Objective']['Object'] = args.objective
+    if args.cara_gamma is not None:
+        hp['Objective']['CARA_Gamma'] = float(args.cara_gamma)
 
     p0, state = float(row[FIX_COL]), carry_state(row)
     premium = float(json.load(open(calibrated_md))['MarketData']['Price Models'][
@@ -185,6 +191,8 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
             trade_date, fixings, delta_corridor, **bounds)
     if args.max_trade is not None:
         hp['Evaluator']['Max_Trade_Per_Step'] = float(args.max_trade)
+    if args.deadband is not None:
+        hp['Evaluator']['Decision_Deadband_Sigma'] = float(args.deadband)
     if args.long_cap is not None:
         # the ruled asymmetric NET range [-60, +long_cap]: per-leg boxes open on the long
         # side, the abs limit widens to the short floor, and the net object is the flat
@@ -368,9 +376,21 @@ def main():
                          'policy).')
     ap.add_argument('--utility-scale', type=float, default=None,
                     help='Override the template Objective\'s Utility_Scale_Explicit.')
+    ap.add_argument('--objective', default=None,
+                    help="Override the template Objective's Object (e.g. "
+                         "AsymmetricUtility_CARA - trains a different policy).")
+    ap.add_argument('--huber-delta', type=float, default=None,
+                    help="Objective Huber_Delta (knee, c-units). Large (1e6) = quadratic "
+                         "loss wing everywhere, linear gains - the semivariance shape.")
+    ap.add_argument('--cara-gamma', type=float, default=None,
+                    help="Objective CARA_Gamma (units of c; read by the CARA shape).")
     ap.add_argument('--max-trade', type=float, default=None,
                     help='Evaluator Max_Trade_Per_Step: per-leg |dq| cap per decision step '
                          'at the argmax (execution only; checkpoints re-rollable under it).')
+    ap.add_argument('--deadband', type=float, default=None,
+                    help='Evaluator Decision_Deadband_Sigma: standard errors of the paired '
+                         'inner-draw difference the argmax must beat the incumbent by to trade '
+                         '(execution only; checkpoints re-rollable under it).')
     ap.add_argument('--long-cap', type=float, default=None,
                     help='Open the NET range to [-60, +long_cap] (flat Total_Position_Schedule '
                          '+ per-leg boxes). Changes the action space: a RETRAIN, never a '
