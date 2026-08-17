@@ -525,6 +525,8 @@ class DiffSolverV2:
         # Cost-aware EXECUTION: the verdict rollout charges κ·|q − q_prev| at the argmax
         # (hysteresis); training/selection stay cost-free. Default off = bit-identical.
         self.cost_aware = bool(self.cfg.get("diffv2_cost_aware_argmax", False))
+        # Quadratic churn charge lambda*sum((q-q_prev)^2) at every argmax that knows q_prev.
+        self.churn_lambda = float(self.cfg.get("diffv2_churn_lambda", 0.0))
         # Bank exploration RNG — deterministic, and PERSISTENT across batches so each batch
         # explores a fresh noise draw.
         self.gen = torch.Generator(device=self.device)
@@ -663,7 +665,8 @@ class DiffSolverV2:
         return dF, dL, inner["market_t1"], inner["market_t"], live
 
     # ---- external argmax (Bellman max outside the fitted value) --------------
-    def _decide(self, nets, market_t1, dF, dL, W, t, q_prev=None, kappa=None, live=None):
+    def _decide(self, nets, market_t1, dF, dL, W, t, q_prev=None, kappa=None, live=None,
+                rate_limit=True):
         """Pick the grid action maximising E_inner[C_{t+1}] per outer path. No grad. The action
         universe is `aspace.grid_at(t, live)` — the base grid, further filtered to the
         `Total_Position_Schedule` corridor at t when one is configured (else the base grid). The
@@ -677,7 +680,7 @@ class DiffSolverV2:
         it (a corridor-forced jump) takes the unrestricted best — the corridor wins. The value
         function itself stays cost-free; both are decision-time corrections."""
         grid = self.aspace.grid_at(t, live)
-        limit = q_prev is not None and self.aspace.max_trade > 0.0
+        limit = rate_limit and q_prev is not None and self.aspace.max_trade > 0.0
         with torch.no_grad():
             B, Bi, md = market_t1.shape
             best_val = None
@@ -692,6 +695,9 @@ class DiffSolverV2:
                 if q_prev is not None and kappa is not None:
                     tc = ((acts[None, :, :] - q_prev[:, None, :]).abs() * kappa).sum(-1)  # (B,c) $
                     W1 = W1 - tc[:, :, None]
+                if q_prev is not None and self.churn_lambda > 0.0:
+                    cq = self.churn_lambda * ((acts[None, :, :] - q_prev[:, None, :]) ** 2).sum(-1)
+                    W1 = W1 - cq[:, :, None]                                              # (B,c) $
                 C1f = self._continuation(
                     nets,
                     market_t1[:, None].expand(B, c, Bi, md).reshape(-1, md),
@@ -828,7 +834,7 @@ class DiffSolverV2:
         return g
 
     # ---- one backward step: bootstrap + advantage twin fit -------------------
-    def _fit_step(self, nets, W_bank, t, inner, rows=slice(None)):
+    def _fit_step(self, nets, W_bank, t, inner, rows=slice(None), q_bank=None):
         """One backward step at t: bootstrap the value target off the cached inner draws, then fit
         `nets[t]` to it through `_fit_from_labels`.
 
@@ -842,7 +848,10 @@ class DiffSolverV2:
         W0_bank = W_bank[t][rows]
         # SELECT the action on the NO-GRAD inner draws; EVALUATE its value + pathwise gradients
         # on a fresh GRAD inner (independent draws → cross-fit, no winner's-curse max-bias).
-        q_star, _ = self._decide(nets, m1_ng[rows], dF_ng[rows], dL_ng[rows], W0_bank, t, live=live)
+        q_star, _ = self._decide(
+            nets, m1_ng[rows], dF_ng[rows], dL_ng[rows], W0_bank, t, live=live,
+            q_prev=(q_bank[t][rows] if q_bank is not None and self.churn_lambda > 0.0 else None),
+            rate_limit=False)   # the band stays execution-only; only the churn charge reaches labels
         q_star = q_star * live          # expired contracts: dF=0 ⇒ wealth-neutral; report 0, not the tie
 
         # GRAD inner-MC fork: AAD-live t→t+1 quantities + state-at-t leaves (see docstring).
@@ -1163,7 +1172,7 @@ class DiffSolverV2:
             self.B_outer, self.levels, self.fit_iters, self.lr, self.contract_size.tolist(),
             self.q_lo.tolist(), self.q_hi.tolist(), self.total_abs_limit)
 
-        W_bank, _q_bank = self._build_bank(self.gen)
+        W_bank, q_bank = self._build_bank(self.gen)
         # Cache the framework inner-MC one-step quantities over the swept range — one
         # inner-MC fork per swept t, reused for the argmax, the bootstrap, AND market_t.
         self.sweep_ts = sweep_ts = list(range(self.t_min, self.T_dec))
@@ -1302,19 +1311,20 @@ class DiffSolverV2:
             self.root = {"t": self.t_min, "Y_mean": float(loaded["V_0"]),
                          "q_star_mean": list(loaded["n_star_0"])}
         else:
-            self._sweep(W_bank)
+            self._sweep(W_bank, q_bank)
         # The frame is now locked. Streaming freezes the trust region from here on (later batches
         # report their breach rate instead of re-fitting it); a frozen eval never gets here
         # twice, so its regions stay exactly as this sweep fitted them.
         self._bounds_frozen = True
 
-    def _sweep(self, W_bank):
+    def _sweep(self, W_bank, q_bank=None):
         """One backward pass over the swept range on the CURRENTLY BOUND bundle: fit C_t for
         t = T_dec-1 .. t_min against the cached inner-MC forks. warmup runs it on batch 1, each
         streaming step runs it again on fresh paths with the same nets and optimizers."""
         rows = []
         for t in reversed(self.sweep_ts):
-            r = self._fit_step(self.nets, W_bank, t, self.inner_cache[t], rows=self.train)
+            r = self._fit_step(self.nets, W_bank, t, self.inner_cache[t], rows=self.train,
+                               q_bank=q_bank)
             rows.append(r)
             logging.info(
                 "DiffSolverV2 C[t=%d] fitted: val_loss=%.4g |Y_boot|=%.4g |A|=%.4g "
@@ -1342,10 +1352,10 @@ class DiffSolverV2:
                          "eval, so this batch trains nothing")
             return
         self._bind(bundle)
-        W_bank, _q_bank = self._build_bank(self.gen)
+        W_bank, q_bank = self._build_bank(self.gen)
         self.inner_cache = {t: self._inner_step(t) for t in self.sweep_ts}
         self._breaches = []
-        self._sweep(W_bank)
+        self._sweep(W_bank, q_bank)
         self._log_breaches()
         logging.info("DiffSolverV2 streaming step complete: max|Y_boot|=%.4g V_0=%+.6g "
                      "n_star@t=%d=%s", self.worst, float(self.root["Y_mean"]),

@@ -249,6 +249,9 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         "diffv2_lambda_grad": float(solver_config.get("DiffV2_Lambda_Grad", 1.0)),
         # Downside-aware SELECTION: mean(C) - kappa · semidev(C) at the argmax. 0 = off.
         "diffv2_risk_kappa": float(solver_config.get("DiffV2_Risk_Kappa", 0.0)),
+        # Quadratic churn charge at the argmax + label argmax (selection-shaping; the fitted
+        # value targets stay cost-free, the cost-aware precedent).
+        "diffv2_churn_lambda": float(solver_config.get("DiffV2_Churn_Lambda", 0.0)),
         # Cost-aware EXECUTION: the verdict rollout charges the L1 repositioning cost
         # (Transaction_Cost_Per_Unit + half Bid_Offer_Spread_Bps) at the argmax, trading
         # expected value against the cost of getting there. Training stays cost-free.

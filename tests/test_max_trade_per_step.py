@@ -41,7 +41,7 @@ def _fake_solver(aspace):
     """The smallest object `_decide` runs on: continuation value = total position (favours the
     flat book), so the unrestricted argmax is [0,0,0] and every preference is deterministic."""
     return types.SimpleNamespace(
-        aspace=aspace, chunk=64, risk_kappa=0.0,
+        aspace=aspace, chunk=64, risk_kappa=0.0, churn_lambda=0.0,
         _wealth_step=lambda W, q, dF, dL: (W + q.sum(-1)).expand(
             W.shape[0], q.shape[1], dF.shape[-1]),
         _continuation=lambda nets, m, W1, t: W1,

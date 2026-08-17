@@ -2301,6 +2301,10 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                       description='Downside semideviation penalty at the argmax; 0 = plain E[C]'),
                     F('DiffV2_Cost_Aware_Argmax', 'Text', default='No', values=['Yes', 'No'],
                       description='Charge the L1 repositioning cost at the verdict argmax'),
+                    F('DiffV2_Churn_Lambda', 'Float', default=0.0,
+                      description='Quadratic repositioning charge in currency per contract^2, '
+                                  'subtracted from the wealth entering the continuation at the '
+                                  'argmax and at the training-label argmax; 0 = off'),
                     F('DiffV2_Stepper_Rollout', 'Text', default='No', values=['Yes', 'No'],
                       description='Roll a frozen policy day-by-day through the real accounting'),
                     F('DiffV2_Per_Column_Grad_Norm', 'Text', default='Yes', values=['Yes', 'No'],
