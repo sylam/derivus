@@ -40,6 +40,10 @@ def fetch_module_documentation(module_name, attribute='documentation', package='
             # module imports it.
             if cls.__module__ != module.__name__:
                 continue
+            # A plain `Alias = Cls` assignment is the SAME class object, so the own-attribute
+            # guard below cannot catch it — skip any binding whose name is not the class's own
+            if class_name != cls.__name__:
+                continue
             # Get 'documentation' attribute (own attribute only, not inherited via the MRO,
             # so behaviour-identical alias subclasses don't duplicate their parent's entry)
             doc = cls.__dict__.get(attribute)

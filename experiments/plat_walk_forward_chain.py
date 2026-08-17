@@ -265,6 +265,8 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
                 args.grid_levels
         if args.churn_lambda is not None:
             tcalc['Hedging_Problem']['Solver']['DiffV2_Churn_Lambda'] = args.churn_lambda
+        if args.fit_tol is not None:
+            tcalc['Hedging_Problem']['Solver']['DiffV2_Fit_Tol'] = args.fit_tol
         if args.solver is not None:
             tcalc['Hedging_Problem']['Solver']['Object'] = args.solver
         if args.temporal_proximity is not None:
@@ -284,9 +286,6 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     if args.grid_levels is not None:
         roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
             'Training_Action_Grid_Levels_Per_Axis'] = args.grid_levels
-    if args.churn_lambda is not None:
-        roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
-            'DiffV2_Churn_Lambda'] = args.churn_lambda
     if args.solver is not None:
         roll['Calc']['Calculation']['Hedging_Problem']['Solver']['Object'] = args.solver
     if args.temporal_proximity is not None:
@@ -381,8 +380,10 @@ def main():
     ap.add_argument('--temporal-proximity', type=float, default=None,
                     help='Solver DiffV2_Temporal_Proximity: successor-proximity weight.')
     ap.add_argument('--churn-lambda', type=float, default=None,
-                    help='Solver DiffV2_Churn_Lambda: quadratic repositioning charge '
-                         '$/(contract^2) at the argmax and the training labels.')
+                    help='Solver DiffV2_Churn_Lambda, TRAIN only: a checkpoint-reuse run '
+                         'must not silently turn a training knob into an execution one.')
+    ap.add_argument('--fit-tol', type=float, default=None,
+                    help='Solver DiffV2_Fit_Tol override (0 pins the full fit budget).')
     ap.add_argument('--grid-levels', type=int, default=None,
                     help='Override Solver Training_Action_Grid_Levels_Per_Axis (train AND '
                          'roll argmax). Changes the action space: a retrain.')

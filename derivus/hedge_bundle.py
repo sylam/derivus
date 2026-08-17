@@ -40,7 +40,7 @@ def wealth_step(W, q, contract_size, dF, dL):
 
     `q` (…,n_hedge) is the per-instrument position, `dF` (…,n_hedge) the per-instrument price
     move F_{t+1}−F_t, `dL` (…) the marked-liability change L_{t+1}−L_t. This is the frictionless
-    law DiffSolverV2 rolls (bank/verdict) and, crucially, the one the twin loss DIFFERENTIATES:
+    law DiffSolver rolls (bank/verdict) and, crucially, the one the twin loss DIFFERENTIATES:
     u(W_{t+1}) is taped back to a wealth leaf + the state-at-t market leaves, so this MUST stay a
     pure tensor op — no .item()/.detach()/.cpu()/.to(); callers own the grad context.
 
@@ -464,7 +464,7 @@ class Bundle:
         """Stage 2 — the marked liability, the realized cashflow ledger, and the two schedule
         scalars the utility scale needs. `last_live_mtm_index` is the structural pre-settlement
         terminal: the grid appends one clean-exit row where the liability settles to zero, so the
-        last LIVE mtm row is `steps - 2` — the single source for the DP depth (DiffSolverV2.T_dec)
+        last LIVE mtm row is `steps - 2` — the single source for the DP depth (DiffSolver.T_dec)
         and the realized-path L_T read (no magnitude heuristic)."""
         prefixed = bool(self.spot_price_history)          # the stage-1 prefix gate
         if mtm is not None:
@@ -1407,7 +1407,7 @@ class HedgeRuntimeExecutionResult:
     """High-level result for HedgeMonteCarlo's hedge-bundle handoff.
 
     Carries the `Bundle` + normalized runtime + evaluation summary + the solver artifact
-    (`policy_artifact` = DiffSolverV2's saved value-function nets, JSON-serializable) so
+    (`policy_artifact` = DiffSolver's saved value-function nets, JSON-serializable) so
     downstream consumers (post-hoc analysis, streaming-service handlers) can do their own
     work without touching framework internals. `create_stepper()` spawns a `BundleStepper`
     to drive the simulator day-by-day with any explicit policy (e.g. the textbook hedge).

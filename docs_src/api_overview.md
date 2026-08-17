@@ -45,7 +45,7 @@ dispatcher:
 |---|---|---|
 | `cx.Base_Valuation(overrides)` | `BaseValuation` | Single-point MTM revaluation |
 | `cx.Credit_Monte_Carlo(overrides)` | `CreditMonteCarlo` | Path-dependent simulation (CVA / FVA / PFE) |
-| `cx.Hedge_Monte_Carlo(overrides)` | `HedgeMonteCarlo` | Same simulation engine, used to solve a dynamic hedging problem (DiffSolverV2) |
+| `cx.Hedge_Monte_Carlo(overrides)` | `HedgeMonteCarlo` | Same simulation engine, used to solve a dynamic hedging problem (DiffSolver) |
 | `cx.run_job(overrides)` | (any of the above) | Dispatches based on the loaded JSON's `Calculation.Object` |
 | `cx.validate()` | (any of the above) | Reports what would stop the loaded job running, without running it |
 | `cx.describe()` | (any of the above) | Reports what the engine made of the loaded job, without running it |
@@ -127,7 +127,7 @@ visible CUDA devices and merges the results.
 
 ### Hedge Monte Carlo
 
-A specialisation of Credit Monte Carlo wired into a differential-ML hedging solver (DiffSolverV2).
+A specialisation of Credit Monte Carlo wired into a differential-ML hedging solver (DiffSolver).
 The same scenario engine generates trajectories which are consumed by a backward-DP value-function
 solver that hedges a portfolio of liabilities by trading a configured set of futures or other
 instruments. See the [Hedging_Problem](json/index.md#calculation) JSON section for the

@@ -1,6 +1,6 @@
 # Solver
 
-`Solver.Object` must be `DiffSolverV2` — the differential-ML value-function solver. `HindsightDpSolver`
+`Solver.Object` must be `DiffSolver` (the legacy spelling `DiffSolverV2` is accepted for one release) — the differential-ML value-function solver. `HindsightDpSolver`
 remains available as the clairvoyant benchmark track (`Run_Hindsight_Diagnostic`), not as a primary
 solver.
 

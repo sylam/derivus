@@ -30,7 +30,7 @@ from .hedge_runtime import per_contract_kappa, initial_q_from_runtime
 
 # Bumped whenever the fitted-value-function on-disk/artifact contract changes shape. Stamped
 # into every artifact so a loader can tell which solver produced a checkpoint.
-SOLVER_VERSION = "diffsolverv2/2026-07"
+SOLVER_VERSION = "diffsolver/2026-08"
 
 
 @dataclass
@@ -119,9 +119,8 @@ class HedgeActionSpace:
         # (step, min_total, max_total) knots or None). `grid_at(t)` filters the base grid to it.
         self.schedule = acc.get("total_position_schedule")
         # Optional per-leg rate limit on |Δq| per decision step (0 = off). EXECUTION policy
-        # only: the argmax penalises actions further than this from the standing book, so a
-        # noisy value surface produces ramps instead of full-position flips. Training labels
-        # never see it (their _decide passes no q_prev).
+        # only: the label path passes rate_limit=False, so a standing book handed to the
+        # training argmax (for the churn charge) never arms the band.
         self.max_trade = float(acc.get("max_trade_per_step", 0.0))
         self._grid_cache = None
         solver_cfg = runtime["solver"]
@@ -379,8 +378,10 @@ class HindsightDpSolver:
 
 class _DiffV2Residual(torch.nn.Module):
     """Zero-init residual head A_t(market, q, W). The continuation is C = u(W) + A, so a
-    zero final layer makes C start exactly at the bounded utility anchor (A ≡ 0) and the
-    net only ever LEARNS the correction off that anchor — the toy's run-away guard."""
+    zero final layer makes C start exactly at the bounded utility anchor (A ≡ 0) — the
+    toy's run-away guard. Under the successor chain only the TERMINAL net starts there;
+    every earlier net starts at its fitted successor, and the trust-region clamp
+    (`a_bounds`) is the brake that covers the inherited starts."""
 
     def __init__(self, in_dim, hidden=128):
         super().__init__()
@@ -527,9 +528,12 @@ class DiffSolver:
         self.cost_aware = bool(self.cfg.get("diffv2_cost_aware_argmax", False))
         # Quadratic churn charge lambda*sum((q-q_prev)^2) at every argmax that knows q_prev.
         self.churn_lambda = float(self.cfg.get("diffv2_churn_lambda", 0.0))
-        # Early-termination tolerance for INHERITED fits (relative loss plateau; 0 = always
-        # run the full budget). The anchor net ignores it by construction.
+        # Early termination for non-anchor fits: BLOCK-wise relative loss plateau (blocks of
+        # 8 iters, floor of 2 blocks), so cold-Adam stall cannot read as convergence and the
+        # loss sync is paid once per block, not per iteration. The terminal anchor always
+        # runs the full budget. 0 disables.
         self.fit_tol = float(self.cfg.get("diffv2_fit_tol", 1e-3))
+        self.prox = float(self.cfg.get("diffv2_temporal_proximity", 0.0))
         # Bank exploration RNG — deterministic, and PERSISTENT across batches so each batch
         # explores a fresh noise draw.
         self.gen = torch.Generator(device=self.device)
@@ -675,13 +679,13 @@ class DiffSolver:
         `Total_Position_Schedule` corridor at t when one is configured (else the base grid). The
         `live` leg mask (the callers zero `q*live` after expiry) enters the filter so the corridor
         bounds the REALIZED Σ(q_i·live_i), not a target the expiry mask then guts.
-        `q_prev`+`kappa` (cost-aware execution): charge the L1 repositioning cost
-        κ·|q − q_prev| against the wealth entering the continuation, so the argmax trades
-        off expected value against the cost of getting there (hysteresis instead of churn).
-        `q_prev` alone also arms the `Max_Trade_Per_Step` rate limit: the argmax takes the
-        best action INSIDE the band around the standing book, and a path with nothing inside
-        it (a corridor-forced jump) takes the unrestricted best — the corridor wins. The value
-        function itself stays cost-free; both are decision-time corrections."""
+        `q_prev` carries the standing book and arms up to three decision-time corrections,
+        each with its own further switch: the cost-aware L1 charge (`kappa` present), the
+        quadratic churn charge (`self.churn_lambda` > 0), and the `Max_Trade_Per_Step` band
+        (`rate_limit` True — the label path lowers it so the band stays execution-only). The
+        band takes the best action INSIDE the reachable set and falls back to the
+        unrestricted best when the corridor forces a jump. The fitted value targets stay
+        cost-free; these shape SELECTION only."""
         grid = self.aspace.grid_at(t, live)
         limit = rate_limit and q_prev is not None and self.aspace.max_trade > 0.0
         with torch.no_grad():
@@ -695,12 +699,14 @@ class DiffSolver:
                 c = acts.shape[0]
                 q = acts[None, :, None, :]                                               # (1,c,1,n_hedge)
                 W1 = self._wealth_step(W[:, None, None], q, dF[:, None], dL[:, None])     # (B,c,Bi)
-                if q_prev is not None and kappa is not None:
-                    tc = ((acts[None, :, :] - q_prev[:, None, :]).abs() * kappa).sum(-1)  # (B,c) $
-                    W1 = W1 - tc[:, :, None]
-                if q_prev is not None and self.churn_lambda > 0.0:
-                    cq = self.churn_lambda * ((acts[None, :, :] - q_prev[:, None, :]) ** 2).sum(-1)
-                    W1 = W1 - cq[:, :, None]                                              # (B,c) $
+                if q_prev is not None and (kappa is not None or self.churn_lambda > 0.0):
+                    dq = acts[None, :, :] - q_prev[:, None, :]                            # (B,c,n_h)
+                    charge = 0.0
+                    if kappa is not None:
+                        charge = self.aspace.turnover_cost(dq, kappa)                     # (B,c) $
+                    if self.churn_lambda > 0.0:
+                        charge = charge + self.churn_lambda * dq.pow(2).sum(-1)
+                    W1 = W1 - charge[:, :, None]
                 C1f = self._continuation(
                     nets,
                     market_t1[:, None].expand(B, c, Bi, md).reshape(-1, md),
@@ -837,7 +843,7 @@ class DiffSolver:
         return g
 
     # ---- one backward step: bootstrap + advantage twin fit -------------------
-    def _fit_step(self, nets, W_bank, t, inner, rows=slice(None), q_bank=None):
+    def _fit_step(self, nets, W_bank, t, inner, q_bank, rows=slice(None)):
         """One backward step at t: bootstrap the value target off the cached inner draws, then fit
         `nets[t]` to it through `_fit_from_labels`.
 
@@ -853,8 +859,10 @@ class DiffSolver:
         # on a fresh GRAD inner (independent draws → cross-fit, no winner's-curse max-bias).
         q_star, _ = self._decide(
             nets, m1_ng[rows], dF_ng[rows], dL_ng[rows], W0_bank, t, live=live,
-            q_prev=(q_bank[t][rows] if q_bank is not None and self.churn_lambda > 0.0 else None),
-            rate_limit=False)   # the band stays execution-only; only the churn charge reaches labels
+            q_prev=q_bank[t][rows] * live, rate_limit=False)
+        # live-masked like every other caller (an expired leg's phantom book must not buy
+        # position budget); with churn_lambda 0 and no kappa the book is inert - the band
+        # stays execution-only via rate_limit
         q_star = q_star * live          # expired contracts: dF=0 ⇒ wealth-neutral; report 0, not the tie
 
         # GRAD inner-MC fork: AAD-live t→t+1 quantities + state-at-t leaves (see docstring).
@@ -933,16 +941,13 @@ class DiffSolver:
             a_val, a_gW = Y, gW
 
         net = nets[t]
-        # THE ARCHITECTURE (the original brief, restored): the terminal net anchors the chain
-        # and trains the hardest; every earlier net INHERITS its fitted successor - the
-        # backward sweep fits t+1 first - and only corrects it, so adjacent days are one
-        # value surface evolving in t, never independent fits free to disagree.
+        # The chain: the terminal net anchors and trains the full budget; every earlier net
+        # inherits its fitted successor on its FIRST fit and only corrects it.
         ref = nets[t + 1] if t + 1 < self.T_dec else None
         if ref is not None and self._opts.get(t) is None:
             net.load_state_dict(ref.state_dict())
-        prox = float(self.cfg.get("diffv2_temporal_proximity", 0.0))
-        prox_ref = ([p.detach().clone() for p in ref.parameters()]
-                    if ref is not None and prox > 0.0 else None)
+        prox_ref = (torch.cat([p.detach().reshape(-1) for p in ref.parameters()])
+                    if ref is not None and self.prox > 0.0 else None)
         # Twin loss in STANDARDIZED space: g_zn = std·g_raw (see docstring).
         lam_g = float(self.cfg.get("diffv2_lambda_grad", 1.0))
         g_zn_W = self.w_std * a_gW                                                       # (B,)
@@ -963,7 +968,7 @@ class DiffSolver:
             opt = self._opts[t] = torch.optim.Adam(
                 net.parameters(), lr=self.lr,
                 weight_decay=float(self.cfg.get("diffv2_weight_decay", 0.0)))
-        prev_loss, stall, iters_run = None, 0, self.fit_iters
+        prev_loss, iters_run = None, self.fit_iters
         for it in range(self.fit_iters):
             mn = ((market0 - self.m_mean) / self.m_std).detach().requires_grad_(True)
             wn = ((W0_bank - self.w_mean) / self.w_std).detach().requires_grad_(True)
@@ -973,21 +978,18 @@ class DiffSolver:
                     + lam_g * ((da_w - g_zn_W) ** 2).mean() / nrm_w
                     + lam_g * (((da_m - g_zn_m) ** 2) / nrm_m).mean())
             if prox_ref is not None:
-                loss = loss + prox * torch.stack(
-                    [(p - pr).pow(2).mean() for p, pr in zip(net.parameters(), prox_ref)]).mean()
+                flat = torch.cat([p.reshape(-1) for p in net.parameters()])
+                loss = loss + self.prox * (flat - prox_ref).pow(2).mean()
             opt.zero_grad(); loss.backward(); opt.step()
-            # An inherited net starts one correction away from its answer: stop when the loss
-            # plateaus (3 stalls under the relative tol). The anchor always runs the full budget.
-            if ref is not None and self.fit_tol > 0.0:
-                cur = float(loss)
-                if prev_loss is not None and abs(prev_loss - cur) <= self.fit_tol * max(
-                        abs(prev_loss), 1e-12):
-                    stall += 1
-                    if stall >= 3:
-                        iters_run = it + 1
-                        break
-                else:
-                    stall = 0
+            # Block-wise early stop (non-anchor only): one host sync per 8-iter block, a
+            # 2-block floor so a cold optimizer cannot plateau its way out, and the stall
+            # test compares block ends - real progress, not per-step Adam jitter.
+            if ref is not None and self.fit_tol > 0.0 and it % 8 == 7:
+                cur = float(loss.detach())
+                if it >= 15 and prev_loss is not None and abs(prev_loss - cur) <= \
+                        self.fit_tol * max(abs(prev_loss), 1e-12):
+                    iters_run = it + 1
+                    break
                 prev_loss = cur
 
         with torch.no_grad():
@@ -1239,6 +1241,7 @@ class DiffSolver:
             # Frozen-policy eval: restore the fitted nets AND each member's own frame; a LIST of
             # checkpoints is an ensemble argmax (see docstring).
             members = []
+            versions = set()
             for member in load_members:
                 # Pre-contract checkpoints predate active_hedge_indices / solver_version /
                 # config_hash — they still load: only the frame + net keys below are read.
@@ -1250,6 +1253,15 @@ class DiffSolver:
                         raise ValueError(
                             f"DiffV2_Load_Value_Fn checkpoint mismatch on {key!r}: "
                             f"{src} saved {ck[key]!r} vs this run {want!r}")
+                # The training ARCHITECTURE is part of what a version stamps (the successor
+                # chain changed it); an ensemble must not average continuations trained under
+                # different ones, and a lone old checkpoint should say what it is.
+                ck_ver = ck.get("solver_version", "<pre-version checkpoint>")
+                if ck_ver != SOLVER_VERSION:
+                    logging.warning(
+                        "DiffV2_Load_Value_Fn: %s trained under solver_version %r, this build "
+                        "is %r - the fitted architecture may differ", src, ck_ver, SOLVER_VERSION)
+                versions.add(ck_ver)
                 # Corridor provenance (see docstring): corridor-free training spans the widest
                 # wealth support, so it rolls under any corridor; a different one → fail loud.
                 want_sched = self.aspace.schedule_key(self.aspace.schedule)
@@ -1293,6 +1305,10 @@ class DiffSolver:
                     "fixed-set one. The argmax averages the members' continuations, which is "
                     "only meaningful when each member standardizes the same state the same way — "
                     "load one provenance or the other, never both.")
+            if len(versions) > 1:
+                raise ValueError(
+                    f"DiffV2_Load_Value_Fn: the ensemble mixes solver versions {sorted(versions)} "
+                    "- members trained under different architectures cannot be averaged")
             loaded = members[0]
             scales = [float(ck["utility_scale"]) for ck in members]
             if max(scales) - min(scales) > 0.01 * max(scales):
@@ -1347,14 +1363,14 @@ class DiffSolver:
         # twice, so its regions stay exactly as this sweep fitted them.
         self._bounds_frozen = True
 
-    def _sweep(self, W_bank, q_bank=None):
+    def _sweep(self, W_bank, q_bank):
         """One backward pass over the swept range on the CURRENTLY BOUND bundle: fit C_t for
         t = T_dec-1 .. t_min against the cached inner-MC forks. warmup runs it on batch 1, each
         streaming step runs it again on fresh paths with the same nets and optimizers."""
         rows = []
         for t in reversed(self.sweep_ts):
-            r = self._fit_step(self.nets, W_bank, t, self.inner_cache[t], rows=self.train,
-                               q_bank=q_bank)
+            r = self._fit_step(self.nets, W_bank, t, self.inner_cache[t], q_bank,
+                               rows=self.train)
             rows.append(r)
             logging.info(
                 "DiffSolver C[t=%d] fitted (%d iters): val_loss=%.4g |Y_boot|=%.4g |A|=%.4g "
@@ -1663,7 +1679,7 @@ def assemble_hedge_result(primary_runs, bundle, runtime):
     comparison = {primary.solver_name: SolverResult.multiseed_summary(primary_runs)}
 
     # Benchmark tracks — assembled alongside the DiffSolver-family deliverable.
-    if obj in ("diffsolver", "diffsolverv2"):
+    if obj == "diffsolver":
         for flag, label in (("run_hindsight_diagnostic", "hindsight"),
                              ("run_textbook_benchmark", "textbook")):
             if solver_cfg.get(flag) and not have_liability:
@@ -1678,7 +1694,8 @@ def assemble_hedge_result(primary_runs, bundle, runtime):
     # Acceptance ordering — hindsight >= DiffSolver >= textbook over the tracks present,
     # with a tiny tolerance for Monte-Carlo noise.
     rungs = [(label, comparison[key]["v0_mean"])
-             for key, label in (("HindsightDpSolver", "hindsight"), ("DiffSolver", "DiffSolver"),
+             for key, label in (("HindsightDpSolver", "hindsight"),
+                                (primary.solver_name, primary.solver_name),
                                 ("textbook", "textbook")) if key in comparison]
     ladder = {"order": rungs,
               "holds": all(rungs[i][1] >= rungs[i + 1][1] - 1.0e-6 for i in range(len(rungs) - 1))}

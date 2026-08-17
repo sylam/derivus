@@ -161,7 +161,7 @@
     },
     "Randomize_Initial_State": "Yes",
     "Solver": {
-     "Object": "DiffSolverV2",
+     "Object": "DiffSolver",
      "Training_Action_Grid_Levels_Per_Axis": 9,
      "Training_Action_Chunk_Size": 64,
      "T_Min": 0,

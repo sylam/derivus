@@ -197,7 +197,7 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
     """Normalize the `Solver` block (Execution_Mode='solve_hedge'). Accepts None (non-solve
     modes); requires `Object` — one of 'diffsolverv2' | 'hindsightdpsolver'.
 
-    DiffSolverV2 (the clean-room differential-ML solver) knobs, beyond the per-t residual-net Adam
+    DiffSolver (the clean-room differential-ML solver) knobs, beyond the per-t residual-net Adam
     iters / lr: `DiffV2_Bank_Noise_Frac` is bank q-exploration noise as a fraction of each
     instrument's [Min,Max] range, and `Active_Hedge_Indices` selects the subset of hedge
     instruments whose action axis VARIES in the grid (others pinned to 0); None = all vary.
@@ -219,14 +219,17 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
     an ENSEMBLE-argmax eval: each member is evaluated in its own standardization frame and the
     continuations are averaged before the argmax (cross-fit winner's-curse reduction). Train and
     evaluate are SEPARATE runs: loading skips every fit step under streaming too
-    (`DiffSolverV2.step` no-ops), so a frozen policy stays frozen batch after batch, and setting
+    (`DiffSolver.step` no-ops), so a frozen policy stays frozen batch after batch, and setting
     both keys at once raises rather than silently discarding a retrained net."""
     if solver_config is None:
         return None
     if "Object" not in solver_config:
         raise ValueError("Hedging_Problem['Solver'] requires an 'Object' field")
     return {
-        "object": str(solver_config["Object"]).lower(),
+        # normalized at THE seam: the legacy spelling maps to the canonical one here, so
+        # every downstream consumer (and config_hash) sees a single name
+        "object": ("diffsolver" if str(solver_config["Object"]).lower() == "diffsolverv2"
+                   else str(solver_config["Object"]).lower()),
         "multi_seed_count": int(solver_config.get("Multi_Seed_Count", 1)),
         # Backward-sweep depth: fit C_t for t in [t_outer-2 .. t_min]. 0 = full sweep to the
         # initial decision; t_min near t_outer-1 = a shallow (bounded) sweep.
@@ -237,7 +240,7 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         "training_action_chunk_size": int(solver_config.get("Training_Action_Chunk_Size", 64)),
         # Advantage decomposition: fit A = C - u(W) (NN residual over the bounded-utility anchor).
         "use_advantage_decomp": solver_config.get("Use_Advantage_Decomp", "Yes") == "Yes",
-        # DiffSolverV2 knobs (see docstring): per-t residual-net Adam iters / lr, bank noise.
+        # DiffSolver knobs (see docstring): per-t residual-net Adam iters / lr, bank noise.
         "diffv2_fit_iters": int(solver_config.get("DiffV2_Fit_Iters", 150)),
         "diffv2_lr": float(solver_config.get("DiffV2_LR", 2.0e-3)),
         "diffv2_bank_noise_frac": float(solver_config.get("DiffV2_Bank_Noise_Frac", 0.15)),
@@ -279,7 +282,7 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         "active_hedge_indices":
             (list(solver_config["Active_Hedge_Indices"])
              if solver_config.get("Active_Hedge_Indices") is not None else None),
-        # Benchmark tracks assembled alongside the DiffSolverV2 deliverable (hindsight upper
+        # Benchmark tracks assembled alongside the DiffSolver deliverable (hindsight upper
         # bound / textbook lower bound).
         "run_hindsight_diagnostic": solver_config.get("Run_Hindsight_Diagnostic", "No") == "Yes",
         "run_textbook_benchmark": solver_config.get("Run_Textbook_Benchmark", "No") == "Yes",
@@ -372,7 +375,7 @@ def construct_hedge_runtime(
         if str(solver_config.get("Object", "")).lower() not in ("diffsolver", "diffsolverv2"):
             raise ValueError(
                 "Execution_Mode 'solve_hedge' requires Solver.Object='DiffSolver' "
-                f"(legacy spelling 'DiffSolverV2' accepted); got "
+                f"(legacy spelling 'DiffSolver' accepted); got "
                 f"{solver_config.get('Object')!r}. HindsightDpSolver remains available as the "
                 "Run_Hindsight_Diagnostic track.")
         # A solve is a STREAM: Simulation_Batches - 1 fit batches, then a held-out batch no fit
