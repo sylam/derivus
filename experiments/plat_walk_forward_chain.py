@@ -377,10 +377,9 @@ def main():
                          '+ per-leg boxes). Changes the action space: a RETRAIN, never a '
                          're-roll. Mutually exclusive with --delta-corridor.')
     ap.add_argument('--solver', default=None,
-                    help="Solver Object override, e.g. CoupledDiffSolver (the temporally-"
-                         "coupled DiffSolverV2 sibling).")
+                    help='Solver Object override (default: the template/BEST_SOLVER DiffSolver).')
     ap.add_argument('--temporal-proximity', type=float, default=None,
-                    help='Solver DiffV2_Temporal_Proximity (CoupledDiffSolver only).')
+                    help='Solver DiffV2_Temporal_Proximity: successor-proximity weight.')
     ap.add_argument('--churn-lambda', type=float, default=None,
                     help='Solver DiffV2_Churn_Lambda: quadratic repositioning charge '
                          '$/(contract^2) at the argmax and the training labels.')

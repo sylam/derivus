@@ -73,7 +73,7 @@ BEST_CALC = {
     'Inner_Antithetic': 'Yes', # mirrored (z,-z) inner pairs — halves argmax selection variance
 }
 BEST_SOLVER = {
-    'Object': 'DiffSolverV2',
+    'Object': 'DiffSolver',
     'Training_Action_Grid_Levels_Per_Axis': 9,   # action-grid resolution per hedge axis
     'Training_Action_Chunk_Size': 64,
     'T_Min': 0,                                   # full window from day 0 = a day-1 policy

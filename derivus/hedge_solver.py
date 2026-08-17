@@ -1,6 +1,6 @@
 """Differential-ML dynamic-hedging solver (Execution_Mode='solve_hedge').
 
-`DiffSolverV2` is the production solver: a backward-DP / differential-ML value function
+`DiffSolver` is the production solver: a backward-DP / differential-ML value function
 fit by the Huge–Savine twin loss (value + AAD pathwise-gradient), consuming the simulated
 scenario bundle and forking inner MC on demand via `Bundle.inner_mc` / `Bundle.inner_mc_grad`
 (attached by `HedgeMonteCarlo.execute`). `HindsightDpSolver` (clairvoyant oracle, the
@@ -35,7 +35,7 @@ SOLVER_VERSION = "diffsolverv2/2026-07"
 
 @dataclass
 class SolverResult:
-    """High-level result of a hedge solver. The DP solvers (HindsightDpSolver, DiffSolverV2)
+    """High-level result of a hedge solver. The DP solvers (HindsightDpSolver, DiffSolver)
     produce per-(t, outer-path) grids of `actions` and `values`."""
     solver_name: str
     actions: Any
@@ -61,11 +61,11 @@ class SolverResult:
 
 class HedgeActionSpace:
     """The solver-owned ACTION UNIVERSE + friction access, built ONCE from (runtime, device)
-    and shared by every track (DiffSolverV2, HindsightDpSolver, run_textbook_benchmark, and
+    and shared by every track (DiffSolver, HindsightDpSolver, run_textbook_benchmark, and
     the stepper rollout) so they optimize over exactly the same positions and price the same
     frictions. One object replaces the old scattered `build_action_grid` (varied ALL hedges,
     letting the benchmarks trade axes an `Active_Hedge_Indices` run had pinned off) + the
-    private `DiffSolverV2._action_grid` + the free `_per_contract_kappa`/`_axis_levels`.
+    private `DiffSolver._action_grid` + the free `_per_contract_kappa`/`_axis_levels`.
 
     Surface:
       * `axis_levels()` / `grid()` — the MASK-AWARE target-position grid: the active hedge
@@ -168,7 +168,7 @@ class HedgeActionSpace:
         """Action grid at decision step t: the base `grid()` filtered to rows whose SIGNED total
         position lies in the `Total_Position_Schedule` corridor at t. No schedule → the base grid
         unchanged (bit-identical to today). The single per-t filter site every track shares
-        (DiffSolverV2 argmax, hindsight, textbook). Empty after filtering ⇒ infeasible corridor at
+        (DiffSolver argmax, hindsight, textbook). Empty after filtering ⇒ infeasible corridor at
         t, failed loud.
 
         The corridor bounds the REALIZED signed total — the position that survives expiry masking
@@ -396,7 +396,7 @@ class _DiffV2Residual(torch.nn.Module):
         return self.body(x).squeeze(-1)
 
 
-class DiffSolverV2:
+class DiffSolver:
     """Clean-room differential-ML hedging solver — rebuilt from the toy (`diffml_hedge_huber.py`
     via `diffsolver_v2.py`, validated BOUNDED at T=119) and wired to the OFFICIAL derivus
     framework. All dynamics come from the bundle's inner-MC closures
@@ -527,6 +527,9 @@ class DiffSolverV2:
         self.cost_aware = bool(self.cfg.get("diffv2_cost_aware_argmax", False))
         # Quadratic churn charge lambda*sum((q-q_prev)^2) at every argmax that knows q_prev.
         self.churn_lambda = float(self.cfg.get("diffv2_churn_lambda", 0.0))
+        # Early-termination tolerance for INHERITED fits (relative loss plateau; 0 = always
+        # run the full budget). The anchor net ignores it by construction.
+        self.fit_tol = float(self.cfg.get("diffv2_fit_tol", 1e-3))
         # Bank exploration RNG — deterministic, and PERSISTENT across batches so each batch
         # explores a fresh noise draw.
         self.gen = torch.Generator(device=self.device)
@@ -566,7 +569,7 @@ class DiffSolverV2:
             raise ValueError(
                 f"streaming batch has decision horizon T_dec={int(bundle.last_live_mtm_index)} "
                 f"but the frame was locked at {self.T_dec} — every batch must share one time grid")
-        logging.info("DiffSolverV2 bound batch: B_outer=%d | frame utility_scale=%.6g "
+        logging.info("DiffSolver bound batch: B_outer=%d | frame utility_scale=%.6g "
                      "(this batch resolved %.6g)", self.B_outer, self.utility_scale,
                      float(bundle.utility_scale))
         self.runtime["objective"]["utility_scale"] = self.utility_scale
@@ -793,7 +796,7 @@ class DiffSolverV2:
         if oob:
             worst = max(oob, key=lambda r: r[3])
             logging.info(
-                "DiffSolverV2 bank IN Total_Position_Schedule (post-projection): residual "
+                "DiffSolver bank IN Total_Position_Schedule (post-projection): residual "
                 "frac(Σq outside corridor) min=%.3f mean=%.3f max=%.3f | worst t=%d "
                 "corridor=[%.4g, %.4g] bank Σq∈[%.4g, %.4g] frac_oob=%.3f (≈0 ⇒ projection clean)",
                 min(r[3] for r in oob), sum(r[3] for r in oob) / len(oob),
@@ -834,11 +837,6 @@ class DiffSolverV2:
         return g
 
     # ---- one backward step: bootstrap + advantage twin fit -------------------
-    def _coupling_ref(self, nets, t):
-        """The net this step's fit couples to. The base solver couples to nothing - every
-        step is an independent fit; `CoupledDiffSolver` returns the fitted successor."""
-        return None
-
     def _fit_step(self, nets, W_bank, t, inner, rows=slice(None), q_bank=None):
         """One backward step at t: bootstrap the value target off the cached inner draws, then fit
         `nets[t]` to it through `_fit_from_labels`.
@@ -889,7 +887,7 @@ class DiffSolverV2:
                 else:                                                          # leaf absent → masked
                     errs.append(f"{utils.check_tuple_name(key)}[unmeasured]")
                 col += width
-            logging.info("DiffSolverV2 differential-label projection check (privileged market_t "
+            logging.info("DiffSolver differential-label projection check (privileged market_t "
                          "cols vs state_t leaves; ≈0 ⇒ ∂Y/∂market_col == ∂Y/∂leaf): %s",
                          " ".join(errs))
         F_t = torch.stack([self.tradables_sim[r][t] for r in self.hedges], dim=-1)        # (B_outer,n_hedge)
@@ -935,9 +933,13 @@ class DiffSolverV2:
             a_val, a_gW = Y, gW
 
         net = nets[t]
-        ref = self._coupling_ref(nets, t)
+        # THE ARCHITECTURE (the original brief, restored): the terminal net anchors the chain
+        # and trains the hardest; every earlier net INHERITS its fitted successor - the
+        # backward sweep fits t+1 first - and only corrects it, so adjacent days are one
+        # value surface evolving in t, never independent fits free to disagree.
+        ref = nets[t + 1] if t + 1 < self.T_dec else None
         if ref is not None and self._opts.get(t) is None:
-            net.load_state_dict(ref.state_dict())     # adjacent days start as one surface
+            net.load_state_dict(ref.state_dict())
         prox = float(self.cfg.get("diffv2_temporal_proximity", 0.0))
         prox_ref = ([p.detach().clone() for p in ref.parameters()]
                     if ref is not None and prox > 0.0 else None)
@@ -961,7 +963,8 @@ class DiffSolverV2:
             opt = self._opts[t] = torch.optim.Adam(
                 net.parameters(), lr=self.lr,
                 weight_decay=float(self.cfg.get("diffv2_weight_decay", 0.0)))
-        for _ in range(self.fit_iters):
+        prev_loss, stall, iters_run = None, 0, self.fit_iters
+        for it in range(self.fit_iters):
             mn = ((market0 - self.m_mean) / self.m_std).detach().requires_grad_(True)
             wn = ((W0_bank - self.w_mean) / self.w_std).detach().requires_grad_(True)
             a = net(torch.cat([mn, wn.unsqueeze(-1)], dim=-1))
@@ -973,6 +976,19 @@ class DiffSolverV2:
                 loss = loss + prox * torch.stack(
                     [(p - pr).pow(2).mean() for p, pr in zip(net.parameters(), prox_ref)]).mean()
             opt.zero_grad(); loss.backward(); opt.step()
+            # An inherited net starts one correction away from its answer: stop when the loss
+            # plateaus (3 stalls under the relative tol). The anchor always runs the full budget.
+            if ref is not None and self.fit_tol > 0.0:
+                cur = float(loss)
+                if prev_loss is not None and abs(prev_loss - cur) <= self.fit_tol * max(
+                        abs(prev_loss), 1e-12):
+                    stall += 1
+                    if stall >= 3:
+                        iters_run = it + 1
+                        break
+                else:
+                    stall = 0
+                prev_loss = cur
 
         with torch.no_grad():
             a_fit = net(self._standardize(market0, W0_bank))
@@ -991,7 +1007,7 @@ class DiffSolverV2:
                 pad = max(hi - lo, 1e-3)
                 self.a_bounds[t] = (lo - pad, hi + pad)
         return {
-            "t": t, "val_loss": val_loss,
+            "t": t, "val_loss": val_loss, "iters": iters_run,
             "Y_absmean": float(Y.abs().mean()),
             "A_absmean": float(a_fit.abs().mean()),
             "q_star_mean": q_star.mean(0).detach().cpu().tolist(),
@@ -1179,7 +1195,7 @@ class DiffSolverV2:
         if bundle is not None:
             self._bind(bundle)
         logging.info(
-            "DiffSolverV2 setup: n_hedge=%d active=%s T_dec=%d (of %d sim steps; last-live "
+            "DiffSolver setup: n_hedge=%d active=%s T_dec=%d (of %d sim steps; last-live "
             "mtm=[-2]) B_outer=%d levels=%d fit_iters=%d lr=%.3g | "
             "contract_size=%s | q∈[%s, %s] total_abs_limit=%.3g",
             self.n_hedge, self.active, self.T_dec, self.n_steps,
@@ -1203,7 +1219,7 @@ class DiffSolverV2:
         self.w_mean, self.w_std = Wall.mean(), Wall.std().clamp_min(1e-6)
         self.md = md = M.shape[-1]
         logging.info(
-            "DiffSolverV2 bank: market_dim=%d | swept W∈[%.4g, %.4g] mean=%.4g std=%.4g | "
+            "DiffSolver bank: market_dim=%d | swept W∈[%.4g, %.4g] mean=%.4g std=%.4g | "
             "q_rep(t=0)=%s", md, float(Wall.min()), float(Wall.max()),
             float(self.w_mean), float(self.w_std),
             self._replication_hedge(0).detach().cpu().tolist())
@@ -1267,7 +1283,7 @@ class DiffSolverV2:
                         "ITS frame, not this run's.", src)
                 drift = ((M.mean(0) - ck["m_mean"]).abs() / ck["m_std"]).max()
                 logging.info(
-                    "DiffSolverV2 LOADED value fn from %s (train V_0=%+.6g) | eval-world "
+                    "DiffSolver LOADED value fn from %s (train V_0=%+.6g) | eval-world "
                     "market drift vs train frame: max %.3g σ | utility_scale %.6g | frame %s",
                     src, ck["V_0"], float(drift), ck["utility_scale"], ck.get("frame_stamp"))
                 members.append(ck)
@@ -1281,7 +1297,7 @@ class DiffSolverV2:
             scales = [float(ck["utility_scale"]) for ck in members]
             if max(scales) - min(scales) > 0.01 * max(scales):
                 logging.warning(
-                    "DiffSolverV2 ensemble utility_scale spread %.3g%% — members trained "
+                    "DiffSolver ensemble utility_scale spread %.3g%% — members trained "
                     "against different anchors; averaging is approximate",
                     100.0 * (max(scales) - min(scales)) / max(scales))
             self.m_mean, self.m_std = loaded["m_mean"], loaded["m_std"]
@@ -1297,7 +1313,7 @@ class DiffSolverV2:
         # None = unclamped, e.g. pre-trust-region checkpoints).
         self.a_bounds = (list(loaded["a_bounds"]) if loaded is not None and loaded.get("a_bounds")
                          else [None] * self.T_dec)
-        logging.info("DiffSolverV2 action grid: K=%d actions (levels=%d ^ active=%d)",
+        logging.info("DiffSolver action grid: K=%d actions (levels=%d ^ active=%d)",
                      self.grid_size, self.levels, self.n_active)
 
         self.nets = nets
@@ -1320,7 +1336,7 @@ class DiffSolverV2:
                     self._ensemble.append(
                         (m_nets, ck["m_mean"], ck["m_std"], ck["w_mean"], ck["w_std"],
                          ck.get("a_bounds")))
-                logging.info("DiffSolverV2 ENSEMBLE argmax over %d value fns", len(members))
+                logging.info("DiffSolver ENSEMBLE argmax over %d value fns", len(members))
             self.worst = float(loaded["max_abs_Y_boot"])
             self.root = {"t": self.t_min, "Y_mean": float(loaded["V_0"]),
                          "q_star_mean": list(loaded["n_star_0"])}
@@ -1341,8 +1357,8 @@ class DiffSolverV2:
                                q_bank=q_bank)
             rows.append(r)
             logging.info(
-                "DiffSolverV2 C[t=%d] fitted: val_loss=%.4g |Y_boot|=%.4g |A|=%.4g "
-                "Y_mean=%+.4g q*_mean=%s", r["t"], r["val_loss"], r["Y_absmean"],
+                "DiffSolver C[t=%d] fitted (%d iters): val_loss=%.4g |Y_boot|=%.4g |A|=%.4g "
+                "Y_mean=%+.4g q*_mean=%s", r["t"], r["iters"], r["val_loss"], r["Y_absmean"],
                 r["A_absmean"], r["Y_mean"],
                 ["%.3f" % v for v in r["q_star_mean"]])
         self.rows = rows
@@ -1362,7 +1378,7 @@ class DiffSolverV2:
         "frozen" policy on the evaluation world — batch by batch, with the verdict then reported
         for a policy that is not the checkpoint and is never written anywhere."""
         if self.loaded is not None:
-            logging.info("DiffSolverV2 streaming step SKIPPED: value fn loaded — frozen-policy "
+            logging.info("DiffSolver streaming step SKIPPED: value fn loaded — frozen-policy "
                          "eval, so this batch trains nothing")
             return
         self._bind(bundle)
@@ -1371,7 +1387,7 @@ class DiffSolverV2:
         self._breaches = []
         self._sweep(W_bank, q_bank)
         self._log_breaches()
-        logging.info("DiffSolverV2 streaming step complete: max|Y_boot|=%.4g V_0=%+.6g "
+        logging.info("DiffSolver streaming step complete: max|Y_boot|=%.4g V_0=%+.6g "
                      "n_star@t=%d=%s", self.worst, float(self.root["Y_mean"]),
                      self.root["t"], self.root["q_star_mean"])
 
@@ -1384,7 +1400,7 @@ class DiffSolverV2:
         worst = max(self._breaches, key=lambda r: r[1])
         lo, hi = self.a_bounds[worst[0]]
         logging.info(
-            "DiffSolverV2 trust region (frozen at warmup) breach rate over %d fitted steps: "
+            "DiffSolver trust region (frozen at warmup) breach rate over %d fitted steps: "
             "mean=%.4f max=%.4f | worst t=%d frac=%.4f targets∈[%+.4g, %+.4g] "
             "bounds=[%+.4g, %+.4g]", len(self._breaches),
             sum(r[1] for r in self._breaches) / len(self._breaches), worst[1], worst[0],
@@ -1446,7 +1462,7 @@ class DiffSolverV2:
         bounded = math.isfinite(V_0) and worst < 1.0e4
         if loaded is None:
             logging.info(
-                "DiffSolverV2 sweep complete: t=%d→%d | max|Y_boot|=%.4g (%s) | "
+                "DiffSolver sweep complete: t=%d→%d | max|Y_boot|=%.4g (%s) | "
                 "V_0=%+.6g | n_star@t=%d=%s", self.T_dec - 1, self.t_min, worst,
                 "BOUNDED" if bounded else "EXPLODED", V_0, root["t"], n_star_0)
         # POLICY ARTIFACT, built ONCE here; a LOADED run produces none (see docstring).
@@ -1480,7 +1496,7 @@ class DiffSolverV2:
                 tmp = save_path + ".tmp"
                 torch.save(artifact, tmp)
                 os.replace(tmp, save_path)                       # atomic on POSIX
-                logging.info("DiffSolverV2 SAVED value fn to %s (V_0=%+.6g)", save_path, V_0)
+                logging.info("DiffSolver SAVED value fn to %s (V_0=%+.6g)", save_path, V_0)
 
         # Downside verdict, OUT-OF-SAMPLE by construction: all rows, held-out world (see docstring).
         verdict = self._verdict(nets, inner_cache, sweep_ts, rows=slice(None))
@@ -1491,7 +1507,7 @@ class DiffSolverV2:
             stepper_verdict = self._rollout_on_stepper(nets, inner_cache, sweep_ts)
             sg, stb, snh = (stepper_verdict[k] for k in ("greedy", "textbook", "nohedge"))
             logging.info(
-                "DiffSolverV2 STEPPER ROLLOUT (frozen policy, realized path, real accounting):\n"
+                "DiffSolver STEPPER ROLLOUT (frozen policy, realized path, real accounting):\n"
                 "  greedy   wT=%+.4e p5=%+.4e cvar5=%+.4e\n"
                 "  textbook wT=%+.4e p5=%+.4e cvar5=%+.4e\n"
                 "  nohedge  wT=%+.4e p5=%+.4e cvar5=%+.4e",
@@ -1506,7 +1522,7 @@ class DiffSolverV2:
         beats_tb = g["u_mean"] >= tb["u_mean"]
         tail_vs_tb = g["wT_cvar5"] >= tb["wT_cvar5"] - abs(tb["wT_cvar5"]) * 0.05
         logging.info(
-            "DiffSolverV2 VERDICT (%s rollout t=%d→T over %d outer paths, start flat):\n"
+            "DiffSolver VERDICT (%s rollout t=%d→T over %d outer paths, start flat):\n"
             "  policy    u(W_T)mean    W_T mean       W_T p5         W_T CVaR5\n"
             "  greedy    %+.5f    %+.4e   %+.4e   %+.4e\n"
             "  textbook  %+.5f    %+.4e   %+.4e   %+.4e\n"
@@ -1519,13 +1535,13 @@ class DiffSolverV2:
             nh["u_mean"], nh["wT_mean"], nh["wT_p5"], nh["wT_cvar5"],
             beats_nh, beats_tb, tail_vs_tb)
         logging.info(
-            "DiffSolverV2 greedy positions: mean|q| per instrument=%s | q@t0=%s | q@mid=%s "
+            "DiffSolver greedy positions: mean|q| per instrument=%s | q@t0=%s | q@mid=%s "
             "(textbook q@t0=%s)", ["%.2f" % v for v in verdict["greedy_mean_abs_q"]],
             verdict.get("greedy_q_first"), verdict.get("greedy_q_mid"),
             self._replication_hedge(self.t_min).detach().cpu().tolist())
 
         return SolverResult(
-            solver_name="DiffSolverV2",
+            solver_name="DiffSolver",
             actions=torch.tensor(n_star_0),
             values=V_0,
             value_fn_artifacts=artifact,              # the fitted policy (None in eval-from-load runs)
@@ -1550,23 +1566,10 @@ class DiffSolverV2:
         )
 
 
-# The differential-ML solver `DiffSolverV2` is the production deliverable; the
+# The differential-ML solver `DiffSolver` is the production deliverable; the
 # clairvoyant `HindsightDpSolver` is kept as the upper-bound (oracle) benchmark
 # track. `run_textbook_benchmark` supplies the lower-bound (min-var / averaging)
 # track.
-class CoupledDiffSolver(DiffSolverV2):
-    """DiffSolverV2 with the per-step value nets COUPLED across time: each decision step's
-    net initializes from its already-fitted successor (the backward sweep fits t+1 first),
-    and `DiffV2_Temporal_Proximity` optionally holds its parameters near the successor's
-    during the fit. One value surface evolving smoothly in t instead of independent fits
-    free to disagree - so the day-over-day action drift reflects state change, not the
-    fit lottery between adjacent days' nets. Same architecture, same sweep, same wall time;
-    the coupling is an inductive bias, not capacity."""
-
-    def _coupling_ref(self, nets, t):
-        return nets[t + 1] if t + 1 < self.T_dec else None
-
-
 class StreamingSolve:
     """The solve driver: one `Bundle` per simulation batch, handed over as it is built.
 
@@ -1617,9 +1620,7 @@ class StreamingSolve:
         """Batch 1: build the solver(s) and fit the first backward sweep. The frame (utility
         scale, z-frame, trust region) is locked here and frozen for every later batch."""
         n_seed = max(1, int(self.cfg.get("multi_seed_count", 1)))
-        cls = {"diffsolverv2": DiffSolverV2, "coupleddiffsolver": CoupledDiffSolver}[
-            self.cfg["object"]]
-        self.solvers = [cls(bundle, self.runtime) for _ in range(n_seed)]
+        self.solvers = [DiffSolver(bundle, self.runtime) for _ in range(n_seed)]
         for solver in self.solvers:
             solver.warmup(bundle)
         # same rule as `step`: a loaded checkpoint fits nothing, so this batch was not a training one
@@ -1661,8 +1662,8 @@ def assemble_hedge_result(primary_runs, bundle, runtime):
     primary = primary_runs[0]
     comparison = {primary.solver_name: SolverResult.multiseed_summary(primary_runs)}
 
-    # Benchmark tracks — assembled alongside the DiffSolverV2-family deliverable.
-    if obj in ("diffsolverv2", "coupleddiffsolver"):
+    # Benchmark tracks — assembled alongside the DiffSolver-family deliverable.
+    if obj in ("diffsolver", "diffsolverv2"):
         for flag, label in (("run_hindsight_diagnostic", "hindsight"),
                              ("run_textbook_benchmark", "textbook")):
             if solver_cfg.get(flag) and not have_liability:
@@ -1674,10 +1675,10 @@ def assemble_hedge_result(primary_runs, bundle, runtime):
         if solver_cfg.get("run_textbook_benchmark") and have_liability:
             comparison["textbook"] = run_textbook_benchmark(bundle, runtime)
 
-    # Acceptance ordering — hindsight >= DiffSolverV2 >= textbook over the tracks present,
+    # Acceptance ordering — hindsight >= DiffSolver >= textbook over the tracks present,
     # with a tiny tolerance for Monte-Carlo noise.
     rungs = [(label, comparison[key]["v0_mean"])
-             for key, label in (("HindsightDpSolver", "hindsight"), ("DiffSolverV2", "DiffSolverV2"),
+             for key, label in (("HindsightDpSolver", "hindsight"), ("DiffSolver", "DiffSolver"),
                                 ("textbook", "textbook")) if key in comparison]
     ladder = {"order": rungs,
               "holds": all(rungs[i][1] >= rungs[i + 1][1] - 1.0e-6 for i in range(len(rungs) - 1))}
@@ -1699,3 +1700,8 @@ def assemble_hedge_result(primary_runs, bundle, runtime):
                                   "comparison": comparison, "ladder": ladder},
         "policy_artifact": primary.value_fn_artifacts,
     }
+
+
+# One release of grace for the old name: checkpoints, configs and imports written against the
+# port's spelling load the REAL solver. The architecture they get is the corrected one.
+DiffSolverV2 = DiffSolver

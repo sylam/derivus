@@ -2273,9 +2273,9 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 description='The value-function solver and its schedule, dispatched on Object',
                 sub_fields=[
                     F('Object', 'Text', default=REQUIRED,
-                      values=['DiffSolverV2', 'CoupledDiffSolver', 'HindsightDpSolver'],
-                      description='The value-function solver; solve_hedge requires DiffSolverV2 '
-                                  'or its temporally-coupled sibling CoupledDiffSolver'),
+                      values=['DiffSolver', 'DiffSolverV2', 'HindsightDpSolver'],
+                      description='The value-function solver; solve_hedge requires DiffSolver '
+                                  '(DiffSolverV2 is the legacy spelling of the same solver)'),
                     F('Multi_Seed_Count', 'Integer', default=1,
                       description='Independent training seeds the artifact is selected across'),
                     F('T_Min', 'Integer', default=0,
@@ -2302,6 +2302,10 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                       description='Downside semideviation penalty at the argmax; 0 = plain E[C]'),
                     F('DiffV2_Cost_Aware_Argmax', 'Text', default='No', values=['Yes', 'No'],
                       description='Charge the L1 repositioning cost at the verdict argmax'),
+                    F('DiffV2_Fit_Tol', 'Float', default=0.001,
+                      description='Relative loss-plateau tolerance at which an INHERITED '
+                                  'net\'s fit stops early; the terminal anchor always runs '
+                                  'the full DiffV2_Fit_Iters budget. 0 = never stop early'),
                     F('DiffV2_Temporal_Proximity', 'Float', default=0.0,
                       description='Weight pulling each net\'s parameters toward its fitted '
                                   'successor\'s during the fit; 0 = off'),

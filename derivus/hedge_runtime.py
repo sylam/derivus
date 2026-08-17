@@ -252,10 +252,11 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         # Quadratic churn charge at the argmax + label argmax (selection-shaping; the fitted
         # value targets stay cost-free, the cost-aware precedent).
         "diffv2_churn_lambda": float(solver_config.get("DiffV2_Churn_Lambda", 0.0)),
-        # CoupledDiffSolver: parameter proximity to the fitted successor (warm-start is the
-        # class itself).
+        # Successor-inheritance extras: parameter proximity to the fitted neighbour, and the
+        # early-termination tolerance an inherited fit stops at (the anchor runs the budget).
         "diffv2_temporal_proximity":
             float(solver_config.get("DiffV2_Temporal_Proximity", 0.0)),
+        "diffv2_fit_tol": float(solver_config.get("DiffV2_Fit_Tol", 1e-3)),
         # Cost-aware EXECUTION: the verdict rollout charges the L1 repositioning cost
         # (Transaction_Cost_Per_Unit + half Bid_Offer_Spread_Bps) at the argmax, trading
         # expected value against the cost of getting there. Training stays cost-free.
@@ -363,16 +364,15 @@ def construct_hedge_runtime(
         if str(config.get("Inner_MC_Enabled", "No")) != "Yes":
             raise ValueError("Execution_Mode 'solve_hedge' requires Inner_MC_Enabled='Yes'")
         min_inner = (2 if str(solver_config.get("Object", "")).lower()
-                     in ("diffsolverv2", "coupleddiffsolver") else 128)
+                     in ("diffsolver", "diffsolverv2") else 128)
         if int(config.get("Inner_Sub_Batch", 0)) < min_inner:
             raise ValueError(
                 "Execution_Mode 'solve_hedge' requires Inner_Sub_Batch >= "
                 f"{min_inner} for Solver.Object={solver_config.get('Object')!r}")
-        if str(solver_config.get("Object", "")).lower() not in (
-                "diffsolverv2", "coupleddiffsolver"):
+        if str(solver_config.get("Object", "")).lower() not in ("diffsolver", "diffsolverv2"):
             raise ValueError(
-                "Execution_Mode 'solve_hedge' requires Solver.Object='DiffSolverV2' or "
-                f"'CoupledDiffSolver' (the incremental warmup/step/finish API); got "
+                "Execution_Mode 'solve_hedge' requires Solver.Object='DiffSolver' "
+                f"(legacy spelling 'DiffSolverV2' accepted); got "
                 f"{solver_config.get('Object')!r}. HindsightDpSolver remains available as the "
                 "Run_Hindsight_Diagnostic track.")
         # A solve is a STREAM: Simulation_Batches - 1 fit batches, then a held-out batch no fit

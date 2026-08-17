@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 
-from derivus.hedge_solver import DiffSolverV2, HedgeActionSpace
+from derivus.hedge_solver import DiffSolver, HedgeActionSpace
 
 
 def _aspace(max_trade=0.0, levels=9, lo=-60, hi=0):
@@ -48,7 +48,7 @@ def _fake_solver(aspace, churn_lambda=0.0, value_scale=1.0):
         _wealth_step=lambda W, q, dF, dL: (W + q.sum(-1) * value_scale).expand(
             W.shape[0], q.shape[1], dF.shape[-1]),
         _continuation=lambda nets, m, W1, t: W1,
-        _decide=DiffSolverV2._decide,
+        _decide=DiffSolver._decide,
     )
 
 
