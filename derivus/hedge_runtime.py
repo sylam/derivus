@@ -511,6 +511,11 @@ def construct_hedge_runtime(
             # Per-leg |Δq| cap per decision step at the ARGMAX (0 = off). Execution policy
             # only — training labels never see it.
             "max_trade_per_step": float(evaluator_config.get("Max_Trade_Per_Step", 0.0)),
+            # Significance the argmax must beat the STANDING book by before it trades, in
+            # standard errors of the paired inner-draw difference (0 = off). Execution
+            # policy only, like the cap above.
+            "decision_deadband_sigma":
+                float(evaluator_config.get("Decision_Deadband_Sigma", 0.0)),
         },
         "privileged_layout": derive_privileged_layout(stoch_factors),
     }

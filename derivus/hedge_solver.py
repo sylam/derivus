@@ -122,6 +122,9 @@ class HedgeActionSpace:
         # only: the label path passes rate_limit=False, so a standing book handed to the
         # training argmax (for the churn charge) never arms the band.
         self.max_trade = float(acc.get("max_trade_per_step", 0.0))
+        # Optional no-trade band in standard errors of the PAIRED inner-draw difference
+        # against the standing book (0 = off). Same execution-only path as `max_trade`.
+        self.deadband_sigma = float(acc.get("decision_deadband_sigma", 0.0))
         self._grid_cache = None
         solver_cfg = runtime["solver"]
         self.levels = int(solver_cfg["training_action_grid_levels_per_axis"])
@@ -685,15 +688,26 @@ class DiffSolver:
         (`rate_limit` True — the label path lowers it so the band stays execution-only). The
         band takes the best action INSIDE the reachable set and falls back to the
         unrestricted best when the corridor forces a jump. The fitted value targets stay
-        cost-free; these shape SELECTION only."""
+        cost-free; these shape SELECTION only.
+
+        `Decision_Deadband_Sigma` (`aspace.deadband_sigma` > 0, also execution-only) then makes
+        the standing book the INCUMBENT candidate: the winner only trades when it beats holding
+        by that many standard errors of the difference PAIRED across the common inner draws, so
+        a near-tie between two noisy estimates leaves the book alone instead of teleporting.
+        Holding an infeasible book is not on offer — a path whose `q_prev` sits outside the
+        corridor at t moves regardless."""
         grid = self.aspace.grid_at(t, live)
         limit = rate_limit and q_prev is not None and self.aspace.max_trade > 0.0
+        dead = rate_limit and q_prev is not None and self.aspace.deadband_sigma > 0.0
         with torch.no_grad():
             B, Bi, md = market_t1.shape
+            rows = torch.arange(B, device=market_t1.device)
             best_val = None
             best_q = None
+            best_f = None
             band_val = None
             band_q = None
+            band_f = None
             for s in range(0, grid.shape[0], self.chunk):
                 acts = grid[s:s + self.chunk]                                            # (c, n_hedge)
                 c = acts.shape[0]
@@ -721,23 +735,45 @@ class DiffSolver:
                     bv, ba = C1.masked_fill(infeas, float('-inf')).max(dim=1)
                     bq = acts[ba]                          # index 0 on an all-infeasible chunk;
                     if band_val is None:                   # discarded by the isfinite mask below
-                        band_val, band_q = bv, bq
+                        band_val, band_q, band_f = bv, bq, C1f[rows, ba]
                     else:
                         upd = bv > band_val
                         band_val = torch.where(upd, bv, band_val)
                         band_q = torch.where(upd.unsqueeze(-1), bq, band_q)
+                        band_f = torch.where(upd.unsqueeze(-1), C1f[rows, ba], band_f)
                 cval, carg = C1.max(dim=1)
                 cact = acts[carg]                                                        # (B,n_hedge)
                 if best_val is None:
-                    best_val, best_q = cval, cact
+                    best_val, best_q, best_f = cval, cact, C1f[rows, carg]
                 else:
                     upd = cval > best_val
                     best_val = torch.where(upd, cval, best_val)
                     best_q = torch.where(upd.unsqueeze(-1), cact, best_q)
+                    best_f = torch.where(upd.unsqueeze(-1), C1f[rows, carg], best_f)
             if limit:
                 ok = torch.isfinite(band_val)
                 best_q = torch.where(ok.unsqueeze(-1), band_q, best_q)
                 best_val = torch.where(ok, band_val, best_val)
+                best_f = torch.where(ok.unsqueeze(-1), band_f, best_f)
+            if dead:
+                # The incumbent: hold q_prev, dq=0 so no turnover/churn charge applies.
+                W1 = self._wealth_step(W[:, None, None], q_prev[:, None, None, :],
+                                       dF[:, None], dL[:, None])                          # (B,1,Bi)
+                C1f_inc = self._continuation(
+                    nets, market_t1.reshape(-1, md), W1.reshape(-1), t + 1).reshape(B, Bi)
+                inc = C1f_inc.mean(-1)
+                if self.risk_kappa > 0.0:
+                    dev = (C1f_inc - inc.unsqueeze(-1)).clamp(max=0.0)
+                    inc = inc - self.risk_kappa * (dev ** 2).mean(-1).sqrt()
+                diff = best_f - C1f_inc                                                   # (B,Bi) paired
+                se = diff.std(-1) / math.sqrt(Bi)
+                move = diff.mean(-1) > self.aspace.deadband_sigma * se
+                # Holding is only on offer while q_prev is corridor-feasible at t.
+                hold_ok = ((self.aspace.project_to_corridor(q_prev, t) - q_prev).abs()
+                           <= 1e-9).all(-1)
+                move = move | ~hold_ok
+                best_q = torch.where(move.unsqueeze(-1), best_q, q_prev)
+                best_val = torch.where(move, best_val, inc)
             return best_q, best_val
 
     # ---- operating-region bank ----------------------------------------------

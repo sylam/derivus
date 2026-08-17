@@ -2263,6 +2263,11 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                       description='Per-leg cap on |position change| per decision step at the '
                                   'argmax; 0 = uncapped. Execution policy only - training is '
                                   'unaffected, so a trained policy can be re-rolled under it'),
+                    F('Decision_Deadband_Sigma', 'Float', default=0.0,
+                      description='No-trade band: the argmax must beat HOLDING the standing '
+                                  'book by this many standard errors of the paired inner-draw '
+                                  'difference before it trades; 0 = trade on any improvement. '
+                                  'Execution policy only, like the cap above'),
                     F('Total_Position_Schedule', 'Table', default=None,
                       row=Row([F('Step', 'Integer', default=0),
                                F('Min_Total', 'Float', default=0.0),
