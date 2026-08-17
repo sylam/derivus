@@ -2326,6 +2326,11 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                       description='Quadratic repositioning charge in currency per contract^2, '
                                   'subtracted from the wealth entering the continuation at the '
                                   'argmax and at the training-label argmax; 0 = off'),
+                    F('DiffV2_Position_State', 'Text', default='No', values=['Yes', 'No'],
+                      description='Frictional Bellman: the signed net book fraction becomes a '
+                                  'state coordinate of the fitted value and the repositioning '
+                                  'charge enters the regressed target, so turnover compounds '
+                                  'down the recursion instead of being a one-day toll'),
                     F('DiffV2_Stepper_Rollout', 'Text', default='No', values=['Yes', 'No'],
                       description='Roll a frozen policy day-by-day through the real accounting'),
                     F('DiffV2_Per_Column_Grad_Norm', 'Text', default='Yes', values=['Yes', 'No'],

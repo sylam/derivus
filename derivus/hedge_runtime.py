@@ -212,6 +212,18 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
     +0.01-0.017 u on every 8k seed versus the pooled scalar. 'No' = the legacy pooled variance,
     where one fat-tailed column deflates the constraint for all columns.
 
+    `DiffV2_Position_State` — the FRICTIONAL Bellman. The fitted value is position-free and
+    cost-free by default, so a repositioning charge levied at the argmax is a one-day toll the
+    value function never remembers, and no no-trade region can form out of a toll. Set, the signed
+    net book fraction p = Sum(q)/`Total_Position_Abs_Limit` joins the net's input after the market
+    columns and W, the charge is subtracted from the wealth that becomes the regressed TARGET (not
+    only the wealth that ranks the action), the successor is read at the book the chosen action
+    leaves standing, and a `Force_Flat_At_End` mandate makes the last decision pay for its own
+    unwind. The charge then compounds down the recursion, which is what a hysteresis band is made
+    of. A cap of 0 fails loud — it is the scale p is measured in. Value functions trained with and
+    without it are different functions of different states, so a checkpoint carries the setting and
+    a mismatched load is refused by name.
+
     `DiffV2_Save_Value_Fn` / `DiffV2_Load_Value_Fn` — value-function persistence: save the fitted
     nets (+ standardization stats + utility scale) after the backward sweep, or load them and SKIP
     training for a frozen-policy eval, e.g. OOD stress gates (train under the calibrated world,
@@ -265,6 +277,10 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         # expected value against the cost of getting there. Training stays cost-free.
         "diffv2_cost_aware_argmax":
             solver_config.get("DiffV2_Cost_Aware_Argmax", "No") == "Yes",
+        # FRICTIONAL Bellman: the net book fraction becomes a state coordinate and the charge
+        # enters the fitted TARGET (see docstring). 'No' = the position-free value.
+        "diffv2_position_state":
+            solver_config.get("DiffV2_Position_State", "No") == "Yes",
         # Deployment-faithful backtest: with a frozen policy loaded, roll it day-by-day on the
         # observed path via BundleStepper (real futures accounting; decisions off the stepper's
         # own wealth). Exposes diagnostics['stepper_verdict']. 'No' = only the fast _verdict.
@@ -561,10 +577,11 @@ def initial_q_from_runtime(runtime, batch, device):
     exposed here so the solver's frictionless bank/verdict/benchmark tracks measure their
     FIRST-step turnover from the real opening book rather than from flat.
 
-    The differential-ML value function is POSITION-FREE: `q0` affects only first-step
-    turnover diagnostics + the rolled P&L, never the fitted value. If turnover cost ever
-    becomes material to the objective, the incoming position becomes a genuine state
-    variable and `q_prev` must move into the value-function state (V(market, W, q))."""
+    The differential-ML value function is POSITION-FREE by default: `q0` affects only first-step
+    turnover diagnostics + the rolled P&L, never the fitted value. `Solver.DiffV2_Position_State`
+    is the case where turnover IS material to the objective — the incoming book becomes a genuine
+    state variable, and `q0` is then the standing position the first decision is charged from and
+    the first position state the value function reads."""
     positions = runtime["portfolio_state"]["positions"]
     hedges = runtime["names"]["hedges"]
     q0 = torch.tensor([float(positions.get(str(h), 0.0)) for h in hedges], device=device)

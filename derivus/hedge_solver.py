@@ -207,15 +207,36 @@ class HedgeActionSpace:
         and the verdict/stepper textbook (a fair in-corridor min-var comparison)."""
         if self.schedule is None:
             return q
-        lo, hi = self._corridor_at(t)
+        return self.waterfill(q, *self._corridor_at(t))
+
+    def waterfill(self, q, lo, hi):
+        """Shift the ACTIVE legs of `q` `(B, n_hedge)` so their signed total lands in `[lo, hi]`,
+        each leg staying inside its own `[Min,Max]`: the deficit `d = clamp(Σq, lo, hi) − Σq` is
+        distributed in proportion to each leg's remaining room in d's direction. `lo`/`hi` are
+        scalars (the corridor) or `(B,1)` tensors (a per-path net target). Feasible whenever the
+        headroom covers `|d|` — the same feasibility `grid_at` fails loud on."""
         idx = self.active
         qa = q[:, idx]                                                   # (B, n_active)
         tot = qa.sum(-1, keepdim=True)                                   # (B,1) signed active total
-        d = tot.clamp(lo, hi) - tot                                     # (B,1) corridor deficit
+        d = tot.clamp(lo, hi) - tot                                     # (B,1) deficit
         head = torch.where(d >= 0, self.q_hi[idx] - qa, qa - self.q_lo[idx]).clamp_min(0.0)
         out = q.clone()
         out[:, idx] = qa + d * head / head.sum(-1, keepdim=True).clamp_min(1e-9)
         return out
+
+    def net_bounds(self, t):
+        """The feasible band of the SIGNED active total at decision step t — the per-leg boxes
+        intersected with `Total_Position_Abs_Limit` and with the `Total_Position_Schedule`
+        corridor. Exactly the interval `grid_at(t)` can realize, so it is the support the position
+        state p = Σq/Q_max is queried over and therefore the one the bank must explore."""
+        lo = float(self.q_lo[self.active].sum())
+        hi = float(self.q_hi[self.active].sum())
+        if self.total_abs_limit > 0.0:
+            lo, hi = max(lo, -self.total_abs_limit), min(hi, self.total_abs_limit)
+        if self.schedule is not None:
+            c_lo, c_hi = self._corridor_at(t)
+            lo, hi = max(lo, c_lo), min(hi, c_hi)
+        return lo, hi
 
     def kappa(self, tradables_sim, t_index):
         """Per-hedge kappa `(n_hedge,)` at sim-grid `t_index` — each instrument's mean mark
@@ -256,8 +277,9 @@ def run_textbook_benchmark(bundle, runtime):
     respects `Active_Hedge_Indices` (inactive axes pinned to 0) exactly like the greedy grid.
 
     The turnover a real execution of this constant hold would pay — entry from the OPENING
-    book `q0` (not from flat) + terminal unwind — is a shared-kappa net-of-cost DIAGNOSTIC
-    (`turnover_cost_mean` / `v0_mean_net`), never charged against the V_0 track.
+    book `q0` (not from flat) + terminal unwind at the PRE-SETTLEMENT row — is a shared-kappa
+    net-of-cost DIAGNOSTIC (`turnover_cost_mean` / `v0_mean_net`), never charged against the V_0
+    track. One unwind row across all three tracks, so their `*_net` columns compare.
 
     The corridor filter is the ENTRY-step one, `grid_at(0)`: the hold is chosen ONCE at entry, and a
     per-t corridor is a dynamic constraint a constant hold cannot track, so the entry-step grid is
@@ -283,7 +305,10 @@ def run_textbook_benchmark(bundle, runtime):
     kappa0 = aspace.kappa(tradables_sim, 0)
     cost = aspace.turnover_cost(n_star.unsqueeze(0) - q0, kappa0)      # (B,) entry from q0
     if acc["force_flat_at_end"]:
-        kappa_T = aspace.kappa(tradables_sim, t_outer - 1)
+        # Unwound at the PRE-SETTLEMENT row `last_live_mtm_index`, the one the solver's own
+        # terminal charge uses: the last row is the post-settlement clean exit, where the deal
+        # has already paid and there is nothing left to liquidate at.
+        kappa_T = aspace.kappa(tradables_sim, int(bundle.last_live_mtm_index))
         cost = cost + aspace.turnover_cost(n_star, kappa_T)            # unwind to flat (scalar)
     u_net = _utility_wrap_signed(L_T + g_t[best] - cost, runtime)
     return {"v0_mean": float(obj[best]), "v0_std": 0.0,
@@ -304,8 +329,9 @@ class HindsightDpSolver:
     choices decouple, so the max-plus DP collapses to a per-step argmax. `mean_b V_0(b)` is
     an upper bound on any deployable (non-clairvoyant) policy's value — the reference the DP
     is measured against. The turnover a real execution of this bang-bang trajectory would pay
-    (entry from the OPENING book, per-step repositioning, terminal unwind) is a shared-kappa
-    net-of-cost DIAGNOSTIC, never charged against the V_0 track. Uses the shared
+    (entry from the OPENING book, per-step repositioning, terminal unwind at the PRE-SETTLEMENT
+    row — the one row all three tracks unwind at, so their `*_net` columns compare) is a
+    shared-kappa net-of-cost DIAGNOSTIC, never charged against the V_0 track. Uses the shared
     `HedgeActionSpace`, so it respects `Active_Hedge_Indices` exactly like the greedy grid."""
 
     documentation = ('Solver', [
@@ -358,7 +384,9 @@ class HindsightDpSolver:
             if t == 0:
                 n_star_0 = q_now
         if acc["force_flat_at_end"]:
-            cost = cost + aspace.turnover_cost(q_prev, aspace.kappa(tradables_sim, t_outer - 1))
+            # Pre-settlement row, as in `run_textbook_benchmark` and `DiffSolver._unwind_kappa`.
+            cost = cost + aspace.turnover_cost(
+                q_prev, aspace.kappa(tradables_sim, int(bundle.last_live_mtm_index)))
         v0 = _utility_wrap_signed(L_T + G, runtime)                    # (B,) FRICTIONLESS
         v0_net = _utility_wrap_signed(L_T + G - cost, runtime)         # (B,) net-of-cost diagnostic
 
@@ -419,14 +447,21 @@ class DiffSolver:
         gradient: a Huge–Savine twin loss), so the unbounded residual can't drift off u.
       * Operating-region bank — roll the OUTER paths forward exploring q AROUND the per-t
         replication (diagonal min-var) hedge, so wealth stays in-band and A stays on-support.
-      * Position-free value (toy-faithful) — V(market, W) does NOT take the position as input;
-        with no turnover cost the held position is a freely-reset control, so it enters the
-        value only through next-step wealth W1 = W + Σ q_i·cs_i·dF_i + dL. The n_hedge
-        instruments live in the ACTION grid + the wealth step (the net learns there are 3 via
-        the routing of W1), not as a state coordinate. Adding q as a state is the right move
-        ONLY once turnover cost makes the incoming position a real state variable. The action
-        grid spans all hedges; a single-future-of-three test pins inactive axes to 0 via
-        `Active_Hedge_Indices` (e.g. [2] ⇒ [0,0,-50]…[0,0,0]).
+      * Position-free value (toy-faithful, the default) — V(market, W) does NOT take the
+        position as input; with no turnover cost the held position is a freely-reset control,
+        so it enters the value only through next-step wealth W1 = W + Σ q_i·cs_i·dF_i + dL. The
+        n_hedge instruments live in the ACTION grid + the wealth step (the net learns there are
+        3 via the routing of W1), not as a state coordinate. The action grid spans all hedges; a
+        single-future-of-three test pins inactive axes to 0 via `Active_Hedge_Indices`
+        (e.g. [2] ⇒ [0,0,-50]…[0,0,0]).
+      * FRICTIONAL Bellman (`DiffV2_Position_State`) — the move the toy's own caveat names: once
+        turnover costs money the incoming position IS a state variable, so the net gains the
+        signed net book fraction p = Σq/Q_max as an input column and the repositioning charge is
+        subtracted from the wealth that becomes the regressed TARGET, not only from the wealth
+        that ranks the action. Cost-free-target pricing charges turnover as a one-day toll the
+        value function never remembers, and a no-trade region cannot form out of a toll; charging
+        it inside the target makes it compound down the recursion, which is what a hysteresis
+        band is made of.
 
     Wealth convention: net wealth W_t = cumulative hedge P&L + the
     marked liability L_t; W_{t+1} = W_t + Σ_i q_i·cs_i·(F_{t+1,i} − F_{t,i}) + (L_{t+1} − L_t);
@@ -469,6 +504,7 @@ class DiffSolver:
         '| `DiffV2_Bank_Noise_Frac` | exploration around the per-t replication hedge |',
         '| `DiffV2_Risk_Kappa` | score actions by `mean(C) - kappa * downside-semidev(C)` |',
         '| `DiffV2_Cost_Aware_Argmax` | charge the L1 repositioning cost at the argmax |',
+        '| `DiffV2_Position_State` | the frictional Bellman: `p` as state, the charge in the target |',
         '| `Active_Hedge_Indices` | which hedge axes vary; the rest pin to 0 |',
         '| `Multi_Seed_Count` | independent solvers on the same batches |',
         '',
@@ -531,6 +567,18 @@ class DiffSolver:
         self.cost_aware = bool(self.cfg.get("diffv2_cost_aware_argmax", False))
         # Quadratic churn charge lambda*sum((q-q_prev)^2) at every argmax that knows q_prev.
         self.churn_lambda = float(self.cfg.get("diffv2_churn_lambda", 0.0))
+        # FRICTIONAL BELLMAN: the net book fraction p = Sum(q)/Q_max becomes a state coordinate of
+        # the fitted value AND the repositioning charge enters the regressed target. 'No' = the
+        # position-free, cost-free value (bit-identical). Q_max is the Evaluator's total-position
+        # cap: it is the only declared scale p can be measured in, so an absent cap fails loud
+        # rather than dividing the state by zero.
+        self.position_state = bool(self.cfg.get("diffv2_position_state", False))
+        self.force_flat = bool(runtime["accounting"]["force_flat_at_end"])
+        if self.position_state and not self.total_abs_limit > 0.0:
+            raise ValueError(
+                "Solver.DiffV2_Position_State='Yes' requires Evaluator.Total_Position_Abs_Limit > 0 "
+                f"(it is {self.total_abs_limit}): the position state is p = Sum(q)/Q_max and the "
+                "cap is the scale it is measured in")
         # Early termination for non-anchor fits: BLOCK-wise relative loss plateau (blocks of
         # 8 iters, floor of 2 blocks), so cold-Adam stall cannot read as convergence and the
         # loss sync is paid once per block, not per iteration. The terminal anchor always
@@ -599,16 +647,24 @@ class DiffSolver:
         return self.aspace.grid()
 
     # ---- input standardization ----------------------------------------------
-    def _standardize(self, market, W):
-        """Standardized state (market | W) for the residual net — POSITION-FREE (toy-faithful:
-        with no turnover cost the held position is a freely-reset control, not a state; it
-        enters the value only through next-step wealth W1). Market/wealth use bank mean/std."""
+    def _standardize(self, market, W, p):
+        """Standardized state for the residual net: (market | W), plus the signed net book
+        fraction p = Sum(q)/Q_max as a trailing column under `DiffV2_Position_State`. `p is None`
+        IS the switch at this level — position-free (toy-faithful: with no turnover cost the held
+        position is a freely-reset control, not a state) gives the bit-identical two-block layout.
+
+        Market and wealth are z-scored against the locked bank frame; p is NOT, because it is
+        already a fraction of the cap on both sides of the seam — `grid()` drops any action over
+        `Total_Position_Abs_Limit`, and `_build_bank` water-fills each sampled book onto
+        `aspace.net_bounds(t)`. So p arrives in [-1, 1] by construction over a support the bank
+        actually covers, and a z-frame would only add a batch-dependent rescaling to a coordinate
+        that already has a natural one."""
         m = (market - self.m_mean) / self.m_std
         wn = ((W - self.w_mean) / self.w_std).unsqueeze(-1)
-        return torch.cat([m, wn], dim=-1)
+        return torch.cat([m, wn] if p is None else [m, wn, p.unsqueeze(-1)], dim=-1)
 
-    def _continuation(self, nets, market, W, t, chunk=400_000):
-        """C_t = u(W) + A_t(market, W); terminal C_{T_dec} = u(W). Row-chunked net eval.
+    def _continuation(self, nets, market, W, t, p, chunk=400_000):
+        """C_t = u(W) + A_t(market, W[, p]); terminal C_{T_dec} = u(W). Row-chunked net eval.
         Ensemble mode (list-of-checkpoints load): A = mean over members, each evaluated in
         its OWN standardization frame — the frame is part of the function.
         A_t is CLAMPED to its fitted-target trust region (one range-width of headroom):
@@ -624,13 +680,14 @@ class DiffSolver:
             acc = torch.zeros_like(base)
             for m_nets, m_mean, m_std, w_mean, w_std, m_bounds in self._ensemble:
                 x = torch.cat([(market - m_mean) / m_std,
-                               ((W - w_mean) / w_std).unsqueeze(-1)], dim=-1)
+                               ((W - w_mean) / w_std).unsqueeze(-1)]
+                              + ([] if p is None else [p.unsqueeze(-1)]), dim=-1)
                 b = m_bounds[t] if m_bounds is not None else None
                 for i in range(0, x.shape[0], chunk):
                     a = m_nets[t](x[i:i + chunk])
                     acc[i:i + chunk] += a if b is None else torch.clamp(a, b[0], b[1])
             return base + acc / len(self._ensemble)
-        x = self._standardize(market, W)
+        x = self._standardize(market, W, p)
         b = self.a_bounds[t]
         if x.shape[0] <= chunk:
             a = nets[t](x)
@@ -640,6 +697,36 @@ class DiffSolver:
             a = nets[t](x[i:i + chunk])
             out[i:i + chunk] = a if b is None else torch.clamp(a, b[0], b[1])
         return base + out
+
+    # ---- friction: the one charge both the ranking and the label pay ---------
+    def _unwind_kappa(self, t):
+        """The terminal liquidation kappa when decision `t`'s successor IS the terminal mark and
+        `Force_Flat_At_End` forces the book flat there — else None. Under `DiffV2_Position_State`
+        the last decision has to price the unwind of whatever it leaves standing; without it the
+        final step accumulates a position for free and the frictional recursion ends in a
+        discontinuity. Read at `T_dec`, the pre-settlement row — the same row the benchmark
+        tracks charge their own unwind at."""
+        return (self.aspace.kappa(self.tradables_sim, self.T_dec)
+                if self.position_state and self.force_flat and t + 1 >= self.T_dec else None)
+
+    def _reposition_charge(self, acts, q_prev, kappa, kappa_T):
+        """The frictional charge on moving `q_prev` to `acts` (broadcastable `(..., n_hedge)`): the
+        L1 turnover toll at `kappa`, the quadratic churn term (`DiffV2_Churn_Lambda`), and the
+        terminal unwind of `acts` at `kappa_T` when `_unwind_kappa` says one applies.
+
+        ONE expression, called from every seam: the wealth that RANKS a candidate in `_decide`,
+        the wealth the INCUMBENT holds against it, and the wealth that becomes the chosen action's
+        regressed TARGET in `_fit_step` all price the same friction. That equality is the whole of
+        the frictional Bellman — a charge applied only at the ranking is a one-day toll the value
+        function forgets. Callers pass LIVE-MASKED positions on both sides; a dead leg then has
+        `dq = 0` and carries no phantom toll (see `_decide`)."""
+        dq = acts - q_prev
+        charge = self.churn_lambda * dq.pow(2).sum(-1)
+        if kappa is not None:
+            charge = charge + self.aspace.turnover_cost(dq, kappa)
+        if kappa_T is not None:
+            charge = charge + self.aspace.turnover_cost(acts, kappa_T)
+        return charge
 
     # ---- one-step wealth move ------------------------------------------------
     def _wealth_step(self, W, q, dF, dL):
@@ -682,26 +769,60 @@ class DiffSolver:
         `Total_Position_Schedule` corridor at t when one is configured (else the base grid). The
         `live` leg mask (the callers zero `q*live` after expiry) enters the filter so the corridor
         bounds the REALIZED Σ(q_i·live_i), not a target the expiry mask then guts.
-        `q_prev` carries the standing book and arms up to three decision-time corrections,
+        `q_prev` carries the standing book and arms up to four decision-time corrections,
         each with its own further switch: the cost-aware L1 charge (`kappa` present), the
-        quadratic churn charge (`self.churn_lambda` > 0), and the `Max_Trade_Per_Step` band
-        (`rate_limit` True — the label path lowers it so the band stays execution-only). The
-        band takes the best action INSIDE the reachable set and falls back to the
-        unrestricted best when the corridor forces a jump. The fitted value targets stay
-        cost-free; these shape SELECTION only.
+        quadratic churn charge (`self.churn_lambda` > 0), the `Max_Trade_Per_Step` band
+        (`rate_limit` True — the label path lowers it so the band stays execution-only) and the
+        `Decision_Deadband_Sigma` incumbent. The band takes the best action INSIDE the reachable
+        set and falls back to the unrestricted best when the corridor forces a jump. Without
+        `DiffV2_Position_State` the fitted value targets stay cost-free and these shape
+        SELECTION only.
+
+        Under `DiffV2_Position_State` the same charge (plus the terminal unwind) also enters the
+        label's target in `_fit_step`, and the successor is queried at the book each CANDIDATE
+        leaves standing, p' = Sum(a·live)/Q_max — the realized book.
+
+        EXPIRY, one convention end to end: every position this method prices, states and RETURNS
+        is LIVE-MASKED — candidate, standing book, incumbent, rate-limit band and answer alike. A
+        dead leg cannot be traded and earns nothing, so a move on it is a phantom, and pricing
+        that phantom is not free: measured, an unmasked `q_prev` let the argmax park |50| on a
+        dead leg purely to dodge the phantom's unwind, and because the action grid is cap-filtered
+        that parking spent the whole `Total_Position_Abs_Limit` on nothing. Masked, the rows that
+        differ only on dead legs collapse to one book, so the ranking compares realizable
+        alternatives and the answer is the book the caller will actually hold.
 
         `Decision_Deadband_Sigma` (`aspace.deadband_sigma` > 0, also execution-only) then makes
         the standing book the INCUMBENT candidate: the winner only trades when it beats holding
         by that many standard errors of the difference PAIRED across the common inner draws, so
         a near-tie between two noisy estimates leaves the book alone instead of teleporting.
         Holding an infeasible book is not on offer — a path whose `q_prev` sits outside the
-        corridor at t moves regardless."""
+        corridor at t moves regardless. The incumbent runs through the SAME `_reposition_charge`
+        as every rival — `dq = 0` kills the L1 and churn terms while the terminal unwind, a
+        charge on the LEVEL, survives — and is queried at its OWN position state, so the paired
+        difference subtracts two readings of one function rather than two functions.
+
+        RULINGS. (i) The deadband is `rate_limit`-gated, so the label path fits against a
+        no-deadband argmax while deployment holds — the same execution-only contract
+        `Max_Trade_Per_Step` has. In the label path instead, it would make the target
+        path-dependent on `q_prev` beyond the charge. (ii) The move test compares RISK-NEUTRAL
+        means while `best_val`/`inc` carry the `DiffV2_Risk_Kappa` semideviation penalty: the
+        paired standard error is an estimator statement about E[C], and a semideviation is not a
+        mean it could be a standard error of. The band stays risk-neutral by construction."""
         grid = self.aspace.grid_at(t, live)
         limit = rate_limit and q_prev is not None and self.aspace.max_trade > 0.0
         dead = rate_limit and q_prev is not None and self.aspace.deadband_sigma > 0.0
         with torch.no_grad():
             B, Bi, md = market_t1.shape
+            if dead and Bi < 2:
+                raise ValueError(
+                    "Decision_Deadband_Sigma needs Inner_Sub_Batch >= 2: the hold test is a "
+                    "PAIRED standard error over the inner draws, so one draw makes it NaN, every "
+                    "comparison False, and the book would silently never trade again")
+            kappa_T = self._unwind_kappa(t)
             rows = torch.arange(B, device=market_t1.device)
+            # ONE expiry convention (see docstring): the standing book, like every candidate, is
+            # only what still lives.
+            q_live = q_prev if q_prev is None or live is None else q_prev * live
             best_val = None
             best_q = None
             best_f = None
@@ -712,28 +833,31 @@ class DiffSolver:
                 acts = grid[s:s + self.chunk]                                            # (c, n_hedge)
                 c = acts.shape[0]
                 q = acts[None, :, None, :]                                               # (1,c,1,n_hedge)
+                a_live = acts if live is None else acts * live                            # (c,n_hedge)
                 W1 = self._wealth_step(W[:, None, None], q, dF[:, None], dL[:, None])     # (B,c,Bi)
-                if q_prev is not None and (kappa is not None or self.churn_lambda > 0.0):
-                    dq = acts[None, :, :] - q_prev[:, None, :]                            # (B,c,n_h)
-                    charge = 0.0
-                    if kappa is not None:
-                        charge = self.aspace.turnover_cost(dq, kappa)                     # (B,c) $
-                    if self.churn_lambda > 0.0:
-                        charge = charge + self.churn_lambda * dq.pow(2).sum(-1)
-                    W1 = W1 - charge[:, :, None]
+                # kappa_T rides OUTSIDE the q_prev gate: the terminal unwind is a property of the
+                # ACTION, so a step with no standing book must not liquidate for free.
+                if kappa_T is not None or (q_live is not None
+                                           and (kappa is not None or self.churn_lambda > 0.0)):
+                    prev = a_live[None] if q_live is None else q_live[:, None, :]
+                    W1 = W1 - self._reposition_charge(                                    # (B,c) $
+                        a_live[None, :, :], prev, kappa, kappa_T)[:, :, None]
+                # The successor is queried at the book the CANDIDATE leaves standing (see docstring).
+                p1 = ((a_live.sum(-1) / self.total_abs_limit)[None, :, None]
+                      .expand(B, c, Bi).reshape(-1) if self.position_state else None)
                 C1f = self._continuation(
                     nets,
                     market_t1[:, None].expand(B, c, Bi, md).reshape(-1, md),
-                    W1.reshape(-1), t + 1).reshape(B, c, Bi)                              # (B,c,Bi)
+                    W1.reshape(-1), t + 1, p1).reshape(B, c, Bi)                          # (B,c,Bi)
                 C1 = C1f.mean(-1)                                                         # E_inner[C] (B,c)
                 if self.risk_kappa > 0.0:        # downside-aware: penalise per-action downside dispersion
                     dev = (C1f - C1.unsqueeze(-1)).clamp(max=0.0)                         # negatives only
                     C1 = C1 - self.risk_kappa * (dev ** 2).mean(-1).sqrt()
                 if limit:
-                    infeas = ((acts[None, :, :] - q_prev[:, None, :]).abs()
+                    infeas = ((a_live[None, :, :] - q_live[:, None, :]).abs()
                               > self.aspace.max_trade).any(-1)                            # (B,c)
                     bv, ba = C1.masked_fill(infeas, float('-inf')).max(dim=1)
-                    bq = acts[ba]                          # index 0 on an all-infeasible chunk;
+                    bq = a_live[ba]                        # index 0 on an all-infeasible chunk;
                     if band_val is None:                   # discarded by the isfinite mask below
                         band_val, band_q, band_f = bv, bq, C1f[rows, ba]
                     else:
@@ -742,7 +866,7 @@ class DiffSolver:
                         band_q = torch.where(upd.unsqueeze(-1), bq, band_q)
                         band_f = torch.where(upd.unsqueeze(-1), C1f[rows, ba], band_f)
                 cval, carg = C1.max(dim=1)
-                cact = acts[carg]                                                        # (B,n_hedge)
+                cact = a_live[carg]                                                      # (B,n_hedge)
                 if best_val is None:
                     best_val, best_q, best_f = cval, cact, C1f[rows, carg]
                 else:
@@ -756,11 +880,21 @@ class DiffSolver:
                 best_val = torch.where(ok, band_val, best_val)
                 best_f = torch.where(ok.unsqueeze(-1), band_f, best_f)
             if dead:
-                # The incumbent: hold q_prev, dq=0 so no turnover/churn charge applies.
-                W1 = self._wealth_step(W[:, None, None], q_prev[:, None, None, :],
+                # The incumbent is a CANDIDATE, priced by the same rules: hold q_live, so dq = 0
+                # kills the L1 and churn terms and only the terminal unwind — a charge on the
+                # level — survives. Holding therefore pays for its own liquidation exactly as
+                # trading INTO the same book would, and the paired difference below is a
+                # difference of two like things.
+                W1 = self._wealth_step(W[:, None, None], q_live[:, None, None, :],
                                        dF[:, None], dL[:, None])                          # (B,1,Bi)
+                if kappa_T is not None or kappa is not None or self.churn_lambda > 0.0:
+                    W1 = W1 - self._reposition_charge(
+                        q_live, q_live, kappa, kappa_T)[:, None, None]
+                p_inc = ((q_live.sum(-1) / self.total_abs_limit)[:, None, None]
+                         .expand(B, 1, Bi).reshape(-1) if self.position_state else None)
                 C1f_inc = self._continuation(
-                    nets, market_t1.reshape(-1, md), W1.reshape(-1), t + 1).reshape(B, Bi)
+                    nets, market_t1.reshape(-1, md), W1.reshape(-1), t + 1,
+                    p_inc).reshape(B, Bi)
                 inc = C1f_inc.mean(-1)
                 if self.risk_kappa > 0.0:
                     dev = (C1f_inc - inc.unsqueeze(-1)).clamp(max=0.0)
@@ -768,11 +902,11 @@ class DiffSolver:
                 diff = best_f - C1f_inc                                                   # (B,Bi) paired
                 se = diff.std(-1) / math.sqrt(Bi)
                 move = diff.mean(-1) > self.aspace.deadband_sigma * se
-                # Holding is only on offer while q_prev is corridor-feasible at t.
-                hold_ok = ((self.aspace.project_to_corridor(q_prev, t) - q_prev).abs()
+                # Holding is only on offer while the LIVE book is corridor-feasible at t.
+                hold_ok = ((self.aspace.project_to_corridor(q_live, t) - q_live).abs()
                            <= 1e-9).all(-1)
                 move = move | ~hold_ok
-                best_q = torch.where(move.unsqueeze(-1), best_q, q_prev)
+                best_q = torch.where(move.unsqueeze(-1), best_q, q_live)
                 best_val = torch.where(move, best_val, inc)
             return best_q, best_val
 
@@ -800,12 +934,22 @@ class DiffSolver:
         moves only, no inner MC): hold q = clamp(q_rep_t + noise) each step, accumulate
         W = cum hedge P&L + L_t. Returns per-t lists W_t (B_outer,) and q_prev (B_outer,
         n_hedge). The bank-state `market_t` is read lazily from the SAME inner-MC fork the
-        backward sweep makes at t (no extra inner-MC passes)."""
+        backward sweep makes at t (no extra inner-MC passes).
+
+        Under `DiffV2_Position_State` the bank also has to COVER THE p AXIS, because p is now an
+        input the argmax queries over the whole of `aspace.net_bounds(t)` while the roll only
+        wanders `Bank_Noise_Frac` around the replication hedge. Measured on the platinum book,
+        that left the deep-hedge ~44% of the axis unsampled and let p_bank breach the cap the grid
+        enforces, so the learned hysteresis slope was extrapolation exactly where it mattered.
+        Each path therefore draws a UNIFORM net target across the feasible band and water-fills
+        onto it: the per-leg shape stays the noisy replication hedge, the total spans what the
+        argmax can ask for, and p_bank is inside [-1, 1] by construction rather than by hope."""
         L = self.liability_sim
         W = L[0].clone()                                                                 # (B_outer,) = cum_pnl(0)+L_0
-        # Seed q_prev from the OPENING book (position-free value: the bank wealth W below
-        # never reads q_prev, so this only labels q_list[0]; q_prev would carry real weight
-        # here only if turnover cost entered the value — see initial_q_from_runtime).
+        # Seed q_prev from the OPENING book. Position-free, this only labels q_list[0] (the bank
+        # wealth W below never reads q_prev); under `DiffV2_Position_State` q_list[t] IS the
+        # sampled position state at t, and `DiffV2_Bank_Noise_Frac` is what makes the p-slice
+        # identifiable — the value fn only learns a no-trade region over books it has seen.
         q_prev = self.aspace.initial_q(self.B_outer, self.device)
         W_list, q_list = [], []
         rng = (self.q_hi - self.q_lo)
@@ -819,6 +963,14 @@ class DiffSolver:
             noise = self.noise_frac * rng * torch.randn(
                 self.B_outer, self.n_hedge, generator=gen, device=self.device)
             q = torch.minimum(torch.maximum(q_rep[None] + noise * mask, self.q_lo), self.q_hi)
+            if self.position_state:
+                # Cover the p axis the argmax queries: a uniform net target over the feasible
+                # band, water-filled into the per-leg boxes (see docstring). Subsumes the
+                # corridor projection below — net_bounds already intersects the corridor.
+                lo_t, hi_t = self.aspace.net_bounds(t)
+                u = lo_t + (hi_t - lo_t) * torch.rand(
+                    self.B_outer, 1, generator=gen, device=self.device)
+                q = self.aspace.waterfill(q, u, u)
             if self.aspace.schedule is not None:
                 # Keep the exploration IN the corridor so the value fn trains on reachable wealth
                 # states only (un-projected, ~50% of bank paths breach — the nets would fit
@@ -879,7 +1031,7 @@ class DiffSolver:
         return g
 
     # ---- one backward step: bootstrap + advantage twin fit -------------------
-    def _fit_step(self, nets, W_bank, t, inner, q_bank, rows=slice(None)):
+    def _fit_step(self, nets, W_bank, t, inner, q_bank, rows=slice(None), live_prev=None):
         """One backward step at t: bootstrap the value target off the cached inner draws, then fit
         `nets[t]` to it through `_fit_from_labels`.
 
@@ -887,18 +1039,42 @@ class DiffSolver:
         state-at-t LEAVES, so the bootstrap value Y AND its pathwise gradients w.r.t. W0 (wealth)
         and the market state (spot/state) come from the SAME forward — the full Huge–Savine twin
         loss. ∂Y/∂market_t is the differential constraint that regularizes the market dimension,
-        where a value-only / W-only fit overfits the few outer paths."""
+        where a value-only / W-only fit overfits the few outer paths.
+
+        Under `DiffV2_Position_State` the step is FRICTIONAL: the bank's own standing book supplies
+        the position state p at t, the selection is charged its repositioning cost, and — the part
+        that distinguishes this from `DiffV2_Cost_Aware_Argmax` — the SAME charge is subtracted from
+        the wealth entering the target, whose successor is read at the book the chosen action leaves
+        standing. So the toll compounds down the recursion instead of being re-paid and forgotten
+        each day, which is the only way a no-trade region can appear in a fitted value.
+
+        THE ONE MASK RULE for p, the coordinate `nets[t]` is both fitted and queried on:
+
+            p_t = Sum(q_standing · live_{t-1}) / Q_max
+
+        — the book masked by the step that SET it, not by the step that is about to trade it.
+        `_decide` at t−1 can only ever hold its own `live`, so it hands the successor
+        `Sum(a·live_{t-1})/Q_max`; the fit has to meet it there. Masking the bank's book with this
+        step's `live` instead reads `nets[t]` on one coordinate and writes it on another, and the
+        two disagree by the FULL width of the axis on exactly the step where a leg rolls off.
+        `live_prev` carries that mask in (`_sweep` reads it off the cache; the first swept step has
+        no predecessor and is fitted but never queried). The CHARGE keeps this step's `live` — what
+        you own and what you may trade are different questions."""
         dF_ng, dL_ng, m1_ng, market0, live = inner                                       # no-grad cache
         market0 = market0[rows]
         W0_bank = W_bank[t][rows]
+        # live-masked like every other caller (an expired leg's phantom book must not buy
+        # position budget); with churn_lambda 0 and no kappa the book is inert - the band
+        # stays execution-only via rate_limit
+        q_prev = q_bank[t][rows] * live
+        # ...but the position STATE is the book masked by the step that set it (see docstring).
+        q_state = q_bank[t][rows] * (live if live_prev is None else live_prev)
+        kappa_t = self.aspace.kappa(self.tradables_sim, t) if self.position_state else None
         # SELECT the action on the NO-GRAD inner draws; EVALUATE its value + pathwise gradients
         # on a fresh GRAD inner (independent draws → cross-fit, no winner's-curse max-bias).
         q_star, _ = self._decide(
             nets, m1_ng[rows], dF_ng[rows], dL_ng[rows], W0_bank, t, live=live,
-            q_prev=q_bank[t][rows] * live, rate_limit=False)
-        # live-masked like every other caller (an expired leg's phantom book must not buy
-        # position budget); with churn_lambda 0 and no kappa the book is inert - the band
-        # stays execution-only via rate_limit
+            q_prev=q_prev, kappa=kappa_t, rate_limit=False)
         q_star = q_star * live          # expired contracts: dF=0 ⇒ wealth-neutral; report 0, not the tie
 
         # GRAD inner-MC fork: AAD-live t→t+1 quantities + state-at-t leaves (see docstring).
@@ -943,17 +1119,25 @@ class DiffSolver:
         q = q_star[:, None, :]                                                           # (B,1,n_hedge)
         W1 = self._wealth_step(W0[:, None], q, dF_g, dL_g)                                # (B,Bi)
         B, Bi_e, md = m1_g.shape
+        p_bank = p1 = None
+        if self.position_state:
+            # The charge the SELECTION above ranked with, now inside the regressed TARGET, and the
+            # successor read at the book the chosen action leaves standing (see docstring).
+            W1 = W1 - self._reposition_charge(
+                q_star, q_prev, kappa_t, self._unwind_kappa(t))[:, None]
+            p_bank = q_state.sum(-1) / self.total_abs_limit               # state at t: live_{t-1}
+            p1 = (q_star.sum(-1) / self.total_abs_limit)[:, None].expand(B, Bi_e).reshape(-1)
         Y = self._continuation(
-            nets, m1_g.reshape(-1, md), W1.reshape(-1), t + 1).reshape(B, Bi_e).mean(1)   # (B,)
+            nets, m1_g.reshape(-1, md), W1.reshape(-1), t + 1, p1).reshape(B, Bi_e).mean(1)  # (B,)
         grads = torch.autograd.grad(Y.sum(), [W0] + list(leaves.values()), allow_unused=True)
         gW = grads[0].detach()
         leaf_grads = {k: (g.detach() if g is not None else None)
                       for k, g in zip(leaves.keys(), grads[1:])}
         g_market = self._project_leaf_grads(leaf_grads, widths, rows, B, md)             # ∂Y/∂market_t (B,md)
         Y = Y.detach()
-        return self._fit_from_labels(nets, W0_bank, market0, Y, gW, g_market, t, q_star)
+        return self._fit_from_labels(nets, W0_bank, market0, Y, gW, g_market, t, q_star, p_bank)
 
-    def _fit_from_labels(self, nets, W0_bank, market0, Y, gW, g_market, t, q_star):
+    def _fit_from_labels(self, nets, W0_bank, market0, Y, gW, g_market, t, q_star, p_bank):
         """Shared fit tail: advantage decomposition + standardized twin loss on the
         (value, wealth-grad, market-grad) labels. Called by both the single-fork and the
         sub-sliced large-B label paths of `_fit_step`.
@@ -966,7 +1150,12 @@ class DiffSolver:
         Huge–Savine term BALANCING: with W~$1e6 and utility~O(1) the standardized W-gradient label
         is ~600× the value label, so an unnormalized sum lets the W-gradient drown the value fit
         AND the market gradient. Each term is normalized by its label variance so all are O(1) and
-        `lam_g` balances value-vs-gradient as intended."""
+        `lam_g` balances value-vs-gradient as intended.
+
+        `p_bank` (the position state, `DiffV2_Position_State`) is an input column with NO gradient
+        label: the twin loss only ever had the channels the AAD fork measures (wealth, market
+        state), and p is a control the bank samples rather than a simulated coordinate the label
+        forward differentiates. It is supervised by the value term alone."""
         # Advantage decomposition: fit A = C − u(W0); subtract the anchor's wealth slope.
         if self.use_adv:
             Wb = W0_bank.clone().requires_grad_(True)
@@ -1008,7 +1197,8 @@ class DiffSolver:
         for it in range(self.fit_iters):
             mn = ((market0 - self.m_mean) / self.m_std).detach().requires_grad_(True)
             wn = ((W0_bank - self.w_mean) / self.w_std).detach().requires_grad_(True)
-            a = net(torch.cat([mn, wn.unsqueeze(-1)], dim=-1))
+            a = net(torch.cat([mn, wn.unsqueeze(-1)]
+                              + ([] if p_bank is None else [p_bank.unsqueeze(-1)]), dim=-1))
             da_m, da_w = torch.autograd.grad(a.sum(), [mn, wn], create_graph=True)
             loss = (((a - a_val) ** 2).mean() / nrm_v
                     + lam_g * ((da_w - g_zn_W) ** 2).mean() / nrm_w
@@ -1029,7 +1219,7 @@ class DiffSolver:
                 prev_loss = cur
 
         with torch.no_grad():
-            a_fit = net(self._standardize(market0, W0_bank))
+            a_fit = net(self._standardize(market0, W0_bank, p_bank))
             val_loss = float(((a_fit - a_val) ** 2).mean())
             # Trust region for all future EVALUATIONS of this net (argmax, bootstrap labels,
             # verdict): its fitted-target range plus one range-width of headroom each side.
@@ -1067,9 +1257,18 @@ class DiffSolver:
 
         Turnover cost is accounted in PARALLEL: Transaction_Cost_Per_Unit + half the
         Bid_Offer_Spread_Bps on |Δq| each rebalance, entry measured from the OPENING book q0 — not
-        from flat. The wealth recursion itself stays cost-free (the position-free value design
-        assumes free repositioning), so these are DIAGNOSTICS quantifying that approximation per
-        policy."""
+        from flat, and the terminal unwind under `Force_Flat_At_End` — the same three-part rule
+        `run_textbook_benchmark` and `HindsightDpSolver` price their own execution with, so the
+        `*_net` columns of the three tracks are comparable. The wealth recursion itself stays
+        cost-free, so these are DIAGNOSTICS quantifying that approximation per policy; the
+        V_0/utility track stays the frictionless DP objective every track shares.
+
+        The greedy ARGMAX is charged when either `DiffV2_Cost_Aware_Argmax` (execution hysteresis
+        over a cost-free value) or `DiffV2_Position_State` is on: a frictional value function that
+        was fitted against a charged selection must be rolled under the same rule, or the policy
+        reported is not the policy trained. `argmax_charged` in the returned dict says which
+        regime produced these numbers, because a charged argmax beside an uncharged wealth
+        recursion is not readable from the figures alone."""
         L = self.liability_sim
         t0 = self.t_min
         n = L[t0][rows].shape[0]
@@ -1090,7 +1289,7 @@ class DiffSolver:
                 q_g, _ = self._decide(
                     nets, m1[rows], dF[rows], dL[rows], W["greedy"], t,
                     q_prev=q_prev["greedy"],
-                    kappa=kappa_t if self.cost_aware else None, live=live)
+                    kappa=kappa_t if self.cost_aware or self.position_state else None, live=live)
                 q_g = q_g * live          # zero positions on expired contracts (wealth-neutral)
                 # Textbook = diagonal min-var, PROJECTED into the corridor (no schedule ⇒ identity)
                 # so the benchmark obeys the same mandate as greedy — a fair in-corridor comparison.
@@ -1105,6 +1304,11 @@ class DiffSolver:
                 W["nohedge"] = self._wealth_step(W["nohedge"], z, dF_o, dL_o)
                 q_traj["greedy"].append(q_g.mean(0).tolist())
                 q_traj["textbook"].append(q_tb.mean(0).tolist())
+            if self.force_flat:
+                # The unwind both benchmark tracks charge, so all three price the same execution.
+                kappa_T = self.aspace.kappa(self.tradables_sim, self.T_dec)
+                for p in cost:
+                    cost[p] = cost[p] + self.aspace.turnover_cost(q_prev[p], kappa_T)
 
         def stats(wT):
             p5 = torch.quantile(wT, 0.05)
@@ -1112,6 +1316,9 @@ class DiffSolver:
             return {"u_mean": float(self._u(wT).mean()), "wT_mean": float(wT.mean()),
                     "wT_p5": float(p5), "wT_cvar5": float(cvar5)}
         out = {p: stats(W[p]) for p in W}
+        # Which regime chose the greedy book — a charged argmax over an uncharged wealth
+        # recursion is not readable off the figures.
+        out["argmax_charged"] = bool(self.cost_aware or self.position_state)
         for p in ("greedy", "textbook"):
             net_stats = stats(W[p] - cost[p])
             out[p]["turnover_cost_mean"] = float(cost[p].mean())
@@ -1152,7 +1359,8 @@ class DiffSolver:
             stepper = BundleStepper(self.bundle, self.runtime, mirror_scale=False)
             # Seed the cost-aware decision q_prev from the OPENING book (the stepper's own
             # positions already open here too, so its realized first-step turnover is measured
-            # from q0). The frozen value is position-free — q0 only shifts first-step cost/P&L.
+            # from q0). Position-free, q0 only shifts first-step cost/P&L; under
+            # `DiffV2_Position_State` it is the realized standing book the charge and p' ride.
             q_prev = self.aspace.initial_q(self.B_outer, self.device)
             last = None
             while not stepper.done:
@@ -1177,8 +1385,9 @@ class DiffSolver:
                     else:
                         dF, dL, m1, _, live = inner_cache[t]
                         kappa_t = self.aspace.kappa(self.tradables_sim, t)
-                        q, _ = self._decide(nets, m1, dF, dL, W, t, q_prev=q_prev,
-                                            kappa=kappa_t if self.cost_aware else None, live=live)
+                        q, _ = self._decide(
+                            nets, m1, dF, dL, W, t, q_prev=q_prev, live=live,
+                            kappa=kappa_t if self.cost_aware or self.position_state else None)
                         q = q * live
                         q_log["greedy"].append(q.mean(0).detach().cpu().tolist())
                         q_log["t"].append(int(t))
@@ -1203,6 +1412,70 @@ class DiffSolver:
         return out
 
     # ---- driver: warmup (fit + frame lock) -> step (fresh batch) -> finish (verdict) ----
+    def _check_load_provenance(self, ck, src, md):
+        """Hold one `DiffV2_Load_Value_Fn` member against this run and return its solver version
+        (the ensemble collects them). Everything a checkpoint stamps that makes it a DIFFERENT
+        FUNCTION OF A DIFFERENT STATE is refused here by name; everything that merely deserves
+        saying out loud is warned.
+
+        Refused: the shape contract (`t_min`/`T_dec`/`md`/`hedges`), `DiffV2_Position_State` — the
+        net book fraction is an input COLUMN, so a mismatch would otherwise surface as a
+        `load_state_dict` shape error naming a Linear weight rather than the key that caused it —
+        and a corridor mismatch. Warned: a stale `solver_version`, a missing corridor stamp under a
+        live corridor, and a pre-stream frame. Corridor-FREE training spans the widest wealth
+        support, so rolling it inside any corridor only restricts to a learned subset (valid);
+        a policy trained INSIDE one is off-support under a different or absent corridor."""
+        for key, want in (("t_min", self.t_min), ("T_dec", self.T_dec),
+                          ("md", md), ("hedges", list(self.hedges))):
+            if ck[key] != want:
+                raise ValueError(
+                    f"DiffV2_Load_Value_Fn checkpoint mismatch on {key!r}: "
+                    f"{src} saved {ck[key]!r} vs this run {want!r}")
+        if bool(ck.get("position_state", False)) != self.position_state:
+            raise ValueError(
+                f"DiffV2_Position_State mismatch: {src} was trained with DiffV2_Position_State="
+                f"{'Yes' if ck.get('position_state', False) else 'No'} but this run sets "
+                f"{'Yes' if self.position_state else 'No'}. The net book fraction p = Sum(q)/Q_max "
+                f"is an input column of the fitted value, so the two are different functions of "
+                f"different states — retrain, or match Solver.DiffV2_Position_State.")
+        # The training ARCHITECTURE is part of what a version stamps (the successor chain changed
+        # it); an ensemble must not average continuations trained under different ones, and a lone
+        # old checkpoint should say what it is.
+        ck_ver = ck.get("solver_version", "<pre-version checkpoint>")
+        if ck_ver != SOLVER_VERSION:
+            logging.warning(
+                "DiffV2_Load_Value_Fn: %s trained under solver_version %r, this build "
+                "is %r - the fitted architecture may differ", src, ck_ver, SOLVER_VERSION)
+        want_sched = self.aspace.schedule_key(self.aspace.schedule)
+        if "total_position_schedule" in ck:
+            saved_sched = self.aspace.schedule_key(ck["total_position_schedule"])
+            if saved_sched == want_sched:
+                pass                                             # same corridor — exact match
+            elif saved_sched is None:
+                logging.info(
+                    "DiffV2_Load_Value_Fn: %s trained corridor-free (widest wealth support); "
+                    "rolling under a Total_Position_Schedule only restricts to a learned "
+                    "subset — valid.", src)
+            else:
+                raise ValueError(
+                    f"DiffV2_Load_Value_Fn corridor mismatch: {src} was trained under "
+                    f"Total_Position_Schedule {saved_sched} but this run rolls under "
+                    f"{want_sched}. A policy trained inside a corridor is queried off its "
+                    f"learned wealth support under a different (or absent) one — retrain, "
+                    f"or match the Evaluator.Total_Position_Schedule.")
+        elif want_sched is not None:
+            logging.warning(
+                "DiffV2_Load_Value_Fn: %s predates corridor provenance (no "
+                "total_position_schedule stamp) but this run sets a Total_Position_Schedule "
+                "— cannot verify the frozen policy was trained in it; roll validity "
+                "unverified.", src)
+        if "streaming" in ck and not ck["streaming"]:
+            logging.warning(
+                "DiffV2_Load_Value_Fn: %s carries a pre-stream frame, locked on a whole "
+                "fixed simulation rather than a warmup batch — the policy evaluates in "
+                "ITS frame, not this run's.", src)
+        return ck_ver
+
     def warmup(self, bundle=None):
         """Fit the value function on the first (or only) bundle and LOCK the frame: the
         standardization stats, the utility scale and the per-t trust region are computed here and
@@ -1221,15 +1494,9 @@ class DiffSolver:
         evaluated in its own frame, continuations averaged (cross-fit winner's-curse reduction on
         top of antithetic).
 
-        Two provenance guards run per member. CORRIDOR: a value fn trained INSIDE a
-        `Total_Position_Schedule` fit only the wealth states that corridor makes reachable, and the
-        wealth support is monotone in the corridor — training UNCONSTRAINED spans the widest
-        support, so rolling that policy inside ANY corridor only restricts to a learned subset
-        (valid — this is the roll-only-on-corridor-free validation path), whereas a policy trained
-        in a specific corridor is queried off-support under a DIFFERENT or absent one, so that
-        fails loud. FRAME: this frame is locked on the warmup batch, a pre-stream checkpoint's on a
-        whole fixed simulation, so the two standardize off different path populations — it still
-        evaluates (the checkpoint's own frame is restored), but it is worth saying out loud."""
+        Every member is held against this run by `_check_load_provenance` first — shape contract,
+        position state and corridor refused, stale version / missing corridor stamp / pre-stream
+        frame warned."""
         if bundle is not None:
             self._bind(bundle)
         logging.info(
@@ -1283,52 +1550,7 @@ class DiffSolver:
                 # config_hash — they still load: only the frame + net keys below are read.
                 ck = member if isinstance(member, dict) else torch.load(member, map_location=self.device)
                 src = "<in-memory artifact>" if isinstance(member, dict) else member
-                for key, want in (("t_min", self.t_min), ("T_dec", self.T_dec),
-                                  ("md", md), ("hedges", list(self.hedges))):
-                    if ck[key] != want:
-                        raise ValueError(
-                            f"DiffV2_Load_Value_Fn checkpoint mismatch on {key!r}: "
-                            f"{src} saved {ck[key]!r} vs this run {want!r}")
-                # The training ARCHITECTURE is part of what a version stamps (the successor
-                # chain changed it); an ensemble must not average continuations trained under
-                # different ones, and a lone old checkpoint should say what it is.
-                ck_ver = ck.get("solver_version", "<pre-version checkpoint>")
-                if ck_ver != SOLVER_VERSION:
-                    logging.warning(
-                        "DiffV2_Load_Value_Fn: %s trained under solver_version %r, this build "
-                        "is %r - the fitted architecture may differ", src, ck_ver, SOLVER_VERSION)
-                versions.add(ck_ver)
-                # Corridor provenance (see docstring): corridor-free training spans the widest
-                # wealth support, so it rolls under any corridor; a different one → fail loud.
-                want_sched = self.aspace.schedule_key(self.aspace.schedule)
-                if "total_position_schedule" in ck:
-                    saved_sched = self.aspace.schedule_key(ck["total_position_schedule"])
-                    if saved_sched == want_sched:
-                        pass                                         # same corridor — exact match
-                    elif saved_sched is None:
-                        logging.info(
-                            "DiffV2_Load_Value_Fn: %s trained corridor-free (widest wealth "
-                            "support); rolling under a Total_Position_Schedule only restricts to a "
-                            "learned subset — valid.", src)
-                    else:
-                        raise ValueError(
-                            f"DiffV2_Load_Value_Fn corridor mismatch: {src} was trained under "
-                            f"Total_Position_Schedule {saved_sched} but this run rolls under "
-                            f"{want_sched}. A policy trained inside a corridor is queried off its "
-                            f"learned wealth support under a different (or absent) one — retrain, "
-                            f"or match the Evaluator.Total_Position_Schedule.")
-                elif want_sched is not None:
-                    logging.warning(
-                        "DiffV2_Load_Value_Fn: %s predates corridor provenance (no "
-                        "total_position_schedule stamp) but this run sets a Total_Position_Schedule "
-                        "— cannot verify the frozen policy was trained in it; roll validity "
-                        "unverified.", src)
-                # Frame provenance, same idiom as the corridor guard above (see docstring).
-                if "streaming" in ck and not ck["streaming"]:
-                    logging.warning(
-                        "DiffV2_Load_Value_Fn: %s carries a pre-stream frame, locked on a whole "
-                        "fixed simulation rather than a warmup batch — the policy evaluates in "
-                        "ITS frame, not this run's.", src)
+                versions.add(self._check_load_provenance(ck, src, md))
                 drift = ((M.mean(0) - ck["m_mean"]).abs() / ck["m_std"]).max()
                 logging.info(
                     "DiffSolver LOADED value fn from %s (train V_0=%+.6g) | eval-world "
@@ -1359,7 +1581,9 @@ class DiffSolver:
             self.utility_scale = float(sum(scales) / len(scales))
             self.runtime["objective"]["utility_scale"] = self.utility_scale
             hidden = int(loaded["hidden"])
-        nets = [_DiffV2Residual(md + 1, hidden=hidden).to(self.device)  # position-free: (market | W)
+        # (market | W), plus the position column p under `DiffV2_Position_State`.
+        in_dim = md + 1 + int(self.position_state)
+        nets = [_DiffV2Residual(in_dim, hidden=hidden).to(self.device)
                 for _ in range(self.T_dec)]
         # Per-t trust region for A_t evaluation (set at fit time / restored from checkpoint;
         # None = unclamped, e.g. pre-trust-region checkpoints).
@@ -1380,7 +1604,7 @@ class DiffSolver:
                 # Ensemble: per-member net stacks + frames; _continuation averages members.
                 self._ensemble = []
                 for ck in members:
-                    m_nets = [_DiffV2Residual(md + 1, hidden=int(ck["hidden"])).to(self.device)
+                    m_nets = [_DiffV2Residual(in_dim, hidden=int(ck["hidden"])).to(self.device)
                               for _ in range(self.T_dec)]
                     for net, sd in zip(m_nets, ck["state_dicts"]):
                         net.load_state_dict(sd)
@@ -1402,11 +1626,17 @@ class DiffSolver:
     def _sweep(self, W_bank, q_bank):
         """One backward pass over the swept range on the CURRENTLY BOUND bundle: fit C_t for
         t = T_dec-1 .. t_min against the cached inner-MC forks. warmup runs it on batch 1, each
-        streaming step runs it again on fresh paths with the same nets and optimizers."""
+        streaming step runs it again on fresh paths with the same nets and optimizers.
+
+        `live_prev` is the leg mask of the step that SET the book standing at t — the one mask
+        rule for the position state (`_fit_step`). The first swept step has no predecessor in the
+        cache and `nets[t_min]` is fitted but never queried (every `_decide` reads `nets[t+1]`, and
+        t_min−1 is outside the sweep), so it falls back to its own."""
         rows = []
         for t in reversed(self.sweep_ts):
             r = self._fit_step(self.nets, W_bank, t, self.inner_cache[t], q_bank,
-                               rows=self.train)
+                               rows=self.train,
+                               live_prev=self.inner_cache.get(t - 1, (None,) * 5)[4])
             rows.append(r)
             logging.info(
                 "DiffSolver C[t=%d] fitted (%d iters): val_loss=%.4g |Y_boot|=%.4g |A|=%.4g "
@@ -1457,6 +1687,39 @@ class DiffSolver:
             "bounds=[%+.4g, %+.4g]", len(self._breaches),
             sum(r[1] for r in self._breaches) / len(self._breaches), worst[1], worst[0],
             worst[1], worst[2], worst[3], lo, hi)
+
+    def _policy_artifact(self, nets, md, hidden, V_0, n_star_0, worst):
+        """The policy artifact: the fitted nets, the frame they read their inputs through, and the
+        provenance every `DiffV2_Load_Value_Fn` guard compares against. Built ONCE per run (in
+        `finish`) and returned AND `torch.save`d, so the file and the in-memory dict are the same
+        object — the eval-from-artifact path is identical to loading the file.
+
+        Every key `_check_load_provenance` refuses on must be stamped HERE, which is why the two
+        live next to each other: a stamp the artifact forgets is a run that refuses its own
+        checkpoint (or worse, accepts a foreign one)."""
+        return {
+            "state_dicts": [net.state_dict() for net in nets],
+            "m_mean": self.m_mean, "m_std": self.m_std,
+            "w_mean": self.w_mean, "w_std": self.w_std,
+            "utility_scale": float(self.runtime["objective"]["utility_scale"]),
+            "a_bounds": self.a_bounds,
+            "hedges": list(self.hedges),
+            "active_hedge_indices": list(self.active),
+            # Corridor provenance: the Total_Position_Schedule this policy was trained inside
+            # (None = unconstrained). A load under a DIFFERENT corridor fails loud.
+            "total_position_schedule": self.aspace.schedule_key(self.aspace.schedule),
+            # Position-state provenance: p is an input column, so a load under the other
+            # setting is refused BY NAME rather than as a net shape error.
+            "position_state": self.position_state,
+            "T_dec": self.T_dec, "t_min": self.t_min, "md": md, "hidden": hidden,
+            "solver_version": SOLVER_VERSION,
+            "config_hash": self._config_hash(),
+            # Frame provenance: WHICH path population locked the frame this policy reads its
+            # inputs through, and a stamp over the frame itself (loads compare both).
+            "frame_stamp": self._frame_stamp(),
+            # Headline echoed so a loaded eval reads it back rather than recomputing.
+            "V_0": V_0, "n_star_0": list(n_star_0), "max_abs_Y_boot": worst,
+        }
 
     def _frame_stamp(self):
         """sha1 of the LOCKED frame — the utility scale, the z-frame (market/wealth mean+std), the
@@ -1521,26 +1784,7 @@ class DiffSolver:
         artifact = None
         save_path = str(self.cfg.get("diffv2_save_value_fn", "") or "")
         if loaded is None:
-            artifact = {
-                "state_dicts": [net.state_dict() for net in nets],
-                "m_mean": self.m_mean, "m_std": self.m_std,
-                "w_mean": self.w_mean, "w_std": self.w_std,
-                "utility_scale": float(self.runtime["objective"]["utility_scale"]),
-                "a_bounds": self.a_bounds,
-                "hedges": list(self.hedges),
-                "active_hedge_indices": list(self.active),
-                # Corridor provenance: the Total_Position_Schedule this policy was trained inside
-                # (None = unconstrained). A load under a DIFFERENT corridor fails loud (above).
-                "total_position_schedule": self.aspace.schedule_key(self.aspace.schedule),
-                "T_dec": self.T_dec, "t_min": self.t_min, "md": md, "hidden": hidden,
-                "solver_version": SOLVER_VERSION,
-                "config_hash": self._config_hash(),
-                # Frame provenance: WHICH path population locked the frame this policy reads its
-                # inputs through, and a stamp over the frame itself (loads compare both).
-                "frame_stamp": self._frame_stamp(),
-                # Headline echoed so a loaded eval reads it back rather than recomputing.
-                "V_0": V_0, "n_star_0": list(n_star_0), "max_abs_Y_boot": worst,
-            }
+            artifact = self._policy_artifact(nets, md, hidden, V_0, n_star_0, worst)
             if save_path:
                 if not math.isfinite(V_0):
                     raise ValueError(

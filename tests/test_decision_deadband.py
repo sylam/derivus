@@ -59,12 +59,15 @@ def _fake_solver(aspace):
     """The smallest object `_decide` runs on: the real frictionless wealth law at
     contract_size 1 with an identity continuation, so a candidate's per-draw value is
     exactly `q*dF + dL` and every quantity the band computes is analytic."""
-    return types.SimpleNamespace(
-        aspace=aspace, chunk=64, risk_kappa=0.0, churn_lambda=0.0,
+    s = types.SimpleNamespace(
+        aspace=aspace, chunk=64, risk_kappa=0.0, churn_lambda=0.0, position_state=False,
         _wealth_step=lambda W, q, dF, dL: W + (q * dF).sum(-1) + dL,
-        _continuation=lambda nets, m, W1, t: W1,
+        _continuation=lambda nets, m, W1, t, p: W1,
         _decide=DiffSolver._decide,
     )
+    s._unwind_kappa = types.MethodType(DiffSolver._unwind_kappa, s)
+    s._reposition_charge = types.MethodType(DiffSolver._reposition_charge, s)
+    return s
 
 
 def _decide(aspace, q_prev, dF_noise=1.0, dF_mean=-0.1, dL_scale=100.0, rate_limit=True):

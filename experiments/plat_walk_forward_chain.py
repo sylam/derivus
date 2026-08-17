@@ -279,6 +279,10 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
                 args.grid_levels
         if args.churn_lambda is not None:
             tcalc['Hedging_Problem']['Solver']['DiffV2_Churn_Lambda'] = args.churn_lambda
+        if args.position_state:
+            tcalc['Hedging_Problem']['Solver']['DiffV2_Position_State'] = 'Yes'
+        if args.bank_noise is not None:
+            tcalc['Hedging_Problem']['Solver']['DiffV2_Bank_Noise_Frac'] = args.bank_noise
         if args.fit_tol is not None:
             tcalc['Hedging_Problem']['Solver']['DiffV2_Fit_Tol'] = args.fit_tol
         if args.solver is not None:
@@ -302,6 +306,16 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
             'Training_Action_Grid_Levels_Per_Axis'] = args.grid_levels
     if args.solver is not None:
         roll['Calc']['Calculation']['Hedging_Problem']['Solver']['Object'] = args.solver
+    if args.position_state:
+        # NOT train-only: p is an input column of the fitted value, so a roll under the other
+        # setting is refused by the checkpoint's own stamp. --churn-lambda rides along, because
+        # under position state it is a TERM of the charge that entered the regressed target, not
+        # a training-only shaper: rolling without it would charge kappa|dq| against a value
+        # fitted on kappa|dq| + lambda dq^2.
+        roll['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Position_State'] = 'Yes'
+        if args.churn_lambda is not None:
+            roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
+                'DiffV2_Churn_Lambda'] = args.churn_lambda
     if args.temporal_proximity is not None:
         roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
             'DiffV2_Temporal_Proximity'] = args.temporal_proximity
@@ -416,8 +430,19 @@ def main():
     ap.add_argument('--temporal-proximity', type=float, default=None,
                     help='Solver DiffV2_Temporal_Proximity: successor-proximity weight.')
     ap.add_argument('--churn-lambda', type=float, default=None,
-                    help='Solver DiffV2_Churn_Lambda, TRAIN only: a checkpoint-reuse run '
-                         'must not silently turn a training knob into an execution one.')
+                    help='Solver DiffV2_Churn_Lambda. TRAIN only on its own: a checkpoint-reuse '
+                         'run must not silently turn a training knob into an execution one. '
+                         'WITH --position-state it is stamped on the roll too, because there it '
+                         'is a term of the charge the fitted target already paid.')
+    ap.add_argument('--position-state', action='store_true',
+                    help='Solver DiffV2_Position_State: the frictional Bellman (net book '
+                         'fraction as state, the charge inside the fitted target). Applied to '
+                         'TRAIN and ROLL - the checkpoint stamps it and a mismatched load is '
+                         'refused. Changes the value function: a retrain.')
+    ap.add_argument('--bank-noise', type=float, default=None,
+                    help='Solver DiffV2_Bank_Noise_Frac, TRAIN only: exploration around the '
+                         'per-t replication hedge, as a fraction of each [Min,Max] range. It '
+                         'is what makes the position-state slice identifiable.')
     ap.add_argument('--fit-tol', type=float, default=None,
                     help='Solver DiffV2_Fit_Tol override (0 pins the full fit budget).')
     ap.add_argument('--grid-levels', type=int, default=None,
