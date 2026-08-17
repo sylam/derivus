@@ -163,7 +163,7 @@ def fair_strike(row, trade_date, fixings):
     return float((s0 * np.exp((c + r) * tau_f)).mean())
 
 
-def delta_corridor_schedule(trade_date, fixings, band):
+def delta_corridor_schedule(trade_date, fixings, band, lo_floor=-50.0, hi_cap=0.0):
     """Deterministic causal delta-ramp corridor on the SIGNED total position Σq_i, keyed by
     sim-grid step t (= calendar-day offset from the trade date; the deal runs on the daily
     '0d 1d(1d)' grid). The remaining-average exposure is FULL (-50 contracts) before the first
@@ -181,8 +181,8 @@ def delta_corridor_schedule(trade_date, fixings, band):
 
     def knot(remaining):
         ramp = 50.0 * remaining
-        lo = max(-50.0, min(0.0, -(ramp + half)))
-        hi = min(0.0, -(ramp - half))
+        lo = max(lo_floor, min(hi_cap, -(ramp + half)))
+        hi = min(hi_cap, -(ramp - half))
         return round(lo, 4), round(hi, 4)
 
     knots = {0: knot(1.0)}                                    # full short before the first fixing

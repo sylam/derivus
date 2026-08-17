@@ -177,20 +177,24 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
     ps['Positions'], ps['Settlement_Prices'], ps['Initial_Margin'] = positions, setts, margins
     hp['Evaluator']['Position_Limits'] = limits
     if delta_corridor is not None:
+        # with a long cap, the corridor's clamps widen into the asymmetric net range - the
+        # ramp mandate and the long allowance compose instead of excluding each other
+        bounds = ({'lo_floor': -60.0, 'hi_cap': float(args.long_cap)}
+                  if args.long_cap is not None else {})
         hp['Evaluator']['Total_Position_Schedule'] = delta_corridor_schedule(
-            trade_date, fixings, delta_corridor)
+            trade_date, fixings, delta_corridor, **bounds)
     if args.max_trade is not None:
         hp['Evaluator']['Max_Trade_Per_Step'] = float(args.max_trade)
     if args.long_cap is not None:
         # the ruled asymmetric NET range [-60, +long_cap]: per-leg boxes open on the long
-        # side, the flat schedule is the binding net object, and the abs limit widens to
-        # match the short floor. Writes the same field the corridor writes - one or the other.
-        assert args.delta_corridor is None, 'long-cap and delta-corridor both write the schedule'
+        # side, the abs limit widens to the short floor, and the net object is the flat
+        # schedule - or the corridor above, already clamped into the same range
         for lim in limits.values():
             lim['Max_Position'] = int(args.long_cap)
         hp['Evaluator']['Total_Position_Abs_Limit'] = 60.0
-        hp['Evaluator']['Total_Position_Schedule'] = [
-            {'Step': 0, 'Min_Total': -60.0, 'Max_Total': float(args.long_cap)}]
+        if delta_corridor is None:
+            hp['Evaluator']['Total_Position_Schedule'] = [
+                {'Step': 0, 'Min_Total': -60.0, 'Max_Total': float(args.long_cap)}]
 
     # No Spot_Price_History: its only live consumer is the utility-scale formula, which the
     # template's Utility_Scale_Explicit overrides; the policy's features are process-revealed
