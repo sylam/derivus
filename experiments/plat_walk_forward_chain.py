@@ -148,6 +148,12 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
         hp['Objective']['Object'] = args.objective
     if args.cara_gamma is not None:
         hp['Objective']['CARA_Gamma'] = float(args.cara_gamma)
+    if args.reference_wealth is not None:
+        hp['Objective']['Reference_Wealth'] = float(args.reference_wealth)
+    if args.up_aversion is not None:
+        hp['Objective']['Up_Aversion'] = float(args.up_aversion)
+    if args.up_knee is not None:
+        hp['Objective']['Up_Knee'] = float(args.up_knee)
 
     p0, state = float(row[FIX_COL]), carry_state(row)
     premium = float(json.load(open(calibrated_md))['MarketData']['Price Models'][
@@ -384,6 +390,16 @@ def main():
                          "loss wing everywhere, linear gains - the semivariance shape.")
     ap.add_argument('--cara-gamma', type=float, default=None,
                     help="Objective CARA_Gamma (units of c; read by the CARA shape).")
+    ap.add_argument('--reference-wealth', type=float, default=None,
+                    help="Objective Reference_Wealth in DOLLARS: the benchmark the utility is "
+                         "measured against, so 'loss' means underperforming it. Every shape.")
+    ap.add_argument('--up-aversion', type=float, default=None,
+                    help="Objective Up_Aversion (units of c): curvature of the huber GAIN wing. "
+                         "0 = today's exactly-linear gains; >0 curves both sides of the "
+                         "reference, deep gains keeping marginal utility 1 - 2*a+*knee.")
+    ap.add_argument('--up-knee', type=float, default=None,
+                    help="Objective Up_Knee (units of c): knee beyond which the gain wing goes "
+                         "linear.")
     ap.add_argument('--max-trade', type=float, default=None,
                     help='Evaluator Max_Trade_Per_Step: per-leg |dq| cap per decision step '
                          'at the argmax (execution only; checkpoints re-rollable under it).')

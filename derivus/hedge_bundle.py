@@ -83,15 +83,26 @@ def _is_utility_objective(runtime):
 def _utility_wrap_signed(x_dollars, runtime):
     """The terminal UTILITY u(W) applied to signed wealth — the single source of truth for
     the objective, the DP recursion, and the solver's value labels. Dispatches on the
-    configured shape (all in normalised wealth x = W / c), identity for the legacy objective:
+    configured shape (all in normalised wealth x = (W − R) / c), identity for the legacy objective:
 
       symlog : sign(x)·log1p(|x|)                  — odd, tail-compressing (variance aversion)
-      huber  : x − [a·loss² | a·δ²+2aδ(loss−δ)]    — linear gains; quadratic small losses;
-               (loss = max(−x,0), knee δ)             linear deep tail (bounded scale, live grad)
+      huber  : x − [a·loss² | a·δ²+2aδ(loss−δ)]    — quadratic small losses, linear deep tail
+               − [a⁺·gain² | a⁺·κ²+2a⁺κ(gain−κ)]     (bounded scale, live grad); the same form
+               (loss = max(−x,0), gain = max(x,0))   on the GAIN wing, off at a⁺ = 0
       cara   : (1 − exp(−γ·x)) / γ                  — bounded gains, exponentially-penalised loss
 
-    Shape params (huber a/δ, cara γ) are DIMENSIONLESS in c-units. Differentiable in `w`
-    (AAD path: twin-loss labels, DP penalty, baseline B) — huber's knee is C¹, cara is smooth.
+    `reference_wealth` R (DOLLARS, default 0) is the benchmark the utility is measured against —
+    subtract it BEFORE the /c scaling and "loss" means underperforming the desk's risk-free
+    alternative rather than falling below an arbitrary zero, which is what puts huber's knee at
+    the operating point. All shapes read it.
+
+    Huber's gain wing mirrors the loss wing: curvature `up_aversion` a⁺ (default 0 ⇒ exactly
+    linear gains, today's shape) out to the knee `up_knee` κ, linear beyond with the level-matching
+    constant, so deep gains keep marginal utility 1 − 2a⁺κ > 0 — the keep-upside asymmetry
+    survives while the objective is curved on BOTH sides of R, with no risk-regime boundary at 0.
+
+    Shape params (huber a/δ/a⁺/κ, cara γ) are DIMENSIONLESS in c-units. Differentiable in `w`
+    (AAD path: twin-loss labels, DP penalty, baseline B) — both huber knees are C¹, cara is smooth.
 
     `c` is `Bundle.utility_scale`, mirrored onto the runtime objective when the bundle is built.
     Missing it is fail-loud: the silent fallback (c = 1.0) produces plausible-looking-but-wrong
@@ -105,17 +116,23 @@ def _utility_wrap_signed(x_dollars, runtime):
             "utility objective active but runtime['objective']['utility_scale'] is not set — "
             "Bundle.from_batch mirrors it from the resolved utility_scale; a hand-built runtime "
             "must set it explicitly.")
-    x = x_dollars / float(c)
+    x = (x_dollars - float(obj.get("reference_wealth", 0.0))) / float(c)
     shape = obj["object"]
     if shape == "asymmetricutility_symlog":
         return torch.sign(x) * torch.log1p(x.abs())
     if shape == "asymmetricutility_huber":
         a = float(obj.get("huber_aversion", 2.5))
         d = float(obj.get("huber_delta", 1.0))
+        au = float(obj.get("up_aversion", 0.0))
+        k = float(obj.get("up_knee", 0.15))
         loss = (-x).clamp(min=0.0)
         quad = a * loss * loss
         lin = a * d * d + 2.0 * a * d * (loss - d)
-        return x - torch.where(loss <= d, quad, lin)
+        gain = x.clamp(min=0.0)
+        quad_up = au * gain * gain
+        lin_up = au * k * k + 2.0 * au * k * (gain - k)
+        return (x - torch.where(loss <= d, quad, lin)
+                - torch.where(gain <= k, quad_up, lin_up))
     # asymmetricutility_cara
     g = float(obj.get("cara_gamma", 1.0))
     return (1.0 - torch.exp(-g * x)) / g

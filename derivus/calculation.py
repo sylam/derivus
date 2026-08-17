@@ -2227,10 +2227,18 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                       description='How the utility scale c is derived from the book'),
                     F('Utility_Scale_Explicit', 'Float', default=None,
                       description='Literal dollar c, overriding the formula'),
+                    F('Reference_Wealth', 'Float', default=0.0,
+                      description='Benchmark wealth in DOLLARS the utility is measured against; '
+                                  'every shape works in x = (W - this) / c'),
                     F('Huber_Aversion', 'Float', default=2.5,
                       description='Curvature of the quadratic loss arm, in units of c'),
                     F('Huber_Delta', 'Float', default=1.0,
                       description='Knee beyond which the loss arm goes linear, in units of c'),
+                    F('Up_Aversion', 'Float', default=0.0,
+                      description='Curvature of the quadratic GAIN arm, in units of c; 0 leaves '
+                                  'gains exactly linear'),
+                    F('Up_Knee', 'Float', default=0.15,
+                      description='Knee beyond which the gain arm goes linear, in units of c'),
                     F('CARA_Gamma', 'Float', default=1.0,
                       description='Absolute risk aversion of u = (1-exp(-gamma x))/gamma')]),
               F('Evaluator', 'Container', default={},

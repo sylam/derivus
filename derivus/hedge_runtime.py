@@ -301,9 +301,11 @@ def construct_hedge_runtime(
     dict every consumer indexes directly. Nothing downstream re-validates.
 
     The objective's utility SHAPE params are DIMENSIONLESS, in units of the utility scale c
-    (applied to x = W/c). Huber: linear gains, quadratic small losses with curvature
-    `huber_aversion`, a linear deep tail beyond the knee `huber_delta`. CARA: u = (1−e^{−γx})/γ.
-    Symlog ignores all three. See hedge_bundle._utility_wrap_signed for the exact forms.
+    (applied to x = (W − `Reference_Wealth`)/c; the reference is in DOLLARS and every shape reads
+    it). Huber: quadratic small losses with curvature `huber_aversion`, a linear deep tail beyond
+    the knee `huber_delta`, and the same form on the gain wing under `Up_Aversion`/`Up_Knee`
+    (`Up_Aversion` 0 = exactly linear gains). CARA: u = (1−e^{−γx})/γ. Symlog ignores the shape
+    params. See hedge_bundle._utility_wrap_signed for the exact forms.
 
     `im_funding_*` is a vol-linked initial-margin FUNDING charge on the post-trade book (realized
     accounting only — see hedge_bundle._im_funding_charge). Per hedge leg i at step t the desk
@@ -450,9 +452,14 @@ def construct_hedge_runtime(
             "utility_scale_explicit":
                 (None if objective_config.get("Utility_Scale_Explicit") is None
                  else float(objective_config["Utility_Scale_Explicit"])),
-            # Utility SHAPE params (dimensionless, in units of c); Symlog ignores all three.
+            # The benchmark wealth the utility is measured against, in DOLLARS (not c-units) —
+            # every shape subtracts it before the /c scaling.
+            "reference_wealth": float(objective_config.get("Reference_Wealth", 0.0)),
+            # Utility SHAPE params (dimensionless, in units of c); Symlog ignores all of them.
             "huber_aversion": float(objective_config.get("Huber_Aversion", 2.5)),
             "huber_delta": float(objective_config.get("Huber_Delta", 1.0)),
+            "up_aversion": float(objective_config.get("Up_Aversion", 0.0)),
+            "up_knee": float(objective_config.get("Up_Knee", 0.15)),
             "cara_gamma": float(objective_config.get("CARA_Gamma", 1.0)),
         },
         "policy": None,
