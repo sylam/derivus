@@ -2256,7 +2256,9 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                       description='Charge a matched roll one calendar half-cost instead of two '
                                   'outright half-spreads'),
                     F('Calendar_Spread_Bps', 'Float', default=None,
-                      description='Half-spread bps of the calendar roll leg'),
+                      description='Half-spread bps of the calendar roll leg. Setting it arms the '
+                                  'matched-leg pricing everywhere - the argmax charge, the fitted '
+                                  'target and the realized accounting'),
                     F('IM_Funding_Spread_Bps', 'Float', default=0.0,
                       description='Spread paid to fund initial margin; 0 switches the term off'),
                     F('IM_Vol_Multiplier', 'Float', default=0.0,
@@ -2281,7 +2283,15 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                                F('Min_Total', 'Float', default=0.0),
                                F('Max_Total', 'Float', default=0.0)]),
                       description='Piecewise-constant corridor on the signed book total, by '
-                                  'decision step')]),
+                                  'decision step'),
+                    F('Allocation_Weights', 'Table', default=None,
+                      row=Row([F('Step', 'Integer', default=0),
+                               F('Instrument', 'Text', default=''),
+                               F('Weight', 'Float', default=0.0)]),
+                      description='Piecewise-constant split of the NET cover across the hedge '
+                                  'legs, by decision step. Present, the argmax searches one '
+                                  'ladder over the total instead of the product of per-leg '
+                                  'levels, and this table decides the composition')]),
               F('Solver', 'Container', default={},
                 description='The value-function solver and its schedule, dispatched on Object',
                 sub_fields=[
@@ -2294,7 +2304,9 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                     F('T_Min', 'Integer', default=0,
                       description='Earliest step the backward sweep fits; 0 = full sweep'),
                     F('Training_Action_Grid_Levels_Per_Axis', 'Integer', default=11,
-                      description='Levels per hedge axis in the greedy action grid'),
+                      description='Levels per hedge axis in the greedy action grid - or, under '
+                                  'Evaluator.Allocation_Weights, rungs on the NET cover, where '
+                                  'it must be at least as large as the net range in contracts'),
                     F('Training_Action_Chunk_Size', 'Integer', default=64,
                       description='Actions scored per batched argmax pass'),
                     F('Use_Advantage_Decomp', 'Text', default='Yes', values=['Yes', 'No'],

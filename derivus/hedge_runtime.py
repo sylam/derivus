@@ -149,6 +149,52 @@ def _position_schedule(evaluator_config: Mapping[str, Any]):
     return tuple(knots)
 
 
+def _allocation_weights(evaluator_config: Mapping[str, Any], hedge_names):
+    """Optional ALLOCATION SCHEDULE, which FACTORS the action space: the solver then chooses one
+    signed NET cover on a fine ladder and this schedule splits it across the hedge legs, instead
+    of searching the Cartesian product of per-leg levels. Absent → None (the Cartesian grid).
+
+    Long form — a list of `{Step, Instrument, Weight}` rows, the rows sharing a `Step` being one
+    KNOT, piecewise-constant in the decision step exactly like `Total_Position_Schedule`. Long
+    rather than one column per leg because a table declares FIXED columns and a book carries as
+    many legs as it carries; naming the instrument also means a knot cannot silently mis-align
+    when the hedge order changes.
+
+    Returns a sorted tuple of `(step, (w_0, ..., w_{n-1}))` in `names['hedges']` order, each knot
+    NORMALIZED to sum 1. A leg no row names gets 0, which is how an expired leg leaves the
+    ladder. Weights are non-negative and must already sum to ~1: normalizing after that check
+    removes float dust rather than reinterpreting the author's intent, and is what makes the
+    ladder's `Σ_i round(Q·w_i) == Q` apportionment exact."""
+    raw = evaluator_config.get("Allocation_Weights")
+    if not raw:
+        return None
+    by_step: Dict[int, Dict[str, float]] = {}
+    for row in raw:
+        step, name, weight = int(row["Step"]), str(row["Instrument"]), float(row["Weight"])
+        if step < 0:
+            raise ValueError(f"Allocation_Weights Step must be >= 0; got {step}")
+        if weight < 0.0:
+            raise ValueError(
+                f"Allocation_Weights Weight must be >= 0; got {weight} for {name} at Step {step}")
+        if name not in hedge_names:
+            raise ValueError(
+                f"Allocation_Weights names {name!r}, which is not a hedge leg {list(hedge_names)}")
+        knot = by_step.setdefault(step, dict.fromkeys(hedge_names, 0.0))
+        if knot[name] != 0.0:
+            raise ValueError(
+                f"Allocation_Weights names {name!r} twice at Step {step}: a last-wins overwrite "
+                f"would silently drop the earlier weight")
+        knot[name] = weight
+    knots = []
+    for step, weights in sorted(by_step.items()):
+        total = sum(weights.values())
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(
+                f"Allocation_Weights knot at Step {step} sums to {total}, not 1")
+        knots.append((step, tuple(weights[n] / total for n in hedge_names)))
+    return tuple(knots)
+
+
 def _spot_price_history(hedging_problem: Mapping[str, Any], lookback: int,
                         referenced_commodities: tuple) -> Dict[str, Dict[str, Any]]:
     """Realized spot history per commodity — the rolling-feature lookback the bundle prepends.
@@ -434,6 +480,24 @@ def construct_hedge_runtime(
         if factor.type == 'CommodityPrice'))
     portfolio_state = hedging_problem.get("Portfolio_State") or {}
     scalar_spread_bps, spread_spec = _bid_offer_spread(evaluator_config)
+    calendar_spread_bps = (float(evaluator_config["Calendar_Spread_Bps"])
+                           if evaluator_config.get("Calendar_Spread_Bps") is not None else None)
+    if calendar_spread_bps is not None:
+        # A rate <= 0 makes matched volume free or PAID FOR: `turnover_charge` then returns a
+        # negative cost the argmax maximizes by churning. Absence is how the feature is switched
+        # off, so an explicit 0 is a typo rather than a cheap desk.
+        if calendar_spread_bps <= 0.0:
+            raise ValueError(
+                f"Evaluator.Calendar_Spread_Bps must be > 0; got {calendar_spread_bps}. Omit the "
+                f"key to price every contract at the outright spread.")
+        # ...and a rate beside an explicit refusal to price spreads is a contradiction, not a
+        # precedence question: the rate says a matched roll is cheap, the switch says charge it
+        # twice, and silently picking a winner is how the two seams drift apart.
+        if evaluator_config.get("Roll_As_Calendar_Spread") == "No":
+            raise ValueError(
+                "Evaluator.Calendar_Spread_Bps is set beside Roll_As_Calendar_Spread='No': the "
+                "rate prices a matched roll as one calendar crossing and the switch refuses to. "
+                "Drop one of them.")
     # Static instrument→cash_account routing by currency: the first cash account whose currency
     # matches wins, else the first account. Computed once; the env step loop reads it per step.
     account_by_currency = {}
@@ -516,12 +580,14 @@ def construct_hedge_runtime(
             "bid_offer_spread_spec": spread_spec,
             # Roll-as-calendar-spread: when a rebalance offsets Δq across adjacent maturities, the
             # matched quantity pays a single calendar half-cost instead of two outright half-spreads
-            # (realized accounting only — see hedge_bundle._roll_rebate). Default off.
+            # (see hedge_bundle._roll_rebate). Default off. A `Calendar_Spread_Bps` RATE arms it on
+            # its own: one spec, all readers — the rate that makes the solver's paired half cheap
+            # has to make the realized accounting's matched roll cheap too, or the policy is
+            # optimized against a friction the book never pays.
             "roll_as_calendar_spread":
-                evaluator_config.get("Roll_As_Calendar_Spread", "No") == "Yes",
-            "calendar_spread_bps": (float(evaluator_config["Calendar_Spread_Bps"])
-                                    if evaluator_config.get("Calendar_Spread_Bps") is not None
-                                    else None),
+                (evaluator_config.get("Roll_As_Calendar_Spread", "No") == "Yes"
+                 or calendar_spread_bps is not None),
+            "calendar_spread_bps": calendar_spread_bps,
             # Vol-linked IM funding charge on the post-trade book (realized accounting only).
             # Spread 0.0 ⇒ the term is exactly 0 and never executes.
             "im_funding_spread_bps": float(evaluator_config.get("IM_Funding_Spread_Bps", 0.0)),
@@ -531,6 +597,10 @@ def construct_hedge_runtime(
             "total_position_abs_limit":
                 float(evaluator_config.get("Total_Position_Abs_Limit", 0.0)),
             "total_position_schedule": _position_schedule(evaluator_config),
+            # Optional per-decision-step split of the NET cover across the legs. Present ⇒ the
+            # action universe is the Q-ladder rather than the Cartesian product (see
+            # HedgeActionSpace.allocation_grid); absent ⇒ today's grid, unchanged.
+            "allocation_weights": _allocation_weights(evaluator_config, hedge_names),
             # Per-leg |Δq| cap per decision step at the ARGMAX (0 = off). Execution policy
             # only — training labels never see it.
             "max_trade_per_step": float(evaluator_config.get("Max_Trade_Per_Step", 0.0)),
@@ -544,7 +614,7 @@ def construct_hedge_runtime(
     }
 
 
-def per_contract_kappa(runtime, price, name, vol=None):
+def per_contract_kappa(runtime, price, name, vol=None, calendar=False):
     """Per-contract turnover cost for tradable `name` at mark `price`: a flat
     Transaction_Cost_Per_Unit plus a half-spread charge on notional
     (`0.5 · half_bps · 1e-4 · price · contract_size`). `price` is a scalar or tensor mark.
@@ -555,19 +625,68 @@ def per_contract_kappa(runtime, price, name, vol=None):
     configured, in which case it is the instrument's `Per_Instrument` base (falling back to
     `Default_Bps`) scaled by `(vol/Ref_Vol)**Beta` when the spec declares a `Vol_Scale` and a
     world-agnostic annualized `vol` is supplied. `vol=None` (or scalar spread / no Vol_Scale) ⇒
-    vol-independent, bit-identical to the scalar behaviour."""
+    vol-independent, bit-identical to the scalar behaviour.
+
+    `calendar=True` prices one contract of a CALENDAR SPREAD quoted against this leg instead: the
+    half-spread is `Evaluator.Calendar_Spread_Bps` on this leg's notional (under the same vol
+    scale — a spread widens with vol for the same reason an outright does) and the flat fee is
+    charged TWICE, because a spread contract moves two futures and clears two of them. Pair it as
+    `0.5·(κcal_i + κcal_j)` (what `turnover_charge` does) and the result is the desk's quote on
+    the pair: both clearing fees plus one half-spread on the average leg notional.
+
+    The `Per_Instrument` base does NOT carry over to the calendar leg — `Calendar_Spread_Bps` is
+    one scalar rate, so a per-maturity spread ladder is inexpressible today. That is a real limit
+    of the key, not of the rule: the OUTRIGHT half of every charge still reads each leg's own
+    base, which is what an unmatched lot pays."""
     acc = runtime["accounting"]
     contract_size = float(runtime["tradables"][name]["contract_size"])
     spec = acc["bid_offer_spread_spec"]
+    scale = 1.0
     if spec is None:
         half_bps = acc["bid_offer_spread_bps"]
     else:
         half_bps = spec["per_instrument"].get(str(name), spec["default_bps"])
         vscale = spec["vol_scale"]
         if vscale is not None and vol is not None:
-            half_bps = half_bps * (vol / vscale["ref_vol"]) ** vscale["beta"]
-    return (acc["transaction_cost_per_unit"]
-            + 0.5 * half_bps * 1.0e-4 * price * contract_size)
+            scale = (vol / vscale["ref_vol"]) ** vscale["beta"]
+    fee = acc["transaction_cost_per_unit"]
+    if calendar:
+        half_bps, fee = acc["calendar_spread_bps"], 2.0 * fee
+    return fee + 0.5 * half_bps * scale * 1.0e-4 * price * contract_size
+
+
+def turnover_charge(delta, kappa, kappa_cal=None):
+    """THE turnover-cost rule for a whole reposition, as `per_contract_kappa` is the rule for one
+    contract. `delta` is `(..., n_hedge)` in `names['hedges']` (maturity) order; `kappa` and
+    `kappa_cal` are per-leg and indexed `[..., i]`, so a `(n_hedge,)` decision kappa and a
+    per-path `(B, n_hedge)` realized one both work.
+
+    No `kappa_cal` ⇒ the L1 sum `Σ_i |Δ_i|·κ_i`, unchanged.
+
+    With one, the move DECOMPOSES by a greedy sweep over CONSECUTIVE maturities: at each pair
+    (i, i+1) the opposite-signed volume `x = min(|Δ_i|, |Δ_j|)` is matched off and pays
+    `0.5·(κcal_i + κcal_j)` per contract — one calendar quote on that listed pair — and whatever
+    survives the sweep pays its OWN leg's `κ_i`, because an unmatched lot physically sits on that
+    leg and crosses that leg's bid/offer.
+
+    ONE pairing rule, for the reason the module exists: the decision charge and the realized
+    accounting have to be the same function. GLOBAL netting (`paired = (Σ|Δ| − |ΣΔ|)/2`) is a
+    different and cheaper decomposition — it pairs the front against the back with no listed
+    spread between them — and it under-charged a non-adjacent move by up to 5× against this
+    sweep. A `|Δ|`-share BLEND of the leg kappas is wrong in the other direction: on a
+    `Per_Instrument` spread it charged leftover front-month lots at 2.4× their own rate."""
+    if kappa_cal is None:
+        return (delta.abs() * kappa).sum(dim=-1)
+    rem = [delta[..., i] for i in range(delta.shape[-1])]
+    cost = torch.zeros_like(rem[0])
+    for i in range(len(rem) - 1):
+        di, dj = rem[i], rem[i + 1]
+        x = torch.minimum(di.abs(), dj.abs()) * ((di * dj) < 0)          # matched contracts
+        rem[i], rem[i + 1] = di - di.sign() * x, dj - dj.sign() * x
+        cost = cost + x * 0.5 * (kappa_cal[..., i] + kappa_cal[..., i + 1])
+    for i, residual in enumerate(rem):
+        cost = cost + residual.abs() * kappa[..., i]
+    return cost
 
 
 def initial_q_from_runtime(runtime, batch, device):

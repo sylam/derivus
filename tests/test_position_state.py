@@ -117,6 +117,9 @@ def _solver(runtime, position_state, T_dec=3, n_steps=4, B=2):
     s._wealth_step = types.MethodType(DiffSolver._wealth_step, s)
     s._project_leaf_grads = types.MethodType(DiffSolver._project_leaf_grads, s)
     s._unwind_kappa = types.MethodType(DiffSolver._unwind_kappa, s)
+    s._calendar_kappa = types.MethodType(DiffSolver._calendar_kappa, s)
+    s._check_action_universe = types.MethodType(DiffSolver._check_action_universe, s)
+    s._check_calendar_spread = types.MethodType(DiffSolver._check_calendar_spread, s)
     s._reposition_charge = types.MethodType(DiffSolver._reposition_charge, s)
     s._continuation = lambda nets, market, W, t, p: (
         s.seen.append((W.detach().clone(), None if p is None else p.detach().clone())) or W)
@@ -261,9 +264,12 @@ def test_the_ranking_charge_is_the_same_arithmetic_as_the_target():
 # --- (d) checkpoint provenance ----------------------------------------------------------------
 def _stub(position_state):
     rt = _runtime()
-    return types.SimpleNamespace(t_min=0, T_dec=3, hedges=list(rt["names"]["hedges"]),
-                                 position_state=position_state,
-                                 aspace=HedgeActionSpace(rt, torch.device("cpu")))
+    s = types.SimpleNamespace(t_min=0, T_dec=3, hedges=list(rt["names"]["hedges"]),
+                              position_state=position_state,
+                              aspace=HedgeActionSpace(rt, torch.device("cpu")))
+    s._check_action_universe = types.MethodType(DiffSolver._check_action_universe, s)
+    s._check_calendar_spread = types.MethodType(DiffSolver._check_calendar_spread, s)
+    return s
 
 
 def _ck(**over):

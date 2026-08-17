@@ -123,6 +123,49 @@ def fair_strike(row, trade_date, fixings, bridge_premium):
     return 0.5 * (am + am * float(np.exp(bridge_premium)))
 
 
+def allocation_knots(trade_date, fixings, mats, names):
+    """The `Evaluator.Allocation_Weights` schedule as DATA: at each decision step (= calendar-day
+    offset from the trade date, the same clock `delta_corridor_schedule` keys on), leg i's weight
+    is its share of the fixings STILL UNFIXED, where a fixing is hedged by the first listed expiry
+    ON OR AFTER it — the only contract still alive when that fixing prints.
+
+    So the split is the remaining-exposure profile the listed strip actually carries, and every
+    date in it is known at the trade date (causal, like the corridor). A leg whose expiry has
+    passed covers no unfixed fixing and drops out of the ladder on its own; so does a front
+    contract that expires before the averaging window opens at all, which is a statement about
+    the quarterly ladder rather than a defect. Knots are emitted only where the weights MOVE, so
+    the table is the handful of days the composition changes, not one row per day.
+
+    A fixing with NO listed expiry after it RAISES: clamping it onto the last (by then dead) leg
+    would hand the ladder a schedule whose weight sits on a contract that expires mid-horizon —
+    a hard corridor abort at best, phantom cover at worst. The strip is the caller's to widen.
+
+    TODO — the carry tilt. Multiplying leg i's share by `exp(z(tau_i)·tau_i)` before renormalizing
+    would let the allocator prefer the cheaper point of the curve; the seam is the `share` vector
+    below, and the trade-date curve is `carry_curve(carry_state(row), ...)`. v1 is pure exposure
+    so the tilt is a measurable change of its own rather than a confound in the first read."""
+    f = np.array([(pd.Timestamp(x) - pd.Timestamp(trade_date)).days for x in fixings])
+    m = np.array([(pd.Timestamp(x) - pd.Timestamp(trade_date)).days for x in mats])
+    leg = np.searchsorted(m, f)                             # first expiry on or after each fixing
+    if leg.max() >= len(m):
+        raise ValueError(
+            f'allocation_knots: fixings run to {max(fixings).date()} but the listed strip ends '
+            f'{max(mats).date()} — {int((leg >= len(m)).sum())} fixing(s) have no live contract '
+            f'to be hedged in; widen the strip (more CommodityFutureDeal legs).')
+    knots, last = [], None
+    for step in range(int(f.max())):
+        unfixed = f > step
+        if not unfixed.any():
+            break
+        share = np.bincount(leg[unfixed], minlength=len(m)) / unfixed.sum()
+        key = tuple(np.round(share, 9))
+        if key != last:
+            knots.extend({'Step': step, 'Instrument': n, 'Weight': float(w)}
+                         for n, w in zip(names, share))
+            last = key
+    return knots
+
+
 def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_corridor=None):
     """The trade-date job: the two-leg AVG liability struck at fair - margin, the listed CME strip
     as tradables, and every market level read off the archive row. Returns `(cfg, info)`.
@@ -195,6 +238,13 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
                   if args.long_cap is not None else {})
         hp['Evaluator']['Total_Position_Schedule'] = delta_corridor_schedule(
             trade_date, fixings, delta_corridor, **bounds)
+    if args.allocation:
+        # FACTORED action space: the DP picks the net cover on a ladder and this schedule splits
+        # it, so --grid-levels now counts rungs on the TOTAL rather than levels per leg.
+        hp['Evaluator']['Allocation_Weights'] = allocation_knots(
+            trade_date, fixings, mats, sorted(futs))
+    if args.calendar_spread_bps is not None:
+        hp['Evaluator']['Calendar_Spread_Bps'] = float(args.calendar_spread_bps)
     if args.max_trade is not None:
         hp['Evaluator']['Max_Trade_Per_Step'] = float(args.max_trade)
     if args.deadband is not None:
@@ -447,7 +497,23 @@ def main():
                     help='Solver DiffV2_Fit_Tol override (0 pins the full fit budget).')
     ap.add_argument('--grid-levels', type=int, default=None,
                     help='Override Solver Training_Action_Grid_Levels_Per_Axis (train AND '
-                         'roll argmax). Changes the action space: a retrain.')
+                         'roll argmax). Changes the action space: a retrain. WITH --allocation '
+                         'the levels count rungs on the NET cover and must span it at one '
+                         'contract a rung or the engine refuses: 51 over [-50, 0], but 71 with '
+                         '--long-cap 10, and the template default of 9 is a 7-contract ladder.')
+    ap.add_argument('--allocation', action='store_true',
+                    help='Evaluator Allocation_Weights: FACTOR the action space. The deck '
+                         'computes the remaining-fixings exposure share of each leg per decision '
+                         'day (see allocation_knots) and the argmax then searches one ladder over '
+                         'the net cover. Applied to TRAIN and ROLL - it is the action space, so a '
+                         'retrain, never a re-roll. Needs --grid-levels (see above). Note the '
+                         'static-hold benchmark is then chosen from the schedule\'s compositions '
+                         'rather than the whole product, and Max_Trade_Per_Step becomes a band on '
+                         'the NET rather than per leg.')
+    ap.add_argument('--calendar-spread-bps', type=float, default=None,
+                    help='Evaluator Calendar_Spread_Bps: half-spread bps the MATCHED half of a '
+                         'move pays instead of two outright crossings. One key, both readers - '
+                         'the argmax/fitted-target charge and the realized roll rebate.')
     ap.add_argument('--delta-corridor', type=float, default=None,
                     help='Causal delta-ramp corridor band on the SIGNED total position, applied '
                          'to BOTH train and roll.')

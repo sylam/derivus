@@ -26,7 +26,7 @@ from . import utils
 from .hedge_bundle import (
     _utility_wrap_signed, wealth_step,
 )
-from .hedge_runtime import per_contract_kappa, initial_q_from_runtime
+from .hedge_runtime import per_contract_kappa, initial_q_from_runtime, turnover_charge
 
 # Bumped whenever the fitted-value-function on-disk/artifact contract changes shape. Stamped
 # into every artifact so a loader can tell which solver produced a checkpoint.
@@ -71,12 +71,15 @@ class HedgeActionSpace:
       * `axis_levels()` / `grid()` — the MASK-AWARE target-position grid: the active hedge
         axes span `[min, max]` at `levels` points, inactive axes are pinned to a single 0,
         and rows over the total-position cap are dropped (identical to the old private grid).
+      * `allocation_grid(t)` — the FACTORED alternative under `Allocation_Weights`: one ladder over
+        the signed NET cover, each rung split across the legs by the schedule. `grid_at` dispatches
+        on which universe is configured; everything downstream consumes the rows either way.
       * `kappa(tradables_sim, t)` — the per-hedge turnover kappa at sim-grid `t` (each
         instrument's mean mark), off the single `hedge_runtime.per_contract_kappa` rule.
       * `initial_q(batch, device)` — the opening book `q0` (see `initial_q_from_runtime`).
-      * `turnover_cost(dq, kappa)` / `schedule_key(schedule)` — the L1 friction charge on a
-        reposition and the comparison-stable corridor stamp, both owned here because the action
-        universe owns kappa and the corridor."""
+      * `turnover_cost(dq, kappa)` / `schedule_key(schedule)` — the friction charge on a
+        reposition (L1, or net/paired under a calendar spread) and the comparison-stable corridor
+        stamp, both owned here because the action universe owns kappa and the corridor."""
 
     documentation = ('Solver', [
         'The action universe, built once from the runtime and shared by every track — the solver,',
@@ -86,10 +89,16 @@ class HedgeActionSpace:
         '- `grid()` / `axis_levels()` — the target-position grid. Active hedge axes span',
         '  `[Min_Position, Max_Position]` at `Training_Action_Grid_Levels_Per_Axis` points,',
         '  inactive axes pin to a single 0, and rows breaching the total-position cap are dropped.',
+        '- `allocation_grid(...)` — under `Evaluator.Allocation_Weights`, the FACTORED universe',
+        '  instead: the levels count rungs on the signed NET cover and the schedule splits each',
+        '  rung across the legs, so the search is over how much cover to carry, not over its',
+        '  composition.',
         '- `kappa(...)` — the per-hedge turnover cost at a step, off the single',
         '  `per_contract_kappa` rule the environment and the diagnostic CSVs also use.',
         '- `initial_q(...)` — the opening book.',
-        '- `turnover_cost(...)` — the L1 charge on a reposition.',
+        '- `turnover_cost(...)` — the charge on a reposition: L1, or (under',
+        '  `Evaluator.Calendar_Spread_Bps`) an outright charge on the net change plus a cheaper',
+        '  spread charge on the matched half.',
         '',
         'One object owning all of this is what makes a benchmark comparable to the solver: they',
         'cannot disagree about which positions are reachable or what a trade costs.',
@@ -125,13 +134,22 @@ class HedgeActionSpace:
         # Optional no-trade band in standard errors of the PAIRED inner-draw difference
         # against the standing book (0 = off). Same execution-only path as `max_trade`.
         self.deadband_sigma = float(acc.get("decision_deadband_sigma", 0.0))
+        # Optional per-decision-step split of the NET cover across the legs (sorted
+        # (step, weights) knots or None). Present ⇒ `grid_at(t)` is the FACTORED Q-ladder.
+        self.weights = acc.get("allocation_weights")
+        # Half-spread bps of the matched (calendar) leg of a reposition, or None ⇒ every
+        # contract traded pays the outright rate.
+        self.calendar_bps = acc.get("calendar_spread_bps")
         self._grid_cache = None
+        self._ladder_cache = {}
         solver_cfg = runtime["solver"]
         self.levels = int(solver_cfg["training_action_grid_levels_per_axis"])
         active = solver_cfg.get("active_hedge_indices")
         self.active = (list(range(self.n_hedge)) if active is None
                        else [int(i) for i in active])
         self.n_active = len(self.active)
+        self.active_mask = torch.zeros(self.n_hedge, device=device)
+        self.active_mask[self.active] = 1.0
 
     def axis_levels(self):
         """Per-hedge 1-D level values: `linspace(lo, hi, levels)` on ACTIVE axes, a single 0
@@ -166,19 +184,121 @@ class HedgeActionSpace:
             lo, hi = mn, mx
         return lo, hi
 
+    def _weights_at(self, t, live=None):
+        """The `Allocation_Weights` split in force at decision step t — the rightmost knot with
+        `Step <= t` (piecewise-constant; clamps to the first knot for t before it) as an
+        `(n_hedge,)` tensor, intersected with the legs that can actually carry a contract and
+        renormalized over what is left: the INACTIVE legs (`Active_Hedge_Indices`) and, when the
+        caller passes one, the EXPIRED legs (`live`).
+
+        The live intersection has to happen HERE, before the ladder is built, not as a filter
+        afterwards: a knot's weight on a dead leg is cover the book cannot realize, so leaving it
+        in makes every rung advertise a net it masks away from (measured: 255 contracts parked on
+        an expired leg) and makes a corridor the live legs can satisfy look infeasible."""
+        w = self.weights[0][1]
+        for step, knot in self.weights:
+            if step > t:
+                break
+            w = knot
+        w = torch.tensor(w, device=self.device) * self.active_mask
+        if live is not None:
+            w = w * live
+        if not float(w.sum()) > 0.0:
+            raise ValueError(
+                f"Allocation_Weights knot in force at step {t} puts no weight on a LIVE, ACTIVE "
+                f"hedge leg — the ladder has nothing to allocate onto")
+        return w / w.sum()
+
+    @staticmethod
+    def _largest_remainder(x, target):
+        """Round `x` `(L, n_hedge)` to whole contracts so each row sums EXACTLY to `round(target)`
+        `(L, 1)`: floor every leg, then hand the `round(target) − Σfloor` leftover units, one
+        each, to the legs with the largest fractional remainders (Hare/largest-remainder
+        apportionment, ties to the lower leg index).
+
+        Naive per-leg rounding does not do this — three legs at `-3.4, -3.3, -3.3` round to `-9`
+        when the row is supposed to be `-10` — and a ladder whose rows miss the net they advertise
+        is not a ladder over the net. Flooring is toward −∞ and the leftover is therefore
+        non-negative, so a short book is apportioned by the same expression as a long one; the
+        leftover is also strictly smaller than the number of legs carrying a remainder, so a leg
+        already sitting on an integer box edge never receives a unit and no row leaves its box."""
+        base = torch.floor(x)
+        need = (target.round() - base.sum(-1, keepdim=True)).round()             # (L,1) whole units
+        order = torch.argsort(x - base, dim=-1, descending=True, stable=True)
+        rank = torch.empty_like(order)
+        rank.scatter_(-1, order, torch.arange(x.shape[-1], device=x.device).expand_as(order))
+        return base + (rank < need).to(x.dtype)
+
+    def allocation_grid(self, t, live=None):
+        """The FACTORED action universe at decision step t: a Q-LADDER over the signed NET cover,
+        each rung split across the legs by the `Allocation_Weights` knot in force. The solver then
+        chooses one number — how much cover to carry — and a deterministic allocator decides where
+        it sits.
+
+        Why factor. The Cartesian grid's quantum on the NET is the per-axis step times the number
+        of legs, so a 3-leg 9-level book moves the net in jumps far larger than any realistic
+        friction can smooth: a frictional Bellman over it changes nothing, and the composition
+        dimension it spends its rows on goes unused. `Training_Action_Grid_Levels_Per_Axis` counts
+        rungs on the TOTAL here, and 51 of them cost a fraction of 9³ rows while quantizing the
+        quantity the policy is actually choosing.
+
+        Construction, all of it on the legs that can carry a contract — `_weights_at(t, live)`
+        drops the inactive and the expired ones and renormalizes, and every bound below is summed
+        over what survives:
+          * the band is `net_bounds(t)` (cap ∩ corridor ∩ boxes) intersected with those legs' own
+            boxes, then snapped INWARD to whole contracts — the apportionment deals in whole
+            contracts, so a fractional band would emit rungs that round outside their own mandate;
+          * `Q·w` is clamped into the per-leg boxes and water-filled back onto Q over the SAME leg
+            set, so neither an uneven schedule nor the water-fill can put cover on a leg the
+            schedule zeroed;
+          * `_largest_remainder` rounds to whole contracts summing to Q, and duplicate rungs (a
+            band narrower than `levels` contracts) collapse.
+        Cached per (t, live). The corridor filter downstream in `grid_at` is then provably a
+        no-op — which is the point: the rungs a caller is offered are rungs it can realize."""
+        key = (t, None if live is None else tuple(live.tolist()))
+        if key not in self._ladder_cache:
+            weights = self._weights_at(t, live)
+            usable = (weights > 0).to(self.q_lo.dtype)
+            box_lo, box_hi = torch.ceil(self.q_lo) * usable, torch.floor(self.q_hi) * usable
+            lo, hi = self.net_bounds(t)
+            lo = math.ceil(max(lo, float(box_lo.sum())) - 1e-9)
+            hi = math.floor(min(hi, float(box_hi.sum())) + 1e-9)
+            if lo > hi:
+                raise ValueError(
+                    f"action ladder empty at step {t} — no whole-contract net is reachable on the "
+                    f"weighted live legs {[self.hedges[i] for i in usable.nonzero().flatten().tolist()]} "
+                    f"inside net_bounds {self.net_bounds(t)}")
+            if hi - lo > self.levels - 1:
+                raise ValueError(
+                    f"Allocation_Weights ladder at step {t} spans {hi - lo} contracts over "
+                    f"{self.levels} rungs — a quantum of {(hi - lo) / (self.levels - 1):.2f} "
+                    f"contracts. Under a weight schedule "
+                    f"Training_Action_Grid_Levels_Per_Axis counts rungs on the TOTAL, and a "
+                    f"quantum above 1 rebuilds the coarse net grid the schedule exists to "
+                    f"replace; raise it to at least {hi - lo + 1}.")
+            net = torch.linspace(lo, hi, self.levels, device=self.device).unsqueeze(-1)  # (L,1)
+            raw = (net * weights).clamp(box_lo, box_hi)
+            rows = self._largest_remainder(
+                self.waterfill(raw, net, net, usable.nonzero().flatten().tolist()), net)
+            if self.total_abs_limit > 0.0:
+                rows = rows[rows.abs().sum(-1) <= self.total_abs_limit + 1e-9]
+            self._ladder_cache[key] = rows.unique(dim=0)
+        return self._ladder_cache[key]
+
     def grid_at(self, t, live=None):
-        """Action grid at decision step t: the base `grid()` filtered to rows whose SIGNED total
-        position lies in the `Total_Position_Schedule` corridor at t. No schedule → the base grid
-        unchanged (bit-identical to today). The single per-t filter site every track shares
-        (DiffSolver argmax, hindsight, textbook). Empty after filtering ⇒ infeasible corridor at
-        t, failed loud.
+        """Action grid at decision step t: the base `grid()` — or the factored `allocation_grid(t)`
+        when `Allocation_Weights` is configured — filtered to rows whose SIGNED total position lies
+        in the `Total_Position_Schedule` corridor at t. No schedule → that grid unchanged
+        (bit-identical to today). The single per-t filter site every track shares (DiffSolver
+        argmax, hindsight, textbook). Empty after filtering ⇒ infeasible corridor at t, failed
+        loud.
 
         The corridor bounds the REALIZED signed total — the position that survives expiry masking
         (the argmax callers apply `q = q * live` afterwards). Passing the step-t `live` leg mask
         filters on Σ(q_i·live_i), so a corridor-satisfying short can't be parked on an expired leg
         (a dF=0 wealth-neutral tie) only to be masked to 0 and silently under-hedge. Absent live ⇒
         Σq_i over all legs (entry step / static diagnostics, where nothing has expired)."""
-        grid = self.grid()
+        grid = self.grid() if self.weights is None else self.allocation_grid(t, live)
         if self.schedule is None:
             return grid
         lo, hi = self._corridor_at(t)
@@ -209,13 +329,17 @@ class HedgeActionSpace:
             return q
         return self.waterfill(q, *self._corridor_at(t))
 
-    def waterfill(self, q, lo, hi):
+    def waterfill(self, q, lo, hi, idx=None):
         """Shift the ACTIVE legs of `q` `(B, n_hedge)` so their signed total lands in `[lo, hi]`,
         each leg staying inside its own `[Min,Max]`: the deficit `d = clamp(Σq, lo, hi) − Σq` is
         distributed in proportion to each leg's remaining room in d's direction. `lo`/`hi` are
         scalars (the corridor) or `(B,1)` tensors (a per-path net target). Feasible whenever the
-        headroom covers `|d|` — the same feasibility `grid_at` fails loud on."""
-        idx = self.active
+        headroom covers `|d|` — the same feasibility `grid_at` fails loud on.
+
+        `idx` narrows which legs absorb the deficit (default: every active leg). The ladder passes
+        the WEIGHTED live legs, because a leg the schedule zeroed has a full box of headroom and
+        would otherwise be handed cover the schedule said it must not carry."""
+        idx = self.active if idx is None else idx
         qa = q[:, idx]                                                   # (B, n_active)
         tot = qa.sum(-1, keepdim=True)                                   # (B,1) signed active total
         d = tot.clamp(lo, hi) - tot                                     # (B,1) deficit
@@ -238,26 +362,67 @@ class HedgeActionSpace:
             lo, hi = max(lo, c_lo), min(hi, c_hi)
         return lo, hi
 
-    def kappa(self, tradables_sim, t_index):
+    def kappa(self, tradables_sim, t_index, calendar=False):
         """Per-hedge kappa `(n_hedge,)` at sim-grid `t_index` — each instrument's mean mark
         through `hedge_runtime.per_contract_kappa` (the single turnover-cost rule). The step's
-        scalar vol (when a Vol_Scale spread is configured) drives per_contract_kappa's Vol_Scale."""
+        scalar vol (when a Vol_Scale spread is configured) drives per_contract_kappa's Vol_Scale.
+        `calendar=True` prices the MATCHED leg at `Calendar_Spread_Bps` instead of the outright
+        half-spread — the rate `turnover_cost` charges matched volume at."""
         vol = None if self.vol_sim is None else self.vol_sim[int(t_index)]
         return torch.stack(
-            [per_contract_kappa(self.runtime, tradables_sim[r][t_index].mean(), r, vol)
+            [per_contract_kappa(self.runtime, tradables_sim[r][t_index].mean(), r, vol, calendar)
              for r in self.hedges])
+
+    def calendar_kappa(self, tradables_sim, t_index):
+        """The matched-leg kappa at `t_index`, or None when no `Calendar_Spread_Bps` is
+        configured. `None` IS the switch, and this is the ONE place that reads it: every charge —
+        the argmax's, the fitted target's, both benchmark tracks' and the verdict's — takes its
+        `kappa_cal` from here, so they cannot end up pricing a roll three different ways."""
+        return (self.kappa(tradables_sim, t_index, calendar=True)
+                if self.calendar_bps is not None else None)
+
+    def universe_size(self):
+        """Row count of the action universe a diagnostic should report: the Cartesian grid, or the
+        entry-step LADDER under `Allocation_Weights`. Never the meshgrid under a schedule — at 5
+        legs and 51 levels that is ~345M rows built and discarded for a 51-row search."""
+        return int((self.grid_at(0) if self.weights is not None else self.grid()).shape[0])
+
+    def static_grid(self):
+        """The universe a CONSTANT hold is chosen from (`run_textbook_benchmark`). Cartesian: the
+        entry-step grid, as before. Under `Allocation_Weights`: every knot's ladder, deduped and
+        held to the ENTRY corridor — every composition the schedule ever offers, any one of which
+        a hold could have carried from day one.
+
+        Not just the entry knot, which is what `grid_at(0)` would give: the DP recomposes at every
+        knot and a constant hold cannot, so pinning the benchmark to the entry ray would put an
+        action-space difference inside the DP-vs-textbook gap, which is the campaign's headline
+        number. The hold still cannot TRACK the schedule — that is the honest asymmetry — but it
+        may at least choose which composition to sit in."""
+        if self.weights is None:
+            return self.grid_at(0)
+        rows = torch.cat([self.allocation_grid(step) for step, _ in self.weights]).unique(dim=0)
+        if self.schedule is None:
+            return rows
+        lo, hi = self._corridor_at(0)
+        return rows[(rows.sum(-1) >= lo - 1e-9) & (rows.sum(-1) <= hi + 1e-9)]
 
     def initial_q(self, batch, device):
         """The opening book `q0` `(batch, n_hedge)` (hedge legs only, `names['hedges']`
         order) from the normalized `Portfolio_State` positions."""
         return initial_q_from_runtime(self.runtime, batch, device)
 
-    @staticmethod
-    def turnover_cost(delta_contracts, kappa):
-        """L1 turnover cost: Σ_i |Δcontracts_i| · kappa_i. `delta_contracts` is `(..., n_hedge)`,
-        `kappa` is the `(n_hedge,)` per-contract cost from `kappa()`. Hard (no smoothing) — the
-        action search has no gradients on the action."""
-        return (delta_contracts.abs() * kappa).sum(dim=-1)
+    def turnover_cost(self, delta_contracts, kappa, kappa_cal=None):
+        """The solver-side name for `hedge_runtime.turnover_charge`, the single reposition-cost
+        rule the realized accounting reads too: the L1 sum `Σ_i |Δ_i|·κ_i`, or — with the matched
+        -leg `kappa_cal` from `calendar_kappa` — a greedy sweep over consecutive maturities that
+        charges matched volume one calendar crossing and every unmatched lot its own leg's kappa.
+        Hard (no smoothing): the action search has no gradients on the action.
+
+        This is what lets a policy roll. L1 charges a roll as two outright crossings, so a book
+        that should move down the curve is held into expiry instead; and the SAME rule has to
+        reach `hedge_bundle._roll_rebate` — it does, both call `turnover_charge` — or the policy
+        is optimized against a friction the book never pays."""
+        return turnover_charge(delta_contracts, kappa, kappa_cal)
 
     @staticmethod
     def schedule_key(schedule):
@@ -266,6 +431,14 @@ class HedgeActionSpace:
         checkpoint's stored corridor compares against the run's regardless of round-trip form."""
         return None if schedule is None else tuple(
             (int(step), float(lo), float(hi)) for step, lo, hi in schedule)
+
+    @staticmethod
+    def weights_key(weights):
+        """Canonical, comparison-stable form of an `Allocation_Weights` schedule (None or the
+        sorted `(step, weights)` knot tuple), rounded so a JSON round-trip of the normalized
+        weights compares equal. The `schedule_key` of the action space's other schedule."""
+        return None if weights is None else tuple(
+            (int(step), tuple(round(float(w), 9) for w in ws)) for step, ws in weights)
 
 
 def run_textbook_benchmark(bundle, runtime):
@@ -281,17 +454,23 @@ def run_textbook_benchmark(bundle, runtime):
     net-of-cost DIAGNOSTIC (`turnover_cost_mean` / `v0_mean_net`), never charged against the V_0
     track. One unwind row across all three tracks, so their `*_net` columns compare.
 
-    The corridor filter is the ENTRY-step one, `grid_at(0)`: the hold is chosen ONCE at entry, and a
-    per-t corridor is a dynamic constraint a constant hold cannot track, so the entry-step grid is
+    The corridor filter is the ENTRY-step one: the hold is chosen ONCE at entry, and a per-t
+    corridor is a dynamic constraint a constant hold cannot track, so the entry-step corridor is
     the single well-defined filter (no schedule ⇒ the base grid, unchanged). Keeps textbook a
-    within-entry-mandate static lower bound and shares the one filter site."""
+    within-entry-mandate static lower bound and shares the one filter site.
+
+    Under `Allocation_Weights` the universe is `aspace.static_grid()` — every knot's composition,
+    not just the entry knot's. The DP recomposes as the schedule moves and a constant hold cannot,
+    so pinning the benchmark to the entry ray would put an action-space difference inside the
+    DP-vs-textbook gap, which is the number the campaign reads. The hold still cannot TRACK the
+    schedule; it may only choose which composition to sit in for the whole horizon."""
     F, L_T, t_outer = bundle.realized_paths(runtime)
     device = F.device
     acc = runtime["accounting"]
     aspace = HedgeActionSpace(runtime, device, bundle.vol_sim)
     tradables_sim = bundle.tradables_sim
     # Entry-step corridor only — a constant hold can't track a per-t one (see docstring).
-    grid = aspace.grid_at(0)                                           # (n_actions, n_hedge)
+    grid = aspace.static_grid()                                        # (n_actions, n_hedge)
     b_outer = F.shape[-1]
     q0 = aspace.initial_q(b_outer, device)                            # (B, n_hedge) opening book
 
@@ -303,11 +482,13 @@ def run_textbook_benchmark(bundle, runtime):
     n_star = grid[best]                                                # (n_hedge,)
     # Net-of-cost diagnostic (shared kappa): entry |n_star − q0| + terminal unwind |0 − n_star|.
     kappa0 = aspace.kappa(tradables_sim, 0)
-    cost = aspace.turnover_cost(n_star.unsqueeze(0) - q0, kappa0)      # (B,) entry from q0
+    cost = aspace.turnover_cost(n_star.unsqueeze(0) - q0,              # (B,) entry from q0
+                                kappa0, aspace.calendar_kappa(tradables_sim, 0))
     if acc["force_flat_at_end"]:
         # Unwound at the PRE-SETTLEMENT row `last_live_mtm_index`, the one the solver's own
         # terminal charge uses: the last row is the post-settlement clean exit, where the deal
-        # has already paid and there is nothing left to liquidate at.
+        # has already paid and there is nothing left to liquidate at. Outright, like every
+        # terminal unwind: it takes the book to flat against the market, not leg against leg.
         kappa_T = aspace.kappa(tradables_sim, int(bundle.last_live_mtm_index))
         cost = cost + aspace.turnover_cost(n_star, kappa_T)            # unwind to flat (scalar)
     u_net = _utility_wrap_signed(L_T + g_t[best] - cost, runtime)
@@ -378,7 +559,8 @@ class HindsightDpSolver:
             step_pnl = torch.einsum("ai,ib->ab", grid * cs, dF)        # (n_actions_t, B)
             best_pnl, best_idx = step_pnl.max(dim=0)                   # (B,), (B,)
             q_now = grid[best_idx]                                     # (B, n_h)
-            cost = cost + aspace.turnover_cost(q_now - q_prev, aspace.kappa(tradables_sim, t))
+            cost = cost + aspace.turnover_cost(q_now - q_prev, aspace.kappa(tradables_sim, t),
+                                               aspace.calendar_kappa(tradables_sim, t))
             G = G + best_pnl
             q_prev = q_now
             if t == 0:
@@ -402,7 +584,7 @@ class HindsightDpSolver:
                 "turnover_cost_mean": float(cost.mean()),
                 "n_star_0": n_star_0.float().mean(dim=0).detach().cpu().tolist(),
                 "v0_abs_max": float(v0.abs().max()),
-                "action_grid_size": int(aspace.grid().shape[0]),
+                "action_grid_size": aspace.universe_size(),
             },
         )
 
@@ -643,8 +825,13 @@ class DiffSolver:
         return _utility_wrap_signed(W, self.runtime)
 
     # ---- action grid (shared, mask-aware; inactive axes pinned to 0) ---------
-    def _action_grid(self):
-        return self.aspace.grid()
+    @property
+    def grid_size(self):
+        """Rows in the action universe this run searches — reported in the sweep log and in
+        `diagnostics['action_grid_size']`. A property rather than a construction-time int because
+        under `Allocation_Weights` the Cartesian meshgrid must never be built at all (51 levels on
+        5 legs is ~345M rows for a 51-row ladder), and its size would be the wrong number anyway."""
+        return self.aspace.universe_size()
 
     # ---- input standardization ----------------------------------------------
     def _standardize(self, market, W, p):
@@ -709,9 +896,17 @@ class DiffSolver:
         return (self.aspace.kappa(self.tradables_sim, self.T_dec)
                 if self.position_state and self.force_flat and t + 1 >= self.T_dec else None)
 
-    def _reposition_charge(self, acts, q_prev, kappa, kappa_T):
+    def _calendar_kappa(self, t):
+        """The MATCHED-leg kappa at decision step t (None with no `Evaluator.Calendar_Spread_Bps`)
+        — the rate matched volume pays inside `_reposition_charge`. A one-line hop to
+        `aspace.calendar_kappa`, which the benchmark and verdict tracks read too, so the ranking
+        in `_decide`, the regressed target in `_fit_step` and every net-of-cost diagnostic cannot
+        price a roll three different ways."""
+        return self.aspace.calendar_kappa(self.tradables_sim, t)
+
+    def _reposition_charge(self, acts, q_prev, kappa, kappa_T, kappa_cal=None):
         """The frictional charge on moving `q_prev` to `acts` (broadcastable `(..., n_hedge)`): the
-        L1 turnover toll at `kappa`, the quadratic churn term (`DiffV2_Churn_Lambda`), and the
+        turnover toll at `kappa`, the quadratic churn term (`DiffV2_Churn_Lambda`), and the
         terminal unwind of `acts` at `kappa_T` when `_unwind_kappa` says one applies.
 
         ONE expression, called from every seam: the wealth that RANKS a candidate in `_decide`,
@@ -719,11 +914,16 @@ class DiffSolver:
         regressed TARGET in `_fit_step` all price the same friction. That equality is the whole of
         the frictional Bellman — a charge applied only at the ranking is a one-day toll the value
         function forgets. Callers pass LIVE-MASKED positions on both sides; a dead leg then has
-        `dq = 0` and carries no phantom toll (see `_decide`)."""
+        `dq = 0` and carries no phantom toll (see `_decide`).
+
+        `kappa_cal` (from `_calendar_kappa`) makes the toll SPREAD-AWARE: the move's matched half
+        pays the calendar rate rather than two outright crossings (see `turnover_cost`). The
+        terminal unwind stays outright — it takes the whole book to flat against the market, not
+        one leg against another, and a same-signed book has no matched half to begin with."""
         dq = acts - q_prev
         charge = self.churn_lambda * dq.pow(2).sum(-1)
         if kappa is not None:
-            charge = charge + self.aspace.turnover_cost(dq, kappa)
+            charge = charge + self.aspace.turnover_cost(dq, kappa, kappa_cal)
         if kappa_T is not None:
             charge = charge + self.aspace.turnover_cost(acts, kappa_T)
         return charge
@@ -769,12 +969,24 @@ class DiffSolver:
         `Total_Position_Schedule` corridor at t when one is configured (else the base grid). The
         `live` leg mask (the callers zero `q*live` after expiry) enters the filter so the corridor
         bounds the REALIZED Σ(q_i·live_i), not a target the expiry mask then guts.
+        Under `Allocation_Weights` that universe is the FACTORED Q-ladder instead — rungs on the
+        signed net cover, split across the legs by the schedule, built on the LIVE legs so a rung
+        is a book this step can actually hold. The charge, the deadband incumbent and the position
+        state consume those rows unchanged. `Max_Trade_Per_Step` is the one correction that has to
+        know: it measures |ΔΣq| rather than per-leg |Δq_i|, because the policy's control is the
+        net cover and the composition jump at a knot is the schedule's mandate, not a trade the
+        argmax chose (per-leg, every row at a knot step is infeasible and the band silently
+        vanishes through the fallback below).
+
         `q_prev` carries the standing book and arms up to four decision-time corrections,
-        each with its own further switch: the cost-aware L1 charge (`kappa` present), the
+        each with its own further switch: the cost-aware turnover charge (`kappa` present, priced
+        net/paired when `Calendar_Spread_Bps` gives `_calendar_kappa` a rate), the
         quadratic churn charge (`self.churn_lambda` > 0), the `Max_Trade_Per_Step` band
         (`rate_limit` True — the label path lowers it so the band stays execution-only) and the
         `Decision_Deadband_Sigma` incumbent. The band takes the best action INSIDE the reachable
-        set and falls back to the unrestricted best when the corridor forces a jump. Without
+        set and falls back to the unrestricted best when NOTHING is reachable — which only a
+        corridor step can cause, now that a schedule's own recomposition is inside the |ΔΣq|
+        measure rather than striking out every row and disarming the band silently. Without
         `DiffV2_Position_State` the fitted value targets stay cost-free and these shape
         SELECTION only.
 
@@ -819,6 +1031,7 @@ class DiffSolver:
                     "PAIRED standard error over the inner draws, so one draw makes it NaN, every "
                     "comparison False, and the book would silently never trade again")
             kappa_T = self._unwind_kappa(t)
+            kappa_cal = self._calendar_kappa(t)
             rows = torch.arange(B, device=market_t1.device)
             # ONE expiry convention (see docstring): the standing book, like every candidate, is
             # only what still lives.
@@ -841,7 +1054,7 @@ class DiffSolver:
                                            and (kappa is not None or self.churn_lambda > 0.0)):
                     prev = a_live[None] if q_live is None else q_live[:, None, :]
                     W1 = W1 - self._reposition_charge(                                    # (B,c) $
-                        a_live[None, :, :], prev, kappa, kappa_T)[:, :, None]
+                        a_live[None, :, :], prev, kappa, kappa_T, kappa_cal)[:, :, None]
                 # The successor is queried at the book the CANDIDATE leaves standing (see docstring).
                 p1 = ((a_live.sum(-1) / self.total_abs_limit)[None, :, None]
                       .expand(B, c, Bi).reshape(-1) if self.position_state else None)
@@ -854,8 +1067,14 @@ class DiffSolver:
                     dev = (C1f - C1.unsqueeze(-1)).clamp(max=0.0)                         # negatives only
                     C1 = C1 - self.risk_kappa * (dev ** 2).mean(-1).sqrt()
                 if limit:
-                    infeas = ((a_live[None, :, :] - q_live[:, None, :]).abs()
-                              > self.aspace.max_trade).any(-1)                            # (B,c)
+                    dq_c = a_live[None, :, :] - q_live[:, None, :]                        # (B,c,n_h)
+                    # Under a weight schedule the policy's control is the NET cover, so the band
+                    # measures |ΔΣq|: the composition jump at a knot is the SCHEDULE's, mandated
+                    # and unavoidable, and a per-leg band would strike out every single row at
+                    # exactly those steps and silently disarm itself through the fallback below.
+                    infeas = ((dq_c.sum(-1).abs() > self.aspace.max_trade)
+                              if self.aspace.weights is not None
+                              else (dq_c.abs() > self.aspace.max_trade).any(-1))           # (B,c)
                     bv, ba = C1.masked_fill(infeas, float('-inf')).max(dim=1)
                     bq = a_live[ba]                        # index 0 on an all-infeasible chunk;
                     if band_val is None:                   # discarded by the isfinite mask below
@@ -889,7 +1108,7 @@ class DiffSolver:
                                        dF[:, None], dL[:, None])                          # (B,1,Bi)
                 if kappa_T is not None or kappa is not None or self.churn_lambda > 0.0:
                     W1 = W1 - self._reposition_charge(
-                        q_live, q_live, kappa, kappa_T)[:, None, None]
+                        q_live, q_live, kappa, kappa_T, kappa_cal)[:, None, None]
                 p_inc = ((q_live.sum(-1) / self.total_abs_limit)[:, None, None]
                          .expand(B, 1, Bi).reshape(-1) if self.position_state else None)
                 C1f_inc = self._continuation(
@@ -953,8 +1172,7 @@ class DiffSolver:
         q_prev = self.aspace.initial_q(self.B_outer, self.device)
         W_list, q_list = [], []
         rng = (self.q_hi - self.q_lo)
-        mask = torch.zeros(self.n_hedge, device=self.device)
-        mask[self.active] = 1.0
+        mask = self.aspace.active_mask
         oob = []                                                                         # per-t bank corridor-breach diagnostic
         for t in range(self.T_dec):
             W_list.append(W.clone())
@@ -1124,7 +1342,7 @@ class DiffSolver:
             # The charge the SELECTION above ranked with, now inside the regressed TARGET, and the
             # successor read at the book the chosen action leaves standing (see docstring).
             W1 = W1 - self._reposition_charge(
-                q_star, q_prev, kappa_t, self._unwind_kappa(t))[:, None]
+                q_star, q_prev, kappa_t, self._unwind_kappa(t), self._calendar_kappa(t))[:, None]
             p_bank = q_state.sum(-1) / self.total_abs_limit               # state at t: live_{t-1}
             p1 = (q_star.sum(-1) / self.total_abs_limit)[:, None].expand(B, Bi_e).reshape(-1)
         Y = self._continuation(
@@ -1296,8 +1514,10 @@ class DiffSolver:
                 q_tb = self.aspace.project_to_corridor(
                     self._replication_hedge(t)[None].expand(n, self.n_hedge), t)
                 z = torch.zeros(n, self.n_hedge, device=self.device)
+                kappa_cal_t = self.aspace.calendar_kappa(self.tradables_sim, t)
                 for p, q_now in (("greedy", q_g), ("textbook", q_tb)):
-                    cost[p] = cost[p] + self.aspace.turnover_cost(q_now - q_prev[p], kappa_t)
+                    cost[p] = cost[p] + self.aspace.turnover_cost(q_now - q_prev[p], kappa_t,
+                                                                  kappa_cal_t)
                     q_prev[p] = q_now
                 W["greedy"] = self._wealth_step(W["greedy"], q_g, dF_o, dL_o)
                 W["textbook"] = self._wealth_step(W["textbook"], q_tb, dF_o, dL_o)
@@ -1421,8 +1641,10 @@ class DiffSolver:
         Refused: the shape contract (`t_min`/`T_dec`/`md`/`hedges`), `DiffV2_Position_State` — the
         net book fraction is an input COLUMN, so a mismatch would otherwise surface as a
         `load_state_dict` shape error naming a Linear weight rather than the key that caused it —
-        and a corridor mismatch. Warned: a stale `solver_version`, a missing corridor stamp under a
-        live corridor, and a pre-stream frame. Corridor-FREE training spans the widest wealth
+        a corridor mismatch, and (in `_check_action_universe` / `_check_calendar_spread`) a
+        narrowed `Allocation_Weights` universe or a `Calendar_Spread_Bps` that moved under
+        position state. Warned: a stale `solver_version`, a missing corridor/universe/rate stamp
+        under a live one, and a pre-stream frame. Corridor-FREE training spans the widest wealth
         support, so rolling it inside any corridor only restricts to a learned subset (valid);
         a policy trained INSIDE one is off-support under a different or absent corridor."""
         for key, want in (("t_min", self.t_min), ("T_dec", self.T_dec),
@@ -1469,12 +1691,75 @@ class DiffSolver:
                 "total_position_schedule stamp) but this run sets a Total_Position_Schedule "
                 "— cannot verify the frozen policy was trained in it; roll validity "
                 "unverified.", src)
+        self._check_action_universe(ck, src)
+        self._check_calendar_spread(ck, src)
         if "streaming" in ck and not ck["streaming"]:
             logging.warning(
                 "DiffV2_Load_Value_Fn: %s carries a pre-stream frame, locked on a whole "
                 "fixed simulation rather than a warmup batch — the policy evaluates in "
                 "ITS frame, not this run's.", src)
         return ck_ver
+
+    def _check_action_universe(self, ck, src):
+        """`Allocation_Weights` provenance, the corridor's rule applied to the action universe a
+        checkpoint's argmax was fitted against. A policy trained on the Cartesian grid saw the
+        WIDEST set of books, so rolling it on a ladder only restricts it to a learned subset
+        (valid, said out loud). A policy trained on one ladder and rolled on a different one — or
+        on the full product — is queried on books it never scored, and under
+        `DiffV2_Position_State` on a p-support it never covered. Refused by name, because the
+        symptom otherwise is a silently worse roll rather than an error."""
+        want = self.aspace.weights_key(self.aspace.weights)
+        saved = self.aspace.weights_key(ck["allocation_weights"]) if "allocation_weights" in ck \
+            else None
+        if "allocation_weights" not in ck:
+            if want is not None:
+                logging.warning(
+                    "DiffV2_Load_Value_Fn: %s predates Allocation_Weights provenance but this "
+                    "run sets a weight schedule — cannot verify which action universe the "
+                    "frozen policy was fitted on; roll validity unverified.", src)
+            return
+        if saved == want:
+            return
+        if saved is None:
+            logging.info(
+                "DiffV2_Load_Value_Fn: %s was fitted on the full Cartesian action grid (the "
+                "widest universe); rolling it on an Allocation_Weights ladder only restricts "
+                "to a learned subset — valid.", src)
+            return
+        raise ValueError(
+            f"DiffV2_Load_Value_Fn Allocation_Weights mismatch: {src} was fitted on the ladder "
+            f"{saved} but this run searches {want}. The argmax scored a different set of books, "
+            f"so the frozen value is queried off the support it learned — retrain, or match the "
+            f"Evaluator.Allocation_Weights.")
+
+    def _check_calendar_spread(self, ck, src):
+        """`Calendar_Spread_Bps` provenance. Under `DiffV2_Position_State` the charge is a term of
+        the regressed TARGET, so a different rate is a different value function and a mismatch is
+        refused — the same reasoning that refuses a `DiffV2_Position_State` mismatch itself.
+        Position-free, the charge only shapes SELECTION (the fitted value never saw it), so a
+        re-roll under a new rate is the deliberate execution-policy re-roll `Max_Trade_Per_Step`
+        and `Decision_Deadband_Sigma` also allow — warned, not refused."""
+        want = self.aspace.calendar_bps
+        if "calendar_spread_bps" not in ck:
+            if want is not None:
+                logging.warning(
+                    "DiffV2_Load_Value_Fn: %s predates Calendar_Spread_Bps provenance but this "
+                    "run sets a rate; cannot verify the frozen policy priced spreads.", src)
+            return
+        if ck["calendar_spread_bps"] == want:
+            return
+        if self.position_state:
+            raise ValueError(
+                f"DiffV2_Load_Value_Fn Calendar_Spread_Bps mismatch under "
+                f"DiffV2_Position_State: {src} was trained at {ck['calendar_spread_bps']!r} and "
+                f"this run rolls at {want!r}. Under position state the reposition charge enters "
+                f"the regressed target, so the two are different value functions — retrain, or "
+                f"match the Evaluator.Calendar_Spread_Bps.")
+        logging.warning(
+            "DiffV2_Load_Value_Fn: %s was trained at Calendar_Spread_Bps %r and this run rolls "
+            "at %r. Position-free the charge shapes SELECTION only, so this is a deliberate "
+            "execution re-roll — but the argmax is now ranking against a different friction "
+            "than the one it was tuned on.", src, ck["calendar_spread_bps"], want)
 
     def warmup(self, bundle=None):
         """Fit the value function on the first (or only) bundle and LOCK the frame: the
@@ -1529,7 +1814,6 @@ class DiffSolver:
             float(self.w_mean), float(self.w_std),
             self._replication_hedge(0).detach().cpu().tolist())
 
-        self.grid_size = int(self._action_grid().shape[0])
         hidden = int(self.cfg.get("diffv2_hidden", 128))
         load_cfg = self.cfg.get("diffv2_load_value_fn", "") or ""
         # A load member is either a checkpoint PATH (JSON contract) or an already-materialised
@@ -1708,6 +1992,15 @@ class DiffSolver:
             # Corridor provenance: the Total_Position_Schedule this policy was trained inside
             # (None = unconstrained). A load under a DIFFERENT corridor fails loud.
             "total_position_schedule": self.aspace.schedule_key(self.aspace.schedule),
+            # Action-universe provenance: the Allocation_Weights this policy's argmax searched
+            # (None = the Cartesian grid, the widest universe). Same shape of check as the
+            # corridor — and `config_hash` cannot stand in for either, because it hashes
+            # runtime['solver'] while both of these live under runtime['accounting'].
+            "allocation_weights": self.aspace.weights_key(self.aspace.weights),
+            # Friction provenance: under DiffV2_Position_State the calendar rate is a term of the
+            # charge that entered the regressed TARGET, so a load at a different rate is a
+            # different value function, not a different execution policy.
+            "calendar_spread_bps": self.aspace.calendar_bps,
             # Position-state provenance: p is an input column, so a load under the other
             # setting is refused BY NAME rather than as a net shape error.
             "position_state": self.position_state,

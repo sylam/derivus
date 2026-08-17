@@ -46,12 +46,15 @@ def _fake_solver(aspace, churn_lambda=0.0, value_scale=1.0):
     s = types.SimpleNamespace(
         aspace=aspace, chunk=64, risk_kappa=0.0, churn_lambda=churn_lambda,
         position_state=False,
+        # Flat marks: `_calendar_kappa` reads them to price a matched leg (None here — no rate).
+        tradables_sim={r: torch.zeros(4, 2) for r in aspace.hedges},
         _wealth_step=lambda W, q, dF, dL: (W + q.sum(-1) * value_scale).expand(
             W.shape[0], q.shape[1], dF.shape[-1]),
         _continuation=lambda nets, m, W1, t, p: W1,
         _decide=DiffSolver._decide,
     )
     s._unwind_kappa = types.MethodType(DiffSolver._unwind_kappa, s)
+    s._calendar_kappa = types.MethodType(DiffSolver._calendar_kappa, s)
     s._reposition_charge = types.MethodType(DiffSolver._reposition_charge, s)
     return s
 

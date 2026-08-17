@@ -25,7 +25,8 @@ import pandas as pd
 import torch
 
 from . import utils
-from .hedge_runtime import assemble_privileged_factors, per_contract_kappa, privileged_block
+from .hedge_runtime import (assemble_privileged_factors, per_contract_kappa, privileged_block,
+                            turnover_charge)
 
 
 # Rolling window (business days) for the realized-vol series feeding the symlog utility scale
@@ -168,43 +169,28 @@ def _history_key(commodity_field):
 
 
 def _roll_rebate(deltas, prices, runtime, vol=None):
-    """Calendar-spread rebate for a step's turnover (Evaluator.Roll_As_Calendar_Spread='Yes').
+    """Calendar-spread rebate for a step's REALIZED turnover, armed by
+    `Evaluator.Roll_As_Calendar_Spread='Yes'` or by a `Calendar_Spread_Bps` rate on its own.
     A rebalance that REDUCES one contract month and INCREASES an adjacent month is a roll: the
-    matched quantity should pay a single calendar-spread half-cost, not two independent outright
-    half-spreads. Greedily match offsetting Δq (opposite signs) across CONSECUTIVE maturities
-    (`names['hedges']` is maturity-ordered): the matched x on each pair earns
-    `rebate = outright(x on both legs) − calendar(x)`; the unmatched residual keeps paying the
-    per-instrument outright debit (untouched). Returns the per-path rebate `(B,)` to CREDIT back.
+    matched quantity should pay a single calendar-spread crossing, not two independent outright
+    half-spreads. The env debits the full L1 turnover leg by leg; this is what it CREDITS back,
+    `(B,)` per path.
 
-    Default calendar rate = half the sum of the two outright kappas (so it composes with the
-    per-instrument / Vol_Scale spread automatically); `Evaluator.Calendar_Spread_Bps` overrides
-    the matched leg with an absolute half-spread bps on the average leg notional (still charging
-    the flat per-unit fee on both legs). `deltas`/`prices` key by hedge name; `vol` is the step's
-    scalar annualized vol."""
-    acc = runtime["accounting"]
+    The matching and the pricing are `hedge_runtime.turnover_charge` — the single rule the
+    solver's decision charge also reads, so the realized cost of a reposition and the cost the
+    argmax ranked it at are the same function of the same move, whatever its shape. Absent a
+    `Calendar_Spread_Bps`, the matched leg falls back to half the sum of the two OUTRIGHT kappas
+    (today's default, composing with the per-instrument / Vol_Scale spread automatically) by
+    handing that rule the outright kappa as the calendar one. `deltas`/`prices` key by hedge
+    name; `vol` is the step's scalar annualized vol."""
     hedges = list(runtime["names"]["hedges"])
-    rem = [deltas[h].to(torch.float32) for h in hedges]                 # remaining unmatched Δq
-    rebate = torch.zeros_like(rem[0])
-    cal_bps = acc["calendar_spread_bps"]
-    for i in range(len(hedges) - 1):
-        di, dj = rem[i], rem[i + 1]
-        x = torch.minimum(di.abs(), dj.abs()) * ((di * dj) < 0)         # (B,) matched contracts
-        rem[i] = di - di.sign() * x
-        rem[i + 1] = dj - dj.sign() * x
-        ni, nj = hedges[i], hedges[i + 1]
-        pi, pj = prices[ni].abs(), prices[nj].abs()
-        k_i = per_contract_kappa(runtime, pi, ni, vol)
-        k_j = per_contract_kappa(runtime, pj, nj, vol)
-        outright = x * (k_i + k_j)
-        if cal_bps is None:
-            cal = x * 0.5 * (k_i + k_j)
-        else:
-            cs_i = float(runtime["tradables"][ni]["contract_size"])
-            cs_j = float(runtime["tradables"][nj]["contract_size"])
-            n_avg = 0.5 * (pi * cs_i + pj * cs_j)
-            cal = x * (2.0 * acc["transaction_cost_per_unit"] + 0.5 * cal_bps * 1.0e-4 * n_avg)
-        rebate = rebate + (outright - cal)
-    return rebate
+    delta = torch.stack([deltas[h].to(torch.float32) for h in hedges], dim=-1)   # (B, n_hedge)
+    kappa = torch.stack([per_contract_kappa(runtime, prices[h].abs(), h, vol)
+                         for h in hedges], dim=-1)
+    cal = (torch.stack([per_contract_kappa(runtime, prices[h].abs(), h, vol, True)
+                        for h in hedges], dim=-1)
+           if runtime["accounting"]["calendar_spread_bps"] is not None else kappa)
+    return (delta.abs() * kappa).sum(-1) - turnover_charge(delta, kappa, cal)
 
 
 def _im_funding_charge(positions, prices, runtime, vol, dt):
