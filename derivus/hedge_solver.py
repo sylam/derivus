@@ -3022,9 +3022,10 @@ class DiffSolverV2(DiffSolver):
         for t in range(T):
             cv = self._phi_curve(L[t], LT < L[t])
             curves.append(cv)
-            if float(rep[t].abs().sum()) == 0.0:
-                # The liability is fully fixed: nothing left to hedge, and the measurement
-                # degenerates to comparison dust (terminal == today up to discounting). The
+            if float(rep[t].abs().sum()) < 0.5:
+                # Less than half a contract of remaining replication delta: the liability is
+                # fixed to within dust (the settling rows still carry discount pull-to-par, so
+                # exact zero never arrives), and the below-today comparison is float noise. The
                 # box's speculative allowance is not a mandate — the constructed book is FLAT
                 # (the wealth step below still accrues the settling liability rows).
                 qt = torch.zeros(self.B_outer, self.n_hedge, device=self.device)

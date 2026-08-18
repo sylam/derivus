@@ -167,7 +167,9 @@ def test_a_fixed_liability_constructs_a_flat_book():
     is not a mandate), while the wealth roll still accrues the settling liability rows."""
     s = _v2(T_dec=3, seed=5, hi=1.0)                     # a long allowance: dust would BUY
     L = s.liability_sim
-    L[3] = L[2]                                          # final step: liability fully fixed
+    g = torch.Generator().manual_seed(1)
+    # final step: liability fixed to within DUST (discount pull-to-par, never exactly zero)
+    L[3] = L[2] + 1e-4 * torch.randn(L.shape[1], generator=g)
     s.tradables_sim["A"][3] = s.tradables_sim["A"][2] + 1.0   # marks still move
     q, curves, WT = s._constructed_policy()
     assert torch.equal(q[2], torch.zeros_like(q[2])), 'fixed liability must hold nothing'
