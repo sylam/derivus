@@ -107,6 +107,8 @@ def _solver(runtime, position_state, T_dec=3, n_steps=4, B=2):
     s = types.SimpleNamespace(
         aspace=aspace, chunk=64, risk_kappa=0.0, churn_lambda=0.0,
         position_state=position_state, wealth_free=False,
+        # The two OBJECTIVE dials, off: the reward is terminal and the knee is one scalar.
+        running_wealth=False, utility_scale_schedule=None, scheduled_scale=False,
         force_flat=runtime["accounting"]["force_flat_at_end"],
         T_dec=T_dec, total_abs_limit=aspace.total_abs_limit,
         hedges=hedges, contract_size=aspace.contract_size, device=torch.device("cpu"),
@@ -267,6 +269,8 @@ def _stub(position_state):
     rt = _runtime()
     s = types.SimpleNamespace(t_min=0, T_dec=3, hedges=list(rt["names"]["hedges"]),
                               position_state=position_state, wealth_free=False,
+                              running_wealth=False, utility_scale_schedule=None,
+                              scheduled_scale=False,
                               aspace=HedgeActionSpace(rt, torch.device("cpu")))
     s._check_action_universe = types.MethodType(DiffSolver._check_action_universe, s)
     s._check_calendar_spread = types.MethodType(DiffSolver._check_calendar_spread, s)
@@ -581,10 +585,10 @@ def test_the_ensemble_branch_carries_the_position_column():
             return torch.zeros(x.shape[0])
 
     s = types.SimpleNamespace(
-        T_dec=2, a_bounds=[None, None], wealth_free=False,
+        T_dec=2, a_bounds=[None, None], wealth_free=False, running_wealth=False,
         _ensemble=[([Rec(), Rec()], torch.zeros(md), torch.ones(md),
-                    torch.tensor(0.0), torch.tensor(1.0), None)],
-        _u=lambda W: torch.zeros_like(W))
+                    torch.tensor(0.0), torch.tensor(1.0), None, None)],
+        _u=lambda W, t=None: torch.zeros_like(W))
     DiffSolver._continuation(s, None, torch.randn(n, md), torch.randn(n), 0, None)
     assert seen[-1] == md + 1, 'position-free ensemble input must stay (market | W)'
     DiffSolver._continuation(s, None, torch.randn(n, md), torch.randn(n), 0, torch.zeros(n))
@@ -623,7 +627,7 @@ def _verdict_solver(runtime, T_dec=3, B=8, Bi=2, md=1):
     s.t_min, s.cost_aware = 0, False
     s.tradables_sim = {r: torch.zeros(T_dec + 1, B) for r in s.hedges}
     s.liability_sim = torch.zeros(T_dec + 1, B)
-    s._u = lambda W: W
+    s._u = lambda W, t=None: W
     s._decide = types.MethodType(DiffSolver._decide, s)
     s._continuation = lambda nets, market, W, t, p: W
     inner = {t: (torch.zeros(B, Bi, n_h), torch.zeros(B, Bi), torch.zeros(B, Bi, md),

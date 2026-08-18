@@ -107,6 +107,8 @@ def _solver(runtime, wealth_free, position_state=False, T_dec=3, n_steps=4, B=2)
     s = types.SimpleNamespace(
         aspace=aspace, chunk=64, risk_kappa=0.0, churn_lambda=0.0,
         position_state=position_state, wealth_free=wealth_free,
+        # The two OBJECTIVE dials, off: the reward is terminal and the knee is one scalar.
+        running_wealth=False, utility_scale_schedule=None, scheduled_scale=False,
         force_flat=runtime["accounting"]["force_flat_at_end"],
         t_min=0, T_dec=T_dec, total_abs_limit=aspace.total_abs_limit,
         hedges=hedges, contract_size=aspace.contract_size, device=torch.device("cpu"),
@@ -116,7 +118,7 @@ def _solver(runtime, wealth_free, position_state=False, T_dec=3, n_steps=4, B=2)
         a_bounds=[None] * T_dec, _ensemble=None,
         # CARA: bounded, strictly concave, strictly increasing — so E_inner[u] has an interior
         # maximiser over the action grid and a wealth slope in A can visibly outrank it.
-        _u=lambda W: -torch.exp(-W),
+        _u=lambda W, t=None: -torch.exp(-W),
     )
     s._wealth_step = types.MethodType(DiffSolver._wealth_step, s)
     s._unwind_kappa = types.MethodType(DiffSolver._unwind_kappa, s)
@@ -271,10 +273,10 @@ def test_the_ensemble_branch_drops_the_wealth_column():
 
     def _ens(wealth_free):
         return types.SimpleNamespace(
-            T_dec=2, a_bounds=[None, None], wealth_free=wealth_free,
+            T_dec=2, a_bounds=[None, None], wealth_free=wealth_free, running_wealth=False,
             _ensemble=[([Rec(), Rec()], torch.zeros(MD), torch.ones(MD),
-                        torch.tensor(0.0), torch.tensor(1.0), None)],
-            _u=lambda W: torch.zeros_like(W))
+                        torch.tensor(0.0), torch.tensor(1.0), None, None)],
+            _u=lambda W, t=None: torch.zeros_like(W))
 
     for wealth_free, width in ((False, MD + 1), (True, MD)):
         s = _ens(wealth_free)
@@ -289,6 +291,8 @@ def _stub(wealth_free, position_state=False):
     rt = _runtime()
     s = types.SimpleNamespace(t_min=0, T_dec=3, hedges=list(rt["names"]["hedges"]),
                               position_state=position_state, wealth_free=wealth_free,
+                              running_wealth=False, utility_scale_schedule=None,
+                              scheduled_scale=False,
                               aspace=HedgeActionSpace(rt, torch.device("cpu")))
     s._check_action_universe = types.MethodType(DiffSolver._check_action_universe, s)
     s._check_calendar_spread = types.MethodType(DiffSolver._check_calendar_spread, s)
@@ -362,11 +366,12 @@ def _fit(wealth_free, w_shift=0.0, y_shift=0.0, m_shift=0.0, B=64, md=MD):
     Y, gW, g_market = torch.randn(B), torch.randn(B), torch.randn(B, md)
     s = types.SimpleNamespace(
         wealth_free=wealth_free, position_state=False, use_adv=True, prox=0.0,
+        running_wealth=False,
         fit_iters=25, fit_tol=0.0, lr=1e-2, cfg={}, _opts={}, T_dec=1,
         _bounds_frozen=False, a_bounds=[None], _breaches=[],
         m_mean=torch.zeros(md), m_std=torch.ones(md),
         w_mean=torch.tensor(0.0), w_std=torch.tensor(1.0),
-        _u=lambda W: torch.tanh(W))
+        _u=lambda W, t=None: torch.tanh(W))
     s._standardize = types.MethodType(DiffSolver._standardize, s)
     out = DiffSolver._fit_from_labels(
         s, [net], W0, market0, Y + y_shift, gW + w_shift, g_market + m_shift, 0,

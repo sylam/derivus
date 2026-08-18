@@ -144,6 +144,8 @@ def _solver(runtime, position_state=False, T_dec=3, n_steps=4, B=2):
     s = types.SimpleNamespace(
         aspace=aspace, chunk=256, risk_kappa=0.0, churn_lambda=0.0,
         position_state=position_state, wealth_free=False,
+        # The two OBJECTIVE dials, off: the reward is terminal and the knee is one scalar.
+        running_wealth=False, utility_scale_schedule=None, scheduled_scale=False,
         force_flat=runtime['accounting']['force_flat_at_end'],
         t_min=0, T_dec=T_dec, total_abs_limit=aspace.total_abs_limit,
         hedges=list(aspace.hedges), contract_size=aspace.contract_size,
@@ -627,7 +629,7 @@ def _verdict_solver(runtime, T_dec=3, B=8, Bi=2, md=1, dF=None):
     s.q_lo, s.q_hi = s.aspace.q_lo, s.aspace.q_hi
     s.tradables_sim = {r: torch.full((T_dec + 1, B), PRICE) for r in s.hedges}
     s.liability_sim = torch.zeros(T_dec + 1, B)
-    s._u = lambda W: W
+    s._u = lambda W, t=None: W
     s._decide = types.MethodType(DiffSolver._decide, s)
     s._replication_hedge = types.MethodType(DiffSolver._replication_hedge, s)
     s._continuation = lambda nets, market, W, t, p: W

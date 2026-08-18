@@ -82,7 +82,43 @@ def _is_utility_objective(runtime):
     return (runtime.get("objective") or {}).get("object") in _UTILITY_OBJECTS
 
 
-def _utility_wrap_signed(x_dollars, runtime):
+def _utility_scale(objective, t=None):
+    """The dollar scale `c` in force at decision step `t` — ONE resolution rule, shared by the
+    utility transform, its closed-form curvature and the decision-curve dump.
+
+    `Objective.Utility_Scale_Mode='conditional_sim'` locks a per-step SCHEDULE at the frame lock
+    (`Bundle.utility_scale_schedule`, mirrored onto the runtime objective beside the scalar): a
+    caller that NAMES its step reads that step's knee, and one that does not — a TERMINAL read,
+    which is what the benchmark tracks and the verdict's terminal stats take — reads the scalar,
+    which under a schedule IS the schedule's terminal entry. So the two agree at the terminal by
+    construction rather than by coincidence, and an ensemble keeps that: its run-level scalar is
+    the MEAN of its members' terminal knees (`DiffSolver._restore_frame`), which is what its
+    averaged terminal continuation is a reading of.
+
+    Missing it is fail-loud: the silent fallback (c = 1.0) produces plausible-looking-but-wrong
+    rewards (log1p($1M / 1.0) ≈ 14) with no error at the call site. A NON-POSITIVE one is the same
+    contract read the other way — `x = (W − R)/c` is then infinite or NaN, every label from that
+    step with it, and the fit spreads the NaN through the nets and reports a finished run — so
+    zero is refused HERE, at the one place c is resolved, rather than at each source that could
+    produce one."""
+    schedule = objective.get("utility_scale_schedule")
+    c = objective.get("utility_scale") if schedule is None or t is None else schedule[int(t)]
+    if c is None:
+        raise ValueError(
+            "utility objective active but runtime['objective']['utility_scale'] is not set — "
+            "Bundle.from_batch mirrors it from the resolved utility_scale; a hand-built runtime "
+            "must set it explicitly.")
+    c = float(c)
+    if not c > 0.0:
+        raise ValueError(
+            f"utility scale c = {c} at step {t}: x = (W − R)/c is then not a number and neither "
+            f"is any reward computed from it. Under Utility_Scale_Mode='conditional_sim' this is "
+            f"the schedule's floor (Utility_Scale_Floor_Frac × its terminal entry) — the early "
+            f"steps carry no dispersion of their own; otherwise it is Utility_Scale_Explicit.")
+    return c
+
+
+def _utility_wrap_signed(x_dollars, runtime, t=None):
     """The terminal UTILITY u(W) applied to signed wealth — the single source of truth for
     the objective, the DP recursion, and the solver's value labels. Dispatches on the
     configured shape (all in normalised wealth x = (W − R) / c), identity for the legacy objective:
@@ -106,19 +142,15 @@ def _utility_wrap_signed(x_dollars, runtime):
     Shape params (huber a/δ/a⁺/κ, cara γ) are DIMENSIONLESS in c-units. Differentiable in `w`
     (AAD path: twin-loss labels, DP penalty, baseline B) — both huber knees are C¹, cara is smooth.
 
-    `c` is `Bundle.utility_scale`, mirrored onto the runtime objective when the bundle is built.
-    Missing it is fail-loud: the silent fallback (c = 1.0) produces plausible-looking-but-wrong
-    rewards (log1p($1M / 1.0) ≈ 14) with no error at the call site."""
+    `c` is `Bundle.utility_scale`, mirrored onto the runtime objective when the bundle is built —
+    or, when a step `t` is named under a locked `Utility_Scale_Mode='conditional_sim'` schedule,
+    that step's knee (`_utility_scale`, which owns the whole of that choice). What u is applied TO
+    is the CALLER's business: under `Objective.Reference_Mode='Running_Wealth'` the solver hands it
+    the day's wealth INCREMENT rather than terminal wealth, and this transform is unchanged."""
     if not _is_utility_objective(runtime):
         return x_dollars
     obj = runtime["objective"]
-    c = obj.get("utility_scale")
-    if c is None:
-        raise ValueError(
-            "utility objective active but runtime['objective']['utility_scale'] is not set — "
-            "Bundle.from_batch mirrors it from the resolved utility_scale; a hand-built runtime "
-            "must set it explicitly.")
-    x = (x_dollars - float(obj.get("reference_wealth", 0.0))) / float(c)
+    x = (x_dollars - float(obj.get("reference_wealth", 0.0))) / _utility_scale(obj, t)
     shape = obj["object"]
     if shape == "asymmetricutility_symlog":
         return torch.sign(x) * torch.log1p(x.abs())
@@ -140,9 +172,10 @@ def _utility_wrap_signed(x_dollars, runtime):
     return (1.0 - torch.exp(-g * x)) / g
 
 
-def _utility_local_curvature(W, runtime):
+def _utility_local_curvature(W, runtime, t=None):
     """`(u'(W), −u''(W)/u'(W))` in DOLLARS at one scalar wealth — the marginal utility and the
-    local absolute risk aversion the configured shape is actually applying there.
+    local absolute risk aversion the configured shape is actually applying there. `t` names the
+    decision step, so a locked per-step scale schedule reports the knee in force on THAT day.
 
     The closed forms in `_utility_wrap_signed`'s normalised x = (W − R)/c, chain-ruled back to
     dollars (u' = f'(x)/c and ARA = −f''(x)/(c·f'(x)), so the scale enters exactly once each):
@@ -161,7 +194,7 @@ def _utility_local_curvature(W, runtime):
     if not _is_utility_objective(runtime):
         return 1.0, 0.0
     obj = runtime["objective"]
-    c = float(obj["utility_scale"])
+    c = _utility_scale(obj, t)
     x = (float(W) - float(obj.get("reference_wealth", 0.0))) / c
     shape = obj["object"]
     if shape == "asymmetricutility_symlog":
@@ -177,6 +210,21 @@ def _utility_local_curvature(W, runtime):
         return f1 / c, (0.0 if d > knee else 2.0 * a / (f1 * c))
     g = float(obj.get("cara_gamma", 1.0))
     return math.exp(-g * x) / c, g / c
+
+
+def _loss_side_curvature(runtime, t=None):
+    """`(u'(R⁻), ARA(R⁻))` — the utility's slope and absolute risk aversion a hair BELOW the
+    reference, which is the dose a hedging objective is actually run at.
+
+    At EXACTLY R the closed form takes the gain wing by its side convention, and that wing's
+    curvature is `Up_Aversion` — zero for every book that never armed it. So a caller that asks
+    "how averse is this objective here" at the reference is told 'not at all', which is the wrong
+    answer for the loss-side knee the whole shape exists for. Both callers that report a DOSE
+    rather than a position (the frame-lock log, and the decision-curve dump under an increment
+    objective, where the increment IS ~0 before the day happens) want this one."""
+    obj = runtime["objective"] or {}
+    reference = float(obj.get("reference_wealth", 0.0))
+    return _utility_local_curvature(reference - 1.0e-6 * _utility_scale(obj, t), runtime, t)
 
 
 def _realized_vol_series(spot, window=PRICE_ZSCORE_WINDOW):
@@ -350,11 +398,13 @@ class Bundle:
     grid, so full-grid indexing is `initial_time_index + t`; the `*_sim` views strip that prefix
     for solver code that indexes by simulation-grid `t`.
 
-    The frame — `utility_scale` (the symlog/Huber/CARA scale c, also mirrored onto the runtime
-    objective) and `step_annual_vol` (the per-step vol driving the state-dependent spread and IM
-    funding) — is resolved here and never recomputed: a per-rollout c silently rescales every
-    reward. `inner_mc` / `inner_mc_grad` are attached by `HedgeMonteCarlo.execute` in solve_hedge
-    mode; they fork the simulator at a decision step and price the {t, t+1} window."""
+    The frame — `utility_scale` (the symlog/Huber/CARA scale c, with its per-decision-step
+    `utility_scale_schedule` under `Utility_Scale_Mode='conditional_sim'`, both mirrored onto the
+    runtime objective) and `step_annual_vol` (the per-step vol driving the state-dependent spread
+    and IM funding) — is resolved here and never recomputed: a per-rollout c silently rescales
+    every reward. `inner_mc` / `inner_mc_grad` are attached by `HedgeMonteCarlo.execute` in
+    solve_hedge mode; they fork the simulator at a decision step and price the {t, t+1}
+    window."""
 
     documentation = ('Bundle', [
         'Every time-indexed tensor the solver and the environment read, built ONCE per batch by',
@@ -367,8 +417,10 @@ class Bundle:
         '- **Liability** — `liability_mtm` / `liability_sim`, plus `realized_cashflows`.',
         '- **Factors** — the simulated factor paths, and `privileged_factors`: whatever each process',
         '  publishes as market state.',
-        '- **Frame** — `utility_scale` (the objective scale `c`) and `step_annual_vol` (the per-step',
-        '  vol driving state-dependent spreads and IM funding).',
+        '- **Frame** — `utility_scale` (the objective scale `c`), its optional per-decision-step',
+        '  schedule `utility_scale_schedule` (`Objective.Utility_Scale_Mode=\'conditional_sim\'`:',
+        '  the cross-sectional dispersion of the flat-book wealth at each step, floored), and',
+        '  `step_annual_vol` (the per-step vol driving state-dependent spreads and IM funding).',
         '',
         'The frame is resolved at build time and never recomputed. A per-rollout `c` would silently',
         'rescale every reward, which is why a loaded checkpoint evaluates in ITS frame rather than',
@@ -407,6 +459,8 @@ class Bundle:
         self.step_annual_vol = None         # (T,) scalar vol per step, or None
         self.calibrated_utility_inputs = None
         self.utility_scale = None
+        # per-step c_t under Utility_Scale_Mode='conditional_sim'
+        self.utility_scale_schedule = None
         self.total_leg_volume = 0.0
         self.last_settlement_index = None
         self.last_live_mtm_index = 0
@@ -552,10 +606,11 @@ class Bundle:
         self.privileged_factors = privileged
 
     def _resolve_frame(self, runtime, stoch_factors):
-        """Stage 4 — the LOCKED frame: the realized-vol surface, the utility scale c (mirrored
-        onto the runtime objective so every reward/penalty reads one number), and the per-step
-        vol series. Nothing here may be recomputed per rollout: a drifting c silently rescales
-        the whole objective, and the vol series drives realized transaction cost."""
+        """Stage 4 — the LOCKED frame: the realized-vol surface, the utility scale c and (under
+        `Utility_Scale_Mode='conditional_sim'`) its per-decision-step schedule, both mirrored onto
+        the runtime objective so every reward/penalty reads one frame, and the per-step vol series.
+        Nothing here may be recomputed per rollout: a drifting c silently rescales the whole
+        objective, and the vol series drives realized transaction cost."""
         self.spot_realized_vol = self._spot_realized_vol()
         if not self.spot_price_history:
             # No Spot_Price_History ⇒ source (spot, σ) from the CALIBRATED market data instead.
@@ -563,15 +618,22 @@ class Bundle:
         self.utility_scale = self._resolve_utility_scale(runtime)
         logging.info('utility_scale (symlog c) resolved to {0:.2f}'.format(self.utility_scale))
         self.mirror_utility_scale(runtime)
+        if self.utility_scale_schedule is not None:
+            self._log_scale_dose(runtime)
         self.step_annual_vol = self._resolve_step_vol(runtime, stoch_factors)
 
     def mirror_utility_scale(self, runtime):
         """Cache the resolved `c` on `runtime['objective']` so every reward, penalty and utility
         transform reads one number without taking the bundle in its signature. Invariant:
         `runtime['objective']['utility_scale'] == bundle.utility_scale` for any rollout that
-        computes rewards against this bundle."""
+        computes rewards against this bundle.
+
+        The per-step SCHEDULE travels with it — one frame, mirrored in one place — so a caller
+        that keeps a checkpoint's scale (`BundleStepper(mirror_scale=False)`) keeps its knees
+        too, and one that re-mirrors gets both from this bundle."""
         if runtime['objective'] is not None:
             runtime['objective']['utility_scale'] = float(self.utility_scale)
+            runtime['objective']['utility_scale_schedule'] = self.utility_scale_schedule
 
     def _spot_timeline(self, commodity):
         """The (H+T_sim, B) spot tensor for `commodity`: JSON history rows 0..H-1 concatenated
@@ -636,8 +698,10 @@ class Bundle:
         symlog). Single source of truth — every reward and penalty reads `Bundle.utility_scale`.
 
         Modes (`Objective.Utility_Scale_Mode`): `vol_scaled_notional` (default) gives
-        c = total_leg_volume × initial_spot × σ_annual × √τ; `Objective.Utility_Scale_Explicit`
-        overrides with a literal dollar value.
+        c = total_leg_volume × initial_spot × σ_annual × √τ; `conditional_sim` measures a
+        per-decision-step SCHEDULE off this batch instead and takes its terminal entry as the
+        scalar (`_conditional_sim_schedule`); `Objective.Utility_Scale_Explicit` overrides the
+        formula with a literal dollar value and is REFUSED beside the schedule mode.
 
         Under a utility objective every degenerate path RAISES: a floor-c symlog silently breaks
         tail compression (log1p($1M/$1k) ≈ 7 ≈ log1p($100M/$1k) ≈ 11.5 — a 100× dollar gap
@@ -662,12 +726,26 @@ class Bundle:
             return 1.0e3
 
         mode = str(objective.get('utility_scale_mode', 'vol_scaled_notional')).lower()
-        if mode != 'vol_scaled_notional':
+        if mode not in ('vol_scaled_notional', 'conditional_sim'):
             raise ValueError(
                 f"Unsupported Objective.Utility_Scale_Mode: {mode!r}. "
-                "Supported modes: 'vol_scaled_notional'. Set Utility_Scale_Explicit to "
-                "override the formula with a literal dollar value.")
+                "Supported modes: 'vol_scaled_notional' | 'conditional_sim'. Set "
+                "Utility_Scale_Explicit to override the formula with a literal dollar value.")
         explicit = objective.get('utility_scale_explicit')
+        if mode == 'conditional_sim':
+            if explicit is not None:
+                raise ValueError(
+                    "Objective.Utility_Scale_Explicit is set beside "
+                    "Utility_Scale_Mode='conditional_sim': the schedule measures the LEVEL of c "
+                    "as well as its shape (the scalar is its terminal entry), so a literal dollar "
+                    "value is a second source for the same number and silently picking a winner "
+                    "is how the two drift apart. Drop one of them.")
+            self.utility_scale_schedule = self._conditional_sim_schedule(objective)
+            if self.utility_scale_schedule is not None:
+                return float(self.utility_scale_schedule[-1])
+            # One outer path carries no cross-section to measure (see `_conditional_sim_schedule`).
+            # The formula below stands in for the placeholder frame a frozen roll replaces from
+            # its checkpoint, and DiffSolver refuses to TRAIN without a schedule.
         if explicit is not None:
             # An EXPLICIT override is honored exactly, including below the $1k production floor:
             # silently clamping would make a cell-by-cell oracle comparison fail for a reason
@@ -716,6 +794,86 @@ class Bundle:
                 f"(volume={self.total_leg_volume}, spot={initial_spot:.2f}, σ={sigma:.4f}, "
                 f"√τ={tau_years ** 0.5:.3f})")
         return c
+
+    def _log_scale_dose(self, runtime):
+        """Say what a `conditional_sim` schedule DOES to the objective, not only what it measured.
+
+        The schedule sets the LEVEL of c as well as its shape — there is no `Utility_Scale_Explicit`
+        under this mode, and that is deliberate: the measured dispersion IS the design scale, and a
+        literal that disagreed with it was the diagnosed bug. But the utility's shape params are
+        DIMENSIONLESS in units of c, so re-levelling c re-doses the risk aversion by the same
+        factor: a book that armed the mode and kept its old `Huber_Aversion` has quietly changed
+        how averse the DP is. That is the recorded 'utility scale mis-sized ⇒ aversion inert'
+        failure, and the only defence is that the new dose is visible in the run log where it can
+        be acted on — so this reports the absolute risk aversion per dollar the shape actually
+        applies at the reference, under the first knee and under the terminal one."""
+        sched = self.utility_scale_schedule
+        _, ara_0 = _loss_side_curvature(runtime, 0)
+        _, ara_T = _loss_side_curvature(runtime, len(sched) - 1)
+        logging.info(
+            'utility_scale SCHEDULE (conditional_sim): %d steps, c_0=%.6g c_mid=%.6g c_T=%.6g. '
+            'The schedule sets the objective LEVEL as well as its shape, and the shape params are '
+            'dimensionless in units of c — so the DOSE moved with it: absolute risk aversion at '
+            'the reference is %.4g per $ at t=0 and %.4g per $ at the terminal. Re-dose '
+            'Huber_Aversion against THIS scale (Utility_Scale_Explicit does not exist under this '
+            'mode).', len(sched), sched[0], sched[len(sched) // 2], sched[-1], ara_0, ara_T)
+
+    def _conditional_sim_schedule(self, objective):
+        """`Utility_Scale_Mode='conditional_sim'` — the per-decision-step utility scale `c_t`, and
+        the whole of what that mode adds: the cross-sectional std ACROSS OUTER PATHS, at each step
+        t, of the flat-book net wealth, floored at `Utility_Scale_Floor_Frac` of its terminal
+        entry. `x = (W − R)/c_t` is then a z-score of the day's wealth against the dispersion the
+        world itself carries that day, so the utility's knee sits where the mass is on EVERY
+        decision rather than only at the terminal.
+
+        WHICH OBJECT, and why. `liability_sim[t]` is the wealth the DP itself carries under a flat
+        book — `DiffSolver._build_bank` opens at `W = L[0]` and telescopes
+        `W + Σ q·cs·dF + (L[t+1] − L[t])`, and the verdict's no-hedge leg IS this path — so its
+        dispersion at t is the money the day's decision is about, in the units the reward is
+        measured in. `BundleStepper._tracking_error_value` is the same read one layer down, but it
+        is a POSITION-dependent state read defined only on a rollout: it cannot be frame-locked
+        from a bundle, and a scale that depended on the policy would move with it.
+
+        WHY A FLOOR, and what it is a fraction OF. Every outer path shares `L_0`, so the dispersion
+        of the first steps is ~0 and an unfloored `x = (W − R)/c_0` is unbounded. The floor is a
+        fraction of the TERMINAL entry — the dispersion the deal ENDS on, which for an average-rate
+        swap is the post-fixing residual and can sit well below the mid-horizon peak (the gate's own
+        fixture tapers). So it is a materially tighter floor than a fraction of the maximum would
+        be, and deliberately: the residual is what the hedge could not remove, and no knee should
+        price a day as if less were at stake than that.
+
+        THE LEVEL is the schedule's too, not only the shape — there is no `Utility_Scale_Explicit`
+        under this mode. The shape params are dimensionless in c, so arming it RE-DOSES the risk
+        aversion; `_log_scale_dose` reports the resulting aversion per dollar at the frame lock.
+
+        ONE ENTRY per step a continuation is ever read at: decisions 0..T_dec−1 plus the terminal
+        mark T_dec (`last_live_mtm_index`), where `DiffSolver._continuation` evaluates the anchor
+        with no residual. `None` when the batch carries a single outer path: one path has no
+        cross-section, and the only 1-path world is the frozen ROLL, which evaluates in its
+        checkpoint's frame regardless.
+
+        The 'symlog c locked, never adaptive' rule is about EVALUATION worlds — a c each rollout
+        re-derives silently rescales every reward. This schedule is measured ONCE at the frame
+        lock, frozen by the solver, stamped into the checkpoint and refused on mismatch: it is
+        deterministic in the state and identical across every world the policy is rolled in, so
+        the lock holds."""
+        if self.liability_mtm is None:
+            raise ValueError(
+                "Objective.Utility_Scale_Mode='conditional_sim' needs a marked liability: the "
+                "schedule is the dispersion of the flat-book wealth path and this bundle has no "
+                "liability_mtm to measure it on.")
+        L = self.liability_sim[:self.last_live_mtm_index + 1].to(dtype=torch.float32)
+        if int(L.shape[-1]) < 2:
+            return None
+        c = L.std(dim=-1)
+        terminal = float(c[-1])
+        if not terminal > 0.0:
+            raise ValueError(
+                f"Objective.Utility_Scale_Mode='conditional_sim' measured a terminal scale of "
+                f"{terminal}: the outer paths carry no dispersion at the last live liability mark, "
+                f"so every knee would floor at zero and x = (W − R)/c would be unbounded.")
+        floor = float(objective['utility_scale_floor_frac']) * terminal
+        return tuple(float(v) for v in c.clamp_min(floor))
 
     def _resolve_step_vol(self, runtime, stoch_factors):
         """Per-step scalar annualized-vol series `(T,)` driving BOTH the state-dependent bid/offer

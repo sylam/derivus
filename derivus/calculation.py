@@ -2223,10 +2223,19 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                               'AsymmetricUtility_CARA'],
                       description='The utility shape the DP recursion works in'),
                     F('Utility_Scale_Mode', 'Text', default='vol_scaled_notional',
-                      values=['vol_scaled_notional'],
-                      description='How the utility scale c is derived from the book'),
+                      values=['vol_scaled_notional', 'conditional_sim'],
+                      description='How the utility scale c is derived from the book; '
+                                  'conditional_sim measures a per-decision-step schedule off the '
+                                  'warmup batch instead of one number'),
                     F('Utility_Scale_Explicit', 'Float', default=None,
                       description='Literal dollar c, overriding the formula'),
+                    F('Utility_Scale_Floor_Frac', 'Float', default=0.05,
+                      description='Floor of the conditional_sim schedule, as a fraction of its '
+                                  'terminal entry; inert under every other scale mode'),
+                    F('Reference_Mode', 'Text', default='Fixed',
+                      values=['Fixed', 'Running_Wealth'],
+                      description='What the utility is applied to: TERMINAL wealth, or the '
+                                  "day's wealth increment (a per-step reward the DP sums)"),
                     F('Reference_Wealth', 'Float', default=0.0,
                       description='Benchmark wealth in DOLLARS the utility is measured against; '
                                   'every shape works in x = (W - this) / c'),

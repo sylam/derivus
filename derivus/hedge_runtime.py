@@ -14,6 +14,7 @@ and the diagnostic CSV writer all price frictions through.
 
 from __future__ import annotations
 
+import logging
 from copy import deepcopy
 from typing import Any, Dict, Mapping, Optional
 
@@ -387,6 +388,19 @@ def construct_hedge_runtime(
     (`Up_Aversion` 0 = exactly linear gains). CARA: u = (1−e^{−γx})/γ. Symlog ignores the shape
     params. See hedge_bundle._utility_wrap_signed for the exact forms.
 
+    Two INDEPENDENT dials move what the shape is applied to and how it is scaled, and the solver
+    refuses to arm them together (the composition is its own experiment). `Reference_Mode`:
+    'Fixed' measures TERMINAL wealth, 'Running_Wealth' the day's wealth INCREMENT, which makes the
+    DP's value a sum of per-step rewards. `Utility_Scale_Mode='conditional_sim'` replaces the
+    single c with a per-decision-step schedule measured off the warmup batch and floored at
+    `Utility_Scale_Floor_Frac` of its terminal entry (hedge_bundle._conditional_sim_schedule);
+    it owns the LEVEL of c as well as its shape, so `Utility_Scale_Explicit` is refused beside it
+    and `Huber_Aversion` — dimensionless in units of c — is dosed against the MEASURED scale.
+
+    Both are dispatched on by equality downstream and are therefore VALIDATED here: a near-miss
+    spelling would otherwise mean the default, silently, all the way to a checkpoint that stamps
+    the default and a provenance check that agrees with itself.
+
     `im_funding_*` is a vol-linked initial-margin FUNDING charge on the post-trade book (realized
     accounting only — see hedge_bundle._im_funding_charge). Per hedge leg i at step t the desk
     posts IM_i = IM_Vol_Multiplier·(σ_t/IM_Ref_Vol)·F_i·|q_i^post|·cs_i and pays
@@ -488,6 +502,38 @@ def construct_hedge_runtime(
                 "The DP recursion lives in utility space: an identity (legacy) objective leaves "
                 "V-hat unbounded in dollars and the backward sweep blows up multiplicatively.")
 
+    # --- objective dials: dispatched on downstream by EQUALITY, so validated here ---
+    # `values=[...]` on the declared field is a UI hint (it picks a dropdown); nothing in the
+    # engine reads it. Both keys below are consumed as `== 'running_wealth'` /
+    # `== 'conditional_sim'` deep in the solver, so an unrecognised spelling would not fail — it
+    # would quietly mean the
+    # DEFAULT, run to completion, stamp the default on the checkpoint and have the provenance
+    # check agree with itself. A campaign would then return a clean null attributable to the dial
+    # rather than to the typo. Utility_Scale_Mode refuses its own unknown values in
+    # `Bundle._resolve_utility_scale`; this is the same refusal for the sibling.
+    reference_mode = str((objective_config or {}).get("Reference_Mode", "Fixed")).lower()
+    if reference_mode not in ("fixed", "running_wealth"):
+        raise ValueError(
+            f"Unsupported Objective.Reference_Mode: "
+            f"{(objective_config or {}).get('Reference_Mode')!r}. Supported: 'Fixed' (the utility "
+            f"is applied to TERMINAL wealth) | 'Running_Wealth' (to the day's wealth increment). "
+            f"The value is dispatched on by equality, so a near-miss would silently run 'Fixed'.")
+    # The floor of the conditional_sim schedule multiplies its terminal entry, and every outer
+    # path shares L_0 — so the raw dispersion at t=0 is exactly 0 and a non-positive floor makes
+    # c_0 = 0, x = (W−R)/c_0 infinite, and every label from step 0 a NaN the fit then spreads
+    # through the nets. The run would complete and report V_0 = nan.
+    floor_frac = float((objective_config or {}).get("Utility_Scale_Floor_Frac", 0.05))
+    if not floor_frac > 0.0:
+        raise ValueError(
+            f"Objective.Utility_Scale_Floor_Frac must be > 0; got {floor_frac}. It floors the "
+            f"conditional_sim scale schedule at a fraction of its terminal entry, and the first "
+            f"steps carry no dispersion at all, so a zero floor is a zero knee and a NaN reward.")
+    if floor_frac > 1.0:
+        logging.warning(
+            "Objective.Utility_Scale_Floor_Frac=%.4g is above 1: the floor then exceeds the "
+            "schedule's terminal entry, which flattens every knee onto one number and retires "
+            "the per-step shape the mode exists for.", floor_frac)
+
     history_lookback = int(hedging_problem.get("History_Lookback_Business_Days", 30))
     if history_lookback < 0:
         raise ValueError("Hedging_Problem.History_Lookback_Business_Days must be non-negative")
@@ -550,6 +596,12 @@ def construct_hedge_runtime(
             "utility_scale_explicit":
                 (None if objective_config.get("Utility_Scale_Explicit") is None
                  else float(objective_config["Utility_Scale_Explicit"])),
+            # Floor of the 'conditional_sim' schedule, as a fraction of its terminal entry —
+            # inert under every other mode. Both dials are validated above.
+            "utility_scale_floor_frac": floor_frac,
+            # WHAT the utility is applied to: terminal wealth ('fixed'), or the DAY's wealth
+            # increment ('running_wealth', a per-step reward the DP sums down the recursion).
+            "reference_mode": reference_mode,
             # The benchmark wealth the utility is measured against, in DOLLARS (not c-units) —
             # every shape subtracts it before the /c scaling.
             "reference_wealth": float(objective_config.get("Reference_Wealth", 0.0)),

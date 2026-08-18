@@ -25,7 +25,8 @@ import torch
 
 from . import utils
 from .hedge_bundle import (
-    _utility_local_curvature, _utility_wrap_signed, wealth_step,
+    _loss_side_curvature, _utility_local_curvature, _utility_scale, _utility_wrap_signed,
+    wealth_step,
 )
 from .hedge_runtime import per_contract_kappa, initial_q_from_runtime, turnover_charge
 
@@ -652,6 +653,21 @@ class DiffSolver:
         value function never remembers, and a no-trade region cannot form out of a toll; charging
         it inside the target makes it compound down the recursion, which is what a hysteresis
         band is made of.
+      * RUNNING WEALTH (`Objective.Reference_Mode`) — the reward becomes the DAY's wealth
+        increment: Y = u(W1 − W_t) + E[C_{t+1}], with C_{T_dec} ≡ 0 and C_t = A_t alone (the u(W)
+        anchor is a terminal-utility construct and retires with it). Exists because terminal
+        wealth drifts far outside the utility's knee by mid-horizon, which leaves the objective
+        affine and the argmax bang-bang; an increment is O(one day's move) on every day. It is the
+        one dial that changes what the DP is maximising, so it is stamped on the checkpoint even
+        though it moves no tensor shape.
+      * CONDITIONAL-SIM SCALE (`Objective.Utility_Scale_Mode`) — the same pathology attacked from
+        the scale instead: a per-decision-step knee c_t measured off the warmup batch (the
+        cross-sectional dispersion of the flat-book wealth at t, floored), so x = (W − R)/c_t is a
+        z-score on every day. It owns the LEVEL of c as well as its shape (`Utility_Scale_Explicit`
+        is refused beside it), and because the shape params are dimensionless in c that RE-DOSES
+        the aversion: under this mode `Huber_Aversion` is the aversion dial and it is dosed against
+        the MEASURED scale, with the frame lock logging the resulting aversion per dollar.
+        Independent of the mode above and REFUSED beside it.
       * WEALTH-FREE residual (`DiffV2_Wealth_Free_Value`) — A_t loses its W input column, so
         C_t = u(W) + A_t(market[, p]) and the only W-dependence left in the ranking is u's own.
         A_t is fitted against the market state (and the position column, when both switches are
@@ -706,6 +722,22 @@ class DiffSolver:
         '| `DiffV2_Decision_Curve_Dump` | CSV of the stepper rollout\'s full per-rung ranking curve |',
         '| `Active_Hedge_Indices` | which hedge axes vary; the rest pin to 0 |',
         '| `Multi_Seed_Count` | independent solvers on the same batches |',
+        '',
+        'Two dials live under `Objective` rather than `Solver`, because they change what is being',
+        'maximised rather than how it is fitted. `Reference_Mode` = `Running_Wealth` makes the',
+        "reward the DAY's wealth increment (the value is then a SUM of per-step utilities, and the",
+        'reported `u_mean` is not comparable to a terminal-utility one), and',
+        '`Utility_Scale_Mode` = `conditional_sim` gives every decision step its own knee, measured',
+        'off the warmup batch and frozen. Each attacks the same defect — a terminal wealth that',
+        'has drifted outside the knee leaves the ranking affine — and they refuse to run together.',
+        '',
+        '!!! warning "`conditional_sim` re-doses the aversion"',
+        '    The measured schedule sets the LEVEL of `c`, not only its shape, and there is no',
+        '    `Utility_Scale_Explicit` under it. The shape parameters are dimensionless in units of',
+        '    `c`, so arming the mode moves the risk aversion by whatever factor the measured scale',
+        '    differs from the retired one: under it, `Huber_Aversion` is the aversion dial and it',
+        '    is dosed AGAINST THE MEASURED SCALE. The frame lock logs the resulting absolute risk',
+        '    aversion per dollar so the re-dosing is visible rather than inferred.',
         '',
         '### Persistence',
         '',
@@ -788,6 +820,28 @@ class DiffSolver:
                 "Solver.DiffV2_Wealth_Free_Value='Yes' refuses DiffV2_Risk_Kappa > 0: the downside "
                 "semideviation is nonlinear over inner draws, so the residual's dispersion leaks "
                 "back into the ranking the switch exists to hand to the utility alone.")
+        # The two OBJECTIVE dials, read off the normalized runtime (absence IS the default, so no
+        # second default is published here). RUNNING WEALTH rewards the day's wealth INCREMENT
+        # instead of terminal wealth, which makes C_t a sum of per-step rewards and retires the
+        # u(W) anchor; SCHEDULED SCALE gives each decision step its own knee.
+        obj = runtime.get("objective") or {}
+        self.running_wealth = obj.get("reference_mode") == "running_wealth"
+        self.scheduled_scale = obj.get("utility_scale_mode") == "conditional_sim"
+        if self.running_wealth and self.scheduled_scale:
+            raise ValueError(
+                "Objective.Reference_Mode='Running_Wealth' refuses "
+                "Utility_Scale_Mode='conditional_sim': the increment already carries a per-step "
+                "scale of its own (one day's move, not the whole horizon's), so a second per-step "
+                "rescaling of it is a different objective again. Each is a separate experiment; "
+                "run them one at a time.")
+        if self.running_wealth and float(self.cfg.get("diffv2_temporal_proximity", 0.0)) > 0.0:
+            raise ValueError(
+                "Objective.Reference_Mode='Running_Wealth' refuses DiffV2_Temporal_Proximity > 0: "
+                "the proximity prior penalises the distance from A_t to its fitted SUCCESSOR, "
+                "which is the right prior only while C_t ≈ C_{t+1}. Under a per-step reward the "
+                "two differ by E[u(ΔW_t)] BY DEFINITION, so the regularizer pulls against exactly "
+                "the offset the objective is made of. The successor WARM START is untouched and "
+                "still valid — it is an initial point, not a penalty.")
         self.force_flat = bool(runtime["accounting"]["force_flat_at_end"])
         # Pure diagnostic: where `_rollout_on_stepper` writes its per-decision ranking-curve CSV.
         # '' = off, and the roll is then bit-identical to a build without the switch.
@@ -823,14 +877,25 @@ class DiffSolver:
             raise ValueError(
                 f"Solver.T_Min={self.t_min} must be < decision horizon T_dec={self.T_dec}")
         self.utility_scale = float(bundle.utility_scale)      # locked here; re-asserted by _bind
+        # ...and the per-step schedule with it: ONE frame, locked in one place. A streaming step
+        # re-binds to a batch that measured its own and must not let it reach the reward.
+        self.utility_scale_schedule = bundle.utility_scale_schedule
+        if (self.scheduled_scale and self.utility_scale_schedule is None
+                and not self.cfg.get("diffv2_load_value_fn")):
+            raise ValueError(
+                "Objective.Utility_Scale_Mode='conditional_sim' but this warmup batch measured no "
+                "schedule: c_t is the cross-sectional dispersion of the flat-book wealth across "
+                "OUTER PATHS, and a single-path batch has no cross-section. Raise Batch_Size (a "
+                "one-path world can only be a frozen roll, which takes its schedule from the "
+                "checkpoint).")
 
     def _bind(self, bundle):
         """Point the solver at a bundle: the history-stripped sim views the sweep indexes by `t`
         and the friction vol series the action space prices with. A frozen eval binds once at
         construction; a streaming step re-binds to each fresh batch — which is also where the
-        LOCKED utility scale is re-asserted, because every batch resolves its own `c` at build
-        time and letting a later one reach the runtime would silently rescale the objective (and
-        with it every fitted C_t) mid-training."""
+        LOCKED utility scale AND its per-step schedule are re-asserted, because every batch
+        resolves its own frame at build time and letting a later one reach the runtime would
+        silently rescale the objective (and with it every fitted C_t) mid-training."""
         self.bundle = bundle
         self.aspace.vol_sim = bundle.vol_sim
         self.tradables_sim, self.n_steps = bundle.tradables_sim, bundle.n_outer_steps
@@ -846,6 +911,7 @@ class DiffSolver:
                      "(this batch resolved %.6g)", self.B_outer, self.utility_scale,
                      float(bundle.utility_scale))
         self.runtime["objective"]["utility_scale"] = self.utility_scale
+        self.runtime["objective"]["utility_scale_schedule"] = self.utility_scale_schedule
 
     def _config_hash(self):
         """sha1 of the stable-JSON solver cfg — the stamp identifying this TRAINING RECIPE.
@@ -858,9 +924,22 @@ class DiffSolver:
         return hashlib.sha1(json.dumps(stable, sort_keys=True, default=str).encode()).hexdigest()
 
     # ---- utility anchor ------------------------------------------------------
-    def _u(self, W):
-        """Bounded terminal-utility anchor u(W) — the framework's normalised utility."""
-        return _utility_wrap_signed(W, self.runtime)
+    def _u(self, W, t=None):
+        """The framework's normalised utility applied to `W` at decision step `t` — the bounded
+        anchor u(W) of C_t = u(W) + A_t, or (`Reference_Mode='Running_Wealth'`, where the callers
+        hand it a wealth INCREMENT) the day's reward. `t` selects the knee under a locked
+        `Utility_Scale_Mode='conditional_sim'` schedule and is omitted for a TERMINAL read — the
+        verdict's u(W_T), which the benchmark tracks take at the same scale."""
+        return _utility_wrap_signed(W, self.runtime, t)
+
+    def _member_anchor(self, W, t, schedule):
+        """u(W) at ONE ensemble member's own step knee. A member's `utility_scale_schedule` is
+        part of its frame exactly as its z-stats are, so its continuation is evaluated at the
+        scale it was fitted against — the schedules of an ensemble are never averaged or
+        otherwise reconciled (see `_restore_frame`)."""
+        return _utility_wrap_signed(
+            W, {"objective": dict(self.runtime["objective"],
+                                  utility_scale_schedule=schedule)}, t)
 
     # ---- action grid (shared, mask-aware; inactive axes pinned to 0) ---------
     @property
@@ -906,20 +985,44 @@ class DiffSolver:
         Under `DiffV2_Wealth_Free_Value` the residual is A_t(market[, p]) — W still enters through
         the anchor, which is the whole of C_t's wealth dependence there; the caller's contract is
         unchanged either way, because `_standardize` owns the layout.
+
+        RULING — under `Objective.Reference_Mode='Running_Wealth'` the anchor is IDENTICALLY ZERO
+        and C_t = A_t alone, with the terminal C_{T_dec} ≡ 0. u(W) anchors the recursion because
+        it is the terminal reward evaluated early; once the reward is the day's INCREMENT there is
+        no terminal utility of the level to anchor on, and keeping u(W) would add a bounded
+        function of a state that earns nothing to every value in the sweep. The per-step reward
+        itself is added by the CALLER, which is the only place that holds both W1 and the wealth
+        it moved from (`_decide`, `_fit_step`, `_score_actions`).
+
         Ensemble mode (list-of-checkpoints load): A = mean over members, each evaluated in
-        its OWN standardization frame — the frame is part of the function.
+        its OWN standardization frame — the frame is part of the function, and under a
+        `conditional_sim` schedule that frame includes the member's own step KNEE, so its
+        continuation is the anchor at ITS c_t plus its own residual.
         A_t is CLAMPED to its fitted-target trust region (one range-width of headroom):
         off-support the zero-init MLP extrapolates freely — measured printing −5 where its
         targets spanned ±0.5 — and the argmax then chases the phantom direction, poisoning
         the t−1 bootstrap labels (the dead-net and corner-over-leverage basins at large B).
         Outside the clamp the gradient is zero, so the differential labels ignore phantom
         directions too."""
-        base = self._u(W)
-        if t >= self.T_dec:
+        base = torch.zeros_like(W) if self.running_wealth else self._u(W, t)
+        ensemble = getattr(self, "_ensemble", None)
+        if t >= self.T_dec and not ensemble:
             return base
-        if getattr(self, "_ensemble", None):
+        if ensemble:
             acc = torch.zeros_like(base)
-            for m_nets, m_mean, m_std, w_mean, w_std, m_bounds in self._ensemble:
+            for m_nets, m_mean, m_std, w_mean, w_std, m_bounds, m_sched in ensemble:
+                if m_sched is not None:
+                    # The member's own step KNEE, as much a part of its frame as its z-stats: its
+                    # continuation is read at the c it was fitted against, never at a reconciled
+                    # one. Written as a correction to the shared anchor so a schedule-free
+                    # ensemble stays arithmetically untouched.
+                    acc = acc + (self._member_anchor(W, t, m_sched) - base)
+                if t >= self.T_dec:
+                    # The TERMINAL has no residual to add — and this correction is then the WHOLE
+                    # of the member's continuation, which is what the last decision is ranked on.
+                    # Returning `base` above (as the single-member path may) would have handed
+                    # every member the first one's knee at exactly the step that decides.
+                    continue
                 cols = [(market - m_mean) / m_std]
                 if not self.wealth_free:
                     cols.append(((W - w_mean) / w_std).unsqueeze(-1))
@@ -928,7 +1031,7 @@ class DiffSolver:
                 for i in range(0, x.shape[0], chunk):
                     a = m_nets[t](x[i:i + chunk])
                     acc[i:i + chunk] += a if b is None else torch.clamp(a, b[0], b[1])
-            return base + acc / len(self._ensemble)
+            return base + acc / len(ensemble)
         x = self._standardize(market, W, p)
         b = self.a_bounds[t]
         if x.shape[0] <= chunk:
@@ -1019,8 +1122,12 @@ class DiffSolver:
     # ---- external argmax (Bellman max outside the fitted value) --------------
     def _decide(self, nets, market_t1, dF, dL, W, t, q_prev=None, kappa=None, live=None,
                 rate_limit=True):
-        """Pick the grid action maximising E_inner[C_{t+1}] per outer path. No grad. The action
-        universe is `aspace.grid_at(t, live)` — the base grid, further filtered to the
+        """Pick the grid action maximising E_inner[C_{t+1}] per outer path. No grad. Under
+        `Objective.Reference_Mode='Running_Wealth'` the score is `E_inner[u(W1 − W_t) + C_{t+1}]`
+        instead — the same expression the LABEL regresses on in `_fit_step`, which is the whole
+        point of stating it once per seam rather than once per mode: a ranking that scored
+        terminal wealth while the labels scored increments would be a train/deploy split.
+        The action universe is `aspace.grid_at(t, live)` — the base grid, further filtered to the
         `Total_Position_Schedule` corridor at t when one is configured (else the base grid). The
         `live` leg mask (the callers zero `q*live` after expiry) enters the filter so the corridor
         bounds the REALIZED Σ(q_i·live_i), not a target the expiry mask then guts.
@@ -1117,6 +1224,11 @@ class DiffSolver:
                     nets,
                     market_t1[:, None].expand(B, c, Bi, md).reshape(-1, md),
                     W1.reshape(-1), t + 1, p1).reshape(B, c, Bi)                          # (B,c,Bi)
+                if self.running_wealth:
+                    # The DAY's reward, added to a continuation that carries no anchor: the
+                    # increment is read off the CHARGED W1, so a move pays its toll inside the
+                    # step that made it rather than at a terminal the reward no longer reaches.
+                    C1f = C1f + self._u(W1 - W[:, None, None], t + 1)
                 C1 = C1f.mean(-1)                                                         # E_inner[C] (B,c)
                 if self.risk_kappa > 0.0:        # downside-aware: penalise per-action downside dispersion
                     dev = (C1f - C1.unsqueeze(-1)).clamp(max=0.0)                         # negatives only
@@ -1169,6 +1281,9 @@ class DiffSolver:
                 C1f_inc = self._continuation(
                     nets, market_t1.reshape(-1, md), W1.reshape(-1), t + 1,
                     p_inc).reshape(B, Bi)
+                if self.running_wealth:
+                    # The incumbent earns its own day's increment, priced exactly as every rival's.
+                    C1f_inc = C1f_inc + self._u(W1 - W[:, None, None], t + 1).reshape(B, Bi)
                 inc = C1f_inc.mean(-1)
                 if self.risk_kappa > 0.0:
                     dev = (C1f_inc - inc.unsqueeze(-1)).clamp(max=0.0)
@@ -1314,6 +1429,12 @@ class DiffSolver:
         loss. ∂Y/∂market_t is the differential constraint that regularizes the market dimension,
         where a value-only / W-only fit overfits the few outer paths.
 
+        Under `Objective.Reference_Mode='Running_Wealth'` the target gains the step's own reward:
+        Y = E_inner[u(W1 − W_t) + C_{t+1}], with C_{T_dec} ≡ 0, so the LAST decision's label is
+        exactly u(ΔW_T) — the forced-flat unwind already inside W1 under `DiffV2_Position_State`,
+        because the charge is subtracted before the increment is taken. It is the same expression
+        `_decide` ranks candidates by, by construction.
+
         Under `DiffV2_Position_State` the step is FRICTIONAL: the bank's own standing book supplies
         the position state p at t, the selection is charged its repositioning cost, and — the part
         that distinguishes this from `DiffV2_Cost_Aware_Argmax` — the SAME charge is subtracted from
@@ -1401,7 +1522,14 @@ class DiffSolver:
             p_bank = q_state.sum(-1) / self.total_abs_limit               # state at t: live_{t-1}
             p1 = (q_star.sum(-1) / self.total_abs_limit)[:, None].expand(B, Bi_e).reshape(-1)
         Y = self._continuation(
-            nets, m1_g.reshape(-1, md), W1.reshape(-1), t + 1, p1).reshape(B, Bi_e).mean(1)  # (B,)
+            nets, m1_g.reshape(-1, md), W1.reshape(-1), t + 1, p1).reshape(B, Bi_e)       # (B,Bi)
+        if self.running_wealth:
+            # Y = u(W1 − W_t) + C_{t+1}, the same expression `_decide` ranked with. W0 is the
+            # autograd leaf and the increment is level-free (W1 − W0 = Σq·cs·dF + dL − charge), so
+            # it contributes exactly 0 to the wealth label and its MARKET slope joins g_market —
+            # the reward is now part of what the twin loss differentiates.
+            Y = Y + self._u(W1 - W0[:, None], t + 1)
+        Y = Y.mean(1)                                                                     # (B,)
         grads = torch.autograd.grad(Y.sum(), [W0] + list(leaves.values()), allow_unused=True)
         gW = grads[0].detach()
         leaf_grads = {k: (g.detach() if g is not None else None)
@@ -1437,11 +1565,14 @@ class DiffSolver:
         the market columns to absorb the wealth slope, which is precisely the slope the switch
         exists to remove. The wealth channel is then supervised nowhere, by design: the anchor
         carries it exactly."""
-        # Advantage decomposition: fit A = C − u(W0); subtract the anchor's wealth slope.
-        if self.use_adv:
+        # Advantage decomposition: fit A = C − u(W0); subtract the anchor's wealth slope. Under
+        # `Reference_Mode='Running_Wealth'` C_t = A_t alone (`_continuation`'s ruling), so there is
+        # no anchor to subtract and the labels ARE the residual's — the same statement `use_adv`
+        # makes by hand.
+        if self.use_adv and not self.running_wealth:
             Wb = W0_bank.clone().requires_grad_(True)
-            (dB_dW,) = torch.autograd.grad(self._u(Wb).sum(), Wb)
-            a_val = Y - self._u(W0_bank)
+            (dB_dW,) = torch.autograd.grad(self._u(Wb, t).sum(), Wb)
+            a_val = Y - self._u(W0_bank, t)
             a_gW = gW - dB_dW.detach()
         else:
             a_val, a_gW = Y, gW
@@ -1542,6 +1673,14 @@ class DiffSolver:
         textbook — a SPECULATING policy (the old solver's failure) shows up as worse p5/CVaR
         than textbook and a wide wT spread.
 
+        WHAT `u_mean` IS under `Objective.Reference_Mode='Running_Wealth'`: the SUM of the
+        rollout's per-step utilities, because that is the objective the DP maximised. It is
+        therefore NOT comparable to a terminal-utility `u_mean` — not across reference modes, and
+        not against `run_textbook_benchmark` / `HindsightDpSolver`, which stay terminal-based by
+        design (converting them would invent a rebalancing schedule neither one has). `wT_mean`
+        and the tail columns are raw dollars under either mode and stay comparable throughout;
+        `u_mean_is_step_sum` in the returned dict says which regime produced the number.
+
         Turnover cost is accounted in PARALLEL: Transaction_Cost_Per_Unit + half the
         Bid_Offer_Spread_Bps on |Δq| each rebalance, entry measured from the OPENING book q0 — not
         from flat, and the terminal unwind under `Force_Flat_At_End` — the same three-part rule
@@ -1565,6 +1704,15 @@ class DiffSolver:
         cost = {p: torch.zeros(n, device=self.device) for p in ("greedy", "textbook")}
         q0 = self.aspace.initial_q(n, self.device)
         q_prev = {p: q0.clone() for p in ("greedy", "textbook")}
+        # Running-wealth objective: the rollout's value is the SUM of the per-step rewards, so it
+        # is accumulated along the roll rather than read off the terminal (see docstring). The net
+        # sum charges each step's own turnover into that step's increment, which is what a
+        # per-step objective means by a cost.
+        u_run = ({p: torch.zeros(n, device=self.device) for p in W}
+                 if self.running_wealth else None)
+        u_net = ({p: torch.zeros(n, device=self.device) for p in cost}
+                 if self.running_wealth else None)
+        last_net_inc = {}          # the final step's net increment, which the unwind belongs to
         with torch.no_grad():
             for t in sweep_ts:
                 dF_o = torch.stack(
@@ -1584,32 +1732,56 @@ class DiffSolver:
                     self._replication_hedge(t)[None].expand(n, self.n_hedge), t)
                 z = torch.zeros(n, self.n_hedge, device=self.device)
                 kappa_cal_t = self.aspace.calendar_kappa(self.tradables_sim, t)
+                step_cost = {}
                 for p, q_now in (("greedy", q_g), ("textbook", q_tb)):
-                    cost[p] = cost[p] + self.aspace.turnover_cost(q_now - q_prev[p], kappa_t,
-                                                                  kappa_cal_t)
+                    step_cost[p] = self.aspace.turnover_cost(q_now - q_prev[p], kappa_t,
+                                                             kappa_cal_t)
+                    cost[p] = cost[p] + step_cost[p]
                     q_prev[p] = q_now
+                W_pre = dict(W)
                 W["greedy"] = self._wealth_step(W["greedy"], q_g, dF_o, dL_o)
                 W["textbook"] = self._wealth_step(W["textbook"], q_tb, dF_o, dL_o)
                 W["nohedge"] = self._wealth_step(W["nohedge"], z, dF_o, dL_o)
+                if u_run is not None:
+                    # Indexed by the step the increment ARRIVES at, as every other seam does
+                    # (`_decide`, `_fit_step`, `_score_actions` all pass t+1): the knee an
+                    # increment is measured under belongs to the day it lands on.
+                    for p in W:
+                        u_run[p] = u_run[p] + self._u(W[p] - W_pre[p], t + 1)
+                    for p in u_net:
+                        last_net_inc[p] = W[p] - W_pre[p] - step_cost[p]
+                        u_net[p] = u_net[p] + self._u(last_net_inc[p], t + 1)
                 q_traj["greedy"].append(q_g.mean(0).tolist())
                 q_traj["textbook"].append(q_tb.mean(0).tolist())
             if self.force_flat:
                 # The unwind both benchmark tracks charge, so all three price the same execution.
                 kappa_T = self.aspace.kappa(self.tradables_sim, self.T_dec)
                 for p in cost:
-                    cost[p] = cost[p] + self.aspace.turnover_cost(q_prev[p], kappa_T)
+                    unwind = self.aspace.turnover_cost(q_prev[p], kappa_T)
+                    cost[p] = cost[p] + unwind
+                    if u_net is not None:
+                        # The liquidation belongs INSIDE the last increment, because that is where
+                        # training charged it: `_fit_step` subtracts the unwind from W1 before
+                        # taking u(W1 − W_t), so the last label is u(ΔW_T − step − unwind). u is
+                        # nonlinear, so appending u(−unwind) as its own term would report a
+                        # different objective than the one optimised. Re-take the last step.
+                        u_net[p] = (u_net[p] - self._u(last_net_inc[p], self.T_dec)
+                                    + self._u(last_net_inc[p] - unwind, self.T_dec))
 
-        def stats(wT):
+        def stats(wT, u_sum=None):
             p5 = torch.quantile(wT, 0.05)
             cvar5 = wT[wT <= p5].mean() if (wT <= p5).any() else p5
-            return {"u_mean": float(self._u(wT).mean()), "wT_mean": float(wT.mean()),
+            return {"u_mean": float((self._u(wT) if u_sum is None else u_sum).mean()),
+                    "wT_mean": float(wT.mean()),
                     "wT_p5": float(p5), "wT_cvar5": float(cvar5)}
-        out = {p: stats(W[p]) for p in W}
+        out = {p: stats(W[p], None if u_run is None else u_run[p]) for p in W}
         # Which regime chose the greedy book — a charged argmax over an uncharged wealth
-        # recursion is not readable off the figures.
+        # recursion is not readable off the figures — and whether `u_mean` is a terminal utility
+        # or a sum of per-step ones, which no figure states either.
         out["argmax_charged"] = bool(self.cost_aware or self.position_state)
+        out["u_mean_is_step_sum"] = bool(self.running_wealth)
         for p in ("greedy", "textbook"):
-            net_stats = stats(W[p] - cost[p])
+            net_stats = stats(W[p] - cost[p], None if u_net is None else u_net[p])
             out[p]["turnover_cost_mean"] = float(cost[p].mean())
             out[p].update({f"{k}_net": v for k, v in net_stats.items()})
         # greedy position summary: mean over the rollout of |q| per instrument (is it hedging?)
@@ -1657,6 +1829,8 @@ class DiffSolver:
 
             def rank(Wx):
                 C1f = self._continuation(nets, market, Wx.reshape(-1), t + 1, p1).reshape(B, K, Bi)
+                if self.running_wealth:
+                    C1f = C1f + self._u(Wx - W[:, None, None], t + 1)   # the day's own reward
                 C1 = C1f.mean(-1)
                 if self.risk_kappa > 0.0:
                     dev = (C1f - C1.unsqueeze(-1)).clamp(max=0.0)
@@ -1677,21 +1851,34 @@ class DiffSolver:
         when `Decision_Deadband_Sigma` is armed, the executed book IS the incumbent, and the
         argmax was somewhere else — i.e. the band, not agreement, is what stopped the trade.
 
-        *The utility in force.* `W` is the stepper's net wealth entering the decision, `c` the
-        scale read off `runtime['objective']` — the frame's, because `_rollout_on_stepper` builds
-        its stepper with `mirror_scale=False` precisely so a loaded checkpoint's scale survives,
-        and it is this value that `_utility_wrap_signed` consumes at every rung. `x0 = (W − R)/c`
-        places the day on the utility, `in_knee` says whether it sits in the loss-side quadratic
-        band `(−δ, 0)`, and `local_ARA` is the risk aversion actually applying there.
+        *The utility in force*, and it is the RANKING's, not the ledger's. `W` is the stepper's net
+        wealth entering the decision — a fact about the day, reported under either regime. `c` is
+        the knee every rung is actually divided by: the scale off `runtime['objective']` at `t+1`,
+        because the rungs are continuations at `t+1` and (under `Running_Wealth`) their reward is
+        read there too. It is the FRAME's, because `_rollout_on_stepper` builds its stepper with
+        `mirror_scale=False` precisely so a loaded checkpoint's scale — and, under
+        `Utility_Scale_Mode='conditional_sim'`, its per-step schedule — survives the roll.
+
+        `x0` places the day ON that utility, at the point the ranking operates: the wealth LEVEL
+        under `Fixed`, and the day's INCREMENT under `Running_Wealth`, which is zero before the day
+        happens — so the curvature there is read off the LOSS side of the reference
+        (`_loss_side_curvature`), the wing an increment objective is dosed by. `in_knee`,
+        `u_prime` and `local_ARA` follow it, and `u_is_increment` says which
+        regime produced them — the way `_verdict` states `u_mean_is_step_sum`. That distinction is
+        the whole reading: at a wealth drifted twenty knees out the level's `local_ARA` is 0 and
+        `in_knee` is 0 on every row, which under `Running_Wealth` would report "the ranking is
+        affine here" at exactly the decisions the dial has made curved.
 
         *What the ranking saw.* `curve_net` / `curve_pre` / `curve_charged` are the FULL per-rung
         curve, packed space-separated into three cells so a corridor that narrows the ladder does
         not ragged the header. `range_CE` converts the charged curve's spread into dollars at the
-        local `u'`, so "how much is this decision worth" is readable without knowing `c`, and
-        `bow_span` is the curve's departure from the chord through its net-sorted endpoints — a
-        straight ranking (bow ≈ 0) is one whose argmax can only be a corner. `P_band_*` is the
-        chance the day ENDS in the same knee band, per inner draw, at three reference books:
-        flat, the standing book, and the deepest rung.
+        local `u'` — the one at the ranking's operating point above, so the conversion is in the
+        same units the curve is — and `bow_span` is the curve's departure from the chord through
+        its net-sorted endpoints; a straight ranking (bow ≈ 0) is one whose argmax can only be a
+        corner. `P_band_*` is the chance the day ENDS in the same knee band, per inner draw, at
+        three reference books (flat, the standing book, the deepest rung), measured on the same
+        quantity `x0` is: the successor LEVEL under `Fixed`, the day's realized INCREMENT under
+        `Running_Wealth`.
 
         *What it was ranking over.* The one-step moments of the fork feeding it, and a SECOND
         independent fork at the same `t`: `fork_disagree` is the seed-disagreement indicator, the
@@ -1704,14 +1891,22 @@ class DiffSolver:
         the composition of a rung) and otherwise the uniform split over the live, active legs (with
         no schedule, nothing mandates any other composition)."""
         obj = self.runtime["objective"]
-        c = float(obj.get("utility_scale") or 1.0)
+        # The knee the RUNGS divide by — `_score_actions` reads every continuation (and, under
+        # Running_Wealth, every reward) at t+1, so t+1 is the step whose entry they consume. Under
+        # a flat scale this is the frame's single c and the distinction is inert.
+        c = _utility_scale(obj, t + 1)
         R = float(obj.get("reference_wealth", 0.0))
         # The knee is huber's; the shapes without one take a unit of c as the near-reference band.
         delta = (float(obj.get("huber_delta", 1.0))
                  if obj.get("object") == "asymmetricutility_huber" else 1.0)
         w0 = float(W[0])
-        u1, ara = _utility_local_curvature(w0, self.runtime)
-        x0 = (w0 - R) / c
+        # WHERE the ranking operates: the wealth LEVEL under Fixed, the day's INCREMENT (zero
+        # before the day happens) under Running_Wealth. Reporting the level under the increment
+        # objective is how a curved ranking gets logged as a flat one.
+        w_rank = 0.0 if self.running_wealth else w0
+        u1, ara = (_loss_side_curvature(self.runtime, t + 1) if self.running_wealth
+                   else _utility_local_curvature(w_rank, self.runtime, t + 1))
+        x0 = (w_rank - R) / c
 
         q_live = q_prev if live is None else q_prev * live                          # (1,n_hedge)
         grid = self.aspace.grid_at(t, live)
@@ -1734,7 +1929,8 @@ class DiffSolver:
         probes = torch.stack([torch.zeros_like(q_live[0]), q_live[0], a_live[deep]])
         _, _, W1p = self._score_actions(
             nets, t, probes, market_t1, dF, dL, W, q_live, kappa, live)
-        x1 = (W1p - R) / c
+        # ...on the same quantity `x0` is: the successor LEVEL, or the day's realized INCREMENT.
+        x1 = (W1p - (w0 if self.running_wealth else 0.0) - R) / c
         p_band = ((x1 > -delta) & (x1 < 0.0)).to(torch.float32).mean(-1)
 
         # The curve's shape: spread in dollars at the local u', and bow off the endpoint chord.
@@ -1764,6 +1960,9 @@ class DiffSolver:
                                  and bool(torch.equal(q_chosen[0], q_live[0]))
                                  and not bool(torch.equal(a_live[k_star], q_live[0]))),
             "W": w0, "c": c, "R": R, "x0": x0,
+            # Which quantity x0 / in_knee / u_prime / local_ARA / P_band_* are measured on —
+            # `_verdict`'s `u_mean_is_step_sum` for the dump.
+            "u_is_increment": int(self.running_wealth),
             "in_knee": int(-delta < x0 < 0.0),
             "u_prime": u1, "local_ARA": ara,
             "P_band_flat": float(p_band[0]),
@@ -1797,7 +1996,9 @@ class DiffSolver:
         (`inner_cache[t]`) and the STEPPER'S OWN net wealth — never a verdict wealth
         recursion, so the decision can't be contaminated by mis-accrued P&L. This is
         the JSON-contract interface for running the precomputed diff-ML nets daily.
-        Returns {greedy, textbook, nohedge} terminal-P&L stats in the verdict shape.
+        Returns {greedy, textbook, nohedge} terminal-P&L stats in the verdict shape, with
+        `u_mean_is_step_sum` stating (as `_verdict` does) whether `u_mean` is a terminal utility
+        or the running-wealth sum of the roll's per-step ones.
 
         `Solver.DiffV2_Decision_Curve_Dump` hangs a per-decision CSV off the greedy roll (see
         `_decision_curve_row`). It reads the same objects the decision read and writes a file;
@@ -1817,12 +2018,18 @@ class DiffSolver:
         dump_rows = [] if self.curve_dump else None
 
         def roll(policy):
-            """Roll `policy` day-by-day through a fresh `BundleStepper`; returns terminal P&L.
+            """Roll `policy` day-by-day through a fresh `BundleStepper`; returns
+            `(terminal P&L, per-step utility sum or None)`.
 
             `mirror_scale=False`: this rollout is only ever reached with a checkpoint loaded, and
             that checkpoint's utility scale is the value function's own frame — the argmax below
             must read the same `c` the nets were fitted against. Re-mirroring would replace it
-            with this world's `c` and decide under a different scale than `_verdict` did."""
+            with this world's `c` and decide under a different scale than `_verdict` did.
+
+            Under `Reference_Mode='Running_Wealth'` the reported objective is the SUM of per-step
+            rewards, so it is accumulated here too. The partition is the DECISION days the policy
+            acted on plus the tail to the terminal — the days this roll actually chooses on, which
+            is the finest partition a stepper rollout observes."""
             stepper = BundleStepper(self.bundle, self.runtime, mirror_scale=False)
             # Seed the cost-aware decision q_prev from the OPENING book (the stepper's own
             # positions already open here too, so its realized first-step turnover is measured
@@ -1830,12 +2037,17 @@ class DiffSolver:
             # `DiffV2_Position_State` it is the realized standing book the charge and p' ride.
             q_prev = self.aspace.initial_q(self.B_outer, self.device)
             last = None
+            u_sum = w_prev = None
             while not stepper.done:
                 t = stepper.time_index - hist
                 if stepper.is_decision_step and t in sweep_set:
                     state = stepper._state
                     W = _tracking_error_value(state, self.runtime).to(self.device)     # (B,) net wealth
                     B = W.shape[0]
+                    if self.running_wealth:
+                        u_sum = (torch.zeros_like(W) if w_prev is None
+                                 else u_sum + self._u(W - w_prev, t))
+                        w_prev = W
                     if policy == "nohedge":
                         q = torch.zeros(B, self.n_hedge, device=self.device)
                     elif policy == "textbook":
@@ -1869,15 +2081,20 @@ class DiffSolver:
                     last = stepper.step(delta)
                 else:
                     last = stepper.step(None)
-            return (last["transition_pnl_excess"]
-                    + last["transition_liability_value"]).to(torch.float64)
+            wT = (last["transition_pnl_excess"]
+                  + last["transition_liability_value"]).to(torch.float64)
+            if u_sum is not None:
+                u_sum = u_sum + self._u(wT.to(torch.float32) - w_prev, self.T_dec)  # the tail
+            return wT, u_sum
 
-        def stats(wT):
+        def stats(wT, u_sum=None):
             p5 = torch.quantile(wT, 0.05)
             cvar5 = wT[wT <= p5].mean() if (wT <= p5).any() else p5
-            return {"u_mean": float(self._u(wT.to(torch.float32)).mean()),
+            return {"u_mean": float((self._u(wT.to(torch.float32)) if u_sum is None
+                                     else u_sum).mean()),
                     "wT_mean": float(wT.mean()), "wT_p5": float(p5), "wT_cvar5": float(cvar5)}
-        out = {p: stats(roll(p)) for p in ("greedy", "textbook", "nohedge")}
+        out = {p: stats(*roll(p)) for p in ("greedy", "textbook", "nohedge")}
+        out["u_mean_is_step_sum"] = bool(self.running_wealth)
         if dump_rows:
             pd.DataFrame(dump_rows).to_csv(self.curve_dump, index=False, float_format="%.6g")
             logging.info("DiffV2_Decision_Curve_Dump: %d decision rows -> %s",
@@ -1896,7 +2113,10 @@ class DiffSolver:
         Refused: the shape contract (`t_min`/`T_dec`/`md`/`hedges`), `DiffV2_Position_State` and
         `DiffV2_Wealth_Free_Value` — each owns an input COLUMN, one added and one removed, so a
         mismatch would otherwise surface as a `load_state_dict` shape error naming a Linear weight
-        rather than the key that caused it — a corridor mismatch, and (in
+        rather than the key that caused it — the two OBJECTIVE dials (`Reference_Mode` and whether
+        a `conditional_sim` scale schedule is in force, neither of which moves a single tensor
+        shape, so a mismatch has no other symptom than a quietly wrong policy) — a corridor
+        mismatch, and (in
         `_check_action_universe` / `_check_calendar_spread`) a
         narrowed `Allocation_Weights` universe or a `Calendar_Spread_Bps` that moved under
         position state. Warned: a stale `solver_version`, a missing corridor/universe/rate stamp
@@ -1916,6 +2136,27 @@ class DiffSolver:
                 f"{'Yes' if self.position_state else 'No'}. The net book fraction p = Sum(q)/Q_max "
                 f"is an input column of the fitted value, so the two are different functions of "
                 f"different states — retrain, or match Solver.DiffV2_Position_State.")
+        want_mode = "running_wealth" if self.running_wealth else "fixed"
+        if ck.get("reference_mode", "fixed") != want_mode:
+            raise ValueError(
+                f"Objective.Reference_Mode mismatch: {src} was trained with Reference_Mode="
+                f"{ck.get('reference_mode', 'fixed')!r} but this run sets {want_mode!r}. One "
+                f"value function scores TERMINAL wealth and the other a sum of daily increments, "
+                f"and they have the same input WIDTH — no shape error would ever surface it — so "
+                f"the two are refused here. Retrain, or match Objective.Reference_Mode.")
+        # The run side of this one is the SETTING, never the schedule this world measured: a frozen
+        # roll is a single path and measures none at all, and it is the checkpoint's that governs
+        # it (`_restore_frame`). So the check is 'was this policy fitted under the mode this run
+        # declares', which is exactly the consistency question a load can answer.
+        if bool(ck.get("utility_scale_schedule")) != self.scheduled_scale:
+            raise ValueError(
+                f"Objective.Utility_Scale_Mode mismatch: {src} was trained "
+                f"{'WITH' if ck.get('utility_scale_schedule') else 'WITHOUT'} a conditional_sim "
+                f"scale schedule and this run declares "
+                f"{'conditional_sim' if self.scheduled_scale else 'a flat scale'}. The knee is "
+                f"what the fitted residual's curvature is measured against, so a per-step "
+                f"schedule and a flat scalar are different utilities of the same wealth — "
+                f"retrain, or match Objective.Utility_Scale_Mode.")
         if bool(ck.get("wealth_free", False)) != self.wealth_free:
             raise ValueError(
                 f"DiffV2_Wealth_Free_Value mismatch: {src} was trained with "
@@ -2025,6 +2266,47 @@ class DiffSolver:
             "execution re-roll — but the argmax is now ranking against a different friction "
             "than the one it was tuned on.", src, ck["calendar_spread_bps"], want)
 
+    def _restore_frame(self, members):
+        """Adopt a loaded checkpoint's FRAME as this run's — the z-frame, the utility scale and
+        its per-decision-step schedule — and mirror it onto the runtime, so every reward and every
+        ranking reads the frame the nets were fitted against rather than the one this world
+        resolved for itself.
+
+        This is `BundleStepper`'s `mirror_scale=False` contract one level up and one step finer.
+        That contract says the checkpoint's `c` is part of the value function, so a frozen roll
+        must decide under it; a per-step SCHEDULE says exactly the same thing on every decision
+        day. The evaluation bundle measured its own at build time and mirrored it on — under a
+        stressed world (which is what a frozen eval is FOR) those knees can be anywhere — and this
+        is where that measurement is discarded. Nothing downstream re-measures: `_bind` re-asserts
+        this frame on every later batch, and the stepper rollout refuses to re-mirror.
+
+        The scalar is AVERAGED over an ensemble (a spread means the members disagree about the
+        anchor, and is warned about) — and under a schedule it is averaged over the members'
+        TERMINAL KNEES, because the scalar is by contract the terminal read. The SCHEDULES
+        themselves are not averaged or reconciled: each member's continuation is read in its own
+        frame — `_continuation`'s ensemble branch carries the member's schedule beside its z-stats,
+        exactly as it carries its trust region — so the run-level schedule is the primary member's,
+        and only the label and terminal reads (which a loaded run never fits) consult it."""
+        loaded = members[0]
+        self.utility_scale_schedule = loaded.get("utility_scale_schedule")
+        # The scalar IS the terminal read (`hedge_bundle._utility_scale`), so under a schedule it
+        # is taken from the members' terminal KNEES rather than from a scalar that only happens to
+        # equal them: the ensemble's terminal stats and its members' terminal continuations then
+        # remain one statement, the run-level scalar being the mean exactly as it is without a
+        # schedule, while each member's own continuation is still read at its own (`_continuation`).
+        scales = [float(ck["utility_scale_schedule"][-1] if ck.get("utility_scale_schedule")
+                        else ck["utility_scale"]) for ck in members]
+        if max(scales) - min(scales) > 0.01 * max(scales):
+            logging.warning(
+                "DiffSolver ensemble utility_scale spread %.3g%% — members trained "
+                "against different anchors; averaging is approximate",
+                100.0 * (max(scales) - min(scales)) / max(scales))
+        self.m_mean, self.m_std = loaded["m_mean"], loaded["m_std"]
+        self.w_mean, self.w_std = loaded["w_mean"], loaded["w_std"]
+        self.utility_scale = float(sum(scales) / len(scales))
+        self.runtime["objective"]["utility_scale"] = self.utility_scale
+        self.runtime["objective"]["utility_scale_schedule"] = self.utility_scale_schedule
+
     def warmup(self, bundle=None):
         """Fit the value function on the first (or only) bundle and LOCK the frame: the
         standardization stats, the utility scale and the per-t trust region are computed here and
@@ -2116,18 +2398,7 @@ class DiffSolver:
                     f"DiffV2_Load_Value_Fn: the ensemble mixes solver versions {sorted(versions)} "
                     "- members trained under different architectures cannot be averaged")
             loaded = members[0]
-            scales = [float(ck["utility_scale"]) for ck in members]
-            if max(scales) - min(scales) > 0.01 * max(scales):
-                logging.warning(
-                    "DiffSolver ensemble utility_scale spread %.3g%% — members trained "
-                    "against different anchors; averaging is approximate",
-                    100.0 * (max(scales) - min(scales)) / max(scales))
-            self.m_mean, self.m_std = loaded["m_mean"], loaded["m_std"]
-            self.w_mean, self.w_std = loaded["w_mean"], loaded["w_std"]
-            # The checkpoint's scale IS the value function's frame, so it also becomes the
-            # locked scale a streaming re-bind re-asserts (never the eval world's).
-            self.utility_scale = float(sum(scales) / len(scales))
-            self.runtime["objective"]["utility_scale"] = self.utility_scale
+            self._restore_frame(members)
             hidden = int(loaded["hidden"])
         in_dim = self._in_dim(md)             # (market | [W] | [p]) — the row `_standardize` builds
         nets = [_DiffV2Residual(in_dim, hidden=hidden).to(self.device)
@@ -2158,7 +2429,7 @@ class DiffSolver:
                         net.eval()
                     self._ensemble.append(
                         (m_nets, ck["m_mean"], ck["m_std"], ck["w_mean"], ck["w_std"],
-                         ck.get("a_bounds")))
+                         ck.get("a_bounds"), ck.get("utility_scale_schedule")))
                 logging.info("DiffSolver ENSEMBLE argmax over %d value fns", len(members))
             self.worst = float(loaded["max_abs_Y_boot"])
             self.root = {"t": self.t_min, "Y_mean": float(loaded["V_0"]),
@@ -2249,6 +2520,15 @@ class DiffSolver:
             "m_mean": self.m_mean, "m_std": self.m_std,
             "w_mean": self.w_mean, "w_std": self.w_std,
             "utility_scale": float(self.runtime["objective"]["utility_scale"]),
+            # The per-step knees this policy was fitted against (None = the single scalar). Part of
+            # the FRAME, so a load restores it rather than re-measuring; the MODE is what a
+            # mismatched load is refused on, because a scheduled and a flat knee are different
+            # utilities of the same wealth.
+            "utility_scale_schedule": self.utility_scale_schedule,
+            # Objective provenance: 'running_wealth' rewards the day's increment and retires the
+            # u(W) anchor, so the fitted nets are a different function of the same input WIDTH —
+            # the one mismatch class no shape error would ever surface.
+            "reference_mode": "running_wealth" if self.running_wealth else "fixed",
             "a_bounds": self.a_bounds,
             "hedges": list(self.hedges),
             "active_hedge_indices": list(self.active),
@@ -2280,12 +2560,18 @@ class DiffSolver:
         }
 
     def _frame_stamp(self):
-        """sha1 of the LOCKED frame — the utility scale, the z-frame (market/wealth mean+std), the
-        trust-region envelope and the streaming flag. Two checkpoints with the same stamp compute
-        the same function of the same standardized state; a different stamp is a different frame,
+        """sha1 of the LOCKED frame — the utility scale AND its per-step schedule, the
+        z-frame (market/wealth mean+std), the trust-region envelope and the streaming flag. Two
+        checkpoints with the same stamp compute the same function of the same standardized
+        state; a different stamp is a different frame,
         which is exactly what makes averaging them in one argmax (or reloading under a re-locked
-        frame) invalid. Stamped into every artifact, logged on every load."""
+        frame) invalid. Stamped into every artifact, logged on every load.
+
+        A frame with no scale schedule hashes exactly as it did before schedules existed: the key
+        is OMITTED rather than hashed as null, so a run that never armed the mode keeps its stamp
+        and two checkpoints from either side of the feature still compare on what they compute."""
         env = [b for b in self.a_bounds if b is not None]
+        sched = self.utility_scale_schedule
         frame = {
             "utility_scale": round(float(self.runtime["objective"]["utility_scale"]), 6),
             "m_mean": [round(float(v), 6) for v in self.m_mean.tolist()],
@@ -2294,6 +2580,8 @@ class DiffSolver:
             "a_bounds": ([round(min(b[0] for b in env), 6), round(max(b[1] for b in env), 6)]
                          if env else None),
         }
+        if sched is not None:
+            frame["utility_scale_schedule"] = [round(float(v), 6) for v in sched]
         return hashlib.sha1(json.dumps(frame, sort_keys=True).encode()).hexdigest()
 
     def finish(self, bundle):
@@ -2509,7 +2797,13 @@ def assemble_hedge_result(primary_runs, bundle, runtime):
     bound / textbook lower bound, enabled by the `Run_*` flags) into the `comparison` table —
     V_0 mean ± std per track — the acceptance ladder, and the result dict
     `HedgeMonteCarlo.execute` unpacks. `bundle` is the HELD-OUT batch, which is exactly the world
-    the verdict was rolled on, so the benchmark tracks measure the same paths."""
+    the verdict was rolled on, so the benchmark tracks measure the same paths.
+
+    The ladder compares V_0 across tracks, and both benchmarks are TERMINAL-utility by
+    construction. Under `Objective.Reference_Mode='Running_Wealth'` the solver's own V_0 is a sum
+    of per-step utilities instead, so the rungs are not on one scale and their ORDER says nothing —
+    said out loud rather than suppressed, because the per-track table is still the honest record
+    and `wT_mean` in the verdict is still comparable."""
     solver_cfg = runtime["solver"]
     obj = solver_cfg["object"]
     have_liability = bundle.liability_mtm is not None
@@ -2537,6 +2831,11 @@ def assemble_hedge_result(primary_runs, bundle, runtime):
                                 ("textbook", "textbook")) if key in comparison]
     ladder = {"order": rungs,
               "holds": all(rungs[i][1] >= rungs[i + 1][1] - 1.0e-6 for i in range(len(rungs) - 1))}
+    if len(rungs) > 1 and (runtime["objective"] or {}).get("reference_mode") == "running_wealth":
+        logging.warning(
+            "solve_hedge ladder under Objective.Reference_Mode='Running_Wealth': the solver's V_0 "
+            "is a SUM of per-step utilities while the hindsight/textbook tracks are terminal — the "
+            "rungs are not on one scale and their order is not an acceptance statement.")
     logging.info("solve_hedge tracks: %s | ladder holds=%s",
                  {k: round(v["v0_mean"], 4) for k, v in comparison.items()},
                  ladder["holds"])

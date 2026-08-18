@@ -166,6 +166,58 @@ def allocation_knots(trade_date, fixings, mats, names):
     return knots
 
 
+def apply_objective_flags(objective, args):
+    """The CLI's `Objective` overrides, applied on top of the TEMPLATE's authored block (which
+    carries the ruled shape and scale) — the swept axes, and nothing else. Mutates in place.
+
+    `Utility_Scale_Mode='conditional_sim'` CLEARS the template's `Utility_Scale_Explicit`: the
+    measured schedule sets the LEVEL of c as well as its shape, so the authored literal is exactly
+    what the mode replaces, and the engine refuses the pair rather than picking a winner. Without
+    the clear the flag is unusable — every authored job here carries a ruled
+    `Utility_Scale_Explicit` and the run would die at the first bundle build.
+
+    A `--utility-scale` typed BESIDE the mode is left standing, deliberately: the template's
+    literal is an inherited default the mode supersedes, but a value the caller typed on the same
+    command line is a contradiction they should hear about, and the engine says so by name.
+
+    The dose moves with the clear, which is the part to carry into a campaign: `Huber_Aversion` is
+    dimensionless in units of c, so re-levelling c re-doses the aversion. Under `conditional_sim`
+    it is dosed against the MEASURED scale (the frame lock logs the resulting risk aversion per
+    dollar), not against the retired literal."""
+    if args.huber_aversion is not None:
+        objective['Huber_Aversion'] = float(args.huber_aversion)
+    if args.huber_delta is not None:
+        objective['Huber_Delta'] = float(args.huber_delta)
+    if args.utility_scale is not None:
+        objective['Utility_Scale_Explicit'] = float(args.utility_scale)
+    if args.objective is not None:
+        objective['Object'] = args.objective
+    if args.cara_gamma is not None:
+        objective['CARA_Gamma'] = float(args.cara_gamma)
+    if args.reference_wealth is not None:
+        objective['Reference_Wealth'] = float(args.reference_wealth)
+    if args.up_aversion is not None:
+        objective['Up_Aversion'] = float(args.up_aversion)
+    if args.up_knee is not None:
+        objective['Up_Knee'] = float(args.up_knee)
+    # The two objective dials ride the SHARED cfg, so train and roll carry them together: both
+    # enter the labels, and the checkpoint refuses a load under the other setting.
+    if args.reference_mode is not None:
+        objective['Reference_Mode'] = args.reference_mode
+    if args.utility_scale_mode is not None:
+        objective['Utility_Scale_Mode'] = args.utility_scale_mode
+        if args.utility_scale_mode == 'conditional_sim' and args.utility_scale is None:
+            retired = objective.pop('Utility_Scale_Explicit', None)
+            if retired is not None:
+                logging.info(
+                    'conditional_sim: retiring the template Utility_Scale_Explicit=%s — the '
+                    'measured schedule sets the level as well as the shape, so Huber_Aversion is '
+                    'now dosed against the MEASURED scale (see the frame-lock log)', retired)
+    if args.utility_scale_floor is not None:
+        objective['Utility_Scale_Floor_Frac'] = float(args.utility_scale_floor)
+    return objective
+
+
 def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_corridor=None):
     """The trade-date job: the two-leg AVG liability struck at fair - margin, the listed CME strip
     as tradables, and every market level read off the archive row. Returns `(cfg, info)`.
@@ -179,24 +231,7 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
     hp = calc['Hedging_Problem']
     calc['Base_Date'] = _ts(trade_date)
     merge['MarketDataFile'] = calibrated_md
-    # the Objective is the TEMPLATE's (the authored job carries the ruled scale); only the swept
-    # axes are overridable
-    if args.huber_aversion is not None:
-        hp['Objective']['Huber_Aversion'] = float(args.huber_aversion)
-    if args.huber_delta is not None:
-        hp['Objective']['Huber_Delta'] = float(args.huber_delta)
-    if args.utility_scale is not None:
-        hp['Objective']['Utility_Scale_Explicit'] = float(args.utility_scale)
-    if args.objective is not None:
-        hp['Objective']['Object'] = args.objective
-    if args.cara_gamma is not None:
-        hp['Objective']['CARA_Gamma'] = float(args.cara_gamma)
-    if args.reference_wealth is not None:
-        hp['Objective']['Reference_Wealth'] = float(args.reference_wealth)
-    if args.up_aversion is not None:
-        hp['Objective']['Up_Aversion'] = float(args.up_aversion)
-    if args.up_knee is not None:
-        hp['Objective']['Up_Knee'] = float(args.up_knee)
+    apply_objective_flags(hp['Objective'], args)
 
     p0, state = float(row[FIX_COL]), carry_state(row)
     premium = float(json.load(open(calibrated_md))['MarketData']['Price Models'][
@@ -345,7 +380,12 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
         logging.info('=== TRAIN %s seed=%d (fair=%.2f, strike=%.2f, bridge premium=%+.6f) ===',
                      tag, seed, info['k_fair'], info['k_fair'] - args.margin, info['premium'])
         tdiag = run(train, f'train_{tag}_s{seed}')
-        verdict = (tdiag.get('verdict') or {}).get('greedy') or {}
+        vd = tdiag.get('verdict') or {}
+        verdict = vd.get('greedy') or {}
+        # ...and WHICH objective that number is: under --reference-mode Running_Wealth it is a sum
+        # of per-step utilities, not a terminal one, so a sweep that mixes the dial would
+        # otherwise mix units in one column without saying so.
+        u_step_sum = vd.get('u_mean_is_step_sum')
         train_us.append(None if verdict.get('u_mean') is None else round(verdict['u_mean'], 4))
         v0s.append(tdiag.get('V_0'))
         market_dim = tdiag.get('market_dim')
@@ -403,6 +443,7 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
         'fair': round(info['k_fair'], 2), 'strike': round(info['k_fair'] - args.margin, 2),
         'n_seeds': len(args.seeds), 'market_dim': market_dim,
         'train_u': train_us[0], 'train_u_seeds': train_us, 'V_0': v0s[0],
+        'train_u_is_step_sum': u_step_sum,
         'greedy_usd_oz': None if greedy is None else round(greedy / args.volume, 2),
         'nohedge_usd_oz': None if nohedge is None else round(nohedge / args.volume, 2),
         'static_short_usd_oz': (None if nohedge is None
@@ -480,6 +521,30 @@ def main():
     ap.add_argument('--up-knee', type=float, default=None,
                     help="Objective Up_Knee (units of c): knee beyond which the gain wing goes "
                          "linear.")
+    ap.add_argument('--reference-mode', choices=['Fixed', 'Running_Wealth'], default=None,
+                    help="Objective Reference_Mode. 'Running_Wealth' rewards the DAY's wealth "
+                         "increment instead of terminal wealth, so the DP's value is a sum of "
+                         "per-step utilities and the reported u_mean is NOT comparable to a "
+                         "terminal-utility one (wT is). Applied to TRAIN and ROLL - it decides "
+                         "what the labels are, and the checkpoint stamps it. A retrain.")
+    ap.add_argument('--utility-scale-mode', choices=['vol_scaled_notional', 'conditional_sim'],
+                    default=None,
+                    help='Objective Utility_Scale_Mode. conditional_sim measures a '
+                         'per-decision-step knee c_t off the warmup batch (the cross-sectional '
+                         'dispersion of the flat-book wealth at t, floored) instead of one '
+                         'number, so x = (W-R)/c_t is a z-score on every day. It CLEARS the '
+                         "template's Utility_Scale_Explicit (the schedule sets the level too, so "
+                         'the two are refused together) and RE-DOSES the aversion with it: '
+                         'Huber_Aversion is dimensionless in units of c, so re-level c and the '
+                         'risk aversion moves - the frame lock logs the per-dollar figure. '
+                         'Refuses --utility-scale typed beside it, and --reference-mode '
+                         'Running_Wealth. Applied to TRAIN and ROLL; stamped on the checkpoint. '
+                         'A retrain.')
+    ap.add_argument('--utility-scale-floor', type=float, default=None,
+                    help='Objective Utility_Scale_Floor_Frac: floor of the conditional_sim '
+                         'schedule as a fraction of its terminal entry, so the early knees (where '
+                         'the paths have barely diverged) never collapse below the unhedgeable '
+                         'residual. Inert under every other scale mode.')
     ap.add_argument('--max-trade', type=float, default=None,
                     help='Evaluator Max_Trade_Per_Step: per-leg |dq| cap per decision step '
                          'at the argmax (execution only; checkpoints re-rollable under it).')
@@ -617,7 +682,8 @@ def main():
             logging.exception('TRADE %s FAILED', tag)
             rec = {'trade': tag, 'world': 'chain', 'margin': args.margin, 'fair': None,
                    'strike': None, 'n_seeds': len(args.seeds), 'market_dim': None, 'train_u': None,
-                   'train_u_seeds': None, 'V_0': None, 'greedy_usd_oz': None,
+                   'train_u_seeds': None, 'train_u_is_step_sum': None, 'V_0': None,
+                   'greedy_usd_oz': None,
                    'nohedge_usd_oz': None, 'static_short_usd_oz': None, 'pf_bound': None,
                    'bound_pass': None, 'churn': None, 'corridor': args.delta_corridor,
                    'error': str(exc)}

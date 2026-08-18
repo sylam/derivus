@@ -61,6 +61,7 @@ def _fake_solver(aspace):
     exactly `q*dF + dL` and every quantity the band computes is analytic."""
     s = types.SimpleNamespace(
         aspace=aspace, chunk=64, risk_kappa=0.0, churn_lambda=0.0, position_state=False,
+        running_wealth=False,
         # Flat marks: `_calendar_kappa` reads them to price a matched leg (None here — no rate).
         tradables_sim={r: torch.zeros(4, 2) for r in aspace.hedges},
         _wealth_step=lambda W, q, dF, dL: W + (q * dF).sum(-1) + dL,

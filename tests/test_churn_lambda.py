@@ -45,7 +45,7 @@ def _fake_solver(aspace, churn_lambda=0.0, value_scale=1.0):
     unrestricted argmax is [0,0,0] and the charge's geometry is exactly computable."""
     s = types.SimpleNamespace(
         aspace=aspace, chunk=64, risk_kappa=0.0, churn_lambda=churn_lambda,
-        position_state=False,
+        position_state=False, running_wealth=False,
         # Flat marks: `_calendar_kappa` reads them to price a matched leg (None here — no rate).
         tradables_sim={r: torch.zeros(4, 2) for r in aspace.hedges},
         _wealth_step=lambda W, q, dF, dL: (W + q.sum(-1) * value_scale).expand(
