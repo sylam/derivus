@@ -925,6 +925,7 @@ class DiffSolver:
         self.aspace.vol_sim = bundle.vol_sim
         self.tradables_sim, self.n_steps = bundle.tradables_sim, bundle.n_outer_steps
         self.liability_sim = bundle.liability_sim                     # (n_steps, B_outer)
+        self.leg_volume = float(getattr(bundle, "total_leg_volume", 0.0) or 0.0)
         self.B_outer = int(self.liability_sim.shape[-1])
         if self.log_ratio:
             # A hair above zero on the book's own dollar scale: ratios against a launch below
@@ -2941,7 +2942,7 @@ class DiffSolverV2(DiffSolver):
     than exploration noise around the replication hedge.
 
     FORWARD PASS — the policy is constructed from the simulated liability distribution. Per
-    decision step, the MEASURED delta d_t(book) = P(terminal book < TODAY'S book | book at t)
+    decision step, the MEASURED delta d_t(book) = P(terminal < max(TODAY'S book, 0) | book)
     is estimated cross-sectionally on the outer paths (bucketed conditional mean, isotonic
     decreasing in the book mark), ONCE — the forward pass is deterministic: the strike rides
     the book, so hedging does not change the measured object and the contracts held are known
@@ -3020,7 +3021,14 @@ class DiffSolverV2(DiffSolver):
         q, W = [], L[0].clone()
         curves = []
         for t in range(T):
-            cv = self._phi_curve(L[t], LT < L[t])
+            # The strike is TODAY'S BOOK OR $1/oz, whichever is higher (user-ruled: "just
+            # above 0" is a dollar over, not zero). The forward pass is hindsight-privileged
+            # — it sees the simulated terminals and exists to seed the backward solver — so
+            # the floor composite is allowed by construction: under water the question
+            # becomes recovery to the floor (d saturates, full cover, and a recovery
+            # ratchets the floor up behind it); above water today's book is the strike
+            # (the high-water ratchet — gains stay defended, no release).
+            cv = self._phi_curve(L[t], LT < L[t].clamp_min(1.0 * self.leg_volume))
             curves.append(cv)
             if float(rep[t].abs().sum()) < 0.5:
                 # Less than half a contract of remaining replication delta: the liability is

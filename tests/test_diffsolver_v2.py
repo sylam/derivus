@@ -75,7 +75,7 @@ def _v2(T_dec=3, B=2048, aversion=1.0, noise=0.0, seed=3, hi=0.0, legs=1):
         device=torch.device("cpu"), liability_sim=L, tradables_sim={n: F for n in names},
         contract_size=aspace.contract_size, q_lo=aspace.q_lo, q_hi=aspace.q_hi,
         active=aspace.active, n_active=aspace.n_active,
-        aversion=aversion, noise_frac=noise, phi_curves=None,
+        aversion=aversion, noise_frac=noise, phi_curves=None, leg_volume=0.5,
         log_ratio=False, w_floor=1.0,
     )
     for name in ("_phi_curve", "_phi_apply"):
@@ -123,16 +123,22 @@ def test_the_dial_is_a_multiplier_on_the_measured_delta():
                - 0.3) < 1e-6                                # linear: g = γ·d
 
 
-def test_the_strike_rides_the_book():
-    """Driftless world: P(end below TODAY'S book | book) ~ 0.5 at every wealth — including
-    after a big gain. The old static-zero strike read ~0 at the top decile (the crash
-    month's release-at-profit); the moving strike must not."""
+def test_the_strike_is_the_high_water_or_zero():
+    """The strike is max(today's book, $1/oz on the leg volume) — the forward pass is
+    hindsight-privileged, so the floor composite is allowed by construction. ABOVE water the curve
+    reads ~0.5 (the high-water ratchet: a book on banked gains is as defended as par — the
+    old static-zero strike read ~0 there, the release-at-profit that lost the crash month).
+    UNDER water the strike pins to ZERO and the delta saturates upward (recovery demanded).
+    Kills both a reverted-static-strike mutant and a dropped-floor (plain moving-strike)
+    mutant."""
     s = _v2(aversion=1.0)
     q, curves, WT = s._constructed_policy()
     book1 = s.liability_sim[1]
-    for pt in (book1.quantile(0.1), book1.quantile(0.5), book1.quantile(0.9)):
-        d = float(s._phi_apply(curves[1], pt.reshape(1))[0])
-        assert 0.32 < d < 0.68, f'moving strike must stay near-ATM everywhere; got {d}'
+    d_hi = float(s._phi_apply(curves[1], book1.quantile(0.9).reshape(1))[0])
+    assert 0.32 < d_hi < 0.68, f'above water must read near-ATM (no release); got {d_hi}'
+    d_lo = float(s._phi_apply(curves[1], book1.quantile(0.1).reshape(1))[0])
+    assert d_lo > 0.62, f'under water the floor must demand more cover; got {d_lo}'
+    assert d_lo > d_hi + 0.1, 'the floor must separate under- from above-water books'
 
 
 def test_the_forward_pass_is_deterministic_and_single_pass():
@@ -151,7 +157,7 @@ def test_the_forward_pass_is_deterministic_and_single_pass():
     W = L[0].clone()
     for t in range(s.T_dec):
         import math as _m
-        cv = DiffSolverV2._phi_curve(L[t], LT < L[t])
+        cv = DiffSolverV2._phi_curve(L[t], LT < L[t].clamp_min(1.0 * s.leg_volume))
         g = s._tilt(s._phi_apply(cv, W))
         lo_t, hi_t = s.aspace.net_bounds(t)
         net = hi_t - g * (hi_t - lo_t)
