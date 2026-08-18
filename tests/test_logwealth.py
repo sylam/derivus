@@ -99,6 +99,25 @@ def test_the_reader_couples_the_dials():
     assert rt3["objective"]["utility_scale_mode"] == "conditional_sim"
 
 
+def test_the_ensemble_member_anchor_is_zero_under_step_sum():
+    """The single-net path retires the terminal anchor under a step-sum objective (a zero
+    base); the ENSEMBLE per-member path must make the same statement — it reached the
+    terminal wrap in production and died on the wrap's named refusal (the refusal doing
+    its job). Kills a dropped-guard mutant."""
+    s = types.SimpleNamespace(running_wealth=True, runtime={"objective": {}})
+    anchor = types.MethodType(DiffSolver._member_anchor, s)
+    W = torch.tensor([1.0, -2.0, 3.0])
+    assert torch.equal(anchor(W, 1, None), torch.zeros(3))
+    s2 = types.SimpleNamespace(
+        running_wealth=False,
+        runtime={"objective": {"object": "asymmetricutility_symlog", "utility_scale": 1.0,
+                               "utility_scale_mode": "vol_scaled_notional",
+                               "reference_wealth": 0.0}})
+    anchor2 = types.MethodType(DiffSolver._member_anchor, s2)
+    out = anchor2(torch.tensor([1.0]), None, None)
+    assert abs(float(out) - math.log(2.0)) < 1e-6      # symlog(1) = log1p(1): the wrap ran
+
+
 def test_the_terminal_wrap_refuses_by_name():
     rt = hedge_runtime.construct_hedge_runtime(_hedge_json())
     with pytest.raises(ValueError, match="no terminal utility"):

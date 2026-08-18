@@ -971,7 +971,14 @@ class DiffSolver:
         """u(W) at ONE ensemble member's own step knee. A member's `utility_scale_schedule` is
         part of its frame exactly as its z-stats are, so its continuation is evaluated at the
         scale it was fitted against — the schedules of an ensemble are never averaged or
-        otherwise reconciled (see `_restore_frame`)."""
+        otherwise reconciled (see `_restore_frame`).
+
+        Under a step-sum objective (Running_Wealth / LogWealth) the anchor concept is retired:
+        the continuation carries NO terminal utility — the same statement the single-net path
+        makes with its zero base — so the member anchor is exactly zero rather than a wrap
+        call the growth objective refuses by name."""
+        if self.running_wealth:
+            return torch.zeros_like(W)
         return _utility_wrap_signed(
             W, {"objective": dict(self.runtime["objective"],
                                   utility_scale_schedule=schedule)}, t)
