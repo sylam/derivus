@@ -363,6 +363,7 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
                           cols=SCALAR_COLS)
 
     ckpts, train_us, v0s, market_dim = [], [], [], None
+    u_step_sum = None                      # set by a TRAINED seed; a checkpoint-skip run has none
     for seed in args.seeds:
         ckpt = os.path.abspath(os.path.join(run_dir, f'value_fn_{tag}_s{seed}.pt'))
         ckpts.append(ckpt)
