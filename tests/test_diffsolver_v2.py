@@ -344,3 +344,26 @@ def test_a_foreign_checkpoint_is_refused_by_name():
 def test_the_name_is_a_class_not_an_alias():
     assert DiffSolverV2 is not DiffSolver
     assert issubclass(DiffSolverV2, DiffSolver)
+
+
+def test_the_bank_mixes_the_seed_and_the_drowning():
+    """Half the bank rolls the clairvoyant seed, half the UNDEFENDED delta base — the value
+    function must train on the under-water states the floor prevents (the first trained
+    roll extrapolated to MAX LONG in the crash exactly because no drowning book existed in
+    its classroom). Kills a dropped-mix mutant."""
+    s = _v2(T_dec=4, seed=9, lo=-7.0, flat_day=2, l0=5.0, noise=0.0)
+    q_seed, _, _ = s._constructed_policy()
+    q_base, _, _ = s._constructed_policy(floored=False)
+    gen = torch.Generator().manual_seed(0)
+    s.aspace.initial_q = lambda B, dev: torch.zeros(B, 1)
+    W_list, q_list = s._build_bank(gen)
+    half = s.B_outer // 2
+    for t in range(1, s.T_dec):
+        assert torch.equal(q_list[t][:half], q_seed[t - 1][:half]), 'first half = the seed'
+        assert torch.equal(q_list[t][half:], q_base[t - 1][half:]), 'second half = the base'
+    floor = 1.0 * s.leg_volume
+    Wb = torch.stack(W_list[1:])
+    assert bool((Wb[:, half:] < floor - 1e-4).any()), \
+        'the drowning must be PRESENT in the base half'
+    assert bool((torch.stack(q_seed) != torch.stack(q_base)).any()), \
+        'seed and base must genuinely differ on this fixture'

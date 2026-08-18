@@ -3010,7 +3010,7 @@ class DiffSolverV2(DiffSolver):
         w = ((x - x0) / (x1 - x0).clamp_min(1e-12)).clamp(0.0, 1.0)
         return bp[idx - 1] + w * (bp[idx] - bp[idx - 1])
 
-    def _constructed_policy(self):
+    def _constructed_policy(self, floored=True):
         """ONE deterministic pass — measure, then construct. The moving-strike delta
         d_t(book) = P(terminal book < book at t | book at t) is measured on the FLAT
         liability (the only book that exists before a policy does), and the policy rolls
@@ -3095,7 +3095,7 @@ class DiffSolverV2(DiffSolver):
                 # updates (an off-by-one here defends one day late and breaches exactly on
                 # the defenseless day — the gate's business).
                 target = reqs[t]
-                if t == 0:
+                if t == 0 or not floored:
                     # t0 is the ONE decision deployment shares with the seed: a single real
                     # state, a single position — the uniform honest delta, NO clairvoyance
                     # (user-ruled). The paths that need more catch up at t1, where the
@@ -3230,6 +3230,16 @@ class DiffSolverV2(DiffSolver):
                 len(sched), sched[0][1] if sched else None,
                 sched[len(sched) // 2][1] if sched else None)
         q_star, curves, WT = self._constructed_policy()
+        # HALF THE CLASSROOM IS THE DROWNING: the floored seed keeps every training book
+        # above the floor, so a deep-under-water state never appears — and the first trained
+        # roll, queried exactly there in the crash month, extrapolated to MAX LONG and
+        # pinned. The value function must see both the floor and what it prevents: half the
+        # paths roll the clairvoyant seed, half the UNDEFENDED delta base, so the log
+        # penalty is fitted where the bad states actually live.
+        q_base, _, _ = self._constructed_policy(floored=False)
+        half = self.B_outer // 2
+        for t in range(self.T_dec):
+            q_star[t] = torch.cat([q_star[t][:half], q_base[t][half:]], dim=0)
         self.phi_curves = [(bx.detach().cpu(), bp.detach().cpu()) for bx, bp in curves]
         phi0 = float(self._phi_apply(curves[0], self.liability_sim[0][:1])[0])
         logging.info(
