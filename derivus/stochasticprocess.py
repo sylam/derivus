@@ -2646,9 +2646,19 @@ class GARCHSpotModel(StochasticProcess):
         F('Carry_Drift', 'Text', default='No', values=['Yes', 'No'],
           description="Yes drifts the simulated log-spot each step at the FRONT of the "
                       "commodity's own carry curve (the factor's declared Forward_Rate, whose "
-                      "process must publish (key, 'z0')) - cost-of-carry real-world dynamics, "
-                      "under which every futures leg is near-driftless in the training world "
-                      "instead of rolling down the curve with certainty")
+                      "process must publish (key, 'z0')) - cost-of-carry real-world dynamics. "
+                      "NOTE a fixed-maturity leg is near-driftless under this switch only for a "
+                      "FLAT carry curve: with curvature D the leg's local roll differs from the "
+                      "front accrual and it drifts at -4*D*tau per year"),
+        F('Bridge_T0_Fix', 'Float', default=0.0,
+          description='Observed later-session fixing at t0 (level). When stamped, the FIRST '
+                      'simulated step conditions on it: the bridge law places the session print '
+                      'ON the path to the next fix, so row 1 re-anchors at this level (less the '
+                      'bridge premium) instead of reverting the print through downstream factors. '
+                      'Absent = off. Applies only to a t0-anchored grid, never inside a fork.'),
+        F('Bridge_T0_Premium', 'Float', default=0.0,
+          description='Log premium of the session bridge, subtracted from the Bridge_T0_Fix '
+                      'conditioning shift')
     ]
 
     def __init__(self, factor, param, implied_factor=None):
@@ -2657,6 +2667,9 @@ class GARCHSpotModel(StochasticProcess):
                 and param['Alpha'] + param['Beta'] <= 0.999 and param['Nu'] > 2.05
                 and param['H0'] > 0.0), f'GARCHSpotModel invalid params: {param}'
         self.carry_drift = str(param.get('Carry_Drift', 'No')) == 'Yes'
+        # Seam conditioning: absent = off (0.0 is not a price level, so falsy is safe here).
+        self.bridge_t0 = float(param.get('Bridge_T0_Fix') or 0.0)
+        self.bridge_t0_prem = float(param.get('Bridge_T0_Premium') or 0.0)
         # Convexity_Correction=Yes makes the PRICE the martingale (E[S_{t+1}/S_t]=exp(Mu·dt))
         # by subtracting ½·Var(r_t) from the per-step log-drift; No (default) is today's
         # log-space-zero-mean (E[Δlog S]=Mu·dt, so the price carries a +½·var Jensen drift).
@@ -2705,6 +2718,15 @@ class GARCHSpotModel(StochasticProcess):
         self.nu = _t(float(self.param['Nu']))
         self.h0_default = _t(float(self.param['H0']))
         self.drift = _t(float(self.param.get('Mu', 0.0)) * dt_arr)               # (T,) μ·dt per step
+        # Bridge_T0_Fix: the first step conditions on the observed later-session print. Under the
+        # bridge law the print sits ON the path to the next fix with unit loading, so row 1's
+        # conditional mean is the print less the premium — a drift term, so the observed-path
+        # replay recovers the same innovations (forward ≡ replay is structural). t0-anchored
+        # outer grids only: a fork from t>0 is not the seam and must not re-apply it.
+        if self.bridge_t0 > 0.0 and time_grid.scen_time_grid[0] == 0 and len(dt_arr) > 1:
+            s0 = float(tensor.detach().reshape(-1)[0])
+            self.drift[1] = self.drift[1] + (
+                np.log(self.bridge_t0 / s0) - self.bridge_t0_prem)
         self.dt_t = _t(dt_arr)                                                   # (T,) dt per step, for Carry_Drift
         # f_t = dt_t/dt_c, the trading-time length of a calendar grid step.
         self.f = _t(dt_arr / dt_c)                                               # (T,) trading-time step length
@@ -4217,7 +4239,16 @@ class BasisLinkedSpotModel(StochasticProcess):
                       'stationarity'),
         F('Mix_P0_Stress', 'Float', default=0.0,
           description='P(stress) at the first simulated step - the filtered posterior at the '
-                      'end of the calibration sample')
+                      'end of the calibration sample'),
+        F('Chain_T0_Basis', 'Float', default=0.0,
+          description='Observed later-session partner basis at t0 (level). When stamped, the '
+                      'FIRST simulated step conditions on it: the chained bridge places the '
+                      'session print ON the path to the next own-session basis, so row 1 '
+                      're-anchors at this level (less the bridge premium) instead of stepping '
+                      'blind off b(0). Absent = off; t0-anchored grids only, never a fork.'),
+        F('Chain_T0_Premium', 'Float', default=0.0,
+          description='Additive premium of the chained bridge, subtracted from the '
+                      'Chain_T0_Basis conditioning shift')
     ]
 
     def __init__(self, factor, param, implied_factor=None):
@@ -4316,6 +4347,25 @@ class BasisLinkedSpotModel(StochasticProcess):
             self.mix_q, self.p0_stress = q, float(self.param.get('Mix_P0_Stress', q))
         # AAD: b0 stays on the graph, unreshaped so inner MC can pass (B,).
         self.b0 = tensor
+        # Chain_T0_Basis: row 1 conditions on the observed later-session partner print (unit
+        # loading — the chained bridge's waypoint sits on the path to the next own-session
+        # basis). Applied as a bias on row 1's ds so forward and replay share it structurally.
+        # None = off; t0-anchored grids only — a fork from t>0 is not the seam.
+        self.chain_t0_shift = None
+        if self.param.get('Chain_T0_Basis') is not None and time_grid.scen_time_grid[0] == 0 \
+                and self.scenario_horizon > 1:
+            self.chain_t0_shift = (float(self.param['Chain_T0_Basis'])
+                                   - float(tensor.detach().reshape(-1)[0])
+                                   - float(self.param.get('Chain_T0_Premium') or 0.0))
+
+    def _ds_linked(self, linked_path, t):
+        """The concurrent-ΔS drive of step t, with the row-1 seam conditioning folded in —
+        shared by the forward sim and the observed-path replay so the bias cannot drift
+        between them."""
+        ds = self.A * (linked_path[t] - linked_path[t - 1])
+        if t == 1 and self.chain_t0_shift is not None:
+            ds = ds + self.chain_t0_shift
+        return ds
 
     def generate(self, shared_mem):
         """
@@ -4362,7 +4412,6 @@ class BasisLinkedSpotModel(StochasticProcess):
         # Identity: ε_t = Z · √(ν/W) where W ~ Chi²(ν). Combine the rescaling so the
         # marginal variance of η_t is sigma_t² regardless of ν.
         nu = self.Nu
-        a = self.A
 
         inner = Z.ndim == 3
         T, batch = Z.shape[0], Z.shape[1:]
@@ -4408,7 +4457,7 @@ class BasisLinkedSpotModel(StochasticProcess):
                                 (u_regime[t] < self.mix_enter).to(dtype))
                 regime_path[t] = s
             out[t], mu, sig2 = self._advance(
-                mu, sig2, out[t - 1], a * (linked_path[t] - linked_path[t - 1]), drawn)
+                mu, sig2, out[t - 1], self._ds_linked(linked_path, t), drawn)
             if self.slow_mean:
                 mu_path[t] = mu
             if self.garch:
@@ -4544,7 +4593,7 @@ class BasisLinkedSpotModel(StochasticProcess):
 
         for t in range(1, obs.shape[0]):
             _, mu, sig2 = self._advance(
-                mu, sig2, obs[t - 1], self.A * (linked_path[t] - linked_path[t - 1]), realised)
+                mu, sig2, obs[t - 1], self._ds_linked(linked_path, t), realised)
             if self.slow_mean:
                 mu_path[t] = mu
             if self.garch:

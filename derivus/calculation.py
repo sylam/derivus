@@ -2777,6 +2777,18 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 'cash_account_names': tuple(normalized_runtime.get('names', {}).get('cash_accounts', ())),
             }
 
+        if evaluation_summary is not None and bundle is not None:
+            # The world-before-solver tripwire: each hedge leg's expected drift over the live
+            # window, in the very sim the policy trains on. A conditional-mean seam (a phantom
+            # charge on hedging) prints HERE on every run instead of surfacing months later as
+            # a trained policy that refuses to hedge.
+            t_live = bundle.last_live_mtm_index
+            drift = {h: round(float((bundle.tradables_sim[h][t_live]
+                                     - bundle.tradables_sim[h][0]).mean()), 4)
+                     for h in normalized_runtime.get('names', {}).get('hedges', ())}
+            evaluation_summary.setdefault('diagnostics', {})['hedge_drift_usd'] = drift
+            logging.info('hedge window drift E[dF] per leg (USD): %s', drift)
+
         return HedgeRuntimeExecutionResult(
             bundle=bundle,
             runtime=normalized_runtime,
