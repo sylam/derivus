@@ -35,8 +35,8 @@ from derivus.hedge_solver import DiffSolver, DiffSolverV2, HedgeActionSpace
 torch.manual_seed(11)
 
 
-def _runtime(lo=-4.0, hi=0.0):
-    hedges = ["A"]
+def _runtime(lo=-4.0, hi=0.0, hedges=("A",)):
+    hedges = list(hedges)
     return {
         "names": {"hedges": hedges},
         "tradables": {r: {"contract_size": 1.0} for r in hedges},
@@ -57,11 +57,12 @@ def _runtime(lo=-4.0, hi=0.0):
     }
 
 
-def _v2(T_dec=3, B=2048, aversion=1.0, noise=0.0, seed=3, hi=0.0):
+def _v2(T_dec=3, B=2048, aversion=1.0, noise=0.0, seed=3, hi=0.0, legs=1):
     """A DiffSolverV2 stand-in with the REAL forward-pass methods bound. The world: one leg,
     dF ~ N(0,1) per step, liability dL = +2·dF + noise (a LONG book, so the short-only box
     [-4, 0] hedges it at ~-2 per step) and terminal book sign genuinely varies across paths."""
-    rt = _runtime(hi=hi)
+    names = [chr(65 + i) for i in range(legs)]
+    rt = _runtime(hi=hi, hedges=names)
     aspace = HedgeActionSpace(rt, torch.device("cpu"))
     g = torch.Generator().manual_seed(seed)
     dF = torch.randn(T_dec, B, generator=g)
@@ -70,8 +71,8 @@ def _v2(T_dec=3, B=2048, aversion=1.0, noise=0.0, seed=3, hi=0.0):
         L[t + 1] = L[t] + 2.0 * dF[t] + 0.3 * torch.randn(B, generator=g)
     F = torch.cat([torch.zeros(1, B), dF.cumsum(0)])
     s = types.SimpleNamespace(
-        aspace=aspace, hedges=["A"], n_hedge=1, B_outer=B, T_dec=T_dec,
-        device=torch.device("cpu"), liability_sim=L, tradables_sim={"A": F},
+        aspace=aspace, hedges=names, n_hedge=legs, B_outer=B, T_dec=T_dec,
+        device=torch.device("cpu"), liability_sim=L, tradables_sim={n: F for n in names},
         contract_size=aspace.contract_size, q_lo=aspace.q_lo, q_hi=aspace.q_hi,
         active=aspace.active, n_active=aspace.n_active,
         aversion=aversion, noise_frac=noise, phi_curves=None,
@@ -149,12 +150,16 @@ def test_the_forward_pass_is_deterministic_and_single_pass():
     LT = L[s.T_dec]
     W = L[0].clone()
     for t in range(s.T_dec):
+        import math as _m
         cv = DiffSolverV2._phi_curve(L[t], LT < L[t])
         g = s._tilt(s._phi_apply(cv, W))
         lo_t, hi_t = s.aspace.net_bounds(t)
-        net = (hi_t - g * (hi_t - lo_t)).unsqueeze(-1)
+        net = hi_t - g * (hi_t - lo_t)
+        net = torch.where(net < 0, net.floor(), net.ceil()).clamp(
+            _m.ceil(lo_t - 1e-9), _m.floor(hi_t + 1e-9)).unsqueeze(-1)
         qt = s.aspace.waterfill(
-            s._replication_hedge(t)[None].expand(s.B_outer, 1).clone(), net, net)
+            s._replication_hedge(t)[None].expand(s.B_outer, s.n_hedge).clone(), net, net)
+        qt = s.aspace._largest_remainder(qt, net)
         qt = torch.minimum(torch.maximum(qt, s.q_lo), s.q_hi)
         assert torch.allclose(q1[t], qt, atol=1e-6), f'hand roll diverges at t={t}'
         dF = (s.tradables_sim["A"][t + 1] - s.tradables_sim["A"][t]).unsqueeze(-1)
@@ -176,6 +181,40 @@ def test_a_fixed_liability_constructs_a_flat_book():
     assert torch.allclose(WT, L[3] + sum(
         (q[t] * (s.tradables_sim["A"][t + 1] - s.tradables_sim["A"][t]).unsqueeze(-1)).sum(-1)
         for t in range(3)) - L[0] + L[0], atol=1e-4), 'the settling rows must still accrue'
+
+
+def test_the_book_holds_whole_contracts():
+    """You cannot trade 2.5 contracts. Every constructed position is a whole number of
+    contracts per leg, legs sum to the whole-contract net, and the net rounds AWAY from
+    zero — more cover, never less: a mapped -x.3 books -(x+1), which plain rounding would
+    miss. Kills a plain-round mutant."""
+    s = _v2(seed=7, aversion=1.1)      # puts a net at frac ~0.19, where plain rounding differs
+    q, curves, _ = s._constructed_policy()
+    L = s.liability_sim
+    W = L[0].clone()
+    saw_discriminating_case = False
+    for t in range(s.T_dec):
+        assert torch.equal(q[t], q[t].round()), f'fractional contracts at t={t}'
+        g = s._tilt(s._phi_apply(curves[t], W))
+        lo_t, hi_t = s.aspace.net_bounds(t)
+        raw = hi_t - g * (hi_t - lo_t)
+        want = torch.where(raw < 0, raw.floor(), raw.ceil()).clamp(-4.0, 0.0)
+        assert torch.equal(q[t].sum(-1), want), f'net not rounded away from zero at t={t}'
+        frac = (raw - raw.trunc()).abs()
+        saw_discriminating_case |= bool(((frac > 0.05) & (frac < 0.45)).any())
+        dF = (s.tradables_sim["A"][t + 1] - s.tradables_sim["A"][t]).unsqueeze(-1)
+        W = s._wealth_step(W, q[t], dF, L[t + 1] - L[t])
+    assert saw_discriminating_case, 'fixture must contain a case where plain rounding differs'
+    # MULTI-LEG: two equal legs and an ODD net — the apportionment must land whole contracts
+    # per leg (-2/-1), never a fractional even split (-1.5/-1.5). aversion 0.9 maps this
+    # fixture's net to -3; the vacuity assert keeps it there.
+    s2 = _v2(seed=7, aversion=0.9, legs=2)
+    q2, _, _ = s2._constructed_policy()
+    saw_odd = False
+    for t in range(s2.T_dec):
+        assert torch.equal(q2[t], q2[t].round()), f'fractional leg at t={t}'
+        saw_odd |= bool(((q2[t].sum(-1).abs() % 2.0) == 1.0).any())
+    assert saw_odd, 'fixture must produce an odd net (an even split would hide the mutant)'
 
 
 def test_the_bank_rolls_the_constructed_policy():
@@ -202,7 +241,10 @@ def test_the_range_map_reaches_the_box():
     assert float(q_hi[1].mean()) < -3.5, 'aversion 2.0 must push the net to the box floor (-4)'
     lo_dial = _v2(aversion=0.1, noise=0.0)         # g ~ 0.05 -> net near the box top
     q_lo, _, _ = lo_dial._constructed_policy()
-    assert float(q_lo[1].mean()) > -0.6, 'aversion 0.1 must release toward the box top'
+    # a fractional residual need books a WHOLE contract (round up in cover): the released
+    # book sits at -1, never a fractional -0.2
+    assert float(q_lo[1].mean()) > -1.5, 'aversion 0.1 must release toward the box top'
+    assert torch.equal(q_lo[1], q_lo[1].round())
 
 
 def test_a_foreign_checkpoint_is_refused_by_name():

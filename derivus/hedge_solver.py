@@ -3032,12 +3032,17 @@ class DiffSolverV2(DiffSolver):
             else:
                 g = self._tilt(self._phi_apply(cv, W))
                 lo_t, hi_t = self.aspace.net_bounds(t)
-                net = (hi_t - g * (hi_t - lo_t)).unsqueeze(-1)
+                net = hi_t - g * (hi_t - lo_t)
+                # WHOLE contracts, rounded AWAY from zero (up, in cover terms), clamped into
+                # the band snapped inward — net_bounds already intersects the corridor, so the
+                # integer net is realizable by construction, and the ladder's own
+                # largest-remainder apportionment makes every leg a whole contract too.
+                net = torch.where(net < 0, net.floor(), net.ceil()).clamp(
+                    math.ceil(lo_t - 1e-9), math.floor(hi_t + 1e-9)).unsqueeze(-1)
                 qt = self.aspace.waterfill(
                     rep[t][None].expand(self.B_outer, self.n_hedge).clone(), net, net)
+                qt = self.aspace._largest_remainder(qt, net)
                 qt = torch.minimum(torch.maximum(qt, self.q_lo), self.q_hi)
-                if self.aspace.schedule is not None:
-                    qt = self.aspace.project_to_corridor(qt, t)
             q.append(qt)
             W = self._wealth_step(W, qt, dF[t], L[t + 1] - L[t])
         return q, curves, W
