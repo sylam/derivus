@@ -57,11 +57,11 @@ def _runtime(lo=-4.0, hi=0.0):
     }
 
 
-def _v2(T_dec=3, B=2048, aversion=1.0, noise=0.0, seed=3):
+def _v2(T_dec=3, B=2048, aversion=1.0, noise=0.0, seed=3, hi=0.0):
     """A DiffSolverV2 stand-in with the REAL forward-pass methods bound. The world: one leg,
     dF ~ N(0,1) per step, liability dL = +2·dF + noise (a LONG book, so the short-only box
     [-4, 0] hedges it at ~-2 per step) and terminal book sign genuinely varies across paths."""
-    rt = _runtime()
+    rt = _runtime(hi=hi)
     aspace = HedgeActionSpace(rt, torch.device("cpu"))
     g = torch.Generator().manual_seed(seed)
     dF = torch.randn(T_dec, B, generator=g)
@@ -159,6 +159,21 @@ def test_the_forward_pass_is_deterministic_and_single_pass():
         assert torch.allclose(q1[t], qt, atol=1e-6), f'hand roll diverges at t={t}'
         dF = (s.tradables_sim["A"][t + 1] - s.tradables_sim["A"][t]).unsqueeze(-1)
         W = s._wealth_step(W, qt, dF, L[t + 1] - L[t])
+
+
+def test_a_fixed_liability_constructs_a_flat_book():
+    """After the last pricing day the replication delta is zero and the below-today comparison
+    is float dust — the constructed book must be FLAT there (the box's speculative allowance
+    is not a mandate), while the wealth roll still accrues the settling liability rows."""
+    s = _v2(T_dec=3, seed=5, hi=1.0)                     # a long allowance: dust would BUY
+    L = s.liability_sim
+    L[3] = L[2]                                          # final step: liability fully fixed
+    s.tradables_sim["A"][3] = s.tradables_sim["A"][2] + 1.0   # marks still move
+    q, curves, WT = s._constructed_policy()
+    assert torch.equal(q[2], torch.zeros_like(q[2])), 'fixed liability must hold nothing'
+    assert torch.allclose(WT, L[3] + sum(
+        (q[t] * (s.tradables_sim["A"][t + 1] - s.tradables_sim["A"][t]).unsqueeze(-1)).sum(-1)
+        for t in range(3)) - L[0] + L[0], atol=1e-4), 'the settling rows must still accrue'
 
 
 def test_the_bank_rolls_the_constructed_policy():

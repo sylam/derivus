@@ -3022,14 +3022,21 @@ class DiffSolverV2(DiffSolver):
         for t in range(T):
             cv = self._phi_curve(L[t], LT < L[t])
             curves.append(cv)
-            g = self._tilt(self._phi_apply(cv, W))
-            lo_t, hi_t = self.aspace.net_bounds(t)
-            net = (hi_t - g * (hi_t - lo_t)).unsqueeze(-1)
-            qt = self.aspace.waterfill(
-                rep[t][None].expand(self.B_outer, self.n_hedge).clone(), net, net)
-            qt = torch.minimum(torch.maximum(qt, self.q_lo), self.q_hi)
-            if self.aspace.schedule is not None:
-                qt = self.aspace.project_to_corridor(qt, t)
+            if float(rep[t].abs().sum()) == 0.0:
+                # The liability is fully fixed: nothing left to hedge, and the measurement
+                # degenerates to comparison dust (terminal == today up to discounting). The
+                # box's speculative allowance is not a mandate — the constructed book is FLAT
+                # (the wealth step below still accrues the settling liability rows).
+                qt = torch.zeros(self.B_outer, self.n_hedge, device=self.device)
+            else:
+                g = self._tilt(self._phi_apply(cv, W))
+                lo_t, hi_t = self.aspace.net_bounds(t)
+                net = (hi_t - g * (hi_t - lo_t)).unsqueeze(-1)
+                qt = self.aspace.waterfill(
+                    rep[t][None].expand(self.B_outer, self.n_hedge).clone(), net, net)
+                qt = torch.minimum(torch.maximum(qt, self.q_lo), self.q_hi)
+                if self.aspace.schedule is not None:
+                    qt = self.aspace.project_to_corridor(qt, t)
             q.append(qt)
             W = self._wealth_step(W, qt, dF[t], L[t + 1] - L[t])
         return q, curves, W
