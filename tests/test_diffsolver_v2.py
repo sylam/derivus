@@ -170,15 +170,32 @@ def test_the_forward_pass_is_deterministic_and_single_pass():
         net = torch.where(net < 0, net.floor(), net.ceil()).clamp(lo_i[t], hi_i[t])
         dL = L[t + 1] - L[t]
         target = reqs[t]                       # reqs[t] IS the requirement at t+1
-        defensible = m[t].abs() > 1e-9
-        bound = (target - W - dL) / torch.where(defensible, m[t], torch.ones_like(m[t]))
-        net = torch.where(defensible & (m[t] > 0), torch.maximum(net, bound.ceil()), net)
-        net = torch.where(defensible & (m[t] < 0), torch.minimum(net, bound.floor()), net)
-        net = net.clamp(lo_i[t], hi_i[t]).unsqueeze(-1)
+        if t == 0:
+            net = net.unsqueeze(-1)
+        else:
+            defensible = m[t].abs() > 1e-9
+            bound = (target - W - dL) / torch.where(defensible, m[t], torch.ones_like(m[t]))
+            net = torch.where(defensible & (m[t] > 0), torch.maximum(net, bound.ceil()), net)
+            net = torch.where(defensible & (m[t] < 0), torch.minimum(net, bound.floor()), net)
+            net = net.clamp(lo_i[t], hi_i[t]).unsqueeze(-1)
         qt = s.aspace.waterfill(
             rep[t][None].expand(s.B_outer, s.n_hedge).clone(), net, net)
         qt = s.aspace._largest_remainder(qt, net)
         qt = torch.minimum(torch.maximum(qt, s.q_lo), s.q_hi)
+        if t > 0:
+            dFl = torch.stack([s.tradables_sim[r][t + 1] - s.tradables_sim[r][t]
+                               for r in s.hedges], dim=-1)
+            exec_pnl = (qt * s.contract_size * dFl).sum(-1)
+            short = target - (W + dL + exec_pnl)
+            fix = defensible & (short > 0)
+            if bool(fix.any()):
+                extra = torch.where(fix, ((short / m[t].abs()).ceil() + 1.0)
+                                    * torch.sign(m[t]), torch.zeros_like(m[t]))
+                net = (net.squeeze(-1) + extra).clamp(lo_i[t], hi_i[t]).unsqueeze(-1)
+                qt = s.aspace.waterfill(
+                    rep[t][None].expand(s.B_outer, s.n_hedge).clone(), net, net)
+                qt = s.aspace._largest_remainder(qt, net)
+                qt = torch.minimum(torch.maximum(qt, s.q_lo), s.q_hi)
         assert torch.allclose(q1[t], qt, atol=1e-6), f'hand roll diverges at t={t}'
         dF = torch.stack([s.tradables_sim[r][t + 1] - s.tradables_sim[r][t]
                           for r in s.hedges], dim=-1)
@@ -222,8 +239,27 @@ def test_the_floor_holds_everywhere_and_minimally():
     q, _, _ = s._constructed_policy()
     books = _roll_books(s, q)
     floor = 1.0 * s.leg_volume
-    assert float(books[1:].min()) >= floor - 1e-4, \
-        f'the floor must hold everywhere; min book {float(books[1:].min()):.3f}'
+    # t0 is uniform (no clairvoyance), so feasibility is judged AT t1: a path whose day-0
+    # loss at the honest delta already exceeds salvage is the accepted 1-day risk
+    import math as _m
+    L, T = s.liability_sim, s.T_dec
+    rep = [s._replication_hedge(t) for t in range(T)]
+    req = torch.full((s.B_outer,), floor)
+    for t in range(T - 1, 0, -1):
+        lo_t, hi_t = s.aspace.net_bounds(t)
+        lo_i, hi_i = _m.ceil(lo_t - 1e-9), _m.floor(hi_t + 1e-9)
+        rs = float(rep[t].abs().sum())
+        m = (torch.zeros(s.B_outer) if rs < 0.5 else torch.einsum(
+            'i,ib->b', (rep[t] / rep[t].sum()) * s.contract_size,
+            torch.stack([s.tradables_sim[r][t + 1] - s.tradables_sim[r][t]
+                         for r in s.hedges])))
+        req = torch.maximum(req - (L[t + 1] - L[t]) - torch.maximum(hi_i * m, lo_i * m),
+                            torch.full_like(req, floor))
+    feasible = req <= books[1] + 1e-6
+    assert bool(feasible.any()) and float(feasible.float().mean()) > 0.5
+    assert float(books[2:, feasible].min()) >= floor - 1e-4, \
+        f'the floor must hold from t1 on feasible paths; min ' \
+        f'{float(books[2:, feasible].min()):.3f}'
     nets = torch.stack([q[t].sum(-1) for t in range(s.T_dec)])
     assert bool((nets > -7.0 + 0.5).any()), 'the seed must not be max cover everywhere'
 
@@ -248,6 +284,7 @@ def test_the_floor_survives_legs_that_move_differently():
     L, T = s.liability_sim, s.T_dec
     rep = [s._replication_hedge(t) for t in range(T)]
     req = torch.full((s.B_outer,), floor)
+    reqs0 = None
     for t in range(T - 1, -1, -1):
         lo_t, hi_t = s.aspace.net_bounds(t)
         lo_i, hi_i = _m.ceil(lo_t - 1e-9), _m.floor(hi_t + 1e-9)
@@ -255,19 +292,37 @@ def test_the_floor_survives_legs_that_move_differently():
         m = torch.einsum('i,ib->b', w * s.contract_size,
                          torch.stack([s.tradables_sim[r][t + 1] - s.tradables_sim[r][t]
                                       for r in s.hedges]))
+        if t == 0:
+            reqs0 = req.clone()                 # the requirement at t1
         req = torch.maximum(req - (L[t + 1] - L[t]) - torch.maximum(hi_i * m, lo_i * m),
                             torch.full_like(req, floor))
-    feasible = req <= L[0] + 1e-6
+    q0 = q[0].sum(-1)
+    m0 = torch.einsum('i,ib->b', (rep[0] / rep[0].sum()) * s.contract_size,
+                      torch.stack([s.tradables_sim[r][1] - s.tradables_sim[r][0]
+                                   for r in s.hedges]))
+    B1 = L[0] + (L[1] - L[0]) + q0 * m0
+    feasible = reqs0 <= B1 + 1e-6
     assert bool(feasible.any()), 'fixture must contain feasible paths'
     # the guarantee under WHOLE-contract trading: the floor holds to within one
     # contract's day move (the integer lattice — achievable books are one quantum apart)
     quantum = torch.stack([(s.tradables_sim[r].diff(dim=0)).abs() for r in s.hedges]).amax(0)
     worst = (floor - books[1:]).clamp_min(0.0)
-    viol = ((worst > quantum[:books.shape[0] - 1] + 1e-4).any(0)) & feasible
+    worst = worst[1:]                       # t0 is the accepted uniform-delta day
+    viol = ((worst > quantum[1:books.shape[0] - 1] + 1e-4).any(0)) & feasible
     assert int(viol.sum()) == 0, \
         f'{int(viol.sum())} feasible paths breached beyond one contract quantum'
-    near = (books[1:] < floor - 1e-4).any(0) & feasible
-    assert float(worst.amax()) < 1.0, 'residuals must stay sub-quantum on this fixture'
+    assert float(worst[:, feasible].amax()) < 1.0, \
+        'feasible residuals must stay sub-quantum on this fixture'
+
+
+def test_t0_is_one_uniform_decision():
+    """Deployment shares exactly one state with the seed: today. Every path holds the SAME
+    t0 position — the honest delta, no clairvoyance — and the catch-up happens at t1.
+    Kills a clairvoyant-t0 mutant (per-path t0 repairs scatter the cross-section)."""
+    s = _v2(T_dec=4, seed=9, lo=-7.0, flat_day=2, l0=5.0)
+    q, _, _ = s._constructed_policy()
+    assert int((q[0] != q[0][0:1]).sum()) == 0, 't0 must be identical on every path'
+    assert bool((q[1] != q[1][0:1]).any()), 't1 must scatter (the catch-up)'
 
 
 def test_a_foreign_checkpoint_is_refused_by_name():

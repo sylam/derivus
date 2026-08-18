@@ -3088,6 +3088,16 @@ class DiffSolverV2(DiffSolver):
                 # updates (an off-by-one here defends one day late and breaches exactly on
                 # the defenseless day — the gate's business).
                 target = reqs[t]
+                if t == 0:
+                    # t0 is the ONE decision deployment shares with the seed: a single real
+                    # state, a single position — the uniform honest delta, NO clairvoyance
+                    # (user-ruled). The paths that need more catch up at t1, where the
+                    # reserve already carries every later need.
+                    q.append(self.aspace._largest_remainder(self.aspace.waterfill(
+                        rep[t][None].expand(self.B_outer, self.n_hedge).clone(),
+                        net.unsqueeze(-1), net.unsqueeze(-1)), net.unsqueeze(-1)))
+                    W = self._wealth_step(W, q[-1], dF[t], L[t + 1] - L[t])
+                    continue
                 # The floor constraint q·m >= need is a HALF-LINE, and the repair is the
                 # delta base PROJECTED onto it — the least change, rounded toward the
                 # feasible side (an up-day's bound is a LIMIT on the short: rounding away
