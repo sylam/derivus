@@ -1909,7 +1909,7 @@ class DiffSolver:
             def rank(Wx):
                 C1f = self._continuation(nets, market, Wx.reshape(-1), t + 1, p1).reshape(B, K, Bi)
                 if self.running_wealth:
-                    C1f = C1f + self._u(Wx - W[:, None, None], t + 1)   # the day's own reward
+                    C1f = C1f + self._u_step(Wx, W[:, None, None], t + 1)   # the day's own reward
                 C1 = C1f.mean(-1)
                 if self.risk_kappa > 0.0:
                     dev = (C1f - C1.unsqueeze(-1)).clamp(max=0.0)
@@ -2125,7 +2125,7 @@ class DiffSolver:
                     B = W.shape[0]
                     if self.running_wealth:
                         u_sum = (torch.zeros_like(W) if w_prev is None
-                                 else u_sum + self._u(W - w_prev, t))
+                                 else u_sum + self._u_step(W, w_prev, t))
                         w_prev = W
                     if policy == "nohedge":
                         q = torch.zeros(B, self.n_hedge, device=self.device)
@@ -2163,7 +2163,7 @@ class DiffSolver:
             wT = (last["transition_pnl_excess"]
                   + last["transition_liability_value"]).to(torch.float64)
             if u_sum is not None:
-                u_sum = u_sum + self._u(wT.to(torch.float32) - w_prev, self.T_dec)  # the tail
+                u_sum = u_sum + self._u_step(wT.to(torch.float32), w_prev, self.T_dec)  # tail
             return wT, u_sum
 
         def stats(wT, u_sum=None):
