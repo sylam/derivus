@@ -1,30 +1,29 @@
-"""`DiffSolverV2` — the forward-backward solver: a CONSTRUCTED moving-strike put-delta bank
-(breach probability against TODAY'S book measured ONCE on the flat liability, aversion
-multiplier, affine range map onto the net position band — fully deterministic) that the
-standard backward sweep then fits and improves on.
+"""`DiffSolverV2` — the forward-backward solver. The forward pass is the CLAIRVOYANT SEED:
+a measured moving-strike delta (strike = max(today's book, $1/oz), no dial — the aversion
+belongs to the backward DP), mapped affinely onto the net band, in whole contracts, plus the
+LEAST extra cover the known path needs so the book never falls under the $1/oz floor —
+positive wealth everywhere, by construction. The backward sweep then fits and improves on
+the bank this policy rolls.
 
 Gates and their killing mutations (all RUN):
 
-1. PHI IS THE CONDITIONAL AND IT IS ISOTONIC — the bucketed curve tracks the oracle
-   P(y|x) and never increases in x, including through a deliberate non-monotone blip that
-   raw bucket means would keep. Kills the dropped-cummax mutant.
-2. THE DIAL IS THE SLOPE AT THE MONEY — tilt(0.5) == atm EXACTLY (linear slope scale);
-   aversion 1.0 is the identity on the measured delta. Kills a scale-ignoring mutant.
-3. THE STRIKE RIDES THE BOOK — on a driftless world the curve reads ~0.5 at EVERY wealth,
-   including the top decile after a gain: release-at-profit is structurally dead (the old
-   static-zero strike read ~0 there). Kills a reverted-static-strike mutant.
-4. THE FORWARD PASS IS DETERMINISTIC AND SINGLE-PASS — two calls agree bitwise and the
-   policy equals the hand-rolled single recursion (measure once on the flat liability,
-   apply at the rolling hedged wealth, range map). Kills a reintroduced-iteration mutant.
-5. THE BANK ROLLS THE CONSTRUCTED POLICY — noise 0: q_list[t+1] == q*[t] bitwise and W
-   telescopes; the RANGE MAP drives the net to the box ends at the dial's extremes (a
-   rep-scaled policy cannot reach the box floor). Kills dropped-range-map and
-   re-centered-bank mutants.
-6. A FOREIGN CHECKPOINT IS REFUSED BY NAME — a 'DiffSolver' stamp under a DiffSolverV2 run
-   raises Solver.Object mismatch (a pre-feature stamp defaults to 'DiffSolver'); a matching
-   stamp gets PAST that check. Kills a dropped-refusal mutant.
-7. THE NAME IS A CLASS, NOT AN ALIAS.
+1. PHI IS THE CONDITIONAL AND IT IS ISOTONIC — oracle-tracked, blip-ironed.
+   Kills the dropped-cummax mutant.
+2. THE STRIKE IS THE HIGH-WATER OR THE FLOOR — above water ~0.5 (no release-at-profit);
+   under water the delta saturates. Kills static-zero and dropped-floor strike mutants.
+3. THE FORWARD PASS IS DETERMINISTIC AND SINGLE-PASS — two calls agree bitwise and equal
+   the hand-rolled recursion (reserve backward, delta + least-repair forward).
+4. THE BOOK HOLDS WHOLE CONTRACTS — integer per leg, net rounded AWAY from zero at a
+   discriminating fraction, odd nets apportioned whole. Kills plain-round and
+   dropped-largest-remainder mutants.
+5. THE FLOOR HOLDS EVERYWHERE, AND MINIMALLY — on a feasible world every path's book stays
+   >= the floor at every step, INCLUDING through a defenseless day (the reserve
+   pre-positions the cushion the day before), and the repair is the LEAST earning integer,
+   never max cover. Kills a dropped-reserve mutant (floor-only look-ahead breaches the
+   defenseless day) and a max-cover mutant.
+6. A FOREIGN CHECKPOINT IS REFUSED BY NAME. 7. THE NAME IS A CLASS, NOT AN ALIAS.
 """
+import math
 import types
 
 import pytest
@@ -45,7 +44,7 @@ def _runtime(lo=-4.0, hi=0.0, hedges=("A",)):
                    "training_action_chunk_size": 64, "active_hedge_indices": None},
         "accounting": {
             "position_limits": {r: {"min_position": lo, "max_position": hi} for r in hedges},
-            "total_position_abs_limit": 4.0,
+            "total_position_abs_limit": abs(lo) * len(hedges),
             "total_position_schedule": None,
             "max_trade_per_step": 0.0,
             "decision_deadband_sigma": 0.0,
@@ -57,16 +56,21 @@ def _runtime(lo=-4.0, hi=0.0, hedges=("A",)):
     }
 
 
-def _v2(T_dec=3, B=2048, aversion=1.0, noise=0.0, seed=3, hi=0.0, legs=1):
-    """A DiffSolverV2 stand-in with the REAL forward-pass methods bound. The world: one leg,
-    dF ~ N(0,1) per step, liability dL = +2·dF + noise (a LONG book, so the short-only box
-    [-4, 0] hedges it at ~-2 per step) and terminal book sign genuinely varies across paths."""
+def _v2(T_dec=3, B=2048, noise=0.0, seed=3, lo=-4.0, hi=0.0, legs=1, flat_day=None,
+        l0=0.0):
+    """A DiffSolverV2 stand-in with the REAL forward-pass methods bound. One (or `legs`)
+    futures with dF ~ N(0,1) per step, liability dL = +2·dF + noise. `flat_day` freezes the
+    marks on that step (m = 0: a defenseless day — the liability still moves on its noise),
+    which is what exercises the reserve's pre-positioning."""
     names = [chr(65 + i) for i in range(legs)]
-    rt = _runtime(hi=hi, hedges=names)
+    rt = _runtime(lo=lo, hi=hi, hedges=names)
     aspace = HedgeActionSpace(rt, torch.device("cpu"))
     g = torch.Generator().manual_seed(seed)
     dF = torch.randn(T_dec, B, generator=g)
+    if flat_day is not None:
+        dF[flat_day] = 0.0
     L = torch.zeros(T_dec + 1, B)
+    L[0] = l0                                # the margin cushion; 0 leaves day-0 under floor
     for t in range(T_dec):
         L[t + 1] = L[t] + 2.0 * dF[t] + 0.3 * torch.randn(B, generator=g)
     F = torch.cat([torch.zeros(1, B), dF.cumsum(0)])
@@ -75,16 +79,28 @@ def _v2(T_dec=3, B=2048, aversion=1.0, noise=0.0, seed=3, hi=0.0, legs=1):
         device=torch.device("cpu"), liability_sim=L, tradables_sim={n: F for n in names},
         contract_size=aspace.contract_size, q_lo=aspace.q_lo, q_hi=aspace.q_hi,
         active=aspace.active, n_active=aspace.n_active,
-        aversion=aversion, noise_frac=noise, phi_curves=None, leg_volume=0.5,
-        log_ratio=False, w_floor=1.0,
+        noise_frac=noise, phi_curves=None, leg_volume=0.5,
+        log_ratio=False, w_floor=1.0, aversion=1.0,
     )
     for name in ("_phi_curve", "_phi_apply"):
         setattr(s, name, getattr(DiffSolverV2, name))
-    for name in ("_tilt", "_constructed_policy", "_build_bank"):
+    for name in ("_constructed_policy", "_build_bank"):
         setattr(s, name, types.MethodType(getattr(DiffSolverV2, name), s))
     s._wealth_step = types.MethodType(DiffSolver._wealth_step, s)
     s._replication_hedge = types.MethodType(DiffSolver._replication_hedge, s)
     return s
+
+
+def _roll_books(s, q):
+    """The per-step book under a constructed trajectory (t=0..T_dec), for floor checks."""
+    L = s.liability_sim
+    books, W = [L[0].clone()], L[0].clone()
+    for t in range(s.T_dec):
+        dF = torch.stack([s.tradables_sim[r][t + 1] - s.tradables_sim[r][t]
+                          for r in s.hedges], dim=-1)
+        W = s._wealth_step(W, q[t], dF, L[t + 1] - L[t])
+        books.append(W.clone())
+    return torch.stack(books)
 
 
 def test_phi_is_the_conditional_and_isotonic():
@@ -93,11 +109,10 @@ def test_phi_is_the_conditional_and_isotonic():
     y = (x + torch.randn(8192, generator=g)) < 0.0          # oracle P = Phi_normal(-x)
     bx, bp = DiffSolverV2._phi_curve(x, y)
     assert (bp[1:] <= bp[:-1] + 1e-6).all(), 'Phi must be decreasing in the book mark'
-    import math as _m
-    for q, tol in ((-2.0, 0.06), (0.0, 0.06), (2.0, 0.06)):
-        oracle = 0.5 * (1.0 + _m.erf(-q / _m.sqrt(2.0)))
-        got = float(DiffSolverV2._phi_apply((bx, bp), torch.tensor([q]))[0])
-        assert abs(got - oracle) < tol, f'Phi({q}) = {got} vs oracle {oracle}'
+    for qq, tol in ((-2.0, 0.06), (0.0, 0.06), (2.0, 0.06)):
+        oracle = 0.5 * (1.0 + math.erf(-qq / math.sqrt(2.0)))
+        got = float(DiffSolverV2._phi_apply((bx, bp), torch.tensor([qq]))[0])
+        assert abs(got - oracle) < tol, f'Phi({qq}) = {got} vs oracle {oracle}'
     y2 = y.clone()
     y2[(x > 0.5) & (x < 0.7)] = True                        # a planted non-monotone blip
     bx2, bp2 = DiffSolverV2._phi_curve(x, y2)
@@ -107,31 +122,8 @@ def test_phi_is_the_conditional_and_isotonic():
     assert torch.allclose(bpf, torch.full_like(bpf, float(y[:512].float().mean())))
 
 
-def test_the_dial_is_a_multiplier_on_the_measured_delta():
-    for gamma in (1.0, 1.2, 1.5, 2.0):
-        s = types.SimpleNamespace(aversion=gamma)
-        tilt = types.MethodType(DiffSolverV2._tilt, s)
-        assert abs(float(tilt(torch.tensor([0.5]))[0]) - min(1.0, 0.5 * gamma)) < 1e-6
-        p = torch.linspace(0.0, 1.0, 21)
-        out = tilt(p)
-        assert (out[1:] >= out[:-1] - 1e-6).all() and float(out[-1]) <= 1.0 + 1e-6
-    s1 = types.SimpleNamespace(aversion=1.0)
-    p = torch.rand(64)
-    assert torch.allclose(types.MethodType(DiffSolverV2._tilt, s1)(p), p, atol=1e-6)
-    s15 = types.SimpleNamespace(aversion=1.5)
-    assert abs(float(types.MethodType(DiffSolverV2._tilt, s15)(torch.tensor([0.2]))[0])
-               - 0.3) < 1e-6                                # linear: g = γ·d
-
-
-def test_the_strike_is_the_high_water_or_zero():
-    """The strike is max(today's book, $1/oz on the leg volume) — the forward pass is
-    hindsight-privileged, so the floor composite is allowed by construction. ABOVE water the curve
-    reads ~0.5 (the high-water ratchet: a book on banked gains is as defended as par — the
-    old static-zero strike read ~0 there, the release-at-profit that lost the crash month).
-    UNDER water the strike pins to ZERO and the delta saturates upward (recovery demanded).
-    Kills both a reverted-static-strike mutant and a dropped-floor (plain moving-strike)
-    mutant."""
-    s = _v2(aversion=1.0)
+def test_the_strike_is_the_high_water_or_the_floor():
+    s = _v2()
     q, curves, WT = s._constructed_policy()
     book1 = s.liability_sim[1]
     d_hi = float(s._phi_apply(curves[1], book1.quantile(0.9).reshape(1))[0])
@@ -142,115 +134,98 @@ def test_the_strike_is_the_high_water_or_zero():
 
 
 def test_the_forward_pass_is_deterministic_and_single_pass():
-    """The user's ruling: measure once on the flat liability, construct once — the contracts
-    held are known exactly, by construction. Two calls agree bitwise (no RNG anywhere in the
-    pass), and the policy is exactly the hand-rolled single recursion: curve on the FLAT book,
-    aversion-scaled delta applied at the ROLLING hedged wealth, range-mapped, water-filled."""
-    s = _v2(seed=5)
+    """Two calls agree bitwise, and the policy equals the hand-rolled spec: the reserve
+    backward (floor minus liability move minus best earnable on the KNOWN move), then
+    forward the whole-contract delta base overridden by the LEAST repairing integer
+    wherever tomorrow's book would miss tomorrow's reserve."""
+    s = _v2(seed=5, lo=-7.0)
     q1, curves1, WT1 = s._constructed_policy()
     q2, curves2, WT2 = s._constructed_policy()
     for a, b in zip(q1, q2):
         assert torch.equal(a, b)
     assert torch.equal(WT1, WT2)
-    L = s.liability_sim
-    LT = L[s.T_dec]
-    W = L[0].clone()
-    for t in range(s.T_dec):
-        import math as _m
-        cv = DiffSolverV2._phi_curve(L[t], LT < L[t].clamp_min(1.0 * s.leg_volume))
-        g = s._tilt(s._phi_apply(cv, W))
+    L, T = s.liability_sim, s.T_dec
+    LT = L[T]
+    floor = 1.0 * s.leg_volume
+    rep = [s._replication_hedge(t) for t in range(T)]
+    m = [(rep[t] / rep[t].sum() * s.contract_size) @ torch.stack(
+        [s.tradables_sim[r][t + 1] - s.tradables_sim[r][t] for r in s.hedges])
+        for t in range(T)]
+    lo_i, hi_i = [], []
+    for t in range(T):
         lo_t, hi_t = s.aspace.net_bounds(t)
-        net = hi_t - g * (hi_t - lo_t)
-        net = torch.where(net < 0, net.floor(), net.ceil()).clamp(
-            _m.ceil(lo_t - 1e-9), _m.floor(hi_t + 1e-9)).unsqueeze(-1)
+        lo_i.append(math.ceil(lo_t - 1e-9))
+        hi_i.append(math.floor(hi_t + 1e-9))
+    req = torch.full((s.B_outer,), floor)
+    reqs = [None] * T
+    for t in range(T - 1, -1, -1):
+        reqs[t] = req.clone()
+        best = torch.maximum(hi_i[t] * m[t], lo_i[t] * m[t])
+        req = torch.maximum(req - (L[t + 1] - L[t]) - best, torch.full_like(req, floor))
+    W = L[0].clone()
+    for t in range(T):
+        cv = DiffSolverV2._phi_curve(L[t], LT < L[t].clamp_min(floor))
+        g = s._phi_apply(cv, W)
+        net = hi_i[t] - g * (hi_i[t] - lo_i[t])
+        net = torch.where(net < 0, net.floor(), net.ceil()).clamp(lo_i[t], hi_i[t])
+        dL = L[t + 1] - L[t]
+        target = reqs[t]                       # reqs[t] IS the requirement at t+1
+        defensible = m[t].abs() > 1e-9
+        bound = (target - W - dL) / torch.where(defensible, m[t], torch.ones_like(m[t]))
+        net = torch.where(defensible & (m[t] > 0), torch.maximum(net, bound.ceil()), net)
+        net = torch.where(defensible & (m[t] < 0), torch.minimum(net, bound.floor()), net)
+        net = net.clamp(lo_i[t], hi_i[t]).unsqueeze(-1)
         qt = s.aspace.waterfill(
-            s._replication_hedge(t)[None].expand(s.B_outer, s.n_hedge).clone(), net, net)
+            rep[t][None].expand(s.B_outer, s.n_hedge).clone(), net, net)
         qt = s.aspace._largest_remainder(qt, net)
         qt = torch.minimum(torch.maximum(qt, s.q_lo), s.q_hi)
         assert torch.allclose(q1[t], qt, atol=1e-6), f'hand roll diverges at t={t}'
-        dF = (s.tradables_sim["A"][t + 1] - s.tradables_sim["A"][t]).unsqueeze(-1)
+        dF = torch.stack([s.tradables_sim[r][t + 1] - s.tradables_sim[r][t]
+                          for r in s.hedges], dim=-1)
         W = s._wealth_step(W, qt, dF, L[t + 1] - L[t])
 
 
-def test_a_fixed_liability_constructs_a_flat_book():
-    """After the last pricing day the replication delta is zero and the below-today comparison
-    is float dust — the constructed book must be FLAT there (the box's speculative allowance
-    is not a mandate), while the wealth roll still accrues the settling liability rows."""
-    s = _v2(T_dec=3, seed=5, hi=1.0)                     # a long allowance: dust would BUY
-    L = s.liability_sim
-    g = torch.Generator().manual_seed(1)
-    # final step: liability fixed to within DUST (discount pull-to-par, never exactly zero)
-    L[3] = L[2] + 1e-4 * torch.randn(L.shape[1], generator=g)
-    s.tradables_sim["A"][3] = s.tradables_sim["A"][2] + 1.0   # marks still move
-    q, curves, WT = s._constructed_policy()
-    assert torch.equal(q[2], torch.zeros_like(q[2])), 'fixed liability must hold nothing'
-    assert torch.allclose(WT, L[3] + sum(
-        (q[t] * (s.tradables_sim["A"][t + 1] - s.tradables_sim["A"][t]).unsqueeze(-1)).sum(-1)
-        for t in range(3)) - L[0] + L[0], atol=1e-4), 'the settling rows must still accrue'
-
-
 def test_the_book_holds_whole_contracts():
-    """You cannot trade 2.5 contracts. Every constructed position is a whole number of
-    contracts per leg, legs sum to the whole-contract net, and the net rounds AWAY from
-    zero — more cover, never less: a mapped -x.3 books -(x+1), which plain rounding would
-    miss. Kills a plain-round mutant."""
-    s = _v2(seed=7, aversion=1.1)      # puts a net at frac ~0.19, where plain rounding differs
+    """You cannot trade 2.5 contracts: integer per leg, the net rounded AWAY from zero at a
+    fraction where plain rounding differs (box -7 puts the mapped net at ~-5.1), and an odd
+    net apportioned whole across two legs (box -9 maps to an odd net)."""
+    s = _v2(seed=7, lo=-7.0)
     q, curves, _ = s._constructed_policy()
-    L = s.liability_sim
-    W = L[0].clone()
-    saw_discriminating_case = False
+    saw = False
+    L, W = s.liability_sim, s.liability_sim[0].clone()
     for t in range(s.T_dec):
         assert torch.equal(q[t], q[t].round()), f'fractional contracts at t={t}'
-        g = s._tilt(s._phi_apply(curves[t], W))
-        lo_t, hi_t = s.aspace.net_bounds(t)
-        raw = hi_t - g * (hi_t - lo_t)
-        want = torch.where(raw < 0, raw.floor(), raw.ceil()).clamp(-4.0, 0.0)
-        assert torch.equal(q[t].sum(-1), want), f'net not rounded away from zero at t={t}'
+        g = s._phi_apply(curves[t], W)
+        raw = 0.0 - g * (0.0 - (-7.0))
         frac = (raw - raw.trunc()).abs()
-        saw_discriminating_case |= bool(((frac > 0.05) & (frac < 0.45)).any())
-        dF = (s.tradables_sim["A"][t + 1] - s.tradables_sim["A"][t]).unsqueeze(-1)
+        saw |= bool(((frac > 0.05) & (frac < 0.45)).any())
+        dF = torch.stack([s.tradables_sim[r][t + 1] - s.tradables_sim[r][t]
+                          for r in s.hedges], dim=-1)
         W = s._wealth_step(W, q[t], dF, L[t + 1] - L[t])
-    assert saw_discriminating_case, 'fixture must contain a case where plain rounding differs'
-    # MULTI-LEG: two equal legs and an ODD net — the apportionment must land whole contracts
-    # per leg (-2/-1), never a fractional even split (-1.5/-1.5). aversion 0.9 maps this
-    # fixture's net to -3; the vacuity assert keeps it there.
-    s2 = _v2(seed=7, aversion=0.9, legs=2)
+    assert saw, 'fixture must contain a case where plain rounding differs'
+    s2 = _v2(seed=7, lo=-9.0, legs=2)
     q2, _, _ = s2._constructed_policy()
     saw_odd = False
     for t in range(s2.T_dec):
         assert torch.equal(q2[t], q2[t].round()), f'fractional leg at t={t}'
         saw_odd |= bool(((q2[t].sum(-1).abs() % 2.0) == 1.0).any())
-    assert saw_odd, 'fixture must produce an odd net (an even split would hide the mutant)'
+    assert saw_odd, 'fixture must produce an odd net (even splits would hide the mutant)'
 
 
-def test_the_bank_rolls_the_constructed_policy():
-    s = _v2(noise=0.0)
-    q_star, _, _ = s._constructed_policy()
-    gen = torch.Generator().manual_seed(0)
-    s.aspace.initial_q = lambda B, dev: torch.zeros(B, 1)
-    W_list, q_list = s._build_bank(gen)
-    for t in range(1, s.T_dec):
-        assert torch.equal(q_list[t], q_star[t - 1]), 'the bank must hold the constructed book'
-    L = s.liability_sim
-    W = L[0].clone()
-    for t in range(1, s.T_dec):
-        dF = (s.tradables_sim["A"][t] - s.tradables_sim["A"][t - 1]).unsqueeze(-1)
-        W = s._wealth_step(W, q_star[t - 1], dF, L[t] - L[t - 1])
-        assert torch.allclose(W_list[t], W, atol=1e-5)
-
-
-def test_the_range_map_reaches_the_box():
-    """The dial's extremes must drive the NET to the box ends — a rep-scaled policy cannot
-    reach the box floor (rep ~ -2 on this fixture, the box is [-4, 0])."""
-    hi_dial = _v2(aversion=2.0, noise=0.0)         # g = min(1, 2d) ~ 1 at d ~ 0.5
-    q_hi, _, _ = hi_dial._constructed_policy()
-    assert float(q_hi[1].mean()) < -3.5, 'aversion 2.0 must push the net to the box floor (-4)'
-    lo_dial = _v2(aversion=0.1, noise=0.0)         # g ~ 0.05 -> net near the box top
-    q_lo, _, _ = lo_dial._constructed_policy()
-    # a fractional residual need books a WHOLE contract (round up in cover): the released
-    # book sits at -1, never a fractional -0.2
-    assert float(q_lo[1].mean()) > -1.5, 'aversion 0.1 must release toward the box top'
-    assert torch.equal(q_lo[1], q_lo[1].round())
+def test_the_floor_holds_everywhere_and_minimally():
+    """The seed's promise: POSITIVE WEALTH EVERYWHERE. Every path's book stays >= the floor
+    at every step — including through a DEFENSELESS day (marks frozen, liability moving),
+    which only the backward reserve can survive: the cushion is pre-positioned the day
+    before. And the repair is MINIMAL: the seed is not max cover — books strictly inside
+    the box must exist."""
+    s = _v2(T_dec=4, seed=9, lo=-7.0, flat_day=2, l0=5.0)
+    q, _, _ = s._constructed_policy()
+    books = _roll_books(s, q)
+    floor = 1.0 * s.leg_volume
+    assert float(books[1:].min()) >= floor - 1e-4, \
+        f'the floor must hold everywhere; min book {float(books[1:].min()):.3f}'
+    nets = torch.stack([q[t].sum(-1) for t in range(s.T_dec)])
+    assert bool((nets > -7.0 + 0.5).any()), 'the seed must not be max cover everywhere'
 
 
 def test_a_foreign_checkpoint_is_refused_by_name():

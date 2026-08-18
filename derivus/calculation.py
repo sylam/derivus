@@ -2336,10 +2336,11 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                     F('DiffV2_Bank_Noise_Frac', 'Float', default=0.15,
                       description='Bank q-exploration noise as a fraction of each [Min,Max] range'),
                     F('DiffV2_Risk_Aversion', 'Float', default=1.0,
-                      description='DiffSolverV2 forward pass: multiplies the MEASURED hedge '
-                                  'delta (which always comes from the simulated portfolio). '
-                                  '1.0 holds exactly what the book measures; above 1 is more '
-                                  'conservative, below 1 more aggressive'),
+                      description='The backward DP aversion — the causal proxy for the '
+                                  'clairvoyant seed floor no causal pass can enforce: divides '
+                                  'the capital line in the LogWealth reward (1.0 neutral; '
+                                  'higher = less capital at risk = more averse). The forward '
+                                  'pass takes no dial.'),
                     F('DiffV2_Weight_Decay', 'Float', default=0.0,
                       description='Residual-net weight decay; a crutch for path-starved problems'),
                     F('DiffV2_Hidden', 'Integer', default=32,

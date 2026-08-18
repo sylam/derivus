@@ -850,6 +850,11 @@ class DiffSolver:
         # for the ratio's denominator) binds with the bundle.
         self.log_ratio = obj.get("object") == "logwealth"
         self.w_floor = 1.0
+        # The DP's aversion (the seed's floor is clairvoyant and CANNOT be enforced by a
+        # causal backward pass — this dial is its causal proxy): it divides the capital line
+        # in the LogWealth reward, so gamma > 1 puts less capital at risk and the objective
+        # punishes drawdowns harder. 1.0 neutral; inert under the other objectives.
+        self.aversion = float(self.cfg.get("diffv2_risk_aversion", 1.0))
         self.scheduled_scale = obj.get("utility_scale_mode") == "conditional_sim"
         if self.running_wealth and self.scheduled_scale and not self.log_ratio:
             raise ValueError(
@@ -1131,7 +1136,7 @@ class DiffSolver:
         # scale) — "wealth 1" is one unit of backing capital, ruin is losing it. This is the
         # user's batch-std normalization: (c_t + W1)/(c_t + W0) with both legs on the SAME
         # step's c, so the inner fork is measured against its own launch.
-        c = self._capital(t)
+        c = self._capital(t) / self.aversion
         eps = 1.0e-3
         base = (c + W0).clamp_min(self.w_floor)
         r = (c + W1) / base
@@ -2947,11 +2952,11 @@ class DiffSolverV2(DiffSolver):
     decreasing in the book mark), ONCE — the forward pass is deterministic: the strike rides
     the book, so hedging does not change the measured object and the contracts held are known
     exactly after a single pass. A book sitting on banked gains is as defended as a book at
-    par. The delta is never declared: it comes from
-    the simulated portfolio; the only dial is `DiffV2_Risk_Aversion`, a multiplier on it
-    (γ = 1 holds exactly what the book measures). The aversion-scaled delta maps AFFINELY
-    onto the net position band, q_net = hi − γ·d·(hi − lo): d = 0 rides the long allowance,
-    d = 1 the full over-short — downside floored, upside kept, by construction.
+    par. The delta is never declared and takes NO dial — the seed is clairvoyant, so
+    `DiffV2_Risk_Aversion` belongs to the backward DP (the causal proxy for this floor).
+    The measured delta maps AFFINELY onto the net band, q_net = hi − d·(hi − lo), and the
+    clairvoyant reserve then adds the LEAST extra cover the path needs to never fall under
+    the $1/oz floor — by construction.
 
     BACKWARD PASS — the standard sweep, unchanged, fitted ON the constructed book: the bank's
     wealth and position states are the constructed policy's own roll (plus the usual
@@ -2969,7 +2974,6 @@ class DiffSolverV2(DiffSolver):
 
     def __init__(self, bundle, runtime):
         super().__init__(bundle, runtime)
-        self.aversion = float(self.cfg.get("diffv2_risk_aversion", 1.0))
         self.phi_curves = None
 
     # ---- the forward pass -------------------------------------------------
@@ -2999,12 +3003,6 @@ class DiffSolverV2(DiffSolver):
         w = ((x - x0) / (x1 - x0).clamp_min(1e-12)).clamp(0.0, 1.0)
         return bp[idx - 1] + w * (bp[idx] - bp[idx - 1])
 
-    def _tilt(self, d):
-        """The aversion multiplier on the MEASURED delta: g = γ·d clamped to [0, 1]
-        (`DiffV2_Risk_Aversion`). γ = 1 holds exactly what the book measures; the delta d
-        itself is never declared — it comes from the simulated portfolio."""
-        return (d * self.aversion).clamp(0.0, 1.0)
-
     def _constructed_policy(self):
         """ONE deterministic pass — measure, then construct. The moving-strike delta
         d_t(book) = P(terminal book < book at t | book at t) is measured on the FLAT
@@ -3018,6 +3016,35 @@ class DiffSolverV2(DiffSolver):
         dF = [torch.stack([self.tradables_sim[r][t + 1] - self.tradables_sim[r][t]
                            for r in self.hedges], dim=-1) for t in range(T)]
         LT = L[T]
+        # THE CLAIRVOYANT RESERVE (user-ruled: the smallest book anywhere on any path is
+        # $1/oz — "we can look ahead and add more contracts than we need"). Backward, per
+        # path: req_t is the minimum book at t from which the known remaining path can be
+        # played without ever dipping under the floor, given each day's best earnable box
+        # P&L on the KNOWN move. Days a futures hedge cannot defend (the basket barely
+        # moves while the liability does) propagate their need BACKWARD, so the forward
+        # pass pre-positions and the cushion arrives before the damage.
+        floor = 1.0 * self.leg_volume
+        m_t, lo_is, hi_is = [], [], []
+        for t in range(T):
+            rs = float(rep[t].abs().sum())
+            lo_t, hi_t = self.aspace.net_bounds(t)
+            lo_is.append(math.ceil(lo_t - 1e-9))
+            hi_is.append(math.floor(hi_t + 1e-9))
+            if rs < 0.5:
+                m_t.append(torch.zeros(self.B_outer, device=self.device))
+            else:
+                w_rep = rep[t] / rep[t].sum()
+                m_t.append(torch.einsum('i,ib->b', w_rep * self.contract_size,
+                                        torch.stack([self.tradables_sim[r][t + 1]
+                                                     - self.tradables_sim[r][t]
+                                                     for r in self.hedges])))
+        req = LT.new_full((self.B_outer,), floor)
+        reqs = [None] * T
+        for t in range(T - 1, -1, -1):
+            reqs[t] = req.clone()
+            best = torch.maximum(hi_is[t] * m_t[t], lo_is[t] * m_t[t])
+            req = torch.maximum(req - (L[t + 1] - L[t]) - best,
+                                torch.full_like(req, floor))
         q, W = [], L[0].clone()
         curves = []
         for t in range(T):
@@ -3038,15 +3065,41 @@ class DiffSolverV2(DiffSolver):
                 # (the wealth step below still accrues the settling liability rows).
                 qt = torch.zeros(self.B_outer, self.n_hedge, device=self.device)
             else:
-                g = self._tilt(self._phi_apply(cv, W))
+                g = self._phi_apply(cv, W)
                 lo_t, hi_t = self.aspace.net_bounds(t)
+                lo_i, hi_i = math.ceil(lo_t - 1e-9), math.floor(hi_t + 1e-9)
                 net = hi_t - g * (hi_t - lo_t)
-                # WHOLE contracts, rounded AWAY from zero (up, in cover terms), clamped into
-                # the band snapped inward — net_bounds already intersects the corridor, so the
-                # integer net is realizable by construction, and the ladder's own
-                # largest-remainder apportionment makes every leg a whole contract too.
-                net = torch.where(net < 0, net.floor(), net.ceil()).clamp(
-                    math.ceil(lo_t - 1e-9), math.floor(hi_t + 1e-9)).unsqueeze(-1)
+                # WHOLE contracts, rounded AWAY from zero (up, in cover terms) — you cannot
+                # trade 2.5 contracts, and the box is snapped inward so every integer net is
+                # realizable.
+                net = torch.where(net < 0, net.floor(), net.ceil()).clamp(lo_i, hi_i)
+                # THE FLOOR BINDS (user-ruled: the smallest book is $1/oz, not a hope): the
+                # seed's one-day hindsight makes it enforceable — it KNOWS tomorrow's move,
+                # so on a day the delta base would let tomorrow's book breach the floor, hold
+                # instead the smallest position that keeps it above, rounded away toward more
+                # earning (the binding days land slightly OVER the floor — integer overshoot).
+                # A day whose basket move is too small to defend (a basis-gap day: the
+                # liability moves, the futures do not) keeps the delta base — best effort is
+                # the honest limit of a futures hedge.
+                m, dL = m_t[t], L[t + 1] - L[t]
+                # tomorrow's book must clear tomorrow's RESERVE, not just the floor — the
+                # reserve carries the look-ahead need of every later undefendable day.
+                # reqs[t] IS the requirement at t+1: the backward loop clones before it
+                # updates (an off-by-one here defends one day late and breaches exactly on
+                # the defenseless day — the gate's business).
+                target = reqs[t]
+                # The floor constraint q·m >= need is a HALF-LINE, and the repair is the
+                # delta base PROJECTED onto it — the least change, rounded toward the
+                # feasible side (an up-day's bound is a LIMIT on the short: rounding away
+                # from zero there walks through the floor, which is how a 4-lot short into
+                # a known +3σ rally breached a test fixture).
+                defensible = m.abs() > 1e-9
+                bound = (target - W - dL) / torch.where(defensible, m, torch.ones_like(m))
+                net = torch.where(defensible & (m > 0),
+                                  torch.maximum(net, bound.ceil()), net)
+                net = torch.where(defensible & (m < 0),
+                                  torch.minimum(net, bound.floor()), net)
+                net = net.clamp(lo_i, hi_i).unsqueeze(-1)
                 qt = self.aspace.waterfill(
                     rep[t][None].expand(self.B_outer, self.n_hedge).clone(), net, net)
                 qt = self.aspace._largest_remainder(qt, net)
@@ -3106,7 +3159,8 @@ class DiffSolverV2(DiffSolver):
                 mu = R.mean(-1)
                 big = 1.0e12 * Sig.diagonal().max().clamp_min(1.0)
                 Sig = Sig + torch.diag(torch.where(alive, torch.zeros_like(mu), big))
-                sol = self._carry_variance_solve(mu, Sig, c, Qb, self._capital(t))
+                sol = self._carry_variance_solve(
+                    mu, Sig, c, Qb, self._capital(t) / getattr(self, "aversion", 1.0))
                 w = tuple(round(float(x), 9) for x in sol)
             if w != last:
                 knots.append((t, w))

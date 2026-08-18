@@ -296,10 +296,10 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
     if "Object" not in solver_config:
         raise ValueError("Hedging_Problem['Solver'] requires an 'Object' field")
     gamma = float(solver_config.get("DiffV2_Risk_Aversion", 1.0))
-    if not 0.1 <= gamma <= 2.0:
-        raise ValueError(f"DiffV2_Risk_Aversion must be in [0.1, 2.0] (a multiplier on the "
-                         f"MEASURED delta — the delta itself always comes from the simulated "
-                         f"portfolio); got {gamma}")
+    if not 0.1 <= gamma <= 10.0:
+        raise ValueError(f"DiffV2_Risk_Aversion must be in [0.1, 10.0] (the DP's aversion: it "
+                         f"divides the LogWealth capital line — the clairvoyant seed's floor "
+                         f"has no causal equivalent, this dial is its proxy); got {gamma}")
     return {
         # 'diffsolverv2' is its OWN object since the forward-backward build: the constructed
         # put-delta bank is part of the fitted function, not a spelling of DiffSolver
@@ -318,7 +318,8 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         "diffv2_fit_iters": int(solver_config.get("DiffV2_Fit_Iters", 150)),
         "diffv2_lr": float(solver_config.get("DiffV2_LR", 2.0e-3)),
         "diffv2_bank_noise_frac": float(solver_config.get("DiffV2_Bank_Noise_Frac", 0.15)),
-        # DiffSolverV2's forward pass: the aversion multiplier on the MEASURED delta.
+        # The DP's aversion — the causal proxy for the clairvoyant seed's floor: divides
+        # the capital line in the LogWealth reward. The forward pass takes no dial.
         "diffv2_risk_aversion": gamma,
         # Residual-net regularization. The PRINCIPLED regularizer is the twin-loss pathwise-
         # gradient match (diffv2_lambda_grad), applied in STANDARDIZED space; weight decay is an

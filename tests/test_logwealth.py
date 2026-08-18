@@ -25,9 +25,10 @@ from derivus.hedge_bundle import _utility_wrap_signed
 from derivus.hedge_solver import DiffSolver
 
 
-def _s(log_ratio=True, w_floor=1.0, capital=0.0):
+def _s(log_ratio=True, w_floor=1.0, capital=0.0, aversion=1.0):
     s = types.SimpleNamespace(log_ratio=log_ratio, w_floor=w_floor,
                               utility_scale_schedule=None, utility_scale=capital,
+                              aversion=aversion,
                               _u=lambda x, t=None: x * 2.0)     # a marked stand-in for the wrap
     s._u_step = types.MethodType(DiffSolver._u_step, s)
     s._capital = types.MethodType(DiffSolver._capital, s)
@@ -48,6 +49,11 @@ def test_the_reward_is_the_growth_ratio():
     sc.utility_scale_schedule = [40.0, 60.0]
     assert abs(float(sc._u_step(torch.tensor([60.0]), torch.tensor([0.0]), 1))
                - math.log(2.0)) < 1e-6                       # c_1 = 60
+    # THE DP'S AVERSION divides the capital line (the causal proxy for the clairvoyant
+    # seed's floor): gamma 2 halves the capital at risk, so the same move is a bigger ratio
+    sa = _s(capital=100.0, aversion=2.0)
+    assert abs(float(sa._u_step(torch.tensor([50.0]), torch.tensor([0.0]), 1))
+               - math.log(2.0)) < 1e-6                       # capital 100/2 = 50
     # the Running_Wealth arm dispatches to the wrap untouched
     off = _s(log_ratio=False)
     assert torch.allclose(off._u_step(torch.tensor([5.0]), torch.tensor([2.0]), 1),
