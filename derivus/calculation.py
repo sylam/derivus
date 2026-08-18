@@ -2343,6 +2343,11 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                                   'state coordinate of the fitted value and the repositioning '
                                   'charge enters the regressed target, so turnover compounds '
                                   'down the recursion instead of being a one-day toll'),
+                    F('DiffV2_Wealth_Free_Value', 'Text', default='No', values=['Yes', 'No'],
+                      description='Drop the wealth column from the value net\'s inputs, so the '
+                                  'fitted residual reads market state (and the position, under '
+                                  'DiffV2_Position_State) alone and the continuation bends in '
+                                  'wealth exactly as the utility anchor does'),
                     F('DiffV2_Stepper_Rollout', 'Text', default='No', values=['Yes', 'No'],
                       description='Roll a frozen policy day-by-day through the real accounting'),
                     F('DiffV2_Per_Column_Grad_Norm', 'Text', default='Yes', values=['Yes', 'No'],

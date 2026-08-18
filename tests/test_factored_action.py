@@ -143,7 +143,7 @@ def _solver(runtime, position_state=False, T_dec=3, n_steps=4, B=2):
     aspace = _aspace(runtime)
     s = types.SimpleNamespace(
         aspace=aspace, chunk=256, risk_kappa=0.0, churn_lambda=0.0,
-        position_state=position_state,
+        position_state=position_state, wealth_free=False,
         force_flat=runtime['accounting']['force_flat_at_end'],
         t_min=0, T_dec=T_dec, total_abs_limit=aspace.total_abs_limit,
         hedges=list(aspace.hedges), contract_size=aspace.contract_size,

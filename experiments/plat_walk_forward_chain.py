@@ -331,6 +331,8 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
             tcalc['Hedging_Problem']['Solver']['DiffV2_Churn_Lambda'] = args.churn_lambda
         if args.position_state:
             tcalc['Hedging_Problem']['Solver']['DiffV2_Position_State'] = 'Yes'
+        if args.wealth_free:
+            tcalc['Hedging_Problem']['Solver']['DiffV2_Wealth_Free_Value'] = 'Yes'
         if args.bank_noise is not None:
             tcalc['Hedging_Problem']['Solver']['DiffV2_Bank_Noise_Frac'] = args.bank_noise
         if args.fit_tol is not None:
@@ -366,6 +368,12 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
         if args.churn_lambda is not None:
             roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
                 'DiffV2_Churn_Lambda'] = args.churn_lambda
+    if args.wealth_free:
+        # Stamped on the roll for the same reason --position-state is: the switch decides which
+        # columns the fitted net consumes, so a roll under the other setting loads a function of
+        # a different state and the checkpoint's own stamp refuses it.
+        roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
+            'DiffV2_Wealth_Free_Value'] = 'Yes'
     if args.temporal_proximity is not None:
         roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
             'DiffV2_Temporal_Proximity'] = args.temporal_proximity
@@ -489,6 +497,13 @@ def main():
                          'fraction as state, the charge inside the fitted target). Applied to '
                          'TRAIN and ROLL - the checkpoint stamps it and a mismatched load is '
                          'refused. Changes the value function: a retrain.')
+    ap.add_argument('--wealth-free', action='store_true',
+                    help='Solver DiffV2_Wealth_Free_Value: drop the wealth column from the '
+                         'value net, so the residual reads market (and, with --position-state, '
+                         'the book) alone and the ranking bends in wealth only as the utility '
+                         'does. Applied to TRAIN and ROLL - the column is part of the fitted '
+                         'function and the checkpoint stamps it. Changes the value function: '
+                         'a retrain.')
     ap.add_argument('--bank-noise', type=float, default=None,
                     help='Solver DiffV2_Bank_Noise_Frac, TRAIN only: exploration around the '
                          'per-t replication hedge, as a fraction of each [Min,Max] range. It '

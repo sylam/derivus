@@ -644,6 +644,13 @@ class DiffSolver:
         value function never remembers, and a no-trade region cannot form out of a toll; charging
         it inside the target makes it compound down the recursion, which is what a hysteresis
         band is made of.
+      * WEALTH-FREE residual (`DiffV2_Wealth_Free_Value`) — A_t loses its W input column, so
+        C_t = u(W) + A_t(market[, p]) and the only W-dependence left in the ranking is u's own.
+        A_t is fitted against the market state (and the position column, when both switches are
+        on) and the two compose: p stays, W goes. The candidate actions of one decision move W1
+        across a span the action set induces, and a residual free to carry a wealth slope over
+        that span adds a term the anchor's curvature has to fight; dropping the column makes the
+        ranking's shape in W exactly the utility's, by construction rather than by fitting.
 
     Wealth convention: net wealth W_t = cumulative hedge P&L + the
     marked liability L_t; W_{t+1} = W_t + Σ_i q_i·cs_i·(F_{t+1,i} − F_{t,i}) + (L_{t+1} − L_t);
@@ -687,6 +694,7 @@ class DiffSolver:
         '| `DiffV2_Risk_Kappa` | score actions by `mean(C) - kappa * downside-semidev(C)` |',
         '| `DiffV2_Cost_Aware_Argmax` | charge the L1 repositioning cost at the argmax |',
         '| `DiffV2_Position_State` | the frictional Bellman: `p` as state, the charge in the target |',
+        '| `DiffV2_Wealth_Free_Value` | drop `W` from the residual: the ranking bends only as `u` does |',
         '| `Active_Hedge_Indices` | which hedge axes vary; the rest pin to 0 |',
         '| `Multi_Seed_Count` | independent solvers on the same batches |',
         '',
@@ -755,6 +763,22 @@ class DiffSolver:
         # cap: it is the only declared scale p can be measured in, so an absent cap fails loud
         # rather than dividing the state by zero.
         self.position_state = bool(self.cfg.get("diffv2_position_state", False))
+        # WEALTH-FREE residual: the value net's W input column is REMOVED, so A_t = A_t(market[, p])
+        # and C_t's whole dependence on wealth is the utility anchor's. 'No' = the wealth-bearing
+        # residual (bit-identical). Composes with the position state: p stays, W goes.
+        self.wealth_free = bool(self.cfg.get("diffv2_wealth_free_value", False))
+        if self.wealth_free and not self.position_state:
+            raise ValueError(
+                "Solver.DiffV2_Wealth_Free_Value='Yes' requires DiffV2_Position_State='Yes': an "
+                "action cannot move the market, so without p the residual A(m') is one constant "
+                "across every candidate and cancels from the argmax - the whole fit would be "
+                "decision-irrelevant and the run a myopic one-step E[u(W1)] policy wearing a "
+                "DP's verdict. Build the myopic baseline deliberately if it is wanted.")
+        if self.wealth_free and self.risk_kappa > 0.0:
+            raise ValueError(
+                "Solver.DiffV2_Wealth_Free_Value='Yes' refuses DiffV2_Risk_Kappa > 0: the downside "
+                "semideviation is nonlinear over inner draws, so the residual's dispersion leaks "
+                "back into the ranking the switch exists to hand to the utility alone.")
         self.force_flat = bool(runtime["accounting"]["force_flat_at_end"])
         if self.position_state and not self.total_abs_limit > 0.0:
             raise ValueError(
@@ -834,6 +858,13 @@ class DiffSolver:
         return self.aspace.universe_size()
 
     # ---- input standardization ----------------------------------------------
+    def _in_dim(self, md):
+        """Input width of a residual net: the `md` privileged market columns, plus W unless
+        `DiffV2_Wealth_Free_Value` removes it, plus p under `DiffV2_Position_State`. The single
+        source `warmup` sizes every net from and `_standardize` builds every row to, so a switch
+        can only move the two together."""
+        return md + int(not self.wealth_free) + int(self.position_state)
+
     def _standardize(self, market, W, p):
         """Standardized state for the residual net: (market | W), plus the signed net book
         fraction p = Sum(q)/Q_max as a trailing column under `DiffV2_Position_State`. `p is None`
@@ -845,13 +876,22 @@ class DiffSolver:
         `Total_Position_Abs_Limit`, and `_build_bank` water-fills each sampled book onto
         `aspace.net_bounds(t)`. So p arrives in [-1, 1] by construction over a support the bank
         actually covers, and a z-frame would only add a batch-dependent rescaling to a coordinate
-        that already has a natural one."""
-        m = (market - self.m_mean) / self.m_std
-        wn = ((W - self.w_mean) / self.w_std).unsqueeze(-1)
-        return torch.cat([m, wn] if p is None else [m, wn, p.unsqueeze(-1)], dim=-1)
+        that already has a natural one.
+
+        `DiffV2_Wealth_Free_Value` drops the W column instead of adding one: the residual then
+        reads market (and p) alone, and every W-dependence of C_t = u(W) + A_t lives in the anchor.
+        The two switches compose — each owns one column — so the layout is
+        (market | [W] | [p]) with the blocks kept in that order under every combination."""
+        cols = [(market - self.m_mean) / self.m_std]
+        if not self.wealth_free:
+            cols.append(((W - self.w_mean) / self.w_std).unsqueeze(-1))
+        return torch.cat(cols if p is None else cols + [p.unsqueeze(-1)], dim=-1)
 
     def _continuation(self, nets, market, W, t, p, chunk=400_000):
         """C_t = u(W) + A_t(market, W[, p]); terminal C_{T_dec} = u(W). Row-chunked net eval.
+        Under `DiffV2_Wealth_Free_Value` the residual is A_t(market[, p]) — W still enters through
+        the anchor, which is the whole of C_t's wealth dependence there; the caller's contract is
+        unchanged either way, because `_standardize` owns the layout.
         Ensemble mode (list-of-checkpoints load): A = mean over members, each evaluated in
         its OWN standardization frame — the frame is part of the function.
         A_t is CLAMPED to its fitted-target trust region (one range-width of headroom):
@@ -866,9 +906,10 @@ class DiffSolver:
         if getattr(self, "_ensemble", None):
             acc = torch.zeros_like(base)
             for m_nets, m_mean, m_std, w_mean, w_std, m_bounds in self._ensemble:
-                x = torch.cat([(market - m_mean) / m_std,
-                               ((W - w_mean) / w_std).unsqueeze(-1)]
-                              + ([] if p is None else [p.unsqueeze(-1)]), dim=-1)
+                cols = [(market - m_mean) / m_std]
+                if not self.wealth_free:
+                    cols.append(((W - w_mean) / w_std).unsqueeze(-1))
+                x = torch.cat(cols + ([] if p is None else [p.unsqueeze(-1)]), dim=-1)
                 b = m_bounds[t] if m_bounds is not None else None
                 for i in range(0, x.shape[0], chunk):
                     a = m_nets[t](x[i:i + chunk])
@@ -1373,7 +1414,15 @@ class DiffSolver:
         `p_bank` (the position state, `DiffV2_Position_State`) is an input column with NO gradient
         label: the twin loss only ever had the channels the AAD fork measures (wealth, market
         state), and p is a control the bank samples rather than a simulated coordinate the label
-        forward differentiates. It is supervised by the value term alone."""
+        forward differentiates. It is supervised by the value term alone.
+
+        `DiffV2_Wealth_Free_Value` is the same discipline read the other way: W is no longer an
+        input, so it can no longer be a MEASURED COLUMN either and its gradient term leaves the
+        loss with it. A differential label on a channel the net does not consume has no parameter
+        to reach — matching ∂A/∂wn against a measured `g_zn_W` while wn is absent would be asking
+        the market columns to absorb the wealth slope, which is precisely the slope the switch
+        exists to remove. The wealth channel is then supervised nowhere, by design: the anchor
+        carries it exactly."""
         # Advantage decomposition: fit A = C − u(W0); subtract the anchor's wealth slope.
         if self.use_adv:
             Wb = W0_bank.clone().requires_grad_(True)
@@ -1415,11 +1464,17 @@ class DiffSolver:
         for it in range(self.fit_iters):
             mn = ((market0 - self.m_mean) / self.m_std).detach().requires_grad_(True)
             wn = ((W0_bank - self.w_mean) / self.w_std).detach().requires_grad_(True)
-            a = net(torch.cat([mn, wn.unsqueeze(-1)]
+            cols = [mn] if self.wealth_free else [mn, wn.unsqueeze(-1)]
+            a = net(torch.cat(cols
                               + ([] if p_bank is None else [p_bank.unsqueeze(-1)]), dim=-1))
-            da_m, da_w = torch.autograd.grad(a.sum(), [mn, wn], create_graph=True)
+            # The MEASURED COLUMNS of the twin loss are exactly the input channels the net
+            # consumes: `DiffV2_Wealth_Free_Value` takes W out of both at once (see docstring).
+            das = torch.autograd.grad(a.sum(), [mn] if self.wealth_free else [mn, wn],
+                                      create_graph=True)
+            da_m = das[0]
+            w_term = 0.0 if self.wealth_free else lam_g * ((das[1] - g_zn_W) ** 2).mean() / nrm_w
             loss = (((a - a_val) ** 2).mean() / nrm_v
-                    + lam_g * ((da_w - g_zn_W) ** 2).mean() / nrm_w
+                    + w_term
                     + lam_g * (((da_m - g_zn_m) ** 2) / nrm_m).mean())
             if prox_ref is not None:
                 flat = torch.cat([p.reshape(-1) for p in net.parameters()])
@@ -1638,10 +1693,11 @@ class DiffSolver:
         FUNCTION OF A DIFFERENT STATE is refused here by name; everything that merely deserves
         saying out loud is warned.
 
-        Refused: the shape contract (`t_min`/`T_dec`/`md`/`hedges`), `DiffV2_Position_State` — the
-        net book fraction is an input COLUMN, so a mismatch would otherwise surface as a
-        `load_state_dict` shape error naming a Linear weight rather than the key that caused it —
-        a corridor mismatch, and (in `_check_action_universe` / `_check_calendar_spread`) a
+        Refused: the shape contract (`t_min`/`T_dec`/`md`/`hedges`), `DiffV2_Position_State` and
+        `DiffV2_Wealth_Free_Value` — each owns an input COLUMN, one added and one removed, so a
+        mismatch would otherwise surface as a `load_state_dict` shape error naming a Linear weight
+        rather than the key that caused it — a corridor mismatch, and (in
+        `_check_action_universe` / `_check_calendar_spread`) a
         narrowed `Allocation_Weights` universe or a `Calendar_Spread_Bps` that moved under
         position state. Warned: a stale `solver_version`, a missing corridor/universe/rate stamp
         under a live one, and a pre-stream frame. Corridor-FREE training spans the widest wealth
@@ -1660,6 +1716,14 @@ class DiffSolver:
                 f"{'Yes' if self.position_state else 'No'}. The net book fraction p = Sum(q)/Q_max "
                 f"is an input column of the fitted value, so the two are different functions of "
                 f"different states — retrain, or match Solver.DiffV2_Position_State.")
+        if bool(ck.get("wealth_free", False)) != self.wealth_free:
+            raise ValueError(
+                f"DiffV2_Wealth_Free_Value mismatch: {src} was trained with "
+                f"DiffV2_Wealth_Free_Value="
+                f"{'Yes' if ck.get('wealth_free', False) else 'No'} but this run sets "
+                f"{'Yes' if self.wealth_free else 'No'}. The switch REMOVES the wealth column from "
+                f"the residual's inputs, so the two are different functions of different states — "
+                f"retrain, or match Solver.DiffV2_Wealth_Free_Value.")
         # The training ARCHITECTURE is part of what a version stamps (the successor chain changed
         # it); an ensemble must not average continuations trained under different ones, and a lone
         # old checkpoint should say what it is.
@@ -1865,8 +1929,7 @@ class DiffSolver:
             self.utility_scale = float(sum(scales) / len(scales))
             self.runtime["objective"]["utility_scale"] = self.utility_scale
             hidden = int(loaded["hidden"])
-        # (market | W), plus the position column p under `DiffV2_Position_State`.
-        in_dim = md + 1 + int(self.position_state)
+        in_dim = self._in_dim(md)             # (market | [W] | [p]) — the row `_standardize` builds
         nets = [_DiffV2Residual(in_dim, hidden=hidden).to(self.device)
                 for _ in range(self.T_dec)]
         # Per-t trust region for A_t evaluation (set at fit time / restored from checkpoint;
@@ -2002,8 +2065,10 @@ class DiffSolver:
             # different value function, not a different execution policy.
             "calendar_spread_bps": self.aspace.calendar_bps,
             # Position-state provenance: p is an input column, so a load under the other
-            # setting is refused BY NAME rather than as a net shape error.
+            # setting is refused BY NAME rather than as a net shape error. The wealth-free
+            # switch is the same statement about the W column it REMOVES.
             "position_state": self.position_state,
+            "wealth_free": self.wealth_free,
             "T_dec": self.T_dec, "t_min": self.t_min, "md": md, "hidden": hidden,
             "solver_version": SOLVER_VERSION,
             "config_hash": self._config_hash(),

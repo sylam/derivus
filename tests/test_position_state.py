@@ -106,7 +106,7 @@ def _solver(runtime, position_state, T_dec=3, n_steps=4, B=2):
     hedges = runtime["names"]["hedges"]
     s = types.SimpleNamespace(
         aspace=aspace, chunk=64, risk_kappa=0.0, churn_lambda=0.0,
-        position_state=position_state,
+        position_state=position_state, wealth_free=False,
         force_flat=runtime["accounting"]["force_flat_at_end"],
         T_dec=T_dec, total_abs_limit=aspace.total_abs_limit,
         hedges=hedges, contract_size=aspace.contract_size, device=torch.device("cpu"),
@@ -166,7 +166,8 @@ def test_off_is_the_position_free_layout():
     `p is None` contract is what the whole switch rests on at this level. Killed by appending p
     unconditionally (the net's input dim, and every checkpoint written under it, would move)."""
     s = types.SimpleNamespace(m_mean=torch.zeros(3), m_std=torch.ones(3),
-                              w_mean=torch.tensor(0.0), w_std=torch.tensor(2.0))
+                              w_mean=torch.tensor(0.0), w_std=torch.tensor(2.0),
+                              wealth_free=False)
     market, W = torch.randn(5, 3), torch.randn(5)
     x = DiffSolver._standardize(s, market, W, None)
     assert x.shape == (5, 4)
@@ -265,7 +266,7 @@ def test_the_ranking_charge_is_the_same_arithmetic_as_the_target():
 def _stub(position_state):
     rt = _runtime()
     s = types.SimpleNamespace(t_min=0, T_dec=3, hedges=list(rt["names"]["hedges"]),
-                              position_state=position_state,
+                              position_state=position_state, wealth_free=False,
                               aspace=HedgeActionSpace(rt, torch.device("cpu")))
     s._check_action_universe = types.MethodType(DiffSolver._check_action_universe, s)
     s._check_calendar_spread = types.MethodType(DiffSolver._check_calendar_spread, s)
@@ -580,7 +581,7 @@ def test_the_ensemble_branch_carries_the_position_column():
             return torch.zeros(x.shape[0])
 
     s = types.SimpleNamespace(
-        T_dec=2, a_bounds=[None, None],
+        T_dec=2, a_bounds=[None, None], wealth_free=False,
         _ensemble=[([Rec(), Rec()], torch.zeros(md), torch.ones(md),
                     torch.tensor(0.0), torch.tensor(1.0), None)],
         _u=lambda W: torch.zeros_like(W))
@@ -652,3 +653,29 @@ def test_the_verdict_cost_includes_the_terminal_unwind():
     assert out_flat["argmax_charged"] is False
     s_flat.position_state = True
     assert DiffSolver._verdict(s_flat, None, inner, ts)["argmax_charged"] is True
+
+
+def test_wealth_free_without_position_state_is_refused():
+    """An action cannot move the market, so with the W column removed and no p the residual
+    A(m') is one constant across every candidate and cancels from the argmax - the whole fit
+    would be decision-irrelevant (measured: myopic argmax 20/20 seeds). The composition
+    refuses to start rather than burning a training budget on nets no decision reads."""
+    rt = _runtime()
+    rt["solver"]["diffv2_wealth_free_value"] = True
+    rt["solver"]["diffv2_position_state"] = False
+    bundle = types.SimpleNamespace(device=torch.device("cpu"), vol_sim=None)
+    with pytest.raises(ValueError, match="DiffV2_Position_State"):
+        DiffSolver(bundle, rt)
+
+
+def test_wealth_free_with_risk_kappa_is_refused():
+    """The downside semideviation is nonlinear over inner draws, so the residual's dispersion
+    leaks back into a ranking the switch exists to hand to the utility alone (measured: the
+    A-free argmax diverges 19/20 seeds at kappa 0.5). Refused by name."""
+    rt = _runtime()
+    rt["solver"]["diffv2_wealth_free_value"] = True
+    rt["solver"]["diffv2_position_state"] = True
+    rt["solver"]["diffv2_risk_kappa"] = 0.5
+    bundle = types.SimpleNamespace(device=torch.device("cpu"), vol_sim=None)
+    with pytest.raises(ValueError, match="DiffV2_Risk_Kappa"):
+        DiffSolver(bundle, rt)
