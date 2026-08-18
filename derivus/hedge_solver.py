@@ -3104,9 +3104,31 @@ class DiffSolverV2(DiffSolver):
                     rep[t][None].expand(self.B_outer, self.n_hedge).clone(), net, net)
                 qt = self.aspace._largest_remainder(qt, net)
                 qt = torch.minimum(torch.maximum(qt, self.q_lo), self.q_hi)
+                # EXECUTION-EXACT top-up: the bound above prices the hedge at the
+                # rep-weighted basket move, but the executed split deviates (box clamps,
+                # integer apportionment), and on days the legs move DIFFERENTLY the realized
+                # P&L misses the plan by enough to breach. Re-price the EXECUTED book and
+                # top the net up by the least whole contracts that clear the shortfall.
+                exec_pnl = (qt * self.contract_size * dF[t]).sum(-1)
+                short = target - (W + dL + exec_pnl)
+                fix = defensible & (short > 0)
+                if bool(fix.any()):
+                    # +1: the exact amount can be re-split away again (integer lattice);
+                    # one more whole contract is then the LEAST that clears. The floor's
+                    # guarantee under whole-contract trading is to within one contract's
+                    # day move — granularity is not free.
+                    extra = torch.where(fix, ((short / m.abs()).ceil() + 1.0) * torch.sign(m),
+                                        torch.zeros_like(m))
+                    net = (net.squeeze(-1) + extra).clamp(lo_i, hi_i).unsqueeze(-1)
+                    qt = self.aspace.waterfill(
+                        rep[t][None].expand(self.B_outer, self.n_hedge).clone(), net, net)
+                    qt = self.aspace._largest_remainder(qt, net)
+                    qt = torch.minimum(torch.maximum(qt, self.q_lo), self.q_hi)
             q.append(qt)
             W = self._wealth_step(W, qt, dF[t], L[t + 1] - L[t])
         return q, curves, W
+
+    @staticmethod
     def _carry_variance_solve(mu, Sig, c, Q, C):
         """argmin_w [Q²·wᵀΣw + 2Q·wᵀc] / (2C) − Q·wᵀμ  s.t. Σw = 1, w ≥ 0.
 

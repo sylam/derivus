@@ -228,6 +228,48 @@ def test_the_floor_holds_everywhere_and_minimally():
     assert bool((nets > -7.0 + 0.5).any()), 'the seed must not be max cover everywhere'
 
 
+def test_the_floor_survives_legs_that_move_differently():
+    """The floor arithmetic plans at the rep-weighted basket move, but execution splits
+    across legs whose moves DIFFER — the plan-vs-execution gap breached feasible paths on
+    the real world. The top-up re-prices the EXECUTED book and adds the least whole
+    contracts. Two legs, second leg = 0.6x the first plus its own noise. Kills a
+    dropped-top-up mutant."""
+    s = _v2(T_dec=4, B=2048, seed=13, lo=-7.0, legs=2, l0=6.0)
+    g = torch.Generator().manual_seed(21)
+    FB = torch.zeros_like(s.tradables_sim["B"])
+    dFA = s.tradables_sim["A"].diff(dim=0)
+    FB[1:] = (0.6 * dFA + 0.2 * torch.randn(dFA.shape, generator=g)).cumsum(0)
+    s.tradables_sim["B"] = FB
+    q, _, _ = s._constructed_policy()
+    books = _roll_books(s, q)
+    floor = 1.0 * s.leg_volume
+    # feasibility mask: rebuild the reserve exactly as the engine does
+    import math as _m
+    L, T = s.liability_sim, s.T_dec
+    rep = [s._replication_hedge(t) for t in range(T)]
+    req = torch.full((s.B_outer,), floor)
+    for t in range(T - 1, -1, -1):
+        lo_t, hi_t = s.aspace.net_bounds(t)
+        lo_i, hi_i = _m.ceil(lo_t - 1e-9), _m.floor(hi_t + 1e-9)
+        w = rep[t] / rep[t].sum()
+        m = torch.einsum('i,ib->b', w * s.contract_size,
+                         torch.stack([s.tradables_sim[r][t + 1] - s.tradables_sim[r][t]
+                                      for r in s.hedges]))
+        req = torch.maximum(req - (L[t + 1] - L[t]) - torch.maximum(hi_i * m, lo_i * m),
+                            torch.full_like(req, floor))
+    feasible = req <= L[0] + 1e-6
+    assert bool(feasible.any()), 'fixture must contain feasible paths'
+    # the guarantee under WHOLE-contract trading: the floor holds to within one
+    # contract's day move (the integer lattice — achievable books are one quantum apart)
+    quantum = torch.stack([(s.tradables_sim[r].diff(dim=0)).abs() for r in s.hedges]).amax(0)
+    worst = (floor - books[1:]).clamp_min(0.0)
+    viol = ((worst > quantum[:books.shape[0] - 1] + 1e-4).any(0)) & feasible
+    assert int(viol.sum()) == 0, \
+        f'{int(viol.sum())} feasible paths breached beyond one contract quantum'
+    near = (books[1:] < floor - 1e-4).any(0) & feasible
+    assert float(worst.amax()) < 1.0, 'residuals must stay sub-quantum on this fixture'
+
+
 def test_a_foreign_checkpoint_is_refused_by_name():
     v2 = DiffSolverV2.__new__(DiffSolverV2)
     v2.t_min, v2.T_dec, v2.hedges = 0, 3, ["A"]
