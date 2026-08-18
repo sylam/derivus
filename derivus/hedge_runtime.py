@@ -242,7 +242,9 @@ def _spot_price_history(hedging_problem: Mapping[str, Any], lookback: int,
 
 def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
     """Normalize the `Solver` block (Execution_Mode='solve_hedge'). Accepts None (non-solve
-    modes); requires `Object` — one of 'diffsolverv2' | 'hindsightdpsolver'.
+    modes); requires `Object` — 'DiffSolver' | 'DiffSolverV2' (the forward-backward solver:
+    a constructed put-delta bank, `DiffV2_Risk_Aversion`) |
+    'HindsightDpSolver'.
 
     DiffSolver (the clean-room differential-ML solver) knobs, beyond the per-t residual-net Adam
     iters / lr: `DiffV2_Bank_Noise_Frac` is bank q-exploration noise as a fraction of each
@@ -293,11 +295,15 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         return None
     if "Object" not in solver_config:
         raise ValueError("Hedging_Problem['Solver'] requires an 'Object' field")
+    gamma = float(solver_config.get("DiffV2_Risk_Aversion", 1.0))
+    if not 0.1 <= gamma <= 2.0:
+        raise ValueError(f"DiffV2_Risk_Aversion must be in [0.1, 2.0] (a multiplier on the "
+                         f"MEASURED delta — the delta itself always comes from the simulated "
+                         f"portfolio); got {gamma}")
     return {
-        # normalized at THE seam: the legacy spelling maps to the canonical one here, so
-        # every downstream consumer (and config_hash) sees a single name
-        "object": ("diffsolver" if str(solver_config["Object"]).lower() == "diffsolverv2"
-                   else str(solver_config["Object"]).lower()),
+        # 'diffsolverv2' is its OWN object since the forward-backward build: the constructed
+        # put-delta bank is part of the fitted function, not a spelling of DiffSolver
+        "object": str(solver_config["Object"]).lower(),
         "multi_seed_count": int(solver_config.get("Multi_Seed_Count", 1)),
         # Backward-sweep depth: fit C_t for t in [t_outer-2 .. t_min]. 0 = full sweep to the
         # initial decision; t_min near t_outer-1 = a shallow (bounded) sweep.
@@ -312,6 +318,8 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         "diffv2_fit_iters": int(solver_config.get("DiffV2_Fit_Iters", 150)),
         "diffv2_lr": float(solver_config.get("DiffV2_LR", 2.0e-3)),
         "diffv2_bank_noise_frac": float(solver_config.get("DiffV2_Bank_Noise_Frac", 0.15)),
+        # DiffSolverV2's forward pass: the aversion multiplier on the MEASURED delta.
+        "diffv2_risk_aversion": gamma,
         # Residual-net regularization. The PRINCIPLED regularizer is the twin-loss pathwise-
         # gradient match (diffv2_lambda_grad), applied in STANDARDIZED space; weight decay is an
         # optional crutch for outer-path-starved (tiny-batch) problems.
@@ -371,7 +379,8 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
 
 
 # Utility Objectives — the DP / value function lives in utility space and needs the scale c.
-_UTILITY_OBJECTS = ("asymmetricutility_symlog", "asymmetricutility_huber", "asymmetricutility_cara")
+_UTILITY_OBJECTS = ("asymmetricutility_symlog", "asymmetricutility_huber",
+                    "asymmetricutility_cara", "logwealth")
 
 
 def construct_hedge_runtime(
@@ -470,8 +479,8 @@ def construct_hedge_runtime(
                 f"{min_inner} for Solver.Object={solver_config.get('Object')!r}")
         if str(solver_config.get("Object", "")).lower() not in ("diffsolver", "diffsolverv2"):
             raise ValueError(
-                "Execution_Mode 'solve_hedge' requires Solver.Object='DiffSolver' "
-                f"(legacy spelling 'DiffSolver' accepted); got "
+                "Execution_Mode 'solve_hedge' requires Solver.Object='DiffSolver' or "
+                f"'DiffSolverV2' (the forward-backward solver); got "
                 f"{solver_config.get('Object')!r}. HindsightDpSolver remains available as the "
                 "Run_Hindsight_Diagnostic track.")
         # A solve is a STREAM: Simulation_Batches - 1 fit batches, then a held-out batch no fit
@@ -498,7 +507,8 @@ def construct_hedge_runtime(
         if str((objective_config or {}).get("Object", "")).lower() not in _UTILITY_OBJECTS:
             raise ValueError(
                 "Execution_Mode 'solve_hedge' requires a utility Objective.Object — one of "
-                "'AsymmetricUtility_Symlog' | 'AsymmetricUtility_Huber' | 'AsymmetricUtility_CARA'. "
+                "'AsymmetricUtility_Symlog' | 'AsymmetricUtility_Huber' | 'AsymmetricUtility_CARA' | "
+                "'LogWealth' (per-step growth). "
                 "The DP recursion lives in utility space: an identity (legacy) objective leaves "
                 "V-hat unbounded in dollars and the backward sweep blows up multiplicatively.")
 
@@ -518,6 +528,17 @@ def construct_hedge_runtime(
             f"{(objective_config or {}).get('Reference_Mode')!r}. Supported: 'Fixed' (the utility "
             f"is applied to TERMINAL wealth) | 'Running_Wealth' (to the day's wealth increment). "
             f"The value is dispatched on by equality, so a near-miss would silently run 'Fixed'.")
+    # LogWealth is the per-step growth objective: the reward is the day's log ratio of
+    # capital + MTM, so it IS running-wealth-shaped, and the utility scale is its CAPITAL line
+    # (conditional_sim = capital tracks the batch dispersion; explicit = constant capital).
+    # A terminal Reference_Mode beside it is a contradiction the run must refuse.
+    if str((objective_config or {}).get("Object", "")).lower() == "logwealth":
+        if str((objective_config or {}).get("Reference_Mode", "")).lower() == "fixed":
+            raise ValueError(
+                "Objective 'LogWealth' is a per-step growth objective (reward = log(W1/W0)) — "
+                "Reference_Mode='Fixed' (terminal utility) contradicts it. Omit Reference_Mode "
+                "or set 'Running_Wealth'.")
+        reference_mode = "running_wealth"
     # The floor of the conditional_sim schedule multiplies its terminal entry, and every outer
     # path shares L_0 — so the raw dispersion at t=0 is exactly 0 and a non-positive floor makes
     # c_0 = 0, x = (W−R)/c_0 infinite, and every label from step 0 a NaN the fit then spreads
@@ -570,6 +591,24 @@ def construct_hedge_runtime(
             normalized_tradables[account_name]["currency"], account_name)
     fallback_account = cash_account_names[0] if cash_account_names else None
 
+    alloc_mode = str(evaluator_config.get("Allocation_Mode", "Exposure")).lower()
+    if alloc_mode not in ("exposure", "carry_variance"):
+        raise ValueError(
+            f"Unsupported Evaluator.Allocation_Mode: "
+            f"{evaluator_config.get('Allocation_Mode')!r}. Supported: 'Exposure' (the declared "
+            f"Allocation_Weights table) | 'Carry_Variance' (solver-derived). Dispatched by "
+            f"equality, so a near-miss would silently run 'Exposure'.")
+    if alloc_mode == "carry_variance":
+        if evaluator_config.get("Allocation_Weights"):
+            raise ValueError(
+                "Evaluator.Allocation_Mode='Carry_Variance' DERIVES the per-step weights from "
+                "the warmup sims — a declared Allocation_Weights table beside it is a "
+                "contradiction the run refuses rather than arbitrates. Remove one of the two.")
+        if solver_config is None:
+            raise ValueError(
+                "Evaluator.Allocation_Mode='Carry_Variance' needs a Solver to derive the "
+                "weights (there are no sims to measure carry/tracking from in a non-solve "
+                "mode). Declare Allocation_Weights instead.")
     return {
         "execution_mode": execution_mode,
         "accounting_mode": str(evaluator_config.get("Accounting_Mode", "futures")).lower(),
@@ -671,6 +710,7 @@ def construct_hedge_runtime(
             # action universe is the Q-ladder rather than the Cartesian product (see
             # HedgeActionSpace.allocation_grid); absent ⇒ today's grid, unchanged.
             "allocation_weights": _allocation_weights(evaluator_config, hedge_names),
+            "allocation_mode": alloc_mode,
             # Per-leg |Δq| cap per decision step at the ARGMAX (0 = off). Execution policy
             # only — training labels never see it.
             "max_trade_per_step": float(evaluator_config.get("Max_Trade_Per_Step", 0.0)),

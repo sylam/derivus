@@ -2220,8 +2220,10 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 sub_fields=[
                     F('Object', 'Text', default=REQUIRED,
                       values=['AsymmetricUtility_Symlog', 'AsymmetricUtility_Huber',
-                              'AsymmetricUtility_CARA'],
-                      description='The utility shape the DP recursion works in'),
+                              'AsymmetricUtility_CARA', 'LogWealth'],
+                      description='The utility shape the DP recursion works in; LogWealth is '
+                                  'the per-step growth objective (reward = log(W1/W0), '
+                                  'scale-free, implies Running_Wealth)'),
                     F('Utility_Scale_Mode', 'Text', default='vol_scaled_notional',
                       values=['vol_scaled_notional', 'conditional_sim'],
                       description='How the utility scale c is derived from the book; '
@@ -2295,6 +2297,13 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                                   'decision step'),
                     F('Allocation_Weights', 'Table', default=None,
                       row=Row([F('Step', 'Integer', default=0),
+                    F('Allocation_Mode', 'Text', default='Exposure',
+                      values=['Exposure', 'Carry_Variance'],
+                      description='How the net cover splits across the hedge legs: Exposure = '
+                                  'the declared Allocation_Weights table; Carry_Variance = the '
+                                  'solver DERIVES per-step weights from the warmup sims (carry '
+                                  'vs tracking vs the capital line), stamps them into the '
+                                  'checkpoint, and a load restores the stamped table'),
                                F('Instrument', 'Text', default=''),
                                F('Weight', 'Float', default=0.0)]),
                       description='Piecewise-constant split of the NET cover across the hedge '
@@ -2326,6 +2335,11 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                     F('DiffV2_LR', 'Float', default=2.0e-3, description='Adam learning rate'),
                     F('DiffV2_Bank_Noise_Frac', 'Float', default=0.15,
                       description='Bank q-exploration noise as a fraction of each [Min,Max] range'),
+                    F('DiffV2_Risk_Aversion', 'Float', default=1.0,
+                      description='DiffSolverV2 forward pass: multiplies the MEASURED hedge '
+                                  'delta (which always comes from the simulated portfolio). '
+                                  '1.0 holds exactly what the book measures; above 1 is more '
+                                  'conservative, below 1 more aggressive'),
                     F('DiffV2_Weight_Decay', 'Float', default=0.0,
                       description='Residual-net weight decay; a crutch for path-starved problems'),
                     F('DiffV2_Hidden', 'Integer', default=32,

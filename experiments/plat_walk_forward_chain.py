@@ -278,6 +278,11 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
         # it, so --grid-levels now counts rungs on the TOTAL rather than levels per leg.
         hp['Evaluator']['Allocation_Weights'] = allocation_knots(
             trade_date, fixings, mats, sorted(futs))
+    if args.allocation_mode is not None:
+        # 'carry_variance' DERIVES the split in the solver; declaring it beside --allocation's
+        # exposure table is the contradiction the runtime refuses loud.
+        hp['Evaluator']['Allocation_Mode'] = (
+            'Carry_Variance' if args.allocation_mode == 'carry_variance' else 'Exposure')
     if args.calendar_spread_bps is not None:
         hp['Evaluator']['Calendar_Spread_Bps'] = float(args.calendar_spread_bps)
     if args.max_trade is not None:
@@ -615,6 +620,9 @@ def main():
                     help='Evaluator Calendar_Spread_Bps: half-spread bps the MATCHED half of a '
                          'move pays instead of two outright crossings. One key, both readers - '
                          'the argmax/fitted-target charge and the realized roll rebate.')
+    ap.add_argument('--allocation-mode', default=None,
+                    choices=['exposure', 'carry_variance'],
+                    help='Evaluator.Allocation_Mode: carry_variance derives the leg split in the solver (use INSTEAD of --allocation).')
     ap.add_argument('--delta-corridor', type=float, default=None,
                     help='Causal delta-ramp corridor band on the SIGNED total position, applied '
                          'to BOTH train and roll.')

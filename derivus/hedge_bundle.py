@@ -147,6 +147,17 @@ def _utility_wrap_signed(x_dollars, runtime, t=None):
     that step's knee (`_utility_scale`, which owns the whole of that choice). What u is applied TO
     is the CALLER's business: under `Objective.Reference_Mode='Running_Wealth'` the solver hands it
     the day's wealth INCREMENT rather than terminal wealth, and this transform is unchanged."""
+    if ((runtime.get("objective") or {}).get("object")) == "logwealth":
+        # The growth objective has no terminal transform: its reward is the per-step ratio
+        # log(W1/W0), owned by the solver's `_u_step`. Any caller reaching this wrap under
+        # LogWealth (a benchmark track, a terminal verdict) is asking for a number the
+        # objective does not define — refuse by name rather than hand back dollars. Checked
+        # BEFORE `_is_utility_objective`, whose meaning is "consumes a scale c" (LogWealth
+        # deliberately does not, so it must not fall into the identity path either).
+        raise ValueError(
+            "Objective 'LogWealth' defines no terminal utility — the reward is the per-step "
+            "growth ratio (DiffSolver._u_step). This caller must be step-sum-aware or disabled "
+            "under LogWealth.")
     if not _is_utility_objective(runtime):
         return x_dollars
     obj = runtime["objective"]

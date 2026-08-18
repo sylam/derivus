@@ -180,7 +180,10 @@ def _solver(runtime, running_wealth=False, position_state=False, T_dec=3, n_step
         w_mean=torch.tensor(0.0), w_std=torch.tensor(1.0),
         a_bounds=[None] * T_dec, _ensemble=None,
     )
-    for name in ("_u", "_member_anchor", "_wealth_step", "_unwind_kappa", "_calendar_kappa",
+    s.log_ratio = False                      # the diff-form arm; LogWealth has its own gates
+    s.w_floor = 1.0
+    for name in ("_u", "_u_step", "_capital", "_member_anchor", "_wealth_step",
+                 "_unwind_kappa", "_calendar_kappa",
                  "_reposition_charge", "_score_actions", "_decision_curve_row",
                  "_standardize", "_continuation", "_decide", "_project_leaf_grads", "_bind",
                  "_replication_hedge", "_check_action_universe", "_check_calendar_spread"):
