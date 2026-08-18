@@ -2350,6 +2350,10 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                                   'wealth exactly as the utility anchor does'),
                     F('DiffV2_Stepper_Rollout', 'Text', default='No', values=['Yes', 'No'],
                       description='Roll a frozen policy day-by-day through the real accounting'),
+                    F('DiffV2_Decision_Curve_Dump', 'Text', default='',
+                      description='Path a per-decision CSV of the stepper rollout\'s FULL '
+                                  'ranking curve is written to (empty = off). Pure diagnostic: '
+                                  'it changes no decision and no reported number'),
                     F('DiffV2_Per_Column_Grad_Norm', 'Text', default='Yes', values=['Yes', 'No'],
                       description='Normalize twin-loss greeks per input column; No = pooled'),
                     F('DiffV2_Save_Value_Fn', 'Text', default='',

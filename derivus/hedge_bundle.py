@@ -17,6 +17,7 @@ shapes, the friction debits, and the state-based portfolio reads.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 
@@ -137,6 +138,45 @@ def _utility_wrap_signed(x_dollars, runtime):
     # asymmetricutility_cara
     g = float(obj.get("cara_gamma", 1.0))
     return (1.0 - torch.exp(-g * x)) / g
+
+
+def _utility_local_curvature(W, runtime):
+    """`(u'(W), −u''(W)/u'(W))` in DOLLARS at one scalar wealth — the marginal utility and the
+    local absolute risk aversion the configured shape is actually applying there.
+
+    The closed forms in `_utility_wrap_signed`'s normalised x = (W − R)/c, chain-ruled back to
+    dollars (u' = f'(x)/c and ARA = −f''(x)/(c·f'(x)), so the scale enters exactly once each):
+
+      symlog : f' = 1/(1+|x|)                     −f''/f' = sign(x)/(1+|x|)  — risk-SEEKING below R
+      huber  : f' = 1 + 2a·min(loss, δ)           −f''/f' = 2a/f'   inside the loss knee
+               f' = 1 − 2a⁺·min(gain, κ)          −f''/f' = 2a⁺/f'  inside the gain knee
+                                                  0 beyond either knee, where both wings go linear
+      cara   : f' = exp(−γx)                      −f''/f' = γ, constant by construction
+      identity (no utility objective): (1, 0) — there is no curvature to report.
+
+    u'' jumps at the reference itself (the two wings carry different curvatures), so x < 0 reads
+    the loss wing and x ≥ 0 the gain wing — the same side-convention the clamps in
+    `_utility_wrap_signed` take. Written out rather than differentiated because the caller is a
+    diagnostic on a no-grad rollout: it wants the two numbers at one wealth, not a tape."""
+    if not _is_utility_objective(runtime):
+        return 1.0, 0.0
+    obj = runtime["objective"]
+    c = float(obj["utility_scale"])
+    x = (float(W) - float(obj.get("reference_wealth", 0.0))) / c
+    shape = obj["object"]
+    if shape == "asymmetricutility_symlog":
+        f1 = 1.0 / (1.0 + abs(x))
+        return f1 / c, math.copysign(f1, x) / c
+    if shape == "asymmetricutility_huber":
+        # the loss wing steepens the slope, the gain wing flattens it; the curvature is +2a either way
+        a, knee, d, s = ((float(obj.get("huber_aversion", 2.5)), float(obj.get("huber_delta", 1.0)),
+                          -x, 1.0) if x < 0.0 else
+                         (float(obj.get("up_aversion", 0.0)), float(obj.get("up_knee", 0.15)),
+                          x, -1.0))
+        f1 = 1.0 + s * 2.0 * a * min(d, knee)
+        return f1 / c, (0.0 if d > knee else 2.0 * a / (f1 * c))
+    g = float(obj.get("cara_gamma", 1.0))
+    return math.exp(-g * x) / c, g / c
 
 
 def _realized_vol_series(spot, window=PRICE_ZSCORE_WINDOW):

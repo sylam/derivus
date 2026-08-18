@@ -377,6 +377,14 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     if args.temporal_proximity is not None:
         roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
             'DiffV2_Temporal_Proximity'] = args.temporal_proximity
+    if args.curve_dump:
+        # ROLL only, and deliberately: the dump is a picture of a DEPLOYED decision — the wealth
+        # the stepper actually carried in, the curve the frozen nets actually ranked — and the
+        # training sweep has neither. It is also a single-path diagnostic, which the roll is and
+        # the training batches are not.
+        roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
+            'DiffV2_Decision_Curve_Dump'] = os.path.abspath(
+                os.path.join(run_dir, f'curve_{tag}.csv'))
     roll['Calc']['Calculation']['Observed_Scenario'] = obs_npz
     logging.info('=== ROLL %s (stepper, realized path, %d-seed ensemble, inner=%d) ===',
                  tag, len(ckpts), args.roll_inner)
@@ -532,6 +540,13 @@ def main():
     ap.add_argument('--delta-corridor', type=float, default=None,
                     help='Causal delta-ramp corridor band on the SIGNED total position, applied '
                          'to BOTH train and roll.')
+    ap.add_argument('--curve-dump', action='store_true',
+                    help='Solver DiffV2_Decision_Curve_Dump on the ROLL: write '
+                         '<run-dir>/curve_<trade>.csv with, per decision day, the FULL per-rung '
+                         'ranking curve (pre-charge and charged), where the day sits on the '
+                         'utility (x0, the knee, the local risk aversion), the band '
+                         'probabilities, the fork moments and a second-fork disagreement flag. '
+                         'Pure diagnostic: no decision and no reported number moves.')
     ap.add_argument('--run-dir', default=None)
     args = ap.parse_args()
 

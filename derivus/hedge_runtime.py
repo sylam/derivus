@@ -345,6 +345,11 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         # own wealth). Exposes diagnostics['stepper_verdict']. 'No' = only the fast _verdict.
         "diffv2_stepper_rollout":
             solver_config.get("DiffV2_Stepper_Rollout", "No") == "Yes",
+        # Pure DIAGNOSTIC: a CSV of the stepper rollout's per-step ranking curve and the local
+        # shape of the utility it was ranked under. '' (or absent) = off, and nothing about the
+        # roll changes when it is on.
+        "diffv2_decision_curve_dump":
+            str(solver_config.get("DiffV2_Decision_Curve_Dump", "") or ""),
         # Per-input-column greek normalization in the twin loss. 'No' = legacy pooled variance.
         "diffv2_per_column_grad_norm":
             solver_config.get("DiffV2_Per_Column_Grad_Norm", "Yes") == "Yes",

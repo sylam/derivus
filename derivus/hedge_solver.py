@@ -20,17 +20,25 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+import pandas as pd
 import torch
 
 from . import utils
 from .hedge_bundle import (
-    _utility_wrap_signed, wealth_step,
+    _utility_local_curvature, _utility_wrap_signed, wealth_step,
 )
 from .hedge_runtime import per_contract_kappa, initial_q_from_runtime, turnover_charge
 
 # Bumped whenever the fitted-value-function on-disk/artifact contract changes shape. Stamped
 # into every artifact so a loader can tell which solver produced a checkpoint.
 SOLVER_VERSION = "diffsolver/2026-08"
+
+
+def _packed(values):
+    """A whole per-rung curve as ONE `%.6g` CSV cell, space separated. Kept in a cell rather than
+    spread over columns because a `Total_Position_Schedule` narrows the ladder per step, and a
+    per-rung column layout would ragged the header the dump writes exactly once."""
+    return " ".join("%.6g" % float(v) for v in values)
 
 
 @dataclass
@@ -695,6 +703,7 @@ class DiffSolver:
         '| `DiffV2_Cost_Aware_Argmax` | charge the L1 repositioning cost at the argmax |',
         '| `DiffV2_Position_State` | the frictional Bellman: `p` as state, the charge in the target |',
         '| `DiffV2_Wealth_Free_Value` | drop `W` from the residual: the ranking bends only as `u` does |',
+        '| `DiffV2_Decision_Curve_Dump` | CSV of the stepper rollout\'s full per-rung ranking curve |',
         '| `Active_Hedge_Indices` | which hedge axes vary; the rest pin to 0 |',
         '| `Multi_Seed_Count` | independent solvers on the same batches |',
         '',
@@ -780,6 +789,9 @@ class DiffSolver:
                 "semideviation is nonlinear over inner draws, so the residual's dispersion leaks "
                 "back into the ranking the switch exists to hand to the utility alone.")
         self.force_flat = bool(runtime["accounting"]["force_flat_at_end"])
+        # Pure diagnostic: where `_rollout_on_stepper` writes its per-decision ranking-curve CSV.
+        # '' = off, and the roll is then bit-identical to a build without the switch.
+        self.curve_dump = str(self.cfg.get("diffv2_decision_curve_dump", "") or "")
         if self.position_state and not self.total_abs_limit > 0.0:
             raise ValueError(
                 "Solver.DiffV2_Position_State='Yes' requires Evaluator.Total_Position_Abs_Limit > 0 "
@@ -838,9 +850,11 @@ class DiffSolver:
     def _config_hash(self):
         """sha1 of the stable-JSON solver cfg — the stamp identifying this TRAINING RECIPE.
         The persistence paths are excluded so the same recipe hashes identically regardless of
-        where its checkpoint lives."""
+        where its checkpoint lives — and the decision-curve dump path with them, because a
+        diagnostic that is switched on beside a run must not make it a different recipe."""
         stable = {k: v for k, v in self.cfg.items()
-                  if k not in ("diffv2_save_value_fn", "diffv2_load_value_fn")}
+                  if k not in ("diffv2_save_value_fn", "diffv2_load_value_fn",
+                               "diffv2_decision_curve_dump")}
         return hashlib.sha1(json.dumps(stable, sort_keys=True, default=str).encode()).hexdigest()
 
     # ---- utility anchor ------------------------------------------------------
@@ -1608,6 +1622,172 @@ class DiffSolver:
                                if q_traj["greedy"] else None)
         return out
 
+    # ---- decision-curve diagnostic (Solver.DiffV2_Decision_Curve_Dump) --------
+    def _score_actions(self, nets, t, acts, market_t1, dF, dL, W, q_live, kappa, live):
+        """Score `acts` `(K, n_hedge)` the way `_decide`'s chunk loop ranks its grid rows —
+        `E_inner[C_{t+1}]` before and after the repositioning charge — and hand back the CHARGED
+        per-draw `W1` the ranking's continuation was actually read at. Returns `(pre, charged,
+        W1)`, `(K,)`/`(K,)`/`(K, Bi)`: the single-path diagnostic drops the outer axis.
+
+        WHY A SECOND PASS rather than a probe wired into `_decide`. The switch's contract is that
+        a run with the dump on is bit-identical to one with it off, and the cheapest way to mean
+        that is for `_decide` to keep no knowledge of it at all — no parameter, no branch, no
+        extra continuation inside the hot loop that a future edit could leave armed. The cost of
+        the choice is that the two rankings could drift apart, and that is exactly what the gate
+        on the argmax column measures: it charges the candidates through `q_prev` so a scoring
+        pass that forgot the charge would pick a different rung, and asserts the dump's argmax IS
+        the executed book. The pass is affordable because the dump is a `Batch_Size = 1`
+        diagnostic — one path times the rungs, against a training loop's thousands."""
+        B, Bi, md = market_t1.shape
+        K = acts.shape[0]
+        kappa_T, kappa_cal = self._unwind_kappa(t), self._calendar_kappa(t)
+        a_live = acts if live is None else acts * live
+        with torch.no_grad():
+            # `_decide` steps wealth with the RAW row and charges the LIVE-masked one; dF is
+            # already zeroed on dead legs, so the two agree on W1 and differ only in the toll.
+            W1 = self._wealth_step(W[:, None, None], acts[None, :, None, :],
+                                   dF[:, None], dL[:, None])                         # (B,K,Bi)
+            W1c = W1
+            if kappa_T is not None or kappa is not None or self.churn_lambda > 0.0:
+                W1c = W1 - self._reposition_charge(
+                    a_live[None, :, :], q_live[:, None, :], kappa, kappa_T, kappa_cal)[:, :, None]
+            p1 = ((a_live.sum(-1) / self.total_abs_limit)[None, :, None]
+                  .expand(B, K, Bi).reshape(-1) if self.position_state else None)
+            market = market_t1[:, None].expand(B, K, Bi, md).reshape(-1, md)
+
+            def rank(Wx):
+                C1f = self._continuation(nets, market, Wx.reshape(-1), t + 1, p1).reshape(B, K, Bi)
+                C1 = C1f.mean(-1)
+                if self.risk_kappa > 0.0:
+                    dev = (C1f - C1.unsqueeze(-1)).clamp(max=0.0)
+                    C1 = C1 - self.risk_kappa * (dev ** 2).mean(-1).sqrt()
+                return C1[0]
+
+            charged = rank(W1c)
+            return (charged if W1c is W1 else rank(W1)), charged, W1c[0]
+
+    def _decision_curve_row(self, nets, t, market_t1, dF, dL, W, q_prev, q_chosen, live, kappa):
+        """One CSV row of `Solver.DiffV2_Decision_Curve_Dump`: everything about decision `t` that
+        says WHY the ranking chose the book it chose, and nothing that changes it.
+
+        The columns, in four groups.
+
+        *The decision.* `q_prev_net` / `q_chosen_net` are the realized signed covers Σq·live,
+        `argmax_net` is the dump's own band-feasible charged argmax, and `deadband_held` is 1 only
+        when `Decision_Deadband_Sigma` is armed, the executed book IS the incumbent, and the
+        argmax was somewhere else — i.e. the band, not agreement, is what stopped the trade.
+
+        *The utility in force.* `W` is the stepper's net wealth entering the decision, `c` the
+        scale read off `runtime['objective']` — the frame's, because `_rollout_on_stepper` builds
+        its stepper with `mirror_scale=False` precisely so a loaded checkpoint's scale survives,
+        and it is this value that `_utility_wrap_signed` consumes at every rung. `x0 = (W − R)/c`
+        places the day on the utility, `in_knee` says whether it sits in the loss-side quadratic
+        band `(−δ, 0)`, and `local_ARA` is the risk aversion actually applying there.
+
+        *What the ranking saw.* `curve_net` / `curve_pre` / `curve_charged` are the FULL per-rung
+        curve, packed space-separated into three cells so a corridor that narrows the ladder does
+        not ragged the header. `range_CE` converts the charged curve's spread into dollars at the
+        local `u'`, so "how much is this decision worth" is readable without knowing `c`, and
+        `bow_span` is the curve's departure from the chord through its net-sorted endpoints — a
+        straight ranking (bow ≈ 0) is one whose argmax can only be a corner. `P_band_*` is the
+        chance the day ENDS in the same knee band, per inner draw, at three reference books:
+        flat, the standing book, and the deepest rung.
+
+        *What it was ranking over.* The one-step moments of the fork feeding it, and a SECOND
+        independent fork at the same `t`: `fork_disagree` is the seed-disagreement indicator, the
+        cheapest honest read on whether a rung won on signal or on inner-MC noise.
+
+        Conventions. Moments are population (÷N) over the flattened outer × inner draws — at the
+        single realized path that is exactly the inner ensemble. `dF_net` is the tradable move a
+        UNIT of net cover earns, reduced the way `_wealth_step` reduces a book: Σ_i w_i·cs_i·dF_i,
+        with `w` the `Allocation_Weights` split in force when one is configured (the schedule IS
+        the composition of a rung) and otherwise the uniform split over the live, active legs (with
+        no schedule, nothing mandates any other composition)."""
+        obj = self.runtime["objective"]
+        c = float(obj.get("utility_scale") or 1.0)
+        R = float(obj.get("reference_wealth", 0.0))
+        # The knee is huber's; the shapes without one take a unit of c as the near-reference band.
+        delta = (float(obj.get("huber_delta", 1.0))
+                 if obj.get("object") == "asymmetricutility_huber" else 1.0)
+        w0 = float(W[0])
+        u1, ara = _utility_local_curvature(w0, self.runtime)
+        x0 = (w0 - R) / c
+
+        q_live = q_prev if live is None else q_prev * live                          # (1,n_hedge)
+        grid = self.aspace.grid_at(t, live)
+        a_live = grid if live is None else grid * live                              # (K,n_hedge)
+        net = a_live.sum(-1)                                                        # (K,)
+        pre, charged, _ = self._score_actions(
+            nets, t, grid, market_t1, dF, dL, W, q_live, kappa, live)
+        # The rate-limit band the executed argmax searched inside, measured exactly as `_decide`
+        # measures it (net under a weight schedule, per-leg without one), with its fallback.
+        pick = charged
+        if self.aspace.max_trade > 0.0:
+            dq = a_live - q_live
+            feas = ((dq.sum(-1).abs() <= self.aspace.max_trade) if self.aspace.weights is not None
+                    else (dq.abs() <= self.aspace.max_trade).all(-1))
+            pick = charged.masked_fill(~feas, float("-inf")) if bool(feas.any()) else charged
+        k_star = int(pick.argmax())
+        deep = int(net.abs().argmax())
+
+        # P_band at the three reference books, off the SAME charged W1 the ranking is built on.
+        probes = torch.stack([torch.zeros_like(q_live[0]), q_live[0], a_live[deep]])
+        _, _, W1p = self._score_actions(
+            nets, t, probes, market_t1, dF, dL, W, q_live, kappa, live)
+        x1 = (W1p - R) / c
+        p_band = ((x1 > -delta) & (x1 < 0.0)).to(torch.float32).mean(-1)
+
+        # The curve's shape: spread in dollars at the local u', and bow off the endpoint chord.
+        order = torch.argsort(net, stable=True)
+        cs, ns = charged[order], net[order]
+        span, width = float(cs[-1] - cs[0]), float(ns[-1] - ns[0])
+        chord = (cs[0] + (cs[-1] - cs[0]) * (ns - ns[0]) / width) if width else cs
+        # A unit of net cover under the composition the schedule mandates (see docstring).
+        w = (self.aspace._weights_at(t, live) if self.aspace.weights is not None
+             else self.aspace.active_mask * (1.0 if live is None else live))
+        w = w / w.sum()
+        dfn = (dF * (w * self.contract_size)).reshape(-1, self.n_hedge).sum(-1)
+        dl = dL.reshape(-1)
+
+        # A SECOND fork at the same t — the stream advances, so this is an independent draw of
+        # the same conditional law, decided under identical rules.
+        dF2, dL2, m2, _, live2 = self._inner_step(t)
+        q_b, _ = self._decide(nets, m2, dF2, dL2, W, t, q_prev=q_prev, live=live2, kappa=kappa)
+        q_b = q_b * live2
+
+        row = {
+            "t": int(t),
+            "q_prev_net": float(q_live.sum()),
+            "q_chosen_net": float(q_chosen.sum()),
+            "argmax_net": float(net[k_star]),
+            "deadband_held": int(self.aspace.deadband_sigma > 0.0
+                                 and bool(torch.equal(q_chosen[0], q_live[0]))
+                                 and not bool(torch.equal(a_live[k_star], q_live[0]))),
+            "W": w0, "c": c, "R": R, "x0": x0,
+            "in_knee": int(-delta < x0 < 0.0),
+            "u_prime": u1, "local_ARA": ara,
+            "P_band_flat": float(p_band[0]),
+            "P_band_prev": float(p_band[1]),
+            "P_band_deep": float(p_band[2]),
+            "range_CE": float(charged.max() - charged.min()) / u1,
+            "bow_span": (float((cs - chord).abs().max()) / abs(span)) if span else float("nan"),
+        }
+        for j, name in enumerate(self.hedges):
+            row[f"E_dF_{name}"] = float(dF[..., j].mean())
+            row[f"sd_dF_{name}"] = float(dF[..., j].std(unbiased=False))
+        row.update({
+            "E_dL": float(dl.mean()), "sd_dL": float(dl.std(unbiased=False)),
+            "cov_dFnet_dL": float(((dfn - dfn.mean()) * (dl - dl.mean())).mean()),
+            "var_dFnet": float(dfn.var(unbiased=False)),
+            "argmax_A_net": float(q_chosen.sum()),
+            "argmax_B_net": float(q_b.sum()),
+            "fork_disagree": int(not bool(torch.equal(q_chosen, q_b))),
+            "n_rungs": int(net.shape[0]),
+            "curve_net": _packed(net), "curve_pre": _packed(pre),
+            "curve_charged": _packed(charged),
+        })
+        return row
+
     # ---- frozen-policy daily rollout on a realized path via the stepper -------
     def _rollout_on_stepper(self, nets, inner_cache, sweep_ts):
         """Deployment-faithful backtest: roll the frozen policy day-by-day along the
@@ -1617,12 +1797,24 @@ class DiffSolver:
         (`inner_cache[t]`) and the STEPPER'S OWN net wealth — never a verdict wealth
         recursion, so the decision can't be contaminated by mis-accrued P&L. This is
         the JSON-contract interface for running the precomputed diff-ML nets daily.
-        Returns {greedy, textbook, nohedge} terminal-P&L stats in the verdict shape."""
+        Returns {greedy, textbook, nohedge} terminal-P&L stats in the verdict shape.
+
+        `Solver.DiffV2_Decision_Curve_Dump` hangs a per-decision CSV off the greedy roll (see
+        `_decision_curve_row`). It reads the same objects the decision read and writes a file;
+        no branch below it depends on whether it is on."""
         from .hedge_bundle import BundleStepper, _tracking_error_value
         hist = self.bundle.initial_time_index
         sweep_set = set(int(t) for t in sweep_ts)
+        if self.curve_dump and self.B_outer != 1:
+            raise ValueError(
+                f"Solver.DiffV2_Decision_Curve_Dump is a SINGLE-PATH diagnostic but this roll "
+                f"carries {self.B_outer} outer paths. Every column it writes — the wealth entering "
+                f"the decision, the ranking curve over it, the band probabilities — belongs to one "
+                f"path, and averaging them would describe a decision nothing took. Roll the dump "
+                f"at Batch_Size 1.")
 
         q_log = {"greedy": [], "t": []}
+        dump_rows = [] if self.curve_dump else None
 
         def roll(policy):
             """Roll `policy` day-by-day through a fresh `BundleStepper`; returns terminal P&L.
@@ -1666,6 +1858,10 @@ class DiffSolver:
                         q = q * live
                         q_log["greedy"].append(q.mean(0).detach().cpu().tolist())
                         q_log["t"].append(int(t))
+                        if dump_rows is not None:
+                            dump_rows.append(self._decision_curve_row(
+                                nets, t, m1, dF, dL, W, q_prev, q, live,
+                                kappa_t if self.cost_aware or self.position_state else None))
                     q_prev = q
                     cur = state["positions"]
                     delta = {n: q[:, j] - cur[n].to(dtype=q.dtype, device=q.device)
@@ -1682,6 +1878,10 @@ class DiffSolver:
             return {"u_mean": float(self._u(wT.to(torch.float32)).mean()),
                     "wT_mean": float(wT.mean()), "wT_p5": float(p5), "wT_cvar5": float(cvar5)}
         out = {p: stats(roll(p)) for p in ("greedy", "textbook", "nohedge")}
+        if dump_rows:
+            pd.DataFrame(dump_rows).to_csv(self.curve_dump, index=False, float_format="%.6g")
+            logging.info("DiffV2_Decision_Curve_Dump: %d decision rows -> %s",
+                         len(dump_rows), self.curve_dump)
         out["greedy_q_traj"] = q_log["greedy"]        # per-decision mean book (audit)
         out["greedy_q_t"] = q_log["t"]
         return out
