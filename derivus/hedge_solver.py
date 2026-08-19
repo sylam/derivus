@@ -1792,6 +1792,7 @@ class DiffSolver:
         # is accumulated along the roll rather than read off the terminal (see docstring). The net
         # sum charges each step's own turnover into that step's increment, which is what a
         # per-step objective means by a cost.
+        vdrift_z, vdrift_n = 0.0, 0
         u_run = ({p: torch.zeros(n, device=self.device) for p in W}
                  if self.running_wealth else None)
         u_net = ({p: torch.zeros(n, device=self.device) for p in cost}
@@ -1805,6 +1806,13 @@ class DiffSolver:
                      for r in self.hedges], dim=-1)                                       # (n, n_hedge)
                 dL_o = (L[t + 1] - L[t])[rows]
                 dF, dL, m1, _, live = inner_cache[t]
+                # in-sim validation CUSUM: the fork's expectation minus the outer realized
+                # move, averaged over paths and summed over steps — WITHIN the model this is
+                # a mean-zero tripwire (the fork and the outer share one law); at deployment
+                # the stepper-roll twin of this is the market-drift monitor
+                vdrift_z += float(((dF[rows].mean(1) - dF_o)
+                                   / dF[rows].std(1).clamp_min(1e-9)).mean())
+                vdrift_n += 1
                 kappa_t = self.aspace.kappa(self.tradables_sim, t)
                 q_g, _ = self._decide(
                     nets, m1[rows], dF[rows], dL[rows], W["greedy"], t,
@@ -1865,6 +1873,7 @@ class DiffSolver:
                     "wT_mean": float(wT.mean()),
                     "wT_p5": float(p5), "wT_cvar5": float(cvar5)}
         out = {p: stats(W[p], None if u_run is None else u_run[p]) for p in W}
+        out["validation_drift_z"] = round(vdrift_z / max(1, vdrift_n) * (vdrift_n ** 0.5), 4)
         # Which regime chose the greedy book — a charged argmax over an uncharged wealth
         # recursion is not readable off the figures — and whether `u_mean` is a terminal utility
         # or a sum of per-step ones, which no figure states either.
@@ -2128,6 +2137,8 @@ class DiffSolver:
             q_prev = self.aspace.initial_q(self.B_outer, self.device)
             last = None
             u_sum = w_prev = None
+            drift = {"t": [], "cum_dF_usd": [0.0] * self.n_hedge, "cum_dL_usd": 0.0,
+                     "cum_z": 0.0, "z_path": []}
             while not stepper.done:
                 t = stepper.time_index - hist
                 if stepper.is_decision_step and t in sweep_set:
@@ -2153,6 +2164,24 @@ class DiffSolver:
                         q = self.aspace.project_to_corridor(qt[None].expand(B, self.n_hedge), t)
                     else:
                         dF, dL, m1, _, live = inner_cache[t]
+                        # MODEL-DRIFT CUSUM (user-ruled): the model's one-day forecast minus
+                        # what the market then did, summed. Under correct assumptions the
+                        # cumsum is mean-zero; a drifting cumsum says the assumptions are
+                        # breaking from the market NOW — no hindsight needed. Standardized
+                        # by the fork's own dispersion so the threshold is scale-free.
+                        obs_dF = torch.stack(
+                            [self.tradables_sim[r][t + 1] - self.tradables_sim[r][t]
+                             for r in self.hedges], dim=-1)                       # (B, n_h)
+                        obs_dL = self.liability_sim[t + 1] - self.liability_sim[t]
+                        rF = dF.mean(1) - obs_dF                                  # (B, n_h)
+                        rL = dL.mean(1) - obs_dL                                  # (B,)
+                        sF = dF.std(1).clamp_min(1e-9)
+                        drift["t"].append(int(t))
+                        drift["cum_dF_usd"] = [a + float(b) for a, b in
+                                               zip(drift["cum_dF_usd"], rF.mean(0))]
+                        drift["cum_dL_usd"] += float(rL.mean())
+                        drift["cum_z"] += float((rF / sF).mean())
+                        drift["z_path"].append(round(drift["cum_z"], 4))
                         kappa_t = self.aspace.kappa(self.tradables_sim, t)
                         q, _ = self._decide(
                             nets, m1, dF, dL, W, t, q_prev=q_prev, live=live,
@@ -2171,11 +2200,14 @@ class DiffSolver:
                     last = stepper.step(delta)
                 else:
                     last = stepper.step(None)
+            n_dec = max(1, len(drift["t"]))
+            drift["max_abs_z"] = max((abs(z) for z in drift["z_path"]), default=0.0)
+            drift["final_z_per_sqrt_n"] = drift["cum_z"] / (n_dec ** 0.5)
             wT = (last["transition_pnl_excess"]
                   + last["transition_liability_value"]).to(torch.float64)
             if u_sum is not None:
                 u_sum = u_sum + self._u_step(wT.to(torch.float32), w_prev, self.T_dec)  # tail
-            return wT, u_sum
+            return wT, u_sum, drift
 
         def stats(wT, u_sum=None):
             p5 = torch.quantile(wT, 0.05)
@@ -2183,7 +2215,10 @@ class DiffSolver:
             return {"u_mean": float((self._u(wT.to(torch.float32)) if u_sum is None
                                      else u_sum).mean()),
                     "wT_mean": float(wT.mean()), "wT_p5": float(p5), "wT_cvar5": float(cvar5)}
-        out = {p: stats(*roll(p)) for p in ("greedy", "textbook", "nohedge")}
+        rolled = {p: roll(p) for p in ("greedy", "textbook", "nohedge")}
+        out = {p: stats(wT, u_sum) for p, (wT, u_sum, _) in rolled.items()}
+        # one drift monitor per rollout policy; the greedy one is THE inference guard
+        out["drift_monitor"] = rolled["greedy"][2]
         out["u_mean_is_step_sum"] = bool(self.running_wealth)
         if dump_rows:
             pd.DataFrame(dump_rows).to_csv(self.curve_dump, index=False, float_format="%.6g")

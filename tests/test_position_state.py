@@ -106,7 +106,7 @@ def _solver(runtime, position_state, T_dec=3, n_steps=4, B=2):
     hedges = runtime["names"]["hedges"]
     s = types.SimpleNamespace(
         aspace=aspace, chunk=64, risk_kappa=0.0, churn_lambda=0.0,
-        position_state=position_state, wealth_free=False,
+        position_state=position_state, wealth_free=False, log_ratio=False,
         # The two OBJECTIVE dials, off: the reward is terminal and the knee is one scalar.
         running_wealth=False, utility_scale_schedule=None, scheduled_scale=False,
         force_flat=runtime["accounting"]["force_flat_at_end"],
@@ -268,7 +268,7 @@ def test_the_ranking_charge_is_the_same_arithmetic_as_the_target():
 def _stub(position_state):
     rt = _runtime()
     s = types.SimpleNamespace(t_min=0, T_dec=3, hedges=list(rt["names"]["hedges"]),
-                              position_state=position_state, wealth_free=False,
+                              position_state=position_state, wealth_free=False, log_ratio=False,
                               running_wealth=False, utility_scale_schedule=None,
                               scheduled_scale=False,
                               aspace=HedgeActionSpace(rt, torch.device("cpu")))
