@@ -876,7 +876,13 @@ class Bundle:
         L = self.liability_sim[:self.last_live_mtm_index + 1].to(dtype=torch.float32)
         if int(L.shape[-1]) < 2:
             return None
-        c = L.std(dim=-1)
+        # Measured FROM THE START: the knee is the dispersion the WORLD generates by day t,
+        # not the dispersion the experimenter injected at t0 — under Randomize_Initial_State
+        # (a bank-coverage device) std(L[t]) is dominated by the start scatter, the schedule
+        # comes out ~flat at the terminal scale, and a growth objective read against it is
+        # linear everywhere (risk-neutral: the trained roll rode the fork's conditional mean
+        # to max-long through a crash). With identical starts the two spellings are equal.
+        c = (L - L[0]).std(dim=-1)
         terminal = float(c[-1])
         if not terminal > 0.0:
             raise ValueError(

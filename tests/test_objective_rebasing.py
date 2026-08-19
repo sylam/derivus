@@ -609,6 +609,33 @@ def test_training_without_a_measured_schedule_fails_loud():
 
 
 # --- (e) the frame lock: the WARMUP batch's schedule, and no later one ------------------------
+def test_the_schedule_measures_the_worlds_dispersion_not_the_injected_scatter():
+    """Under Randomize_Initial_State the paths START scattered (a bank-coverage device);
+    the knee must measure the dispersion the world GENERATES from those starts, or the
+    schedule sits ~flat at the terminal scale and a growth objective read against it is
+    linear everywhere — the trained crash roll rode the conditional mean to max long on
+    exactly this. With identical starts the two spellings coincide (every other gate).
+    Kills a reverted-absolute-std mutant."""
+    import types as _types
+    import torch as _torch
+    from derivus.hedge_bundle import Bundle
+    g = _torch.Generator().manual_seed(3)
+    B = 4096
+    starts = 1000.0 * _torch.randn(B, generator=g)          # the injected scatter
+    steps = _torch.randn(4, B, generator=g)                 # the world's own dispersion ~1
+    L = starts.unsqueeze(0) + _torch.cat(
+        [_torch.zeros(1, B), steps.cumsum(0)]).to(_torch.float32)
+    s = _types.SimpleNamespace(liability_sim=L, liability_mtm=L,
+                               last_live_mtm_index=4)
+    sched = Bundle._conditional_sim_schedule(
+        s, {"utility_scale_floor_frac": 0.05})
+    assert sched is not None
+    assert float(sched[1]) < 50.0, \
+        f"day-1 knee must be the world's ~1-unit dispersion, not the ~1000 scatter; " \
+        f"got {float(sched[1]):.1f}"
+    assert 1.5 < float(sched[-1]) < 3.0, 'terminal ~ sqrt(4) of unit steps'
+
+
 def test_the_schedule_is_locked_at_the_warmup_batch():
     """(e) Every streaming batch measures its own dispersion, and letting a later one reach the
     runtime would rescale every reward the recursion has already composed. `_bind` re-asserts the
