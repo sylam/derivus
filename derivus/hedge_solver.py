@@ -1810,8 +1810,9 @@ class DiffSolver:
                 # move, averaged over paths and summed over steps — WITHIN the model this is
                 # a mean-zero tripwire (the fork and the outer share one law); at deployment
                 # the stepper-roll twin of this is the market-drift monitor
-                zstep = ((dF[rows].mean(1) - dF_o)
-                         / dF[rows].std(1).clamp_min(1e-9)).mean(-1)              # (n,) per path
+                zraw = ((dF[rows].mean(1) - dF_o)
+                        / dF[rows].std(1).clamp_min(1e-9)) * live                 # dead legs: 0
+                zstep = zraw.sum(-1) / (float(live.sum()) or 1.0)                 # (n,) per path
                 vdrift_z += float(zstep.mean())
                 vdrift_s2 += float(zstep.pow(2).mean())
                 vdrift_n += 1
@@ -2180,14 +2181,17 @@ class DiffSolver:
                             [self.tradables_sim[r][t + 1] - self.tradables_sim[r][t]
                              for r in self.hedges], dim=-1)                       # (B, n_h)
                         obs_dL = self.liability_sim[t + 1] - self.liability_sim[t]
-                        rF = dF.mean(1) - obs_dF                                  # (B, n_h)
+                        rF = (dF.mean(1) - obs_dF) * live                         # (B, n_h)
                         rL = dL.mean(1) - obs_dL                                  # (B,)
                         sF = dF.std(1).clamp_min(1e-9)
                         drift["t"].append(int(t))
                         drift["cum_dF_usd"] = [a + float(b) for a, b in
                                                zip(drift["cum_dF_usd"], rF.mean(0))]
                         drift["cum_dL_usd"] += float(rL.mean())
-                        drift["cum_z"] += float((rF / sF).mean())
+                        # LIVE legs only: an expired leg has zero fork dispersion, and its
+                        # frozen-mark dust over the std clamp fabricates 1e5-sigma readings
+                        n_live = float(live.sum()).__int__() or 1
+                        drift["cum_z"] += float(((rF / sF) * live).sum() / (rF.shape[0] * n_live))
                         drift["z_path"].append(round(drift["cum_z"], 4))
                         n_so_far = len(drift["t"])
                         boundary = (float(self.cfg.get("diffv2_drift_threshold_sigmas", 3.0))
