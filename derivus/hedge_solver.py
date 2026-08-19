@@ -1157,13 +1157,14 @@ class DiffSolver:
         return torch.where((c + W0) > self.w_floor, u, u.clamp_max(0.0))
 
     def _capital(self, t):
-        """The dollar capital backing the book at step t: the locked conditional_sim schedule
-        entry (the batch std of the book at t, floored) when a schedule is in force, else the
-        scalar utility scale. Index convention matches `_u`: the reward landing at t reads t's
-        knee, clamped into the schedule's range."""
-        sch = self.utility_scale_schedule
-        if sch is not None:
-            return float(sch[min(max(int(t), 0), len(sch) - 1)])
+        """The DISPLACEMENT of the growth reward — a shifted-lognormal bias term (user-ruled):
+        one constant per run, the scalar utility scale, which is by contract the TERMINAL
+        dispersion read (the horizon-sigma under conditional_sim, a declared literal under
+        Utility_Scale_Explicit). Deliberately t-independent: a per-step capital line changes
+        the objective's curvature day by day and its measured-std machinery is where the
+        start-scatter bug lived; the shift just keeps the log's argument positive and the
+        curvature stable, exactly as a displacement does for a vol model. `t` is accepted for
+        the call sites' sake and ignored."""
         return float(self.utility_scale)
 
     def _wealth_step(self, W, q, dF, dL):

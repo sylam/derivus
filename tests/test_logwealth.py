@@ -46,9 +46,12 @@ def test_the_reward_is_the_growth_ratio():
     sc = _s(capital=100.0)
     assert abs(float(sc._u_step(torch.tensor([100.0]), torch.tensor([0.0]), 1))
                - math.log(2.0)) < 1e-6
+    # THE DISPLACEMENT IS ONE CONSTANT (shifted-lognormal bias, user-ruled): a locked
+    # schedule is IGNORED by the growth reward — per-step capital lines change curvature
+    # day by day, and their measured-std machinery is where the scatter bug lived
     sc.utility_scale_schedule = [40.0, 60.0]
-    assert abs(float(sc._u_step(torch.tensor([60.0]), torch.tensor([0.0]), 1))
-               - math.log(2.0)) < 1e-6                       # c_1 = 60
+    assert abs(float(sc._u_step(torch.tensor([100.0]), torch.tensor([0.0]), 1))
+               - math.log(2.0)) < 1e-6                       # still the scalar 100, not 60
     # THE DP'S AVERSION divides the capital line (the causal proxy for the clairvoyant
     # seed's floor): gamma 2 halves the capital at risk, so the same move is a bigger ratio
     sa = _s(capital=100.0, aversion=2.0)
