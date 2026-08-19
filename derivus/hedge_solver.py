@@ -1792,7 +1792,7 @@ class DiffSolver:
         # is accumulated along the roll rather than read off the terminal (see docstring). The net
         # sum charges each step's own turnover into that step's increment, which is what a
         # per-step objective means by a cost.
-        vdrift_z, vdrift_n = 0.0, 0
+        vdrift_z, vdrift_s2, vdrift_n = 0.0, 0.0, 0
         u_run = ({p: torch.zeros(n, device=self.device) for p in W}
                  if self.running_wealth else None)
         u_net = ({p: torch.zeros(n, device=self.device) for p in cost}
@@ -1810,8 +1810,10 @@ class DiffSolver:
                 # move, averaged over paths and summed over steps — WITHIN the model this is
                 # a mean-zero tripwire (the fork and the outer share one law); at deployment
                 # the stepper-roll twin of this is the market-drift monitor
-                vdrift_z += float(((dF[rows].mean(1) - dF_o)
-                                   / dF[rows].std(1).clamp_min(1e-9)).mean())
+                zstep = ((dF[rows].mean(1) - dF_o)
+                         / dF[rows].std(1).clamp_min(1e-9)).mean(-1)              # (n,) per path
+                vdrift_z += float(zstep.mean())
+                vdrift_s2 += float(zstep.pow(2).mean())
                 vdrift_n += 1
                 kappa_t = self.aspace.kappa(self.tradables_sim, t)
                 q_g, _ = self._decide(
@@ -1874,6 +1876,11 @@ class DiffSolver:
                     "wT_p5": float(p5), "wT_cvar5": float(cvar5)}
         out = {p: stats(W[p], None if u_run is None else u_run[p]) for p in W}
         out["validation_drift_z"] = round(vdrift_z / max(1, vdrift_n) * (vdrift_n ** 0.5), 4)
+        # THE NULL (user-ruled: "we know it should be 0 - measure the std there"): the
+        # per-step std of the within-model standardized residual — the tripwire boundary at
+        # inference is k * null_sigma * sqrt(t). Stamped with the frame.
+        self.drift_null_sigma = max(1e-6, (vdrift_s2 / max(1, vdrift_n)) ** 0.5)
+        out["drift_null_sigma"] = round(self.drift_null_sigma, 4)
         # Which regime chose the greedy book — a charged argmax over an uncharged wealth
         # recursion is not readable off the figures — and whether `u_mean` is a terminal utility
         # or a sum of per-step ones, which no figure states either.
@@ -2138,7 +2145,7 @@ class DiffSolver:
             last = None
             u_sum = w_prev = None
             drift = {"t": [], "cum_dF_usd": [0.0] * self.n_hedge, "cum_dL_usd": 0.0,
-                     "cum_z": 0.0, "z_path": []}
+                     "cum_z": 0.0, "z_path": [], "tripped": []}
             while not stepper.done:
                 t = stepper.time_index - hist
                 if stepper.is_decision_step and t in sweep_set:
@@ -2182,6 +2189,22 @@ class DiffSolver:
                         drift["cum_dL_usd"] += float(rL.mean())
                         drift["cum_z"] += float((rF / sF).mean())
                         drift["z_path"].append(round(drift["cum_z"], 4))
+                        n_so_far = len(drift["t"])
+                        boundary = (float(self.cfg.get("diffv2_drift_threshold_sigmas", 3.0))
+                                    * getattr(self, "drift_null_sigma", 1.0)
+                                    * (n_so_far ** 0.5))
+                        tripped = abs(drift["cum_z"]) > boundary
+                        drift["tripped"].append(bool(tripped))
+                        beta = float(self.cfg.get("diffv2_drift_beta", 0.0))
+                        if tripped and beta > 0.0:
+                            # bias the forecast toward the REALIZED drift (user-ruled: "if we
+                            # wanted to go long but we've been falling, go short"): the
+                            # observed average residual (obs − exp) per leg, scaled by beta,
+                            # shifts the fork moves the ranking prices
+                            adj = torch.tensor(
+                                [-beta * c / n_so_far for c in drift["cum_dF_usd"]],
+                                device=self.device)
+                            dF = dF + adj.view(1, 1, -1)
                         kappa_t = self.aspace.kappa(self.tradables_sim, t)
                         q, _ = self._decide(
                             nets, m1, dF, dL, W, t, q_prev=q_prev, live=live,
@@ -2202,6 +2225,8 @@ class DiffSolver:
                     last = stepper.step(None)
             n_dec = max(1, len(drift["t"]))
             drift["max_abs_z"] = max((abs(z) for z in drift["z_path"]), default=0.0)
+            drift["n_tripped"] = int(sum(drift["tripped"]))
+            drift["null_sigma"] = round(getattr(self, "drift_null_sigma", 1.0), 4)
             drift["final_z_per_sqrt_n"] = drift["cum_z"] / (n_dec ** 0.5)
             wT = (last["transition_pnl_excess"]
                   + last["transition_liability_value"]).to(torch.float64)
@@ -2423,6 +2448,8 @@ class DiffSolver:
         self.loaded_displacement = loaded.get("displacement")
         if self.loaded_displacement is not None:
             self.displacement = float(self.loaded_displacement)
+        if loaded.get("drift_null_sigma") is not None:
+            self.drift_null_sigma = float(loaded["drift_null_sigma"])
         # The scalar IS the terminal read (`hedge_bundle._utility_scale`), so under a schedule it
         # is taken from the members' terminal KNEES rather than from a scalar that only happens to
         # equal them: the ensemble's terminal stats and its members' terminal continuations then
@@ -2716,6 +2743,7 @@ class DiffSolver:
             # The growth reward's shift, measured off the training bank's worst book — part
             # of the FRAME: a roll under a different shift is a different utility.
             "displacement": getattr(self, "displacement", 0.0),
+            "drift_null_sigma": getattr(self, "drift_null_sigma", None),
             "risk_aversion": getattr(self, "aversion", None),
             "phi_curves": getattr(self, "phi_curves", None),
             "solver_version": SOLVER_VERSION,

@@ -321,6 +321,12 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         # The DP's aversion — the causal proxy for the clairvoyant seed's floor: divides
         # the capital line in the LogWealth reward. The forward pass takes no dial.
         "diffv2_risk_aversion": gamma,
+        # The drift tripwire (user-ruled): the tail multiple on the VALIDATION-measured null
+        # dispersion of the cumsum, and the strength of the on-trip correction toward the
+        # realized drift (0 = report-only; tuned POST-training by re-rolling checkpoints).
+        "diffv2_drift_threshold_sigmas":
+            float(solver_config.get("DiffV2_Drift_Threshold_Sigmas", 3.0)),
+        "diffv2_drift_beta": float(solver_config.get("DiffV2_Drift_Beta", 0.0)),
         # Residual-net regularization. The PRINCIPLED regularizer is the twin-loss pathwise-
         # gradient match (diffv2_lambda_grad), applied in STANDARDIZED space; weight decay is an
         # optional crutch for outer-path-starved (tiny-batch) problems.

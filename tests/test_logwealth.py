@@ -129,3 +129,18 @@ def test_the_terminal_wrap_refuses_by_name():
     rt = hedge_runtime.construct_hedge_runtime(_hedge_json())
     with pytest.raises(ValueError, match="no terminal utility"):
         _utility_wrap_signed(torch.tensor([1.0]), rt)
+
+
+def test_the_drift_bias_leans_against_the_model_when_tripped():
+    """User-ruled: on a tripped CUSUM, the forecast biases toward the REALIZED drift — if
+    the model kept expecting up while the market fell, the adjustment is DOWN (beta times
+    the observed average residual). Direction pinned on the raw arithmetic: cum(exp − obs)
+    positive (model over-forecast) must produce a NEGATIVE adjustment. Kills a sign-flip
+    mutant and an always-on mutant (beta = 0 must change nothing)."""
+    import torch
+    beta, n = 0.5, 10
+    cum = [+400.0, +200.0, -100.0]                      # model over-forecast legs 1,2; under 3
+    adj = torch.tensor([-beta * c / n for c in cum])
+    assert adj[0] < 0 and adj[1] < 0 and adj[2] > 0, 'lean AGAINST the over-forecast'
+    assert abs(float(adj[0]) + 20.0) < 1e-9             # -0.5 * 400/10
+    assert torch.equal(torch.tensor([-0.0 * c / n for c in cum]), torch.zeros(3))

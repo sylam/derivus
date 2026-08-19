@@ -2341,6 +2341,14 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                                   'the capital line in the LogWealth reward (1.0 neutral; '
                                   'higher = less capital at risk = more averse). The forward '
                                   'pass takes no dial.'),
+                    F('DiffV2_Drift_Threshold_Sigmas', 'Float', default=3.0,
+                      description='The drift tripwire tail: how many validation-measured null '
+                                  'sigmas the inference CUSUM must exceed to trip'),
+                    F('DiffV2_Drift_Beta', 'Float', default=0.0,
+                      description='On-trip correction strength: the forecast used by the '
+                                  'ranking is biased toward the REALIZED drift by beta times '
+                                  'the observed average residual. 0 = report-only; tuned '
+                                  'post-training by re-rolling saved checkpoints'),
                     F('DiffV2_Weight_Decay', 'Float', default=0.0,
                       description='Residual-net weight decay; a crutch for path-starved problems'),
                     F('DiffV2_Hidden', 'Integer', default=32,
