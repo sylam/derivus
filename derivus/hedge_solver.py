@@ -1148,6 +1148,12 @@ class DiffSolver:
         base = (c + W0).clamp_min(self.w_floor)
         r = (c + W1) / base
         u = torch.where(r > eps, r.clamp_min(eps).log(), math.log(eps) + (r - eps) / eps)
+        # BOUNDED CONDITIONING: log's economic content lives within a few nats; beyond ruin
+        # there are no useful gradations, only magnitudes that wreck the fit (unbounded, the
+        # penalty reached -4e8, the trust region spanned ±1e10, and the nets learned nothing
+        # but the cliff — rolling the same garbage corner across retrains). -20 nats is ruin
+        # by e^20: the cliff stays a cliff, the labels stay a distribution.
+        u = u.clamp_min(-20.0)
         return torch.where((c + W0) > self.w_floor, u, u.clamp_max(0.0))
 
     def _capital(self, t):

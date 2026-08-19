@@ -77,6 +77,10 @@ def test_the_floor_is_the_domain():
     # ruined launch: W0 under the floor can only score <= 0, however large W1
     assert float(s._u_step(torch.tensor([1.0e6]), torch.tensor([0.5]), 1)) <= 0.0
     assert float(s._u_step(torch.tensor([1.0e6]), torch.tensor([-50.0]), 1)) <= 0.0
+    # BOUNDED: beyond-ruin has no gradations — the reward floors at -20 nats however deep
+    # (unbounded penalties reached -4e8 in training and the fit learned only the cliff)
+    assert float(s._u_step(torch.tensor([-1.0e9]), torch.tensor([100.0]), 1)) == -20.0
+    assert float(s._u_step(torch.tensor([-1.0e9]), torch.tensor([-1.0e6]), 1)) >= -20.0
 
 
 def _hedge_json(**objective):
