@@ -2482,8 +2482,10 @@ class DiffSolver:
         exactly as it carries its trust region — so the run-level schedule is the primary member's,
         and only the label and terminal reads (which a loaded run never fits) consult it."""
         loaded = members[0]
-        self.utility_scale_schedule = self._pad_steps(loaded.get("utility_scale_schedule"),
-                                                      self.T_dec + 2)
+        self.utility_scale_schedule = loaded.get("utility_scale_schedule")
+        if self.cfg.get("diffv2_load_horizon_pad"):
+            self.utility_scale_schedule = self._pad_steps(self.utility_scale_schedule,
+                                                          self.T_dec + 2)
         self.loaded_displacement = loaded.get("displacement")
         if self.loaded_displacement is not None:
             self.displacement = float(self.loaded_displacement)
@@ -2640,10 +2642,13 @@ class DiffSolver:
                     for net, sd in zip(m_nets, self._pad_steps(ck["state_dicts"], self.T_dec)):
                         net.load_state_dict(sd)
                         net.eval()
+                    pad = bool(self.cfg.get("diffv2_load_horizon_pad"))
                     self._ensemble.append(
                         (m_nets, ck["m_mean"], ck["m_std"], ck["w_mean"], ck["w_std"],
-                         self._pad_steps(ck.get("a_bounds"), self.T_dec),
-                         self._pad_steps(ck.get("utility_scale_schedule"), self.T_dec + 2)))
+                         self._pad_steps(ck.get("a_bounds"), self.T_dec) if pad
+                         else ck.get("a_bounds"),
+                         self._pad_steps(ck.get("utility_scale_schedule"), self.T_dec + 2)
+                         if pad else ck.get("utility_scale_schedule")))
                 logging.info("DiffSolver ENSEMBLE argmax over %d value fns", len(members))
             self.worst = float(loaded["max_abs_Y_boot"])
             self.root = {"t": self.t_min, "Y_mean": float(loaded["V_0"]),

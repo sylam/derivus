@@ -160,7 +160,7 @@ def _solver(runtime, running_wealth=False, position_state=False, T_dec=3, n_step
     aspace = HedgeActionSpace(runtime, torch.device("cpu"))
     hedges = runtime["names"]["hedges"]
     s = types.SimpleNamespace(
-        runtime=runtime, aspace=aspace, chunk=64, risk_kappa=0.0, churn_lambda=0.0,
+        runtime=runtime, aspace=aspace, chunk=64, risk_kappa=0.0, churn_lambda=0.0, cfg={},
         position_state=position_state, wealth_free=False,
         running_wealth=running_wealth,
         utility_scale=float(runtime["objective"]["utility_scale"]),
