@@ -354,6 +354,13 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
                                 os.path.join(run_dir, f'md_{tag}_trade.json'), args.carry_drift)
     cfg, info = build_deal_config(template, arch, trade_date, calibrated_md, args,
                                   delta_corridor=args.delta_corridor)
+    if args.drift_overlay is not None:
+        # Stressed-regime bank member: the calibrated machine with a RULED drift the data cannot
+        # identify (GARCHSpotModel.Mu exists for exactly this; composes with Carry_Drift). The
+        # stamp rides ExplicitMarketData so training and roll both live under the hypothesis.
+        g = json.load(open(calibrated_md))['MarketData']['Price Models']['GARCHSpotModel.LBMA_AM']
+        cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Models'][
+            'GARCHSpotModel.LBMA_AM'] = dict(g, Mu=args.drift_overlay)
     # the observed window BEFORE training: a month the gap guard refuses must refuse in seconds,
     # not after a policy whose roll can never run
     obs_npz = os.path.abspath(os.path.join(run_dir, f'obs_{tag}.npz'))
@@ -514,6 +521,9 @@ def main():
     ap.add_argument('--seeds', type=int, nargs='+', default=[7])
     ap.add_argument('--carry-drift', choices=['Yes', 'No'], default='Yes',
                     help="Stamped onto the recalibrated spot block - see `trade_world`.")
+    ap.add_argument('--drift-overlay', type=float, default=None,
+                    help='Annualised log-drift stamped as GARCHSpotModel.Mu on top of the carry '
+                         '- trains a stressed-regime bank member (e.g. +0.60 = steep rally).')
     ap.add_argument('--max-gap', type=int, default=5,
                     help='Largest hole (days) allowed in the realized window.')
     ap.add_argument('--fit-iters', type=int, default=None)
