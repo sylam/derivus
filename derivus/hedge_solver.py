@@ -2128,7 +2128,7 @@ class DiffSolver:
                 f"path, and averaging them would describe a decision nothing took. Roll the dump "
                 f"at Batch_Size 1.")
 
-        q_log = {"greedy": [], "t": []}
+        q_log = {"greedy": [], "t": [], "w": []}
         dump_rows = [] if self.curve_dump else None
 
         def roll(policy):
@@ -2227,6 +2227,7 @@ class DiffSolver:
                         q = q * live
                         q_log["greedy"].append(q.mean(0).detach().cpu().tolist())
                         q_log["t"].append(int(t))
+                        q_log["w"].append(float(W.mean()))
                         if dump_rows is not None:
                             dump_rows.append(self._decision_curve_row(
                                 nets, t, m1, dF, dL, W, q_prev, q, live,
@@ -2266,6 +2267,7 @@ class DiffSolver:
                          len(dump_rows), self.curve_dump)
         out["greedy_q_traj"] = q_log["greedy"]        # per-decision mean book (audit)
         out["greedy_q_t"] = q_log["t"]
+        out["greedy_w_traj"] = q_log["w"]             # wealth at each decision (audit)
         return out
 
     def _pad_steps(self, seq, target):
