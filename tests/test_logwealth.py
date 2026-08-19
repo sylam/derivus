@@ -27,8 +27,8 @@ from derivus.hedge_solver import DiffSolver
 
 def _s(log_ratio=True, w_floor=1.0, capital=0.0, aversion=1.0):
     s = types.SimpleNamespace(log_ratio=log_ratio, w_floor=w_floor,
-                              utility_scale_schedule=None, utility_scale=capital,
-                              aversion=aversion,
+                              utility_scale_schedule=None, utility_scale=1.0e9,
+                              displacement=capital, aversion=aversion,
                               _u=lambda x, t=None: x * 2.0)     # a marked stand-in for the wrap
     s._u_step = types.MethodType(DiffSolver._u_step, s)
     s._capital = types.MethodType(DiffSolver._capital, s)
@@ -46,12 +46,12 @@ def test_the_reward_is_the_growth_ratio():
     sc = _s(capital=100.0)
     assert abs(float(sc._u_step(torch.tensor([100.0]), torch.tensor([0.0]), 1))
                - math.log(2.0)) < 1e-6
-    # THE DISPLACEMENT IS ONE CONSTANT (shifted-lognormal bias, user-ruled): a locked
-    # schedule is IGNORED by the growth reward — per-step capital lines change curvature
-    # day by day, and their measured-std machinery is where the scatter bug lived
+    # THE BIAS IS ITS OWN MEASURED CONSTANT (user-ruled: the forward pass's worst book
+    # plus a buffer) — neither the schedule nor the scalar scale is consulted
     sc.utility_scale_schedule = [40.0, 60.0]
+    sc.utility_scale = 7.0
     assert abs(float(sc._u_step(torch.tensor([100.0]), torch.tensor([0.0]), 1))
-               - math.log(2.0)) < 1e-6                       # still the scalar 100, not 60
+               - math.log(2.0)) < 1e-6                       # the displacement 100 alone
     # THE DP'S AVERSION divides the capital line (the causal proxy for the clairvoyant
     # seed's floor): gamma 2 halves the capital at risk, so the same move is a bigger ratio
     sa = _s(capital=100.0, aversion=2.0)

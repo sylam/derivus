@@ -855,6 +855,8 @@ class DiffSolver:
         # in the LogWealth reward, so gamma > 1 puts less capital at risk and the objective
         # punishes drawdowns harder. 1.0 neutral; inert under the other objectives.
         self.aversion = float(self.cfg.get("diffv2_risk_aversion", 1.0))
+        self.displacement = 0.0                # measured off the bank at warmup, or restored
+        self.loaded_displacement = None
         self.scheduled_scale = obj.get("utility_scale_mode") == "conditional_sim"
         if self.running_wealth and self.scheduled_scale and not self.log_ratio:
             raise ValueError(
@@ -1143,7 +1145,7 @@ class DiffSolver:
         # scale) — "wealth 1" is one unit of backing capital, ruin is losing it. This is the
         # user's batch-std normalization: (c_t + W1)/(c_t + W0) with both legs on the SAME
         # step's c, so the inner fork is measured against its own launch.
-        c = self._capital(t) / self.aversion
+        c = self.displacement / self.aversion
         eps = 1.0e-3
         base = (c + W0).clamp_min(self.w_floor)
         r = (c + W1) / base
@@ -2381,6 +2383,9 @@ class DiffSolver:
         and only the label and terminal reads (which a loaded run never fits) consult it."""
         loaded = members[0]
         self.utility_scale_schedule = loaded.get("utility_scale_schedule")
+        self.loaded_displacement = loaded.get("displacement")
+        if self.loaded_displacement is not None:
+            self.displacement = float(self.loaded_displacement)
         # The scalar IS the terminal read (`hedge_bundle._utility_scale`), so under a schedule it
         # is taken from the members' terminal KNEES rather than from a scalar that only happens to
         # equal them: the ensemble's terminal stats and its members' terminal continuations then
@@ -2431,6 +2436,16 @@ class DiffSolver:
             self.q_lo.tolist(), self.q_hi.tolist(), self.total_abs_limit)
 
         W_bank, q_bank = self._build_bank(self.gen)
+        if self.log_ratio and self.loaded_displacement is None and not self.displacement:
+            # THE BIAS IS MEASURED FROM THE FORWARD PASS (user-ruled): the worst book any
+            # simulated bank path touches, plus a 10% buffer — wealth stays free to go
+            # negative, the shifted log is defined on everything training will see, and the
+            # -20-nat backstop only guards the rare inner-fork dip beyond the buffer.
+            worst = min(float(W_bank[t].min()) for t in range(self.T_dec))
+            self.displacement = 1.1 * max(0.0, -worst)
+            logging.info("DiffSolver LogWealth displacement: worst bank book %.4g -> "
+                         "bias %.4g (aversion %.2f divides it)",
+                         worst, self.displacement, self.aversion)
         # Cache the framework inner-MC one-step quantities over the swept range — one
         # inner-MC fork per swept t, reused for the argmax, the bootstrap, AND market_t.
         self.sweep_ts = sweep_ts = list(range(self.t_min, self.T_dec))
@@ -2575,6 +2590,16 @@ class DiffSolver:
             return
         self._bind(bundle)
         W_bank, q_bank = self._build_bank(self.gen)
+        if self.log_ratio and self.loaded_displacement is None and not self.displacement:
+            # THE BIAS IS MEASURED FROM THE FORWARD PASS (user-ruled): the worst book any
+            # simulated bank path touches, plus a 10% buffer — wealth stays free to go
+            # negative, the shifted log is defined on everything training will see, and the
+            # -20-nat backstop only guards the rare inner-fork dip beyond the buffer.
+            worst = min(float(W_bank[t].min()) for t in range(self.T_dec))
+            self.displacement = 1.1 * max(0.0, -worst)
+            logging.info("DiffSolver LogWealth displacement: worst bank book %.4g -> "
+                         "bias %.4g (aversion %.2f divides it)",
+                         worst, self.displacement, self.aversion)
         self.inner_cache = {t: self._inner_step(t) for t in self.sweep_ts}
         self._breaches = []
         self._sweep(W_bank, q_bank)
@@ -2647,6 +2672,9 @@ class DiffSolver:
             # curves and dials) so a replay reads the solved construction instead of
             # re-measuring it on different paths.
             "solver_object": getattr(self, "SOLVER_OBJECT", "DiffSolver"),
+            # The growth reward's shift, measured off the training bank's worst book — part
+            # of the FRAME: a roll under a different shift is a different utility.
+            "displacement": getattr(self, "displacement", 0.0),
             "risk_aversion": getattr(self, "aversion", None),
             "phi_curves": getattr(self, "phi_curves", None),
             "solver_version": SOLVER_VERSION,
