@@ -1810,9 +1810,10 @@ class DiffSolver:
                 # move, averaged over paths and summed over steps — WITHIN the model this is
                 # a mean-zero tripwire (the fork and the outer share one law); at deployment
                 # the stepper-roll twin of this is the market-drift monitor
-                zraw = ((dF[rows].mean(1) - dF_o)
-                        / dF[rows].std(1).clamp_min(1e-9)) * live                 # dead legs: 0
-                zstep = zraw.sum(-1) / (float(live.sum()) or 1.0)                 # (n,) per path
+                sF_v = dF[rows].std(1).clamp_min(1e-9)
+                inf_m = live * (sF_v.mean(0) > 0.5)          # live AND still dispersing
+                zraw = ((dF[rows].mean(1) - dF_o) / sF_v) * inf_m
+                zstep = zraw.sum(-1) / (float(inf_m.sum()) or 1.0)                # (n,) per path
                 vdrift_z += float(zstep.mean())
                 vdrift_s2 += float(zstep.pow(2).mean())
                 vdrift_n += 1
@@ -2190,8 +2191,12 @@ class DiffSolver:
                         drift["cum_dL_usd"] += float(rL.mean())
                         # LIVE legs only: an expired leg has zero fork dispersion, and its
                         # frozen-mark dust over the std clamp fabricates 1e5-sigma readings
-                        n_live = float(live.sum()).__int__() or 1
-                        drift["cum_z"] += float(((rF / sF) * live).sum() / (rF.shape[0] * n_live))
+                        # informative legs only: live AND still dispersing — on a leg's final
+                        # day the fork's dispersion collapses while the settling mark moves,
+                        # and one such step fabricated -40,688 of a -40,669 month
+                        inf_m = live * (sF.mean(0) > 0.5)
+                        n_inf = float(inf_m.sum()).__int__() or 1
+                        drift["cum_z"] += float(((rF / sF) * inf_m).sum() / (rF.shape[0] * n_inf))
                         drift["z_path"].append(round(drift["cum_z"], 4))
                         n_so_far = len(drift["t"])
                         boundary = (float(self.cfg.get("diffv2_drift_threshold_sigmas", 3.0))
