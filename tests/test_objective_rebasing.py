@@ -181,6 +181,7 @@ def _solver(runtime, running_wealth=False, position_state=False, T_dec=3, n_step
         a_bounds=[None] * T_dec, _ensemble=None,
     )
     s.log_ratio = False                      # the diff-form arm; LogWealth has its own gates
+    s.loaded = None
     s.w_floor = 1.0
     for name in ("_u", "_u_step", "_capital", "_member_anchor", "_wealth_step",
                  "_unwind_kappa", "_calendar_kappa",
