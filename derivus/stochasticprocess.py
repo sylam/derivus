@@ -431,6 +431,16 @@ class StochasticProcess(object):
         instead of type-branching. Default: nothing to seed."""
         return {}
 
+    @staticmethod
+    def calibrated_t0_start(tensor, time_grid):
+        """True iff this precalculate starts the sim at the single CALIBRATED t0 state — the
+        only start a t0-DATA seam (an observed session print conditioning row 1) may apply to.
+        A fork from t>0 is not the seam (scen_time_grid[0] > 0), and neither is a per-path (B,)
+        restart — the Randomize_Initial_State burn-in — where re-applying it stamps
+        log(print / scattered-path-0) on every path's row 1 as a common phantom jump. Every
+        seam-conditioned process must gate on this predicate, not on the grid alone."""
+        return time_grid.scen_time_grid[0] == 0 and tensor.numel() == 1
+
     # ---- Model-agnostic reseed protocol (the calc / solver speak only these verbs) ----------
     # A process owns every model-specific buffer key and recursion; the calc loops uniformly and
     # never mentions a regime, belief, or variance. Base implementations are inert no-ops.
@@ -2721,9 +2731,10 @@ class GARCHSpotModel(StochasticProcess):
         # Bridge_T0_Fix: the first step conditions on the observed later-session print. Under the
         # bridge law the print sits ON the path to the next fix with unit loading, so row 1's
         # conditional mean is the print less the premium — a drift term, so the observed-path
-        # replay recovers the same innovations (forward ≡ replay is structural). t0-anchored
-        # outer grids only: a fork from t>0 is not the seam and must not re-apply it.
-        if self.bridge_t0 > 0.0 and time_grid.scen_time_grid[0] == 0 and len(dt_arr) > 1:
+        # replay recovers the same innovations (forward ≡ replay is structural). Gated on
+        # `calibrated_t0_start`: forks and burn-in restarts are not the data seam.
+        if (self.bridge_t0 > 0.0 and len(dt_arr) > 1
+                and self.calibrated_t0_start(tensor, time_grid)):
             s0 = float(tensor.detach().reshape(-1)[0])
             self.drift[1] = self.drift[1] + (
                 np.log(self.bridge_t0 / s0) - self.bridge_t0_prem)
@@ -4350,10 +4361,10 @@ class BasisLinkedSpotModel(StochasticProcess):
         # Chain_T0_Basis: row 1 conditions on the observed later-session partner print (unit
         # loading — the chained bridge's waypoint sits on the path to the next own-session
         # basis). Applied as a bias on row 1's ds so forward and replay share it structurally.
-        # None = off; t0-anchored grids only — a fork from t>0 is not the seam.
+        # None = off; gated on `calibrated_t0_start`: forks and burn-in restarts are not the seam.
         self.chain_t0_shift = None
-        if self.param.get('Chain_T0_Basis') is not None and time_grid.scen_time_grid[0] == 0 \
-                and self.scenario_horizon > 1:
+        if self.param.get('Chain_T0_Basis') is not None and self.scenario_horizon > 1 \
+                and self.calibrated_t0_start(tensor, time_grid):
             self.chain_t0_shift = (float(self.param['Chain_T0_Basis'])
                                    - float(tensor.detach().reshape(-1)[0])
                                    - float(self.param.get('Chain_T0_Premium') or 0.0))
