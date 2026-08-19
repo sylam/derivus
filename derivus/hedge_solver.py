@@ -1465,6 +1465,8 @@ class DiffSolver:
                 "corridor=[%.4g, %.4g] bank Σq∈[%.4g, %.4g] frac_oob=%.3f (≈0 ⇒ projection clean)",
                 min(r[3] for r in oob), sum(r[3] for r in oob) / len(oob),
                 worst[3], worst[0], worst[1], worst[2], worst[4], worst[5], worst[3])
+        if self.log_ratio:
+            self._bank_worst = float(min(min(float(w.min()) for w in W_list), float(W.min())))
         return W_list, q_list
 
     # ---- project per-process state-at-t leaf grads → market_t columns --------
@@ -2441,7 +2443,9 @@ class DiffSolver:
             # simulated bank path touches, plus a 10% buffer — wealth stays free to go
             # negative, the shifted log is defined on everything training will see, and the
             # -20-nat backstop only guards the rare inner-fork dip beyond the buffer.
-            worst = min(float(W_bank[t].min()) for t in range(self.T_dec))
+            worst = getattr(self, "_bank_worst", None)
+            if worst is None:
+                worst = min(float(W_bank[t].min()) for t in range(self.T_dec))
             self.displacement = 1.1 * max(0.0, -worst)
             logging.info("DiffSolver LogWealth displacement: worst bank book %.4g -> "
                          "bias %.4g (aversion %.2f divides it)",
@@ -2595,7 +2599,9 @@ class DiffSolver:
             # simulated bank path touches, plus a 10% buffer — wealth stays free to go
             # negative, the shifted log is defined on everything training will see, and the
             # -20-nat backstop only guards the rare inner-fork dip beyond the buffer.
-            worst = min(float(W_bank[t].min()) for t in range(self.T_dec))
+            worst = getattr(self, "_bank_worst", None)
+            if worst is None:
+                worst = min(float(W_bank[t].min()) for t in range(self.T_dec))
             self.displacement = 1.1 * max(0.0, -worst)
             logging.info("DiffSolver LogWealth displacement: worst bank book %.4g -> "
                          "bias %.4g (aversion %.2f divides it)",
@@ -3303,9 +3309,12 @@ class DiffSolverV2(DiffSolver):
             q_prev = q
         if self.log_ratio:
             bw = torch.stack(W_list)
+            # the WORST book includes the terminal wealth (W after the last step) — in a
+            # crash month the terminal is often the global minimum, and a bias measured
+            # only at decision times would leave the last fit step's states uncovered
+            self._bank_worst = float(torch.minimum(bw.min(), W.min()))
             logging.info(
                 "DiffSolverV2 bank floor (LogWealth domain): frac(W <= floor) = %.4f "
-                "min W = %.4g — the ratio reward is linear-extended below eps, so breaches "
-                "train as penalties rather than NaNs",
-                float((bw <= self.w_floor).float().mean()), float(bw.min()))
+                "min W (incl terminal) = %.4g",
+                float((bw <= self.w_floor).float().mean()), self._bank_worst)
         return W_list, q_list

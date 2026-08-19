@@ -367,3 +367,22 @@ def test_the_bank_mixes_the_seed_and_the_drowning():
         'the drowning must be PRESENT in the base half'
     assert bool((torch.stack(q_seed) != torch.stack(q_base)).any()), \
         'seed and base must genuinely differ on this fixture'
+
+
+def test_the_bias_measurement_includes_the_terminal_wealth():
+    """The bias covers the WORST book anywhere in the bank — including the wealth AFTER the
+    last step, which in a crash month is often the global minimum. A bias measured only at
+    decision times leaves the last fit step's states uncovered. Kills a decision-times-only
+    mutant."""
+    s = _v2(T_dec=3, seed=2, lo=-7.0, l0=2.0)
+    s.log_ratio = True
+    gen = torch.Generator().manual_seed(0)
+    s.aspace.initial_q = lambda B, dev: torch.zeros(B, 1)
+    W_list, q_list = s._build_bank(gen)
+    q_star = [q_list[t + 1] for t in range(s.T_dec - 1)]
+    books = _roll_books(s, [q_list[t + 1] for t in range(s.T_dec - 1)] + [q_list[-1]])
+    # the stash must be <= every decision-time book AND the terminal book
+    assert hasattr(s, '_bank_worst')
+    assert s._bank_worst <= float(torch.stack(W_list).min()) + 1e-4
+    assert s._bank_worst <= float(books[-1].min()) + 1e-4, \
+        'the terminal wealth must bound the measured worst'
