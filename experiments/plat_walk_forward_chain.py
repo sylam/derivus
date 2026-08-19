@@ -679,18 +679,19 @@ def main():
                 # per-family windows (the window-study rulings): the basis/chain/fix/carry
                 # families fit on the rolling short window; the GARCH shape wants the LONG
                 # one (a 3y fit reads nu ~ 23, near-Gaussian tails), so the spot block is
-                # spliced in from a long-window pass
-                calibrate(os.path.abspath(args.marketdata), cal_cfg, cal_end, calibrated_md,
-                          start=cal_start)
-                md_long = calibrated_md.replace('.json', '_garchlong.json')
-                cal_start_g = (trade_date - pd.DateOffset(years=args.garch_years)).strftime('%Y-%m-%d')
-                calibrate(os.path.abspath(args.marketdata), cal_cfg, cal_end, md_long,
-                          start=cal_start_g)
-                _short = json.load(open(calibrated_md))
-                _key = f'GARCHSpotModel.{FIX_COL.split(".", 1)[1]}'
-                _short['MarketData']['Price Models'][_key] = json.load(
-                    open(md_long))['MarketData']['Price Models'][_key]
-                _atomic_write_json(calibrated_md, _short)
+                # spliced in from a long-window pass. An existing spliced file is the cache.
+                if not os.path.exists(calibrated_md):
+                    calibrate(os.path.abspath(args.marketdata), cal_cfg, cal_end, calibrated_md,
+                              start=cal_start)
+                    md_long = calibrated_md.replace('.json', '_garchlong.json')
+                    cal_start_g = (trade_date - pd.DateOffset(years=args.garch_years)).strftime('%Y-%m-%d')
+                    calibrate(os.path.abspath(args.marketdata), cal_cfg, cal_end, md_long,
+                              start=cal_start_g)
+                    _short = json.load(open(calibrated_md))
+                    _key = f'GARCHSpotModel.{FIX_COL.split(".", 1)[1]}'
+                    _short['MarketData']['Price Models'][_key] = json.load(
+                        open(md_long))['MarketData']['Price Models'][_key]
+                    _atomic_write_json(calibrated_md, _short)
                 mats_g = listed_expiries(args.expiries, trade_date)
                 taus = [(e - trade_date).days / DAYS_IN_YEAR for e in mats_g]
                 for leg, by_state in guard_e_df_state(
