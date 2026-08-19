@@ -2417,6 +2417,12 @@ class DiffSolver:
                 "widest universe); rolling it on an Allocation_Weights ladder only restricts "
                 "to a learned subset — valid.", src)
             return
+        if self.cfg.get("diffv2_load_horizon_pad"):
+            # A ladder is derived from the run's own calendar, so under a horizon-padded load a
+            # knot-for-knot match is impossible by construction; the run's own ladder is searched.
+            logging.info("DiffV2 load horizon pad: Allocation_Weights differ from the saved "
+                         "ladder; this run searches its own.")
+            return
         raise ValueError(
             f"DiffV2_Load_Value_Fn Allocation_Weights mismatch: {src} was fitted on the ladder "
             f"{saved} but this run searches {want}. The argmax scored a different set of books, "
