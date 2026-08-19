@@ -144,3 +144,20 @@ def test_the_drift_bias_leans_against_the_model_when_tripped():
     assert adj[0] < 0 and adj[1] < 0 and adj[2] > 0, 'lean AGAINST the over-forecast'
     assert abs(float(adj[0]) + 20.0) < 1e-9             # -0.5 * 400/10
     assert torch.equal(torch.tensor([-0.0 * c / n for c in cum]), torch.zeros(3))
+
+
+def test_inner_mc_averages_the_logs_not_the_log_of_the_average():
+    """The labels take E[log] over inner draws — the ordering that ENCODES risk aversion
+    (Jensen: a dispersed fork must score below its mean-preserving safe twin). Log-of-mean
+    would erase the aversion silently. Pins the atom the _fit_step/_decide paths average."""
+    s = _s(capital=100.0)
+    W0 = torch.tensor([0.0])
+    draws = torch.tensor([[-50.0, 150.0]])              # mean 50, dispersed
+    safe = torch.tensor([[50.0, 50.0]])                 # same mean, no dispersion
+    u_disp = s._u_step(draws, W0, 1).mean()
+    u_safe = s._u_step(safe, W0, 1).mean()
+    assert float(u_disp) < float(u_safe) - 0.05, \
+        'a dispersed fork must price BELOW its mean-preserving safe twin (E[log])'
+    import math as _m
+    per_draw = (_m.log(50.0 / 100.0) + _m.log(250.0 / 100.0)) / 2.0
+    assert abs(float(u_disp) - per_draw) < 1e-6, 'must be the mean of per-draw logs'
