@@ -1881,8 +1881,14 @@ class DiffSolver:
         # THE NULL (user-ruled: "we know it should be 0 - measure the std there"): the
         # per-step std of the within-model standardized residual — the tripwire boundary at
         # inference is k * null_sigma * sqrt(t). Stamped with the frame.
-        self.drift_null_sigma = max(1e-6, (vdrift_s2 / max(1, vdrift_n)) ** 0.5)
-        out["drift_null_sigma"] = round(self.drift_null_sigma, 4)
+        if self.loaded is None:
+            # THE NULL comes from TRAINING validation only: there the fork and the outer
+            # paths share one law and the statistic is internal consistency. On a LOADED
+            # roll the batch is the observed market (B=1), the same statistic reads
+            # model-vs-market drift, and stamping THAT as the null would inflate the
+            # tripwire's own threshold with the very signal it must detect.
+            self.drift_null_sigma = max(1e-6, (vdrift_s2 / max(1, vdrift_n)) ** 0.5)
+        out["drift_null_sigma"] = round(getattr(self, "drift_null_sigma", 0.0) or 0.0, 4)
         # Which regime chose the greedy book — a charged argmax over an uncharged wealth
         # recursion is not readable off the figures — and whether `u_mean` is a terminal utility
         # or a sum of per-step ones, which no figure states either.
