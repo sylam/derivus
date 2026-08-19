@@ -418,6 +418,9 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     roll = apply_config(copy.deepcopy(cfg), batch=1, seed=args.seeds[0], load=ckpts,
                         stepper_rollout=True, randomize_initial_state=False)
     roll['Calc']['Calculation']['Inner_Sub_Batch'] = args.roll_inner
+    if args.load_horizon_pad:
+        roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
+            'DiffV2_Load_Horizon_Pad'] = 'Yes'
     if args.grid_levels is not None:
         roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
             'Training_Action_Grid_Levels_Per_Axis'] = args.grid_levels
@@ -522,6 +525,9 @@ def main():
                     help="Stamped onto the recalibrated spot block - see `trade_world`.")
     ap.add_argument('--drift-overlay', type=float, default=None,
                     help='Annualised log-drift stamped as GARCHSpotModel.Mu on top of the carry.')
+    ap.add_argument('--load-horizon-pad', action='store_true',
+                    help='Roll-time DiffV2_Load_Horizon_Pad=Yes: accept checkpoints fitted on a '
+                         'different decision horizon (steps clamp to the saved range).')
     ap.add_argument('--max-gap', type=int, default=5,
                     help='Largest hole (days) allowed in the realized window.')
     ap.add_argument('--fit-iters', type=int, default=None)

@@ -352,6 +352,10 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         # enters the fitted TARGET (see docstring). 'No' = the position-free value.
         "diffv2_position_state":
             solver_config.get("DiffV2_Position_State", "No") == "Yes",
+        # Load a checkpoint fitted on a different decision horizon: per-step structures clamp
+        # to the saved range (the tail repeats the last fitted step). 'No' = exact-shape loads.
+        "diffv2_load_horizon_pad":
+            solver_config.get("DiffV2_Load_Horizon_Pad", "No") == "Yes",
         # WEALTH-FREE residual: drop the W input column of the value net, so the ranking's
         # wealth dependence is the utility anchor's alone. 'No' = the wealth-bearing residual.
         "diffv2_wealth_free_value":

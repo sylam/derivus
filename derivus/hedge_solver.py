@@ -2268,6 +2268,15 @@ class DiffSolver:
         out["greedy_q_t"] = q_log["t"]
         return out
 
+    def _pad_steps(self, seq, target):
+        """Clamp a per-step list to `target` entries by truncating or repeating the last one —
+        identity when the lengths already agree (the provenance check enforces that unless
+        `DiffV2_Load_Horizon_Pad` relaxed it)."""
+        if seq is None:
+            return None
+        seq = list(seq)
+        return seq[:target] if len(seq) >= target else seq + [seq[-1]] * (target - len(seq))
+
     # ---- driver: warmup (fit + frame lock) -> step (fresh batch) -> finish (verdict) ----
     def _check_load_provenance(self, ck, src, md):
         """Hold one `DiffV2_Load_Value_Fn` member against this run and return its solver version
@@ -2291,6 +2300,12 @@ class DiffSolver:
         for key, want in (("t_min", self.t_min), ("T_dec", self.T_dec),
                           ("md", md), ("hedges", list(self.hedges))):
             if ck[key] != want:
+                if key in ("t_min", "T_dec") and self.cfg.get("diffv2_load_horizon_pad"):
+                    # Horizon pad: per-step structures clamp to the saved range at load
+                    # (`_pad_steps`); the tail repeats the last fitted step.
+                    logging.info("DiffV2 load horizon pad: %r saved %r vs this run %r",
+                                 key, ck[key], want)
+                    continue
                 raise ValueError(
                     f"DiffV2_Load_Value_Fn checkpoint mismatch on {key!r}: "
                     f"{src} saved {ck[key]!r} vs this run {want!r}")
@@ -2459,7 +2474,8 @@ class DiffSolver:
         exactly as it carries its trust region — so the run-level schedule is the primary member's,
         and only the label and terminal reads (which a loaded run never fits) consult it."""
         loaded = members[0]
-        self.utility_scale_schedule = loaded.get("utility_scale_schedule")
+        self.utility_scale_schedule = self._pad_steps(loaded.get("utility_scale_schedule"),
+                                                      self.T_dec + 2)
         self.loaded_displacement = loaded.get("displacement")
         if self.loaded_displacement is not None:
             self.displacement = float(self.loaded_displacement)
@@ -2593,7 +2609,8 @@ class DiffSolver:
                 for _ in range(self.T_dec)]
         # Per-t trust region for A_t evaluation (set at fit time / restored from checkpoint;
         # None = unclamped, e.g. pre-trust-region checkpoints).
-        self.a_bounds = (list(loaded["a_bounds"]) if loaded is not None and loaded.get("a_bounds")
+        self.a_bounds = (self._pad_steps(loaded["a_bounds"], self.T_dec)
+                         if loaded is not None and loaded.get("a_bounds")
                          else [None] * self.T_dec)
         logging.info("DiffSolver action grid: K=%d actions (levels=%d ^ active=%d)",
                      self.grid_size, self.levels, self.n_active)
@@ -2603,7 +2620,7 @@ class DiffSolver:
         self.loaded = loaded
         self.rows = []
         if loaded is not None:
-            for net, sd in zip(nets, loaded["state_dicts"]):
+            for net, sd in zip(nets, self._pad_steps(loaded["state_dicts"], self.T_dec)):
                 net.load_state_dict(sd)
                 net.eval()
             if len(members) > 1:
@@ -2612,12 +2629,13 @@ class DiffSolver:
                 for ck in members:
                     m_nets = [_DiffV2Residual(in_dim, hidden=int(ck["hidden"])).to(self.device)
                               for _ in range(self.T_dec)]
-                    for net, sd in zip(m_nets, ck["state_dicts"]):
+                    for net, sd in zip(m_nets, self._pad_steps(ck["state_dicts"], self.T_dec)):
                         net.load_state_dict(sd)
                         net.eval()
                     self._ensemble.append(
                         (m_nets, ck["m_mean"], ck["m_std"], ck["w_mean"], ck["w_std"],
-                         ck.get("a_bounds"), ck.get("utility_scale_schedule")))
+                         self._pad_steps(ck.get("a_bounds"), self.T_dec),
+                         self._pad_steps(ck.get("utility_scale_schedule"), self.T_dec + 2)))
                 logging.info("DiffSolver ENSEMBLE argmax over %d value fns", len(members))
             self.worst = float(loaded["max_abs_Y_boot"])
             self.root = {"t": self.t_min, "Y_mean": float(loaded["V_0"]),

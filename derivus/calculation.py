@@ -2349,6 +2349,11 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                                   'ranking is biased toward the REALIZED drift by beta times '
                                   'the observed average residual. 0 = report-only; tuned '
                                   'post-training by re-rolling saved checkpoints'),
+                    F('DiffV2_Load_Horizon_Pad', 'Text', default='No', values=['Yes', 'No'],
+                      description='Yes loads a value-function checkpoint fitted on a different '
+                                  'decision horizon: per-step nets, trust bounds and scale '
+                                  'schedules clamp to the saved range, the tail repeating the '
+                                  'last fitted step. No refuses any t_min/T_dec mismatch'),
                     F('DiffV2_Weight_Decay', 'Float', default=0.0,
                       description='Residual-net weight decay; a crutch for path-starved problems'),
                     F('DiffV2_Hidden', 'Integer', default=32,
