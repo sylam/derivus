@@ -27,7 +27,7 @@ from collections import namedtuple, defaultdict
 # import the risk factors (also known as price factors)
 from .riskfactors import construct_factor
 # import the stochastic processes
-from .stochasticprocess import construct_process
+from .stochasticprocess import REVEAL_CONTINUOUS, construct_process
 # import the currency/curve lookup factors 
 from .instruments import get_fxrate_factor, get_survival_component, get_interest_factor, get_survival_factor
 # import the hessian function
@@ -2354,6 +2354,12 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                                   'decision horizon: per-step nets, trust bounds and scale '
                                   'schedules clamp to the saved range, the tail repeating the '
                                   'last fitted step. No refuses any t_min/T_dec mismatch'),
+                    F('DiffV2_Returns_State', 'Text', default='No', values=['Yes', 'No'],
+                      description='Yes makes the value state dimensionless: price columns as '
+                                  'log-returns vs the calibrated t0 spot, basis columns as '
+                                  'fractions of it, wealth as a fraction of the t0 book '
+                                  'notional. Checkpoints stamp the coordinate system and refuse '
+                                  'a mismatched load'),
                     F('DiffV2_Weight_Decay', 'Float', default=0.0,
                       description='Residual-net weight decay; a crutch for path-starved problems'),
                     F('DiffV2_Hidden', 'Integer', default=32,
@@ -2474,6 +2480,18 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         payment day onto the (history-prefixed) bundle time grid to recover
         `last_settlement_index`."""
         return self.liabilities.aggregate_leg_descriptors()
+
+    def _reveal_transform(self, key, block, kind):
+        """Returns-state coordinate map (identity when the switch is off): a CommodityPrice's
+        CONTINUOUS segment becomes log(x / calibrated t0 spot); an ObservedBasis segment becomes
+        x / that spot. Sufficient statistics (log h, beliefs) and rate curves pass through."""
+        if not getattr(self, '_returns_state', False):
+            return block
+        if key.type == 'CommodityPrice' and kind == REVEAL_CONTINUOUS:
+            return (block / self._state_spot0).log()
+        if key.type == 'ObservedBasis':
+            return block / self._state_spot0
+        return block
 
     def execute(self, params, job_id=0, num_jobs=1):
         """Simulate the scenario engine over batches, building the tensor bundle (tradable
@@ -2626,6 +2644,22 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
             self.params['Calendar'], {'businessday': pd.offsets.BDay(1)})['businessday']
         # per-batch burn-in: variance in z_0 for the diff-ML boundary label
         randomize_t0 = hedging_problem.get('Randomize_Initial_State', 'No') == 'Yes'
+        # Returns-state coordinates: dimensionless market columns (price -> log-return vs the
+        # calibrated t0 spot; basis -> fraction of it), constant divisor per run so outer rows
+        # and fork reveals share one coordinate system across price epochs.
+        self._returns_state = (hedging_problem.get('Solver') or {}).get(
+            'DiffV2_Returns_State', 'No') == 'Yes'
+        self._state_spot0 = None
+        if self._returns_state:
+            price_keys = [k for k in self.stoch_factors if k.type == 'CommodityPrice']
+            if len(price_keys) != 1:
+                raise ValueError(
+                    f'DiffV2_Returns_State=Yes needs exactly one simulated CommodityPrice to '
+                    f'anchor the coordinates; this world has {len(price_keys)}')
+            self._state_spot0 = float(
+                self.stoch_var[price_keys[0]].detach().reshape(-1)[0])
+            normalized_runtime['objective']['state_notional'] = (
+                self._state_spot0 * total_leg_volume)
         # walk-forward replay: substitute observed paths; the driver owns all the prep
         observed = None
         if params.get('Observed_Scenario'):
@@ -3089,7 +3123,8 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                         state_t_leaves.update(inner_leaves)
                     # market state at outer t+1 (inner-time index 1), in reveal order
                     for block, _kind in proc_inner.reveal_state_at(1, shared_mem.t_Scenario_Buffer):
-                        market_t1_parts.append(block.reshape(-1, B_outer, B_inner))
+                        market_t1_parts.append(
+                            self._reveal_transform(key, block, _kind).reshape(-1, B_outer, B_inner))
 
                 # publish past-then-forked rows; the past keeps ONE outer column per B_inner flat
                 # columns, handed over as data rather than re-derived downstream
@@ -3186,7 +3221,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                     proc_inner = self.stoch_factors_inner[key]
                     width = 0
                     for block, _kind in proc_inner.reveal_state_at(t, outer_scenario_buffer):
-                        b = block.reshape(-1, B_outer)
+                        b = self._reveal_transform(key, block, _kind).reshape(-1, B_outer)
                         market_t_parts.append(b)
                         width += b.shape[0]
                     # Forward the process's differentiable-state-leaf suffixes to the solver's

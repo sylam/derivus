@@ -1021,7 +1021,8 @@ class DiffSolver:
         (market | [W] | [p]) with the blocks kept in that order under every combination."""
         cols = [(market - self.m_mean) / self.m_std]
         if not self.wealth_free:
-            cols.append(((W - self.w_mean) / self.w_std).unsqueeze(-1))
+            sn = getattr(self, "state_notional", None)
+            cols.append((((W / sn if sn else W) - self.w_mean) / self.w_std).unsqueeze(-1))
         return torch.cat(cols if p is None else cols + [p.unsqueeze(-1)], dim=-1)
 
     def _continuation(self, nets, market, W, t, p, chunk=400_000):
@@ -2324,6 +2325,13 @@ class DiffSolver:
                 f"{'Yes' if self.position_state else 'No'}. The net book fraction p = Sum(q)/Q_max "
                 f"is an input column of the fitted value, so the two are different functions of "
                 f"different states — retrain, or match Solver.DiffV2_Position_State.")
+        if bool(ck.get("returns_state", False)) != bool(self.cfg.get("diffv2_returns_state")):
+            raise ValueError(
+                f"DiffV2_Returns_State mismatch: {src} was trained with returns_state="
+                f"{bool(ck.get('returns_state', False))} but this run sets "
+                f"{bool(self.cfg.get('diffv2_returns_state'))}. The state coordinates differ, "
+                f"so the two are different functions of different states - retrain, or match "
+                f"Solver.DiffV2_Returns_State.")
         want_mode = "running_wealth" if self.running_wealth else "fixed"
         if ck.get("reference_mode", "fixed") != want_mode:
             raise ValueError(
@@ -2566,6 +2574,12 @@ class DiffSolver:
         M = torch.cat([inner_cache[t][3][train] for t in sweep_ts], 0)                # (n_swept*B, md)
         self.m_mean, self.m_std = M.mean(0), M.std(0).clamp_min(1e-6)
         Wall = torch.stack([W_bank[t][train] for t in sweep_ts], 0).reshape(-1)
+        # Returns-state: the wealth column (and its frame) lives in fractions of the t0 book
+        # notional, so a stamped frame travels across price epochs like the market columns do.
+        self.state_notional = (float(self.runtime["objective"].get("state_notional") or 0.0)
+                               if self.cfg.get("diffv2_returns_state") else 0.0) or None
+        if self.state_notional:
+            Wall = Wall / self.state_notional
         self.w_mean, self.w_std = Wall.mean(), Wall.std().clamp_min(1e-6)
         self.md = md = M.shape[-1]
         logging.info(
@@ -2779,6 +2793,7 @@ class DiffSolver:
             # setting is refused BY NAME rather than as a net shape error. The wealth-free
             # switch is the same statement about the W column it REMOVES.
             "position_state": self.position_state,
+            "returns_state": bool(self.cfg.get("diffv2_returns_state")),
             "wealth_free": self.wealth_free,
             "T_dec": self.T_dec, "t_min": self.t_min, "md": md, "hidden": hidden,
             # Bank-policy provenance: WHICH solver class shaped the wealth/position states the

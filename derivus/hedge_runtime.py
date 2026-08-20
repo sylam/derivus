@@ -356,6 +356,11 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         # to the saved range (the tail repeats the last fitted step). 'No' = exact-shape loads.
         "diffv2_load_horizon_pad":
             solver_config.get("DiffV2_Load_Horizon_Pad", "No") == "Yes",
+        # Dimensionless state coordinates: price -> log-return vs calibrated t0 spot, basis ->
+        # fraction of it, wealth -> fraction of t0 book notional. A different coordinate system
+        # is a different function; checkpoints stamp it and refuse a mismatch.
+        "diffv2_returns_state":
+            solver_config.get("DiffV2_Returns_State", "No") == "Yes",
         # WEALTH-FREE residual: drop the W input column of the value net, so the ranking's
         # wealth dependence is the utility anchor's alone. 'No' = the wealth-bearing residual.
         "diffv2_wealth_free_value":

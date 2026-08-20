@@ -114,7 +114,7 @@ def _solver(runtime, position_state, T_dec=3, n_steps=4, B=2):
         hedges=hedges, contract_size=aspace.contract_size, device=torch.device("cpu"),
         # Flat marks: per_contract_kappa is then the Transaction_Cost_Per_Unit alone.
         tradables_sim={r: torch.zeros(n_steps, B) for r in hedges},
-        seen=[],
+        seen=[], cfg={}, loaded=None,
     )
     s._wealth_step = types.MethodType(DiffSolver._wealth_step, s)
     s._project_leaf_grads = types.MethodType(DiffSolver._project_leaf_grads, s)
@@ -270,7 +270,7 @@ def _stub(position_state):
     s = types.SimpleNamespace(t_min=0, T_dec=3, hedges=list(rt["names"]["hedges"]),
                               position_state=position_state, wealth_free=False, log_ratio=False,
                               running_wealth=False, utility_scale_schedule=None,
-                              scheduled_scale=False,
+                              scheduled_scale=False, cfg={}, loaded=None,
                               aspace=HedgeActionSpace(rt, torch.device("cpu")))
     s._check_action_universe = types.MethodType(DiffSolver._check_action_universe, s)
     s._check_calendar_spread = types.MethodType(DiffSolver._check_calendar_spread, s)
