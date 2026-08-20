@@ -122,15 +122,18 @@ def test_phi_is_the_conditional_and_isotonic():
     assert torch.allclose(bpf, torch.full_like(bpf, float(y[:512].float().mean())))
 
 
-def test_the_strike_is_the_high_water_or_the_floor():
+def test_the_strike_is_the_floor():
+    """User-ruled: the danger measured is terminal breach of the FLOOR ($1/oz), not a
+    high-water ratchet — a book far above water reads low d (the map parks the seed at the
+    top of the bound), an under-water book reads high d, and the curve separates them."""
     s = _v2()
     q, curves, WT = s._constructed_policy()
     book1 = s.liability_sim[1]
     d_hi = float(s._phi_apply(curves[1], book1.quantile(0.9).reshape(1))[0])
-    assert 0.32 < d_hi < 0.68, f'above water must read near-ATM (no release); got {d_hi}'
     d_lo = float(s._phi_apply(curves[1], book1.quantile(0.1).reshape(1))[0])
-    assert d_lo > 0.62, f'under water the floor must demand more cover; got {d_lo}'
     assert d_lo > d_hi + 0.1, 'the floor must separate under- from above-water books'
+    assert d_hi < 0.5, f'a book far above the floor must not read near-ATM danger; got {d_hi}'
+    assert d_lo > 0.5, f'a book near the floor must demand cover; got {d_lo}'
 
 
 def test_the_forward_pass_is_deterministic_and_single_pass():
@@ -164,7 +167,7 @@ def test_the_forward_pass_is_deterministic_and_single_pass():
         req = torch.maximum(req - (L[t + 1] - L[t]) - best, torch.full_like(req, floor))
     W = L[0].clone()
     for t in range(T):
-        cv = DiffSolverV2._phi_curve(L[t], LT < L[t].clamp_min(floor))
+        cv = DiffSolverV2._phi_curve(L[t], LT < floor)
         g = s._phi_apply(cv, W)
         net = hi_i[t] - g * (hi_i[t] - lo_i[t])
         net = torch.where(net < 0, net.floor(), net.ceil()).clamp(lo_i[t], hi_i[t])

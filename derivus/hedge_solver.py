@@ -3220,14 +3220,14 @@ class DiffSolverV2(DiffSolver):
         q, W = [], L[0].clone()
         curves = []
         for t in range(T):
-            # The strike is TODAY'S BOOK OR $1/oz, whichever is higher (user-ruled: "just
-            # above 0" is a dollar over, not zero). The forward pass is hindsight-privileged
-            # — it sees the simulated terminals and exists to seed the backward solver — so
-            # the floor composite is allowed by construction: under water the question
-            # becomes recovery to the floor (d saturates, full cover, and a recovery
-            # ratchets the floor up behind it); above water today's book is the strike
-            # (the high-water ratchet — gains stay defended, no release).
-            cv = self._phi_curve(L[t], LT < L[t].clamp_min(1.0 * self.leg_volume))
+            # The strike is the FLOOR: $1/oz over the leg volume (user-ruled: "we just ensure
+            # the minimal contracts to protect ourselves"). The danger measured is terminal
+            # capital breach, not a high-water ratchet — a rallying book with no breach risk
+            # reads d ~ 0 and the map parks the seed at the TOP of the bound, so a world that
+            # only rises seeds riding and a world that falls seeds full cover. The forward
+            # pass is hindsight-privileged; the least-repair leg below still guarantees the
+            # floored half never ends under the same floor.
+            cv = self._phi_curve(L[t], LT < 1.0 * self.leg_volume)
             curves.append(cv)
             if float(rep[t].abs().sum()) < 0.5:
                 # Less than half a contract of remaining replication delta: the liability is
