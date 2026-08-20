@@ -358,8 +358,10 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
         # Stamp Mu on the recalibrated spot block (composes with Carry_Drift); rides
         # ExplicitMarketData so train and roll see the same world.
         g = json.load(open(calibrated_md))['MarketData']['Price Models']['GARCHSpotModel.LBMA_AM']
+        # The overlay IS the drift hypothesis: Mu replaces the carry drift rather than
+        # riding on top of it.
         cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Models'][
-            'GARCHSpotModel.LBMA_AM'] = dict(g, Mu=args.drift_overlay)
+            'GARCHSpotModel.LBMA_AM'] = dict(g, Mu=args.drift_overlay, Carry_Drift='No')
     # the observed window BEFORE training: a month the gap guard refuses must refuse in seconds,
     # not after a policy whose roll can never run
     obs_npz = os.path.abspath(os.path.join(run_dir, f'obs_{tag}.npz'))
