@@ -426,6 +426,9 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     if args.returns_state:
         roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
             'DiffV2_Returns_State'] = 'Yes'
+    if args.drift_beta is not None:
+        roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
+            'DiffV2_Drift_Beta'] = args.drift_beta
     if args.grid_levels is not None:
         roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
             'Training_Action_Grid_Levels_Per_Axis'] = args.grid_levels
@@ -530,6 +533,8 @@ def main():
                     help="Stamped onto the recalibrated spot block - see `trade_world`.")
     ap.add_argument('--drift-overlay', type=float, default=None,
                     help='Annualised log-drift stamped as GARCHSpotModel.Mu on top of the carry.')
+    ap.add_argument('--drift-beta', type=float, default=None,
+                    help='Roll-time Solver.DiffV2_Drift_Beta.')
     ap.add_argument('--returns-state', action='store_true',
                     help='Solver.DiffV2_Returns_State=Yes on train and roll.')
     ap.add_argument('--load-horizon-pad', action='store_true',
