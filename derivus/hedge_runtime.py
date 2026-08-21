@@ -98,15 +98,16 @@ def _instrument_metadata(name, entry, *, hedge_names, cash_account_names, liabil
 
 
 def _bid_offer_spread(evaluator_config: Mapping[str, Any]):
-    """`Evaluator.Bid_Offer_Spread_Bps` is EITHER a scalar half-spread bps applied to every
-    instrument (the fast path) OR a spec dict for maturity/liquidity- and volatility-dependent
+    """`Evaluator.Bid_Offer_Spread_Bps` is EITHER the scalar FULL quoted bid-offer spread in
+    bps, applied to every instrument (each trade pays HALF of it — mid to touch; the fast
+    path) OR a spec dict for maturity/liquidity- and volatility-dependent
     spreads:
 
         {"Default_Bps": d,
          "Per_Instrument": {name: base_bps, ...},
          "Vol_Scale": {"Ref_Vol": r, "Beta": b}}
 
-    The effective half-spread for instrument `name` at annualized vol σ_t is
+    The effective full spread for instrument `name` at annualized vol σ_t is
     `base_bps[name] · (σ_t/Ref_Vol)**Beta`, where `base_bps[name]` falls back to `Default_Bps`
     (Per_Instrument absent ⇒ Default_Bps for all) and the vol factor is 1 when Vol_Scale is
     absent, Beta==0, or σ_t is unknown. Returns `(scalar_bps, spec)`; `spec` is None in the
@@ -743,19 +744,20 @@ def construct_hedge_runtime(
 
 def per_contract_kappa(runtime, price, name, vol=None, calendar=False):
     """Per-contract turnover cost for tradable `name` at mark `price`: a flat
-    Transaction_Cost_Per_Unit plus a half-spread charge on notional
-    (`0.5 · half_bps · 1e-4 · price · contract_size`). `price` is a scalar or tensor mark.
+    Transaction_Cost_Per_Unit plus the half-spread charge on notional
+    (`0.5 · spread_bps · 1e-4 · price · contract_size` — `spread_bps` is the FULL quoted
+    spread; the 0.5 is the mid-to-touch crossing). `price` is a scalar or tensor mark.
     Single source for the solver's decision-time kappa, the env's realized debit, and the
     diagnostic CSV writer — any change (asymmetric bid/offer, tiered spread) lives here alone.
 
-    `half_bps` is the scalar `Bid_Offer_Spread_Bps` (fast-path) unless a spread SPEC is
+    `spread_bps` is the scalar `Bid_Offer_Spread_Bps` (fast-path) unless a spread SPEC is
     configured, in which case it is the instrument's `Per_Instrument` base (falling back to
     `Default_Bps`) scaled by `(vol/Ref_Vol)**Beta` when the spec declares a `Vol_Scale` and a
     world-agnostic annualized `vol` is supplied. `vol=None` (or scalar spread / no Vol_Scale) ⇒
     vol-independent, bit-identical to the scalar behaviour.
 
     `calendar=True` prices one contract of a CALENDAR SPREAD quoted against this leg instead: the
-    half-spread is `Evaluator.Calendar_Spread_Bps` on this leg's notional (under the same vol
+    spread is `Evaluator.Calendar_Spread_Bps` (full, halved the same way) on this leg's notional (under the same vol
     scale — a spread widens with vol for the same reason an outright does) and the flat fee is
     charged TWICE, because a spread contract moves two futures and clears two of them. Pair it as
     `0.5·(κcal_i + κcal_j)` (what `turnover_charge` does) and the result is the desk's quote on
@@ -770,16 +772,16 @@ def per_contract_kappa(runtime, price, name, vol=None, calendar=False):
     spec = acc["bid_offer_spread_spec"]
     scale = 1.0
     if spec is None:
-        half_bps = acc["bid_offer_spread_bps"]
+        spread_bps = acc["bid_offer_spread_bps"]
     else:
-        half_bps = spec["per_instrument"].get(str(name), spec["default_bps"])
+        spread_bps = spec["per_instrument"].get(str(name), spec["default_bps"])
         vscale = spec["vol_scale"]
         if vscale is not None and vol is not None:
             scale = (vol / vscale["ref_vol"]) ** vscale["beta"]
     fee = acc["transaction_cost_per_unit"]
     if calendar:
-        half_bps, fee = acc["calendar_spread_bps"], 2.0 * fee
-    return fee + 0.5 * half_bps * scale * 1.0e-4 * price * contract_size
+        spread_bps, fee = acc["calendar_spread_bps"], 2.0 * fee
+    return fee + 0.5 * spread_bps * scale * 1.0e-4 * price * contract_size
 
 
 def turnover_charge(delta, kappa, kappa_cal=None):

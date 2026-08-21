@@ -1008,7 +1008,8 @@ class BundleStepper:
         'recorded trajectory feeds `write_diagnostic_csvs`.',
         '',
         'The JSON that drives it lives under `Evaluator`: position limits,',
-        '`Transaction_Cost_Per_Unit`, `Bid_Offer_Spread_Bps` (a scalar half-spread, or a spec with',
+        '`Transaction_Cost_Per_Unit`, `Bid_Offer_Spread_Bps` (the FULL quoted spread — each trade',
+        'pays half — or a spec with',
         '`Per_Instrument` bases and a `Vol_Scale` making the spread vol-dependent), margin funding,',
         'and the optional `Total_Position_Schedule` corridor on the signed book total.',
         '',
@@ -1104,6 +1105,30 @@ class BundleStepper:
             for n in self._instrument_order:
                 self._trade_history[n].append(
                     next_state['positions'][n].detach().cpu() - self._position_history[n][-1])
+        if self._batch_size == 1 and logging.getLogger().isEnabledFor(logging.DEBUG):
+            # Reconciliation organ (B=1 rolls, EVERY step so daily identities close exactly):
+            # decision-time marks, post-trade book, realized trade, the engine's own VM and
+            # spread cost for the day, post-step margin, funding discounts, cumulative P&L legs.
+            cur = self.time_index
+            deltas = self._trade_deltas(structured)
+            vol_t = self.bundle.vol_at(cur)
+            cost = sum(float(self._cost(deltas[n], self._state['tradable_values'][n], n,
+                                        vol_t)[0]) for n in self._hedges)
+            reb = (float(_roll_rebate(deltas, {h: self._state['tradable_values'][h]
+                                               for h in self._hedges}, self.runtime, vol_t)[0])
+                   if self._accounting['roll_as_calendar_spread'] else 0.0)
+            legs = {n: (float(self._state['tradable_values'][n][0]),
+                        int(next_state['positions'][n][0]),
+                        int(deltas[n][0])) for n in self._hedges}
+            logging.debug(
+                'STEP %s t=%d dec=%d legs(mark,q,dq)=%s vm=%.6f cost=%.6f reb=%.6f margin=%.6f '
+                'cash_tv=%s pnl_excess=%.6f liability=%.6f',
+                self.bundle.scenario_dates[cur].date(), cur, int(was_decision_step), legs,
+                sum(float(v[0]) for v in next_state.get('variation_margin', {}).values()),
+                cost, reb, sum(float(b[0]) for b in next_state['margin_accounts'].values()),
+                {n: float(self._state['tradable_values'][n][0]) for n in self._cash_names
+                 if n in self._state['tradable_values']},
+                float(transition['pnl_excess'][0]), float(transition['liability_value'][0]))
         self._state = next_state
         self._terminal_transition = transition
         return {
