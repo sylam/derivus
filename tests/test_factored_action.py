@@ -141,7 +141,7 @@ def _solver(runtime, position_state=False, T_dec=3, n_steps=4, B=2):
     """The minimal stand-in `_decide` / `_fit_step` run on. `seen` is the probe continuation's
     record of every (W1, p) it was queried with, stashed on the object itself."""
     aspace = _aspace(runtime)
-    s = types.SimpleNamespace(
+    s = types.SimpleNamespace(cfg={}, loaded=None, 
         aspace=aspace, chunk=256, risk_kappa=0.0, churn_lambda=0.0,
         position_state=position_state, wealth_free=False,
         # The two OBJECTIVE dials, off: the reward is terminal and the knee is one scalar.
@@ -182,7 +182,7 @@ def _fit_step(s, t=0, B=2, Bi=2, md=1, q_prev_val=0.0):
     zero_in = (torch.zeros(B, Bi, n_h), torch.zeros(B, Bi), torch.zeros(B, Bi, md),
                torch.zeros(B, md), live)
     # F_t1 at the OUTER mark, so the one-step move is 0 and the target wealth IS minus the charge.
-    s.bundle = types.SimpleNamespace(inner_mc_grad=lambda _t: {
+    s.bundle = types.SimpleNamespace(cfg={}, loaded=None, inner_mc_grad=lambda _t: {
         'F_t1': {r: torch.full((B, Bi), PRICE) for r in s.hedges},
         'L_t1': torch.zeros(B, Bi), 'L_t': torch.zeros(B, Bi),
         'market_t1': torch.zeros(B, Bi, md), 'market_t': torch.zeros(B, md),
@@ -671,7 +671,7 @@ def _bundle(runtime, marks):
     sim = {n: torch.tensor(m, dtype=torch.float32)[:, None].expand(-1, B).contiguous()
            for n, m in zip(LEGS, marks)}
     T = len(marks[0]) - 1
-    b = types.SimpleNamespace(
+    b = types.SimpleNamespace(cfg={}, loaded=None, 
         device=torch.device('cpu'), vol_sim=None, n_outer_steps=T + 1, last_live_mtm_index=T,
         liability_sim=torch.zeros(T + 1, B), tradables_sim=sim)
     b.realized_paths = types.MethodType(Bundle.realized_paths, b)

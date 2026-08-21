@@ -2295,8 +2295,6 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                                F('Max_Total', 'Float', default=0.0)]),
                       description='Piecewise-constant corridor on the signed book total, by '
                                   'decision step'),
-                    F('Allocation_Weights', 'Table', default=None,
-                      row=Row([F('Step', 'Integer', default=0),
                     F('Allocation_Mode', 'Text', default='Exposure',
                       values=['Exposure', 'Carry_Variance'],
                       description='How the net cover splits across the hedge legs: Exposure = '
@@ -2304,6 +2302,8 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                                   'solver DERIVES per-step weights from the warmup sims (carry '
                                   'vs tracking vs the capital line), stamps them into the '
                                   'checkpoint, and a load restores the stamped table'),
+                    F('Allocation_Weights', 'Table', default=None,
+                      row=Row([F('Step', 'Integer', default=0),
                                F('Instrument', 'Text', default=''),
                                F('Weight', 'Float', default=0.0)]),
                       description='Piecewise-constant split of the NET cover across the hedge '
@@ -2423,7 +2423,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 utils.check_rate_name(reporting_currency), self.static_factors, self.stoch_factors),
             seed, job_id, num_jobs,
             simulation_sub_batch=int(self.params.get('Inner_Sub_Batch', 0)),
-            keep_tensor=self.params.get('Keep_Tensor', 'No') == 'Yes')
+            keep_tensor=True)  # hedge stepper replays need the kept tensor, unconditionally
 
     @staticmethod
     def _require_all_compiled(declared, structure, role):
@@ -2485,7 +2485,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         """Returns-state coordinate map (identity when the switch is off): a CommodityPrice's
         CONTINUOUS segment becomes log(x / calibrated t0 spot); an ObservedBasis segment becomes
         x / that spot. Sufficient statistics (log h, beliefs) and rate curves pass through."""
-        if not getattr(self, '_returns_state', False):
+        if not self._returns_state:
             return block
         if key.type == 'CommodityPrice' and kind == REVEAL_CONTINUOUS:
             return (block / self._state_spot0).log()
@@ -2566,7 +2566,6 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         self.numscenarios = self.batch_size * params['Simulation_Batches']
         self.params = params
         # keep the mtm
-        self.params['Keep_Tensor'] = 'Yes'
 
         logging.root.name = self.config.deals['Attributes'].get('Reference', self.config.file_ref)
         self.calc_stats['Batch_Size'] = self.batch_size
@@ -2680,6 +2679,15 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 self.num_factors, self.time_grid,
                 use_antithetic=params.get('Antithetic', 'No') == 'Yes')
 
+            # Session-print conditioning from STATE: the calibrated t0 values ARE the state of
+            # this batch's first step (the burn-in's, or the main run's when there is no
+            # burn-in). Any process that informs another off a print in that state publishes
+            # its first-step shift here (see StochasticProcess.print_seed) — present in state
+            # ⇒ condition; absent ⇒ nothing to condition on.
+            t0_state = {k: v.reshape(1, 1, -1) for k, v in self.stoch_var.items()}
+            print_keys = self._publish_print_seeds(
+                self.stoch_factors.items(), t0_state, 0, shared_mem)
+
             if randomize_t0:
                 # REWIND to the calibrated t=0 first, or the batch sequence random-walks away from
                 # it (measured: symlog scale 592k -> 1.15M over 5 batches, NaN sweeps some months)
@@ -2714,6 +2722,11 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                         implied_tensor=implied_tensor)
                 for seed_key, seed_val in outer_reseeds.items():
                     shared_mem.t_Scenario_Buffer[seed_key] = seed_val
+                # The restart's state carries each path's OWN prints — condition on them
+                # (per path), exactly as a fork conditions on its day's prints.
+                restart_state = {k: v.reshape(1, 1, -1) for k, v in initial_t0.items()}
+                print_keys |= self._publish_print_seeds(
+                    self.stoch_factors.items(), restart_state, 0, shared_mem)
 
             for key, proc in self.stoch_factors.items():
                 simulated = proc.generate(shared_mem)
@@ -2736,6 +2749,12 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                     factor_name = key.name[0] if key.name else str(key)
                     for attr_name, tensor in priv.items():
                         privileged_factor_blocks[(factor_name, attr_name)].append(tensor.detach().clone())
+
+            # print seeds are CONSUMED state, not path series: every generate/replay above has
+            # read them, and leaving them in the buffer would make the fork's republication
+            # filter (fork-rewrote ∧ outer-carries) mistake a per-path scalar for a path.
+            for k in print_keys:
+                shared_mem.t_Scenario_Buffer.pop(k, None)
 
             # solve_hedge: snapshot this batch's outer scenario buffer (factor paths + every
             # per-process aux key each generate() published) — the forks run against THIS batch.
@@ -2946,6 +2965,18 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
             t, outer_buffer, shared_mem, base_date, tradable_refs,
             with_grad=True, outer_rows=outer_rows)
 
+    def _publish_print_seeds(self, procs, state, t, shared_mem):
+        """Publish every process's `print_seed` off `state` (factor key → row-indexable
+        snapshot) into the buffer; returns the published keys. The keys are CONSUMED state,
+        not path series — the caller drops them once the run has generated (see the base
+        `print_seed` contract), and always publishes every seed before any generate."""
+        keys = set()
+        for key, proc in procs:
+            for seed_key, seed_val in proc.print_seed(key, state, t).items():
+                shared_mem.t_Scenario_Buffer[seed_key] = seed_val
+                keys.add(seed_key)
+        return keys
+
     def _run_inner_mc_at_t(self, t, outer_scenario_buffer, shared_mem, base_date,
                            tradable_refs, with_grad=False, outer_rows=None):
         """Run inner MC at a single outer timestep `t`, forking from `outer_scenario_buffer`
@@ -3094,6 +3125,8 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 # The fork BORROWS this buffer, so an entry it does not rewrite is still the outer
                 # run's - references only, read once by the publication below.
                 outer_entries = dict(shared_mem.t_Scenario_Buffer)
+                live_procs = []
+                fork_state = {}
                 for key, proc_inner in self.stoch_factors_inner.items():
                     if key.type in utils.DimensionLessFactors:
                         continue
@@ -3111,9 +3144,24 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                         shared_mem, self.process_ofs[key],
                         implied_tensor=self._factor_precalc_args[key][1],
                     )
-                    # per-outer-path t=0 privileged-state seed for this process's inner generate
-                    for seed_key, seed_val in proc_inner.inner_fork_seed(key, outer_scenario_buffer, t).items():
+                    # The fork's day-t state snapshot the print seeds read. Under `with_grad`
+                    # this IS the leaf, so the conditioning a seed derives from a print stays
+                    # on the tape — the differential labels' print columns carry the channel.
+                    fork_state[key] = init_state.unsqueeze(0)
+                    live_procs.append((key, proc_inner))
+                # EVERY fork seed before ANY generate: a seed reads only the OUTER state (the
+                # protocol's contract), and a process may seed a factor that generates before
+                # it — the fixing bridge conditions its PARENT's first step on the current
+                # session print, and the parent is upstream in topological order. The fork's
+                # state at day t carries that day's prints, so `print_seed` conditions on them
+                # exactly as the calibrated start conditions on its own. `inner_fork_seed`
+                # keeps the detached buffer — its privileged seeds are detached by design.
+                for key, proc_inner in live_procs:
+                    for seed_key, seed_val in proc_inner.inner_fork_seed(
+                            key, outer_scenario_buffer, t).items():
                         shared_mem.t_Scenario_Buffer[seed_key] = seed_val
+                self._publish_print_seeds(live_procs, fork_state, 0, shared_mem)
+                for key, proc_inner in live_procs:
                     simulated = proc_inner.generate(shared_mem)
                     shared_mem.t_Scenario_Buffer[key] = simulated
                     # post-generate coherence: publish revealed state at t+1, return twin-loss leaves

@@ -321,3 +321,4 @@ def test_freezing_the_series_at_the_fork_row_is_right_at_t_and_wrong_at_t_plus_o
            for a, b in zip(shipped, frozen)]
     assert max(rel) > 1e-3, f'freezing the state is a no-op on the one-step labels ({max(rel):.3e})'
     assert v_0 != v_0_frozen, 'the solved value is indifferent to the labels it was fitted on'
+

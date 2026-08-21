@@ -65,16 +65,6 @@ _UTILITY_OBJECTS = (
     "asymmetricutility_symlog", "asymmetricutility_huber", "asymmetricutility_cara")
 
 
-def _is_symlog_objective(runtime):
-    """True for the TRUE symlog shape ONLY — the gate for symlog-SPECIFIC diagnostics (the −45
-    saturation tripwire, the log1p-floor penalty-bite report) that don't transfer to the huber or
-    cara shapes. Use `_is_utility_objective` for the broader "does this consume a scale c".
-
-    `objective["object"]` is canonical-lowercased at normalization time
-    (hedge_runtime.normalize_objective), so plain equality is sufficient here."""
-    return (runtime.get("objective") or {}).get("object") == "asymmetricutility_symlog"
-
-
 def _is_utility_objective(runtime):
     """True iff the objective transforms wealth through a utility shape (symlog/huber/cara) —
     so the DP/value-fn live in utility space and a scale `c` is required. False for the legacy

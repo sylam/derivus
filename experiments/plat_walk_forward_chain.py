@@ -331,18 +331,9 @@ def trade_world(arch, trade_date, calibrated_md, out_path, carry_drift):
     pm = md['MarketData']['Price Models']
     spot = pm[f'GARCHSpotModel.{FIX_COL.split(".", 1)[1]}']
     spot['Carry_Drift'] = carry_drift
-    # Seam conditioning: the t0 row is DATA — the observed PM-session prints are state the
-    # first simulated step must condition on, exactly as the bridge laws imply in-path.
-    # Without these, an outlier print reverts through the FUTURES legs (the data says the
-    # FIX absorbs it), handing every short hedge a phantom day-1 charge.
-    row = arch.loc[:trade_date].ffill().iloc[-1]
-    spot['Bridge_T0_Fix'] = round(float(row[FIX_COL] + row[B_PM]), 6)
-    spot['Bridge_T0_Premium'] = float(
-        pm[f'FixingBridgeModel.{B_PM.split(".", 1)[1]}']['Bridge_Premium'])
-    band = pm[f'BasisLinkedSpotModel.{B_CME.split(".", 1)[1]}']
-    band['Chain_T0_Basis'] = round(float(row[B_CME_PM]), 6)
-    band['Chain_T0_Premium'] = float(
-        pm[f'ChainedBasisModel.{B_CME_PM.split(".", 1)[1]}']['Bridge_Premium'])
+    # Session-print conditioning needs no stamping: the t0 prints ARE state (the restamped
+    # ObservedBasis Spots at the trade date), and the engine's `print_seed` protocol
+    # conditions every start on the prints its state carries.
     _atomic_write_json(out_path, md)
     return out_path
 

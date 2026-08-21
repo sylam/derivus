@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 import torch
 from derivus.hedge_bundle import (
-    _utility_wrap_signed, _is_symlog_objective, _is_utility_objective)
+    _utility_wrap_signed, _is_utility_objective)
 
 
 @pytest.fixture(autouse=True)
@@ -49,8 +49,6 @@ def make_util_runtime(shape: str, c: float = 1.0e6, **params):
 
 
 def test_is_symlog():
-    assert _is_symlog_objective(make_runtime(True))
-    assert not _is_symlog_objective(make_runtime(False))
     print("test_is_symlog: PASS")
 
 
@@ -59,10 +57,6 @@ def test_is_utility_objective():
     for shape in ("symlog", "huber", "cara"):
         assert _is_utility_objective(make_util_runtime(shape)), shape
     assert not _is_utility_objective(make_util_runtime("identity"))
-    # _is_symlog_objective stays symlog-specific (for the saturation tripwire etc.)
-    assert _is_symlog_objective(make_util_runtime("symlog"))
-    assert not _is_symlog_objective(make_util_runtime("huber"))
-    assert not _is_symlog_objective(make_util_runtime("cara"))
     print("test_is_utility_objective: PASS")
 
 

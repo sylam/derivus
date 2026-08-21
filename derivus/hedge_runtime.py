@@ -549,7 +549,8 @@ def construct_hedge_runtime(
     # (conditional_sim = capital tracks the batch dispersion; explicit = constant capital).
     # A terminal Reference_Mode beside it is a contradiction the run must refuse.
     if str((objective_config or {}).get("Object", "")).lower() == "logwealth":
-        if str((objective_config or {}).get("Reference_Mode", "")).lower() == "fixed":
+        rm_declared = (objective_config or {}).get("Reference_Mode")
+        if rm_declared is not None and str(rm_declared).lower() == "fixed":
             raise ValueError(
                 "Objective 'LogWealth' is a per-step growth objective (reward = log(W1/W0)) — "
                 "Reference_Mode='Fixed' (terminal utility) contradicts it. Omit Reference_Mode "

@@ -223,6 +223,15 @@ def test_the_calibration_round_trips():
     assert abs(sd - SIG_D) < 0.25
     assert abs(0.5 + (sid ** 2 - son ** 2) / (2 * sd ** 2) - W_LVL) < 0.03
     assert abs(res.param['Bridge_Premium'] - (-0.8)) < 0.3
+    # the cross-day carry-through: on the model's own law the loadings obey
+    # a ≈ w·σ_D²/σ_ID² (the print's posterior weight), a + c ≈ 1 (a level-walk source), and
+    # k ≈ −a·premium — three identities that pin the OLS column order dead (a print/self swap
+    # ships silently without them).
+    a, c_self, k = (res.param['Next_Print_Loading'], res.param['Next_Self_Loading'],
+                    res.param['Next_Const'])
+    assert abs(a - W_LVL * sd ** 2 / sid ** 2) < 0.05
+    assert abs(a + c_self - 1.0) < 0.05
+    assert abs(k - (-a * res.param['Bridge_Premium'])) < 0.3
     assert res.delta.shape[1] == 1 and cal.num_factors == 1
     # the delta is the BRIDGE residual: uncorrelated with the source's step, so a correlation
     # estimate off it cannot double-count the news channel (the ID-link residual would)

@@ -104,7 +104,7 @@ def _solver(runtime, wealth_free, position_state=False, T_dec=3, n_steps=4, B=2)
     row IS the raw state and the gates can read it without undoing a standardization."""
     aspace = HedgeActionSpace(runtime, torch.device("cpu"))
     hedges = runtime["names"]["hedges"]
-    s = types.SimpleNamespace(
+    s = types.SimpleNamespace(cfg={}, loaded=None, 
         aspace=aspace, chunk=64, risk_kappa=0.0, churn_lambda=0.0,
         position_state=position_state, wealth_free=wealth_free,
         # The two OBJECTIVE dials, off: the reward is terminal and the knee is one scalar.
@@ -161,7 +161,7 @@ def _reference(s, probe):
 def test_off_is_the_wealth_bearing_layout():
     """`_standardize` with the switch off is the pre-change concatenation — (market | W), and
     (market | W | p) under `DiffV2_Position_State`. Killed by dropping W unconditionally."""
-    s = types.SimpleNamespace(m_mean=torch.zeros(3), m_std=torch.ones(3),
+    s = types.SimpleNamespace(cfg={}, loaded=None, m_mean=torch.zeros(3), m_std=torch.ones(3),
                               w_mean=torch.tensor(0.0), w_std=torch.tensor(2.0),
                               wealth_free=False)
     market, W, p = torch.randn(5, 3), torch.randn(5), torch.full((5,), -0.5)
@@ -272,7 +272,7 @@ def test_the_ensemble_branch_drops_the_wealth_column():
             return torch.zeros(x.shape[0])
 
     def _ens(wealth_free):
-        return types.SimpleNamespace(
+        return types.SimpleNamespace(cfg={}, loaded=None, 
             T_dec=2, a_bounds=[None, None], wealth_free=wealth_free, running_wealth=False,
             _ensemble=[([Rec(), Rec()], torch.zeros(MD), torch.ones(MD),
                         torch.tensor(0.0), torch.tensor(1.0), None, None)],
@@ -289,7 +289,7 @@ def test_the_ensemble_branch_drops_the_wealth_column():
 # --- (d) checkpoint provenance ----------------------------------------------------------------
 def _stub(wealth_free, position_state=False):
     rt = _runtime()
-    s = types.SimpleNamespace(t_min=0, T_dec=3, hedges=list(rt["names"]["hedges"]),
+    s = types.SimpleNamespace(cfg={}, loaded=None, t_min=0, T_dec=3, hedges=list(rt["names"]["hedges"]),
                               position_state=position_state, wealth_free=wealth_free,
                               running_wealth=False, utility_scale_schedule=None,
                               scheduled_scale=False,

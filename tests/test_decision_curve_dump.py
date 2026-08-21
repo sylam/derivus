@@ -154,7 +154,7 @@ def _solver(runtime, dump_path="", world_c=WORLD_C):
     s = types.SimpleNamespace(
         runtime=runtime, aspace=aspace, chunk=64, risk_kappa=0.0, churn_lambda=0.0,
         position_state=False, wealth_free=False, cost_aware=True, force_flat=False,
-        running_wealth=False,
+        running_wealth=False, cfg={}, loaded=None,
         T_dec=T_DEC, t_min=0, total_abs_limit=CAP, curve_dump=dump_path,
         hedges=list(runtime["names"]["hedges"]), n_hedge=1, contract_size=aspace.contract_size,
         device=torch.device("cpu"), B_outer=1,
