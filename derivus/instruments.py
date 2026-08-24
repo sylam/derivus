@@ -5518,7 +5518,13 @@ class FXTARFOptionDeal(Deal):
         F('LeverageNotional', 'Float', default=0),
         F('TargetAdjustment', 'Text', default=''),
         F('TargetLevel', 'Float', default=0),
-        F('TARF_ExpiryDates', 'Table', default='null', row=Row([F('Fixing Date', 'Date'), F('Settlement Date', 'Date'), F('Value', 'Float')]), tag='DateEqualList'),
+        # NO `tag`, for the reason FXAccumulatorOptionDeal's schedule carries none: a tag names
+        # the container the WIRE form uses, and this table is read by iterating rows
+        # (`for x in self.field['TARF_ExpiryDates']`). Declared `tag='DateEqualList'` the decoder
+        # handed the deal a `utils.DateEqualList`, which is not iterable - so a TARF authored the
+        # way its own declaration described could not be loaded at all, while one authored as
+        # plain rows priced fine. Every test built its config in-process and saw neither.
+        F('TARF_ExpiryDates', 'Table', default='null', row=Row([F('Fixing Date', 'Date'), F('Settlement Date', 'Date'), F('Value', 'Float')])),
         F('Barrier', 'Float', default=0)
 ])]
 
@@ -5646,6 +5652,186 @@ class FXTARFOptionDeal(Deal):
             shared, time_grid, deal_data, spot, FX_rep) * FX_rep
 
         return mtm
+
+
+class FXAccumulatorOptionDeal(Deal):
+    fields = [ADMIN, FX_ADMIN, own('FXAccumulatorOptionDeal', [
+        F('Currency', 'Text', default=''),
+        F('Underlying_Currency', 'Text', default=''),
+        F('Discount_Rate', 'Text', default='', obj='Tuple'),
+        F('FX_Volatility', 'Text', default='', obj='Tuple'),
+        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
+        F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
+        F('Strike_Price', 'Float', default=0.0),
+        F('Underlying_Amount', 'Float', default=0.0),
+        F('LeverageNotional', 'Float', default=0.0),
+        F('Barrier_Type', 'Text', default='Up_And_Out', values=['Up_And_Out', 'Down_And_Out']),
+        F('Barrier_Price', 'Float', default=REQUIRED),
+        F('Barrier_Hit', 'Text', default='No', values=['No', 'Yes']),
+        # NO `tag`: a tag names the utils container the wire form uses, and a tagged table
+        # arrives as that object (see EquitySwapletListDeal, which reads its two through `.data`).
+        # This schedule is read by iterating rows, exactly as the autocall's `Price_Fixing` and
+        # `Autocall_Coupons` are, and those carry no tag either.
+        F('Accumulator_ExpiryDates', 'Table', default='null', row=Row([
+            F('Fixing Date', 'Date'), F('Settlement Date', 'Date'), F('Value', 'Float')]))
+])]
+
+    spot_models = ('None', 'HestonNandi')
+
+    factor_fields = {'Currency': ['FxRate'],
+                     'Underlying_Currency': ['FxRate'],
+                     'Discount_Rate': ['InterestRate'],
+                     'FX_Volatility': ['FXVol']}
+
+    documentation = (
+        'Fx And Equity', [
+            'A fixing-observed knock-out FX accumulator priced by One-Step Survival (OSS) Monte',
+            'Carlo. See [One-Step Survival Methodology](../theory/mc_simulation.md) for the theory.',
+            '',
+            'At each fixing $t_j$, provided the knock-out barrier has not been hit, the signed',
+            'payoff is',
+            '',
+            '$$\\mathrm{BS}\\left[N_1\\max(c(S_j-K),0)-N_2\\max(-c(S_j-K),0)\\right],$$',
+            '',
+            'paid at that fixing\'s own settlement date, where $c=+1$ for Call and $c=-1$ for Put,',
+            '$N_1$ is Underlying_Amount, $N_2$ is LeverageNotional, and BS is +1/-1 for Buy/Sell.',
+            '',
+            'The barrier is observed on the fixing dates themselves. For Up_And_Out the deal',
+            'survives a fixing only when $S_j < H$; for Down_And_Out only when $S_j > H$. The',
+            'fixing that breaches pays no cashflow and every later fixing is cancelled; cashflows',
+            'accrued before the breach still settle. Survival at a future fixing is integrated',
+            'analytically and the surviving spot is drawn from the truncated distribution, so the',
+            'knock-out decision stays smooth through the AAD tape; an already-observed fixing is',
+            'resolved by its exact indicator.',
+            '',
+            'Accumulator_ExpiryDates rows are [fixing date, settlement date, observed fixing],',
+            'with the observed fixing blank until it is known. Barrier_Hit may be set when the',
+            'source system already knows an earlier fixing knocked the deal out; a settled',
+            'fixing whose recorded value breaches the barrier knocks the deal out either way.',
+            '',
+            '**Valuation options** (set in the Valuation Configuration section, per deal type)',
+            '',
+            '- **SpotModel**: `None` (default - lognormal dynamics off the implied vol surface) or',
+            '`HestonNandi`, resolved by naming convention from',
+            '`<SpotModel>ModelParameters.<underlying>` exactly as for the FX TARF.',
+            '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH',
+            'steps (default 252; only read when SpotModel is not `None`).'
+        ])
+
+    def __init__(self, params, valuation_options):
+        super(FXAccumulatorOptionDeal, self).__init__(params, valuation_options)
+        # `path_dependent` WITHOUT an `add_grid_dates`, unlike the barrier deals: `reset` already
+        # puts every fixing and settlement in `reval_dates`, so there is no observation date the
+        # grid is missing. What the flag buys is the OTHER half of its meaning - inside a netting
+        # set a path-dependent child keeps its own dates instead of inheriting every grid row
+        # (instruments.py `NettingCollateralSet.finalize_dates`), which is what keeps the pricer's
+        # blocks aligned to fixings. FXPartialTimeBarrierOption declares it the same way.
+        self.path_dependent = True
+
+    def reset(self, calendars):
+        super(FXAccumulatorOptionDeal, self).reset()
+        # fixings are state-observation rows; only settlement dates are cashflow dates
+        self.reval_dates.update({x[0] for x in self.field['Accumulator_ExpiryDates']})
+        self.add_reval_dates(
+            {x[1] for x in self.field['Accumulator_ExpiryDates']}, self.field['Currency'])
+
+    def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
+                          calendars):
+        """Resolve the accumulator's factor dependencies and the opt-in spot-model switch.
+
+        The knock-out state carried in from before the base date is DATA: the declared
+        `Barrier_Hit` flag is OR'd with every settled fixing's own breach test, so the prefix the
+        pricer starts from is what the schedule records. Unsettled and future fixings are the
+        pricer's business (exact indicators and OSS truncation respectively). The Heston-Nandi
+        switch is the TARF's, verbatim - see FXTARFOptionDeal.calc_dependencies."""
+        field = {'Currency': utils.check_rate_name(self.field['Currency']),
+                 'Underlying_Currency': utils.check_rate_name(self.field['Underlying_Currency']),
+                 'FX_Volatility': utils.check_rate_name(self.field['FX_Volatility'])}
+
+        schedule = sorted(self.field['Accumulator_ExpiryDates'], key=lambda x: x[0])
+        active = [x for x in schedule if x[1] >= base_date]
+        if not active:
+            raise utils.InstrumentExpired(self.field.get('Reference', 'FXAccumulatorOptionDeal'))
+
+        # not defensive: the pricer's block search assumes settlements monotone in fixing order,
+        # and a duplicated fixing date would silently collapse in the lookup - refuse loudly
+        if any(x[1] < x[0] for x in active) or \
+                any(a[0] >= b[0] or a[1] > b[1] for a, b in zip(active, active[1:])):
+            raise ValueError('{}: accumulator fixings must be strictly increasing with '
+                             'non-decreasing settlements on or after their fixing'.format(
+                                 self.field.get('Reference', 'FXAccumulatorOptionDeal')))
+
+        pf = {x[0]: (x[-1] if (x[-1] is not None) else 0.0) for x in active}
+        fixing_dates = [x[0] for x in active]
+        settlement_dates = [x[1] for x in active]
+        all_dates = sorted(set(fixing_dates).union(settlement_dates))
+
+        barrier = float(self.field['Barrier_Price'])
+        barrier_up = 'Up' in self.field['Barrier_Type']
+        # A knock-out barrier at or below zero is unreachable from below and instantly breached
+        # from above: an Up_And_Out deal authored with the field left blank survives NO fixing and
+        # prices to a silent scalar zero. Refuse rather than mark it flat.
+        if barrier <= 0.0:
+            raise ValueError('{}: Barrier_Price must be positive (got {}); an accumulator with no '
+                             'knock-out is authored with the barrier far out of the money'.format(
+                                 self.field.get('Reference', 'FXAccumulatorOptionDeal'), barrier))
+        settled_breach = any(
+            (x[-1] >= barrier if barrier_up else x[-1] <= barrier)
+            for x in schedule if x[1] < base_date and x[-1] is not None)
+
+        field['Discount_Rate'] = utils.check_rate_name(self.field['Discount_Rate']) if self.field['Discount_Rate'] \
+            else field['Currency']
+
+        field_index = {
+            'Currency': get_fx_and_zero_rate_factor(
+                field['Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
+            'SettleCurrency': self.field['Currency'],
+            'Discount': get_interest_factor(
+                field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
+            'Underlying_Currency': get_fx_and_zero_rate_factor(
+                field['Underlying_Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
+            'Volatility': get_fx_vol_factor(
+                field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+            'Expiry': (settlement_dates[-1] - base_date).days,
+            'Invert_Moneyness': field['Currency'][0] == field['FX_Volatility'][0],
+            'Strike_Price': self.field['Strike_Price'],
+            'Fixings': utils.make_fixing_data(
+                base_date, time_grid, [[x, pf.get(x, -1)] for x in all_dates]),
+            'Price_Fixings': utils.make_fixing_data(
+                base_date, time_grid, [[x, pf[x]] for x in fixing_dates]),
+            'Settlement': np.array([(x - base_date).days for x in settlement_dates]),
+            'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
+            'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
+            'Notional1': self.field['Underlying_Amount'],
+            'Notional2': self.field['LeverageNotional'],
+            'Barrier_Price': barrier,
+            'Barrier_Up': barrier_up,
+            'Barrier_Hit': self.field.get('Barrier_Hit', 'No') == 'Yes' or settled_breach,
+            'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
+        }
+
+        # opt-in Heston-Nandi spot model, by naming convention off the FX underlying
+        hn = get_spot_model_params_factor(
+            self.options.get('SpotModel', 'None'), field['Underlying_Currency'],
+            all_factors, static_offsets, stochastic_offsets)
+        if hn is not None:
+            field_index['HN_Params'] = hn
+            field_index['HN_Steps_Per_Year'] = self.options.get('Steps_Per_Year', 252.0)
+
+        return field_index
+
+    def generate(self, shared, time_grid, deal_data):
+        deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
+        FX_rep = utils.calc_fx_cross(
+            deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
+
+        # get pricing data
+        spot = utils.calc_fx_cross(
+            deal_data.Factor_dep['Underlying_Currency'][0],
+            deal_data.Factor_dep['Currency'][0], deal_time, shared)
+
+        return pricing.pv_MC_Accumulator(
+            shared, time_grid, deal_data, spot, FX_rep) * FX_rep
 
 
 class FXOptionDeal(Deal):

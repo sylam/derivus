@@ -11,6 +11,7 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
+import logging
 import math
 from functools import partial
 
@@ -244,6 +245,61 @@ def forward_vol_rate(vols, cum_t, dt):
     fwd = torch.sqrt(cum_var.diff(dim=-2).clamp(min=torch.finfo(vols.dtype).eps) /
                      torch.where(step > 0, step, torch.ones_like(step)))
     return torch.cat([vols[..., :1, :], fwd], dim=-2)
+
+
+def oss_uniforms(shared, n_fix, num_sims, sobol):
+    """Antithetic uniforms for a one-step-survival loop: ``[n_fix, batch, 2 * num_sims]``.
+
+    One Sobol/pseudo draw plus its ``1 - u`` mirror, which is what pairs the truncated final draws
+    of an OSS step with the antithetic halves of ``hn_unmonitored_substeps``. TWO pricers spelled
+    this block identically - ``sim_spot_oss`` and ``sim_spot_tarf`` - and both now read it here,
+    bit for bit; ``pv_MC_Accumulator`` is new and was written against it. The sibling NOT absorbed:
+    ``pv_MC_AutoCallSwap``'s no-averaging loop draws the same Sobol block but consumes it RAW
+    (no antithetic mirror), so bringing it in would change its estimator - an upgrade, not a
+    refactor, and a results-changing one.
+    """
+    if sobol:
+        u = shared.quasi_rng(shared.simulation_batch, n_fix * num_sims)[1].T.reshape(
+            n_fix, shared.simulation_batch, -1)
+    else:
+        u = torch.rand([n_fix, shared.simulation_batch, num_sims],
+                       dtype=shared.one.dtype, device=shared.one.device)
+    return torch.concat([u, 1.0 - u], dim=-1)
+
+
+def oss_truncated_draw(u, z_bound, survive_below):
+    """Survival probability and the survival-truncated standard normal draw - ONE spelling.
+
+    The OSS kernel: given the standardised bound ``z_bound`` of this step's barrier,
+    ``survive_below=True`` means survival is ``{Z <= z_bound}`` (an up barrier, a call's PnL cap)
+    and the draw maps ``u`` into the lower tail, ``icdf(u * p)``; ``survive_below=False`` means
+    survival is ``{Z >= z_bound}`` and the draw maps into the upper tail, ``icdf(Phi + u * p)``.
+    Returns ``(p, Z)`` with ``p`` the survival probability - the caller owns what the knocked-out
+    weight ``(1 - p) * L`` is worth, which is the one thing the adopters legitimately differ in.
+
+    Adopters: ``sim_spot_tarf`` (this IS its spelling, adopted bit-identically) and
+    ``pv_MC_Accumulator``. THREE call sites are enumerated rather than absorbed, in two pricers:
+    ``sim_spot_oss`` (discrete barrier) carries the unabsorbed spelling TWICE, once on its HN
+    branch and once on its GBM branch, both writing the down-side base as ``(1.0 - p) + u * p``
+    where this helper writes ``Phi + u * p`` - algebraically identical, DIFFERENT last bit wherever
+    ``Phi < 0.5``, so absorbing them is a declared results-changing event that must re-baseline the
+    barrier's pinned fixtures. Measured, by making exactly that substitution on the baseline: five
+    fixtures move in their last bits (``Down_And_Out`` 29.519592210041296 -> ...303,
+    ``Down_And_In`` 0.15730997864594862 -> ...96) and every ``Up_*`` and HN fixture is blind to it.
+    The third is ``pv_MC_AutoCallSwap``, which only ever truncates on the up side and draws
+    non-antithetic uniforms, so its ``clamp(p * u)`` is this helper's ``survive_below`` branch on a
+    different estimator. A defect fixed in this expression must be checked against all three by
+    hand until they are absorbed.
+    """
+    eps = torch.finfo(u.dtype).eps
+    Phi = utils.norm_cdf(z_bound)
+    if survive_below:
+        p = Phi
+        Z = utils.norm_icdf(torch.clamp(u * p, eps, 1.0 - eps))
+    else:
+        p = 1.0 - Phi
+        Z = utils.norm_icdf(torch.clamp(Phi + u * p, eps, 1.0 - eps))
+    return p, Z
 
 
 def boundary_weights(gap, bandwidth):
@@ -1237,14 +1293,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             if not hn:
                 r, sigma = drift[blk], vol[blk]  # [N_fix, batch] each
 
-            if sobol:
-                u = shared.quasi_rng(shared.simulation_batch, N_fix * num_sims)[1].T.reshape(
-                    N_fix, shared.simulation_batch, -1)
-            else:
-                u = torch.rand([N_fix, shared.simulation_batch, num_sims],
-                               dtype=shared.one.dtype, device=shared.one.device)
-            # antithetic variates: [N_fix, batch, 2*num_sims]
-            u = torch.concat([u, 1.0 - u], dim=-1)
+            # antithetic variates: [N_fix, batch, 2*num_sims] (shared OSS spelling, bit-identical)
+            u = oss_uniforms(shared, N_fix, num_sims, sobol)
 
             D_T = D[-1].reshape(-1, 1)  # terminal discount: [batch, 1]
 
@@ -2073,6 +2123,295 @@ def pv_european_option(shared, time_grid, deal_data, nominal, moneyness, forward
     return value * discount_rates
 
 
+def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
+    """Fixing-observed FX accumulator with a knock-out barrier, by one-step-survival Monte Carlo.
+
+    At each surviving fixing the signed payoff is ``N1 * relu(cp*(S_j - K)) - N2 * relu(-cp*(S_j -
+    K))``, paid at that fixing's own settlement date; the fixing that breaches the barrier pays
+    nothing and cancels every later fixing. Survival at a FUTURE fixing is the analytic OSS
+    truncation at the CONSTANT barrier (``oss_truncated_draw`` - the barrier is F-measurable over
+    the interval, so the scheme is exact); a fixing the row has already OBSERVED is resolved by its
+    EXACT indicator off the outer sample - the accumulator has no simulated zero-length step and
+    therefore no variance floor, which is the resolution the roadmap's open OSS item asks for.
+
+    The carry and vol arrive as INTERVAL strips (``forward_carry_rate``,
+    ``forward_vol_rate(forward_vol_strip(...))``), built at the call site like every OSS adopter;
+    ``use_forwards=True`` because every FX pricer here reads the surface at forward moneyness, so
+    the never-knocking limit - a strip of Europeans, one per fixing - is priced at the same quote
+    the FX vanillas mark with. Under Heston-Nandi the strip is not built (nothing correct reads an
+    implied surface under a non-GBM spot model); the recursion supplies the variance, exactly as in
+    ``sim_spot_tarf``, whose (F1)-(F4) limitations apply verbatim.
+
+    RECOMPUTE (``shared.recompute_inner_mc``): the simulation is a pure bound/theta split called
+    through ``InnerMCRecompute`` - which is why its settled cashflows are RETURNED (a settle inside
+    the callable fires twice in the backward) and why the observed samples, the alive prefix and
+    both strips enter as theta. Settlements may be GROUPED (several fixings paying one value date):
+    every ``tau[j] == 0`` fixing returns its own (row, amount) pair and ``cash_settle`` accumulates.
+
+    BOUNDARY AAD: the knock-out on an OBSERVED fixing is a decision on OUTER scenario state - the
+    barrier pricer's latched shape - so the gaps are built OUTSIDE the node from the samples the
+    outer loop already has, signed so ``gap > 0`` means CROSSED. ``untriggered`` is the alive
+    branch: the same loop on a weight the observed indicators never zero (the left limit, TARF's
+    redemption pattern), which the smooth future survivals still discount. ``triggered`` is ZEROS,
+    the TARF redemption precedent, and it carries a NAMED approximation: a knocked deal still owes
+    the fixings accrued before the breach whose settlements are pending, so between the breach and
+    the last prior settlement the true branch is not zero.
+
+    That approximation is MEASURED rather than bounded by argument, and the measurement says two
+    things. It is EXACT - reconstruction to 4.5e-13 - wherever the settlement lag is shorter than
+    the fixing spacing, which is the T+2 spot-FX default at any weekly-or-longer schedule; a
+    45-day lag on 20-day fixings runs 1.07% of the profile. And it is NOT one-signed: the tempting
+    claim that zero can only UNDERSTATE what a knocked deal is owed, so the jump is only ever
+    overstated in magnitude and can never pull the correction the wrong way, is FALSE for a
+    leveraged accumulator and was measured false at +54.06 - the pending head is
+    ``N1*relu(S-K) - N2*relu(K-S)``, negative on an OTM fixing whenever ``LeverageNotional``
+    exceeds ``Underlying_Amount``, which is the ordinary way this product is written. What IS true
+    is that the error is confined to cells the latch calls dead. Both statements are gated
+    (``test_a_pending_settlement_is_what_the_zero_dead_branch_costs``). An exact branch needs a
+    per-decision head profile, i.e. a fourth BoundarySet shape, and is deliberately not built
+    ahead of a measured need. A deal declared ``Barrier_Hit`` registers nothing: its death is
+    data, not simulated state, and no flux crosses a declared constant.
+
+    The prefix alive state folds ``Barrier_Hit`` with every SETTLED fixing's own breach test (the
+    schedule's observed values), so a source system that forgot the flag still prices the deal the
+    data describes; unsettled observed fixings enter through ``all_samples`` exactly as the TARF's
+    past fixings do.
+    """
+
+    def survives(s):
+        return (s < barrier) if barrier_up else (s > barrier)
+
+    def sim_spot_accumulator(settlement, fixing_offset, sobol, num_sims,
+                             spot_prices, times, carry, prev_alive, discount_rates, vols_all,
+                             past_fixings, *hn_scalars):
+        """OSS inner Monte Carlo over one block of MTM rows; mean PV and alive-branch PV per row.
+
+        PURE, and split into a bound half and a theta half for `InnerMCRecompute` (see
+        `sim_spot_tarf` - same contract, same reason). Returns `(mtm, alive_pv, settled,
+        settle_rows)`: the block's rows, the never-knocked branch the latch needs (empty when
+        sensitivities are off), and the first-fixing cashflow of every row that settles today with
+        the block-local rows those land on. `prev_alive` is theta: it carries the (a.e. zero)
+        graph of the observed samples that built it.
+        """
+        hn = bool(hn_scalars)
+        if hn:
+            *hn_params, H0 = hn_scalars
+        mcmc, alive, settled, settle_rows = [], [], [], []
+        for i, (D, s, carry_rate, delta_t, tau) in enumerate(zip(
+                discount_rates, spot_prices, carry, times, settlement)):
+            reduced_samples = len(delta_t)
+            if reduced_samples == 0:
+                mcmc.append(shared.one.new_zeros(shared.simulation_batch))
+                if boundary_aad:
+                    alive.append(shared.one.new_zeros(shared.simulation_batch))
+                continue
+            if not hn:
+                vols = vols_all[i]
+            u = oss_uniforms(shared, reduced_samples, num_sims, sobol)
+            Sj = torch.unsqueeze(s, 1)
+            h = H0 if hn else None
+            P = shared.one.new_zeros((shared.simulation_batch, 2 * num_sims))
+            L = prev_alive.reshape(-1, 1) * shared.one.new_ones((shared.simulation_batch, 2 * num_sims))
+            if boundary_aad:
+                # the alive branch: observed indicators (the latch's decisions) never zero it;
+                # the smooth future survivals still apply - the left limit, not a re-simulation
+                P_alive, L_alive = P, torch.ones_like(L)
+            for j in range(reduced_samples):
+                dt = delta_t[j]
+                Dj = D[j].reshape(-1, 1)
+                if dt > 0:
+                    fwd_carry = carry_rate[j].reshape(-1, 1)
+                    if hn:
+                        # daily HN sub-steps; only the LAST is monitored, so the OSS truncation at
+                        # the constant barrier is exact (see sim_spot_tarf)
+                        n_sub = max(int(round(float(dt) * hn_spy)), 1)
+                        b_step = fwd_carry * dt / n_sub
+                        Sj, h = utils.hn_unmonitored_substeps(
+                            Sj, h, b_step, n_sub - 1, hn_params, shared, num_sims, antithetic=True)
+                        z_bound = (torch.log(barrier / Sj) - (b_step - 0.5 * h)) / torch.sqrt(h)
+                        p, Z = oss_truncated_draw(u[j], z_bound, barrier_up)
+                        Sj, h = utils.hn_daily_advance(Sj, h, b_step, Z, *hn_params)
+                    else:
+                        fwd_vol = vols[j].reshape(-1, 1)
+                        vol_dt = fwd_vol * torch.sqrt(dt)
+                        fwd_drift = (fwd_carry - 0.5 * fwd_vol * fwd_vol) * dt
+                        z_bound = (torch.log(barrier / Sj) - fwd_drift) / vol_dt
+                        p, Z = oss_truncated_draw(u[j], z_bound, barrier_up)
+                        Sj = Sj * torch.exp(fwd_drift + vol_dt * Z)
+                    payoff_spot = Sj
+                    p_alive = p
+                else:
+                    # a fixing this row has already OBSERVED: resolved by its exact indicator off
+                    # the outer sample - no simulated zero-length step, no variance floor
+                    payoff_spot = past_fixings[fixing_offset + j].reshape(-1, 1).expand_as(P)
+                    p = survives(payoff_spot).to(P.dtype)
+                    p_alive = 1.0
+                intrinsic = (payoff_spot - strike) * callOrPut
+                cashflow = F.relu(intrinsic) * notional_itm - F.relu(-intrinsic) * notional_otm
+                cf_step = L * p * cashflow
+                P = P + Dj * cf_step
+                L = L * p
+                if boundary_aad:
+                    P_alive = P_alive + Dj * L_alive * p_alive * cashflow
+                    L_alive = L_alive * p_alive
+                # grouped settlements: EVERY fixing whose value date is today returns its own
+                # (row, amount) pair - RETURNED, because a recompute would settle twice
+                if tau[j] == 0:
+                    settled.append(cf_step.mean(axis=1))
+                    settle_rows.append(i)
+            mcmc.append(P.mean(axis=1))
+            if boundary_aad:
+                alive.append(P_alive.mean(axis=1))
+        return (torch.stack(mcmc),
+                torch.stack(alive) if alive else prev_alive.new_empty(0),
+                torch.stack(settled) if settled else prev_alive.new_empty(0),
+                settle_rows)
+
+    # --- main block loop (the TARF's setup, fixing for fixing) ---
+    mtm_list = []
+    factor_dep = deal_data.Factor_dep
+    deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
+    discount = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
+    daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
+
+    samples = factor_dep['Fixings']
+    start_idx = samples.get_start_index(deal_time)
+    start_index, counts = np.unique(start_idx, return_counts=True)
+
+    fx_samples = factor_dep['Price_Fixings']
+    known_resets = fx_samples.known_resets(shared.simulation_batch)
+    sim_samples = fx_samples.schedule[
+        (fx_samples.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
+        (fx_samples.schedule[:, utils.RESET_INDEX_Reset_Day] <= deal_time[:, utils.TIME_GRID_MTM].max())]
+    next_samples = utils.calc_fx_cross(
+        factor_dep['Underlying_Currency'][0], factor_dep['Currency'][0],
+        sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)
+    all_samples = torch.cat(
+        [torch.cat(known_resets, dim=0), next_samples], dim=0) if known_resets else next_samples
+
+    settle_idx = np.searchsorted(factor_dep['Settlement'], deal_time[:, utils.TIME_GRID_MTM]).astype(np.int64)
+    fixing_indices = counts.cumsum() - 1
+    settle_index = settle_idx[fixing_indices]
+
+    strike = factor_dep['Strike_Price']
+    barrier = factor_dep['Barrier_Price']
+    barrier_up = factor_dep['Barrier_Up']
+    callOrPut = factor_dep['Option_Type']
+    buy_sell = factor_dep['Buy_Sell']
+    notional_itm = factor_dep['Notional1'] * shared.one
+    notional_otm = factor_dep['Notional2'] * shared.one
+
+    # What the pricer DECIDED, which a value cannot show: how many fixings it resolved off the
+    # outer path rather than simulating, whether the deal came in already dead, and how the book
+    # split into blocks. A misclassified fixing moves the mark by an amount a tolerance absorbs;
+    # it moves `resolved` by one, visibly.
+    logging.debug('ACCUMULATOR %s fixings=%d resolved=%d barrier=%.6g up=%d dead=%d blocks=%d',
+                  deal_data.Instrument.field.get('Reference'), len(fx_samples.schedule),
+                  len(known_resets) + len(sim_samples), barrier, int(barrier_up),
+                  int(bool(factor_dep['Barrier_Hit'])), len(counts))
+
+    # a declared-dead deal has no flux to record - folding that in here rather than at the
+    # registration keeps the simulation from building an alive branch nobody reads
+    boundary_aad = getattr(shared, 'boundary_aad', False) and not factor_dep['Barrier_Hit']
+    b_gaps, b_crossed, b_obs_before, alive_blocks = [], [], [], []
+
+    # opt-in Heston-Nandi spot model; absent => byte-identical GBM path (see sim_spot_tarf)
+    hn = 'HN_Params' in factor_dep
+    if hn:
+        hn_p = {x.name[-1]: shared.t_Static_Buffer[x].reshape(-1, 1)
+                for x in factor_dep['HN_Params'][0][utils.FACTOR_INDEX_Offset]}
+        *hn_params, H0 = (hn_p[k] for k in utils.HN_PARAM_NAMES)
+        hn_spy = factor_dep['HN_Steps_Per_Year']
+
+    # prefix knock-out state: the declared flag OR any observed sample's own breach. `Barrier_Hit`
+    # and the settled fixings' tests are folded in calc_dependencies; the unsettled observed and
+    # simulated fixings fold here, per sample, exactly as the TARF accumulates its target
+    state = shared.one.new_ones(shared.simulation_batch) * (0.0 if factor_dep['Barrier_Hit'] else 1.0)
+    alive_seq = [state]
+    for k in range(len(all_samples)):
+        state = state * survives(all_samples[k]).to(shared.one.dtype)
+        alive_seq.append(state)
+    fixing_days = fx_samples.schedule[:, utils.RESET_INDEX_Reset_Day]
+
+    sobol = False
+    if shared.simulation_batch > 16:
+        sobol = True
+        shared.reset_qrg()
+
+    for b_idx, (discount_block, spot_block) in enumerate(
+            utils.split_counts([discount, spot], counts, shared)):
+        settle_index_local = int(settle_index[b_idx])
+        t_block = discount_block.time_grid
+        fixings = (fx_samples[np.newaxis, settle_index_local:, utils.RESET_INDEX_End_Day] -
+                   t_block[:, utils.TIME_GRID_MTM, np.newaxis]).clip(min=0)
+        drifts = utils.calc_fx_drift(
+            factor_dep['Underlying_Currency'], factor_dep['Currency'],
+            fixings, t_block, shared, multiply_by_time=False)
+        fixing_block = daycount_fn(fixings)
+        settlement = (factor_dep['Settlement'][np.newaxis, settle_index_local:] -
+                      t_block[:, utils.TIME_GRID_MTM, np.newaxis])
+        sample_ts = drifts.new(
+            np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)]))
+        discount_rates = utils.calc_discount_rate(discount_block, settlement, shared)
+        cum_t = drifts.new(fixing_block)
+        # the interval carry and vol strips, both theta rather than loop state, built where every
+        # OSS adopter builds theirs; both take the ZERO carry `drifts` (a forward is cumulative)
+        fwd_drifts = forward_carry_rate(drifts, cum_t, sample_ts)
+        vols = forward_vol_rate(forward_vol_strip(
+            deal_data, strike, spot_block, drifts, fixing_block, shared,
+            factor_dep['Invert_Moneyness'], use_forwards=True), cum_t,
+            sample_ts) if not hn else spot_block.new_empty(0)
+
+        simulate = partial(sim_spot_accumulator, settlement, settle_index_local, sobol, shared.MCMC_sims)
+        theta = (spot_block, sample_ts, fwd_drifts, alive_seq[settle_index_local],
+                 discount_rates, vols, all_samples) + (tuple(hn_params) + (H0,) if hn else ())
+        # the SAME callable either way: under the node it is called twice (see InnerMCRecompute)
+        block_mtm, block_alive, block_settled, settle_rows = InnerMCRecompute.run(
+            shared, simulate, *theta)
+        theo_price = buy_sell * block_mtm
+
+        # the by-products, performed once off the forward's result (see sim_spot_accumulator)
+        for row, value in zip(settle_rows, block_settled):
+            cash_settle(shared, factor_dep['SettleCurrency'], np.searchsorted(
+                time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]), buy_sell * value)
+
+        if boundary_aad:
+            # Every observed fixing (prefix AND in-block) is a latched decision, and `obs_before`
+            # is stamped PER ROW. Blocks are cut on `Fixings` - the UNION of fixing and settlement
+            # dates - so a fixing date is routinely a block's LAST row, and one count taken at the
+            # block's FIRST row is short by exactly that decision on exactly the row it first
+            # bites. The gap COUNT therefore comes off the block's last row, or the decision a row
+            # names would have no gap to be scored against.
+            # A row's own fixing COUNTS here, where `pv_discrete_barrier_option` counts only
+            # strictly-earlier observations: that pricer's untriggered branch prices the current
+            # date's crossing itself, while this one's sets `p_alive = 1.0` and leaves it out. With
+            # the row's own decision counted the latch reconstructs the reported profile to 4.5e-13;
+            # taking it from the first row instead hands the ALIVE branch to 2.3% of the dead cells
+            # (max 85.7 on a ~250 profile) and loses 1.6% of the boundary correction.
+            rows_obs = np.searchsorted(fixing_days, t_block[:, utils.TIME_GRID_MTM], side='right')
+            while len(b_gaps) < int(rows_obs[-1]):
+                s_k = all_samples[len(b_gaps)]
+                b_gaps.append(torch.log(s_k / barrier) * (1.0 if barrier_up else -1.0))
+                b_crossed.append(~survives(s_k).detach())
+            b_obs_before.extend(rows_obs.tolist())
+            alive_blocks.append(block_alive)
+        mtm_list.append(theo_price)
+
+    mtm = torch.cat(mtm_list, dim=0)
+
+    # report_index is None on a grid nobody reports off - an HMC tradable, a calibration's
+    # benchmark grid - and there is no reporting row for a counterfactual to land on
+    if boundary_aad and b_gaps and time_grid.report_index is not None:
+        untriggered = buy_sell * torch.cat(alive_blocks, dim=0).detach()
+        shared.boundary_sets.append(utils.LatchedBoundarySet(
+            gaps=b_gaps, fired=b_crossed, obs_before=np.array(b_obs_before),
+            untriggered=untriggered, triggered=torch.zeros_like(untriggered),
+            to_mtm=deal_to_mtm_grid(time_grid, deal_data, fx_rep),
+            report_index=time_grid.report_index))
+
+    return mtm
+
+
 def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     """
     One-step survival Monte Carlo for TARF (autograd-friendly).
@@ -2202,8 +2541,6 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         on the repo's own fixture.
         """
 
-        # Styles & shapes follow your autocall implementation
-        eps = torch.finfo(shared.one.dtype).eps
         # easier to type
         K = strike
         hn = bool(hn_scalars)
@@ -2220,17 +2557,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             reduced_samples = len(delta_t)
             if not hn:
                 vols = vols_all[i]
-            # RNG (uniforms for truncated draws)
+            # RNG (antithetic uniforms for truncated draws; shared OSS spelling, bit-identical)
             if reduced_samples:
-                if sobol:
-                    u = shared.quasi_rng(shared.simulation_batch, reduced_samples * num_sims)[1].T.reshape(
-                        reduced_samples, shared.simulation_batch, -1)
-                else:
-                    u = torch.rand([reduced_samples, shared.simulation_batch, num_sims],
-                                   dtype=shared.one.dtype, device=shared.one.device)
-
-                # now we should have antithetic uniform samples
-                u = torch.concat([u,1.0-u], dim=-1)
+                u = oss_uniforms(shared, reduced_samples, num_sims, sobol)
 
             Sj = torch.unsqueeze(s, 1)  # [batch, 1] as you do
             # HN predictable variance of the first daily step; re-seeded per MTM row (see docstring)
@@ -2300,14 +2629,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                         # NOTE: use current Sj as “S_{i-1}”
                         fwd_drift = (fwd_carry - 0.5 * fwd_vol * fwd_vol) * dt
                         z_max = (torch.log(B_pnl/Sj) - fwd_drift) / vol_dt
-                    PhiB = utils.norm_cdf(z_max)  # = P(Z <= z_max)
-                    
-                    if (callOrPut > 0):
-                        p = PhiB  # survival = Z <= z_max
-                        Z = utils.norm_icdf(torch.clamp(u[j] * p, eps, 1.0 - eps))
-                    else:
-                        p = 1.0 - PhiB  # survival = Z >= z_max
-                        Z = utils.norm_icdf(torch.clamp(PhiB + u[j] * p, eps, 1.0 - eps))
+                    # survival side follows the PnL cap's direction; the kernel is the shared
+                    # OSS spelling, adopted bit-identically (see oss_truncated_draw)
+                    p, Z = oss_truncated_draw(u[j], z_max, callOrPut > 0)
                         
                     # ---- Analytic KO-in-step contribution -------------------------------------
                     # KO pays the *remaining target* this step, discounted at the j-th discount point
@@ -2417,6 +2741,14 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     callOrPut = factor_dep['Option_Type']
     buy_sell = factor_dep['Buy_Sell']
 
+    # `resolved` counts the fixings taken off the realized path, and it is NOT `num_samples`:
+    # `calc_fx_cross` on an empty schedule returns a broadcast row, so `len(all_samples)` reads 1
+    # where nothing is resolved at all. Harmless today - the past-fixing branch is unreachable
+    # when the count is zero - but it is not the quantity a reader would take it for.
+    logging.debug('TARF %s fixings=%d resolved=%d target=%.6g barrier=%.6g blocks=%d',
+                  deal_data.Instrument.field.get('Reference'), len(fx_samples.schedule),
+                  len(known_resets) + len(sim_samples), targetValue, barrier, len(counts))
+
     # gated: the target filling and the OTM knock-in both jump on simulated state (see docstring)
     boundary_aad = getattr(shared, 'boundary_aad', False)
     b_gaps, b_fired, b_obs_before, b_inner, alive, row_ofs = [], [], [], [], [], 0
@@ -2492,10 +2824,12 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         block_mtm, block_alive, block_settled, settle_rows, knock_rows = outputs[:5]
         theo_price = buy_sell * block_mtm
 
-        # the by-products, performed once off the forward's result (see sim_spot_tarf)
+        # the by-products, performed once off the forward's result (see sim_spot_tarf). The
+        # ledger carries the deal's direction exactly as the mtm does - it was booked unsigned,
+        # so a sold TARF settled its fixing as a receipt (tests/test_tarf_cash_settle.py)
         for row, value in zip(settle_rows, block_settled):
             cash_settle(shared, factor_dep['SettleCurrency'], np.searchsorted(
-                time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]), value)
+                time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]), buy_sell * value)
 
         if boundary_aad:
             alive.append(block_alive)
@@ -2913,6 +3247,13 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     strike = factor_dep['Strike_Price']
     nominal = factor_dep['Buy_Sell'] * deal_data.Instrument.field['Units']
     terminationDate = -shared.one.new_ones(shared.simulation_batch, 1)
+
+    # `averaging` is the branch selector and it changes the PRODUCT, not just the estimator: the
+    # OSS path integrates each coupon's survival analytically, the averaging path simulates a mean
+    # of spots. Which one ran is invisible in a single number and decisive for what was priced.
+    logging.debug('AUTOCALL %s coupons=%d thresholds=%d averaging=%d barrier=%.6g blocks=%d',
+                  deal_data.Instrument.field.get('Reference'), int((np.asarray(Coupon) > 0).sum()),
+                  len(Threshold), int(not factor_dep['no_averaging']), putBarrier, len(counts))
 
     # Heston-Nandi spot model (present iff HestonNandiModelParameters.<equity> was resolved): the
     # five GARCH scalars ride the AAD graph out of t_Static_Buffer, unpacked exactly like the TARF.

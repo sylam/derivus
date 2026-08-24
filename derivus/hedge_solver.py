@@ -1159,6 +1159,36 @@ class DiffSolver:
         u = u.clamp_min(-20.0)
         return torch.where((c + W0) > self.w_floor, u, u.clamp_max(0.0))
 
+
+    def _set_displacement(self, W_bank):
+        """THE BIAS IS MEASURED FROM THE FORWARD PASS (user-ruled): the worst book any
+        simulated bank path touches, plus a 10% buffer — wealth stays free to go negative,
+        the shifted log is defined on everything training will see, and the -20-nat backstop
+        only guards the rare inner-fork dip beyond the buffer.
+
+        THE HEADROOM GATE: the utility's capital line is c = displacement/aversion, so the
+        worst path sits at headroom (c + worst)/c = 1 - aversion/1.1. Aversion rescales the
+        very buffer the displacement exists to provide — at 1.1 the buffer is GONE and every
+        worse outcome lands on the saturated tail, where the objective cannot tell degrees
+        of disaster apart (measured: tail -327 vs -149 across the 2.0/0.5 arms). So the
+        domain break refuses, and thin headroom warns rather than silently degrading."""
+        worst = getattr(self, "_bank_worst", None)
+        if worst is None:
+            worst = min(float(W_bank[t].min()) for t in range(self.T_dec))
+        self.displacement = 1.1 * max(0.0, -worst)
+        c = self.displacement / self.aversion
+        headroom = 1.0 if worst >= 0 else (c + worst) / c
+        if headroom <= 0.0:
+            raise ValueError(
+                f"LogWealth domain break: DiffV2_Risk_Aversion={self.aversion:g} leaves the "
+                f"worst bank book ({worst:.4g}) outside the shifted log's domain "
+                f"(headroom {headroom:.1%}). The displacement buffers 10% at aversion 1.0 "
+                f"and aversion divides it — use aversion < 1.1, or raise the displacement.")
+        log = logging.warning if headroom < 0.15 else logging.info
+        log("DiffSolver LogWealth displacement: worst bank book %.4g -> bias %.4g "
+            "(aversion %.2f divides it; headroom %.1f%%)",
+            worst, self.displacement, self.aversion, 100.0 * headroom)
+
     def _capital(self, t):
         """The DISPLACEMENT of the growth reward — a shifted-lognormal bias term (user-ruled):
         one constant per run, the scalar utility scale, which is by contract the TERMINAL
@@ -2552,17 +2582,7 @@ class DiffSolver:
 
         W_bank, q_bank = self._build_bank(self.gen)
         if self.log_ratio and self.loaded_displacement is None and not self.displacement:
-            # THE BIAS IS MEASURED FROM THE FORWARD PASS (user-ruled): the worst book any
-            # simulated bank path touches, plus a 10% buffer — wealth stays free to go
-            # negative, the shifted log is defined on everything training will see, and the
-            # -20-nat backstop only guards the rare inner-fork dip beyond the buffer.
-            worst = getattr(self, "_bank_worst", None)
-            if worst is None:
-                worst = min(float(W_bank[t].min()) for t in range(self.T_dec))
-            self.displacement = 1.1 * max(0.0, -worst)
-            logging.info("DiffSolver LogWealth displacement: worst bank book %.4g -> "
-                         "bias %.4g (aversion %.2f divides it)",
-                         worst, self.displacement, self.aversion)
+            self._set_displacement(W_bank)
         # Cache the framework inner-MC one-step quantities over the swept range — one
         # inner-MC fork per swept t, reused for the argmax, the bootstrap, AND market_t.
         self.sweep_ts = sweep_ts = list(range(self.t_min, self.T_dec))
@@ -2719,17 +2739,7 @@ class DiffSolver:
         self._bind(bundle)
         W_bank, q_bank = self._build_bank(self.gen)
         if self.log_ratio and self.loaded_displacement is None and not self.displacement:
-            # THE BIAS IS MEASURED FROM THE FORWARD PASS (user-ruled): the worst book any
-            # simulated bank path touches, plus a 10% buffer — wealth stays free to go
-            # negative, the shifted log is defined on everything training will see, and the
-            # -20-nat backstop only guards the rare inner-fork dip beyond the buffer.
-            worst = getattr(self, "_bank_worst", None)
-            if worst is None:
-                worst = min(float(W_bank[t].min()) for t in range(self.T_dec))
-            self.displacement = 1.1 * max(0.0, -worst)
-            logging.info("DiffSolver LogWealth displacement: worst bank book %.4g -> "
-                         "bias %.4g (aversion %.2f divides it)",
-                         worst, self.displacement, self.aversion)
+            self._set_displacement(W_bank)
         self.inner_cache = {t: self._inner_step(t) for t in self.sweep_ts}
         self._breaches = []
         self._sweep(W_bank, q_bank)

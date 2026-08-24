@@ -2008,6 +2008,19 @@ class LogOUSpotCalibration(object):
             [[1.0]], delta)
 
 
+def ctmc_per_step(P_calib, dt_calib, dt_arr):
+    """Re-discretise a calibrated row-stochastic transition matrix to a scenario grid via the
+    CTMC generator, P(dt) = expm(logm(P)/dt_calib * dt): one (n, n) matrix per grid step.
+    Shared by every process carrying a Markov chain (MarkovHMMSpotModel's regimes,
+    GARCHSpotModel's optional drift chain)."""
+    Q = np.real(matrix_logm(P_calib)) / dt_calib
+    n = P_calib.shape[0]
+    out = np.zeros((len(dt_arr), n, n))
+    for t, dt in enumerate(dt_arr):
+        out[t] = np.real(matrix_expm(Q * dt)) if dt > 1.0e-12 else np.eye(n)
+    return out
+
+
 class MarkovHMMSpotModel(StochasticProcess):
     """N-state hidden-Markov spot-price model. Conditional on regime z_t, the per-step
     innovation is Gaussian (or Student-t if `Nu` is set on the state) with annualised
@@ -2104,14 +2117,9 @@ class MarkovHMMSpotModel(StochasticProcess):
         # When False, emissions are raw price diffs and price is spot0 + cumsum(dS).
         self.log_price = bool(self.param.get('Log_Price', False))
 
-        # CTMC re-discretisation: the calibrated per-business-day transition matrix maps to the
-        # scenario grid through the generator, P(dt) = expm(logm(P_calib)/dt_calib * dt).
-        P_calib = np.array(self.param['Transition_Matrix'], dtype=np.float64)
-        dt_calib = float(self.param['Calibration_DT_Years'])
-        Q = np.real(matrix_logm(P_calib)) / dt_calib
-        P_per_step = np.zeros((T, self.n_states, self.n_states))
-        for t, dt in enumerate(dt_arr):
-            P_per_step[t] = np.real(matrix_expm(Q * dt)) if dt > 1.0e-12 else np.eye(self.n_states)
+        # CTMC re-discretisation of the calibrated matrix onto the scenario grid.
+        P_per_step = ctmc_per_step(np.array(self.param['Transition_Matrix'], dtype=np.float64),
+                                   float(self.param['Calibration_DT_Years']), dt_arr)
         self.P_cum = _t(np.cumsum(P_per_step, axis=2))
         # Raw P kept for the forward belief filter (the cumulative form is sampling-only).
         self.P_per_step = _t(P_per_step)
@@ -2649,7 +2657,12 @@ class GARCHSpotModel(StochasticProcess):
          '- **Convexity_Correction**: Yes/No (default No). Yes makes the PRICE a Mu-martingale by '
          'subtracting $\\tfrac{1}{2}\\text{Var}(r_t)$ from the per-step log-drift; No leaves a '
          '$+\\tfrac{1}{2}\\text{var}$ Jensen drift.',
-         '- **Carry_Drift**: Yes drifts the log-spot at the front of the declared carry curve.'])
+         '- **Carry_Drift**: Yes drifts the log-spot at the front of the declared carry curve.',
+         '- **Drift_States / Drift_Transition_Matrix / Drift_Initial_Probs**: optional latent '
+         'Markov chain over per-regime drifts replacing the scalar Mu (vol stays GARCH); the '
+         'matrix is re-discretised to the simulation grid via the CTMC generator, and inner '
+         'forks always draw their regime from the initial distribution - the state is latent '
+         'and never leaks into a forecast.'])
 
     factor_types = ('CommodityPrice',)
     fields = [
@@ -2671,6 +2684,20 @@ class GARCHSpotModel(StochasticProcess):
                       "NOTE a fixed-maturity leg is near-driftless under this switch only for a "
                       "FLAT carry curve: with curvature D the leg's local roll differs from the "
                       "front accrual and it drifts at -4*D*tau per year"),
+        F('Drift_States', 'Container', default=[],
+          description='Optional list of per-regime {Mu} dicts (annualised): the log drift then '
+                      'follows a latent Markov chain over these states instead of the scalar Mu. '
+                      'Mutually exclusive with a nonzero Mu and with Carry_Drift=Yes'),
+        F('Drift_Transition_Matrix', 'Table', default=[],
+          description='NxN row-stochastic transition matrix of the drift chain at '
+                      'Drift_Calibration_DT_Years, re-discretised to the simulation grid via the '
+                      'CTMC generator'),
+        F('Drift_Initial_Probs', 'Table', default=[],
+          description='Initial drift-state distribution (length N, sums to 1). Inner forks '
+                      'always draw their state from THIS: the regime is latent and is never '
+                      'leaked from the outer path into a fork'),
+        F('Drift_Calibration_DT_Years', 'Float', default=1.0 / 52.0,
+          description='Step size (in years) of the drift-chain transition matrix'),
     ]
 
     def __init__(self, factor, param, implied_factor=None):
@@ -2728,6 +2755,20 @@ class GARCHSpotModel(StochasticProcess):
         self.h0_default = _t(float(self.param['H0']))
         self.drift = _t(float(self.param.get('Mu', 0.0)) * dt_arr)               # (T,) μ·dt per step
         self.dt_t = _t(dt_arr)                                                   # (T,) dt per step, for Carry_Drift
+        states = self.param.get('Drift_States') or []
+        self.chain_on = bool(states)
+        if self.chain_on:
+            if float(self.param.get('Mu', 0.0)) != 0.0 or self.carry_drift:
+                raise Exception(
+                    f'GARCHSpotModel {utils.check_tuple_name(self.factor_key)}: Drift_States IS '
+                    f'the drift - it cannot be combined with a nonzero Mu or Carry_Drift=Yes')
+            self.chain_mu = _t(np.array([float(s.get('Mu', 0.0)) for s in states],
+                                        dtype=np.float64))
+            P_step = ctmc_per_step(
+                np.array(self.param['Drift_Transition_Matrix'], dtype=np.float64),
+                float(self.param.get('Drift_Calibration_DT_Years', 1.0 / 52.0)), dt_arr)
+            self.chain_P_cum = _t(np.cumsum(P_step, axis=2))
+            self.chain_pi0_cum = _t(np.cumsum(self.param['Drift_Initial_Probs']))
         # f_t = dt_t/dt_c, the trading-time length of a calendar grid step.
         self.f = _t(dt_arr / dt_c)                                               # (T,) trading-time step length
         self.sub_dt = utils.substep_schedule(dt_arr / dt_c)
@@ -2802,6 +2843,45 @@ class GARCHSpotModel(StochasticProcess):
             drift = drift + row.view(shape) * b
         return drift
 
+    def _chain_drift(self, shared_mem, Z):
+        """Per-(step, path) regime drift μ_state·dt from the optional Drift_States Markov chain,
+        sampled on the independent quasi-RNG uniform stream in the canonical Sobol orientation
+        (dimensions = the T+1 per-path coordinates, samples = paths — the transposed form
+        correlates transitions across paths; see MarkovHMMSpotModel.generate). The regime is
+        LATENT: every mode, inner forks included, draws its t=0 state from Drift_Initial_Probs —
+        never from another path's realized state — so a decision rule can learn the regime only
+        from the price evidence its own state carries. Unabsorbed sibling: the HMM model's
+        regime walk (different emission/override semantics); the CTMC ladder is shared
+        (ctmc_per_step)."""
+        T = Z.shape[0]
+        flat_paths = int(np.prod(Z.shape[1:]))
+        u = shared_mem.quasi_rng(T + 1, flat_paths)[1].transpose(0, 1).contiguous()
+        k = self.chain_mu.numel() - 1
+        state = torch.searchsorted(self.chain_pi0_cum, u[0]).clamp_max_(k)
+        mu_path = torch.empty((T, flat_paths), dtype=Z.dtype, device=Z.device)
+        mu_path[0] = self.chain_mu[state]
+        regimes = torch.empty((T, flat_paths), dtype=torch.long, device=Z.device)
+        regimes[0] = state
+        for t in range(1, T):
+            cdf_rows = self.chain_P_cum[t - 1].index_select(0, state)
+            state = (cdf_rows < u[t].unsqueeze(1)).sum(dim=1).clamp_max_(k)
+            mu_path[t] = self.chain_mu[state]
+            regimes[t] = state
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            # Reconciliation organ: the sampled chain's occupancy and pooled one-step empirical
+            # transition matrix, for the log-based law gate (test_garch_drift_chain).
+            occ = torch.bincount(regimes.reshape(-1), minlength=k + 1).double()
+            counts = torch.zeros((k + 1, k + 1), dtype=torch.double)
+            src, dst = regimes[:-1].reshape(-1).cpu(), regimes[1:].reshape(-1).cpu()
+            counts.index_put_((src, dst), torch.ones_like(src, dtype=torch.double),
+                              accumulate=True)
+            logging.debug('DRIFT_CHAIN %s T=%d paths=%d occ=%s trans=%s',
+                          utils.check_tuple_name(self.factor_key), T, flat_paths,
+                          [round(float(x), 6) for x in (occ / occ.sum())],
+                          [[round(float(x), 6) for x in row]
+                           for row in (counts / counts.sum(1, keepdim=True).clamp_min(1.0))])
+        return (mu_path * self.dt_t.view(-1, 1)).view(Z.shape)
+
     def _simulate_returns(self, eps, z, h, drift=None):
         """Shared GARCH recursion (outer/inner) on the FRACTIONAL TRADING CLOCK. `eps` (T, ...)
         unit-variance standardised-t innovations, `z` (T, ...) the raw framework Gaussians they
@@ -2858,8 +2938,9 @@ class GARCHSpotModel(StochasticProcess):
         """
         Simulate the GARCH spot path; Z is (T, B) outer, (T, B, B2) inner.
 
-        One framework Gaussian per step; the standardised-t rescale draws its own Gamma (there is
-        no regime sampling, hence no quasi_rng). ε is unit-variance and independent of h, so it
+        One framework Gaussian per step; the standardised-t rescale draws its own Gamma
+        (quasi_rng uniforms are drawn only when the optional Drift_States chain is on). ε is
+        unit-variance and independent of h, so it
         precomputes fully vectorised — but only the fine steps read it (a coarse interval t-scales
         its own sub-step normals), so an all-coarse PFE grid skips the draw rather than allocating
         a dead (T,B) pair.
@@ -2873,6 +2954,8 @@ class GARCHSpotModel(StochasticProcess):
             eps = Z
 
         drift = self._carry_drift(shared_mem, Z.ndim)
+        if self.chain_on:
+            drift = drift + self._chain_drift(shared_mem, Z)
         if Z.ndim == 2:
             T, B = Z.shape
             # h0: the diff-ML t=0 randomization hook (mirrors regime0_outer); else H0 expanded.

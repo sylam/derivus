@@ -603,7 +603,7 @@ mapping = {
                 ['FXNonDeliverableForward', 'FXForwardDeal', 'FXOptionDeal', 'FXBinaryOption',
                  'FXDiscreteExplicitAsianOption', 'FXOneTouchOption',
                  'FXBarrierOption', 'FXSwapDeal',
-                 'MtMCrossCurrencySwapDeal', 'FXTARFOptionDeal',
+                 'MtMCrossCurrencySwapDeal', 'FXTARFOptionDeal', 'FXAccumulatorOptionDeal',
                  'FXDiscreteExplicitDoubleAsianOption', 'FXPartialTimeBarrierOption'],
             'New Energy Derivative':
                 ['FloatingEnergyDeal', 'FixedEnergyDeal', 'EnergySingleOption',
