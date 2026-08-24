@@ -97,32 +97,18 @@ def calc_moneyness(strike, spot, forward, deal_data, use_forward=False, invert_m
 def forward_carry_rate(carry_rate, cum_t, dt):
     """The annualised carry over EACH fixing INTERVAL, from zero rates read at the fixing tenors.
 
-    ``carry_rate[j]`` is what ``calc_eq_drift``/``calc_fx_drift`` return with
-    ``multiply_by_time=False``: the curve gathered AT tenor ``T_j``, which is an AVERAGE over
-    ``[t, T_j]`` measured from the valuation row. The carry over the interval ENDING at ``T_j`` is
-    therefore a DIFFERENCE OF CUMULATIVE INTEGRALS, ``(c_j*T_j - c_{j-1}*T_{j-1}) / dt_j``, and not
-    ``c_j`` - the two agree only for the FIRST interval, where the cumulative window IS the
-    interval, and on a FLAT curve. Both degeneracies hold in every barrier fixture in this repo,
-    which is why ``pv_discrete_barrier_option`` multiplied one window's average by another window's
-    length for as long as it existed while ``pv_MC_Tarf`` and ``pv_MC_AutoCallSwap`` differenced.
-    Measured on a 2%->5% curve with quarterly fixings, the strip's total ran -1.12% on the forward
-    factor; on this repo's own sloped fixture the forward to expiry ran -4.28%.
+    ``carry_rate[j]`` (a ``calc_eq_drift``/``calc_fx_drift`` gather with ``multiply_by_time=False``)
+    is the AVERAGE rate over ``[t, T_j]``, so the interval ending at ``T_j`` carries a DIFFERENCE of
+    cumulative integrals, ``(c_j*T_j - c_{j-1}*T_{j-1}) / dt_j`` - equal to ``c_j`` only on the
+    first interval or a flat curve. All four OSS adopters read the strip from here, so a simulated
+    drift and a closed-form forward cannot be spelled apart; the strip sums (telescopes) to
+    ``total_log_forward``. Background: conventions.md#unification-siblings.
 
-    All FOUR adopters now read the strip from here - ``sim_spot_oss``, ``pv_MC_Tarf``, and both
-    branches of ``pv_MC_AutoCallSwap``, the averaging one having its own ``carry * dt`` that the
-    defect report did not name - so the drift of their simulations and the forward their
-    closed-form legs are valued at cannot be spelled differently again. Summing the strip
-    telescopes to ``c_N*T_N`` - see ``total_log_forward``, which is that sum.
-
-    Rank-polymorphic on the same rule as ``total_log_forward``: ``[N_fix, batch]`` for one MTM row
-    and ``[N_block, N_fix, batch]`` for a whole block, with ``cum_t`` and ``dt`` carrying no batch
-    axis. A ZERO-LENGTH interval is a fixing the row has already observed and every caller skips
-    it, so it divides by one rather than by zero - which keeps the unread entries out of the
-    backward pass as well as the forward one.
-
-    A FLAT curve does NOT come back bit-identical, and no gate on this may be written with
-    ``torch.equal``: differencing amplifies the rounding of a cumulative time by ``T_j/dt_j``,
-    measured at 6 eps on the engine's monthly ACT/365 strip against that bound of 12.
+    Rank-polymorphic: ``[N_fix, batch]`` for one MTM row or ``[N_block, N_fix, batch]`` for a block,
+    with ``cum_t``/``dt`` carrying no batch axis. A zero-length interval (an already-observed
+    fixing, skipped by every caller) divides by one, keeping unread entries out of the backward
+    pass. A flat curve is NOT bit-identical - differencing amplifies cumulative-time rounding by
+    ``T_j/dt_j`` - so gates on this must not use ``torch.equal``.
     """
     cum = carry_rate * cum_t.unsqueeze(-1)
     step = dt[..., 1:].unsqueeze(-1)
@@ -131,25 +117,15 @@ def forward_carry_rate(carry_rate, cum_t, dt):
 
 
 def total_log_forward(carry_rate, times):
-    """``log F(t,T) / S(t)``: the carry integrated over a fixing strip.
+    """``log F(t,T) / S(t)``: the interval carry strip integrated over a fixing strip.
 
-    THE forward to expiry, for every leg that needs one. ``carry_rate`` is the annualised carry per
-    fixing INTERVAL - what ``forward_carry_rate`` builds, NOT the raw zero rates the curve is
-    gathered at - and ``times`` the year-fraction of each interval, so the integral is their
-    product summed over the fixing axis, the axis ``times`` names by carrying no batch dimension.
-    That sum telescopes to ``c_N*T_N``, one gather at expiry. Rank-polymorphic on purpose:
-    ``[N_fix, batch]`` for one MTM row and ``[N_block, N_fix, batch]`` for a whole block are the
-    same expression, so the leg that values one row and the leg that values the block cannot spell
-    it differently.
-
-    That is the point of the function existing at all. Two legs of ``pv_discrete_barrier_option``
-    value the SAME European on the SAME state - a knocked-in barrier - and the already-hit one
-    carried a second spelling that summed annualised RATES with no ``dt`` and added a half-variance
-    whose cancelling subtraction lives on the other branch. It read 106.7% high in log-forward on
-    this repo's own fixture and no gate saw it: base valuation never evaluates the leg, the one
-    exposure-grid barrier is the model-free zeros branch, and ``r = q = 0`` everywhere zeroes the
-    missing ``dt``. A shared expression makes the divergence unrepresentable rather than merely
-    detected, which is why this is a function and not a comment.
+    THE forward to expiry for every leg that needs one - the sum telescopes to ``c_N*T_N``, one
+    gather at expiry. Takes ``forward_carry_rate``'s strip, never raw zero rates. Rank-polymorphic
+    (``[N_fix, batch]`` or ``[N_block, N_fix, batch]``; ``times`` carries no batch axis), so a leg
+    valuing one row and a leg valuing the block are the same expression. It is a function rather
+    than an inline expression because two legs of ``pv_discrete_barrier_option`` value the SAME
+    European on the same state: a shared spelling makes divergence unrepresentable rather than
+    detected (conventions.md#unification-siblings).
     """
     return (carry_rate * times.unsqueeze(-1)).sum(dim=-2)
 
@@ -158,37 +134,19 @@ def forward_vol_strip(deal_data, strike, spot, carry_rate, cum_t, shared,
                       invert_moneyness=False, use_forwards=False):
     """The implied vol read at EVERY fixing's own tenor, at the moneyness the DEAL declares.
 
-    An implied surface is quoted against an option's EXPIRY, so a simulation that steps a fixing
-    strip has to read it once per fixing - at ``T_j``, and at the moneyness an option expiring
-    ``T_j`` would be quoted at. ``carry_rate`` is therefore the ZERO carry
-    (the raw ``calc_eq_drift``/``calc_fx_drift`` gather at each tenor, NOT the interval strip
-    ``forward_carry_rate`` builds), because a forward wants the cumulative integral: ``F_j =
-    S * exp(c_j * T_j)``. ``cum_t`` is that cumulative tenor and arrives as NUMPY - it is the
-    surface's expiry KEY as well as the exponent's year fraction, and the key has to be hashable.
+    A surface is quoted against an option's EXPIRY, so a simulation stepping a fixing strip reads it
+    once per fixing. ``carry_rate`` is the ZERO carry (the raw gather - a forward wants the
+    cumulative integral ``F_j = S * exp(c_j * T_j)``), and ``cum_t`` arrives as NUMPY because it is
+    also the surface's hashable expiry key.
 
-    Rank-polymorphic on the same rule as ``forward_carry_rate``: ``[N_fix, batch]`` for one MTM row
-    and ``[N_block, N_fix, batch]`` for a whole block, ``cum_t`` carrying no batch axis, and the
-    fixing axis returned at ``-2`` either way so the strip drops straight into ``forward_vol_rate``.
+    ``use_forwards`` is the DEAL's declaration, threaded through so the strip reads the surface at
+    the same moneyness the pricer marks its own European legs with; the per-fixing smile convention
+    is an open modelling question (roadmap.md). Moneyness goes through ``calc_moneyness`` - the one
+    place that knows a surface subtype's query - with the spot broadcast onto the fixing axis first,
+    without which the result is one rank short.
 
-    ``use_forwards`` IS THE DEAL'S, not this function's. It was hard-coded ``True`` here, mirroring
-    ``pv_MC_Tarf`` - the sibling that already read the surface per fixing and has no European limit
-    to violate. Its two other adopters DO have one, and they declare ``use_forwards = False``, so a
-    forward read made the simulation step a different law from the quote the same pricer marks its
-    own European legs with. Measured on a smiley surface (``vol = 0.2479 + 0.35*(m-1)^2``, ten
-    seeds, 65536 inner paths): a never-knocking ``Down_And_Out`` read 1175.00 against Black at the
-    declared quote 1163.96, ``+0.948%`` and 8.3 standard errors, and in-out parity read ``-11.03``
-    where it must read zero. INTERNAL CONSISTENCY WINS: the strip reads what the deal declares, and
-    per-fixing SMILE - a real modelling question, since a desk quoting sticky-forward moneyness
-    wants the other convention - is open in ``roadmap.md`` with those numbers on it. The TERM
-    STRUCTURE half is untouched by the choice: alternating only this flag on the smile-free sloped
-    surface leaves the prices agreeing to 2.274e-13.
-
-    The moneyness goes through ``calc_moneyness``, the one place that knows what a surface's
-    subtype wants (SVI/Skew take a log, Malz its own ratio) - ``pv_MC_Tarf`` had its own
-    ``forward / strike`` inline, which is that function's ``else`` branch and silently the wrong
-    query on any surface that is not a plain 2d grid. The SPOT is broadcast onto the fixing axis
-    first: a declared spot read is one moneyness for the whole strip, and without the expand
-    ``calc_moneyness`` returns a tensor one rank short and the per-fixing loop indexes off the end.
+    Rank-polymorphic as ``forward_carry_rate``; the fixing axis returns at ``-2`` so the strip drops
+    straight into ``forward_vol_rate``.
     """
     forward = spot.unsqueeze(-2) * torch.exp(carry_rate * carry_rate.new(cum_t).unsqueeze(-1))
     moneyness = calc_moneyness(strike, spot.unsqueeze(-2).expand_as(forward), forward, deal_data,
@@ -202,43 +160,20 @@ def forward_vol_strip(deal_data, strike, spot, carry_rate, cum_t, shared,
 def forward_vol_rate(vols, cum_t, dt):
     """The annualised vol over EACH fixing INTERVAL, from implied vols read at the fixing tenors.
 
-    An implied vol is CUMULATIVE by definition - ``sigma(T)^2 * T`` is the total variance to ``T``
-    - so the variance of the interval ending at ``T_j`` is a DIFFERENCE of cumulative variances,
-    ``(sigma_j^2 T_j - sigma_j-1^2 T_j-1) / dt_j``, and not ``sigma_j^2``. The two agree only for
-    the FIRST interval, where the cumulative window IS the interval, and on a FLAT surface. This is
-    ``forward_carry_rate``'s statement one factor over, and it has the same failure mode: the
-    wrong allocation TELESCOPES to the right total variance, so the terminal distribution, every
-    European limit, in-out parity and every CRN gradient gate stay exactly right and only the
-    path-dependent MONITORING is biased.
+    An implied vol is CUMULATIVE (``sigma(T)^2 * T`` is total variance to ``T``), so the interval
+    ending at ``T_j`` carries ``(sigma_j^2 T_j - sigma_{j-1}^2 T_{j-1}) / dt_j``, not
+    ``sigma_j^2`` - ``forward_carry_rate``'s statement one factor over, with the same failure mode:
+    the wrong allocation telescopes to the right TOTAL variance, so every European limit stays exact
+    and only path-dependent monitoring is biased (conventions.md#unification-siblings).
 
-    Measured on two surfaces carrying the same 1y implied vol (flat 0.2479 against a term
-    structure running 0.10 to 0.32 at 2y): the true interval strip runs 0.111 -> 0.336 against the
-    single 0.2479 that ``pv_discrete_barrier_option`` and ``pv_MC_AutoCallSwap`` applied to every
-    interval, and the two surfaces priced ``Down_And_Out``/``Down_And_In``/``Up_And_Out`` BITWISE
-    IDENTICALLY. Against a fine-step oracle under the surface's own instantaneous vol the sloped
-    world read -1.46%, +11.53% and -11.07%.
+    ``clamp(min=eps)`` floors a DECLINING cumulative variance (an arbitrageable surface) rather than
+    taking a negative square root. The floor does NOT telescope: the strip's total then exceeds the
+    surface's own, so in-out parity against the simulated vanilla breaks while the analytic half
+    stays exact. That is inherent to flooring - the fix is an arbitrage-free surface, not a
+    different floor. ``j == 0`` takes ``vols[0]`` directly, its window being the interval itself.
 
-    ``clamp(min=eps)`` handles a DECLINING cumulative variance - an arbitrageable surface, or the
-    same interpolation kink the GBM term-structure quote work documents - by flooring the interval
-    at one eps rather than taking the square root of a negative. IT DOES NOT TELESCOPE, and that is
-    a disclosure and not a bug: a floored interval contributes ~0 where the surface says it should
-    contribute a NEGATIVE variance, so the strip's total EXCEEDS the surface's own total and the
-    simulation no longer reproduces the European quote the same pricer marks with. Measured on a
-    monthly barrier fixture whose surface runs 0.30 at 6m into 0.20 at 9m - three intervals of
-    declining cumulative variance - in-out parity against the simulated vanilla reads -101.08 +/-
-    1.37 on ten seeds, -7.99% of that vanilla, where an arbitrage-free surface reads -0.19. The
-    analytic half is unaffected (KO + KI is still Black at the declared quote to 2.3e-12), which is
-    exactly why this shows up as a parity break rather than as a wrong-looking price. It is inherent
-    to flooring:
-    ``pv_MC_Tarf`` has carried the same clamp since it was written. The fix is an arbitrage-free
-    surface, not a different floor. ``j == 0`` takes ``vols[0]`` directly, that window being the
-    interval itself. Both are ``pv_MC_Tarf``'s semantics, term for term, because they were its
-    expression before they were this one.
-
-    Rank-polymorphic exactly as ``forward_carry_rate``, and a ZERO-LENGTH interval divides by one
-    rather than by zero for the same reason: it is a fixing the row has already observed and every
-    caller skips it. A FLAT surface does NOT come back bit-identical and no gate on this may use
-    ``torch.equal`` - differencing amplifies the rounding of a cumulative time by ``T_j/dt_j``.
+    Rank-polymorphic as ``forward_carry_rate``; a zero-length interval divides by one; a flat
+    surface is NOT bit-identical, so gates on this must not use ``torch.equal``.
     """
     cum_var = vols * vols * cum_t.unsqueeze(-1)
     step = dt[..., 1:].unsqueeze(-1)
@@ -270,26 +205,18 @@ def oss_uniforms(shared, n_fix, num_sims, sobol):
 def oss_truncated_draw(u, z_bound, survive_below):
     """Survival probability and the survival-truncated standard normal draw - ONE spelling.
 
-    The OSS kernel: given the standardised bound ``z_bound`` of this step's barrier,
-    ``survive_below=True`` means survival is ``{Z <= z_bound}`` (an up barrier, a call's PnL cap)
-    and the draw maps ``u`` into the lower tail, ``icdf(u * p)``; ``survive_below=False`` means
-    survival is ``{Z >= z_bound}`` and the draw maps into the upper tail, ``icdf(Phi + u * p)``.
-    Returns ``(p, Z)`` with ``p`` the survival probability - the caller owns what the knocked-out
-    weight ``(1 - p) * L`` is worth, which is the one thing the adopters legitimately differ in.
+    Given the standardised bound of this step's barrier: ``survive_below=True`` means survival is
+    ``{Z <= z_bound}`` and the draw maps into the lower tail, ``icdf(u * p)``; ``False`` means
+    ``{Z >= z_bound}`` and the upper tail, ``icdf(Phi + u * p)``. Returns ``(p, Z)`` - what the
+    knocked-out weight ``(1 - p) * L`` is worth belongs to the caller, the one thing adopters
+    legitimately differ in.
 
-    Adopters: ``sim_spot_tarf`` (this IS its spelling, adopted bit-identically) and
-    ``pv_MC_Accumulator``. THREE call sites are enumerated rather than absorbed, in two pricers:
-    ``sim_spot_oss`` (discrete barrier) carries the unabsorbed spelling TWICE, once on its HN
-    branch and once on its GBM branch, both writing the down-side base as ``(1.0 - p) + u * p``
-    where this helper writes ``Phi + u * p`` - algebraically identical, DIFFERENT last bit wherever
-    ``Phi < 0.5``, so absorbing them is a declared results-changing event that must re-baseline the
-    barrier's pinned fixtures. Measured, by making exactly that substitution on the baseline: five
-    fixtures move in their last bits (``Down_And_Out`` 29.519592210041296 -> ...303,
-    ``Down_And_In`` 0.15730997864594862 -> ...96) and every ``Up_*`` and HN fixture is blind to it.
-    The third is ``pv_MC_AutoCallSwap``, which only ever truncates on the up side and draws
-    non-antithetic uniforms, so its ``clamp(p * u)`` is this helper's ``survive_below`` branch on a
-    different estimator. A defect fixed in this expression must be checked against all three by
-    hand until they are absorbed.
+    Adopters: ``sim_spot_tarf`` (bit-identically) and ``pv_MC_Accumulator``. Three call sites stay
+    enumerated rather than absorbed: ``sim_spot_oss`` twice (its down-side base ``(1-p) + u*p``
+    differs from ``Phi + u*p`` in the last bit wherever ``Phi < 0.5``, so absorbing it is a
+    results-changing event that must re-baseline the barrier's pinned fixtures), and
+    ``pv_MC_AutoCallSwap`` (up-side only, non-antithetic uniforms). A defect fixed here must be
+    checked against all three until they are absorbed.
     """
     eps = torch.finfo(u.dtype).eps
     Phi = utils.norm_cdf(z_bound)
@@ -306,37 +233,20 @@ def boundary_weights(gap, bandwidth):
     """Density at the boundary and local-linear regression weights, estimated SEPARATELY.
 
     The term to recover is ``f_G(0) * E[jump * dG/dtheta | G = 0]``. Folding both halves into one
-    kernel - weighting each path by a smoothed Dirac and averaging - is a local-CONSTANT estimator,
-    whose bias is O(bandwidth) with an f'/f term rather than O(bandwidth^2). Measured on this book
-    that bias never settles: the correction tracked the bandwidth from -70k to -235k with no
-    plateau, and stayed put across a 16x change in path count, so it was estimator bias and not
-    Monte Carlo noise.
+    kernel is a local-CONSTANT estimator whose O(bandwidth) bias never settles; local-linear weights
+    cancel the first-order term, so the estimate holds still over a range of bandwidths - the only
+    acceptance available when no single bandwidth can be argued for.
 
-    Local-linear weights cancel that first-order term, so the estimate should hold still over a
-    range of bandwidths - which is the only acceptance criterion worth having here, since no
-    single bandwidth can be argued for on its own.
+    Returns ``(density_at_zero, weights)`` with the weights summing to one, so the caller multiplies
+    rather than averages - and that sum makes ``||weights||_1`` exactly the solve's amplification: a
+    kernel admitting two far-apart neighbours cancels the first-order term by subtracting two
+    enormous numbers, so the solve is refused on what it PRODUCED, past
+    ``BOUNDARY_MAX_AMPLIFICATION``, landing on the empty-kernel branch (weights zero, correction
+    exactly zero).
 
-    Returns ``(density_at_zero, weights)`` with the weights summing to one, so the caller
-    multiplies rather than averages.
-
-    THAT SUM IS ALSO THE ACCEPTANCE TEST. Cancelling the first-order term is what makes the
-    weights signed, and a kernel that admits two neighbouring points a long way out cancels it by
-    subtracting two enormous numbers - measured, +50.4 and -49.5 on two points 0.02 widths apart,
-    whose differing jumps then did not cancel and supplied 112% of that gradient. Since the
-    weights sum to one, ``||weights||_1`` is exactly that amplification, so the solve is refused
-    on what it PRODUCED rather than on its determinant: the determinant over ``s0 * s2`` is
-    Cauchy-Schwarz-bounded into [0, 1] and the pathology (8.6e-05) sits beside a legitimate solve
-    (6.2e-03) close enough that no level separates them. See ``BOUNDARY_MAX_AMPLIFICATION``.
-    Refusing costs one reduction and lands on the branch a degenerate gap already takes - weights
-    zero, correction exactly zero, which is also what an empty kernel returns.
-
-    ONE sample has no spread for a kernel to be scaled by, and ``torch.std`` returns NaN there
-    rather than raising - which propagates into the scalar handed to ``backward()`` and is invisible
-    while the degenerate gap happens to carry no graph (``0 * NaN`` is NaN forward but reaches
-    nothing). Zero width is the right degenerate answer: the kernel admits nothing, the local-linear
-    solve is refused, and the correction is exactly zero - which is what one scenario means here.
-    That path is reached by base valuation, whose whole simulation is the pricer's own inner Monte
-    Carlo.
+    ONE sample has no spread for a kernel width: ``std()`` would be NaN and reach ``backward()``
+    silently, so zero width is returned - the kernel admits nothing and the correction is exactly
+    zero, which is what one scenario means. Base valuation reaches this path.
     """
     g = gap.detach()
     # one sample -> zero width; std() would be NaN and the correction is exactly zero anyway
@@ -403,88 +313,38 @@ def boundary_correction(shared, objective, reported_mtm, bandwidth):
 class InnerMCRecompute(torch.autograd.Function):
     """A pricer's inner Monte Carlo as one node: simulated untaped, RE-simulated to differentiate.
 
-    An MC-priced deal builds a graph per pricing that the terminal backward holds until it runs -
-    every fixing of every reporting row of every deal, all resident at once. The simulation itself
-    is cheap and the tape is what does not fit, so this trades the tape for a second forward: the
-    node's own forward runs under `no_grad` and leaves NOTHING behind but its inputs, and its
-    backward re-runs the same simulation under `enable_grad` and contracts the cotangent through
-    that one graph, which dies as soon as it has. Peak is one inner graph rather than all of them.
+    The autograd tape of every inner pricing is what does not fit in memory; the simulation itself
+    is cheap. The forward therefore runs under ``no_grad`` and keeps nothing but its inputs, and the
+    backward re-runs the SAME callable under ``enable_grad``, contracting the cotangent through one
+    block's graph at a time. Subsystem documentation and measurements:
+    calc_lifecycle.md#recompute-inner-mc.
 
-    THE COUNTER IS THE STORAGE. A recompute is only a recompute if the second pass draws the same
-    numbers, and the numbers are exactly what is too big to keep - so what is saved is where each
-    stream STOOD (`utils.rng_position`), not what it produced. Sobol draws are memoized
-    per (dimension, sample_size, batch), so rewinding the counter makes the replay return the very
-    same tensor; the regular generator has no memo, so its own state is saved and restored. The
-    live position is put back afterwards as STATED contract rather than observed necessity: every
-    current pricer reseeks absolutely per batch, so deleting the restore is unobservable today
-    (measured by mutation) - it protects the caller that does not reseek, which nothing yet is.
+    THE COUNTER IS THE STORAGE. What is saved is where each random stream stood
+    (``utils.rng_position``), never what it produced: Sobol draws are memoized, so rewinding the
+    counter replays the same tensors; the plain generator's state is saved and restored, and the
+    live position is put back after the replay.
 
-    ONE FUNCTION, CALLED TWICE. `simulate` is the same object in both passes - not a differentiable
-    copy of a fast forward - because two spellings of one simulation agree until the day one of
-    them is edited, and the failure is a wrong gradient beside a right price, which no price gate
-    sees. For the same reason it must be PURE in everything but its return: a side effect (a
-    cashflow accrued, a decision registered) would fire a second time in the backward, so a pricer
-    RETURNS those instead and the caller performs them once, off the forward's result.
+    THE ADOPTER'S SHAPE: ``simulate(*bound)(*theta)`` - bound arguments are the block's shape, theta
+    is every graph-carrying tensor (anything read from a closure differentiates as a constant). It
+    returns a TUPLE whose element 0 is the marks and whose remaining elements are by-products the
+    caller performs ONCE - settled cashflows, decision gaps, counterfactual branches - each a
+    TOP-LEVEL element (a tensor nested inside a list is not an output and its gradient is silently
+    zero). The callable must be PURE in everything but its return: a side effect fires a second time
+    in the backward, and a cashflow booked inside is booked under ``no_grad``, severing the channel
+    a collateralised exposure reads through ``C_ts_te``.
 
-    ITS INPUTS ARE ITS WHOLE THETA SURFACE. Autograd can only return a gradient for a tensor that
-    was passed to `apply`, so anything `simulate` reads out of a closure is differentiated as a
-    constant - silently. A pricer therefore hoists every graph-carrying quantity into `theta`,
-    including ones it would otherwise compute inside the loop (a vol strip off the surface, say).
+    A DECISION'S GAP IS AN OUTPUT when the simulation decided it - the boundary correction's
+    coefficient then arrives as that output's cotangent. A decision taken on OUTER state keeps its
+    own graph and registers outside the node.
 
-    A DECISION'S GAP IS AN OUTPUT WHEN THE SIMULATION IS WHAT DECIDED IT, which is what makes it
-    survive the untaped forward. Boundary corrections need `gap` to carry a graph
-    (`stochastic_boundary_correction` is `gap - gap.detach()` times a detached coefficient) and the
-    forward pass here has none to give: the gap's VALUE is computed under `no_grad` for the
-    registration to report, and the node is what connects it. The coefficient is assembled at the
-    objective, exactly as before, and arrives as that output's cotangent - so the graph-carrying
-    half of the correction is built during the backward, inside the recompute, and the split costs
-    the estimator nothing. The contract is unchanged: what reaches `backward()` differs, what is
-    reported does not.
+    A registration held on ``shared`` makes a reference cycle through this node
+    (shared -> boundary_sets -> gap -> node -> simulate -> shared); ``reset()`` clearing
+    ``boundary_sets`` per batch is what frees it.
 
-    The converse is the rule, and it is about WHERE THE GRAPH LIVES rather than about symmetry: a
-    decision taken on OUTER state - a scenario spot at a barrier observation, an accrual series the
-    block loop built - keeps its own graph whatever this node does to the inner pass, so its gap
-    stays where it was. `pv_discrete_barrier_option` registers its whole latch outside; `pv_MC_Tarf`
-    registers the redemption latch outside and the knock-in, decided on an inner draw, as outputs.
-
-    THE ADOPTER'S SHAPE (`run` below is the one line; the rest is the callable's own contract):
-
-    - `simulate(*bound)(*theta)` - the leading arguments are the block's SHAPE, bound per block with
-      `partial`, and are numpy, ints and flags; the trailing ones are every tensor it reads that can
-      carry a graph, which is exactly what the node can return a gradient for.
-    - It returns a TUPLE whose element 0 is the block's marks and whose remaining elements are the
-      by-products the caller performs once - settled cashflows, decision gaps, counterfactual
-      branches - each accompanied by the plain-Python row index that places it. Non-tensors pass
-      straight through and take a `None` cotangent, which is why the pairing below tests the
-      cotangent first.
-    - Every graph-carrying by-product is a TOP-LEVEL element of that tuple. A tensor nested inside a
-      returned list is NOT an output: measured, it comes back with `requires_grad False` and no
-      `grad_fn`, so its half of a correction would be silently zero.
-    - A settled cashflow is one of those outputs, not a side effect. A replay would settle it twice,
-      and WHICH harvest sees that depends on when it reads the buffer: the per-netting-set
-      `save_cashflows` snapshot is taken in the forward pass and survives the defect, while
-      `Credit_Monte_Carlo` builds its REPORTED frame from `t_Cashflows` after the batch's backward
-      (calculation.py:1727) and does not - measured on the TARF fixture, a replay that books moves
-      that frame by 6.0e+06 while the cva, the profile and the whole CVA gradient stay bit-identical
-      (`tests/test_recompute_inner_mc.py`, and it is only reachable with sensitivities on, since
-      with them off no backward runs at all). What ALSO breaks is the graph - booked inside, the
-      cashflow is booked under `no_grad`, and a collateralised exposure reading `t_Cashflows`
-      through `C_ts_te` loses that whole channel (measured, 8.7% of the autocall's CVA gradient).
-
-    A registration held on `shared` makes shared -> boundary_sets -> gap -> this node -> `simulate`
-    -> shared, a cycle refcounting cannot break; `reset()` clearing `boundary_sets` per batch drops
-    one edge and frees it deterministically. With sensitivities off nothing outside the graph holds
-    the node at all.
-
-    SECOND DERIVATIVES ARE REFUSED, on the `LeastSquaresSolve` precedent and for a sharper reason.
-    The replay is rooted at DETACHED copies of the saved inputs - that is what stops `autograd.grad`
-    walking back into the outer graph and double-counting the first derivative - and a second
-    derivative taken through a detached leaf is severed from the graph the outer pass holds. It does
-    not raise on its own: it comes back with the entries that needed that path set to ZERO, which is
-    a Hessian that looks like a Hessian. Measured on the TARF fixture, `Greeks: 'All'`: three
-    leading entries of -1.74e6 / -4.03e5 / -1.67e4 taped, all three zero recomputed, and a fourth
-    that merely disagreed. Keeping the inputs attached instead was tried and breaks the FIRST
-    derivative outright, so the honest node is a first-order one that says so.
+    SECOND DERIVATIVES ARE REFUSED. The replay is rooted at DETACHED copies of the saved inputs -
+    what stops the inner ``autograd.grad`` double-counting the first derivative - so a second
+    derivative taken through the node comes back partly ZERO: a Hessian that looks like a Hessian.
+    Ask for the second-order block with the switch off.
     """
 
     @staticmethod
@@ -750,29 +610,17 @@ def interp_to_mtm_grid(mtm, time_grid, deal_data, interpolate_grid=True):
 
 
 def deal_to_mtm_grid(time_grid, deal_data, fx_rep):
-    """The map from a pricer's own output to the MTM-grid rows the deal reports it on, detached.
+    """The map from a pricer's own output to the MTM-grid rows the deal reports on, detached.
 
-    Everything `Deal.generate` and `Deal.calculate` do to a theo price and nothing else: scale
-    into the reporting currency, then interpolate. A boundary branch is an alternative value for
-    the SAME deal, so it has to travel the same two steps - and both were being skipped.
+    Everything ``Deal.generate``/``calculate`` do to a theo price and nothing else: scale into the
+    reporting currency, then interpolate. A boundary branch is an alternative value for the SAME
+    deal, so it travels the same two steps in the same order - fx BEFORE interpolation.
 
-    `fx_rep` is `shared.one` only when the payoff and reporting currencies match; otherwise it is a
-    simulated (T, B) cross, and a branch registered without it is a delta in the wrong currency
-    whose own flux never reaches the tape. It multiplies on the pricer grid, BEFORE the
-    interpolation, because that is the order the reported mtm was built in.
-
-    Two things this closure must NOT hold, both found by measurement rather than by reading.
-
-    `fx_rep` is detached AT CAPTURE, not merely on the way out: a boundary set outlives the pricing
-    call, so a closure over a live cross pins that deal's whole autograd graph until the batch's
-    backward pass. The rule that jumps stay detached is a memory contract as well as a correctness
-    one - the branch values are coefficients.
-
-    And it does not take `shared`. It has no use for it (`interp_to_mtm_grid` never did either),
-    and holding it makes a REFERENCE CYCLE: shared -> boundary_sets -> this closure -> shared, which
-    refcounting cannot break, so the calculation state and everything reachable from it survives
-    the run and waits on the cyclic collector. Measured together: 19.6 GB still resident after one
-    collateralised barrier run where the same run held 32 MiB before, and the next run OOMed.
+    Two things this closure must NOT hold. ``fx_rep`` is detached AT CAPTURE: a boundary set
+    outlives the pricing call, and a closure over a live cross pins the deal's whole autograd graph
+    until the batch's backward pass. And it does not take ``shared``: that closure is a reference
+    cycle (shared -> boundary_sets -> closure -> shared) refcounting cannot break, leaving the whole
+    calculation state resident until the cyclic collector runs.
     """
     scale = fx_rep.detach()
     return lambda profile: interp_to_mtm_grid(profile * scale, time_grid, deal_data).detach()
@@ -1025,27 +873,50 @@ def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBar
         return pv
 
 
-def calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared):
+def compo_vol(vols, fx_vols, rho):
+    """Vol of the PRODUCT S*X from its two lognormal legs. Exact for the joint law; the simulating
+    pricers apply it per INTERVAL with the fx leg read at expiry - the same deal-level fidelity as
+    the quanto carry adjustment beside it."""
+    return torch.sqrt(vols * vols + 2.0 * rho * vols * fx_vols + fx_vols * fx_vols)
+
+
+def calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared, fixings=None):
+    """The quanto/compo adjustment, factored for BOTH consumer shapes.
+
+    A forward-based pricer (`pv_european_option`) rebuilds its terminal law as
+    `s_adj * forward * exp(b_adj * T)` - quanto bends the carry, compo swaps the underlying for
+    S*X so its fx half arrives as the outright fx forward. A SIMULATING pricer (the OSS pair)
+    takes the same information factored the way a path steps: `spot_scale` (the fx cross, 1 for
+    quanto), `carry_adj` (per-fixing, built only when `fixings` is passed), and `fx_vol`/`rho` to
+    compose its interval vol strip (None for quanto, whose measure change touches no vol). The
+    compo defect history is in the roadmap.
+    """
     # None means get the ATM vol for this expiry (can change depending on the vol surface type)
     fx_vols = utils.calc_time_grid_vol_rate(factor_dep['FXVol'], None, expiry, shared)
 
-    # b_adj adjusts the carry on the forward, s_adj is to scale the forward directly (as a factor)
     if 'QuantoImpliedCorrelation' in factor_dep:
         # quanto fx deal
         rho = utils.implied_correlation(
             factor_dep['QuantoImpliedCorrelation'], factor_dep['Correlation_Sign'])
         atm_vol = utils.calc_time_grid_vol_rate(factor_dep['Volatility'], None, expiry, shared)
-        return {'vol': vols, 'b_adj': -atm_vol * fx_vols * rho, 's_adj': 1.0}
+        b_adj = -atm_vol * fx_vols * rho
+        return {'vol': vols, 'b_adj': b_adj, 's_adj': 1.0, 'spot_scale': 1.0,
+                'carry_adj': b_adj.unsqueeze(1) if fixings is not None else None,
+                'fx_vol': None, 'rho': rho}
     else:
         rho = utils.implied_correlation(
             factor_dep['CompoImpliedCorrelation'], factor_dep['Correlation_Sign'])
-        tenor_in_days = factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM]
         forwardfx = utils.calc_fx_forward(
             factor_dep['Local'], factor_dep['Other'],
-            tenor_in_days, deal_time, shared)
-        compo_vols = torch.sqrt(
-            fx_vols * fx_vols + 2.0 * fx_vols * vols * rho + vols * vols)
-        return {'vol': compo_vols, 'b_adj': 0.0, 's_adj':forwardfx}
+            int(factor_dep['Expiry']), deal_time, shared)
+        return {'vol': compo_vol(vols, fx_vols, rho),
+                'b_adj': torch.zeros_like(fx_vols), 's_adj': forwardfx,
+                'spot_scale': utils.calc_fx_cross(
+                    factor_dep['Local'][0], factor_dep['Other'][0], deal_time, shared),
+                'carry_adj': utils.calc_fx_drift(
+                    factor_dep['Local'], factor_dep['Other'], fixings, deal_time, shared,
+                    multiply_by_time=False) if fixings is not None else None,
+                'fx_vol': fx_vols, 'rho': rho}
 
 
 def smooth_max(x, k, eps=0.01):
@@ -1070,199 +941,69 @@ def smooth_heaviside_down(x, k, eps=0.01):
 
 def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_rep,
                                invert_moneyness=False, use_forwards=False, isdigital=False):
-    """
-    One-step survival (OSS) variant of pv_discrete_barrier_option.
+    """One-step-survival (OSS) Monte Carlo for a discretely monitored barrier option.
 
-    At each barrier observation date j, uses the analytic survival probability
-    P(S_j on correct side of H | S_{j-1}) to:
-      - Contribute an analytic KO-in-step term directly to the PV
-      - Draw truncated GBM steps for the surviving paths only
-      - Eliminate variance from paths near the barrier
+    At each observation date the analytic survival probability contributes the knock-out term
+    exactly and only surviving paths draw a truncated step - differentiable end to end (no
+    smoothing) and free of the variance paths near the barrier would contribute. ``BARRIER_IN`` is
+    priced by in-out parity, so its vanilla leg is valued from the block spot forwarded by
+    ``total_log_forward`` in the DECLARED model - Black, or the Heston-Nandi closed form.
 
-    Advantages over the naive path simulation:
-      - No smooth_heaviside approximation needed — the analytic probability is
-        exact and differentiable via norm_cdf/norm_icdf
-      - Lower variance: barrier-touching paths contribute analytically
-      - For BARRIER_IN: in-out parity's vanilla is valued from the block spot forwarded
-        by ``total_log_forward``, in the DECLARED model - Black or the HN closed form
+    Reads. The carry arrives as the interval strip (``forward_carry_rate``) and the vol as TWO
+    quantities: the per-interval strip (``forward_vol_rate(forward_vol_strip(...))``) the simulation
+    steps on, and ``sd_to_expiry = sigma(K, tau) * sqrt(tau)`` for the European legs - two
+    legitimate reads of one surface, deliberately not unified (conventions.md#unification-siblings).
+    The strip reads the moneyness the deal declares (``use_forwards``); the per-fixing smile
+    convention is an open modelling question (roadmap.md). Under Heston-Nandi neither vol quantity
+    is built - nothing correct reads an implied surface under a non-GBM spot model, so a leg that
+    reaches for one fails on the shape rather than quietly pricing a second model. Quanto bends the
+    per-fixing carry; compo prices the product S*X - spot scaled by the fx cross, fx carry added per
+    fixing, interval strip composed with the fx expiry vol (``calc_vol_adjustment``).
 
-    ``Cash_Rebate`` is an ABSOLUTE cash amount, which is how ``pv_barrier_option`` reads it - that
-    routine hands the closed form ``cash_rebate/nominal`` and multiplies the result back by nominal.
-    Everything ``sim_spot_oss`` returns is scaled by nominal too, so the rebate goes in per-unit,
-    divided by the UNSIGNED size rather than by nominal: nominal already carries Buy_Sell (which is
-    NOT true in ``pv_barrier_option``, where buy_or_sell is a separate factor), so dividing by it
-    would cancel the direction and bring every rebate leg back as +cash_rebate whichever way the deal
-    is done - a sold knock-out would book the rebate it must PAY as a receipt.
+    Conventions this loop owns:
 
-    Heston-Nandi is opt-in via ``SpotModel='HestonNandi'``: the five GARCH scalars ride the AAD graph
-    out of ``t_Static_Buffer`` (identical resolution to the TARF), and when absent ``sim_spot_oss``
-    takes the byte-identical GBM path.
+    - ``Cash_Rebate`` is an absolute cash amount and enters PER-UNIT, divided by the UNSIGNED size:
+      ``nominal`` already carries ``Buy_Sell``, so dividing by it would book a sold knock-out's
+      rebate as a receipt.
+    - The per-row hit mask carries STRICTLY EARLIER observations only. The block's own date is
+      priced by ``sim_spot_oss`` as its zero-length first step, so folding it in would count the
+      same crossing twice; the barrier is observed only on its own dates.
+    - The rebate settles on the date it falls due, excluding the TERMINAL row - the single settle
+      after the loop already pays that one in full inside ``mtm_list[-1][-1]``.
+    - ONE model and ONE forward price every leg: the already-hit KI vanilla runs the parity leg's
+      own algebra on the parity leg's own discretisation (and raises the same batch-constant-carry
+      refusal), and both legs read ``total_log_forward`` so a second spelling is unrepresentable.
+      The variance floor binds only on the zero-length first interval (roadmap.md for the open
+      exact-indicator item).
 
-    ONE MODEL PRICES EVERY LEG. Both vanillas switch: the KI in-out-parity vanilla inside
-    ``sim_spot_oss`` AND the already-hit ``hit_value`` this loop overrides it with. They are the SAME
-    state - a knocked-in barrier is a European - so a Black vanilla beside an HN one is a model mix
-    inside one payoff, and at 1y ATM on the repo's fixture the two disagree by 15.8%. Worse, the
-    ``torch.where(row_barrier_hit, hit_value, oss_result)`` selection puts both models in one tensor,
-    element by element. The already-hit leg therefore runs the parity leg's own algebra on the parity
-    leg's own discretisation: the same per-row ``n_total`` summed from the same ``sample_ts`` daily
-    sub-step counts, and the same scalar per-step carry - which is why it raises the same
-    batch-constant-carry refusal, in its own name. ``n_steps`` drives the variance recursion so it is
-    scalar per MTM row and the leg is a Python loop over the block's rows; ``rem_exp`` is
-    batch-constant (it is the deal clock, shape ``[N_block, 1]``), so nothing is averaged away.
-
-    AND ONE FORWARD PRICES EVERY LEG, for the same reason and by the same means: both vanillas call
-    ``total_log_forward``, so a second spelling is unrepresentable rather than merely wrong. There
-    was one - the already-hit leg summed annualised RATES with no ``dt`` and added a half-variance
-    whose cancelling subtraction lives on the parity branch - and it read 106.7% high in log-forward
-    while every gate in the suite stayed green. The parity leg's own spelling was
-    ``(r + 0.5 * sigma^2)``, which reconstructs the carry by undoing the ``-0.5 * var`` folded into
-    ``drift``; that round trip leaked the ``1e-4`` VARIANCE FLOOR into the DRIFT, adding exactly
-    ``5e-5`` to the log-forward on every row whose first fixing interval has zero length - which is
-    every row that IS an observation date. Measured: 13 of 37 rows on the repo's monthly fixture,
-    worth -0.025% of EPE.
-
-    THAT FLOOR IS NOW THE ZERO-LENGTH INTERVAL'S AND NOTHING ELSE'S. It was unconditional, which was
-    harmless only while the defect below handed every interval ``sigma(T)^2`` - the largest vol on
-    an upward surface. A correct forward-variance strip hands it genuinely small numbers and it
-    binds wherever ``sigma_fwd < 0.01/sqrt(dt)``, 19.1% annualised at daily monitoring: 114 of 365
-    daily intervals on an upward 0.12 -> 0.24 surface, against 0 of 53 weekly and 0 of 13 monthly,
-    which is every barrier fixture in this repo. Measured there against a floor-free oracle, eight
-    seeds: the SHIPPED spelling read +1.584% on a ``Down_And_Out`` and -6.870% on an ``Up_And_Out``,
-    the floor alone +0.049% and -5.576%, and this one +0.183% (1.7 se) and +0.403% (0.9 se). The
-    weekly and monthly readings are bitwise identical under all three, and the repo's own monthly
-    exposure grid is bitwise identical - value, CVA and all 13 CVA-gradient entries - whether the
-    floor is conditioned or not, which is why the density gate had to be written rather than
-    inherited. ``drift`` and ``vol`` now read ONE ``var``, so a floored
-    interval is a martingale under the law it is actually drawn from; the old spelling took the
-    drift from the unclamped variance and moves that exposure grid +0.0215% and its CVA +0.0240%
-    with no gate anywhere able to see it. WHAT THE ``dt == 0`` CLAMP BUYS is the GRADIENT, measured
-    by deleting it: every value stays finite (the profile moves -0.046%) and 11 of the 13
-    CVA-gradient entries go NaN, ``sqrt`` having an infinite derivative at zero and the variance
-    carrying the surface's graph. The remaining inconsistency is that a zero-length interval is
-    still SIMULATED with 1% of lognormal vol rather than resolved by an exact indicator, which
-    would consume a Sobol draw and move every barrier constant - open in the roadmap.
-
-    AND THAT FORWARD IS BUILT FROM INTERVAL CARRY, which is the seam's other half and was the
-    defect one layer down: the strip handed in is ``forward_carry_rate``'s, not the zero rates the
-    curve is gathered at, so ``carry * dt`` is an interval integral rather than one window's
-    average times another window's length. It drives ``drift``, so on a sloped curve the OSS
-    simulation's own ``E[S_T]`` was not ``F(t,T)`` either - measured -4.28% on the repo's sloped
-    fixture, exactly 0 on every flat one, which is why no fixture here had ever seen it.
-
-    AND THE VOL IS TWO QUANTITIES, both legitimate, deliberately not unified into one read. The
-    SIMULATION wants the per-INTERVAL strip: the surface read at every fixing's own TENOR
-    (``forward_vol_strip``), differenced into forward variance (``forward_vol_rate``), because an
-    implied vol is cumulative and the variance of ``[T_j-1, T_j]`` is a difference and not
-    ``sigma(T_j)^2 * dt_j``. The EUROPEAN legs - the already-hit KI mark and the in-out-parity
-    vanilla - want ``sigma(K, tau) * sqrt(tau)``, the surface's own quote for the option being
-    valued, and they share it as ``sd_to_expiry`` for the same reason both read one forward.
-
-    TWO READS OF ONE SURFACE MUST AGREE ON THE MONEYNESS, and this pricer's two did not. The strip
-    read every fixing at its own FORWARD moneyness, hard-coded, mirroring ``pv_MC_Tarf`` - which has
-    no European limit to violate. This one does, and it declares ``use_forwards`` (False on every
-    fixture here), so on a smiley surface the simulation stepped a law the pricer's own European
-    legs disagreed with: a never-knocking ``Down_And_Out`` read +0.948% and 8.3 standard errors from
-    Black at the declared quote, and in-out parity -11.03 instead of -0.19. The strip now takes the
-    deal's flag. What that costs is the per-fixing SMILE, which is a genuine modelling question and
-    is open in the roadmap with those numbers; the TERM STRUCTURE half is untouched by the choice
-    (1.1e-15 relative, alternating only the flag on a smile-free sloped surface).
-
-    THE DEFECT THIS REPLACED read ONE implied vol per MTM row - at the strike's moneyness and the
-    EXPIRY tenor - and applied it to every monitoring interval. The wrong allocation telescopes to
-    the right total variance, so the terminal distribution, every European limit, in-out parity and
-    every CRN gradient gate were EXACTLY right and only the barrier MONITORING was biased. Two
-    surfaces carrying the same 1y implied vol (flat 0.2479 against 0.10 rising to 0.32 at 2y)
-    priced ``Down_And_Out``/``Down_And_In``/``Up_And_Out`` BITWISE IDENTICALLY, while the true
-    interval strip ran 0.111 -> 0.336. Against a fine-step oracle the sloped world read -1.46%,
-    +11.53% and -11.07%.
-
-    AND THE VOL STRIP IS NOT BUILT UNDER HN, as in ``pv_MC_Tarf``. Nothing correct reads the implied
-    surface under a non-GBM spot model - the OSS steps the recursion, the already-hit leg is the same
-    closed form, and quanto/compo (the third reader, ``Check_Payoff_Type``) is refused at compile
-    time - so ``vols`` is an empty tensor there. That is what stops this recurring: the next leg that
-    reaches for the surface under HN dies on the shape rather than pricing a second model quietly.
-
-    The per-row hit mask is the state carried IN: every scenario hit at a STRICTLY EARLIER
-    observation. The current observation is NOT folded in, because this block's last row IS its
-    observation date and ``sim_spot_oss`` prices that date as its own first (zero-length) step, so
-    adding it would count the same crossing twice. The barrier is observed only on its own dates: an
-    earlier form cumsum-tested EVERY mtm row of the block, so on the repo's own fixture it monitored
-    37 rows against 12 barrier dates and knocked scenarios out on dates the deal never observes - and
-    it monitored expiry too, which BarrierDates flags -1. It also missed the FIRST barrier date
-    entirely, because ``range(prev_sample_idx, sample_index_t)`` is empty for block 0 and lags one
-    block thereafter, testing block i's rows because block i-1's observation had fired.
-
-    The rebate falls due AT the knock-out. ``sim_spot_oss`` already puts it in the mtm of that row -
-    its zero-length first step gives p=0 for a crossed path, leaving ``(1-p)*L*rebate`` - but nothing
-    settled it, and from the next row on ``hit_value`` is zero, so the cash would be priced and then
-    paid nowhere; the increment is settled per date, the same way ``pv_barrier_option`` does. The
-    TERMINAL row is excluded, since the single settle after the loop already pays it in full as part
-    of ``mtm_list[-1][-1]`` - the rebate is in that mtm because ``sim_spot_oss`` accrued it.
-    ``pv_barrier_option`` guards the same double count with ``expiry[index] > 0.0``; a deal whose
-    last barrier date IS expiry hits it, and instruments.py unions Expiry_Date into the observation
-    dates, so that is common.
-
-    Under ``boundary_aad`` the recorded gap is the margin by which each decision was made, graph
-    retained - it carries every factor that moved the spot to the barrier - and is signed so
-    ``gap > 0`` means CROSSED, matching the jump ``J(crossed) - J(did not)``: a down barrier is
-    crossed from ABOVE, so its gap is ``log(barrier/spot)``. The already-hit vanilla is a closed form
-    drawing no random numbers, so building it for the counterfactual cannot shift the OSS stream and
-    cannot move the reported value. Blocks where EVERY scenario has resolved skip the OSS and so
-    carry no counterfactual - running it there would draw random numbers and move the reported value
-    - which is also where the kernel weight is negligible, every scenario being far past the barrier
-    rather than near it.
-
-    RECOMPUTE (``shared.recompute_inner_mc``, the ``Recompute_Inner_MC`` calculation field). Off,
-    ``sim_spot_oss`` is called once and taped. On, it goes through ``InnerMCRecompute`` - untaped to
-    price, re-run under ``enable_grad`` to differentiate. This is the cheapest of the three ports
-    because ``sim_spot_oss`` was ALREADY pure: it settles no cash (the barrier settles once, after
-    the block loop, and its rebate settles off ``crossed``, which the OSS does not produce) and it
-    registers nothing. Only the Heston-Nandi scalars had to move out of the closure and into theta.
-
-    ITS GAPS STAY OUTSIDE THE NODE, and not by analogy with the TARF's redemption latch: the
-    decision is ``spot_block[-1]`` against the barrier, an OUTER scenario spot at an observation
-    date, which the inner simulation neither produces nor is asked about. Its graph is the scenario
-    generation's, which this node does not untape, so the registration needs nothing from the
-    replay - the whole latch (gaps, both branches, the crossed flags) is built from block tensors
-    the loop already has. Off is bit-identical, price and gradient.
+    BOUNDARY AAD (``shared.boundary_aad``): the gap is each crossing's margin, graph retained,
+    signed so ``gap > 0`` means CROSSED - a down barrier is crossed from above, so its gap is
+    ``log(barrier/spot)``. The whole latch is built OUTSIDE the recompute node: the decision is an
+    outer scenario spot, whose graph the node does not untape. Blocks where every scenario has
+    resolved skip the OSS and carry no counterfactual - running one would draw random numbers and
+    move the reported value. ``sim_spot_oss`` is pure (no cash settled, nothing registered), so the
+    recompute port only hoists the Heston-Nandi scalars into theta.
     """
 
     def sim_spot_oss(offset, sobol, num_sims,
                      spot_prices, vols, sd_to_expiry, times, carry, discount_rates, *hn_scalars):
-        """Run the OSS inner Monte Carlo and return the per-block mean PV.
+        """Run the OSS inner Monte Carlo and return the per-block mean PV as the one-element tuple
+        ``(mtm,)`` - the tuple is ``InnerMCRecompute``'s contract.
 
-        PURE, and split into a bound half and a theta half, because `InnerMCRecompute` calls it
-        TWICE - once untaped to price and once taped to differentiate - whenever
-        `Recompute_Inner_MC` is on. The leading arguments are the block's shape and are bound per
-        block; the trailing ones are every tensor it reads that can carry a graph, which is what the
-        node can return a gradient for. It has no by-products, so it returns the one-element tuple
-        `(mtm,)` - the tuple is the node's contract, not a shape it happens to have here.
+        PURE bound/theta split: the leading arguments are the block's shape, bound per block with
+        ``partial``; the trailing ones are every graph-carrying tensor the node can return a gradient
+        for. It takes BOTH vol quantities - ``vols`` the per-interval strip ``[N_block, N_fix, batch]``
+        the simulation steps on, ``sd_to_expiry`` the European standard deviation ``[N_block, batch]``
+        the parity vanilla is valued at.
 
-        IT TAKES BOTH VOL QUANTITIES, because there are two and they are not the same read (see the
-        pricer docstring): ``vols`` is the per-INTERVAL strip the simulation steps on, shaped
-        ``[N_block, N_fix, batch]`` like the carry beside it, and ``sd_to_expiry`` is the EUROPEAN
-        standard deviation ``sigma(K, tau) * sqrt(tau)`` the parity vanilla is valued at, shaped
-        ``[N_block, batch]`` and shared with the already-hit leg outside.
+        Under Heston-Nandi the KI parity vanilla is the HN closed form over ``n_total`` daily steps with
+        a scalar per-step carry - valid only while the carry is batch-constant, hence the loud refusal
+        under stochastic rates (the extension is a batched-carry ``hn_call``).
 
-        BARRIER_IN is priced by in-out parity, so the leg needs a vanilla. Under HN the SMILE BITES:
-        that vanilla is the HN CLOSED FORM, not a normal at aggregate variance. It runs ``n_total``
-        daily steps to expiry from ``h1 = H0``, with a per-step carry reproducing the forward
-        ``S*exp(b*T)`` (undiscounted forward-measure value = ``hn_call * exp(b*T)``), then discounts
-        at the real curve ``D[-1]`` - forward and discount separated as in ``black_european_option``.
-        Reducing the carry to a scalar ``r_step`` is valid ONLY when carry is batch-constant
-        (deterministic rates/dividends): under stochastic-rate CVA the per-scenario carries diverge
-        and a scalar leg would misprice the KI vanilla by O(10%) of its value, silently - hence the
-        loud guard. The fix is a batched-carry ``hn_call``.
-
-        A digital's TERMINAL step is INTEGRATED, not sampled. An indicator on the drawn spot has
-        zero derivative almost everywhere, so the density term that is most of a digital's delta and
-        vega never reaches the tape: measured 10.5% low on a knock-out digital's delta and 14.7%
-        high on its vega, and once the barrier is out of reach the reported delta and vega are
-        EXACTLY zero, with the equity and vol factors absent from the greeks report rather than
-        showing zero. The survival legs are already integrated this way - this is the same idiom one
-        step later, and it also drops the last step's sampling noise. The HN branch always samples,
-        its per-path conditional variance having no scalar closed form to integrate against, so an
-        HN digital keeps the indicator.
+        A digital's TERMINAL step is INTEGRATED, not sampled: an indicator on a drawn spot has zero
+        derivative almost everywhere, so sampling it loses the density term that is most of a digital's
+        delta and vega. The HN branch keeps the indicator - its per-path conditional variance has no
+        scalar closed form to integrate against.
         """
         eps = torch.finfo(shared.one.dtype).eps
         hn = bool(hn_scalars)
@@ -1556,13 +1297,17 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             factor_dep['Volatility'], moneyness_block, expiry,
             shared) if not hn else spot_block.new_empty(0)
 
+        adj = None
         if factor_dep.get('Check_Payoff_Type', False):
-            # a DEAL-LEVEL drift adjustment, so its input stays the expiry read; the strip below
-            # then rides the adjusted carry. Compo is unreachable here - `b_adj` is a python float
-            # on that branch and `torch.unsqueeze` refuses it - so `adj['vol']` is `vols` identity.
-            adj = calc_vol_adjustment(factor_dep, deal_time, expiry, expiry_vols, shared)
+            # a DEAL-LEVEL adjustment, so its vol input stays the expiry read. Quanto bends the
+            # per-fixing carry; compo changes the UNDERLYING to S*X - the spot scaled by the fx
+            # cross, the fx carry added per fixing, and the interval strip composed with the fx
+            # expiry vol below. Barrier and strike are payoff-currency quantities, so they compare
+            # against the scaled spot as authored.
+            adj = calc_vol_adjustment(factor_dep, deal_time, expiry, expiry_vols, shared, fixings)
             expiry_vols = adj['vol']
-            drifts = drifts + torch.unsqueeze(adj['b_adj'], 1)
+            drifts = drifts + adj['carry_adj']
+            spot_block = spot_block * adj['spot_scale']
 
         sample_ts = drifts.new(
             np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)]))
@@ -1577,6 +1322,10 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         interval_vols = forward_vol_rate(forward_vol_strip(
             deal_data, shared.one * strike, spot_block, drifts, fixing_block, shared,
             invert_moneyness, use_forwards), cum_t, sample_ts) if not hn else spot_block.new_empty(0)
+        if adj is not None and adj['fx_vol'] is not None:
+            # compo: the simulation steps S*X, so each interval's vol is the PRODUCT's - the
+            # asset's own interval strip composed with the fx expiry read (see compo_vol)
+            interval_vols = compo_vol(interval_vols, adj['fx_vol'].unsqueeze(1), adj['rho'])
         # sigma(K, tau) * sqrt(tau): the ONE European standard deviation, marked by the already-hit
         # leg below and by the in-out-parity vanilla inside `sim_spot_oss`
         sd_to_expiry = expiry_vols * torch.sqrt(rem_exp.clamp(min=1e-4)) if not hn else expiry_vols
@@ -2126,56 +1875,34 @@ def pv_european_option(shared, time_grid, deal_data, nominal, moneyness, forward
 def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     """Fixing-observed FX accumulator with a knock-out barrier, by one-step-survival Monte Carlo.
 
-    At each surviving fixing the signed payoff is ``N1 * relu(cp*(S_j - K)) - N2 * relu(-cp*(S_j -
-    K))``, paid at that fixing's own settlement date; the fixing that breaches the barrier pays
-    nothing and cancels every later fixing. Survival at a FUTURE fixing is the analytic OSS
-    truncation at the CONSTANT barrier (``oss_truncated_draw`` - the barrier is F-measurable over
-    the interval, so the scheme is exact); a fixing the row has already OBSERVED is resolved by its
-    EXACT indicator off the outer sample - the accumulator has no simulated zero-length step and
-    therefore no variance floor, which is the resolution the roadmap's open OSS item asks for.
+    At each surviving fixing the signed payoff ``N1 * relu(cp*(S_j - K)) - N2 * relu(-cp*(S_j - K))``
+    pays at that fixing's own settlement date; the fixing that breaches the barrier pays nothing and
+    cancels every later fixing. Survival at a FUTURE fixing is the analytic OSS truncation at the
+    constant barrier (``oss_truncated_draw`` - F-measurable over the interval, so exact); a fixing
+    the row has already OBSERVED is resolved by its exact indicator off the outer sample - no
+    simulated zero-length step, so no variance floor.
 
-    The carry and vol arrive as INTERVAL strips (``forward_carry_rate``,
-    ``forward_vol_rate(forward_vol_strip(...))``), built at the call site like every OSS adopter;
-    ``use_forwards=True`` because every FX pricer here reads the surface at forward moneyness, so
-    the never-knocking limit - a strip of Europeans, one per fixing - is priced at the same quote
-    the FX vanillas mark with. Under Heston-Nandi the strip is not built (nothing correct reads an
-    implied surface under a non-GBM spot model); the recursion supplies the variance, exactly as in
-    ``sim_spot_tarf``, whose (F1)-(F4) limitations apply verbatim.
+    A fixing dated ON the base date resolves off the SIMULATED spot, not the recorded print: a
+    sensitivity bump can only reach the fixing if the fixing follows the factor. The two designs
+    agree in value and differ by the whole fixing's contribution in delta (``make_fixing_data``).
 
-    RECOMPUTE (``shared.recompute_inner_mc``): the simulation is a pure bound/theta split called
-    through ``InnerMCRecompute`` - which is why its settled cashflows are RETURNED (a settle inside
-    the callable fires twice in the backward) and why the observed samples, the alive prefix and
-    both strips enter as theta. Settlements may be GROUPED (several fixings paying one value date):
-    every ``tau[j] == 0`` fixing returns its own (row, amount) pair and ``cash_settle`` accumulates.
+    The carry and vol arrive as interval strips built at the call site, ``use_forwards=True`` (every
+    FX pricer reads the surface at forward moneyness, so the never-knocking limit prices at the
+    quote the FX vanillas mark with). Under Heston-Nandi the strips are not built; the recursion
+    supplies the variance and ``sim_spot_tarf``'s (F1)-(F4) apply verbatim. RECOMPUTE: pure
+    bound/theta split; settles are RETURNED, and grouped settlements (several fixings paying one
+    value date) accumulate through ``cash_settle``.
 
-    BOUNDARY AAD: the knock-out on an OBSERVED fixing is a decision on OUTER scenario state - the
-    barrier pricer's latched shape - so the gaps are built OUTSIDE the node from the samples the
-    outer loop already has, signed so ``gap > 0`` means CROSSED. ``untriggered`` is the alive
-    branch: the same loop on a weight the observed indicators never zero (the left limit, TARF's
-    redemption pattern), which the smooth future survivals still discount. ``triggered`` is ZEROS,
-    the TARF redemption precedent, and it carries a NAMED approximation: a knocked deal still owes
-    the fixings accrued before the breach whose settlements are pending, so between the breach and
-    the last prior settlement the true branch is not zero.
-
-    That approximation is MEASURED rather than bounded by argument, and the measurement says two
-    things. It is EXACT - reconstruction to 4.5e-13 - wherever the settlement lag is shorter than
-    the fixing spacing, which is the T+2 spot-FX default at any weekly-or-longer schedule; a
-    45-day lag on 20-day fixings runs 1.07% of the profile. And it is NOT one-signed: the tempting
-    claim that zero can only UNDERSTATE what a knocked deal is owed, so the jump is only ever
-    overstated in magnitude and can never pull the correction the wrong way, is FALSE for a
-    leveraged accumulator and was measured false at +54.06 - the pending head is
-    ``N1*relu(S-K) - N2*relu(K-S)``, negative on an OTM fixing whenever ``LeverageNotional``
-    exceeds ``Underlying_Amount``, which is the ordinary way this product is written. What IS true
-    is that the error is confined to cells the latch calls dead. Both statements are gated
-    (``test_a_pending_settlement_is_what_the_zero_dead_branch_costs``). An exact branch needs a
-    per-decision head profile, i.e. a fourth BoundarySet shape, and is deliberately not built
-    ahead of a measured need. A deal declared ``Barrier_Hit`` registers nothing: its death is
-    data, not simulated state, and no flux crosses a declared constant.
-
-    The prefix alive state folds ``Barrier_Hit`` with every SETTLED fixing's own breach test (the
-    schedule's observed values), so a source system that forgot the flag still prices the deal the
-    data describes; unsettled observed fixings enter through ``all_samples`` exactly as the TARF's
-    past fixings do.
+    BOUNDARY AAD: the knock-out is decided on OUTER scenario state, so the whole latch is built
+    outside the node - gaps signed so ``gap > 0`` means CROSSED, ``untriggered`` the alive branch on
+    a weight the observed indicators never zero, ``triggered`` ZEROS. The zero dead branch is a
+    NAMED approximation: it omits the pending settlements a knocked deal still owes - exact wherever
+    the settlement lag is shorter than the fixing spacing, NOT one-signed on a leveraged deal, and
+    confined to cells the latch calls dead (measurements: roadmap.md). An exact branch is a
+    per-decision head profile - a fourth BoundarySet shape, not built ahead of a caller needing the
+    accuracy. A deal declared ``Barrier_Hit`` registers nothing: its death is data, not simulated
+    state. The alive prefix folds ``Barrier_Hit`` with every settled fixing's own breach test, so
+    the deal prices from the data even without the flag.
     """
 
     def survives(s):
@@ -2413,63 +2140,33 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
 
 
 def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
-    """
-    One-step survival Monte Carlo for TARF (autograd-friendly).
-    - Analytic KO-in-step: adds (1 - p_survive) * remaining_target at each fixing
-    - Survival branch: GBM step with Z ~ N(0,1) truncated at z_max from the PnL barrier
-    - Accrual: only ITM leg contributes to target; OTM affects PV only (and optional knock-in barrier)
+    """One-step-survival Monte Carlo for a TARF.
 
-    KNOWN LIMITATIONS of the opt-in Heston-Nandi spot model (SpotModel='HestonNandi'); accepted
-    design semantics, stated so they are not re-discovered:
-    (F1) each fixing spans n_sub = max(round(dt * Steps_Per_Year), 1) whole HN daily steps, so the
-         per-fixing variance is quantised to an integer number of trading days with a floor of one -
-         a sub-3-calendar-day fixing still carries one full day of HN variance.
-    (F2) Steps_Per_Year (default 252) MUST match the daily clock the HN factor was calibrated on; a
-         mismatch silently rescales the variance horizon (n_sub and hence Sum h) with no error.
-    (F3) the n_sub-1 unconditional sub-step normals are drawn from the global torch generator, not
-         the reset Sobol stream - deterministic per run seed, but finite-difference greeks w.r.t.
-         NON-HN factors pick up this RNG noise (HN-parameter greeks are AAD and unaffected).
-    (F4) h re-seeds to H0 at the start of every MTM row (static implied factor); there is no
-         outer-grid variance term structure - each valuation date restarts the recursion at H0.
+    Analytic KO-in-step (``(1 - p_survive) * remaining_target`` at each fixing), truncated draws for
+    the surviving branch, and only the ITM leg accrues toward the target - the OTM leg affects PV
+    only, plus the optional knock-in barrier.
 
-    The HN scalars (Omega, Alpha, Beta, Gamma_Star, H0) ride the AAD graph out of
-    ``t_Static_Buffer``, unpacked exactly like the SVI wing params (utils.py:2052); when they are
-    absent ``sim_spot_tarf`` takes the byte-identical GBM path. Asset-class agnostic - it works for
-    the FX cross here and is unchanged for an equity or commodity underlying.
+    Heston-Nandi limitations - accepted design semantics, stated so they are not re-derived:
+    (F1) each fixing spans ``n_sub = max(round(dt * Steps_Per_Year), 1)`` whole HN daily steps, so
+         per-fixing variance is quantised to trading days with a floor of one;
+    (F2) ``Steps_Per_Year`` must match the daily clock the HN factor was calibrated on - a mismatch
+         silently rescales the variance horizon;
+    (F3) the ``n_sub - 1`` unmonitored sub-step normals come from the global torch generator, so
+         finite-difference greeks w.r.t. non-HN factors pick up RNG noise (AAD HN greeks do not);
+    (F4) ``h`` re-seeds to ``H0`` at every MTM row - there is no outer-grid variance term structure.
+    The HN scalars ride the AAD graph out of ``t_Static_Buffer``; when absent the GBM path is
+    byte-identical. RECOMPUTE: the vol strip is built at the call site and the simulation RETURNS
+    its settled cashflows and registrations - the node's inputs are its whole theta surface.
 
-    RECOMPUTE (``shared.recompute_inner_mc``, the ``Recompute_Inner_MC`` calculation field). Off,
-    ``sim_spot_tarf`` is called once and taped. On, it is called through ``InnerMCRecompute`` -
-    untaped to price, re-run under ``enable_grad`` to differentiate - and the peak becomes one
-    block's graph rather than every block's. That is why the vol strip is built at the call site
-    (``forward_vol_strip`` into ``forward_vol_rate``) and why the simulation returns its settled
-    cashflows and boundary registrations instead of performing them: the node's inputs must be its
-    whole theta surface, and a side effect inside it would fire twice. Off is bit-identical, price
-    and gradient.
-
-    BOUNDARY AAD (``shared.boundary_aad``). Two decisions are taken on simulated state and jump: the
-    target filling (the deal has redeemed and is worth nothing thereafter) and the OTM leg knocking
-    in. Both jumps are real product economics, so neither may be smoothed; what ordinary AAD drops is
-    the flux of paths across them. Recording costs nothing when sensitivities are not wanted, hence
-    the gate.
-
-    The redemption gap is built from the UNCLAMPED accrual ``raw``, which is the same series with the
-    min taken off - every step's clamp is at ``targetValue`` and the increments are non-negative, so
-    ``accumulation[k] == min(raw[k], target)`` exactly. The clamp is also what kills the derivative
-    AT the decision (past it the reported accrual is a constant), so a gap built from
-    ``accumulation`` would carry no graph on the very paths that made the decision, while
-    ``raw[k] - target`` is the same test, signed the same way, and carries every factor that moved
-    the fixings there. It is in target units and deliberately NOT rescaled to be dimensionless the
-    way a barrier gap is: ``boundary_weights`` sets its kernel width to ``bandwidth * gap.std()``, so
-    the whole estimator is invariant to the gap's scale - measured, dividing through by the target
-    left every digit of the correction unchanged.
-
-    There is one redemption decision per block: ``q`` is read off that block's accrual, so it is the
-    same test for every row the block covers, and a later block's accrual can only be larger - the
-    flags latch, which is what makes this the LATCHED shape. The gaps are ``expand``-ed because block
-    0's accrual is the HISTORIC one, a single number rather than a per-scenario tensor. That decision
-    is registered like any other rather than skipped: it carries no graph, so the local-linear fit
-    degenerates and it contributes exactly zero, whereas skipping it would leave the latch
-    reconstruction wrong on a deal whose target had already filled before the base date.
+    BOUNDARY AAD registers two decisions taken on simulated state: the target FILLING (the deal has
+    redeemed and is worth nothing after - the LATCHED shape, since a later block's accrual is only
+    ever larger) and the OTM leg KNOCKING IN (per inner path). The redemption gap is built from the
+    UNCLAMPED accrual ``raw``: ``accumulation == min(raw, target)`` exactly, and the clamp kills the
+    derivative at the decision, so a gap built from the clamped series would carry no graph on the
+    very paths that decided. It stays in target units - ``boundary_weights`` scales its kernel by
+    ``gap.std()``, making the estimator invariant to the gap's scale. A graphless historic decision
+    (a target already filled at the base date) is registered anyway: it contributes exactly zero,
+    and skipping it would corrupt the latch reconstruction.
     """
 
     # --- Accumulated target from past observed fixings --------------------------
@@ -2486,59 +2183,29 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     def sim_spot_tarf(settlement, sobol, num_sims,
                       spot_prices, times, carry, prev_accum, discount_rates, vols_all,
                       past_fixings, *hn_scalars):
-        """
-        Inner one-step-survival Monte Carlo over one block of MTM rows; returns the mean PV per row.
+        """Inner one-step-survival Monte Carlo over one block of MTM rows; returns the mean PV per row.
 
-        PURE, and split into a bound half and a theta half, because `InnerMCRecompute` calls it
-        TWICE - once untaped to price and once taped to differentiate - whenever
-        `Recompute_Inner_MC` is on. The leading arguments are the block's shape and are bound per
-        block; the trailing ones are every tensor it reads that can carry a graph, which is what
-        the node can return a gradient for. Its by-products are RETURNED rather than performed:
-        a settled cashflow and a boundary registration must happen once, off the forward's result,
-        and the caller is the only place that knows which call it is looking at.
+        PURE bound/theta split for ``InnerMCRecompute``; by-products are RETURNED and performed once by
+        the caller. Returns ``(mtm, untriggered, settled, settle_rows, knock_rows) + gaps + jumps``: the
+        block's rows, the redemption latch's counterfactual rows, the cashflows settling today, the
+        block-local rows they and the knock-in decisions land on, then one gap and one jump per
+        (row, fixing) - the gaps are the outputs whose cotangent carries the boundary correction.
 
-        Returns `(mtm, untriggered, settled, settle_rows, knock_rows) + gaps + jumps`: the block's
-        rows, the counterfactual rows the redemption latch needs, the first-fixing cashflow of every
-        row that settles today, the block-local rows those cashflows and those knock-in decisions
-        land on, and then one knock-in gap and one knock-in jump per (row, fixing). The gaps are the
-        outputs whose cotangent carries the boundary correction back into the simulation.
+        Heston-Nandi: ``h`` re-seeds to ``H0`` per MTM row and recurses continuously through every daily
+        sub-step. Only the LAST step of each fixing is truncated - the TARF accrues and knocks AT the
+        fixing - and the PnL barrier depends only on the remaining target, constant over the interval
+        and F-measurable at the truncation, so the scheme is exact.
 
-        Heston-Nandi: ``h`` is re-seeded to ``H0`` at the start of each forward simulation (each MTM
-        row) and then recursed continuously - including through the truncated final draw - across
-        every daily sub-step. At the base date ``h1 = H0`` is exactly the calibrated initial
-        variance; at a future MTM row it is the base-date seed, per (F4) above. Each fixing spans
-        ``n_sub`` whole daily steps of which the first ``n_sub - 1`` are UNCONDITIONAL and
-        UNMONITORED - the TARF only accrues and knocks AT the fixing - so the OSS truncation applies
-        ONLY on the last step, where the daily log-return is conditionally Gaussian given ``h``. The
-        barrier ``B_pnl`` depends only on the remaining target ``R``, constant over the interval and
-        F-measurable at the truncation, so the scheme is EXACT (the product is unchanged). A
-        mean-matched single-step normal bridge misprices the KO probability, with the error growing
-        in ``n``; naive daily-monitored OSS prices a DIFFERENT product.
+        Two decisions fork here under ``boundary_aad``:
 
-        Under ``boundary_aad`` two decisions are forked here.
-
-        Redemption: a path whose accrual has reached the target has redeemed, so the jump to zero is
-        real product economics - but ``q`` is an exact float equality firing on a POSITIVE-MEASURE
-        set (``calc_accum_value`` clamps AT ``targetValue``), which makes it a knock-out decision
-        like any other, whose flux ordinary AAD drops. The counterfactual is the SAME loop on a
-        weight that was never zeroed: the weight feeds nothing back into the spot, the truncation or
-        the remaining target, so one extra accumulator answers "had it not quite filled" exactly,
-        with no re-simulation and no random number drawn. It IS the left limit - everything the
-        remaining target enters is continuous at 0.
-
-        Knock-in: decided by ``Sj``, a draw of THIS pricer's inner simulation, so it is one decision
-        per inner path and the jump it carries is the OTM leg switching on for that path alone,
-        ``J(knocked in) - J(did not) = -Dj * L * p * relu(-intr) * N_otm``, everything else being
-        shared. The gap is signed so ``gap > 0`` means KNOCKED IN, and is taken in log space so a
-        bandwidth means the same thing here as at a barrier observation. At a fixing this row has
-        ALREADY OBSERVED (``dt <= 0``), ``Sj`` is a past reset rather than an inner draw, so the
-        decision is one per SCENARIO and the gap is constant along the inner axis - which
-        ``expand_as`` says explicitly. That is not an approximation: the pooled kernel over ``B * n``
-        samples of which only ``B`` are distinct reproduces the whole-scenario estimator exactly,
-        because the ``1/n`` in the weights cancels the ``n`` copies of each jump. Under CMC every
-        fixing date IS a reporting row (a deal's own dates are folded into the grid), so skipping
-        that case leaves one decision per fixing unregistered - measured at 5.50% of the CVA delta
-        on the repo's own fixture.
+        - REDEMPTION: the accrual clamps AT ``targetValue``, so the equality fires on a positive-measure
+          set - a knock-out like any other. The counterfactual is the same loop on a weight that was
+          never zeroed (the left limit): one extra accumulator, nothing re-simulated, no draw consumed.
+        - KNOCK-IN: decided on ``Sj``, an inner draw - one decision per inner path, with jump
+          ``J(knocked in) - J(did not) = -Dj * L * p * relu(-intr) * N_otm`` and the gap in log space so
+          a bandwidth means the same as at a barrier. At an already-observed fixing (``dt <= 0``) the
+          decision is per SCENARIO and the gap is expanded along the inner axis - exact, because the
+          pooled kernel's ``1/n`` weights cancel the ``n`` copies of each jump.
         """
 
         # easier to type
@@ -2875,52 +2542,28 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     """Autocallable swap by inner Monte Carlo, one-step-survival when there is no averaging.
 
-    RECOMPUTE (``shared.recompute_inner_mc``, the ``Recompute_Inner_MC`` calculation field). Off,
-    ``sim_spot`` is called once and taped. On, it goes through ``InnerMCRecompute`` - untaped to
-    price, re-run under ``enable_grad`` to differentiate - and the peak becomes one block's graph
-    rather than every block's. That is why the floating leg, the past equity fixings and the
-    Heston-Nandi scalars are passed IN rather than read from the enclosing scope, and why the
-    simulation returns its settled cashflows and its trigger registrations instead of performing
-    them: the node's inputs must be its whole theta surface, and a side effect inside it would fire
-    twice. ON reproduces the pre-refactor gradients bit for bit; the refactored OFF path is 1 ulp
-    from them under collateral - the stacked settle reorders that chain's backward accumulation -
-    which the ulp gate pins by name.
+    RECOMPUTE: ``sim_spot`` is a pure bound/theta split called through ``InnerMCRecompute`` - the
+    floating leg, past fixings and Heston-Nandi scalars enter as theta, and settled cashflows and
+    trigger registrations are RETURNED, not performed. THE VOL IS AN INTERVAL STRIP in both branches
+    (``forward_vol_rate(forward_vol_strip(...))``), read at the moneyness the deal declares; the
+    per-fixing smile convention is open in roadmap.md. Quanto bends the carry at the expiry read;
+    compo prices the product S*X - spot scaled by the fx cross, fx carry per fixing, interval strip
+    composed with the fx expiry vol (``calc_vol_adjustment``).
 
-    THE VOL IS AN INTERVAL STRIP, in BOTH branches, and it used to be one implied vol read at the
-    expiry moneyness and the expiry tenor - the pricer's own comment said so and asked for the fix.
-    An implied vol is cumulative, so an interval's variance is a DIFFERENCE of cumulative variances
-    (``forward_vol_rate``) off a surface read at each fixing's own forward moneyness
-    (``forward_vol_strip``); ``pv_MC_Tarf`` differenced and this pricer did not, in the same file.
-    Because the wrong allocation telescopes to the right TOTAL variance and every fixture here is
-    flat, the correction leaves this repo's autocall value and exposure profile BITWISE UNCHANGED
-    and moves six of thirteen CVA-gradient entries - the vol surface's own nodes, by up to 157%,
-    with their SUM bit-invariant. The quanto/compo adjustment keeps the EXPIRY read: it is a
-    deal-level drift adjustment, not a step of the simulation.
+    THE KNOCK-OUT LATCH IS CARRIED. ``terminationDate`` is stamped inside ``sim_spot`` at each
+    observed fixing, returned as a by-product and handed to the next block's theta - an autocalled
+    path settles its coupon once and marks zero from then on. The averaging branch cannot stamp it
+    (its termination is a smoothed per-inner-path weight, with no crisp per-scenario decision) and
+    returns it unchanged; the lagging-payment schedule case is open in roadmap.md.
 
-    WHAT IT IS WORTH, since no fixture here can show it. On two surfaces carrying the same 1y
-    implied vol - flat 0.2479 against a term structure running 0.10 to 0.32 - a quarterly autocall
-    struck 2% out of the money priced 0.034026629996 on BOTH, bitwise, and the sloped one is worth
-    0.037094 by brute-force Monte Carlo: -8.27%, 207 standard errors. The strip reads 0.037064.
-    Twice the barrier's percentage on the same surfaces, because a digital trigger observed
-    quarterly is all monitoring and has no terminal payoff to telescope back into.
-
-    TWO MONEYNESS CONVENTIONS LIVE HERE, and this pricer is where the difference is exactly
-    measurable. ``forward_vol_strip`` read each fixing at its own FORWARD moneyness, mirroring
-    ``pv_MC_Tarf``; the deal declares ``use_forwards = False``, so the expiry read above - and every
-    value this pricer returned before the port - is the SPOT read. A ONE-COUPON autocall is a
-    closed-form digital, which makes that gap noise-free: on a surface flat in tenor and smiley in
-    moneyness the forward read is 0.024428368300 against the declared 0.024490310460, -0.2529%,
-    both exact. The strip now takes the DECLARED read, so this pricer reproduces its own European
-    quote to 0 ULP; whether a simulation should instead read the quote its own forward implies is a
-    modelling decision and it is open in the roadmap. It is NOT a consequence of the interval strip,
-    which prices identically to 6.9e-18 under either convention on a smile-free surface.
-
-    BOUNDARY AAD (``shared.boundary_aad``). The coupon trigger observed on its own fixing date is a
-    real redemption, so the value is not what is wrong; what ordinary AAD drops is the flux of
-    scenarios across the threshold. Its gap is decided on ``Sj`` INSIDE the simulation - the row's
-    own spot, or a past fixing, selected by loop state - so under the node it is an OUTPUT and the
-    correction's coefficient arrives as that output's cotangent. Building it outside instead would
-    mean a second spelling of the trigger condition, which is the failure the node exists to avoid.
+    BOUNDARY AAD: the trigger's gap is decided on ``Sj`` INSIDE the simulation, so under the node it
+    is an OUTPUT whose cotangent carries the correction. The decision's reach registers as TWO sets:
+    the fired/survived fork on its own row (``RowBoundarySet`` - a hard indicator, nothing smooths
+    it) and the carried latch killing every later row (``LatchedBoundarySet``, alive against zero;
+    the alive branch costs nothing because the accumulators run alive and the latch masks the
+    exits). The two share their gaps, do not overlap, and sum to the whole jump. Only a STAMPED
+    decision (``tau == 0``) opens the latch; a re-observation of an old decision in a pending window
+    stays row-local.
     """
     def sim_autocall(S, isBarrierDate, isFixingDate, isFloatDate, floating, threshold, coupon, terminationDate):
         avg = 0.0
@@ -2975,34 +2618,28 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     def sim_spot(offset, times, t_tenor, last_fixing, sobol, num_sims,
                  spot_prices, vols, carry, terminationDate, discount_rates, floating_leg,
                  past_fixings, *hn_scalars):
-        """
-        Inner one-step-survival Monte Carlo over one block of MTM rows; returns the mean PV per row.
+        """Inner one-step-survival Monte Carlo over one block of MTM rows; returns the mean PV per row.
 
-        PURE, and split into a bound half and a theta half, because `InnerMCRecompute` calls it
-        TWICE - once untaped to price and once taped to differentiate - whenever
-        `Recompute_Inner_MC` is on. The leading arguments are the block's shape and are bound per
-        block; the trailing ones are every tensor it reads that can carry a graph, which is what the
-        node can return a gradient for. `times` is bound rather than theta because it is built from
-        numpy through `Tensor.new` and carries no graph at all - and because it stays numpy on a
-        block whose fixings have all been observed.
+        PURE bound/theta split for ``InnerMCRecompute``: leading arguments are the block's shape, bound
+        per block; trailing ones are every graph-carrying tensor. ``times`` is bound because it is built
+        from numpy and stays numpy on a block whose fixings have all been observed.
 
-        Returns `(mtm, settled, settle_rows, event_rows) + gaps + fired + survived`: the block's
-        rows, the cashflows the caller settles once, the block-local rows those cashflows and those
-        trigger decisions land on, and then one gap, one fired branch and one surviving branch per
-        decision. The gaps are the outputs whose cotangent carries the boundary correction back into
-        the simulation; the branches are coefficients and go in detached.
+        Returns ``(mtm, settled, settle_rows, event_rows, terminationDate, alive) + gaps + fired +
+        survived`` - the marks, the by-products the caller performs once, then one gap and two detached
+        branch coefficients per decision (the gaps carry the correction's cotangent).
 
-        Under ``boundary_aad`` a row whose autocall is OBSERVED forks a counterfactual. ``dt == 0``
-        means the fixing date IS this reporting row, so ``Sj`` is the scenario's own spot rather than
-        an inner draw and no smoothing can be justified - the note really has redeemed; what the tape
-        drops is the flux of scenarios across the threshold. The gap is signed so ``gap > 0`` means
-        the trigger FIRED (spot at or above ``K``, hence ``p == 0``), matching
-        ``jump = J(fired) - J(did not)``. Firing zeroes the weight, so every later term of the row
-        vanishes and the fired branch is exactly that coupon, while the surviving branch forks there
-        with the weight intact: ``P_cf``/``L_cf`` are the same accumulation on a survival weight the
-        trigger never touched. They do not exist until the trigger is met, which happens at most once
-        per row - a fixing lands on the last row of its block, and its first coupon is the only one
-        that can be time-aligned.
+        ``terminationDate`` arrives as the latch a PRIOR block left (-1 alive, else the fixing index
+        that killed the path), is stamped where a fixing is observed (``tau == 0``, off the scenario's
+        own spot) and returned for the next block. The accumulators run ALIVE with the latch masking the
+        exits: ``P`` is homogeneous in its initial weight, so the masked exit equals the killed weight
+        bit for bit, and the same pass yields the ``alive`` rows the latched registration needs - which
+        a killed weight could never produce.
+
+        Under ``boundary_aad`` a row whose autocall is OBSERVED (``dt == 0``: the fixing IS the row,
+        ``Sj`` the scenario's own spot) forks a counterfactual. The gap is signed so ``gap > 0`` means
+        FIRED (``p == 0``). Firing zeroes the weight, so the fired branch is exactly that coupon; the
+        surviving branch (``P_cf``/``L_cf``) is the same accumulation on a weight the trigger never
+        touched, created at most once per row - a fixing lands on the last row of its block.
         """
 
         timesteps, num_samples = times.shape
@@ -3011,6 +2648,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             *hn_params, H0 = hn_scalars
         # the by-products the caller performs once (see docstring)
         settled, settle_rows, event_rows, gaps, fired, survived = [], [], [], [], [], []
+        alive = []
 
         isBarrierDate = BarrierDates[offset:]
         isFloatingDate = Floating[offset:]
@@ -3022,6 +2660,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             # needed for numerical stability
             eps = torch.finfo(shared.one.dtype).eps
             fx = isQuanto * (fixFXRate - 1.0) + 1.0
+            # block-entry latch state: a scenario that fires at THIS block's fixing settles its
+            # coupon here and dies from the next block on (see docstring)
+            dead = (terminationDate != -1).squeeze(1)
             mcmc = []
             for i, (tau, df, s, v, carry_rate, delta_t, floating) in enumerate(zip(
                     t_tenor, discount_rates, spot_prices, vols, carry, times, floating_leg)):
@@ -3049,10 +2690,6 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 # counterfactual for this row's OBSERVED autocall; it does not exist until the
                 # trigger is met, at most once per row (see docstring)
                 P_cf = L_cf = None
-                # which simulations are still alive?
-                q = terminationDate != -1
-                # update the Live matrix
-                L = torch.where(q, torch.zeros_like(L), L)
                 # set the correct shape for discounting; the vol is per INTERVAL, so it is picked
                 # off the strip at the coupon's own index rather than hoisted out of the loop
                 D = df.unsqueeze(2)
@@ -3091,7 +2728,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         else:
                             p = torch.where(K > Sj, 1.0, 0.0)
                             if tau == 0.0:
-                                terminationDate = torch.where((terminationDate == -1) & (p == 0), reduced_samples, terminationDate)
+                                # stamp the latch: the fixing IS this row, the decision is the
+                                # scenario's own spot, and the marker is the fixing that killed it
+                                terminationDate = torch.where(
+                                    (terminationDate == -1) & (p == 0), float(offset), terminationDate)
 
                         if P_cf is not None:
                             # every LATER coupon is the same smooth p in both worlds - the weight
@@ -3101,14 +2741,36 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             L_cf = p * L_cf
                         elif boundary_aad and dt <= 0:
                             # the autocall is OBSERVED here (dt == 0), so Sj is the scenario's own
-                            # spot and gap > 0 means the trigger FIRED (see docstring)
+                            # spot and gap > 0 means the trigger FIRED (see docstring); the
+                            # branches are DEAD-AWARE - a scenario an earlier fixing latched has
+                            # nothing left to jump
                             event_rows.append(i)
                             gaps.append(torch.log(Sj / K).squeeze(dim=1))
-                            fired.append((P + fx * L * coup * D[j]).mean(axis=1).detach())
+                            fired.append(torch.where(
+                                dead, 0.0, (P + fx * L * coup * D[j]).mean(axis=1)).detach())
                             P_cf, L_cf = P, L
 
-                        P = P + fx * (1 - p) * L * coup * D[j]
+                        # the payment this coupon makes: the knocked-out weight times the coupon,
+                        # discounted from the row to the coupon's own date. On an OBSERVED coupon
+                        # (dt <= 0) that discount is 1 and this IS the cash that changes hands.
+                        coupon_cash = fx * (1 - p) * L * coup * D[j]
+                        P = P + coupon_cash
                         L = p * L
+                        if tau == 0.0 and dt <= 0:
+                            # SETTLE HERE, not at the bottom of the loop. `tau` is row-level, so a
+                            # test down there holds for every coupon and books the running `P`
+                            # once per coupon - measured at 3x on a three-coupon document, and
+                            # `P` is the deal's accumulated VALUE rather than the payment anyway.
+                            # This is the autocall's analogue of the TARF's `cf_step`. A scenario
+                            # an earlier fixing latched pays nothing again - the mask, since the
+                            # accumulators run alive.
+                            row_cash = torch.where(dead, 0.0, coupon_cash.mean(axis=1))
+                            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                                logging.debug(
+                                    'AUTOCALL_SETTLE row=%d j=%d coup=%.6g cash=%.6g P=%.6g',
+                                    i, j, float(coup), float(row_cash.mean()), float(P.mean()))
+                            settled.append(row_cash)
+                            settle_rows.append(i)
 
                         if fixing_aligned:
                             # prevent underflow or overflow
@@ -3134,14 +2796,12 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         if P_cf is not None:
                             P_cf = P_cf + L_cf * D[j] * fx * breach * (rebate - (1.0 - Sj / strike))
 
-                    # RETURNED, because a replay of this simulation would settle it twice
-                    if tau == 0.0:
-                        settled.append(P.mean(axis=1))
-                        settle_rows.append(i)
 
-                mcmc.append(P.mean(axis=1))
+                row_value = P.mean(axis=1)
+                alive.append(row_value)
+                mcmc.append(torch.where(dead, torch.zeros_like(row_value), row_value))
                 if P_cf is not None:
-                    survived.append(P_cf.mean(axis=1).detach())
+                    survived.append(torch.where(dead, 0.0, P_cf.mean(axis=1)).detach())
         else:
             isFixingDate = FixingDates[offset:]
             dt = times.unsqueeze(axis=2)
@@ -3175,12 +2835,16 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 if tau == 0.0:
                     settled.append(pv)
                     settle_rows.append(i)
-            # if the last cashflow wasn't 0 then the autocall hasn't knocked out yet
-            terminationDate = -1.0 * (terminationDate == -1) * (pv != 0.0).reshape(-1, 1)
+            # the averaging branch carries NO latch out: its termination is a smoothed
+            # per-inner-path weight (sim_autocall's smooth_heaviside), so there is no crisp
+            # per-scenario decision to stamp - open in the roadmap; the incoming latch is
+            # respected (sim_autocall's `inforce`) and returned unchanged
 
         return (torch.stack(mcmc),
                 torch.stack(settled) if settled else spot_prices.new_empty(0),
-                settle_rows, event_rows) + tuple(gaps) + tuple(fired) + tuple(survived)
+                settle_rows, event_rows, terminationDate,
+                torch.stack(alive) if alive else spot_prices.new_empty(0),
+                ) + tuple(gaps) + tuple(fired) + tuple(survived)
 
     mtm_list = []
     factor_dep = deal_data.Factor_dep
@@ -3276,8 +2940,12 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     # An autocall taken on the reporting row's own spot is a real redemption, so the value is not
     # what is wrong; what ordinary AAD drops is the flux of scenarios across the threshold.
     # Recording it costs nothing when sensitivities are not wanted, so it is gated rather than on.
+    # The decision's reach has TWO halves and each gets the registration shaped for it: the
+    # fired/survived fork at the decision row itself (RowBoundarySet, per event), and the carried
+    # knock-out latch every LATER row reads - alive value against zero (LatchedBoundarySet).
     boundary_aad = getattr(shared, 'boundary_aad', False)
     b_events, row_ofs = [], 0
+    b_latch, b_obs, b_alive = [], [], []
 
     for index, (forward_block, discount_block, spot_block, moneyness_block) in enumerate(
             utils.split_counts([forward, discount, spot, moneyness], counts, shared)):
@@ -3302,11 +2970,16 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         expiry_vols = utils.calc_time_grid_vol_rate(
             factor_dep['Volatility'], moneyness_block, expiry, shared)
 
+        adj = None
         if factor_dep.get('Check_Payoff_Type', False):
-            # need quanto/compo adjustments
-            adj = calc_vol_adjustment(factor_dep, deal_time, expiry, expiry_vols, shared)
+            # quanto bends the per-fixing carry; compo changes the UNDERLYING to S*X - the spot
+            # scaled by the fx cross, the fx carry added per fixing, the interval strip composed
+            # with the fx expiry vol below. Strike and thresholds are payoff-currency quantities,
+            # so they compare against the scaled spot as authored.
+            adj = calc_vol_adjustment(factor_dep, deal_time, expiry, expiry_vols, shared, fixings)
             expiry_vols = adj['vol']
-            drifts = drifts + torch.unsqueeze(adj['b_adj'], 1)
+            drifts = drifts + adj['carry_adj']
+            spot_block = spot_block * adj['spot_scale']
 
         sample_ts = drifts.new(
             np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)])
@@ -3353,8 +3026,12 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
         # calc the discount rates
         discount_rates = utils.calc_discount_rate(discount_block, all_fixings, shared)
-        # sometimes the autocall kicks out early for this batch - skip redundant calcs
-        if terminationDate.any():
+        if boundary_aad and factor_dep['no_averaging']:
+            # decisions latched STRICTLY BEFORE this block's rows, at block granularity - the
+            # block's own fixing is priced by its own simulation (the barrier's spelling)
+            b_obs.extend([len(b_latch)] * len(t_block))
+        # skip the simulation once EVERY scenario has autocalled - nothing is left to price
+        if (terminationDate == -1).any():
             if factor_dep['no_averaging']:
                 fixing_index = coupon_equity_index[cp_start_index[index]]
                 last_fixing = None if fixing_index == eq_start_index[index] else fixing_index
@@ -3371,6 +3048,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             interval_vols = forward_vol_rate(forward_vol_strip(
                 deal_data, strike * shared.one, spot_block, drifts, fixing_block, shared),
                 cum_t, sample_ts) if fixing_block.any() else expiry_vols.unsqueeze(-2)
+            if adj is not None and adj['fx_vol'] is not None and fixing_block.any():
+                # compo: the simulation steps S*X, so each interval's vol is the PRODUCT's; the
+                # expiry-read else-branch above is already compo via adj['vol']
+                interval_vols = compo_vol(interval_vols, adj['fx_vol'].unsqueeze(1), adj['rho'])
             simulate = partial(sim_spot, sample_index_t, sample_ts,
                                all_fixings[:, 0], last_fixing, sobol, shared.MCMC_sims)
             theta = (spot_block, interval_vols, fwd_drifts, terminationDate, discount_rates,
@@ -3379,26 +3060,37 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                      ) + (tuple(hn_params) + (H0,) if hn else ())
             # the SAME callable either way: under the node it is called twice (see InnerMCRecompute)
             outputs = InnerMCRecompute.run(shared, simulate, *theta)
-            theo_cashflow, block_settled, settle_rows, event_rows = outputs[:4]
-
-            # the by-products, performed once off the forward's result (see sim_spot)
+            # `terminationDate` comes back stamped by this block's observed fixing and is handed to
+            # the NEXT block's theta - an autocalled path pays once and is worth nothing after
+            theo_cashflow, block_settled, settle_rows, event_rows, terminationDate, block_alive = \
+                outputs[:6]
+            # the by-products, performed once off the forward's result (see sim_spot). `nominal`
+            # is `Buy_Sell * Units` and scales the MARK three lines down; the ledger carries the
+            # same deal, so it carries the same scaling - without it a 10-unit deal booked one
+            # unit's cash and a sold one booked a receipt.
             for row, value in zip(settle_rows, block_settled):
                 cash_settle(shared, factor_dep['SettleCurrency'], np.searchsorted(
-                    time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]), value)
+                    time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]), nominal * value)
             # one trigger decision per row that OBSERVED its coupon, with the row it landed on
-            fixed, n_events = 4, len(event_rows)
+            fixed, n_events = 6, len(event_rows)
             b_events.extend([[row_ofs + row, outputs[fixed + k], outputs[fixed + n_events + k],
                               outputs[fixed + 2 * n_events + k]] for k, row in enumerate(event_rows)])
+            if boundary_aad and factor_dep['no_averaging']:
+                b_alive.append(block_alive)
+                # only the STAMPED decision (tau == 0: the fixing IS the row) opens the latch the
+                # later blocks read; a re-observation of an old decision (a pending window's rows)
+                # stays row-local. `gap >= 0` IS the trigger: p == 0 iff Sj >= K.
+                for k, row in enumerate(event_rows):
+                    if all_fixings[row, 0] == 0.0:
+                        b_latch.append([outputs[fixed + k], (outputs[fixed + k] >= 0).detach()])
         else:
-            theo_cashflow = torch.zeros_like(drifts)
+            theo_cashflow = drifts.new_zeros((len(t_block), shared.simulation_batch))
+            if boundary_aad and factor_dep['no_averaging']:
+                # every scenario resolved: both branches are the same zero, so the rows carry no
+                # counterfactual - the barrier's all_hit discipline
+                b_alive.append(theo_cashflow)
         theo_price = nominal * theo_cashflow
         row_ofs += theo_price.shape[0]
-        # theo_price = (theo_cashflow * discount_rates).sum(axis=1)
-        # # settle potential cashflows
-        # cash_settle(shared, factor_dep['SettleCurrency'], np.searchsorted(
-        #     time_grid.mtm_time_grid, t_block[-1][utils.TIME_GRID_MTM]), theo_cashflow[-1][0])
-        # # if the last cashflow was 0 then the autocall hasn't knocked out yet
-        # terminationDate = -1.0 * (terminationDate == -1) * (theo_cashflow[-1][0] == 0.0).reshape(-1, 1)
         mtm_list.append(theo_price)
 
     # mtm in reporting currency
@@ -3410,11 +3102,23 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         # the additive route can go on to the reporting grid at the point of use - and is None on
         # a grid nobody reports off (an HMC tradable, a calibration's benchmark grid).
         rows, gaps, fired, survived = zip(*b_events)
+        to_mtm = deal_to_mtm_grid(time_grid, deal_data, fx_rep)
         shared.boundary_sets.append(utils.RowBoundarySet(
             gaps=list(gaps), rows=list(rows),
             fired=[nominal * x for x in fired], survived=[nominal * x for x in survived],
-            reported=mtm.detach(), to_mtm=deal_to_mtm_grid(time_grid, deal_data, fx_rep),
+            reported=mtm.detach(), to_mtm=to_mtm,
             report_index=time_grid.report_index))
+        if b_latch:
+            # the carried latch's OTHER half: a decision the later blocks read kills every later
+            # row, so its jump there is alive value against zero. The two registrations share
+            # their gaps and do not overlap - Row lands on the decision row, this one strictly
+            # after it - so together they are the whole reach of the decision.
+            l_gaps, l_hit = zip(*b_latch)
+            untriggered = (nominal * torch.cat(b_alive, dim=0)).detach()
+            shared.boundary_sets.append(utils.LatchedBoundarySet(
+                gaps=list(l_gaps), fired=list(l_hit), obs_before=np.array(b_obs),
+                untriggered=untriggered, triggered=torch.zeros_like(untriggered),
+                to_mtm=to_mtm, report_index=time_grid.report_index))
 
     return mtm
 
@@ -4471,51 +4175,43 @@ def pv_energy_cashflows(shared, time_grid, deal_data):
 
 @utils.log_exception
 def pv_average_price_swap(shared, time_grid, deal_data):
-    """A commodity average-price swap: `(A - K) * Buy_Sell * Units` paid at `Settlement_Date`,
-    where `A = sum_j w_j S(T_j)` samples a possibly COMPOSED spot (primary + `ObservedBasis`).
+    """A commodity average-price swap: ``(A - K) * Buy_Sell * Units`` paid at ``Settlement_Date``,
+    where ``A = sum_j w_j S(T_j)`` samples a possibly COMPOSED spot (primary + ``ObservedBasis``).
 
     Closed form conditional on the path - no inner MC, because nothing here decides on simulated
-    state. Per reporting row the average splits at that row, and the two halves are read from
-    genuinely different places:
+    state. Per reporting row the average splits at that row, and the two halves read from genuinely
+    different places:
 
-    **Realised, `T_j <= t`.** The composed spot gathered at the FIXING's own scenario row - a reset
-    row's first three columns are a time-grid triple by construction (`utils.RESET_INDEX_Time_Grid`
-    / `_Reset_Day` / `_Scenario`), so `calc_time_grid_spot_rate` reads the path where the fixing
-    happened. A fixing before the base date is its declared `Price` instead. Re-reading the CURRENT
-    row's spot is the stale-read defect and is worth the whole drift between the two dates.
+    REALISED, ``T_j <= t``: the composed spot gathered at the FIXING's own scenario row (a reset
+    row's first three columns are a time-grid triple, so ``calc_time_grid_spot_rate`` reads the path
+    where the fixing happened); a fixing before the base date is its declared ``Price``. Reading the
+    current row's spot instead would be stale by the whole drift between the two dates.
 
-    **Projected, `T_j > t`.** `F_primary(t, T_j) + E_t[b(T_j)]`. The forward is the cost-of-carry
-    read `CommodityFutureDeal` makes - the carry gathered at the fixing's ABSOLUTE date times the
-    remaining tenor in years, plus the integrated repo - taken on the PRIMARY spot alone, because
-    the basis is not a traded carry and does not belong under the exponential. The basis projects
-    under ITS OWN simulated law instead. With the slow mean on, that law is the coupled pair
-    `b_t = mu_{t-1} + phi (b_{t-1} - mu_{t-1})`, `mu_t = lam mu_{t-1} + (1-lam) b_t`, whose mean
-    matrix is ROW-STOCHASTIC - eigenvalues 1 and `lam*phi` - so the conditional mean is
+    PROJECTED, ``T_j > t``: ``F_primary(t, T_j) + E_t[b(T_j)]``. The forward is the cost-of-carry
+    read on the PRIMARY spot alone - the basis is not a traded carry and does not belong under the
+    exponential; it projects under ITS OWN simulated law. With the slow mean on, that law is the
+    coupled pair ``b_t = mu_{t-1} + phi (b_{t-1} - mu_{t-1})``,
+    ``mu_t = lam mu_{t-1} + (1-lam) b_t``, whose mean matrix is row-stochastic (eigenvalues 1 and
+    ``lam*phi``), so
 
-    $$E_t[b(T_j)] = \\mu_t + \\big(\\pi_b + (1-\\pi_b)(\\lambda\\phi)^{n_j}\\big)(b_t - \\mu_t),
-    \\qquad \\pi_b = \\tfrac{(1-\\lambda)\\phi}{(1-\\lambda)\\phi + 1 - \\phi}$$
+    $$E_t[b(T_j)] = \mu_t + \big(\pi_b + (1-\pi_b)(\lambda\phi)^{n_j}\big)(b_t - \mu_t),
+    \qquad \pi_b = \tfrac{(1-\lambda)\phi}{(1-\lambda)\phi + 1 - \phi}$$
 
-    A deviation does NOT die: the pair has a unit root and keeps `pi_b` of it forever (5.5% at the
-    shipped parameters). The naive `phi^n` decay converges to `mu_t` instead and misprices every
-    unrealised fixing by `pi_b (b_t - mu_t)` - $0.086/oz on the 2026 world, invisible to an MC
-    gate because that is 5e-5 of the notional. `Phi`/`lam` are the simulated model's declared
-    coefficients and `mu_t` its published slow mean, read per path off `(key, 'basis_mu')` in the
-    fork-index convention the model publishes it in (`state[t]` is what the step t->t+1 consumes,
-    which is exactly the mean the projection from row t reverts toward). With the slow-mean
-    extension off there is no published series, no second recursion and no unit root: the AR
-    reverts to zero through the plain `phi^{n_j}`, which is exact there - `Mu` is declared on that
-    model and read by nothing.
+    A deviation does NOT die: the pair has a unit root and keeps ``pi_b`` of it forever, so a naive
+    ``phi^n`` decay misprices every unrealised fixing by ``pi_b (b_t - mu_t)``. ``Phi``/``lam`` are
+    the simulated model's declared coefficients and ``mu_t`` its published slow mean, read per path
+    off ``(key, 'basis_mu')`` in the fork-index convention (``state[t]`` is what the step t->t+1
+    consumes). With the slow-mean extension off there is no published series and no unit root: the
+    plain ``phi^{n_j}`` is exact.
 
-    `n_j` counts SIMULATION STEPS between the two rows, fractionally, because a simulation step is
-    what the basis model applies `Phi` to: its loop is one step per scenario row and it rescales
-    nothing (`Calibration_DT_Years` is declared on it and read by nothing either). Decaying in
-    calendar days, or in calibration steps, projects a different model from the one being
-    simulated - the two coincide only on a calendar-daily grid, which is why the gate's grid is not
-    one.
+    ``n_j`` counts SIMULATION STEPS between the two rows, fractionally, because a simulation step is
+    what the basis model applies ``Phi`` to - decaying in calendar days or calibration steps
+    projects a different model from the one being simulated; the two coincide only on a
+    calendar-daily grid.
 
-    Both halves carry the same normalised weights, so `K` comes off the average once. The
-    settlement is booked once, at the deal grid's last row - which is `Settlement_Date`, that being
-    the deal's latest reval date.
+    Both halves carry the same normalised weights, so ``K`` comes off the average once. The
+    settlement books once, at the deal grid's last row - ``Settlement_Date``, the deal's latest
+    reval date.
     """
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]

@@ -249,37 +249,13 @@ def test_the_registered_barrier_branches_reproduce_the_reported_value(interpolat
         f'{float(seen["reported"].abs().mean()):.6g}')
 
 
-@pytest.mark.parametrize('report_currency', ['USD', 'EUR'])
-def test_the_autocall_row_delta_lands_where_the_reported_value_did(report_currency):
-    """The same defect on the ROW-local shape, where it presents differently: an autocall's jump is
-    a single row, so a mis-mapped row index puts the whole jump on the WRONG DATE rather than
-    rescaling it - and on an interpolated grid the jump has to SPLIT across the two mtm rows its
-    deal row sits between, which no integer row index can express at all.
-
-    The oracle is the deal's OWN reported profile, captured independently of the registration.
-    Comparing a delta against another use of the same map proves nothing: both move together, and
-    a first attempt at this test passed the padding mutant for exactly that reason."""
-    seen = _spy_registration('AC1', deal=AUTOCALL, batch=256, mcmc=64,
-                             report_currency=report_currency,
-                             extra_deals=(INTERPOLATING_DEAL,))
-    bset, = seen['sets']
-    assert torch.equal(bset.to_mtm(bset.reported), seen['reported']), (
-        'the registered baseline is not the deal value that was reported - every delta measured '
-        'against it is on the wrong grid or in the wrong currency; max |d| '
-        f'{float((bset.to_mtm(bset.reported) - seen["reported"]).abs().max()):.6g}')
-    # The jump for a decision recorded on pricer row r belongs on the DATE that row falls on, and
-    # on the mtm rows either side of it that interpolate through it - never anywhere else. Dates,
-    # not indices: an index equal to the registered one is what the padding form produced, and it
-    # was the wrong date. `assert bset.rows` because a fixture where nothing fires gates nothing.
-    assert bset.rows, 'no autocall decision was recorded - this fixture cannot see the defect'
-    mtm_dates, deal_dates = seen['mtm_dates'], seen['deal_dates']
-    for (gap, on, off), row in zip(bset.branch_deltas(), bset.rows):
-        hit = mtm_dates[(on - off).abs().sum(dim=1).gt(0).cpu().numpy()]
-        assert len(hit) and hit.min() < deal_dates[row] + 1 and hit.max() > deal_dates[row] - 1, (
-            f'the jump recorded on pricer row {row} (day {deal_dates[row]:.0f}) landed on mtm days '
-            f'{hit.tolist()} - it is on the wrong date, not merely the wrong index')
-        assert deal_dates[row] in hit, (
-            f'the coupon date itself (day {deal_dates[row]:.0f}) carries none of its own jump')
+# The autocall row-delta placement test that stood here was SCRAPPED, not converted: it captured
+# the registration through a `_spy_registration` monkey-patch of `pricing.interpolate`, which the
+# test architecture forbids, and it broke on arity the day the autocall correctly registered two
+# sets. Its currency statement now rides `test_autocall_json.py::
+# test_the_cva_spot_delta_matches_in_a_foreign_reporting_currency` through the contract; its
+# interpolated-row date-split statement for the ROW shape is NOT re-expressed - the composite
+# gradient gates run with deal dates on mtm rows - and that loss is deliberate and recorded.
 
 
 def test_a_registration_does_not_hold_the_calculation_state():
@@ -527,47 +503,38 @@ def test_the_autocall_trigger_is_what_the_residual_is():
 def test_autocall_coupon_digital_gradient_matches_bump_and_reprice():
     """The aligned coupon digital in pv_MC_AutoCallSwap. An autocall observed on its coupon date
     really has redeemed, so the jump is product economics and must NOT be smoothed away - what has
-    to reach the tape is the flux of scenarios across the threshold.
+    to reach the tape is the flux of scenarios across the threshold, in BOTH halves of its reach:
+    the fired/survived fork on the decision row (RowBoundarySet) and the carried knock-out latch
+    killing every later row (LatchedBoundarySet).
 
-    MEASURED, 16384 paths: AAD +2.2744372e-05 against a CRN best of +2.2825345e-05, 0.36% apart on
-    a ladder flat to 1.05%.
+    MEASURED, 65536 paths: AAD +2.29385e-06 against a CRN best of +2.2925346e-06, 0.06% apart on
+    rungs 5e-3/7e-3/1e-2 flat to 5.0%. The path count is 64 batches and the window is the top of
+    LIVE_RUNGS, both for the same measured reason: the carried latch made the deal DIE when it
+    autocalls, which shrank this gradient tenfold (it was +2.27e-05 while the deal kept paying)
+    against an oracle whose ABSOLUTE noise did not move - so at 16 batches both estimators sit in
+    their own noise (8.45% apart, rungs scattering to 31%), and a rung's relative noise scales as
+    1/h, which prices the 2e-3 and 3e-3 rungs out of the oracle's resolution (12.84% off at 3e-3
+    beside 0.06% at 7e-3, at 64 batches). Same reasoning that moved every live gate to the large
+    window in the first place, one octave further.
 
-    MUTATION - the correction deleted: +1.483223e-05, read 53.89% from the same ladder. KILLED with
-    a 10x margin, the widest in the file: the correction is 35% of the reported gradient, because an
-    aligned coupon digital is nothing BUT flux. Corrected it lands within 0.02%-0.74% over
-    bandwidths from 0.005 to 0.2, a 40x range: the estimate holds still, which is the only
-    acceptance worth having when no single bandwidth can be argued for."""
-    kw = dict(batch=1024, mcmc=256, batches=16)
+    MUTATION, each half of the registration suppressed alone, same 64 batches (the oracle does
+    not move, so both die on the AGREEMENT clause at any window):
+      latched suppressed: +1.5035267e-05, 84% disagreement - the tape keeps paying rows the
+                          latch killed, reproducing the pre-carry Row-only reading (+1.5043e-05)
+      row suppressed:     -1.7815224e-06 - the sign FLIPS without the own-row digital flux
+    An aligned coupon digital is nothing BUT flux."""
+    kw = dict(batch=1024, mcmc=256, batches=64)
     aad = _run(AUTOCALL, gradient=True, **kw)[2]
     r = ladder(price=lambda s: _run(AUTOCALL, spot=s, **kw)[1], aad=aad, base=bb.SPOT,
-               rungs=LIVE_RUNGS)
+               rungs=LIVE_RUNGS[2:])
     assert r.agrees(tol=0.05), f'{r}'
 
 
-@pytest.mark.xfail(strict=True, reason='the MTM counterfactual is right (0.82% with cash_settle '
-                                       'stubbed out) but an autocall SETTLES its coupon when it '
-                                       'fires, and that cash reaches a collateralised net through '
-                                       'C_ts_te, which gross_to_net does not carry')
-def test_collateralised_autocall_gradient_matches_bump_and_reprice():
-    """The same trigger with collateral in the way, and the one thing this port did NOT close.
-
-    A gross-mtm delta reaches the net through Vte and through the balance the collateral scan
-    derives from it, and `gross_to_net` runs that whole chain - which works: stub `cash_settle` out
-    and the corrected gradient lands 0.82% from the oracle on a ladder flat to 1.15% (uncorrected
-    +8.2e-08 against +3.69e-06, so the correction is supplying essentially all of it).
-
-    Shipped, it reads 89% low: MEASURED AAD +5.1615619e-06 against a CRN best of +9.7424621e-06 on
-    a ladder flat to 2.24%. The missing channel is CASH. Firing pays the coupon, `cash_settle` books
-    it, and a collateralised exposure reads that ledger through C_ts_te - so the counterfactual has
-    to move the settled cash as well as the mtm, and `gross_to_net` takes only an mtm delta. Left
-    failing deliberately: the number is not noise and a tolerance widened until a test passes
-    measures nothing. Deleting the correction takes it to 322% - i.e. the correction supplies most
-    of what IS there, and what is missing is a channel and not a coefficient."""
-    kw = dict(batch=1024, mcmc=256, batches=16, collateralised=True)
-    aad = _run(AUTOCALL, gradient=True, **kw)[2]
-    r = ladder(price=lambda s: _run(AUTOCALL, spot=s, **kw)[1], aad=aad, base=bb.SPOT,
-               rungs=LIVE_RUNGS)
-    assert r.agrees(tol=0.05), f'{r}'
+# The collateralised autocall gradient gate that stood here moved to the JSON contract:
+# `test_autocall_json.py::test_a_collateralised_cva_delta_carries_the_settled_coupon`
+# (strict xfail, current measurements in its docstring). The missing channel is the
+# counterfactual's CASH: firing pays a coupon a collateralised exposure reads through
+# C_ts_te, and gross_to_net takes only an mtm delta.
 
 
 def test_the_barrier_latch_is_what_the_residual_is():

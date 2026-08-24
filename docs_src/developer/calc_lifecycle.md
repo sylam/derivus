@@ -343,6 +343,13 @@ why one class with a mode flag would be the wrong shape:
 | `RowBoundarySet` | lands on its own row and no other (autocall coupon) | a pair of `(B,)` values per decision |
 | `InnerBoundarySet` | a decision inside a pricer's inner MC | the objective's *derivative*, not a difference — one inner path moves the row by `1/n`, a jump the value never takes |
 
+One decision can register **two** sets, one per half of its reach. The autocall's observed coupon
+forks fired-against-survived on its own row — a hard indicator, the `Row` shape — and stamps a
+knock-out latch every later block reads, so the same decision's jump there is the alive
+continuation against zero — the `Latched` shape, its `untriggered` branch the simulation run
+alive. The two share their gaps, do not overlap, and sum to the whole jump because the estimator
+is linear in the jump.
+
 !!! note "Under a recompute node, a `gap` is an OUTPUT — when the simulation is what decided it"
     `stochastic_boundary_correction` needs `gap` to carry a graph and an untaped forward pass has
     none to give it (see [Recomputing the inner Monte Carlo](#recompute-inner-mc)). So the

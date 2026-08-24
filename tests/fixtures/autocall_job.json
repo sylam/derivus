@@ -1,0 +1,185 @@
+{
+  "Calc": {
+    "Calculation": {
+      "Object": "BaseValuation",
+      "Base_Date": {
+        ".Timestamp": "2024-06-28"
+      },
+      "Currency": "USD",
+      "Greeks": "No",
+      "MCMC_Simulations": 65536,
+      "Random_Seed": 1
+    },
+    "MergeMarketData": {
+      "ExplicitMarketData": {
+        "System Parameters": {
+          "Base_Currency": "USD",
+          "Base_Date": {
+            ".Timestamp": "2024-06-28"
+          }
+        },
+        "Price Factors": {
+          "FxRate.USD": {
+            "Domestic_Currency": null,
+            "Interest_Rate": "USD",
+            "Priority": 1,
+            "Spot": 1.0
+          },
+          "InterestRate.USD": {
+            "Currency": "USD",
+            "Day_Count": "ACT_365",
+            "Sub_Type": null,
+            "Curve": {
+              ".Curve": {
+                "meta": [],
+                "data": [
+                  [
+                    0.0,
+                    0.04
+                  ],
+                  [
+                    5.0,
+                    0.04
+                  ]
+                ]
+              }
+            }
+          },
+          "EquityPrice.EQ": {
+            "Spot": 100.0,
+            "Currency": "USD",
+            "Interest_Rate": "USD",
+            "Issuer": "",
+            "Respect_Default": "No",
+            "Jump_Level": 0.0
+          },
+          "DividendRate.EQ": {
+            "Currency": "USD",
+            "Floor": null,
+            "Curve": {
+              ".Curve": {
+                "meta": [],
+                "data": [
+                  [
+                    0.01,
+                    0.01
+                  ],
+                  [
+                    5.0,
+                    0.01
+                  ]
+                ]
+              }
+            }
+          },
+          "VolatilityGrid.EQ": {
+            "Surface_Type": "Explicit",
+            "Moneyness_Rule": "Sticky_Moneyness",
+            "Surface": {
+              ".Curve": {
+                "meta": [],
+                "data": [
+                  [
+                    0.8,
+                    0.02,
+                    0.25
+                  ],
+                  [
+                    0.8,
+                    2.0,
+                    0.25
+                  ],
+                  [
+                    1.0,
+                    0.02,
+                    0.25
+                  ],
+                  [
+                    1.0,
+                    2.0,
+                    0.25
+                  ],
+                  [
+                    1.2,
+                    0.02,
+                    0.25
+                  ],
+                  [
+                    1.2,
+                    2.0,
+                    0.25
+                  ]
+                ]
+              }
+            }
+          }
+        },
+        "Price Models": {},
+        "Correlations": {},
+        "Valuation Configuration": {}
+      }
+    },
+    "Deals": {
+      "Reference": "test",
+      "Tag_Titles": "",
+      "Deals": {
+        "Children": [
+          {
+            "Instrument": {
+              ".Deal": {
+                "Object": "QEDI_CustomAutoCallSwap",
+                "Reference": "AC1",
+                "Tags": "",
+                "MtM": "",
+                "Currency": "USD",
+                "Payoff_Currency": "USD",
+                "Equity": "EQ",
+                "Dividends": "EQ",
+                "Discount_Rate": "USD",
+                "Equity_Volatility": "EQ",
+                "Buy_Sell": "Buy",
+                "Option_Type": "Call",
+                "Strike_Price": 100.0,
+                "Expiry_Date": {
+                  ".Timestamp": "2025-06-28"
+                },
+                "Units": 10.0,
+                "Settlement_Style": "Cash",
+                "Option_On_Forward": "No",
+                "Option_Style": "European",
+                "Barrier": 0.0,
+                "Payoff_Type": "Standard",
+                "Price_Fixing": [
+                  [
+                    {
+                      ".Timestamp": "2025-06-28"
+                    },
+                    0.0
+                  ]
+                ],
+                "Autocall_Coupons": [
+                  [
+                    {
+                      ".Timestamp": "2025-06-28"
+                    },
+                    0.08
+                  ]
+                ],
+                "Autocall_Thresholds": [
+                  [
+                    {
+                      ".Timestamp": "2025-06-28"
+                    },
+                    1.0
+                  ]
+                ],
+                "Barrier_Dates": [],
+                "Autocall_Floating": []
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

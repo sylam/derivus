@@ -124,6 +124,15 @@ def _cfg(field, ref, sig=SIGMA, hn_params=None, r=0.0, q=0.0, spot_model='auto',
     gate varies to prove its fixture is not zeroing the quantity under test."""
     if payoff is not None:
         field = dict(field, Payoff_Currency=payoff[0], Payoff_Type=payoff[1])
+        if payoff[1] == 'Compo' and payoff[0] != field['Currency']:
+            # a compo strike or barrier is a PAYOFF-currency quantity monitored against S*X, so
+            # the USD-authored levels scale by the cross to keep the fixture at the same
+            # moneyness - left unscaled, a down-barrier sits above the compo spot at t0 and the
+            # deal is born dead: the degenerate fixture that made the fixed pricer read 0.0
+            x0 = 1.0 / FX_SPOT
+            field['Strike_Price'] = field['Strike_Price'] * x0
+            if 'Barrier_Price' in field:
+                field['Barrier_Price'] = field['Barrier_Price'] * x0
     if spot_model == 'auto':
         spot_model = 'HestonNandi' if hn_params is not None else None
     c = Config()
@@ -313,18 +322,19 @@ def test_cross_currency_payoff_under_non_gbm_is_refused(build, ref, ptype):
 
 
 @pytest.mark.parametrize('build,ref', QUANTO_BUILDS, ids=QUANTO_IDS)
-@pytest.mark.parametrize('ptype', ['Quanto', pytest.param('Compo', marks=pytest.mark.xfail(
-    strict=True, reason='Compo is broken in BOTH OSS pricers independently of any spot model: '
-                        'calc_vol_adjustment returns the python float 0.0 as its Compo b_adj and '
-                        'pricing.py:1257/2651 call torch.unsqueeze on it (TypeError -> deal '
-                        'skipped). They also drop its s_adj forward scaling entirely.'))])
+@pytest.mark.parametrize('ptype', ['Quanto', 'Compo'])
 def test_cross_currency_payoff_under_gbm_still_prices(build, ref, ptype):
     """The refusal is the MODEL's, not the payoff type's: the same deal under GBM prices. And the
     quantity it refuses is live in this fixture - rho is the carry's only free parameter, so a
     price that ignored rho would make the gate above a placebo over a zeroed adjustment.
 
-    The Compo leg is xfail-STRICT, not deleted: it pins a defect this gate found, and it turns the
-    suite red the moment Compo starts pricing so the fix has to come back and re-read this."""
+    The Compo leg was xfail-STRICT for a release: `calc_vol_adjustment` returned the python float
+    0.0 as its Compo b_adj and both OSS call sites handed it to `torch.unsqueeze` (TypeError ->
+    deal skipped), and its s_adj was mis-tenored besides - no compo OSS deal had ever priced.
+    Compo now simulates the PRODUCT S*X: spot scaled by the cross, the fx carry added per fixing,
+    the interval strip composed with the fx expiry vol, so rho reaches the simulation through the
+    variance. The value oracle is the JSON contract gate
+    (`test_autocall_json.py::test_a_compo_autocall_is_a_digital_on_the_converted_spot`)."""
     price = _mtm(build(payoff=('ZAR', ptype)), sims=1 << 12)
     assert price is not None and np.isfinite(price) and price != 0.0
     assert abs(price - _mtm(build(payoff=('ZAR', ptype), rho=-RHO), sims=1 << 12)) > 1e-8

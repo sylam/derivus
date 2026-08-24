@@ -431,10 +431,13 @@ class RowBoundarySet(BoundarySet):
     """Triggers a pricer read off the REPORTING ROW's own state, and both values they choose between.
 
     An autocall observed on its coupon date is decided by the scenario spot itself - not by an
-    inner draw - so the trigger fires per scenario, and the value jump lands entirely on that one
-    row: the row's own inner Monte Carlo prices the remainder of the deal from there, and the
-    knock-out latch it sets is read by no later row (a fixing date is the LAST row of its block,
-    and the latch does not survive into the next).
+    inner draw - so the trigger fires per scenario and the row's own inner Monte Carlo prices the
+    remainder of the deal from there. This set carries the ROW-LOCAL half of that decision's reach:
+    the fired/survived fork at the decision row, which no smoothing touches. The knock-out latch
+    the decision stamps survives into every later block - an autocalled path is worth nothing after
+    - and THAT half is a `LatchedBoundarySet` the pricer registers beside this one, its branches
+    the alive continuation against zero. The two share their gaps and do not overlap: Row lands on
+    the decision row, Latched strictly after it.
 
     Both branches come out of ONE forward pass. Firing zeroes the survival weight, so every later
     term of that row is zero and the fired branch is closed form; the surviving branch is the same
