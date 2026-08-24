@@ -172,6 +172,10 @@ SHAPELESS = {
     ('MarkovHMMSpotModel', 'States'),
     ('MarkovHMMSpotModel', 'Transition_Matrix'),
     ('MarkovHMMSpotModel', 'Initial_State_Probs'),
+    # The GARCH drift chain reuses the HMM vocabulary; same output-shaped arrays.
+    ('GARCHSpotModel', 'Drift_States'),
+    ('GARCHSpotModel', 'Drift_Transition_Matrix'),
+    ('GARCHSpotModel', 'Drift_Initial_Probs'),
     ('QuadraticCarryCurveModel', 'Reference_Tenors'),
     ('BasisLinkedSpotModel', 'Sigma_By_State'),
     ('CreditMonteCarlo', 'Credit_Valuation_Adjustment.CDS_Tenors'),

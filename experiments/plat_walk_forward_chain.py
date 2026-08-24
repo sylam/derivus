@@ -338,6 +338,29 @@ def trade_world(arch, trade_date, calibrated_md, out_path, carry_drift):
     return out_path
 
 
+def _apply_overrides(cfg, args):
+    """Generic KEY=VALUE stamps onto the built Solver / Calculation blocks.
+
+    `production_solver.apply_config` rebuilds `Solver` from its own defaults, so a dial that
+    has no dedicated flag (DiffV2_Risk_Aversion, DiffV2_Hidden, DiffV2_LR, ...) is otherwise
+    unreachable from a job JSON. Values parse as int, then float, else stay strings."""
+    def coerce(v):
+        for f in (int, float):
+            try:
+                return f(v)
+            except ValueError:
+                pass
+        return v
+    calc = cfg['Calc']['Calculation']
+    for kv in (args.solver_set or []):
+        k, v = kv.split('=', 1)
+        calc['Hedging_Problem']['Solver'][k] = coerce(v)
+    for kv in (args.calc_set or []):
+        k, v = kv.split('=', 1)
+        calc[k] = coerce(v)
+    return cfg
+
+
 def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     """Train the day-1 policy per seed in the calibrated chain world, then roll the frozen
     ensemble along the REALIZED archive path. Returns the recorded row."""
@@ -371,7 +394,8 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
             train_us.append(None)
             v0s.append(None)
             continue
-        train = apply_config(copy.deepcopy(cfg), batch=args.batch, seed=seed, save=ckpt)
+        train = _apply_overrides(
+            apply_config(copy.deepcopy(cfg), batch=args.batch, seed=seed, save=ckpt), args)
         tcalc = train['Calc']['Calculation']
         tcalc['Simulation_Batches'] = args.batches
         tcalc['Inner_Sub_Batch'] = args.inner_sub_batch
@@ -410,8 +434,9 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
         v0s.append(tdiag.get('V_0'))
         market_dim = tdiag.get('market_dim')
 
-    roll = apply_config(copy.deepcopy(cfg), batch=1, seed=args.seeds[0], load=ckpts,
-                        stepper_rollout=True, randomize_initial_state=False)
+    roll = _apply_overrides(apply_config(
+        copy.deepcopy(cfg), batch=1, seed=args.seeds[0], load=ckpts,
+        stepper_rollout=True, randomize_initial_state=False), args)
     roll['Calc']['Calculation']['Inner_Sub_Batch'] = args.roll_inner
     if args.load_horizon_pad:
         roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
@@ -646,6 +671,10 @@ def main():
     ap.add_argument('--delta-corridor', type=float, default=None,
                     help='Causal delta-ramp corridor band on the SIGNED total position, applied '
                          'to BOTH train and roll.')
+    ap.add_argument('--solver-set', action='append', metavar='KEY=VALUE',
+                    help='Stamp an arbitrary Hedging_Problem.Solver field (repeatable).')
+    ap.add_argument('--calc-set', action='append', metavar='KEY=VALUE',
+                    help='Stamp an arbitrary Calculation field (repeatable).')
     ap.add_argument('--curve-dump', action='store_true',
                     help='Solver DiffV2_Decision_Curve_Dump on the ROLL: write '
                          '<run-dir>/curve_<trade>.csv with, per decision day, the FULL per-rung '
