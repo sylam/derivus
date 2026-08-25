@@ -1844,7 +1844,8 @@ def pv_american_option(shared, time_grid, deal_data, nominal, moneyness, spot, f
     return value
 
 
-def pv_european_option(shared, time_grid, deal_data, nominal, moneyness, forward, binary=False):
+def pv_european_option(shared, time_grid, deal_data, nominal, moneyness, forward, binary=False,
+                       digital_spread=None):
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     discount = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
@@ -1854,6 +1855,7 @@ def pv_european_option(shared, time_grid, deal_data, nominal, moneyness, forward
     vols = utils.calc_time_grid_vol_rate(factor_dep['Volatility'], moneyness, expiry, shared)
 
     # check if this is a compo or quanto deal
+    adj = None
     if factor_dep.get('Check_Payoff_Type', False):
         # need quanto/compo adjustments
         adj = calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared)
@@ -1861,10 +1863,30 @@ def pv_european_option(shared, time_grid, deal_data, nominal, moneyness, forward
         forward = adj['s_adj'] * forward * torch.exp(adj['b_adj'] * shared.one.new(expiry.reshape(-1, 1)))
 
     if binary:
-        theo_price = utils.black_european_option(
-            forward, factor_dep['Strike_Price'], vols, expiry,
-            factor_dep['Buy_Sell'], factor_dep['Option_Type'], shared, cash_payoff=nominal)
-        value = theo_price
+        if digital_spread is not None:
+            # digital as a tight call/put spread: each leg re-queries the surface at its OWN
+            # strike, so the smile's dVol/dK term enters the price as the finite difference the
+            # spread takes. The quanto drift bend (ATM-vol b_adj) and the compo forward are
+            # strike-free and already in `forward`; a compo leg composes its own strike's vol.
+            eps, m_lo, m_hi = digital_spread
+            strike = factor_dep['Strike_Price']
+            legs = []
+            for shift, m in ((-1.0, m_lo), (1.0, m_hi)):
+                leg_vols = utils.calc_time_grid_vol_rate(factor_dep['Volatility'], m, expiry, shared)
+                if adj is not None and adj['fx_vol'] is not None:
+                    leg_vols = compo_vol(leg_vols, adj['fx_vol'], adj['rho'])
+                if logging.getLogger().isEnabledFor(logging.DEBUG):
+                    logging.debug('DIGITAL_SPREAD eps=%.6g strike=%.6g leg=%s vol=%.6g',
+                                  eps, strike, '-+'[shift > 0], float(leg_vols[0].mean()))
+                legs.append(utils.black_european_option(
+                    forward, strike * (1.0 + shift * eps), leg_vols, expiry, 1.0,
+                    factor_dep['Option_Type'], shared))
+            value = nominal * factor_dep['Buy_Sell'] * factor_dep['Option_Type'] * (
+                legs[0] - legs[1]) / (2.0 * eps * strike)
+        else:
+            value = utils.black_european_option(
+                forward, factor_dep['Strike_Price'], vols, expiry,
+                factor_dep['Buy_Sell'], factor_dep['Option_Type'], shared, cash_payoff=nominal)
     else:
         theo_price = utils.black_european_option(
             forward, factor_dep['Strike_Price'], vols, expiry,
@@ -3524,40 +3546,65 @@ def pricer_float_cashflows(all_resets, t_cash, shared):
     return all_int, margin
 
 
-def _pricer_cap_floor(all_resets, t_cash, factor_dep, expiries, tenor, call_or_put, shared, vol_expiries):
-    strike = t_cash[:, utils.CASHFLOW_INDEX_Strike].reshape(1, -1, 1)
+def _cap_floor_payoff(all_resets, strike, factor_dep, expiries, tenor, call_or_put, shared,
+                      vol_expiries):
+    """One caplet/floorlet payoff per (rate, strike, expiry) row - the law both aggregation
+    shapes share: the period pricer applies it to one compounded rate per cashflow, the daily
+    pricer to every reset in the period."""
     expiry = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount](expiries)
     vol_expiry = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount](vol_expiries)
     digital_payoff = factor_dep['Digital_Payoff_Rate'] if 'Digital_Payoff_Rate' in factor_dep else 0.0
     dist, shf = factor_dep['VolSurface'][0][utils.FACTOR_INDEX_SubType]
-    pricing_fn = utils.black_european_option if dist=='Lognormal' else utils.bachelier_european_option
+    pricing_fn = utils.black_european_option if dist == 'Lognormal' else utils.bachelier_european_option
 
     if digital_payoff and factor_dep.get('Digital_Spread', 0.0) > 0:
         # call/put spread replication: vols are re-queried at the two spread strikes so the
-        # smile is automatically picked up — no separate dvol/dK correction needed.
+        # smile is automatically picked up - no separate dvol/dK correction needed. The
+        # half-width is ABSOLUTE in rate (a relative width dies at a zero strike and flips its
+        # legs at a negative one), and `call_or_put` orients the difference: a digital floorlet
+        # is the PUT spread (P(K+eps) - P(K-eps)) / 2 eps.
         eps = factor_dep['Digital_Spread']
-        strike_lo = strike * (1.0 - eps)
-        strike_hi = strike * (1.0 + eps)
+        strike_lo = strike - eps
+        strike_hi = strike + eps
         mn_lo = -100.0 * (all_resets - strike_lo)
         mn_hi = -100.0 * (all_resets - strike_hi)
         vols_lo = utils.calc_tenor_cap_time_grid_vol_rate(
             factor_dep['VolSurface'], mn_lo, vol_expiry, tenor, shared)
         vols_hi = utils.calc_tenor_cap_time_grid_vol_rate(
             factor_dep['VolSurface'], mn_hi, vol_expiry, tenor, shared)
-        payoff = digital_payoff * (
+        return digital_payoff * call_or_put * (
             pricing_fn(all_resets, strike_lo, vols_lo, expiry, 1.0, call_or_put, shared, shift=shf.amount) -
             pricing_fn(all_resets, strike_hi, vols_hi, expiry, 1.0, call_or_put, shared, shift=shf.amount)
-        ) / (2.0 * eps * strike)
-    else:
-        mn_option = -100.0 * (all_resets - strike)
-        vols = utils.calc_tenor_cap_time_grid_vol_rate(
-            factor_dep['VolSurface'], mn_option, vol_expiry, tenor, shared)
-        payoff = pricing_fn(
-            all_resets, strike, vols, expiry, 1.0, call_or_put, shared, 
-            cash_payoff=digital_payoff, shift=shf.amount)
+        ) / (2.0 * eps)
 
+    mn_option = -100.0 * (all_resets - strike)
+    vols = utils.calc_tenor_cap_time_grid_vol_rate(
+        factor_dep['VolSurface'], mn_option, vol_expiry, tenor, shared)
+    return pricing_fn(
+        all_resets, strike, vols, expiry, 1.0, call_or_put, shared,
+        cash_payoff=digital_payoff, shift=shf.amount)
+
+
+def _pricer_cap_floor(all_resets, t_cash, factor_dep, expiries, tenor, call_or_put, shared, vol_expiries):
+    strike = t_cash[:, utils.CASHFLOW_INDEX_Strike].reshape(1, -1, 1)
+    payoff = _cap_floor_payoff(
+        all_resets, strike, factor_dep, expiries, tenor, call_or_put, shared, vol_expiries)
     all_int = t_cash[:, utils.CASHFLOW_INDEX_Year_Frac].reshape(1, -1, 1) * payoff
     margin = shared.one.new_zeros(len(t_cash))
+
+    return all_int, margin
+
+
+def _pricer_cap_floor_daily(all_resets, strike, accrual, expiries, tenor, factor_dep,
+                            call_or_put, lengths, shared):
+    """Every reset of an aggregated period as its own optionlet, summed back to the period -
+    the cap-then-compound convention (`Averaging_Method: Pre_Aggregation`), where the period
+    pricer's compound-then-cap is the other order and Jensen separates the two."""
+    payoff = _cap_floor_payoff(
+        all_resets, strike, factor_dep, expiries, tenor, call_or_put, shared, expiries)
+    daily_int = accrual.view(1, -1, 1) * payoff
+    all_int = torch.segment_reduce(daily_int, reduce="sum", lengths=lengths, axis=1)
+    margin = shared.one.new_zeros(lengths.shape[1])
 
     return all_int, margin
 
@@ -3712,37 +3759,60 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
 
             time_ofs += size
 
-            if all_resets.shape[1] != reset_cashflows.np.shape[0]:
+            needs_aggregation = all_resets.shape[1] != reset_cashflows.np.shape[0]
+            if needs_aggregation:
                 # OIS: a row owning several resets is the SHAPE the compile side produces on
                 # purpose - see docs_src/developer/quote_sensitivities.md#curve-contracts
-                # check if the resets need to be averaged (compounded) before being applied (i.e. OIS)
                 reset_per_cashflows = factor_dep['Cashflows'].offsets[start_index[index]:, 0]
                 accrual = reset_block.tn[:, utils.RESET_INDEX_Accrual]  # should align with all_resets dim=1
-                # note that if we want to do average rate (not compounding) - we just need to drop log1p and expm1
-                log_rt = torch.log1p(all_resets * accrual.view(1, -1, 1))
                 reset_split = torch.as_tensor(
                     reset_per_cashflows[reset_per_cashflows > 0], device=shared.one.device, dtype=torch.long)
-                lengths = reset_split.unsqueeze(0).expand(log_rt.shape[0], -1)
-                sum_log = torch.segment_reduce(log_rt, reduce="sum", lengths=lengths, axis=1)
-                sum_acc = torch.segment_reduce(accrual, reduce="sum", lengths=reset_split, axis=0)
-                all_resets = torch.expm1(sum_log)/sum_acc.view(1, -1, 1)
+                lengths = reset_split.unsqueeze(0).expand(all_resets.shape[0], -1)
+                if factor_dep['AveragingMethod'] != 'Pre_Aggregation':
+                    # compound the resets into one rate per cashflow - Pre_Aggregation keeps them
+                    # separate for the daily pricer below, which caps each BEFORE aggregating.
+                    # note that if we want to do average rate (not compounding) - we just need
+                    # to drop log1p and expm1
+                    log_rt = torch.log1p(all_resets * accrual.view(1, -1, 1))
+                    sum_log = torch.segment_reduce(log_rt, reduce="sum", lengths=lengths, axis=1)
+                    sum_acc = torch.segment_reduce(accrual, reduce="sum", lengths=reset_split, axis=0)
+                    all_resets = torch.expm1(sum_log)/sum_acc.view(1, -1, 1)
 
             # check if we need extra information to price caps or floors
             if cashflow_pricer in [pricer_cap, pricer_floor]:
-                expiries = cashflows.np[:, utils.CASHFLOW_INDEX_Start_Day] - time_slice
-                if factor_dep['AveragingMethod']=='Post_Aggregation':
-                    # adjust the expiry date to adjust the vol
-                    t_k = cashflows.np[:, utils.CASHFLOW_INDEX_Start_Day] - time_slice
-                    t_kp1 = cashflows.np[:, utils.CASHFLOW_INDEX_End_Day] - time_slice
-                    eff_expiries = t_kp1 - (2/3)*(t_kp1 - t_k)
-                else:
-                    eff_expiries = expiries
                 # note that the tenor (Year Frac) is averaged
                 # all the cashflows are supposed to have the same year frac
                 # (but practically not - should be ok to do this)
                 tenor = cashflows.np[:, utils.CASHFLOW_INDEX_Year_Frac].mean()
-                all_int, all_margin = cashflow_pricer(
-                    all_resets, reset_cashflows.tn, factor_dep, eff_expiries, tenor, shared, expiries)
+                expiries = cashflows.np[:, utils.CASHFLOW_INDEX_Start_Day] - time_slice
+                if factor_dep['AveragingMethod'] == 'Pre_Aggregation' and needs_aggregation:
+                    # price each reset in the period as its own optionlet (its own dates, accrual
+                    # and a strike broadcast from its parent cashflow) instead of compounding the
+                    # period into one rate and pricing one option on that
+                    daily_ends = reset_block.np[:, utils.RESET_INDEX_End_Day] - time_slice
+                    strike_daily = torch.repeat_interleave(
+                        reset_cashflows.tn[:, utils.CASHFLOW_INDEX_Strike], reset_split).reshape(1, -1, 1)
+                    call_or_put = 1.0 if cashflow_pricer is pricer_cap else -1.0
+                    all_int, all_margin = _pricer_cap_floor_daily(
+                        all_resets, strike_daily, accrual, daily_ends, tenor,
+                        factor_dep, call_or_put, lengths, shared)
+                else:
+                    if factor_dep['AveragingMethod'] == 'Post_Aggregation':
+                        # an option on the average: the vol is read at the period END, and the
+                        # Black time carries the averaging decay - variance accrues on the
+                        # not-yet-fixed remainder, integrated exactly when the valuation date
+                        # sits inside the period
+                        t_k = cashflows.np[:, utils.CASHFLOW_INDEX_Start_Day] - time_slice
+                        t_kp1 = cashflows.np[:, utils.CASHFLOW_INDEX_End_Day] - time_slice
+                        expiries = t_kp1
+                        eff_expiries = np.where(
+                            (t_k <= 0) & (t_kp1 > 0),
+                            t_kp1 ** 3 / (3 * (t_kp1 - t_k) ** 2),
+                            t_kp1 - (2 / 3) * (t_kp1 - t_k))
+                    else:
+                        eff_expiries = expiries
+                    all_int, all_margin = cashflow_pricer(
+                        all_resets, reset_cashflows.tn, factor_dep, eff_expiries, tenor, shared, expiries)
             else:
                 all_int, all_margin = cashflow_pricer(all_resets, reset_cashflows.tn, shared)
 

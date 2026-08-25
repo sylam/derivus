@@ -2590,7 +2590,7 @@ class CFFloatingInterestListDeal(Deal):
         F('Forecast_Rate_Swaption_Volatility', 'Text', default='', obj='Tuple'),
         F('Is_Defaultable', 'Text', default='No', values=['Yes', 'No']),
         F('Settlement_Amount', 'Float', default=0.0),
-        F('Float_Cashflows', 'Container', default={'Properties': [], 'Compounding_Method': 'None', 'Averaging_Method': 'Average_Interest', 'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('Properties', 'Table', default='null', row=Row([F('Digital_Payoff_Rate', 'Percent'), F('Cap_Multiplier', 'Float'), F('Cap_Strike', 'Percent'), F('Floor_Multiplier', 'Float'), F('Floor_Strike', 'Percent')])), F('Compounding_Method', 'Text', default='None', values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin', 'Exponential']), F('Averaging_Method', 'Text', default='Average_Rate', values=['Average_Interest', 'Average_Rate']), F('FloatItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Notional', 'Float'), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'), F('Accrual_Day_Count', 'Text', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']), F('Accrual_Year_Fraction', 'Float'), F('Resets', 'Table'), F('Margin', 'Basis'), F('Fixed_Amount', 'Float'), F('FX_Reset_Date', 'Date'), F('Known_FX_Rate', 'Float')]))]),
+        F('Float_Cashflows', 'Container', default={'Properties': [], 'Compounding_Method': 'None', 'Averaging_Method': 'Average_Interest', 'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('Properties', 'Table', default='null', row=Row([F('Digital_Payoff_Rate', 'Percent'), F('Cap_Multiplier', 'Float'), F('Cap_Strike', 'Percent'), F('Floor_Multiplier', 'Float'), F('Floor_Strike', 'Percent')])), F('Compounding_Method', 'Text', default='None', values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin', 'Exponential']), F('Averaging_Method', 'Text', default='Average_Rate', values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']), F('FloatItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Notional', 'Float'), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'), F('Accrual_Day_Count', 'Text', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']), F('Accrual_Year_Fraction', 'Float'), F('Resets', 'Table'), F('Margin', 'Basis'), F('Fixed_Amount', 'Float'), F('FX_Reset_Date', 'Date'), F('Known_FX_Rate', 'Float')]))]),
         F('Forecast_Rate_Cap_Volatility', 'Text', default='', obj='Tuple'),
         F('Settlement_Amount_Is_Clean', 'Text', default='Yes', values=['Yes', 'No']),
         F('Discount_Rate_Cap_Volatility', 'Text', default='', obj='Tuple'),
@@ -2610,10 +2610,29 @@ class CFFloatingInterestListDeal(Deal):
                      'Forecast_Rate_Swaption_Volatility': ['InterestYieldVol']}
 
     documentation = (
-        'Interest Rates', ['A series of floating interest cashflows as described [here](#floating-interest-cashflows)'])
+        'Interest Rates', [
+            'A series of floating interest cashflows as described [here](#floating-interest-cashflows)',
+            '',
+            'A cashflow Properties row with a non-zero **Cap_Multiplier** or **Floor_Multiplier**',
+            'prices the leg as caplets or floorlets; **Digital_Payoff_Rate** makes each one a',
+            'digital paying that rate. If the **Digital_Spread** Valuation Configuration option is',
+            'set (> 0), the digital is priced as a call/put spread of ABSOLUTE half-width',
+            '`Digital_Spread` in rate either side of the strike, each leg reading the cap surface',
+            'at its own strike, so the smile is picked up automatically.',
+            '',
+            'On an aggregated leg (several resets per cashflow), **Averaging_Method** picks the',
+            'cap convention: `Pre_Aggregation` prices every reset as its own optionlet at its own',
+            'expiry and accrual before summing back to the period (cap-then-compound - the daily',
+            'capped RFR shape, and with a digital payoff a range accrual), while',
+            '`Post_Aggregation` compounds first and prices one option on the period rate, vol',
+            'read at the period end with the averaging-decay Black time (integrated exactly when',
+            'the valuation date sits inside the period). Any other value compounds and prices at',
+            'the reset-start expiry.'])
 
     def __init__(self, params, valuation_options):
         super(CFFloatingInterestListDeal, self).__init__(params, valuation_options)
+        self.options = {'Digital_Spread': 0.0}
+        self.options.update(valuation_options)
 
     def reset(self, calendars):
         super(CFFloatingInterestListDeal, self).reset()
@@ -2629,7 +2648,7 @@ class CFFloatingInterestListDeal(Deal):
             field['Discount_Rate']
 
         field_index = {
-            'Digital_Spread': self.options.get('Digital_Spread', 0.0),
+            'Digital_Spread': self.options['Digital_Spread'],
             'SettleCurrency': self.field['Currency'],
             'Forward': get_interest_factor(
                 field['Forecast_Rate'], static_offsets, stochastic_offsets, all_tenors),
@@ -2817,7 +2836,7 @@ class CapDeal(Deal):
         F('Payment_Timing', 'Text', default='End', values=['End', 'Begin', 'Discounted']),
         F('Payment_Offset', 'Integer', default=0),
         F('Effective_Date', 'Date', default=''),
-        F('Averaging_Method', 'Text', default='Average_Rate', values=['Average_Interest', 'Average_Rate']),
+        F('Averaging_Method', 'Text', default='Average_Rate', values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']),
         F('First_Coupon_Date', 'Date', default=''),
         F('Accrual_Calendars', 'Text', default=''),
         F('Accrual_Day_Count', 'Text', default='ACT_365', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
@@ -2932,7 +2951,7 @@ class FloorDeal(Deal):
         F('Floor_Rate', 'Float', default=0.0),
         F('Payment_Offset', 'Integer', default=0),
         F('Effective_Date', 'Date', default=''),
-        F('Averaging_Method', 'Text', default='Average_Rate', values=['Average_Interest', 'Average_Rate']),
+        F('Averaging_Method', 'Text', default='Average_Rate', values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']),
         F('First_Coupon_Date', 'Date', default=''),
         F('Accrual_Calendars', 'Text', default=''),
         F('Accrual_Day_Count', 'Text', default='ACT_365', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
@@ -3844,7 +3863,18 @@ class EquityBinaryOption(EquityOptionDeal):
         F('Settlement_Date', 'Date', default='')
 ])]
 
-    documentation = ('Fx And Equity', ['A vanilla option described [here](definitions.md#european-options)'])
+    documentation = ('Fx And Equity', [
+        'A vanilla option described [here](definitions.md#european-options)',
+        '',
+        'If the **Relative_Digital_Spread** Valuation Configuration option is set (> 0), the',
+        'digital is priced as a call/put spread of width `Strike * Relative_Digital_Spread`',
+        'either side of the strike, rather than the single-vol closed form, so the vol surface',
+        'smile is picked up automatically.'])
+
+    def __init__(self, params, valuation_options):
+        super(EquityBinaryOption, self).__init__(params, valuation_options)
+        self.options = {'Relative_Digital_Spread': 0.0}
+        self.options.update(valuation_options)
 
     def generate(self, shared, time_grid, deal_data):
         deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -3858,8 +3888,16 @@ class EquityBinaryOption(EquityOptionDeal):
             deal_data.Factor_dep['Dividend_Yield'], deal_data.Factor_dep['Forward_Settlement'], deal_time, shared)
         moneyness = pricing.calc_moneyness(strike, spot, forward, deal_data)
 
+        # the spread legs' moneyness is authored HERE, where the deal's convention arguments
+        # live - calc_moneyness stays the single owner of the surface's moneyness rule
+        eps = self.options['Relative_Digital_Spread']
+        spread = (eps,
+                  pricing.calc_moneyness(strike * (1.0 - eps), spot, forward, deal_data),
+                  pricing.calc_moneyness(strike * (1.0 + eps), spot, forward, deal_data)) if eps else None
+
         mtm = pricing.pv_european_option(
-            shared, time_grid, deal_data, self.field['Cash_Payoff'], moneyness, forward, binary=True) * fx_rep
+            shared, time_grid, deal_data, self.field['Cash_Payoff'], moneyness, forward,
+            binary=True, digital_spread=spread) * fx_rep
 
         return mtm
 
@@ -5985,7 +6023,18 @@ class FXBinaryOption(FXOptionDeal):
     documentation = (
         'Fx And Equity', ['A path independent vanilla FX binary (digital) option described'
                           ' [here](./definitions.md#european-options). Pays a fixed **Cash_Payoff**'
-                          ' amount in **Currency** if the option expires in-the-money.'])
+                          ' amount in **Currency** if the option expires in-the-money.',
+                          '',
+                          'If the **Relative_Digital_Spread** Valuation Configuration option is set',
+                          '(> 0), the digital is priced as a call/put spread of width',
+                          '`Strike * Relative_Digital_Spread` either side of the strike, rather than',
+                          'the single-vol closed form, so the vol surface smile is picked up',
+                          'automatically.'])
+
+    def __init__(self, params, valuation_options):
+        super(FXBinaryOption, self).__init__(params, valuation_options)
+        self.options = {'Relative_Digital_Spread': 0.0}
+        self.options.update(valuation_options)
 
     def generate(self, shared, time_grid, deal_data):
         deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -5994,13 +6043,22 @@ class FXBinaryOption(FXOptionDeal):
         forward = utils.calc_fx_forward(
             deal_data.Factor_dep['Underlying_Currency'], deal_data.Factor_dep['Currency'],
             deal_data.Factor_dep['Expiry'], deal_time, shared)
+        invert_moneyness = deal_data.Factor_dep['Invert_Moneyness']
+        strike = deal_data.Factor_dep['Strike_Price']
         moneyness = pricing.calc_moneyness(
-            deal_data.Factor_dep['Strike_Price'], forward, forward,
-            deal_data, use_forward=True, invert_moneyness=deal_data.Factor_dep['Invert_Moneyness'])
+            strike, forward, forward, deal_data, use_forward=True, invert_moneyness=invert_moneyness)
+
+        # spread legs at the deal's own moneyness convention (see EquityBinaryOption.generate)
+        eps = self.options['Relative_Digital_Spread']
+        spread = (eps,
+                  pricing.calc_moneyness(strike * (1.0 - eps), forward, forward, deal_data,
+                                         use_forward=True, invert_moneyness=invert_moneyness),
+                  pricing.calc_moneyness(strike * (1.0 + eps), forward, forward, deal_data,
+                                         use_forward=True, invert_moneyness=invert_moneyness)) if eps else None
 
         mtm = pricing.pv_european_option(
             shared, time_grid, deal_data, self.field['Cash_Payoff'], moneyness, forward,
-            binary=True) * fx_rep
+            binary=True, digital_spread=spread) * fx_rep
 
         return mtm
 
