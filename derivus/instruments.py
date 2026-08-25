@@ -5543,6 +5543,7 @@ class FXPartialTimeBarrierOption(Deal):
                 field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Barrier_Monitoring': 0.5826 * np.sqrt(
                 (base_date + self.field['Barrier_Monitoring_Frequency'] - base_date).days / 365.0),
+            'Barrier_Underlying': get_fx_barrier_underlying(field, stochastic_offsets),
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
             'Limit_Date': (self.field['Barrier_Limit_Date'] - base_date).days,
             'Invert_Moneyness': 1 if field['Currency'][0] == field['FX_Volatility'][0] else 0,

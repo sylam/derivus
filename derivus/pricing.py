@@ -840,11 +840,15 @@ def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBar
                 temp = PartialBarrierCalc(
                     forward, strike, log1, log2, rho, -rho, g1, e1, g3, -e3, g2, e2, g4, -e4)
                 temp += PartialBarrierCalc(
-                    forward, strike, log1, log2, rho, -rho, -g1, -e1, -g3, -e3, -g2, -e2, -g4, -e4)
+                    forward, strike, log1, log2, rho, -rho, -g1, -e1, -g3, e3, -g2, -e2, -g4, e4)
                 temp -= PartialBarrierCalc(
-                    forward, strike, log1, log2, rho, -rho, -d1, -e1, -f1, -e3, -d2, -e2, -f2, -e4)
+                    forward, strike, log1, log2, rho, -rho, -d1, -e1, -f1, e3, -d2, -e2, -f2, e4)
 
-                pv = torch.where(strike < barrier, pv, temp)
+                # `pv` is the X >= H expression and `temp` the X < H one - adjudicated against a
+                # 4M-path bridge Monte Carlo with an exact bivariate normal, which also fixed the
+                # reflected terms' e3/e4 signs above; the original selection was inverted
+                pv = torch.where(torch.as_tensor(strike < barrier, device=forward.device),
+                                 temp, pv)
             else:
                 if eta == 1:
 
@@ -853,7 +857,8 @@ def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBar
                     temp = PartialBarrierCalc(
                         forward, strike, log1, log2, rho, -rho, d1, e1, f1, -e3, d2, e2, f2, -e4)
 
-                    pv = torch.where(strike < barrier, pv, temp)
+                    pv = torch.where(torch.as_tensor(strike < barrier, device=forward.device),
+                                     pv, temp)
 
                 else:  # eta == -1
 
@@ -1672,7 +1677,7 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal,
 
     # work out what we're pricing
     barrierType = deal_data.Instrument.field['Barrier_Type']
-    isKnockIn = barrierType in ['Up_And_In', 'Down_And_In', 'In']
+    isKnockIn = barrierType in ['Up_And_In', 'Down_And_In']
 
     eta = 0.0
     if barrierType in ['Down_And_Out', 'Down_And_In']:
@@ -1697,8 +1702,10 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal,
     sigma = utils.calc_time_grid_vol_rate(factor_dep['Volatility'], moneyness, expiry, shared)
 
     if factor_dep['Barrier_Monitoring']:
+        # Broadie-Glasserman-Kou shift, AWAY from the live region by the barrier TYPE - the
+        # spot's side is not the shift's direction (`pv_barrier_option` states the convention)
         adj_barrier = barrier * torch.exp(
-            (2.0 * (barrier > spot[0][0]).type(shared.one.dtype) - 1.0) * sigma * factor_dep['Barrier_Monitoring'])
+            (1.0 if eta == BARRIER_UP else -1.0) * sigma * factor_dep['Barrier_Monitoring'])
     else:
         adj_barrier = barrier
 
@@ -1712,20 +1719,41 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal,
 
     expiry_years, limit_years = factor_dep[expiry_years_key]
 
+    at_start = deal_data.Instrument.field['Barrier_At_Start'] == 'Yes'
+    # rows at and past the limit date fed the closed form a non-positive window and priced NaN
+    # through sqrt (inf - inf in the e-terms at zero). The clamp is also the VALUATION there: a
+    # start-window repriced over a vanishing window IS the vanilla on its surviving branch, and
+    # an end-window row sits inside its window, where a vanishing head IS the full barrier for
+    # the remainder - both limits of the same formula, to O(clamp)
     barrier_payoff = buy_or_sell * nominal * getpartialbarrierpayoff(
-        isKnockIn, eta, phi, spot_prior, strike, adj_barrier,
-        deal_data.Instrument.field['Barrier_At_Start'] == 'Yes',
-        limit_years, expiry_years, r, b, sigma)
+        isKnockIn, eta, phi, spot_prior, strike, adj_barrier, at_start,
+        limit_years.clamp(min=1e-6), expiry_years, r, b, sigma)
 
     if need_spot_at_expiry:
-        # work out barrier
-        if eta == BARRIER_UP:
-            touched = (spot[:-1] < barrier) & (spot[1:] > barrier)
-        else:
-            touched = (spot[:-1] > barrier) & (spot[1:] < barrier)
-
-        # barrier payoff
-        barrier_touched = F.pad((torch.cumsum(touched, dim=0) > 0).type(shared.one.dtype), [0, 0, 1, 0])
+        # the SAME running touch probability as `pv_barrier_option`: an endpoint beyond the
+        # barrier is a certain touch, an interior crossing the exact Brownian-bridge one -
+        # accumulated ONLY inside the barrier window, because the window is the deal. The
+        # interval straddling the limit date is attributed to the side its far end sits on,
+        # and the bridge tests the SAME shifted barrier the closed form prices against
+        interval_variance = utils.bridge_interval_variance(shared, factor_dep, deal_time)
+        interval_days = deal_time[:, utils.TIME_GRID_MTM]
+        in_window = np.concatenate([
+            [at_start or factor_dep['Limit_Date'] <= interval_days[0]],
+            (interval_days[1:] <= factor_dep['Limit_Date']) if at_start else
+            (interval_days[:-1] >= factor_dep['Limit_Date'])])
+        rows, prev_touched, prev_spot = [], 0.0, None
+        last_bar = adj_barrier.shape[0] - 1 if torch.is_tensor(adj_barrier) else None
+        for index in range(deal_time.shape[0]):
+            if in_window[index]:
+                bar_t = adj_barrier[min(index, last_bar)] if last_bar is not None else adj_barrier
+                prev_touched = utils.barrier_touched(
+                    prev_touched, prev_spot, spot[index], bar_t, interval_variance[index],
+                    eta == BARRIER_UP)
+            elif index == 0:
+                prev_touched = torch.zeros_like(spot[0])
+            prev_spot = spot[index]
+            rows.append(prev_touched)
+        barrier_touched = torch.stack(rows)
         first_touch = barrier_touched[1:] - barrier_touched[:-1]
         # final payoff
         payoff_at = buy_or_sell * torch.relu(phi * (spot_at - strike))
