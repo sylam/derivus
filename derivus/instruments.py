@@ -1535,10 +1535,12 @@ class NettingCollateralSet(Deal):
                     # is already the Te-grid fx, so only the delta takes the Te index here.
                     vte = b_Vte + delta[g_Te] * g_fx
                     c_d = None
-                    if cash is not None:
-                        c_d, vte_d = cash_to_C(*cash)
-                        if vte_d is not None:
-                            vte = vte + vte_d
+                    if cash:
+                        parts = [cash_to_C(*entry) for entry in cash]
+                        c_d = sum(p[0] for p in parts)
+                        for _, vte_d in parts:
+                            if vte_d is not None:
+                                vte = vte + vte_d
                     return replay_net_mtm(balance, vte=vte, c_delta=c_d)
 
                 # Published, not applied. `resolve_structure` hands it to the registrations made

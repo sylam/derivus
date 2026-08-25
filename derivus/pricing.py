@@ -2759,10 +2759,11 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             gaps.append(torch.log(Sj / K).squeeze(dim=1))
                             fired.append(torch.where(
                                 dead, 0.0, (P + fx * L * coup * D[j]).mean(axis=1)).detach())
-                            # the payment the trigger controls, per scenario, had it FIRED - the
-                            # collateral chain's cash counterfactual (the not-fired branch pays 0)
-                            cash_on.append(torch.where(
-                                dead, 0.0, (fx * coup * D[j]).squeeze(1)).detach())
+                            # the payment the trigger makes IF it fires - UNMASKED: which worlds
+                            # reach it is the latch's question (`latched_cash`), and a scenario
+                            # dead as booked is alive in the world where an earlier trigger is
+                            # forced off
+                            cash_on.append((fx * coup * D[j]).squeeze(1).detach())
                             P_cf, L_cf = P, L
 
                         # the payment this coupon makes: the knocked-out weight times the coupon,
@@ -3088,8 +3089,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 b_alive.append(block_alive)
                 settle_map = dict(zip(settle_rows, block_settled))
                 # per STAMPED decision (tau == 0): gap, flag (`gap >= 0` IS the trigger), the
-                # own-row fork, and the payment as a ledger triple in reporting currency; a
-                # pending window's re-observation is not a new decision and registers nothing
+                # own-row fork, and the payment as a per-event `(mtm_row, amount, booked)` fact
+                # in reporting currency; a pending window's re-observation is not a new decision
+                # and registers nothing
                 for k, row in enumerate(event_rows):
                     if all_fixings[row, 0] != 0.0:
                         continue
@@ -3099,10 +3101,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                     outputs[fixed + 2 * n_events + k]])
                     fxr = (fx_rep[row_ofs + row] if fx_rep.dim() > 1 and
                            fx_rep.shape[0] > 1 else fx_rep.reshape(-1)[0])
-                    on = (nominal * fxr * outputs[fixed + 3 * n_events + k]).detach()
                     b_cash.append((int(np.searchsorted(
                         time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM])),
-                        on, torch.zeros_like(on),
+                        (nominal * fxr * outputs[fixed + 3 * n_events + k]).detach(),
                         (nominal * fxr * settle_map[row]).detach()))
         else:
             theo_cashflow = drifts.new_zeros((len(t_block), shared.simulation_batch))
@@ -3118,9 +3119,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     mtm = torch.cat(mtm_list, dim=0)
 
     if b_latch and time_grid.report_index is not None:
-        # one counterfactual per decision, its whole reach: latch + own-row fork + ledger triple
-        # (see the docstring). Branches stay on the pricer's grid; report_index is None on a
-        # grid nobody reports off (an HMC tradable, a calibration's benchmark grid)
+        # one counterfactual per decision, its whole reach: latch + own-row fork + every payment
+        # row the flip touches (see the docstring). Branches stay on the pricer's grid;
+        # report_index is None on a grid nobody reports off (an HMC tradable, a calibration's
+        # benchmark grid)
         gaps, flags, own_rows, on_v, off_v = zip(*b_latch)
         untriggered = (nominal * torch.cat(b_alive, dim=0)).detach()
         latch_set = utils.LatchedBoundarySet(
@@ -3130,7 +3132,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                      for r, a, b in zip(own_rows, on_v, off_v)],
             to_mtm=deal_to_mtm_grid(time_grid, deal_data, fx_rep),
             report_index=time_grid.report_index)
-        latch_set.cash = b_cash
+        latch_set.cash = latch_set.latched_cash(b_cash)
         shared.boundary_sets.append(latch_set)
 
     return mtm

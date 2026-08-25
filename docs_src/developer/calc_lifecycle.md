@@ -339,18 +339,21 @@ why one class with a mode flag would be the wrong shape:
 
 | subclass | reach | carries |
 | --- | --- | --- |
-| `LatchedBoundarySet` | read by every row from the decision onward (barrier, swaption, autocall) | two whole-profile branches shared across decisions; optionally, per decision, an own-row fired/survived override and a settled-cash ledger triple |
+| `LatchedBoundarySet` | read by every row from the decision onward (barrier, swaption, autocall) | two whole-profile branches shared across decisions; optionally, per decision, an own-row fired/survived override and the ledger rows of every payment the flip touches (`latched_cash`) |
 | `InnerBoundarySet` | a decision inside a pricer's inner MC | the objective's *derivative*, not a difference — one inner path moves the row by `1/n`, a jump the value never takes |
 
 One decision registers **one** counterfactual carrying its whole reach. The autocall's observed
 coupon forks fired-against-survived on its own row — a hard indicator neither whole-profile
 branch expresses, hence the own-row override — stamps a knock-out latch every later block reads
 (alive continuation against zero, the `untriggered` branch being the simulation run alive), and
-settles a payment a collateralised exposure reads through `C_ts_te`, hence the ledger triple
-`net_from_gross` folds into the settlement-risk windows. Splitting one decision across two
-registrations is exact only while the objective responds linearly — a collateralised net sits at
-the relu kink by construction, where the sum of two partial counterfactuals scores differently
-from the counterfactual of the sum.
+settles payments a collateralised exposure reads through `C_ts_te`. The reach covers the ledger
+too, and not just the decision's own row of it: forced ON the latch kills every later payment,
+forced OFF each later trigger pays iff no other earlier decision fired — `latched_cash` derives
+those rows per decision from per-event `(row, amount, booked)` facts, and `net_from_gross` folds
+the list into the settlement-risk windows. Splitting one decision across two registrations is
+exact only while the objective responds linearly — a collateralised net sits at the relu kink by
+construction, where the sum of two partial counterfactuals scores differently from the
+counterfactual of the sum.
 
 !!! note "Under a recompute node, a `gap` is an OUTPUT — when the simulation is what decided it"
     `stochastic_boundary_correction` needs `gap` to carry a graph and an untaped forward pass has

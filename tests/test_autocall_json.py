@@ -33,7 +33,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
-import pytest
 
 import derivus as rf
 
@@ -451,31 +450,26 @@ def _collateralised(job):
     return job
 
 
-@pytest.mark.xfail(strict=True, reason='the collateralised boundary counterfactual carries a '
-                                       'bandwidth-stable residual of order 10-18% that is NOT '
-                                       'the settled-cash channel: the oracle reads the same '
-                                       'delta with the engine cash on or off, and the cash-free '
-                                       'world overshoots by +17.6% - the mtm-side counterfactual '
-                                       'under the collateral chain is what does not resolve')
 def test_a_collateralised_cva_delta_carries_the_settled_coupon(tmp_path):
-    """The one statement still owed: the collateralised CVA spot delta does not resolve to 5%.
+    """The collateralised twin of the sensitivity gate: the same document under a zero-threshold
+    CSA, so each decision's counterfactual runs the gross->net chain and the settled-cash ledger
+    instead of reaching the report grid additively.
 
-    MEASURED on this document at 64 batches (CRN flat to <1%, truth 5.22e-05):
+    What this gate measures is the decision's LEDGER REACH. A trigger forced ON kills every later
+    coupon's settled cash; forced OFF it pays at the path's first later firing - so the
+    counterfactual must flip every payment row it touches, not only its own. Scoring the own
+    payment alone leaves the later coupons' booked cash in the margin period's exposure windows,
+    measured at +6.5% per added later decision on a two-coupon cut of this document (dumped
+    engine branch rows against a closed-form chain replica; the excess sits exactly on the later
+    coupon's C_ts_te window rows).
 
-        merged registration, no cash channel:   4.6496e-05   -10.9%
-        merged registration, with cash channel: 5.9234e-05   +13.1%  (bandwidth plateau: 0.02 /
-                                                0.05 / 0.10 read +12.5% flat to 0.25%)
-        cash-free WORLD vs its own oracle:      6.1555e-05 / 5.23e-05   +17.6%
-        oracle, engine cash on vs off:          5.22e-05 vs 5.23e-05 - cash worth ~0 in truth
+    MEASURED at 1024 x 4 batches, rungs 0.3/0.5/1.0 on spot 100:
 
-    The earlier attribution ('the missing channel is CASH') is RETRACTED: it rested on a 4-batch
-    reading inside its own noise. On this fixture the true cash effect is neutralised - the relu
-    kills a fired path's later exposure and the one-row-lagged balance offsets the C_ts_te window
-    - while the mtm-side counterfactual misses by double digits in BOTH worlds. The registration
-    carries the per-decision ledger triple anyway (a counterfactual that flips a payment must be
-    ABLE to flip the ledger, and on a finer grid the neutralisation does not hold); what is owed
-    is the accuracy of the collateralised counterfactual itself (roadmap). Strict, so the suite
-    goes red the moment it resolves and this marker must come off.
+        cva 0.0017986481   AAD +5.0705166e-05   CRN 4.9345/5.0634/5.15172e-05
+        disagreement 0.14% at the best rung, ladder flatness 4.29%
+
+    MUTATION: `latched_cash` truncated to the decision's own row reads +7.73% against the same
+    ladder - the reach rows are what this gate kills over.
     """
     aad, crn, cva = _cva_ladder(tmp_path, threshold=1.02, collateral=True)
     best = min(crn, key=lambda c: abs(aad - c))

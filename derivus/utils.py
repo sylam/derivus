@@ -308,9 +308,11 @@ class BoundarySet:
     # measured from. Cached on first use rather than precomputed: it costs one balance scan per
     # registration and needs no assumption about a delta's shape.
     net_at_zero = None
-    # Per decision, the payment the decision moves: None, or entries `(time_index, on, off,
-    # booked)` - the mtm row plus three detached (B,) reporting-currency ledger amounts. The
-    # collateral chain reads settled cash through C_ts_te; the additive route ignores this.
+    # Per decision, the ledger rows its counterfactual touches: None, or a LIST of entries
+    # `(time_index, on, off, booked)` - the mtm row plus three detached (B,) reporting-currency
+    # ledger amounts. A decision can move MORE than its own payment (a latch forced ON kills every
+    # later one), so one decision owns a list of rows, not a row. The collateral chain reads
+    # settled cash through C_ts_te; the additive route ignores this.
     cash = None
     # Who registered it, stamped by `stamp_boundary_sets` off the structure walk - the pricers do
     # not name themselves. A slot rather than a field because the subclasses declare non-default
@@ -328,8 +330,8 @@ class BoundarySet:
         netting set, so what the portfolio gains is the chain at this delta LESS the chain at zero -
         true whatever the set's own arithmetic is, rather than depending on identifying which
         tensor is its baseline. An additive set publishes no chain and only has to reach the report
-        grid - and reads no ledger, so `cash` (a `(time_index, branch, booked)` ledger triple for
-        the branch being scored) reaches only the collateral chain.
+        grid - and reads no ledger, so `cash` (a list of `(time_index, branch, booked)` ledger
+        rows for the branch being scored) reaches only the collateral chain.
         """
         if self.net_from_gross is None:
             return delta[self.report_index]
@@ -358,9 +360,9 @@ class BoundarySet:
             entry = self.cash[k] if self.cash else None
             with torch.no_grad():
                 jump = (score(self.portfolio_delta(
-                            on, entry and (entry[0], entry[1], entry[3]))) -
+                            on, entry and [(e[0], e[1], e[3]) for e in entry])) -
                         score(self.portfolio_delta(
-                            off, entry and (entry[0], entry[2], entry[3]))))
+                            off, entry and [(e[0], e[2], e[3]) for e in entry])))
             yield gap, jump
 
 
@@ -443,6 +445,29 @@ class LatchedBoundarySet(BoundarySet):
                         profile[own[0]] = branch_val
                     deltas.append(self.to_mtm(profile) - reported)
             yield (gap,) + tuple(deltas)
+
+    def latched_cash(self, events):
+        """Each decision's `cash` rows, derived from the per-event payments the latch controls.
+
+        `events` is one `(mtm_row, amount, booked)` per decision: the payment the trigger makes IF
+        it fires while the deal is alive, and the ledger as booked. A decision's reach covers every
+        LATER payment too: forced ON it kills them all, forced OFF each later trigger pays iff no
+        OTHER earlier decision fired. Rows before the decision are identical in both worlds and are
+        not carried. Scoring only the decision's own payment leaves the later rows' settled cash
+        in the counterfactual's exposure windows and overstates the flux.
+        """
+        cash = []
+        for k, (t, amount, booked) in enumerate(events):
+            dead = torch.zeros_like(self.fired[0])
+            for flag in self.fired[:k]:
+                dead = dead | flag
+            rows = [(t, amount * ~dead, torch.zeros_like(amount), booked)]
+            # `dead` walks the OFF world from here: decision k never fires in it
+            for j, (tj, amt, booked_j) in enumerate(events[k + 1:], k + 1):
+                rows.append((tj, torch.zeros_like(amt), amt * (self.fired[j] & ~dead), booked_j))
+                dead = dead | self.fired[j]
+            cash.append(rows)
+        return cash
 
 
 @dataclass
