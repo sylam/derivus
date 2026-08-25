@@ -4231,6 +4231,12 @@ class EquityOneTouchOption(Deal):
     def __init__(self, params, valuation_options):
         super(EquityOneTouchOption, self).__init__(params, valuation_options)
         self.path_dependent = True
+        # the pricer's closed-form chain has exactly these two branches, and `reset` and
+        # `add_grid_dates` read the field before dependencies run - a third value is a malformed
+        # program, refused at construction rather than priced as whatever the last branch left
+        if self.field.get('Payment_Timing', 'Expiry') not in ('Touch', 'Expiry'):
+            raise ValueError('EquityOneTouchOption Payment_Timing must be Touch or Expiry, not {!r}'.format(
+                self.field['Payment_Timing']))
 
     def reset(self, calendars):
         super(EquityOneTouchOption, self).reset()
@@ -5264,6 +5270,12 @@ class FXOneTouchOption(Deal):
     def __init__(self, params, valuation_options):
         super(FXOneTouchOption, self).__init__(params, valuation_options)
         self.path_dependent = True
+        # the pricer's closed-form chain has exactly these two branches, and `reset` and
+        # `add_grid_dates` read the field before dependencies run - a third value is a malformed
+        # program, refused at construction rather than priced as whatever the last branch left
+        if self.field.get('Payment_Timing', 'Expiry') not in ('Touch', 'Expiry'):
+            raise ValueError('FXOneTouchOption Payment_Timing must be Touch or Expiry, not {!r}'.format(
+                self.field['Payment_Timing']))
 
     def reset(self, calendars):
         super(FXOneTouchOption, self).reset()
@@ -5910,6 +5922,200 @@ class FXAccumulatorOptionDeal(Deal):
 
         return pricing.pv_MC_Accumulator(
             shared, time_grid, deal_data, spot, FX_rep) * FX_rep
+
+
+class FXExtendableForwardDeal(Deal):
+    fields = [ADMIN, FX_ADMIN, own('FXExtendableForwardDeal', [
+        F('Currency', 'Text', default=''),
+        F('Underlying_Currency', 'Text', default=''),
+        F('Discount_Rate', 'Text', default='', obj='Tuple'),
+        F('FX_Volatility', 'Text', default='', obj='Tuple'),
+        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
+        F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
+        F('Strike_Price', 'Float', default=REQUIRED),
+        F('Extension_Strike', 'Float', default=REQUIRED),
+        F('Extension_Date', 'Date', default=REQUIRED),
+        F('Extension_Style', 'Text', default='Strip', values=['Strip', 'Rolling']),
+        F('Underlying_Amount', 'Float', default=0.0),
+        # NO `tag`, read by iterating rows - the accumulator's schedule states the reason.
+        # `Extended` is a lifecycle fact (Yes/No once the bank has decided, blank otherwise),
+        # never a model output.
+        F('Extendable_ExpiryDates', 'Table', default='null', row=Row([
+            F('Fixing Date', 'Date'), F('Settlement Date', 'Date'), F('Value', 'Float'),
+            F('Extended', 'Text')]))
+])]
+
+    factor_fields = {'Currency': ['FxRate'],
+                     'Underlying_Currency': ['FxRate'],
+                     'Discount_Rate': ['InterestRate'],
+                     'FX_Volatility': ['FXVol']}
+
+    documentation = (
+        'Fx And Equity', [
+            'A bank-exercisable FX extendable forward with periodic fixing cashflows.',
+            '',
+            'Fixings up to and including **Extension_Date** are guaranteed at **Strike_Price**',
+            '(K1). Any fixing created by an extension is struck at **Extension_Strike** (K2). The',
+            'fixing on an extension decision date is already in force and therefore pays before',
+            'the decision to continue or terminate the remaining schedule is applied.',
+            '',
+            '**Extension_Style = Strip**: the fixing count must be even and Extension_Date is the',
+            'last fixing of the first half. At that date the bank either activates the whole',
+            'second half at K2 or terminates the deal after the current K1 fixing.',
+            '',
+            '**Extension_Style = Rolling**: starting at Extension_Date, each fixing carries a',
+            'bank decision whether to create exactly the next fixing at K2. The first decision',
+            'not to extend terminates the deal permanently after the current fixing.',
+            '',
+            '**Extendable_ExpiryDates** rows are [fixing date, settlement date, observed fixing,',
+            'observed extension decision]. The decision is a lifecycle fact: Yes/No when the bank',
+            'has decided (mandatory once the fixing is historical), blank otherwise - future',
+            'blanks are decided scenario-by-scenario by the exercise rule.',
+            '',
+            'GBM off the implied surface only; the exercise boundary at each rolling decision is',
+            'built by a backward one-dimensional quadrature and the forward pass values the',
+            'decisions by One-Step Survival. See',
+            '[One-Step Survival Methodology](../theory/mc_simulation.md).',
+            '',
+            '**Valuation options** (set in the Valuation Configuration section, per deal type)',
+            '',
+            '- **Boundary_Grid_Size** / **Boundary_Quadrature** / **Boundary_Batch_Chunk** /',
+            '**Boundary_Std_Width** / **Boundary_Min_Log_Width**: resolution dials of the',
+            'backward boundary solver (defaults 501 / 32 / 256 / 6.0 / 2.0).'
+        ])
+
+    def __init__(self, params, valuation_options):
+        super(FXExtendableForwardDeal, self).__init__(params, valuation_options)
+        self.options = {'Boundary_Grid_Size': 501, 'Boundary_Quadrature': 32,
+                        'Boundary_Batch_Chunk': 256, 'Boundary_Std_Width': 6.0,
+                        'Boundary_Min_Log_Width': 2.0}
+        self.options.update(valuation_options)
+        self.path_dependent = True
+
+    def reset(self, calendars):
+        super(FXExtendableForwardDeal, self).reset()
+        schedule = self.field['Extendable_ExpiryDates']
+        # every fixing is a reval date - a decision is reconstructed at its own fixing row
+        self.reval_dates.update({x[0] for x in schedule})
+        self.add_reval_dates({x[1] for x in schedule}, self.field['Currency'])
+
+    @staticmethod
+    def _decision_code(value):
+        """A lifecycle Yes/No, or -1 for not-yet-decided."""
+        if value is None or str(value).strip() == '':
+            return -1
+        text = str(value).strip().lower()
+        if text in ('yes', 'no'):
+            return int(text == 'yes')
+        raise ValueError('Extension decision must be Yes, No or blank, not {!r}'.format(value))
+
+    def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
+                          calendars):
+        field = {'Currency': utils.check_rate_name(self.field['Currency']),
+                 'Underlying_Currency': utils.check_rate_name(self.field['Underlying_Currency']),
+                 'FX_Volatility': utils.check_rate_name(self.field['FX_Volatility'])}
+
+        if float(self.field['Strike_Price']) <= 0.0 or float(self.field['Extension_Strike']) <= 0.0:
+            raise ValueError('FXExtendableForwardDeal requires positive K1 and K2 strikes')
+
+        style = str(self.field['Extension_Style']).strip().lower()
+        schedule = sorted(self.field['Extendable_ExpiryDates'], key=lambda x: x[0])
+        if len(schedule) < 2:
+            raise ValueError('FXExtendableForwardDeal requires at least two fixings')
+        fixing_dates = [x[0] for x in schedule]
+        settlement_dates = [x[1] for x in schedule]
+        if any(b < a for a, b in zip(fixing_dates, settlement_dates)):
+            raise ValueError('Extendable forward settlement date must be on or after its fixing date')
+        if any(fixing_dates[i] >= fixing_dates[i + 1] for i in range(len(fixing_dates) - 1)):
+            raise ValueError('Extendable forward fixing dates must be strictly increasing')
+        if any(settlement_dates[i] > settlement_dates[i + 1] for i in range(len(settlement_dates) - 1)):
+            raise ValueError('Extendable forward settlement dates must be non-decreasing')
+        if settlement_dates[-1] < base_date:
+            raise utils.InstrumentExpired(self.field.get('Reference', 'FXExtendableForwardDeal'))
+
+        extension_date = self.field['Extension_Date']
+        if extension_date not in fixing_dates:
+            raise ValueError('Extension_Date must be one of the fixing dates')
+        extension_index = fixing_dates.index(extension_date)
+        if extension_index >= len(fixing_dates) - 1:
+            raise ValueError('Extension_Date must be before the final fixing')
+
+        if style == 'strip':
+            if len(fixing_dates) % 2:
+                raise ValueError('Strip style requires an even number of fixings')
+            if extension_index != len(fixing_dates) // 2 - 1:
+                raise ValueError('Strip style Extension_Date must be the last fixing of the first half')
+            decision_indices = [extension_index]
+        else:
+            decision_indices = list(range(extension_index, len(fixing_dates) - 1))
+
+        fixing_values = [x[2] if len(x) > 2 and x[2] is not None else 0.0 for x in schedule]
+        decision_codes = np.full(len(schedule), -1, dtype=np.int8)
+        for i, row in enumerate(schedule):
+            if len(row) > 3:
+                decision_codes[i] = self._decision_code(row[3])
+        invalid = [i for i, code in enumerate(decision_codes) if code >= 0 and i not in decision_indices]
+        if invalid:
+            raise ValueError('Extension decisions supplied on non-decision fixing(s): {}'.format(invalid))
+        # a decision is a lifecycle FACT: mandatory once its fixing is historical, refused on a
+        # future one - a fact authored ahead of its date would be honoured by the lifecycle but
+        # still priced as an option by every pre-decision row - and, after the first No, never
+        # demanded again: decisions the termination made moot were never taken
+        seen_no = False
+        for i in decision_indices:
+            if seen_no and decision_codes[i] == 1:
+                raise ValueError('A Rolling extension cannot restart after the first No decision')
+            if not seen_no and fixing_dates[i] < base_date and decision_codes[i] < 0:
+                raise ValueError('Historical extension decision on {} must be supplied'.format(fixing_dates[i]))
+            if fixing_dates[i] > base_date and decision_codes[i] >= 0:
+                raise ValueError('Extension decision on {} is in the future'.format(fixing_dates[i]))
+            if decision_codes[i] == 0:
+                seen_no = True
+
+        field['Discount_Rate'] = utils.check_rate_name(self.field['Discount_Rate']) if self.field['Discount_Rate'] \
+            else field['Currency']
+
+        field_index = {
+            'Currency': get_fx_and_zero_rate_factor(
+                field['Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
+            'SettleCurrency': self.field['Currency'],
+            'Discount': get_interest_factor(
+                field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
+            'Underlying_Currency': get_fx_and_zero_rate_factor(
+                field['Underlying_Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
+            'Volatility': get_fx_vol_factor(
+                field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+            'Expiry': (settlement_dates[-1] - base_date).days,
+            'Invert_Moneyness': field['Currency'][0] == field['FX_Volatility'][0],
+            'Strike_Price': float(self.field['Strike_Price']),
+            'Extension_Strike': float(self.field['Extension_Strike']),
+            'Fixing_Days': np.array([(x - base_date).days for x in fixing_dates], dtype=np.int64),
+            'Price_Fixings': utils.make_fixing_data(
+                base_date, time_grid, [[d, v] for d, v in zip(fixing_dates, fixing_values)]),
+            'Settlement': np.array([(x - base_date).days for x in settlement_dates], dtype=np.int64),
+            'Decision_Codes': decision_codes,
+            'Decision_Indices': np.array(decision_indices, dtype=np.int64),
+            'Extension_Index': extension_index,
+            'Extension_Style': style,
+            'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
+            'Option_Type': 1.0 if self.field.get('Option_Type', 'Call') == 'Call' else -1.0,
+            'Notional': float(self.field['Underlying_Amount']),
+            'Boundary_Grid_Size': int(self.options['Boundary_Grid_Size']),
+            'Boundary_Quadrature': int(self.options['Boundary_Quadrature']),
+            'Boundary_Batch_Chunk': int(self.options['Boundary_Batch_Chunk']),
+            'Boundary_Std_Width': float(self.options['Boundary_Std_Width']),
+            'Boundary_Min_Log_Width': float(self.options['Boundary_Min_Log_Width'])
+        }
+        return field_index
+
+    def generate(self, shared, time_grid, deal_data):
+        deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
+        fx_rep = utils.calc_fx_cross(
+            deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
+        spot = utils.calc_fx_cross(
+            deal_data.Factor_dep['Underlying_Currency'][0],
+            deal_data.Factor_dep['Currency'][0], deal_time, shared)
+        return pricing.pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep) * fx_rep
 
 
 class FXOptionDeal(Deal):

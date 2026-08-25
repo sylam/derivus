@@ -468,7 +468,8 @@ def test_a_collateralised_cva_delta_carries_the_settled_coupon(tmp_path):
         cva 0.0017986481   AAD +5.0705166e-05   CRN 4.9345/5.0634/5.15172e-05
         disagreement 0.14% at the best rung, ladder flatness 4.29%
 
-    MUTATION: `latched_cash` truncated to the decision's own row reads +7.73% against the same
+    MUTATION: the ledger reach truncated to the decision's own row (the later `cash_events`
+    rows dropped in `objective_jumps`) reads +7.73% against the same
     ladder - the reach rows are what this gate kills over.
     """
     aad, crn, cva = _cva_ladder(tmp_path, threshold=1.02, collateral=True)

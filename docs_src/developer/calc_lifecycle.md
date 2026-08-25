@@ -339,7 +339,7 @@ why one class with a mode flag would be the wrong shape:
 
 | subclass | reach | carries |
 | --- | --- | --- |
-| `LatchedBoundarySet` | read by every row from the decision onward (barrier, swaption, autocall) | two whole-profile branches shared across decisions; optionally, per decision, an own-row fired/survived override and the ledger rows of every payment the flip touches (`latched_cash`) |
+| `LatchedBoundarySet` | read by every row from the decision onward (barrier, swaption, autocall) | two whole-profile branches shared across decisions; optionally, per decision, an own-row fired/survived override, the per-event payment facts (`cash_events`) its scoring derives every ledger row from, and per row the survived-weighted pending head (`pending`) that makes the dead branch a function of the latch state |
 | `InnerBoundarySet` | a decision inside a pricer's inner MC | the objective's *derivative*, not a difference — one inner path moves the row by `1/n`, a jump the value never takes |
 
 One decision registers **one** counterfactual carrying its whole reach. The autocall's observed
@@ -348,9 +348,9 @@ branch expresses, hence the own-row override — stamps a knock-out latch every 
 (alive continuation against zero, the `untriggered` branch being the simulation run alive), and
 settles payments a collateralised exposure reads through `C_ts_te`. The reach covers the ledger
 too, and not just the decision's own row of it: forced ON the latch kills every later payment,
-forced OFF each later trigger pays iff no other earlier decision fired — `latched_cash` derives
-those rows per decision from per-event `(row, amount, booked)` facts, and `net_from_gross` folds
-the list into the settlement-risk windows. Splitting one decision across two registrations is
+forced OFF each later trigger pays iff no other earlier decision fired — `objective_jumps`
+derives those rows per decision from the declared `cash_events` facts, and `net_from_gross`
+folds the list into the settlement-risk windows. Splitting one decision across two registrations is
 exact only while the objective responds linearly — a collateralised net sits at the relu kink by
 construction, where the sum of two partial counterfactuals scores differently from the
 counterfactual of the sum.

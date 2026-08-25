@@ -537,3 +537,11 @@ def test_the_bridge_honours_the_monitoring_frequency(freq_days, label):
     assert drift < 0.05, (
         f'{label}: profile drifts {drift:.1%} from inception {v[0]:.4f} - the bridge and the '
         f'closed form are testing different barriers\n{np.round(v, 3)}')
+
+
+def test_an_unknown_payment_timing_is_refused():
+    """`Payment_Timing` has exactly two values and the pricer's closed-form chain has exactly two
+    branches - no else. A third value used to price as whatever the last branch assignment left
+    behind; it now refuses at CONSTRUCTION, before `reset` and `add_grid_dates` read the field."""
+    with pytest.raises(ValueError, match='Payment_Timing'):
+        construct_instrument(dict(ONE_TOUCH, Payment_Timing='AtMaturity'), {})

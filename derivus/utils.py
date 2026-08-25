@@ -278,11 +278,10 @@ class BoundarySet:
     at the relu by construction) scores the sum of two partial counterfactuals differently from
     the counterfactual of the sum.
 
-    What they DO share is the contract this base declares: `branch_deltas` yields, per decision,
-    the gap (graph retained, signed so gap > 0 means the trigger FIRED) and the deal-mtm delta with
-    that decision forced ON and forced OFF. Both branches, for EVERY scenario - near the boundary
-    the scenarios that did not fire are exactly as numerous as those that did, and scoring the
-    former as a zero jump halves the conditional expectation.
+    What they DO share is the estimator's contract: `objective_jumps(score)` yields, per decision,
+    the gap (graph retained, signed so gap > 0 means the trigger FIRED) and the objective's
+    response to that decision - each subclass owning the form its reach requires. This base is the
+    plumbing every form consumes: the gross-to-net chain and `portfolio_delta`.
 
     Branch values are registered on the PRICER's own grid, in the pricer's own currency, and
     `to_mtm` is the deal's own map onto the MTM grid. A pricer builds its profile over
@@ -308,20 +307,11 @@ class BoundarySet:
     # measured from. Cached on first use rather than precomputed: it costs one balance scan per
     # registration and needs no assumption about a delta's shape.
     net_at_zero = None
-    # Per decision, the ledger rows its counterfactual touches: None, or a LIST of entries
-    # `(time_index, on, off, booked)` - the mtm row plus three detached (B,) reporting-currency
-    # ledger amounts. A decision can move MORE than its own payment (a latch forced ON kills every
-    # later one), so one decision owns a list of rows, not a row. The collateral chain reads
-    # settled cash through C_ts_te; the additive route ignores this.
-    cash = None
     # Who registered it, stamped by `stamp_boundary_sets` off the structure walk - the pricers do
     # not name themselves. A slot rather than a field because the subclasses declare non-default
     # fields of their own, which cannot follow a defaulted one. Read by the second-derivative
     # refusal, which owes the caller the deals it is refusing over.
     deal = None
-
-    def branch_deltas(self):
-        raise NotImplementedError
 
     def portfolio_delta(self, delta, cash=None):
         """This registration's deal-mtm delta as a change to the reported PORTFOLIO.
@@ -338,32 +328,6 @@ class BoundarySet:
         if self.net_at_zero is None:
             self.net_at_zero = self.net_from_gross(torch.zeros_like(delta))
         return self.net_from_gross(delta, cash) - self.net_at_zero
-
-    def objective_jumps(self, score):
-        """Per decision, the gap and the change in the OBJECTIVE that decision produces.
-
-        `score` maps a change to the reported portfolio to the per-scenario objective of the
-        counterfactual - the CVA or FVA reduction. What a set owes it is its own half: which
-        alternative values the decision chooses between, where on the grid they land, and the
-        netting arithmetic that carries them from there to the portfolio.
-
-        This default is the WHOLE-SCENARIO form the two `branch_deltas` shapes share. The decision
-        moves one scenario's reported value by a FINITE amount, so the objective's response to it
-        is a difference across that amount, and nothing smaller would be the right question.
-
-        The yield is OUTSIDE the no_grad block on purpose. `no_grad` is a thread-local flag, and a
-        generator suspended inside one leaves it set in whoever resumes it - so yielding from in
-        there would hand the caller a gap whose `gap - gap.detach()` carries no graph, and the
-        correction would silently become the zero it is already worth in the forward pass.
-        """
-        for k, (gap, on, off) in enumerate(self.branch_deltas()):
-            entry = self.cash[k] if self.cash else None
-            with torch.no_grad():
-                jump = (score(self.portfolio_delta(
-                            on, entry and [(e[0], e[1], e[3]) for e in entry])) -
-                        score(self.portfolio_delta(
-                            off, entry and [(e[0], e[2], e[3]) for e in entry])))
-            yield gap, jump
 
 
 @dataclass
@@ -399,6 +363,17 @@ class LatchedBoundarySet(BoundarySet):
     # `(pricer_row, value_if_fired, value_if_not)`, detached. Rides THIS set, not a second
     # registration - one decision must be ONE counterfactual (see the class docstring).
     own_row: list = None
+    # Settled-cash-in-transit a DEAD row still carries: None, or one entry per PRICER row -
+    # None, or `(first_decision, (m, B) tensor)` whose slice t is the row-present value of
+    # decision `first_decision + t`'s fixed-but-unsettled payoff. A dead path keeps the payoffs
+    # of fixings it SURVIVED, so the dead branch is `triggered[row]` plus the survived-weighted
+    # sum - a function of the latch state, which one shared profile cannot express. Detached.
+    pending: list = None
+    # Per decision, `(mtm_row, amount, booked)`: the payment the trigger makes IF it fires while
+    # the deal is alive, and the ledger as booked - detached reporting-currency (B,) amounts.
+    # `objective_jumps` derives each counterfactual's whole ledger reach from these facts; the
+    # collateral chain reads them through C_ts_te and the additive route ignores them.
+    cash_events: list = None
 
     def branch_deltas(self):
         """Per decision, the deal-mtm delta with that decision forced ON and forced OFF.
@@ -423,8 +398,7 @@ class LatchedBoundarySet(BoundarySet):
             prefix = [torch.zeros_like(self.fired[0])]
             for flag in self.fired:
                 prefix.append(prefix[-1] | flag)
-            reported = self.to_mtm(torch.where(
-                torch.stack(prefix)[self.obs_before], self.triggered, self.untriggered))
+            reported = self.to_mtm(self.select(prefix))
         for k, gap in enumerate(self.gaps):
             with torch.no_grad():
                 on, off = [], []
@@ -439,35 +413,69 @@ class LatchedBoundarySet(BoundarySet):
                 own = self.own_row[k] if self.own_row else None
                 deltas = []
                 for state, branch_val in ((on, own and own[1]), (off, own and own[2])):
-                    profile = torch.where(torch.stack(state)[self.obs_before],
-                                          self.triggered, self.untriggered)
+                    profile = self.select(state)
                     if own is not None:
                         profile[own[0]] = branch_val
                     deltas.append(self.to_mtm(profile) - reported)
             yield (gap,) + tuple(deltas)
 
-    def latched_cash(self, events):
-        """Each decision's `cash` rows, derived from the per-event payments the latch controls.
+    def select(self, state):
+        """The value profile a latch state reports: triggered where dead, untriggered where
+        alive - plus, at a dead row with `pending` entries, the payoffs of the fixings that path
+        SURVIVED whose settlements have not landed. `state[i]` is the dead prefix through the
+        first `i` decisions, which makes the survived weight for decision j `~state[j + 1]`."""
+        profile = torch.where(torch.stack(state)[self.obs_before],
+                              self.triggered, self.untriggered)
+        if self.pending is not None:
+            for r, entry in enumerate(self.pending):
+                if entry is None:
+                    continue
+                j0, c = entry
+                survived = torch.stack(
+                    [(~state[j + 1]).to(c.dtype) for j in range(j0, j0 + c.shape[0])])
+                profile[r] = torch.where(state[self.obs_before[r]],
+                                         self.triggered[r] + (c * survived).sum(dim=0),
+                                         profile[r])
+        return profile
 
-        `events` is one `(mtm_row, amount, booked)` per decision: the payment the trigger makes IF
-        it fires while the deal is alive, and the ledger as booked. A decision's reach covers every
-        LATER payment too: forced ON it kills them all, forced OFF each later trigger pays iff no
-        OTHER earlier decision fired. Rows before the decision are identical in both worlds and are
-        not carried. Scoring only the decision's own payment leaves the later rows' settled cash
-        in the counterfactual's exposure windows and overstates the flux.
+    def objective_jumps(self, score):
+        """Per decision, the gap and the change in the OBJECTIVE that decision produces.
+
+        `score` maps a change to the reported portfolio to the per-scenario objective of the
+        counterfactual - the CVA or FVA reduction. A latched decision moves one scenario's
+        reported value by a FINITE amount, so the objective's response is a difference across
+        that amount, and nothing smaller would be the right question.
+
+        Each counterfactual's ledger reach is derived from `cash_events` as it is scored: forced
+        ON the decision makes its own payment (if still alive as booked) and kills every later
+        one; forced OFF each later trigger pays iff no OTHER earlier decision fired. Rows before
+        the decision are identical in both worlds and are not carried - scoring only the
+        decision's own payment leaves the later rows' settled cash in the counterfactual's
+        exposure windows and overstates the flux.
+
+        The yield is OUTSIDE the no_grad block on purpose. `no_grad` is a thread-local flag, and
+        a generator suspended inside one leaves it set in whoever resumes it - so yielding from
+        in there would hand the caller a gap whose `gap - gap.detach()` carries no graph, and the
+        correction would silently become the zero it is already worth in the forward pass.
         """
-        cash = []
-        for k, (t, amount, booked) in enumerate(events):
-            dead = torch.zeros_like(self.fired[0])
-            for flag in self.fired[:k]:
-                dead = dead | flag
-            rows = [(t, amount * ~dead, torch.zeros_like(amount), booked)]
-            # `dead` walks the OFF world from here: decision k never fires in it
-            for j, (tj, amt, booked_j) in enumerate(events[k + 1:], k + 1):
-                rows.append((tj, torch.zeros_like(amt), amt * (self.fired[j] & ~dead), booked_j))
-                dead = dead | self.fired[j]
-            cash.append(rows)
-        return cash
+        for k, (gap, on, off) in enumerate(self.branch_deltas()):
+            with torch.no_grad():
+                on_cash = off_cash = None
+                if self.cash_events:
+                    t, amount, booked = self.cash_events[k]
+                    dead = torch.zeros_like(self.fired[0])
+                    for flag in self.fired[:k]:
+                        dead = dead | flag
+                    on_cash = [(t, amount * ~dead, booked)]
+                    off_cash = [(t, torch.zeros_like(amount), booked)]
+                    # `dead` walks the OFF world from here: decision k never fires in it
+                    for j, (tj, amt, booked_j) in enumerate(self.cash_events[k + 1:], k + 1):
+                        on_cash.append((tj, torch.zeros_like(amt), booked_j))
+                        off_cash.append((tj, amt * (self.fired[j] & ~dead), booked_j))
+                        dead = dead | self.fired[j]
+                jump = (score(self.portfolio_delta(on, on_cash)) -
+                        score(self.portfolio_delta(off, off_cash)))
+            yield gap, jump
 
 
 @dataclass

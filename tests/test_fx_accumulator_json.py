@@ -352,3 +352,89 @@ def test_the_deal_tags_reach_the_reported_row(tmp_path):
     assert 'Portfolio' in rows.columns and 'Trader' in rows.columns, list(rows.columns)
     assert rows['Portfolio'].iloc[0] == 'FX-EXOTICS', rows['Portfolio'].iloc[0]
     assert rows['Trader'].iloc[0] == 'jdoe', rows['Trader'].iloc[0]
+
+
+def _long_lag_job(greeks='No', spot=None, sims=1 << 16):
+    """The dead-branch document: settlements lag their fixings by MORE than the fixing spacing,
+    so a knocked deal carries several fixed-but-unsettled payoffs - the pending head - through
+    every reporting row between the knock and the last landing. A live barrier makes the latch
+    fire on real paths, which is what routes those rows through the boundary registration's dead
+    branch."""
+    job = _job(greeks=greeks, Barrier_Price=1.18, Accumulator_ExpiryDates=[
+        [{'.Timestamp': _day(30 + 20 * i)}, {'.Timestamp': _day(30 + 20 * i + 45)}, 0.0]
+        for i in range(6)])
+    job['Calc']['Calculation']['MCMC_Simulations'] = sims
+    if spot is not None:
+        job['Calc']['MergeMarketData']['ExplicitMarketData'][
+            'Price Factors']['FxRate.EUR']['Spot'] = spot
+    return job
+
+
+def _cva_long_lag(gradient='No', spot=None):
+    """The long-lag document as a credit Monte Carlo with the CVA block on: outer rows observe
+    fixings, the latch registration carries real dead cells, and the boundary correction scores
+    the knock jumps - which is the only place the dead branch is ever read."""
+    job = _long_lag_job(spot=spot, sims=256)
+    job['Calc']['Calculation'] = {
+        'Object': 'CreditMonteCarlo', 'Base_Date': {'.Timestamp': BASE}, 'Currency': 'USD',
+        'Time_grid': '0d 6m(10d)', 'Batch_Size': 1024, 'Simulation_Batches': 4,
+        'Random_Seed': 1, 'MCMC_Simulations': 256, 'Deflation_Interest_Rate': 'USD',
+        'Credit_Valuation_Adjustment': {
+            'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
+            'Stochastic_Hazard_Rates': 'No', 'Gradient': gradient}}
+    market = job['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Models'] = {'GBMAssetPriceModel.EUR': {'Vol': SIGMA, 'Drift': 0.0}}
+    market['Model Configuration'] = {'.ModelParams': {
+        'modeldefaults': {'FxRate': 'GBMAssetPriceModel'}, 'modelfilters': {}}}
+    market['Price Factors']['SurvivalProb.CPTY'] = {
+        'Recovery_Rate': 0.4,
+        'Curve': {'.Curve': {'meta': [], 'data': [[0.0, 0.0], [10.0, 0.4]]}}}
+    return job
+
+
+def test_a_knocked_deal_still_carries_its_pending_settlements(tmp_path):
+    """The dead branch is NOT zero: a knocked deal keeps the payoffs of fixings it survived whose
+    settlements have not landed - the pending head - through every reporting row between the
+    knock and the last landing. Only a gradient run ever reads those cells, through the latch
+    registration's counterfactual branches.
+
+    The DISCRIMINATOR is the `ACCUMULATOR_LATCH` organ: the registration reconstructed at the
+    booked flags against the engine's own reported rows. With the pending head carried the
+    residual is float roundoff while the head itself is material - the same statement measured
+    at 1.07% of the profile when the branch was a zero. The CVA delta against its CRN ladder
+    rides along at the ladder's own resolution, an economic sanity bound rather than the gate.
+    """
+    import io as _io
+    import logging as _logging
+    buf, root = _io.StringIO(), _logging.getLogger()
+    handler, old = _logging.StreamHandler(buf), root.level
+    root.addHandler(handler)
+    root.setLevel(_logging.DEBUG)
+    try:
+        out = _run(_cva_long_lag(gradient='Yes'), tmp_path, 'aad')
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(old)
+    organs = [ln for ln in buf.getvalue().splitlines() if 'ACCUMULATOR_LATCH' in ln]
+    assert organs, 'the latch reconstruction logged nothing at DEBUG'
+    parse = lambda ln, key: float(ln.split(key + '=')[1].split()[0])
+    recon = max(parse(ln, 'recon_max') for ln in organs)
+    head = max(parse(ln, 'head_max') for ln in organs)
+    scale = max(parse(ln, 'scale') for ln in organs)
+    # MEASURED: head_max 444 on a 1600 profile scale (28% - the head is not a nicety), and the
+    # residual 1.22e-4 = 7.6e-8 relative, float32 roundoff for this engine precision; the bound
+    # carries a 13x margin. MUTATION: the dead branch zeroed again reads 156 - the booked
+    # knocks' own heads - nearly 100,000x over the bound.
+    assert head > 1e-3 * scale, 'the document must carry a material pending head'
+    assert recon < 1e-6 * scale, (recon, head, scale)
+
+    g = out['Results']['grad_cva']['Gradient']
+    aad = float(g.loc[[i for i in g.index if 'FxRate.EUR' in str(i[0])][0]])
+    cva = float(out['Results']['cva'])
+    crn = []
+    for h in (0.002, 0.004):
+        up = float(_run(_cva_long_lag(spot=SPOT + h), tmp_path, f'u{h}')['Results']['cva'])
+        dn = float(_run(_cva_long_lag(spot=SPOT - h), tmp_path, f'd{h}')['Results']['cva'])
+        crn.append((up - dn) / (2.0 * h))
+    best = min(crn, key=lambda c: abs(aad - c))
+    assert abs(aad - best) / abs(best) < 5e-2, (aad, crn, cva)

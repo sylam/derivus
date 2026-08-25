@@ -2070,7 +2070,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     # a declared-dead deal has no flux to record - folding that in here rather than at the
     # registration keeps the simulation from building an alive branch nobody reads
     boundary_aad = getattr(shared, 'boundary_aad', False) and not factor_dep['Barrier_Hit']
-    b_gaps, b_crossed, b_obs_before, alive_blocks = [], [], [], []
+    b_gaps, b_crossed, b_obs_before, alive_blocks, b_pending = [], [], [], [], []
 
     # opt-in Heston-Nandi spot model; absent => byte-identical GBM path (see sim_spot_tarf)
     hn = 'HN_Params' in factor_dep
@@ -2152,6 +2152,22 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                 b_crossed.append(~survives(s_k).detach())
             b_obs_before.extend(rows_obs.tolist())
             alive_blocks.append(block_alive)
+            # the pending head, per row: fixings this row has OBSERVED whose settlements have
+            # not landed - what a DEAD path still carries. Blocks break on every schedule date,
+            # so the block's unsettled window [settle_index_local, rows_obs) is every row's
+            # window, and the block's own discounts are the right ones
+            for r_local in range(len(t_block)):
+                j_hi = int(rows_obs[r_local])
+                if j_hi > settle_index_local:
+                    intrinsic = (torch.stack([all_samples[j] for j in range(
+                        settle_index_local, j_hi)]) - strike) * callOrPut
+                    pay = (F.relu(intrinsic) * factor_dep['Notional1'] -
+                           F.relu(-intrinsic) * factor_dep['Notional2'])
+                    d_settle = discount_rates[r_local][:j_hi - settle_index_local].reshape(
+                        j_hi - settle_index_local, -1)
+                    b_pending.append((settle_index_local, (buy_sell * d_settle * pay).detach()))
+                else:
+                    b_pending.append(None)
         mtm_list.append(theo_price)
 
     mtm = torch.cat(mtm_list, dim=0)
@@ -2160,11 +2176,517 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     # benchmark grid - and there is no reporting row for a counterfactual to land on
     if boundary_aad and b_gaps and time_grid.report_index is not None:
         untriggered = buy_sell * torch.cat(alive_blocks, dim=0).detach()
-        shared.boundary_sets.append(utils.LatchedBoundarySet(
+        latch = utils.LatchedBoundarySet(
             gaps=b_gaps, fired=b_crossed, obs_before=np.array(b_obs_before),
             untriggered=untriggered, triggered=torch.zeros_like(untriggered),
+            pending=b_pending,
             to_mtm=deal_to_mtm_grid(time_grid, deal_data, fx_rep),
-            report_index=time_grid.report_index))
+            report_index=time_grid.report_index)
+        shared.boundary_sets.append(latch)
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            # the registration reconstructed at the BOOKED flags against the engine's own rows:
+            # the one number that says the counterfactual profiles - dead branch, pending head
+            # and all - describe the deal the pricer actually reported
+            with torch.no_grad():
+                prefix = [torch.zeros_like(b_crossed[0])]
+                for flag in b_crossed:
+                    prefix.append(prefix[-1] | flag)
+                recon = latch.select(prefix)
+                head = max((float(c.abs().max()) for _, c in filter(None, b_pending)),
+                           default=0.0)
+                logging.debug('ACCUMULATOR_LATCH recon_max=%.3g head_max=%.3g scale=%.3g',
+                              float((recon - mtm.detach()).abs().max()),
+                              head, float(mtm.detach().abs().max()))
+
+    return mtm
+
+
+def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
+    """The bank-exercisable Strip/Rolling FX extendable forward.
+
+    K1 applies to all guaranteed fixings through Extension_Date inclusive; K2 to every fixing an
+    extension creates. On a decision date the current fixing is already in force: its cashflow is
+    valued first, then the bank extends or the deal terminates permanently. The reporting side and
+    the deciding side are the same book, so `forward_sign` orients both the payoff and the
+    exercise rule - a sold deal is optimised exactly as a bought one, from its own side.
+
+    Future decisions are One-Step Survival: a backward one-dimensional Gauss-Hermite quadrature
+    builds the zero-continuation boundary H_j per rolling decision (for the strip the single
+    boundary is closed-form, K2*B/A), and the forward pass draws only the continuing branch,
+    weighting it by the analytic continuation probability. Truncated draws happen ONLY at
+    decisions; between them cashflows are propagated as exact lognormal expectations. The
+    boundary is detached: by value matching C_j(H_j) = 0, the first-order moving-boundary term
+    vanishes (envelope argument).
+
+    Scope: GBM off the implied surface, the smile frozen at K2 moneyness for transition
+    variances. Heston-Nandi would make the continuation state two-dimensional and is deliberately
+    not approximated. Reconstructed outer-grid decisions register a `LatchedBoundarySet` carrying
+    their flux: the alive branch is the facts-only world, the dead branch the survived-weighted
+    pending head - both derived from the same `value = fixed + state * live` row arithmetic the
+    forward reports, which is what the `EXTENDABLE_LATCH` organ states.
+    """
+    factor_dep = deal_data.Factor_dep
+    deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
+    daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
+
+    k1 = factor_dep['Strike_Price']
+    k2 = factor_dep['Extension_Strike']
+    notional = factor_dep['Notional']
+    forward_sign = factor_dep['Buy_Sell'] * factor_dep['Option_Type']
+    style = factor_dep['Extension_Style']
+    extension_index = int(factor_dep['Extension_Index'])
+    decision_indices = [int(x) for x in factor_dep['Decision_Indices']]
+    decision_set = set(decision_indices)
+    decision_codes = factor_dep['Decision_Codes']
+    fixing_days = factor_dep['Fixing_Days']
+    settlement_days = factor_dep['Settlement']
+    n_fix = len(fixing_days)
+    eps = torch.finfo(shared.one.dtype).eps
+
+    # observed fixings, one-to-one with the schedule: a historical print, or the scenario spot at
+    # a fixing row the outer grid has reached; None while the fixing is still in the future
+    fx_samples = factor_dep['Price_Fixings']
+    max_mtm = deal_time[:, utils.TIME_GRID_MTM].max()
+    sim_mask = ((fx_samples.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
+                (fx_samples.schedule[:, utils.RESET_INDEX_Reset_Day] <= max_mtm))
+    sim_schedule = fx_samples.schedule[sim_mask]
+    next_samples = utils.calc_fx_cross(
+        factor_dep['Underlying_Currency'][0], factor_dep['Currency'][0],
+        sim_schedule[:, :utils.RESET_INDEX_Scenario + 1], shared) if len(sim_schedule) else []
+
+    observed_fixings = []
+    sim_ptr = 0
+    for row in fx_samples.schedule:
+        observed = None
+        if row[utils.RESET_INDEX_Value]:
+            observed = shared.one.new_full((shared.simulation_batch,),
+                                           float(row[utils.RESET_INDEX_Value]))
+        elif (row[utils.RESET_INDEX_Scenario] > -1 and
+              row[utils.RESET_INDEX_Reset_Day] <= max_mtm):
+            observed = next_samples[sim_ptr]
+            sim_ptr += 1
+        observed_fixings.append(observed)
+
+    mtm_days = deal_time[:, utils.TIME_GRID_MTM].astype(np.int64)
+    row_by_fixing = {}
+    for i, d in enumerate(fixing_days):
+        rows = np.flatnonzero(mtm_days == d)
+        if rows.size:
+            row_by_fixing[i] = int(rows[0])
+
+    grid_size = max(int(factor_dep['Boundary_Grid_Size']), 33)
+    if grid_size % 2 == 0:
+        grid_size += 1
+    quadrature = max(int(factor_dep['Boundary_Quadrature']), 8)
+    boundary_chunk = max(int(factor_dep['Boundary_Batch_Chunk']), 1)
+    std_width = factor_dep['Boundary_Std_Width']
+    min_log_width = factor_dep['Boundary_Min_Log_Width']
+    gh_x_np, gh_w_np = np.polynomial.hermite.hermgauss(quadrature)
+    gh_z = torch.tensor(np.sqrt(2.0) * gh_x_np, dtype=shared.one.dtype, device=shared.one.device)
+    gh_w = torch.tensor(gh_w_np / np.sqrt(np.pi), dtype=shared.one.dtype, device=shared.one.device)
+    grid_u = torch.linspace(-1.0, 1.0, grid_size, dtype=shared.one.dtype, device=shared.one.device)
+
+    logging.debug('EXTENDABLE %s style=%s fixings=%d decisions=%d known=%d extension=%d',
+                  deal_data.Instrument.field.get('Reference'), style, n_fix,
+                  len(decision_indices), int((decision_codes >= 0).sum()), extension_index)
+
+    def market_inputs(row_index, first_index):
+        """Frozen-curve/frozen-surface GBM inputs from one MTM row to schedule[first_index:]."""
+        if first_index >= n_fix:
+            return None
+        t_row = deal_time[row_index:row_index + 1]
+        mtm_day = int(t_row[0, utils.TIME_GRID_MTM])
+        ids = np.arange(first_index, n_fix, dtype=np.int64)
+        fix_days = np.maximum(fixing_days[ids] - mtm_day, 0).reshape(1, -1)
+        set_days = (settlement_days[ids] - mtm_day).reshape(1, -1)
+        discount_row = utils.calc_time_grid_curve_rate(factor_dep['Discount'], t_row, shared)
+        carry = utils.calc_fx_drift(
+            factor_dep['Underlying_Currency'], factor_dep['Currency'],
+            fix_days, t_row, shared, multiply_by_time=False)[0]
+        full_np = daycount_fn(fix_days)[0]
+        full = carry.new(full_np).reshape(-1, 1)
+        log_fwd = carry * full
+        s = spot[row_index]
+        forward = s.unsqueeze(0) * torch.exp(log_fwd)
+        moneyness = k2 / forward if factor_dep['Invert_Moneyness'] else forward / k2
+        vols = []
+        for mon, tau in zip(moneyness, full_np):
+            if float(tau) <= 0.0:
+                vols.append(torch.zeros_like(s))
+            else:
+                vols.append(utils.calc_time_grid_vol_rate(
+                    factor_dep['Volatility'], mon.reshape(1, -1), np.array([tau]),
+                    shared).reshape(-1))
+        vols = torch.stack(vols)
+        total_var = (vols * vols * full).clamp(min=0.0)
+        if len(total_var) > 1 and float((total_var[1:] - total_var[:-1]).min()) < -1e-10:
+            # every fixing-to-fixing transition variance is a difference of these rows; a
+            # materially decreasing total variance would be silently clamped into a degenerate
+            # transition whose survival probability saturates - refuse the surface instead
+            raise ValueError('total variance decreases across extendable-forward fixings')
+        return {
+            'first': first_index,
+            'spot': s,
+            'log_fwd': log_fwd,
+            'total_var': total_var,
+            'd_fix': utils.calc_discount_rate(discount_row, fix_days, shared)[0],
+            'd_settle': utils.calc_discount_rate(discount_row, set_days, shared)[0],
+        }
+
+    def interp_batch(x_grid, y_grid, x):
+        """Batched linear interpolation with linear extrapolation. x_grid/y_grid: [B,G]."""
+        B, G = x_grid.shape
+        x_flat = x.reshape(B, -1)
+        idx = torch.searchsorted(x_grid.contiguous(), x_flat.contiguous(), right=True).clamp(1, G - 1)
+        x0 = torch.gather(x_grid, 1, idx - 1)
+        x1 = torch.gather(x_grid, 1, idx)
+        y0 = torch.gather(y_grid, 1, idx - 1)
+        y1 = torch.gather(y_grid, 1, idx)
+        w = (x_flat - x0) / (x1 - x0).clamp(min=eps)
+        return (y0 + w * (y1 - y0)).reshape_as(x)
+
+    def root_from_continuation(x_grid, continuation):
+        # forward_sign makes the continuation increasing for both deal directions; cummax only
+        # removes quadrature/interpolation ripples for LOCATING the zero - the unmodified
+        # continuation is what the recursion keeps
+        monotone = torch.cummax(continuation * forward_sign, dim=1).values
+        count = (monotone <= 0.0).sum(dim=1)
+        gather = count.clamp(1, x_grid.shape[1] - 1).reshape(-1, 1)
+        x0 = torch.gather(x_grid, 1, gather - 1).squeeze(1)
+        x1 = torch.gather(x_grid, 1, gather).squeeze(1)
+        y0 = torch.gather(monotone, 1, gather - 1).squeeze(1)
+        y1 = torch.gather(monotone, 1, gather).squeeze(1)
+        root = x0 - y0 * (x1 - x0) / (y1 - y0).clamp(min=eps)
+        root = torch.where(count == 0, x_grid[:, 0] * 0.5, root)
+        root = torch.where(count >= x_grid.shape[1], x_grid[:, -1] * 2.0, root)
+        return root
+
+    boundary_cache = {}
+
+    @torch.no_grad()
+    def extension_boundaries(row_index, first_decision):
+        """{global decision index: spot boundary} under the market state at row_index."""
+        if first_decision is None or first_decision > n_fix - 2:
+            return {}
+        cache_key = (int(row_index), int(first_decision))
+        if cache_key in boundary_cache:
+            return boundary_cache[cache_key]
+
+        data = market_inputs(row_index, first_decision)
+        if data is None:
+            return {}
+        log_fwd, total_var = data['log_fwd'], data['total_var']
+        d_fix, d_settle = data['d_fix'], data['d_settle']
+        first = data['first']
+
+        if style == 'strip':
+            # one exercise date and a LINEAR continuation (a strip of K2 forwards), so the
+            # zero-value boundary is closed-form
+            m = extension_index - first
+            future = slice(m + 1, None)
+            rel_pay = d_settle[future] / d_fix[m]
+            growth = torch.exp(log_fwd[future] - log_fwd[m])
+            A = torch.sum(rel_pay * growth, dim=0)
+            B = torch.sum(rel_pay, dim=0)
+            result = {extension_index: (k2 * B / A.clamp(min=eps)).detach()}
+            boundary_cache[cache_key] = result
+            return result
+
+        # rolling: C_j(s) = PV at f_j of the next K2 fixing plus the option to continue again,
+        # by backward Gauss-Hermite recursion on a per-scenario spot grid. Chunked: the
+        # [batch, grid, quadrature] temporary is otherwise too large for XVA batches.
+        B_total = log_fwd.shape[1]
+        pieces = {j: [] for j in range(first_decision, n_fix - 1)}
+        final_local = n_fix - 1 - first
+
+        for lo in range(0, B_total, boundary_chunk):
+            hi = min(lo + boundary_chunk, B_total)
+            lf, tv = log_fwd[:, lo:hi], total_var[:, lo:hi]
+            df, ds = d_fix[:, lo:hi], d_settle[:, lo:hi]
+
+            rem_var = (tv[final_local] - tv[0]).clamp(min=eps).reshape(-1)
+            half_width = torch.maximum(std_width * torch.sqrt(rem_var),
+                                       rem_var.new_full(rem_var.shape, min_log_width))
+            x_grid = torch.exp(half_width.reshape(-1, 1) * grid_u.reshape(1, -1))
+            s_grid = k2 * x_grid
+            continuation_values = {}
+
+            for j in range(n_fix - 2, first_decision - 1, -1):
+                a = j - first
+                k = a + 1
+                log_inc = (lf[k] - lf[a]).reshape(-1)
+                var_inc = (tv[k] - tv[a]).clamp(min=eps).reshape(-1)
+                d_pay = (ds[k] / df[a]).reshape(-1)
+                d_cont = (df[k] / df[a]).reshape(-1)
+                s_next = s_grid.unsqueeze(-1) * torch.exp(
+                    (log_inc - 0.5 * var_inc).reshape(-1, 1, 1) +
+                    torch.sqrt(var_inc).reshape(-1, 1, 1) * gh_z.reshape(1, 1, -1))
+                value = d_pay.reshape(-1, 1, 1) * forward_sign * notional * (s_next - k2)
+                if j + 1 <= n_fix - 2:
+                    c_next = interp_batch(x_grid, continuation_values[j + 1], s_next / k2)
+                    value = value + d_cont.reshape(-1, 1, 1) * F.relu(c_next)
+                c_j = torch.sum(value * gh_w.reshape(1, 1, -1), dim=-1)
+                continuation_values[j] = c_j
+                pieces[j].append((k2 * root_from_continuation(x_grid, c_j)).detach())
+
+        result = {j: torch.cat(parts, dim=0) for j, parts in pieces.items()}
+        boundary_cache[cache_key] = result
+        return result
+
+    # the outer-path lifecycle, built once: a supplied historical Yes/No is authoritative,
+    # otherwise the decision is reconstructed at the fixing row from that scenario's own spot
+    # and boundary. `fact` twins `alive` counting only the CODE-supplied decisions - the world
+    # where every RECONSTRUCTED decision extends, which is the latch registration's alive branch
+    boundary_aad = getattr(shared, 'boundary_aad', False)
+    alive = shared.one.new_ones(shared.simulation_batch)
+    fact = alive
+    alive_enter, alive_after, fact_enter, fact_after, b_latch = [], [], [], [], []
+    for j in range(n_fix):
+        alive_enter.append(alive)
+        fact_enter.append(fact)
+        # a decision the outer grid never reaches is never read - no row's `current_alive` looks
+        # past its own day, and the OSS pass owns every future decision. A state already dead on
+        # every path stays dead without being reconstructed: a decision the termination made moot
+        # was never taken and has no boundary to build
+        if j in decision_set and fixing_days[j] <= max_mtm and bool((alive != 0).any()):
+            code = int(decision_codes[j])
+            if code >= 0:
+                extend = alive.new_full(alive.shape, bool(code), dtype=torch.bool)
+                fact = fact * extend.to(fact.dtype)
+            else:
+                row_index = row_by_fixing.get(j)
+                if row_index is None:
+                    raise ValueError('Extension fixing {} is missing from the MTM grid'.format(j))
+                H = extension_boundaries(row_index, j).get(j)
+                if H is None:
+                    raise ValueError('Unable to construct extension boundary at fixing {}'.format(j))
+                s_fix = observed_fixings[j]
+                if s_fix is None:
+                    s_fix = spot[row_index]
+                extend = (s_fix > H) if forward_sign > 0 else (s_fix < H)
+                if boundary_aad:
+                    # gap > 0 means the latch FIRED - the deal terminated; the graph rides the
+                    # scenario's own spot, the boundary is detached (envelope argument)
+                    gap = torch.log(H / s_fix) if forward_sign > 0 else torch.log(s_fix / H)
+                    b_latch.append((j, gap, (~extend).detach()))
+            alive = alive * extend.to(alive.dtype)
+        alive_after.append(alive)
+        fact_after.append(fact)
+
+    sobol = False
+    if shared.simulation_batch > 16:
+        sobol = True
+        shared.reset_qrg()
+
+    def oss_extend(prev_spot, log_inc, var_inc, barrier, u):
+        """Continuation probability and the extended-branch draw at one decision."""
+        var_inc = var_inc.reshape(-1).clamp(min=eps)
+        sd = torch.sqrt(var_inc).reshape(-1, 1)
+        drift = (log_inc.reshape(-1) - 0.5 * var_inc).reshape(-1, 1)
+        z_bound = (torch.log(barrier.reshape(-1, 1) / prev_spot) - drift) / sd
+        p, Z = oss_truncated_draw(u, z_bound, survive_below=forward_sign < 0)
+        return p, prev_spot * torch.exp(drift + sd * Z)
+
+    def state_at(after, mtm_day):
+        past = [j for j in decision_indices if fixing_days[j] <= mtm_day]
+        return after[past[-1]] if past else shared.one.new_ones(shared.simulation_batch)
+
+    # registered decisions in day order; a fixing's pending bucket is the count of them strictly
+    # before its own day, and a row's `obs_before` the count at or before the row's
+    reg_days = np.array([fixing_days[j] for j, _, _ in b_latch])
+    mtm_values, b_alive_rows, b_trig_rows, b_pending = [], [], [], []
+    for row_index, mtm_day in enumerate(mtm_days):
+        start_idx = int(np.searchsorted(settlement_days, mtm_day, side='left'))
+        if start_idx >= n_fix:
+            mtm_values.append(shared.one.new_zeros(shared.simulation_batch))
+            b_alive_rows.append(mtm_values[-1])
+            b_trig_rows.append(mtm_values[-1])
+            b_pending.append(None)
+            continue
+
+        data = market_inputs(row_index, start_idx)
+        first = data['first']
+        log_fwd, total_var = data['log_fwd'], data['total_var']
+        d_fix, d_settle = data['d_fix'], data['d_settle']
+        s0 = data['spot']
+        pos = lambda j: j - first
+        state_now = state_at(alive_after, mtm_day)
+        fact_now = state_at(fact_after, mtm_day)
+        # `live` is the STATE-FREE live part: value = fixed + state * live, and the latch
+        # registration's alive branch is the same arithmetic at the facts-only state
+        fixed = shared.one.new_zeros(shared.simulation_batch)
+        fixed_fact = shared.one.new_zeros(shared.simulation_batch)
+        trig_row = shared.one.new_zeros(shared.simulation_batch)
+        buckets = {}
+        live = shared.one.new_zeros(shared.simulation_batch)
+        settlement_cf = shared.one.new_zeros(shared.simulation_batch)
+
+        # fixed-but-unsettled cashflows survive a later decision not to extend: their alive state
+        # is the state ENTERING their fixing, never the current post-decision state
+        for j in range(start_idx, n_fix):
+            if fixing_days[j] > mtm_day:
+                break
+            observed = observed_fixings[j]
+            if observed is None:
+                if fixing_days[j] == mtm_day:
+                    observed = s0
+                elif not bool((alive_enter[j] != 0).any()):
+                    # terminated before this fixing on every path: nothing fixed, nothing owed -
+                    # a dead deal's unprinted dates are not missing data
+                    continue
+                else:
+                    raise ValueError('Missing observed extendable-forward fixing {}'.format(j))
+            strike_j = k1 if j <= extension_index else k2
+            cf = alive_enter[j] * forward_sign * notional * (observed - strike_j)
+            fixed = fixed + d_settle[pos(j)] * cf
+            if settlement_days[j] == mtm_day:
+                settlement_cf = settlement_cf + cf
+            if boundary_aad:
+                # the pending head, bucketed by how many REGISTERED decisions precede the fixing:
+                # bucket 0 is certain given the facts and lives on the triggered profile, later
+                # buckets are the survived-weighted slices of `pending`
+                c = (d_settle[pos(j)] * fact_enter[j] * forward_sign * notional *
+                     (observed - strike_j)).detach()
+                fixed_fact = fixed_fact + c
+                m = int(np.searchsorted(reg_days, fixing_days[j], side='left'))
+                if m == 0:
+                    trig_row = trig_row + c
+                else:
+                    buckets[m - 1] = buckets.get(m - 1, 0.0) + c
+
+        if (settlement_cf != 0).any():
+            cash_settle(shared, factor_dep['SettleCurrency'],
+                        deal_data.Time_dep.deal_time_grid[row_index], settlement_cf)
+
+        # future K1 fixings through the extension date are guaranteed and linear - valued
+        # analytically. The extension fixing itself belongs here; the decision only controls
+        # LATER K2 fixings
+        for j in range(max(start_idx, 0), extension_index + 1):
+            if fixing_days[j] <= mtm_day:
+                continue
+            p = pos(j)
+            expected_s = s0 * torch.exp(log_fwd[p])
+            live = live + d_settle[p] * forward_sign * notional * (expected_s - k1)
+
+        if style == 'strip':
+            if mtm_day < fixing_days[extension_index]:
+                H = extension_boundaries(row_index, extension_index)[extension_index]
+                m = pos(extension_index)
+                # market value at f_m of the whole K2 tail: C_m(S) = sign * N * (A * S - K2 * B)
+                tail = [pos(j) for j in range(extension_index + 1, n_fix)]
+                rel_pay = d_settle[tail] / d_fix[m]
+                growth = torch.exp(log_fwd[tail] - log_fwd[m])
+                A = torch.sum(rel_pay * growth, dim=0)
+                B = torch.sum(rel_pay, dim=0)
+                u = oss_uniforms(shared, 1, shared.MCMC_sims, sobol)[0]
+                prev = s0.reshape(-1, 1).expand(-1, u.shape[-1])
+                p_ext, s_ext = oss_extend(prev, log_fwd[m], total_var[m], H, u)
+                c_ext = forward_sign * notional * (A.reshape(-1, 1) * s_ext - k2 * B.reshape(-1, 1))
+                live = live + (d_fix[m].reshape(-1, 1) * p_ext * c_ext).mean(dim=1)
+            else:
+                # resolved: an exercised strip's remaining K2 fixings are ordinary forwards
+                for j in range(max(start_idx, extension_index + 1), n_fix):
+                    if fixing_days[j] <= mtm_day:
+                        continue
+                    p = pos(j)
+                    expected_s = s0 * torch.exp(log_fwd[p])
+                    live = live + d_settle[p] * forward_sign * notional * (expected_s - k2)
+
+        else:  # rolling
+            # a decision on the current fixing is resolved AT that fixing row; the next live
+            # fixing, if any, was already created by it
+            if mtm_day < fixing_days[extension_index]:
+                first_decision = extension_index
+            else:
+                future_decisions = [j for j in decision_indices if fixing_days[j] > mtm_day]
+                first_decision = future_decisions[0] if future_decisions else None
+
+            boundaries = extension_boundaries(row_index, first_decision) \
+                if first_decision is not None else {}
+            n_future = len([j for j in decision_indices if fixing_days[j] > mtm_day])
+            u_all = oss_uniforms(shared, n_future, shared.MCMC_sims, sobol) if n_future else None
+            u_ptr = 0
+            sims = 2 * shared.MCMC_sims
+            L = shared.one.new_ones((shared.simulation_batch, sims))
+            prev_spot = s0.reshape(-1, 1).expand(-1, sims)
+            prev_index = None
+
+            # before Extension_Date the first decision sits on a guaranteed K1 fixing: its K1
+            # cashflow was valued above, and only the continuation branch starts the K2 chain
+            if mtm_day < fixing_days[extension_index]:
+                j = extension_index
+                pj = pos(j)
+                p_ext, prev_spot = oss_extend(prev_spot, log_fwd[pj], total_var[pj],
+                                              boundaries[j], u_all[u_ptr])
+                u_ptr += 1
+                L = L * p_ext
+                prev_index = j
+                next_fixing = j + 1
+            else:
+                after = [j for j in range(extension_index + 1, n_fix) if fixing_days[j] > mtm_day]
+                next_fixing = after[0] if after else n_fix
+
+            P = shared.one.new_zeros((shared.simulation_batch, sims))
+            for j in range(next_fixing, n_fix):
+                pj = pos(j)
+                if prev_index is None:
+                    log_inc, var_inc = log_fwd[pj], total_var[pj]
+                else:
+                    pp = pos(prev_index)
+                    log_inc = log_fwd[pj] - log_fwd[pp]
+                    var_inc = (total_var[pj] - total_var[pp]).clamp(min=eps)
+
+                expected_s = prev_spot * torch.exp(log_inc.reshape(-1, 1))
+                P = P + d_settle[pj].reshape(-1, 1) * L * forward_sign * notional * (expected_s - k2)
+
+                if j in decision_set:
+                    p_ext, prev_spot = oss_extend(prev_spot, log_inc, var_inc,
+                                                  boundaries[j], u_all[u_ptr])
+                    u_ptr += 1
+                    L = L * p_ext
+                    # prev_index tracks where prev_spot LIVES - the last drawn decision - so a
+                    # non-decision fixing must not advance it: its expectation was taken off the
+                    # decision spot, and the next increment starts there too
+                    prev_index = j
+
+            live = live + P.mean(dim=1)
+
+        value = fixed + state_now * live
+        mtm_values.append(value)
+        if boundary_aad:
+            b_alive_rows.append((fixed_fact + fact_now * live).detach())
+            b_trig_rows.append(trig_row)
+            if buckets:
+                j0 = min(buckets)
+                width = max(buckets) - j0 + 1
+                b_pending.append((j0, torch.stack(
+                    [buckets.get(j0 + t, torch.zeros_like(trig_row)) for t in range(width)])))
+            else:
+                b_pending.append(None)
+
+    mtm = torch.stack(mtm_values)
+
+    # the latch registration: the reconstructed decisions' whole reach - the alive branch is the
+    # facts-only world, the dead branch the survived-weighted pending head on `triggered`
+    if boundary_aad and b_latch and time_grid.report_index is not None:
+        latch = utils.LatchedBoundarySet(
+            gaps=[g for _, g, _ in b_latch], fired=[f for _, _, f in b_latch],
+            obs_before=np.searchsorted(reg_days, mtm_days, side='right'),
+            untriggered=torch.stack(b_alive_rows),
+            triggered=torch.stack(b_trig_rows).detach(),
+            pending=b_pending,
+            to_mtm=deal_to_mtm_grid(time_grid, deal_data, fx_rep),
+            report_index=time_grid.report_index)
+        shared.boundary_sets.append(latch)
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            with torch.no_grad():
+                prefix = [torch.zeros_like(latch.fired[0])]
+                for flag in latch.fired:
+                    prefix.append(prefix[-1] | flag)
+                recon = latch.select(prefix)
+                logging.debug('EXTENDABLE_LATCH decisions=%d recon_max=%.3g scale=%.3g',
+                              len(b_latch), float((recon - mtm.detach()).abs().max()),
+                              float(mtm.detach().abs().max()))
 
     return mtm
 
@@ -2782,7 +3304,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             fired.append(torch.where(
                                 dead, 0.0, (P + fx * L * coup * D[j]).mean(axis=1)).detach())
                             # the payment the trigger makes IF it fires - UNMASKED: which worlds
-                            # reach it is the latch's question (`latched_cash`), and a scenario
+                            # reach it is the latch's question (`cash_events`), and a scenario
                             # dead as booked is alive in the world where an earlier trigger is
                             # forced off
                             cash_on.append((fx * coup * D[j]).squeeze(1).detach())
@@ -3147,15 +3669,14 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         # benchmark grid)
         gaps, flags, own_rows, on_v, off_v = zip(*b_latch)
         untriggered = (nominal * torch.cat(b_alive, dim=0)).detach()
-        latch_set = utils.LatchedBoundarySet(
+        shared.boundary_sets.append(utils.LatchedBoundarySet(
             gaps=list(gaps), fired=list(flags), obs_before=np.array(b_obs),
             untriggered=untriggered, triggered=torch.zeros_like(untriggered),
             own_row=[(r, nominal * a, nominal * b)
                      for r, a, b in zip(own_rows, on_v, off_v)],
+            cash_events=b_cash,
             to_mtm=deal_to_mtm_grid(time_grid, deal_data, fx_rep),
-            report_index=time_grid.report_index)
-        latch_set.cash = latch_set.latched_cash(b_cash)
-        shared.boundary_sets.append(latch_set)
+            report_index=time_grid.report_index))
 
     return mtm
 
