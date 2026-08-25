@@ -1445,19 +1445,25 @@ class NettingCollateralSet(Deal):
                 b_fx, b_surv = fx_base.detach(), St_T.detach() if surv else None
                 b_pad = time_grid.report_index.size - net_accum.shape[0]
 
-                def replay_net_mtm(balance_path, vte=None, base_i=base_i, delta_T=delta_T):
-                    """Balance path (and optionally a different Vte) -> the net mtm as reported.
+                def replay_net_mtm(balance_path, vte=None, c_delta=None, base_i=base_i,
+                                   delta_T=delta_T):
+                    """Balance path (and optionally a different Vte / settled-cash delta) -> the
+                    net mtm as reported.
 
                     `vte` defaults to what was reported, which is the margin-call case: only the
                     balance varies. A pricer counterfactual moves the GROSS as well, and the gross
-                    reaches the net through exactly this one term."""
+                    reaches the net through exactly this one term; a counterfactual that flips a
+                    PAYMENT also moves the settled cash, which reaches it through `c_delta` beside
+                    the captured `C_ts_te`."""
                     running = balance_path[base_i]
                     step = np.zeros_like(delta_T)
                     for i in range(delta_T.max() if delta_T.size else 0):
                         step[delta_T > i] = i + 1
                         running = torch.min(running, balance_path[base_i + step])
                     running = Fn.pad(running, [0, 0, 0, 1])
-                    out = ((b_Vte if vte is None else vte) + b_C - running * b_Ste) / b_fx
+                    out = ((b_Vte if vte is None else vte) +
+                           (b_C if c_delta is None else b_C + c_delta) -
+                           running * b_Ste) / b_fx
                     if b_surv is not None:
                         out = out * b_surv
                     return Fn.pad(out, [0, 0, 0, b_pad]) if b_pad else out
@@ -1480,8 +1486,34 @@ class NettingCollateralSet(Deal):
                     factor_dep['Independent_Amount'] * fx_agreement).detach()
                 g_Vt, g_B0, g_Te = Vt.detach(), Bt[0].detach(), factor_dep['Te']
                 g_mask = factor_dep['call_mask'].astype(bool)
+                # the C_ts_te window edges per the declared settlement-risk convention;
+                # Exclude_Paid_Today shifts the cumsum from strict-before to inclusive
+                g_ept = self.options['Exclude_Paid_Today']
+                g_rec_lo = factor_dep['Tl'] if self.options[
+                    'Cash_Settlement_Risk'] == utils.CASH_SETTLEMENT_Paid_Only else factor_dep['Ts']
+                g_pay_lo = factor_dep['Ts'] if self.options[
+                    'Cash_Settlement_Risk'] == utils.CASH_SETTLEMENT_Received_Only else factor_dep['Tl']
 
-                def net_from_gross(delta, base_i=base_i, delta_T=delta_T):
+                def cash_to_C(t, branch, booked):
+                    """A flipped payment at mtm row `t` as its C_ts_te delta (and Vte delta).
+
+                    The ledger is relu-split into received/paid before cumulating, so the exact
+                    delta needs the booked amount beside the branch - the split of a difference is
+                    not the difference of the splits."""
+                    rec_d = torch.relu(branch) - torch.relu(booked)
+                    pay_d = torch.relu(-branch) - torch.relu(-booked)
+                    if g_ept:
+                        rec, pay = (g_rec_lo < t) & (t <= g_Te), (g_pay_lo < t) & (t <= g_Te)
+                        today = branch.new((g_Te == t).astype('f8')).reshape(-1, 1)
+                        vte_d = -today * (rec_d - pay_d)
+                    else:
+                        rec, pay = (g_rec_lo <= t) & (t < g_Te), (g_pay_lo <= t) & (t < g_Te)
+                        vte_d = None
+                    c_d = (branch.new(rec.astype('f8')).reshape(-1, 1) * rec_d -
+                           branch.new(pay.astype('f8')).reshape(-1, 1) * pay_d)
+                    return c_d, vte_d
+
+                def net_from_gross(delta, cash=None, base_i=base_i, delta_T=delta_T):
                     """Push a GROSS-mtm delta all the way to the net, collateral response included.
 
                     The delta arrives on the MTM grid; this set runs on its own local prefix of it.
@@ -1501,7 +1533,13 @@ class NettingCollateralSet(Deal):
                         g_B0, req, req - min_received * g_fxSt, min_posted * g_fxSt + req, g_mask)
                     # Vte from the REPORTED b_Vte, never re-indexed off g_Vt (see docstring). g_fx
                     # is already the Te-grid fx, so only the delta takes the Te index here.
-                    return replay_net_mtm(balance, vte=b_Vte + delta[g_Te] * g_fx)
+                    vte = b_Vte + delta[g_Te] * g_fx
+                    c_d = None
+                    if cash is not None:
+                        c_d, vte_d = cash_to_C(*cash)
+                        if vte_d is not None:
+                            vte = vte + vte_d
+                    return replay_net_mtm(balance, vte=vte, c_delta=c_d)
 
                 # Published, not applied. `resolve_structure` hands it to the registrations made
                 # beneath THIS netting set and drops it again - a slot that survived the call

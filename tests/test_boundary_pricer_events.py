@@ -504,7 +504,7 @@ def test_autocall_coupon_digital_gradient_matches_bump_and_reprice():
     """The aligned coupon digital in pv_MC_AutoCallSwap. An autocall observed on its coupon date
     really has redeemed, so the jump is product economics and must NOT be smoothed away - what has
     to reach the tape is the flux of scenarios across the threshold, in BOTH halves of its reach:
-    the fired/survived fork on the decision row (RowBoundarySet) and the carried knock-out latch
+    the own-row fired/survived override and the carried knock-out latch
     killing every later row (LatchedBoundarySet).
 
     MEASURED, 65536 paths: AAD +2.29385e-06 against a CRN best of +2.2925346e-06, 0.06% apart on
@@ -517,11 +517,11 @@ def test_autocall_coupon_digital_gradient_matches_bump_and_reprice():
     beside 0.06% at 7e-3, at 64 batches). Same reasoning that moved every live gate to the large
     window in the first place, one octave further.
 
-    MUTATION, each half of the registration suppressed alone, same 64 batches (the oracle does
-    not move, so both die on the AGREEMENT clause at any window):
-      latched suppressed: +1.5035267e-05, 84% disagreement - the tape keeps paying rows the
-                          latch killed, reproducing the pre-carry Row-only reading (+1.5043e-05)
-      row suppressed:     -1.7815224e-06 - the sign FLIPS without the own-row digital flux
+    MUTATION, each half of the one-per-decision registration suppressed alone, same 64 batches
+    (the oracle does not move, so both die on the AGREEMENT clause at any window):
+      latch neutralised:   +1.5035267e-05, 84% disagreement - the tape keeps paying rows the
+                           latch killed, reproducing the pre-carry reading (+1.5043e-05)
+      own-row suppressed:  -1.7815224e-06 - the sign FLIPS without the decision row's flux
     An aligned coupon digital is nothing BUT flux."""
     kw = dict(batch=1024, mcmc=256, batches=64)
     aad = _run(AUTOCALL, gradient=True, **kw)[2]

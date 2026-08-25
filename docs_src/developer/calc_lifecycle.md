@@ -339,16 +339,18 @@ why one class with a mode flag would be the wrong shape:
 
 | subclass | reach | carries |
 | --- | --- | --- |
-| `LatchedBoundarySet` | read by every row from the decision onward (barrier, swaption) | two whole-profile branches, shared across decisions |
-| `RowBoundarySet` | lands on its own row and no other (autocall coupon) | a pair of `(B,)` values per decision |
+| `LatchedBoundarySet` | read by every row from the decision onward (barrier, swaption, autocall) | two whole-profile branches shared across decisions; optionally, per decision, an own-row fired/survived override and a settled-cash ledger triple |
 | `InnerBoundarySet` | a decision inside a pricer's inner MC | the objective's *derivative*, not a difference — one inner path moves the row by `1/n`, a jump the value never takes |
 
-One decision can register **two** sets, one per half of its reach. The autocall's observed coupon
-forks fired-against-survived on its own row — a hard indicator, the `Row` shape — and stamps a
-knock-out latch every later block reads, so the same decision's jump there is the alive
-continuation against zero — the `Latched` shape, its `untriggered` branch the simulation run
-alive. The two share their gaps, do not overlap, and sum to the whole jump because the estimator
-is linear in the jump.
+One decision registers **one** counterfactual carrying its whole reach. The autocall's observed
+coupon forks fired-against-survived on its own row — a hard indicator neither whole-profile
+branch expresses, hence the own-row override — stamps a knock-out latch every later block reads
+(alive continuation against zero, the `untriggered` branch being the simulation run alive), and
+settles a payment a collateralised exposure reads through `C_ts_te`, hence the ledger triple
+`net_from_gross` folds into the settlement-risk windows. Splitting one decision across two
+registrations is exact only while the objective responds linearly — a collateralised net sits at
+the relu kink by construction, where the sum of two partial counterfactuals scores differently
+from the counterfactual of the sum.
 
 !!! note "Under a recompute node, a `gap` is an OUTPUT — when the simulation is what decided it"
     `stochastic_boundary_correction` needs `gap` to carry a graph and an untaped forward pass has

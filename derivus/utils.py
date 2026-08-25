@@ -272,10 +272,11 @@ class BoundarySet:
     the FLUX: as a factor moves, scenarios cross the trigger, and the indicator recording it has
     zero derivative almost everywhere.
 
-    Subclasses differ in ONE thing: how far a decision reaches. A latched one is read by every
-    later row; a row-local one lands on its own row and no other. That is the whole reason there
-    are two, and it is why they cannot share a field layout - the latch shares two whole-profile
-    branches across all its decisions, while a row-local one carries a pair of values per decision.
+    Subclasses differ in ONE thing: how far a decision reaches - every row from the decision
+    onward, or inside a pricer's own inner Monte Carlo. A decision must register as ONE
+    counterfactual carrying its whole reach: an objective with a kink (a collateralised net sits
+    at the relu by construction) scores the sum of two partial counterfactuals differently from
+    the counterfactual of the sum.
 
     What they DO share is the contract this base declares: `branch_deltas` yields, per decision,
     the gap (graph retained, signed so gap > 0 means the trigger FIRED) and the deal-mtm delta with
@@ -307,6 +308,10 @@ class BoundarySet:
     # measured from. Cached on first use rather than precomputed: it costs one balance scan per
     # registration and needs no assumption about a delta's shape.
     net_at_zero = None
+    # Per decision, the payment the decision moves: None, or entries `(time_index, on, off,
+    # booked)` - the mtm row plus three detached (B,) reporting-currency ledger amounts. The
+    # collateral chain reads settled cash through C_ts_te; the additive route ignores this.
+    cash = None
     # Who registered it, stamped by `stamp_boundary_sets` off the structure walk - the pricers do
     # not name themselves. A slot rather than a field because the subclasses declare non-default
     # fields of their own, which cannot follow a defaulted one. Read by the second-derivative
@@ -316,20 +321,21 @@ class BoundarySet:
     def branch_deltas(self):
         raise NotImplementedError
 
-    def portfolio_delta(self, delta):
+    def portfolio_delta(self, delta, cash=None):
         """This registration's deal-mtm delta as a change to the reported PORTFOLIO.
 
         The chain returns this SET's net LEVEL while the objective consumes the root sum over every
         netting set, so what the portfolio gains is the chain at this delta LESS the chain at zero -
         true whatever the set's own arithmetic is, rather than depending on identifying which
         tensor is its baseline. An additive set publishes no chain and only has to reach the report
-        grid.
+        grid - and reads no ledger, so `cash` (a `(time_index, branch, booked)` ledger triple for
+        the branch being scored) reaches only the collateral chain.
         """
         if self.net_from_gross is None:
             return delta[self.report_index]
         if self.net_at_zero is None:
             self.net_at_zero = self.net_from_gross(torch.zeros_like(delta))
-        return self.net_from_gross(delta) - self.net_at_zero
+        return self.net_from_gross(delta, cash) - self.net_at_zero
 
     def objective_jumps(self, score):
         """Per decision, the gap and the change in the OBJECTIVE that decision produces.
@@ -348,9 +354,13 @@ class BoundarySet:
         there would hand the caller a gap whose `gap - gap.detach()` carries no graph, and the
         correction would silently become the zero it is already worth in the forward pass.
         """
-        for gap, on, off in self.branch_deltas():
+        for k, (gap, on, off) in enumerate(self.branch_deltas()):
+            entry = self.cash[k] if self.cash else None
             with torch.no_grad():
-                jump = score(self.portfolio_delta(on)) - score(self.portfolio_delta(off))
+                jump = (score(self.portfolio_delta(
+                            on, entry and (entry[0], entry[1], entry[3]))) -
+                        score(self.portfolio_delta(
+                            off, entry and (entry[0], entry[2], entry[3]))))
             yield gap, jump
 
 
@@ -382,6 +392,11 @@ class LatchedBoundarySet(BoundarySet):
     obs_before: object              # (T,) int: decisions strictly before each row, PRICER grid
     untriggered: object             # (T, B) detached, PRICER grid: value while it has not fired
     triggered: object               # (T, B) detached, PRICER grid: value once it has
+    # A decision whose OWN row also forks (an autocall's observed coupon - a hard indicator
+    # neither whole-profile branch expresses): None, or per-decision
+    # `(pricer_row, value_if_fired, value_if_not)`, detached. Rides THIS set, not a second
+    # registration - one decision must be ONE counterfactual (see the class docstring).
+    own_row: list = None
 
     def branch_deltas(self):
         """Per decision, the deal-mtm delta with that decision forced ON and forced OFF.
@@ -419,52 +434,14 @@ class LatchedBoundarySet(BoundarySet):
                     run_off = run_off | (torch.zeros_like(flag) if j == k else flag)
                     on.append(run_on)
                     off.append(run_off)
-                deltas = tuple(
-                    self.to_mtm(torch.where(torch.stack(state)[self.obs_before],
-                                            self.triggered, self.untriggered)) - reported
-                    for state in (on, off))
-            yield (gap,) + deltas
-
-
-@dataclass
-class RowBoundarySet(BoundarySet):
-    """Triggers a pricer read off the REPORTING ROW's own state, and both values they choose between.
-
-    An autocall observed on its coupon date is decided by the scenario spot itself - not by an
-    inner draw - so the trigger fires per scenario and the row's own inner Monte Carlo prices the
-    remainder of the deal from there. This set carries the ROW-LOCAL half of that decision's reach:
-    the fired/survived fork at the decision row, which no smoothing touches. The knock-out latch
-    the decision stamps survives into every later block - an autocalled path is worth nothing after
-    - and THAT half is a `LatchedBoundarySet` the pricer registers beside this one, its branches
-    the alive continuation against zero. The two share their gaps and do not overlap: Row lands on
-    the decision row, Latched strictly after it.
-
-    Both branches come out of ONE forward pass. Firing zeroes the survival weight, so every later
-    term of that row is zero and the fired branch is closed form; the surviving branch is the same
-    loop carried alongside on an untouched weight. The weight never feeds back into the spot, so
-    the two share every state advance and neither draws a random number - which is what keeps the
-    reported value where it was.
-    """
-    rows: list                      # per event, int: the PRICER-grid row the jump lands on
-    fired: list                     # per event, (B,) detached: that row's value had it fired
-    survived: list                  # per event, (B,) detached: ... had it not
-    reported: object                # (T, B) detached, PRICER grid: the value as reported
-
-    def branch_deltas(self):
-        """Per decision, the deal-mtm delta with the trigger forced ON and forced OFF.
-
-        The delta is built on the PRICER grid - one row, the rest zero - and mapped afterwards.
-        A row index means nothing on the MTM grid until that map has run: interpolation inserts
-        rows, so deal row i is mtm row i only until another deal contributes a date inside this
-        one's life. Mapping the DELTA rather than the row is also what spreads the jump correctly
-        over the two mtm rows an interpolated deal row sits between."""
-        for gap, row, on, off in zip(self.gaps, self.rows, self.fired, self.survived):
-            with torch.no_grad():
+                own = self.own_row[k] if self.own_row else None
                 deltas = []
-                for branch in (on, off):
-                    delta = torch.zeros_like(self.reported)
-                    delta[row] = branch - self.reported[row]
-                    deltas.append(self.to_mtm(delta))
+                for state, branch_val in ((on, own and own[1]), (off, own and own[2])):
+                    profile = torch.where(torch.stack(state)[self.obs_before],
+                                          self.triggered, self.untriggered)
+                    if own is not None:
+                        profile[own[0]] = branch_val
+                    deltas.append(self.to_mtm(profile) - reported)
             yield (gap,) + tuple(deltas)
 
 

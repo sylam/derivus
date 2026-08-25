@@ -304,9 +304,17 @@ def boundary_correction(shared, objective, reported_mtm, bandwidth):
     def score(delta):
         return objective(reported_mtm + delta)
 
-    corrections = [stochastic_boundary_correction(gap, jump, bandwidth)
-                   for bset in shared.boundary_sets
-                   for gap, jump in bset.objective_jumps(score)]
+    corrections = []
+    for bset in shared.boundary_sets:
+        for k, (gap, jump) in enumerate(bset.objective_jumps(score)):
+            corrections.append(stochastic_boundary_correction(gap, jump, bandwidth))
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                # the correction's forward value is zero by construction; the COEFFICIENT it
+                # multiplies into the gap's graph is the reading
+                density, weights = boundary_weights(gap, bandwidth)
+                logging.debug('BOUNDARY %s decision=%d coeff=%.6g',
+                              type(bset).__name__, k,
+                              float((density * weights * jump).sum()))
     return torch.stack(corrections).sum() if corrections else None
 
 
@@ -2557,13 +2565,14 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     returns it unchanged; the lagging-payment schedule case is open in roadmap.md.
 
     BOUNDARY AAD: the trigger's gap is decided on ``Sj`` INSIDE the simulation, so under the node it
-    is an OUTPUT whose cotangent carries the correction. The decision's reach registers as TWO sets:
-    the fired/survived fork on its own row (``RowBoundarySet`` - a hard indicator, nothing smooths
-    it) and the carried latch killing every later row (``LatchedBoundarySet``, alive against zero;
-    the alive branch costs nothing because the accumulators run alive and the latch masks the
-    exits). The two share their gaps, do not overlap, and sum to the whole jump. Only a STAMPED
-    decision (``tau == 0``) opens the latch; a re-observation of an old decision in a pending window
-    stays row-local.
+    is an OUTPUT whose cotangent carries the correction. Each STAMPED decision (``tau == 0``)
+    registers ONE ``LatchedBoundarySet`` entry carrying its whole reach: the carried latch killing
+    every later row (alive against zero - the alive branch costs nothing, since the accumulators
+    run alive and the latch masks the exits), the own-row override forking the decision row itself
+    (fired against survived, a hard indicator), and the ledger triple for the payment the decision
+    controls, which a collateralised exposure reads through ``C_ts_te``. One decision is ONE
+    counterfactual: an objective with a kink scores two partial counterfactuals differently from
+    their sum. A re-observation of an old decision in a pending window registers nothing.
     """
     def sim_autocall(S, isBarrierDate, isFixingDate, isFloatDate, floating, threshold, coupon, terminationDate):
         avg = 0.0
@@ -2625,8 +2634,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         from numpy and stays numpy on a block whose fixings have all been observed.
 
         Returns ``(mtm, settled, settle_rows, event_rows, terminationDate, alive) + gaps + fired +
-        survived`` - the marks, the by-products the caller performs once, then one gap and two detached
-        branch coefficients per decision (the gaps carry the correction's cotangent).
+        survived + cash_on`` - the marks, the by-products the caller performs once, then per
+        decision: a gap (carrying the correction's cotangent), two detached branch coefficients,
+        and the payment the trigger controls had it fired (the collateral chain's cash
+        counterfactual).
 
         ``terminationDate`` arrives as the latch a PRIOR block left (-1 alive, else the fixing index
         that killed the path), is stamped where a fixing is observed (``tau == 0``, off the scenario's
@@ -2648,7 +2659,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             *hn_params, H0 = hn_scalars
         # the by-products the caller performs once (see docstring)
         settled, settle_rows, event_rows, gaps, fired, survived = [], [], [], [], [], []
-        alive = []
+        alive, cash_on = [], []
 
         isBarrierDate = BarrierDates[offset:]
         isFloatingDate = Floating[offset:]
@@ -2748,6 +2759,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             gaps.append(torch.log(Sj / K).squeeze(dim=1))
                             fired.append(torch.where(
                                 dead, 0.0, (P + fx * L * coup * D[j]).mean(axis=1)).detach())
+                            # the payment the trigger controls, per scenario, had it FIRED - the
+                            # collateral chain's cash counterfactual (the not-fired branch pays 0)
+                            cash_on.append(torch.where(
+                                dead, 0.0, (fx * coup * D[j]).squeeze(1)).detach())
                             P_cf, L_cf = P, L
 
                         # the payment this coupon makes: the knocked-out weight times the coupon,
@@ -2844,7 +2859,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 torch.stack(settled) if settled else spot_prices.new_empty(0),
                 settle_rows, event_rows, terminationDate,
                 torch.stack(alive) if alive else spot_prices.new_empty(0),
-                ) + tuple(gaps) + tuple(fired) + tuple(survived)
+                ) + tuple(gaps) + tuple(fired) + tuple(survived) + tuple(cash_on)
 
     mtm_list = []
     factor_dep = deal_data.Factor_dep
@@ -2940,12 +2955,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     # An autocall taken on the reporting row's own spot is a real redemption, so the value is not
     # what is wrong; what ordinary AAD drops is the flux of scenarios across the threshold.
     # Recording it costs nothing when sensitivities are not wanted, so it is gated rather than on.
-    # The decision's reach has TWO halves and each gets the registration shaped for it: the
-    # fired/survived fork at the decision row itself (RowBoundarySet, per event), and the carried
-    # knock-out latch every LATER row reads - alive value against zero (LatchedBoundarySet).
     boundary_aad = getattr(shared, 'boundary_aad', False)
-    b_events, row_ofs = [], 0
-    b_latch, b_obs, b_alive = [], [], []
+    row_ofs = 0
+    b_latch, b_obs, b_alive, b_cash = [], [], [], []
 
     for index, (forward_block, discount_block, spot_block, moneyness_block) in enumerate(
             utils.split_counts([forward, discount, spot, moneyness], counts, shared)):
@@ -3071,18 +3083,27 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             for row, value in zip(settle_rows, block_settled):
                 cash_settle(shared, factor_dep['SettleCurrency'], np.searchsorted(
                     time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]), nominal * value)
-            # one trigger decision per row that OBSERVED its coupon, with the row it landed on
             fixed, n_events = 6, len(event_rows)
-            b_events.extend([[row_ofs + row, outputs[fixed + k], outputs[fixed + n_events + k],
-                              outputs[fixed + 2 * n_events + k]] for k, row in enumerate(event_rows)])
             if boundary_aad and factor_dep['no_averaging']:
                 b_alive.append(block_alive)
-                # only the STAMPED decision (tau == 0: the fixing IS the row) opens the latch the
-                # later blocks read; a re-observation of an old decision (a pending window's rows)
-                # stays row-local. `gap >= 0` IS the trigger: p == 0 iff Sj >= K.
+                settle_map = dict(zip(settle_rows, block_settled))
+                # per STAMPED decision (tau == 0): gap, flag (`gap >= 0` IS the trigger), the
+                # own-row fork, and the payment as a ledger triple in reporting currency; a
+                # pending window's re-observation is not a new decision and registers nothing
                 for k, row in enumerate(event_rows):
-                    if all_fixings[row, 0] == 0.0:
-                        b_latch.append([outputs[fixed + k], (outputs[fixed + k] >= 0).detach()])
+                    if all_fixings[row, 0] != 0.0:
+                        continue
+                    gap = outputs[fixed + k]
+                    b_latch.append([gap, (gap >= 0).detach(), row_ofs + row,
+                                    outputs[fixed + n_events + k],
+                                    outputs[fixed + 2 * n_events + k]])
+                    fxr = (fx_rep[row_ofs + row] if fx_rep.dim() > 1 and
+                           fx_rep.shape[0] > 1 else fx_rep.reshape(-1)[0])
+                    on = (nominal * fxr * outputs[fixed + 3 * n_events + k]).detach()
+                    b_cash.append((int(np.searchsorted(
+                        time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM])),
+                        on, torch.zeros_like(on),
+                        (nominal * fxr * settle_map[row]).detach()))
         else:
             theo_cashflow = drifts.new_zeros((len(t_block), shared.simulation_batch))
             if boundary_aad and factor_dep['no_averaging']:
@@ -3096,29 +3117,21 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     # mtm in reporting currency
     mtm = torch.cat(mtm_list, dim=0)
 
-    if b_events and time_grid.report_index is not None:
-        # Branches stay on THIS pricer's grid and in its own currency; `to_mtm` is the deal's own
-        # map onto the MTM grid, which the collateral chain consumes. report_index rides along so
-        # the additive route can go on to the reporting grid at the point of use - and is None on
-        # a grid nobody reports off (an HMC tradable, a calibration's benchmark grid).
-        rows, gaps, fired, survived = zip(*b_events)
-        to_mtm = deal_to_mtm_grid(time_grid, deal_data, fx_rep)
-        shared.boundary_sets.append(utils.RowBoundarySet(
-            gaps=list(gaps), rows=list(rows),
-            fired=[nominal * x for x in fired], survived=[nominal * x for x in survived],
-            reported=mtm.detach(), to_mtm=to_mtm,
-            report_index=time_grid.report_index))
-        if b_latch:
-            # the carried latch's OTHER half: a decision the later blocks read kills every later
-            # row, so its jump there is alive value against zero. The two registrations share
-            # their gaps and do not overlap - Row lands on the decision row, this one strictly
-            # after it - so together they are the whole reach of the decision.
-            l_gaps, l_hit = zip(*b_latch)
-            untriggered = (nominal * torch.cat(b_alive, dim=0)).detach()
-            shared.boundary_sets.append(utils.LatchedBoundarySet(
-                gaps=list(l_gaps), fired=list(l_hit), obs_before=np.array(b_obs),
-                untriggered=untriggered, triggered=torch.zeros_like(untriggered),
-                to_mtm=to_mtm, report_index=time_grid.report_index))
+    if b_latch and time_grid.report_index is not None:
+        # one counterfactual per decision, its whole reach: latch + own-row fork + ledger triple
+        # (see the docstring). Branches stay on the pricer's grid; report_index is None on a
+        # grid nobody reports off (an HMC tradable, a calibration's benchmark grid)
+        gaps, flags, own_rows, on_v, off_v = zip(*b_latch)
+        untriggered = (nominal * torch.cat(b_alive, dim=0)).detach()
+        latch_set = utils.LatchedBoundarySet(
+            gaps=list(gaps), fired=list(flags), obs_before=np.array(b_obs),
+            untriggered=untriggered, triggered=torch.zeros_like(untriggered),
+            own_row=[(r, nominal * a, nominal * b)
+                     for r, a, b in zip(own_rows, on_v, off_v)],
+            to_mtm=deal_to_mtm_grid(time_grid, deal_data, fx_rep),
+            report_index=time_grid.report_index)
+        latch_set.cash = b_cash
+        shared.boundary_sets.append(latch_set)
 
     return mtm
 

@@ -326,10 +326,10 @@ def test_an_autocalled_path_pays_once_and_is_worth_nothing_after(tmp_path):
     This was a strict xfail: `terminationDate` was maintained correctly inside `sim_spot` - per
     scenario, off the observed indicator - and never returned, so the outer loop rebuilt it from
     -1 for every block and the deal kept paying (0.8 / 0.8 / 0.8). The latch is now a by-product
-    of the simulation, carried into the next block's theta, and the boundary registration carries
-    the decision's full reach in two halves - the fired/survived fork on its own row
-    (`RowBoundarySet`) and alive-against-zero on every later row (`LatchedBoundarySet`); see
-    `pv_MC_AutoCallSwap`'s docstring and `test_boundary_pricer_events.py` for the gradient side.
+    of the simulation, carried into the next block's theta, and each decision registers ONE
+    counterfactual carrying its whole reach - the latch over every later row plus an own-row
+    fired/survived override; see `pv_MC_AutoCallSwap`'s docstring and
+    `test_boundary_pricer_events.py` for the gradient side.
     """
     ledger, mtm = _cmc(_cmc_job(threshold=0.01), tmp_path, 'zero_tail')
     cash = np.asarray(ledger.values, dtype=float).mean(axis=1)
@@ -418,16 +418,17 @@ def test_the_cva_spot_delta_matches_the_same_document_bumped(tmp_path):
         disagreement 1.68% at the best rung, ladder flatness 8.22%
 
     so the 5% tolerance carries a 3x margin inside a ladder whose own spread is wider than it.
-    The AAD carries the boundary correction in BOTH halves of the decision's reach - the
-    fired/survived fork on the decision row (`RowBoundarySet`) and the carried latch's
-    alive-against-zero on every later row (`LatchedBoundarySet`) - and each half suppressed alone
-    kills this gate, measured on this exact document:
+    The decision registers ONCE (`LatchedBoundarySet` with an own-row fired/survived override),
+    and each half of its reach suppressed alone kills this gate, measured on this document:
 
-        latched half suppressed:  AAD +2.5547825e-04, +73.83% from the ladder - the tape keeps
-                                  paying rows the latch has killed
-        row half suppressed:      AAD +3.7148406e-05, -72.65% - the own-row digital flux gone
+        latch neutralised (triggered := untriggered): AAD +2.5547825e-04, +73.83% - the tape
+                                  keeps paying rows the latch killed
+        own-row override suppressed: AAD +3.7148406e-05, -72.65% - the decision row's digital
+                                  flux gone
 
-    Opposite signs, each ~43x the corrected residual: the gate measures its subject.
+    Opposite signs, each ~43x the corrected residual - which is also why the WHOLE registration
+    suppressed is a weak mutant here (+5.15%): the two flux halves nearly cancel on this fixture,
+    so the per-half mutants are the ones that measure the subject.
     """
     aad, crn, cva = _cva_ladder(tmp_path, threshold=1.02)
     best = min(crn, key=lambda c: abs(aad - c))
@@ -450,22 +451,31 @@ def _collateralised(job):
     return job
 
 
-@pytest.mark.xfail(strict=True, reason='the counterfactual does not flip the settled coupon: '
-                                       'firing pays cash a collateralised exposure reads through '
-                                       'C_ts_te, and gross_to_net takes only an mtm delta - with '
-                                       'the cash channel removed from both estimators the same '
-                                       'document agrees within tolerance')
+@pytest.mark.xfail(strict=True, reason='the collateralised boundary counterfactual carries a '
+                                       'bandwidth-stable residual of order 10-18% that is NOT '
+                                       'the settled-cash channel: the oracle reads the same '
+                                       'delta with the engine cash on or off, and the cash-free '
+                                       'world overshoots by +17.6% - the mtm-side counterfactual '
+                                       'under the collateral chain is what does not resolve')
 def test_a_collateralised_cva_delta_carries_the_settled_coupon(tmp_path):
-    """The one statement still owed: under collateral the CVA spot delta reads LOW.
+    """The one statement still owed: the collateralised CVA spot delta does not resolve to 5%.
 
-    MEASURED on this document (1024 x 4 x 256): cva 0.0017986481, AAD +4.4164593e-05 against CRN
-    4.9345/5.0634/5.1517e-05 - 10.50% low, flatness 4.40%; the Config-built twin at 16 batches
-    reads 18.84% low on a ladder flat to 1.37%. Removing the cash channel from BOTH estimators
-    (settle disabled at source for the measurement, then reverted) takes the same fixture to
-    agreement, so the residual is the cash leg of the counterfactual and nothing else: the
-    boundary registration would have to carry a per-decision cashflow delta and `gross_to_net`
-    accept it (roadmap). Strict, so the suite goes red the moment that channel is built and this
-    marker must come off.
+    MEASURED on this document at 64 batches (CRN flat to <1%, truth 5.22e-05):
+
+        merged registration, no cash channel:   4.6496e-05   -10.9%
+        merged registration, with cash channel: 5.9234e-05   +13.1%  (bandwidth plateau: 0.02 /
+                                                0.05 / 0.10 read +12.5% flat to 0.25%)
+        cash-free WORLD vs its own oracle:      6.1555e-05 / 5.23e-05   +17.6%
+        oracle, engine cash on vs off:          5.22e-05 vs 5.23e-05 - cash worth ~0 in truth
+
+    The earlier attribution ('the missing channel is CASH') is RETRACTED: it rested on a 4-batch
+    reading inside its own noise. On this fixture the true cash effect is neutralised - the relu
+    kills a fired path's later exposure and the one-row-lagged balance offsets the C_ts_te window
+    - while the mtm-side counterfactual misses by double digits in BOTH worlds. The registration
+    carries the per-decision ledger triple anyway (a counterfactual that flips a payment must be
+    ABLE to flip the ledger, and on a finer grid the neutralisation does not hold); what is owed
+    is the accuracy of the collateralised counterfactual itself (roadmap). Strict, so the suite
+    goes red the moment it resolves and this marker must come off.
     """
     aad, crn, cva = _cva_ladder(tmp_path, threshold=1.02, collateral=True)
     best = min(crn, key=lambda c: abs(aad - c))
