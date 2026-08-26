@@ -39,3 +39,7 @@ tests/_stepper_out*/
 # Reference notebooks from Huge & Savine (github.com/differential-machine-learning/notebooks).
 # Third-party work under its own licence - kept locally, not redistributed here.
 /notebooks/Differential*.ipynb
+
+# The web UI's build output and dependencies - `npm ci && npm run build` in web/ regenerates both.
+/web/node_modules/
+/web/dist/
