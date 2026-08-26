@@ -35,10 +35,10 @@ jobs:
 
       # the service extra is a test dependency now that tests/test_service.py drives the endpoints,
       # and httpx is what fastapi's TestClient calls them through. requests is the excel_integration
-      # client's own transport - the add-in is not part of the installed library, so it is declared
-      # here rather than in setup.py
+      # client's own transport and mcp is mcp_integration's - neither folder is part of the
+      # installed library, so both are declared here rather than in setup.py
       - name: Install derivus
-        run: pip install -e '.[service]' pytest httpx requests
+        run: pip install -e '.[service]' pytest httpx requests mcp
 
       - name: Confirm we are testing the repo, on CPU
         run: python -c "import derivus, torch; print(derivus.__version__, derivus.__file__, torch.__version__, torch.cuda.is_available())"
