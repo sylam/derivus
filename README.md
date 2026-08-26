@@ -84,7 +84,10 @@ expect.
 
 ## Documentation
 
-Build it locally with `DV_Docs`, or read the sources under `docs_src/`. The developer section
+Build it locally with `DV_Docs`, or read the sources under `docs_src/`.
+[`docs_src/getting_started.md`](docs_src/getting_started.md) is the working stack in fifteen
+minutes — the service with a live book, the web UI, Claude over MCP, and a Bloomberg quote source
+ticking the market. The developer section
 (`docs_src/developer/`) is the internal view: architecture, the calculation lifecycle, the
 dependency system, the resolver layer and the house conventions.
 

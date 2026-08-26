@@ -391,6 +391,7 @@ class ConstructMarkdown(object):
             f"    - Home: index.md",
             f"    - Requirements: require.md",
             f"    - Quick Start: quickstart.md",
+            f"    - Getting Started: getting_started.md",
             f"    - Running Calculations: running_calcs.md",
             f"    - Understanding Output: output.md",
             f"    - API Overview: api_overview.md"
@@ -464,7 +465,7 @@ class ConstructMarkdown(object):
 
         # --- Generate Static Pages ---
         logging.info("Processing static pages...")
-        static_pages = ['index.md', 'require.md', 'quickstart.md',
+        static_pages = ['index.md', 'require.md', 'quickstart.md', 'getting_started.md',
                         'running_calcs.md', 'output.md', 'api_overview.md']
         for page in static_pages:
             src_path = self.docs_src_dir / page
