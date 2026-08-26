@@ -47,7 +47,7 @@ _STANDARD_FIELD_NAMES: frozenset[str] = frozenset(
 
 # Widget types that produce complex JSON blobs (not suitable for plain cells).
 _COMPLEX_WIDGETS: frozenset[str] = frozenset(
-    {"Flot", "Three", "Table", "Container"}
+    {"Curve", "Surface", "Table", "Container"}
 )
 
 # ---------------------------------------------------------------------------

@@ -225,6 +225,54 @@ def check_descriptor(key, d):
                 f'{len(d["col_names"])}')
 
 
+def every_descriptor(node=None, key='mapping'):
+    """Every descriptor in the published mapping, `sub_fields` included - a dict is a descriptor
+    iff it carries `widget` and `value`, which is what the consumers destructure on."""
+    node = schema.mapping if node is None else node
+    if isinstance(node, dict):
+        if 'widget' in node and 'value' in node:
+            yield key, node
+            for sub_key, sub in node.get('sub_fields', {}).items():
+                yield from every_descriptor(sub, f'{key}.{sub_key}')
+        else:
+            for k, v in node.items():
+                yield from every_descriptor(v, f'{key}.{k}')
+
+
+def test_the_widget_vocabulary_names_no_plotting_library():
+    """'Flot' is jQuery-flot and 'Three' is three.js/k3d - plotting libraries, not types. What the
+    tokens denote is a curve OBJECT and a surface OBJECT, and the store now says so: 'Curve', and
+    'Surface' covering BOTH shaped types (a Space is a tenor-keyed surface), so a renderer branches
+    on the value's row arity, never on the token. The legacy spellings live in the front end's
+    `LEGACY_WIDGET` map and must never re-enter the published store."""
+    widgets = set()
+    for key, d in every_descriptor():
+        assert d['widget'] not in ('Flot', 'Three'), key
+        widgets.add(d['widget'])
+    # non-vacuous: the new tokens are actually emitted, so a rename AWAY from them also fails here
+    assert {'Curve', 'Surface'} <= widgets
+
+
+def test_the_column_default_map_is_keyed_by_a_column_token():
+    """`default` supplies the blank cell of a table COLUMN, and a column is never a shape. Keyed by
+    widget, 'Surface' would mean both the token every Space field carries and the Surface type -
+    `default[F.WIDGET['Space']]` would hand a Space field a 2-column surface blank where its blank
+    is a tenor-keyed map. `BLANK`, keyed by TYPE, is the one definition of a shape's blank; the
+    three shape keys ('Flot', 'Surface', 'Space') were read by no call site - all five key by a
+    column token - and are gone. The last assert is the jupyter hazard: `set_value_from_widget`
+    reads `obj or widget` into ONE variable and picks the decoder off it, so a column token spelled
+    like a shape widget would decode a table as a curve."""
+    column_tokens = set(schema.OBJ_TOKEN.values()) | set(TAG_ARITY)
+    assert set(schema.default) <= column_tokens, sorted(set(schema.default) - column_tokens)
+    shape_widgets = {schema.F.WIDGET[t] for t in schema.SHAPED}
+    assert set(schema.default).isdisjoint(shape_widgets)
+    emitted = set()
+    for _, d in every_descriptor():
+        obj = d.get('obj')
+        emitted.update(obj if isinstance(obj, list) else [] if obj is None else [obj])
+    assert emitted.isdisjoint(shape_widgets), sorted(emitted & shape_widgets)
+
+
 def test_no_class_is_hidden_from_the_create_menu():
     """`groups` is the Workbench's create-deal menu and stays hand-curated, being presentation. So
     it is the one part of the store that can still drift from the classes: a deal type absent from
@@ -417,7 +465,7 @@ def test_one_name_may_carry_two_shapes_in_different_processes():
     leaves `Phi` a scalar everywhere.)"""
     types = PROCESS['types']
     assert types['LogOUSpotModel']['Sigma']['widget'] == 'Float'
-    assert types['HullWhite1FactorInterestRateModel']['Sigma']['widget'] == 'Flot'
+    assert types['HullWhite1FactorInterestRateModel']['Sigma']['widget'] == 'Curve'
     assert types['BasisLinkedSpotModel']['Phi']['widget'] == 'Float'
     assert not any('sigma' in d for d in types.values()), 'the lowercase alias key is back'
 

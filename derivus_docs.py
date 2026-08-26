@@ -136,8 +136,8 @@ class ConstructMarkdown(object):
         if obj == 'Period': return "String (Period, e.g., '3M', '1Y6M')"
         if obj == 'Tuple': return "String (Dot-separated, e.g., 'USD.EUR')"
         # Link complex types
-        if widget == 'Flot' or (widget == 'Table' and obj == 'DateValueList'): return "JSON Array (See `.Curve` type in [General Types](../general_types.md))"
-        if widget == 'Three': return "JSON Object/Array (See `.Surface`/`.Space` type in [General Types](../general_types.md))"
+        if widget == 'Curve' or (widget == 'Table' and obj == 'DateValueList'): return "JSON Array (See `.Curve` type in [General Types](../general_types.md))"
+        if widget == 'Surface': return "JSON Object/Array (See `.Surface`/`.Space` type in [General Types](../general_types.md))"
         if obj == 'DateList': return "JSON Array (See `.DateList` type in [General Types](../general_types.md))"
         if obj == 'DateEqualList': return "JSON Array (See `.DateEqualList` type in [General Types](../general_types.md))"
         if obj == 'CreditSupportList': return "JSON Array (See `.CreditSupportList` type in [General Types](../general_types.md))"
@@ -150,7 +150,7 @@ class ConstructMarkdown(object):
         obj = meta.get('obj')
         widget = meta.get('widget')
         try:
-            if widget in ['Flot', 'Three', 'Table'] and isinstance(value, str):
+            if widget in ['Curve', 'Surface', 'Table'] and isinstance(value, str):
                  # Attempt to parse JSON string defaults for complex types for pretty printing
                  parsed = json.loads(value)
                  return json.dumps(parsed, indent=2)

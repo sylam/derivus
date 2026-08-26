@@ -19,6 +19,10 @@ import derivus as rf
 # load the widgets - might be able to use more native objects instead of unicode text - TODO!
 from riskflow_widgets import FileDragUpload, Tree, Table, Flot, Three, to_json
 
+# the schema names shapes for what they denote; the legacy plotting-library spelling is this
+# front end's own business, held here and nowhere upstream
+LEGACY_WIDGET = {'Curve': Flot, 'Surface': Three}
+
 
 def load_table_from_vol(vol, svi_sampler=np.linspace(-3, 3, 21), param='Surface'):
     '''
@@ -328,16 +332,17 @@ class TreePanel(metaclass=ABCMeta):
                 # w = widgets.Accordion(children=[raw_w])
                 # w.set_title(0, element['description'].replace(' ', '_'))
                 # w.selected_index=None
-            elif element['widget'] == 'Flot':
+            elif element['widget'] == 'Curve':
                 if element['value'] == 0.0:
                     element['value'] = element['default']
 
-                w = Flot(description=element['description'],
-                         hot_settings=to_json(element.get('hot_settings', {})),
-                         flot_settings=to_json(element.get('flot_settings', {})),
-                         value=element['value'])
-            elif element['widget'] == 'Three':
-                w = Three(description=element['description'], value=element['value'])
+                w = LEGACY_WIDGET['Curve'](
+                    description=element['description'],
+                    hot_settings=to_json(element.get('hot_settings', {})),
+                    flot_settings=to_json(element.get('flot_settings', {})),
+                    value=element['value'])
+            elif element['widget'] == 'Surface':
+                w = LEGACY_WIDGET['Surface'](description=element['description'], value=element['value'])
             elif element['widget'] == 'Integer':
                 w = widgets.IntText(description=element['description'], value=element['value'])
             elif element['widget'] == 'Checkbox':
@@ -809,7 +814,7 @@ class RiskFactorsPage(TreePanel):
             return curve_array
 
         def set_repr(obj, obj_type):
-            if obj_type == 'Flot':
+            if obj_type == 'Curve':
                 new_obj = json.loads(obj)
                 if field_name == 'Eigenvectors':
                     obj = []
@@ -821,7 +826,7 @@ class RiskFactorsPage(TreePanel):
                     return obj
                 else:
                     return rf.utils.Curve([], check_array(new_obj[0]['data']))
-            elif obj_type == 'Three':
+            elif obj_type == 'Surface':
                 new_obj = json.loads(obj)
                 if rate_type in rf.utils.TwoDimensionalFactors:
                     # 2d Surfaces
@@ -1282,7 +1287,7 @@ class CalculationPage(TreePanel):
                     if v.index.dtype.type == np.datetime64:
                         # clip the columns if there are too many to display
                         clipped_cols = v.columns[:8]
-                        Widget = {'widget': 'Flot', 'description': '',
+                        Widget = {'widget': 'Curve', 'description': '',
                                   'hot_settings': {
                                       'columns': [{}] +
                                                  [{"type": "numeric",

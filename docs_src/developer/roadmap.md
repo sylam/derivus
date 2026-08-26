@@ -616,11 +616,17 @@ exception: `get_implied_correlation`'s two callers build type-prefixed correlati
 no-abstraction-ahead-of-a-second-caller rule — held until a third correlation pair shows up or the
 rule is judged to outrank it. The gate does not cover tuple literals, so this stays a note.
 
-**`Flot` is a plotting library, not a type.** The widget token the schema vocabulary files a
-`Curve` descriptor under (`schema.py`) is the jQuery-Flot chart widget's name, surviving from the
-`fields.py` era. What it denotes is a curve OBJECT — a 1d list of indexed numbers (an
-interest-rate curve, a commodity curve, a vol column) — and the token should say so, with any
-legacy spelling owned by the front-end mapping. Lands with the next schema-design pass.
+**`Flot` is a plotting library, not a type — CLOSED**, and `Three` (three.js/k3d) with it: the
+widget tokens are now `Curve` and `Surface` (`Surface` covering both shaped types, so a renderer
+branches on the value's row arity, never the token), with the legacy spellings owned by the
+Jupyter front end's `LEGACY_WIDGET` map. What the pass had to resolve was the `default` dict:
+keyed "by widget", it also carried `Surface`/`Space` as TYPE names, so the rename would have made
+`default[F.WIDGET['Space']]` a silently wrong blank. The three shape keys were read by nothing —
+every call site keys by a table-COLUMN token — and are deleted; `BLANK`, keyed by type, is the one
+definition of a shape's blank. Gated by `test_the_widget_vocabulary_names_no_plotting_library` and
+`test_the_column_default_map_is_keyed_by_a_column_token`; the one consumer that would have failed
+SILENTLY was `excel_integration/portfolio_service._COMPLEX_WIDGETS`, a membership test that would
+have started emitting blank curve strings into deal defaults.
 
 **Inline comment density.** The boundary-correction work left ~12 inline blocks of 4-11 comment
 lines, several outweighing the code beneath them. House style is detailed docstrings, 2-3 lines

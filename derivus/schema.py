@@ -127,10 +127,15 @@ class F(object):
     vocabulary spells a flag with: a calibration reading `bool(param.get(...))` takes `'No'` as
     true, so the two cannot share a descriptor.
     """
+    # The shape widgets are named for what they denote, not for a plotting library: 'Curve' is a 1d
+    # list of indexed numbers, 'Surface' covers BOTH shaped types (a Space is a tenor-keyed
+    # surface), so a renderer branches on the value's row arity, never on the token. 'Surface' is
+    # also a JSON field key (`VolatilityGrid.Surface`) - namespaced inside a descriptor map, so the
+    # two senses cannot collide. Legacy spellings ('Flot', 'Three') are the front end's business.
     WIDGET = {'Text': 'Text', 'Float': 'Float', 'Integer': 'Integer', 'Date': 'DatePicker',
               'Percent': 'Float', 'Basis': 'Float', 'Period': 'Text', 'Boolean': 'Checkbox',
               'Table': 'Table', 'Container': 'Container',
-              'Curve': 'Flot', 'Surface': 'Three', 'Space': 'Three'}
+              'Curve': 'Curve', 'Surface': 'Surface', 'Space': 'Surface'}
 
     __slots__ = ('name', 'type', 'default', 'description', 'values', 'row', 'tag',
                  'sub_fields', 'json_name', 'obj', 'bounds', 'bind')
@@ -536,16 +541,14 @@ _types, _sections = emit_instrument(instruments)
 _factor_types = emit_factor(riskfactors)
 _process_types, _process_factor_map = emit_process(stochasticprocess, _factor_types)
 
-#: Object-list defaults, keyed by WIDGET. The shape-valued ones come from the declaration
-#: vocabulary so a blank curve has one definition.
+#: The blank value of a table COLUMN, keyed by the `obj` token that column declares. A shape is
+#: never a column, so a blank curve or surface is not here - `BLANK`, keyed by TYPE, is the one
+#: definition of those.
 default = {
     'Integer': 0,
     'Float': 0.0,
     'Percent': 0.0,
     'Text': '',
-    'Flot': BLANK['Curve'],
-    'Surface': BLANK['Surface'],
-    'Space': BLANK['Space'],
     'DateList': 'null',
     'CreditSupportList': '[[0,1]]',
     'DatePicker': ''
