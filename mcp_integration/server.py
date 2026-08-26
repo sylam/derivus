@@ -332,9 +332,12 @@ def price_candidate(deal: dict | None = None, parent_reference: str | None = Non
     relation for the amount that lands the value on your target, then `book_deal` the answer.
 
     The candidate joins an in-memory copy only; the book file never moves. `calculation_overrides`
-    merges into the calculation block (e.g. `{"Greeks": "First"}`). Waits up to `wait_seconds`
-    for the run; the answer carries `tables` and `stats`, and `deal_values` projects per-deal
-    values from it. Content-addressed: the same what-if twice is one run.
+    merges into the calculation block: `{"Greeks": "First"}` for the AAD delta vector,
+    `{"Greeks": "All"}` for the full second-order block - `Greeks_Second` is the cross-gamma
+    matrix a trading read of an options book needs (spot gamma on the diagonal, vanna against the
+    surface's own nodes beside it), one backward pass however many factors. Waits up to
+    `wait_seconds` for the run; the answer carries `tables` and `stats`, and `deal_values`
+    projects per-deal values from it. Content-addressed: the same what-if twice is one run.
     """
     request = {}
     if deal is not None:

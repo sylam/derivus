@@ -533,6 +533,46 @@ def test_a_bloomberg_snapshot_reaches_a_solved_strike(tmp_path):
         service.BOOK = None
 
 
+def test_gamma_travels_the_served_path(tmp_path):
+    """Trading options needs second order, and base valuation HAS it - `Greeks: 'All'` is the
+    gated cross-gamma block (`test_base_valuation_gamma` owns its oracles). This pins the SERVED
+    route a desk actually uses: a what-if with `calculation_overrides` returns `Greeks_Second`,
+    its cells are the in-process run's to the bit (the house parity discipline), and the spot
+    diagonal is a live positive gamma with the vanna cross carrying real weight beside it."""
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(job(
+        sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2))
+    service.BOOK = service.Book(str(path))
+    try:
+        CLIENT.post('/book/market', content=dump({'quotes': fx_vol_quotes()}), headers=JSON)
+        submitted = CLIENT.post('/book/price', content=dump({
+            'deal': FX_OPTION, 'calculation_overrides': {'Greeks': 'All'}}), headers=JSON).json()
+        service.EXECUTOR.queue.join()
+        summary = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+        served = fetch(submitted['result_id'], 'Greeks_Second')
+
+        # the other binding, over the identical document the what-if built
+        document = json.loads(path.read_text())
+        document['Calc']['Deals']['Deals']['Children'].append(
+            {'Instrument': {'.Deal': json.loads(dump(FX_OPTION))}})
+        document['Calc']['Calculation']['Greeks'] = 'All'
+        _, out = in_process(document).run_job()
+        frame = out['Results']['Greeks_Second']
+
+        assert summary['status'] == 'done' and 'Greeks_Second' in summary['tables']
+        assert (served['rows'], len(served['columns'])) == frame.shape
+        for served_row, true_row in zip(served['data'], frame.values):
+            assert served_row == pytest.approx(list(true_row), rel=1e-12)
+        spot = [i for i, label in enumerate(served['index']) if 'FxRate.ZAR' in label][0]
+        spot_col = [i for i, label in enumerate(served['columns']) if 'FxRate.ZAR' in label][0]
+        assert served['data'][spot][spot_col] > 0, 'the spot diagonal is a real gamma'
+        vanna = [abs(cell) for i, row in enumerate(served['data']) for j, cell in enumerate(row)
+                 if i != j]
+        assert max(vanna) > 0, 'the off-diagonal block is empty - crosses were dropped'
+    finally:
+        service.BOOK = None
+
+
 def test_a_quote_update_may_move_only_the_numbers(book):
     """The structure guard, generalized to every family: a re-post moving only
     `Quoted_Market_Value`/`Timestamp` updates; one moving a pillar refuses by name with the file

@@ -110,6 +110,11 @@ Par forwards (target 0), sales margins (target the margin), a strike to a premiu
 spot), a zero-cost collar (fix one strike, solve the other). The answer carries the solved
 coordinates and the deal ready to book; a linear payoff solves exactly in two pricings.
 
+Greeks ride the same requests: `calculation_overrides={'Greeks': 'First'}` returns the AAD delta
+vector, `{'Greeks': 'All'}` the full second-order block — `Greeks_Second` is the cross-gamma
+matrix a trading read of an options book needs, spot gamma on the diagonal and vanna against the
+bootstrapped surface's own nodes beside it. One backward pass either way, however many factors.
+
 ## Where next
 
 - [Running Calculations](running_calcs.md) and [Understanding Output](output.md) — the job
