@@ -365,6 +365,59 @@ def test_a_booking_nests_under_a_container(book):
     assert node['Children'][0]['Instrument']['.Deal']['Reference'] == 'CF2'
 
 
+def test_an_amendment_lands_in_the_file(book):
+    """The edit flow the UI rides: merge one field into a deal at its path, validated first,
+    written atomically - and the etag moves so every polling client repaints."""
+    etag = CLIENT.get('/book').json()['etag']
+    outcome = CLIENT.post('/book/deals', json={
+        'action': 'amend', 'deal_path': '0', 'fields': {'Amount': 750_000.0}}).json()
+    on_disk = json.loads(book.read_text())
+
+    assert outcome['written'] is True and outcome['deal_path'] == '0'
+    assert outcome['etag'] != etag
+    assert on_disk['Calc']['Deals']['Deals']['Children'][0][
+        'Instrument']['.Deal']['Amount'] == 750_000.0
+    assert in_process(on_disk).validate() == {'deals': {}, 'factors': []}
+
+
+def test_a_bad_amendment_touches_nothing(book):
+    """The same validate-delta rule as a booking, wired to the amend branch: pointing CF1 at a
+    curve the book lacks refuses by name and leaves the file's bytes standing."""
+    before = book.read_bytes()
+    outcome = CLIENT.post('/book/deals', json={
+        'action': 'amend', 'deal_path': '0', 'fields': {'Discount_Rate': 'GBP'}}).json()
+
+    assert outcome['written'] is False
+    assert 'no market data for InterestRate.GBP' in outcome['refused']
+    assert book.read_bytes() == before
+
+
+def test_amending_back_is_byte_identical(book):
+    """An edit undone leaves no trace, not even a reformat - the same discipline as
+    book-then-delete, so an amendment is reviewable as the diff of the field and nothing else."""
+    before = book.read_bytes()
+    original = json.loads(book.read_text())['Calc']['Deals']['Deals']['Children'][0][
+        'Instrument']['.Deal']['Amount']
+    CLIENT.post('/book/deals', json={
+        'action': 'amend', 'deal_path': '0', 'fields': {'Amount': 1.0}})
+    CLIENT.post('/book/deals', json={
+        'action': 'amend', 'deal_path': '0', 'fields': {'Amount': original}})
+    assert book.read_bytes() == before
+
+
+def test_an_amendment_needs_a_real_path(book):
+    """An unknown path is a 422 naming it, and a NEGATIVE path refuses rather than silently
+    resolving from the end - a wrong path must never quietly amend a different deal."""
+    unknown = CLIENT.post('/book/deals', json={
+        'action': 'amend', 'deal_path': '7', 'fields': {'Amount': 1.0}})
+    negative = CLIENT.post('/book/deals', json={
+        'action': 'amend', 'deal_path': '-1', 'fields': {'Amount': 1.0}})
+    assert unknown.status_code == 422 and '7' in unknown.json()['detail']
+    assert negative.status_code == 422
+    assert json.loads(book.read_text())['Calc']['Deals']['Deals']['Children'][0][
+        'Instrument']['.Deal']['Amount'] == AMOUNT
+
+
 def test_a_what_if_prices_the_candidate_and_writes_nothing(book):
     """The par-solve verb: the book plus a candidate priced off an in-memory copy, the file never
     moving. The candidate's own value comes back through the ordinary result surface, which is

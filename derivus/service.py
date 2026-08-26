@@ -70,7 +70,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import Context, content_hash
 from .schema import mapping
 from ._version import __version__
-from .config import CustomJsonEncoder, remove_deal, sniff_indent, splice_deal
+from .config import CustomJsonEncoder, deal_at, remove_deal, sniff_indent, splice_deal
 
 #: Cost class off `Calculation['Object']`: a light job jumps a heavy one among those still WAITING.
 #: Anything unnamed is heavy, and `run_job` is the one that names it when it turns out not to run.
@@ -471,28 +471,35 @@ def book():
     return {'document': document, 'etag': etag, 'path': live_book().path}
 
 
-@app.post('/book/deals', summary='Book or delete one deal - validated, then written atomically')
+@app.post('/book/deals', summary='Book, amend or delete one deal - validated, then written atomically')
 def book_deals(request: dict):
-    """`{action: 'add', deal, parent_reference?}` or `{action: 'delete', deal_path}`.
+    """`{action: 'add', deal, parent_reference?}`, `{action: 'amend', deal_path, fields}` or
+    `{action: 'delete', deal_path}`. An amendment MERGES `fields` into the deal at `deal_path`.
 
-    The contract is validate-before-write: the deal is spliced into a copy, the whole document is
-    validated, and the file is rewritten only if nothing is said against the BOOKED deal - its own
-    authoring messages, or market data the book did not already lack. A book already failing
-    elsewhere cannot block a correct booking, and the caller sees the whole verdict either way. A
-    refusal is `{written: False, ...}` and touches nothing - it is an answer, not an error.
+    The contract is validate-before-write, one spelling for both mutating actions: the change
+    lands on a copy, the whole document is validated, and the file is rewritten only if nothing is
+    said against the CHANGED deal - its own authoring messages, or market data the book did not
+    already lack. A book already failing elsewhere cannot block a correct change, and the caller
+    sees the whole verdict either way. A refusal is `{written: False, ...}` and touches nothing -
+    it is an answer, not an error.
     """
     action = request.get('action', 'add')
-    if action not in ('add', 'delete'):
-        raise HTTPException(422, 'action must be add or delete, not {!r}'.format(action))
+    if action not in ('add', 'amend', 'delete'):
+        raise HTTPException(422, 'action must be add, amend or delete, not {!r}'.format(action))
 
     def edit(document):
         if action == 'delete':
             removed = remove_deal(document, request['deal_path'])
             return True, {'written': True,
                           'deleted': removed['Instrument']['.Deal'].get('Reference')}
-        deal = request['deal']
         already_missing = set(load(document).validate()['factors'])
-        deal_path = splice_deal(document, deal, request.get('parent_reference'))
+        if action == 'amend':
+            deal = deal_at(document, request['deal_path'])['Instrument']['.Deal']
+            deal.update(request['fields'])
+            deal_path = request['deal_path']
+        else:
+            deal = request['deal']
+            deal_path = splice_deal(document, deal, request.get('parent_reference'))
         verdict = load(document).validate()
         refused = list(verdict['deals'].get(deal.get('Reference'), []))
         refused += ['no market data for {}'.format(name)

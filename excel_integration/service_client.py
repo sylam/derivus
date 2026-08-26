@@ -101,6 +101,12 @@ class ServiceClient:
             request['parent_reference'] = parent_reference
         return self.call('POST', '/book/deals', json=request)
 
+    def amend_deal(self, deal_path: str, fields: Any) -> dict[str, Any]:
+        """Merge `fields` into the deal at a positional path - validated first, written only if
+        nothing is said against the amended deal."""
+        return self.call('POST', '/book/deals', json={
+            'action': 'amend', 'deal_path': deal_path, 'fields': as_document(fields)})
+
     def delete_deal(self, deal_path: str) -> dict[str, Any]:
         """Remove the deal at a positional path ('0/2/1') from the live book, subtree and all."""
         return self.call('POST', '/book/deals', json={'action': 'delete', 'deal_path': deal_path})

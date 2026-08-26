@@ -237,6 +237,31 @@ def splice_deal(document, deal, parent_reference=None):
     return '{}/{}'.format(parent_path, position) if parent_path else position
 
 
+def _positions(deal_path):
+    """A `deal_path` as index steps. Negative positions refuse rather than silently resolving
+    from the end - a wrong path must never quietly name a different deal."""
+    positions = [int(p) for p in str(deal_path).split('/')]
+    if any(p < 0 for p in positions):
+        raise ValueError
+    return positions
+
+
+def deal_at(document, deal_path):
+    """The node at a positional `deal_path` - a live reference into the document, which is what
+    an amendment edits in place."""
+    children = job_children(document)
+    if children is None:
+        raise ValueError('not a job document - no Calc.Deals.Deals.Children')
+    try:
+        node = None
+        for position in _positions(deal_path):
+            node = children[position]
+            children = node.get('Children', [])
+        return node
+    except (ValueError, IndexError):
+        raise ValueError('no deal at path {!r}'.format(deal_path))
+
+
 def remove_deal(document, deal_path):
     """Remove and return the node at a positional `deal_path`, in place - the whole subtree goes
     with it, which is what deleting a structure means."""
@@ -244,7 +269,7 @@ def remove_deal(document, deal_path):
     if children is None:
         raise ValueError('not a job document - no Calc.Deals.Deals.Children')
     try:
-        positions = [int(p) for p in str(deal_path).split('/')]
+        positions = _positions(deal_path)
         for position in positions[:-1]:
             children = children[position]['Children']
         return children.pop(positions[-1])
