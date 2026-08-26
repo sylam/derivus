@@ -345,6 +345,29 @@ def price_candidate(deal: dict | None = None, parent_reference: str | None = Non
 
 
 @MCP.tool()
+def update_market_quotes(quotes: dict, bootstrap: bool = True) -> dict:
+    """Tick the live book's market with quote blocks - `{name: block}` exactly as a quote source
+    emits them (`derivus_bloomberg.to_market_prices_block` for an FX vol surface; any `Market
+    Prices` family). An existing block may move ONLY its quoted values and timestamps - a changed
+    pillar, expiry or convention is refused by name, because structure is a re-authoring, never a
+    tick. With `bootstrap` (the default) the engine turns the quotes into the price factors the
+    pricers read, and the book file gains everything in one atomic write; a bootstrap that
+    complains refuses the WHOLE write and hands its messages back as `refused`. After a
+    successful tick, `solve_deal` and `price_candidate` price against the fresh market."""
+    return service().call('POST', '/book/market', json={
+        'quotes': quotes, 'bootstrap': 'Yes' if bootstrap else 'No'})
+
+
+@MCP.tool()
+def patch_market_values(patch: dict) -> dict:
+    """Move market VALUES in the live book - `{factor: {field: value}}`, e.g.
+    `{"FxRate.ZAR": {"Spot": 19.25}}`. Only value-bound fields move (spots, rate columns, vols);
+    a structural key - anything that would change the plan - is refused by the engine's own rule.
+    One atomic write; every client sees it on its next read."""
+    return service().call('POST', '/book/market', json={'patch': patch})
+
+
+@MCP.tool()
 def solve_deal(deal: dict, field: str, target: float = 0.0, bounds: list | None = None,
                calculation_overrides: dict | None = None, wait_seconds: float = 300.0) -> dict:
     """Solve ONE field of a candidate deal so the deal's own value lands on `target`, and get the

@@ -73,14 +73,15 @@ def test_every_tool_is_registered_and_carries_its_contract():
     expected = {'list_instrument_types', 'describe_instrument_type', 'describe_calculation_type',
                 'describe_factor_type', 'job_skeleton', 'read_book', 'read_deal', 'book_deal',
                 'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal', 'execute_book',
-                'validate_book', 'describe_book', 'poll_result', 'fetch_table', 'deal_values'}
+                'validate_book', 'describe_book', 'poll_result', 'fetch_table', 'deal_values',
+                'update_market_quotes', 'patch_market_values'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
     writers = {name for name, tool in tools.items()
                if not (tool.annotations and tool.annotations.read_only_hint)}
     assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal',
-                       'execute_book'}
+                       'execute_book', 'update_market_quotes', 'patch_market_values'}
 
 
 def test_the_schema_tools_are_the_declarations():
@@ -150,6 +151,40 @@ def test_solving_then_booking_a_structured_deal(book):
     run = mcp_server.execute_book()
     assert booked['written'] is True
     assert mcp_server.deal_values(run['result_id'])['SLV1'] == pytest.approx(200_000.0, abs=0.01)
+
+
+def test_the_practical_loop_quotes_to_a_booked_structure(tmp_path):
+    """The library's whole working day in four tool calls: a Bloomberg-normalized quote block
+    ticks the market, the bootstrap writes the surface, `solve_deal` finds the strike that marks
+    the option at the target premium, and the solved deal books - every step through the same
+    tools a model drives, nothing large entering the conversation."""
+    from test_service import FX_OPTION, fx_vol_quotes
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(job(
+        sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2))
+    service.BOOK = service.Book(str(path))
+    try:
+        ticked = mcp_server.update_market_quotes(json.loads(dump(fx_vol_quotes())))
+        assert ticked['written'] is True and 'FXVol.USD.ZAR' in ticked['new_factors']
+
+        option = json.loads(dump(FX_OPTION))
+        outcome = mcp_server.solve_deal(option, 'Strike_Price', target=500_000.0,
+                                        bounds=[12.0, 30.0])
+        assert outcome['status'] == 'done' and abs(outcome['solved']['residual']) <= 0.01
+
+        booked = mcp_server.book_deal(outcome['solved_deal'])
+        run = mcp_server.execute_book()
+        assert booked['written'] is True
+        assert mcp_server.deal_values(run['result_id'])['OPT1'] == pytest.approx(
+            500_000.0, abs=0.01)
+
+        # and a values tick moves the mark - the market is live, not a snapshot baked at load
+        patched = mcp_server.patch_market_values({'FxRate.ZAR': {'Spot': SPOT * 1.02}})
+        moved = mcp_server.execute_book()
+        assert patched['written'] is True
+        assert mcp_server.deal_values(moved['result_id'])['OPT1'] > 550_000.0
+    finally:
+        service.BOOK = None
 
 
 def test_a_rejected_booking_is_an_answer_that_wrote_nothing(book):
