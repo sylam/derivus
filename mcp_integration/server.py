@@ -13,6 +13,12 @@ poll, Excel - sees a booking on its next read. Market data is deliberately NOT e
 structural/value split lives in the engine, a wrong structural edit silently changes the plan, and
 the safe half already travels as the values `Patch` on execute.
 
+Answers are SUMMARIES AND POINTERS, never payloads: the model needs to know a deal booked or a
+calculation ran, not to hold a simulation cube in its context. A run comes back as its replay
+tuple, its stats and each table's SHAPE; cells come one capped page at a time through
+`fetch_table`, a table too wide to read as text is refused by name (that is what the web UI is
+for), and `deal_values` checks a result's shape before it fetches anything.
+
 Run: `python mcp_integration/server.py` (stdio), with `RF_SERVICE_URL` naming the service
 (default http://127.0.0.1:8000 - the same variable the Excel add-in reads).
 """
@@ -69,6 +75,30 @@ def service():
     return SERVICE if SERVICE is not None else configure()
 
 
+#: The caps that keep a result out of the model's context: a page is at most this many rows, and a
+#: table wider than this is a scenario cube the model should never hold as text.
+MAX_PAGE_ROWS = 200
+MAX_TABLE_COLUMNS = 60
+
+
+def _raw_result(result_id):
+    return service().call('GET', '/results/{}'.format(result_id))
+
+
+def _summary(raw, result_id):
+    """A run as the model should hold it: identity, stats, and each table's SHAPE as one line -
+    never a column list, never a cell. The cells stay behind `fetch_table`."""
+    trimmed = {'result_id': result_id, 'status': raw.get('status')}
+    for key in ('plan_hash', 'values_hash', 'seed', 'stats', 'error'):
+        if key in raw:
+            trimmed[key] = raw[key]
+    if 'tables' in raw:
+        trimmed['tables'] = {
+            name: '{} rows x {} columns'.format(shape['rows'], len(shape['columns']) or 1)
+            for name, shape in raw['tables'].items()}
+    return trimmed
+
+
 def _await_result(result_id, wait_seconds):
     """Poll `/results/{id}` until it settles or the wait runs out - one tool call that returns the
     answer beats a model burning a turn per poll. On timeout the id and the way forward travel in
@@ -76,9 +106,9 @@ def _await_result(result_id, wait_seconds):
     deadline = time.monotonic() + wait_seconds
     interval, stepped_up = 0.25, time.monotonic() + 2.0
     while True:
-        summary = service().call('GET', '/results/{}'.format(result_id))
+        summary = _raw_result(result_id)
         if summary.get('status') not in ('queued', 'running'):
-            return dict(summary, result_id=result_id, waited=True)
+            return dict(_summary(summary, result_id), waited=True)
         if time.monotonic() >= deadline:
             return {'result_id': result_id, 'status': summary['status'],
                     'hint': 'still {} - call poll_result({!r}) to check again, and fetch_table '
@@ -86,6 +116,19 @@ def _await_result(result_id, wait_seconds):
         if time.monotonic() >= stepped_up:
             interval = 1.0
         time.sleep(interval)
+
+
+def _booking(outcome):
+    """A booking outcome as the model should hold it: what happened to THIS deal, and a COUNT of
+    anything else outstanding in the book - never the whole verdict, which `validate_book` serves
+    to whoever asks for it."""
+    verdict = outcome.pop('validate', None) or {}
+    issues = {name: count for name, count in
+              (('deal_messages', len(verdict.get('deals', {}))),
+               ('missing_factors', len(verdict.get('factors', [])))) if count}
+    if issues:
+        outcome['book_issues'] = dict(issues, hint='validate_book lists them')
+    return outcome
 
 
 def _walk(children, path=''):
@@ -190,7 +233,9 @@ def read_book() -> dict:
     carries. `read_deal` fetches any one deal in full."""
     live = service().call('GET', '/book')
     calc = live['document']['Calc']
+    calculation = calc['Calculation']
     market = calc.get('MergeMarketData', {})
+    factors = sorted(market.get('ExplicitMarketData', {}).get('Price Factors', {}))
     deals = [{'deal_path': deal_path,
               'object': node['Instrument']['.Deal'].get('Object'),
               'reference': node['Instrument']['.Deal'].get('Reference'),
@@ -198,12 +243,19 @@ def read_book() -> dict:
               'ignored': node.get('Ignore') == 'True',
               'children': len(node.get('Children', []))}
              for deal_path, node in _walk(calc['Deals']['Deals']['Children'])]
+    # summaries and pointers: the calculation's headline plus its field NAMES, and the factor
+    # names capped - the model needs the vocabulary it books against, never a payload
     return {'path': live['path'], 'etag': live['etag'],
             'reference': calc['Deals'].get('Reference'),
-            'calculation': calc['Calculation'],
+            'calculation': {
+                'Object': calculation.get('Object'), 'Currency': calculation.get('Currency'),
+                'Base_Date': calculation.get('Base_Date'),
+                'other_fields': sorted(set(calculation) - {'Object', 'Currency', 'Base_Date'})},
             'market_data': {'file': market.get('MarketDataFile', ''),
-                            'factors': sorted(market.get('ExplicitMarketData', {})
-                                              .get('Price Factors', {}))},
+                            'factor_count': len(factors),
+                            'factors': factors[:80] + (
+                                ['... and {} more'.format(len(factors) - 80)]
+                                if len(factors) > 80 else [])},
             'deals': deals, 'count': len(deals)}
 
 
@@ -235,12 +287,14 @@ def book_deal(deal: dict, parent_reference: str | None = None) -> dict:
     To book AT PAR or at a target margin, solve before you book: a linear payoff's value is affine
     in its amount, so `price_candidate` twice at two trial amounts gives the exact amount that
     lands the value on the target - then book that. On success the answer carries the new
-    `deal_path`, and every other client (the web UI, Excel) sees the deal on its next read.
+    `deal_path`, and every other client (the web UI, Excel) sees the deal on its next read. The
+    answer is about THIS booking; anything else outstanding in the book arrives as counts under
+    `book_issues`, with `validate_book` for the detail.
     """
     request = {'action': 'add', 'deal': deal}
     if parent_reference is not None:
         request['parent_reference'] = parent_reference
-    return service().call('POST', '/book/deals', json=request)
+    return _booking(service().call('POST', '/book/deals', json=request))
 
 
 @MCP.tool()
@@ -306,32 +360,45 @@ def describe_book() -> dict:
 @MCP.tool(annotations=READ_ONLY)
 def poll_result(result_id: str) -> dict:
     """Where a run got to: `queued`/`running`, or `done` with the replay tuple, the run's stats
-    and the SHAPE of every table (fetch cells with `fetch_table`), or `error` with the message."""
-    return service().call('GET', '/results/{}'.format(result_id))
+    and each table's SHAPE as one line (fetch cells with `fetch_table`), or `error` with the
+    message. Never the cells themselves."""
+    return _summary(_raw_result(result_id), result_id)
 
 
 @MCP.tool(annotations=READ_ONLY)
 def fetch_table(result_id: str, table: str, offset: int = 0, limit: int = 50) -> dict:
-    """One table of a finished run, paged: `rows`/`columns` describe the whole table, `data` is
-    `limit` rows from `offset`. Table names come from the result's `tables` - a grouped table is
-    a path (`cashflows/USD`)."""
+    """One table of a finished run, paged and CAPPED: at most 200 rows per call, and a table wider
+    than 60 columns - a scenario cube - is refused by name, because it belongs in the web UI and
+    not in a context window. Table names come from the result summary; a grouped table is a path
+    (`cashflows/USD`)."""
+    shape = _raw_result(result_id).get('tables', {}).get(table)
+    if shape is None:
+        raise ToolError('result {} has no table {!r} - poll_result lists them'.format(
+            result_id, table))
+    if len(shape['columns']) > MAX_TABLE_COLUMNS:
+        raise ToolError('{} is {} columns wide - a simulation cube, not a table to read as text. '
+                        'View it in the web UI, or fetch a summary table instead.'.format(
+                            table, len(shape['columns'])))
     return service().call('GET', '/results/{}/{}?offset={}&limit={}'.format(
-        result_id, table, offset, limit))
+        result_id, table, offset, min(int(limit), MAX_PAGE_ROWS)))
 
 
 @MCP.tool(annotations=READ_ONLY)
 def deal_values(result_id: str) -> dict:
-    """`{reference: value}` off a finished run's `mtm` table - the question after every booking
-    and every what-if. Base valuation only (a Monte Carlo's mtm is a scenario cube; page it with
-    `fetch_table` instead). Row 0's `Total` is the whole book."""
-    page = fetch_table(result_id, 'mtm', 0, 10_000)
-    try:
-        reference = page['columns'].index('Reference')
-        value = page['columns'].index('Value')
-    except ValueError:
-        raise ToolError('this result\'s mtm table has no Reference/Value columns - it is not a '
-                        'base valuation; use fetch_table on one of: {}'.format(
-                            ', '.join(poll_result(result_id).get('tables', {}))))
+    """`{reference: value}` off a finished base valuation's `mtm` table - the question after every
+    booking and every what-if. The SHAPE is checked before anything is fetched: a Monte Carlo's
+    mtm is a scenario cube and is refused unfetched. Row 0's `Total` is the whole book."""
+    raw = _raw_result(result_id)
+    shape = raw.get('tables', {}).get('mtm')
+    if shape is None or 'Reference' not in shape['columns'] or 'Value' not in shape['columns']:
+        raise ToolError('this result carries no per-deal mtm frame - it is not a base valuation. '
+                        'Its tables: {}'.format(', '.join(raw.get('tables', {})) or 'none'))
+    if shape['rows'] > 500:
+        raise ToolError('the mtm frame holds {} deals - too many to hold as text; page it with '
+                        'fetch_table instead'.format(shape['rows']))
+    page = service().call('GET', '/results/{}/mtm?offset=0&limit={}'.format(
+        result_id, shape['rows']))
+    reference, value = page['columns'].index('Reference'), page['columns'].index('Value')
     return {row[reference] if row[reference] else 'Total': row[value] for row in page['data']}
 
 

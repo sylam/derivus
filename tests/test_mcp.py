@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
                                 'mcp_integration'))
 
 import numpy as np
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 from mcp.server.mcpserver.exceptions import ToolError
@@ -196,3 +197,75 @@ def test_deal_values_refuses_a_result_with_no_mtm_frame():
     service.EXECUTOR.queue.join()
     with pytest.raises(ToolError):
         mcp_server.deal_values('mcp-shape')
+
+
+class Counting:
+    """A transport that records every path it carries - how a gate proves a tool REFUSED without
+    fetching, rather than fetched and then refused."""
+
+    def __init__(self, inner):
+        self.inner, self.paths = inner, []
+
+    def request(self, method, url, **kwargs):
+        self.paths.append(url)
+        return self.inner.request(method, url, **kwargs)
+
+
+def held_result(result_id, results):
+    service.EXECUTOR.submit(service.Job(result_id, Held(result_id, [], results=results), {}),
+                            service.HEAVY)
+    service.EXECUTOR.queue.join()
+
+
+def test_a_run_comes_back_as_shapes_never_cells(book):
+    """The minimal-context rule: the model learns the run happened - identity, stats, one line per
+    table - and never holds a table's columns or cells unless it asks for a page."""
+    run = mcp_server.execute_book()
+    assert set(run) <= {'result_id', 'status', 'plan_hash', 'values_hash', 'seed',
+                        'stats', 'tables', 'waited', 'error'}
+    for name, shape in run['tables'].items():
+        assert isinstance(shape, str) and 'rows x' in shape, (name, shape)
+
+
+def test_fetch_table_is_capped_and_a_cube_is_refused():
+    """A page is at most 200 rows however much is asked for, and a table wider than 60 columns -
+    a simulation cube - is refused BY NAME, pointed at the web UI, with nothing fetched."""
+    long = pd.DataFrame({'a': np.arange(500.0), 'b': np.arange(500.0)})
+    wide = pd.DataFrame(np.zeros((3, 100)), columns=[str(c) for c in range(100)])
+    held_result('mcp-caps', {'long': long, 'wide': wide})
+
+    page = mcp_server.fetch_table('mcp-caps', 'long', limit=10_000)
+    assert len(page['data']) == 200 and page['rows'] == 500
+
+    counting = Counting(TestClient(service.app))
+    mcp_server.configure(base_url='http://testserver', session=counting)
+    with pytest.raises(ToolError, match='web UI'):
+        mcp_server.fetch_table('mcp-caps', 'wide')
+    assert not any(path.endswith('/wide') for path in counting.paths)
+
+
+def test_deal_values_refuses_a_cube_without_fetching():
+    """A Monte Carlo's mtm is dates x scenarios; `deal_values` reads its SHAPE and refuses before
+    a single cell travels - the recorded transport is the proof."""
+    cube = pd.DataFrame(np.zeros((5, 80)), columns=[str(c) for c in range(80)])
+    held_result('mcp-cube', {'mtm': cube})
+
+    counting = Counting(TestClient(service.app))
+    mcp_server.configure(base_url='http://testserver', session=counting)
+    with pytest.raises(ToolError, match='base valuation'):
+        mcp_server.deal_values('mcp-cube')
+    assert not any('/mtm' in path for path in counting.paths)
+
+
+def test_a_booking_answer_is_the_booking_not_the_book(book):
+    """The booking outcome carries what happened to THIS deal; the rest of the book's troubles
+    arrive as counts with a pointer, never as the whole verdict."""
+    clean = mcp_server.book_deal(json.loads(dump(BOOKED)))
+    assert 'validate' not in clean and 'book_issues' not in clean
+    assert clean['written'] is True
+
+    rejected = mcp_server.book_deal(json.loads(dump(BINARY)))
+    assert 'validate' not in rejected
+    assert rejected['written'] is False and rejected['refused']
+    assert rejected['book_issues']['deal_messages'] == 1
+    assert 'validate_book' in rejected['book_issues']['hint']

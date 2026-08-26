@@ -48,6 +48,15 @@ takes no children.
 **Deals are addressed positionally.** `deal_path` (`"0/2/1"`) is the identity everywhere —
 the same one the web UI's tree uses — because references are not unique in a book.
 
+**Answers are summaries and pointers — the model's context is a budget.** The model needs to know
+a deal booked or a calculation ran, never to hold a simulation matrix. So a run comes back as its
+replay tuple, its stats and one line per table (`"250 rows x 4 columns"`); a booking outcome is
+about *that* booking, with the rest of the book's troubles as counts pointing at `validate_book`;
+`fetch_table` pages at most 200 rows and refuses a table wider than 60 columns by name — a
+scenario cube belongs in the web UI; and `deal_values` checks a result's shape **before** fetching
+anything (the gate records the transport to prove nothing travelled). Drill-down is always
+available; it is never the default.
+
 **Par and margin are a solve, not a verb.** A linear payoff's value is affine in its amount, so
 two `price_candidate` calls at trial amounts give the exact amount that lands the value on a
 target — then `book_deal` the answer. The tool docstrings teach the model this pattern.
