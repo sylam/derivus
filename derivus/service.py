@@ -658,6 +658,34 @@ def book_solve(request: dict):
     return {'result_id': submitted.result_id, 'status': EXECUTOR.submit(submitted, HEAVY)}
 
 
+def blank_book():
+    """A blank book: the job skeleton's envelope and market data with NO deals, dated today.
+
+    A fresh desk has no job file, so `--book` pointed at a path that does not exist starts one -
+    empty enough to mean nothing, furnished enough to work: the skeleton's USD factors stay so
+    the first booking has market data to validate against (the missing-factor delta would refuse
+    every deal on truly bare market data), and the dates are stamped to today because a starting
+    point is authored at creation, unlike the skeleton itself, whose fixed date is a gated
+    contract."""
+    import datetime
+
+    document = json.loads(json.dumps(JOB_SKELETON))
+    document['Calc']['Deals']['Deals']['Children'] = []
+    stamp = {'.Timestamp': datetime.date.today().strftime('%Y-%m-%d')}
+    document['Calc']['Calculation']['Base_Date'] = stamp
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters'][
+        'Base_Date'] = stamp
+    return document
+
+
+def open_book(path):
+    """The live book at `path`, created blank first when nothing is there yet."""
+    if not os.path.isfile(path):
+        with open(path, 'w', encoding='utf-8', newline='') as handle:
+            json.dump(blank_book(), handle, indent=2)
+    return Book(path)
+
+
 def mount_ui(application, directory):
     """Serve a built web UI at `/ui`, and say whether there was one to serve.
 
@@ -690,7 +718,8 @@ def main():
     parser.add_argument('-u', '--ui', type=str, default=None,
                         help='directory holding a built web UI to serve at /ui')
     parser.add_argument('-k', '--book', type=str, default=None,
-                        help='job JSON file to serve live at /book - the file is the book of record')
+                        help='job JSON file to serve live at /book - created blank if missing; '
+                             'the file is the book of record')
     args = parser.parse_args()
 
     if args.origin:
@@ -698,10 +727,8 @@ def main():
     if args.ui and not mount_ui(app, args.ui):
         parser.error('--ui {} holds no index.html - build the UI first'.format(args.ui))
     if args.book:
-        if not os.path.isfile(args.book):
-            parser.error('--book {} does not exist'.format(args.book))
         global BOOK
-        BOOK = Book(args.book)
+        BOOK = open_book(args.book)
 
     uvicorn.run(app, host=args.bind, port=args.port)
     return 0

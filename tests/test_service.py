@@ -268,6 +268,36 @@ def book(tmp_path):
     service.BOOK = None
 
 
+def test_a_missing_book_file_starts_blank_and_takes_its_first_booking(tmp_path):
+    """A fresh desk has no job file, so `--book` at an empty path creates the blank book: no
+    deals, dated today, the skeleton's USD market data still aboard - which is what lets the very
+    first booking validate instead of being refused for market data a bare file would lack."""
+    import datetime
+    path = tmp_path / 'desk.json'
+    service.BOOK = service.open_book(str(path))
+    try:
+        live = CLIENT.get('/book').json()
+        assert live['document']['Calc']['Deals']['Deals']['Children'] == []
+        assert live['document']['Calc']['Calculation']['Base_Date'] == {
+            '.Timestamp': datetime.date.today().strftime('%Y-%m-%d')}
+        assert CLIENT.post('/validate', json=live['document']).json() == {
+            'deals': {}, 'factors': []}
+
+        first = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': {
+            'Object': 'FixedCashflowDeal', 'Reference': 'FIRST', 'Currency': 'USD',
+            'Discount_Rate': 'USD', 'Calendars': None, 'Amount': 1000.0,
+            'Payment_Date': BASE + pd.DateOffset(years=1)}}), headers=JSON).json()
+        assert first['written'] is True and first['deal_path'] == '0'
+        assert json.loads(path.read_text())['Calc']['Deals']['Deals']['Children'][0][
+            'Instrument']['.Deal']['Reference'] == 'FIRST'
+        # reopening an existing book must never overwrite it
+        service.BOOK = service.open_book(str(path))
+        assert len(CLIENT.get('/book').json()['document']['Calc']['Deals']['Deals'][
+            'Children']) == 1
+    finally:
+        service.BOOK = None
+
+
 def test_without_a_book_the_book_verbs_are_a_404():
     """A service started without `--book` has no book, and a miss is a refusal naming the fix -
     never a book invented in memory that no file backs."""

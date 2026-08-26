@@ -31,8 +31,12 @@ Point the service at a job file — the **live book**, the one document every cl
 writes — and at the UI build:
 
 ```
-DV_Service --book path/to/job.json --ui web/dist
+DV_Service --book path/to/book.json --ui web/dist
 ```
+
+The path need not exist: a missing file starts as a **blank book** — no deals, dated today, with
+the skeleton's USD market data aboard so the first booking has something to validate against. An
+existing file is never touched.
 
 Open `http://127.0.0.1:8000/ui/`. The portfolio tree, the market data (curves and surfaces
 plotted), the calculation and its results all render from the engine's own schema, and the page
