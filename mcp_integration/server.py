@@ -345,6 +345,34 @@ def price_candidate(deal: dict | None = None, parent_reference: str | None = Non
 
 
 @MCP.tool()
+def solve_deal(deal: dict, field: str, target: float = 0.0, bounds: list | None = None,
+               calculation_overrides: dict | None = None, wait_seconds: float = 300.0) -> dict:
+    """Solve ONE field of a candidate deal so the deal's own value lands on `target`, and get the
+    deal back READY TO BOOK - the structuring tool. A par forward: solve the amount to target 0.
+    A sales margin: target the margin. A zero-cost collar: fix one strike, solve the other to
+    target 0. A strike to a premium: solve `Strike_Price` with `bounds` around spot.
+
+    Prefer this over hand-iterating `price_candidate`: the root find runs server-side against the
+    book's market data (brentq inside `bounds`, else a secant from the field's current value -
+    exact in two pricings for an amount) and nothing large enters the conversation. The answer
+    carries `solved` (the field's value, the pricing count, the residual) and `solved_deal` - the
+    deal with the field set, which `book_deal` books as-is.
+    """
+    request = {'deal': deal, 'field': field, 'target': target}
+    if bounds is not None:
+        request['bounds'] = bounds
+    if calculation_overrides:
+        request['calculation_overrides'] = calculation_overrides
+    submitted = service().call('POST', '/book/solve', json=request)
+    outcome = _await_result(submitted['result_id'], wait_seconds)
+    solved = outcome.get('stats', {}).pop('Solved', None) if 'stats' in outcome else None
+    if solved is not None:
+        outcome['solved'] = solved
+        outcome['solved_deal'] = dict(deal, **{field: solved['value']})
+    return outcome
+
+
+@MCP.tool()
 def execute_book(calculation_overrides: dict | None = None,
                  wait_seconds: float = 120.0) -> dict:
     """Run the book's own calculation as it stands - `price_candidate` with no candidate. Waits

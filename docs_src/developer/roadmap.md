@@ -574,6 +574,19 @@ client appears within a tick), the **Excel add-in** (`ServiceClient` gained `boo
 [MCP Binding](mcp.md): sixteen tools, docstrings as the model-facing contract, a rejected booking
 returned as data, an import gate holding it to `requests` + `mcp`).
 
+**The structuring calc is RETIRED as a concept (2026-08-26), by ruling**: structuring is a solve
+VERB over base valuation, not a calculation type — the bootstrap's own pattern (a root find
+around the engine's pricers) applied to a deal field. `POST /book/solve` /
+`derivus.solve_deal_field`: brentq inside declared bounds, else a secant (exact in two pricings
+for an affine field), the candidate priced alone on the book's market data, the seed fixed so a
+Monte-Carlo-priced objective is deterministic (the solved field is conditional on the draw — the
+swaption calibration's philosophy), the residual checked against a declared tolerance rather than
+clamped, and the result's tables being the run AT the solved value. One queued job, one
+result_id, `stats.Solved` carrying the coordinates. Multi-strike structures (collar, seagull)
+compose from 1D solves under their conventions; no N-D optimizer until a genuinely coupled case
+arrives. A deal field is structural, so every iterate recompiles — the solve is where the case
+for extending `bind=` to payoff-only deal fields (a strike moves no discovery) will be MEASURED.
+
 The book surface also carries `amend` (merge fields into the deal at a path, the same
 validate-delta and byte-identical-undo discipline as a booking, negative paths refused by name),
 reachable from all three clients: `ServiceClient.amend_deal`, the MCP `amend_deal` tool ("make

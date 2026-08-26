@@ -123,3 +123,13 @@ class ServiceClient:
         if calculation_overrides:
             request['calculation_overrides'] = calculation_overrides
         return self.call('POST', '/book/price', json=request)
+
+    def solve_deal(self, deal: Any, field: str, target: float = 0.0,
+                   bounds: list[float] | None = None, **options: Any) -> dict[str, Any]:
+        """Solve one field of a candidate deal so its value lands on `target` - par, a margin, a
+        strike to a premium. The answer's `stats.Solved` carries the solved value."""
+        request: dict[str, Any] = {'deal': as_document(deal), 'field': field, 'target': target}
+        if bounds is not None:
+            request['bounds'] = bounds
+        request.update(options)
+        return self.call('POST', '/book/solve', json=request)

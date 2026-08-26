@@ -34,6 +34,7 @@ the verbs cannot answer is a missing verb on `Context`, not an endpoint that rea
 | `GET /book` | the live job document `DV_Service --book` serves, and the etag naming its state |
 | `POST /book/deals` | book or delete one deal - validated BEFORE an atomic write, refusal writes nothing |
 | `POST /book/price` | price the book, optionally with a candidate deal spliced in - a what-if, writes nothing |
+| `POST /book/solve` | solve one field of a candidate deal to a target value - a root find over base valuations, writes nothing |
 
 Every POST body is either a job document or `{"plan_id": ...}` naming one already prepared, and
 nothing downstream can tell the two apart: the plan cache holds a pristine parse and every read of
@@ -67,7 +68,7 @@ from itertools import count
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import Context, content_hash
+from . import Context, content_hash, solve_deal_field
 from .schema import mapping
 from ._version import __version__
 from .config import CustomJsonEncoder, deal_at, remove_deal, sniff_indent, splice_deal
@@ -534,6 +535,56 @@ def book_price(request: dict):
     calculation = context.current_cfg.deals['Calculation']
     return {'result_id': submitted.result_id,
             'status': EXECUTOR.submit(submitted, cost(calculation)['class'])}
+
+
+class SolveJob:
+    """A solve as ONE unit of queued work: the loop runs on the worker like any pricing, so it
+    cannot interleave with other jobs, and its answer files under a result_id like any run. The
+    loop itself is `derivus.solve_deal_field` - this only packages what came back, with the
+    solved coordinates riding the run's own Stats."""
+
+    def __init__(self, document, deal_path, solve):
+        self.document, self.deal_path, self.solve = document, deal_path, solve
+
+    def run_job(self):
+        solved, evaluations, residual, out = solve_deal_field(
+            self.document, self.deal_path, **self.solve)
+        out['Stats'] = dict(out.get('Stats', {}), Solved=dict(
+            self.solve, value=solved, evaluations=evaluations, residual=residual))
+        return None, out
+
+
+@app.post('/book/solve', summary='Solve one field of a candidate deal to a target value')
+def book_solve(request: dict):
+    """The structuring verb: `{deal, field, target?, bounds?, tolerance?,
+    calculation_overrides?}` finds the value of `deal[field]` at which the deal's own base
+    valuation marks at `target` (default 0 - par), against the book's market data, on an
+    in-memory copy - the file never moves.
+
+    Not a calculation type: a root find over ordinary base valuations (brentq inside declared
+    bounds, else a secant - exact in two pricings for a field the value is affine in). The
+    candidate prices ALONE on the book's market data, since a deal's own base-valuation row does
+    not depend on its siblings and a lone deal compiles faster per iterate. Answers
+    `{result_id, status}`; the solved value, pricing count and residual arrive under the
+    result's `stats.Solved`, and the result's tables are the run AT the solved value.
+    """
+    document, etag = live_book().read()
+    try:
+        document['Calc']['Deals']['Deals']['Children'] = []
+        deal_path = splice_deal(document, request['deal'])
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    document['Calc']['Calculation'].update(request.get('calculation_overrides', {}))
+    document['Calc']['Calculation']['Object'] = 'BaseValuation'
+    solve = {key: request[key] for key in ('field', 'target', 'bounds', 'tolerance')
+             if key in request}
+    if 'field' not in solve:
+        raise HTTPException(422, 'a solve names the field it moves')
+    # the identity is the request against this exact book state - the same solve twice is one run
+    submitted = Job(content_hash({'book': etag, 'solve': solve, 'deal': request['deal'],
+                                  'calculation': document['Calc']['Calculation']}),
+                    SolveJob(document, deal_path, solve), {})
+    return {'result_id': submitted.result_id, 'status': EXECUTOR.submit(submitted, HEAVY)}
 
 
 def mount_ui(application, directory):

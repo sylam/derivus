@@ -72,14 +72,15 @@ def test_every_tool_is_registered_and_carries_its_contract():
     tools = {t.name: t for t in asyncio.run(mcp_server.MCP.list_tools())}
     expected = {'list_instrument_types', 'describe_instrument_type', 'describe_calculation_type',
                 'describe_factor_type', 'job_skeleton', 'read_book', 'read_deal', 'book_deal',
-                'amend_deal', 'delete_deal', 'price_candidate', 'execute_book', 'validate_book',
-                'describe_book', 'poll_result', 'fetch_table', 'deal_values'}
+                'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal', 'execute_book',
+                'validate_book', 'describe_book', 'poll_result', 'fetch_table', 'deal_values'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
     writers = {name for name, tool in tools.items()
                if not (tool.annotations and tool.annotations.read_only_hint)}
-    assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'execute_book'}
+    assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal',
+                       'execute_book'}
 
 
 def test_the_schema_tools_are_the_declarations():
@@ -131,6 +132,24 @@ def test_a_what_if_prices_without_writing(book):
     assert mcp_server.deal_values(run['result_id'])['TRIAL'] == pytest.approx(
         BOOKED['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
     assert book.read_bytes() == before
+
+
+def test_solving_then_booking_a_structured_deal(book):
+    """The structuring flow in one breath: solve the amount that marks the deal at the margin,
+    get the deal back ready to book, book it, and the book marks it at the margin - the "3m par
+    fx forward with a 200k sales margin" pattern, with the loop server-side and nothing large in
+    the answer."""
+    outcome = mcp_server.solve_deal(
+        json.loads(dump(dict(BOOKED, Reference='SLV1'))), 'Amount', target=200_000.0)
+
+    assert outcome['status'] == 'done'
+    assert abs(outcome['solved']['residual']) <= 0.01
+    assert outcome['solved_deal']['Amount'] == outcome['solved']['value']
+
+    booked = mcp_server.book_deal(outcome['solved_deal'])
+    run = mcp_server.execute_book()
+    assert booked['written'] is True
+    assert mcp_server.deal_values(run['result_id'])['SLV1'] == pytest.approx(200_000.0, abs=0.01)
 
 
 def test_a_rejected_booking_is_an_answer_that_wrote_nothing(book):

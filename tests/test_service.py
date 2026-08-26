@@ -433,6 +433,62 @@ def test_a_what_if_prices_the_candidate_and_writes_nothing(book):
     assert book.read_bytes() == before
 
 
+def test_a_solve_lands_an_affine_field_in_a_handful_of_pricings(book):
+    """The structuring verb on the affine case: solve a cashflow's Amount to a target value. A
+    secant is exact where the value is affine in the field, so the pricing count is small, the
+    residual is inside tolerance, and the result's tables are the run AT the solved value - a
+    priced answer, never an extrapolated one. The book file never moves."""
+    before = book.read_bytes()
+    submitted = CLIENT.post('/book/solve', content=dump({
+        'deal': dict(CASHFLOW, Reference='SLV1'), 'field': 'Amount',
+        'target': 123_456.0}), headers=JSON).json()
+    service.EXECUTOR.queue.join()
+    result = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+    solved = result['stats']['Solved']
+
+    assert result['status'] == 'done'
+    assert solved['value'] == pytest.approx(123_456.0 / (SPOT * np.exp(-RATE * 2.0)), rel=1e-6)
+    assert abs(solved['residual']) <= 0.01 and solved['evaluations'] <= 4
+    assert mtm(submitted['result_id'])['SLV1'] == pytest.approx(123_456.0, abs=0.01)
+    assert book.read_bytes() == before
+
+
+def test_a_solve_brackets_a_nonlinear_strike(tmp_path):
+    """The case the verb exists for: a digital's value is nonlinear and monotone in its strike,
+    so brentq inside declared bounds finds the strike that marks at the target - and the pricing
+    count says it genuinely iterated rather than taking the affine two-step."""
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(job(factors=dict(FACTORS, **EQUITY)))), indent=2))
+    service.BOOK = service.Book(str(path))
+    try:
+        submitted = CLIENT.post('/book/solve', content=dump({
+            'deal': dict(BINARY, Cash_Payoff=100_000.0, Reference='SLV2'),
+            'field': 'Strike_Price', 'target': 40_000.0, 'bounds': [80.0, 120.0]}),
+            headers=JSON).json()
+        service.EXECUTOR.queue.join()
+        result = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+        solved = result['stats']['Solved']
+
+        assert result['status'] == 'done'
+        assert 80.0 < solved['value'] < 120.0 and solved['evaluations'] > 3
+        assert abs(solved['residual']) <= 0.01
+        assert mtm(submitted['result_id'])['SLV2'] == pytest.approx(40_000.0, abs=0.01)
+    finally:
+        service.BOOK = None
+
+
+def test_a_solve_that_cannot_reach_its_target_says_so(book):
+    """An unreachable target is an error result carrying the solver's own words, not a number
+    quietly clamped to a bound."""
+    submitted = CLIENT.post('/book/solve', content=dump({
+        'deal': dict(CASHFLOW, Reference='SLV3'), 'field': 'Amount',
+        'target': 1_000_000.0, 'bounds': [1.0, 2.0]}), headers=JSON).json()
+    service.EXECUTOR.queue.join()
+    result = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+
+    assert result['status'] == 'error' and result['error']
+
+
 def test_validate_over_http_is_the_verb_verbatim():
     """Both halves of the want-list, over a job broken deliberately in both ways: a deal that
     breaks an authoring rule, and one naming a curve the market data has no block for."""

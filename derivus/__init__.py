@@ -34,7 +34,7 @@ from . import schema
 from . import fields
 from . import utils
 from .instruments import construct_instrument
-from .config import CustomJsonEncoder, Config
+from .config import CustomJsonEncoder, Config, deal_at
 
 
 def update_dict(d, u):
@@ -120,6 +120,57 @@ def load_market_data(rundate, path, json_name='MarketData.json', calendar_name='
     config.params['System Parameters']['Base_Date'] = pd.Timestamp(rundate)
 
     return config
+
+
+def solve_deal_field(document, deal_path, field, target=0.0, bounds=None, tolerance=0.01,
+                     max_iterations=30):
+    """Solve ONE field of a deal so the deal's own value lands on `target` - the structuring
+    verb: par forwards (target 0), sales margins, a collar's second strike, a strike to a premium.
+
+    Not a calculation type: a driver over the ordinary run, the bootstrap's own pattern (a root
+    find around the engine's pricers) applied to a deal field. Each iterate rewrites the field in
+    a copy of the wire document, loads and runs it, and reads the deal's own row off the `mtm`
+    frame - the document's seed is fixed, so a Monte-Carlo-priced objective is DETERMINISTIC and
+    the solved field is conditional on that draw, the same philosophy as the swaption calibration.
+    A deal field is structural today, so every iterate recompiles; the solve is where the case for
+    extending `bind=` to payoff-only deal fields will be measured, not assumed.
+
+    With `bounds`, bracketed brentq; without, a secant from the field's current value - exact in
+    two evaluations for anything affine in the field (an amount), and fast on the monotone
+    payoffs a strike lives in. Raises when the residual cannot reach `tolerance`, naming it.
+
+    Returns `(solved_value, evaluations, residual, out)` - `out` being the full output of the
+    run AT the solved value, so the caller reports a priced answer, never an extrapolated one.
+    """
+    from scipy import optimize
+
+    reference = deal_at(document, deal_path)['Instrument']['.Deal'].get('Reference')
+    priced = {}
+
+    def value(x):
+        x = float(x)
+        if x not in priced:
+            iterate = json.loads(json.dumps(document))
+            deal_at(iterate, deal_path)['Instrument']['.Deal'][field] = x
+            _, out = Context().load_json((json.dumps(iterate), 'solve')).run_job()
+            frame = out['Results']['mtm']
+            priced[x] = (float(frame[frame['Reference'] == reference]['Value'].iloc[0]), out)
+        return priced[x][0]
+
+    if bounds is not None:
+        solved = float(optimize.brentq(lambda x: value(x) - target, bounds[0], bounds[1],
+                                       maxiter=max_iterations))
+    else:
+        start = deal_at(document, deal_path)['Instrument']['.Deal'].get(field)
+        x0 = float(start) if isinstance(start, (int, float)) and start else 1.0
+        solved = float(optimize.newton(lambda x: value(x) - target, x0, x1=x0 * 1.0001 + 1.0,
+                                       maxiter=max_iterations))
+
+    residual = value(solved) - target
+    if abs(residual) > tolerance:
+        raise ValueError('solve for {} stopped {:.6g} from the target after {} pricings'.format(
+            field, residual, len(priced)))
+    return solved, len(priced), residual, priced[solved][1]
 
 
 def run_baseval(context, prec=torch.float64, overrides=None):

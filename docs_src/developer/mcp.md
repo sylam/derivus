@@ -33,6 +33,7 @@ repo.
 | `read_book` / `read_deal` | the live book summarised per deal; one deal verbatim |
 | `book_deal` / `delete_deal` | write verbs onto `POST /book/deals` |
 | `price_candidate` / `execute_book` | `POST /book/price` — the what-if; waits, then hands back the id |
+| `solve_deal` | `POST /book/solve` — solve one field to a target, get the deal back ready to book |
 | `validate_book` / `describe_book` | the read verbs over the live document |
 | `poll_result` / `fetch_table` / `deal_values` | results: status, one paged table, `{reference: value}` |
 
@@ -57,9 +58,11 @@ scenario cube belongs in the web UI; and `deal_values` checks a result's shape *
 anything (the gate records the transport to prove nothing travelled). Drill-down is always
 available; it is never the default.
 
-**Par and margin are a solve, not a verb.** A linear payoff's value is affine in its amount, so
-two `price_candidate` calls at trial amounts give the exact amount that lands the value on a
-target — then `book_deal` the answer. The tool docstrings teach the model this pattern.
+**Par, margin and strikes are `solve_deal`'s job.** The root find runs server-side (brentq inside
+bounds, else a secant — exact in two pricings for an amount), the model receives the solved
+coordinates and the deal ready to book, and no pricing loop ever runs through the conversation. A
+collar or seagull composes from 1D solves under its conventions — fix one strike, solve the
+other, margin last.
 
 **Market data is not editable here**, by decision: the structural/value split
 (`schema.partition_factor`) is engine-side, and a wrong structural edit silently changes the plan
