@@ -507,6 +507,12 @@ class Context:
     def describe(self):
         return self.current_cfg.describe()
 
+    def bootstrap(self):
+        """Run every configured bootstrapper - quotes in `Market Prices` become the price factors
+        and model parameters the pricers read. Delegates to the loaded config, so the harvested
+        calibration tensors (`Quote_Sensitivity`) land where `_build_factor_state` reads them."""
+        return self.current_cfg.bootstrap()
+
     def market_patch(self):
         """The VALUES half of the market data: `{factor_name: {field: content}}`.
 

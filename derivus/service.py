@@ -35,6 +35,7 @@ the verbs cannot answer is a missing verb on `Context`, not an endpoint that rea
 | `POST /book/deals` | book or delete one deal - validated BEFORE an atomic write, refusal writes nothing |
 | `POST /book/price` | price the book, optionally with a candidate deal spliced in - a what-if, writes nothing |
 | `POST /book/solve` | solve one field of a candidate deal to a target value - a root find over base valuations, writes nothing |
+| `POST /book/market` | tick the book's market: quote blocks installed or value-updated, a values patch applied, the bootstrap run - one atomic write |
 
 Every POST body is either a job document or `{"plan_id": ...}` naming one already prepared, and
 nothing downstream can tell the two apart: the plan cache holds a pristine parse and every read of
@@ -57,6 +58,7 @@ put it behind something that terminates both, or narrow the origins with `DV_Ser
 """
 
 import json
+import logging
 import os
 import queue
 import threading
@@ -71,7 +73,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import Context, content_hash, solve_deal_field
 from .schema import mapping
 from ._version import __version__
-from .config import CustomJsonEncoder, deal_at, remove_deal, sniff_indent, splice_deal
+from .config import (CustomJsonEncoder, deal_at, remove_deal, sniff_indent, splice_deal,
+                     update_market_quote)
 
 #: Cost class off `Calculation['Object']`: a light job jumps a heavy one among those still WAITING.
 #: Anything unnamed is heavy, and `run_job` is the one that names it when it turns out not to run.
@@ -535,6 +538,72 @@ def book_price(request: dict):
     calculation = context.current_cfg.deals['Calculation']
     return {'result_id': submitted.result_id,
             'status': EXECUTOR.submit(submitted, cost(calculation)['class'])}
+
+
+class CapturedErrors(logging.Handler):
+    """What the bootstrap has to say for itself: `Config.bootstrap` reports a family that could
+    not run or wrote nothing at ERROR and carries on, so a market update captures that channel
+    and refuses the write when anything landed on it - a book must never carry a market its own
+    bootstrap complained about."""
+
+    def __init__(self):
+        super().__init__(level=logging.ERROR)
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+@app.post('/book/market', summary="Tick the book's market - quotes in, values patched, bootstrapped")
+def book_market(request: dict):
+    """`{quotes?: {name: block}, patch?: {factor: {field: value}}, bootstrap?: 'Yes'|'No'}`.
+
+    The practical tick path: a quote source (`derivus_bloomberg.to_market_prices_block`, a desk
+    script, an MCP tool) posts `Market Prices` blocks; an update may move only each point's
+    `Quoted_Market_Value` and `Timestamp` - structure is a re-authoring, refused by name. `patch`
+    is the values delta exactly as `patch_market` takes it, so the engine's own refusal guards
+    the structural half. The bootstrap (default: run iff quotes arrived) turns the quotes into
+    the price factors the pricers read, and the book file gains the whole result in one atomic
+    write - a bootstrap that reports an error writes NOTHING and hands the messages back.
+    """
+    live = live_book()
+
+    def edit(document):
+        outcome = {'installed': [], 'updated': []}
+        for name in sorted(request.get('quotes', {})):
+            outcome[update_market_quote(document, name, request['quotes'][name])].append(name)
+        wants_bootstrap = request.get(
+            'bootstrap', 'Yes' if request.get('quotes') else 'No') == 'Yes'
+        market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+        if wants_bootstrap and not market.get('Bootstrapper Configuration'):
+            raise ValueError('the book declares no Bootstrapper Configuration - nothing can '
+                             'turn quotes into price factors')
+        if not (wants_bootstrap or request.get('patch')):
+            return bool(outcome['installed'] or outcome['updated']), dict(outcome, written=True)
+
+        context = load(document)
+        context.patch_market(request.get('patch', {}))
+        before = set(market.get('Price Factors', {}))
+        if wants_bootstrap:
+            captured = CapturedErrors()
+            logging.getLogger().addHandler(captured)
+            try:
+                context.bootstrap()
+            finally:
+                logging.getLogger().removeHandler(captured)
+            if captured.messages:
+                return False, {'written': False, 'refused': captured.messages}
+        params = context.current_cfg.params
+        market['Price Factors'] = as_json(params['Price Factors'])
+        market['Market Prices'] = as_json(params['Market Prices'])
+        return True, dict(outcome, written=True,
+                          patched=sorted(request.get('patch', {})),
+                          new_factors=sorted(set(market['Price Factors']) - before))
+
+    try:
+        return live.mutate(edit)
+    except (ValueError, KeyError) as error:
+        raise HTTPException(422, str(error))
 
 
 class SolveJob:

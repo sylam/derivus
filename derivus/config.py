@@ -283,6 +283,37 @@ def sniff_indent(text, default=2):
     return len(found.group(1)) if found else default
 
 
+def update_market_quote(document, name, block):
+    """Install or update one `Market Prices` block in a wire-form job document, in place.
+
+    An update is VALUE-ONLY by construction, for every family at once: everything except each
+    point's `Quoted_Market_Value` and `Timestamp` must stand, because the pillar set, the
+    expiries, the conventions and the tolerances are STRUCTURE - a plan and a pinned grid hang
+    off them, so a moved node is a re-authoring, never a tick. The same rule
+    `derivus_bloomberg.update_fx_vol_snapshot` enforces snapshot-side, held here for whatever
+    posts a block. Returns 'installed' or 'updated'.
+    """
+    if not isinstance(block, dict) or 'instrument' not in block:
+        raise ValueError('{}: a Market Prices block is {{"instrument": {{...}}}}'.format(name))
+    prices = document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
+        'Market Prices', {})
+    if name in prices:
+        def structure(b):
+            instrument = dict(b['instrument'])
+            instrument['Points'] = [
+                {key: value for key, value in point.items()
+                 if key not in ('Quoted_Market_Value', 'Timestamp')}
+                for point in instrument.get('Points', [])]
+            return instrument
+        if structure(prices[name]) != structure(block):
+            raise ValueError('{}: structure differs from the installed block - a moved node is a '
+                             'new plan; re-author it deliberately'.format(name))
+        prices[name] = block
+        return 'updated'
+    prices[name] = block
+    return 'installed'
+
+
 class Config(object):
     """
     Reads (parses) a JSON market data and deals file.

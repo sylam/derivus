@@ -124,6 +124,19 @@ class ServiceClient:
             request['calculation_overrides'] = calculation_overrides
         return self.call('POST', '/book/price', json=request)
 
+    def update_market(self, quotes: Any = None, patch: dict[str, Any] | None = None,
+                      bootstrap: str | None = None) -> dict[str, Any]:
+        """Tick the live book's market: install/update quote blocks, patch values, run the
+        bootstrap - one atomic write, refused whole if the bootstrap complains."""
+        request: dict[str, Any] = {}
+        if quotes is not None:
+            request['quotes'] = as_document(quotes)
+        if patch is not None:
+            request['patch'] = patch
+        if bootstrap is not None:
+            request['bootstrap'] = bootstrap
+        return self.call('POST', '/book/market', json=request)
+
     def solve_deal(self, deal: Any, field: str, target: float = 0.0,
                    bounds: list[float] | None = None, **options: Any) -> dict[str, Any]:
         """Solve one field of a candidate deal so its value lands on `target` - par, a margin, a

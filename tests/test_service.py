@@ -83,19 +83,20 @@ EQUITY = {
                                                       for t in (0.02, 2.0)])}}
 
 
-def job(deals=(CASHFLOW,), factors=FACTORS, **calculation):
+def job(deals=(CASHFLOW,), factors=FACTORS, sections={}, **calculation):
     """A job document, authored as the objects a market data file holds. Dumping it through
     `CustomJsonEncoder` is what a client posts, so the `.Curve` and `.Timestamp` tokens the endpoint
     receives are exactly the ones a file carries — and the decoder that reads them is the same one.
+    `sections` adds further market-data sections (a `Bootstrapper Configuration`, `Market Prices`).
     """
     return {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
                              'MCMC_Simulations': 1, 'Random_Seed': 1}, **calculation),
         'Deals': {'Tag_Titles': '', 'Reference': 'service',
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}} for deal in deals]}},
-        'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
+        'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': dict({
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE},
-            'Price Factors': factors}}}}
+            'Price Factors': factors}, **sections)}}}
 
 
 def dump(document):
@@ -430,6 +431,142 @@ def test_a_what_if_prices_the_candidate_and_writes_nothing(book):
     assert result['status'] == 'done'
     assert mtm(submitted['result_id'])['CF2'] == pytest.approx(
         BOOKED['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
+    assert book.read_bytes() == before
+
+
+def fx_vol_quotes():
+    """An `FXVolPrices` block built through the Bloomberg package's own normalization - canned
+    observations standing in for the terminal, everything downstream of them the real pipeline."""
+    from derivus_bloomberg import (FXQuoteSecurity, FXVolDefinition, RawBloombergObservation,
+                                   normalize_fx_vol, to_market_prices_block)
+    raw = {('3M', 'ATM', None): 14.0, ('3M', 'RR', 0.25): -1.2, ('3M', 'BF', 0.25): 0.35,
+           ('1Y', 'ATM', None): 15.0, ('1Y', 'RR', 0.25): -1.6, ('1Y', 'BF', 0.25): 0.45}
+    definition = FXVolDefinition(
+        pair='USDZAR', surface_name='USD.ZAR', currency='USD',
+        expiries={'3M': 0.25, '1Y': 1.0}, pillars=(0.25,),
+        securities={coordinate: FXQuoteSecurity('USDZAR {} {} {}'.format(*coordinate))
+                    for coordinate in raw})
+    observations = [
+        RawBloombergObservation(expiry, quote_type, pillar,
+                                'USDZAR {} {} {}'.format(expiry, quote_type, pillar),
+                                'PX_LAST', value)
+        for (expiry, quote_type, pillar), value in raw.items()]
+    snapshot = normalize_fx_vol(definition, observations, pd.Timestamp('2024-06-28 16:30'))
+    return {'FXVolPrices.USD.ZAR': to_market_prices_block(snapshot)}
+
+
+FX_OPTION = {'Object': 'FXOptionDeal', 'Reference': 'OPT1', 'Currency': 'USD',
+             'Underlying_Currency': 'ZAR', 'Underlying_Amount': 1_000_000.0,
+             'Strike_Price': SPOT, 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
+             'Option_Style': 'European', 'Expiry_Date': BASE + pd.DateOffset(years=1),
+             'FX_Volatility': 'USD.ZAR', 'Discount_Rate': 'USD'}
+
+
+def test_a_bloomberg_snapshot_reaches_a_solved_strike(tmp_path):
+    """THE practical loop, end to end through one service: canned Bloomberg observations run
+    through `derivus_bloomberg`'s own normalization, `/book/market` installs the quote block and
+    bootstraps it into the `FXVol` surface the book file then carries, and `/book/solve` finds
+    the strike at which an FX option on that surface marks at the target premium. The before/after
+    validate pins the surface as load-bearing: the option is unpriceable until the tick lands."""
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(job(
+        sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2))
+    service.BOOK = service.Book(str(path))
+    try:
+        with_option = json.loads(dump(job(
+            deals=(CASHFLOW, FX_OPTION),
+            sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}})))
+        assert 'FXVol.USD.ZAR' in CLIENT.post('/validate', json=with_option).json()['factors']
+
+        ticked = CLIENT.post('/book/market', content=dump({'quotes': fx_vol_quotes()}),
+                             headers=JSON).json()
+        on_disk = json.loads(path.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+
+        assert ticked['written'] is True
+        assert ticked['installed'] == ['FXVolPrices.USD.ZAR']
+        assert 'FXVol.USD.ZAR' in ticked['new_factors']
+        assert on_disk['Price Factors']['FXVol.USD.ZAR']['Surface_Type'] == 'Malz'
+        assert 'FXVolPrices.USD.ZAR' in on_disk['Market Prices']
+
+        target = 500_000.0
+        submitted = CLIENT.post('/book/solve', content=dump({
+            'deal': FX_OPTION, 'field': 'Strike_Price', 'target': target,
+            'bounds': [12.0, 30.0]}), headers=JSON).json()
+        service.EXECUTOR.queue.join()
+        result = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+        solved = result['stats']['Solved']
+
+        assert result['status'] == 'done'
+        assert 12.0 < solved['value'] < 30.0 and abs(solved['residual']) <= 0.01
+        assert mtm(submitted['result_id'])['OPT1'] == pytest.approx(target, abs=0.01)
+    finally:
+        service.BOOK = None
+
+
+def test_a_quote_update_may_move_only_the_numbers(book):
+    """The structure guard, generalized to every family: a re-post moving only
+    `Quoted_Market_Value`/`Timestamp` updates; one moving a pillar refuses by name with the file
+    untouched - a moved node is a new plan, never a tick."""
+    quotes = fx_vol_quotes()
+    doc = json.loads(book.read_text())
+    doc['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Bootstrapper Configuration'] = {'FXVolSurfaceParameters': {}}
+    book.write_text(json.dumps(doc, indent=2))
+
+    first = CLIENT.post('/book/market', content=dump({'quotes': quotes}), headers=JSON).json()
+    assert first['installed'] == ['FXVolPrices.USD.ZAR']
+
+    ticked = json.loads(dump(fx_vol_quotes()))
+    for point in ticked['FXVolPrices.USD.ZAR']['instrument']['Points']:
+        if point['Quote_Type'] == 'ATM':
+            point['Quoted_Market_Value'] += 0.01
+    before = book.read_bytes()
+    second = CLIENT.post('/book/market', content=dump({'quotes': ticked}), headers=JSON).json()
+    assert second['updated'] == ['FXVolPrices.USD.ZAR'] and second['written'] is True
+
+    moved = json.loads(dump(fx_vol_quotes()))
+    for point in moved['FXVolPrices.USD.ZAR']['instrument']['Points']:
+        point['Pillar'] = 0.1
+    after_update = book.read_bytes()
+    refused = CLIENT.post('/book/market', content=dump({'quotes': moved}), headers=JSON)
+    assert refused.status_code == 422 and 'structure differs' in refused.json()['detail']
+    assert book.read_bytes() == after_update != before
+
+
+def test_a_market_values_patch_reaches_the_file_and_a_structural_one_is_refused(book):
+    """The `patch_market`-shaped half: a spot tick lands in the file through the engine's own
+    values seam, and a structural key is refused by the engine's own raise - the service adds no
+    judgment of its own."""
+    ticked = CLIENT.post('/book/market', json={
+        'patch': {'FxRate.ZAR': {'Spot': 19.25}}}).json()
+    on_disk = json.loads(book.read_text())
+
+    assert ticked['written'] is True and ticked['patched'] == ['FxRate.ZAR']
+    assert on_disk['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Price Factors']['FxRate.ZAR']['Spot'] == 19.25
+
+    before = book.read_bytes()
+    structural = CLIENT.post('/book/market', json={
+        'patch': {'FxRate.ZAR': {'Interest_Rate': 'GBP'}}})
+    assert structural.status_code == 422
+    assert book.read_bytes() == before
+
+
+def test_a_bootstrap_that_complains_writes_nothing(book):
+    """A quote block the bootstrap cannot turn into a factor - here a misnamed one no family
+    selects - refuses the WHOLE write with the bootstrap's own messages: a book must never carry
+    a market its own bootstrap complained about."""
+    doc = json.loads(book.read_text())
+    doc['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Bootstrapper Configuration'] = {'FXVolSurfaceParameters': {}}
+    book.write_text(json.dumps(doc, indent=2))
+    before = book.read_bytes()
+
+    ghost = {'GhostPrices.NOWHERE': {'instrument': {'Points': []}}}
+    outcome = CLIENT.post('/book/market', content=dump({'quotes': ghost}), headers=JSON).json()
+
+    assert outcome['written'] is False
+    assert any('wrote no' in message for message in outcome['refused'])
     assert book.read_bytes() == before
 
 
