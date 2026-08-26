@@ -72,14 +72,14 @@ def test_every_tool_is_registered_and_carries_its_contract():
     tools = {t.name: t for t in asyncio.run(mcp_server.MCP.list_tools())}
     expected = {'list_instrument_types', 'describe_instrument_type', 'describe_calculation_type',
                 'describe_factor_type', 'job_skeleton', 'read_book', 'read_deal', 'book_deal',
-                'delete_deal', 'price_candidate', 'execute_book', 'validate_book',
+                'amend_deal', 'delete_deal', 'price_candidate', 'execute_book', 'validate_book',
                 'describe_book', 'poll_result', 'fetch_table', 'deal_values'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
     writers = {name for name, tool in tools.items()
                if not (tool.annotations and tool.annotations.read_only_hint)}
-    assert writers == {'book_deal', 'delete_deal', 'price_candidate', 'execute_book'}
+    assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'execute_book'}
 
 
 def test_the_schema_tools_are_the_declarations():
@@ -141,6 +141,24 @@ def test_a_rejected_booking_is_an_answer_that_wrote_nothing(book):
 
     assert outcome['written'] is False
     assert 'Cash_Payoff is required' in outcome['refused']
+    assert book.read_bytes() == before
+
+
+def test_an_amendment_changes_the_value_it_names(book):
+    """The 'change a value' flow in plain language: amend the amount, see the deal carry it, see
+    the book mark it - and an amendment that breaks the deal is an answer, not a write."""
+    outcome = mcp_server.amend_deal('0', {'Amount': 500_000.0})
+    assert outcome['written'] is True
+    assert mcp_server.read_deal('0')['deal']['Amount'] == 500_000.0
+
+    run = mcp_server.execute_book()
+    assert mcp_server.deal_values(run['result_id'])['CF1'] == pytest.approx(
+        500_000.0 * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
+
+    before = book.read_bytes()
+    refused = mcp_server.amend_deal('0', {'Discount_Rate': 'GBP'})
+    assert refused['written'] is False and refused['refused']
+    assert 'validate' not in refused
     assert book.read_bytes() == before
 
 

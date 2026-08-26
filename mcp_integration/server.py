@@ -298,6 +298,18 @@ def book_deal(deal: dict, parent_reference: str | None = None) -> dict:
 
 
 @MCP.tool()
+def amend_deal(deal_path: str, fields: dict) -> dict:
+    """Change one or more fields of a booked deal - "make the notional 3m", "move settlement a
+    week". `fields` MERGES into the deal at `deal_path` (from `read_book`); every other field
+    stands. The same validate-before-write contract as `book_deal`: a refusal comes back as
+    `{written: false, refused: [messages]}` with the file untouched - read the messages, fix,
+    amend again. Values wear their wire form: dates `{".Timestamp": "YYYY-MM-DD"}`, percentages
+    `{".Percent": 2.5}`, plain numbers as numbers."""
+    return _booking(service().call('POST', '/book/deals', json={
+        'action': 'amend', 'deal_path': deal_path, 'fields': fields}))
+
+
+@MCP.tool()
 def delete_deal(deal_path: str) -> dict:
     """Remove the deal at `deal_path` from the live book, its children with it. The write is
     atomic and every other client sees it on its next read."""
