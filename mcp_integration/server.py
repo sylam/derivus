@@ -9,9 +9,12 @@ the service, never code here.
 
 The tools work the service's LIVE BOOK (`DV_Service --book <job file>`): the file on disk is the
 book of record, a booking validates before it writes, and every other client - the web UI's etag
-poll, Excel - sees a booking on its next read. Market data is deliberately NOT editable here: the
-structural/value split lives in the engine, a wrong structural edit silently changes the plan, and
-the safe half already travels as the values `Patch` on execute.
+poll, Excel - sees a booking on its next read. Market data moves on the engine's own terms: quote
+blocks tick through `update_market_quotes` (values only - structure is a re-authoring, refused by
+name - with the bootstrap judging the whole write), spots and vols through `patch_market_values`
+(the `bind='value'` seam; a structural key is refused by the engine's rule). What never moves
+from here is structure: a new factor, a moved pillar, a changed convention is authoring, not
+ticking.
 
 Answers are SUMMARIES AND POINTERS, never payloads: the model needs to know a deal booked or a
 calculation ran, not to hold a simulation cube in its context. A run comes back as its replay

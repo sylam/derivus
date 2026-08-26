@@ -94,12 +94,14 @@ export type AmendField = (key: string, wireValue: unknown) => Promise<string[] |
  * values over them, then every UNDECLARED key of the value dict - visible, marked, at the end.
  * With `onAmend`, declared SCALAR fields grow inputs (shapes, tables and containers stay
  * read-only in this slice, and the amendment merges top-level keys, so container children never
- * receive the handler). */
-export function DescriptorPanel({ title, fields, values, onAmend }: {
+ * receive the handler). `editable` narrows WHICH declared fields may edit - the market view
+ * passes the bind='value' test, so structure stays read-only where the engine says it must. */
+export function DescriptorPanel({ title, fields, values, onAmend, editable }: {
   title: string;
   fields?: Record<string, Descriptor>;
   values: Record<string, unknown>;
   onAmend?: AmendField;
+  editable?: (key: string, descriptor: Descriptor) => boolean;
 }) {
   const declared = Object.entries(fields ?? {});
   const undeclared = Object.keys(values).filter((key) => !(fields ?? {})[key]);
@@ -126,7 +128,9 @@ export function DescriptorPanel({ title, fields, values, onAmend }: {
             </div>
           ) : (
             <FieldRow key={key} name={key} descriptor={descriptor} value={value}
-                      declared={!!descriptor || !undeclared.includes(key)} onAmend={onAmend} />
+                      declared={!!descriptor || !undeclared.includes(key)}
+                      onAmend={onAmend && (!descriptor || !editable || editable(key, descriptor))
+                        ? onAmend : undefined} />
           );
         })}
       </div>

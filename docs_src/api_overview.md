@@ -287,6 +287,7 @@ DV_Service --port 8000
 | `POST` | `/book/deals` | book or delete one deal — validated BEFORE an atomic write; a refusal is `{"written": false, "refused": […]}` and touches nothing |
 | `POST` | `/book/price` | price the book plus an optional candidate deal — a what-if; writes nothing |
 | `POST` | `/book/solve` | solve one field of a candidate deal to a target value — a root find over base valuations; the solved coordinates arrive under the result's `stats.Solved` |
+| `POST` | `/book/market` | tick the book's market: quote blocks installed or value-updated (structure refused), a `patch_market`-shaped values patch, the bootstrap run — one atomic write, refused whole if the bootstrap complains |
 
 The book's FILE is the source of truth: every client — the web UI, an MCP tool, the Excel add-in —
 reads and writes it through these verbs, so a deal booked by one appears to the others on their

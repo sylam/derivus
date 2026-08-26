@@ -38,6 +38,8 @@ export const getBook = () => call<BookResponse>('GET', '/book');
 export const amendDeal = (dealPath: string, fields: Record<string, unknown>) =>
   call<BookDealOutcome>('POST', '/book/deals',
     { action: 'amend', deal_path: dealPath, fields });
+export const patchMarket = (factor: string, fields: Record<string, unknown>) =>
+  call<BookDealOutcome>('POST', '/book/market', { patch: { [factor]: fields } });
 export const postDescribe = (doc: JobDoc) => call<DescribeResult>('POST', '/describe', doc);
 export const postValidate = (doc: JobDoc) => call<ValidateResult>('POST', '/validate', doc);
 export const postExecute = (doc: JobDoc) =>

@@ -34,6 +34,7 @@ repo.
 | `book_deal` / `delete_deal` | write verbs onto `POST /book/deals` |
 | `price_candidate` / `execute_book` | `POST /book/price` — the what-if; waits, then hands back the id |
 | `solve_deal` | `POST /book/solve` — solve one field to a target, get the deal back ready to book |
+| `update_market_quotes` / `patch_market_values` | `POST /book/market` — quote blocks in (values-only updates, bootstrap judging the write), spot/vol values patched |
 | `validate_book` / `describe_book` | the read verbs over the live document |
 | `poll_result` / `fetch_table` / `deal_values` | results: status, one paged table, `{reference: value}` |
 
@@ -64,10 +65,13 @@ coordinates and the deal ready to book, and no pricing loop ever runs through th
 collar or seagull composes from 1D solves under its conventions — fix one strike, solve the
 other, margin last.
 
-**Market data is not editable here**, by decision: the structural/value split
-(`schema.partition_factor`) is engine-side, and a wrong structural edit silently changes the plan
-— a wrong number, not a failure. The safe half already travels as the values `Patch` on execute;
-when market-data editing lands it lands behind a `patch_market`-shaped verb.
+**Market data moves on the engine's terms, never freely.** `patch_market_values` rides the
+`bind='value'` seam — the engine's own `patch_market` refuses a structural key by name.
+`update_market_quotes` installs or ticks whole `Market Prices` blocks (the shape
+`derivus_bloomberg.to_market_prices_block` emits): an update may move only each point's quoted
+value and timestamp — a changed pillar, expiry or convention is a re-authoring, refused — and the
+bootstrap judges the whole write: any error it reports refuses everything, messages verbatim.
+Structure (a new factor, a moved node) is authoring, and stays outside these tools.
 
 ## Testing
 

@@ -595,10 +595,23 @@ live book, the wire form chosen by the DECLARATION (`encodeScalar` inverts the t
 `widget`+`obj`, no field-name whitelists anywhere), refusals rendered verbatim, and the etag
 refresh doing the repaint so the client holds no edit state.
 
+**The market ticks through the book (2026-08-26)** — the practical loop the Bloomberg package
+feeds. `POST /book/market`: quote blocks install or update (`config.update_market_quote` — the
+value-only structure guard generalized to every family: only `Quoted_Market_Value`/`Timestamp`
+may move, a changed pillar/expiry/convention refuses by name), a `patch_market`-shaped values
+patch (the engine's own structural refusal), and the bootstrap — now a `Context` verb — turning
+quotes into the factors the pricers read, all in one atomic write that a bootstrap ERROR refuses
+whole with its own messages. MCP: `update_market_quotes` / `patch_market_values`; Excel:
+`ServiceClient.update_market`; web UI: `bind='value'` fields edit in place (the declaration is
+the predicate — structure stays read-only exactly where the engine refuses it). Gated end to end:
+canned Bloomberg observations → `derivus_bloomberg`'s own normalization → the book file carries
+the `Malz` surface → `/book/solve` lands an FX option's strike on a target premium
+(`test_a_bloomberg_snapshot_reaches_a_solved_strike`; the MCP twin runs the whole day in four
+tool calls and then moves the mark with a spot tick).
+
 What remains of the service: SSE for progress (the UI and the book poll today), a cost estimate
 that reads the real grid rather than a segment count, auth with budget caps, and the rest of the
-web UI's edit surface — tables/curves (an editable grid component), creating deals from the UI,
-and market data behind a `patch_market`-shaped verb.
+web UI's edit surface — tables/curves (an editable grid component) and creating deals from the UI.
 
 **The Excel add-in is the first real client.** `excel_integration/service_client.py` is a plain
 `requests` client of the verbs and imports neither `xlwings` nor `derivus` — it is the HTTP binding
