@@ -298,8 +298,10 @@ class Book:
 
     def _read(self):
         stamp = os.stat(self.path).st_mtime_ns
-        if self._cache[0] != stamp:
-            with open(self.path) as handle:
+        if stamp != self._cache[0]:
+            # utf-8 named on both sides: Windows' locale default is cp1252, which misreads any
+            # non-ascii book; newline translation on read makes the etag convention-independent
+            with open(self.path, encoding='utf-8') as handle:
                 text = handle.read()
             self._cache = (stamp, content_hash(text), text)
         return json.loads(self._cache[2]), self._cache[1]
@@ -318,7 +320,7 @@ class Book:
             if write:
                 text = json.dumps(document, indent=sniff_indent(self._cache[2]))
                 temporary = self.path + '.tmp'
-                with open(temporary, 'w') as handle:
+                with open(temporary, 'w', encoding='utf-8', newline='') as handle:
                     handle.write(text)
                 os.replace(temporary, self.path)
                 self._cache = (os.stat(self.path).st_mtime_ns, content_hash(text), text)

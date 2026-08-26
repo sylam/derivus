@@ -1216,7 +1216,7 @@ class Config(object):
                 return ModelParams((dct['.ModelParams']['modeldefaults'], dct['.ModelParams']['modelfilters']))
             return dct
 
-        with open(filename, 'rt') as f:
+        with open(filename, 'rt', encoding='utf-8') as f:
             self.last_file_loaded = filename
             self.file_ref = os.path.splitext(os.path.split(self.last_file_loaded)[-1])[0]
             data = json.load(f, object_hook=as_internal)
@@ -1297,7 +1297,7 @@ class Config(object):
             self.file_ref = filedata[1]
             data = json.loads(filedata[0], object_hook=as_internal)
         else:
-            with open(filedata, 'rt') as f:
+            with open(filedata, 'rt', encoding='utf-8') as f:
                 self.last_file_loaded = filedata
                 self.file_ref = os.path.splitext(os.path.split(self.last_file_loaded)[-1])[0]
                 data = json.load(f, object_hook=as_internal)
@@ -1316,7 +1316,7 @@ class Config(object):
         # create new keys for json serialization
         self.params['Correlations'] = correlations
 
-        with open(json_filename, 'wt') as f:
+        with open(json_filename, 'wt', encoding='utf-8') as f:
             f.write(json.dumps({'MarketData': self.params,
                                 'Version': self.version}, separators=(',', ':'), cls=CustomJsonEncoder))
 
