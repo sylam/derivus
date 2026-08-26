@@ -1938,7 +1938,7 @@ class Base_Revaluation(Calculation):
                         greeks.setdefault(k, []).append(
                             self.gradients_as_df(v, header=deal.Instrument.field.get('Reference'), display_val=True))
                     elif k == 'Value':
-                        data[k] = float(v)
+                        data[k] = v.item()
                 # update any tags
                 if deal.Instrument.field.get('Tags'):
                     data.update(dict(zip(tag_titles, deal.Instrument.field['Tags'][0].split(','))))
@@ -1980,7 +1980,7 @@ class Base_Revaluation(Calculation):
         # calculate the grand total
         data = dict(
             [(field, self.netting_sets.obj.Instrument.field.get(field, 'Root')) for field in ['Reference', 'Object']])
-        data['Value'] = sum([float(x.obj.Calc_res['Value']) for x in self.netting_sets.sub_structures])
+        data['Value'] = sum([x.obj.Calc_res['Value'].item() for x in self.netting_sets.sub_structures])
         mtm.insert(0, data)
 
         # write out the dataframe

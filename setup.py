@@ -14,7 +14,7 @@ setup(
     name='derivus',
     version=version_ns['__version__'],
     # excel_integration is an add-in that lives in the repo, not part of the installed library
-    packages=find_packages(include=['derivus', 'derivus.*']),
+    packages=find_packages(include=['derivus', 'derivus.*', 'derivus_bloomberg', 'derivus_bloomberg.*']),
     # the three console scripts are flat modules beside the package, so they need declaring
     py_modules=['derivus_bootstrap', 'derivus_batch', 'derivus_docs'],
     url='https://github.com/sylam/derivus',
