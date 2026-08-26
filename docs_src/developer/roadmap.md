@@ -574,10 +574,18 @@ client appears within a tick), the **Excel add-in** (`ServiceClient` gained `boo
 [MCP Binding](mcp.md): sixteen tools, docstrings as the model-facing contract, a rejected booking
 returned as data, an import gate holding it to `requests` + `mcp`).
 
+The book surface also carries `amend` (merge fields into the deal at a path, the same
+validate-delta and byte-identical-undo discipline as a booking, negative paths refused by name),
+reachable from all three clients: `ServiceClient.amend_deal`, the MCP `amend_deal` tool ("make
+the notional 3m"), and the web UI's scalar edit — declared scalar fields grow inputs over the
+live book, the wire form chosen by the DECLARATION (`encodeScalar` inverts the token map off
+`widget`+`obj`, no field-name whitelists anywhere), refusals rendered verbatim, and the etag
+refresh doing the repaint so the client holds no edit state.
+
 What remains of the service: SSE for progress (the UI and the book poll today), a cost estimate
-that reads the real grid rather than a segment count, auth with budget caps, and the web UI's
-EDIT slice — field write-back done from the declarations, which is where the Jupyter app's
-whitelist defects go to die rather than get repaired.
+that reads the real grid rather than a segment count, auth with budget caps, and the rest of the
+web UI's edit surface — tables/curves (an editable grid component), creating deals from the UI,
+and market data behind a `patch_market`-shaped verb.
 
 **The Excel add-in is the first real client.** `excel_integration/service_client.py` is a plain
 `requests` client of the verbs and imports neither `xlwings` nor `derivus` — it is the HTTP binding

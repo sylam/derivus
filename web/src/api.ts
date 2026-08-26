@@ -26,8 +26,18 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   return response.json() as Promise<T>;
 }
 
+export type BookDealOutcome = {
+  written: boolean;
+  deal_path?: string;
+  refused?: string[];
+  etag?: string;
+};
+
 export const getSchema = () => call<Schema>('GET', '/schema');
 export const getBook = () => call<BookResponse>('GET', '/book');
+export const amendDeal = (dealPath: string, fields: Record<string, unknown>) =>
+  call<BookDealOutcome>('POST', '/book/deals',
+    { action: 'amend', deal_path: dealPath, fields });
 export const postDescribe = (doc: JobDoc) => call<DescribeResult>('POST', '/describe', doc);
 export const postValidate = (doc: JobDoc) => call<ValidateResult>('POST', '/validate', doc);
 export const postExecute = (doc: JobDoc) =>

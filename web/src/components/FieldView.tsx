@@ -1,4 +1,7 @@
-import { curveOf, formatNumber, isObject, offsetText, token } from '../tokens';
+import { useEffect, useState } from 'react';
+import {
+  curveOf, editRaw, encodeScalar, formatNumber, isEditableScalar, isObject, offsetText, token,
+} from '../tokens';
 import type { Descriptor } from '../types';
 import { CurveChart } from './CurveChart';
 import { DataTable } from './DataTable';
@@ -84,12 +87,19 @@ export function FieldView({ value, descriptor }: { value: unknown; descriptor?: 
   );
 }
 
+/** Save one field's wire value; resolves to refusal messages, or null on success. */
+export type AmendField = (key: string, wireValue: unknown) => Promise<string[] | null>;
+
 /** One card of labelled fields: declared descriptors in declaration order with the document's
- * values over them, then every UNDECLARED key of the value dict - visible, marked, at the end. */
-export function DescriptorPanel({ title, fields, values }: {
+ * values over them, then every UNDECLARED key of the value dict - visible, marked, at the end.
+ * With `onAmend`, declared SCALAR fields grow inputs (shapes, tables and containers stay
+ * read-only in this slice, and the amendment merges top-level keys, so container children never
+ * receive the handler). */
+export function DescriptorPanel({ title, fields, values, onAmend }: {
   title: string;
   fields?: Record<string, Descriptor>;
   values: Record<string, unknown>;
+  onAmend?: AmendField;
 }) {
   const declared = Object.entries(fields ?? {});
   const undeclared = Object.keys(values).filter((key) => !(fields ?? {})[key]);
@@ -116,7 +126,7 @@ export function DescriptorPanel({ title, fields, values }: {
             </div>
           ) : (
             <FieldRow key={key} name={key} descriptor={descriptor} value={value}
-                      declared={!!descriptor || !undeclared.includes(key)} />
+                      declared={!!descriptor || !undeclared.includes(key)} onAmend={onAmend} />
           );
         })}
       </div>
@@ -124,9 +134,11 @@ export function DescriptorPanel({ title, fields, values }: {
   );
 }
 
-function FieldRow({ name, descriptor, value, declared }: {
-  name: string; descriptor?: Descriptor; value: unknown; declared: boolean;
+function FieldRow({ name, descriptor, value, declared, onAmend }: {
+  name: string; descriptor?: Descriptor; value: unknown; declared: boolean; onAmend?: AmendField;
 }) {
+  const editable = onAmend !== undefined && descriptor !== undefined &&
+    isEditableScalar(descriptor, value);
   return (
     <>
       <div className="k">
@@ -134,7 +146,74 @@ function FieldRow({ name, descriptor, value, declared }: {
         {descriptor?.required && !value && <span className="required"> *</span>}
         {!declared && <span className="hint">(not declared)</span>}
       </div>
-      <div className="v"><FieldView value={value} descriptor={descriptor} /></div>
+      <div className="v">
+        {editable
+          ? <EditableScalar name={name} descriptor={descriptor!} value={value} onAmend={onAmend!} />
+          : <FieldView value={value} descriptor={descriptor} />}
+      </div>
     </>
+  );
+}
+
+/** One scalar input, saved on Enter or on leaving the field when changed. No client-side edit
+ * state beyond this component: a successful save refreshes the book, the incoming value moves,
+ * and the effect below re-syncs - the file is the truth, always. A refusal renders verbatim. */
+function EditableScalar({ name, descriptor, value, onAmend }: {
+  name: string; descriptor: Descriptor; value: unknown; onAmend: AmendField;
+}) {
+  const incoming = editRaw(value);
+  const [raw, setRaw] = useState(incoming);
+  const [refused, setRefused] = useState<string[] | null>(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setRaw(incoming); setRefused(null); }, [incoming]);
+
+  async function save(nextRaw: string | boolean) {
+    if (typeof nextRaw === 'string' && nextRaw === incoming) return;
+    setSaving(true);
+    try {
+      setRefused(await onAmend(name, encodeScalar(descriptor, nextRaw)));
+    } catch (error) {
+      setRefused([String(error)]);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const suffix = descriptor.obj === 'Percent' ? ' %' : descriptor.obj === 'Basis' ? ' bp' : '';
+  let input;
+  if (descriptor.widget === 'Dropdown') {
+    input = (
+      <select value={raw} disabled={saving}
+              onChange={(e) => { setRaw(e.target.value); void save(e.target.value); }}>
+        {(descriptor.values ?? []).map((option) => <option key={option}>{option}</option>)}
+      </select>
+    );
+  } else if (descriptor.widget === 'Checkbox') {
+    input = (
+      <input type="checkbox" checked={raw === 'true'} disabled={saving}
+             onChange={(e) => { setRaw(String(e.target.checked)); void save(e.target.checked); }} />
+    );
+  } else {
+    const kind = descriptor.widget === 'DatePicker' ? 'date'
+      : ['Float', 'BoundedFloat', 'Integer'].includes(descriptor.widget)
+        || descriptor.obj === 'Percent' || descriptor.obj === 'Basis' ? 'number' : 'text';
+    input = (
+      <input
+        type={kind} value={raw} disabled={saving} step="any"
+        min={descriptor.min} max={descriptor.max}
+        onChange={(e) => setRaw(e.target.value)}
+        onBlur={() => void save(raw)}
+        onKeyDown={(e) => { if (e.key === 'Enter') void save(raw); }}
+      />
+    );
+  }
+  return (
+    <span className="editcell">
+      {input}{suffix && <span className="hint">{suffix}</span>}
+      {saving && <span className="hint">saving…</span>}
+      {refused && refused.map((message, i) => (
+        <span key={i} className="refusal">{message}</span>
+      ))}
+    </span>
   );
 }

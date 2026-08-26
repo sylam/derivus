@@ -1,8 +1,11 @@
 # derivus web UI
 
-A viewer over the derivus HTTP service: the portfolio tree, the market data (curves and surfaces
-plotted), the calculation, and a run's results. Slice 1 is **view + run** — fields are read-only;
-booking goes through the service's `/book` verbs (the MCP tools, or Excel).
+A client over the derivus HTTP service: the portfolio tree, the market data (curves and surfaces
+plotted), the calculation, and a run's results. **View + run + scalar edit**: over the live book,
+declared scalar fields (amounts, dates, rates, dropdowns) edit in place — saved through the
+service's validate-before-write `amend` verb, refusals rendered verbatim, the etag poll doing the
+repaint, so there is no client-side edit state at all. Tables, curves and market data stay
+read-only for now; booking new deals goes through the `/book` verbs (the MCP tools, or Excel).
 
 The UI is optional to the core library. Nothing here enters the `derivus` package: it is a client
 of the same endpoints every other client uses, built separately and handed to the service as a

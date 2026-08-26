@@ -1,4 +1,5 @@
-import { DescriptorPanel } from '../components/FieldView';
+import { amendDeal, getBook } from '../api';
+import { DescriptorPanel, type AmendField } from '../components/FieldView';
 import { Tree, type TreeNode } from '../components/Tree';
 import { useApp } from '../state';
 import type { DealNode } from '../types';
@@ -42,6 +43,22 @@ export function PortfolioView() {
   const deal = selected?.Instrument['.Deal'];
   const sections = deal ? schema.Instrument.types[String(deal.Object)] : undefined;
 
+  // editing exists only over the LIVE BOOK - a local file has nothing server-side to amend.
+  // A successful amendment refreshes the book at once rather than waiting a poll tick.
+  const onAmend: AmendField | undefined =
+    state.source?.kind === 'book' && selection.deal !== null
+      ? async (key, wireValue) => {
+          const outcome = await amendDeal(selection.deal!, { [key]: wireValue });
+          if (!outcome.written) return outcome.refused ?? ['refused'];
+          const live = await getBook();
+          dispatch({
+            type: 'DOC_LOADED', doc: live.document, refresh: true,
+            source: { kind: 'book', etag: live.etag, path: live.path },
+          });
+          return null;
+        }
+      : undefined;
+
   return (
     <div className="main">
       <div className="sidebar">
@@ -59,6 +76,7 @@ export function PortfolioView() {
             title={section}
             fields={schema.Instrument.sections[section]}
             values={deal}
+            onAmend={onAmend}
           />
         ))}
         {deal && !sections && (
