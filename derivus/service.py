@@ -31,6 +31,9 @@ the verbs cannot answer is a missing verb on `Context`, not an endpoint that rea
 | `GET /results/{result_id}` | status, the replay tuple, the run's stats, and the SHAPE of each table |
 | `GET /results/{result_id}/{table}` | one table, paged |
 | `GET /ui` | a built web UI, when `DV_Service --ui` mounted one - a client, not a verb |
+| `GET /book` | the live job document `DV_Service --book` serves, and the etag naming its state |
+| `POST /book/deals` | book or delete one deal - validated BEFORE an atomic write, refusal writes nothing |
+| `POST /book/price` | price the book, optionally with a candidate deal spliced in - a what-if, writes nothing |
 
 Every POST body is either a job document or `{"plan_id": ...}` naming one already prepared, and
 nothing downstream can tell the two apart: the plan cache holds a pristine parse and every read of
@@ -53,6 +56,7 @@ put it behind something that terminates both, or narrow the origins with `DV_Ser
 """
 
 import json
+import os
 import queue
 import threading
 
@@ -66,7 +70,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import Context, content_hash
 from .schema import mapping
 from ._version import __version__
-from .config import CustomJsonEncoder
+from .config import CustomJsonEncoder, remove_deal, sniff_indent, splice_deal
 
 #: Cost class off `Calculation['Object']`: a light job jumps a heavy one among those still WAITING.
 #: Anything unnamed is heavy, and `run_job` is the one that names it when it turns out not to run.
@@ -271,6 +275,56 @@ class ComputeExecutor:
             self.queue.task_done()
 
 
+class Book:
+    """One live job document on disk - the FILE is the source of truth.
+
+    This is the state MCP, the SPA and Excel meet in: a booking lands as a file write, and every
+    client sees it on its next read. Reads check mtime and re-parse on change, so an external edit
+    is picked up too; the etag is a hash of the text, so a client polls one small GET and
+    re-renders only when the book actually moved. Writes are atomic (write-temp-then-replace) in
+    the file's own indent, and `mutate` holds one lock across read-edit-validate-write so two
+    bookings cannot interleave. Every read parses fresh, so an edit a refusal abandons never
+    reaches the cache.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self.lock = threading.Lock()
+        self._cache = (None, None, None)  # (mtime_ns, etag, text)
+
+    def _read(self):
+        stamp = os.stat(self.path).st_mtime_ns
+        if self._cache[0] != stamp:
+            with open(self.path) as handle:
+                text = handle.read()
+            self._cache = (stamp, content_hash(text), text)
+        return json.loads(self._cache[2]), self._cache[1]
+
+    def read(self):
+        """`(wire document, etag)` - a fresh parse, safe for the caller to mutate."""
+        with self.lock:
+            return self._read()
+
+    def mutate(self, edit):
+        """Read-modify-write under one lock. `edit(document)` returns `(write, outcome)`; a False
+        first half leaves the file untouched - a refused booking is a read, not a write."""
+        with self.lock:
+            document, _ = self._read()
+            write, outcome = edit(document)
+            if write:
+                text = json.dumps(document, indent=sniff_indent(self._cache[2]))
+                temporary = self.path + '.tmp'
+                with open(temporary, 'w') as handle:
+                    handle.write(text)
+                os.replace(temporary, self.path)
+                self._cache = (os.stat(self.path).st_mtime_ns, content_hash(text), text)
+            return dict(outcome, etag=self._cache[1])
+
+
+#: The live book, when `DV_Service --book` opened one. None is a 404 on every /book verb.
+BOOK = None
+
+
 app = FastAPI(title='derivus', version=__version__)
 app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_methods=['*'], allow_headers=['*'])
 EXECUTOR = ComputeExecutor()
@@ -402,6 +456,79 @@ def table(result_id: str, table: str, offset: int = 0, limit: int = None):
                 index=index[offset:end], data=rows[offset:end])
 
 
+def live_book():
+    if BOOK is None:
+        raise HTTPException(404, 'No book is being served - start DV_Service --book <job file>')
+    return BOOK
+
+
+@app.get('/book', summary='The live job document this service serves')
+def book():
+    """The book, whole and in wire form, with the etag naming its current state. A client renders
+    the document and then polls only the etag question - re-fetching when it moves - so a deal
+    booked by any other client appears within a poll tick."""
+    document, etag = live_book().read()
+    return {'document': document, 'etag': etag, 'path': live_book().path}
+
+
+@app.post('/book/deals', summary='Book or delete one deal - validated, then written atomically')
+def book_deals(request: dict):
+    """`{action: 'add', deal, parent_reference?}` or `{action: 'delete', deal_path}`.
+
+    The contract is validate-before-write: the deal is spliced into a copy, the whole document is
+    validated, and the file is rewritten only if nothing is said against the BOOKED deal - its own
+    authoring messages, or market data the book did not already lack. A book already failing
+    elsewhere cannot block a correct booking, and the caller sees the whole verdict either way. A
+    refusal is `{written: False, ...}` and touches nothing - it is an answer, not an error.
+    """
+    action = request.get('action', 'add')
+    if action not in ('add', 'delete'):
+        raise HTTPException(422, 'action must be add or delete, not {!r}'.format(action))
+
+    def edit(document):
+        if action == 'delete':
+            removed = remove_deal(document, request['deal_path'])
+            return True, {'written': True,
+                          'deleted': removed['Instrument']['.Deal'].get('Reference')}
+        deal = request['deal']
+        already_missing = set(load(document).validate()['factors'])
+        deal_path = splice_deal(document, deal, request.get('parent_reference'))
+        verdict = load(document).validate()
+        refused = list(verdict['deals'].get(deal.get('Reference'), []))
+        refused += ['no market data for {}'.format(name)
+                    for name in sorted(set(verdict['factors']) - already_missing)]
+        if refused:
+            return False, {'written': False, 'refused': refused, 'validate': verdict}
+        return True, {'written': True, 'deal_path': deal_path, 'validate': verdict}
+
+    try:
+        return live_book().mutate(edit)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+
+
+@app.post('/book/price', summary='Price the book, with an optional candidate deal - writes nothing')
+def book_price(request: dict):
+    """The what-if verb: `{deal?, parent_reference?, calculation_overrides?}` prices the book plus
+    an optional candidate on an in-memory copy - the file never moves. Overrides merge into
+    `Calc.Calculation`, so "with Greeks" or "as a CMC" needs no second write surface. Answers
+    `{result_id, status}` exactly like `/execute`, and the same content addressing applies: the
+    same what-if twice is one run."""
+    document, _ = live_book().read()
+    try:
+        if request.get('deal') is not None:
+            splice_deal(document, request['deal'], request.get('parent_reference'))
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    document['Calc']['Calculation'].update(request.get('calculation_overrides', {}))
+    context = load(document)
+    stamp = replay(context)
+    submitted = Job(content_hash(stamp), context, stamp)
+    calculation = context.current_cfg.deals['Calculation']
+    return {'result_id': submitted.result_id,
+            'status': EXECUTOR.submit(submitted, cost(calculation)['class'])}
+
+
 def mount_ui(application, directory):
     """Serve a built web UI at `/ui`, and say whether there was one to serve.
 
@@ -433,12 +560,19 @@ def main():
                         help='browser origin to allow; repeatable, defaults to any')
     parser.add_argument('-u', '--ui', type=str, default=None,
                         help='directory holding a built web UI to serve at /ui')
+    parser.add_argument('-k', '--book', type=str, default=None,
+                        help='job JSON file to serve live at /book - the file is the book of record')
     args = parser.parse_args()
 
     if args.origin:
         ORIGINS[:] = args.origin
     if args.ui and not mount_ui(app, args.ui):
         parser.error('--ui {} holds no index.html - build the UI first'.format(args.ui))
+    if args.book:
+        if not os.path.isfile(args.book):
+            parser.error('--book {} does not exist'.format(args.book))
+        global BOOK
+        BOOK = Book(args.book)
 
     uvicorn.run(app, host=args.bind, port=args.port)
     return 0

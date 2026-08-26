@@ -252,6 +252,134 @@ def test_the_ui_is_mounted_only_when_it_is_built(tmp_path):
     assert ui.get('/ui/portfolio').status_code == 404
 
 
+#: What a client books into the live book: the same cashflow shape, its own reference and size.
+BOOKED = dict(CASHFLOW, Reference='CF2', Amount=250_000.0)
+
+
+@pytest.fixture
+def book(tmp_path):
+    """A live book over a temp copy of the one-cashflow job, taken down after the gate. Written at
+    indent 2, which is what the formatting gate holds the rewrite to."""
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(job())), indent=2))
+    service.BOOK = service.Book(str(path))
+    yield path
+    service.BOOK = None
+
+
+def test_without_a_book_the_book_verbs_are_a_404():
+    """A service started without `--book` has no book, and a miss is a refusal naming the fix -
+    never a book invented in memory that no file backs."""
+    assert CLIENT.get('/book').status_code == 404
+    assert '--book' in CLIENT.get('/book').json()['detail']
+
+
+def test_a_booking_lands_in_the_file_and_every_client_sees_it(book):
+    """The file is the source of truth: the booked deal is in the answer, in the file on disk and
+    in the next GET - with a moved etag, which is the one question a polling client asks."""
+    before = CLIENT.get('/book').json()
+    outcome = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': BOOKED}),
+                          headers=JSON).json()
+    after = CLIENT.get('/book').json()
+    on_disk = json.loads(book.read_text())
+
+    assert outcome['written'] is True and outcome['deal_path'] == '1'
+    assert before['etag'] != after['etag'] == outcome['etag']
+    assert after['document'] == on_disk
+    assert on_disk['Calc']['Deals']['Deals']['Children'][1][
+        'Instrument']['.Deal']['Reference'] == 'CF2'
+    # and the written file is still a job the other binding loads and validates clean
+    assert in_process(on_disk).validate() == {'deals': {}, 'factors': []}
+
+
+def test_a_rejected_booking_touches_nothing(book):
+    """Validate-before-write, refused on both counts at once: an authoring message against the
+    booked deal, and market data the book does not carry. File bytes and etag stand still, and the
+    refusal is an ANSWER carrying the messages - the caller reads them to fix the deal."""
+    before = book.read_bytes()
+    etag = CLIENT.get('/book').json()['etag']
+    outcome = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': BINARY}),
+                          headers=JSON).json()
+
+    assert outcome['written'] is False
+    assert 'Cash_Payoff is required' in outcome['refused']
+    assert any('EquityPrice.EQ' in message for message in outcome['refused'])
+    assert book.read_bytes() == before
+    assert CLIENT.get('/book').json()['etag'] == etag
+
+
+def test_a_booking_naming_market_data_the_book_lacks_is_refused(book):
+    """A deal with clean authoring but a curve the book has no block for would load and then be
+    silently DROPPED by discovery - the wrong kind of quiet for a booking verb - so the delta of
+    missing factors refuses it by name. The book's own pre-existing gaps do not block: only what
+    this booking adds."""
+    outcome = CLIENT.post('/book/deals', content=dump(
+        {'action': 'add',
+         'deal': dict(CASHFLOW, Reference='CF9', Currency='GBP', Discount_Rate='GBP')}),
+        headers=JSON).json()
+
+    assert outcome['written'] is False
+    assert 'no market data for InterestRate.GBP' in outcome['refused']
+
+
+def test_booking_then_deleting_restores_the_file_bytes(book):
+    """The rewrite keeps the file's own indent, so book-then-delete is a no-op to the byte - what
+    makes the book diffable and a booking reviewable as the diff of the deal and nothing else."""
+    before = book.read_bytes()
+    booked = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': BOOKED}),
+                         headers=JSON).json()
+    deleted = CLIENT.post(
+        '/book/deals', json={'action': 'delete', 'deal_path': booked['deal_path']}).json()
+
+    assert booked['written'] and deleted['written'] and deleted['deleted'] == 'CF2'
+    assert book.read_bytes() == before
+
+
+def test_a_parent_must_exist_be_unique_and_take_children(book):
+    """Appending under the wrong node is a mis-booked trade, not an error message - so a parent
+    that is a leaf refuses naming its type, an unknown one refuses naming it, and neither writes.
+    `containers` (C2) is what makes the leaf refusal expressible without importing the engine."""
+    under_leaf = CLIENT.post('/book/deals', content=dump(
+        {'action': 'add', 'deal': BOOKED, 'parent_reference': 'CF1'}), headers=JSON)
+    unknown = CLIENT.post('/book/deals', content=dump(
+        {'action': 'add', 'deal': BOOKED, 'parent_reference': 'GHOST'}), headers=JSON)
+
+    assert under_leaf.status_code == 422 and 'FixedCashflowDeal' in under_leaf.json()['detail']
+    assert unknown.status_code == 422 and 'GHOST' in unknown.json()['detail']
+    assert len(CLIENT.get('/book').json()['document']['Calc']['Deals']['Deals']['Children']) == 1
+
+
+def test_a_booking_nests_under_a_container(book):
+    """A container books like any deal and then holds its children: the nested node lands in the
+    parent's `Children`, and its `deal_path` is the positional identity every client shares."""
+    net = {'Object': 'StructuredDeal', 'Reference': 'STR1', 'Currency': 'ZAR'}
+    first = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': net}),
+                        headers=JSON).json()
+    second = CLIENT.post('/book/deals', content=dump(
+        {'action': 'add', 'deal': BOOKED, 'parent_reference': 'STR1'}), headers=JSON).json()
+    node = json.loads(book.read_text())['Calc']['Deals']['Deals']['Children'][1]
+
+    assert first['written'] and first['deal_path'] == '1'
+    assert second['written'] and second['deal_path'] == '1/0'
+    assert node['Instrument']['.Deal']['Reference'] == 'STR1'
+    assert node['Children'][0]['Instrument']['.Deal']['Reference'] == 'CF2'
+
+
+def test_a_what_if_prices_the_candidate_and_writes_nothing(book):
+    """The par-solve verb: the book plus a candidate priced off an in-memory copy, the file never
+    moving. The candidate's own value comes back through the ordinary result surface, which is
+    what lets a caller solve an amount against a target and only then book it."""
+    before = book.read_bytes()
+    submitted = CLIENT.post('/book/price', content=dump({'deal': BOOKED}), headers=JSON).json()
+    service.EXECUTOR.queue.join()
+    result = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+
+    assert result['status'] == 'done'
+    assert mtm(submitted['result_id'])['CF2'] == pytest.approx(
+        BOOKED['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
+    assert book.read_bytes() == before
+
+
 def test_validate_over_http_is_the_verb_verbatim():
     """Both halves of the want-list, over a job broken deliberately in both ways: a deal that
     breaks an authoring rule, and one naming a curve the market data has no block for."""

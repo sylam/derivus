@@ -12,6 +12,7 @@
 ########################################################################
 
 import os
+import re
 import calendar
 # import standard libraries
 import json
@@ -182,6 +183,79 @@ class CustomJsonEncoder(json.JSONEncoder):
         else:
             logging.error('Error Saving file - Encoding object ' + str(obj) + ' failed')
         return return_value
+
+
+def job_children(document):
+    """The root `Children` list of a job document in wire form, or None where it is not a job."""
+    try:
+        children = document['Calc']['Deals']['Deals']['Children']
+        return children if isinstance(children, list) else None
+    except (KeyError, TypeError):
+        return None
+
+
+def walk_job_deals(children, path=()):
+    """Every deal node of a wire-form job, as `(deal_path, node)`. The positional path ('0/2/1')
+    is the node's identity, because References are not unique in a book."""
+    for position, node in enumerate(children):
+        deal_path = path + (position,)
+        yield '/'.join(map(str, deal_path)), node
+        yield from walk_job_deals(node.get('Children', []), deal_path)
+
+
+def splice_deal(document, deal, parent_reference=None):
+    """Append `deal` to a wire-form job document IN PLACE and return the new node's `deal_path`.
+
+    The node is `{'Instrument': {'.Deal': deal}}`, gaining an empty `Children` when the booked type
+    is itself a container (`schema.mapping['Instrument']['containers']`). The insertion point is
+    the root, or the single node whose Reference is `parent_reference` - an unknown, ambiguous or
+    non-container parent refuses by name, because appending under the wrong node is a mis-booked
+    trade rather than an error message.
+    """
+    children = job_children(document)
+    if children is None:
+        raise ValueError('not a job document - no Calc.Deals.Deals.Children')
+    containers = schema.mapping['Instrument']['containers']
+    parent_path = ''
+    if parent_reference is not None:
+        found = [(deal_path, node) for deal_path, node in walk_job_deals(children)
+                 if node['Instrument']['.Deal'].get('Reference') == parent_reference]
+        if len(found) != 1:
+            raise ValueError('{} deals carry Reference {!r} - a parent must be unique'.format(
+                len(found) or 'no', parent_reference))
+        parent_path, parent = found[0]
+        parent_type = parent['Instrument']['.Deal'].get('Object')
+        if parent_type not in containers:
+            raise ValueError('{!r} is a {}, which takes no children'.format(
+                parent_reference, parent_type))
+        children = parent.setdefault('Children', [])
+    node = {'Instrument': {'.Deal': deal}}
+    if deal.get('Object') in containers:
+        node['Children'] = []
+    children.append(node)
+    position = str(len(children) - 1)
+    return '{}/{}'.format(parent_path, position) if parent_path else position
+
+
+def remove_deal(document, deal_path):
+    """Remove and return the node at a positional `deal_path`, in place - the whole subtree goes
+    with it, which is what deleting a structure means."""
+    children = job_children(document)
+    if children is None:
+        raise ValueError('not a job document - no Calc.Deals.Deals.Children')
+    try:
+        positions = [int(p) for p in str(deal_path).split('/')]
+        for position in positions[:-1]:
+            children = children[position]['Children']
+        return children.pop(positions[-1])
+    except (ValueError, KeyError, IndexError):
+        raise ValueError('no deal at path {!r}'.format(deal_path))
+
+
+def sniff_indent(text, default=2):
+    """A JSON file's own indent, so a rewrite is a diff of the change and nothing else."""
+    found = re.search(r'\n( +)"', text)
+    return len(found.group(1)) if found else default
 
 
 class Config(object):

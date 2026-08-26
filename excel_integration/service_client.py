@@ -88,3 +88,32 @@ class ServiceClient:
         if limit is not None:
             paging['limit'] = limit
         return self.call('GET', '/results/{}/{}'.format(result_id, table), params=paging)
+
+    def book(self) -> dict[str, Any]:
+        """The live job document the service serves, and the etag naming its current state."""
+        return self.call('GET', '/book')
+
+    def book_deal(self, deal: Any, parent_reference: str | None = None) -> dict[str, Any]:
+        """Book one deal into the live book - validated first, written only if nothing is said
+        against it. `{written: False, refused: [...]}` is an answer, not an error."""
+        request: dict[str, Any] = {'action': 'add', 'deal': as_document(deal)}
+        if parent_reference is not None:
+            request['parent_reference'] = parent_reference
+        return self.call('POST', '/book/deals', json=request)
+
+    def delete_deal(self, deal_path: str) -> dict[str, Any]:
+        """Remove the deal at a positional path ('0/2/1') from the live book, subtree and all."""
+        return self.call('POST', '/book/deals', json={'action': 'delete', 'deal_path': deal_path})
+
+    def price_candidate(self, deal: Any = None, parent_reference: str | None = None,
+                        calculation_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Price the live book, optionally with a candidate deal spliced in - a what-if that
+        writes nothing. Answers `{result_id, status}` like `submit`."""
+        request: dict[str, Any] = {}
+        if deal is not None:
+            request['deal'] = as_document(deal)
+        if parent_reference is not None:
+            request['parent_reference'] = parent_reference
+        if calculation_overrides:
+            request['calculation_overrides'] = calculation_overrides
+        return self.call('POST', '/book/price', json=request)

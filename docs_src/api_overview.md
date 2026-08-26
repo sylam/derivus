@@ -283,6 +283,14 @@ DV_Service --port 8000
 | `GET` | `/results/{result_id}` | `{"status": …}`, and when done the replay tuple, the run's `stats`, and the SHAPE of each table |
 | `GET` | `/results/{result_id}/{table}` | one table, `?offset=&limit=` |
 | `GET` | `/ui` | a built web UI, when `DV_Service --ui <dir>` mounted one |
+| `GET` | `/book` | the live job document `DV_Service --book <file>` serves, with the etag naming its state |
+| `POST` | `/book/deals` | book or delete one deal — validated BEFORE an atomic write; a refusal is `{"written": false, "refused": […]}` and touches nothing |
+| `POST` | `/book/price` | price the book plus an optional candidate deal — a what-if; writes nothing |
+
+The book's FILE is the source of truth: every client — the web UI, an MCP tool, the Excel add-in —
+reads and writes it through these verbs, so a deal booked by one appears to the others on their
+next etag poll. Deals are addressed by positional `deal_path` (`"0/2/1"`), because references are
+not unique in a book.
 
 `mapping['Instrument']` also publishes `containers` — the deal types that accept `Children`
 (`Deal.accepts_children` emitted into the store), so a client can tell a leaf from a structure
