@@ -262,7 +262,7 @@ def book(tmp_path):
     """A live book over a temp copy of the one-cashflow job, taken down after the gate. Written at
     indent 2, which is what the formatting gate holds the rewrite to."""
     path = tmp_path / 'book.json'
-    path.write_text(json.dumps(json.loads(dump(job())), indent=2))
+    path.write_text(json.dumps(json.loads(dump(job())), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     yield path
     service.BOOK = None
@@ -500,7 +500,7 @@ def test_a_bloomberg_snapshot_reaches_a_solved_strike(tmp_path):
     validate pins the surface as load-bearing: the option is unpriceable until the tick lands."""
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(job(
-        sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2))
+        sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     try:
         with_option = json.loads(dump(job(
@@ -541,7 +541,7 @@ def test_gamma_travels_the_served_path(tmp_path):
     diagonal is a live positive gamma with the vanna cross carrying real weight beside it."""
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(job(
-        sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2))
+        sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     try:
         CLIENT.post('/book/market', content=dump({'quotes': fx_vol_quotes()}), headers=JSON)
@@ -581,7 +581,7 @@ def test_a_quote_update_may_move_only_the_numbers(book):
     doc = json.loads(book.read_text())
     doc['Calc']['MergeMarketData']['ExplicitMarketData'][
         'Bootstrapper Configuration'] = {'FXVolSurfaceParameters': {}}
-    book.write_text(json.dumps(doc, indent=2))
+    book.write_text(json.dumps(doc, indent=2), newline='\n')
 
     first = CLIENT.post('/book/market', content=dump({'quotes': quotes}), headers=JSON).json()
     assert first['installed'] == ['FXVolPrices.USD.ZAR']
@@ -629,7 +629,7 @@ def test_a_bootstrap_that_complains_writes_nothing(book):
     doc = json.loads(book.read_text())
     doc['Calc']['MergeMarketData']['ExplicitMarketData'][
         'Bootstrapper Configuration'] = {'FXVolSurfaceParameters': {}}
-    book.write_text(json.dumps(doc, indent=2))
+    book.write_text(json.dumps(doc, indent=2), newline='\n')
     before = book.read_bytes()
 
     ghost = {'GhostPrices.NOWHERE': {'instrument': {'Points': []}}}
@@ -665,7 +665,7 @@ def test_a_solve_brackets_a_nonlinear_strike(tmp_path):
     so brentq inside declared bounds finds the strike that marks at the target - and the pricing
     count says it genuinely iterated rather than taking the affine two-step."""
     path = tmp_path / 'book.json'
-    path.write_text(json.dumps(json.loads(dump(job(factors=dict(FACTORS, **EQUITY)))), indent=2))
+    path.write_text(json.dumps(json.loads(dump(job(factors=dict(FACTORS, **EQUITY)))), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     try:
         submitted = CLIENT.post('/book/solve', content=dump({

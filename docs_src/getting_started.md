@@ -38,6 +38,10 @@ The path need not exist: a missing file starts as a **blank book** — no deals,
 the skeleton's USD market data aboard so the first booking has something to validate against. An
 existing file is never touched.
 
+Windows note: book writes are atomic (write-then-replace), which fails if another program holds
+the file locked — Excel does, most editors don't. View the book through the UI rather than
+keeping it open in Excel.
+
 Open `http://127.0.0.1:8000/ui/`. The portfolio tree, the market data (curves and surfaces
 plotted), the calculation and its results all render from the engine's own schema, and the page
 follows the book: a deal booked or a value changed by *any* client appears within a couple of

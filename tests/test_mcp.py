@@ -45,7 +45,7 @@ def book(tmp_path):
     """A live book over a temp copy of the one-cashflow job, indent 2 (the formatting gate's
     baseline), taken down after the gate."""
     path = tmp_path / 'book.json'
-    path.write_text(json.dumps(json.loads(dump(job())), indent=2))
+    path.write_text(json.dumps(json.loads(dump(job())), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     yield path
     service.BOOK = None
@@ -161,7 +161,7 @@ def test_the_practical_loop_quotes_to_a_booked_structure(tmp_path):
     from test_service import FX_OPTION, fx_vol_quotes
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(job(
-        sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2))
+        sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     try:
         ticked = mcp_server.update_market_quotes(json.loads(dump(fx_vol_quotes())))
