@@ -28,8 +28,9 @@ the verbs cannot answer is a missing verb on `Context`, not an endpoint that rea
 | `POST /describe` | what the engine parsed, and what running it would cost, without running it |
 | `POST /prepare` | `{plan_id}` — the parsed job, named by its plan hash and cached under it |
 | `POST /execute` | `{result_id, status}` — always, for every calculation |
-| `GET /results/{result_id}` | status, the replay tuple, and the SHAPE of each table |
+| `GET /results/{result_id}` | status, the replay tuple, the run's stats, and the SHAPE of each table |
 | `GET /results/{result_id}/{table}` | one table, paged |
+| `GET /ui` | a built web UI, when `DV_Service --ui` mounted one - a client, not a verb |
 
 Every POST body is either a job document or `{"plan_id": ...}` naming one already prepared, and
 nothing downstream can tell the two apart: the plan cache holds a pristine parse and every read of
@@ -259,7 +260,10 @@ class ComputeExecutor:
                 self.results[job.result_id] = {'status': 'running'}
             try:
                 _, out = job.context.run_job()
-                result = dict(status='done', tables=tables_of(as_json(out['Results'])), **job.replay)
+                # Stats is a flat dict of timings and counts (plus Calibrations provenance), not a
+                # table - through `tables_of` it would flatten into fake table paths
+                result = dict(status='done', tables=tables_of(as_json(out['Results'])),
+                              stats=as_json(out.get('Stats', {})), **job.replay)
             except Exception as error:
                 result = {'status': 'error', 'error': str(error)}
             with self.lock:
@@ -398,6 +402,24 @@ def table(result_id: str, table: str, offset: int = 0, limit: int = None):
                 index=index[offset:end], data=rows[offset:end])
 
 
+def mount_ui(application, directory):
+    """Serve a built web UI at `/ui`, and say whether there was one to serve.
+
+    The UI is a CLIENT of this service, optional to the core library, and lives outside the
+    package - so the mount is a flag, never an import-time assumption. `html=True` makes `/ui/`
+    serve `index.html`; it does NOT fall back to it for an unknown subpath, so the SPA navigates
+    by tab state and hash rather than by URL path - a router would ship deep links that 404 on
+    reload.
+    """
+    import os
+    from fastapi.staticfiles import StaticFiles
+
+    if not os.path.isfile(os.path.join(directory, 'index.html')):
+        return False
+    application.mount('/ui', StaticFiles(directory=directory, html=True), name='ui')
+    return True
+
+
 def main():
     """`DV_Service` - serve the app on one uvicorn worker, which is all the executor's single
     compute thread and in-memory store can be shared across."""
@@ -409,10 +431,14 @@ def main():
     parser.add_argument('-p', '--port', type=int, help='port to listen on', default=8000)
     parser.add_argument('-o', '--origin', action='append',
                         help='browser origin to allow; repeatable, defaults to any')
+    parser.add_argument('-u', '--ui', type=str, default=None,
+                        help='directory holding a built web UI to serve at /ui')
     args = parser.parse_args()
 
     if args.origin:
         ORIGINS[:] = args.origin
+    if args.ui and not mount_ui(app, args.ui):
+        parser.error('--ui {} holds no index.html - build the UI first'.format(args.ui))
 
     uvicorn.run(app, host=args.bind, port=args.port)
     return 0

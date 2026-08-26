@@ -199,6 +199,59 @@ def test_the_schema_endpoint_is_the_declarations_plus_the_version():
     assert published['Factor']['types']['FxRate']['Spot']['bind'] == 'value'
 
 
+def test_the_schema_publishes_which_deals_take_children():
+    """`containers` is `Deal.accepts_children` emitted into the store, so a client - a browser
+    SPA, an MCP tool booking under a netting set - answers "may this take children" without
+    importing the engine to ask. Held to the accessor over EVERY declared type, both directions,
+    and non-vacuously in both."""
+    published = CLIENT.get('/schema').json()['Instrument']
+    accessor = sorted(t for t in published['types'] if derivus.instruments.accepts_children(t))
+
+    assert published['containers'] == accessor
+    assert 'NettingCollateralSet' in published['containers']
+    assert 'FixedCashflowDeal' not in published['containers']
+    # a container the create menu does not offer would be bookable over MCP and uncreatable in
+    # every UI - the same drift test_no_class_is_hidden_from_the_create_menu makes of types
+    menued = {t for members in published['groups'].values() for t in members}
+    assert set(published['containers']) <= menued
+
+
+def test_a_done_result_carries_the_run_stats():
+    """`Stats` is the run's own account of itself - timings, deals loaded, calibration provenance -
+    and dropping it at the store made it unreachable from every HTTP client. It rides the summary
+    as a flat dict, never through `tables_of` (which would flatten `Calibrations` into a fake
+    table path), and a calculation that reports none reads as `{}` rather than a KeyError."""
+    _, result = run(job())
+
+    assert result['stats']['Deals loaded'] == 1
+    assert 'stats' not in result['tables'] and 'Stats' not in result['tables']
+
+    service.EXECUTOR.submit(service.Job('statless', Held('statless', [], results={}), {}),
+                            service.HEAVY)
+    service.EXECUTOR.queue.join()
+    assert CLIENT.get('/results/statless').json()['stats'] == {}
+
+
+def test_the_ui_is_mounted_only_when_it_is_built(tmp_path):
+    """The UI is a CLIENT of the service, optional to the core library, so the mount is a flag over
+    a directory rather than an import-time assumption - an empty directory refuses. The 404 on
+    `/ui/portfolio` is pinned deliberately: `StaticFiles(html=True)` has no SPA fallback, which is
+    the fact the front end's no-router decision rests on - a router would ship deep links that 404
+    on reload, and this gate is where that lands first."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient as Client
+
+    assert service.mount_ui(FastAPI(), str(tmp_path)) is False
+
+    (tmp_path / 'index.html').write_text('<!doctype html><title>derivus</title>UI-MARKER')
+    mounted = FastAPI()
+    assert service.mount_ui(mounted, str(tmp_path)) is True
+    ui = Client(mounted)
+    assert 'UI-MARKER' in ui.get('/ui/').text
+    assert ui.get('/ui', follow_redirects=False).status_code in (301, 307)
+    assert ui.get('/ui/portfolio').status_code == 404
+
+
 def test_validate_over_http_is_the_verb_verbatim():
     """Both halves of the want-list, over a job broken deliberately in both ways: a deal that
     breaks an authoring rule, and one naming a curve the market data has no block for."""

@@ -276,16 +276,24 @@ def emit_instrument(module):
     had to invent a key and carry the real one as an alias. `Payment_Timing` is `Touch`/`Expiry` on
     a one-touch and `End`/`Begin`/`Discounted` on a cashflow leg, and both are right, because the
     JSON is per-deal and only the flat view was ambiguous.
+
+    `containers` names the types that can HOLD other deals. It is a property of the deal
+    (`Deal.accepts_children`, read with `getattr` exactly as `instruments.accepts_children` reads
+    it) rather than of the create menu, and it is emitted here so a client rendering from this
+    store - a browser SPA, an MCP tool booking under a netting set - can answer "may this take
+    children" without importing the engine to ask.
     """
-    types, sections = {}, {}
+    types, sections, containers = {}, {}, []
     for deal_type, cls in vars(module).items():
         groups = cls.__dict__.get('fields') if isinstance(cls, type) else None
         if not isinstance(groups, list):
             continue
         types[deal_type] = [g.name for g in groups]
+        if getattr(cls, 'accepts_children', False):
+            containers.append(deal_type)
         for g in groups:
             sections.setdefault(g.name, {f.key: f.descriptor() for f in g.fields})
-    return types, sections
+    return types, sections, sorted(containers)
 
 
 def emit_factor(module):
@@ -537,7 +545,7 @@ OPTION_QUOTE = [F('Expiry_Date', 'Date'), F('Strike', 'Float', description='0 re
 # package first, and `derivus/__init__` imports this module before any declaring one.
 from . import bootstrappers, calculation, instruments, riskfactors, stochasticprocess  # noqa: E402
 
-_types, _sections = emit_instrument(instruments)
+_types, _sections, _containers = emit_instrument(instruments)
 _factor_types = emit_factor(riskfactors)
 _process_types, _process_factor_map = emit_process(stochasticprocess, _factor_types)
 
@@ -594,7 +602,7 @@ mapping = {
     },
     'Instrument': {
         # the create-deal menu, the one hand-kept part of the Instrument store. Whether a type can
-        # hold children is NOT here: it is `Deal.accepts_children`, a property of the deal.
+        # hold children is NOT here: it is `Deal.accepts_children`, emitted as `containers` below.
         'groups': {
             'New Structure': ['NettingCollateralSet', 'StructuredDeal'],
             'New Interest Rate Derivative':
@@ -623,6 +631,7 @@ mapping = {
             'New Credit Derivative': ['DealDefaultSwap', 'CreditNthToDefault']
         },
         'sections': _sections,
-        'types': _types
+        'types': _types,
+        'containers': _containers
     }
 }

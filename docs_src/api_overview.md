@@ -280,8 +280,13 @@ DV_Service --port 8000
 | `POST` | `/describe` | `cx.describe()` plus what the queue would make of the job |
 | `POST` | `/prepare` | `{"plan_id": …, "values_hash": …, "engine_version": …}` |
 | `POST` | `/execute` | `{"result_id": …, "status": …}` |
-| `GET` | `/results/{result_id}` | `{"status": …}`, and when done the replay tuple plus the SHAPE of each table |
+| `GET` | `/results/{result_id}` | `{"status": …}`, and when done the replay tuple, the run's `stats`, and the SHAPE of each table |
 | `GET` | `/results/{result_id}/{table}` | one table, `?offset=&limit=` |
+| `GET` | `/ui` | a built web UI, when `DV_Service --ui <dir>` mounted one |
+
+`mapping['Instrument']` also publishes `containers` — the deal types that accept `Children`
+(`Deal.accepts_children` emitted into the store), so a client can tell a leaf from a structure
+without importing the engine.
 
 A posted job is a job *file* — the same document `load_json` reads, parsed by the same decoder, so
 its `.Curve`, `.Timestamp` and `.DateList` tokens travel as themselves. `/execute` takes one extra
