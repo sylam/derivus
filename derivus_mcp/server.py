@@ -25,11 +25,13 @@ for), and `deal_values` checks a result's shape before it fetches anything.
 Run: `DV_MCP` (stdio; `python -m derivus_mcp.server` from a source tree), with `RF_SERVICE_URL`
 naming the service (default http://127.0.0.1:8000 - the same variable the Excel add-in reads).
 """
+import asyncio
 import os
 import time
 
 import requests
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 
@@ -290,10 +292,16 @@ def book_deal(deal: dict, parent_reference: str | None = None) -> dict:
 
     To book AT PAR or at a target margin, solve before you book: a linear payoff's value is affine
     in its amount, so `price_candidate` twice at two trial amounts gives the exact amount that
-    lands the value on the target - then book that. On success the answer carries the new
-    `deal_path`, and every other client (the web UI, Excel) sees the deal on its next read. The
-    answer is about THIS booking; anything else outstanding in the book arrives as counts under
-    `book_issues`, with `validate_book` for the detail.
+    lands the value on the target - then book that.
+
+    The engine's FX convention is REPORTING units per one unit of the currency (`FxRate.ZAR`
+    carries USD per ZAR), and an FX option's `Strike_Price` lives on that same axis - so a desk's
+    'USDZAR call', the option paid when ZAR weakens, is authored as a PUT on ZAR with
+    `Underlying_Currency` ZAR.
+
+    On success the answer carries the new `deal_path`, and every other client (the web UI, Excel)
+    sees the deal on its next read. The answer is about THIS booking; anything else outstanding in
+    the book arrives as counts under `book_issues`, with `validate_book` for the detail.
     """
     request = {'action': 'add', 'deal': deal}
     if parent_reference is not None:
@@ -375,6 +383,58 @@ def patch_market_values(patch: dict) -> dict:
 
 
 @MCP.tool()
+async def tick_market_from_bloomberg(pairs: list = None, expiries: list = None,
+                                     pillars: list = None, wait_seconds: float = 360.0,
+                                     ctx: Context = None) -> dict:
+    """Tick the live book's FX market off THIS workstation's Bloomberg terminal - the whole "get
+    me today's market" move, and on a fresh machine the call that PROVISIONS the desk.
+
+    First use does the setup before it fetches anything: it creates `DV_HOME` (`~/.derivus`
+    unless the variable says otherwise), copies the packaged seed - the ticker vocabulary the
+    desk owns and edits - into it, then asks this terminal about every candidate the seed spells
+    and keeps only the ones it answers for (what the security IS, whether it prices, when it last
+    printed). That verification is the few minutes: it walks candidate by candidate reporting
+    progress as it goes, which is both what keeps this call alive and what the user watches. Then
+    it fetches the surfaces and installs them through the same quote-block tick
+    `update_market_quotes` rides, with the bootstrap judging the whole write. Later calls skip
+    the provisioning and just fetch.
+
+    `pairs` narrows the currency pairs to fetch (`["USDZAR"]`); `expiries` narrows the surface's
+    expiry column; `pillars` the delta pillars (`[0.25]`, the default - `[0.1, 0.25]` for wider
+    wings the map verified). Omit all three for the desk's own scope - every pair the map
+    carries, at the expiries it verified. The finished run's outcome rides `stats.Bloomberg`: what installed,
+    what updated, whether the map had to be provisioned, or the refusal messages.
+
+    A refusal is an answer and it NAMES what stopped it: no terminal answering on this machine,
+    a candidate whose last print is stale (a retired benchmark keeps quoting a plausible price -
+    that is the trap the verification exists for), a seed spelling the terminal does not know, or
+    a bootstrap complaint that refuses the whole write. Each names the ticker or the file, so the
+    next move is to fix that one thing and call again.
+    """
+    request = {key: value for key, value in (('pairs', pairs), ('expiries', expiries),
+                                             ('pillars', pillars)) if value is not None}
+    submitted = await asyncio.to_thread(
+        service().call, 'POST', '/book/bloomberg', json=request)
+    result_id = submitted['result_id']
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        # every HTTP call is blocking, so it goes to a thread - the event loop stays free to put
+        # the progress notifications on the wire
+        raw = await asyncio.to_thread(_raw_result, result_id)
+        if raw.get('status') not in ('queued', 'running'):
+            return raw
+        progress = raw.get('progress')
+        if progress and ctx is not None:
+            # a client resets its timeout on progress: this is what buys a five-minute first use
+            await ctx.report_progress(progress['done'], progress['total'], progress.get('note'))
+        if time.monotonic() >= deadline:
+            return {'result_id': result_id, 'status': raw['status'],
+                    'hint': 'still {} - call poll_result({!r}) to check again; the provisioning '
+                            'carries on service-side either way'.format(raw['status'], result_id)}
+        await asyncio.sleep(2)
+
+
+@MCP.tool()
 def solve_deal(deal: dict, field: str, target: float = 0.0, bounds: list | None = None,
                calculation_overrides: dict | None = None, wait_seconds: float = 300.0) -> dict:
     """Solve ONE field of a candidate deal so the deal's own value lands on `target`, and get the
@@ -387,6 +447,11 @@ def solve_deal(deal: dict, field: str, target: float = 0.0, bounds: list | None 
     exact in two pricings for an amount) and nothing large enters the conversation. The answer
     carries `solved` (the field's value, the pricing count, the residual) and `solved_deal` - the
     deal with the field set, which `book_deal` books as-is.
+
+    The engine's FX convention is REPORTING units per one unit of the currency (`FxRate.ZAR`
+    carries USD per ZAR), and an FX option's `Strike_Price` lives on that same axis - so a desk's
+    'USDZAR call', the option paid when ZAR weakens, is a PUT on ZAR with `Underlying_Currency`
+    ZAR, and the strike solved here is quoted on that axis too.
     """
     request = {'deal': deal, 'field': field, 'target': target}
     if bounds is not None:

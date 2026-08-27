@@ -61,7 +61,7 @@ def test_the_mcp_server_imports_neither_the_engine_nor_the_add_in():
                 imported.update(alias.name.split('.')[0] for alias in node.names)
             elif isinstance(node, ast.ImportFrom):
                 imported.add((node.module or '').split('.')[0])
-    assert imported <= {'os', 'time', 'requests', 'mcp', 'mcp_types'}, imported
+    assert imported <= {'asyncio', 'os', 'time', 'requests', 'mcp', 'mcp_types'}, imported
     assert imported.isdisjoint({'derivus', 'torch', 'pandas', 'numpy', 'excel_integration'})
 
 
@@ -73,14 +73,23 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'describe_factor_type', 'job_skeleton', 'read_book', 'read_deal', 'book_deal',
                 'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal', 'execute_book',
                 'validate_book', 'describe_book', 'poll_result', 'fetch_table', 'deal_values',
-                'update_market_quotes', 'patch_market_values'}
+                'update_market_quotes', 'patch_market_values', 'tick_market_from_bloomberg'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
     writers = {name for name, tool in tools.items()
                if not (tool.annotations and tool.annotations.read_only_hint)}
     assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal',
-                       'execute_book', 'update_market_quotes', 'patch_market_values'}
+                       'execute_book', 'update_market_quotes', 'patch_market_values',
+                       'tick_market_from_bloomberg'}
+
+
+def test_the_progress_tool_does_not_advertise_its_context():
+    """`ctx` is the SDK's injection, not an argument: a host that saw it in the schema would try
+    to fill it in, and the model would spend a field guessing at a transport object."""
+    tools = {t.name: t for t in asyncio.run(mcp_server.MCP.list_tools())}
+    schema = tools['tick_market_from_bloomberg'].input_schema
+    assert set(schema['properties']) == {'pairs', 'expiries', 'pillars', 'wait_seconds'}
 
 
 def test_the_schema_tools_are_the_declarations():
@@ -340,3 +349,86 @@ def test_a_booking_answer_is_the_booking_not_the_book(book):
     assert rejected['written'] is False and rejected['refused']
     assert rejected['book_issues']['deal_messages'] == 1
     assert 'validate_book' in rejected['book_issues']['hint']
+
+
+class Terminal:
+    """A transport that answers the bloomberg submit and then reads a scripted `/results`
+    sequence - the tool's own contract with no terminal, no service and no socket (the `Down`
+    precedent). The last poll stands once the script runs out."""
+
+    class Reply:
+        def __init__(self, payload):
+            self.status_code, self.payload, self.text = 200, payload, ''
+
+        def json(self):
+            return self.payload
+
+    def __init__(self, *polls):
+        self.polls, self.requests = list(polls), []
+
+    def request(self, method, url, **kwargs):
+        self.requests.append((method, url, kwargs.get('json')))
+        if url.endswith('/book/bloomberg'):
+            return self.Reply({'result_id': 'bbg-1', 'status': 'queued'})
+        return self.Reply(self.polls.pop(0) if len(self.polls) > 1 else self.polls[0])
+
+
+class Watching:
+    """The host's progress channel minus the host: what the gate reads is what the tool told it."""
+
+    def __init__(self):
+        self.reported = []
+
+    async def report_progress(self, done, total, note=None):
+        self.reported.append((done, total, note))
+
+
+def test_a_bloomberg_tick_returns_the_finished_payload():
+    """A run that is already done comes back verbatim - a provisioning answer is what installed
+    and what was refused, not a shape summary - and the None arguments never reach the wire."""
+    finished = {'result_id': 'bbg-1', 'status': 'done', 'installed': ['FXVol.USD.ZAR'],
+                'updated': [], 'verified': 42}
+    terminal = Terminal(finished)
+    mcp_server.configure(base_url='http://testserver', session=terminal)
+
+    answer = asyncio.run(mcp_server.tick_market_from_bloomberg(pairs=['USDZAR']))
+
+    assert answer == finished
+    assert terminal.requests[0] == ('POST', 'http://testserver/book/bloomberg',
+                                    {'pairs': ['USDZAR']})
+
+
+def test_a_bloomberg_tick_that_will_not_wait_hands_back_the_id():
+    """The same escape hatch `execute_book` has: past the wait, the id and the way forward travel
+    in `hint` - the provisioning is on the service, not in this call."""
+    mcp_server.configure(base_url='http://testserver',
+                         session=Terminal({'result_id': 'bbg-1', 'status': 'running'}))
+
+    answer = asyncio.run(mcp_server.tick_market_from_bloomberg(wait_seconds=0.0))
+
+    assert answer['result_id'] == 'bbg-1' and answer['status'] == 'running'
+    assert 'poll_result' in answer['hint']
+
+
+def test_provisioning_reports_its_progress_while_it_runs(monkeypatch):
+    """The five-minute first use only survives because of these notifications: a client resets
+    its timeout on each one, and the user watching sees which candidate the terminal is on. So
+    every poll that carries a progress dict must reach the context, `note` included."""
+    delays = []
+
+    async def instant(seconds, *rest):  # the gate is about the loop, not its patience
+        delays.append(seconds)
+
+    monkeypatch.setattr(mcp_server.asyncio, 'sleep', instant)
+    terminal = Terminal(
+        {'status': 'queued', 'progress': {'done': 0, 'total': 3, 'note': 'copying the seed'}},
+        {'status': 'running', 'progress': {'done': 2, 'total': 3, 'note': 'verifying USDZAR'}},
+        {'status': 'done', 'installed': ['FXVol.USD.ZAR']})
+    mcp_server.configure(base_url='http://testserver', session=terminal)
+    watching = Watching()
+
+    answer = asyncio.run(mcp_server.tick_market_from_bloomberg(ctx=watching))
+
+    assert answer == {'status': 'done', 'installed': ['FXVol.USD.ZAR']}
+    assert watching.reported == [(0, 3, 'copying the seed'), (2, 3, 'verifying USDZAR')]
+    assert delays == [2, 2], 'a poll between notifications, not a spin'

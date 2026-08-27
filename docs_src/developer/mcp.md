@@ -37,6 +37,7 @@ repo — and `DV_MCP` takes the path out of the command altogether.
 | `price_candidate` / `execute_book` | `POST /book/price` — the what-if; waits, then hands back the id |
 | `solve_deal` | `POST /book/solve` — solve one field to a target, get the deal back ready to book |
 | `update_market_quotes` / `patch_market_values` | `POST /book/market` — quote blocks in (values-only updates, bootstrap judging the write), spot/vol values patched |
+| `tick_market_from_bloomberg` | `POST /book/bloomberg` — today's surfaces off this workstation's terminal; provisions the desk on first use, reporting progress while it waits |
 | `validate_book` / `describe_book` | the read verbs over the live document |
 | `poll_result` / `fetch_table` / `deal_values` | results: status, one paged table, `{reference: value}` |
 
@@ -66,6 +67,20 @@ bounds, else a secant — exact in two pricings for an amount), the model receiv
 coordinates and the deal ready to book, and no pricing loop ever runs through the conversation. A
 collar or seagull composes from 1D solves under its conventions — fix one strike, solve the
 other, margin last.
+
+**First use provisions the desk, and progress is what keeps that call alive.**
+`tick_market_from_bloomberg` is the one verb a model calls for today's market, and on a fresh
+machine it is also the setup: `DV_HOME` created, the packaged seed copied in, every candidate the
+seed spells verified against *this* workstation's terminal (what it is, whether it prices, when it
+last printed), and only then the surfaces fetched and installed through the same quote-block tick.
+That verification is minutes, not seconds — so the tool is `async`, every blocking HTTP call goes
+through `asyncio.to_thread`, and each poll that carries a `progress` dict is forwarded to the
+injected `Context` as `report_progress(done, total, note)`. The notifications are not decoration: a
+host resets its call timeout on each one, so they are what lets a five-minute first use finish
+instead of timing out, and they are what tells the user which candidate the terminal is on. `ctx`
+is injected by the SDK and never appears in the advertised schema (a gate reads the listed tool's
+properties to prove it). Past `wait_seconds` the answer is `execute_book`'s pointer —
+`{result_id, status, hint}` — because the provisioning carries on service-side either way.
 
 **Market data moves on the engine's terms, never freely.** `patch_market_values` rides the
 `bind='value'` seam — the engine's own `patch_market` refuses a structural key by name.
