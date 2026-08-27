@@ -1,0 +1,46 @@
+{
+ "fx_vol": {
+  "pairs": ["USDJPY", "USDCHF", "USDCAD", "USDZAR", "EURZAR", "GBPZAR"],
+  "expiries": {"1W": 0.0192, "2W": 0.0384, "1M": 0.0822, "2M": 0.1671, "3M": 0.2493,
+               "6M": 0.4986, "9M": 0.7479, "1Y": 1.0, "2Y": 2.0},
+  "pillars": [0.10, 0.25]
+ },
+ "fx_spot": {"pairs": ["EURUSD", "GBPUSD", "AUDUSD", "NZDUSD", "USDJPY", "USDCHF", "USDCAD",
+                       "USDZAR", "EURGBP", "EURJPY", "EURCHF", "AUDJPY", "EURAUD", "GBPJPY",
+                       "EURZAR", "GBPZAR"]},
+ "rates": {
+  "USD": {"prefix": "USOSFR", "expect": "USD OIS", "weeks": true, "months": true,
+          "years": [1, 2, 3, 5, 7, 10, 15, 20, 30],
+          "overnight": {"security": "SOFRRATE Index", "expect": "SOFR"}},
+  "EUR": {"prefix": "EESWE", "expect": "EUR SWAP (ESTR)", "weeks": true, "months": true,
+          "years": [1, 2, 3, 5, 7, 10, 15, 20, 30],
+          "overnight": {"security": "ESTRON Index", "expect": "ESTR"}},
+  "GBP": {"prefix": "BPSWS", "expect": "GBP SWAP (vs SONIA)", "weeks": true, "months": true,
+          "years": [1, 2, 3, 5, 7, 10, 15, 20, 30],
+          "overnight": {"security": "SONIO Index", "expect": "SONIA"}},
+  "JPY": {"prefix": "JYSO", "expect": "JPY SWAP OIS", "weeks": true, "months": true,
+          "years": [1, 2, 5, 10, 20, 30],
+          "overnight": {"security": "MUTKCALM Index", "expect": "Bank of Japan"}},
+  "CHF": {"prefix": "SFSNT", "expect": "CHF SARON", "weeks": true, "months": true,
+          "years": [1, 2, 5, 10, 20, 30],
+          "overnight": {"security": "SRFXON1 Index", "expect": "SARON"}},
+  "CAD": {"prefix": "CDSO", "expect": "CAD SWAP OIS", "weeks": true, "months": true,
+          "years": [1, 2, 5, 10, 20, 30],
+          "overnight": {"security": "CAONREPO Index", "expect": "Canadian Overnight"}},
+  "AUD": {"prefix": "ADSO", "expect": "AUD SWAP OIS", "weeks": true, "months": true,
+          "years": [1, 2, 5, 10, 20, 30],
+          "overnight": {"security": "RBACOR Index", "expect": "RBA"}},
+  "ZAR": {"prefix": "SASW", "expect": "ZAR SWAP QTR", "years": [1, 2, 3, 5, 7, 10, 15, 20, 30],
+          "overnight": {"security": "ZARONIA Index", "expect": "South African Overnight"},
+          "fixings": {"1M": {"security": "JIBA1M Index", "expect": "Johannesburg"},
+                      "3M": {"security": "JIBA3M Index", "expect": "Johannesburg"},
+                      "6M": {"security": "JIBA6M Index", "expect": "Johannesburg"},
+                      "12M": {"security": "JIBA12M Index", "expect": "Johannesburg"}}}
+ },
+ "swaption": {
+  "ZAR": {"prefix": "SASN", "expect": "ZAR SWPT NVOL",
+          "expiries": {"1M": "0A", "3M": "0C", "6M": "0F", "9M": "0I",
+                       "1Y": "01", "2Y": "02", "5Y": "05", "7Y": "07", "10Y": "10"},
+          "tenor_years": [1, 2, 3, 4, 5, 7, 10]}
+ }
+}

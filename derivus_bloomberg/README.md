@@ -11,74 +11,43 @@ SDK installed and the Desktop API service available. The adapter deliberately ha
 Bloomberg requirements file because workstation installation is platform-specific. Importing
 `derivus` or the adapter's normalization modules does not import `blpapi`.
 
-The caller supplies the complete Bloomberg map. The package ships no ticker templates and no desk
-surface - what it ships is the machinery to BUILD one and hold it honest: `DV_Bloomberg discover`
-probes a seed vocabulary you own against your own terminal and writes a map in which every entry
-records the `NAME` Bloomberg answered, the quote's last print, and when it was verified.
-`security_map.load` refuses an entry missing its answered name or verification date (the last
-print may honestly be absent - not every field carries one), so nothing unverified can reach a
-fetch - the "verify every security and field against OVDV" rule enforced by the artifact rather
-than by discipline.
+The caller still owns the map. What the package ships is candidate vocabulary - a starting seed of
+tickers to ASK about - AND the machinery that refuses to believe a word of it until your own
+terminal answers for it: `DV_Bloomberg discover` probes every seeded candidate against your
+workstation and writes a map in which every entry records the `NAME` Bloomberg answered, the
+quote's last print, and when it was verified. `security_map.load` refuses an entry missing its
+answered name or verification date (the last print may honestly be absent - not every field
+carries one), so nothing unverified can reach a fetch - the "verify every security and field
+against OVDV" rule enforced by the artifact rather than by discipline. The seed is a
+questionnaire, never an answer key: shipping it moves the first hour of typing, not the trust
+boundary, which was always the load-bearing rule.
 
 ## Discovery
 
 ```bash
-DV_Bloomberg discover --seed seed.json --out C:\somewhere\outside\any\repo\map.json
-DV_Bloomberg verify --map map.json          # later: re-probe every entry, report drift, exit 1 on any
+DV_Bloomberg discover                       # reads DV_HOME/seed.json, writes DV_HOME/security_map.json
+DV_Bloomberg verify                         # later: re-probe every entry, report drift, exit 1 on any
 ```
 
-A starting seed, with the vocabulary verified on a live terminal (2026-08-27) - copy it, then cut
-it to the scope your desk actually quotes. The `fx_vol` pairs deliberately exclude `EURUSD`,
+`DV_HOME` (default `~/.derivus`) is the user-data directory every `DV_*` tool shares — the live
+book, the seed, the security map — outside any repo by construction. `--seed`, `--out` and
+`--map` name other paths when you want them.
+
+The starting seed SHIPS in the package as `derivus_bloomberg/seed.json`, its vocabulary spelled
+on a live terminal (2026-08-27); first use copies it to `DV_HOME/seed.json`, which is yours to cut
+down to the scope your desk actually quotes. The `fx_vol` pairs deliberately exclude `EURUSD`,
 `GBPUSD`, `AUDUSD` and `NZDUSD`: those are quoted premium-UNADJUSTED and the adapter supports one
 convention (see the note at the end), so mapping their vols would verify tickers whose surfaces
-the adapter cannot yet honestly write - their spots are still mapped:
+the adapter cannot yet honestly write - their spots are still mapped. Its top-level shape:
 
-```json
+```
 {
- "fx_vol": {
-  "pairs": ["USDJPY", "USDCHF", "USDCAD", "USDZAR", "EURZAR", "GBPZAR"],
-  "expiries": {"1W": 0.0192, "2W": 0.0384, "1M": 0.0822, "2M": 0.1671, "3M": 0.2493,
-               "6M": 0.4986, "9M": 0.7479, "1Y": 1.0, "2Y": 2.0},
-  "pillars": [0.10, 0.25]
- },
- "fx_spot": {"pairs": ["EURUSD", "GBPUSD", "AUDUSD", "NZDUSD", "USDJPY", "USDCHF", "USDCAD",
-                       "USDZAR", "EURGBP", "EURJPY", "EURCHF", "AUDJPY", "EURAUD", "GBPJPY",
-                       "EURZAR", "GBPZAR"]},
- "rates": {
-  "USD": {"prefix": "USOSFR", "expect": "USD OIS", "weeks": true, "months": true,
-          "years": [1, 2, 3, 5, 7, 10, 15, 20, 30],
-          "overnight": {"security": "SOFRRATE Index", "expect": "SOFR"}},
-  "EUR": {"prefix": "EESWE", "expect": "EUR SWAP (ESTR)", "weeks": true, "months": true,
-          "years": [1, 2, 3, 5, 7, 10, 15, 20, 30],
-          "overnight": {"security": "ESTRON Index", "expect": "ESTR"}},
-  "GBP": {"prefix": "BPSWS", "expect": "GBP SWAP (vs SONIA)", "weeks": true, "months": true,
-          "years": [1, 2, 3, 5, 7, 10, 15, 20, 30],
-          "overnight": {"security": "SONIO Index", "expect": "SONIA"}},
-  "JPY": {"prefix": "JYSO", "expect": "JPY SWAP OIS", "weeks": true, "months": true,
-          "years": [1, 2, 5, 10, 20, 30],
-          "overnight": {"security": "MUTKCALM Index", "expect": "Bank of Japan"}},
-  "CHF": {"prefix": "SFSNT", "expect": "CHF SARON", "weeks": true, "months": true,
-          "years": [1, 2, 5, 10, 20, 30],
-          "overnight": {"security": "SRFXON1 Index", "expect": "SARON"}},
-  "CAD": {"prefix": "CDSO", "expect": "CAD SWAP OIS", "weeks": true, "months": true,
-          "years": [1, 2, 5, 10, 20, 30],
-          "overnight": {"security": "CAONREPO Index", "expect": "Canadian Overnight"}},
-  "AUD": {"prefix": "ADSO", "expect": "AUD SWAP OIS", "weeks": true, "months": true,
-          "years": [1, 2, 5, 10, 20, 30],
-          "overnight": {"security": "RBACOR Index", "expect": "RBA"}},
-  "ZAR": {"prefix": "SASW", "expect": "ZAR SWAP QTR", "years": [1, 2, 3, 5, 7, 10, 15, 20, 30],
-          "overnight": {"security": "ZARONIA Index", "expect": "South African Overnight"},
-          "fixings": {"1M": {"security": "JIBA1M Index", "expect": "Johannesburg"},
-                      "3M": {"security": "JIBA3M Index", "expect": "Johannesburg"},
-                      "6M": {"security": "JIBA6M Index", "expect": "Johannesburg"},
-                      "12M": {"security": "JIBA12M Index", "expect": "Johannesburg"}}}
- },
- "swaption": {
-  "ZAR": {"prefix": "SASN", "expect": "ZAR SWPT NVOL",
-          "expiries": {"1M": "0A", "3M": "0C", "6M": "0F", "9M": "0I",
-                       "1Y": "01", "2Y": "02", "5Y": "05", "7Y": "07", "10Y": "10"},
-          "tenor_years": [1, 2, 3, 4, 5, 7, 10]}
- }
+ "fx_vol":   {"pairs": [...], "expiries": {"1M": 0.0822, ...}, "pillars": [0.10, 0.25]},
+ "fx_spot":  {"pairs": [...]},
+ "rates":    {"USD": {"prefix": "USOSFR", "expect": "USD OIS", "weeks": true, "months": true,
+                      "years": [...], "overnight": {"security": "SOFRRATE Index", ...}}, ...},
+ "swaption": {"ZAR": {"prefix": "SASN", "expect": "ZAR SWPT NVOL",
+                      "expiries": {"1Y": "01", ...}, "tenor_years": [1, 2, 3, 4, 5, 7, 10]}}
 }
 ```
 

@@ -19,6 +19,13 @@ full-document execute of the same job name the same result, and a patched execut
 the plan as it was — which is asserted by running an unpatched one after it and demanding the
 original id back.
 
+`/book/bloomberg` is the one verb whose dependency this machine may not have, so its gates drive
+the seams instead of the terminal: `discover.provision`, `security_map.stale` and `fetch_fx_vol`
+are monkeypatched, and the lazy imports inside the job are what makes that reach it. No blpapi,
+no socket, no map file - what is under test is the verb's own wiring: the scope it derives from
+the map, the refusal a late quote earns, the single atomic write it installs through, and the
+progress a poller reads while it runs.
+
 The ordering and dedupe gates are deterministic without sleeping on a clock. A first job blocks
 inside `run_job` and announces it through an `Event`, so by the time the others are submitted the
 worker is provably busy and they are all in the queue — releasing it makes the queue the only thing
@@ -464,11 +471,13 @@ def test_a_what_if_prices_the_candidate_and_writes_nothing(book):
     assert book.read_bytes() == before
 
 
-def fx_vol_quotes():
-    """An `FXVolPrices` block built through the Bloomberg package's own normalization - canned
-    observations standing in for the terminal, everything downstream of them the real pipeline."""
+def fx_vol_snapshot():
+    """A USDZAR snapshot built through the Bloomberg package's own normalization - canned
+    observations standing in for the terminal, everything downstream of them the real pipeline.
+    The block a quote source posts and the snapshot a fetch returns are both this one object, so
+    the `/book/market` gates and the `/book/bloomberg` gates tick the same numbers."""
     from derivus_bloomberg import (FXQuoteSecurity, FXVolDefinition, RawBloombergObservation,
-                                   normalize_fx_vol, to_market_prices_block)
+                                   normalize_fx_vol)
     raw = {('3M', 'ATM', None): 14.0, ('3M', 'RR', 0.25): -1.2, ('3M', 'BF', 0.25): 0.35,
            ('1Y', 'ATM', None): 15.0, ('1Y', 'RR', 0.25): -1.6, ('1Y', 'BF', 0.25): 0.45}
     definition = FXVolDefinition(
@@ -481,8 +490,13 @@ def fx_vol_quotes():
                                 'USDZAR {} {} {}'.format(expiry, quote_type, pillar),
                                 'PX_LAST', value)
         for (expiry, quote_type, pillar), value in raw.items()]
-    snapshot = normalize_fx_vol(definition, observations, pd.Timestamp('2024-06-28 16:30'))
-    return {'FXVolPrices.USD.ZAR': to_market_prices_block(snapshot)}
+    return normalize_fx_vol(definition, observations, pd.Timestamp('2024-06-28 16:30'))
+
+
+def fx_vol_quotes():
+    """That snapshot as the `Market Prices` block a quote source posts to `/book/market`."""
+    from derivus_bloomberg import to_market_prices_block
+    return {'FXVolPrices.USD.ZAR': to_market_prices_block(fx_vol_snapshot())}
 
 
 FX_OPTION = {'Object': 'FXOptionDeal', 'Reference': 'OPT1', 'Currency': 'USD',
@@ -638,6 +652,159 @@ def test_a_bootstrap_that_complains_writes_nothing(book):
     assert outcome['written'] is False
     assert any('wrote no' in message for message in outcome['refused'])
     assert book.read_bytes() == before
+
+
+@pytest.fixture
+def desk(tmp_path):
+    """A live book that declares the `FXVolSurfaceParameters` bootstrapper - what a market tick
+    needs to turn quotes into the price factors a pricer reads."""
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(job(sections={
+        'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    yield path
+    service.BOOK = None
+
+
+def canned_map():
+    """The verified security map `discover.provision` hands back - one USDZAR block carrying its
+    evidence, spelled the way discovery spells the broker grid."""
+    def entry(security):
+        return {'security': security, 'name': security, 'last_update': '2024-06-28',
+                'verified': '2024-06-28'}
+
+    quotes = {label: {'ATM': entry('USDZARV{} BGN Curncy'.format(label)),
+                      'RR_0.25': entry('USDZAR25R{} BGN Curncy'.format(label)),
+                      'BF_0.25': entry('USDZAR25B{} BGN Curncy'.format(label))}
+              for label in ('3M', '1Y')}
+    return {'schema': 'derivus-bloomberg-map/1', 'generated': '2024-06-28', 'rejected': {},
+            'blocks': {'fx_vol': {'USDZAR': {'expiries': {'3M': 0.25, '1Y': 1.0},
+                                             'quotes': quotes}}}}
+
+
+class FakeTerminal:
+    """`BloombergSession` as the verb uses it - a context manager and nothing else, since the
+    provision, the freshness check and the fetch are all seams the gates drive. No request is
+    built, no socket is opened and blpapi is never reached."""
+
+    def __init__(self, **options):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *error):
+        return False
+
+
+def bloomberg_seams(monkeypatch, provision=None, stale=None):
+    """Every seam between the verb and the terminal, replaced. The lazy imports inside
+    `BloombergJob.run_job` are what lets a patch reach the job at all: each name is bound off the
+    package when the WORKER runs, which is after this. Returns the definitions the fetch was
+    handed, so a gate can hold the scope it asked for against what the map built."""
+    import derivus_bloomberg
+    from derivus_bloomberg import discover, security_map, session
+
+    asked = []
+
+    def fetch_fx_vol(source, definition):
+        asked.append(definition)
+        return fx_vol_snapshot()
+
+    monkeypatch.setattr(session, 'BloombergSession', FakeTerminal)
+    monkeypatch.setattr(derivus_bloomberg, 'fetch_fx_vol', fetch_fx_vol)
+    monkeypatch.setattr(security_map, 'stale', stale or (lambda source, securities: {}))
+    monkeypatch.setattr(discover, 'provision', provision or (
+        lambda source, as_of, on_batch=None: (canned_map(), False)))
+    return asked
+
+
+def ticked(request={}):
+    """POST the verb, wait for the one worker to drain, and read the outcome off the result the
+    way a poller does - the book write rides the run's own Stats, as a solve's coordinates do."""
+    submitted = CLIENT.post('/book/bloomberg', json=request).json()
+    service.EXECUTOR.queue.join()
+    result = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+    return result, result.get('stats', {}).get('Bloomberg', {})
+
+
+def test_the_bloomberg_verb_provisions_fetches_and_ticks_the_book(desk, monkeypatch):
+    """THE verb, end to end on a machine with no terminal: the map is provisioned, its scope
+    (every fx_vol pair, at the expiries it verified, at the default pillar) is what the fetch is
+    asked for, and what comes back is installed and bootstrapped in one atomic write - so the
+    book file carries the `FXVol` surface a pricer reads, not just the quotes it came from."""
+    asked = bloomberg_seams(monkeypatch)
+    result, outcome = ticked()
+    on_disk = json.loads(desk.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+
+    assert result['status'] == 'done'
+    assert outcome['written'] is True
+    assert outcome['installed'] == ['FXVolPrices.USD.ZAR']
+    assert 'FXVol.USD.ZAR' in outcome['new_factors']
+    assert on_disk['Price Factors']['FXVol.USD.ZAR']['Surface_Type'] == 'Malz'
+    assert 'FXVolPrices.USD.ZAR' in on_disk['Market Prices']
+    # the scope came off the map, which is what "defaults to the desk's own" has to mean
+    assert [definition.pair for definition in asked] == ['USDZAR']
+    assert sorted(asked[0].expiries) == ['1Y', '3M'] and asked[0].pillars == (0.25,)
+
+
+def test_a_stale_quote_refuses_the_tick_by_name(desk, monkeypatch):
+    """A retired series keeps answering with a plausible price, so the update date is the only
+    thing that says so: one late quote refuses the WHOLE tick by name and the book's bytes stand
+    still - no half-installed surface, and nothing fetched reaches the file."""
+    before = desk.read_bytes()
+    asked = bloomberg_seams(monkeypatch, stale=lambda source, securities: {
+        'USDZARV3M BGN Curncy': '2015-01-02'})
+    result, outcome = ticked()
+
+    assert result['status'] == 'done'
+    assert outcome['written'] is False
+    assert any('USDZARV3M BGN Curncy' in message and '2015-01-02' in message
+               for message in outcome['refused'])
+    assert asked == [], 'a late quote must refuse BEFORE anything is fetched'
+    assert desk.read_bytes() == before
+
+
+def test_progress_is_readable_while_the_fetch_runs(desk, monkeypatch):
+    """A terminal round trip is minutes of work behind one `result_id`, so the job publishes where
+    it has got to and `/results/{id}` merges it while the job waits or runs. Held on an Event, so
+    the worker is provably mid-provision when the poll happens - and the entry is gone once the
+    result carries its outcome, which is what keeps a done answer from ever showing a stale bar."""
+    started, release = threading.Event(), threading.Event()
+
+    def provision(source, as_of, on_batch=None):
+        on_batch(1, 3)
+        started.set()
+        release.wait(timeout=30)
+        return canned_map(), True
+
+    bloomberg_seams(monkeypatch, provision=provision)
+    submitted = CLIENT.post('/book/bloomberg', json={}).json()
+    assert started.wait(timeout=30)
+    running = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+    release.set()
+    service.EXECUTOR.queue.join()
+    done = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+
+    assert submitted['status'] == 'queued'
+    assert running['status'] == 'running'
+    assert running['progress'] == {'done': 1, 'total': 3, 'note': 'verifying securities'}
+    assert done['status'] == 'done' and 'progress' not in done
+    assert done['stats']['Bloomberg']['written'] is True
+    assert done['stats']['Bloomberg']['provisioned'] is True
+
+
+def test_the_bloomberg_verb_needs_a_book_and_a_bootstrapper(book):
+    """Both refusals are the ones the market verbs already make, in the same words: no book is a
+    404 naming the flag that opens one, and a book that declares no bootstrapper is a 422 saying
+    nothing can turn quotes into price factors. Neither reaches the terminal or the queue."""
+    bare = CLIENT.post('/book/bloomberg', json={})
+    service.BOOK = None
+    missing = CLIENT.post('/book/bloomberg', json={})
+
+    assert bare.status_code == 422
+    assert 'Bootstrapper Configuration' in bare.json()['detail']
+    assert missing.status_code == 404 and '--book' in missing.json()['detail']
 
 
 def test_a_solve_lands_an_affine_field_in_a_handful_of_pricings(book):

@@ -45,6 +45,10 @@ writes:
 DV_Service --book path/to/book.json
 ```
 
+With no `--book` at all, the service serves `book.json` from **`DV_HOME`** (`~/.derivus` unless
+the env var says otherwise) — the same directory `DV_Bloomberg` keeps its security map and seed
+in, so `DV_Service` alone is a working desk. `--no-book` serves the verbs with no book.
+
 A wheel serves the UI it shipped with at `/ui` by itself; from a clone, add `--ui web/dist` to
 serve the build. (If `DV_Service` is not on your PATH — pip's per-user installs on Windows —
 `python -m derivus.service` is the same program.)

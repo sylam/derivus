@@ -26,7 +26,10 @@ setup(
                                     'derivus_mcp', 'derivus_mcp.*']),
     # the release pipeline builds web/ and copies web/dist here before `python -m build`, so a
     # wheel serves the UI it was released with; the repo tree carries neither the build nor the copy
-    package_data={'derivus': ['_ui/*', '_ui/assets/*']},
+    package_data={'derivus': ['_ui/*', '_ui/assets/*'],
+                  # the seed is a QUESTIONNAIRE of unverified candidates - the evidence-refusing
+                  # loader stays the trust boundary
+                  'derivus_bloomberg': ['seed.json']},
     # the three console scripts are flat modules beside the package, so they need declaring
     py_modules=['derivus_bootstrap', 'derivus_batch', 'derivus_docs'],
     url='https://github.com/sylam/derivus',

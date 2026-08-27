@@ -26,6 +26,7 @@ wearing today's time - check `stale` beside a tick).
 """
 import datetime
 import json
+import os
 
 from .errors import BloombergConfigurationError
 from .types import FXQuoteSecurity, FXVolDefinition
@@ -33,8 +34,27 @@ from .types import FXQuoteSecurity, FXVolDefinition
 SCHEMA = 'derivus-bloomberg-map/1'
 
 
-def load(path):
-    """The map, refused unless every entry still carries its evidence."""
+def home():
+    """The user-data directory the DV_* tools share: `$DV_HOME`, defaulting to `~/.derivus` -
+    where a desk's own files (`book.json`, `security_map.json`, `seed.json`) live, outside any
+    repo. One env var, the `RF_SERVICE_URL` pattern; deliberately re-spelled per package rather
+    than imported across the engine boundary."""
+    return os.path.expanduser(os.environ.get('DV_HOME', os.path.join('~', '.derivus')))
+
+
+def packaged_seed():
+    """The questionnaire the package ships - the starting vocabulary of pairs, curve prefixes
+    and grids, copied to `$DV_HOME/seed.json` on first use so a desk finds a file to cut down
+    to what it actually quotes rather than a blank prompt. Shipping it asserts nothing about
+    any workstation: the seed only names CANDIDATES, and `load` below - which refuses an entry
+    carrying no terminal evidence - not the seed, is where the trust boundary sits."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'seed.json')
+
+
+def load(path=None):
+    """The map - `$DV_HOME/security_map.json` unless named - refused unless every entry still
+    carries its evidence."""
+    path = path or os.path.join(home(), 'security_map.json')
     with open(path, encoding='utf-8') as handle:
         document = json.load(handle)
     if document.get('schema') != SCHEMA:

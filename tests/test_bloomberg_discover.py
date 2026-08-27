@@ -6,7 +6,10 @@ walk. What is gated is the trust chain a map rides on: a candidate is believed o
 terminal's own NAME says it is what it claims, a dead benchmark is refused on its update date
 however sane its price reads (the SAONIA trap: 8.855 nineteen years after its last print), an
 entry stripped of its evidence refuses to load by name, and the strict and tolerant readers are
-one walk with two policies rather than two walks that drift.
+one walk with two policies rather than two walks that drift. First use is gated as its own
+claim: the shipped questionnaire lands where the desk can cut it down BEFORE the terminal is
+asked at all, so a refused probe leaves a seed and no half-map, and a map already on disk is
+loaded rather than quietly rebuilt.
 """
 import datetime
 import json
@@ -145,6 +148,29 @@ def discover_with(report):
     return discover.build_map(SEED, verdicts, AS_OF.isoformat()), verdicts
 
 
+def test_the_user_data_home_is_one_env_var(tmp_path, monkeypatch):
+    """DV_HOME names where a desk's own files live, the RF_SERVICE_URL pattern: `load()` with no
+    path reads `$DV_HOME/security_map.json`, so every DV_* tool and script agrees on the same
+    file without any of them passing paths around."""
+    document, _ = discover_with(full_report())
+    (tmp_path / 'security_map.json').write_text(json.dumps(document), encoding='utf-8',
+                                               newline='\n')
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    assert security_map.home() == str(tmp_path)
+    loaded = security_map.load()
+    assert loaded['blocks']['fx_spot']['USDZAR']['security'] == 'USDZAR BGN Curncy'
+
+
+def test_a_missing_seed_is_an_instruction_not_a_traceback(tmp_path, monkeypatch):
+    """The seed is the one file no tool writes - the vocabulary is the caller's - so running
+    discovery without one must say where the seed goes and where the starting one is, before
+    any Bloomberg session is even attempted."""
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    monkeypatch.setattr(sys, 'argv', ['DV_Bloomberg', 'discover'])
+    with pytest.raises(SystemExit, match='questionnaire'):
+        discover.main()
+
+
 def test_a_map_entry_without_evidence_is_refused_by_name(tmp_path):
     """The map is trusted BECAUSE each entry records what the terminal answered - so a
     hand-edited entry with the evidence stripped refuses to load, naming the entry, rather than
@@ -233,3 +259,87 @@ def test_staleness_reads_the_terminals_date_never_the_wall_clock():
     late = security_map.stale(source, ['SAONIA Index', 'ZARONIA Index', 'MUTE Index'],
                               as_of=AS_OF)
     assert late == {'SAONIA Index': '2007-03-26', 'MUTE Index': 'no LAST_UPDATE_DT'}
+
+
+class Answering(Walked):
+    """The terminal answering every SEED candidate as itself, live - what a first-use
+    provisioning run meets on a workstation that has its entitlements."""
+
+    def __init__(self):
+        super().__init__([(security, None, row['fields'])
+                          for security, row in full_report().items()])
+
+
+class Refusing(Walked):
+    """A session that refuses the walk - no terminal, no entitlement, a timeout mid-request -
+    and so the only way to assert that a call probed NOTHING at all."""
+
+    def __init__(self):
+        super().__init__([])
+
+    def _walk(self, securities, fields):
+        raise BloombergRequestError('the terminal was asked about {} names'.format(
+            len(securities)))
+
+
+def provisioning_home(tmp_path, monkeypatch):
+    """A DV_HOME that does not exist yet and a packaged seed this gate owns - so provisioning is
+    gated on its own file and never on whether the wheel has been built yet."""
+    home = tmp_path / 'home'
+    monkeypatch.setenv('DV_HOME', str(home))
+    packaged = tmp_path / 'packaged_seed.json'
+    packaged.write_bytes(json.dumps(SEED, indent=1).encode('utf-8'))
+    monkeypatch.setattr(security_map, 'packaged_seed', lambda: str(packaged))
+    return home, packaged
+
+
+def test_first_use_provisions_once_and_the_second_run_probes_nothing(tmp_path, monkeypatch):
+    """A desk's first run finds no DV_HOME at all: provisioning creates it, copies the shipped
+    questionnaire in byte for byte so there is a real file to cut down, and writes the map its
+    probe evidenced. The second run is the claim that matters - the existing map is LOADED, not
+    rebuilt - so a session that raises the moment it is walked passes it, and `created` says the
+    map is not new rather than leaving the caller to guess."""
+    home, packaged = provisioning_home(tmp_path, monkeypatch)
+    document, created = discover.provision(Answering(), AS_OF)
+    assert created is True
+    assert (home / 'seed.json').read_bytes() == packaged.read_bytes()
+    assert document['blocks']['fx_spot']['USDZAR']['security'] == 'USDZAR BGN Curncy'
+    assert json.loads((home / 'security_map.json').read_text(encoding='utf-8')) == document
+
+    again, created = discover.provision(Refusing(), AS_OF)
+    assert created is False
+    assert again == document
+
+
+def test_a_refused_probe_leaves_the_seed_behind_and_no_half_map(tmp_path, monkeypatch):
+    """The folder and the seed are laid down BEFORE the terminal is asked, so a refusal leaves
+    the user holding the questionnaire to cut down and NO partial map to distrust - which is the
+    state the retry wants to start from."""
+    home, packaged = provisioning_home(tmp_path, monkeypatch)
+    with pytest.raises(BloombergRequestError):
+        discover.provision(Refusing(), AS_OF)
+    assert (home / 'seed.json').read_bytes() == packaged.read_bytes()
+    assert not (home / 'security_map.json').exists()
+
+
+def test_progress_counts_answered_names_and_lands_exactly_on_the_total(tmp_path, monkeypatch):
+    """A first-use probe is hundreds of names over a slow terminal, so `on_batch(done, total)`
+    fires per chunk: the counts only ever rise, and the last chunk clamps to the total instead
+    of overshooting it by the batch remainder. Provisioning threads the same callback through,
+    which is the only reason it exists."""
+    securities = [candidate.security for candidate in discover.candidates_from_seed(SEED)]
+    total = len(securities)
+    progress = []
+    discover.probe(Answering(), securities, batch=5,
+                   on_batch=lambda done, count: progress.append((done, count)))
+    counted = [done for done, _ in progress]
+    assert [count for _, count in progress] == [total] * len(progress)
+    assert counted == sorted(set(counted)) and counted[-1] == total
+    assert counted[0] == 5 and len(counted) == 1 + (total - 1) // 5
+
+    provisioning_home(tmp_path, monkeypatch)
+    threaded = []
+    discover.provision(Answering(), AS_OF,
+                       on_batch=lambda done, count: threaded.append((done, count)))
+    assert threaded and threaded[-1] == (total, total)
+

@@ -28,8 +28,11 @@ so the gates drive them on canned terminal answers, the `normalize_fx_vol` seam.
 """
 import datetime
 import json
+import os
+import shutil
 from collections import namedtuple
 
+from . import security_map
 from .errors import BloombergConfigurationError
 from .security_map import SCHEMA, entries, load
 
@@ -198,22 +201,57 @@ def build_map(seed, verdicts, generated):
     return {'schema': SCHEMA, 'generated': generated, 'blocks': blocks, 'rejected': rejected}
 
 
-def probe(session, securities, fields=FIELDS, batch=BATCH):
+def probe(session, securities, fields=FIELDS, batch=BATCH, on_batch=None):
+    """Every candidate asked in bounded chunks. `on_batch(done, total)`, when given, is called
+    after each chunk ANSWERS - a full seed is several hundred names over a terminal that takes
+    its time, so `done` counts names replied about, never names sent."""
     report = {}
     for start in range(0, len(securities), batch):
         report.update(session.reference_data_report(securities[start:start + batch], fields))
+        if on_batch is not None:
+            on_batch(min(start + batch, len(securities)), len(securities))
     return report
 
 
-def discover(seed, session, as_of, stale_days=STALE_DAYS):
+def discover(seed, session, as_of, stale_days=STALE_DAYS, on_batch=None):
     """Seed in, verified map out: candidates spelled from the seed's vocabulary, probed in
-    batches, classified, and assembled with their evidence."""
+    batches, classified, and assembled with their evidence. `on_batch` is the probe's own
+    progress, passed through untouched so a caller with a screen has something to show."""
     candidates = list(candidates_from_seed(seed))
     if not candidates:
         raise BloombergConfigurationError('the seed names nothing to discover')
-    report = probe(session, [candidate.security for candidate in candidates])
+    report = probe(session, [candidate.security for candidate in candidates], on_batch=on_batch)
     verdicts = verify(candidates, report, as_of, stale_days)
     return build_map(seed, verdicts, as_of.isoformat()), verdicts
+
+
+def provision(session, as_of, home=None, stale_days=STALE_DAYS, on_batch=None):
+    """First use, once: `(document, created)` for `$DV_HOME/security_map.json`.
+
+    A map that is already there is LOADED and returned with `created` False - no probe, no
+    write - so a desk that has cut its seed down and verified it keeps that map until it asks
+    for another. With no map, the home folder and the seed are laid down FIRST: the packaged
+    questionnaire is copied in byte for byte, so what the user meets is a real file to edit
+    rather than an instruction to go find one. Only then is the terminal asked.
+
+    That order is the point of the ordering: a Bloomberg failure propagates AFTER the folder
+    and seed exist, so a refusal leaves the user with the seed to cut down and NO half-written
+    map - and the retry starts from an edited seed instead of from a map nobody trusts.
+    """
+    home = home or security_map.home()
+    map_path = os.path.join(home, 'security_map.json')
+    if os.path.isfile(map_path):
+        return load(map_path), False
+    os.makedirs(home, exist_ok=True)
+    seed_path = os.path.join(home, 'seed.json')
+    if not os.path.isfile(seed_path):
+        shutil.copyfile(security_map.packaged_seed(), seed_path)
+    with open(seed_path, encoding='utf-8') as handle:
+        seed = json.load(handle)
+    document, _ = discover(seed, session, as_of, stale_days, on_batch=on_batch)
+    with open(map_path, 'w', encoding='utf-8', newline='\n') as handle:
+        json.dump(document, handle, indent=1)
+    return document, True
 
 
 def recheck(document, session, as_of, stale_days=STALE_DAYS):
@@ -248,12 +286,17 @@ def main():
 
     parser = argparse.ArgumentParser(
         description='Build and re-verify a Bloomberg security map for derivus market data.')
+    from .security_map import home
+
     verbs = parser.add_subparsers(dest='verb', required=True)
     discovering = verbs.add_parser('discover', help='probe a seed and write a verified map')
-    discovering.add_argument('--seed', required=True, help='the vocabulary file you own')
-    discovering.add_argument('--out', required=True, help='where the map lands - outside any repo')
+    discovering.add_argument('--seed', default=os.path.join(home(), 'seed.json'),
+                             help='the vocabulary file you own (default: DV_HOME/seed.json)')
+    discovering.add_argument('--out', default=os.path.join(home(), 'security_map.json'),
+                             help='where the map lands (default: DV_HOME/security_map.json)')
     checking = verbs.add_parser('verify', help='re-probe an existing map and report drift')
-    checking.add_argument('--map', required=True, dest='map_path')
+    checking.add_argument('--map', default=os.path.join(home(), 'security_map.json'),
+                          dest='map_path', help='the map to re-probe (default: DV_HOME/security_map.json)')
     for verb in (discovering, checking):
         verb.add_argument('--stale-days', type=int, default=STALE_DAYS,
                           help='a LAST_UPDATE_DT older than this marks a quote dead')
@@ -261,6 +304,14 @@ def main():
 
     as_of = datetime.date.today()
     if args.verb == 'discover':
+        # the CLI keeps the seed deliberate where `provision` copies it: a hand-run discovery
+        # refuses on a missing seed so the desk cuts its scope FIRST, and the refusal names the
+        # packaged questionnaire to start from
+        if not os.path.isfile(args.seed):
+            raise SystemExit(
+                'no seed at {} - copy the packaged questionnaire ({}) there and cut it to the '
+                'scope your desk quotes, or name one with --seed'.format(
+                    args.seed, security_map.packaged_seed()))
         with open(args.seed, encoding='utf-8') as handle:
             seed = json.load(handle)
         with BloombergSession(timeout_ms=30000) as session:

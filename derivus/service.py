@@ -36,6 +36,7 @@ the verbs cannot answer is a missing verb on `Context`, not an endpoint that rea
 | `POST /book/price` | price the book, optionally with a candidate deal spliced in - a what-if, writes nothing |
 | `POST /book/solve` | solve one field of a candidate deal to a target value - a root find over base valuations, writes nothing |
 | `POST /book/market` | tick the book's market: quote blocks installed or value-updated, a values patch applied, the bootstrap run - one atomic write |
+| `POST /book/bloomberg` | provision the security map, fetch the desk's FX vol surfaces off the terminal and tick the book |
 
 Every POST body is either a job document or `{"plan_id": ...}` naming one already prepared, and
 nothing downstream can tell the two apart: the plan cache holds a pristine parse and every read of
@@ -62,6 +63,7 @@ import logging
 import os
 import queue
 import threading
+import time
 
 from collections import namedtuple, OrderedDict
 from copy import deepcopy
@@ -336,6 +338,13 @@ app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_methods=['*'], a
 EXECUTOR = ComputeExecutor()
 PLANS = PlanCache()
 
+#: Where a long job has got to, under the result id it will be filed as: `{done, total, note}`.
+#: A terminal round trip is minutes of work behind one `result_id`, so the worker publishes its own
+#: progress here and `/results/{result_id}` merges it while the job is queued or running. That
+#: thread is the only writer and drops its entry as the job leaves, so a reader tolerates absence -
+#: a finished result carries its outcome, never a stale count.
+PROGRESS = {}
+
 
 def context_for(body):
     """The Context an endpoint works on: the posted document parsed, or a deep copy of the plan it
@@ -435,13 +444,20 @@ def results(result_id: str):
     No cells. A credit Monte Carlo's exposure is dates by scenarios and does not fit in an answer
     anyone wants to hold, so a client reads the shapes here and fetches the one table it is showing
     from `/results/{result_id}/{table}`. A failed run carries the message and nothing else.
+
+    A job that publishes its own progress - a Bloomberg round trip is minutes of terminal time -
+    carries it under `progress` while it waits or runs, so one poll loop serves a cell that wants
+    a number and a screen that wants a bar.
     """
     result = EXECUTOR.result(result_id)
     if result is None:
         raise HTTPException(404, 'Unknown result {}'.format(result_id))
     tables = result.get('tables')
-    return result if tables is None else dict(
+    answer = result if tables is None else dict(
         result, tables={name: shape(table) for name, table in tables.items()})
+    # a done result carries its outcome instead, and the worker has already dropped the entry
+    progress = PROGRESS.get(result_id) if result['status'] in ('queued', 'running') else None
+    return answer if progress is None else dict(answer, progress=progress)
 
 
 @app.get('/results/{result_id}/{table:path}', summary='One table of a finished run, paged')
@@ -556,6 +572,51 @@ class CapturedErrors(logging.Handler):
         self.messages.append(record.getMessage())
 
 
+#: What a tick cannot do without, in the one wording both market verbs refuse in.
+NO_BOOTSTRAPPER = ('the book declares no Bootstrapper Configuration - nothing can turn quotes '
+                   'into price factors')
+
+
+def market_edit(document, quotes, patch, bootstrap=None):
+    """The market tick as ONE edit closure over a wire document, for `Book.mutate`: quote blocks
+    installed or value-updated, a values patch applied, the bootstrap run, `(write, outcome)` back.
+
+    `/book/market` and `/book/bloomberg` differ only in where the quotes came from, so the whole
+    install-and-refuse semantic lives here once rather than twice: a bootstrap that reports an
+    ERROR writes NOTHING and hands its messages back, because a book must never carry a market its
+    own bootstrap complained about. `bootstrap` is `'Yes'`/`'No'`, or None for the default - run it
+    iff quotes arrived.
+    """
+    outcome = {'installed': [], 'updated': []}
+    for name in sorted(quotes):
+        outcome[update_market_quote(document, name, quotes[name])].append(name)
+    wants_bootstrap = (bootstrap if bootstrap is not None else
+                       ('Yes' if quotes else 'No')) == 'Yes'
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    if wants_bootstrap and not market.get('Bootstrapper Configuration'):
+        raise ValueError(NO_BOOTSTRAPPER)
+    if not (wants_bootstrap or patch):
+        return bool(outcome['installed'] or outcome['updated']), dict(outcome, written=True)
+
+    context = load(document)
+    context.patch_market(patch)
+    before = set(market.get('Price Factors', {}))
+    if wants_bootstrap:
+        captured = CapturedErrors()
+        logging.getLogger().addHandler(captured)
+        try:
+            context.bootstrap()
+        finally:
+            logging.getLogger().removeHandler(captured)
+        if captured.messages:
+            return False, {'written': False, 'refused': captured.messages}
+    params = context.current_cfg.params
+    market['Price Factors'] = as_json(params['Price Factors'])
+    market['Market Prices'] = as_json(params['Market Prices'])
+    return True, dict(outcome, written=True, patched=sorted(patch),
+                      new_factors=sorted(set(market['Price Factors']) - before))
+
+
 @app.post('/book/market', summary="Tick the book's market - quotes in, values patched, bootstrapped")
 def book_market(request: dict):
     """`{quotes?: {name: block}, patch?: {factor: {field: value}}, bootstrap?: 'Yes'|'No'}`.
@@ -571,41 +632,110 @@ def book_market(request: dict):
     live = live_book()
 
     def edit(document):
-        outcome = {'installed': [], 'updated': []}
-        for name in sorted(request.get('quotes', {})):
-            outcome[update_market_quote(document, name, request['quotes'][name])].append(name)
-        wants_bootstrap = request.get(
-            'bootstrap', 'Yes' if request.get('quotes') else 'No') == 'Yes'
-        market = document['Calc']['MergeMarketData']['ExplicitMarketData']
-        if wants_bootstrap and not market.get('Bootstrapper Configuration'):
-            raise ValueError('the book declares no Bootstrapper Configuration - nothing can '
-                             'turn quotes into price factors')
-        if not (wants_bootstrap or request.get('patch')):
-            return bool(outcome['installed'] or outcome['updated']), dict(outcome, written=True)
-
-        context = load(document)
-        context.patch_market(request.get('patch', {}))
-        before = set(market.get('Price Factors', {}))
-        if wants_bootstrap:
-            captured = CapturedErrors()
-            logging.getLogger().addHandler(captured)
-            try:
-                context.bootstrap()
-            finally:
-                logging.getLogger().removeHandler(captured)
-            if captured.messages:
-                return False, {'written': False, 'refused': captured.messages}
-        params = context.current_cfg.params
-        market['Price Factors'] = as_json(params['Price Factors'])
-        market['Market Prices'] = as_json(params['Market Prices'])
-        return True, dict(outcome, written=True,
-                          patched=sorted(request.get('patch', {})),
-                          new_factors=sorted(set(market['Price Factors']) - before))
+        return market_edit(document, request.get('quotes', {}), request.get('patch', {}),
+                           request.get('bootstrap'))
 
     try:
         return live.mutate(edit)
     except (ValueError, KeyError) as error:
         raise HTTPException(422, str(error))
+
+
+class BloombergJob:
+    """A terminal round trip as ONE unit of queued work: the security map provisioned, every
+    requested surface fetched and checked, and the whole lot installed and bootstrapped in one
+    atomic write.
+
+    `derivus_bloomberg` is imported INSIDE `run_job`. blpapi lives only on a terminal workstation,
+    and the service has to start and serve every other verb on a machine that has never heard of
+    it - so the dependency is reached at the moment a desk asks for a fetch, and nowhere else.
+
+    The outcome is a book WRITE rather than tables, so it rides the run's own Stats under
+    `Bloomberg`, exactly as a solve's coordinates ride `Solved`: the worker files every result the
+    one way, and a job with no tables adds no second shape for a client to learn. Progress rides
+    `PROGRESS` under the result id and is dropped in a `finally`, so a poller sees a count while
+    the terminal is answering and the outcome once it has.
+    """
+
+    def __init__(self, book, scope, result_id):
+        self.book, self.scope, self.result_id = book, scope, result_id
+
+    def note(self, note, done=0, total=0):
+        PROGRESS[self.result_id] = {'done': done, 'total': total, 'note': note}
+
+    def run_job(self):
+        import datetime
+
+        from derivus_bloomberg import discover, fetch_fx_vol, security_map, to_market_prices_block
+        from derivus_bloomberg.session import BloombergSession
+
+        surface = {key: self.scope[key] for key in ('expiries', 'pillars') if key in self.scope}
+        try:
+            self.note('provisioning the security map')
+            with BloombergSession(timeout_ms=30000) as session:
+                def on_batch(done, total):
+                    self.note('verifying securities', done, total)
+
+                map_document, created = discover.provision(
+                    session, datetime.date.today(), on_batch=on_batch)
+                pairs = self.scope.get('pairs') or sorted(map_document['blocks']['fx_vol'])
+                quotes, late = {}, {}
+                for index, pair in enumerate(pairs, 1):
+                    self.note('fetching {} {}/{}'.format(pair, index, len(pairs)),
+                              index - 1, len(pairs))
+                    definition = security_map.fx_vol_definition(map_document, pair, **surface)
+                    late.update(security_map.stale(session, sorted(
+                        {quote.security for quote in definition.securities.values()})))
+                    # one late quote refuses the whole tick - and the rest are still checked, so
+                    # the refusal names every dead security rather than the first one found
+                    if not late:
+                        snapshot = fetch_fx_vol(session, definition)
+                        quotes['FXVolPrices.' + snapshot.surface_name] = as_json(
+                            to_market_prices_block(snapshot))
+            if late:
+                refused = ['{} is stale - {}'.format(name, why)
+                           for name, why in sorted(late.items())]
+                return None, {'Results': {}, 'Stats': {
+                    'Bloomberg': {'written': False, 'refused': refused}}}
+
+            self.note('installing and bootstrapping', len(pairs), len(pairs))
+            outcome = self.book.mutate(
+                lambda document: market_edit(document, quotes, {}, 'Yes'))
+            return None, {'Results': {}, 'Stats': {
+                'Bloomberg': dict(outcome, provisioned=created)}}
+        finally:
+            PROGRESS.pop(self.result_id, None)
+
+
+@app.post('/book/bloomberg', summary="Fetch the desk's FX vol surfaces off Bloomberg and tick the book")
+def book_bloomberg(request: dict):
+    """`{pairs?: [PAIR], expiries?: [LABEL], pillars?: [DELTA]}` - the whole tick, terminal to
+    book, as one queued job.
+
+    The scope defaults to the desk's own: every `fx_vol` pair the security map carries, at the
+    expiries it verified and the delta pillars `security_map.fx_vol_definition` defaults to. The
+    map is provisioned first - discovered and written when this workstation has none - then every
+    requested surface is checked for staleness and fetched, and what came back is installed and
+    bootstrapped through the same seam `/book/market` uses, in ONE atomic write. A quote whose
+    last print is late refuses the whole tick BY NAME and writes nothing: a dead series keeps
+    answering with a plausible number, and a book must never carry one unremarked.
+
+    Answers `{result_id, status}` exactly like `/execute`, because a terminal round trip is
+    minutes of work: `/results/{result_id}` carries `progress` while it runs and the outcome under
+    `stats.Bloomberg` when it is done. The id names the ACT rather than the numbers - a fetch is a
+    trip to the terminal, so two ticks against an unmoved book are two fetches, never one.
+    """
+    live = live_book()
+    document, etag = live.read()
+    if not document['Calc']['MergeMarketData']['ExplicitMarketData'].get(
+            'Bootstrapper Configuration'):
+        raise HTTPException(422, NO_BOOTSTRAPPER)
+    scope = {key: request[key] for key in ('pairs', 'expiries', 'pillars') if key in request}
+    # a fetch is an ACT against the terminal rather than a function of the book, so the submission
+    # clock names it: two ticks against an unmoved book are two trips, never one coalesced result
+    result_id = content_hash({'book': etag, 'bloomberg': scope, 'at': time.perf_counter()})
+    submitted = Job(result_id, BloombergJob(live, scope, result_id), {})
+    return {'result_id': result_id, 'status': EXECUTOR.submit(submitted, HEAVY)}
 
 
 class SolveJob:
@@ -666,15 +796,19 @@ def blank_book():
     the first booking has market data to validate against (the missing-factor delta would refuse
     every deal on truly bare market data), and the dates are stamped to today because a starting
     point is authored at creation, unlike the skeleton itself, whose fixed date is a gated
-    contract."""
+    contract. The two bootstrapper families are declared for the same reason: a fresh desk's
+    first market tick (`/book/bloomberg` provisioning included) must find something able to turn
+    quotes into price factors, or first use dead-ends at a 422 no newcomer can act on."""
     import datetime
 
     document = json.loads(json.dumps(JOB_SKELETON))
     document['Calc']['Deals']['Deals']['Children'] = []
     stamp = {'.Timestamp': datetime.date.today().strftime('%Y-%m-%d')}
     document['Calc']['Calculation']['Base_Date'] = stamp
-    document['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters'][
-        'Base_Date'] = stamp
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['System Parameters']['Base_Date'] = stamp
+    market['Bootstrapper Configuration'] = {'FXVolSurfaceParameters': {},
+                                            'InterestRateCurveParameters': {}}
     return document
 
 
@@ -722,7 +856,10 @@ def main():
                              'build the wheel shipped, when there is one')
     parser.add_argument('-k', '--book', type=str, default=None,
                         help='job JSON file to serve live at /book - created blank if missing; '
-                             'the file is the book of record')
+                             'the file is the book of record. Defaults to book.json in DV_HOME '
+                             '(~/.derivus); --no-book serves the verbs with no book')
+    parser.add_argument('--no-book', action='store_true',
+                        help='serve no live book - /book answers 404')
     args = parser.parse_args()
 
     if args.origin:
@@ -733,9 +870,14 @@ def main():
     else:
         # a wheel ships the built UI as package data; a source tree without a build serves none
         mount_ui(app, os.path.join(os.path.dirname(os.path.abspath(__file__)), '_ui'))
-    if args.book:
+    if not args.no_book:
+        # the user-data home: one env var names where a desk's own files live, the same way
+        # RF_SERVICE_URL names the service for every client. A missing book starts blank.
+        home = os.path.expanduser(os.environ.get('DV_HOME', os.path.join('~', '.derivus')))
+        path = args.book if args.book else os.path.join(home, 'book.json')
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         global BOOK
-        BOOK = open_book(args.book)
+        BOOK = open_book(path)
 
     uvicorn.run(app, host=args.bind, port=args.port)
     return 0
