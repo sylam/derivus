@@ -414,6 +414,33 @@ def emit_calibration(module):
         and 'model_type' in cls.__dict__}
 
 
+def emit_structures(module):
+    """The `types` of `mapping['Structure']` - each SALES structure holding what it is made of.
+
+    Keyed by the class name, which is the registry key `structures.structure_named` dispatches on,
+    so a front end offering a menu and the runner pricing the choice read the same word.
+
+    A structure declares four things and this publishes all four: `vernacular` (what a desk calls
+    it, so a search for "range forward" lands on `ZeroCostCollar`), `fields` as descriptors in the
+    usual idiom, `legs` as a deal type plus the block the structure pins and the parameter slots it
+    maps, and `recipe` as the readable step list. The legs are deliberately NOT expanded into deal
+    schemas: a leg names a declared `Instrument` type, and that type's entry in the Instrument store
+    IS its field schema - the `Market Prices` quote pattern, reused by reference so the two cannot
+    drift.
+
+    Own-attr only, matching the other emitters, and gated on `vernacular` rather than on `fields`
+    alone: the module's own vocabulary classes (`Leg`, `Premium`, `Price`, `Solve`) are not
+    structures and must not emit as empty ones.
+    """
+    return {name: {'vernacular': cls.__dict__['vernacular'],
+                   'fields': {f.key: f.descriptor() for f in cls.__dict__['fields']},
+                   'legs': {leg.role: leg.descriptor() for leg in cls.__dict__['legs']},
+                   'recipe': [step.describe() for step in cls.__dict__['recipe']]}
+            for name, cls in vars(module).items()
+            if isinstance(cls, type) and 'vernacular' in cls.__dict__
+            and isinstance(cls.__dict__.get('fields'), list)}
+
+
 def partition_factor(type_name, block):
     """Split one `Price Factors` block into `(structural, values)`.
 
@@ -544,6 +571,9 @@ OPTION_QUOTE = [F('Expiry_Date', 'Date'), F('Strike', 'Float', description='0 re
 # has to come after the vocabulary above it. Any `import derivus.<anything>` initialises the
 # package first, and `derivus/__init__` imports this module before any declaring one.
 from . import bootstrappers, calculation, instruments, riskfactors, stochasticprocess  # noqa: E402
+# structures is last of the declaring modules: it names Instrument types in its legs, so the store
+# it publishes is only meaningful beside one already emitted
+from . import structures  # noqa: E402
 
 _types, _sections, _containers = emit_instrument(instruments)
 _factor_types = emit_factor(riskfactors)
@@ -576,6 +606,9 @@ mapping = {
     # a price FAMILY holds its own, keyed by the `Market Prices` type string the engine selects
     # work by
     'MarketPrices': {'types': emit_market_prices(bootstrappers)},
+    # a SALES structure holds its vernacular, its parameters, its legs and its recipe, keyed by the
+    # name the runner dispatches on
+    'Structure': {'types': emit_structures(structures)},
     # the UI's two menus: a valid-processes-per-factor one and a valid-interpolations-per-factor
     # one, both the same declarations read the other way round
     'Process_factor_map': _process_factor_map,

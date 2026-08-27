@@ -37,6 +37,8 @@ the verbs cannot answer is a missing verb on `Context`, not an endpoint that rea
 | `POST /book/solve` | solve one field of a candidate deal to a target value - a root find over base valuations, writes nothing |
 | `POST /book/market` | tick the book's market: quote blocks installed or value-updated, a values patch applied, the bootstrap run - one atomic write |
 | `POST /book/bloomberg` | provision the security map, fetch the desk's FX vol surfaces off the terminal and tick the book |
+| `POST /book/structure` | quote a named structure against the book - legs solved, the pending trade filed under its quote id |
+| `POST /book/quote` | book a quote already given - the approval half, refused exactly as a booking is |
 
 Every POST body is either a job document or `{"plan_id": ...}` naming one already prepared, and
 nothing downstream can tell the two apart: the plan cache holds a pristine parse and every read of
@@ -493,10 +495,83 @@ def book():
     return {'document': document, 'etag': etag, 'path': live_book().path}
 
 
+def booked_node(deal):
+    """A booked deal as the NODE a job document holds: `{'Instrument': {'.Deal': fields}}` with
+    `Children` hanging off the node beside `Instrument`.
+
+    A structure IS its legs, so `/book/quote` books a container and everything under it as ONE
+    trade - and a composed deal arrives with the legs written INTO the container, which is the
+    natural way to say "this deal, with these legs" and the one placement `Config` does not walk
+    (`node['Children']`, never `deal['Children']`). Lifting them here is what makes a composed
+    structure bookable as it stands rather than leg by leg; the deal block is copied rather than
+    edited, because what a quote file holds is the record of what was quoted.
+    """
+    if 'Instrument' in deal:
+        return deal
+    deal = dict(deal)
+    children = deal.pop('Children', None)
+    node = {'Instrument': {'.Deal': deal}}
+    if children:
+        node['Children'] = children
+    return node
+
+
+def deal_references(node):
+    """Every `Reference` in a booked subtree: the deal itself, then each leg under it. What the
+    verdict has to read - a container whose LEG is misauthored is a refused booking, not a
+    booking whose container had nothing said about it."""
+    return [node['Instrument']['.Deal'].get('Reference')] + [
+        reference for child in node.get('Children', [])
+        for reference in deal_references(child)]
+
+
+def deal_verdict(document, references, deal_path, already_missing):
+    """The validate-before-write verdict on a document a change has already landed on:
+    `(write, outcome)` for `Book.mutate`, written iff nothing is said against the CHANGED deals.
+
+    What counts against them is their own authoring messages plus market data the book did not
+    ALREADY lack - `already_missing` is that baseline, taken before the change - so a book failing
+    elsewhere cannot block a correct change. Both mutating actions of `/book/deals` and every
+    approved quote end here, which is what makes a refusal one wording rather than three.
+    """
+    verdict = load(document).validate()
+    refused = [message for reference in references
+               for message in verdict['deals'].get(reference, [])]
+    refused += ['no market data for {}'.format(name)
+                for name in sorted(set(verdict['factors']) - already_missing)]
+    if refused:
+        return False, {'written': False, 'refused': refused, 'validate': verdict}
+    return True, {'written': True, 'deal_path': deal_path, 'validate': verdict}
+
+
+def deal_edit(document, deal, parent_reference=None):
+    """One deal - or one whole structured subtree - added to a wire document, as the ONE edit
+    closure body `/book/deals` books through: the baseline taken, the node spliced in, the verdict
+    read off the whole document.
+
+    `splice_deal` gives a container an EMPTY `Children`, since a hand-booking fills it one deal at
+    a time; a quoted structure arrives with its legs already composed, so they land with it - one
+    booking, one atomic write, one verdict over the container and every leg.
+
+    `/book/quote` books an approved quote through this same function rather than a second write
+    path, so a structured deal is refused in exactly the wording - and by exactly the reading - a
+    hand-booked one is.
+    """
+    already_missing = set(load(document).validate()['factors'])
+    node = booked_node(deal)
+    deal_path = splice_deal(document, node['Instrument']['.Deal'], parent_reference)
+    if node.get('Children'):
+        deal_at(document, deal_path)['Children'] = node['Children']
+    return deal_verdict(document, deal_references(node), deal_path, already_missing)
+
+
 @app.post('/book/deals', summary='Book, amend or delete one deal - validated, then written atomically')
 def book_deals(request: dict):
     """`{action: 'add', deal, parent_reference?}`, `{action: 'amend', deal_path, fields}` or
     `{action: 'delete', deal_path}`. An amendment MERGES `fields` into the deal at `deal_path`.
+
+    `deal` is a deal block, or a whole node - a container with its `Children` - which is how a
+    quoted structure books: the legs land with the container, in one write and under one verdict.
 
     The contract is validate-before-write, one spelling for both mutating actions: the change
     lands on a copy, the whole document is validated, and the file is rewritten only if nothing is
@@ -514,21 +589,13 @@ def book_deals(request: dict):
             removed = remove_deal(document, request['deal_path'])
             return True, {'written': True,
                           'deleted': removed['Instrument']['.Deal'].get('Reference')}
-        already_missing = set(load(document).validate()['factors'])
         if action == 'amend':
+            already_missing = set(load(document).validate()['factors'])
             deal = deal_at(document, request['deal_path'])['Instrument']['.Deal']
             deal.update(request['fields'])
-            deal_path = request['deal_path']
-        else:
-            deal = request['deal']
-            deal_path = splice_deal(document, deal, request.get('parent_reference'))
-        verdict = load(document).validate()
-        refused = list(verdict['deals'].get(deal.get('Reference'), []))
-        refused += ['no market data for {}'.format(name)
-                    for name in sorted(set(verdict['factors']) - already_missing)]
-        if refused:
-            return False, {'written': False, 'refused': refused, 'validate': verdict}
-        return True, {'written': True, 'deal_path': deal_path, 'validate': verdict}
+            return deal_verdict(document, [deal.get('Reference')], request['deal_path'],
+                                already_missing)
+        return deal_edit(document, request['deal'], request.get('parent_reference'))
 
     try:
         return live_book().mutate(edit)
@@ -788,6 +855,136 @@ def book_solve(request: dict):
     return {'result_id': submitted.result_id, 'status': EXECUTOR.submit(submitted, HEAVY)}
 
 
+def dv_home():
+    """The desk's own user-data directory: `DV_HOME`, or `~/.derivus` when it is unset.
+
+    One env var names where a desk's files live, the same way `RF_SERVICE_URL` names the service
+    for every client. Read on every call rather than captured at import, because the book `main`
+    opens and the quotes a running service files are the same setting answered at two different
+    moments - and a client that moves it moves both.
+    """
+    return os.path.expanduser(os.environ.get('DV_HOME', os.path.join('~', '.derivus')))
+
+
+def quote_dir():
+    """Where a pending trade waits for its approval: `DV_HOME/tmp`, created on first use.
+
+    A quote is not a booking. `/book/structure` files the whole pending trade here under its own
+    `quote_id` and `/book/quote` books it from here, so the desk that gave the quote and the desk
+    that approves it meet in a FILE - and the file stays after the booking, because what was
+    quoted at what market is the audit trail of why the book carries what it carries.
+    """
+    return os.path.join(dv_home(), 'tmp')
+
+
+class StructureJob:
+    """A structured quote as ONE unit of queued work: the recipe's solves run on the worker like
+    any pricing, and the pending trade is filed before the answer is published.
+
+    `derivus.structures` is imported INSIDE `run_job`, the way `BloombergJob` reaches its own
+    package: the runner prices and solves leg by leg, so it belongs to the moment a desk asks for
+    a quote rather than to import time, and every other verb still serves on a tree whose
+    structures module is missing or broken. The sheet writer is reached the same way and is
+    genuinely optional - `xlsxwriter` is the `quote` extra, and a desk that has not installed it
+    gets the quote with `files['sheet_note']` naming the install, never a refusal.
+
+    The outcome is the whole quote rather than tables, so it rides the run's own Stats under
+    `Quote`, exactly as a solve's coordinates ride `Solved` and a fetch's write rides `Bloomberg`.
+    """
+
+    def __init__(self, document, structure, params):
+        self.document, self.structure, self.params = document, structure, params
+
+    def sheet(self, directory, outcome):
+        """The quote sheet beside the quote file, or the note saying why there is none. The import
+        is what fails when `xlsxwriter` is absent, so it is the only thing guarded: a writer that
+        raises is a real failure and travels."""
+        try:
+            from . import quote_sheet
+        except ImportError as error:
+            return {'sheet': None,
+                    'sheet_note': 'no quote sheet ({}) - pip install derivus[quote]'.format(error)}
+        path = os.path.join(directory, outcome['quote_id'] + '.xlsx')
+        quote_sheet.write_sheet(path, outcome, self.document)
+        return {'sheet': path}
+
+    def run_job(self):
+        from . import structures
+
+        outcome = structures.quote(self.document, self.structure, self.params)
+        directory = quote_dir()
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, outcome['quote_id'] + '.json')
+        outcome['files'] = dict(self.sheet(directory, outcome), quote=path)
+        # one file IS the pending trade: what was quoted, and the deal that books it
+        record = {'quote': {name: value for name, value in outcome.items() if name != 'deal'},
+                  'deal': outcome['deal']}
+        with open(path, 'w', encoding='utf-8', newline='') as handle:
+            json.dump(as_json(record), handle, indent=2)
+        return None, {'Results': {}, 'Stats': {'Quote': as_json(outcome)}}
+
+
+@app.post('/book/structure', summary='Quote a named structure against the book')
+def book_structure(request: dict):
+    """`{structure: name, params: {...}}` - the sales verb: a structure named the way a desk names
+    it, its parameters in MARKET terms, and back comes the whole quote with every leg priced and
+    the solved ones solved.
+
+    The recipe runs against the book's market data on an in-memory copy - the book file never
+    moves, because a quote is not a trade. What it DOES write is the pending trade:
+    `DV_HOME/tmp/<quote_id>.json` carries the quote and the composed deal, and a `.xlsx` sheet
+    lands beside it when the `quote` extra is installed. `/book/quote` with that id is the
+    approval.
+
+    Answers `{result_id, status}` exactly like `/execute`, because a recipe is a solve or three:
+    `/results/{result_id}` carries the outcome under `stats.Quote` when it is done, files and all.
+    The id names the ACT rather than the numbers - two identical asks are two quotes, never one
+    coalesced result, the same reading `/book/bloomberg` takes of a trip to the terminal.
+    """
+    document, etag = live_book().read()
+    structure = request.get('structure')
+    if not structure:
+        raise HTTPException(422, 'a quote names the structure it prices')
+    params = request.get('params', {})
+    # a quote is an ACT, not a function of the book: asking twice is two quotes, both filed
+    result_id = content_hash({'book': etag, 'structure': structure, 'params': params,
+                              'at': time.perf_counter()})
+    submitted = Job(result_id, StructureJob(document, structure, params), {})
+    return {'result_id': result_id, 'status': EXECUTOR.submit(submitted, HEAVY)}
+
+
+@app.post('/book/quote', summary='Book a quote already given - the approval half of a structure')
+def book_quote(request: dict):
+    """`{quote_id}` - approve a quote and book it. The pending trade is read back from
+    `DV_HOME/tmp/<quote_id>.json` and its deal goes through `deal_edit`, which is the same
+    validate-before-write seam `/book/deals` books through: one atomic write, and a refusal that
+    writes nothing and reads `{written: False, refused: [...]}` in the identical wording.
+
+    The market may have moved since the quote was given, so the validation is against the book as
+    it is NOW rather than as it was quoted - an approval is a booking, and a booking is refused on
+    what it would land in. The file is not deleted: what was quoted, at what market, under what
+    id, is why the book carries what it carries.
+    """
+    live = live_book()
+    quote_id = request.get('quote_id')
+    if not quote_id:
+        raise HTTPException(422, 'an approval names the quote_id it books')
+    # a quote id names a file in the desk's own tmp - never a path out of it
+    if quote_id != os.path.basename(quote_id):
+        raise HTTPException(422, '{!r} is not a quote id'.format(quote_id))
+    path = os.path.join(quote_dir(), quote_id + '.json')
+    if not os.path.isfile(path):
+        raise HTTPException(404, 'Unknown quote {} - nothing under that id in {}'.format(
+            quote_id, quote_dir()))
+    with open(path, encoding='utf-8') as handle:
+        pending = json.load(handle)
+
+    try:
+        return live.mutate(lambda document: deal_edit(document, pending['deal']))
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+
+
 def blank_book():
     """A blank book: the job skeleton's envelope and market data with NO deals, dated today.
 
@@ -871,10 +1068,8 @@ def main():
         # a wheel ships the built UI as package data; a source tree without a build serves none
         mount_ui(app, os.path.join(os.path.dirname(os.path.abspath(__file__)), '_ui'))
     if not args.no_book:
-        # the user-data home: one env var names where a desk's own files live, the same way
-        # RF_SERVICE_URL names the service for every client. A missing book starts blank.
-        home = os.path.expanduser(os.environ.get('DV_HOME', os.path.join('~', '.derivus')))
-        path = args.book if args.book else os.path.join(home, 'book.json')
+        # the user-data home names where a desk's own files live; a missing book starts blank
+        path = args.book if args.book else os.path.join(dv_home(), 'book.json')
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         global BOOK
         BOOK = open_book(path)

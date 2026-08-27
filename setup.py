@@ -15,6 +15,9 @@ with open(os.path.join(here, 'derivus', '_version.py')) as f:
 # mcp's own dependency would be pyparsing-by-accident again
 SERVICE = ['fastapi>=0.100', 'uvicorn>=0.23']
 MCP = ['mcp>=2,<3', 'mcp-types', 'requests']
+# derivus/quote_sheet.py is the sole importer and the service imports it inside the job, so a
+# missing xlsxwriter costs a desk its sheet and never its quote
+XLSX = ['xlsxwriter>=3.1']
 
 setup(
     name='derivus',
@@ -61,7 +64,10 @@ setup(
         # the MCP binding's own two imports (mcp needs python 3.10+); `desk` is the whole
         # working stack - service plus MCP, with the packaged UI riding in the wheel as data
         'mcp': MCP,
-        'desk': SERVICE + MCP,
+        # the quote sheet a structure is priced into - it joins `desk` above, so the working
+        # stack now hands a counterparty a workbook as well as a number
+        'quote': XLSX,
+        'desk': SERVICE + MCP + XLSX,
     },
     entry_points={
         'console_scripts': [

@@ -29,6 +29,7 @@ repo — and `DV_MCP` takes the path out of the command altogether.
 | --- | --- |
 | `list_instrument_types` | every bookable type, the create-menu grouping, and `containers` |
 | `describe_instrument_type` | one type's fields as declared — required, defaults, valid values |
+| `describe_structure` | the structures the desk quotes — the sales names, the parameters, the legs, the recipe |
 | `describe_calculation_type` / `describe_factor_type` | the same for calculations and factors |
 | `job_skeleton` | the envelope, as a job that loads |
 | `read_book` / `read_deal` | the live book summarised per deal; one deal verbatim |
@@ -36,6 +37,8 @@ repo — and `DV_MCP` takes the path out of the command altogether.
 | `book_deal` / `delete_deal` | write verbs onto `POST /book/deals` |
 | `price_candidate` / `execute_book` | `POST /book/price` — the what-if; waits, then hands back the id |
 | `solve_deal` | `POST /book/solve` — solve one field to a target, get the deal back ready to book |
+| `solve_structure` | `POST /book/structure` — quote a declared structure: legs priced, strikes solved, the pending trade filed under its id |
+| `book_quote` | `POST /book/quote` — approve a quote by id and book it, refused exactly as a booking is |
 | `update_market_quotes` / `patch_market_values` | `POST /book/market` — quote blocks in (values-only updates, bootstrap judging the write), spot/vol values patched |
 | `tick_market_from_bloomberg` | `POST /book/bloomberg` — today's surfaces off this workstation's terminal; provisions the desk on first use, reporting progress while it waits |
 | `validate_book` / `describe_book` | the read verbs over the live document |
@@ -66,7 +69,21 @@ available; it is never the default.
 bounds, else a secant — exact in two pricings for an amount), the model receives the solved
 coordinates and the deal ready to book, and no pricing loop ever runs through the conversation. A
 collar or seagull composes from 1D solves under its conventions — fix one strike, solve the
-other, margin last.
+other, margin last — which is exactly why it is not left to the conversation.
+
+**Structures are declared, not composed by the model.** A structure is a class in
+`derivus/structures.py`: its `vernacular` (the sales names a desk actually says), its legs, and a
+recipe — price this leg, solve that one to the other's premium. `describe_structure` serves
+that declaration off `/schema`, so a model reads what a zero-cost collar IS instead of inventing
+it, and fills the structure's own parameters — strikes in **market terms** (a USDZAR strike is
+15.50; the runner puts it on the engine's axis, and that inversion is the one thing never done
+by hand). `solve_structure` runs the recipe server-side and answers with the composed deal, the
+per-leg premiums and the net, writing nothing into the book: the quote lands in
+`DV_HOME/tmp/<quote_id>.json` as one pending trade, its sheet beside it when the `quote` extra is
+installed (a missing `xlsxwriter` names the install in `files.sheet_note` and never refuses a
+quote). `book_quote(quote_id)` is the approval that makes it a trade — the same
+validate-before-write seam a booking rides — and the file stays afterwards, because what was
+quoted at what market is why the book carries what it carries.
 
 **First use provisions the desk, and progress is what keeps that call alive.**
 `tick_market_from_bloomberg` is the one verb a model calls for today's market, and on a fresh
@@ -96,4 +113,6 @@ Structure (a new factor, a moved node) is authoring, and stays outside these too
 (`configure(session=TestClient(service.app))` — the same seam the Excel client uses), so the gates
 run with no stdio and no sockets: the import discipline, the registry's contracts and read-only
 hints, schema tools equal to the declarations, a booking that prices to the closed form, a
-refusal that writes nothing, and the byte-identical book-then-delete round trip.
+refusal that writes nothing, the byte-identical book-then-delete round trip, and the quoting day
+end to end — a structure named, its collar solved to a zero net, the pending trade filed under
+`DV_HOME/tmp` and approved into a book that marks it at what was quoted.

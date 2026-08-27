@@ -73,7 +73,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'describe_factor_type', 'job_skeleton', 'read_book', 'read_deal', 'book_deal',
                 'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal', 'execute_book',
                 'validate_book', 'describe_book', 'poll_result', 'fetch_table', 'deal_values',
-                'update_market_quotes', 'patch_market_values', 'tick_market_from_bloomberg'}
+                'update_market_quotes', 'patch_market_values', 'tick_market_from_bloomberg',
+                'describe_structure', 'solve_structure', 'book_quote'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
@@ -81,7 +82,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
                if not (tool.annotations and tool.annotations.read_only_hint)}
     assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal',
                        'execute_book', 'update_market_quotes', 'patch_market_values',
-                       'tick_market_from_bloomberg'}
+                       'tick_market_from_bloomberg', 'solve_structure', 'book_quote'}
 
 
 def test_the_progress_tool_does_not_advertise_its_context():
@@ -114,6 +115,30 @@ def test_the_schema_tools_are_the_declarations():
     factor = mcp_server.describe_factor_type('InterestRate')
     assert factor['processes'], 'a curve with no process menu'
     assert mcp_server.job_skeleton()['Calc']['Calculation']['Object'] == 'BaseValuation'
+
+
+def test_the_structure_store_is_the_quoting_menu():
+    """A structure is a DECLARATION and this is the tool that serves it, so the whole menu comes
+    off `/schema` with nothing composed here: the four structures with the sales names a desk
+    actually says, then one of them opened up - its parameters, its legs, its recipe. A name that
+    is not a structure refuses with the close match rather than guessing, and it matches on the
+    vernacular too, because 'collar' is how a model spells it."""
+    listed = mcp_server.describe_structure()
+    vernaculars = {entry['name']: entry['vernacular'] for entry in listed['structures']}
+
+    assert [entry['name'] for entry in listed['structures']] == [
+        'Seagull', 'Straddle', 'Strangle', 'ZeroCostCollar']
+    assert listed['count'] == 4 and all(vernaculars.values())
+    assert 'collar' in vernaculars['ZeroCostCollar']
+
+    collar = mcp_server.describe_structure('ZeroCostCollar')
+    assert collar['structure'] == 'ZeroCostCollar' and collar['vernacular']
+    assert collar['fields'] and collar['legs'] and collar['recipe']
+    assert 'protection' in str(collar['legs']), 'the leg the cap is solved against is unnamed'
+    assert 'FXOptionDeal' in str(collar['legs'])
+
+    with pytest.raises(ToolError, match='ZeroCostCollar'):
+        mcp_server.describe_structure('collar')
 
 
 def test_booking_a_deal_prices_it(book):
@@ -191,6 +216,68 @@ def test_the_practical_loop_quotes_to_a_booked_structure(tmp_path):
         moved = mcp_server.execute_book()
         assert patched['written'] is True
         assert mcp_server.deal_values(moved['result_id'])['OPT1'] > 550_000.0
+    finally:
+        service.BOOK = None
+
+
+def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path, monkeypatch):
+    """The desk's whole day, and the one gate that says the structures layer is real. The market
+    ticks off a quote block; `solve_structure` quotes a zero-cost collar against the live book -
+    both legs priced, the cap solved until the net is zero, all of it the structure's own
+    declaration rather than anything composed in this conversation; the quote and its sheet land
+    in `DV_HOME/tmp` as one pending trade; `book_quote` approves it; and the book then marks the
+    collar, legs and all, at what was quoted.
+
+    `DV_HOME` is set for real because it IS the surface under test - where a pending trade waits
+    is a contract a desk depends on, and the gate reads the file it names."""
+    from test_service import fx_vol_quotes
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(job(
+        sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2),
+        newline='\n')
+    service.BOOK = service.Book(str(path))
+    try:
+        ticked = mcp_server.update_market_quotes(json.loads(dump(fx_vol_quotes())))
+        assert ticked['written'] is True and 'FXVol.USD.ZAR' in ticked['new_factors']
+
+        declared = mcp_server.describe_structure('ZeroCostCollar')['fields']
+        assert set(declared) >= {'pair', 'expiry', 'notional', 'notional_currency', 'floor'}
+        # a structure may take its expiry as a tenor or as a date - the declaration says which
+        expiry = ({'.Timestamp': '2025-06-28'}
+                  if declared['expiry']['widget'] == 'DatePicker' else '1Y')
+        # this book's FxRate.ZAR carries 18.5 USD per ZAR, so the pair's MARKET quote is its
+        # reciprocal: the desk asks in market terms and the runner does the inversion, which is
+        # the convention under test. A floor 5% out of the money.
+        quote = mcp_server.solve_structure('ZeroCostCollar', {
+            'pair': 'USDZAR', 'expiry': expiry, 'notional': 1_000_000.0,
+            'notional_currency': 'USD', 'floor': 1.0 / (SPOT * 0.95)})
+
+        assert quote['structure'] == 'ZeroCostCollar' and quote['quote_id']
+        assert len(quote['legs']) == 2 and 'protection' in {leg['role'] for leg in quote['legs']}
+        assert [leg for leg in quote['legs'] if leg['solved']], 'nothing was solved'
+        # zero cost is the CONTRACT - and two worthless legs would satisfy it vacuously
+        assert quote['net'] == pytest.approx(0.0, abs=1.0)
+        assert min(abs(leg['premium']) for leg in quote['legs']) > 1.0
+
+        pending = quote['files']['quote']
+        assert os.path.dirname(pending) == str(tmp_path / 'home' / 'tmp')
+        assert quote['files']['sheet'] or quote['files']['sheet_note']
+        with open(pending, encoding='utf-8') as handle:
+            assert json.load(handle)['deal'], 'the pending file is not the trade it stands for'
+
+        booked = mcp_server.book_quote(quote['quote_id'])
+        assert booked['written'] is True and 'validate' not in booked
+        node = mcp_server.read_deal(booked['deal_path'])
+        assert len(node['children']) == 2, 'the structure booked without its legs'
+
+        run = mcp_server.execute_book()
+        assert mcp_server.deal_values(run['result_id'])[
+            node['deal']['Reference']] == pytest.approx(quote['net'], abs=1.0)
+        assert os.path.isfile(pending), 'the pending trade is an audit trail, not a scratch file'
+
+        with pytest.raises(ToolError, match='tmp'):
+            mcp_server.book_quote('nothing-was-ever-quoted-under-this')
     finally:
         service.BOOK = None
 

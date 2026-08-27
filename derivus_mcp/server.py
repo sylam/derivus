@@ -22,6 +22,12 @@ tuple, its stats and each table's SHAPE; cells come one capped page at a time th
 `fetch_table`, a table too wide to read as text is refused by name (that is what the web UI is
 for), and `deal_values` checks a result's shape before it fetches anything.
 
+A structure is DECLARED, never composed here: `describe_structure` reads the desk's own
+vocabulary - the sales names, the legs, the recipe - off that same `/schema`, `solve_structure`
+runs the recipe server-side and files the pending trade under its quote id, and `book_quote` is the
+approval that makes it a trade. What a zero-cost collar IS therefore never depends on which model
+is driving.
+
 Run: `DV_MCP` (stdio; `python -m derivus_mcp.server` from a source tree), with `RF_SERVICE_URL`
 naming the service (default http://127.0.0.1:8000 - the same variable the Excel add-in reads).
 """
@@ -190,6 +196,50 @@ def describe_instrument_type(deal_type: str) -> dict:
     return {'deal_type': deal_type, 'sections': sections,
             'accepts_children': deal_type in schema['containers'], 'fields': fields,
             'required': [key for key, meta in fields.items() if meta.get('required')]}
+
+
+@MCP.tool(annotations=READ_ONLY)
+def describe_structure(name: str = None) -> dict:
+    """The structures this desk quotes - a collar, a strangle, a seagull - and exactly what each
+    one asks for. Call this before `solve_structure`: a structure is DECLARED (its legs, and the
+    order they are priced and solved in), so what you supply are PARAMETERS, never deal fields.
+
+    With no `name`: every structure with its `vernacular` - the sales names a desk actually says
+    ("zero-cost collar, range forward, cylinder") - which is how a plain-language ask finds the
+    right one, and the parameters each takes. With a `name` (an exact structure name from that
+    list): `fields`, the parameters as declared - what each is, what it defaults to, whether it is
+    required, and for a choice exactly which strings are valid; `legs`, what the structure books
+    and which parameter each leg reads; and `recipe`, the steps in order - what is priced, and
+    which leg is solved to what.
+
+    STRIKES ARRIVE IN MARKET TERMS. A strike parameter is quoted the way the pair trades - a
+    USDZAR strike is 15.50, never its reciprocal - and the runner puts it on the engine's axis
+    itself. That inversion is the one thing not to do by hand here.
+
+    `solve_structure` then runs the recipe and answers with the composed deal, each leg's premium,
+    the strikes it solved and where the pending files landed; `book_quote` is the approval that
+    turns that quote into a trade.
+    """
+    store = service().call('GET', '/schema').get('Structure')
+    if store is None:
+        raise ToolError('this DV_Service publishes no Structure store - it is older than the '
+                        'structures vocabulary. Upgrade the service, or compose the legs yourself '
+                        'with solve_deal.')
+    types = store['types']
+    if name is None:
+        return {'structures': [{'name': key, 'vernacular': declared['vernacular'],
+                                'parameters': sorted(declared['fields'])}
+                               for key, declared in sorted(types.items())],
+                'count': len(types)}
+    declared = types.get(name)
+    if declared is None:
+        # a sales name is how a model spells it - so the vernacular is searched beside the names
+        close = [key for key, entry in sorted(types.items())
+                 if name.lower() in key.lower() or name.lower() in entry['vernacular'].lower()]
+        raise ToolError('{!r} is not a structure. {}'.format(
+            name, 'Close matches: {}'.format(', '.join(close)) if close
+            else 'Call describe_structure() for the list with the sales names.'))
+    return dict({'structure': name}, **declared)
 
 
 @MCP.tool(annotations=READ_ONLY)
@@ -465,6 +515,65 @@ def solve_deal(deal: dict, field: str, target: float = 0.0, bounds: list | None 
         outcome['solved'] = solved
         outcome['solved_deal'] = dict(deal, **{field: solved['value']})
     return outcome
+
+
+@MCP.tool()
+def solve_structure(structure: str, params: dict, wait_seconds: float = 120.0) -> dict:
+    """Quote a whole structure against the live book - the collar, strangle and seagull verb, and
+    the one to reach for instead of composing legs by hand: the structure declares its own legs,
+    their conventions and the order they solve in, so the finance does not depend on this
+    conversation getting it right.
+
+    `structure` is a name from `describe_structure`, and `params` fills the parameters IT declares
+    - nothing else. STRIKES ARE MARKET TERMS (a USDZAR strike is 15.50); the runner puts them on
+    the engine's axis. The recipe runs server-side against the book's market data: each leg priced
+    alone, each solved leg found by the same root find `solve_deal` rides.
+
+    The answer IS the quote - `quote_id`, the params as read, one row per leg (role, deal type,
+    buy/sell, the strike in MARKET terms, the premium, what was solved) and the `net`: zero for a
+    zero-cost structure, the margin otherwise. `deal` rides with it, the composed structured deal
+    ready to book. The BOOK IS NOT TOUCHED. What is written is the pending trade:
+    `DV_HOME/tmp/<quote_id>.json` holds the quote and its deal, with `<quote_id>.xlsx` - the sheet
+    that goes to the client - beside it when the sheet writer is installed; `files` names both, and
+    `files.sheet_note` names the install when there is no sheet. A missing sheet writer never
+    refuses a quote.
+
+    Then `book_quote(quote_id)` is the approval that makes it a trade. Two identical asks are two
+    quotes, each with its own id and its own files - a quote is an act, not a lookup.
+    """
+    submitted = service().call('POST', '/book/structure',
+                               json={'structure': structure, 'params': params})
+    outcome = _await_result(submitted['result_id'], wait_seconds)
+    quote = outcome.get('stats', {}).get('Quote')
+    if quote is not None:
+        return quote
+    # no quote: the run summary IS the answer - an error naming itself, or the poll pointer, whose
+    # follow-up here is the stats rather than a table
+    if 'hint' in outcome:
+        outcome['hint'] = ('still {} - call poll_result({!r}) to check again; the quote lands '
+                           'under stats.Quote, and the pending trade is filed the moment it '
+                           'does'.format(outcome['status'], submitted['result_id']))
+    return outcome
+
+
+@MCP.tool()
+def book_quote(quote_id: str) -> dict:
+    """Approve a quote and book it - the second half of `solve_structure`, and the only thing that
+    turns a quote into a trade.
+
+    `quote_id` is the one the quote carries. The service reads the pending trade back from
+    `DV_HOME/tmp/<quote_id>.json` and books its deal through the SAME validate-before-write seam
+    `book_deal` uses: validated against the book as it is NOW - the market may have moved since
+    the quote was given - written atomically, and refused as `{written: false, refused:
+    [messages]}` with the file untouched. A refusal is an answer; an id with no file behind it is
+    a tool error naming the directory it looked in.
+
+    The pending file is NOT deleted. What was quoted, at what market, under what id, is the audit
+    trail of why the book carries what it carries - and the sheet the client saw stands beside it.
+    """
+    # an approval books through `deal_edit`, so its answer is a booking's - and gets a booking's
+    # trim: what happened to THIS deal, the rest of the book's troubles as counts
+    return _booking(service().call('POST', '/book/quote', json={'quote_id': quote_id}))
 
 
 @MCP.tool()
