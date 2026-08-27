@@ -48,9 +48,10 @@ setup(
     # torch>=2.0 does not build below 3.8, so the old >=3.6 floor let pip resolve a broken install
     python_requires='>=3.8',
     # exactly what the package imports — pyparsing was previously only reaching us by accident,
-    # as a transitive dependency of matplotlib
+    # as a transitive dependency of matplotlib, and sortedcontainers was declared and read by
+    # nothing at all
     install_requires=['numpy>=1.16.1', 'scipy>=1.2.2', 'pandas>=1.0', 'pyparsing>=2.4.7',
-                      'sortedcontainers>2.0', 'torch>=2.0'],
+                      'torch>=2.0'],
     extras_require={
         'interactive': ['jupyter', 'matplotlib>=3.0'],
         # GARCHSpotModel's calibration only; the import is lazy, so the rest of the library

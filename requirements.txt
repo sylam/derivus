@@ -4,10 +4,19 @@ pandas>=1.0.0
 torch>=2.0.0
 pyparsing>=2.4.7
 setuptools>=49.6.0
-matplotlib>=3.0.0
-sortedcontainers>=2.0.0
+# The notebook Workbench only (the `interactive` extra) - nothing in the package imports it
+# jupyter
+# matplotlib>=3.0
 # GARCHSpotModel calibration only - lazily imported, so not needed to install or run
 # arch>=6.0
 # DV_Service only (the `service` extra) - derivus/service.py is the sole importer
 # fastapi>=0.100
 # uvicorn>=0.23
+# The MCP binding only (the `mcp` extra; python 3.10+) - derivus_mcp imports all three
+# mcp>=2,<3
+# mcp-types
+# requests
+# The quote ticket only (the `quote` extra) - derivus/quote_sheet.py is the sole importer,
+# reached lazily from the service; a desk without it quotes fine and skips the sheet by name
+# xlsxwriter>=3.1
+# `desk` is service + mcp + quote in one install - the whole working stack
