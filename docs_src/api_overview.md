@@ -288,6 +288,9 @@ DV_Service --port 8000
 | `POST` | `/book/price` | price the book plus an optional candidate deal — a what-if; writes nothing |
 | `POST` | `/book/solve` | solve one field of a candidate deal to a target value — a root find over base valuations; the solved coordinates arrive under the result's `stats.Solved` |
 | `POST` | `/book/market` | tick the book's market: quote blocks installed or value-updated (structure refused), a `patch_market`-shaped values patch, the bootstrap run — one atomic write, refused whole if the bootstrap complains |
+| `POST` | `/book/bloomberg` | provision the security map (first use creates `DV_HOME`, copies the packaged seed, verifies every candidate against the terminal), fetch the desk's FX vol surfaces and tick the book — a queued job whose `/results/{id}` carries `progress` while it runs |
+| `POST` | `/book/structure` | quote a named structure against the book — the declared recipe solved server-side, the pending trade and its ticket filed under the quote id in `DV_HOME/tmp` |
+| `POST` | `/book/quote` | book a quote already given — the approval half, validated and refused exactly as a booking is; the pending file survives as the audit trail |
 
 The book's FILE is the source of truth: every client — the web UI, an MCP tool, the Excel add-in —
 reads and writes it through these verbs, so a deal booked by one appears to the others on their
