@@ -88,18 +88,46 @@ class BloombergSession:
 
     def reference_data(self, securities: Sequence[str],
                        fields: Sequence[str]) -> dict[str, dict[str, object]]:
+        """`{security: {field: value}}`, refusing the whole batch on ANY per-security error: a
+        production tick built from a partial answer is a wrong market, not a smaller one."""
+        response = {}
+        for security, error, values in self._walked(securities, fields):
+            if error is not None:
+                _raise_response_error('{}: {}'.format(security, error))
+            response[security] = values
+        return response
+
+    def reference_data_report(self, securities: Sequence[str],
+                              fields: Sequence[str]) -> dict[str, dict[str, object]]:
+        """Per-security outcomes, for DISCOVERY: `{security: {'ok', 'error', 'fields'}}` with
+        every requested name answered. One bad ticker in a batch of fifty is the finding there,
+        not a failure - `reference_data` above is the production reader. A request-level error
+        (a timeout, a `responseError`) still raises: that is transport, not a fact about a name."""
+        report = {}
+        for security, error, values in self._walked(securities, fields):
+            report[security] = {'ok': error is None, 'error': error, 'fields': values}
+        for security in securities:
+            report.setdefault(security, {'ok': False, 'error': 'no answer in the response',
+                                         'fields': {}})
+        return report
+
+    def _walked(self, securities, fields):
+        """The one event walk both readers share, materialized so the wrapping below covers the
+        whole response: `(security, error, values)` per name, `error` carrying Bloomberg's own
+        text where it refused one. Materializing means the response is DRAINED before either
+        policy raises - deliberately: the strict reader used to abandon the event loop
+        mid-response, leaving the session dirty for its next request. The cost is that a
+        transport failure on a later event outranks a per-security error already walked."""
         if self._session is None or self._service is None or self._api is None:
             raise BloombergUnavailable('BloombergSession must be started before requesting data')
-
         try:
-            return self._reference_data(securities, fields)
+            return list(self._walk(securities, fields))
         except (BloombergRequestError, BloombergUnavailable):
             raise
         except Exception as error:
             raise BloombergRequestError('Bloomberg reference-data request failed: {}'.format(error)) from error
 
-    def _reference_data(self, securities: Sequence[str],
-                        fields: Sequence[str]) -> dict[str, dict[str, object]]:
+    def _walk(self, securities, fields):
         request = self._service.createRequest('ReferenceDataRequest')
         security_element = request.getElement('securities')
         field_element = request.getElement('fields')
@@ -109,7 +137,6 @@ class BloombergSession:
             field_element.appendValue(field)
         self._session.sendRequest(request)
 
-        response = {}
         while True:
             event = self._session.nextEvent(self.timeout_ms)
             if event.eventType() == self._api.Event.TIMEOUT:
@@ -123,16 +150,18 @@ class BloombergSession:
                 for index in range(security_data.numValues()):
                     item = security_data.getValueAsElement(index)
                     security = item.getElementAsString('security')
+                    error = None
                     if item.hasElement('securityError'):
-                        _raise_response_error('{}: {}'.format(
-                            security, _error_text(item.getElement('securityError'))))
-                    if item.hasElement('fieldExceptions'):
+                        error = _error_text(item.getElement('securityError'))
+                    elif item.hasElement('fieldExceptions'):
                         exceptions = item.getElement('fieldExceptions')
                         if exceptions.numValues():
-                            _raise_response_error('{}: {}'.format(security, _error_text(exceptions)))
-                    values = item.getElement('fieldData')
-                    response[security] = {
-                        field: values.getElement(field).getValue()
-                        for field in fields if values.hasElement(field)}
+                            error = _error_text(exceptions)
+                    values = {}
+                    if item.hasElement('fieldData'):
+                        data = item.getElement('fieldData')
+                        values = {field: data.getElement(field).getValue()
+                                  for field in fields if data.hasElement(field)}
+                    yield security, error, values
             if event.eventType() == self._api.Event.RESPONSE:
-                return response
+                return
