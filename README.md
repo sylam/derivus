@@ -20,6 +20,10 @@ scenario engine is written for it.
 Optional extras:
 
 ```
+pip install "derivus[desk]"         # the working stack: the HTTP service, the MCP binding, the quote ticket
+pip install "derivus[service]"      # DV_Service alone (fastapi, uvicorn)
+pip install "derivus[mcp]"          # the MCP binding alone (python 3.10+)
+pip install "derivus[quote]"        # the Excel quote ticket alone (xlsxwriter)
 pip install "derivus[garch]"        # GARCHSpotModel calibration (lazy import; the rest runs without it)
 pip install "derivus[interactive]"  # jupyter and matplotlib
 pip install "derivus[docs]"         # the mkdocs toolchain DV_Docs generates config for
@@ -58,6 +62,9 @@ need to import derivus internals. Six console scripts are installed:
 | | |
 | --- | --- |
 | `derivus/` | the library |
+| `derivus_bloomberg/` | the Bloomberg adapter: `DV_Bloomberg` discovery, the evidence-carrying security map, the FX vol fetch |
+| `derivus_mcp/` | the MCP binding — a thin HTTP client of `DV_Service`, never the engine |
+| `web/` | the web UI, a client of the same verbs; a release wheel ships its build |
 | `tests/` | the suite |
 | `tests/fixtures/` | every input the suite needs — configs and small calibrated market data |
 | `gates/` | acceptance harnesses: end-to-end reproduction and bit-identity |
@@ -67,6 +74,10 @@ need to import derivus internals. Six console scripts are installed:
 | `excel_integration/` | xlwings add-in, and the HTTP client it talks to `DV_Service` through |
 | `data/` | *untracked* — where you drop real market data |
 | `artifacts/` | *untracked* — run outputs, fits, decks |
+
+A desk's own files never enter the repo at all: the live book, the Bloomberg security map and
+seed, and pending quotes with their tickets live in `DV_HOME` (`~/.derivus` unless the variable
+says otherwise).
 
 Scripts under `experiments/` are run from the repo root, e.g. `python experiments/production_solver.py`.
 
@@ -99,7 +110,3 @@ dependency system, the resolver layer and the house conventions.
 [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) —
 free for any noncommercial purpose, including research, teaching and personal projects. Commercial
 use requires a separate licence.
-
-Derivus continues work previously published as RiskFlow under GPL-3.0. Anyone who received that
-release keeps their rights under those terms; this repository is licensed separately by the same
-copyright holder.
