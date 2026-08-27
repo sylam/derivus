@@ -1986,11 +1986,13 @@ class Base_Revaluation(Calculation):
         # write out the dataframe
         self.output['mtm'] = pd.DataFrame(mtm)
         for greek_name, greek_val in greeks.items():
-            # this guarantees that the multiindex is uniquely defined when we write it out
+            # this guarantees that the multiindex is uniquely defined when we write it out.
+            # groupby(axis=1) was removed in pandas 3; the transposed spelling is pandas' own
+            # migration and runs identically back to 1.x
             if greek_name == 'Greeks_Second':
-                summary = pd.concat(greek_val, axis=1).groupby(level=[0, 1, 2, 3, 4], axis=1).sum()
+                summary = pd.concat(greek_val, axis=1).T.groupby(level=[0, 1, 2, 3, 4]).sum().T
             elif greek_name == 'Greeks_First':
-                summary = pd.concat(greek_val, axis=1).groupby(level=0, axis=1).sum()
+                summary = pd.concat(greek_val, axis=1).T.groupby(level=0).sum().T
             else:
                 raise Exception('Unknown Greek requested', greek_name)
             self.output.setdefault(greek_name, summary)
