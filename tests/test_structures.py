@@ -1,6 +1,6 @@
 """A structure is only sold once, and it either costs what it says it costs or it does not.
 
-`derivus.structures` declares four FX structures and one runner. There is nothing to unit-test
+`derivus.structures` declares five FX structures and one runner. There is nothing to unit-test
 about a declaration, so every gate here is a REAL quote: a real book document with a real
 bootstrapped USDZAR vol surface, `quote()` run against it, and the answer checked against a
 financial identity that would be false if any piece of the runner were wrong.
@@ -42,8 +42,8 @@ EXPIRY = '1Y'
 NOTIONAL = 1_000_000.0
 NOTIONAL_CURRENCY = 'ZAR'
 
-#: The four names the registry must carry, and nothing else.
-ROSTER = {'Straddle', 'Strangle', 'ZeroCostCollar', 'Seagull'}
+#: The names the registry must carry, and nothing else.
+ROSTER = {'Straddle', 'Strangle', 'ZeroCostCollar', 'Seagull', 'ForwardExtra'}
 
 #: `solve_deal_field`'s own default, in report currency. A zero-cost structure is zero-cost to
 #: whatever the solve was allowed to leave on the table, so this is the tolerance every net-zero
@@ -117,7 +117,7 @@ def leg(outcome, role):
     return next(row for row in outcome['legs'] if row['role'] == role)
 
 
-def test_the_registry_publishes_exactly_the_four_structures():
+def test_the_registry_publishes_exactly_the_declared_structures():
     """The store is the front end's whole source: a menu, its parameters, what each one is made of
     and what pricing it does. A leg names a declared `Instrument` type and nothing else - that type's
     entry in the Instrument store IS the leg's field schema, the same reuse-by-reference a
@@ -232,6 +232,87 @@ def test_a_seagull_nets_to_zero(book):
             for child in outcome['deal']['Children']] == ['Buy', 'Sell', 'Sell']
 
 
+def test_a_forward_extra_costs_nothing_and_solves_its_barrier(book):
+    """The desk's most-sold hedge, and the registry's first solved coordinate that is not a strike:
+    the client is protected at the rate they name, keeps the favourable move, and pays nothing -
+    the price of the upside being that a trade through the barrier knocks the sold call in and the
+    whole thing reverts to a plain forward at that same protected rate.
+
+    Four claims. The net is zero to the solve's own tolerance. Both legs are struck at the ONE rate
+    the client named, which is what makes the knocked state a forward and not a spread. The solved
+    barrier sits ABOVE the market spot - the participation side, and not a tautology: on a rand
+    notional that leg lives on the reciprocal axis as a `Down_And_In` bracketed BELOW the engine
+    spot, so a runner that flipped the direction the wrong way or inverted the level twice would
+    report a barrier under spot or refuse inside the bracket. And the composed `StructuredDeal`,
+    spliced back through `book_node`, reprices to the quoted net leg for leg - the deal riding the
+    quote is the thing that was quoted.
+    """
+    protected = SPOT * 0.97
+    outcome = structures.quote(book, 'ForwardExtra', params(protected_rate=protected))
+    protection, reversion = leg(outcome, 'protection'), leg(outcome, 'reversion')
+
+    assert abs(outcome['net']) <= SOLVE_TOLERANCE, outcome['net']
+    assert protection['premium'] > 0 > reversion['premium'], 'the sides are the wrong way round'
+    assert protection['strike_market'] == pytest.approx(protected, rel=1e-12)
+    assert reversion['strike_market'] == pytest.approx(protected, rel=1e-12), (
+        'the knock-in reverts to a forward at a rate the client never named')
+    assert protection['barrier_market'] is None, 'a vanilla leg reports no barrier'
+    assert reversion['barrier_market'] > SPOT, 'the barrier is not on the participation side'
+    assert reversion['solved'] == {'Barrier_Price': pytest.approx(
+        1.0 / reversion['barrier_market'], rel=1e-12)}
+    assert protection['solved'] is None
+
+    booked = outcome['deal']['Children'][1]['Instrument']['.Deal']
+    assert booked['Object'] == 'FXBarrierOption' and booked['Buy_Sell'] == 'Sell'
+    assert booked['Barrier_Type'] == 'Down_And_In', 'up on the pair is down on the rand'
+    assert booked['Option_Type'] == 'Put', 'the sense crosses with the axis on a barrier leg too'
+    assert 'Option_Style' not in booked, 'an FXBarrierOption declares no Option_Style to pin'
+
+    priced = values(book, [outcome['deal']])
+    assert [priced[row['reference']] for row in outcome['legs']] == pytest.approx(
+        [row['premium'] for row in outcome['legs']], rel=1e-9), (
+        'the container reports legs the quote does not')
+    assert priced[outcome['deal']['Reference']] == pytest.approx(outcome['net'], abs=1e-6)
+
+
+def test_a_knock_in_plus_a_knock_out_is_the_vanilla(book):
+    """In-out parity, straight through the engine: a bought up-and-IN call and a bought up-and-OUT
+    call on the same strike and the same barrier are between them the vanilla, because exactly one
+    of them pays on every path. Three deals authored by hand, one ordinary run, no structure and no
+    solve in the way.
+
+    This is the identity the forward extra's sold leg rests on, and it is worth stating alone: the
+    census records the analytic knock-IN branch of `pv_barrier_option` as executed by almost no
+    test, so the leg the client is being charged for travels code nothing has demanded a number
+    from. Closed forms on both sides, so the tolerance is analytic and not statistical: measured
+    1.1e-16 relative, one ULP, against a 1e-9 gate.
+
+    That exactness is not luck and it bounds the claim. The two branches are complementary term
+    sets of the same Merton-Reiner-Rubinstein decomposition - the knock-in here is `B - C + D`,
+    the knock-out `A - B + C - D`, and `A` is the vanilla - so the sum cancels term by term in
+    floating point. What this holds is that the IN branch is REACHED and that its terms and signs
+    compose to that decomposition, which is exactly the family of defect the partial-time barrier's
+    inverted branch turned out to be. It is not an independent check of the formula's accuracy.
+    """
+    knock = SPOT * 1.10
+    common = {'Currency': 'ZAR', 'Discount_Rate': 'ZAR', 'Underlying_Currency': 'USD',
+              'Underlying_Amount': NOTIONAL / SPOT, 'FX_Volatility': 'USD.ZAR',
+              'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': SPOT,
+              'Expiry_Date': {'.Timestamp': (BASE + pd_offset()).strftime('%Y-%m-%d')}}
+    # a deal block IS the pricer's field dict, so the barrier's own two fields are written out -
+    # continuous monitoring, no rebate - exactly as the runner writes them onto a barrier leg
+    barrier = dict(common, Object='FXBarrierOption', Cash_Rebate=0.0,
+                   Barrier_Monitoring_Frequency={'.DateOffset': '0M'}, Barrier_Price=knock)
+    priced = values(book, [
+        dict(common, Object='FXOptionDeal', Reference='VANILLA', Option_Style='European'),
+        dict(barrier, Reference='KNOCK_IN', Barrier_Type='Up_And_In'),
+        dict(barrier, Reference='KNOCK_OUT', Barrier_Type='Up_And_Out')])
+
+    assert priced['KNOCK_IN'] > 0 and priced['KNOCK_OUT'] > 0, (
+        'a bought barrier is worth something, or the barrier is unreachable and this is vacuous')
+    assert priced['KNOCK_IN'] + priced['KNOCK_OUT'] == pytest.approx(priced['VANILLA'], rel=1e-9)
+
+
 def test_a_market_strike_reaches_the_engine_axis(book):
     """The conversion, on its own, exactly: a floor quoted USDZAR 15.50 on a rand notional is a
     deal struck at `1/15.50` dollars per rand, and the leg the client reads back says 15.50 again.
@@ -274,6 +355,49 @@ def test_the_same_trade_quotes_the_same_from_either_side_of_the_pair(book):
     assert call['Option_Type'] == 'Call' and call['Underlying_Currency'] == 'USD'
     assert call['Currency'] == 'ZAR' and call['Discount_Rate'] == 'ZAR'
     assert leg(in_dollars, 'call')['strike_market'] == SPOT
+
+
+def test_a_forward_extra_quotes_the_same_from_either_side_of_the_pair(book):
+    """The straddle's statement again, with THREE conversions in the way instead of two: a forward
+    extra on 1,000,000 rand and one on the dollars that buys are the same trade, and the desk must
+    quote them at the same money.
+
+    What the rand side crosses that the straddle's did not is the BARRIER. Its level inverts like a
+    strike, and its DIRECTION inverts with it - the `Up_And_In` the structure declares on the pair
+    is booked `Down_And_In` on the rand - while the dollar side crosses nothing at all. Get either
+    half wrong and the two orientations solve different barriers for one trade, so the sharp claim
+    is that the solved LEVELS agree in market terms; the nets agree at all only because `brentq`
+    runs to its own `xtol` rather than stopping at the solve's reporting tolerance.
+
+    The equivalent notional converts at the STRIKE, not at the spot: a rand-notional option on the
+    reciprocal pays `max(1/S - 1/K, 0) x N`, which is `(N/K) x max(K - S, 0)` read in rand, so the
+    same trade is `N / protected_rate` dollars. The straddle's version of this gate is struck at
+    the money and cannot tell the two divisors apart; struck away from it, `N / SPOT` misprices by
+    exactly the moneyness (measured 3.09% on the protection leg at 0.97 spot).
+    """
+    protected = SPOT * 0.97
+    both_ways = {'pair': PAIR, 'expiry': EXPIRY, 'protected_rate': protected}
+    in_rand = structures.quote(book, 'ForwardExtra', dict(
+        both_ways, notional=NOTIONAL, notional_currency='ZAR'))
+    in_dollars = structures.quote(book, 'ForwardExtra', dict(
+        both_ways, notional=NOTIONAL / protected, notional_currency='USD'))
+
+    assert in_dollars['net'] == pytest.approx(in_rand['net'], abs=1e-6)
+    assert leg(in_dollars, 'protection')['premium'] == pytest.approx(
+        leg(in_rand, 'protection')['premium'], rel=1e-9)
+    assert leg(in_dollars, 'reversion')['barrier_market'] == pytest.approx(
+        leg(in_rand, 'reversion')['barrier_market'], rel=1e-6), (
+        'the two orientations solved different barriers for one trade')
+
+    booked = {side: quote['deal']['Children'][1]['Instrument']['.Deal']
+              for side, quote in (('rand', in_rand), ('dollars', in_dollars))}
+    assert booked['dollars']['Barrier_Type'] == 'Up_And_In', 'a base-currency notional flips nothing'
+    assert booked['dollars']['Strike_Price'] == pytest.approx(protected, rel=1e-12)
+    assert booked['rand']['Barrier_Type'] == 'Down_And_In'
+    assert booked['dollars']['Barrier_Price'] > SPOT
+    assert booked['rand']['Barrier_Price'] < 1.0 / SPOT, 'the engine barrier is not the reciprocal'
+    assert booked['rand']['Barrier_Price'] == pytest.approx(
+        1.0 / leg(in_rand, 'reversion')['barrier_market'], rel=1e-12)
 
 
 def test_a_quote_is_an_act_not_a_lookup(book):

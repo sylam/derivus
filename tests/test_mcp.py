@@ -119,7 +119,7 @@ def test_the_schema_tools_are_the_declarations():
 
 def test_the_structure_store_is_the_quoting_menu():
     """A structure is a DECLARATION and this is the tool that serves it, so the whole menu comes
-    off `/schema` with nothing composed here: the four structures with the sales names a desk
+    off `/schema` with nothing composed here: every structure with the sales names a desk
     actually says, then one of them opened up - its parameters, its legs, its recipe. A name that
     is not a structure refuses with the close match rather than guessing, and it matches on the
     vernacular too, because 'collar' is how a model spells it."""
@@ -127,8 +127,8 @@ def test_the_structure_store_is_the_quoting_menu():
     vernaculars = {entry['name']: entry['vernacular'] for entry in listed['structures']}
 
     assert [entry['name'] for entry in listed['structures']] == [
-        'Seagull', 'Straddle', 'Strangle', 'ZeroCostCollar']
-    assert listed['count'] == 4 and all(vernaculars.values())
+        'ForwardExtra', 'Seagull', 'Straddle', 'Strangle', 'ZeroCostCollar']
+    assert listed['count'] == 5 and all(vernaculars.values())
     assert 'collar' in vernaculars['ZeroCostCollar']
 
     collar = mcp_server.describe_structure('ZeroCostCollar')

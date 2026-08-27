@@ -30,7 +30,7 @@ The class name is the registry key (`globals()` dispatch, the house pattern), an
 `mapping['Structure']` is `schema.emit_structures(structures)`, assembled with the other stores,
 so `GET /schema` publishes the vocabulary and a front end can grow a structures screen for free.
 
-## The runner owns the conventions — both of them
+## The runner owns the conventions — all three of them
 
 Parameters arrive in MARKET terms and the engine never shows through. `materialize()` converts
 once, for every structure at once:
@@ -39,17 +39,39 @@ once, for every structure at once:
   REPORTING units per unit of currency and an FX option's strike lives on that axis;
 - the option SENSE inverts with the same axis — a market call (the right to buy the base
   currency) is an engine PUT on the quote currency — so no structure declares an orientation and
-  none can get it wrong.
+  none can get it wrong;
+- a BARRIER leg crosses on a third axis at the same time. The `Barrier_Price` inverts exactly as a
+  strike does (it is a level on the same pair), and the barrier's DIRECTION inverts with it — the
+  `Up_And_In` a forward extra declares on the pair is booked `Down_And_In` on a rand notional —
+  while In/Out describes the PAYOFF rather than the axis and never moves. `BARRIER_FLIP` is that
+  map, declared beside `VANILLA` and applied exactly where `Option_Type` flips. `Option_Style` is
+  NOT pinned on a barrier leg: `FXBarrierOption` declares no such field.
 
-Both conversions were found the expensive way (a session lost to each) and are gated: a straddle
-quoted on a ZAR notional and one on the USD it buys must net the same to machine precision,
-travelling opposite paths through the runner. `notional_currency` IS the option underlying, which
+The first two were found the expensive way (a session lost to each) and all three are gated the
+same way: a straddle quoted on a ZAR notional and one on the USD it buys must net the same to
+machine precision, and a forward extra quoted both ways must solve the SAME barrier in market
+terms — travelling opposite paths through the runner. (The equivalent notional converts at the
+STRIKE, not at the spot: `N` rand is `N / K` dollars, which an at-the-money straddle cannot tell
+apart and a 0.97-spot forward extra misprices by exactly the moneyness.) `notional_currency` IS the option underlying, which
 makes "is the notional the quote currency" exactly the discriminator the inversion needs.
 
 Strike solves are BRACKETED (brentq over `(0.25, 4.0) ×` the market spot, crossed to the engine
 axis), never the secant — `solve_deal_field`'s secant seed lands in the dead flat region for an
 engine-axis strike of 0.06. A zero-cost leg no strike inside the bracket can fund refuses by
 name rather than returning a wrong branch.
+
+A BARRIER solve is bracketed on the side its own type lives on, off the same ends with a hair of
+buffer at the spot so the level never lands exactly on it: `Down_*` over `(0.25, 0.9999) × spot`,
+`Up_*` over `(1.0001, 4.0) × spot`, both read on the ENGINE axis the leg's `Barrier_Type` has
+already crossed to. A knock-in's premium is monotone in its barrier — toward the spot is likelier
+to knock and so larger in magnitude — so brentq owns the root or refuses by name.
+
+One furnishing the runner does that looks like a default and is not: a deal block IS the field
+dict the pricer reads (`Deal.__init__` takes it verbatim), so a DECLARED default never reaches it.
+`pv_barrier_option` asks for `Barrier_Monitoring_Frequency` and `Cash_Rebate` by name, so
+`materialize` writes both onto a barrier leg — `{'.DateOffset': '0M'}`, continuous monitoring in
+the wire form a Period field decodes from, and a zero rebate. Without them the deal is SKIPPED at
+load: an ERROR line in the log, a leg priced at nothing, and a quote that still returns.
 
 ## The quote lifecycle
 
@@ -75,17 +97,25 @@ the legs, never the container.
 
 Every gate is the owner's rule made concrete — a real document through the real pipeline, results
 against financial identities, nothing monkeypatched: the straddle equals its call plus its put,
-the collar and seagull net to zero within the solve's own residual, re-quoting the solved cap as
-a given strangle reproduces equal premiums, and the whole day (quote → pending file → approve →
-book marks it at ~0) runs over the served book. The declared registry reproduced the first
+the collar, seagull and forward extra net to zero within the solve's own residual, re-quoting the
+solved cap as a given strangle reproduces equal premiums, and the whole day (quote → pending file
+→ approve → book marks it at ~0) runs over the served book. The forward extra brought one gate of
+its own that is not about structures at all: a hand-authored knock-IN plus knock-OUT call must be
+the vanilla, which is the first test to demand a number from `pv_barrier_option`'s analytic
+knock-in branch (measured 1.1e-16 relative). The declared registry reproduced the first
 hand-composed collar's solved cap to the digit, which is the check that the recipe encodes the
 composition and not an approximation of it.
 
 ## V1 scope, and the named next steps
 
-Four structures ship: `Straddle`, `Strangle` (no solve — the registry handles recipe-free
-entries), `ZeroCostCollar` (floor given, cap solved to premium parity) and `Seagull` (three legs,
-two given, one solved to net zero). Named next, in order of what they exercise:
+Five structures ship: `Straddle`, `Strangle` (no solve — the registry handles recipe-free
+entries), `ZeroCostCollar` (floor given, cap solved to premium parity), `Seagull` (three legs,
+two given, one solved to net zero) and `ForwardExtra` (the protected rate given, the BARRIER
+solved — protection plus a sold knock-in call at the same strike, so the client keeps the
+favourable move until the pair trades through the level and the structure reverts to a plain
+forward at the rate they were protected at). It is the recipe vocabulary's first solved
+coordinate that is not a strike, and the first leg that is not an `FXOptionDeal`. Named next, in
+order of what they exercise:
 
 - **The risk-impact step.** Price the BOOK plus the candidate under `Greeks` and read the skew
   delta in RR/BF coordinates — does the structure add skew or shed it — so a risk-reducing trade
@@ -93,10 +123,6 @@ two given, one solved to net zero). Named next, in order of what they exercise:
   ordinary number ([Quote Sensitivities](quote_sensitivities.md#the-delta-solve)), and with
   `FXForwardDeal` benchmarks every hedge layer now speaks tradable coordinates. What it needs
   from the desk is POLICY — bp per unit of skew, the mid threshold — which is mandate, not code.
-- **Barrier legs**, for the forward-extra family — the most-sold structured FX hedge. The barrier
-  pricers exist; the registry needs to name a barrier deal as a leg, and the first forward-extra
-  quote will drive real traffic through analytic knock-in branches the census only recently saw
-  executed.
 - **A ratio-solve primitive**, for participating forwards — the recipe vocabulary's first step
   that moves a notional fraction rather than a strike.
 - **A tenor-vocabulary note**: `expiry` parses `<n><D|W|M|Y>` through the job grammar's own

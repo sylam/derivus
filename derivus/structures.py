@@ -35,7 +35,10 @@ option on `Underlying_Currency` settled in `Currency`, so its `Strike_Price` is 
 USDZAR), the deal's axis is the reciprocal of the quoted one, and BOTH the strike and the option
 sense invert: `Strike_Price = 1/K`, and a market Call (the right to buy the base currency) is an
 engine Put on the quote currency. A leg therefore pins `Option_Type` on the PAIR and the runner
-flips it in step with the strike. When the notional is the BASE currency the two axes agree and
+flips it in step with the strike. A barrier leg crosses on a third axis of its own: its
+`Barrier_Price` inverts exactly as a strike does, and its DIRECTION flips with it - an Up barrier
+on the pair is a Down barrier on the quote currency - while In/Out, which is about the payoff
+rather than the axis, never moves. When the notional is the BASE currency the two axes agree and
 nothing is converted. No structure knows any of this.
 
 PARAMETERS vs A DEAL. The runner fills the shared block from the parameters - the two currencies
@@ -74,12 +77,19 @@ TENOR = re.compile(r'^\s*(\d+)\s*([DWMY])\s*$', re.IGNORECASE)
 #: legs can carry, and `brentq` refuses by name when it does not.
 STRIKE_BRACKET = (0.25, 4.0)
 
-#: Every v1 leg is a European vanilla. Pinned per leg rather than injected by the runner: it is an
-#: `FXOptionDeal` field, and the runner furnishes only what the PARAMETERS decide.
+#: Every vanilla leg is European. Pinned per leg rather than injected by the runner: it is an
+#: `FXOptionDeal` field, and the runner furnishes only what the PARAMETERS decide. An
+#: `FXBarrierOption` declares no such field, so a barrier leg does not carry it.
 VANILLA = {'Option_Style': 'European'}
 
+#: A barrier's DIRECTION is a statement about the PAIR, so it crosses to the engine axis with the
+#: strike: a barrier above USDZAR 18.50 is below 1/18.50 dollars per rand. In/Out says what the
+#: payoff does on touch and means the same on either axis, so only Up/Down moves.
+BARRIER_FLIP = {'Up_And_In': 'Down_And_In', 'Down_And_In': 'Up_And_In',
+                'Up_And_Out': 'Down_And_Out', 'Down_And_Out': 'Up_And_Out'}
+
 #: The parameters every FX structure quotes in. Shared as module constants for the reason the
-#: schema's field groups are: eight legs across four structures read the same four slots, and a
+#: schema's field groups are: ten legs across five structures read the same four slots, and a
 #: copy per class is a copy that drifts.
 PAIR = F('pair', 'Text', default=REQUIRED,
          description='The market pair, base then quote - USDZAR is ZAR per USD')
@@ -256,6 +266,25 @@ class Seagull:
               Solve('financing', 'Strike_Price', -Premium('protection', 'participation'))]
 
 
+class ForwardExtra:
+    """Protection with the upside left on, paid for by a level rather than by a strike. The client
+    is protected at the rate they name and still participates in a favourable move - until the pair
+    trades through the barrier, where the sold call knocks in and the whole thing reverts to a plain
+    forward at that same protected rate. Nothing is given up at a strike, so the solved coordinate
+    is the BARRIER: the level at which the knock-in the client sells funds the put they buy."""
+    vernacular = 'forward extra, forward plus, at-worst forward'
+    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY,
+              strike('protected_rate', 'The protected level, bought as a put on the pair - and the '
+                                       'forward the structure reverts to if the barrier trades')]
+    legs = [Leg('protection', 'FXOptionDeal', dict(VANILLA, Option_Type='Put', Buy_Sell='Buy'),
+                {'Strike_Price': 'protected_rate'}),
+            Leg('reversion', 'FXBarrierOption',
+                {'Option_Type': 'Call', 'Buy_Sell': 'Sell', 'Barrier_Type': 'Up_And_In'},
+                {'Strike_Price': 'protected_rate'})]
+    recipe = [Price('protection'),
+              Solve('reversion', 'Barrier_Price', -Premium('protection'))]
+
+
 def registry():
     """`{name: class}` for every structure declared here - the same scan `emit_structures` makes.
 
@@ -379,22 +408,44 @@ def materialize(structure, params, document):
 
     out = []
     for leg in structure.legs:
-        if leg.deal_type != 'FXOptionDeal':
-            raise ValueError('{}: the runner furnishes FXOptionDeal legs, not {}'.format(
-                leg.role, leg.deal_type))
+        if leg.deal_type not in ('FXOptionDeal', 'FXBarrierOption'):
+            raise ValueError('{}: the runner furnishes FXOptionDeal and FXBarrierOption legs, '
+                             'not {}'.format(leg.role, leg.deal_type))
         deal = dict(shared, Object=leg.deal_type)
         deal.update(leg.pinned)
-        if inverted and 'Option_Type' in deal:
-            # a call on the pair is a put on the quote currency - the sense inverts with the axis
-            deal['Option_Type'] = 'Put' if deal['Option_Type'] == 'Call' else 'Call'
         for field, slot in leg.slots.items():
             if slot not in params:
                 raise ValueError('{}: leg {} needs the {!r} parameter'.format(
                     structure.__name__, leg.role, slot))
             value = float(params[slot])
-            deal[field] = 1.0 / value if inverted and field == 'Strike_Price' else value
+            deal[field] = 1.0 / value if inverted and field in (
+                'Strike_Price', 'Barrier_Price') else value
+        # senses and directions convert AFTER pinned and slots merge, so a structure that one day
+        # lets the client choose either still crosses the axis exactly once
+        if inverted:
+            if 'Option_Type' in deal:
+                # a call on the pair is a put on the quote currency - the sense inverts with the axis
+                deal['Option_Type'] = 'Put' if deal['Option_Type'] == 'Call' else 'Call'
+            if 'Barrier_Type' in deal:
+                deal['Barrier_Type'] = BARRIER_FLIP[deal['Barrier_Type']]
         # an unsolved strike still has to be a number the splice can price - the solve replaces it
         deal.setdefault('Strike_Price', seed)
+        if leg.deal_type == 'FXBarrierOption':
+            # the direction is the structure's own statement: the Instrument declaration's default
+            # would ride the axis unflipped, so a barrier leg that names none refuses
+            if 'Barrier_Type' not in deal:
+                raise ValueError('{}: barrier leg {} declares no Barrier_Type'.format(
+                    structure.__name__, leg.role))
+            # and an unsolved barrier has to be a number on the live side of its own direction,
+            # read off the ENGINE axis the type now sits on
+            deal.setdefault('Barrier_Price',
+                            seed * (0.75 if deal['Barrier_Type'].startswith('Down') else 1.25))
+            # a deal block IS the field dict the pricer reads, so a declared default never reaches
+            # it: the two fields `pv_barrier_option` asks for by name are written out, continuous
+            # monitoring in the wire form a Period field is decoded from. Absent, the deal is
+            # SKIPPED at load and the leg quietly prices at nothing
+            deal.setdefault('Barrier_Monitoring_Frequency', {'.DateOffset': '0M'})
+            deal.setdefault('Cash_Rebate', 0.0)
         out.append(Materialized(leg.role, deal, inverted))
     return out
 
@@ -434,16 +485,34 @@ def run_solve(document, leg, field, target, spot):
     """`derivus.solve_deal_field` over one leg, bracketed, writing the answer back onto the leg.
 
     A strike is bracketed around the market spot by `STRIKE_BRACKET` and crossed to the engine
-    axis - inverting swaps the ends, so they are sorted rather than assumed. Any other field is
-    left to the secant from its current value, which is exact in two pricings for anything the
-    value is affine in. Returns `(solved, premium at the solved value)`.
+    axis - inverting swaps the ends, so they are sorted rather than assumed. A BARRIER is bracketed
+    on the side its own type lives on, off the same ends. Any other field is left to the secant
+    from its current value, which is exact in two pricings for anything the value is affine in.
+    Returns `(solved, premium at the solved value)`.
     """
     from . import solve_deal_field
     iterate, deal_path = alone(document, leg.deal)
     bounds = None
     if field == 'Strike_Price':
         bounds = sorted([spot / end if leg.inverted else spot * end for end in STRIKE_BRACKET])
-    solved, _, _, out = solve_deal_field(iterate, deal_path, field, target=target, bounds=bounds)
+    elif field == 'Barrier_Price':
+        # `spot` and the leg's Barrier_Type are both already on the ENGINE axis, so the direction
+        # names the side directly - with a hair of buffer so the barrier never lands exactly on the
+        # spot. A knock-in's premium is monotone in its barrier (toward spot = more likely to knock
+        # = larger magnitude), so brentq owns the root or refuses by name.
+        bounds = sorted([spot * STRIKE_BRACKET[0], spot * 0.9999]) \
+            if leg.deal['Barrier_Type'].startswith('Down') \
+            else sorted([spot * 1.0001, spot * STRIKE_BRACKET[1]])
+    try:
+        solved, _, _, out = solve_deal_field(iterate, deal_path, field, target=target, bounds=bounds)
+    except ValueError as error:
+        if bounds is None or 'different signs' not in str(error):
+            raise
+        # brentq's sign check speaks in f(a) and f(b); a desk needs the economics said out loud
+        raise ValueError(
+            '{}: no {} in [{:.6g}, {:.6g}] lets this leg reach {:.6g} - the structure cannot be '
+            'financed at these parameters'.format(
+                leg.deal['Reference'], field, bounds[0], bounds[1], target))
     leg.deal[field] = solved
     return solved, own_value(out, leg.deal['Reference'])
 
@@ -483,8 +552,9 @@ def quote(document, structure_name, params):
     `document` is a wire-form job document - the book - and travels whole, never a patch. `params`
     are the client's numbers, in the market's own terms. The answer is
     `{quote_id, structure, params, legs, net, deal}`: one row per leg carrying its reference, role,
-    deal type, side, market-terms strike, premium and whatever was solved on it; `net` as the sum
-    of the legs; and `deal` the composed `StructuredDeal`, wire form, ready for the booking verb.
+    deal type, side, market-terms strike and barrier, premium and whatever was solved on it - a leg
+    carrying no barrier reports None for it; `net` as the sum of the legs; and `deal` the composed
+    `StructuredDeal`, wire form, ready for the booking verb.
 
     `quote_id` hashes the structure, the parameters, the market the book was carrying AND a
     submission clock. The clock is the point: a quote is an ACT, so two identical asks minutes
@@ -537,6 +607,8 @@ def quote(document, structure_name, params):
                   'deal_type': leg.deal['Object'], 'buy_sell': leg.deal.get('Buy_Sell'),
                   'strike_market': leg.to_market(leg.deal['Strike_Price'])
                   if 'Strike_Price' in leg.deal else None,
+                  'barrier_market': leg.to_market(leg.deal['Barrier_Price'])
+                  if 'Barrier_Price' in leg.deal else None,
                   'premium': premiums[leg.role], 'solved': solved.get(leg.role)}
                  for leg in legs],
         'net': sum(premiums.values()),
