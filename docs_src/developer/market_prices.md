@@ -53,7 +53,7 @@ The six families, and what each fits:
 | `CSForwardPriceModelPrices` | European energy futures options | `CSForwardPriceModelParameters` — sigma, alpha |
 | `HestonNandiModelPrices` | European options on any spot | `HestonNandiModelParameters` — omega, alpha, beta, gamma\*, H0 |
 | `HullWhite2FactorModelPrices` | forward-starting swaps against a swaption surface | `HullWhite2FactorModelParameters` — two sigma curves, two alphas, a correlation |
-| `InterestRatePrices` | deposits, FRAs and swaps | an `InterestRate` zero curve |
+| `InterestRatePrices` | deposits, FRAs, swaps and FX forward outrights | an `InterestRate` zero curve |
 | `FXVolPrices` | ATM vols, risk reversals and butterflies | an `FXVol` log-moneyness surface |
 
 ## `InterestRatePrices` — a curve solved from its quotes {#interestrateprices}
@@ -70,19 +70,46 @@ vocabulary the calibration classes tune with, and each read with its declared de
 engine's fallback), and the quote `Points`. A blank `Discount_Rate` builds a **self-discounting**
 curve, which is the single-curve configuration.
 
-**The quotes.** Each point carries a `Deal` — a deposit, an FRA, a swap, or a `StructuredDeal` over
-two legs, authored exactly as it would be in `Trade Data`, because it is the same declaration —
-plus `DealType`, `Quote_Type` and `Quoted_Market_Value`, and a `Use` flag so a quote can be held out
-without being deleted. `DealType` supplies the block's `Object`, and the family stamps
-`Discount_Rate`: what an instrument *projects* off is its own business and it names that curve
-itself, what the quote set *discounts* on belongs to the curve set and is stated once.
+**The quotes.** Each point carries a `Deal` — a deposit, an FRA, a swap, an `FXForwardDeal`, or a
+`StructuredDeal` over two legs, authored exactly as it would be in `Trade Data`, because it is the
+same declaration — plus `DealType`, `Quote_Type` and `Quoted_Market_Value`, and a `Use` flag so a
+quote can be held out without being deleted. `DealType` supplies the block's `Object`, and the
+family stamps `Discount_Rate`: what an instrument *projects* off is its own business and it names
+that curve itself, what the quote set *discounts* on belongs to the curve set and is stated once.
 
-`Quoted_Market_Value` is a rate in percent, and where it lands is a property of the instrument
-TYPE — a `FRA_Rate`, a `Swap_Rate`, a pinned `Interest_Rate_Schedule`, a fixed leg's `Rate` column.
-That correspondence is the one thing the family knows about a type beyond the type's own
-declarations, and it is a registry (`QUOTE_WRITERS`) rather than a branch, so a new quotable
-instrument is a row. `Quote_Type` declares the single convention that is built, `Par_Rate`: the
-solve holds every benchmark at PV zero.
+`Quoted_Market_Value` is read in the unit its own `DealType` reads, and where it lands is a
+property of the instrument TYPE — a `FRA_Rate`, a `Swap_Rate`, a pinned `Interest_Rate_Schedule`, a
+fixed leg's `Rate` column. That correspondence is the one thing the family knows about a type
+beyond the type's own declarations, and it is a registry (`QUOTE_WRITERS`) rather than a branch, so
+a new quotable instrument is a row. The family scales nothing centrally: a rate benchmark is quoted
+in **percent** because that deal's own field semantics divide by 100 — a `Percent`, a `Basis`, a
+schedule the deal scales — so a quote that is not a rate rides the same path untouched.
+`Quote_Type` declares the single convention that is built, `Par_Rate`: the solve holds every
+benchmark at PV zero.
+
+**A forward outright as a benchmark.** `FXForwardDeal` is the one quotable type whose quote is not
+a rate. Its `Quoted_Market_Value` is the forward **outright** — units of `Buy_Currency` per one
+unit of `Sell_Currency` — landing as `Buy_Amount = quote × Sell_Amount` on a benchmark that fixes
+the sold amount and both discount-rate names, which keeps the PV exactly affine in the quote the
+way the par solve and the drift metric both need. A currency's discount curve can then be solved
+directly from the points a desk trades, and covered interest parity is written nowhere: the
+residual is the forward's own pricer held at PV zero, so the parity is whatever that pricer means.
+The residual **crosses currencies**, which the benchmark closure allows by the same rule it applies
+to every factor a solve is not solving for — the other leg's curve and both `FxRate` spots are
+discovered from the deal's own declarations and enter as detached constants, while the deal
+converts to the reporting currency itself, that currency being the solved curve's. Because the
+coupling is authored inside the deal rather than in `Discount_Rate`, the **solve order** reads it
+there too: a block comes after every block building a curve its benchmark deals name, so a forward
+strip authored before the curve its other leg discounts on still solves.
+
+`Quote_Sensitivity` on such a block **refuses**, by name. The overlay that carries a quote
+derivative rides cashflow-schedule value columns; an outright lands in `Buy_Amount`, which the
+pricer reads as a float off the deal, so no schedule of the compiled forward moves and the refusal
+names the benchmark and the type rather than reporting a zero `dV/dq` on the instrument the desk
+actually trades. It is measured and not a branch on the type, so it stays silent wherever a quote
+does reach a column. `Quote_Propagation` cannot ride one either — a coupled set spanning two
+reporting currencies was already refused, and a single-currency block of forwards meets the same
+overlay refusal. Full quote-derivative support for an amount-valued quote is not built.
 
 **The knot rule.** ONE knot per used quote, at that benchmark's last cashflow date, in the block's
 `Day_Count`. That is the only placement that makes the system square, and squareness is the shape

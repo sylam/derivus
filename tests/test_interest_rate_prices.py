@@ -5,16 +5,24 @@ benchmark set off it to GENERATE the quotes, then require the solve to recover t
 from. Nothing here is copied from a vendor file and nothing needs to be - the levels only have to be
 plausibly shaped, because the quotes are derived from them rather than asserted against them.
 
-Two worlds, because the two configurations fail differently. A USD SOFR-style world is genuinely
-multi-curve: an OIS discount curve solved from compounded-in-arrears OIS quotes, then a projection
-curve solved from a FRA strip and par swaps that discount on it, which only works if the two solves
-run in dependency order. A ZAR JIBAR-style world is the degenerate single-curve one, where discount
-and projection coincide - the harder solve, because the unknown appears on both sides of every
-benchmark.
+Two rate worlds, because the two configurations fail differently. A USD SOFR-style world is
+genuinely multi-curve: an OIS discount curve solved from compounded-in-arrears OIS quotes, then a
+projection curve solved from a FRA strip and par swaps that discount on it, which only works if the
+two solves run in dependency order. A ZAR JIBAR-style world is the degenerate single-curve one,
+where discount and projection coincide - the harder solve, because the unknown appears on both
+sides of every benchmark.
 
 Generating the quotes needs no second pricer and no root find. A benchmark's PV is AFFINE in its
 quote - a deposit's coupons, an FRA's strike and a swap's fixed leg are each linear in it - so two
 priced sets locate the par rate exactly.
+
+A third world is CROSS-CURRENCY and is gated differently, because its quotes are FX forward
+outrights rather than rates and there is no true curve behind them to recover: a USD curve solved
+from its own quotes, and a ZAR curve solved from USDZAR outrights against it. What stands in for
+the round trip there is the identity covered interest parity IS - reprice a fresh par forward off
+the solved pair and the outright comes back - and the subtleties it brings with it: a residual that
+reads another currency's curve and spot as constants, an ordering dependency no `Discount_Rate`
+declares, and a quote that cannot reach the `Quote_Sensitivity` overlay and says so.
 """
 import copy
 import logging
@@ -24,6 +32,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 
@@ -365,3 +374,314 @@ def test_the_damping_never_engages_on_these_worlds():
         x = x.detach() - torch.linalg.solve(jacobian, f.detach())
     assert torch.allclose(damped[curve], x, atol=1e-14), (
         'the damped and undamped iterations disagree, so the line search is doing something')
+
+
+# ---------------------------------------------------------------------------------------------
+# A CROSS-CURRENCY world. The USD curve is solved from its own deposit and swap quotes; the ZAR
+# curve is solved DIRECTLY from FX FORWARD OUTRIGHTS against it, which is covered interest parity
+# run backwards - the spot, the outright and the USD leg are given and the ZAR discount factor is
+# the unknown. Nothing states CIP anywhere: the residual is an `FXForwardDeal` priced by the
+# engine's own pricer and held at zero, so the parity relation is whatever that pricer means.
+#
+# Unlike the rate worlds these quotes are STATED rather than generated, because there is no true
+# ZAR curve to recover - the outrights ARE the market data. What replaces the round trip is the
+# identity CIP is: price a fresh par forward off the solved pair and the outright has to come back.
+# The levels are invented and 2026-shaped - an 18.25 spot carrying about 4.8% of forward points.
+# ---------------------------------------------------------------------------------------------
+FX_SPOT = 18.25
+FX_OUTRIGHTS = ((1, 18.32), (3, 18.47), (6, 18.70), (12, 19.15))
+FX_USD_SWAP_YEARS = (1, 2, 3)
+FX_USD_TRUE = [0.0448, 0.0430, 0.0412, 0.0402]
+USD_CURVE, ZAR_CURVE = 'USD-OIS', 'ZAR-FX-IMPLIED'
+
+
+def fx_forward(ref, months, outright, sell_amount=1e6):
+    """One benchmark FX forward: `sell_amount` of USD sold against ZAR at `months`, bought at
+    `outright` ZAR per USD.
+
+    `Sell_Amount` and BOTH discount-rate names are fixed by the authoring, which leaves the quote
+    exactly one place to land - `Buy_Amount` - and lets the deal name its own two curves. The
+    block's `Discount_Rate` is inert for this type: an FX forward discounts each leg on the curve
+    IT names, which is the whole reason the ordering read cannot stop at the block's field.
+    """
+    return {'Object': 'FXForwardDeal', 'Reference': ref,
+            'Sell_Currency': 'USD', 'Sell_Amount': sell_amount,
+            'Buy_Currency': 'ZAR', 'Buy_Amount': outright * sell_amount,
+            'Settlement_Date': BASE + pd.DateOffset(months=months),
+            'Buy_Discount_Rate': ZAR_CURVE, 'Sell_Discount_Rate': USD_CURVE}
+
+
+def fx_blocks():
+    """The two `Market Prices` blocks of the cross-currency world, USD authored first."""
+    usd = [quote_point('USD 3M depo', deposit('USD_DEPO_3M', 'USD', USD_CURVE, 3, 0.0))]
+    usd += [quote_point('USD {}Y IRS'.format(y),
+                        par_swap('USD_IRS_{}Y'.format(y), 'USD', USD_CURVE, USD_CURVE, y, 0.0))
+            for y in FX_USD_SWAP_YEARS]
+    forwards = [dict(quote_point('USDZAR {}M outright'.format(months),
+                                 fx_forward('FWD_{}M'.format(months), months, outright)),
+                     Quoted_Market_Value=outright)
+                for months, outright in FX_OUTRIGHTS]
+    return {'InterestRatePrices.' + USD_CURVE: {
+                'Currency': 'USD', 'Day_Count': 'ACT_365', 'Discount_Rate': '', 'Points': usd},
+            'InterestRatePrices.' + ZAR_CURVE: {
+                'Currency': 'ZAR', 'Day_Count': 'ACT_365', 'Discount_Rate': '', 'Points': forwards}}
+
+
+def fx_price_factors():
+    """The two FX spots and nothing else. ZAR is the base currency of this world, so `FxRate.USD`
+    IS the USDZAR spot - the constant the forward's other leg converts through, and the one
+    `BenchmarkInstruments` hands the residual as a detached leaf."""
+    return {
+        'FxRate.ZAR': {'Domestic_Currency': None, 'Interest_Rate': ZAR_CURVE, 'Priority': 1,
+                       'Spot': 1.0},
+        'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': USD_CURVE, 'Priority': 1,
+                       'Spot': FX_SPOT}}
+
+
+def fx_world():
+    """`market_prices` for the cross-currency world - the USD quotes generated at par off a known
+    curve the way the rate worlds do, the ZAR forwards carrying their stated outrights."""
+    blocks = fx_blocks()
+    usd_block = blocks['InterestRatePrices.' + USD_CURVE]
+    price_factors = fx_price_factors()
+    price_factors['InterestRate.' + USD_CURVE] = {
+        'Property_Aliases': None, 'Sub_Type': None, 'Currency': 'USD', 'Day_Count': 'ACT_365',
+        'Curve': utils.Curve([], list(zip(
+            quote_knots(block_nodes(usd_block, USD_CURVE, 0.0), BASE, 'ACT_365', {}),
+            FX_USD_TRUE)))}
+    for point, quote in zip(usd_block['Points'], par_quotes(usd_block, USD_CURVE, price_factors)):
+        point['Quoted_Market_Value'] = quote
+    return {name: {'instrument': block, 'Children': []} for name, block in blocks.items()}
+
+
+def fx_bootstrapped(market_prices):
+    """Run the family over the cross-currency world into a `Price Factors` holding the two spots
+    and no curve at all, so every curve it comes back with was solved here."""
+    price_factors = fx_price_factors()
+    InterestRateCurveParameters({}, DEVICE, torch.float32).bootstrap(
+        {'Base_Date': BASE, 'Base_Currency': 'ZAR'}, {}, price_factors, INTERP, market_prices, {})
+    return price_factors
+
+
+def fx_par_outrights(market_prices, price_factors):
+    """Each forward benchmark's PAR outright off `price_factors` - the outright at which a FRESH
+    `FXForwardDeal` is worth exactly zero, priced by the same pricer the solve used.
+
+    `par_quotes` is the rate worlds' own affine root and it needs no adjusting to read an amount:
+    PV is affine in the quote whatever the quote MEANS, so bracketing at outrights 0 and 1 returns
+    the par outright exactly rather than approximately.
+    """
+    block = market_prices['InterestRatePrices.' + ZAR_CURVE]['instrument']
+    return par_quotes(block, ZAR_CURVE, price_factors)
+
+
+def test_the_outright_reaches_the_deal_unscaled():
+    """The convention, stated once and gated: the quote is the forward outright in units of
+    `Buy_Currency` per one unit of `Sell_Currency`, and it lands as `Buy_Amount = quote *
+    Sell_Amount` with no conversion anywhere.
+
+    That is what says the family scales nothing centrally. A percent-quoted benchmark is scaled by
+    its own field semantics - a `Percent`, a `Basis`, a schedule the deal divides by 100 - so an
+    amount-valued quote riding the same `author_quote` path arrives untouched, which a hundredfold
+    error here would make unmissable.
+    """
+    deal = fx_forward('FWD_6M', 6, 0.0)
+    author_quote(deal, 18.70, ZAR_CURVE)
+    assert deal['Buy_Amount'] == 18.70 * deal['Sell_Amount']
+    assert deal['Sell_Amount'] == 1e6, 'the authored benchmark fixes the sold amount'
+
+
+def test_a_forward_curve_reprices_the_outrights_it_was_solved_from():
+    """THE IDENTITY. Solve a ZAR curve from USDZAR outrights, then price a fresh par forward off
+    the solved pair: the par outright is the quote back, to 1e-9 relative.
+
+    This is covered interest parity CLOSING THROUGH THE ENGINE'S OWN PRICERS. No formula for the
+    forward is written here or in the family - the residual is `FXForwardDeal.generate` held at
+    zero, its ZAR leg discounted on the curve being solved and its USD leg on the solved USD curve
+    converted at the spot, so whatever parity that pricer means is the parity the curve carries.
+    """
+    market_prices = fx_world()
+    solved = fx_bootstrapped(market_prices)
+    quoted = np.array([outright for _, outright in FX_OUTRIGHTS])
+    par = fx_par_outrights(market_prices, solved)
+    assert np.abs(par / quoted - 1.0).max() < 1e-9, (
+        'the solved curve does not reprice its own outrights\n{}\n{}'.format(par, quoted))
+
+
+def test_the_forward_knots_land_on_the_settlement_dates():
+    """The knot rule, on this family's newest benchmark: one knot per used quote, at that
+    benchmark's last cashflow - which for a forward is its settlement date, in the curve's own day
+    count. Strictly increasing, or two forwards would share a knot and leave the curve between
+    them unidentified."""
+    market_prices = fx_world()
+    solved = fx_bootstrapped(market_prices)
+    knots = solved['InterestRate.' + ZAR_CURVE]['Curve'].array[:, 0]
+    settlement = np.array([utils.get_day_count_accrual(
+        BASE, ((BASE + pd.DateOffset(months=months)) - BASE).days,
+        utils.get_day_count('ACT_365')) for months, _ in FX_OUTRIGHTS])
+    assert (np.diff(knots) > 0).all(), 'the forward knots are not increasing: {}'.format(knots)
+    assert np.abs(knots - settlement).max() == 0.0, '{} against {}'.format(knots, settlement)
+
+
+def test_a_forwards_pv_is_affine_in_its_outright_to_the_last_bit():
+    """The property the par solve and the drift metric both rest on, MEASURED rather than argued.
+
+    `FXForwardDeal.generate` is linear in `Buy_Amount` and the writer makes `Buy_Amount` linear in
+    the quote, so the PV is affine in the outright at fixed curves and the second difference across
+    three levels carries NO curvature - which is what `CalibrationArtifact.mispricing` needs to be
+    an exact quote-space residual rather than an estimate.
+
+    Recorded honestly, because the number is NOT the flat zero `_carry_quotes` reports for a rate
+    quote. It is 3.7252903e-09, identically, on all four benchmarks - and that is one ULP of the
+    BOUGHT LEG rather than curvature. The difference from a par swap is where the cancellation
+    happens: a swap is bracketed at quotes where its own PV is near zero and its second difference
+    cancels bit for bit, while a forward's PV is the difference of two legs each worth about 2e7,
+    so the last bit of THOSE is its arithmetic floor. `np.spacing(20.0 * 1e6)` is 3.7252903e-09
+    exactly, which is what the gate compares against - the machine's own resolution at the scale
+    the sum is formed, not a tolerance anybody chose.
+
+    The resolution is not in doubt: the FIRST difference is about 9.5e5, so a quadratic term would
+    have to hide fourteen orders of magnitude under the linear one to pass here.
+    """
+    market_prices = fx_world()
+    solved = fx_bootstrapped(market_prices)
+    block = market_prices['InterestRatePrices.' + ZAR_CURVE]['instrument']
+    outrights = (18.0, 19.0, 20.0)
+    priced = [BenchmarkInstruments(
+        block_nodes(block, ZAR_CURVE, outright), solved, INTERP, BASE, 'ZAR', {}, [], DEVICE
+    )({}).detach().numpy() for outright in outrights]
+    second = priced[0] - 2.0 * priced[1] + priced[2]
+    # the scale the PV's terms are formed at, which is what sets its rounding floor
+    bought = max(outrights) * block['Points'][0]['Deal']['Sell_Amount']
+    assert (np.abs(second) <= np.spacing(bought)).all(), (
+        'PV carries curvature in the outright: {} against one ULP of {}'.format(second, bought))
+    first = np.abs(priced[2] - priced[1])
+    assert (first > 1e5).all() and (np.abs(second) / first < 1e-14).all(), (
+        'the second difference is not at the rounding floor: {}'.format(second / first))
+
+
+def test_a_held_out_forward_drops_its_knot():
+    """`Use` on a forward is `Use` on any other benchmark: the knot grid IS the used quotes'
+    settlement dates, so dropping the 1Y outright shortens the curve by one knot and moves none of
+    the others - each forward identifies its own discount factor and nothing beyond it."""
+    market_prices = fx_world()
+    full = fx_bootstrapped(market_prices)
+    market_prices['InterestRatePrices.' + ZAR_CURVE]['instrument']['Points'][-1]['Use'] = 'No'
+    held_out = fx_bootstrapped(market_prices)
+
+    curve_name = 'InterestRate.' + ZAR_CURVE
+    assert len(held_out[curve_name]['Curve'].array) == len(full[curve_name]['Curve'].array) - 1
+    assert np.abs(held_out[curve_name]['Curve'].array[:, 1] -
+                  full[curve_name]['Curve'].array[:-1, 1]).max() < 1e-10
+    par = fx_par_outrights(market_prices, held_out)
+    assert np.abs(par[:-1] / np.array([o for _, o in FX_OUTRIGHTS])[:-1] - 1.0).max() < 1e-9
+
+
+def test_a_forward_block_authored_before_the_curve_its_other_leg_needs_still_solves():
+    """THE ORDERING SUBTLETY. This block's `Discount_Rate` is BLANK - it discounts on the curve it
+    builds - and yet its residual reads the USD curve, because each forward names `USD-OIS` in its
+    own `Sell_Discount_Rate`. A dependency read that stopped at the block's field would order the
+    ZAR solve first and price it against a curve that does not exist.
+
+    `benchmark_curves` is the extension that fixes it: the deals declare the coupling, so the read
+    includes the curves they name. Authoring the ZAR block FIRST then has to change nothing.
+    """
+    market_prices = fx_world()
+    zar_name, usd_name = 'InterestRatePrices.' + ZAR_CURVE, 'InterestRatePrices.' + USD_CURVE
+    assert market_prices[zar_name]['instrument']['Discount_Rate'] == '', (
+        'the gate is void unless the block declares nothing - the deals have to be what orders it')
+
+    reversed_blocks = dict(reversed(list(market_prices.items())))
+    assert list(reversed_blocks) == [zar_name, usd_name]
+    family = InterestRateCurveParameters({}, DEVICE, torch.float32)
+    assert [name for name, _ in family.in_dependency_order(reversed_blocks)] == [usd_name, zar_name]
+    assert family.benchmark_curves(market_prices[zar_name]['instrument']) == {USD_CURVE, ZAR_CURVE}
+
+    solved = fx_bootstrapped(reversed_blocks)
+    quoted = np.array([outright for _, outright in FX_OUTRIGHTS])
+    assert np.abs(fx_par_outrights(reversed_blocks, solved) / quoted - 1.0).max() < 1e-9
+
+
+def test_the_ordering_read_does_not_reorder_the_rate_worlds():
+    """The extension is only safe if it is a NO-OP where the declaration was already enough. Both
+    rate worlds order exactly as they did off `Discount_Rate` alone - a benchmark naming the curve
+    its own block builds is the self-discounting case and orders nothing."""
+    family = InterestRateCurveParameters({}, DEVICE, torch.float32)
+    usd, _, _ = authored_world('usd')
+    assert [name for name, _ in family.in_dependency_order(dict(reversed(list(usd.items()))))] == [
+        'InterestRatePrices.USD-OIS', 'InterestRatePrices.USD-3M']
+    zar, _, _ = authored_world('zar')
+    assert family.benchmark_curves(zar['InterestRatePrices.ZAR-JIBAR-3M']['instrument']) == {
+        'ZAR-JIBAR-3M'}
+    assert [name for name, _ in family.in_dependency_order(zar)] == [
+        'InterestRatePrices.ZAR-JIBAR-3M']
+
+
+def test_a_forward_block_refuses_quote_sensitivity():
+    """THE REFUSAL, and the reason it is not a zero. `Quote_Sensitivity` reports dV/dq by putting
+    an increment-1 overlay on the CASHFLOW SCHEDULE COLUMNS a quote writes. An outright writes into
+    `Buy_Amount`, which the pricer reads as a float off the deal, so no column moves and the
+    overlay carries nothing - and a zero delta on the instrument a desk actually trades is the
+    precise failure this switch exists to prevent, the same call `create_market_swaps` makes when a
+    premium reaches the residual through a root find.
+
+    So the block refuses, by name, and says which benchmark and which type could not be carried.
+    """
+    market_prices = fx_world()
+    market_prices['InterestRatePrices.' + ZAR_CURVE]['instrument']['Quote_Sensitivity'] = 'Yes'
+    with pytest.raises(Exception, match='Quote_Sensitivity') as refusal:
+        fx_bootstrapped(market_prices)
+    assert 'FXForwardDeal' in str(refusal.value), str(refusal.value)
+    assert 'FWD_1M' in str(refusal.value), str(refusal.value)
+
+
+def test_the_refusal_is_measured_and_leaves_the_rate_quotes_carrying():
+    """The other half of that refusal: it is MEASURED, not a branch on the deal type, so it has to
+    stay silent everywhere a quote does reach a schedule column. A rate world asking for
+    `Quote_Sensitivity` still solves, still to 1e-10, and still leaves its quote leaf behind."""
+    market_prices, true_factors, _ = authored_world('zar')
+    block = market_prices['InterestRatePrices.ZAR-JIBAR-3M']['instrument']
+    block['Quote_Sensitivity'] = 'Yes'
+    family = InterestRateCurveParameters({}, DEVICE, torch.float32)
+    price_factors = {'FxRate.ZAR': {'Domestic_Currency': None, 'Interest_Rate': 'ZAR-JIBAR-3M',
+                                    'Priority': 1, 'Spot': 1.0}}
+    family.bootstrap({'Base_Date': BASE, 'Base_Currency': 'ZAR'}, {}, price_factors, INTERP,
+                     market_prices, {})
+    curve_name = 'InterestRate.ZAR-JIBAR-3M'
+    assert np.abs(price_factors[curve_name]['Curve'].array[:, 1] -
+                  true_factors[curve_name]['Curve'].array[:, 1]).max() < 1e-10
+    descriptors, quotes = family.quote_leaves['InterestRatePrices.ZAR-JIBAR-3M']
+    assert len(descriptors) == len(block['Points']) and quotes.requires_grad
+
+
+def test_a_forward_block_cannot_publish_a_ride_operator():
+    """`Quote_Propagation` wants the same quote side `Quote_Sensitivity` does, and a forward block
+    cannot give it either - but which refusal fires depends on what else is in the run, and both
+    are already named.
+
+    Solved TOGETHER, the two blocks are one coupled set, and they are measured as one rather than
+    declared: `BenchmarkInstruments.reads` differentiates the ZAR residual and finds it reaching
+    `InterestRate.USD-OIS` through the sell leg's constant. That is the cross-currency residual
+    working exactly as intended - and a set spanning two reporting currencies cannot be compiled as
+    one system, which the family already refuses by name.
+
+    Solved ALONE against a USD curve nobody is bootstrapping, the set is one currency and that
+    refusal has nothing to say. The overlay's does: no schedule column moves, so it refuses rather
+    than publishing an operator whose `dF/dq` row is a zero.
+    """
+    market_prices = fx_world()
+    for entry in market_prices.values():
+        entry['instrument']['Quote_Propagation'] = 'Linear'
+    with pytest.raises(Exception, match='Quote_Propagation') as coupled:
+        fx_bootstrapped(market_prices)
+    assert 'InterestRatePrices.' + USD_CURVE in str(coupled.value), str(coupled.value)
+    assert 'InterestRatePrices.' + ZAR_CURVE in str(coupled.value), str(coupled.value)
+
+    price_factors = fx_price_factors()
+    price_factors['InterestRate.' + USD_CURVE] = fx_bootstrapped(fx_world())[
+        'InterestRate.' + USD_CURVE]
+    solo = {'InterestRatePrices.' + ZAR_CURVE: market_prices['InterestRatePrices.' + ZAR_CURVE]}
+    with pytest.raises(Exception, match='Quote_Sensitivity') as alone:
+        InterestRateCurveParameters({}, DEVICE, torch.float32).bootstrap(
+            {'Base_Date': BASE, 'Base_Currency': 'ZAR'}, {}, price_factors, INTERP, solo, {})
+    assert 'FXForwardDeal' in str(alone.value), str(alone.value)

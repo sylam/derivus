@@ -1913,6 +1913,16 @@ class BenchmarkInstruments(object):
         FRA's margin and a fixed leg's rate all land in the cashflow schedule - and a reset value
         also leaves through `known_resets`, which reads numpy. Measured rather than assumed: a
         moved reset column raises here.
+
+        A quote that moves NO column raises too, and for the reason the whole quote side exists.
+        Not every quotable instrument carries its number in a cashflow schedule: an `FXForwardDeal`
+        writes the outright into `Buy_Amount`, which `generate` reads as a float off the deal
+        itself, and no schedule of its compiled form moves at all. The overlay would then carry
+        nothing, `residual_jacobians` would report a zero `dF/dq` row, and a block asking for
+        `Quote_Sensitivity` would be handed a silent zero delta on the instrument a desk actually
+        trades - the exact failure the switch was built to make visible. So it refuses by name.
+        It is MEASURED, like the columns themselves: the day such a type grows a schedule the
+        refusal stops firing on its own, and nothing here restates what any type is.
         """
         for index, (legs, node) in enumerate(zip(self.benchmarks, bumped_nodes)):
             delta = self.quotes[index] - self.quotes[index].detach()
@@ -1920,6 +1930,7 @@ class BenchmarkInstruments(object):
             bumped_legs = leaf_deals(node)
             for leaf in bumped_legs:
                 leaf.reset(calendars)
+            carried = 0
             for leg, plus in zip(legs, [self._compile(leaf, base_date, calendars)
                                         for leaf in bumped_legs]):
                 for name, schedule in leg.Factor_dep.items():
@@ -1934,8 +1945,20 @@ class BenchmarkInstruments(object):
                     moved = bumped.schedule - schedule.schedule
                     columns = np.flatnonzero(np.abs(moved).max(axis=0))
                     if columns.size:
+                        carried += columns.size
                         schedule.carry({int(column): self._column(schedule.schedule[:, column]) +
                                         delta * self._column(moved[:, column]) for column in columns})
+            if not carried:
+                raise Exception(
+                    'Quote_Sensitivity: benchmark {} ({}) writes its quote into no cashflow '
+                    'schedule column, so the increment-1 overlay reaches nothing and dV/dq for it '
+                    'would be reported as a silent zero rather than refused. An FXForwardDeal '
+                    'quote lands in Buy_Amount, which the pricer reads as a float off the deal and '
+                    'not off a schedule - the only seam the overlay carries. Leave '
+                    'Quote_Sensitivity at No and Quote_Propagation at No on a block carrying such '
+                    'a quote; the solved curve is identical either way.'.format(
+                        ' + '.join(str(leg.Instrument.field.get('Reference', '?')) for leg in legs),
+                        ' + '.join(type(leg.Instrument).__name__ for leg in legs)))
 
     def _column(self, values):
         return torch.tensor(values, dtype=self.dtype, device=self.one.device)
@@ -2316,6 +2339,27 @@ def _fixed_cashflow_rate(deal, quote):
         item['Rate'] = utils.Percent(quote)
 
 
+def _fx_forward_outright(deal, quote):
+    """An FX forward's quote is the FORWARD OUTRIGHT - units of `Buy_Currency` per one unit of
+    `Sell_Currency` - and the amount it buys is where that number lands.
+
+    The authored benchmark fixes `Sell_Amount` and both discount-rate names, so `Buy_Amount =
+    quote * Sell_Amount` is the only thing the quote moves and `FXForwardDeal.generate` is LINEAR
+    in it: the PV is `Buy_Amount * X_buy * D_buy - Sell_Amount * X_sell * D_sell`, exactly affine
+    in the quote at fixed curves. That affinity is what the par solve is a root find on and what
+    `CalibrationArtifact.mispricing` reads as an exact quote-space residual, so it is gated rather
+    than asserted.
+
+    THE OUTRIGHT IS NOT A PERCENT, and nothing here converts it, because no writer converts
+    anything: a percent-quoted type carries its scaling in its OWN field semantics - `DepositDeal`
+    divides `Interest_Rate_Schedule` by 100, `FRADeal` wraps `FRA_Rate` in a `Basis`,
+    `_fixed_cashflow_rate` writes a `utils.Percent` - and the family never scales a quote
+    centrally. `author_quote` hands the number over untouched, so an amount-valued quote rides the
+    same path as a rate-valued one.
+    """
+    deal['Buy_Amount'] = quote * deal['Sell_Amount']
+
+
 #: Where a quote's number goes, per instrument type, keyed by the `Object` string. A quote NAMES an
 #: instrument type and carries a block of it, so this is the ONE thing the family knows about a type
 #: beyond that type's own declarations - and it is a registry rather than a branch because a new
@@ -2325,6 +2369,7 @@ QUOTE_WRITERS = {
     'FRADeal': lambda deal, quote: deal.update({'FRA_Rate': quote}),
     'SwapInterestDeal': lambda deal, quote: deal.update({'Swap_Rate': quote}),
     'CFFixedInterestListDeal': _fixed_cashflow_rate,
+    'FXForwardDeal': _fx_forward_outright,
 }
 
 
@@ -2380,7 +2425,8 @@ def quote_knots(nodes, base_date, day_count, calendars):
 
 
 class InterestRateCurveParameters(object):
-    """A zero curve solved from deposit, FRA and swap quotes, priced by the engine's own pricers.
+    """A zero curve solved from deposit, FRA, swap and FX forward quotes, priced by the engine's
+    own pricers.
 
     A quote is an instrument, a `Quote_Type` and a number - see the developer note on
     [Market Prices](../developer/market_prices.md). Each `Points` entry names an instrument type in
@@ -2406,8 +2452,11 @@ class InterestRateCurveParameters(object):
     #: The instrument types a quote in this family may be. Each is a declared `Instrument` type,
     #: so the quote's schema IS that type's declarations - reused by reference, never restated.
     #: `StructuredDeal` is how a two-leg benchmark is authored - an OIS swap is its compounded
-    #: floating leg and its fixed leg, composed by `Children`.
-    quote_instruments = ('DepositDeal', 'FRADeal', 'SwapInterestDeal', 'StructuredDeal')
+    #: floating leg and its fixed leg, composed by `Children`. `FXForwardDeal` is the one that
+    #: crosses currencies: its quote is a forward OUTRIGHT, and holding it at par is covered
+    #: interest parity solved through the engine's own pricers rather than restated as a formula.
+    quote_instruments = ('DepositDeal', 'FRADeal', 'SwapInterestDeal', 'StructuredDeal',
+                         'FXForwardDeal')
     #: Block fields a calibration artifact is NOT a function of - the LIFECYCLE switches, read when
     #: one is published or ridden rather than when it is fitted. `plan_key` shadows them out for one
     #: reason: a knob that governs the ride must not also hide the artifact it governs, or loosening
@@ -2474,7 +2523,11 @@ class InterestRateCurveParameters(object):
             F('Quote_Type', 'Text', default='Par_Rate', values=['Par_Rate'],
               description='What Quoted_Market_Value is; the solve holds the instrument at par'),
             F('Quoted_Market_Value', 'Float',
-              description='The quote, in percent, the instrument is authored at')],
+              description='The quote the instrument is authored at, in the unit its own DealType '
+                          'reads: a rate benchmark is quoted in percent, and an FXForwardDeal is '
+                          'quoted as a forward OUTRIGHT - units of Buy_Currency per one unit of '
+                          'Sell_Currency. The family scales nothing; each type\'s field semantics '
+                          'do - see QUOTE_WRITERS')],
           description='One market quote: an instrument, what kind of number is quoted, and the '
                       'number')
     ]
@@ -2489,12 +2542,49 @@ class InterestRateCurveParameters(object):
         self.calibrated = {}
         self.quote_leaves = {}
 
+    @staticmethod
+    def benchmark_curves(block):
+        """Every `InterestRate` curve this block's used benchmark deals NAME, read off each deal
+        type's own `factor_fields` and recursing into `Children`.
+
+        `Discount_Rate` is what the SET discounts on, and it orders the ordinary multi-curve case.
+        It cannot order a CROSS-CURRENCY benchmark: an `FXForwardDeal` names the other leg's curve
+        in `Sell_Discount_Rate`, INSIDE the deal, and that curve is as much an input to this
+        block's residual as the discount curve is - the block's own `Discount_Rate` may be blank
+        while the residual reads a curve another block has not built yet. The coupling is declared
+        by the deals themselves, so this reads that declaration rather than restating it beside it,
+        the same reuse-by-reference rule `quote_instruments` follows.
+
+        Read off the deal CLASS and not off a constructed deal, because this runs before anything
+        is seeded - and a benchmark naming a curve nobody has built yet is exactly the case that
+        cannot be compiled. It is a declaration read, so it is strictly weaker than
+        `BenchmarkInstruments.reads`, which MEASURES the same coupling but needs every curve to
+        exist first; the two answer different questions at different times.
+        """
+        def walk(deal, object_type):
+            declared = getattr(instruments, object_type, None)
+            for field, candidates in getattr(declared, 'factor_fields', {}).items():
+                if 'InterestRate' in candidates and deal.get(field):
+                    yield '.'.join(utils.check_rate_name(deal[field]))
+            for child in deal.get('Children', ()):
+                yield from walk(child, child.get('Object', ''))
+
+        return {curve for point in block['Points'] if point.get('Use', 'Yes') == 'Yes'
+                for curve in walk(point['Deal'], point['DealType'])}
+
     def in_dependency_order(self, market_prices):
-        """This family's blocks, one that discounts on a curve another block BUILDS coming after it.
+        """This family's blocks, one that READS a curve another block BUILDS coming after it.
 
         Dict order is the JSON author's, and a projection curve solved before its discount curve is
         solved against a curve that does not exist yet - which fails on the lookup rather than
         quietly, but fails on the author's ordering rather than on anything they got wrong.
+
+        A block reads a curve two ways and both order it: it says what it DISCOUNTS on in
+        `Discount_Rate`, and its benchmark deals NAME what they project and settle off - see
+        `benchmark_curves`. A block naming its own curve is the self-discounting configuration and
+        orders nothing, so those edges are dropped; a cycle is a set naming each other's curves,
+        which no order resolves, and it is refused BY NAME here rather than as the bare
+        `RuntimeError` the sort would raise.
         """
         blocks = {}
         for name, implied_params in market_prices.items():
@@ -2505,10 +2595,27 @@ class InterestRateCurveParameters(object):
         # keyed by the curve NAME a `Discount_Rate` field carries, which is the block's name without
         # its `Market Prices` type
         builds = {'.'.join(utils.check_rate_name(name)[1:]): name for name in blocks}
-        graph = {name: [builds[implied_params['instrument']['Discount_Rate']]]
-                 if implied_params['instrument']['Discount_Rate'] in builds else []
-                 for name, implied_params in blocks.items()}
-        return [(name, blocks[name]) for name in utils.topological_sort(graph)]
+        graph = {}
+        for name, implied_params in blocks.items():
+            block = implied_params['instrument']
+            reads = {block['Discount_Rate']} | self.benchmark_curves(block)
+            graph[name] = sorted({builds[curve] for curve in reads
+                                  if curve in builds and builds[curve] != name})
+        # `topological_sort` DELETES what it resolves, so what is left of the copy after it gives up
+        # is exactly the cycle - which is how the refusal can name the blocks in it
+        unresolved = dict(graph)
+        try:
+            order = utils.topological_sort(unresolved)
+        except RuntimeError:
+            raise Exception(
+                'Curve bootstrap: {} cannot be put in a solve order - each reads a curve another '
+                'builds, so whichever is solved first is solved against a curve that does not '
+                'exist yet ({}). A mutually-referencing set has to be solved as ONE system; this '
+                'family solves a block at a time.'.format(
+                    ' + '.join(sorted(unresolved)),
+                    '; '.join('{} reads {}'.format(name, ' + '.join(edges))
+                              for name, edges in sorted(unresolved.items()))))
+        return [(name, blocks[name]) for name in order]
 
     def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices,
                   calendars, debug=None):
@@ -2539,6 +2646,15 @@ class InterestRateCurveParameters(object):
         `Price Factors` - and a par rate is within a few basis points of the zero rate at the same
         maturity, so it is also the seed the solve starts from. `Curve` sorts the pairs, so each
         knot keeps the quote that identifies it.
+
+        THE `/100` IS THE SEED'S AND NOT THE QUOTE'S. It is the one place the family reads a quote
+        as a percent rate, and it is a STARTING ITERATE rather than a value anything is priced at -
+        `author_quote` is what puts a quote into a deal, and it scales nothing. So an amount-valued
+        quote seeds nonsense and converges anyway: an 18.32 outright seeds an 18.32% zero rate
+        against a true 8.99%, and the damped Newton walks it to a residual of exactly zero, because
+        an FX forward's PV is very nearly linear in the discount factor it identifies. Recorded
+        rather than special-cased: branching on the deal type here would put knowledge of a type
+        somewhere other than `QUOTE_WRITERS`, to buy iterations a well-posed strip does not need.
         """
         curve = utils.Factor('InterestRate', utils.check_rate_name(market_price)[1:])
         discount_rate = block['Discount_Rate'] or '.'.join(curve.name)
