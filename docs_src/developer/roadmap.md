@@ -644,7 +644,12 @@ its Up/Down direction inverts with it), which drove the first numbers through th
 knock-in branch. The structures registry's named next steps are now: the RISK-IMPACT step (book
 plus candidate under `Greeks`, the skew delta in RR/BF coordinates pricing the spread — every
 hedge layer now speaks tradable coordinates), and a ratio-solve primitive for participating
-forwards.
+forwards. That step's SPREAD INPUT has landed: `PX_BID`/`PX_ASK` ride the vol pillars as
+`Quoted_Bid`/`Quoted_Ask` beside the mid, the bootstrap still reads only the mid, and the quote
+layer shifts each leg's own copy of the written surface by the ATM half-spread on the client's
+side — mid for the book, two-sided for the quote
+([Structures](structures.md#two-sided)). What risk impact adds on top is the POLICY that widens or
+tightens that spread per trade, which is mandate rather than code.
 
 **The Excel add-in is the first real client.** `excel_integration/service_client.py` is a plain
 `requests` client of the verbs and imports neither `xlwings` nor `derivus` — it is the HTTP binding

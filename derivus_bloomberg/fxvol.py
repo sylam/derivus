@@ -25,10 +25,19 @@ from .types import (FXQuoteSecurity, FXVolDefinition, FXVolPoint, FXVolSnapshot,
 
 SUPPORTED_CONVENTION = ('Forward', True, 'Delta_Neutral_Straddle')
 BOOTSTRAPPER = 'FXVolSurfaceParameters'
+#: The two-way a vol pillar carries beside its last print. Asked for in the same fetch as the
+#: value and NEVER required: the mid is what the surface, the bootstrap and every mark are built
+#: from, and a pillar the terminal quotes no two-way for must cost a desk its spread, never its
+#: tick. That is also why it is read through the REPORT reader below rather than beside the value.
+TWO_SIDED_FIELDS = ('PX_BID', 'PX_ASK')
 
 
 class ReferenceDataSource(Protocol):
     def reference_data(self, securities: list[str], fields: list[str]) -> Mapping[str, Mapping[str, object]]:
+        ...
+
+    def reference_data_report(self, securities: list[str],
+                              fields: list[str]) -> Mapping[str, Mapping[str, object]]:
         ...
 
 
@@ -109,7 +118,9 @@ def normalize_fx_vol(definition: FXVolDefinition,
         points.append(FXVolPoint(
             observation.expiry_label, definition.expiries[observation.expiry_label],
             observation.quote_type, observation.pillar, value, retrieved_at,
-            observation.security, observation.field, raw_value))
+            observation.security, observation.field, raw_value,
+            _scaled_side(observation.bid, definition.quote_scale),
+            _scaled_side(observation.ask, definition.quote_scale)))
 
     quote_order = {'RR': 0, 'BF': 1}
     points.sort(key=lambda point: (
@@ -122,6 +133,35 @@ def normalize_fx_vol(definition: FXVolDefinition,
         definition.grid_tolerance, definition.quote_sensitivity)
 
 
+def _scaled_side(side, quote_scale: float) -> float | None:
+    """One side of a two-way in the surface's own units, or None. Absent, unparseable and
+    non-finite all read as ABSENT: a spread the terminal did not quote is not a spread, and the
+    one thing this must never do is manufacture one out of the mid."""
+    try:
+        scaled = float(side) * quote_scale
+    except (TypeError, ValueError):
+        return None
+    return scaled if math.isfinite(scaled) else None
+
+
+def _two_way(source: ReferenceDataSource, securities) -> dict:
+    """`{security: (bid, ask)}` off a SECOND, tolerant request over the same names.
+
+    Not folded into the value request on purpose. `reference_data` refuses the whole batch on one
+    field exception - right for the value, since a tick built from a partial answer is a wrong
+    market - and a vol pillar the terminal publishes no two-way for raises exactly that. So the
+    two-way rides `reference_data_report`, the reader `security_map.freshness` already uses for
+    the same reason: one name's silence is a finding, not a failure. A source with no report
+    reader quotes mid-only rather than refusing.
+    """
+    report = getattr(source, 'reference_data_report', None)
+    if report is None:
+        return {}
+    answered = report(list(securities), list(TWO_SIDED_FIELDS))
+    return {security: tuple(row.get('fields', {}).get(field) for field in TWO_SIDED_FIELDS)
+            for security, row in answered.items()}
+
+
 def fetch_fx_vol(source: ReferenceDataSource, definition: FXVolDefinition) -> FXVolSnapshot:
     validate_definition(definition)
     securities_by_field = {}
@@ -132,6 +172,7 @@ def fetch_fx_vol(source: ReferenceDataSource, definition: FXVolDefinition) -> FX
         field_response = source.reference_data(sorted(securities_by_field[field]), [field])
         for security, values in field_response.items():
             response.setdefault(security, {}).update(values)
+    two_way = _two_way(source, sorted({quote.security for quote in definition.securities.values()}))
     retrieved_at = pd.Timestamp.now(tz='UTC')
 
     observations = []
@@ -141,8 +182,9 @@ def fetch_fx_vol(source: ReferenceDataSource, definition: FXVolDefinition) -> FX
         except KeyError as error:
             raise IncompleteSurface('{} {} is missing from the Bloomberg response'.format(
                 quote.security, quote.value_field)) from error
+        bid, ask = two_way.get(quote.security, (None, None))
         observations.append(RawBloombergObservation(
-            expiry, quote_type, pillar, quote.security, quote.value_field, value))
+            expiry, quote_type, pillar, quote.security, quote.value_field, value, bid, ask))
     return normalize_fx_vol(definition, observations, retrieved_at)
 
 
@@ -189,18 +231,33 @@ def validate_snapshot(snapshot: FXVolSnapshot) -> None:
                 point.expiry_label, point.quote_type, point.value))
         if pd.Timestamp(point.observed_at) != retrieved_at:
             raise InvalidQuote('every point must carry the snapshot retrieval timestamp')
+        # a side may be ABSENT - that is what optional means here - but a side that is there is a
+        # number a quote gets struck off, so it is held to the same finiteness as the mid
+        for side in (point.bid, point.ask):
+            if side is not None and not math.isfinite(side):
+                raise InvalidQuote('{} {} has an invalid two-way side {!r}'.format(
+                    point.expiry_label, point.quote_type, side))
 
 
 def to_market_prices_block(snapshot: FXVolSnapshot) -> dict:
     validate_snapshot(snapshot)
-    points = [{
-        'Use': 'Yes',
-        'Expiry': point.expiry,
-        'Pillar': 0.0 if point.pillar is None else point.pillar,
-        'Quote_Type': point.quote_type,
-        'Quoted_Market_Value': point.value,
-        'Timestamp': point.observed_at,
-    } for point in snapshot.points]
+    points = []
+    for point in snapshot.points:
+        row = {
+            'Use': 'Yes',
+            'Expiry': point.expiry,
+            'Pillar': 0.0 if point.pillar is None else point.pillar,
+            'Quote_Type': point.quote_type,
+            'Quoted_Market_Value': point.value,
+            'Timestamp': point.observed_at,
+        }
+        # written ONLY when the terminal quoted one, so a mid-only surface's block is the block it
+        # has always been, key for key - the compatibility contract the quote layer rests on
+        if point.bid is not None:
+            row['Quoted_Bid'] = point.bid
+        if point.ask is not None:
+            row['Quoted_Ask'] = point.ask
+        points.append(row)
     return {'instrument': {
         'Currency': snapshot.currency,
         'Delta_Type': snapshot.delta_type,
@@ -228,6 +285,9 @@ def _market_prices(config) -> dict:
 
 
 def _structure(block: dict) -> tuple:
+    # Quoted_Bid/Quoted_Ask are missing from this tuple deliberately, exactly as the mid is: a
+    # two-way MOVES on a tick, and a point that gains or loses one is still the same node of the
+    # same plan. Only the coordinates and the conventions are structure.
     instrument = block['instrument']
     points = tuple((point['Use'], point['Expiry'], point['Pillar'], point['Quote_Type'])
                    for point in instrument['Points'])

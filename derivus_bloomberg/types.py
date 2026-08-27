@@ -56,6 +56,10 @@ class RawBloombergObservation:
     security: str
     field: str
     value: object
+    #: the two-way the terminal quoted beside the value, raw and OPTIONAL - a pillar answered with
+    #: no PX_BID/PX_ASK arrives here as None and stays mid-only all the way to the block
+    bid: object = None
+    ask: object = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +73,11 @@ class FXVolPoint:
     security: str
     field: str
     raw_value: float
+    #: the two-way in the surface's own units, defaulted absent. `value` is the mid the surface,
+    #: the bootstrap and every mark are built from; these two are carried BESIDE it for the quote
+    #: layer, which is the only thing in the house that opens them
+    bid: float | None = None
+    ask: float | None = None
 
 
 @dataclass(frozen=True)

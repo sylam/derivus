@@ -626,6 +626,56 @@ def test_a_quote_update_may_move_only_the_numbers(book):
     assert book.read_bytes() == after_update != before
 
 
+def test_a_two_way_ticks_beside_the_mid_and_a_moved_pillar_still_refuses(book):
+    """The same guard, now that a point may carry a two-way: `Quoted_Bid`/`Quoted_Ask` are on the
+    VALUE side of the line the mid is on.
+
+    A spread widens between one print and the next, and a pillar can start or stop being quoted
+    two-sided without becoming a different node - so a re-post moving bid, ask and the mid together
+    is a tick, and the file takes it. What is structure has not changed: the same post with a moved
+    `Pillar` still refuses in the identical wording, and the book is untouched by it.
+
+    The bootstrap runs on every one of these posts, which is the other half of the claim - the
+    surface it writes is built from `Quoted_Market_Value` alone, so a block carrying the sides
+    ticks a book exactly as a mid-only block does.
+    """
+    quotes = json.loads(dump(fx_vol_quotes()))
+    for point in quotes['FXVolPrices.USD.ZAR']['instrument']['Points']:
+        point['Quoted_Bid'] = point['Quoted_Market_Value'] - 0.002
+        point['Quoted_Ask'] = point['Quoted_Market_Value'] + 0.002
+    doc = json.loads(book.read_text())
+    doc['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Bootstrapper Configuration'] = {'FXVolSurfaceParameters': {}}
+    book.write_text(json.dumps(doc, indent=2), newline='\n')
+
+    installed = CLIENT.post('/book/market', content=dump({'quotes': quotes}), headers=JSON).json()
+    assert installed['installed'] == ['FXVolPrices.USD.ZAR'] and installed['written'] is True
+
+    ticked = json.loads(json.dumps(quotes))
+    for point in ticked['FXVolPrices.USD.ZAR']['instrument']['Points']:
+        if point['Quote_Type'] == 'ATM':
+            point['Quoted_Market_Value'] += 0.01
+            point['Quoted_Bid'] += 0.008
+            point['Quoted_Ask'] += 0.012
+    second = CLIENT.post('/book/market', content=dump({'quotes': ticked}), headers=JSON).json()
+    on_disk = json.loads(book.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+    atm = [point for point in on_disk['Market Prices'][
+        'FXVolPrices.USD.ZAR']['instrument']['Points'] if point['Quote_Type'] == 'ATM']
+
+    assert second['updated'] == ['FXVolPrices.USD.ZAR'] and second['written'] is True
+    assert all(point['Quoted_Ask'] - point['Quoted_Bid'] == pytest.approx(0.008) for point in atm), (
+        'the widened two-way did not reach the file')
+
+    moved = json.loads(json.dumps(ticked))
+    for point in moved['FXVolPrices.USD.ZAR']['instrument']['Points']:
+        point['Pillar'] = 0.1
+    before = book.read_bytes()
+    refused = CLIENT.post('/book/market', content=dump({'quotes': moved}), headers=JSON)
+
+    assert refused.status_code == 422 and 'structure differs' in refused.json()['detail']
+    assert book.read_bytes() == before
+
+
 def test_a_market_values_patch_reaches_the_file_and_a_structural_one_is_refused(book):
     """The `patch_market`-shaped half: a spot tick lands in the file through the engine's own
     values seam, and a structural key is refused by the engine's own raise - the service adds no

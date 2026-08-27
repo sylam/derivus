@@ -3029,6 +3029,12 @@ class FXVolSurfaceParameters(object):
     date and an intraday stamp keeps its time, so a stamped surface round-trips to the moment its
     quotes were seen.
 
+    **A point may carry a two-way, and nothing here reads it.** `Quoted_Bid`/`Quoted_Ask` ride the
+    row beside the mid when the terminal quoted them, for `derivus.structures` to charge a spread
+    on a quote. Every line below - `used`, `atm_quotes`, `smile`, `carried_smile` and the grid
+    refinement - addresses `Quoted_Market_Value` BY NAME, so the surface this writes is the mid
+    surface whether or not the sides are there: the spread is the quote's, the mid is the book's.
+
     Like `InterestRatePrices` this writes a typed price factor rather than a `<ClassName>`
     parameter block, which is what `price_factor_type` declares.
     """
@@ -3094,6 +3100,17 @@ class FXVolSurfaceParameters(object):
             F('Quoted_Market_Value', 'Float',
               description='The quote, in the surface\'s own units - 0.12 for 12 vols, and a risk '
                           'reversal of -0.35 vols is -0.0035'),
+            F('Quoted_Bid', 'Float',
+              description='The bid side of this quote, in the surface\'s own units. QUOTE-LAYER '
+                          'data: nothing below reads it, and the surface, the pinned grid and '
+                          'every mark are built from Quoted_Market_Value alone - the mid is what '
+                          'the book runs on. Optional because a pillar the terminal quotes no '
+                          'two-way for stays mid-only rather than borrowing a spread'),
+            F('Quoted_Ask', 'Float',
+              description='The offer side, the pair of Quoted_Bid and read only where that is - '
+                          'derivus.structures, which shifts a leg\'s own copy of the written '
+                          'surface by the ATM half-spread to quote a client two-sided. Absent '
+                          'here, a structure quotes at mid, which is what it has always done'),
             F('Timestamp', 'Date', default='',
               description='When this quote was observed. Stored and reported - the surface '
                           'carries the latest of them - and never read by pricing')]),

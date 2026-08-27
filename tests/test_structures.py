@@ -21,6 +21,11 @@ USDZAR 18.50 against it would be 340 standard deviations from the money. So `FxR
 Both curves are flat at the same rate, so the FX forward IS the spot - and that is asserted rather
 than assumed, by the straddle's two wings pricing equal at it. The collar gate leans on it to say
 the solved cap sits above the forward.
+
+That book quotes MID: the canned observations carry no `Quoted_Bid`/`Quoted_Ask`, so every gate
+above the two-sided pair is the runner as it has always been. `two_sided_book` is the same book
+with a desk's two-way authored onto the quote block and nothing else changed - the surface stays
+the one the mid built, which that fixture proves by re-bootstrapping rather than assuming.
 """
 import copy
 import json
@@ -73,6 +78,47 @@ def book():
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     market['Price Factors'] = json.loads(dump(context.current_cfg.params['Price Factors']))
     assert 'FXVol.USD.ZAR' in market['Price Factors'], 'the surface never reached the book'
+    return document
+
+
+#: How wide the desk's ATM two-way is in the gates below, in the surface's own units: 0.4 vol
+#: points, so a leg is shifted by half of it. Wide enough that the solved coordinate moves by more
+#: than any solve tolerance, narrow enough to be a spread a desk would actually show.
+ATM_SPREAD = 0.004
+
+
+def two_way(document, spread=ATM_SPREAD):
+    """`document` with a two-way authored around the mid its `FXVolPrices` block already carries -
+    the block `derivus_bloomberg.to_market_prices_block` writes when the terminal answers PX_BID
+    and PX_ASK. The written surface is not touched: the mid is what built it.
+
+    The wings get a two-way too, half as wide, and no gate below reads them. That is the point:
+    v1 charges the ATM spread and carries the smile's own, so a wing spread that started being
+    consumed would move these numbers and be caught.
+    """
+    out = copy.deepcopy(document)
+    block = out['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Market Prices']['FXVolPrices.USD.ZAR']
+    for point in block['instrument']['Points']:
+        half = 0.5 * (spread if point['Quote_Type'] == 'ATM' else 0.5 * spread)
+        point['Quoted_Bid'] = point['Quoted_Market_Value'] - half
+        point['Quoted_Ask'] = point['Quoted_Market_Value'] + half
+    return out
+
+
+@pytest.fixture(scope='module')
+def two_sided_book(book):
+    """The same book, quoted two-sided - and the proof, taken here rather than assumed, that the
+    bootstrap never reads the two-way: re-bootstrapping the block that now carries bid and ask
+    writes the IDENTICAL `FXVol.USD.ZAR` surface the mid alone wrote, key for key and float for
+    float. Were it false the owner's ruling would be too: the book would mark at the spread."""
+    document = two_way(book)
+    context = derivus.Context().load_json((json.dumps(document), 'two-sided'))
+    context.bootstrap()
+    rebuilt = json.loads(dump(context.current_cfg.params['Price Factors']))
+    factors = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    assert rebuilt['FXVol.USD.ZAR'] == factors['FXVol.USD.ZAR'], (
+        'the bootstrap read the two-way - the written surface is no longer the mid one')
     return document
 
 
@@ -273,6 +319,92 @@ def test_a_forward_extra_costs_nothing_and_solves_its_barrier(book):
         [row['premium'] for row in outcome['legs']], rel=1e-9), (
         'the container reports legs the quote does not')
     assert priced[outcome['deal']['Reference']] == pytest.approx(outcome['net'], abs=1e-6)
+
+
+def test_a_book_with_no_two_way_quotes_exactly_as_it_always_did(book):
+    """The compatibility contract, stated as an identity rather than as a promise.
+
+    A book whose quote block carries no `Quoted_Bid`/`Quoted_Ask` has no spread to charge, so every
+    leg's shift is zero, `with_vol_shift` hands back the document ITSELF rather than a shifted copy,
+    and the quote that comes out is the one this file's other gates pin - the same code path, not a
+    similar one.
+
+    The sharp half is the comparison. A block carrying a ZERO-WIDE two-way exercises the entire new
+    layer - the block is found, the ATM rows are read, a half-spread is computed and interpolated,
+    a shift is signed per leg - and must land on the identical floats, not close ones. So the
+    presence of the DATA cannot move a price; only a real spread can.
+
+    `net_mid` is the finished legs repriced at mid, and at zero spread that is the same pricing
+    twice: it agrees to the bit, which is also what says the solve reports its root's own valuation
+    rather than a nearby iterate's.
+    """
+    ask = params(protected_rate=SPOT * 0.97)
+    mid = structures.quote(book, 'ForwardExtra', ask)
+    zero_wide = structures.quote(two_way(book, spread=0.0), 'ForwardExtra', ask)
+
+    assert [row['vol_spread'] for row in mid['legs']] == [None, None]
+    assert 'Quoted_Bid' in mid['spread_note'] and 'FXVolPrices.USD.ZAR' in mid['spread_note']
+    assert structures.with_vol_shift(book, 'FXVol.USD.ZAR', 0.0) is book, (
+        'a zero shift copied the book - the mid path is no longer the path it was')
+
+    assert [row['vol_spread'] for row in zero_wide['legs']] == [0.0, 0.0]
+    assert zero_wide['spread_note'] is None, 'a two-way was found; there is no fallback to name'
+    for row, same in zip(mid['legs'], zero_wide['legs']):
+        assert (row['premium'], row['strike_market'], row['barrier_market'], row['solved']) == (
+            same['premium'], same['strike_market'], same['barrier_market'], same['solved']), row
+    assert mid['net'] == zero_wide['net'] and mid['net_mid'] == zero_wide['net_mid']
+    assert mid['net_mid'] == mid['net'], 'the same legs on the same book priced two ways'
+
+
+def test_a_two_sided_quote_charges_the_spread_and_leaves_the_book_at_mid(book, two_sided_book):
+    """The ruling, priced: the spread belongs to the quote and the mid belongs to the book.
+
+    Three statements per structure, and they are DIRECTIONS - a magnitude here would be a
+    restatement of the shift rather than a test of what it did.
+
+    The structure still costs nothing. It nets to zero AT THE TWO-SIDED VOLS, which is what a
+    zero-cost structure means when a desk quotes one: the client pays no premium, and the price of
+    that is where the solved coordinate lands.
+
+    The solved coordinate lands CLIENT-WORSE. The forward extra's client buys protection at the
+    offered vol and sells the knock-in at the bid, so the barrier that finances it has to sit
+    closer to spot than the mid-solved one - a level more likely to trade, which is exactly what
+    the client gives up for the spread. The collar says the same in strikes: the cap comes in.
+    Both are strictly between the mid answer and the spot, so a shift applied with the wrong sign,
+    to the wrong leg, or to a copy nothing priced would fail here rather than pass quietly.
+
+    And the desk keeps the difference. The finished legs marked at MID come out below what the
+    client was quoted, and `net - net_mid` is that gap: the edge, positive, in the report currency.
+    Note the frame - a leg's `Buy_Sell` is the CLIENT's side, so the booked package marks NEGATIVE
+    on a two-sided quote and the desk's edge is the difference rather than `net_mid` itself.
+
+    This gate is also the empirical answer to "does a pricing run rebuild the surface from
+    `Market Prices`?". It does not: the only thing separating these two quotes is a shift applied
+    to the written `FXVol` surface of each leg's own copy, and every number below moves.
+    """
+    ask = params(protected_rate=SPOT * 0.97)
+    mid, two_sided = (structures.quote(document, 'ForwardExtra', ask)
+                      for document in (book, two_sided_book))
+    barrier = (leg(mid, 'reversion')['barrier_market'],
+               leg(two_sided, 'reversion')['barrier_market'])
+
+    assert abs(two_sided['net']) <= SOLVE_TOLERANCE, two_sided['net']
+    assert leg(two_sided, 'protection')['vol_spread'] == pytest.approx(0.5 * ATM_SPREAD)
+    assert leg(two_sided, 'reversion')['vol_spread'] == pytest.approx(-0.5 * ATM_SPREAD)
+    assert SPOT < barrier[1] < barrier[0], (
+        'the two-sided barrier {} is not inside the mid one {}'.format(*reversed(barrier)))
+    assert two_sided['edge'] == two_sided['net'] - two_sided['net_mid'] > 0, two_sided['net_mid']
+
+    floor = params(floor=SPOT * 0.95)
+    mid_collar, two_sided_collar = (structures.quote(document, 'ZeroCostCollar', floor)
+                                    for document in (book, two_sided_book))
+    cap = (leg(mid_collar, 'financing')['strike_market'],
+           leg(two_sided_collar, 'financing')['strike_market'])
+
+    assert abs(two_sided_collar['net']) <= SOLVE_TOLERANCE, two_sided_collar['net']
+    assert SPOT < cap[1] < cap[0], 'the two-sided cap {} is not inside the mid one {}'.format(
+        *reversed(cap))
+    assert two_sided_collar['net'] - two_sided_collar['net_mid'] > 0, two_sided_collar['net_mid']
 
 
 def test_a_knock_in_plus_a_knock_out_is_the_vanilla(book):

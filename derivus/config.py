@@ -295,11 +295,13 @@ def update_market_quote(document, name, block):
     """Install or update one `Market Prices` block in a wire-form job document, in place.
 
     An update is VALUE-ONLY by construction, for every family at once: everything except each
-    point's `Quoted_Market_Value` and `Timestamp` must stand, because the pillar set, the
-    expiries, the conventions and the tolerances are STRUCTURE - a plan and a pinned grid hang
-    off them, so a moved node is a re-authoring, never a tick. The same rule
-    `derivus_bloomberg.update_fx_vol_snapshot` enforces snapshot-side, held here for whatever
-    posts a block. Returns 'installed' or 'updated'.
+    point's `Quoted_Market_Value`, its two-way `Quoted_Bid`/`Quoted_Ask` and its `Timestamp` must
+    stand, because the pillar set, the expiries, the conventions and the tolerances are STRUCTURE
+    - a plan and a pinned grid hang off them, so a moved node is a re-authoring, never a tick. A
+    two-way is on the value side of that line for the reason the mid is: a spread widens between
+    one print and the next, and a pillar that starts or stops being quoted two-sided is the same
+    node of the same plan. The same rule `derivus_bloomberg.update_fx_vol_snapshot` enforces
+    snapshot-side, held here for whatever posts a block. Returns 'installed' or 'updated'.
     """
     if not isinstance(block, dict) or 'instrument' not in block:
         raise ValueError('{}: a Market Prices block is {{"instrument": {{...}}}}'.format(name))
@@ -310,7 +312,7 @@ def update_market_quote(document, name, block):
             instrument = dict(b['instrument'])
             instrument['Points'] = [
                 {key: value for key, value in point.items()
-                 if key not in ('Quoted_Market_Value', 'Timestamp')}
+                 if key not in ('Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask', 'Timestamp')}
                 for point in instrument.get('Points', [])]
             return instrument
         if structure(prices[name]) != structure(block):

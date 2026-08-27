@@ -220,6 +220,21 @@ bisection instead would have reported.
     descriptor across blocks and **sum**; see
     [the collision](quote_sensitivities.md#the-attachment) for the measured numbers.
 
+**A point may carry a two-way, and the bootstrap never reads it.** `Quoted_Bid` and `Quoted_Ask`
+are optional columns beside the mid: `derivus_bloomberg` writes them onto a row when the terminal
+answered `PX_BID`/`PX_ASK` for that pillar, and leaves the row exactly as it always was when it did
+not — a mid-only surface's block is byte-identical to the one this family has always been handed.
+Everything below this line reads `Quoted_Market_Value` by name, so the surface, the pinned grid and
+every mark on the book are built from the **mid** whether or not the sides are there. The one
+reader is the quote layer: [`derivus.structures`](structures.md#two-sided) shifts a leg's own copy
+of the written surface by the ATM half-spread to quote a client two-sided. *The spread is the
+quote's; the mid is the book's.*
+
+They tick like the mid, too. Both are on the value side of `update_market_quote`'s structure guard,
+because a spread widens between one print and the next and a pillar that starts or stops being
+quoted two-sided is still the same node of the same plan; a moved `Pillar` or `Expiry` refuses as
+it always did.
+
 **Timestamps are data the engine stores and reports.** Each quote row carries when it was seen;
 the written surface carries the latest of the rows that built it as `Quote_Timestamp`, its own
 as-of. It is declared `bind='value'` because it travels with the vols — a tick delivers new numbers

@@ -73,6 +73,46 @@ dict the pricer reads (`Deal.__init__` takes it verbatim), so a DECLARED default
 the wire form a Period field decodes from, and a zero rebate. Without them the deal is SKIPPED at
 load: an ERROR line in the log, a leg priced at nothing, and a quote that still returns.
 
+## The spread is quoted, the mid is booked {#two-sided}
+
+A desk does not sell at the mid, and its book does not mark at the offer. Both are true at once
+because the two numbers live in different places. The `FXVol` surface in `Price Factors` is
+bootstrapped from `Quoted_Market_Value` alone and never moves — that is what every mark on the book
+runs off. The `FXVolPrices` block beside it may carry each pillar's `Quoted_Bid`/`Quoted_Ask`
+([Market Prices](market_prices.md#fxvolprices)), which is DATA the bootstrap never reads. The
+runner is its only reader.
+
+**Where the spread enters.** The ATM rows give a half-spread `(ask − bid) / 2` per quoted expiry,
+in the surface's own vol units; a leg's tenor is placed between those pillars linearly and held
+FLAT past either end, because a spread extrapolated off the last two pillars is a number the market
+never quoted. Each SIDE of the spread then gets a copy of the book with the written surface
+shifted flat by that half-spread, and a leg prices on the one its own side names — legs taking the
+same shift share it, and every pricing deep-copies again through `alone()`, so no leg can disturb
+another's. Moving the written surface is what a leg prices on because a pricing run does not bootstrap:
+the block is not read again inside `run_job`, which the two-sided gate demonstrates rather than
+assumes. RR and BF rows carry their own two-way and v1 does not consume it — a wing spread has to
+skew the smile rather than shift it.
+
+**The sign rule.** A leg's `Buy_Sell` is the CLIENT's side. What the client buys is offered at the
+**ask** vol (`+half`); what they sell is taken at the **bid** (`−half`). A solve then iterates its
+leg on that leg's own shifted copy against targets taken from the other legs' shifted copies, so
+the solved coordinate is a realistic two-sided quote by construction: the forward extra's barrier
+comes IN toward the spot, the collar's cap comes IN toward it, and both are the participation the
+client gives up for the spread.
+
+**`net` versus `net_mid`.** `net` is what the client is quoted — zero, for a zero-cost structure,
+at the two-sided vols. `net_mid` is one extra pass over the finished legs against the UNSHIFTED
+book: what the trade marks at the moment it is booked. Both are in the same sign convention as
+every premium here, the CLIENT's, so the desk's captured edge on a zero-cost structure is
+`net − net_mid` — measured 113.85 USD on a 1M ZAR one-year forward extra at a 0.4-vol-point ATM
+spread, against a barrier that moved from 22.401 to 22.255.
+
+Each leg reports the signed shift it took as `vol_spread` (0.002 is 0.2 vol points), or `None`
+where the book quotes no two-way at all. In that case every shift is zero, `with_vol_shift` hands
+back the document ITSELF rather than a copy, and the quote is bit-identical to the one the runner
+has always given — the gate compares it float for float against a book carrying a zero-wide
+two-way, so the presence of the data cannot move a price. `spread_note` names the absence.
+
 ## The quote lifecycle
 
 `POST /book/structure` runs the recipe as one queued job and files TWO artifacts under

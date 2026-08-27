@@ -532,7 +532,14 @@ def solve_structure(structure: str, params: dict, wait_seconds: float = 120.0) -
     The answer IS the quote - `quote_id`, the params as read, one row per leg (role, deal type,
     buy/sell, the strike in MARKET terms, the premium, what was solved) and the `net`: zero for a
     zero-cost structure, the margin otherwise. `deal` rides with it, the composed structured deal
-    ready to book. The BOOK IS NOT TOUCHED. What is written is the pending trade:
+    ready to book.
+
+    Where the book's vol quotes carry a two-way, the legs are priced on the sides of it a desk
+    would deal - each leg's `vol_spread` is the signed vol shift it took, in the surface's own
+    units - and `net_mid` is the same legs marked at MID, which is what the trade will be worth on
+    the book once booked. Read in the client's sign convention like every premium here, so the
+    desk's edge on a zero-cost structure is `net` less `net_mid`. With no two-way in the book
+    every shift is zero, `net_mid` equals `net`, and `spread_note` says so. The BOOK IS NOT TOUCHED. What is written is the pending trade:
     `DV_HOME/tmp/<quote_id>.json` holds the quote and its deal, with `<quote_id>.xlsx` - the sheet
     that goes to the client - beside it when the sheet writer is installed; `files` names both, and
     `files.sheet_note` names the install when there is no sheet. A missing sheet writer never
