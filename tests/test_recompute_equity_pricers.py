@@ -57,6 +57,7 @@ import test_barrier_bridge as bb
 import test_boundary_pricer_events as bp
 import test_hn_oss_pricers as hn
 import test_recompute_inner_mc as rc
+from conftest import needs_hn_fused
 
 DTYPE = bb.DTYPE
 #: The two adopters, in the fixtures that already gate their boundary registrations -
@@ -353,7 +354,10 @@ def test_a_registered_boundary_correction_is_refused_first():
             base_hessian('barrier', recompute)
 
 
-@pytest.mark.parametrize('pricer', PRICERS)
+# only the autocall's simulation reaches the fused sub-step on these fixtures (measured: the
+# barrier passes on a compiler-less CPU box), so the precondition rides that param alone
+@pytest.mark.parametrize('pricer', [pytest.param(p, marks=needs_hn_fused) if p == 'autocall' else p
+                                    for p in PRICERS])
 def test_the_heston_nandi_theta_survives_the_node(pricer):
     """The gate on the hoist itself, and the only one that can see it.
 

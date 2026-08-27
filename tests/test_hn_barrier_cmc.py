@@ -24,6 +24,7 @@ from derivus import utils
 from derivus.config import Config
 from derivus.instruments import construct_instrument
 import hn_reference as hnref
+from conftest import needs_hn_fused
 
 BASE = pd.Timestamp('2024-06-28')
 DTYPE = torch.float64
@@ -149,7 +150,8 @@ def _profile(hn, seed=1, batch=64, sims=1024):
     return out['Results']['mtm']
 
 
-@pytest.mark.parametrize('hn', [True, False], ids=['heston_nandi', 'gbm'])
+@pytest.mark.parametrize('hn', [pytest.param(True, marks=needs_hn_fused, id='heston_nandi'),
+                                pytest.param(False, id='gbm')])
 def test_barrier_prices_across_the_exposure_grid(hn):
     """The regression gate for the shape bug: one row per report date, one column per path. The
     bug produced len(deal_time)**2 rows and the deal was skipped, which surfaced only as a
@@ -163,6 +165,7 @@ def test_barrier_prices_across_the_exposure_grid(hn):
     assert mtm.values.std(axis=1).min() > 0.0, 'no dispersion across paths at some date'
 
 
+@needs_hn_fused
 @pytest.mark.parametrize('row_index', [2, 4])
 def test_already_hit_leg_prices_under_the_declared_model(row_index):
     """The already-hit KI leg is HESTON-NANDI, not Black at the implied surface.

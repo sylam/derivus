@@ -1,8 +1,9 @@
 name: Tests
 
-# the 16GB hosted runner cannot hold the suite - the job is SIGTERMed ~4 minutes in on every
-# push - so a triggered run is guaranteed red. Manual-only until the suite fits the runner.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -41,7 +42,8 @@ jobs:
       - name: Confirm we are testing the repo, on CPU
         run: python -c "import derivus, torch; print(derivus.__version__, derivus.__file__, torch.__version__, torch.cuda.is_available())"
 
-      # -rs so the skips read in the log. Expect 8: 2 calibration tests wanting licensed market
-      # data, 6 AAD-vs-CRN gates whose oracle is calibrated on CUDA reduction order.
+      # -rs so the skips read in the log. Expect 1: the coupon-digital CRN ladder, whose 5%
+      # oracle is calibrated under CUDA reduction order. The Heston-Nandi fused-substep gates
+      # skip only where torch.compile has no host C++ compiler, which this runner's gcc satisfies.
       - name: Run the suite
         run: pytest tests -q -rs

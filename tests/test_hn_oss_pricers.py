@@ -51,6 +51,7 @@ import torch
 import derivus
 from derivus import run_baseval, utils
 import hn_reference as hnref
+from conftest import needs_hn_fused
 from derivus.config import Config
 from derivus.instruments import construct_instrument
 
@@ -404,6 +405,7 @@ def test_barrier_ki_always_knock_matches_hn_call_closed_form():
     assert price == pytest.approx(_hn_call_ref(30, _STRONG_H0), rel=1e-6)
 
 
+@needs_hn_fused
 def test_autocall_single_coupon_matches_hn_cdf():
     """KILL MATRIX GATE 2 (survival construction + recursion). A single-coupon autocall with no
     floating/barrier pays coupon * P(S_T > K) discounted; with zero rates that is
