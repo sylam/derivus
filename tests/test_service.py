@@ -26,6 +26,14 @@ no socket, no map file - what is under test is the verb's own wiring: the scope 
 the map, the refusal a late quote earns, the single atomic write it installs through, and the
 progress a poller reads while it runs.
 
+`/book/structure` and `/book/quote` are one verb split across the desk's own approval: a quote is
+given, filed under its id in `DV_HOME/tmp`, and only then booked. What the gates hold is that the
+two halves are the same trade - the collar comes back netting to zero, and the BOOK marks the deal
+it wrote at zero when the file is priced afterwards. `DV_HOME` is the declared surface for where
+those files land, so the gates set it and read the directory it names; the booking half goes
+through the same validate-before-write seam `/book/deals` uses, which is asserted by refusing an
+authored pending trade in the identical wording an amendment is refused in.
+
 The ordering and dedupe gates are deterministic without sleeping on a clock. A first job blocks
 inside `run_job` and announces it through an `Event`, so by the time the others are submitted the
 worker is provably busy and they are all in the queue — releasing it makes the queue the only thing
@@ -39,6 +47,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 import threading
+import zipfile
 
 import numpy as np
 import pandas as pd
@@ -47,7 +56,7 @@ from fastapi.testclient import TestClient
 
 import derivus
 from derivus import service, utils
-from derivus.config import CustomJsonEncoder
+from derivus.config import CustomJsonEncoder, deal_at
 
 BASE = pd.Timestamp('2024-06-28')
 RATE = 0.02
@@ -1140,3 +1149,174 @@ def test_a_failing_job_is_an_error_status_and_the_worker_survives():
     assert 'tables' not in failed
     assert after['status'] == 'done'
     assert mtm(after_id)['CF1'] == pytest.approx(AMOUNT * SPOT * np.exp(-RATE * 2.0), rel=1e-9)
+
+
+#: USDZAR as THIS book quotes it. `FxRate.ZAR.Spot` is one ZAR in the base currency's units, and
+#: the suite's world sets it to 18.5, so the market pair - ZAR per USD - is its reciprocal. A gate
+#: that struck the collar at 18.5 would be asking for a floor deep in the money and reading the
+#: runner's bracket refusal as a service bug.
+USDZAR = 1.0 / SPOT
+
+#: The zero-cost collar as a sales desk asks for it: parameters in MARKET terms, the floor given
+#: and the cap left for the recipe to solve. The keys are the structure's own declared `fields`,
+#: and one it does not declare comes back as a `status: error` carrying the runner's message,
+#: which is why every gate below asserts the status with that message attached rather than reading
+#: past it. The floor sits 5% out of the money: the bought put is then cheap enough for a solved
+#: cap to fund it well inside the bracket the runner brackets a strike solve with.
+COLLAR = {'pair': 'USDZAR', 'expiry': '1Y', 'notional': AMOUNT,
+          'notional_currency': 'USD', 'floor': USDZAR * 0.95}
+
+
+@pytest.fixture
+def quoting(tmp_path, monkeypatch):
+    """A desk that can be quoted at: the one-cashflow book with the FX vol bootstrapper declared
+    and a real USDZAR surface ticked into it, and `DV_HOME` pointed at the gate's own tmp.
+
+    `DV_HOME` is the declared surface for where a desk's files live, so setting it is the honest
+    way to make the pending quotes land somewhere a gate may read - and the service reads it per
+    call, so the worker thread that files the quote sees the directory this fixture named.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(job(sections={
+        'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    ticked = CLIENT.post('/book/market', content=dump({'quotes': fx_vol_quotes()}),
+                         headers=JSON).json()
+    assert ticked['written'] is True, ticked
+    yield path
+    service.BOOK = None
+
+
+def quote_of(structure, params):
+    """Ask for a quote and wait for the one worker to give it - the outcome under `stats.Quote`,
+    exactly where a solve's coordinates sit under `stats.Solved`."""
+    submitted = CLIENT.post('/book/structure', content=dump(
+        {'structure': structure, 'params': params}), headers=JSON).json()
+    service.EXECUTOR.queue.join()
+    result = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+    assert result['status'] == 'done', result.get('error')
+    return result['stats']['Quote']
+
+
+def test_a_quoted_collar_is_filed_pending_and_books_at_zero(quoting, tmp_path):
+    """The whole sales loop through one service: a structure named the way a desk names it comes
+    back solved, the pending trade is on disk under its quote id, the approval books it through
+    the same seam a hand-booked deal goes through, and the book then MARKS it at zero.
+
+    The last step is the one that cannot be faked. `net` is what the runner computed while it was
+    solving; the collar's value in the book is what the engine says about the composed deal that
+    was actually written, priced from the file afterwards, so agreement between them is the quote
+    and the booking being one trade. Zero is asserted against a leg premium rather than in
+    absolute currency - a net of zero means nothing if both legs are worth nothing.
+    """
+    quote = quote_of('ZeroCostCollar', COLLAR)
+    premium = max(abs(leg['premium']) for leg in quote['legs'])
+
+    assert quote['structure'] == 'ZeroCostCollar'
+    assert len(quote['legs']) == 2 and premium > 0.0
+    assert [leg['deal_type'] for leg in quote['legs']] == ['FXOptionDeal'] * 2
+    assert {leg['buy_sell'] for leg in quote['legs']} == {'Buy', 'Sell'}
+    assert sum(leg['solved'] is not None for leg in quote['legs']) == 1
+    assert abs(quote['net']) < premium * 1e-4
+
+    pending = tmp_path / 'tmp' / (quote['quote_id'] + '.json')
+    assert quote['files']['quote'] == str(pending)
+    filed = json.loads(pending.read_text())
+    assert filed['deal'] == quote['deal']
+    assert filed['quote']['quote_id'] == quote['quote_id'] and 'deal' not in filed['quote']
+
+    booked = CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']}).json()
+    on_disk = json.loads(quoting.read_text())
+    node = deal_at(on_disk, booked['deal_path'])
+
+    assert booked['written'] is True
+    assert node['Instrument']['.Deal']['Object'] == 'StructuredDeal'
+    assert [child['Instrument']['.Deal']['Reference'] for child in node['Children']] == [
+        leg['reference'] for leg in quote['legs']]
+    # the file is the audit trail of what was quoted at what market - booking does not consume it
+    assert pending.is_file()
+
+    marked_id, marked = run(on_disk)
+    assert marked['status'] == 'done', marked.get('error')
+    assert mtm(marked_id)[node['Instrument']['.Deal']['Reference']] == pytest.approx(
+        0.0, abs=premium * 1e-4)
+
+
+def test_an_unknown_quote_id_names_the_tmp_it_looked_in(quoting):
+    """A quote id nobody gave is a 404 naming the directory it was looked for in - a desk whose
+    `DV_HOME` is not the one the quote was filed under has to be able to READ that off the
+    refusal. Nothing is written: a booking that never found its trade is not a booking."""
+    before = quoting.read_bytes()
+    answer = CLIENT.post('/book/quote', json={'quote_id': 'nosuchquoteid'})
+
+    assert answer.status_code == 404
+    assert 'nosuchquoteid' in answer.json()['detail']
+    assert str(quoting.parent / 'tmp') in answer.json()['detail']
+    assert quoting.read_bytes() == before
+
+
+def test_a_pending_trade_the_book_would_refuse_is_refused_in_the_booking_wording(quoting,
+                                                                                 tmp_path):
+    """An approval is a BOOKING, so it is refused on what it would land in and in the same words.
+
+    The pending file here is authored by the gate - a broken trade is data, and this is the one
+    way to reach the refusal branch without asking the runner for a quote it would rightly
+    decline to give. Pointing the deal at a currency the book has no market data for is exactly
+    what `test_a_bad_amendment_touches_nothing` refuses, and the wording has to match it: one
+    validate-before-write seam, or the two paths have drifted.
+    """
+    before = quoting.read_bytes()
+    pending = tmp_path / 'tmp'
+    pending.mkdir(parents=True, exist_ok=True)
+    broken = dict(CASHFLOW, Reference='BROKEN', Currency='GBP', Discount_Rate='GBP')
+    (pending / 'authored.json').write_text(json.dumps(json.loads(dump(
+        {'quote': {'quote_id': 'authored'}, 'deal': broken})), indent=2), newline='\n')
+
+    refused = CLIENT.post('/book/quote', json={'quote_id': 'authored'}).json()
+
+    assert refused['written'] is False
+    assert 'no market data for InterestRate.GBP' in refused['refused']
+    assert quoting.read_bytes() == before
+    # a refusal is an answer, not a deletion: the pending trade is still there to be corrected
+    assert (pending / 'authored.json').is_file()
+
+
+def test_the_quote_sheet_lands_beside_the_pending_trade(quoting, tmp_path):
+    """The sheet is a real xlsx workbook next to the quote file, under the same id.
+
+    Skipped rather than faked when the `quote` extra is not installed on this box: nothing is
+    uninstalled and nothing is patched to reach the other branch, so what this gate says is only
+    ever true of a desk that HAS the writer. `derivus.quote_sheet` owns the gates on what is
+    inside the three sheets; this one owns the wiring - that the job reaches the writer, names
+    the file it wrote, and put a workbook there.
+    """
+    pytest.importorskip('derivus.quote_sheet',
+                        reason='the quote extra is not installed - there is no sheet to find')
+    quote = quote_of('ZeroCostCollar', COLLAR)
+    sheet = tmp_path / 'tmp' / (quote['quote_id'] + '.xlsx')
+
+    assert quote['files']['sheet'] == str(sheet)
+    assert 'sheet_note' not in quote['files']
+    assert zipfile.is_zipfile(str(sheet))
+
+
+def test_a_composed_candidate_prices_its_legs_not_an_empty_container(book):
+    """A structure IS its legs, on the what-if verb too: a composed StructuredDeal arriving with
+    node-shaped children inside its deal block prices as the sum of those legs. The killing
+    mutation is `splice_deal` dropping the composed children back to an empty list - the container
+    then prices 0.0 with nothing said against it, which is exactly the silent hollow quote this
+    gate exists to keep dead. Non-vacuity is the legs themselves: each must carry a real value."""
+    legs = [dict(CASHFLOW, Reference='CMP_A'), dict(BOOKED, Reference='CMP_B')]
+    composed = {'Object': 'StructuredDeal', 'Reference': 'CMP1', 'Currency': 'USD',
+                'Net_Cashflows': 'No',
+                'Children': [{'Instrument': {'.Deal': json.loads(dump(leg))}} for leg in legs]}
+    run = CLIENT.post('/book/price', content=dump({'deal': composed}), headers=JSON).json()
+    service.EXECUTOR.queue.join()
+    values = mtm(run['result_id'])
+
+    expected = {leg['Reference']: leg['Amount'] * SPOT * np.exp(-RATE * 2.0) for leg in legs}
+    for reference, value in expected.items():
+        assert abs(value) > 1.0  # a leg worth nothing would make the sum check vacuous
+        assert values[reference] == pytest.approx(value, rel=1e-9)
+    assert values['CMP1'] == pytest.approx(sum(expected.values()), rel=1e-9)

@@ -207,10 +207,14 @@ def splice_deal(document, deal, parent_reference=None):
     """Append `deal` to a wire-form job document IN PLACE and return the new node's `deal_path`.
 
     The node is `{'Instrument': {'.Deal': deal}}`, gaining an empty `Children` when the booked type
-    is itself a container (`schema.mapping['Instrument']['containers']`). The insertion point is
-    the root, or the single node whose Reference is `parent_reference` - an unknown, ambiguous or
-    non-container parent refuses by name, because appending under the wrong node is a mis-booked
-    trade rather than an error message.
+    is itself a container (`schema.mapping['Instrument']['containers']`). A COMPOSED deal - one
+    arriving with node-shaped legs under its own `Children` key, the way `structures.quote` hands
+    a structure back - has them lifted onto the node, because the engine walks `node['Children']`
+    and never inside the deal block: without the lift a spliced structure loads as an empty
+    container and prices 0.0 with nothing said against it, on every verb at once (a what-if, a
+    solve, a booking). The insertion point is the root, or the single node whose Reference is
+    `parent_reference` - an unknown, ambiguous or non-container parent refuses by name, because
+    appending under the wrong node is a mis-booked trade rather than an error message.
     """
     children = job_children(document)
     if children is None:
@@ -229,8 +233,12 @@ def splice_deal(document, deal, parent_reference=None):
             raise ValueError('{!r} is a {}, which takes no children'.format(
                 parent_reference, parent_type))
         children = parent.setdefault('Children', [])
+    deal = dict(deal)
+    composed = deal.pop('Children', None)
     node = {'Instrument': {'.Deal': deal}}
-    if deal.get('Object') in containers:
+    if composed:
+        node['Children'] = composed
+    elif deal.get('Object') in containers:
         node['Children'] = []
     children.append(node)
     position = str(len(children) - 1)
