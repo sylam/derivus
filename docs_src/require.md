@@ -29,6 +29,8 @@ Optional capability is grouped into pip extras, so the core library installs lea
 | `derivus[garch]` | arch >= 6.0 | CALIBRATING `GARCHSpotModel` — the import is lazy, so simulation never needs it |
 | `derivus[docs]` | mkdocs >= 1.5, mkdocs-material, pymdown-extensions | building this documentation (`DV_Docs` emits the tree, mkdocs renders it) |
 | `derivus[service]` | fastapi, uvicorn | the HTTP service (`DV_Service`) — `derivus/service.py` is the sole importer |
+| `derivus[mcp]` | mcp >= 2, requests | the MCP binding (`DV_MCP`) — needs python 3.10+ |
+| `derivus[desk]` | service + mcp | the whole working stack of [Getting Started](getting_started.md) in one install |
 
 ## GPU notes
 

@@ -41,5 +41,8 @@ tests/_stepper_out*/
 /notebooks/Differential*.ipynb
 
 # The web UI's build output and dependencies - `npm ci && npm run build` in web/ regenerates both.
+# /derivus/_ui/ is the release pipeline's copy of that build, staged for package_data - never
+# committed, so a source tree serves only the UI it builds itself.
 /web/node_modules/
 /web/dist/
+/derivus/_ui/

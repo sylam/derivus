@@ -1,26 +1,27 @@
 # MCP Binding
 
-`mcp_integration/server.py` is the derivus verbs as MCP tools, for a model to book instruments in
+`derivus_mcp/server.py` is the derivus verbs as MCP tools, for a model to book instruments in
 plain language. It is the third client of the service — the web UI and the Excel add-in are the
 other two — and it owns **no logic**: every tool is a thin adapter onto a `DV_Service` endpoint,
 so anything a tool needs that an endpoint cannot answer is a missing verb on the service, never
-code in this layer. It lives outside the `derivus` package on purpose: importing any of the
-package pulls the whole engine (torch included, ~3s) into a process that only talks HTTP, and the
-import gate in `tests/test_mcp.py` holds the module to `requests` + `mcp` and nothing else.
+code in this layer. It lives outside the `derivus` package on purpose — a sibling package in the
+same wheel, `derivus_bloomberg`'s shape: importing any of the engine's package pulls the whole
+engine (torch included, ~3s) into a process that only talks HTTP, and the import gate in
+`tests/test_mcp.py` holds the module to `requests` + `mcp` and nothing else.
 
 ## Running it
 
 ```
-pip install -r mcp_integration/requirements.txt          # mcp needs python 3.10+
-DV_Service --book path/to/job.json --ui web/dist &       # the service does the work
-claude mcp add derivus -- python mcp_integration/server.py
+pip install 'derivus[desk]'                     # service + binding; mcp needs python 3.10+
+DV_Service --book path/to/job.json &            # the service does the work
+claude mcp add derivus -- DV_MCP
 # a service somewhere else:
-claude mcp add derivus --env RF_SERVICE_URL=http://host:8000 -- python mcp_integration/server.py
+claude mcp add derivus --env RF_SERVICE_URL=http://host:8000 -- DV_MCP
 ```
 
 `RF_SERVICE_URL` is the same variable the Excel add-in reads — one setting configures every
 client. There is deliberately no tracked `.mcp.json`: it would pin one machine's paths into the
-repo.
+repo — and `DV_MCP` takes the path out of the command altogether.
 
 ## The tools
 
@@ -31,6 +32,7 @@ repo.
 | `describe_calculation_type` / `describe_factor_type` | the same for calculations and factors |
 | `job_skeleton` | the envelope, as a job that loads |
 | `read_book` / `read_deal` | the live book summarised per deal; one deal verbatim |
+| `amend_deal` | merge fields into the deal at a path - the same validate-delta as a booking |
 | `book_deal` / `delete_deal` | write verbs onto `POST /book/deals` |
 | `price_candidate` / `execute_book` | `POST /book/price` — the what-if; waits, then hands back the id |
 | `solve_deal` | `POST /book/solve` — solve one field to a target, get the deal back ready to book |

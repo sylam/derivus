@@ -10,10 +10,20 @@ The [Quick Start](quickstart.md) covers the three-line in-process route (`load_j
 ## Install
 
 ```
-git clone https://github.com/sylam/derivus && cd derivus
-pip install -e ".[service]" requests mcp
+pip install "derivus[desk]"            # the engine, DV_Service, and the MCP binding
 pip install torch                      # the CUDA build if you have an NVIDIA GPU
-cd web && npm ci && npm run build && cd ..
+```
+
+A release wheel serves its own web UI, so there is nothing to build. (The library alone is
+`pip install derivus` — the three-line route needs no extras at all. The `desk` extra needs
+python 3.10+, which is `mcp`'s floor.)
+
+Working on derivus itself is the clone route instead:
+
+```
+git clone https://github.com/sylam/derivus && cd derivus
+pip install -e ".[desk]" pytest httpx
+cd web && npm ci && npm run build && cd ..     # a source tree serves the UI it builds
 ```
 
 Optional, for a Bloomberg-enabled workstation:
@@ -22,17 +32,22 @@ Optional, for a Bloomberg-enabled workstation:
 pip install --index-url=https://blpapi.bloomberg.com/repository/releases/python/simple/ blpapi
 ```
 
-Sanity check: `pytest tests -q -rs` from the repo root. On CPU expect a handful of skips that
-name their reasons (licensed market data; CUDA-calibrated oracles).
+Sanity check: start the service and `GET /schema` answers with `engine_version`. From a clone,
+`pytest tests -q -rs` runs the suite — on CPU expect a handful of skips that name their reasons
+(licensed market data; CUDA-calibrated oracles).
 
 ## Start the stack
 
 Point the service at a job file — the **live book**, the one document every client reads and
-writes — and at the UI build:
+writes:
 
 ```
-DV_Service --book path/to/book.json --ui web/dist
+DV_Service --book path/to/book.json
 ```
+
+A wheel serves the UI it shipped with at `/ui` by itself; from a clone, add `--ui web/dist` to
+serve the build. (If `DV_Service` is not on your PATH — pip's per-user installs on Windows —
+`python -m derivus.service` is the same program.)
 
 The path need not exist: a missing file starts as a **blank book** — no deals, dated today, with
 the skeleton's USD market data aboard so the first booking has something to validate against. An
@@ -50,7 +65,7 @@ seconds. `GET /schema/job` serves a minimal job document if you need a starting 
 ## Wire in Claude
 
 ```
-claude mcp add derivus -- python mcp_integration/server.py
+claude mcp add derivus -- DV_MCP
 ```
 
 (`RF_SERVICE_URL` points it at a service somewhere else; it is the same variable the Excel
@@ -70,7 +85,9 @@ in [the MCP page](developer/mcp.md).
 ## The same verbs from Python or Excel
 
 Every client is a thin binding of the same HTTP verbs — see the
-[API Overview](api_overview.md) for the full table. From a script or notebook:
+[API Overview](api_overview.md) for the full table. From a script or notebook (`ServiceClient`
+rides the **clone** — `excel_integration` is an add-in in the repo, not in the wheel; a wheel
+user talks the same verbs with plain `requests`):
 
 ```python
 from excel_integration.service_client import ServiceClient
@@ -86,7 +103,9 @@ desk.submit(job); desk.poll(result_id); desk.fetch_table(result_id, 'mtm')
 
 ## Tick the market from Bloomberg
 
-On a workstation with `blpapi`, the loop from terminal to book is:
+On a workstation with `blpapi`, the loop from terminal to book is (`ServiceClient` again from
+the clone — the Bloomberg half is all in the wheel, and `DV_Bloomberg discover` is how the
+security map behind `definition` gets built and verified; see `derivus_bloomberg/README.md`):
 
 ```python
 from derivus_bloomberg import fetch_fx_vol, to_market_prices_block

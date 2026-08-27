@@ -22,8 +22,8 @@ tuple, its stats and each table's SHAPE; cells come one capped page at a time th
 `fetch_table`, a table too wide to read as text is refused by name (that is what the web UI is
 for), and `deal_values` checks a result's shape before it fetches anything.
 
-Run: `python mcp_integration/server.py` (stdio), with `RF_SERVICE_URL` naming the service
-(default http://127.0.0.1:8000 - the same variable the Excel add-in reads).
+Run: `DV_MCP` (stdio; `python -m derivus_mcp.server` from a source tree), with `RF_SERVICE_URL`
+naming the service (default http://127.0.0.1:8000 - the same variable the Excel add-in reads).
 """
 import os
 import time
@@ -43,7 +43,8 @@ class Service:
     """A `DV_Service` at a URL. `session` is the transport seam - anything with a requests-style
     `request(method, url, ...)`, which is how the gates drive the tools in process through
     fastapi's TestClient without a socket. Deliberately a second copy of what `excel_integration`
-    has: the add-in is not an installed package, so nothing here can import it."""
+    has: the import gate holds this module to `requests` + `mcp`, so it can never import the
+    add-in's client (which is not packaged anyway)."""
 
     def __init__(self, base_url=None, session=None, timeout=120.0):
         self.base_url = (base_url if base_url is not None

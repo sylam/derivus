@@ -15,8 +15,6 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                'mcp_integration'))
 
 import numpy as np
 import pandas as pd
@@ -25,7 +23,7 @@ from fastapi.testclient import TestClient
 from mcp.server.mcpserver.exceptions import ToolError
 
 import derivus
-import server as mcp_server
+from derivus_mcp import server as mcp_server
 from derivus import service
 from test_service import BINARY, BOOKED, RATE, SPOT, Held, dump, job
 
@@ -52,16 +50,17 @@ def book(tmp_path):
 
 
 def test_the_mcp_server_imports_neither_the_engine_nor_the_add_in():
-    """A thin client stays thin by construction: the whole point of the folder is that an MCP host
-    can launch it without paying for (or depending on) torch and the engine. An import that never
-    executes is still a dependency, so this reads the SOURCE, not the loaded module."""
-    tree = ast.parse(open(SERVER_FILE).read())
+    """A thin client stays thin by construction: the whole point of the package is that an MCP
+    host can launch it without paying for (or depending on) torch and the engine. An import that
+    never executes is still a dependency, so this reads the SOURCE, not the loaded module - and
+    the package `__init__` too, since importing the server runs it."""
     imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.update(alias.name.split('.')[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            imported.add((node.module or '').split('.')[0])
+    for source in (SERVER_FILE, os.path.join(os.path.dirname(SERVER_FILE), '__init__.py')):
+        for node in ast.walk(ast.parse(open(source).read())):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split('.')[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported.add((node.module or '').split('.')[0])
     assert imported <= {'os', 'time', 'requests', 'mcp', 'mcp_types'}, imported
     assert imported.isdisjoint({'derivus', 'torch', 'pandas', 'numpy', 'excel_integration'})
 

@@ -282,7 +282,7 @@ DV_Service --port 8000
 | `POST` | `/execute` | `{"result_id": …, "status": …}` |
 | `GET` | `/results/{result_id}` | `{"status": …}`, and when done the replay tuple, the run's `stats`, and the SHAPE of each table |
 | `GET` | `/results/{result_id}/{table}` | one table, `?offset=&limit=` |
-| `GET` | `/ui` | a built web UI, when `DV_Service --ui <dir>` mounted one |
+| `GET` | `/ui` | a built web UI - the wheel's own by default, or the `DV_Service --ui <dir>` build |
 | `GET` | `/book` | the live job document `DV_Service --book <file>` serves, with the etag naming its state |
 | `POST` | `/book/deals` | book or delete one deal — validated BEFORE an atomic write; a refusal is `{"written": false, "refused": […]}` and touches nothing |
 | `POST` | `/book/price` | price the book plus an optional candidate deal — a what-if; writes nothing |

@@ -689,11 +689,13 @@ def open_book(path):
 def mount_ui(application, directory):
     """Serve a built web UI at `/ui`, and say whether there was one to serve.
 
-    The UI is a CLIENT of this service, optional to the core library, and lives outside the
-    package - so the mount is a flag, never an import-time assumption. `html=True` makes `/ui/`
-    serve `index.html`; it does NOT fall back to it for an unknown subpath, so the SPA navigates
-    by tab state and hash rather than by URL path - a router would ship deep links that 404 on
-    reload.
+    The UI is a CLIENT of this service, optional to the core library, and its source lives
+    outside the package - so the mount is a flag, never an import-time assumption. A release
+    wheel carries the BUILT UI as package data (`derivus/_ui`, staged by the publish pipeline),
+    which `main` offers as the default directory when `--ui` is not given; a source tree without
+    a build simply serves no UI. `html=True` makes `/ui/` serve `index.html`; it does NOT fall
+    back to it for an unknown subpath, so the SPA navigates by tab state and hash rather than by
+    URL path - a router would ship deep links that 404 on reload.
     """
     import os
     from fastapi.staticfiles import StaticFiles
@@ -716,7 +718,8 @@ def main():
     parser.add_argument('-o', '--origin', action='append',
                         help='browser origin to allow; repeatable, defaults to any')
     parser.add_argument('-u', '--ui', type=str, default=None,
-                        help='directory holding a built web UI to serve at /ui')
+                        help='directory holding a built web UI to serve at /ui; defaults to the '
+                             'build the wheel shipped, when there is one')
     parser.add_argument('-k', '--book', type=str, default=None,
                         help='job JSON file to serve live at /book - created blank if missing; '
                              'the file is the book of record')
@@ -724,8 +727,12 @@ def main():
 
     if args.origin:
         ORIGINS[:] = args.origin
-    if args.ui and not mount_ui(app, args.ui):
-        parser.error('--ui {} holds no index.html - build the UI first'.format(args.ui))
+    if args.ui:
+        if not mount_ui(app, args.ui):
+            parser.error('--ui {} holds no index.html - build the UI first'.format(args.ui))
+    else:
+        # a wheel ships the built UI as package data; a source tree without a build serves none
+        mount_ui(app, os.path.join(os.path.dirname(os.path.abspath(__file__)), '_ui'))
     if args.book:
         global BOOK
         BOOK = open_book(args.book)

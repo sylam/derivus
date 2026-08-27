@@ -29,16 +29,36 @@ jobs:
           echo "tag=$tag package=$pkg"
           test "$tag" = "$pkg" || { echo "::error::tag '$tag' != derivus/_version.py '$pkg'"; exit 1; }
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # a wheel serves the UI it was released with: build it and stage it where package_data
+      # picks it up - the repo tree carries neither the build nor the copy (both gitignored)
+      - name: Build the web UI into the package
+        run: |
+          npm ci --prefix web
+          npm run build --prefix web
+          rm -rf derivus/_ui
+          cp -r web/dist derivus/_ui
+
       - name: Build sdist and wheel
         run: |
           python -m pip install --upgrade pip build
           python -m build
 
-      - name: Verify the console scripts are actually in the wheel
+      - name: Verify the wheel carries what a desk install relies on
         run: |
-          for m in derivus_bootstrap.py derivus_batch.py derivus_docs.py; do
+          for m in derivus_bootstrap.py derivus_batch.py derivus_docs.py \
+                   derivus_mcp/server.py derivus/_ui/index.html; do
             unzip -Z1 dist/*.whl | grep -qx "$m" || { echo "::error::$m missing from wheel"; exit 1; }
           done
+          # every built UI file, not just the entry point - the package_data globs are
+          # non-recursive, so a vite output that grows a nested directory must fail here
+          # rather than ship a wheel whose UI is silently incomplete
+          built=$(find derivus/_ui -type f | wc -l)
+          shipped=$(unzip -Z1 dist/*.whl | grep -c '^derivus/_ui/')
+          test "$built" -eq "$shipped" || { echo "::error::UI built $built files, wheel carries $shipped"; exit 1; }
 
       - name: Check metadata renders on PyPI
         run: |

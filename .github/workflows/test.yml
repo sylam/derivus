@@ -33,12 +33,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-      # the service extra is a test dependency now that tests/test_service.py drives the endpoints,
-      # and httpx is what fastapi's TestClient calls them through. requests is the excel_integration
-      # client's own transport and mcp is mcp_integration's - neither folder is part of the
-      # installed library, so both are declared here rather than in setup.py
+      # the desk extra carries what the tests drive: the service endpoints (tests/test_service.py)
+      # and the MCP binding's requests + mcp (tests/test_mcp.py) - requests also being the
+      # excel_integration client's transport. httpx is what fastapi's TestClient calls through.
       - name: Install derivus
-        run: pip install -e '.[service]' pytest httpx requests mcp
+        run: pip install -e '.[desk]' pytest httpx
 
       - name: Confirm we are testing the repo, on CPU
         run: python -c "import derivus, torch; print(derivus.__version__, derivus.__file__, torch.__version__, torch.cuda.is_available())"

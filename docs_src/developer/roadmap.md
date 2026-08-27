@@ -570,8 +570,8 @@ and the document — value-first field dispatch, `.Curve` branched on row arity,
 views in a workspace registry so a future SACCR/backtest/archive screen is an entry, not a
 refactor; slice 1 is view + run, and it follows the book by etag poll so a booking from any
 client appears within a tick), the **Excel add-in** (`ServiceClient` gained `book` / `book_deal` /
-`delete_deal` / `price_candidate`), and the **MCP binding** (`mcp_integration/server.py` — see
-[MCP Binding](mcp.md): sixteen tools, docstrings as the model-facing contract, a rejected booking
+`delete_deal` / `price_candidate`), and the **MCP binding** (`derivus_mcp/server.py` — see
+[MCP Binding](mcp.md): twenty tools today, docstrings as the model-facing contract, a rejected booking
 returned as data, an import gate holding it to `requests` + `mcp`).
 
 **The structuring calc is RETIRED as a concept (2026-08-26), by ruling**: structuring is a solve

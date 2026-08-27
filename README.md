@@ -42,13 +42,16 @@ calc, results = cx.run_job()
 ```
 
 The JSON is the whole contract — every feature is reachable from it, and a user script should never
-need to import derivus internals. Three console scripts are installed:
+need to import derivus internals. Six console scripts are installed:
 
 | | |
 | --- | --- |
 | `DV_Batch` | CVA, CollVA and FVA over a folder of netting sets |
 | `DV_Bootstrap` | calibration (currently Hull-White 2-factor from swaption vols) |
 | `DV_Docs` | builds `./docs` from `./docs_src` |
+| `DV_Service` | the HTTP service - the live book, the web UI, the verbs every client rides |
+| `DV_MCP` | the MCP binding over stdio, for an LLM host (`derivus[mcp]`) |
+| `DV_Bloomberg` | builds and re-verifies a Bloomberg security map on a terminal workstation |
 
 ## Layout
 
