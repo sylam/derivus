@@ -136,7 +136,8 @@ report FORMAT for a quote delta (it lands on the leaves in `Config.quote_leaves`
 [two shapes](quote_sensitivities.md#the-attachment) — increments 3 and 4 both reused the vector
 one — `make_factor_index` wants a tenor grid a quote does not have, and where two families read the
 same JSON number its `dV/dq` arrives as **two partials under one descriptor** that a consumer has to
-sum: 2.243453e4 + 8.071709e4 on a stacked FX pair, measured); neither backward supports
+sum: 2.243453e4 + 8.071709e4 on a stacked FX pair, measured — `structures.vol_risk` is the first
+consumer to obey that rule, and it sums rather than reports); neither backward supports
 `create_graph`, so there is no second derivative in quote space; and no vol-surface
 parameterisation (SABR, SSVI) is in scope — a Malz smile is the one delta parameterisation built.
 
@@ -653,15 +654,31 @@ the rest of the web UI's edit surface — tables/curves (an editable grid compon
 deals from the UI. Barrier legs SHIPPED with `ForwardExtra` (protected rate given,
 the BARRIER solved — the runner's third axis conversion: a barrier level inverts like a strike and
 its Up/Down direction inverts with it), which drove the first numbers through the analytic
-knock-in branch. The structures registry's named next steps are now: the RISK-IMPACT step (book
-plus candidate under `Greeks`, the skew delta in RR/BF coordinates pricing the spread — every
-hedge layer now speaks tradable coordinates), and a ratio-solve primitive for participating
-forwards. That step's SPREAD INPUT has landed: `PX_BID`/`PX_ASK` ride the vol pillars as
+knock-in branch. That step's SPREAD INPUT landed first: `PX_BID`/`PX_ASK` ride the vol pillars as
 `Quoted_Bid`/`Quoted_Ask` beside the mid, the bootstrap still reads only the mid, and the quote
 layer shifts each leg's own copy of the written surface by the ATM half-spread on the client's
-side — mid for the book, two-sided for the quote
-([Structures](structures.md#two-sided)). What risk impact adds on top is the POLICY that widens or
-tightens that spread per trade, which is mandate rather than code.
+side — mid for the book, two-sided for the quote ([Structures](structures.md#two-sided)).
+
+**RISK-IMPACT PRICING v1 is BUILT** ([Structures](structures.md#risk-impact)). A trade's charge is
+the cost of hedging the RESIDUAL it leaves, at the market's own two-way and not at an invented
+bp-per-skew number: the composed candidate is MIRRORED (the verb the booking already uses) and the
+book's vol risk is read with it and without it under `Greeks: 'First'`, in QUOTE coordinates —
+`dV/d(ATM)`, `dV/d(RR)`, `dV/d(BF)` per pillar off `Quote_Sensitivity` on the `FXVolPrices` block,
+which is the first consumer of that switch outside its own gates. Each bucket's move in absolute
+risk is charged that bucket's own half-spread; a negative total is a saving and `participation` of
+it comes off the quote. The V1 SCOPE, named honestly: vol only (`scope: 'vol'` refuses anything
+else), quote-space coordinates (the per-expiry ATM vega fallback was budgeted and never needed),
+ONE re-solve rather than a fixed point (the risk is measured on the full-spread candidate and the
+re-solve moves the coordinate second order — measured 0.026% on the gate's book), and NO surcharge
+past the two-way: the market spread is the ceiling. The POLICY is a declared `Quote Policy` block
+on `Calc` — `participation`, `floor`, `scope`, `bucket_limit`, `min_ticket_bp` — and its ABSENCE is
+the feature's off switch, so a book without one quotes bit for bit as it always did. Measured on
+the gate's book: a desk quoted the same collar it already holds tightens from a full charge of
+81.2194 USD to 75.9178 on a saving of 10.6031, and its solved cap moves from 19.16949 to 19.17396
+against a mid of 19.23863. Named next for the registry: **incremental XVA as the v2 of that same
+step** — a counterparty on the quote and `CVA(book + mirror) − CVA(book)` through the
+`Credit_Monte_Carlo` engine, the same two-run seam with a different calculation in it — and a
+ratio-solve primitive for participating forwards.
 
 **The Excel add-in is the first real client.** `excel_integration/service_client.py` is a plain
 `requests` client of the verbs and imports neither `xlwings` nor `derivus` — it is the HTTP binding

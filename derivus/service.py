@@ -1172,6 +1172,11 @@ class StructureJob:
     The outcome is the whole quote rather than tables, so it rides the run's own Stats under
     `Quote`, exactly as a solve's coordinates ride `Solved` and a fetch's write rides `Bloomberg`.
 
+    THE DOCUMENT TRAVELS WHOLE, which is what lets the quote read its own mandate: the book's
+    `Quote Policy` block rides the same copy the legs price against, and `structures.quote` reads
+    it there - so the risk-impact half is a property of the BOOK rather than of the service, and
+    the library verb behaves identically with no service anywhere near it.
+
     THE SPOT IS LIVE. Before the recipe runs, `patch_live_spot` puts this workstation's terminal
     spot onto THIS job's copy of the book - the surface and the curves stay the book's, since the
     cadence owns those and a delta-quoted surface reads at whatever spot is standing. The book file

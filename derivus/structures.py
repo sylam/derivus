@@ -71,6 +71,16 @@ legs are priced ONCE more against the unshifted book, and that is `net_mid`: wha
 at the moment it is booked. A book carrying no two-way shifts every leg by zero and quotes
 exactly as it always has, to the bit.
 
+THE RISK PRICES THE SPREAD. A trade's charge is the cost of hedging the RESIDUAL it leaves on the
+book, at the market's own two-way - never a bp-per-skew number somebody invented. So the composed
+candidate is MIRRORED (`mirror`, the same verb the booking uses, so the risk measured and the trade
+booked are one object) and the book's vol risk is read twice, with it and without it, in QUOTE
+space: `dV/d(ATM)`, `dV/d(RR)`, `dV/d(BF)` per pillar, off `Quote_Sensitivity` on the risk run's own
+copy of the `FXVolPrices` block. Each bucket's move in ABSOLUTE risk is charged that bucket's own
+half-spread, and a trade that sheds risk saves the desk that much hedge cost - so `participation` of
+it comes off the spread. The `Quote Policy` block declares the mandate and its ABSENCE is the
+feature's off switch: a book without one quotes bit for bit as it always did.
+
 THE SPOT IS LIVE, THE SURFACE IS TICKED. `with_live_spots` is the inverse of `engine_spot` and the
 one seam a caller writes a terminal's number through: a spot is `bind='value'` data and moves
 between two prints, while a delta-quoted vol surface is meant to be read at whatever spot is
@@ -105,6 +115,30 @@ VANILLA = {'Option_Style': 'European'}
 #: price factor is `FXVol.<name>`; the quote block is this.
 FX_VOL_PRICES = 'FXVolPrices.{}'
 FX_VOL_FACTOR = 'FXVol.{}'
+
+#: Where a desk's quoting MANDATE lives: a section of the JOB, beside `Calculation` and
+#: `MergeMarketData`. Not inside `ExplicitMarketData` beside `Market Prices`, which was the first
+#: choice and is not available - `Context.load_json` does `cfg.params[section].update(...)` and a
+#: section `Config` does not declare raises `KeyError` on load, measured rather than assumed. A
+#: policy is not market data anyway; every reader of a job walks `Calc` by NAME, so an unknown key
+#: there travels through load, pricing and the book file untouched. This module is its only reader.
+QUOTE_POLICY = 'Quote Policy'
+
+#: What the policy means where the block is silent, read with `.get` so a desk states only what it
+#: is changing. The ABSENCE OF THE BLOCK is the off switch, not these values: `participation` here
+#: is what a declared block defaults to, and a book carrying no block never reaches this dict.
+POLICY_DEFAULTS = {'participation': 0.5, 'floor': 'mid', 'scope': 'vol',
+                   'bucket_limit': None, 'min_ticket_bp': 0.0}
+
+#: `min_ticket_bp` is bp of notional, and a bp is this.
+BASIS_POINT = 1e-4
+
+#: The book-alone risk vector by the book's own content etag, bounded. The book's risk moves only
+#: when the market ticks or something books, and both change the etag - so a repeat quote on a
+#: standing book pays one greeks run instead of two. Bounded because a desk quotes all day against
+#: a book that ticks every 30s, and an unbounded dict of vectors keyed by etag is a slow leak.
+RISK_CACHE = {}
+RISK_CACHE_LIMIT = 16
 
 #: A year, as the expiry axis of a quote block counts one. Only ever used to place a leg's tenor
 #: BETWEEN two quoted pillars of the spread curve, so it is a reading of the same axis rather
@@ -492,6 +526,35 @@ def half_spread(rows, expiry):
     return rows[-1][1]
 
 
+def quote_two_way(document, surface):
+    """EVERY quoted pillar's half-spread for `surface`, keyed by the descriptor `dV/dq` reports
+    that quote under - `{'ATM 1': 0.002, 'RR 0.25 1': 0.001, ...}`, in the surface's own vol units.
+
+    `atm_two_way`'s reading widened to the whole block, and the two are not redundant: that one
+    answers "what does a VANILLA deal on at this tenor", an ATM curve read between pillars, while
+    this one answers "what does hedging THIS bucket cost", which is a lookup per quote and never
+    interpolated - a bucket IS a quoted pillar or it is not a bucket.
+
+    The descriptor and the used-quote filter both come from `FXVolSurfaceParameters`, because the
+    identity that matters is that these keys are the ones the bootstrap's own leaves are published
+    under. A second copy of the naming rule here is a copy that drifts, and it would drift into
+    silently pricing no bucket at all. A row missing either side is not a two-way and is skipped; a
+    CROSSED one reads zero-wide, for the reason `atm_two_way` states.
+    """
+    from .bootstrappers import FXVolSurfaceParameters
+    prices = document.get('Calc', {}).get('MergeMarketData', {}).get(
+        'ExplicitMarketData', {}).get('Market Prices', {})
+    block = (prices.get(FX_VOL_PRICES.format(surface)) or {}).get('instrument')
+    halves = {}
+    for point in FXVolSurfaceParameters.used(block) if block and block.get('Points') else []:
+        bid, ask = point.get('Quoted_Bid'), point.get('Quoted_Ask')
+        if bid is None or ask is None:
+            continue
+        halves[FXVolSurfaceParameters.descriptor(point)] = max(
+            0.0, 0.5 * (float(ask) - float(bid)))
+    return halves
+
+
 def leg_expiry(document, deal):
     """A leg's tenor in years, on the quote block's own expiry axis - the coordinate the spread
     curve is read at, and nothing else. Not a day count a price comes off."""
@@ -724,6 +787,296 @@ def mirror(deal):
     return flipped
 
 
+def read_policy(document):
+    """The desk's quoting mandate off `Calc['Quote Policy']`, or `None` where the book declares
+    none - and `None` turns the whole risk-impact feature off, which is the compatibility contract.
+
+    Five fields, each read with `.get` against `POLICY_DEFAULTS` so a block may state one of them:
+
+      - `participation` - how much of a measured hedge-cost SAVING is passed to the client
+      - `floor` - 'mid': the scale never goes below zero, so a quote never crosses the mid
+      - `scope` - 'vol', which is all v1 measures; anything else refuses rather than silently
+        pricing a scope nobody implemented
+      - `bucket_limit` - a per-bucket cap on `|risk after|` in the bucket's own vega units, past
+        which NO tightening applies however good the saving looks
+      - `min_ticket_bp` - flat bp of notional, the ops floor under the edge
+    """
+    policy = document.get('Calc', {}).get(QUOTE_POLICY)
+    if policy is None:
+        return None
+    read = {name: policy.get(name, default) for name, default in POLICY_DEFAULTS.items()}
+    if read['scope'] != 'vol':
+        raise ValueError('{}: scope {!r} - v1 measures the vol book and nothing else, so any '
+                         'other scope would quote a residual it never looked at'.format(
+                             QUOTE_POLICY, read['scope']))
+    if read['floor'] != 'mid':
+        raise ValueError('{}: floor {!r} - the only floor v1 implements is the mid, which is the '
+                         'ruling that a quote never goes through it automatically'.format(
+                             QUOTE_POLICY, read['floor']))
+    return read
+
+
+def risk_document(document, nodes, surface):
+    """The book as a GREEKS run, with `nodes` added to its deal tree and the vol quotes connected.
+
+    Three edits and no others. The calculation becomes a `BaseValuation` asking for `Greeks: 'First'`
+    - one backward off the ROOT netting set, so a leaf's `.grad` is the whole portfolio's. The
+    candidate's nodes are appended (through `book_node` at the call site, which is where a populated
+    container learns its children hang off the node). And `Quote_Sensitivity` goes to Yes on the
+    `FXVolPrices` block, which is what makes `Config.bootstrap` leave the surface behind still
+    connected to the ATM/RR/BF quotes it was built from.
+
+    The switch is worth exactly ZERO in the forward pass - `leaf + (theta - theta.detach())` - so
+    turning it on cannot move a price, and this document is a copy in any case.
+    """
+    run = copy.deepcopy(document)
+    run['Calc']['Calculation'] = dict(run['Calc']['Calculation'],
+                                      Object='BaseValuation', Greeks='First')
+    children = list(run['Calc']['Deals']['Deals'].get('Children') or [])
+    run['Calc']['Deals']['Deals']['Children'] = children + list(nodes)
+    prices = run['Calc']['MergeMarketData']['ExplicitMarketData'].get('Market Prices', {})
+    block = prices.get(FX_VOL_PRICES.format(surface))
+    if not block:
+        raise ValueError('{} is missing - quote-space risk is read off the block the surface was '
+                         'bootstrapped from'.format(FX_VOL_PRICES.format(surface)))
+    block['instrument'] = dict(block['instrument'], Quote_Sensitivity='Yes')
+    return run
+
+
+def vol_risk(document, nodes, surface):
+    """`{descriptor: dV/dq}` for the book plus `nodes` - the vol book in QUOTE coordinates.
+
+    The attachment is harvested at BOOTSTRAP rather than at run, so this bootstraps its own copy
+    and prices it in the SAME `Context`: the leaves `Config.quote_leaves` publishes are the tensors
+    `Calculation.factor_leaf` was offered, and one backward off the root leaves `.grad` on them.
+
+    Descriptors are SUMMED across every published block, which is the documented collision rule -
+    one JSON number can feed two chains (`FXVolPrices` writes the surface an option reads, and
+    `GBMAssetPriceTSModelPrices` integrates that surface's ATM column into the curve the FX rate is
+    simulated with), and each family's partial is correct while neither is the answer. A book that
+    only asks the one block still lands here; the sum is over what the run published.
+
+    An EMPTY deal tree has no value to differentiate - `backward()` on a constant refuses - and its
+    risk is a zero vector by inspection, so it never reaches a run.
+    """
+    from . import Context
+    from .config import CustomJsonEncoder
+    run = risk_document(document, nodes, surface)
+    if not run['Calc']['Deals']['Deals']['Children']:
+        return {}
+    context = Context().load_json((json.dumps(run, cls=CustomJsonEncoder), 'risk'))
+    context.bootstrap()
+    context.run_job()
+    risk = {}
+    for descriptors, leaves in context.current_cfg.quote_leaves.values():
+        if leaves.grad is None:
+            continue
+        for descriptor, value in zip(descriptors, leaves.grad.detach().cpu().numpy().ravel()):
+            risk[descriptor] = risk.get(descriptor, 0.0) + float(value)
+    return risk
+
+
+def book_risk(document, surface):
+    """The book's OWN vol risk, cached on the book's content etag.
+
+    The book alone is the half of the measurement that does not depend on what is being quoted, and
+    it moves only when the market ticks or something books - both of which change the etag - so a
+    desk quoting repeatedly against a standing book pays for one greeks run rather than two per
+    quote. The etag is over everything the greeks run reads: the deal tree, the WHOLE market
+    section (a MarketDataFile path is market data too) and the Calculation block - a rolled
+    Base_Date or a changed report currency with an unmoved book is a different risk vector, and a
+    key missing either would serve yesterday's.
+    """
+    from . import content_hash
+    etag = content_hash({'deals': document['Calc']['Deals']['Deals'],
+                         'market': document['Calc']['MergeMarketData'],
+                         'calculation': document['Calc']['Calculation'],
+                         'surface': surface})
+    if etag not in RISK_CACHE:
+        if len(RISK_CACHE) >= RISK_CACHE_LIMIT:
+            RISK_CACHE.pop(next(iter(RISK_CACHE)))
+        RISK_CACHE[etag] = vol_risk(document, [], surface)
+    return RISK_CACHE[etag]
+
+
+def risk_buckets(before, after, halves):
+    """Per-bucket rows and the RESIDUAL HEDGE COST they add up to, in the report currency.
+
+    A bucket's cost is the move in ABSOLUTE risk times that bucket's own half-spread: what it would
+    cost, at the market's own two-way, to put the residual back flat. `dV/dq` is already a vega in
+    report currency per unit of quote, so the product is money and nothing converts it. A NEGATIVE
+    total is the trade shedding risk - the desk saves that much hedge cost, and the policy decides
+    how much of the saving the client sees.
+
+    Only buckets the book quotes a two-way for are priced: a bucket with no quoted spread has no
+    market price for its risk, and charging it something would be the invented number this whole
+    design exists to avoid.
+    """
+    rows, cost = [], 0.0
+    for bucket in sorted(halves):
+        was, now, half = before.get(bucket, 0.0), after.get(bucket, 0.0), halves[bucket]
+        delta = abs(now) - abs(was)
+        rows.append({'bucket': bucket, 'before': was, 'after': now,
+                     'delta': delta, 'half_spread': half})
+        cost += delta * half
+    return rows, cost
+
+
+def risk_scale(rows, cost, policy, charge_full, min_ticket):
+    """The policy applied: `(scale, saving, charge_effective, note)`.
+
+    `scale` multiplies every leg's half-spread on the re-quote and lives in [0, 1]. Three rulings
+    are in this arithmetic and each is one line:
+
+      - a risk-ADDING trade stays at the full two-way. The market spread is the CEILING in v1 -
+        there is no surcharge past it - so a positive residual cost is simply no saving.
+      - the mid is the FLOOR. The effective charge never goes below zero, so a quote is never
+        automatically pushed through the mid however much risk it sheds.
+      - the min ticket is the ops floor UNDER the tightening, not a second ceiling over it: a
+        min_ticket above the full spread leaves the scale at 1 rather than lifting the quote.
+
+    A bucket standing past `bucket_limit` after the trade suspends the tightening entirely and is
+    NAMED - the trade may net down some other bucket, but a book already over its limit somewhere
+    does not get to quote tighter on the strength of it.
+    """
+    limit = policy['bucket_limit']
+    capped = next((row['bucket'] for row in rows
+                   if limit is not None and abs(row['after']) > float(limit)), None)
+    saving = 0.0 if capped is not None else max(0.0, -cost)
+    effective = max(0.0, charge_full - float(policy['participation']) * saving)
+    effective = max(effective, min_ticket)
+    scale = 1.0 if charge_full <= 0.0 else min(1.0, effective / charge_full)
+    note = None if capped is None else (
+        '{} stands at {:.6g} after the trade, past bucket_limit {:g} - no tightening '
+        'applies'.format(capped, next(row['after'] for row in rows if row['bucket'] == capped),
+                         float(limit)))
+    return scale, saving, scale * charge_full, note
+
+
+def run_recipe(document, structure, params, reference, two_way, surface, spot, scale):
+    """One whole pass of the recipe at `scale` times the book's half-spread, from fresh legs.
+
+    Everything a pass owns: materializing the legs, signing each one's shift by the CLIENT's side,
+    building the shifted book each shift needs, running the steps in order, and marking the
+    finished legs once more at mid. `scale` is the ONE thing that differs between the base pass and
+    a re-quote - it multiplies the half-spread and rides the same two-sided machinery, rather than
+    forking a second shift path that could disagree with it about a sign.
+
+    Returns `(legs, spreads, premiums, solved, mid)`. Legs are fresh because `run_solve` writes the
+    solved value back onto the leg it moved, so a second pass over the first pass's legs would seed
+    itself from the answer it is meant to find.
+    """
+    legs = materialize(structure, params, document)
+    for leg in legs:
+        leg.deal['Reference'] = '{}_{}'.format(reference, leg.role)
+        leg.deal['Structure_Reference'] = reference
+    by_role = {leg.role: leg for leg in legs}
+
+    spreads, books, by_shift = {}, {}, {}
+    for leg in legs:
+        # a leg's Buy_Sell is the CLIENT's side: what they buy is offered at the ask vol and what
+        # they sell is taken at the bid, so the client's side IS the sign of the shift - and a leg
+        # that states no side has no side of the market to be dealt on, which is a refusal rather
+        # than a default, because either guess charges the spread the wrong way round
+        side = leg.deal.get('Buy_Sell')
+        if two_way and side not in ('Buy', 'Sell'):
+            raise ValueError('{}: leg {} carries no Buy_Sell, so which side of the two-way it '
+                             'deals on is not stated'.format(structure.__name__, leg.role))
+        spreads[leg.role] = scale * (1.0 if side == 'Buy' else -1.0) * half_spread(
+            two_way, leg_expiry(document, leg.deal)) if two_way else None
+        # legs taking the SAME shift share one copy - the shift is the whole difference between
+        # them, and every pricing deep-copies again through `alone`, so nothing here is mutated.
+        # A structure's legs usually share an expiry, which makes this two books rather than five
+        shift = spreads[leg.role] or 0.0
+        if shift not in by_shift:
+            by_shift[shift] = with_vol_shift(document, FX_VOL_FACTOR.format(surface), shift)
+        books[leg.role] = by_shift[shift]
+
+    premiums, solved = {}, {}
+    for step in structure.recipe:
+        if step.role not in by_role:
+            raise ValueError('{}: the recipe names leg {!r}, which is not declared'.format(
+                structure.__name__, step.role))
+        leg = by_role[step.role]
+        if isinstance(step, Price):
+            premiums[leg.role] = run_price(books[leg.role], leg.deal)
+        elif isinstance(step, Solve):
+            # the target is the legs already priced ON THEIR OWN SIDES, so a solved coordinate
+            # finances the structure at the vols it was really quoted at
+            target = step.target.value(premiums) if isinstance(step.target, Premium) \
+                else float(step.target)
+            value, premiums[leg.role] = run_solve(books[leg.role], leg, step.field, target, spot)
+            solved.setdefault(leg.role, {})[step.field] = value
+        else:
+            raise ValueError('{}: {!r} is not a recipe step'.format(structure.__name__, step))
+
+    unpriced = [leg.role for leg in legs if leg.role not in premiums]
+    if unpriced:
+        raise ValueError('{}: the recipe never prices {}'.format(
+            structure.__name__, ', '.join(unpriced)))
+
+    # ONE more pass, at MID, over the legs as they were finally solved: the spread belongs to the
+    # quote and the mid belongs to the book, and this is the number the trade marks at once booked
+    mid = {leg.role: run_price(document, leg.deal) for leg in legs}
+    return legs, spreads, premiums, solved, mid
+
+
+def risk_impact(document, params, reference, two_way, surface, legs, premiums, mid):
+    """The whole risk-impact step over a candidate already quoted at the full two-way.
+
+    Measures the book with the candidate's MIRROR on it and without, prices the difference at the
+    market's own two-way, applies the policy, and hands back the `risk` block the outcome carries -
+    `scale` included, which is what the re-quote multiplies every half-spread by.
+
+    Four ways out, and each leaves `scale` at None (nothing to re-quote) with the reason NAMED
+    rather than reported as a scale of 1 nobody can distinguish from a decision:
+
+      - the book declares no `Quote Policy` - the feature is off and this is today's quote
+      - the book quotes no two-way - there is no spread to tighten and no half-spread to price a
+        bucket at either
+      - the full charge is not positive - a two-way that captured nothing has nothing to give back
+      - the book publishes no vol quote leaves, so there are no quote coordinates to measure in.
+        Conservative on purpose: no coordinates means no tightening, never a guessed one
+    """
+    policy = read_policy(document)
+    empty = {'coordinates': 'quote-space', 'buckets': [], 'saving': None, 'charge_full': None,
+             'charge_effective': None, 'scale': None, 'policy': policy}
+    if policy is None:
+        return dict(empty, note='the book declares no {} block - the quote is the full two-way '
+                                'spread, exactly as it was before'.format(QUOTE_POLICY))
+    if not two_way:
+        return dict(empty, note='{} carries no two-way - there is no spread to tighten'.format(
+            FX_VOL_PRICES.format(surface)))
+    charge_full = sum(premiums.values()) - sum(mid[leg.role] for leg in legs)
+    if charge_full <= 0.0:
+        return dict(empty, charge_full=charge_full,
+                    note='the two-way captured {:.6g} - there is nothing to give back'.format(
+                        charge_full))
+
+    # the MIRROR is the desk's side, which is what a book would carry - the same verb the approval
+    # books through, so the risk measured and the trade booked cannot disagree by a sign
+    candidate = book_node(mirror(compose(reference, legs)))
+    before = book_risk(document, surface)
+    after = vol_risk(document, [candidate], surface)
+    halves = quote_two_way(document, surface)
+    if not (before or after):
+        return dict(empty, charge_full=charge_full,
+                    note='no FX vol quote leaves were published - the book carries no '
+                         'FXVolSurfaceParameters bootstrap, so there are no quote coordinates to '
+                         'measure the residual in and no tightening applies')
+
+    rows, cost = risk_buckets(before, after, halves)
+    # a bp of NOTIONAL in the report currency: the notional is in its own currency and the charge
+    # is in the run's, so the ops floor crosses on the same FxRate ratio `engine_spot` reads
+    min_ticket = float(policy['min_ticket_bp']) * BASIS_POINT * float(params['notional']) * \
+        engine_spot(document, str(params['notional_currency']).upper(),
+                    document['Calc']['Calculation']['Currency'])
+    scale, saving, effective, note = risk_scale(rows, cost, policy, charge_full, min_ticket)
+    return {'coordinates': 'quote-space', 'buckets': rows, 'saving': saving,
+            'charge_full': charge_full, 'charge_effective': effective, 'scale': scale,
+            'policy': policy, 'note': note}
+
+
 def quote(document, structure_name, params, spot_source=None):
     """Price a structure against a book, and hand back the quote plus the deal it would book.
 
@@ -760,6 +1113,28 @@ def quote(document, structure_name, params, spot_source=None):
     the value rather than being told it, so what is reported and what was priced cannot disagree;
     a caller that patched a live spot in says so, and the default is the plain reading - the
     document's own spot, nothing tried, nothing to name.
+
+    THE RISK-IMPACT HALF, and it is OFF unless the book declares a `Calc['Quote Policy']` block.
+    Where it does: the base pass above is quoted at the full two-way, its composed candidate is
+    MIRRORED into the desk's side, and the book's vol risk is measured with it and without it in
+    quote coordinates - `dV/d(ATM)`, `dV/d(RR)`, `dV/d(BF)` per pillar. Each bucket's move in
+    ABSOLUTE risk, times that bucket's own half-spread, is what hedging the residual costs at the
+    market's own two-way; a negative total is a SAVING, and `participation` of it comes off the
+    charge. The re-quote then runs the whole recipe again with every leg's half-spread multiplied
+    by `scale = charge_effective / charge_full`, threaded through the same two-sided machinery.
+
+    ONE PASS, NOT A FIXED POINT, and that is a deliberate approximation stated rather than hidden:
+    the risk was measured on the FULL-SPREAD candidate, and the re-solve moves the solved
+    coordinate, so the tightened structure's residual is not exactly the one that was priced. The
+    move is second order - a strike shifts by the spread, and the risk shifts by the strike - and
+    iterating to a fixed point would pay a greeks run per iterate to chase it. The quote is honest
+    about which candidate it measured: the `risk` block's buckets are the full-spread candidate's.
+
+    A risk-ADDING trade quotes at the full spread. There is no surcharge past the two-way in v1 -
+    the market's own spread is the ceiling, by the owner's ruling - so a trade that piles risk on
+    is simply not tightened. `scale` is never below zero either: the mid is the floor, and a quote
+    is never automatically pushed through it. The `risk` block reports the buckets, the saving, the
+    full and effective charges, the scale, the policy as READ, and a note where one is warranted.
     """
     from . import content_hash
     from .config import CustomJsonEncoder
@@ -773,61 +1148,17 @@ def quote(document, structure_name, params, spot_source=None):
         'at': time.perf_counter()})
     reference = '{}-{}'.format(structure_name, quote_id[:8])
 
-    legs = materialize(structure, params, document)
-    for leg in legs:
-        leg.deal['Reference'] = '{}_{}'.format(reference, leg.role)
-        leg.deal['Structure_Reference'] = reference
-    by_role = {leg.role: leg for leg in legs}
-    spot = engine_spot(document, legs[0].deal['Underlying_Currency'], legs[0].deal['Currency'])
-
-    surface = legs[0].deal['FX_Volatility']
+    probe = materialize(structure, params, document)[0]
+    spot = engine_spot(document, probe.deal['Underlying_Currency'], probe.deal['Currency'])
+    surface = probe.deal['FX_Volatility']
     two_way = atm_two_way(document, surface)
-    spreads, books, by_shift = {}, {}, {}
-    for leg in legs:
-        # a leg's Buy_Sell is the CLIENT's side: what they buy is offered at the ask vol and what
-        # they sell is taken at the bid, so the client's side IS the sign of the shift - and a leg
-        # that states no side has no side of the market to be dealt on, which is a refusal rather
-        # than a default, because either guess charges the spread the wrong way round
-        side = leg.deal.get('Buy_Sell')
-        if two_way and side not in ('Buy', 'Sell'):
-            raise ValueError('{}: leg {} carries no Buy_Sell, so which side of the two-way it '
-                             'deals on is not stated'.format(structure_name, leg.role))
-        spreads[leg.role] = (1.0 if side == 'Buy' else -1.0) * half_spread(
-            two_way, leg_expiry(document, leg.deal)) if two_way else None
-        # legs taking the SAME shift share one copy - the shift is the whole difference between
-        # them, and every pricing deep-copies again through `alone`, so nothing here is mutated.
-        # A structure's legs usually share an expiry, which makes this two books rather than five
-        shift = spreads[leg.role] or 0.0
-        if shift not in by_shift:
-            by_shift[shift] = with_vol_shift(document, FX_VOL_FACTOR.format(surface), shift)
-        books[leg.role] = by_shift[shift]
 
-    premiums, solved = {}, {}
-    for step in structure.recipe:
-        if step.role not in by_role:
-            raise ValueError('{}: the recipe names leg {!r}, which is not declared'.format(
-                structure_name, step.role))
-        leg = by_role[step.role]
-        if isinstance(step, Price):
-            premiums[leg.role] = run_price(books[leg.role], leg.deal)
-        elif isinstance(step, Solve):
-            # the target is the legs already priced ON THEIR OWN SIDES, so a solved coordinate
-            # finances the structure at the vols it was really quoted at
-            target = step.target.value(premiums) if isinstance(step.target, Premium) \
-                else float(step.target)
-            value, premiums[leg.role] = run_solve(books[leg.role], leg, step.field, target, spot)
-            solved.setdefault(leg.role, {})[step.field] = value
-        else:
-            raise ValueError('{}: {!r} is not a recipe step'.format(structure_name, step))
-
-    unpriced = [leg.role for leg in legs if leg.role not in premiums]
-    if unpriced:
-        raise ValueError('{}: the recipe never prices {}'.format(
-            structure_name, ', '.join(unpriced)))
-
-    # ONE more pass, at MID, over the legs as they were finally solved: the spread belongs to the
-    # quote and the mid belongs to the book, and this is the number the trade marks at once booked
-    mid = {leg.role: run_price(document, leg.deal) for leg in legs}
+    legs, spreads, premiums, solved, mid = run_recipe(
+        document, structure, params, reference, two_way, surface, spot, 1.0)
+    risk = risk_impact(document, params, reference, two_way, surface, legs, premiums, mid)
+    if risk['scale'] is not None and risk['scale'] < 1.0:
+        legs, spreads, premiums, solved, mid = run_recipe(
+            document, structure, params, reference, two_way, surface, spot, risk['scale'])
 
     return {
         'quote_id': quote_id, 'structure': structure_name, 'params': dict(params),
@@ -853,4 +1184,7 @@ def quote(document, structure_name, params, spot_source=None):
         'spread_note': None if two_way else
         '{} carries no Quoted_Bid/Quoted_Ask - every leg is quoted at the mid surface, '
         'unshifted'.format(FX_VOL_PRICES.format(surface)),
+        # what the residual this trade leaves on the book costs to hedge, and what the policy did
+        # with it. `scale` is None where the feature never ran; the note says why
+        'risk': risk,
         'deal': compose(reference, legs)}

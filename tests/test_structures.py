@@ -407,6 +407,179 @@ def test_a_two_sided_quote_charges_the_spread_and_leaves_the_book_at_mid(book, t
     assert two_sided_collar['net'] - two_sided_collar['net_mid'] > 0, two_sided_collar['net_mid']
 
 
+#: The desk's mandate, as a book declares one. `participation` at a half is the default a declared
+#: block carries; the gates below vary one field at a time off this.
+POLICY = {'participation': 0.5, 'floor': 'mid', 'scope': 'vol',
+          'bucket_limit': None, 'min_ticket_bp': 0.0}
+
+
+def with_policy(document, **stated):
+    """`document` with a `Quote Policy` block on it - the whole risk-impact feature's on switch."""
+    out = copy.deepcopy(document)
+    out['Calc'][structures.QUOTE_POLICY] = dict(POLICY, **stated)
+    return out
+
+
+def holding(document, deals):
+    """`document` with exactly `deals` standing in its deal tree, through the one lift that knows a
+    container's children hang off the NODE."""
+    out = copy.deepcopy(document)
+    out['Calc']['Deals']['Deals']['Children'] = [structures.book_node(deal) for deal in deals]
+    return out
+
+
+COLLAR = 'ZeroCostCollar'
+
+
+@pytest.fixture(scope='module')
+def standing(two_sided_book):
+    """One collar quoted at the full two-way - the trade the books below already carry."""
+    return structures.quote(two_sided_book, COLLAR, params(floor=SPOT * 0.95))
+
+
+def cap_of(outcome):
+    return leg(outcome, 'financing')['strike_market']
+
+
+def test_a_book_with_no_quote_policy_quotes_exactly_as_it_always_did(two_sided_book, standing):
+    """The compatibility contract for the risk-impact half, and it is the same shape as the
+    two-sided one: absence is not a small effect, it is the identical code path.
+
+    A book declaring no `Quote Policy` never reaches the greeks runs at all - `risk.scale` is None
+    rather than 1.0, which is the difference between "the feature did not run" and "it ran and
+    decided nothing", and a consumer that cannot tell those apart cannot audit a quote. A book
+    declaring one with `participation` at ZERO runs the WHOLE layer - both greeks runs, the
+    buckets, the charge - and must land on the identical floats, so the presence of the policy
+    cannot move a price and only a stated participation can.
+
+    Both quotes are given against a book already carrying a position, so the measurement has
+    something real to say and its silence is a decision rather than an empty book's default.
+    """
+    held = holding(two_sided_book, [structures.mirror(standing['deal'])])
+    plain = structures.quote(held, COLLAR, params(floor=SPOT * 0.95))
+    zero = structures.quote(with_policy(held, participation=0.0), COLLAR,
+                            params(floor=SPOT * 0.95))
+
+    assert plain['risk']['scale'] is None and plain['risk']['buckets'] == []
+    assert plain['risk']['policy'] is None and structures.QUOTE_POLICY in plain['risk']['note']
+    assert zero['risk']['scale'] == 1.0 and zero['risk']['buckets'], 'the layer never ran'
+    assert zero['risk']['policy'] == dict(POLICY, participation=0.0)
+
+    for row, same in zip(plain['legs'], zero['legs']):
+        assert (row['premium'], row['strike_market'], row['solved'], row['vol_spread']) == (
+            same['premium'], same['strike_market'], same['solved'], same['vol_spread']), row
+    assert (plain['net'], plain['net_mid'], plain['edge']) == (
+        zero['net'], zero['net_mid'], zero['edge'])
+
+
+def renamed(deal, suffix):
+    """The same trade under its own reference - a book may hold two of one structure, and the mtm
+    frame is keyed by reference."""
+    copied = copy.deepcopy(deal)
+    copied['Reference'] += suffix
+    for child in copied.get('Children', []):
+        child['Instrument']['.Deal']['Reference'] += suffix
+        child['Instrument']['.Deal']['Structure_Reference'] = copied['Reference']
+    return copied
+
+
+def test_an_offset_quotes_tighter_than_a_repeat(book, two_sided_book, standing):
+    """The whole ruling, priced: what a trade costs is what hedging the RESIDUAL it leaves costs,
+    at the market's own two-way.
+
+    The registry has no sell-side collar - a collar's client always buys the put and sells the call -
+    so the opposite SIDE is put on the BOOK rather than into the quote. Two books carry the same
+    trade the two ways a desk can hold it: SHORT it (the mirror of a collar it quoted, the ordinary
+    case) and LONG it (what it holds when a client sold it one). Quoting that collar into the first
+    piles the same risk on again; into the second it nets the book flat. One structure, one policy,
+    one set of parameters, opposite signs - so nothing but the residual can be producing the
+    difference below.
+
+    Four claims. The offsetting quote is TIGHTER (`scale` strictly inside 1) and the repeat is not
+    (`scale` exactly 1 - the market's own spread is the ceiling in v1, so a risk-adding trade takes
+    no surcharge). The charges order the same way. The offset's solved cap lands strictly between
+    the full-spread cap and the MID cap - client-better than the full spread, and never through the
+    mid, which is the floor the policy declares. And every scale is in [0, 1], on all three.
+
+    The buckets say why: the same trade's mirror doubles `RR 0.25 1` on one book and zeroes it on
+    the other, and the RR pillar's own half-spread is what that move is charged at.
+    """
+    ask = params(floor=SPOT * 0.95)
+    short_book = with_policy(holding(two_sided_book, [structures.mirror(standing['deal'])]))
+    long_book = with_policy(holding(two_sided_book, [standing['deal']]))
+    adding = structures.quote(short_book, COLLAR, ask)
+    reducing = structures.quote(long_book, COLLAR, ask)
+    full_spread = structures.quote(
+        holding(two_sided_book, [structures.mirror(standing['deal'])]), COLLAR, ask)
+
+    assert adding['risk']['scale'] == 1.0, 'a risk-adding trade was surcharged past the two-way'
+    assert adding['risk']['saving'] == 0.0
+    assert 0.0 < reducing['risk']['scale'] < 1.0, reducing['risk']['scale']
+    assert reducing['risk']['saving'] > 0.0
+    assert reducing['risk']['charge_effective'] < adding['risk']['charge_effective']
+    assert adding['risk']['charge_effective'] == pytest.approx(adding['risk']['charge_full'])
+    assert reducing['risk']['coordinates'] == 'quote-space'
+
+    # the mirror doubles the skew bucket on one book and cancels it on the other - one number,
+    # read from both sides, which no sign error survives
+    skew = {row['bucket']: row for row in reducing['risk']['buckets']}['RR 0.25 1']
+    piled = {row['bucket']: row for row in adding['risk']['buckets']}['RR 0.25 1']
+    assert skew['before'] == pytest.approx(-piled['before'], rel=1e-9)
+    assert abs(skew['after']) < 1e-6 * abs(skew['before']), 'the offset left skew standing'
+    assert piled['after'] == pytest.approx(2.0 * piled['before'], rel=1e-9)
+    assert skew['half_spread'] > 0.0
+
+    assert cap_of(adding) == cap_of(full_spread), 'the repeat is not the full-spread quote'
+    assert cap_of(adding) < cap_of(reducing) < cap_of(structures.quote(book, COLLAR, ask)), (
+        'the tightened cap {} is not between the full-spread cap {} and the mid one'.format(
+            cap_of(reducing), cap_of(adding)))
+    assert all(0.0 <= outcome['risk']['scale'] <= 1.0 for outcome in (adding, reducing))
+
+
+def test_the_cap_and_the_floor(two_sided_book, standing):
+    """The two limits the policy declares, each made to bind on a book where it matters.
+
+    THE CAP. A book holding TWO of the trade still has one of them standing after the offset, so
+    the residual is real - a `bucket_limit` under it suspends the tightening entirely and NAMES the
+    bucket. That is the conservative direction and it is the point of the field: a book already
+    over its limit somewhere does not get to quote tighter on the strength of netting down
+    elsewhere, however good the saving looks.
+
+    THE FLOOR. `min_ticket_bp` is flat bp of NOTIONAL, and the notional is in rand while the charge
+    is in the report currency, so it crosses on the same `FxRate` ratio every other conversion here
+    reads. Set inside the band the tightening opens - between the tightened charge and the full
+    one - it binds exactly: the effective charge lands ON the ticket rather than below it, and the
+    quote is wider than the unfloored one and still no wider than the two-way.
+    """
+    ask = params(floor=SPOT * 0.95)
+    twice = holding(two_sided_book, [renamed(standing['deal'], '_a'),
+                                     renamed(standing['deal'], '_b')])
+    free = structures.quote(with_policy(twice), COLLAR, ask)
+    residual = max(abs(row['after']) for row in free['risk']['buckets'])
+    assert free['risk']['scale'] < 1.0 and residual > 0.0, 'nothing was tightened to cap'
+
+    capped = structures.quote(with_policy(twice, bucket_limit=residual / 2.0), COLLAR, ask)
+    assert capped['risk']['scale'] == 1.0
+    assert capped['risk']['saving'] == 0.0
+    assert 'bucket_limit' in capped['risk']['note'] and 'RR 0.25 1' in capped['risk']['note']
+    assert cap_of(capped) == cap_of(structures.quote(
+        holding(two_sided_book, [structures.mirror(standing['deal'])]), COLLAR, ask)), (
+        'a capped quote is not the full-spread quote')
+
+    # bp of notional, crossed to the report currency exactly as the runner crosses it
+    per_bp = structures.BASIS_POINT * NOTIONAL / SPOT
+    tight, full = free['risk']['charge_effective'], free['risk']['charge_full']
+    ticket_bp = 0.5 * (tight + full) / per_bp
+    floored = structures.quote(with_policy(twice, min_ticket_bp=ticket_bp), COLLAR, ask)
+
+    assert tight < ticket_bp * per_bp < full, 'the ticket does not bind between the two charges'
+    assert floored['risk']['charge_effective'] == pytest.approx(ticket_bp * per_bp, rel=1e-12)
+    assert tight < floored['risk']['charge_effective'] < full
+    assert free['risk']['scale'] < floored['risk']['scale'] < 1.0
+    assert cap_of(capped) < cap_of(floored) < cap_of(free), (
+        'the floored cap is not between the full-spread one and the unfloored one')
+
+
 def test_a_knock_in_plus_a_knock_out_is_the_vanilla(book):
     """In-out parity, straight through the engine: a bought up-and-IN call and a bought up-and-OUT
     call on the same strike and the same barrier are between them the vanilla, because exactly one

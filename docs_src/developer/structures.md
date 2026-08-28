@@ -129,6 +129,94 @@ prices the book PLUS the same mirror — the risk measured and the trade booked 
 a sign cannot disagree between them. The pending file keeps the client frame it was quoted in; the
 flip is the booking's act, by the owner's ruling: quote client-frame, mirror once, book the mirror.
 
+## The risk prices the spread {#risk-impact}
+
+The two-way above is what the MARKET charges for a trade. What a DESK charges is the cost of
+hedging the RESIDUAL that trade leaves on its book — and the whole point of the design is that this
+is a measurement, priced at the market's own two-way, rather than a bp-per-skew number somebody
+invented. A trade that nets the book down costs the desk less to carry and is quoted tighter; a
+trade that piles risk on is quoted at the full spread and no wider.
+
+**The measurement.** The base pass is unchanged — quote two-sided, full half-spread per leg. Then
+the composed candidate is put through `structures.mirror` (the same verb `/book/quote` books
+through, so the risk measured and the trade booked are ONE object and a sign cannot disagree
+between them) and the book's vol risk is read twice: the book alone, and the book with the mirror
+spliced in through `book_node`. Both are `BaseValuation` with `Greeks: 'First'` — one backward off
+the ROOT netting set, so a leaf's `.grad` is the whole portfolio's.
+
+**The coordinates are QUOTE space.** `Quote_Sensitivity: 'Yes'` goes onto the `FXVolPrices` block
+of the risk run's own copy, which is bootstrapped in the same `Context` that prices it — the
+attachment is harvested at BOOTSTRAP, not at run
+([Quote Sensitivities](quote_sensitivities.md#the-attachment)) — and `Config.quote_leaves` then
+holds the ATM/RR/BF quote leaves the surface was built from. So a bucket is `dV/d(ATM 1)`,
+`dV/d(RR 0.25 1)`, `dV/d(BF 0.25 1)`: what the desk would actually have to trade, not a node of a
+log-moneyness grid. Descriptors are summed across every published block, which is the
+[collision rule](quote_sensitivities.md#the-attachment) — one JSON number can feed two chains and
+each family's partial is correct while neither is the answer. The switch is worth exactly zero in
+the forward pass, so turning it on cannot move a price.
+
+**The charge.** `quote_two_way` reads EVERY pillar's half-spread off the same block, keyed by the
+same descriptor the leaves are published under (`FXVolSurfaceParameters.descriptor`, reused rather
+than re-derived — a second copy of the naming rule is a copy that drifts into pricing no bucket at
+all). A bucket's cost is the move in ABSOLUTE risk times that bucket's own half: `dV/dq` is already
+a vega in report currency per unit of quote, so the product is money and nothing converts it.
+Summed, a NEGATIVE total is a saving. On the gate's book — a desk holding one collar, quoted the
+same collar back — the offset moves `ATM 1` by −613.86 at a 0.002 half, `BF 0.25 1` by −626.38 at
+0.001 and `RR 0.25 1` by −8748.99 at 0.001, for a measured saving of **10.6031 USD** against a full
+charge of **81.2194 USD**.
+
+**The policy** is a declared `Quote Policy` block on `Calc`, beside `Calculation` and
+`MergeMarketData`. Not inside `ExplicitMarketData` beside `Market Prices`: `Context.load_json`
+does `cfg.params[section].update(...)` and a section `Config` does not declare raises `KeyError` on
+load — measured, not assumed — and a mandate is not market data anyway. Every reader of a job walks
+`Calc` by name, so an unknown key there travels through load, pricing and the book file untouched,
+and `structures.quote` is its only reader exactly as it is the only reader of `Quoted_Bid`. Five
+fields, each read with `.get`:
+
+| field | default | what it decides |
+| --- | --- | --- |
+| `participation` | `0.5` | how much of a measured saving reaches the client |
+| `floor` | `'mid'` | the scale never goes below 0 — a quote never crosses the mid automatically |
+| `scope` | `'vol'` | all v1 measures; any other value refuses rather than quoting a scope nobody looked at |
+| `bucket_limit` | `None` | a cap on `\|risk after\|` per bucket, past which NO tightening applies |
+| `min_ticket_bp` | `0.0` | flat bp of notional, the ops floor under the edge (crossed to the report currency on the same `FxRate` ratio everything else here reads) |
+
+**The ABSENCE of the block is the off switch**, and that is the compatibility contract in the same
+shape as the two-sided one: a book declaring no policy never reaches the greeks runs at all and its
+`risk.scale` is `None` rather than `1.0` — the difference between "the feature did not run" and "it
+ran and decided nothing", which a consumer auditing a quote has to be able to tell apart. A block
+declaring `participation: 0` runs the WHOLE layer and lands on the identical floats.
+
+**The scale, and the ceiling.** `charge_effective = max(min_ticket, max(0, charge_full −
+participation × saving))`, and `scale = charge_effective / charge_full` clipped into [0, 1]. Two
+rulings sit in that clip. A risk-ADDING trade takes no surcharge — the market's own spread is the
+ceiling in v1 — so a positive residual cost is simply no saving and `scale` is exactly 1. And the
+min ticket is an ops floor UNDER the tightening, not a second ceiling over it: a ticket above the
+full spread leaves the scale at 1 rather than lifting the quote through the two-way.
+
+**ONE pass, not a fixed point**, and it is stated rather than hidden. The recipe is re-run once with
+every leg's half-spread multiplied by `scale`, threaded through the same two-sided machinery rather
+than a second shift path. But the risk was measured on the FULL-SPREAD candidate, and the re-solve
+moves the solved coordinate, so the tightened structure's residual is not exactly the one that was
+priced. The miss is second order — a strike shifts by the spread, the risk shifts by the strike —
+and measured on the gate's book it is **0.0196 USD on 75.92**, 0.026%: `charge_effective` 75.9178
+against a realised `edge` of 75.8983. Iterating to a fixed point would pay a greeks run per iterate
+to chase that. The `risk` block is honest about which candidate it measured: its buckets are the
+full-spread candidate's.
+
+**What it does to a quote.** Same book, same collar, same policy, opposite sign of the standing
+position: the repeat quotes a cap of 19.16949443 (the full-spread cap, to the bit) and the offset
+quotes 19.17396280 — 6.5% of the way back from the full spread toward the mid cap of 19.23862842.
+Client-better, and never through the mid.
+
+**The cache.** The book-alone half of the measurement does not depend on what is being quoted and
+moves only when the market ticks or something books — both of which change the book's content
+etag — so it is kept in a bounded module dict keyed by that etag, and a desk quoting repeatedly
+against a standing book pays one greeks run per quote instead of two. Measured: a miss is
+**30.5 ms** and a hit **0.115 ms**, against a cold run (bootstrap plus a `Greeks: 'First'`
+`BaseValuation`) of 105.8 ms. Bounded at 16 entries because a book that ticks every 30s would
+otherwise leak a vector per tick.
+
 ## The quote lifecycle
 
 **The spot is live, the surface is ticked.** Before the recipe runs, `StructureJob` puts this
@@ -182,6 +270,18 @@ knock-in branch (measured 1.1e-16 relative). The declared registry reproduced th
 hand-composed collar's solved cap to the digit, which is the check that the recipe encodes the
 composition and not an approximation of it.
 
+The risk-impact gates are three and the same shape. A book with no `Quote Policy` and one with
+`participation: 0` quote float for float identically, so the presence of the data cannot move a
+price. The registry has no sell-side collar — a collar's client always buys the put and sells the
+call — so the opposite SIDE is put on the BOOK rather than into the quote: one book short the trade
+and one long it, the same structure quoted into both, and the offset comes out tighter while the
+repeat comes out at exactly the full-spread cap. The `RR 0.25 1` bucket is read from both sides in
+that gate (`before` equal and opposite, `after` doubled on one and zero on the other), which no
+sign error survives. And the two limits are made to BIND on a book holding two of the trade, where
+the offset leaves a real residual: a `bucket_limit` under it suspends the tightening and names the
+bucket, and a `min_ticket_bp` set inside the band the tightening opens lands the effective charge
+exactly on the ticket.
+
 ## V1 scope, and the named next steps
 
 Five structures ship: `Straddle`, `Strangle` (no SOLVE — the registry handles recipes that only
@@ -193,12 +293,18 @@ forward at the rate they were protected at). It is the recipe vocabulary's first
 coordinate that is not a strike, and the first leg that is not an `FXOptionDeal`. Named next, in
 order of what they exercise:
 
-- **The risk-impact step.** Price the BOOK plus the candidate under `Greeks` and read the skew
-  delta in RR/BF coordinates — does the structure add skew or shed it — so a risk-reducing trade
-  is charged near mid. The runner already takes the whole document, `dV/d(risk reversal)` is an
-  ordinary number ([Quote Sensitivities](quote_sensitivities.md#the-delta-solve)), and with
-  `FXForwardDeal` benchmarks every hedge layer now speaks tradable coordinates. What it needs
-  from the desk is POLICY — bp per unit of skew, the mid threshold — which is mandate, not code.
+RISK-IMPACT PRICING v1 ships with them ([above](#risk-impact)), and its scope is named honestly:
+the residual is measured in the VOL book only (`scope: 'vol'`, and any other value refuses), in
+QUOTE coordinates off `Quote_Sensitivity` on the `FXVolPrices` block — the per-expiry ATM vega
+fallback was budgeted and never needed. It is ONE pass rather than a fixed point, and there is no
+surcharge past the two-way. Named next, in order of what they exercise:
+
+- **Incremental XVA — the v2 of the same step.** A counterparty on the quote, and the charge grows
+  a second term: `CVA(book + mirror(candidate)) − CVA(book)` through the `Credit_Monte_Carlo`
+  engine. The seam is already the right shape — `risk_impact` measures the book with and without
+  the mirror and prices the difference — so what v2 changes is WHICH calculation those two runs
+  are and what the difference is priced at: a credit charge is the number itself rather than a risk
+  times a half-spread, and it is a netting-set question rather than a bucket one.
 - **A ratio-solve primitive**, for participating forwards — the recipe vocabulary's first step
   that moves a notional fraction rather than a strike.
 - **A tenor-vocabulary note**: `expiry` parses `<n><D|W|M|Y>` through the job grammar's own

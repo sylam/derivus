@@ -549,7 +549,18 @@ def solve_structure(structure: str, params: dict, wait_seconds: float = 120.0) -
     units - and `net_mid` is the same legs marked at MID, which is what the trade will be worth on
     the book once booked. Read in the client's sign convention like every premium here, so the
     desk's edge on a zero-cost structure is `net` less `net_mid`. With no two-way in the book
-    every shift is zero, `net_mid` equals `net`, and `spread_note` says so. The BOOK IS NOT TOUCHED. What is written is the pending trade:
+    every shift is zero, `net_mid` equals `net`, and `spread_note` says so.
+
+The `risk` block says what the trade does to the BOOK and what that was worth to the client. Where
+the book declares a `Quote Policy`, the candidate is measured against the book with and without it
+in the vol quotes a desk trades - `buckets` carries `dV/d(ATM)`, `dV/d(RR)` and `dV/d(BF)` per
+pillar `before` and `after`, with that pillar's own `half_spread` - and a trade that NETS THE BOOK
+DOWN is quoted tighter by `participation` of the hedge cost it saves: `charge_full` is the full
+two-way, `charge_effective` what was actually charged, and `scale` the ratio the whole quote was
+re-solved at. A risk-adding trade is quoted at the full spread and never wider - the market's own
+spread is the ceiling - and no quote is pushed through the mid. `scale` is null where the feature
+never ran, and `note` says why (no policy declared, no two-way, or a bucket past its limit, named).
+The BOOK IS NOT TOUCHED. What is written is the pending trade:
     `DV_HOME/tmp/<quote_id>.json` holds the quote and its deal, with `<quote_id>.xlsx` - the sheet
     that goes to the client - beside it when the sheet writer is installed; `files` names both, and
     `files.sheet_note` names the install when there is no sheet. A missing sheet writer never
