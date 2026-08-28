@@ -31,6 +31,16 @@ the skip-if-in-flight decision is read off the executor's REAL store while a hel
 worker, and the routine refusal is a beat against a `DV_HOME` holding no map - which the job
 answers before it opens a session, in a named refusal the book's bytes are untouched by.
 
+`/book/hn` is the calibration verb, and its three gates are the emitter, the round trip and the
+refusal. The emitter is checked against the canned surface the market gates already build - ten
+points, the surface's own expiries with the substitutions NAMED, vega-normalised weights, wings
+straddling the spot - and then each emitted strike is put back through the family's own moneyness
+dispatch and required to return the vol the block carries, which is the whole orientation argument
+asserted rather than claimed. The round trip runs the verb and demands the model reprice its own
+ten quotes off the parameters the BOOK FILE ends up carrying; it fits a short-dated smile of its
+own, for two reasons its fixture states. The refusal is on the REQUEST thread, because a
+minutes-long job whose answer is a typo is not an answer.
+
 `/book/structure` and `/book/quote` are one verb split across the desk's own approval: a quote is
 given, filed under its id in `DV_HOME/tmp`, and only then booked. What the gates hold is that the
 two halves are the same trade - the collar comes back netting to zero, and the BOOK marks the deal
@@ -718,6 +728,466 @@ def test_a_bootstrap_that_complains_writes_nothing(book):
     assert book.read_bytes() == before
 
 
+def built_surface(path, quotes=None):
+    """A live book carrying a BUILT `FXVol.USD.ZAR`, through the two real entry points: the file is
+    a job declaring the surface bootstrapper, and the surface arrives by POSTing a quote block to
+    `/book/market` - the canned USDZAR one unless the caller hands in its own. What the
+    Heston-Nandi gates start from is therefore a surface the engine built, never one written by
+    hand."""
+    path.write_text(json.dumps(json.loads(dump(job(sections={
+        'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    ticked = CLIENT.post('/book/market', content=dump(
+        {'quotes': quotes if quotes is not None else fx_vol_quotes()}), headers=JSON).json()
+    assert ticked['written'] is True and 'FXVol.USD.ZAR' in ticked['new_factors']
+    return path
+
+
+def desk_smile():
+    """A USDZAR smile quoted at 1M, 2M, 3M and 6M, as the `FXVolPrices` block a quote source posts.
+
+    FOUR PILLARS BECAUSE THE LADDER NEEDS SIX CONTRACTS. Ten rungs are not ten quotes: every rung
+    the surface does not carry snaps onto one it does, and the canned two-pillar surface collapses
+    the whole ladder onto FOUR distinct contracts, which do not identify five parameters. Four
+    pillars are the fewest that give the ATM term structure three distinct expiries AND put the
+    two wing pairs on two different ones - eight contracts, measured - which is why 6M is here and
+    9M and 1Y are not.
+
+    THE RISK REVERSAL IS NEGATIVE, in pair terms, exactly as the canned USDZAR snapshot's is
+    (-1.2 at 3M there, -1.2 here) - which is the sign that pair actually trades at. Read on the
+    `FxRate.ZAR` axis the model is fitted on, that is a smile whose vol RISES with strike, and it
+    is the shape a strictly positive `Gamma_Star` could not represent: the fit used to answer it
+    with the leverage channel switched off and a flat smile it called converged. The signed
+    leverage share is what admits it, and this fixture is what proves the admission.
+
+    The expiries stop at 6M for the clock rather than the maths: the fit's cost is linear in the
+    step count of the longest expiry (252 GARCH steps a year, Fourier-inverted per L-BFGS-B
+    evaluation), and on the 3M/1Y canned surface it was measured still running past 21 minutes.
+    """
+    return {'FXVolPrices.USD.ZAR': {'instrument': {
+        'Currency': 'USD', 'Delta_Type': 'Forward', 'Premium_Adjusted': 'Yes',
+        'ATM_Convention': 'Delta_Neutral_Straddle', 'Grid_Tolerance': 1e-4,
+        'Quote_Sensitivity': 'No',
+        'Points': [{'Use': 'Yes', 'Expiry': expiry, 'Pillar': pillar, 'Quote_Type': quote_type,
+                    'Quoted_Market_Value': value,
+                    'Timestamp': pd.Timestamp('2024-06-28 16:30')}
+                   for expiry, atm, rr, bf in ((1.0 / 12.0, 0.140, -0.010, 0.0030),
+                                               (2.0 / 12.0, 0.142, -0.011, 0.0032),
+                                               (0.25, 0.145, -0.012, 0.0035),
+                                               (0.5, 0.150, -0.014, 0.0040))
+                   for pillar, quote_type, value in ((0.0, 'ATM', atm), (0.25, 'RR', rr),
+                                                     (0.25, 'BF', bf))]}}}
+
+
+def hn_block(path):
+    """The emitter, run the way the verb runs it: off a Context over the book file on disk."""
+    from derivus.bootstrappers import HestonNandiModelParameters
+
+    params = in_process(json.loads(path.read_text())).current_cfg.params
+    return HestonNandiModelParameters.fx_surface_block(
+        'USD.ZAR', params['Price Factors'], params['System Parameters'],
+        params['Price Factor Interpolation'])
+
+
+def test_the_hn_ladder_is_ten_vega_weighted_points_on_the_surfaces_own_strikes(tmp_path):
+    """The desk's ladder, off the built surface: ATM at 1M/2M/3M/6M/9M/1Y plus the 25 delta wings
+    at 3M and 6M, ten points, nothing past a year.
+
+    What is asserted is what makes them the SURFACE'S points rather than a moneyness grid laid over
+    it. The expiries are the surface's own - this one carries 1M/2M/3M/6M, so the 9M and 1Y rungs
+    move to the nearest quoted one AT OR UNDER a year and the block SAYS SO in `Quote_Source`,
+    which is the whole difference between a substitution and a silent interpolation. Ten rungs are
+    therefore EIGHT distinct contracts here, and the count is what the fit is actually given. The
+    weights are Black vega, normalised, so they sum to one and the back ATM outweighs the front
+    (vega grows with root time) - the property that stops an unweighted fit from serving the back
+    end and abandoning the front. And the wings straddle the spot: the strike solved for the pillar
+    delta on one side is above it, the other below.
+    """
+    from derivus.bootstrappers import HestonNandiModelParameters
+
+    name, block = hn_block(built_surface(tmp_path / 'book.json',
+                                         json.loads(dump(desk_smile()))))
+    try:
+        instrument = block['instrument']
+        points = instrument['European_Options']
+        expiries = sorted({point['Expiry_Date'] for point in points})
+
+        assert name == 'HestonNandiModelPrices.ZAR'
+        assert len(points) == 10
+        # the surface carries 1/12, 2/12, 0.25 and 0.5 in years, and nothing else
+        assert [str(x.date()) for x in expiries] == [
+            '2024-07-28', '2024-08-28', '2024-09-27', '2024-12-27']
+        assert len({(point['Expiry_Date'], point['Strike']) for point in points}) == 8, (
+            'the ladder collapsed further than the fixture says it does')
+        assert 'moved to the nearest quoted' in instrument['Quote_Source']
+        for moved in ('ATM 0.75 -> 0.5', 'ATM 1 -> 0.5'):
+            assert moved in instrument['Quote_Source'], moved
+        # the surface's own as-of travels onto the block, to the minute - staleness is data
+        assert '2024-06-28' in str(instrument['Quote_Timestamp'])
+        assert '16:30' in str(instrument['Quote_Timestamp'])
+
+        # the six ATM rungs are emitted in ladder order, then the two wing pairs
+        atm, wings = points[:6], points[6:]
+        assert sum(point['Weight'] for point in points) == pytest.approx(1.0)
+        assert {point['Expiry_Date'] for point in atm} == set(expiries)
+        assert atm[0]['Weight'] < atm[-1]['Weight'], 'the front ATM outweighs the back one'
+        assert atm[0]['Expiry_Date'] == expiries[0] and atm[-1]['Expiry_Date'] == expiries[-1]
+
+        assert len({point['Strike'] for point in wings}) == 4, 'the wings sit on two expiries'
+        below = [point for point in wings if point['Option_Type'] == 'Put']
+        above = [point for point in wings if point['Option_Type'] == 'Call']
+        assert len(below) == 2 and len(above) == 2
+        assert all(point['Strike'] < SPOT for point in below)
+        assert all(point['Strike'] > SPOT for point in above)
+        # the wings carry the smile, not the ATM vol repeated - and this pair's RISES with strike
+        # in the underlying's own units, which is the sign a one-signed Gamma_Star could not fit
+        assert below[0]['Quoted_Market_Value'] < above[0]['Quoted_Market_Value']
+
+        # the block resolves: every reference the fit hard-reads types off the book's own factors
+        from derivus import riskfactors
+
+        params = in_process(json.loads((tmp_path / 'book.json').read_text())).current_cfg.params
+        factors, interp = params['Price Factors'], params['Price Factor Interpolation']
+        assert [HestonNandiModelParameters.resolve(instrument, field, factors)
+                for field in ('Underlying', 'Volatility', 'Discount_Rate', 'Yield')] == [
+            utils.Factor('FxRate', ('ZAR',)), utils.Factor('FXVol', ('USD', 'ZAR')),
+            utils.Factor('InterestRate', ('USD',)), utils.Factor('InterestRate', ('ZAR',))]
+        # the surface's axis is log(F/K) on the PAIR, so the lookup is against the forward and
+        # inverted - the same pair of switches an FXOptionDeal on this surface sets
+        assert (instrument['Use_Forward'], instrument['Invert_Moneyness']) == ('Yes', 'Yes')
+
+        # THE CONVENTION CHAIN, ASSERTED: put each emitted strike back through the family's OWN
+        # moneyness dispatch, off the switches the block declares, and the surface has to answer
+        # the vol the block carries. That is what makes each quote the surface's own point rather
+        # than a number laid beside it, and it is what would fail first if the orientation, the
+        # forward or the inversion were wrong.
+        #
+        # THE VOL IS READ AT THE PILLAR, the strike hangs off the DATE. `Expiry_Date` is the
+        # pillar rounded to whole days and the fit reads its own accrual back off it, so the
+        # forward is that accrual's; the surface is read at the pillar the quote came from, which
+        # under a curve that is not ACT_365 is a different number and under ACT_360 puts the 1Y
+        # rung past the last expiry the surface carries
+        base = params['System Parameters']['Base_Date']
+        surface = riskfactors.construct_factor(
+            utils.Factor('FXVol', ('USD', 'ZAR')), factors, interp)
+        curve = lambda name: riskfactors.construct_factor(
+            utils.Factor('InterestRate', (name,)), factors, interp)
+        discount, carry = curve('USD'), curve('ZAR')
+        spot = float(riskfactors.construct_factor(
+            utils.Factor('FxRate', ('ZAR',)), factors, interp).current_value()[0])
+        for point in points:
+            days = (point['Expiry_Date'] - base).days
+            t = discount.get_day_count_accrual(base, days)
+            pillar, _ = HestonNandiModelParameters.fx_surface_expiry(
+                surface, days / HestonNandiModelParameters.fx_days_per_year,
+                max(HestonNandiModelParameters.fx_atm_expiries))
+            forward = spot * np.exp(
+                (float(discount.current_value(t)) - float(carry.current_value(t))) * t)
+            moneyness = HestonNandiModelParameters.moneyness(
+                point['Strike'], spot, forward, surface, True, True)
+            assert float(surface.current_value([[moneyness, pillar]])[0]) == pytest.approx(
+                point['Quoted_Market_Value'], rel=1e-9)
+    finally:
+        service.BOOK = None
+
+
+def hand_authored_hn_block(vols):
+    """A `HestonNandiModelPrices.ZAR` block with nine quotes at ONE WEEK, TWO and THREE.
+
+    The emitter's own ladder reaches six months and its fit is a wall-clock quarter of an hour;
+    what the shift gate needs is the fit's ARITHMETIC, not its ladder, so the expiries here are
+    the shortest that still make three step counts (5, 10 and 15 GARCH steps) and the whole gate
+    runs in seconds. Everything else is the block the emitter writes - the same references, the
+    same switches, the same columns.
+    """
+    return {'instrument': {
+        'Underlying': 'ZAR', 'Underlying_Type': 'FxRate',
+        'Volatility': 'USD.ZAR', 'Volatility_Type': 'FXVol',
+        'Discount_Rate': 'USD', 'Discount_Rate_Type': 'InterestRate',
+        'Yield': 'ZAR', 'Yield_Type': 'InterestRate',
+        'Quote_Type': 'Implied_Volatility', 'Use_Forward': 'Yes', 'Invert_Moneyness': 'Yes',
+        'Steps_Per_Year': 252.0, 'Quadrature_Panels': 64,
+        'European_Options': [
+            {'Expiry_Date': BASE + pd.DateOffset(days=days), 'Strike': SPOT * ratio,
+             'Option_Type': 'Call' if ratio >= 1.0 else 'Put', 'Units': 1.0, 'Weight': 1.0 / 9.0,
+             'Quoted_Market_Value': vol}
+            for days in (7, 14, 21)
+            for ratio, vol in zip((0.95, 1.0, 1.05), vols)]}}
+
+
+def fitted_five(path, block, delta):
+    """The five parameters a book fits `block` to, at `Volatility_Delta` `delta` - through the
+    market seam, off the file, exactly as a tick calibrates."""
+    document = json.loads(path.read_text())
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['System Parameters']['Volatility_Delta'] = delta
+    market['Bootstrapper Configuration'] = {'HestonNandiModelParameters': {}}
+    market.get('Market Prices', {}).pop('HestonNandiModelPrices.ZAR', None)
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    written = CLIENT.post('/book/market', content=dump(
+        {'quotes': {'HestonNandiModelPrices.ZAR': block}}), headers=JSON).json()
+    assert written['written'] is True, written
+    factor = json.loads(path.read_text())['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Price Factors']['HestonNandiModelParameters.ZAR']
+    return {key: factor[key] for key in utils.HN_PARAM_NAMES}
+
+
+def test_a_volatility_delta_moves_the_fitted_world_once(tmp_path):
+    """A scenario shift is the FIT's business, and it must reach the fitted world exactly once.
+
+    It used to reach it twice. `fx_surface_block` folded `Volatility_Delta` into every vol it
+    emitted, and `bootstrap` - which reads `Quoted_Market_Value` when the block carries one - added
+    `vol_surface.delta` to it again. A 1-vol-point scenario therefore calibrated a 2-vol-point
+    world, and nothing said so: both numbers are plausible and neither is reported.
+
+    THE TWO HALVES, asserted separately. The emitter is delta-BLIND: a block authored at 0.01 is
+    the block authored at 0.0, bit for bit, because a quote block is a QUOTE and the surface it
+    reads is the mid one the book carries either way. And the fit applies the shift ONCE, which is
+    stated as an identity between two real calibrations: fitting the unshifted quotes under a 0.01
+    scenario must land on the same five parameters as fitting the HAND-BUMPED quotes under no
+    scenario at all. The doubled world is what the third fit rules out - the shift has to MOVE the
+    answer, or the identity would hold for a shift that did nothing.
+    """
+    path = built_surface(tmp_path / 'book.json', json.loads(dump(desk_smile())))
+    try:
+        unshifted = hn_block(path)[1]['instrument']['European_Options']
+        document = json.loads(path.read_text())
+        document['Calc']['MergeMarketData']['ExplicitMarketData'][
+            'System Parameters']['Volatility_Delta'] = 0.01
+        path.write_text(json.dumps(document, indent=2), newline='\n')
+        service.BOOK = service.Book(str(path))
+        shifted = hn_block(path)[1]['instrument']['European_Options']
+
+        assert [point['Quoted_Market_Value'] for point in shifted] == [
+            point['Quoted_Market_Value'] for point in unshifted], (
+            'the emitted block moved with a scenario shift - the block is a quote')
+        assert [point['Strike'] for point in shifted] == [
+            point['Strike'] for point in unshifted], 'the strikes moved with the shift'
+
+        vols = (0.14, 0.145, 0.15)
+        scenario = fitted_five(path, hand_authored_hn_block(vols), 0.01)
+        by_hand = fitted_five(path, hand_authored_hn_block(
+            tuple(vol + 0.01 for vol in vols)), 0.0)
+        unmoved = fitted_five(path, hand_authored_hn_block(vols), 0.0)
+
+        # MEASURED at 7.7e-9 relative, which is the two worlds' quoted vols differing by one ulp
+        # (`q + delta` inside the fit against `q + 0.01` written out) amplified by a line search,
+        # not a second application of anything: a doubled shift moves these by percent
+        assert scenario == pytest.approx(by_hand, rel=1e-6), (
+            'a 1 vol point scenario did not fit the world 1 vol point away')
+        assert scenario != pytest.approx(unmoved, rel=1e-3), (
+            'the shift moved nothing, so the identity above is vacuous')
+    finally:
+        service.BOOK = None
+
+
+def test_a_collapsed_ladder_refuses_and_nothing_past_a_year_is_ever_snapped_to(tmp_path):
+    """The two things an unconditional argmin does not do, and both are silent when they happen.
+
+    A COLLAPSED LADDER. The canned surface carries 3M and 1Y and nothing else, so all six ATM
+    rungs land on two contracts and both wing pairs land on one expiry - FOUR distinct contracts,
+    handed to a five-parameter fit as though they were ten quotes. The repeated ones are weight,
+    not observation: what identifies `H0`, `Beta` and `Omega` is the ATM TERM STRUCTURE, and a
+    collapse is precisely the destruction of it. So the emitter refuses, naming the surface's own
+    pillars, the ladder it was asked for, the count it collapsed to and what to do about it. The
+    `expiry.size < 2` guard below it cannot see this - the canned surface IS a grid.
+
+    NOTHING PAST A YEAR, ENFORCED. The rule is the desk's and it was a comment: snapping is an
+    argmin over every pillar the surface carries, so a surface quoting 2Y answers the 1Y rung with
+    2Y and a fit of sub-year products borrows a parameter from a smile nobody quotes. Here the same
+    four-pillar surface carries a 2Y pillar as well, and the ladder must not touch it: every
+    emitted expiry is a date inside the year, the 9M and 1Y rungs both land on 6M, and the block
+    says so.
+    """
+    from derivus.bootstrappers import HestonNandiModelParameters
+
+    with pytest.raises(ValueError) as refusal:
+        hn_block(built_surface(tmp_path / 'canned.json'))
+    service.BOOK = None
+    assert '4 distinct contracts' in str(refusal.value)
+    assert 'FXVol.USD.ZAR carries pillars 0.25/1' in str(refusal.value)
+    assert 'term structure' in str(refusal.value), 'a refusal that does not say what was lost'
+    assert 'more expiries' in str(refusal.value), 'a refusal without a remedy'
+
+    long_dated = json.loads(dump(desk_smile()))
+    points = long_dated['FXVolPrices.USD.ZAR']['instrument']['Points']
+    for pillar, quote_type, value in ((0.0, 'ATM', 0.170), (0.25, 'RR', -0.020),
+                                      (0.25, 'BF', 0.0055)):
+        points.append(dict(points[0], Expiry=2.0, Pillar=pillar, Quote_Type=quote_type,
+                           Quoted_Market_Value=value))
+
+    name, block = hn_block(built_surface(tmp_path / 'book.json', long_dated))
+    try:
+        instrument = block['instrument']
+        emitted = sorted({point['Expiry_Date'] for point in instrument['European_Options']})
+        year = BASE + pd.DateOffset(days=int(HestonNandiModelParameters.fx_days_per_year))
+
+        assert name == 'HestonNandiModelPrices.ZAR'
+        assert emitted[-1] <= year, 'the ladder snapped onto a pillar past its own cap'
+        assert str(emitted[-1].date()) == '2024-12-27', 'the back rungs left the 6M pillar'
+        assert 'ATM 1 -> 0.5' in instrument['Quote_Source']
+        assert '-> 2' not in instrument['Quote_Source'], 'a 2Y pillar reached the ladder'
+    finally:
+        service.BOOK = None
+
+    # and where NOTHING is admissible, every rung is DROPPED rather than snapped up onto the
+    # nearest thing past the cap - the refusal says which rung did what
+    past_the_cap = json.loads(dump(desk_smile()))
+    for point in past_the_cap['FXVolPrices.USD.ZAR']['instrument']['Points']:
+        point['Expiry'] += 2.0
+    with pytest.raises(ValueError) as dropped:
+        hn_block(built_surface(tmp_path / 'past.json', past_the_cap))
+    service.BOOK = None
+    assert '0 distinct contracts' in str(dropped.value)
+    assert 'ATM 1 DROPPED - no pillar at or under 1' in str(dropped.value)
+    assert '0.25d 0.5 DROPPED' in str(dropped.value)
+
+
+def test_the_hn_verb_lands_a_fitted_factor_that_reprices_its_own_quotes(tmp_path):
+    """The round trip: `/book/hn` authors the block, installs it through the market seam,
+    bootstraps, and the five parameters land in the book FILE - after which the model has to
+    reprice the ten quotes it was fitted to.
+
+    The yardstick is the family's OWN objective, recomputed here off the written parameters: each
+    quote's Black target premium against the Heston-Nandi price of the same contract, weighted by
+    the weight the block carries. A calibration that lands finite numbers and misses the smile is
+    the failure mode this exists to catch.
+
+    IT RUNS ON THE NEGATIVE RISK REVERSAL, which is the sign USDZAR actually trades at and the one
+    the family could not fit at all until the leverage share carried the sign. Read on the
+    `FxRate.ZAR` axis the model is fitted on, a negative pair-terms RR is a smile whose vol RISES
+    with strike, and a strictly positive `Gamma_Star` could only answer it by switching the
+    leverage channel off and reporting a flat smile as a converged calibration. So the gate holds
+    the shape rather than the numbers: `Gamma_Star` NEGATIVE, and the optimum INTERIOR - no
+    parameter pinned on a box bound, which is what a fit that cannot represent its own data does.
+
+    WHAT IT MEASURED, so a later reading can be compared rather than guessed at, on `desk_smile`'s
+    four pillars: 288 s on a quiet box and 549 s with the suite running beside it, to the same
+    five numbers BIT FOR BIT - the fit is a deterministic L-BFGS-B and only the clock moves.
+    `Omega` 2.757e-6, `Alpha` 7.784e-8, `Beta` 1.079e-3, `Gamma_Star`
+    -3529.45, `H0` 7.027e-5 - persistence 0.9708, signed leverage share -0.9989, initial vol
+    13.31% and long-run vol 15.64% against a 3M ATM quote of 14.50%. Every one of the five is
+    strictly inside its box. Worst point 4.73% (the 3M 25 delta put), weighted residual 6.21e-5.
+
+    AND THE BOUNDS BELOW ARE THAT READING AGAINST A MEASURED MUTANT rather than a wish. The mutant
+    is the fit with the LEVERAGE CHANNEL removed and nothing else moved - `Alpha` 0, `Beta` = psi,
+    `Omega` = omega + alpha, which holds both the persistence and the stationary per-step variance
+    exactly where the fit put them, so the only thing missing is the smile. It reads worst point
+    13.13% and weighted residual 2.83e-4: 4.6x the residual, on the same ten quotes. That is the
+    number the flat-smile failure would land on, and it is what these bounds sit between.
+    """
+    import torch
+
+    from derivus import riskfactors
+    from derivus.bootstrappers import HestonNandiModelParameters
+
+    path = built_surface(tmp_path / 'book.json', json.loads(dump(desk_smile())))
+    try:
+        submitted = CLIENT.post('/book/hn', json={'pair': 'USD.ZAR'}).json()
+        assert submitted['factor'] == 'HestonNandiModelParameters.ZAR'
+        service.EXECUTOR.queue.join()
+        result = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+        outcome = result['stats']['HestonNandi']
+
+        assert result['status'] == 'done', result
+        assert outcome['written'] is True and outcome['quotes'] == 10
+        assert outcome['block'] == 'HestonNandiModelPrices.ZAR'
+
+        # the projection is the book itself - no second file, and the FILE is what a client reads
+        market = json.loads(path.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+        written = market['Price Factors']['HestonNandiModelParameters.ZAR']
+        assert 'HestonNandiModelPrices.ZAR' in market['Market Prices']
+        # and the tick does not refit, STRUCTURALLY: the family was borrowed for this run and
+        # handed back, so no later bootstrap re-enters a minutes-long least squares
+        assert list(market['Bootstrapper Configuration']) == ['FXVolSurfaceParameters']
+        assert [key for key in utils.HN_PARAM_NAMES if key not in written] == []
+        assert all(np.isfinite(written[key]) for key in utils.HN_PARAM_NAMES)
+        assert 0.0 < utils.hn_persistence(*(written[key] for key in (
+            'Alpha', 'Beta', 'Gamma_Star'))) < 1.0, 'a non-stationary fit'
+        # THE DEGENERATE FIT IS THE ONE TO CATCH, and it is a specific pair of numbers: the
+        # leverage channel switched off (`Alpha` at zero, so the smile is flat) with `Gamma_Star`
+        # pinned at its bound, which is what an inadmissible skew sign used to produce and what the
+        # family still reports as convergence. A model with no skew in it prices a TARF as a
+        # lognormal
+        assert written['Alpha'] > 0.0, 'the leverage channel is off - the fitted smile is flat'
+        # THE SIGN, which is the whole point of the signed leverage share: this surface's smile
+        # RISES with strike on the axis the model is fitted on, and only a negative Gamma_Star
+        # says so. A positive one here is the old box answering a shape it cannot represent
+        assert written['Gamma_Star'] < 0.0, 'a rising smile fitted with equity-leverage skew'
+        # AND THE OPTIMUM IS INTERIOR: no parameter sits on a box bound, which is what separates a
+        # fit from a surrender. `Gamma_Star`'s box is +-[1, 5000] in magnitude
+        assert 1.0 < abs(written['Gamma_Star']) < 4999.0, 'Gamma_Star is pinned at its bound'
+        assert 1e-12 < written['Omega'] < 1e-3, 'Omega is pinned at a bound'
+        assert 0.0 < written['Beta'], 'Beta is pinned at zero - the leverage share ran to one'
+        assert 1e-10 < written['H0'] < 1e-2, 'H0 is pinned at a bound'
+        assert {key: written[key] for key in utils.HN_PARAM_NAMES} == pytest.approx(
+            {key: outcome['parameters'][key] for key in utils.HN_PARAM_NAMES})
+
+        # reprice the ten, in the objective the fit minimised
+        params = in_process(json.loads(path.read_text())).current_cfg.params
+        factors, interp = params['Price Factors'], params['Price Factor Interpolation']
+        base = params['System Parameters']['Base_Date']
+        curve = lambda name: riskfactors.construct_factor(
+            utils.Factor('InterestRate', (name,)), factors, interp)
+        discount, carry = curve('USD'), curve('ZAR')
+        spot = float(riskfactors.construct_factor(
+            utils.Factor('FxRate', ('ZAR',)), factors, interp).current_value()[0])
+        omega, alpha, beta, gamma, h0 = (written[key] for key in utils.HN_PARAM_NAMES)
+        tensor = lambda x: torch.tensor(float(x), dtype=torch.float64)
+
+        worst, weighted = 0.0, 0.0
+        for point in params['Market Prices']['HestonNandiModelPrices.ZAR'][
+                'instrument']['European_Options']:
+            t = discount.get_day_count_accrual(base, (point['Expiry_Date'] - base).days)
+            rate, yld = float(discount.current_value(t)), float(carry.current_value(t))
+            forward, steps = spot * np.exp((rate - yld) * t), max(int(round(t * 252.0)), 1)
+            sign = 1.0 if point['Option_Type'] == 'Call' else -1.0
+            target = utils.black_european_option_price(
+                forward, point['Strike'], rate, point['Quoted_Market_Value'], t, 1.0, sign)
+            model = float(HestonNandiModelParameters.price(
+                tensor(spot), tensor(point['Strike']), tensor(sign > 0), tensor(1.0),
+                *[tensor(x) for x in (omega, alpha, beta, gamma)],
+                tensor((rate - yld) * t / steps), steps, tensor(h0), 64,
+                tensor(np.exp(-yld * t))))
+            worst = max(worst, abs(model / target - 1.0))
+            weighted += point['Weight'] * (target - model) ** 2
+            print('HN quote K={:.4f} T={:.4f} {} vol={:.5f} target={:.6f} model={:.6f} '
+                  'rel={:+.4%}'.format(point['Strike'], t, point['Option_Type'],
+                                       point['Quoted_Market_Value'], target, model,
+                                       model / target - 1.0))
+        print('HN fit: {:.2f}s params {} worst |rel| {:.4%} weighted residual {:.3e}'.format(
+            outcome['seconds'], {k: written[k] for k in utils.HN_PARAM_NAMES}, worst, weighted))
+
+        # MEASURED: worst point 4.73% (the 3M 25 delta put), ATM 1M -0.04%, ATM 3M +1.04%,
+        # weighted residual 6.21e-5, against a no-leverage mutant at 13.13% and 2.83e-4 (see the
+        # docstring). A one-factor GARCH does not fit a smile exactly and is not asked to - what
+        # these hold is that it fits it AT ALL, which a flat smile does not
+        assert worst < 0.08, 'the model does not reprice its own quotes'
+        assert weighted < 1.2e-4
+    finally:
+        service.BOOK = None
+
+
+def test_a_pair_with_no_built_surface_refuses_at_the_verb(tmp_path):
+    """A calibration against a surface the book does not carry is refused ON THE REQUEST THREAD,
+    by name and with the remedy - never queued as a two-minute job whose answer is that the pair
+    was a typo. Nothing is written and nothing is queued."""
+    path = built_surface(tmp_path / 'book.json')
+    try:
+        before = path.read_bytes()
+        refused = CLIENT.post('/book/hn', json={'pair': 'EUR.USD'})
+        unnamed = CLIENT.post('/book/hn', json={})
+
+        assert refused.status_code == 422
+        assert 'FXVol.EUR.USD' in refused.json()['detail']
+        assert 'FXVolPrices' in refused.json()['detail'], 'the refusal must name the remedy'
+        assert unnamed.status_code == 422 and 'pair' in unnamed.json()['detail']
+        assert path.read_bytes() == before
+    finally:
+        service.BOOK = None
+
+
 @pytest.fixture
 def desk(tmp_path):
     """A live book that declares the `FXVolSurfaceParameters` bootstrapper - what a market tick
@@ -1375,6 +1845,84 @@ def test_a_quoted_collar_is_filed_pending_and_books_at_zero(quoting, tmp_path):
     assert marked['status'] == 'done', marked.get('error')
     assert mtm(marked_id)[node['Instrument']['.Deal']['Reference']] == pytest.approx(
         0.0, abs=premium * 1e-4)
+
+
+#: A calibrated Heston-Nandi factor for the rand, as `/book/hn` writes one. The booking gate does
+#: not fit it - what it is about is whether the MODEL a leg was quoted under reaches the book with
+#: the trade - so these five are a stationary set (persistence 0.90) near the surface's own vol
+#: rather than a fit of it, with `Gamma_Star` on the sign this pair's smile actually carries.
+CALIBRATED = {'Property_Aliases': None, 'Omega': 1e-12, 'Alpha': 2.0e-6, 'Beta': 0.45,
+              'Gamma_Star': -474.34, 'H0': 7.8e-5}
+
+#: An accumulator on the RAND, which is the orientation that joins: the engine keys a spot model
+#: off `Underlying_Currency`, the calibration writes the pair's non-domestic token, and an
+#: accumulator - unlike a TARF - may be quoted from either side.
+ACCUMULATOR = {'pair': 'USDZAR', 'expiry': '3M', 'notional': AMOUNT, 'notional_currency': 'ZAR',
+               'fixing_frequency': '1M', 'knockout': USDZAR * 1.10}
+
+
+def test_a_leg_quoted_under_a_model_books_into_a_book_that_marks_it(quoting):
+    """The model books WITH the trade, in the same atomic write, or the desk marks a trade at a
+    price it was never dealt at.
+
+    `structures.spot_model` pins Heston-Nandi on the QUOTE's copy of the document - it has to be
+    the quote's copy, since a quote is not a trade and must not touch the book. That copy is thrown
+    away when the answer is published, so an approval that booked only the deal would leave a leg
+    priced under a GARCH in a book whose `Valuation Configuration` says nothing, and the very next
+    mark would price it as a lognormal. Nothing would say so: both numbers are plausible.
+
+    So the quote REPORTS what it pinned, the pending file records it, and `/book/quote` merges it
+    into the book inside the same edit closure that splices the deal - one lock, one validation,
+    one write. What this gate reads is the FILE afterwards, because the file is what a re-mark
+    prices off.
+
+    And the same approval REFUSES where the calibration has gone away between the quote and the
+    approval: an approval is validated against the book as it stands now, and booking a switch over
+    a factor nobody carries any more would skip the deal inside the engine's dependency loop and
+    mark the trade at nothing - the one outcome the pin exists to prevent.
+    """
+    document = json.loads(quoting.read_text())
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Factors']['HestonNandiModelParameters.ZAR'] = dict(CALIBRATED)
+    document['Calc']['Calculation']['MCMC_Simulations'] = 1024
+    quoting.write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = service.Book(str(quoting))
+
+    quote = quote_of('Accumulator', ACCUMULATOR)
+    pinned = {'FXAccumulatorOptionDeal': {'SpotModel': 'HestonNandi'}}
+
+    assert quote['legs'][0]['note'] is None, 'the leg did not join the calibration'
+    assert quote['valuation_configuration'] == pinned
+    # the pending file is the record of what was quoted, model included
+    filed = json.loads((quoting.parent / 'tmp' / (quote['quote_id'] + '.json')).read_text())
+    assert filed['quote']['valuation_configuration'] == pinned
+
+    before = json.loads(quoting.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+    assert 'Valuation Configuration' not in before, 'the quote wrote on the book'
+
+    # the calibration goes away between the quote and the approval: the approval refuses, the
+    # book is untouched, and the message names the factor and the remedy
+    dropped = json.loads(quoting.read_text())
+    dropped['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].pop(
+        'HestonNandiModelParameters.ZAR')
+    quoting.write_text(json.dumps(dropped, indent=2), newline='\n')
+    service.BOOK = service.Book(str(quoting))
+    unbookable = json.dumps(dropped, indent=2)
+    refused = CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']})
+
+    assert refused.status_code == 422
+    assert 'HestonNandiModelParameters.ZAR' in refused.json()['detail']
+    assert 're-quote' in refused.json()['detail'], 'a refusal without a remedy'
+    assert quoting.read_text() == unbookable, 'a refused approval wrote'
+
+    quoting.write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = service.Book(str(quoting))
+    booked = CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']}).json()
+    after = json.loads(quoting.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+
+    assert booked['written'] is True and booked['valuation_configuration'] == pinned
+    assert after['Valuation Configuration'] == pinned, (
+        'the book marks under a model the leg was not quoted under')
 
 
 def test_a_quote_with_no_map_prices_on_the_book_and_names_the_spot_it_used(quoting, tmp_path):

@@ -141,7 +141,8 @@ Data tab.
 ## Structure against it
 
 The desk's vocabulary is **declared**, not composed by whoever is driving. `derivus/structures.py`
-ships five structures — `Straddle`, `Strangle`, `ZeroCostCollar`, `Seagull` and `ForwardExtra` —
+ships seven structures — `Straddle`, `Strangle`, `ZeroCostCollar`, `Seagull`, `ForwardExtra`,
+`TargetRedemptionForward` and `Accumulator` —
 each a class naming its sales names, its legs and a recipe (price this leg, solve that one to the
 other's premium). `POST /book/structure` runs the recipe server-side and files the pending trade
 plus its `.xlsx` ticket under `DV_HOME/tmp`, named by the quote id; `POST /book/quote` is the

@@ -41,6 +41,13 @@ on the pair is a Down barrier on the quote currency - while In/Out, which is abo
 rather than the axis, never moves. When the notional is the BASE currency the two axes agree and
 nothing is converted. No structure knows any of this.
 
+An ACCRUAL leg - a TARF, an accumulator - asks the axis question once more, and the answer is that
+one of them does not cross. A LEVEL inverts: an accumulator's knock-out crosses exactly as a
+barrier does, and it quotes from either side of the pair. A TARGET does not, because it is a sum of
+DIFFERENCES rather than a level and `1/S - 1/K` is not the reciprocal of `S - K` - so a TARF is
+quoted on the pair's BASE currency and refuses the other side by name rather than capping a move
+nobody quoted. A leverage is a ratio and never converts. See `furnish_accrual`.
+
 PARAMETERS vs A DEAL. The runner fills the shared block from the parameters - the two currencies
 off the pair, the vol surface named for it, the discounting currency, the notional, and
 `Expiry_Date` as the book's `Base_Date` plus the quoted tenor - then the leg's pinned block, then
@@ -105,6 +112,42 @@ TENOR = re.compile(r'^\s*(\d+)\s*([DWMY])\s*$', re.IGNORECASE)
 #: legs can carry, and `brentq` refuses by name when it does not.
 STRIKE_BRACKET = (0.25, 4.0)
 
+#: The same bracket for an ACCRUAL strike, moved in - and it is narrower for a reason the vanilla
+#: ends do not have. A strip's value is still monotone in its strike, but it SATURATES at the low
+#: end: past the point where every fixing redeems the target at once it is flat at `target x
+#: notional` discounted, so nothing is given up by moving the end in. What IS given up by leaving
+#: it out is a root find that dies: at `0.25 x spot` on `fx_tarf_job.json`'s market the TARF prices
+#: NaN and `brentq` refuses at its own first evaluation, because a surface quoted over moneyness
+#: [0.8, 1.2] does not extrapolate to 0.25 as a volatility. Measured on that fixture: NaN at 0.28,
+#: and flat at 99,697.57 - the redeemed target to the cent - from 0.30 through 0.50.
+ACCRUAL_BRACKET = (0.5, 2.0)
+
+#: A fixing settles on its own spot value date, two days on - the lag both accrual fixtures author
+#: (`fx_tarf_job.json`, `fx_accumulator_job.json`) and the one a confirmation carries. CALENDAR days
+#: rather than business: the runner holds no calendar, and a settlement date is a cashflow date
+#: rather than an observation, so a weekend costs two days of discounting and nothing else.
+FIXING_LAG = 2
+
+#: The accrual deals a leg may name beside the two vanilla ones. What makes them different to
+#: furnish is one thing: each carries a fixing SCHEDULE the runner grows from the tenor, rather
+#: than the single expiry a vanilla is struck to.
+ACCRUAL_DEALS = ('FXTARFOptionDeal', 'FXAccumulatorOptionDeal')
+
+#: Where each accrual deal files that schedule. The field name is the deal's own; the ROW is one
+#: shape either way - `[fixing date, settlement date, observed fixing]`, untagged, read by
+#: iterating rows (both declarations say why they carry no `tag`).
+SCHEDULE_FIELD = {'FXTARFOptionDeal': 'TARF_ExpiryDates',
+                  'FXAccumulatorOptionDeal': 'Accumulator_ExpiryDates'}
+
+#: `<SpotModel>ModelParameters.<underlying>`, the naming convention `get_spot_model_params_factor`
+#: resolves the parameters by - so the presence check here and the engine's own lookup are one key.
+SPOT_MODEL_FACTOR = '{}ModelParameters.{}'
+
+#: The model an accrual leg is priced under WHERE THE BOOK CARRIES A CALIBRATION. The switch lives
+#: in `Valuation Configuration` per deal TYPE, not on a deal, and both accrual deals declare it in
+#: their own `spot_models`.
+SPOT_MODEL = 'HestonNandi'
+
 #: Every vanilla leg is European. Pinned per leg rather than injected by the runner: it is an
 #: `FXOptionDeal` field, and the runner furnishes only what the PARAMETERS decide. An
 #: `FXBarrierOption` declares no such field, so a barrier leg does not carry it.
@@ -155,8 +198,8 @@ BARRIER_FLIP = {'Up_And_In': 'Down_And_In', 'Down_And_In': 'Up_And_In',
                 'Up_And_Out': 'Down_And_Out', 'Down_And_Out': 'Up_And_Out'}
 
 #: The parameters every FX structure quotes in. Shared as module constants for the reason the
-#: schema's field groups are: ten legs across five structures read the same four slots, and a
-#: copy per class is a copy that drifts.
+#: schema's field groups are: thirteen legs across seven structures read the same four slots, and
+#: a copy per class is a copy that drifts.
 PAIR = F('pair', 'Text', default=REQUIRED,
          description='The market pair, base then quote - USDZAR is ZAR per USD')
 EXPIRY = F('expiry', 'Period', default=REQUIRED,
@@ -351,6 +394,74 @@ class ForwardExtra:
               Solve('reversion', 'Barrier_Price', -Premium('protection'))]
 
 
+class TargetRedemptionForward:
+    """A better rate than the forward at every fixing, bought with gearing and a redemption cap.
+
+    The desk's standard zero-premium TARF, and the registry's first MULTI-FIXING structure. At each
+    fixing to the tenor the client deals `notional` at the solved strike: they accrue the whole of a
+    favourable move and take `leverage` times the notional on an unfavourable one, and the strip
+    ends the moment their cumulative accrual reaches `target`. That gearing and that cap are what
+    the better-than-forward strike is paid with, so the STRIKE is the solved coordinate and the
+    premium is zero - a TARF is dealt at no upfront.
+
+    ONE leg, because the deal itself is the strip: `FXTARFOptionDeal` prices every fixing, the
+    knock-out and the partial accrual that exactly fills the target, by one-step survival. The
+    recipe has no `Price` step at all - there is nothing to fund and nothing to fund it with.
+
+    `notional` here is PER FIXING, which is the one place this structure reads the shared parameter
+    differently to a vanilla one: a 1M notional on a 1M-fixing 1Y TARF deals a million twelve times.
+    And it is the pair's BASE currency, always - the target is a cap on the accrual in the pair's
+    own units, which is a reading the reciprocal axis does not have. `furnish_accrual` refuses the
+    other side by name rather than quoting a cap nobody stated.
+    """
+    vernacular = 'tarf, target redemption forward, target forward'
+    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY,
+              F('fixing_frequency', 'Period', default=REQUIRED,
+                description='How often the strip fixes - 1M, 3M - counted off the book\'s '
+                            'Base_Date to the tenor'),
+              F('target', 'Float', default=REQUIRED,
+                description='The accrual cap that redeems the strip, in the PAIR\'s own units - '
+                            '1.5 on USDZAR is 1.50 rand of cumulative favourable move'),
+              F('leverage', 'Float', default=2.0,
+                description='The loss-side gearing: how many notionals the client deals on an '
+                            'unfavourable fixing, against one on a favourable one')]
+    legs = [Leg('tarf', 'FXTARFOptionDeal',
+                {'Option_Type': 'Call', 'Buy_Sell': 'Buy',
+                 'Settlement_Style': 'Cash', 'Option_Style': 'European'},
+                {'TargetLevel': 'target'})]
+    recipe = [Solve('tarf', 'Strike_Price', 0.0)]
+
+
+class Accumulator:
+    """The same bargain with a LEVEL instead of a cap: accumulate at a better-than-forward strike
+    until the pair trades through the knock-out.
+
+    The client deals `notional` at each fixing at the solved strike, geared `leverage` times against
+    them on an unfavourable one, and the whole strip cancels at the first fixing that observes the
+    pair at or beyond `knockout`. Where a TARF stops once the client has WON enough, an accumulator
+    stops once the market has MOVED enough - one is a cap on the accrual and the other a level on
+    the spot, which is why the knock-out crosses to the engine axis exactly as a barrier does and
+    the target does not cross at all.
+
+    The knock-out is observed ON THE FIXING DATES, not continuously - `FXAccumulatorOptionDeal`'s
+    own declaration - so it is a level in the client's market terms and nothing more.
+    """
+    vernacular = 'accumulator, accumulator forward, accu'
+    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY,
+              F('fixing_frequency', 'Period', default=REQUIRED,
+                description='How often the strip fixes - 1M, 3M - counted off the book\'s '
+                            'Base_Date to the tenor'),
+              strike('knockout', 'The level that cancels the strip when a fixing observes it'),
+              F('leverage', 'Float', default=2.0,
+                description='The loss-side gearing: how many notionals the client deals on an '
+                            'unfavourable fixing, against one on a favourable one')]
+    legs = [Leg('accumulator', 'FXAccumulatorOptionDeal',
+                {'Option_Type': 'Call', 'Buy_Sell': 'Buy',
+                 'Barrier_Type': 'Up_And_Out', 'Barrier_Hit': 'No'},
+                {'Barrier_Price': 'knockout'})]
+    recipe = [Solve('accumulator', 'Strike_Price', 0.0)]
+
+
 def registry():
     """`{name: class}` for every structure declared here - the same scan `emit_structures` makes.
 
@@ -406,6 +517,180 @@ def expiry_date(base_date, expiry):
         return {'.Timestamp': pd.Timestamp(expiry).strftime('%Y-%m-%d')}
     except (ValueError, TypeError):
         raise ValueError('{!r} is not a tenor (3M, 1Y) or a date'.format(expiry))
+
+
+def fixing_grid(base_date, expiry, frequency):
+    """An accrual deal's fixing SCHEDULE, in the wire form both declarations read.
+
+    `[[fixing, settlement, observed], ...]` - the row shape `TARF_ExpiryDates` and
+    `Accumulator_ExpiryDates` share, untagged, with the observed fixing written as 0.0 because a
+    quote is struck today and nothing in it has fixed yet. Fixings run from the book's `Base_Date`
+    at `frequency` up to and including the tenor; each settles `FIXING_LAG` days later.
+
+    Each fixing is `base + n x frequency` rather than a step off the previous one: an offset
+    applied repeatedly from a month end walks (31 Jan + 1M + 1M is 28 Mar, not 31 Mar), and a
+    schedule that drifts is a schedule that stops landing on the dates a confirmation names.
+
+    A tenor holding no whole fixing period refuses rather than returning an empty strip: a deal
+    with no fixings prices at nothing, which is a quote of zero for something.
+
+    A frequency that does not DIVIDE the tenor refuses too, and for the same reason one step up:
+    the loop would stop at the last fixing that still fits and the strip would be silently SHORT
+    of the tenor that was quoted. A TARF's `Expiry_Date` is then set to that short date, the
+    two-way half-spread is read at the short tenor, and the ticket says 1Y over a strip that ends
+    in April. The remedy is a frequency that divides, or the broken date quoted directly.
+
+    THE BASE IS NORMALIZED TO MIDNIGHT first, exactly as `expiry_date` normalizes its answer. A
+    book whose `Base_Date` carries a time (16:30, as a terminal snapshot stamps it) would
+    otherwise put the final fixing at 16:30 on the expiry, one comparison past a midnight last
+    date, and a twelve-fixing year would quietly be eleven.
+    """
+    import pandas as pd
+    from .config import Config
+    found = TENOR.match(str(frequency))
+    if not found:
+        raise ValueError('{!r} is not a fixing frequency - 1M, 3M, 1W'.format(frequency))
+    period, count = Config.offset_lookup[found.group(2).upper()], int(found.group(1))
+    base_date = pd.Timestamp(base_date).normalize()
+    last, rows, step = timestamp(expiry_date(base_date, expiry)), [], 1
+    while True:
+        fixing = base_date + pd.DateOffset(**{period: count * step})
+        if fixing > last:
+            break
+        rows.append([{'.Timestamp': fixing.strftime('%Y-%m-%d')},
+                     {'.Timestamp': (fixing + pd.DateOffset(days=FIXING_LAG)).strftime('%Y-%m-%d')},
+                     0.0])
+        step += 1
+    if not rows:
+        raise ValueError('a {} tenor holds no {} fixing - the strip would be empty and the '
+                         'structure would price at nothing'.format(expiry, frequency))
+    if timestamp(rows[-1][0]) != last:
+        raise ValueError(
+            'a {0} tenor is not a whole number of {1} periods - the last fixing would be {2} '
+            'rather than {3}, so the strip would end SHORT of the {0} that was quoted and the '
+            'deal\'s Expiry_Date and its two-way spread would both be read off {2}. Quote a '
+            'fixing frequency that divides the tenor, or quote the broken expiry {2} '
+            'directly'.format(expiry, frequency, rows[-1][0]['.Timestamp'],
+                              last.strftime('%Y-%m-%d')))
+    return rows
+
+
+def declared(structure, params):
+    """`params` completed by the structure's OWN declared defaults.
+
+    Almost every parameter is `REQUIRED` - a strike a client did not name is a strike nobody
+    agreed. A market CONVENTION is the exception: a TARF's loss-side gearing is 2.0 unless the
+    client asks for something else, and the number belongs on the `F` descriptor, where
+    `describe_structure` publishes it, rather than in a `.get` inside the runner.
+    """
+    stated = {f.key: f.default for f in structure.fields if f.default is not REQUIRED}
+    return dict(stated, **params)
+
+
+def spot_model(document, deal_type, underlying, settlement):
+    """Pin `HestonNandi` on `deal_type` where THIS book carries a calibration, and say the WHOLE
+    truth where it does not. Returns the leg's note, or `None` when the model was pinned.
+
+    The switch is a `Valuation Configuration` entry per deal TYPE rather than a deal field, and the
+    parameters are resolved by naming convention off the leg's own underlying - a rand-notional
+    USDZAR TARF reads `HestonNandiModelParameters.ZAR`, and the same trade on a dollar notional
+    reads `.USD`, because the underlying IS `notional_currency`. So the presence check is a lookup
+    of the exact key `get_spot_model_params_factor` will make.
+
+    It has to be made HERE because of what the alternative does: the switch on with the factor
+    absent raises inside the engine's dependency loop, which SKIPS the deal and logs an ERROR - the
+    quote returns with its only leg priced at nothing. A structure that pinned the model
+    unconditionally would therefore quote zero on every book that has not been calibrated. So the
+    document decides, and its absence is a NOTE on the leg rather than a lognormal fallback nobody
+    was told about.
+
+    THE ABSENCE IS NOT ALWAYS THE BOOK'S FAULT, and the note says so rather than sending a desk to
+    re-run a calibration it has already run. Three keyings meet here and they do not agree:
+
+    - the ENGINE keys a deal's spot-model parameters off `Underlying_Currency` (`instruments.py`,
+      `get_spot_model_params_factor`), which is the side this looks up;
+    - the CALIBRATION writes the pair's NON-DOMESTIC token (`fx_surface_block`), because an
+      `FxRate` is priced in the domestic currency and that is the only leg of the pair the engine
+      can simulate at all;
+    - `furnish_accrual` forces a TARF onto the pair's BASE currency, because a target has no
+      reading on the reciprocal axis.
+
+    So on a USD-base book a USDZAR TARF looks up `.USD` while the calibration wrote `.ZAR`, and it
+    rides GBM however many times the pair is calibrated; EURUSD - a pair whose BASE is the
+    non-domestic token - joins. An accumulator has no target and quotes from either side, so a
+    rand-notional USDZAR accumulator joins too. Closing the gap is the ENGINE's half (spot-model
+    support where `Underlying_Currency` is the domestic side), and it is on the roadmap; tonight
+    this is honest about which factor was looked up and which one exists.
+
+    Writes IN PLACE, on the document the runner holds - `with_live_spots`' own contract, and the
+    reason it works is `alone`: every pricing deep-copies this document, so one write reaches every
+    iterate of the solve.
+    """
+    factors = market_data(document)
+    factor = SPOT_MODEL_FACTOR.format(SPOT_MODEL, underlying)
+    if factor in factors:
+        document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
+            'Valuation Configuration', {}).setdefault(deal_type, {})['SpotModel'] = SPOT_MODEL
+        return None
+    other = SPOT_MODEL_FACTOR.format(SPOT_MODEL, settlement)
+    note = ('priced GBM - the engine keys a deal\'s spot model off Underlying_Currency, so this '
+            'leg looked up {}, which this book does not carry'.format(factor))
+    if other in factors:
+        note += ('. The book DOES carry {}: the calibration writes the pair\'s non-domestic token, '
+                 'which is the only leg it can simulate, and this leg is on the other side'.format(
+                     other))
+    return note + ('. A pair whose BASE is the non-domestic token joins as it stands (EURUSD on a '
+                   'USD book, and either side of an accumulator); a USDZAR TARF rides GBM until '
+                   'the engine\'s spot-model keying learns the base side. The '
+                   'HestonNandiModelParameters bootstrapper installs {}'.format(factor))
+
+
+def pinned_models(document):
+    """The `Valuation Configuration` a quote's own passes pinned on this document, or `None`.
+
+    `spot_model` writes the switch onto the document the runner holds; this reads it back so the
+    outcome can REPORT it. A quote that priced a leg under Heston-Nandi and books into a book that
+    marks it GBM is a mark that disagrees with the price it was dealt at, and the only place that
+    can be fixed atomically is the approval - which needs to be told.
+    """
+    pinned = document.get('Calc', {}).get('MergeMarketData', {}).get(
+        'ExplicitMarketData', {}).get('Valuation Configuration')
+    return copy.deepcopy(pinned) if pinned else None
+
+
+def pin_models(document, deal, pinned):
+    """`pinned` merged into a document's `Valuation Configuration`, per deal TYPE, in place.
+
+    The booking half of `pinned_models`: an approval carries the quote's own pins onto the BOOK, so
+    a leg dealt under Heston-Nandi re-marks under Heston-Nandi. Merged per type and per key rather
+    than assigned, because the block is the whole book's and a quote owns only the entries it
+    pinned.
+
+    REFUSES where a pinned model's parameters are no longer on the book. The quote pinned only
+    where the factor was there, but an approval is validated against the book as it is NOW, and a
+    switch pinned over a factor somebody has since dropped raises inside the engine's dependency
+    loop - the deal SKIPPED, an ERROR logged, and the trade marked at nothing. That is the one
+    outcome this whole pin exists to prevent, so it is a refusal rather than a write.
+    """
+    factors = market_data(document)
+    for leg in deal.get('Children') or []:
+        block = leg['Instrument']['.Deal']
+        entry = pinned.get(block.get('Object'))
+        if not entry:
+            continue
+        factor = SPOT_MODEL_FACTOR.format(entry['SpotModel'], block['Underlying_Currency'])
+        if factor not in factors:
+            raise ValueError(
+                'this quote was priced under {} and the book no longer carries {} - booking the '
+                'switch would skip the deal at the next valuation and mark it at nothing. Re-run '
+                'the {} calibration for {}, or re-quote'.format(
+                    entry['SpotModel'], factor, entry['SpotModel'],
+                    block['Underlying_Currency']))
+    configuration = document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
+        'Valuation Configuration', {})
+    for deal_type, entry in pinned.items():
+        configuration.setdefault(deal_type, {}).update(entry)
+    return configuration
 
 
 def market_data(document):
@@ -560,9 +845,17 @@ def quote_two_way(document, surface):
 
 def leg_expiry(document, deal):
     """A leg's tenor in years, on the quote block's own expiry axis - the coordinate the spread
-    curve is read at, and nothing else. Not a day count a price comes off."""
-    days = (timestamp(deal['Expiry_Date']) - timestamp(
-        document['Calc']['Calculation']['Base_Date'])).days
+    curve is read at, and nothing else. Not a day count a price comes off.
+
+    An accumulator declares no `Expiry_Date`, so a strip's tenor is its LAST SETTLEMENT - the same
+    date the TARF writes into the field it does declare. The half-spread a strip is dealt on is
+    then the one at its longest fixing, which is the widest of the ones it spans: v1 shifts the
+    surface FLAT per leg, so a single coordinate has to be picked, and picking the cheap end would
+    quote a strip tighter than any of its own fixings.
+    """
+    end = deal['Expiry_Date'] if 'Expiry_Date' in deal \
+        else deal[SCHEDULE_FIELD[deal['Object']]][-1][1]
+    days = (timestamp(end) - timestamp(document['Calc']['Calculation']['Base_Date'])).days
     return max(0.0, days / DAYS_IN_YEAR)
 
 
@@ -599,10 +892,13 @@ def with_vol_shift(document, factor, shift):
 class Materialized(object):
     """One leg turned into a deal: the wire block, its role, and how its axis relates to the quoted
     one - which is what lets the runner report a solved strike back in market terms."""
-    __slots__ = ('role', 'deal', 'inverted')
+    __slots__ = ('role', 'deal', 'inverted', 'note')
 
-    def __init__(self, role, deal, inverted):
+    def __init__(self, role, deal, inverted, note=None):
         self.role, self.deal, self.inverted = role, deal, inverted
+        # what the runner had to decide about this leg that the client would not otherwise see -
+        # today, only that the book carries no calibration for the model the leg asked for
+        self.note = note
 
     def to_market(self, engine_strike):
         """An engine-axis strike as the client reads it."""
@@ -616,7 +912,13 @@ def materialize(structure, params, document):
     for it, the settlement currency doing the discounting, the notional as the underlying amount,
     and the expiry as a date. Then the leg's pinned block, then its slots. Strike-like slots and
     `Option_Type` cross to the engine axis together, exactly once, here.
+
+    An ACCRUAL leg is furnished the same way plus a schedule - see `furnish_accrual`, which is also
+    where the third and last axis question this module has to answer is answered. It may WRITE to
+    `document`, to pin the spot model on the deal type; the caller owns the copy, exactly as it does
+    for `with_live_spots`, and `quote` hands it one of its own.
     """
+    params = declared(structure, params)
     base, quote_ccy = split_pair(params['pair'])
     underlying = str(params['notional_currency']).upper()
     if underlying not in (base, quote_ccy):
@@ -634,9 +936,10 @@ def materialize(structure, params, document):
 
     out = []
     for leg in structure.legs:
-        if leg.deal_type not in ('FXOptionDeal', 'FXBarrierOption'):
-            raise ValueError('{}: the runner furnishes FXOptionDeal and FXBarrierOption legs, '
-                             'not {}'.format(leg.role, leg.deal_type))
+        if leg.deal_type not in ('FXOptionDeal', 'FXBarrierOption') + ACCRUAL_DEALS:
+            raise ValueError('{}: the runner furnishes FXOptionDeal, FXBarrierOption and the '
+                             'accrual deals {}, not {}'.format(
+                                 leg.role, ', '.join(ACCRUAL_DEALS), leg.deal_type))
         deal = dict(shared, Object=leg.deal_type)
         deal.update(leg.pinned)
         for field, slot in leg.slots.items():
@@ -672,8 +975,75 @@ def materialize(structure, params, document):
             # SKIPPED at load and the leg quietly prices at nothing
             deal.setdefault('Barrier_Monitoring_Frequency', {'.DateOffset': '0M'})
             deal.setdefault('Cash_Rebate', 0.0)
-        out.append(Materialized(leg.role, deal, inverted))
+        note = furnish_accrual(deal, params, document, base_date, underlying, inverted) \
+            if leg.deal_type in ACCRUAL_DEALS else None
+        out.append(Materialized(leg.role, deal, inverted, note))
     return out
+
+
+def furnish_accrual(deal, params, document, base_date, underlying, inverted):
+    """The rest of an accrual leg: its fixing strip, its geared notional, and the ONE axis question
+    a strip asks that a single expiry does not. Returns the leg's note.
+
+    THE SCHEDULE. `fixing_grid` grows it from the tenor and `fixing_frequency`, and the deal files
+    it under its own name. `FXTARFOptionDeal` also declares an `Expiry_Date`, which is set to the
+    LAST SETTLEMENT rather than to the tenor: the field is the deal's own reporting horizon and a
+    strip is not over until its final cashflow lands. `FXAccumulatorOptionDeal` declares no such
+    field at all, so the shared block's is REMOVED - a deal block is the field dict the pricer
+    reads, and a key no declaration carries is a key nothing will ever read back.
+
+    THE NOTIONALS. `Underlying_Amount` is the notional per fixing, already in
+    `notional_currency`; `LeverageNotional` is `leverage` times it. Neither has an axis:
+    `notional_currency` IS the underlying, so the amount is stated in the currency the deal is
+    denominated in whichever side of the pair it names, and a gearing is a pure ratio.
+
+    THE TARGET, which is the axis question this module could not answer and says so instead. A
+    target is NOT a level, so it cannot invert like one: it is a sum of DIFFERENCES, and
+    `1/S - 1/K` is not the reciprocal of `S - K`. No number in reciprocal units means the same
+    accrual cap, and two TARFs capped at "the same" target on the two axes redeem on different
+    paths - they are different trades, not one trade read two ways.
+
+    The declaration does carry `InvertedTarget`, and it is NOT the answer: it moves the whole
+    fixing - `eff_intr` and therefore `cf_itm` as well as the accrual - onto the reciprocal of the
+    deal axis, so the deal pays `Underlying_Amount` per unit of MOVE in the pair. That is a
+    coherent product and a well-known one, but it is not what `notional_currency` means here (the
+    notional is an AMOUNT OF that currency, which is why it is the underlying), so a rand notional
+    under the flag would pay a million dollars per rand of move. Measured on the gate's book, the
+    two read 0.77% apart in the solved strike and neither is wrong about its own product.
+
+    So `InvertedTarget` is False on every leg the runner builds, the accrual is the deal's own
+    axis, and a TARF quoted on the pair's QUOTE currency REFUSES by name - the client's cap has no
+    reading there. An accumulator has no target and crosses both axes freely, which is why the
+    both-axes gate is its.
+
+    THE MODEL. `spot_model` pins Heston-Nandi where the book carries a calibration for this leg's
+    underlying, and hands back the note where it does not.
+
+    The axis refusal is this function's FIRST statement, before the schedule and the notionals: a
+    refusal that fires after the deal has been furnished has already written the block the caller
+    holds, and a caller that catches it is holding a half-built strip.
+    """
+    if inverted and deal['Object'] == 'FXTARFOptionDeal':
+        raise ValueError(
+            'a target redemption forward is quoted on the pair\'s BASE currency: the target is '
+            'an accrual cap in the pair\'s own units, the deal accrues on the axis its notional '
+            'puts it on, and a sum of differences has no reading on the reciprocal - '
+            '{} would cap a move nobody quoted'.format(underlying))
+    schedule = fixing_grid(base_date, params['expiry'], params['fixing_frequency'])
+    deal[SCHEDULE_FIELD[deal['Object']]] = schedule
+    deal['LeverageNotional'] = float(params['leverage']) * float(params['notional'])
+    if deal['Object'] == 'FXTARFOptionDeal':
+        deal['Expiry_Date'] = dict(schedule[-1][1])
+        # the deal accrues and pays on its OWN axis - see the docstring for what the flag would do
+        deal['InvertedTarget'] = False
+        # declared, unread today, and written anyway: a deal block IS the field dict, so a field
+        # the pricer starts reading is a KeyError on every quote rather than on the next author's
+        deal.setdefault('TargetAdjustment', '')
+        # the OTM knock-in this desk does not sell; `> 0.0` is the pricer's own off switch
+        deal.setdefault('Barrier', 0.0)
+    else:
+        deal.pop('Expiry_Date', None)
+    return spot_model(document, deal['Object'], underlying, deal['Currency'])
 
 
 def alone(document, deal):
@@ -710,8 +1080,9 @@ def run_price(document, deal):
 def run_solve(document, leg, field, target, spot):
     """`derivus.solve_deal_field` over one leg, bracketed, writing the answer back onto the leg.
 
-    A strike is bracketed around the market spot by `STRIKE_BRACKET` and crossed to the engine
-    axis - inverting swaps the ends, so they are sorted rather than assumed. A BARRIER is bracketed
+    A strike is bracketed around the market spot by `STRIKE_BRACKET` - `ACCRUAL_BRACKET` for a
+    strip, whose ends are the ones that measured badly - and crossed to the engine axis: inverting
+    swaps the ends, so they are sorted rather than assumed. A BARRIER is bracketed
     on the side its own type lives on, off the same ends. Any other field is left to the secant
     from its current value, which is exact in two pricings for anything the value is affine in.
     Returns `(solved, premium at the solved value)`.
@@ -720,7 +1091,8 @@ def run_solve(document, leg, field, target, spot):
     iterate, deal_path = alone(document, leg.deal)
     bounds = None
     if field == 'Strike_Price':
-        bounds = sorted([spot / end if leg.inverted else spot * end for end in STRIKE_BRACKET])
+        ends = ACCRUAL_BRACKET if leg.deal['Object'] in ACCRUAL_DEALS else STRIKE_BRACKET
+        bounds = sorted([spot / end if leg.inverted else spot * end for end in ends])
     elif field == 'Barrier_Price':
         # `spot` and the leg's Barrier_Type are both already on the ENGINE axis, so the direction
         # names the side directly - with a hair of buffer so the barrier never lands exactly on the
@@ -1136,8 +1508,11 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None):
     are the client's numbers, in the market's own terms. The answer is
     `{quote_id, structure, params, legs, net, deal}`: one row per leg carrying its reference, role,
     deal type, side, market-terms strike and barrier, premium and whatever was solved on it - a leg
-    carrying no barrier reports None for it; `net` as the sum of the legs; and `deal` the composed
-    `StructuredDeal`, wire form, ready for the booking verb.
+    carrying no barrier reports None for it, and a leg the runner had to decide something about
+    says so under `note`; `net` as the sum of the legs; and `deal` the composed `StructuredDeal`,
+    wire form, ready for the booking verb. `params` comes back COMPLETED by the structure's own
+    declared defaults - a TARF quoted without a `leverage` was still quoted at one, and a ticket
+    that does not state it is missing a term of the trade.
 
     `quote_id` hashes the structure, the parameters, the market the book was carrying AND a
     submission clock. The clock is the point: a quote is an ACT, so two identical asks minutes
@@ -1188,6 +1563,14 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None):
     is never automatically pushed through it. The `risk` block reports the buckets, the saving, the
     full and effective charges, the scale, the policy as READ, and a note where one is warranted.
 
+    WHAT MODEL IT WAS PRICED UNDER. `valuation_configuration` is the `Valuation Configuration` this
+    quote's own passes pinned - the Heston-Nandi switch `spot_model` writes per deal TYPE where the
+    book carries the calibration - or `None` where the quote pinned nothing. It is reported because
+    the pin lives on the quote's COPY of the document and dies with it: `/book/quote` merges it
+    into the book as part of the booking act, so a leg dealt under a GARCH does not re-mark as a
+    lognormal. Only what THIS quote pinned is reported, never what the book already declared, so an
+    approval cannot re-install a switch the desk has since taken off.
+
     WHO IT IS FOR. `netting_set` names an existing `NettingCollateralSet` in the book - the CLIENT,
     since that is where the counterparty and the CSA are declared - and the approval books the
     mirror UNDER that node rather than at the root, which is what puts the trade inside the subtree
@@ -1201,9 +1584,16 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None):
     # authored objects and a file's wire form become one shape here, so every copy below is plain
     # JSON and a solve's own re-serialisation cannot trip over a Timestamp
     document = json.loads(json.dumps(document, cls=CustomJsonEncoder))
+    # what the BOOK already pinned, so what is reported below is what THIS quote pinned and an
+    # approval never re-installs a switch the desk has since taken off the book
+    already = pinned_models(document) or {}
     # the client is checked before the price: a quote nobody could approve is not worth the solves
     check_netting_set(document, netting_set)
     structure = structure_named(structure_name)
+    # a declared default is part of what was quoted, so it is filled in HERE - before the id is
+    # hashed and before the outcome reports the parameters - rather than inside `materialize`
+    # alone. A ticket that does not state the gearing is a ticket missing a term of the trade
+    params = declared(structure, params)
     quote_id = content_hash({
         'structure': structure_name, 'params': params, 'netting_set': netting_set,
         'market': document.get('Calc', {}).get('MergeMarketData', {}).get('ExplicitMarketData', {}),
@@ -1234,7 +1624,10 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None):
                   'barrier_market': leg.to_market(leg.deal['Barrier_Price'])
                   if 'Barrier_Price' in leg.deal else None,
                   'premium': premiums[leg.role], 'solved': solved.get(leg.role),
-                  'vol_spread': spreads[leg.role]}
+                  'vol_spread': spreads[leg.role],
+                  # what the runner decided about this leg that the parameters did not say - a
+                  # model the book could not price it under, today. None on every vanilla leg
+                  'note': leg.note}
                  for leg in legs],
         'net': sum(premiums.values()),
         'net_mid': sum(mid[leg.role] for leg in legs),
@@ -1252,4 +1645,10 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None):
         # what the residual this trade leaves on the book costs to hedge, and what the policy did
         # with it. `scale` is None where the feature never ran; the note says why
         'risk': risk,
+        # the MODEL these legs were priced under, where it is not the book's own default - the pin
+        # `spot_model` wrote on the quote's copy. `/book/quote` merges it into the book as part of
+        # the booking, so a leg quoted under Heston-Nandi does not re-mark as a lognormal
+        'valuation_configuration': {
+            deal_type: entry for deal_type, entry in (pinned_models(document) or {}).items()
+            if entry != already.get(deal_type)} or None,
         'deal': compose(reference, legs)}

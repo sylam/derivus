@@ -37,6 +37,7 @@ the verbs cannot answer is a missing verb on `Context`, not an endpoint that rea
 | `POST /book/solve` | solve one field of a candidate deal to a target value - a root find over base valuations, writes nothing |
 | `POST /book/market` | tick the book's market: quote blocks installed or value-updated, a values patch applied, the bootstrap run - one atomic write |
 | `POST /book/bloomberg` | provision the security map, fetch the desk's FX vol surfaces off the terminal and tick the book |
+| `POST /book/hn` | calibrate one pair's Heston-Nandi parameters off its built surface - on request, never on the tick |
 | `POST /book/structure` | quote a named structure against the book - legs solved, the pending trade filed under its quote id |
 | `POST /book/quote` | book a quote already given - the approval half, refused exactly as a booking is |
 | `GET /book/risk` | the book's CONSOLIDATED risk - one greeks run over every counterparty at once, cached on what it reads |
@@ -87,6 +88,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import Context, content_hash, solve_deal_field
+from .bootstrappers import HestonNandiModelParameters
 from .schema import mapping
 from ._version import __version__
 from .config import (CustomJsonEncoder, deal_at, remove_deal, sniff_indent, splice_deal,
@@ -1316,6 +1318,164 @@ def book_bloomberg(request: dict):
         {key: request[key] for key in ('pairs', 'expiries', 'pillars') if key in request})
 
 
+#: The `Bootstrapper Configuration` entry that turns a `HestonNandiModelPrices` block into the
+#: parameters a TARF reads - borrowed for the calibration's own run, never left standing (see
+#: `hn_edit`). `Config.bootstrap` runs the families in SORTED order, and `FXVolSurfaceParameters`
+#: sorts before this - so the surface is rebuilt before the fit reads it, in the one write, without
+#: the section having to declare an order it has no field for.
+HN_FAMILY = 'HestonNandiModelParameters'
+
+
+def hn_factor(block_name):
+    """The price factor a `HestonNandiModelPrices.<name>` block writes. The family declares the two
+    strings ARE different (`market_factor_type` against the class name) and no rule recovers one
+    from the other, so the one place the name is composed is here."""
+    return '{}.{}'.format(HN_FAMILY, block_name.split('.', 1)[1])
+
+
+def hn_edit(document, pair):
+    """The calibration as ONE edit closure over a wire document, for `Book.mutate`: the quote block
+    authored off the book's own built surface, installed through the `/book/market` seam,
+    bootstrapped, and the fitted factor landing with it in a single atomic write.
+
+    A RE-CALIBRATION IS A RE-AUTHORING, and the block is dropped before it is installed rather than
+    ticked over. Every other quote block in the system ticks value-only because its structure is a
+    plan: a moved pillar is a new grid. This block's structure IS a function of the surface - the
+    delta-neutral straddle strike moves with the ATM vol, and the 25 delta strikes move with the
+    whole smile - so re-emitting it after a tick legitimately moves the strikes, which
+    `update_market_quote` would refuse by name and be right to. Dropping it first is the deliberate
+    re-authoring that refusal asks for, and it is exactly what makes a calibration a distinct act
+    from a tick.
+
+    THE FAMILY ENTRY IS BORROWED FOR THIS RUN AND HANDED BACK. `Bootstrapper Configuration` says
+    which families run on EVERY bootstrap, and every market tick is a bootstrap - so a book left
+    declaring this one would refit these parameters on every tick, which is the one thing the
+    design says it must not do. It is therefore added if it is missing, and removed again once the
+    fit has run: what the book keeps is the block (the quotes, with their provenance) and the
+    factor (the answer), and re-fitting is this verb being called again. A book that declares the
+    family itself is left declaring it - that is a desk asking for the fit on every build, and its
+    own business. A book with no such section at all refuses in the one wording both market verbs
+    refuse in: there is nothing here to author into.
+    """
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    if not market.get('Bootstrapper Configuration'):
+        raise ValueError(NO_BOOTSTRAPPER)
+    params = load(document).current_cfg.params
+    name, block = HestonNandiModelParameters.fx_surface_block(
+        pair, params['Price Factors'], params['System Parameters'],
+        params['Price Factor Interpolation'])
+    market.get('Market Prices', {}).pop(name, None)
+    borrowed = HN_FAMILY not in market['Bootstrapper Configuration']
+    market['Bootstrapper Configuration'].setdefault(HN_FAMILY, {})
+    try:
+        written, outcome = market_edit(document, {name: as_json(block)}, {}, 'Yes')
+    finally:
+        if borrowed:
+            market['Bootstrapper Configuration'].pop(HN_FAMILY, None)
+    factor = hn_factor(name)
+    # the parameters are read back off the WRITE - a refused bootstrap leaves the section as it was,
+    # and reporting the standing block would report the previous fit as this one's answer
+    fitted = (market['Price Factors'].get(factor) or {}) if written else {}
+    return written, dict(outcome, pair=pair, block=name, factor=factor,
+                         quotes=len(block['instrument']['European_Options']),
+                         source=block['instrument']['Quote_Source'],
+                         parameters={key: value for key, value in fitted.items()
+                                     if key != 'Property_Aliases'})
+
+
+class HestonNandiJob:
+    """One pair's Heston-Nandi calibration as ONE unit of queued work.
+
+    THE XVA MOSAIC'S PATTERN, and for the XVA mosaic's reason: the fit is a least squares over a
+    Fourier inversion of a daily GARCH recursion, and it is MINUTES - measured at 288 s for a
+    ten-quote ladder reaching six months, 549 s for the same fit with the suite running beside it
+    and the same five parameters bit for bit (880 s on an earlier three-month ladder, so the
+    ITERATION count dominates the step count and neither reading predicts the other), and still
+    running past 21 minutes on one reaching a year. It can no more ride a market tick than a credit Monte Carlo
+    can. The market ticks, the parameters stand, and a desk asks for a refit when it wants one. That
+    is why it is queued at `HEAVY`: at three orders of magnitude over a base valuation it must not
+    sit in front of a salesperson's quote, and the cost class is the one thing that says so.
+
+    There is no second file and no projection to write. The fitted
+    `HestonNandiModelParameters.<underlying>` block lands in the book's own `Price Factors`, which
+    is what every read of the book already serves - and what an FX TARF or accumulator resolves by
+    naming convention off its `Underlying_Currency`. The outcome rides the run's own `Stats` under
+    `HestonNandi`, the way a Bloomberg tick's write rides `Bloomberg` and a solve's coordinates ride
+    `Solved`: a job with no tables adds no second shape for a client to learn. Progress rides
+    `PROGRESS` under the result id, so a poller reads what the worker is doing rather than a bare
+    `running` for the length of a least squares.
+    """
+
+    def __init__(self, book, pair, result_id):
+        self.book, self.pair, self.result_id = book, pair, result_id
+
+    def run_job(self):
+        started = time.perf_counter()
+        # minutes behind one result id, so the worker says what it is doing - the same PROGRESS
+        # seam a terminal round trip publishes on, and dropped in a `finally` the same way
+        PROGRESS[self.result_id] = {
+            'done': 0, 'total': 1,
+            'note': 'fitting {} against ten vega-weighted vols'.format(self.pair)}
+        try:
+            outcome = self.book.mutate(lambda document: hn_edit(document, self.pair))
+        finally:
+            PROGRESS.pop(self.result_id, None)
+        return None, {'Results': {}, 'Stats': {'HestonNandi': dict(
+            outcome, seconds=round(time.perf_counter() - started, 2))}}
+
+
+@app.post('/book/hn', summary="Calibrate one pair's Heston-Nandi parameters off its built surface")
+def book_hn(request: dict):
+    """`{pair}` - fit the five Q-measure Heston-Nandi parameters for one FX pair against ten
+    vega-weighted vols read off the surface the book already carries, and land them in it.
+
+    ON REQUEST, NEVER ON THE TICK. The fit is a least squares over a Fourier-inverted daily GARCH
+    recursion, minutes of work, so it is queued at the heavy cost class and a desk's quotes and
+    valuations keep jumping it. A market tick moves the surface and leaves these parameters exactly
+    where they were - STRUCTURALLY, because the family is borrowed into `Bootstrapper
+    Configuration` for this run and handed back, so no later bootstrap re-enters the fit. This verb
+    is what moves them, and the honest time to call it is after a re-tick and before quoting the
+    TARFs that read them.
+
+    The quote ladder is the desk's own and is stated once, on
+    `HestonNandiModelParameters.fx_surface_block`: ATM at 1M/2M/3M/6M/9M/1Y plus 25 delta wings at
+    3M and 6M, weighted by Black vega, nothing past a year. An expiry the surface does not carry
+    moves to the nearest quoted one, and the installed block SAYS SO.
+
+    Answers `{result_id, status}` like `/execute`; the outcome arrives under
+    `stats.HestonNandi` - the block installed, the factor written, the fitted parameters, and the
+    fit's wall time. THERE IS NO GET SIDE, deliberately: the written
+    `HestonNandiModelParameters.<underlying>` factor in the book's `Price Factors` IS the
+    projection, so `GET /book` already serves it and a second file could only disagree with it.
+
+    The pair is REFUSED HERE, on the request thread, when the book carries no built surface for it -
+    a queued job whose answer is 'that pair does not exist' would be a result to poll for a typo.
+    The job re-authors the block against the document it locks, so a book that moved between the
+    check and the write is fitted as it is rather than as it was.
+    """
+    live = live_book()
+    document, etag = live.read()
+    pair = request.get('pair')
+    if not pair:
+        raise HTTPException(422, 'a calibration names the pair it fits, e.g. {"pair": "USD.ZAR"}')
+    try:
+        # the pre-flight IS the emitter, run on the read copy and thrown away: every refusal it
+        # names (no built surface, a parametric one, a cross, a missing curve) is a fact about the
+        # book that a desk must hear now rather than poll for
+        params = load(document).current_cfg.params
+        block_name, _ = HestonNandiModelParameters.fx_surface_block(
+            pair, params['Price Factors'], params['System Parameters'],
+            params['Price Factor Interpolation'])
+    except (ValueError, KeyError) as error:
+        raise HTTPException(422, str(error))
+    # content addressed on the book it fits: the same calibration over an unmoved book is one
+    # execution, and a tick moves the etag, so asking again after one genuinely refits
+    result_id = content_hash({'book': etag, 'hn': pair})
+    submitted = Job(result_id, HestonNandiJob(live, pair, result_id), {})
+    return {'result_id': result_id, 'factor': hn_factor(block_name),
+            'status': EXECUTOR.submit(submitted, HEAVY)}
+
+
 class Metronome:
     """`DV_Service --tick SECONDS` - the background market ticker, as a thread that SUBMITS.
 
@@ -1783,6 +1943,19 @@ def book_quote(request: dict):
     have moved since the quote - and one that has been closed refuses in `splice_deal`'s own
     wording rather than silently falling back to the root.
 
+    THE MODEL BOOKS WITH THE TRADE. A quote may have priced its legs under a spot model the book's
+    own `Valuation Configuration` does not name - `structures.spot_model` pins Heston-Nandi on the
+    QUOTE's copy of the document wherever the book carries the calibration. That copy is thrown
+    away when the quote is answered, so an approval that booked only the deal would land a leg
+    priced under one model into a book that marks it under another, silently. The pending file
+    records the pin (`valuation_configuration`) and it is merged into the book HERE, inside the
+    same edit closure the deal is spliced by: one lock, one validation, one atomic write, and no
+    state in which the trade is on the book without the model it was dealt at. A quote that pinned
+    nothing merges nothing and this is byte for byte the booking it always was. A pin whose
+    parameters the book no longer carries REFUSES 422 rather than booking a switch that would skip
+    the deal at the next valuation - the approval is validated against the book as it is now, and
+    that is the book the model has to resolve on too.
+
     A QUOTE IS FIRM FOR A WINDOW. Where the BOOK declares a `Quote Policy`, its `firm_seconds` is
     how long an approval may stand on the price that was given, and a pending quote older than that
     is refused 422 naming its age, the window and the remedy. The absence of the policy block is
@@ -1831,9 +2004,19 @@ def book_quote(request: dict):
                                      'to move'.format(quote_id, age, structures.QUOTE_POLICY,
                                                       firm, age))
 
-    parent = (pending.get('quote') or {}).get('netting_set')
+    quoted = pending.get('quote') or {}
+    parent, pinned = quoted.get('netting_set'), quoted.get('valuation_configuration')
+
+    def approve(book):
+        written, outcome = deal_edit(book, structures.mirror(pending['deal']), parent)
+        # the model rides the SAME write as the deal - never a second one that could half-land
+        if written and pinned:
+            structures.pin_models(book, pending['deal'], pinned)
+            outcome = dict(outcome, valuation_configuration=pinned)
+        return written, outcome
+
     try:
-        return live.mutate(lambda book: deal_edit(book, structures.mirror(pending['deal']), parent))
+        return live.mutate(approve)
     except ValueError as error:
         raise HTTPException(422, str(error))
 

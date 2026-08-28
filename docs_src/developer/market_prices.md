@@ -150,6 +150,104 @@ parameter block, so the class declares `price_factor_type` — as `FXVolPrices` 
 interpolation of a solved curve comes from `Price Factor Interpolation` rather than from the
 block — see the `Interpolation` note in [Conventions](conventions.md#registries-not-functions).
 
+## `HestonNandiModelPrices` — a block authored off a built surface {#hestonnandi-fx}
+
+The family fits five parameters to a set of European options, and for an equity that set is
+authored: somebody types the strikes. An FX pair's is not typed, because the desk already has the
+answer — the `FXVol` surface [`FXVolPrices`](#fxvolprices) just built. So
+`HestonNandiModelParameters.fx_surface_block` READS a pair's built surface and authors the block:
+**ten vega-weighted implied vols — ATM at 1M, 2M, 3M, 6M, 9M and 1Y, plus the 25 delta wings at 3M
+and 6M**. The term structure is what identifies `H0`, `Beta` and `Omega`; the skew identifies
+`Gamma_Star` and the wings' width `Alpha`. `Weight` is the Black vega off the same surface,
+normalised, so the front month is not abandoned to the back. Nothing past 1Y: TARFs and
+accumulators are sub-year products, and a parameter fitted to the 2Y smile is borrowed against
+products nobody quotes.
+
+**The strikes are the surface's own coordinates.** ATM is the delta-neutral straddle
+`K = F exp(-σ²T/2)` the surface was BUILT under, and each wing is the strike whose
+premium-adjusted forward delta IS the pillar — found by inverting the same delta `Factor2D`'s Malz
+solve inverted, off the same vols. An expiry the surface does not carry moves to the **nearest
+quoted one at or under a year**, and the block says so in `Quote_Source`; interpolating between two
+pillars would put a number nobody quoted into the objective under the name of one somebody did.
+The surface's own `Quote_Timestamp` travels onto the block, so staleness stays data here as it does
+there.
+
+**Ten rungs are not ten quotes, and the count is what refuses.** Snapping is an argmin, so every
+rung the surface does not carry lands on a contract another rung already named — a repeated
+contract is a WEIGHT, not an observation. The canned two-pillar USDZAR surface collapses the whole
+ladder onto **four** distinct `(expiry, strike)` contracts and a single-expiry surface onto three,
+and four observations do not identify five parameters: what identifies `H0`, `Beta` and `Omega` is
+the ATM TERM STRUCTURE, which is exactly what a collapse destroys. So the DISTINCT contracts are
+counted after snapping and a ladder below **six** refuses by name, with the surface's own pillars
+in the message. Four pillars (1M/2M/3M/6M) are the fewest that clear it — measured at eight
+contracts, since the two wing pairs then sit on two different expiries.
+
+**And the cap is applied, not hoped for.** An argmin has no ceiling: on a surface quoting 2Y every
+rung of the ladder would answer 2Y and a fit of sub-year products would borrow its parameters from
+a smile nobody quotes. The candidates are therefore filtered to the ladder's own longest rung plus
+a week (the width of the same pillar quoted from a different date), and a rung with nothing
+admissible under it is DROPPED — which `Quote_Source` says, and which can drop the ladder below the
+six-contract floor and refuse there.
+
+**The vol is read at the PILLAR; the strike hangs off the DATE.** A quote block carries dates, so
+the pillar is emitted as the nearest whole day and the fit reads its own accrual back off that date
+through the discount curve's day count. That accrual is what the FORWARD is built at — the fit
+recomputes exactly it — but it is NOT where the surface is read: under ACT_360 a 1Y pillar resolves
+to 1.0139, and reading there walks every rung off its pillar and puts the 1Y rung past the last
+expiry the surface carries (measured +0.0036 vol points at the 3M rung on the canned surface with
+the USD curve on ACT_360). The day-count conversion belongs to the forward and to the step count.
+
+**`Volatility_Delta` is not folded in.** The block is a QUOTE, and the scenario shift is the FIT's
+business: `bootstrap` adds `vol_surface.delta` to every quoted vol it prices a target premium off.
+Adding it here as well calibrated a two-vol-point world for a one-vol-point scenario, and said
+nothing. Gated as an identity between two real calibrations — the unshifted quotes under a 0.01
+scenario land on the same five parameters as the hand-bumped quotes under none, to **7.7e-9
+relative**.
+
+**Orientation is the correctness argument, not a detail.** An `FXVol.A.B` surface's x-axis is
+`log(F/K)` on the pair *A priced in B*; the 0D factor the family fits is an `FxRate`, which is
+priced in the DOMESTIC currency. So the underlying is the token that is not domestic, the strikes
+are in that factor's units, and the block declares `Use_Forward` **Yes** with `Invert_Moneyness`
+set exactly as an `FXOptionDeal` on that surface sets it. The written
+`HestonNandiModelParameters.<underlying>` is then the factor an FX TARF resolves by naming
+convention off its `Underlying_Currency` — describing the same rate the pricer simulates.
+Inverting the rate flips the sign of the skew `Gamma_Star` carries, which is why that is worth a
+paragraph.
+
+**Both signs of the skew live in one box.** `Gamma_Star`'s sign IS the direction of the smile:
+positive is the equity leverage shape, vol falling with strike in the underlying's own units, and
+USDZAR — whose risk reversal is negative in pair terms — is the other one once read as `FxRate.ZAR`.
+The fitted vector used to bound `Gamma_Star` in `[1, 5000]`, strictly positive, so that surface had
+no admissible fit and the optimizer answered it by switching the leverage channel off and reporting
+a **flat smile** as a converged calibration. It cannot simply be widened across zero:
+`Alpha = |l|ψ/Gamma_Star²` is singular there, and the singularity is real — holding the skew
+channel fixed while `Gamma_Star → 0` sends the wings' width to infinity. So the **leverage share
+carries the sign**: `x[3]` is the magnitude, bounded away from zero, and `x[2]` is a signed share
+in `[-1, 1]` whose sign is `Gamma_Star`'s, with `Alpha = |l|ψ/Gamma_Star²` and `Beta = ψ(1-|l|)`.
+Stationarity is still a box bound on a fitted parameter and every iterate is still feasible. At
+`l = 0` there is no leverage channel and `Gamma_Star` is unidentified, which is what a flat surface
+legitimately reports — and the reason refusing a fit that lands ON the bound was the wrong fix.
+A cold start seeds the SIGN off the quotes themselves (a smile rising with strike is a negative
+`Gamma_Star`), because the objective has a kink at zero leverage and a local optimizer started on
+the wrong side of it would have to cross that kink.
+
+**`POST /book/hn` is the verb**, and it is calibrate-on-request, on the XVA mosaic's terms: the fit
+is a least squares over a Fourier-inverted daily GARCH recursion, and it is MINUTES — **288 s**
+measured on the four-pillar ladder reaching six months (549 s for the same fit with the suite
+running beside it, to the same five parameters bit for bit), against 880 s on an earlier 1M/3M one
+under the one-signed parametrisation, and still running past 21 minutes on one reaching a year. The
+ITERATION count dominates the step count, so neither reading predicts the other; what both share is
+that **75–82% of every option price is the adaptive `phi_max` scan** (0.87 s against 3.42 s per
+`hn_call` at 252 steps, with the bound pinned). So it rides no tick,
+it is queued at the heavy cost class, and a market tick leaves the parameters exactly where they
+were. That last part is STRUCTURAL rather than a convention: `Bootstrapper Configuration` names the
+families that run on EVERY bootstrap and a tick is a bootstrap, so the verb BORROWS the family
+entry for its own run and hands it back. What the book keeps is the block and the fitted factor;
+re-fitting is this verb being called again. It drops its own block before re-installing it, because these
+strikes are a FUNCTION of the surface: re-emitting after a tick legitimately moves them, which
+`update_market_quote` would refuse by name and be right to. There is no GET side — the written
+factor in `Price Factors` is the projection, and `GET /book` already serves it.
+
 ## `FXVolPrices` — a smile quoted in delta, and where the conversion runs {#fxvolprices}
 
 An FX smile ticks in as DELTA quotes: an ATM vol per expiry and, per delta pillar, the risk

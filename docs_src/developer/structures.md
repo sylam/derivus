@@ -47,6 +47,20 @@ once, for every structure at once:
   map, declared beside `VANILLA` and applied exactly where `Option_Type` flips. `Option_Style` is
   NOT pinned on a barrier leg: `FXBarrierOption` declares no such field.
 
+An **accrual** leg — a TARF, an accumulator — asks the axis question a fourth time and gets the
+first NO. A knock-out is a LEVEL and crosses exactly as a barrier does, so an accumulator quotes
+from either side of the pair. A **target** does not cross at all: it is a cap on a sum of
+DIFFERENCES rather than a level, and `1/S − 1/K` is not the reciprocal of `S − K`, so no number in
+reciprocal units means the client's cap — two TARFs "capped the same" on the two axes redeem on
+different paths and are different trades. `FXTARFOptionDeal` does declare an `InvertedTarget` flag,
+and it is not the way out: it moves the whole fixing onto the reciprocal axis (`eff_intr`, and so
+`cf_itm` as well as the accrual), which pays `Underlying_Amount` per unit of MOVE in the pair. That
+is a coherent product — a rand notional under the flag pays a million dollars per rand — and not
+the one `notional_currency` names, since the notional here is an AMOUNT OF that currency, which is
+why it is the underlying. The two read **0.77% apart** in the solved strike on the gate's book and
+neither is wrong about its own product. So `InvertedTarget` is `False` on every leg the runner
+builds, and `TargetRedemptionForward` REFUSES a quote-currency notional by name.
+
 The first two were found the expensive way (a session lost to each) and all three are gated the
 same way: a straddle quoted on a ZAR notional and one on the USD it buys must net the same to
 machine precision, and a forward extra quoted both ways must solve the SAME barrier in market
@@ -66,12 +80,111 @@ buffer at the spot so the level never lands exactly on it: `Down_*` over `(0.25,
 already crossed to. A knock-in's premium is monotone in its barrier — toward the spot is likelier
 to knock and so larger in magnitude — so brentq owns the root or refuses by name.
 
+An **accrual** strike is bracketed over `ACCRUAL_BRACKET` — `(0.5, 2.0) ×` spot — rather than the
+vanilla ends, and the reason is measured rather than defensive. A strip's value is still monotone
+in its strike but it SATURATES at the low end: past the point where every fixing redeems the target
+at once it is flat at `target × notional` discounted, so moving the end in gives up no root. What
+leaving it out gives up is the solve itself — at `0.25 ×` spot on `fx_tarf_job.json`'s market the
+TARF prices **NaN** and `brentq` refuses at its own first evaluation, because a surface quoted over
+moneyness `[0.8, 1.2]` does not extrapolate to 0.25 as a volatility. Measured on that fixture: NaN
+at 0.28, and flat at 99,697.57 — the redeemed target to the cent — from 0.30 through 0.50.
+
 One furnishing the runner does that looks like a default and is not: a deal block IS the field
 dict the pricer reads (`Deal.__init__` takes it verbatim), so a DECLARED default never reaches it.
 `pv_barrier_option` asks for `Barrier_Monitoring_Frequency` and `Cash_Rebate` by name, so
 `materialize` writes both onto a barrier leg — `{'.DateOffset': '0M'}`, continuous monitoring in
 the wire form a Period field decodes from, and a zero rebate. Without them the deal is SKIPPED at
 load: an ERROR line in the log, a leg priced at nothing, and a quote that still returns.
+
+## An accrual leg is one leg and a SCHEDULE {#accrual}
+
+`TargetRedemptionForward` and `Accumulator` are the registry's first MULTI-FIXING structures, and
+its first legs that are a whole strip rather than one option. Each declares ONE leg and a recipe of
+one step — `Solve('tarf', 'Strike_Price', 0.0)` — because there is nothing to fund and nothing to
+fund it with: a TARF is dealt at no upfront, and the strike IS the price. `furnish_accrual` is
+where a leg becomes a strip:
+
+- **the schedule.** `fixing_grid` grows `[[fixing, settlement, observed], ...]` — the untagged row
+  shape both declarations read by iterating — from the tenor and `fixing_frequency`, each fixing at
+  `base + n × frequency` rather than a step off the last (an offset applied repeatedly from a month
+  end walks: 31 Jan + 1M + 1M is 28 Mar), settling `FIXING_LAG` days on, observed 0.0 because a
+  quote is struck today and nothing in it has fixed. A tenor holding no whole fixing period refuses
+  rather than returning an empty strip that would price at nothing.
+- **the two ways a strip comes out SHORT**, and neither is allowed to be silent. A frequency that
+  does not DIVIDE the tenor stops at the last fixing that fits: a 1Y ticket at 5M fixes in November
+  and April, the TARF's `Expiry_Date` is then the April settlement, and the deal is priced,
+  reported and two-way spread at a tenor the ticket does not say. That REFUSES, naming the expiry,
+  the frequency, the last fixing it would have produced (`2025-04-28`) and both remedies — a
+  frequency that divides, or the broken date quoted directly. And a `Base_Date` carrying a TIME (a
+  terminal stamps 16:30) put the final fixing one comparison past a midnight expiry and turned
+  twelve monthly fixings into eleven, so the base is normalized to midnight before the loop
+  exactly as `expiry_date` normalizes its answer.
+- **the expiry.** `FXTARFOptionDeal`'s `Expiry_Date` is the LAST SETTLEMENT — a strip is not over
+  until its final cashflow lands — while `FXAccumulatorOptionDeal` declares no such field, so the
+  shared block's is REMOVED rather than carried as a key nothing will read. `leg_expiry` therefore
+  reads the last settlement where the field is absent, which is the same date either way.
+- **the notionals.** `Underlying_Amount` is the notional PER FIXING and `LeverageNotional` is
+  `leverage ×` it. `leverage` is the registry's first parameter with a DEFAULT (2.0, the market's
+  own gearing) — published as the descriptor's `value` so a front end can show it, and read through
+  `declared()` rather than a `.get` inside the runner.
+- **the model.** Both deals declare `spot_models = ('None', 'HestonNandi')`, and the switch is a
+  `Valuation Configuration` entry per deal TYPE resolved by naming convention off the leg's own
+  underlying — `HestonNandiModelParameters.ZAR` for a rand-notional USDZAR TARF, `.USD` for the
+  same trade on a dollar notional, because `notional_currency` IS the underlying. `spot_model`
+  checks the book for that exact key and pins the model only where it is there. It has to: the
+  switch on with the factor absent raises inside the engine's dependency loop, which SKIPS the deal
+  and logs an ERROR, so a structure that pinned it unconditionally would quote ZERO on every
+  uncalibrated book. Where it is absent the leg carries a `note` instead, and that note names the
+  WHOLE truth — see [the join](#the-join) below.
+- **and the model books with the trade.** The pin is written on the QUOTE's copy of the document,
+  because a quote is not a trade and must not touch the book. That copy dies with the answer, so
+  the outcome REPORTS what it pinned (`valuation_configuration`), the pending file records it, and
+  `/book/quote` merges it into the book inside the same edit closure that splices the deal — one
+  lock, one validation, one write. Without that, a leg dealt under a GARCH re-marks as a lognormal
+  on the very next valuation and nothing says so, because both numbers are plausible. And a pin
+  whose parameters the book no longer carries REFUSES at the approval rather than booking a switch
+  the engine would then raise on — a skipped deal marks at nothing, which is the outcome the whole
+  pin exists to prevent.
+
+### The join, and the note that says the whole truth {#the-join}
+
+Three keyings meet at an accrual leg and **they do not agree**:
+
+| who | keys off | on a USD-base book, for USDZAR |
+|---|---|---|
+| the engine (`get_spot_model_params_factor`) | the deal's `Underlying_Currency` | whatever the notional says |
+| the calibration (`fx_surface_block`) | the pair's NON-domestic token — the only leg that IS an `FxRate` | writes `…ModelParameters.ZAR` |
+| `furnish_accrual` | forces a TARF onto the pair's BASE, since a target has no reading on the reciprocal | `Underlying_Currency` = USD |
+
+So a USDZAR **TARF** looks up `HestonNandiModelParameters.USD` while `/book/hn` wrote `.ZAR`, and
+it prices GBM however many times the pair is calibrated — measured on the calibrated book, where
+the TARF's strike is bit-identical to its GBM one and the accumulator's is not. EURUSD joins (its
+base IS the non-domestic token) and so does either side of an **accumulator**, which has no target
+and crosses freely. Tonight's fix is HONESTY, not an engine change: the absence note names the
+factor that was looked up, the factor the book actually carries, and the orientation that works,
+so a desk does not re-run a calibration it has already run. The engine's half — spot-model support
+where `Underlying_Currency` is the domestic side — is a [roadmap](roadmap.md) row, and it is a
+modelling question rather than a lookup fix: a GARCH on `S` is not a GARCH on `1/S`.
+
+### What the model is worth, and what it is not {#hn-worth}
+
+The case for Heston-Nandi on an accrual strip is **not "the skew and only the skew"**, and the
+measurement says so. On the gate's book, with the USDZAR parameters `/book/hn` actually fits
+(`Omega` 2.757e-6, `Alpha` 7.784e-8, `Beta` 1.079e-3, `Gamma_Star` −3529.45, `H0` 7.027e-5;
+persistence 0.9708, initial vol 13.31% rising to a long-run 15.64%), an accumulator's zero-cost
+strike moves **+0.378%** from GBM to Heston-Nandi. Of that, the LEVERAGE CHANNEL alone — `Alpha` to
+zero with the persistence and the stationary per-step variance held exactly where the fit put them,
+so only the smile and the vol-of-vol are removed — is **+0.048%**, about an eighth. The sign of
+`Gamma_Star` alone is **+0.003%**, which is the solve's own Monte Carlo floor at 16,384 paths
+(2.5e-5 relative) and is therefore *not resolved* at this path count; under a stronger leverage
+channel at the same persistence (`Alpha` 2e-6, `Gamma_Star` ±474) the same flip is worth **0.43%**.
+
+So what the model is mostly worth on this book is its VARIANCE PATH — a level and a persistence a
+lognormal read off the same surface does not have — and the skew is a real but secondary term. The
+same asymmetry shows up in the calibration itself: the fit reprices its own ten quotes to a worst
+point of 4.73% and a weighted residual of 6.21e-5, against **13.13%** and **2.83e-4** for the same
+parameters with the leverage channel removed. The skew is worth having; it is not the whole case,
+and a page that said it was would be overselling a measured 12%.
 
 ## The spread is quoted, the mid is booked {#two-sided}
 
@@ -274,6 +387,21 @@ knock-in branch (measured 1.1e-16 relative). The declared registry reproduced th
 hand-composed collar's solved cap to the digit, which is the check that the recipe encodes the
 composition and not an approximation of it.
 
+The accrual strips brought three of their own, and their tolerances are measured rather than
+chosen. A strip is Monte Carlo priced, so its zero-cost strike is a root find over an ESTIMATOR —
+deterministic for a fixed seed, which is what lets `brentq` own it at all, but converging on the
+true root only as the paths grow: the accumulator's two orientations solve strikes 4.8e-4 apart at
+1024 inner paths, 1.3e-4 at 4096, 2.5e-5 at 16384 and 3.9e-5 at 65536. So the gates quote at 16384
+(about a second) and allow 2e-4. The three: the ACCUMULATOR quoted from both sides of the pair
+solves one strike in market terms while the TARF refuses the second side by name, which is the
+axis finding made concrete in one gate; both strips net to zero, reprice through `book_node`, and
+land BELOW the forward — not a tautology, since at a strike of the forward the geared sold leg
+outweighs the bought one and the strike has to come down until they balance, which is exactly the
+discount the gearing and the redemption cap are sold for; and the composed TARF, booked into
+`test_fx_tarf_json`'s market as a `CreditMonteCarlo`, reports an exposure profile that is finite,
+more than one row, and DISPERSED — which a skipped deal cannot be, because zero has no spread, and
+a skipped deal is invisible in a CMC profile in a way it is not in an `mtm` frame.
+
 The risk-impact gates are three and the same shape. A book with no `Quote Policy` and one with
 `participation: 0` quote float for float identically, so the presence of the data cannot move a
 price. The registry has no sell-side collar — a collar's client always buys the put and sells the
@@ -288,14 +416,18 @@ exactly on the ticket.
 
 ## V1 scope, and the named next steps
 
-Five structures ship: `Straddle`, `Strangle` (no SOLVE — the registry handles recipes that only
+Seven structures ship: `Straddle`, `Strangle` (no SOLVE — the registry handles recipes that only
 price), `ZeroCostCollar` (floor given, cap solved to premium parity), `Seagull` (three legs,
-two given, one solved to net zero) and `ForwardExtra` (the protected rate given, the BARRIER
+two given, one solved to net zero), `ForwardExtra` (the protected rate given, the BARRIER
 solved — protection plus a sold knock-in call at the same strike, so the client keeps the
 favourable move until the pair trades through the level and the structure reverts to a plain
-forward at the rate they were protected at). It is the recipe vocabulary's first solved
-coordinate that is not a strike, and the first leg that is not an `FXOptionDeal`. Named next, in
-order of what they exercise:
+forward at the rate they were protected at), and the two accrual strips
+([above](#accrual)) — `TargetRedemptionForward` (fixings to the tenor, a target cap in the pair's
+own units, the strike solved to zero upfront) and `Accumulator` (the same bargain with a knock-out
+LEVEL in place of the cap). The forward extra is the recipe vocabulary's first solved coordinate
+that is not a strike and its first leg that is not an `FXOptionDeal`; the strips are its first
+one-step recipes, its first legs that are a whole schedule, its first Monte Carlo solves, and the
+first parameter carrying a market DEFAULT. Named next, in order of what they exercise:
 
 RISK-IMPACT PRICING v1 ships with them ([above](#risk-impact)), and its scope is named honestly:
 the residual is measured in the VOL book only (`scope: 'vol'`, and any other value refuses), in

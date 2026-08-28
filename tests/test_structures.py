@@ -1,6 +1,6 @@
 """A structure is only sold once, and it either costs what it says it costs or it does not.
 
-`derivus.structures` declares five FX structures and one runner. There is nothing to unit-test
+`derivus.structures` declares seven FX structures and one runner. There is nothing to unit-test
 about a declaration, so every gate here is a REAL quote: a real book document with a real
 bootstrapped USDZAR vol surface, `quote()` run against it, and the answer checked against a
 financial identity that would be false if any piece of the runner were wrong.
@@ -48,7 +48,40 @@ NOTIONAL = 1_000_000.0
 NOTIONAL_CURRENCY = 'ZAR'
 
 #: The names the registry must carry, and nothing else.
-ROSTER = {'Straddle', 'Strangle', 'ZeroCostCollar', 'Seagull', 'ForwardExtra'}
+ROSTER = {'Straddle', 'Strangle', 'ZeroCostCollar', 'Seagull', 'ForwardExtra',
+          'TargetRedemptionForward', 'Accumulator'}
+
+#: How many inner paths an ACCRUAL structure is quoted on here, and the reason it is not the
+#: book's own 1. A TARF and an accumulator are Monte Carlo priced, so a zero-cost solve is a root
+#: find over an estimator - deterministic for a fixed seed, which is what lets `brentq` own it at
+#: all, but converging on the true root only as the paths grow. The cross-axis gate is what reads
+#: that convergence, and it is MEASURED here rather than chosen: the accumulator's two orientations
+#: solve strikes 4.8e-4 apart at 1024 paths, 1.3e-4 at 4096, 2.5e-5 at 16384 and 3.9e-5 at 65536.
+#: 16384 is where the identity is sharp and a quote still takes about a second.
+ACCRUAL_SIMS = 16384
+
+#: The gap the cross-axis gate allows, at that path count: eight times the measured 2.5e-5, which
+#: is a band no axis error survives (the smallest of them, a barrier level inverted twice, moves
+#: the solved strike by percent).
+AXIS_TOLERANCE = 2e-4
+
+#: Every parameter in the store that is NOT required, and the value it must publish. A market
+#: convention is the only reason a sales parameter carries a default at all, so this list is the
+#: one place a new one has to be argued for.
+DECLARED_DEFAULTS = {'leverage': 2.0}
+
+#: A calibrated Heston-Nandi factor for the rand, as `/book/hn` writes one - the JOINING side of
+#: the pair. Nothing here is fitted: the gates that read it are about which factor the engine looks
+#: up and whether the pin reaches the book, so what these five numbers have to be is stationary
+#: (persistence 0.90) and roughly the surface's own vol, not a fit of it.
+HN_PARAMS = {'Property_Aliases': None, 'Omega': 1e-12, 'Alpha': 2.0e-6, 'Beta': 0.45,
+             'Gamma_Star': -474.34, 'H0': 7.8e-5}
+
+#: The strip a TARF and an accumulator are quoted on here: monthly fixings to the tenor, and a cap
+#: of 1.50 rand of cumulative favourable move on a spot of 18.50 - reachable enough that the
+#: redemption is part of the price rather than decoration.
+FIXING_FREQUENCY = '1M'
+TARGET = 1.5
 
 #: `solve_deal_field`'s own default, in report currency. A zero-cost structure is zero-cost to
 #: whatever the solve was allowed to leave on the table, so this is the tolerance every net-zero
@@ -180,8 +213,14 @@ def test_the_registry_publishes_exactly_the_declared_structures():
         assert entry['vernacular'] and entry['legs'] and entry['recipe']
         assert {'pair', 'expiry', 'notional', 'notional_currency'} <= set(entry['fields'])
         for key, descriptor in entry['fields'].items():
-            assert descriptor['required'] is True, '{}.{} has a default a client cannot mean'.format(
-                name, key)
+            # a parameter is REQUIRED unless the market itself has a convention for it - a TARF's
+            # loss-side gearing is 2.0 unless the client says otherwise - and a declared default
+            # has to be PUBLISHED as the value, because a front end that cannot see it is a front
+            # end that makes the client state a number the desk already assumed
+            if descriptor.get('required') is not True:
+                assert key in DECLARED_DEFAULTS, (
+                    '{}.{} has a default a client cannot mean'.format(name, key))
+                assert descriptor['value'] == DECLARED_DEFAULTS[key], (name, key, descriptor)
         for role, declared in entry['legs'].items():
             assert declared['deal_type'] in instruments, (
                 '{}.{} is a {}, which no class declares'.format(name, role, declared['deal_type']))
@@ -756,3 +795,299 @@ def test_an_unparsed_tenor_refuses_rather_than_expiring_today(book):
     with pytest.raises(ValueError) as refusal:
         structures.quote(book, 'Straddle', dict(params(strike=SPOT), expiry='three months'))
     assert 'three months' in str(refusal.value)
+
+
+# --------------------------------------------------------------------------------------------
+# the accrual strips: a TARF and an accumulator, which are one leg and a SCHEDULE
+# --------------------------------------------------------------------------------------------
+@pytest.fixture(scope='module')
+def accrual_book(book):
+    """The same book quoted at `ACCRUAL_SIMS` inner paths.
+
+    The only edit is the path count, and it is not tuning: every other gate here prices a closed
+    form, while a strip is Monte Carlo and its zero-cost strike is a root find over an estimator.
+    `MCMC_Simulations` is 1 on `test_service`'s job, which is the right number for a cashflow's
+    arithmetic and one path for a TARF.
+    """
+    document = copy.deepcopy(book)
+    document['Calc']['Calculation']['MCMC_Simulations'] = ACCRUAL_SIMS
+    return document
+
+
+def accrual_params(**extra):
+    return params(fixing_frequency=FIXING_FREQUENCY, **extra)
+
+
+def only_leg(outcome):
+    """The one deal a strip composes to - the container's single child."""
+    return outcome['deal']['Children'][0]['Instrument']['.Deal']
+
+
+def test_an_accumulator_crosses_both_axes_and_a_tarf_refuses_the_second(accrual_book):
+    """The axis gate for the strips, and it has two halves because the two structures answer
+    differently - which is the whole finding.
+
+    THE ACCUMULATOR CROSSES. An accumulator on 1,000,000 rand and one on the dollars that buys at
+    the solved strike are the SAME trade, and the desk must quote them at the same money. The rand
+    side crosses everything at once: the strike inverts, the market Call is written as an engine
+    Put, the knock-out LEVEL inverts with the strike and its DIRECTION inverts with it - the
+    `Up_And_Out` the structure declares on the pair is booked `Down_And_Out` on the rand - while
+    the dollar side crosses nothing at all. Get any of them wrong and the two orientations solve
+    different strikes for one trade. The equivalent notional converts at the STRIKE, exactly as the
+    forward extra's gate states, and the strike here is the SOLVED one - which costs nothing to
+    use, because a zero-cost strike is scale-invariant (both sides of the payoff carry the
+    notional) and the sizing therefore only has to make the two NETS comparable, never the strike.
+
+    THE TARF DOES NOT, and refuses rather than quoting something else. Its target is a cap on the
+    ACCRUAL, which is a sum of differences rather than a level: `1/S - 1/K` is not the reciprocal
+    of `S - K`, so no number in reciprocal units means the client's cap and the two orientations
+    would be different trades wearing one parameter. The deal's own `InvertedTarget` flag is not
+    the way out - it moves the whole fixing onto the reciprocal axis, paying the notional per unit
+    of MOVE, which is a coherent product and not the one `notional_currency` names (measured 0.77%
+    apart in the solved strike, and neither wrong about its own product). So the refusal names the
+    currency, and `InvertedTarget` is False on every leg the runner builds.
+    """
+    both_ways = {'pair': PAIR, 'expiry': EXPIRY, 'fixing_frequency': FIXING_FREQUENCY,
+                 'knockout': SPOT * 1.10}
+    in_rand = structures.quote(accrual_book, 'Accumulator', dict(
+        both_ways, notional=NOTIONAL, notional_currency='ZAR'))
+    strike = leg(in_rand, 'accumulator')['strike_market']
+    in_dollars = structures.quote(accrual_book, 'Accumulator', dict(
+        both_ways, notional=NOTIONAL / strike, notional_currency='USD'))
+
+    assert abs(in_rand['net']) <= SOLVE_TOLERANCE and abs(in_dollars['net']) <= SOLVE_TOLERANCE
+    assert leg(in_dollars, 'accumulator')['strike_market'] == pytest.approx(
+        strike, rel=AXIS_TOLERANCE), 'the two orientations solved different strikes for one trade'
+
+    rand, dollars = only_leg(in_rand), only_leg(in_dollars)
+    assert rand['Option_Type'] == 'Put' and dollars['Option_Type'] == 'Call'
+    assert rand['Barrier_Type'] == 'Down_And_Out', 'up on the pair is down on the rand'
+    assert dollars['Barrier_Type'] == 'Up_And_Out', 'a base-currency notional flips nothing'
+    assert rand['Barrier_Price'] == pytest.approx(1.0 / (SPOT * 1.10), rel=1e-12)
+    assert dollars['Barrier_Price'] == pytest.approx(SPOT * 1.10, rel=1e-12)
+    assert rand['Strike_Price'] == pytest.approx(1.0 / strike, rel=1e-12)
+
+    with pytest.raises(ValueError) as refusal:
+        structures.quote(accrual_book, 'TargetRedemptionForward', accrual_params(target=TARGET))
+    assert 'ZAR' in str(refusal.value) and 'accrual cap' in str(refusal.value)
+
+
+def test_an_accrual_strip_costs_nothing_and_strikes_better_than_the_forward(accrual_book):
+    """The zero-cost identity for both strips, and the DIRECTION that says the client got the
+    bargain they are paying gearing and a knock-out for.
+
+    A TARF is dealt at no upfront - `Solve('tarf', 'Strike_Price', 0.0)` is the whole recipe, with
+    no leg to fund it - so the net is zero to the solve's own tolerance and the composed deal
+    reprices to it through `book_node`, leg for leg.
+
+    The SIDE of the forward is the claim that is not a tautology. Both curves are flat at one rate
+    in this world, so the forward IS the spot (the straddle gate asserts it), and at a strike of
+    the forward the client's bought leg and their sold leg are worth the SAME per fixing - at which
+    point `leverage` times the sold one outweighs one of the bought one and the package is
+    negative. The strike therefore has to come DOWN until the two balance, and a client accruing
+    `(S - K)+` is better off the lower it goes. So a zero-cost accrual strike sits BELOW the
+    forward, and that discount is exactly what the 2x gearing and the redemption cap are sold for.
+    A runner that inverted a strike twice, or fed the pricer a leverage of one, lands above it.
+
+    The rest is what the parameters became: twelve monthly fixings to the tenor, each settling two
+    days on; the geared notional at `leverage x notional` off a default the client never stated;
+    and the target copied through UNCONVERTED, on the pair's own axis, with `InvertedTarget` False.
+
+    The HN pin is exercised here by its ABSENCE, which is the only arm this repo can reach: no
+    fixture carries a `HestonNandiModelParameters` price factor for an FX underlying, so the leg is
+    priced GBM and SAYS so on its own row. The alternative is what makes that worth a gate -
+    pinning the model on a book with no calibration raises inside the engine's dependency loop,
+    which SKIPS the deal and logs an ERROR, and the quote comes back with its only leg priced at
+    nothing.
+    """
+    tarf = structures.quote(accrual_book, 'TargetRedemptionForward', dict(
+        accrual_params(target=TARGET), notional_currency='USD'))
+    row, deal = leg(tarf, 'tarf'), only_leg(tarf)
+
+    assert abs(tarf['net']) <= SOLVE_TOLERANCE, tarf['net']
+    assert row['strike_market'] < SPOT, (
+        'a zero-cost TARF strike is not better than the forward for the client')
+    assert row['solved'] == {'Strike_Price': pytest.approx(row['strike_market'], rel=1e-12)}
+    assert row['barrier_market'] is None, 'a TARF leg carries no barrier'
+
+    assert len(deal['TARF_ExpiryDates']) == 12, 'a 1Y tenor holds twelve monthly fixings'
+    fixing, settlement, observed = deal['TARF_ExpiryDates'][0]
+    assert fixing == {'.Timestamp': '2024-07-28'} and settlement == {'.Timestamp': '2024-07-30'}
+    assert observed == 0.0, 'a quote is struck today and nothing in it has fixed'
+    assert deal['Expiry_Date'] == deal['TARF_ExpiryDates'][-1][1], (
+        'a strip expires with its last cashflow, not with its last fixing')
+    assert deal['LeverageNotional'] == 2.0 * NOTIONAL, 'the declared leverage never reached the deal'
+    assert deal['TargetLevel'] == TARGET and deal['InvertedTarget'] is False, (
+        'the target is the client number, on the pair own axis')
+    assert 'HestonNandiModelParameters' in row['note'], row['note']
+    assert not accrual_book['Calc']['MergeMarketData']['ExplicitMarketData'].get(
+        'Valuation Configuration'), 'a model was pinned on a book that cannot price it'
+
+    priced = values(accrual_book, [tarf['deal']])
+    assert priced[row['reference']] == pytest.approx(row['premium'], rel=1e-9), (
+        'the container reports a leg the quote does not')
+    assert priced[tarf['deal']['Reference']] == pytest.approx(tarf['net'], abs=1e-6)
+
+    accumulator = structures.quote(accrual_book, 'Accumulator', dict(
+        accrual_params(knockout=SPOT * 1.10), notional_currency='USD'))
+    accrued = leg(accumulator, 'accumulator')
+    assert abs(accumulator['net']) <= SOLVE_TOLERANCE, accumulator['net']
+    assert accrued['strike_market'] < SPOT, 'the same bargain, and the same side of the forward'
+    assert accrued['barrier_market'] == pytest.approx(SPOT * 1.10, rel=1e-12)
+    assert only_leg(accumulator)['LeverageNotional'] == 2.0 * NOTIONAL
+    assert 'Expiry_Date' not in only_leg(accumulator), (
+        'FXAccumulatorOptionDeal declares no Expiry_Date, so the block must not carry one')
+
+
+def test_a_strip_ends_on_its_own_expiry_or_refuses(book):
+    """The two ways a fixing strip can come out SHORT of the tenor it was quoted at, and neither
+    is allowed to be silent.
+
+    A FREQUENCY THAT DOES NOT DIVIDE. A 1Y ticket at a 5M frequency fixes twice - November and
+    April - and the loop's only stopping rule is `fixing > expiry`, so it stops there. Nothing
+    downstream can tell: a TARF's `Expiry_Date` is set to the last SETTLEMENT, so the deal is
+    priced, reported and two-way spread at the SHORT tenor, and the ticket still says 1Y. So the
+    strip refuses, naming the expiry, the frequency, the last fixing it would have produced and
+    the two ways out - a frequency that divides, or the broken date quoted directly.
+
+    A BASE DATE CARRYING A TIME. `expiry_date` normalizes its answer to a date, and a terminal
+    snapshot stamps `Base_Date` at 16:30, so the final fixing landed one comparison past midnight
+    on the expiry and a twelve-fixing year quietly became eleven. The base is normalized before
+    the loop, and the count is the same from either stamp.
+    """
+    import pandas as pd
+
+    with pytest.raises(ValueError) as refusal:
+        structures.fixing_grid(BASE, '1Y', '5M')
+    assert '2025-04-28' in str(refusal.value), 'the refusal must name the fixing it would end on'
+    assert '5M' in str(refusal.value) and '1Y' in str(refusal.value)
+    assert 'divides the tenor' in str(refusal.value), 'a refusal without a remedy'
+
+    stamped = structures.fixing_grid(pd.Timestamp(BASE) + pd.Timedelta(hours=16, minutes=30),
+                                     '1Y', '1M')
+    assert len(stamped) == len(structures.fixing_grid(BASE, '1Y', '1M')) == 12
+    assert stamped[-1][0] == {'.Timestamp': '2025-06-28'}, 'the last fixing IS the expiry'
+
+    # and the quote refuses through the runner, not just the helper
+    with pytest.raises(ValueError) as quoted:
+        structures.quote(book, 'TargetRedemptionForward', dict(
+            params(target=TARGET, fixing_frequency='5M'), notional_currency='USD'))
+    assert '5M' in str(quoted.value)
+
+
+def test_the_axis_refusal_fires_before_the_deal_is_furnished(book):
+    """A refusal is not allowed to leave a half-built deal behind.
+
+    `furnish_accrual` writes the schedule and the geared notional onto the deal block the caller
+    holds - IN PLACE, because a deal block IS the field dict the pricer reads. So the TARF's axis
+    refusal has to be the function's FIRST statement: fired after those writes, it hands a caller
+    that catches it a block carrying a strip and a leverage for a trade that was never quoted.
+
+    The ordering is visible in the wording too. An inverted TARF with a frequency that also does
+    not divide reports the AXIS - the thing the client has to change - rather than the schedule
+    it would never have got to build.
+    """
+    deal = {'Object': 'FXTARFOptionDeal', 'Currency': 'USD', 'Underlying_Currency': 'ZAR'}
+    with pytest.raises(ValueError) as refusal:
+        structures.furnish_accrual(
+            deal, params(target=TARGET, fixing_frequency='5M'), book, BASE, 'ZAR', True)
+
+    assert 'accrual cap' in str(refusal.value) and 'ZAR' in str(refusal.value)
+    assert '5M' not in str(refusal.value), 'the schedule was built before the axis was checked'
+    assert deal == {'Object': 'FXTARFOptionDeal', 'Currency': 'USD', 'Underlying_Currency': 'ZAR'}
+
+
+def test_the_absence_note_names_the_whole_join(accrual_book):
+    """What the leg says when the model is NOT pinned, and it has to be the whole truth because a
+    desk reading it will otherwise re-run a calibration that was already run.
+
+    Three keyings meet at this leg and they do not agree: the ENGINE keys spot-model parameters off
+    `Underlying_Currency`, the CALIBRATION writes the pair's non-domestic token (the only leg of
+    the pair an `FxRate` can be), and `furnish_accrual` forces a TARF onto the pair's BASE. So a
+    USDZAR TARF on a USD-base book looks up `.USD` while `/book/hn` wrote `.ZAR`, and it rides GBM
+    however many times the pair is calibrated. The note names the factor looked up, the one the
+    book actually carries, and the orientation that DOES join - which is the roadmap row for the
+    engine half stated where a salesperson can read it.
+    """
+    document = copy.deepcopy(accrual_book)
+    factors = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    factors['HestonNandiModelParameters.ZAR'] = dict(HN_PARAMS)
+
+    tarf = structures.quote(document, 'TargetRedemptionForward', dict(
+        accrual_params(target=TARGET), notional_currency='USD'))
+    note = leg(tarf, 'tarf')['note']
+
+    assert 'HestonNandiModelParameters.USD' in note, 'the factor looked up is unnamed'
+    assert 'HestonNandiModelParameters.ZAR' in note, 'the factor the book carries is unnamed'
+    assert 'Underlying_Currency' in note and 'base side' in note
+    assert tarf['valuation_configuration'] is None, 'a model was pinned that cannot be resolved'
+
+    # the joining orientation: an accumulator has no target, so it quotes on the rand and JOINS
+    joined = structures.quote(document, 'Accumulator', dict(
+        accrual_params(knockout=SPOT * 1.10), notional=NOTIONAL, notional_currency='ZAR'))
+    assert leg(joined, 'accumulator')['note'] is None, 'the pinned arm still carries a note'
+    assert joined['valuation_configuration'] == {
+        'FXAccumulatorOptionDeal': {'SpotModel': 'HestonNandi'}}
+
+
+def test_a_composed_tarf_carries_an_exposure_profile(tmp_path):
+    """The CMC bar: a quoted TARF, booked, run as an exposure simulation - which is what the deal
+    is FOR, and the failure mode a base valuation cannot see.
+
+    A deal the engine cannot resolve is SKIPPED: an ERROR in the log, and every number downstream
+    computed over a portfolio that quietly lost a trade. On a base valuation that shows up as a
+    missing `mtm` row, which the zero-cost gate already reads. On a Credit Monte Carlo it does not
+    show up at all - the profile is still a frame of the right shape, and a book of one skipped
+    deal is a floor of zeros that looks like a trade deep out of the money. So the claim is made
+    unrepresentable: more than one reporting row, every value finite, and DISPERSION across the
+    scenarios of each row - which a skipped deal cannot have, because zero has no spread.
+
+    The market is `test_fx_tarf_json`'s own, so the composed deal is priced against the world that
+    file's closed-form gates pin, with the FX rate given a simulation model (`GBMAssetPriceModel`,
+    the only edit) because a Credit Monte Carlo simulates what a base valuation only discounts.
+    """
+    import numpy as np
+
+    template = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'fixtures', 'fx_tarf_job.json')
+    with open(template) as source:
+        document = json.load(source)
+    document['Calc']['Deals']['Deals']['Children'] = []
+    document['Calc']['Calculation']['MCMC_Simulations'] = ACCRUAL_SIMS
+    factors = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+
+    outcome = structures.quote(document, 'TargetRedemptionForward', {
+        'pair': 'EURUSD', 'expiry': '6M', 'notional': 1_000_000.0, 'notional_currency': 'EUR',
+        'fixing_frequency': FIXING_FREQUENCY, 'target': 0.10})
+    assert abs(outcome['net']) <= SOLVE_TOLERANCE, outcome['net']
+    assert leg(outcome, 'tarf')['strike_market'] < factors['FxRate.EUR']['Spot'] * 1.05
+
+    run = copy.deepcopy(document)
+    run['Calc']['Deals']['Deals']['Children'] = [structures.book_node(outcome['deal'])]
+    # the grid runs PAST the last settlement on purpose: a Credit Monte Carlo whose horizon stops
+    # inside the strip reports one mtm row more than its own report index and refuses on the shape
+    run['Calc']['Calculation'] = {
+        'Object': 'CreditMonteCarlo', 'Base_Date': document['Calc']['Calculation']['Base_Date'],
+        'Currency': 'USD', 'Time_grid': '0d 7m(1m)', 'Batch_Size': 512, 'Simulation_Batches': 2,
+        'Random_Seed': 1, 'MCMC_Simulations': 512, 'Deflation_Interest_Rate': 'USD'}
+    market = run['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Models'] = {'GBMAssetPriceModel.EUR': {
+        'Vol': factors['FXVol.EUR.USD']['Surface']['.Curve']['data'][0][2], 'Drift': 0.0}}
+    market['Model Configuration'] = {'.ModelParams': {
+        'modeldefaults': {'FxRate': 'GBMAssetPriceModel'}, 'modelfilters': {}}}
+
+    path = os.path.join(str(tmp_path), 'tarf_cmc.json')
+    with open(path, 'w') as target:
+        json.dump(run, target, default=str)
+    context = derivus.Context()
+    context.load_json(path)
+    _, out = context.run_job()
+
+    profile = np.asarray(out['Results']['mtm'].values, dtype=float)
+    spread = profile.std(axis=1)
+    assert profile.shape[0] > 1, 'one reporting row is not a profile'
+    assert np.isfinite(profile).all(), 'the exposure profile carries a non-finite row'
+    assert (spread > 0.0).sum() > 1, (
+        'a profile with no dispersion across scenarios is a deal the run skipped')
+    assert spread[-1] == 0.0, (
+        'the grid deliberately outlives the strip, so the last row has nothing left to be worth')

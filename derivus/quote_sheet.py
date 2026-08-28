@@ -68,8 +68,11 @@ CURVE_COLUMNS = {'Curve': ('Tenor', 'Rate'),
                  'ATM_Ref': ('Tenor', 'Level')}
 
 #: The ticket's columns, in the order a dealer reads them.
+#: `Note` is last because it is usually blank: it carries what the runner had to decide about a
+#: leg that the parameters did not say - today, that the book has no calibration for the model the
+#: leg asked for and it was priced GBM. A dealer who has to know that has to read it on the ticket.
 LEG_COLUMNS = ('Role', 'Reference', 'Deal Type', 'Buy/Sell', 'Strike (market)', 'Premium',
-               'Solved')
+               'Solved', 'Note')
 
 #: The keys of a deal block that are the TREE rather than a field of it. Each subtree is already
 #: said as its own section, so repeating it as json in one cell is noise - and on a three-legged
@@ -162,7 +165,7 @@ class _Sheet:
 
 def _quote_sheet(sheet, outcome, base_date):
     """The ticket: what was asked for, what each leg costs, what the package nets."""
-    sheet.widths((26, 24, 18, 12, 16, 16, 34))
+    sheet.widths((26, 24, 18, 12, 16, 16, 34, 48))
     sheet.line([('Quote', 'title')])
     sheet.blank()
     sheet.line([('Structure', 'head'), _stated(outcome.get('structure'))])
@@ -184,7 +187,7 @@ def _quote_sheet(sheet, outcome, base_date):
                     _stated(leg.get('deal_type')), _stated(leg.get('buy_sell')),
                     (_number(leg.get('strike_market')), 'strike'),
                     (_number(leg.get('premium')), 'premium'),
-                    _solved(leg.get('solved'))])
+                    _solved(leg.get('solved')), _stated(leg.get('note'))])
     sheet.blank()
     sheet.line([('Net', 'head'), None, None, None, None, (_number(outcome.get('net')), 'premium')])
 

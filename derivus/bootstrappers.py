@@ -31,6 +31,7 @@ from .schema import F, OPTION_QUOTE, REQUIRED, Row
 from ._version import __version__
 
 import scipy.optimize
+import scipy.stats
 
 
 def resolve_factor(name, price_factors, candidates):
@@ -486,11 +487,19 @@ class HestonNandiModelParameters(object):
          '',
          '$$\\sum_{j\\in J}w_j\\Big(V_j-V_j(\\omega,\\alpha,\\beta,\\gamma^*,h_1)\\Big)^2$$',
          '',
-         'is minimized with L-BFGS-B over $\\Big(\\log\\omega,\\psi,l,\\frac{\\gamma^*}{1000},\\log h_1\\Big)$',
-         'where $\\alpha=\\frac{l\\psi}{\\gamma^{*2}}$ and $\\beta=\\psi(1-l)$ for a leverage share',
-         '$l\\in[0,1]$. Stationarity is therefore a *box constraint on a fitted parameter*',
-         '($\\psi\\le1-10^{-6}$) and holds at every point the optimizer visits - there is no penalty term and',
-         'no infeasible iterate. Gradients are exact (torch autograd through the inversion).',
+         'is minimized with L-BFGS-B over',
+         '$\\Big(\\log\\omega,\\psi,l,\\frac{|\\gamma^*|}{1000},\\log h_1\\Big)$ where',
+         '$\\alpha=\\frac{|l|\\psi}{\\gamma^{*2}}$, $\\beta=\\psi(1-|l|)$ and',
+         '$\\gamma^*=\\mathrm{sgn}(l)\\,|\\gamma^*|$ for a SIGNED leverage share $l\\in[-1,1]$.',
+         'Stationarity is therefore a *box constraint on a fitted parameter* ($\\psi\\le1-10^{-6}$) and',
+         'holds at every point the optimizer visits - there is no penalty term and no infeasible iterate.',
+         'The share carries the sign because $\\gamma^*$ cannot: $\\alpha$ is singular at',
+         '$\\gamma^*=0$, so the fitted magnitude is bounded away from zero and BOTH skew directions',
+         'live in one box - the equity leverage shape (vol falling with strike in the underlying\'s',
+         'own units, $\\gamma^*>0$) and the shape an FX pair read on its **FxRate** axis routinely',
+         'wants ($\\gamma^*<0$). At $l=0$ there is no leverage channel and $\\gamma^*$ is',
+         'unidentified, which is what a flat surface legitimately reports. Gradients are exact',
+         '(torch autograd through the inversion).',
          '',
          'Target premia are the Black prices at the corresponding vol surface point (as per the Clewlow',
          'Strickland bootstrapper) unless *Quote_Type* is **Premium**, in which case the quoted values are',
@@ -511,8 +520,8 @@ class HestonNandiModelParameters(object):
     # The Fourier inversion needs double precision - the framework default (float32) destroys the
     # cancellation in P1/P2 - so the dtype this is constructed with is deliberately ignored.
     prec = torch.float64
-    # x = (log Omega, psi, leverage share, Gamma_Star/1000, log H0) - see reparam
-    bounds = [(np.log(1e-12), np.log(1e-3)), (0.0, 1.0 - 1e-6), (0.0, 1.0),
+    # x = (log Omega, psi, SIGNED leverage share, |Gamma_Star|/1000, log H0) - see reparam
+    bounds = [(np.log(1e-12), np.log(1e-3)), (0.0, 1.0 - 1e-6), (-1.0, 1.0),
               (1e-3, 5.0), (np.log(1e-10), np.log(1e-2))]
     # candidate price factor types for each instrument input - the underlying is any spot (0D)
     # factor and the volatility any (moneyness, expiry) surface, so one instrument definition
@@ -548,6 +557,16 @@ class HestonNandiModelParameters(object):
           description='GARCH steps an expiry is spread over'),
         F('Quadrature_Panels', 'Integer', default=64,
           description='Gauss-Legendre panels the characteristic function is inverted on'),
+        F('Quote_Timestamp', 'Date', default='',
+          description='When the quotes were seen - the vol surface\'s own as-of where this block '
+                      'was authored off one (fx_surface_block). Stored, logged and reported; '
+                      'nothing in the fit reads it, because what counts as too old is the '
+                      'consumer\'s policy and not the parameters\''),
+        F('Quote_Source', 'Text', default='',
+          description='How this block was authored, in one line: what the vols were read off and '
+                      '- where the surface does not carry an expiry the ladder asks for - the '
+                      'nearest quoted one used instead. Logged beside the fitted parameters, so a '
+                      'substituted pillar is in the record rather than interpolated silently'),
         F('European_Options', 'Table', default='null', row=Row(OPTION_QUOTE),
           description='The option quotes the five parameters are fitted to')]
 
@@ -570,18 +589,38 @@ class HestonNandiModelParameters(object):
 
         STATIONARITY IS ENFORCED BY CONSTRUCTION, not by a penalty: the optimizer fits the
         persistence psi = Beta + Alpha*Gamma_Star^2 itself (a plain box bound psi <= 1-1e-6) and
-        splits it between the two channels with a leverage share l in [0, 1]. Omega and H0 are
-        fitted in logs so they stay positive and so their scale (~1e-6) doesn't wreck the line
-        search against Gamma_Star (~1e3, hence the /1000).
+        splits it between the two channels with a leverage share l. Omega and H0 are fitted in logs
+        so they stay positive and so their scale (~1e-6) doesn't wreck the line search against
+        Gamma_Star (~1e3, hence the /1000).
+
+        THE LEVERAGE SHARE CARRIES THE SIGN, and BOTH signs of the skew live in one box because of
+        it. Gamma_Star's sign is the direction of the smile: positive is the equity leverage shape,
+        vol FALLING with strike in the underlying's own units, and an FX pair read on its `FxRate`
+        axis routinely wants the other one (USDZAR's negative pair-terms risk reversal is a RISING
+        smile once read as `FxRate.ZAR`). A one-signed Gamma_Star has no admissible fit for that
+        surface and the optimizer answers with a flat smile it calls converged.
+
+        Gamma_Star itself cannot simply be widened across zero: Alpha = l*psi/Gamma_Star^2 is
+        singular there, and the singularity is real rather than parametric - holding the skew
+        channel fixed while Gamma_Star -> 0 sends the wings' width to infinity. So x[3] is the
+        MAGNITUDE, bounded away from zero, and x[2] is a SIGNED share in [-1, 1] whose sign is
+        Gamma_Star's: Alpha = |l|*psi/Gamma_Star^2, Beta = psi*(1-|l|). The price is continuous
+        across l = 0 - at zero leverage Alpha is zero and Gamma_Star has no effect at all, which is
+        exactly why a flat surface leaves it unidentified - and every point of the box is
+        stationary and feasible, as before.
         """
-        psi, lev, gamma = x[1], x[2], x[3] * 1000.0
+        psi, share, magnitude = x[1], x[2], x[3] * 1000.0
+        gamma = torch.where(share < 0.0, -magnitude, magnitude)
+        lev = torch.abs(share)
         return torch.exp(x[0]), lev * psi / gamma ** 2, psi * (1.0 - lev), gamma, torch.exp(x[4])
 
     @staticmethod
     def unreparam(omega, alpha, beta, gamma, h0):
         """Inverse of reparam (used to warm start off an existing price factor)."""
         psi = beta + alpha * gamma ** 2
-        return np.array([np.log(omega), psi, alpha * gamma ** 2 / psi, gamma / 1000.0, np.log(h0)])
+        share = alpha * gamma ** 2 / psi
+        return np.array([np.log(omega), psi, -share if gamma < 0.0 else share,
+                         abs(gamma) / 1000.0, np.log(h0)])
 
     @classmethod
     def moneyness(cls, strike, spot, forward, vol_surface, use_forward, invert_moneyness):
@@ -598,6 +637,396 @@ class HestonNandiModelParameters(object):
         return float(pricing.calc_moneyness(
             *[torch.tensor(float(x), dtype=cls.prec) for x in (strike, spot, forward)],
             deal_data, use_forward, invert_moneyness))
+
+    #: THE FX LADDER, ratified by the desk and encoded here rather than described: the ATM term
+    #: structure identifies H0/Beta/Omega, and the 25 delta wings identify Gamma_Star (the skew)
+    #: and Alpha (the wings' width). NOTHING PAST 1Y - TARFs and accumulators are sub-year
+    #: products, and a parameter fitted to the 2Y smile is borrowed against products nobody quotes.
+    fx_atm_expiries = (1.0 / 12.0, 2.0 / 12.0, 0.25, 0.5, 0.75, 1.0)
+    fx_wing_expiries = (0.25, 0.5)
+    fx_wing_pillar = 0.25
+    #: Days a surface expiry in YEARS is emitted as. A quote block carries DATES, so a pillar has
+    #: to be rounded to one - `Expiry_Date` is the nearest whole day to the pillar and the fit
+    #: reads its own accrual back off that date. The residual is the rounding (a 1M pillar is
+    #: 30.4 days and is emitted as 30) and it is not the day-count conversion, which is what
+    #: `pillar` keeps off the surface lookup entirely.
+    fx_days_per_year = 365.0
+    #: How far PAST the ladder's own longest rung a surface pillar may still be snapped to. The
+    #: 'nothing past 1Y' rule is a rule about the QUOTES, and an unconditional argmin does not
+    #: enforce it: on a surface whose only pillars are 2Y and 5Y every rung of the ladder would
+    #: land on 2Y and the fit would be a 2Y fit wearing a 1M label. A week is the width of the
+    #: same pillar quoted from a different date (a 1Y pillar at 366 or 368 days), not a second
+    #: expiry.
+    fx_expiry_tolerance = 7.0 / 365.0
+    #: DISTINCT (expiry, strike) contracts the ladder must survive snapping with. Ten rungs are
+    #: not ten quotes: a surface carrying two pillars collapses them onto FOUR contracts and one
+    #: carrying a single expiry onto three, and four contracts do not identify five parameters -
+    #: the ATM term structure is what identifies H0/Beta/Omega, and it is exactly what a collapse
+    #: destroys. Six is the floor, and it is a floor rather than a guarantee: the fit still reports
+    #: which of its parameters sat on a bound.
+    fx_minimum_contracts = 6
+
+    @classmethod
+    def fx_surface_expiry(cls, surface, expiry, cap):
+        """The surface's OWN expiry nearest `expiry` at or under `cap`, and whether it had to
+        substitute. `(None, True)` where the surface carries no admissible pillar at all.
+
+        A surface that does not carry 2M is not asked to invent one: the quote moves to the nearest
+        pillar the surface was BUILT from and the block says so (`Quote_Source`). Interpolating
+        between two pillars would put a number nobody quoted into the objective under the name of
+        one somebody did.
+
+        `cap` is the ladder's own longest rung, `fx_expiry_tolerance` wide. Snapping is an argmin
+        and an argmin has no ceiling, so without it the desk's 'nothing past 1Y' rule holds only on
+        surfaces that happen to stop there. A rung with nothing admissible under it is DROPPED, and
+        the block says that too.
+        """
+        admissible = surface.expiry[surface.expiry <= cap + cls.fx_expiry_tolerance]
+        if not admissible.size:
+            return None, True
+        nearest = float(admissible[np.argmin(np.abs(admissible - expiry))])
+        return nearest, not np.isclose(nearest, expiry)
+
+    @staticmethod
+    def fx_atm_coordinate(vol_at, T, iterations=64):
+        """`(x, vol)` of the DELTA-NEUTRAL STRADDLE on a Malz surface at expiry `T`.
+
+        That is the ATM convention `FXVolSurfaceParameters` writes and `Factor2D.malz_skew` places
+        the +-0.5 label's vol at: `K = F exp(-sigma^2 T/2)`, i.e. `x = log(F/K) = sigma^2 T / 2`
+        with `sigma` the surface's own vol AT that x. Reading the surface at `x = 0` instead would
+        be the ATMF vol, which is a different number on a skewed smile - so this is the fixed
+        point `sigma = surface(sigma^2 T / 2)`, iterated to machine precision (a contraction: the
+        map's slope is the smile's slope times `sigma T`, order 1e-2 here).
+        """
+        vol = vol_at(0.0)
+        for _ in range(iterations):
+            moved = vol_at(0.5 * vol * vol * T)
+            if abs(moved - vol) < 1e-14:
+                vol = moved
+                break
+            vol = moved
+        return 0.5 * vol * vol * T, vol
+
+    @staticmethod
+    def fx_pillar_delta(vol_at, T, x, side):
+        """The PREMIUM-ADJUSTED FORWARD delta magnitude at log-moneyness `x = log(F/K)`, on the
+        call wing (`side` +1) or the put wing (-1) - `(K/F)N(d2)` and `(K/F)N(-d2)`.
+
+        The one delta convention the Malz solve inverts, so a strike found by inverting THIS is
+        the strike that solve placed the pillar's vol at. `d2` is built off the surface's own vol
+        at `x`, which is what makes it a smile delta rather than a flat-vol one.
+        """
+        vol = vol_at(x)
+        d2 = (x - 0.5 * vol * vol * T) / (vol * np.sqrt(T))
+        return float(np.exp(-x) * scipy.stats.norm.cdf(side * d2))
+
+    @classmethod
+    def fx_pillar_coordinate(cls, vol_at, T, pillar, side, x_atm, iterations=100):
+        """The log-moneyness whose premium-adjusted forward delta IS `pillar` on one wing.
+
+        Bisection between the delta-neutral straddle and a far wing: the delta is monotone in `x`
+        along each wing (a call's rises as the strike falls), so the bracket is the ATM coordinate
+        on one end and a strike three log-units out on the other. An unbracketed pillar REFUSES by
+        name rather than clamping - a 25 delta quote that the surface cannot reach is a surface
+        question, and a silently clamped strike would enter the objective as if it were the wing.
+        """
+        far = 3.0
+        low, high = (-far, x_atm) if side > 0 else (x_atm, far)
+        error = lambda x: cls.fx_pillar_delta(vol_at, T, x, side) - pillar
+        if error(low) * error(high) > 0.0:
+            raise ValueError(
+                'the {:g} delta {} at expiry {:.4f} is not reachable on this surface - its delta '
+                'runs from {:.4f} to {:.4f} over log-moneyness [{:g}, {:g}]. Quote the wing the '
+                'surface carries, or widen it'.format(
+                    pillar, 'call' if side > 0 else 'put', T,
+                    cls.fx_pillar_delta(vol_at, T, low, side),
+                    cls.fx_pillar_delta(vol_at, T, high, side), low, high))
+        for _ in range(iterations):
+            middle = 0.5 * (low + high)
+            if error(low) * error(middle) <= 0.0:
+                high = middle
+            else:
+                low = middle
+        return 0.5 * (low + high)
+
+    @staticmethod
+    def fx_black_vega(forward, strike, rate, vol, T):
+        """Black vega of one unit of the option - `exp(-rT) F n(d1) sqrt(T)`.
+
+        THE WEIGHT, before normalisation. Vega is what a desk's risk in a quote actually is, and
+        it is what makes the objective scale-free across a term structure: a one-month premium is
+        a fraction of a one-year one, and an unweighted least squares would fit the back end and
+        leave the front to fend for itself. Puts and calls share it, so the wing's own type does
+        not enter.
+        """
+        stddev = vol * np.sqrt(T)
+        d1 = (np.log(forward / strike) + 0.5 * stddev * stddev) / stddev
+        return float(np.exp(-rate * T) * forward * scipy.stats.norm.pdf(d1) * np.sqrt(T))
+
+    @classmethod
+    def fx_surface_block(cls, pair, price_factors, sys_params, factor_interp):
+        """`(Market Prices name, block)` - this family's quote block, authored off a pair's BUILT
+        `FXVol` surface.
+
+        THE SPEC, ratified by the desk and encoded here rather than described: calibrate the five
+        Q-measure Heston-Nandi parameters against TEN VEGA-WEIGHTED IMPLIED VOLS read off the
+        pair's BUILT surface - ATM at 1M, 2M, 3M, 6M, 9M and 1Y (the term structure identifies H0,
+        Beta and Omega) plus 25 delta wings at 3M and 6M (the skew identifies Gamma_Star, the
+        wings' width Alpha). Weight is the Black vega off the same surface, normalised. NOTHING
+        PAST 1Y - TARFs and accumulators are sub-year products, and a parameter fitted to the 2Y
+        smile is borrowed against products nobody quotes. An expiry the surface does not carry
+        moves to the NEAREST QUOTED one AT OR UNDER 1Y and the block SAYS SO (`Quote_Source`)
+        rather than interpolating silently; a rung with no admissible pillar under it is dropped,
+        and the block says that too. Snapping is an argmin and an argmin has no ceiling, so the
+        cap is applied to the candidates rather than hoped for.
+
+        TEN RUNGS ARE NOT TEN QUOTES, and this is the guard the `expiry.size < 2` one below is not.
+        Every substituted rung lands on a contract another rung already named, so a two-pillar
+        surface hands the fit FOUR distinct contracts and a one-expiry surface three - a repeated
+        contract is a weight, not an observation, and four observations do not identify five
+        parameters. So the DISTINCT `(expiry, strike)` contracts are counted after snapping and a
+        ladder below `fx_minimum_contracts` refuses by name, with the surface's own pillars in the
+        message.
+
+        THE VOLS ARE THE SURFACE'S, UNSHIFTED. `Volatility_Delta` is a scenario shift and it is the
+        FIT's business: `bootstrap` reads `vol_surface.delta` and adds it to every quoted vol it
+        prices a target premium off. Adding it here as well would move the fitted world twice for
+        one bump - a block is a QUOTE, and a quote is not a scenario.
+
+        THE VOL IS READ AT THE PILLAR'S OWN COORDINATE. `T` is the surface's expiry axis; the
+        emitted `Expiry_Date` resolves, through the discount curve's own day count, to an accrual
+        `t` that equals it only under ACT_365. `t` is what the FORWARD hangs off - the fit
+        recomputes exactly that number off the date and prices there - and `T` is what the surface
+        is read at. Reading the surface at `t` under ACT_360 walks every rung off its pillar and
+        puts the 1Y rung PAST the last expiry the surface carries.
+
+        THE STRIKES ARE THE SURFACE'S OWN COORDINATES, not a moneyness ladder laid over it. The
+        ATM strike is the delta-neutral straddle `K = F exp(-sigma^2 T/2)` the surface was built
+        under, and each wing is the strike whose premium-adjusted forward delta IS the pillar -
+        found by inverting the same delta the Malz solve inverted, off the same vols. So the ten
+        quotes are ten points the desk actually made a market in, and the vol beside each is the
+        one the surface carries there.
+
+        WHY IT LIVES HERE AND NOT IN `derivus_bloomberg`. Nothing here is quote provenance: no
+        terminal is reached, no ticker is spelled, and the only as-of in sight is the surface's own
+        `Quote_Timestamp`, carried through so staleness stays data. What it authors is a block of
+        THIS family's schema, in THIS family's conventions - `Use_Forward`/`Invert_Moneyness` as
+        `moneyness` reads them, the `OPTION_QUOTE` columns, the reference fields `resolve` needs -
+        off a price factor the engine built. That is the family's business, so it is the family's
+        method.
+
+        THE CONVENTIONS, and they are the whole correctness argument. An `FXVol.A.B` surface's
+        x-axis is `log(F/K)` in terms of the pair `A` priced in `B` (`FXOptionDeal` reads it that
+        way from either side, which is what makes the axis unambiguous). The 0D factor this family
+        fits is an `FxRate`, and an `FxRate` is priced in the DOMESTIC currency - so the underlying
+        is the token that is not domestic, the strikes are in that factor's own units, and the
+        block declares `Use_Forward` Yes with `Invert_Moneyness` set exactly as the deal sets it
+        (`domestic == A`). The written `HestonNandiModelParameters.<underlying>` is then the factor
+        an FX TARF or accumulator resolves by naming convention off its `Underlying_Currency`, and
+        it describes the same rate the pricer simulates - orientation included, which matters
+        because inverting the rate flips the sign of the skew Gamma_Star carries.
+
+        Refuses by name, with the remedy, on: no built surface for the pair, a surface whose type
+        is not one a strike can be looked up on, a ladder that collapses below
+        `fx_minimum_contracts` distinct contracts, a pair neither of whose tokens is the domestic
+        currency (a cross - author the block by hand), and a missing spot or discount curve.
+        """
+        name = utils.check_rate_name(pair)
+        vol_name = utils.check_tuple_name(utils.Factor('FXVol', name))
+        if vol_name not in price_factors:
+            raise ValueError(
+                'no {} in the book\'s Price Factors - there is no built surface to read {} off. '
+                'Tick the pair\'s FXVolPrices block first (/book/market or /book/bloomberg), '
+                'which bootstraps it'.format(vol_name, pair))
+
+        surface = riskfactors.construct_factor(
+            utils.Factor('FXVol', name), price_factors, factor_interp)
+        subtype = surface.get_subtype()
+        if subtype[0] not in cls.tabular_surfaces:
+            raise ValueError(
+                '{} has Surface_Type {} - only {} surfaces carry a vol AT A STRIKE, which is what '
+                'a quote is. Author the quotes as premiums (Quote_Type Premium) instead'.format(
+                    vol_name, subtype[0], '/'.join(cls.tabular_surfaces)))
+
+        # `Factor2D.current_value` only INTERPOLATES a grid with two of each coordinate - handed a
+        # degenerate one it answers the whole flat vol vector, and reading element zero of that
+        # would be a plausible number at the wrong point on every rung of the ladder
+        if surface.expiry.size < 2 or surface.moneyness.size < 2:
+            raise ValueError(
+                '{} carries {} expiries x {} moneyness nodes - a surface has to be a grid before a '
+                'vol can be read off it at a strike. Quote the pair at more than one '
+                'expiry'.format(vol_name, surface.expiry.size, surface.moneyness.size))
+
+        base_date = sys_params['Base_Date']
+        domestic = sys_params.get('Base_Currency', 'USD')
+        # the pair is A.B = A priced in B; the FxRate this family fits is priced in the DOMESTIC
+        # currency, so the underlying is whichever token is not it - and the moneyness inverts
+        # exactly where FXOptionDeal inverts it, on the surface's FIRST token being the domestic
+        if domestic not in name:
+            raise ValueError(
+                '{} is a cross against the reporting currency {} - neither leg is an FxRate this '
+                'family can fit, because an FxRate is priced in the domestic currency. Author the '
+                'HestonNandiModelPrices block by hand, naming the Underlying and its '
+                'Discount_Rate/Yield explicitly'.format(pair, domestic))
+        underlying = name[1] if name[0] == domestic else name[0]
+        invert = name[0] == domestic
+
+        spot_name = utils.check_tuple_name(utils.Factor('FxRate', (underlying,)))
+        if spot_name not in price_factors:
+            raise ValueError('no {} in the book\'s Price Factors - a smile is quoted around a '
+                             'spot, and the parameters this writes describe that rate\'s own '
+                             'dynamics. Add the FxRate block for {}'.format(
+                                 spot_name, underlying))
+        spot_block = price_factors[spot_name]
+        # the carry legs: an FxRate names its own foreign curve, and its domestic is the one it is
+        # priced in - the same pair of curves the FX forward is built from
+        carry_name = spot_block.get('Interest_Rate') or underlying
+        discount_name = spot_block.get('Domestic_Currency') or domestic
+        for curve in (discount_name, carry_name):
+            if utils.check_tuple_name(
+                    utils.Factor('InterestRate', utils.check_rate_name(curve))) not in price_factors:
+                raise ValueError(
+                    'no InterestRate.{0} in the book\'s Price Factors - the strikes hang off the '
+                    'forward, and the forward is this pair\'s two curves. Add the {0} curve, or '
+                    'point {1}\'s Interest_Rate / Domestic_Currency at curves the book '
+                    'carries'.format(curve, spot_name))
+
+        spot = float(riskfactors.construct_factor(
+            utils.Factor('FxRate', (underlying,)), price_factors, factor_interp).current_value()[0])
+        discount = riskfactors.construct_factor(
+            utils.Factor('InterestRate', utils.check_rate_name(discount_name)),
+            price_factors, factor_interp)
+        carry = riskfactors.construct_factor(
+            utils.Factor('InterestRate', utils.check_rate_name(carry_name)),
+            price_factors, factor_interp)
+        cap = max(cls.fx_atm_expiries)
+
+        def pillar(expiry):
+            """One admissible expiry's `(T, moved, days, t, F, r, vol_at)`, or `None` where the
+            surface carries no pillar the ladder may snap to.
+
+            `T` is the SURFACE's own coordinate and the vol is read there, at `T` exactly. `t` is
+            the accrual the emitted date resolves to through the discount curve's own day count,
+            and it is what the FORWARD hangs off, because it is what the fit will recompute off
+            `Expiry_Date` and price at. The two are the same number only under ACT_365: under
+            ACT_360 a 1Y pillar resolves to 1.0139, and reading the surface there would read PAST
+            the last pillar on every rung - the day-count conversion belongs to the forward and to
+            the step count, never to the surface lookup.
+            """
+            T, moved = cls.fx_surface_expiry(surface, expiry, cap)
+            if T is None:
+                return None
+            days = int(round(T * cls.fx_days_per_year))
+            t = discount.get_day_count_accrual(base_date, days)
+            rate = float(discount.current_value(t))
+            forward = spot * np.exp((rate - float(carry.current_value(t))) * t)
+            # the surface UNSHIFTED: this block is a QUOTE, and `Volatility_Delta` is a scenario
+            # shift the fit applies to every quoted vol it reads. Folding it in here as well would
+            # move the fitted world twice on one bump
+            return T, moved, days, t, forward, rate, (
+                lambda x: float(surface.current_value([[x, T]])[0]))
+
+        quotes, substituted = [], []
+
+        def quote(days, forward, rate, t, x, vol):
+            """One `OPTION_QUOTE` row: the strike this coordinate names in the UNDERLYING's own
+            units (inverting `calc_moneyness`, which is what `Invert_Moneyness` declares), the
+            surface's vol there, and the Black vega that will become its weight."""
+            strike = forward * np.exp(x if invert else -x)
+            quotes.append({
+                'Expiry_Date': base_date + pd.DateOffset(days=days), 'Strike': strike,
+                # the OTM leg of the pair, which is the one a desk deals - and the fit is blind to
+                # the choice either way, since the family prices puts by parity off the call
+                'Option_Type': 'Call' if strike >= forward else 'Put', 'Units': 1.0,
+                'Weight': cls.fx_black_vega(forward, strike, rate, vol, t),
+                'Quoted_Market_Value': vol})
+
+        for expiry in cls.fx_atm_expiries:
+            found = pillar(expiry)
+            if found is None:
+                substituted.append('ATM {:g} DROPPED - no pillar at or under {:g}'.format(
+                    expiry, cap))
+                continue
+            T, moved, days, t, forward, rate, vol_at = found
+            x, vol = cls.fx_atm_coordinate(vol_at, T)
+            quote(days, forward, rate, t, x, vol)
+            if moved:
+                substituted.append('ATM {:g} -> {:g}'.format(expiry, T))
+
+        for expiry in cls.fx_wing_expiries:
+            found = pillar(expiry)
+            if found is None:
+                substituted.append('{:g}d {:g} DROPPED - no pillar at or under {:g}'.format(
+                    cls.fx_wing_pillar, expiry, cap))
+                continue
+            T, moved, days, t, forward, rate, vol_at = found
+            x_atm, _ = cls.fx_atm_coordinate(vol_at, T)
+            for side in (1.0, -1.0):
+                x = cls.fx_pillar_coordinate(vol_at, T, cls.fx_wing_pillar, side, x_atm)
+                quote(days, forward, rate, t, x, vol_at(x))
+            if moved:
+                substituted.append('{:g}d {:g} -> {:g}'.format(cls.fx_wing_pillar, expiry, T))
+
+        # TEN RUNGS ARE NOT TEN QUOTES. Every rung the surface does not carry snaps onto one it
+        # does, so a thin surface hands the fit the same contract several times under different
+        # names - and a repeated contract is a weight, not an observation. What identifies five
+        # parameters is the count of DISTINCT (expiry, strike) contracts, so that is what is
+        # counted and what refuses
+        contracts = {(point['Expiry_Date'], point['Strike']) for point in quotes}
+        if len(contracts) < cls.fx_minimum_contracts:
+            raise ValueError(
+                '{} carries pillars {} - the ladder (ATM {}, {:g}d wings {}) collapses onto {} '
+                'distinct contract{} on it, and {} do not identify five parameters: the ATM term '
+                'structure is what identifies H0, Beta and Omega, and a collapsed ladder has no '
+                'term structure in it. Quote the pair at more expiries (at least {} distinct '
+                'contracts, so at least three pillars at or under {:g}), or author the '
+                'HestonNandiModelPrices block by hand. What each rung did: {}'.format(
+                    vol_name, '/'.join('{:g}'.format(x) for x in surface.expiry),
+                    '/'.join('{:g}'.format(x) for x in cls.fx_atm_expiries), cls.fx_wing_pillar,
+                    '/'.join('{:g}'.format(x) for x in cls.fx_wing_expiries), len(contracts),
+                    '' if len(contracts) == 1 else 's', len(contracts),
+                    cls.fx_minimum_contracts, cap,
+                    ', '.join(substituted) or 'every rung landed on a pillar it was asked for'))
+
+        # NORMALISED, over the rungs as emitted: the weights are relative in the objective, and a
+        # ladder the surface collapsed onto fewer pillars is honestly a heavier weight on those
+        total = sum(point['Weight'] for point in quotes)
+        if not total > 0.0:
+            raise ValueError('{} priced every quote at zero vega, so there is no weight to '
+                             'normalise and nothing the fit would be sensitive to. Quote the '
+                             'surface at a positive vol'.format(vol_name))
+        for point in quotes:
+            point['Weight'] /= total
+
+        source = '{} ATM {} + {:g}d wings {}, off {} as at {}'.format(
+            len(quotes), '/'.join('{:g}'.format(x) for x in cls.fx_atm_expiries),
+            cls.fx_wing_pillar, '/'.join('{:g}'.format(x) for x in cls.fx_wing_expiries), vol_name,
+            price_factors[vol_name].get('Quote_Timestamp') or 'no stated time')
+        if substituted:
+            source += ('; rungs the surface does not carry, moved to the nearest quoted at or '
+                       'under {:g} or dropped where it carries none: {}'.format(
+                           cap, ', '.join(substituted)))
+
+        declared = {field.name: field.default for field in cls.fields}
+        return utils.check_tuple_name(utils.Factor(cls.market_factor_type, (underlying,))), {
+            'instrument': {
+                'Underlying': underlying, 'Underlying_Type': 'FxRate',
+                'Volatility': '.'.join(name), 'Volatility_Type': 'FXVol',
+                'Discount_Rate': discount_name, 'Discount_Rate_Type': 'InterestRate',
+                'Yield': carry_name, 'Yield_Type': 'InterestRate',
+                'Quote_Type': 'Implied_Volatility',
+                # the surface's x-axis is log(F/K) on the PAIR, so the lookup is against the
+                # forward and inverts exactly where the pair's own deals invert it
+                'Use_Forward': 'Yes', 'Invert_Moneyness': 'Yes' if invert else 'No',
+                # stated rather than left to fall through, because the STEP CLOCK is what the
+                # fitted parameters mean: a deal's `Steps_Per_Year` valuation option has to be
+                # this number or it is simulating a different model. Read off the declaration, so
+                # the block and the field cannot come to hold two different defaults
+                'Steps_Per_Year': declared['Steps_Per_Year'],
+                'Quadrature_Panels': declared['Quadrature_Panels'],
+                'Quote_Timestamp': price_factors[vol_name].get('Quote_Timestamp') or '',
+                'Quote_Source': source,
+                'European_Options': quotes}}
 
     @staticmethod
     def price(spot, strike, is_call, units, omega, alpha, beta, gamma, r, n, h0, panels, yield_discount=1.0):
@@ -735,7 +1164,16 @@ class HestonNandiModelParameters(object):
                 else:
                     var = np.mean([x['sigma'] for opts in expiries.values()
                                    for x in opts]) ** 2 / steps_per_year
-                    x0 = np.array([np.log(0.1 * var), 0.9, 0.5, 0.1, np.log(var)])
+                    # THE SIGN IS SEEDED OFF THE QUOTES, not guessed: the leverage share is signed
+                    # and the objective has a kink at zero leverage (where Gamma_Star stops
+                    # mattering at all), so a local optimizer started on the wrong side of it would
+                    # have to cross that kink to reach the right one. A smile whose vol RISES with
+                    # strike in the underlying's own units is a negative Gamma_Star
+                    rise = sum(max(opts, key=lambda o: o['Strike'])['sigma'] -
+                               min(opts, key=lambda o: o['Strike'])['sigma']
+                               for opts in expiries.values() if len(opts) > 1)
+                    x0 = np.array([np.log(0.1 * var), 0.9, -0.5 if rise > 0.0 else 0.5, 0.1,
+                                   np.log(var)])
 
                 scale = np.mean([x['Premium'] ** 2 for opts in expiries.values() for x in opts])
                 result = scipy.optimize.minimize(
@@ -770,6 +1208,12 @@ class HestonNandiModelParameters(object):
                         utils.hn_persistence(alpha, beta, gamma),
                         utils.hn_ann_vol(omega, alpha, beta, gamma, steps_per_year),
                         result.fun, result.message))
+                # the block's own account of where its quotes came from, in the record beside the
+                # parameters they produced - a substituted expiry is a fact about this fit
+                if instrument.get('Quote_Source') or instrument.get('Quote_Timestamp'):
+                    logging.info('  quotes: {} (as at {})'.format(
+                        instrument.get('Quote_Source') or 'authored by hand',
+                        instrument.get('Quote_Timestamp') or 'no stated time'))
 
                 # emit in the canonical HN_PARAM_NAMES order (single source), paired with reparam's
                 # documented (Omega, Alpha, Beta, Gamma_Star, H0) output tuple
