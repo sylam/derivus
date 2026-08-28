@@ -540,6 +540,10 @@ def solve_structure(structure: str, params: dict, wait_seconds: float = 120.0) -
     zero-cost structure, the margin otherwise. `deal` rides with it, the composed structured deal
     ready to book.
 
+    A quote prices on the LIVE spot when this workstation's terminal is up, and on the book's last
+    ticked one - with the reason named - when it is not; the outcome's `spot` block says which was
+    used (`value_market`, the pair as quoted, with `source` and `note`).
+
     Where the book's vol quotes carry a two-way, the legs are priced on the sides of it a desk
     would deal - each leg's `vol_spread` is the signed vol shift it took, in the surface's own
     units - and `net_mid` is the same legs marked at MID, which is what the trade will be worth on

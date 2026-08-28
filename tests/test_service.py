@@ -60,7 +60,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import derivus
-from derivus import service, utils
+from derivus import service, structures, utils
 from derivus.config import CustomJsonEncoder, deal_at
 
 BASE = pd.Timestamp('2024-06-28')
@@ -1374,6 +1374,37 @@ def test_a_quoted_collar_is_filed_pending_and_books_at_zero(quoting, tmp_path):
     assert marked['status'] == 'done', marked.get('error')
     assert mtm(marked_id)[node['Instrument']['.Deal']['Reference']] == pytest.approx(
         0.0, abs=premium * 1e-4)
+
+
+def test_a_quote_with_no_map_prices_on_the_book_and_names_the_spot_it_used(quoting, tmp_path):
+    """A quote prices on this workstation's LIVE spot when the terminal is up, and the fallback
+    when it is not IS the old path - said float for float rather than promised.
+
+    This `DV_HOME` holds no security map, which is a fresh desk and the one live-spot refusal
+    reachable with no terminal at all: a quote never provisions, exactly as a routine tick never
+    does. So the quote runs on the book's own ticked spot, names the home it looked in, and must
+    come out identical to the same structure quoted straight through `structures.quote` - the
+    entry point this feature did not touch. Close would not do: a fallback that moved a price
+    would be a live-spot feature firing when there is no live spot.
+
+    `value_market` is read back off the document the legs priced against, so it is the book's
+    USDZAR here and cannot be anything else. And the book file is untouched either way - a spot is
+    `bind='value'` data patched onto the JOB's copy, and a quote is not a trade.
+    """
+    before = quoting.read_bytes()
+    quote = quote_of('ZeroCostCollar', COLLAR)
+    document, _ = service.BOOK.read()
+    unchanged = structures.quote(document, 'ZeroCostCollar', COLLAR)
+
+    assert quote['spot']['source'] == 'book'
+    assert 'no security map in {}'.format(tmp_path) in quote['spot']['note']
+    assert quote['spot']['value_market'] == USDZAR
+
+    assert (quote['net'], quote['net_mid']) == (unchanged['net'], unchanged['net_mid'])
+    for row, same in zip(quote['legs'], unchanged['legs']):
+        assert (row['premium'], row['strike_market'], row['solved']) == (
+            same['premium'], same['strike_market'], same['solved']), row
+    assert quoting.read_bytes() == before
 
 
 def test_an_unknown_quote_id_names_the_tmp_it_looked_in(quoting):

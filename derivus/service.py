@@ -97,6 +97,24 @@ TICK_SECONDS = 30.0
 TICK_FAILURES = 3
 TICK_STRETCH = 5
 
+#: A quote prices on a LIVE spot when this workstation's terminal is up. That fetch rides in front
+#: of EVERY quote rather than on the cadence, so it gets a budget of its own: a terminal that is not
+#: there must cost a salesperson nothing they can feel.
+SPOT_TIMEOUT_MS = 2000
+
+#: And the cost is paid once. A failure that reached the terminal is remembered process-wide for
+#: this long, so consecutive quotes skip the attempt instead of each re-paying the timeout. A plain
+#: clock and no thread machinery: the worst a race can do here is one extra request.
+SPOT_BACKOFF_SECONDS = 30.0
+
+#: Why a quote fell back to the book's ticked spot, in ONE wording. A quote NEVER fails for want of
+#: a live one - the book's is a real market, ticked on the cadence - so every branch below ends as
+#: a named note beside the price rather than as a refusal.
+NO_LIVE_SPOT = "priced on the book's ticked spot - {}"
+
+#: `(monotonic stamp, note)` of the last live-spot attempt that REACHED the terminal and failed.
+_SPOT_FAILURE = (0.0, None)
+
 #: Browsers refuse a cross-origin fetch the server does not invite, so an SPA served from anywhere
 #: but the service itself cannot call it at all without this. Read when the middleware stack is
 #: built, which is the first request - long after `main` has parsed `--origin`.
@@ -1029,6 +1047,117 @@ def quote_dir():
     return os.path.join(dv_home(), 'tmp')
 
 
+def spot_failure():
+    """The remembered live-spot failure while it is still believed, or None.
+
+    Read before every attempt: a dead terminal is learned ONCE and costs the next half-minute of
+    quotes nothing at all, which is the whole difference between a feature and a two-second tax on
+    every price a desk asks for.
+    """
+    stamp, note = _SPOT_FAILURE
+    return note if note is not None and time.monotonic() - stamp < SPOT_BACKOFF_SECONDS else None
+
+
+def remember_spot_failure(note):
+    """Remember a live-spot failure that REACHED the terminal - only those. A home with no map or a
+    pair the map never verified costs a stat and a dict lookup, and the home a note names can change
+    between two quotes, so remembering those would buy nothing and make the note lie."""
+    global _SPOT_FAILURE
+    _SPOT_FAILURE = (time.monotonic(), note)
+
+
+def live_spot_crosses(base_currency, currencies, host=None, port=None):
+    """`({PAIR: cross}, None)` off this workstation's terminal, or `(None, note)` naming why not.
+
+    ONE request for every pair at once, through the same `derivus_bloomberg` machinery a tick
+    fetches a surface with: the security map says which verified ticker prices each currency
+    against the book's own base, and the session's tolerant reader answers them together.
+    `derivus_bloomberg` is imported HERE for the reason `BloombergJob` imports it inside `run_job` -
+    blpapi lives only on a terminal workstation, and the service serves every other verb on machines
+    that have never heard of it.
+
+    An unprovisioned home, a missing blpapi, a pair the map never verified: all of them end as a
+    named note, never as an error and never as provisioning - verifying a workstation's vocabulary
+    is minutes of terminal time and a person's act, exactly as the metronome has it.
+
+    `host`/`port` are the session's own endpoint arguments threaded through rather than hard-coded,
+    so a workstation whose Desktop API is not on the default socket reaches this one seam too.
+    """
+    remembered = spot_failure()
+    if remembered is not None:
+        return None, remembered
+    try:
+        from derivus_bloomberg import security_map
+        from derivus_bloomberg.discover import provisioned
+    except ImportError as error:
+        return None, NO_LIVE_SPOT.format('derivus_bloomberg is not importable ({})'.format(error))
+    try:
+        path = provisioned()
+        if path is None:
+            return None, NO_LIVE_SPOT.format(
+                'no security map in {} - a quote never provisions'.format(security_map.home()))
+        map_document = security_map.load(path)
+        pairs = {}
+        for currency in currencies:
+            pair, security = security_map.fx_spot_route(map_document, currency, base_currency)
+            if pair is not None:
+                pairs[pair] = security
+    except Exception as error:
+        return None, NO_LIVE_SPOT.format(error)
+    if not pairs:
+        return None, NO_LIVE_SPOT.format(
+            'nothing to fetch - the pair is quoted in {} against itself'.format(base_currency))
+
+    try:
+        from derivus_bloomberg.session import BloombergSession
+        # the connect is bounded as tightly as the request: a terminal that is not listening spends
+        # its whole budget in the socket, where `timeout_ms` alone would never reach
+        endpoint = {name: value for name, value in (('host', host), ('port', port))
+                    if value is not None}
+        with BloombergSession(timeout_ms=SPOT_TIMEOUT_MS, connect_timeout_ms=SPOT_TIMEOUT_MS,
+                              **endpoint) as session:
+            values = security_map.fetch_fx_spot(session, pairs.values())
+    except Exception as error:
+        # this one reached the terminal, so this is the one worth remembering
+        note = NO_LIVE_SPOT.format(error)
+        remember_spot_failure(note)
+        return None, note
+    return {pair: values[security] for pair, security in pairs.items()}, None
+
+
+def patch_live_spot(document, params):
+    """This workstation's LIVE spot put onto the document a quote is about to price, and the
+    account of which spot that turned out to be.
+
+    A spot is `bind='value'` data and `document` is the job's OWN copy - `/book/structure` hands
+    every job a fresh parse - so the book FILE is never written by a quote. Only the spot moves:
+    the vol surface and the curves stay the book's, because the cadence owns those and a
+    delta-quoted FX surface is meant to be read at whatever spot is standing. A spot, alone, is
+    stale within seconds of a quote being given.
+
+    Answers the `source`/`note` half of the outcome's `spot` block; the runner fills in the value
+    it actually priced on, so the two cannot disagree.
+    """
+    from . import structures
+
+    try:
+        currencies = structures.split_pair(params['pair'])
+    except (KeyError, TypeError, ValueError) as error:
+        return {'source': 'book', 'note': NO_LIVE_SPOT.format(error)}
+    base = structures.base_currency(document)
+    if not base:
+        return {'source': 'book', 'note': NO_LIVE_SPOT.format(
+            'the book declares no Base_Currency to read a cross against')}
+    crosses, note = live_spot_crosses(base, currencies)
+    if crosses is None:
+        return {'source': 'book', 'note': note}
+    try:
+        structures.with_live_spots(document, crosses)
+    except ValueError as error:
+        return {'source': 'book', 'note': NO_LIVE_SPOT.format(error)}
+    return {'source': 'terminal', 'note': None}
+
+
 class StructureJob:
     """A structured quote as ONE unit of queued work: the recipe's solves run on the worker like
     any pricing, and the pending trade is filed before the answer is published.
@@ -1042,6 +1171,12 @@ class StructureJob:
 
     The outcome is the whole quote rather than tables, so it rides the run's own Stats under
     `Quote`, exactly as a solve's coordinates ride `Solved` and a fetch's write rides `Bloomberg`.
+
+    THE SPOT IS LIVE. Before the recipe runs, `patch_live_spot` puts this workstation's terminal
+    spot onto THIS job's copy of the book - the surface and the curves stay the book's, since the
+    cadence owns those and a delta-quoted surface reads at whatever spot is standing. The book file
+    is untouched either way, and the outcome's `spot` block says which market was used, so a
+    fallback is a note beside a price rather than a quote that did not happen.
     """
 
     def __init__(self, document, structure, params):
@@ -1063,7 +1198,10 @@ class StructureJob:
     def run_job(self):
         from . import structures
 
-        outcome = structures.quote(self.document, self.structure, self.params)
+        # the live spot lands BEFORE anything is priced, so `engine_spot`, every solve bracket and
+        # every leg - and the sheet written from this same document - read one market
+        spot_source = patch_live_spot(self.document, self.params)
+        outcome = structures.quote(self.document, self.structure, self.params, spot_source)
         directory = quote_dir()
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, outcome['quote_id'] + '.json')
@@ -1083,7 +1221,10 @@ def book_structure(request: dict):
     the solved ones solved.
 
     The recipe runs against the book's market data on an in-memory copy - the book file never
-    moves, because a quote is not a trade. What it DOES write is the pending trade:
+    moves, because a quote is not a trade. The SPOT on that copy is this workstation's live one
+    when the terminal is up, and the book's last ticked one with a named reason when it is not;
+    the surface and the curves are always the book's, and the outcome's `spot` block says which
+    market the legs were struck on. What it DOES write is the pending trade:
     `DV_HOME/tmp/<quote_id>.json` carries the quote and the composed deal, and a `.xlsx` sheet
     lands beside it when the `quote` extra is installed. `/book/quote` with that id is the
     approval.

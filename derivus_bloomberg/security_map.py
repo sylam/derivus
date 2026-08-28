@@ -26,9 +26,10 @@ wearing today's time - check `stale` beside a tick).
 """
 import datetime
 import json
+import math
 import os
 
-from .errors import BloombergConfigurationError
+from .errors import BloombergConfigurationError, InvalidQuote
 from .types import FXQuoteSecurity, FXVolDefinition
 
 SCHEMA = 'derivus-bloomberg-map/1'
@@ -125,6 +126,52 @@ def fx_vol_definition(document, pair, expiries=None, pillars=(0.25,), quote_sens
         pair=pair, surface_name=pair[:3] + '.' + pair[3:], currency=pair[3:],
         expiries={label: block['expiries'][label] for label in labels},
         pillars=tuple(pillars), securities=securities, quote_sensitivity=quote_sensitivity)
+
+
+def fx_spot_route(document, currency, base_currency):
+    """`(pair, security)` - the verified market pair whose cross prices one unit of `currency` in
+    `base_currency` units, or `(None, None)` where the currency IS the base and prices itself.
+
+    A map entry is a MARKET pair and the market spells each one way round, so exactly the two
+    spellings the map could carry are tried - `USDZAR` for ZAR against a USD base, `EURUSD` for
+    EUR against it. Triangulating through a third currency is a market VIEW rather than a lookup,
+    so a pair this workstation never verified refuses by name and the caller keeps whatever spot
+    it already had.
+    """
+    if currency == base_currency:
+        return None, None
+    block = document.get('blocks', {}).get('fx_spot', {})
+    for pair in (currency + base_currency, base_currency + currency):
+        if pair in block:
+            return pair, block[pair]['security']
+    raise BloombergConfigurationError(
+        'the map verified no spot for {} against {} - neither {} nor {}'.format(
+            currency, base_currency, currency + base_currency, base_currency + currency))
+
+
+def fetch_fx_spot(source, securities):
+    """`{security: last price}` for verified spot tickers - ONE request off a live session.
+
+    The tolerant reader makes the request and the strict policy is applied CLIENT-side, exactly as
+    `fxvol._value_of` applies it to a vol pillar: a name that did not answer, or answered with
+    something that is not a positive number, refuses BY NAME. A spot struck on a blank is worse
+    than one struck on a book's own ticked market, which is what the caller falls back to.
+    """
+    wanted = sorted(set(securities))
+    report = source.reference_data_report(wanted, ('PX_LAST',))
+    values = {}
+    for security in wanted:
+        row = report.get(security, {'error': 'no answer in the response', 'fields': {}})
+        raw = row.get('fields', {}).get('PX_LAST')
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = None
+        if value is None or not math.isfinite(value) or value <= 0.0:
+            raise InvalidQuote('{} returned {!r}{}'.format(
+                security, raw, ' - {}'.format(row['error']) if row.get('error') else ''))
+        values[security] = value
+    return values
 
 
 def freshness(source, securities):

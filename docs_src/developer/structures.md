@@ -124,6 +124,20 @@ flip is the booking's act, by the owner's ruling: quote client-frame, mirror onc
 
 ## The quote lifecycle
 
+**The spot is live, the surface is ticked.** Before the recipe runs, `StructureJob` puts this
+workstation's terminal spot onto its OWN copy of the book (`service.patch_live_spot` →
+`structures.with_live_spots`, the exact inverse of `engine_spot`) — the book file is never written
+by a quote, because a spot is `bind='value'` data. Only the spot moves: the vol surface and the
+curves stay whatever the 30s cadence last ticked in, and that is a convention rather than a
+shortcut — an FX surface quoted in delta space is sticky-delta, meant to be read at whatever spot
+is standing, while the spot itself is stale seconds after a quote is given. Failure is fast and
+NAMED: one request on a 2s budget, and a failure that reached the terminal is remembered
+process-wide for 30s so consecutive quotes skip the attempt instead of each re-paying it. An
+unprovisioned `DV_HOME`, a missing blpapi and a pair the security map never verified all fall back
+the same way — never an error, never provisioning. Every outcome carries `spot`:
+`{value_market, source: 'terminal'|'book', note}`, where `value_market` is read back off the
+document the legs actually priced against, so what is reported and what was priced cannot disagree.
+
 `POST /book/structure` runs the recipe as one queued job and files TWO artifacts under
 `DV_HOME/tmp/<quote_id>`: the pending trade (`.json` — the outcome plus the composed
 `StructuredDeal`, ready to book) and its ticket (`.xlsx` via `derivus/quote_sheet.py`, the

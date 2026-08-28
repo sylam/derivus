@@ -463,6 +463,38 @@ def test_a_market_strike_reaches_the_engine_axis(book):
     assert protection['Structure_Reference'] == outcome['deal']['Reference']
 
 
+def test_a_live_cross_lands_exactly_where_engine_spot_reads_it_back(book):
+    """The live-spot conversion, on a real book and with no terminal anywhere near it.
+
+    `with_live_spots` is the exact inverse of `engine_spot`, so the gate is the round trip: a market
+    cross written in against the book's own `Base_Currency`, the same cross read back out on the
+    DEAL axis, and the same number a third time in MARKET terms off a real quote's `spot` block -
+    which is what a salesperson reads. The runner reports the spot it PRICED on rather than one it
+    was handed, so the reading has to survive the axis inversion a rand notional puts it through.
+
+    The two refusals are the ones that keep a wrong number out of a book. A pair with NEITHER leg
+    against the base cannot be placed without a second cross, and triangulating one would be a
+    market view rather than a tick; a currency the book carries no `FxRate` for is a new price
+    factor, which is authoring rather than the `bind='value'` seam a spot moves through.
+    """
+    moved = copy.deepcopy(book)
+    written = structures.with_live_spots(moved, {'USDZAR': 16.31})
+    factors = moved['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+
+    assert written == {'ZAR': 1.0 / 16.31}
+    assert factors['FxRate.USD']['Spot'] == 1.0, 'the base currency prices itself and is not moved'
+    assert structures.engine_spot(moved, 'USD', 'ZAR') == pytest.approx(16.31, rel=1e-15)
+
+    outcome = structures.quote(moved, 'Straddle', params(strike=16.31))
+    assert outcome['spot'] == {'value_market': pytest.approx(16.31, rel=1e-15),
+                               'source': 'book', 'note': None}
+
+    with pytest.raises(ValueError, match='neither of its legs'):
+        structures.with_live_spots(copy.deepcopy(book), {'EURJPY': 160.0})
+    with pytest.raises(ValueError, match='FxRate.GBP is missing'):
+        structures.with_live_spots(copy.deepcopy(book), {'GBPUSD': 1.27})
+
+
 def test_the_same_trade_quotes_the_same_from_either_side_of_the_pair(book):
     """The conversion's other half, and the sharpest test of it: a straddle on 1,000,000 rand and a
     straddle on the 54,054 dollars that buys at 18.50 are the SAME trade, and the desk must quote

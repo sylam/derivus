@@ -36,10 +36,18 @@ def _error_text(element) -> str:
 class BloombergSession:
     """Small synchronous wrapper over Bloomberg Desktop API reference data."""
 
-    def __init__(self, host: str = 'localhost', port: int = 8194, timeout_ms: int = 10000):
+    def __init__(self, host: str = 'localhost', port: int = 8194, timeout_ms: int = 10000,
+                 connect_timeout_ms: int = None):
         self.host = host
         self.port = port
         self.timeout_ms = timeout_ms
+        #: The whole budget for GETTING connected, which `timeout_ms` does not touch - that one
+        #: bounds `nextEvent`, the request. A terminal that is not there spends its time in the
+        #: socket and in the service handshake instead, and the SDK's defaults there are generous
+        #: on purpose (5s x 3 attempts, then a minute of service checks). A caller that named a
+        #: budget meant the whole of it, so this caps every leg of it at once. None leaves the
+        #: SDK's own defaults, so every existing caller is untouched.
+        self.connect_timeout_ms = connect_timeout_ms
         self._api = None
         self._session = None
         self._service = None
@@ -51,6 +59,13 @@ class BloombergSession:
             options = api.SessionOptions()
             options.setServerHost(self.host)
             options.setServerPort(self.port)
+            if self.connect_timeout_ms is not None:
+                # one attempt, not the SDK's three: a per-attempt timeout the library then
+                # multiplies (and backs off between) is not a budget, it is a suggestion
+                options.setConnectTimeout(self.connect_timeout_ms)
+                options.setNumStartAttempts(1)
+                options.setServiceCheckTimeout(self.connect_timeout_ms)
+                options.setServiceDownloadTimeout(self.connect_timeout_ms)
             session = api.Session(options)
             if not session.start():
                 raise BloombergUnavailable(

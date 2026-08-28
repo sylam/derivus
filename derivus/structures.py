@@ -70,6 +70,12 @@ bid - so a solved coordinate comes out where a desk would actually deal it. Then
 legs are priced ONCE more against the unshifted book, and that is `net_mid`: what the trade marks
 at the moment it is booked. A book carrying no two-way shifts every leg by zero and quotes
 exactly as it always has, to the bit.
+
+THE SPOT IS LIVE, THE SURFACE IS TICKED. `with_live_spots` is the inverse of `engine_spot` and the
+one seam a caller writes a terminal's number through: a spot is `bind='value'` data and moves
+between two prints, while a delta-quoted vol surface is meant to be read at whatever spot is
+standing, so a quote may price on a live spot over the book's own ticked surface. Every quote says
+which it used under `spot`, and the runner reads that value off the document it priced.
 """
 
 import copy
@@ -393,6 +399,49 @@ def engine_spot(document, underlying_currency, settlement_currency):
     return spots[underlying_currency] / spots[settlement_currency]
 
 
+def base_currency(document):
+    """The reporting currency every `FxRate.<ccy>.Spot` in this document is quoted in."""
+    return document.get('Calc', {}).get('MergeMarketData', {}).get(
+        'ExplicitMarketData', {}).get('System Parameters', {}).get('Base_Currency')
+
+
+def with_live_spots(document, crosses):
+    """Live market crosses written onto the document's own `FxRate.<ccy>.Spot` blocks, IN PLACE -
+    the exact inverse of `engine_spot`, and the only thing a quote ever takes off a terminal.
+
+    `crosses` is `{PAIR: value}` as the MARKET quotes each one - `'USDZAR': 16.31` is ZAR per USD.
+    `FxRate.<ccy>.Spot` is one unit of that currency in the document's own `Base_Currency` units,
+    so a cross pins the leg the base does not: against a USD base, USDZAR writes `FxRate.ZAR` at
+    1/16.31 and leaves `FxRate.USD` at the 1.0 it is by definition. A pair NEITHER of whose legs is
+    the base needs a second cross to place it and refuses by name rather than being triangulated -
+    inventing a leg is a market view, not a tick.
+
+    A spot is `bind='value'` data, so this moves a NUMBER on a block that already exists and never
+    authors one: a book carrying no `FxRate` for a leg could not have priced the quote anyway, and
+    a new price factor is a re-authoring. The caller owns the copy - the runner is handed a
+    document, never a file. Returns `{currency: spot}` for what it wrote.
+    """
+    base = base_currency(document)
+    factors = market_data(document)
+    written = {}
+    for pair, cross in sorted(crosses.items()):
+        left, right = split_pair(pair)
+        if right == base:
+            currency, spot = left, float(cross)
+        elif left == base:
+            currency, spot = right, 1.0 / float(cross)
+        else:
+            raise ValueError('{} prices neither of its legs against {} - a live spot is written '
+                             "against the book's own base currency".format(pair, base))
+        name = 'FxRate.{}'.format(currency)
+        if name not in factors:
+            raise ValueError('{} is missing - a live spot moves a block the book already carries, '
+                             'it does not author one'.format(name))
+        factors[name]['Spot'] = spot
+        written[currency] = spot
+    return written
+
+
 def atm_two_way(document, surface):
     """The ATM half-spread the book carries for `surface`, as sorted `[(expiry, half), ...]` in the
     surface's own vol units - `(ask - bid) / 2` off the quote block's ATM rows, and empty when the
@@ -675,7 +724,7 @@ def mirror(deal):
     return flipped
 
 
-def quote(document, structure_name, params):
+def quote(document, structure_name, params, spot_source=None):
     """Price a structure against a book, and hand back the quote plus the deal it would book.
 
     `document` is a wire-form job document - the book - and travels whole, never a patch. `params`
@@ -704,6 +753,13 @@ def quote(document, structure_name, params):
     marks at the moment it is booked. Read it beside `net`, in the same sign convention - a leg's
     `Buy_Sell` is the CLIENT's side, so a bought leg is a positive premium here and the desk's
     captured edge on a zero-cost structure is `net - net_mid`, positive when a spread was charged.
+
+    WHICH SPOT. `spot` is always there and always names the market this quote was actually struck
+    on: `value_market` is the pair as the client quotes it, read off the document the legs priced
+    against, beside the caller's `source` ('terminal' or 'book') and its `note`. The runner reads
+    the value rather than being told it, so what is reported and what was priced cannot disagree;
+    a caller that patched a live spot in says so, and the default is the plain reading - the
+    document's own spot, nothing tried, nothing to name.
     """
     from . import content_hash
     from .config import CustomJsonEncoder
@@ -786,6 +842,11 @@ def quote(document, structure_name, params):
                  for leg in legs],
         'net': sum(premiums.values()),
         'net_mid': sum(mid[leg.role] for leg in legs),
+        # the spot the legs were ACTUALLY struck on, in the pair's own terms - read back off the
+        # document rather than taken from the caller, so the reported market and the priced one are
+        # one number. The caller owns only the account of where it came from
+        'spot': dict({'source': 'book', 'note': None}, **(spot_source or {}),
+                     value_market=legs[0].to_market(spot)),
         # every number above is CLIENT-frame; the desk's capture is the one derived reading, said
         # once under its own name rather than left as arithmetic for every consumer to re-derive
         'edge': sum(premiums.values()) - sum(mid[leg.role] for leg in legs),
