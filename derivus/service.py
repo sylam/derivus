@@ -1493,6 +1493,36 @@ def quote_dir():
     return os.path.join(dv_home(), 'tmp')
 
 
+def quote_stamp():
+    """When a quote was GIVEN, as one ISO stamp in UTC - what the firm window is measured from.
+
+    UTC and offset-aware, unlike `as_of`: a projection row is read by the desk that computed it,
+    but a quote's age is arithmetic against a clock that keeps running, and a naive local stamp
+    puts an hour into that arithmetic twice a year. The `quote_id` cannot serve here - it hashes a
+    `perf_counter`, which is a monotonic tick with no epoch and no meaning across a restart.
+    """
+    import datetime
+
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds')
+
+
+def quote_age(stamp):
+    """How many seconds ago `stamp` was written, or None where there is nothing readable to
+    measure - a pending file from before quotes were stamped, or a stamp that will not parse.
+    None is not zero: an age nobody can establish is not an age inside the window."""
+    import datetime
+
+    if not stamp:
+        return None
+    try:
+        given = datetime.datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return None
+    if given.tzinfo is None:
+        given = given.replace(tzinfo=datetime.timezone.utc)
+    return (datetime.datetime.now(datetime.timezone.utc) - given).total_seconds()
+
+
 def spot_failure():
     """The remembered live-spot failure while it is still believed, or None.
 
@@ -1628,10 +1658,18 @@ class StructureJob:
     cadence owns those and a delta-quoted surface reads at whatever spot is standing. The book file
     is untouched either way, and the outcome's `spot` block says which market was used, so a
     fallback is a note beside a price rather than a quote that did not happen.
+
+    THE QUOTE IS FOR SOMEONE. `netting_set` names the client's `NettingCollateralSet` and travels
+    into `structures.quote`, which checks it against this job's own copy of the book before pricing
+    anything; the pending file carries it, and `/book/quote` books the mirror under that node. It
+    is also stamped: `quoted_at` is written BESIDE the outcome rather than inside it, because when
+    a quote was given is a fact about the filing rather than about the price, and the writer is the
+    only thing that knows the wall clock the approval's window is measured against.
     """
 
-    def __init__(self, document, structure, params):
+    def __init__(self, document, structure, params, netting_set=None):
         self.document, self.structure, self.params = document, structure, params
+        self.netting_set = netting_set
 
     def sheet(self, directory, outcome):
         """The quote sheet beside the quote file, or the note saying why there is none. The import
@@ -1652,14 +1690,16 @@ class StructureJob:
         # the live spot lands BEFORE anything is priced, so `engine_spot`, every solve bracket and
         # every leg - and the sheet written from this same document - read one market
         spot_source = patch_live_spot(self.document, self.params)
-        outcome = structures.quote(self.document, self.structure, self.params, spot_source)
+        outcome = structures.quote(self.document, self.structure, self.params, spot_source,
+                                   self.netting_set)
         directory = quote_dir()
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, outcome['quote_id'] + '.json')
         outcome['files'] = dict(self.sheet(directory, outcome), quote=path)
-        # one file IS the pending trade: what was quoted, and the deal that books it
+        # one file IS the pending trade: what was quoted, the deal that books it, and WHEN - the
+        # stamp is the writer's, since only the thing that files a quote knows when it was given
         record = {'quote': {name: value for name, value in outcome.items() if name != 'deal'},
-                  'deal': outcome['deal']}
+                  'deal': outcome['deal'], 'quoted_at': quote_stamp()}
         with open(path, 'w', encoding='utf-8', newline='') as handle:
             json.dump(as_json(record), handle, indent=2)
         return None, {'Results': {}, 'Stats': {'Quote': as_json(outcome)}}
@@ -1667,33 +1707,51 @@ class StructureJob:
 
 @app.post('/book/structure', summary='Quote a named structure against the book')
 def book_structure(request: dict):
-    """`{structure: name, params: {...}}` - the sales verb: a structure named the way a desk names
-    it, its parameters in MARKET terms, and back comes the whole quote with every leg priced and
-    the solved ones solved.
+    """`{structure: name, params: {...}, netting_set?}` - the sales verb: a structure named the way
+    a desk names it, its parameters in MARKET terms, and back comes the whole quote with every leg
+    priced and the solved ones solved.
 
     The recipe runs against the book's market data on an in-memory copy - the book file never
     moves, because a quote is not a trade. The SPOT on that copy is this workstation's live one
     when the terminal is up, and the book's last ticked one with a named reason when it is not;
     the surface and the curves are always the book's, and the outcome's `spot` block says which
     market the legs were struck on. What it DOES write is the pending trade:
-    `DV_HOME/tmp/<quote_id>.json` carries the quote and the composed deal, and a `.xlsx` sheet
+    `DV_HOME/tmp/<quote_id>.json` carries the quote, the composed deal and `quoted_at` - when the
+    quote was given, in UTC, which is what a firm window is measured from - and a `.xlsx` sheet
     lands beside it when the `quote` extra is installed. `/book/quote` with that id is the
     approval.
+
+    `netting_set` is WHO the quote is for: the Reference of a `NettingCollateralSet` already in the
+    book, which is where a client's counterparty and CSA are declared. It is checked HERE, against
+    the book as it stands, and an unknown one refuses 422 naming the sets the book holds - the XVA
+    verb's own wording, since it is the same question asked of the same book. Refusing at the ask
+    rather than at the approval is the point: a quote given under a set nobody opened is a quote
+    that cannot be booked, and a salesperson finds that out with the client still on the phone.
+    Omitting it is exactly today's behaviour - the approval books at the root.
 
     Answers `{result_id, status}` exactly like `/execute`, because a recipe is a solve or three:
     `/results/{result_id}` carries the outcome under `stats.Quote` when it is done, files and all.
     The id names the ACT rather than the numbers - two identical asks are two quotes, never one
     coalesced result, the same reading `/book/bloomberg` takes of a trip to the terminal.
     """
+    from . import structures
+
     document, etag = live_book().read()
     structure = request.get('structure')
     if not structure:
         raise HTTPException(422, 'a quote names the structure it prices')
     params = request.get('params', {})
+    netting_set = request.get('netting_set')
+    # the client is validated on THIS thread: a quote runs on a worker, and a 422 a salesperson can
+    # read beats an `error` status they have to poll for and then decode
+    try:
+        structures.check_netting_set(document, netting_set)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
     # a quote is an ACT, not a function of the book: asking twice is two quotes, both filed
     result_id = content_hash({'book': etag, 'structure': structure, 'params': params,
-                              'at': time.perf_counter()})
-    submitted = Job(result_id, StructureJob(document, structure, params), {})
+                              'netting_set': netting_set, 'at': time.perf_counter()})
+    submitted = Job(result_id, StructureJob(document, structure, params, netting_set), {})
     # a quote is base valuations under the hood - light, so a salesperson's ask jumps every
     # XVA set still waiting rather than draining behind a whole-book recalc
     return {'result_id': result_id,
@@ -1717,6 +1775,21 @@ def book_quote(request: dict):
     verb the risk-impact step will price the book-plus-candidate through, so the risk measured
     and the trade booked cannot disagree by a sign. The file keeps the client frame it was quoted
     in; the flip is the booking's act, not the quote's.
+
+    WHERE it books is the quote's own `netting_set`: the mirror goes in under that node through
+    `deal_edit`'s `parent_reference`, the same argument a hand-booking nests with, so a client's
+    trade lands inside the subtree its CVA is projected over. A quote that named no set books at
+    the root, byte for byte as it always did. The set is re-read off the book HERE - the tree may
+    have moved since the quote - and one that has been closed refuses in `splice_deal`'s own
+    wording rather than silently falling back to the root.
+
+    A QUOTE IS FIRM FOR A WINDOW. Where the BOOK declares a `Quote Policy`, its `firm_seconds` is
+    how long an approval may stand on the price that was given, and a pending quote older than that
+    is refused 422 naming its age, the window and the remedy. The absence of the policy block is
+    the off switch here as everywhere else: a book declaring none holds every quote approvable for
+    ever, exactly as before. A pending file carrying no `quoted_at` - one filed before quotes were
+    stamped - is treated as AGED when a window applies and the refusal says which case it is: an
+    unknown age is not an age inside the window.
     """
     live = live_book()
     quote_id = request.get('quote_id')
@@ -1733,8 +1806,34 @@ def book_quote(request: dict):
         pending = json.load(handle)
 
     from . import structures
+    # the window is read off the BOOK, not off the quote: the mandate is the desk's and it is the
+    # desk's as it stands now, the same way the validation is against the book as it is now
+    document, _ = live.read()
     try:
-        return live.mutate(lambda document: deal_edit(document, structures.mirror(pending['deal'])))
+        policy = structures.read_policy(document)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    if policy is not None:
+        firm = policy['firm_seconds']
+        age = quote_age(pending.get('quoted_at'))
+        if age is None:
+            raise HTTPException(422, 'quote {} carries no quoted_at - it was filed before quotes '
+                                     'were stamped, so its age cannot be established, and an '
+                                     'unknown age is not an age inside a window: {} holds a quote '
+                                     'firm for {:.0f}s - re-quote: the market has had an unknown '
+                                     'number of seconds to move'.format(
+                                         quote_id, structures.QUOTE_POLICY, firm))
+        if age > firm:
+            # the age to a tenth: a zero-second window refused at 0.1s must name an age a desk can
+            # tell from the window it broke, and rounding both to 0 would report neither
+            raise HTTPException(422, 'quote {} was given {:.1f}s ago and {} holds a quote firm '
+                                     'for {:.0f}s - re-quote: the market has had {:.1f} seconds '
+                                     'to move'.format(quote_id, age, structures.QUOTE_POLICY,
+                                                      firm, age))
+
+    parent = (pending.get('quote') or {}).get('netting_set')
+    try:
+        return live.mutate(lambda book: deal_edit(book, structures.mirror(pending['deal']), parent))
     except ValueError as error:
         raise HTTPException(422, str(error))
 

@@ -410,7 +410,7 @@ def test_a_two_sided_quote_charges_the_spread_and_leaves_the_book_at_mid(book, t
 #: The desk's mandate, as a book declares one. `participation` at a half is the default a declared
 #: block carries; the gates below vary one field at a time off this.
 POLICY = {'participation': 0.5, 'floor': 'mid', 'scope': 'vol',
-          'bucket_limit': None, 'min_ticket_bp': 0.0}
+          'bucket_limit': None, 'min_ticket_bp': 0.0, 'firm_seconds': 600}
 
 
 def with_policy(document, **stated):

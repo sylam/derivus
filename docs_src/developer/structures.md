@@ -170,7 +170,7 @@ charge of **81.2194 USD**.
 does `cfg.params[section].update(...)` and a section `Config` does not declare raises `KeyError` on
 load — measured, not assumed — and a mandate is not market data anyway. Every reader of a job walks
 `Calc` by name, so an unknown key there travels through load, pricing and the book file untouched,
-and `structures.quote` is its only reader exactly as it is the only reader of `Quoted_Bid`. Five
+and `structures.quote` is its only reader exactly as it is the only reader of `Quoted_Bid`. Six
 fields, each read with `.get`:
 
 | field | default | what it decides |
@@ -180,6 +180,10 @@ fields, each read with `.get`:
 | `scope` | `'vol'` | all v1 measures; any other value refuses rather than quoting a scope nobody looked at |
 | `bucket_limit` | `None` | a cap on `\|risk after\|` per bucket, past which NO tightening applies |
 | `min_ticket_bp` | `0.0` | flat bp of notional, the ops floor under the edge (crossed to the report currency on the same `FxRate` ratio everything else here reads) |
+| `firm_seconds` | `600` | how long a quote stays approvable — `/book/quote` refuses a pending quote older than this, naming the age, the window and the remedy |
+
+`firm_seconds` is the one field this module carries rather than acts on: the mandate is ONE block a
+desk states, and the approval verb is what reads the clock against the pending file's `quoted_at`.
 
 **The ABSENCE of the block is the off switch**, and that is the compatibility contract in the same
 shape as the two-sided one: a book declaring no policy never reaches the greeks runs at all and its

@@ -127,8 +127,11 @@ QUOTE_POLICY = 'Quote Policy'
 #: What the policy means where the block is silent, read with `.get` so a desk states only what it
 #: is changing. The ABSENCE OF THE BLOCK is the off switch, not these values: `participation` here
 #: is what a declared block defaults to, and a book carrying no block never reaches this dict.
+#: `firm_seconds` is the only field this module does not itself act on - a quote is firm for a
+#: WINDOW, and the approval verb is what reads the clock; it lives here because the mandate is one
+#: block a desk states, not two, and ten minutes is the desk convention it defaults to.
 POLICY_DEFAULTS = {'participation': 0.5, 'floor': 'mid', 'scope': 'vol',
-                   'bucket_limit': None, 'min_ticket_bp': 0.0}
+                   'bucket_limit': None, 'min_ticket_bp': 0.0, 'firm_seconds': 600}
 
 #: `min_ticket_bp` is bp of notional, and a bp is this.
 BASIS_POINT = 1e-4
@@ -787,11 +790,46 @@ def mirror(deal):
     return flipped
 
 
+def netting_set_references(document):
+    """Every `NettingCollateralSet` Reference the book carries, sorted - the set names a quote may
+    be booked under. A set nested inside another container is still a set, so the whole tree is
+    walked rather than the top level, exactly as the XVA view walks it."""
+    from .config import walk_job_deals
+
+    try:
+        children = document['Calc']['Deals']['Deals']['Children']
+    except (KeyError, TypeError):
+        return []
+    return sorted(node['Instrument']['.Deal'].get('Reference')
+                  for _, node in walk_job_deals(children)
+                  if node['Instrument']['.Deal'].get('Object') == 'NettingCollateralSet')
+
+
+def check_netting_set(document, reference):
+    """Refuse `reference` unless the book carries a `NettingCollateralSet` by that name.
+
+    A CLIENT IS A NETTING SET: the counterparty and the CSA live on the set, and a trade booked
+    anywhere else is invisible to the CVA projection that netting set is the unit of. So the set is
+    named at QUOTE time and checked against the book THEN - a quote given under a set that does not
+    exist is a quote nobody can approve, and finding that out at the approval is finding it out
+    after the client has the sheet.
+
+    One wording with the XVA verb's, deliberately: both refusals are the same question asked of the
+    same book, and a desk that has learned to read one has learned to read the other.
+    """
+    if reference is None:
+        return
+    found = netting_set_references(document)
+    if reference not in found:
+        raise ValueError('the book carries no NettingCollateralSet called {!r} - its sets are '
+                         '{}'.format(reference, ', '.join(found) or 'none'))
+
+
 def read_policy(document):
     """The desk's quoting mandate off `Calc['Quote Policy']`, or `None` where the book declares
     none - and `None` turns the whole risk-impact feature off, which is the compatibility contract.
 
-    Five fields, each read with `.get` against `POLICY_DEFAULTS` so a block may state one of them:
+    Six fields, each read with `.get` against `POLICY_DEFAULTS` so a block may state one of them:
 
       - `participation` - how much of a measured hedge-cost SAVING is passed to the client
       - `floor` - 'mid': the scale never goes below zero, so a quote never crosses the mid
@@ -800,11 +838,25 @@ def read_policy(document):
       - `bucket_limit` - a per-bucket cap on `|risk after|` in the bucket's own vega units, past
         which NO tightening applies however good the saving looks
       - `min_ticket_bp` - flat bp of notional, the ops floor under the edge
+      - `firm_seconds` - how long a quote stays approvable; the approval verb reads it, and this
+        module only carries it through so a desk states its mandate in ONE block
+
+    A field that will not read refuses HERE, where the block is read, rather than at the moment
+    some later verb tries to compare against it: `firm_seconds` is a number of seconds, and a
+    policy stating 'ten minutes' is a mis-authored mandate on every quote it touches.
     """
     policy = document.get('Calc', {}).get(QUOTE_POLICY)
     if policy is None:
         return None
     read = {name: policy.get(name, default) for name, default in POLICY_DEFAULTS.items()}
+    try:
+        read['firm_seconds'] = float(read['firm_seconds'])
+        if read['firm_seconds'] < 0.0:
+            raise ValueError('negative')
+    except (TypeError, ValueError):
+        raise ValueError('{}: firm_seconds {!r} - a quote is firm for a NUMBER of seconds, and a '
+                         'window that cannot be read is one no approval could be measured '
+                         'against'.format(QUOTE_POLICY, policy.get('firm_seconds'))) from None
     if read['scope'] != 'vol':
         raise ValueError('{}: scope {!r} - v1 measures the vol book and nothing else, so any '
                          'other scope would quote a residual it never looked at'.format(
@@ -1077,7 +1129,7 @@ def risk_impact(document, params, reference, two_way, surface, legs, premiums, m
             'policy': policy, 'note': note}
 
 
-def quote(document, structure_name, params, spot_source=None):
+def quote(document, structure_name, params, spot_source=None, netting_set=None):
     """Price a structure against a book, and hand back the quote plus the deal it would book.
 
     `document` is a wire-form job document - the book - and travels whole, never a patch. `params`
@@ -1135,15 +1187,25 @@ def quote(document, structure_name, params, spot_source=None):
     is simply not tightened. `scale` is never below zero either: the mid is the floor, and a quote
     is never automatically pushed through it. The `risk` block reports the buckets, the saving, the
     full and effective charges, the scale, the policy as READ, and a note where one is warranted.
+
+    WHO IT IS FOR. `netting_set` names an existing `NettingCollateralSet` in the book - the CLIENT,
+    since that is where the counterparty and the CSA are declared - and the approval books the
+    mirror UNDER that node rather than at the root, which is what puts the trade inside the subtree
+    the CVA projection prices. It is checked against THIS document before anything is priced, so a
+    set nobody has opened refuses while the quote is being asked for rather than after the client
+    has the sheet. The outcome carries it either way, `None` where none was named; `None` is the
+    root booking that was always the behaviour, unchanged to the bit.
     """
     from . import content_hash
     from .config import CustomJsonEncoder
     # authored objects and a file's wire form become one shape here, so every copy below is plain
     # JSON and a solve's own re-serialisation cannot trip over a Timestamp
     document = json.loads(json.dumps(document, cls=CustomJsonEncoder))
+    # the client is checked before the price: a quote nobody could approve is not worth the solves
+    check_netting_set(document, netting_set)
     structure = structure_named(structure_name)
     quote_id = content_hash({
-        'structure': structure_name, 'params': params,
+        'structure': structure_name, 'params': params, 'netting_set': netting_set,
         'market': document.get('Calc', {}).get('MergeMarketData', {}).get('ExplicitMarketData', {}),
         'at': time.perf_counter()})
     reference = '{}-{}'.format(structure_name, quote_id[:8])
@@ -1162,6 +1224,9 @@ def quote(document, structure_name, params, spot_source=None):
 
     return {
         'quote_id': quote_id, 'structure': structure_name, 'params': dict(params),
+        # WHO the quote is for, always said: a null is the root booking, never an unanswered
+        # question, so a consumer never has to know whether this quote predates the field
+        'netting_set': netting_set,
         'legs': [{'reference': leg.deal['Reference'], 'role': leg.role,
                   'deal_type': leg.deal['Object'], 'buy_sell': leg.deal.get('Buy_Sell'),
                   'strike_market': leg.to_market(leg.deal['Strike_Price'])

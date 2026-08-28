@@ -1317,11 +1317,12 @@ def quoting(tmp_path, monkeypatch):
     service.BOOK = None
 
 
-def quote_of(structure, params):
+def quote_of(structure, params, **extra):
     """Ask for a quote and wait for the one worker to give it - the outcome under `stats.Quote`,
-    exactly where a solve's coordinates sit under `stats.Solved`."""
+    exactly where a solve's coordinates sit under `stats.Solved`. `extra` is the rest of the ask -
+    `netting_set`, the client the quote is for - passed as the verb takes it."""
     submitted = CLIENT.post('/book/structure', content=dump(
-        {'structure': structure, 'params': params}), headers=JSON).json()
+        dict({'structure': structure, 'params': params}, **extra)), headers=JSON).json()
     service.EXECUTOR.queue.join()
     result = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
     assert result['status'] == 'done', result.get('error')
@@ -1704,3 +1705,185 @@ def test_an_unknown_set_refuses_by_name_and_a_missing_survival_curve_lands_in_th
         assert rows['NS_A'] == standing, "a failed set took another set's row with it"
     finally:
         service.BOOK = None
+
+
+# --------------------------------------------------------------------------------------------
+# a quote is FOR someone, and it is firm for a WINDOW
+# --------------------------------------------------------------------------------------------
+#: The client the quoting book has opened, as a Reference. Not `CLIENT`, which is this module's
+#: TestClient - and a desk's client is a `NettingCollateralSet` in any case, since that is the node
+#: the counterparty and the CSA are declared on.
+CLIENT_SET = 'CLIENT_A'
+
+
+@pytest.fixture
+def quoting_client(tmp_path, monkeypatch):
+    """The quoting desk with a CLIENT on its book: the same one-cashflow book with a real USDZAR
+    surface ticked in, plus an EMPTY `NettingCollateralSet` naming a counterparty the market data
+    carries a survival curve for. Empty because what lands under it is the whole point.
+
+    Built here rather than off `quoting` because a netting set is a NODE - it holds children - and
+    the `job` helper wraps plain deal blocks; and kept separate from `quoting` because the existing
+    gates read that book's deal paths by position.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    factors = dict(FACTORS, **{'SurvivalProb.CPTY_A': {
+        'Recovery_Rate': 0.4, 'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.2]])}})
+    document = job(factors=factors, sections={
+        'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}})
+    document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A', []))
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(document)), indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    ticked = CLIENT.post('/book/market', content=dump({'quotes': fx_vol_quotes()}),
+                         headers=JSON).json()
+    assert ticked['written'] is True, ticked
+    yield path
+    service.BOOK = None
+
+
+def set_paths(path):
+    """`{Reference: deal_path}` for the netting sets the book on disk carries, read through the
+    service's own reading of them rather than by counting positions in the gate."""
+    return {node['Instrument']['.Deal']['Reference']: deal_path
+            for deal_path, node in service.netting_sets(json.loads(path.read_text()))}
+
+
+def test_a_quote_for_a_client_books_under_the_clients_netting_set(quoting_client, tmp_path):
+    """A quote given FOR a client books under that client's netting set, and a quote given for
+    nobody books at the root exactly as it always did.
+
+    The decisive assertion is the deal PATH: a trade booked at the root is outside every netting
+    set's subtree, so the CVA projection - which prices one set's subtree per run - cannot see it.
+    Beneath the set's own path is the whole feature, and the path is read off the book on disk
+    through `service.netting_sets`, the same walk the XVA verb takes, rather than by counting
+    positions here. The mirror still mirrors: the approval is where client paper becomes the
+    bank's position, and nesting it somewhere else must not touch the side it lands on.
+
+    The root half is in the same gate on purpose. `netting_set` absent has to be TODAY's booking,
+    and a control run on the same book, in the same breath, is what says so.
+    """
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    assert quote['netting_set'] == CLIENT_SET
+
+    pending = tmp_path / 'tmp' / (quote['quote_id'] + '.json')
+    filed = json.loads(pending.read_text())
+    assert filed['quote']['netting_set'] == CLIENT_SET, 'the pending trade forgot who it is for'
+    assert filed['quoted_at'], 'the pending trade is not stamped with when it was given'
+
+    booked = CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']}).json()
+    assert booked['written'] is True, booked
+    on_disk = json.loads(quoting_client.read_text())
+    node = deal_at(on_disk, booked['deal_path'])
+
+    parent = set_paths(quoting_client)[CLIENT_SET]
+    assert booked['deal_path'].startswith(parent + '/'), booked['deal_path']
+    assert node['Instrument']['.Deal']['Object'] == 'StructuredDeal'
+    assert [child['Instrument']['.Deal']['Reference'] for child in node['Children']] == [
+        leg['reference'] for leg in quote['legs']]
+    assert [child['Instrument']['.Deal']['Buy_Sell'] for child in node['Children']] == [
+        {'Buy': 'Sell', 'Sell': 'Buy'}[leg['buy_sell']] for leg in quote['legs']]
+
+    # and the control: no client named is the root booking, unchanged
+    house = quote_of('ZeroCostCollar', COLLAR)
+    assert house['netting_set'] is None
+    at_root = CLIENT.post('/book/quote', json={'quote_id': house['quote_id']}).json()
+    assert at_root['written'] is True, at_root
+    assert '/' not in at_root['deal_path'], 'a quote for nobody nested under something'
+
+
+def test_a_quote_for_a_client_the_book_never_opened_refuses_at_the_ask(quoting_client, tmp_path):
+    """A netting set nobody opened refuses while the quote is being ASKED for - naming what was
+    asked for and what the book actually holds, in the XVA verb's own wording, since it is the
+    same question asked of the same book.
+
+    At the ask rather than at the approval: a quote given under a set that does not exist is a
+    quote nobody can book, and finding that out at the approval is finding it out after the client
+    has the sheet. So nothing is priced, nothing is filed, and the book is untouched - the refusal
+    is a 422 on the salesperson's own call, not an `error` status they have to poll for.
+    """
+    before = quoting_client.read_bytes()
+    refused = CLIENT.post('/book/structure', content=dump(
+        {'structure': 'ZeroCostCollar', 'params': COLLAR, 'netting_set': 'NOT_A_CLIENT'}),
+        headers=JSON)
+
+    assert refused.status_code == 422
+    assert 'NOT_A_CLIENT' in refused.json()['detail']
+    assert CLIENT_SET in refused.json()['detail'], 'the refusal names the sets the book holds'
+    assert not list((tmp_path / 'tmp').glob('*.json')), 'a refused quote filed a pending trade'
+    assert quoting_client.read_bytes() == before
+
+
+def declare_policy(path, **stated):
+    """The desk's mandate written onto the live book, or taken off it where nothing is stated -
+    and the book's bytes as they now stand.
+
+    A `Quote Policy` block is AUTHORED data and no verb writes one, so the gate authors it the same
+    way the fixture authored the book. The live book is then REOPENED, which is what a desk that
+    edits its mandate does: `Book` re-parses on mtime, and Windows' file timestamps do not resolve
+    two writes landing inside the same 15ms clock tick - so a gate that changed a mandate twice in
+    a row would otherwise read the first one back and pass for the wrong reason.
+    """
+    document = json.loads(path.read_text())
+    if stated:
+        document['Calc'][structures.QUOTE_POLICY] = dict(stated)
+    else:
+        document['Calc'].pop(structures.QUOTE_POLICY, None)
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    return path.read_bytes()
+
+
+def test_a_quote_is_firm_only_for_the_window_the_book_declares(quoting, tmp_path):
+    """One quote, one book, three mandates - which is what makes this about the WINDOW and nothing
+    else. The quote is given once and never re-given; only the book's `Quote Policy` moves.
+
+    With `firm_seconds: 0` an approval arriving immediately is already outside the window and is
+    refused 422 naming the age, the window and the remedy - and it writes NOTHING, asserted on the
+    book's bytes, because a stale quote is a refusal rather than a booking at a price nobody stands
+    behind any more. With the block taken off, THE SAME pending quote books: the absence of the
+    policy is the off switch here as it is for the risk-impact half, so a book that declares no
+    mandate behaves exactly as it always did.
+
+    The third mandate is the compatibility case: a pending file with no `quoted_at` - one filed
+    before quotes were stamped - cannot be shown to be inside any window, and an unknown age is not
+    an age inside it. So a real window treats it as AGED and the refusal says which case it is,
+    rather than defaulting to fresh and booking a quote of unknown vintage.
+    """
+    quote = quote_of('ZeroCostCollar', COLLAR)
+    pending = tmp_path / 'tmp' / (quote['quote_id'] + '.json')
+    assert json.loads(pending.read_text())['quoted_at'], 'the quote was filed unstamped'
+
+    # a quote filed before quotes were stamped, authored here because there is no other way to
+    # reach a pending file with no `quoted_at` on a build that stamps them
+    stale = dict(json.loads(pending.read_text()))
+    stale.pop('quoted_at')
+    stale['quote'] = dict(stale['quote'], quote_id='unstamped')
+    (tmp_path / 'tmp' / 'unstamped.json').write_text(json.dumps(stale, indent=2), newline='\n')
+
+    before = declare_policy(quoting, firm_seconds=0)
+    refused = CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']})
+
+    assert refused.status_code == 422
+    detail = refused.json()['detail']
+    assert quote['quote_id'] in detail and 'firm for 0s' in detail, detail
+    assert 's ago' in detail, 'the refusal never named the age'
+    assert 're-quote' in detail and 'seconds to move' in detail, 'no remedy in the refusal'
+    assert quoting.read_bytes() == before, 'a refused approval wrote to the book'
+    assert pending.is_file(), 'a refused approval consumed the pending trade'
+
+    # a real window, and a quote whose age cannot be established: aged, and the message says why
+    declare_policy(quoting, firm_seconds=600)
+    unstamped = CLIENT.post('/book/quote', json={'quote_id': 'unstamped'})
+    assert unstamped.status_code == 422
+    assert 'quoted_at' in unstamped.json()['detail'], unstamped.json()['detail']
+    assert 'firm for 600s' in unstamped.json()['detail']
+
+    # the same quote, the same book, no mandate: it books
+    declare_policy(quoting)
+    booked = CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']}).json()
+
+    assert booked['written'] is True, booked
+    node = deal_at(json.loads(quoting.read_text()), booked['deal_path'])
+    assert [child['Instrument']['.Deal']['Buy_Sell'] for child in node['Children']] == [
+        {'Buy': 'Sell', 'Sell': 'Buy'}[leg['buy_sell']] for leg in quote['legs']]

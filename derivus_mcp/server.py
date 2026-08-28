@@ -537,7 +537,8 @@ def solve_deal(deal: dict, field: str, target: float = 0.0, bounds: list | None 
 
 
 @MCP.tool()
-def solve_structure(structure: str, params: dict, wait_seconds: float = 120.0) -> dict:
+def solve_structure(structure: str, params: dict, netting_set: str | None = None,
+                    wait_seconds: float = 120.0) -> dict:
     """Quote a whole structure against the live book - the collar, strangle and seagull verb, and
     the one to reach for instead of composing legs by hand: the structure declares its own legs,
     their conventions and the order they solve in, so the finance does not depend on this
@@ -547,6 +548,15 @@ def solve_structure(structure: str, params: dict, wait_seconds: float = 120.0) -
     - nothing else. STRIKES ARE MARKET TERMS (a USDZAR strike is 15.50); the runner puts them on
     the engine's axis. The recipe runs server-side against the book's market data: each leg priced
     alone, each solved leg found by the same root find `solve_deal` rides.
+
+    `netting_set` is WHO the quote is for, and it is worth naming on any quote for a real client. A
+    CLIENT IS A NETTING SET: the counterparty and the CSA are declared on the
+    `NettingCollateralSet` node, `recalc_xva` projects a CVA per set, and booking the trade UNDER
+    that node is the only thing that puts it inside the subtree the projection prices - a trade
+    booked at the root has no counterparty and no CVA. Pass the set's Reference (see `xva_view` or
+    `read_book` for the ones the book holds); an unknown one refuses HERE, naming the sets the book
+    holds, rather than at the approval when the client already has the sheet. Left out, the
+    approval books at the root exactly as before.
 
     The answer IS the quote - `quote_id`, the params as read, one row per leg (role, deal type,
     buy/sell, the strike in MARKET terms, the premium, what was solved) and the `net`: zero for a
@@ -580,10 +590,13 @@ The BOOK IS NOT TOUCHED. What is written is the pending trade:
     refuses a quote.
 
     Then `book_quote(quote_id)` is the approval that makes it a trade. Two identical asks are two
-    quotes, each with its own id and its own files - a quote is an act, not a lookup.
+    quotes, each with its own id and its own files - a quote is an act, not a lookup. A quote is
+    also FIRM ONLY FOR A WINDOW where the book declares one (`Quote Policy.firm_seconds`, ten
+    minutes by default): approve it while it is fresh, or re-quote.
     """
     submitted = service().call('POST', '/book/structure',
-                               json={'structure': structure, 'params': params})
+                               json={'structure': structure, 'params': params,
+                                     'netting_set': netting_set})
     outcome = _await_result(submitted['result_id'], wait_seconds)
     quote = outcome.get('stats', {}).get('Quote')
     if quote is not None:
@@ -611,8 +624,19 @@ def book_quote(quote_id: str) -> dict:
     [messages]}` with the file untouched. A refusal is an answer; an id with no file behind it is
     a tool error naming the directory it looked in.
 
-    The pending file is NOT deleted. What was quoted, at what market, under what id, is the audit
-    trail of why the book carries what it carries - and the sheet the client saw stands beside it.
+    WHERE it books is the quote's own `netting_set`: the mirror lands UNDER that
+    `NettingCollateralSet` node, which is what makes `recalc_xva` see the trade - the client's CVA
+    is projected over that subtree and a trade booked at the root is outside it. A quote that named
+    no set books at the root, as it always did.
+
+    A QUOTE IS FIRM FOR A WINDOW. Where the book declares a `Quote Policy`, its `firm_seconds` is
+    how long an approval may stand on the price that was given; past it this is a tool error naming
+    the age, the window and the remedy, and NOTHING is written - re-quote with `solve_structure`
+    and approve that. A book declaring no policy holds a quote approvable indefinitely.
+
+    The pending file is NOT deleted. What was quoted, at what market, when, under what id, is the
+    audit trail of why the book carries what it carries - and the sheet the client saw stands
+    beside it.
     """
     # an approval books through `deal_edit`, so its answer is a booking's - and gets a booking's
     # trim: what happened to THIS deal, the rest of the book's troubles as counts
