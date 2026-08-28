@@ -99,6 +99,19 @@ is injected by the SDK and never appears in the advertised schema (a gate reads 
 properties to prove it). Past `wait_seconds` the answer is `execute_book`'s pointer —
 `{result_id, status, hint}` — because the provisioning carries on service-side either way.
 
+**A ticking service refreshes itself, so the verb is for forcing and for provisioning.**
+`DV_Service --tick SECONDS` (30 with no value) runs a metronome thread that submits the *same*
+queued Bloomberg job `POST /book/bloomberg` submits — same job class, same single-worker queue —
+so a beat's write serialises with pricings and lands atomically exactly as a posted tick does. It
+never stacks (a beat whose predecessor is still queued or running is skipped), never provisions
+(an unprovisioned `DV_HOME` refuses by name and the cadence carries on — verifying a workstation
+is minutes of terminal time and a person's decision), and never dies (a failure is one warning
+line naming the cause with the book untouched; three in a row stretch the interval fivefold until
+one succeeds). `--tick` on a box where `blpapi` does not import refuses at startup, and `--tick`
+with `--no-book` is refused by name. So on a ticking desk `tick_market_from_bloomberg` is what a
+model calls to **force** a refresh between beats, or to do the **first-use provisioning** the
+cadence will not — which the tool's own docstring says first.
+
 **Market data moves on the engine's terms, never freely.** `patch_market_values` rides the
 `bind='value'` seam — the engine's own `patch_market` refuses a structural key by name.
 `update_market_quotes` installs or ticks whole `Market Prices` blocks (the shape

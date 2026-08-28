@@ -26,6 +26,11 @@ no socket, no map file - what is under test is the verb's own wiring: the scope 
 the map, the refusal a late quote earns, the single atomic write it installs through, and the
 progress a poller reads while it runs.
 
+`--tick`'s metronome rides that same seam, so its two gates need neither a terminal nor a patch:
+the skip-if-in-flight decision is read off the executor's REAL store while a held job occupies the
+worker, and the routine refusal is a beat against a `DV_HOME` holding no map - which the job
+answers before it opens a session, in a named refusal the book's bytes are untouched by.
+
 `/book/structure` and `/book/quote` are one verb split across the desk's own approval: a quote is
 given, filed under its id in `DV_HOME/tmp`, and only then booked. What the gates hold is that the
 two halves are the same trade - the collar comes back netting to zero, and the BOOK marks the deal
@@ -864,6 +869,80 @@ def test_the_bloomberg_verb_needs_a_book_and_a_bootstrapper(book):
     assert bare.status_code == 422
     assert 'Bootstrapper Configuration' in bare.json()['detail']
     assert missing.status_code == 404 and '--book' in missing.json()['detail']
+
+
+def test_the_metronome_skips_the_beat_its_last_tick_is_still_in_flight():
+    """A terminal round trip can outlast an interval, and the result id's clock stamp means two
+    ticks will never coalesce onto one result - so nothing but the metronome stops a slow terminal
+    accumulating a queue of them.
+
+    The decision is read off the executor's REAL store, which is why it can be gated without a
+    terminal and without patching anything: a job that holds the worker is queued, then running,
+    then done, and `pending_status` is exactly that word each time. `beat()` returning while the
+    hold is on is the claim - it left `pending` where it was instead of submitting a second tick.
+    Non-vacuous by construction: there is no book open here, so a beat that did NOT skip would
+    reach `live_book()` and raise the 404 rather than passing quietly.
+    """
+    metronome = service.Metronome(60.0)
+    assert metronome.pending_status() is None, 'nothing submitted yet is nothing to wait on'
+
+    hold = threading.Event()
+    held = Held('metronome-tick', [], hold=hold)
+    service.EXECUTOR.submit(service.Job('metronome-tick', held, {}), service.HEAVY)
+    assert held.started.wait(timeout=30)
+    metronome.pending = 'metronome-tick'
+
+    assert metronome.pending_status() == 'running'
+    assert metronome.beat() is None
+    assert metronome.pending == 'metronome-tick', 'the beat stacked a tick on a running one'
+
+    hold.set()
+    service.EXECUTOR.queue.join()
+    assert metronome.pending_status() == 'done'
+
+
+def test_a_routine_tick_refuses_an_unprovisioned_home_and_leaves_the_book_alone(
+        desk, tmp_path, monkeypatch, caplog):
+    """The metronome does not provision. Verifying a workstation's whole vocabulary is minutes of
+    terminal time and a person's decision, so a cadence that met an unprovisioned `DV_HOME` and
+    started discovering would be doing exactly the thing nobody asked for.
+
+    `DV_HOME` here names a directory with no `security_map.json`, which is a fresh desk. The beat
+    submits through the real queue, the job refuses BEFORE it opens a session - which is what
+    makes this gate reachable on a machine with no terminal at all - and the refusal names the
+    home it looked in and the verb that fixes it. The book's bytes stand still, and the second
+    beat is the failure discipline: exactly ONE warning line, carrying that same cause.
+    """
+    import logging
+
+    # DV_HOME is the declared surface for where a desk's files live, so pointing it at a directory
+    # holding no map IS an unprovisioned workstation - nothing in the package is patched
+    home = tmp_path / 'unprovisioned'
+    monkeypatch.setenv('DV_HOME', str(home))
+    before = desk.read_bytes()
+    metronome = service.Metronome(60.0)
+
+    metronome.beat()
+    service.EXECUTOR.queue.join()
+    result = CLIENT.get('/results/{}'.format(metronome.pending)).json()
+    outcome = result['stats']['Bloomberg']
+
+    assert result['status'] == 'done'
+    assert outcome['written'] is False
+    assert any(str(home) in message and 'tick_market_from_bloomberg' in message
+               for message in outcome['refused'])
+    assert desk.read_bytes() == before
+
+    # the next beat judges the one that refused: ONE warning line, and it carries the cause
+    with caplog.at_level(logging.WARNING, logger='derivus.service'):
+        metronome.beat()
+    service.EXECUTOR.queue.join()
+    warned = [record.getMessage() for record in caplog.records
+              if record.name == 'derivus.service' and record.levelno == logging.WARNING]
+
+    assert len(warned) == 1 and str(home) in warned[0]
+    assert metronome.failures == 1
+    assert desk.read_bytes() == before
 
 
 def test_a_solve_lands_an_affine_field_in_a_handful_of_pricings(book):

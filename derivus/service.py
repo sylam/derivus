@@ -80,10 +80,22 @@ from ._version import __version__
 from .config import (CustomJsonEncoder, deal_at, remove_deal, sniff_indent, splice_deal,
                      update_market_quote)
 
+LOG = logging.getLogger(__name__)
+
 #: Cost class off `Calculation['Object']`: a light job jumps a heavy one among those still WAITING.
 #: Anything unnamed is heavy, and `run_job` is the one that names it when it turns out not to run.
 COST_CLASS = {'BaseValuation': 0, 'CreditMonteCarlo': 1, 'HedgeMonteCarlo': 1}
 HEAVY = 1
+
+#: `--tick` with no value: a cadence a desk can watch a spot move on, without asking a terminal
+#: for a whole surface more often than a surface moves.
+TICK_SECONDS = 30.0
+
+#: The metronome's backoff: this many failed ticks in a row stretch the interval by this factor
+#: until one succeeds. A terminal that went away, a market that closed - keep beating, stop asking
+#: every thirty seconds.
+TICK_FAILURES = 3
+TICK_STRETCH = 5
 
 #: Browsers refuse a cross-origin fetch the server does not invite, so an SPA served from anywhere
 #: but the service itself cannot call it at all without this. Read when the middleware stack is
@@ -643,6 +655,13 @@ class CapturedErrors(logging.Handler):
 NO_BOOTSTRAPPER = ('the book declares no Bootstrapper Configuration - nothing can turn quotes '
                    'into price factors')
 
+#: What a ROUTINE tick refuses on when this workstation has never been verified. The metronome
+#: does not provision - that is a person's act, minutes of terminal time - so it says so, names
+#: the home it looked in, and keeps beating.
+UNPROVISIONED = ('no security map in {} - a routine tick never provisions. Run '
+                 'tick_market_from_bloomberg once (or DV_Bloomberg discover) to verify this '
+                 "workstation's securities, and the cadence picks up from the next beat")
+
 
 def market_edit(document, quotes, patch, bootstrap=None):
     """The market tick as ONE edit closure over a wire document, for `Book.mutate`: quote blocks
@@ -722,13 +741,26 @@ class BloombergJob:
     one way, and a job with no tables adds no second shape for a client to learn. Progress rides
     `PROGRESS` under the result id and is dropped in a `finally`, so a poller sees a count while
     the terminal is answering and the outcome once it has.
+
+    `routine` is the metronome's mode: the interactive verb PROVISIONS a workstation that has no
+    security map, and a cadence must not - verifying a whole vocabulary is minutes of terminal
+    time and something a person asked for. So a routine job checks for the map first and refuses
+    by name without opening a session at all, which is also what keeps the refusal reachable on a
+    machine with no terminal.
     """
 
-    def __init__(self, book, scope, result_id):
+    def __init__(self, book, scope, result_id, routine=False):
         self.book, self.scope, self.result_id = book, scope, result_id
+        self.routine = routine
 
     def note(self, note, done=0, total=0):
         PROGRESS[self.result_id] = {'done': done, 'total': total, 'note': note}
+
+    def outcome(self, started, **fields):
+        """The write's account of itself, with the trip's wall time beside it - what a poller
+        reads off `stats.Bloomberg`, and what the metronome logs a landed tick by."""
+        return None, {'Results': {}, 'Stats': {
+            'Bloomberg': dict(fields, seconds=round(time.perf_counter() - started, 2))}}
 
     def run_job(self):
         import datetime
@@ -736,8 +768,12 @@ class BloombergJob:
         from derivus_bloomberg import discover, fetch_fx_vol, security_map, to_market_prices_block
         from derivus_bloomberg.session import BloombergSession
 
+        started = time.perf_counter()
         surface = {key: self.scope[key] for key in ('expiries', 'pillars') if key in self.scope}
         try:
+            if self.routine and discover.provisioned() is None:
+                return self.outcome(started, written=False, refused=[UNPROVISIONED.format(
+                    security_map.home())])
             self.note('provisioning the security map')
             with BloombergSession(timeout_ms=30000) as session:
                 def on_batch(done, total):
@@ -760,24 +796,46 @@ class BloombergJob:
                         quotes['FXVolPrices.' + snapshot.surface_name] = as_json(
                             to_market_prices_block(snapshot))
             if late:
-                refused = ['{} is stale - {}'.format(name, why)
-                           for name, why in sorted(late.items())]
-                return None, {'Results': {}, 'Stats': {
-                    'Bloomberg': {'written': False, 'refused': refused}}}
+                return self.outcome(started, written=False, refused=[
+                    '{} is stale - {}'.format(name, why) for name, why in sorted(late.items())])
 
             self.note('installing and bootstrapping', len(pairs), len(pairs))
-            outcome = self.book.mutate(
+            written = self.book.mutate(
                 lambda document: market_edit(document, quotes, {}, 'Yes'))
-            return None, {'Results': {}, 'Stats': {
-                'Bloomberg': dict(outcome, provisioned=created)}}
+            return self.outcome(started, provisioned=created, **written)
         finally:
             PROGRESS.pop(self.result_id, None)
+
+
+def submit_bloomberg(scope, routine=False):
+    """The terminal round trip as a queued job - the ONE seam `/book/bloomberg` and the metronome
+    both ride.
+
+    Same job class, same single-worker queue, same result store: a posted tick and a beat of the
+    cadence are indistinguishable downstream, so a tick's write serialises with every pricing and
+    lands atomically exactly as a posted one does. `routine` is the only thing that separates
+    them, and all it says is "do not provision".
+    """
+    live = live_book()
+    document, etag = live.read()
+    if not document['Calc']['MergeMarketData']['ExplicitMarketData'].get(
+            'Bootstrapper Configuration'):
+        raise HTTPException(422, NO_BOOTSTRAPPER)
+    # a fetch is an ACT against the terminal rather than a function of the book, so the submission
+    # clock names it: two ticks against an unmoved book are two trips, never one coalesced result
+    result_id = content_hash({'book': etag, 'bloomberg': scope, 'at': time.perf_counter()})
+    submitted = Job(result_id, BloombergJob(live, scope, result_id, routine), {})
+    return {'result_id': result_id, 'status': EXECUTOR.submit(submitted, HEAVY)}
 
 
 @app.post('/book/bloomberg', summary="Fetch the desk's FX vol surfaces off Bloomberg and tick the book")
 def book_bloomberg(request: dict):
     """`{pairs?: [PAIR], expiries?: [LABEL], pillars?: [DELTA]}` - the whole tick, terminal to
     book, as one queued job.
+
+    `DV_Service --tick SECONDS` submits this same job on a cadence, so on a ticking service this
+    verb is what FORCES a refresh between beats - and what provisions the workstation, since the
+    metronome deliberately will not.
 
     The scope defaults to the desk's own: every `fx_vol` pair the security map carries, at the
     expiries it verified and the delta pillars `security_map.fx_vol_definition` defaults to. The
@@ -792,17 +850,111 @@ def book_bloomberg(request: dict):
     `stats.Bloomberg` when it is done. The id names the ACT rather than the numbers - a fetch is a
     trip to the terminal, so two ticks against an unmoved book are two fetches, never one.
     """
-    live = live_book()
-    document, etag = live.read()
-    if not document['Calc']['MergeMarketData']['ExplicitMarketData'].get(
-            'Bootstrapper Configuration'):
-        raise HTTPException(422, NO_BOOTSTRAPPER)
-    scope = {key: request[key] for key in ('pairs', 'expiries', 'pillars') if key in request}
-    # a fetch is an ACT against the terminal rather than a function of the book, so the submission
-    # clock names it: two ticks against an unmoved book are two trips, never one coalesced result
-    result_id = content_hash({'book': etag, 'bloomberg': scope, 'at': time.perf_counter()})
-    submitted = Job(result_id, BloombergJob(live, scope, result_id), {})
-    return {'result_id': result_id, 'status': EXECUTOR.submit(submitted, HEAVY)}
+    return submit_bloomberg(
+        {key: request[key] for key in ('pairs', 'expiries', 'pillars') if key in request})
+
+
+class Metronome:
+    """`DV_Service --tick SECONDS` - the background market ticker, as a thread that SUBMITS.
+
+    It owns no fetching of its own: every beat goes through `submit_bloomberg`, the same seam
+    `/book/bloomberg` rides, so a tick is the same job class on the same single-worker queue and
+    its write serialises with pricings and lands atomically like any other. What the thread adds
+    is a clock and three disciplines.
+
+    NEVER STACK. A terminal round trip can outlast an interval, and the result id carries a clock
+    stamp precisely so that two ticks never coalesce onto one result - which means nothing
+    downstream would stop a slow terminal accumulating a queue of them. So the beat that finds its
+    predecessor still `queued` or `running` is skipped, on a reading taken straight off the
+    executor's own store rather than off bookkeeping of the metronome's own.
+
+    NEVER PROVISION. An unprovisioned `DV_HOME` refuses by name and the cadence carries on:
+    verifying a workstation's whole vocabulary is minutes of terminal time, and stays the
+    interactive verb's act.
+
+    NEVER DIE. A failed tick - the terminal down, the market closed, a refusal - is ONE warning
+    line naming the cause, and the book is untouched by construction, since a job that refuses
+    writes nothing. Three failures in a row stretch the interval fivefold until one succeeds, so a
+    workstation that lost its terminal overnight is not still asking every thirty seconds by
+    morning. Nothing a beat can raise reaches the loop.
+    """
+
+    def __init__(self, interval, scope=None):
+        self.interval = interval
+        self.scope = scope or {}
+        self.pending = None
+        self.failures = 0
+        self.stretched = False
+
+    def pending_status(self):
+        """Where the tick this thread last submitted got to - `queued`, `running`, `done`,
+        `error`, or None when there is nothing to wait on. The whole skip decision is this."""
+        outcome = EXECUTOR.result(self.pending) if self.pending is not None else None
+        return None if outcome is None else outcome['status']
+
+    def cause(self, outcome):
+        """Why the last tick failed, or None if it did not. A job that raised carries its message;
+        a job that refused carries `refused` under its own Stats - and anything that did not write
+        is a failure whatever else it says, because the write is the point of a tick."""
+        if outcome.get('status') == 'error':
+            return outcome.get('error')
+        bloomberg = outcome.get('stats', {}).get('Bloomberg', {})
+        if bloomberg.get('written'):
+            return None
+        return '; '.join(bloomberg.get('refused', [])) or 'the tick wrote nothing'
+
+    def failed(self, cause):
+        self.failures += 1
+        LOG.warning('bloomberg tick failed (%d in a row): %s - the book is untouched',
+                    self.failures, cause)
+        # `==`, not `>=`: the stretch is announced once, not once per failure after it
+        if self.failures == TICK_FAILURES:
+            self.stretched = True
+            LOG.warning('bloomberg ticks stretched to every %gs until one succeeds',
+                        self.interval * TICK_STRETCH)
+
+    def succeeded(self, outcome):
+        if self.stretched:
+            LOG.warning('bloomberg tick recovered - back to every %gs', self.interval)
+        self.failures, self.stretched = 0, False
+        LOG.debug('bloomberg tick landed in %ss',
+                  outcome.get('stats', {}).get('Bloomberg', {}).get('seconds'))
+
+    def beat(self):
+        """One beat: skip if the last tick is still in flight, else judge it and submit the next.
+
+        Judging at the TOP rather than after submitting is what keeps a beat a submission - the
+        metronome never waits on a terminal, it only reads what the worker has already filed.
+        """
+        if self.pending_status() in ('queued', 'running'):
+            LOG.debug('bloomberg tick skipped - the last one is still in flight')
+            return
+        settled = EXECUTOR.result(self.pending) if self.pending is not None else None
+        # cleared BEFORE the submit, so a submit that refuses cannot leave a settled result to be
+        # judged - and counted - a second time on the next beat
+        self.pending = None
+        if settled is not None:
+            cause = self.cause(settled)
+            if cause is None:
+                self.succeeded(settled)
+            else:
+                self.failed(cause)
+        self.pending = submit_bloomberg(self.scope, routine=True)['result_id']
+
+    def run(self):
+        while True:
+            time.sleep(self.interval * (TICK_STRETCH if self.stretched else 1))
+            try:
+                self.beat()
+            except Exception as error:
+                # the thread outlives every beat: a book that went away, a terminal that did, a
+                # bug in a fetch. `detail` is an HTTPException's message - the refusals the shared
+                # seam already spells, in the wording a POST would have got back
+                self.failed(getattr(error, 'detail', None) or error)
+
+    def start(self):
+        threading.Thread(target=self.run, daemon=True).start()
+        return self
 
 
 class SolveJob:
@@ -1064,6 +1216,14 @@ def main():
                              '(~/.derivus); --no-book serves the verbs with no book')
     parser.add_argument('--no-book', action='store_true',
                         help='serve no live book - /book answers 404')
+    parser.add_argument('-t', '--tick', type=float, nargs='?', const=TICK_SECONDS, default=None,
+                        metavar='SECONDS',
+                        help='refresh the book off this workstation\'s Bloomberg terminal every '
+                             'SECONDS (default {:g} when the flag is given no value), through the '
+                             'same queued job POST /book/bloomberg submits - so a tick serialises '
+                             'with pricings and lands atomically. Routine only: an unprovisioned '
+                             'DV_HOME refuses by name and keeps beating, since provisioning is '
+                             'the interactive act'.format(TICK_SECONDS))
     args = parser.parse_args()
 
     if args.origin:
@@ -1080,6 +1240,22 @@ def main():
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         global BOOK
         BOOK = open_book(path)
+
+    if args.tick is not None:
+        if args.no_book:
+            parser.error('--tick has nothing to tick into: it refreshes the live book, and '
+                         '--no-book serves none')
+        if args.tick <= 0:
+            parser.error('--tick {:g} is not an interval'.format(args.tick))
+        # a ticker that could never tick is a MISCONFIGURATION, so it is a usage error at startup
+        # rather than a warning every beat from a thread nobody is reading
+        from derivus_bloomberg.errors import BloombergUnavailable
+        from derivus_bloomberg.session import blpapi_module
+        try:
+            blpapi_module()
+        except BloombergUnavailable as error:
+            parser.error('--tick needs a Bloomberg terminal on this workstation - {}'.format(error))
+        Metronome(args.tick).start()
 
     uvicorn.run(app, host=args.bind, port=args.port)
     return 0

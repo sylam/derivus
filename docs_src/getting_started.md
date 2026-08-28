@@ -49,6 +49,11 @@ With no `--book` at all, the service serves `book.json` from **`DV_HOME`** (`~/.
 the env var says otherwise) — the same directory `DV_Bloomberg` keeps its security map and seed
 in, so `DV_Service` alone is a working desk. `--no-book` serves the verbs with no book.
 
+On a Bloomberg workstation, add `--tick 30` and the book re-marks itself off the terminal every
+30 seconds — the same queued job `POST /book/bloomberg` submits, so a tick serialises with your
+pricings; it never provisions (run the fetch once by hand first), and a failure is one warning
+line with the book untouched.
+
 A wheel serves the UI it shipped with at `/ui` by itself; from a clone, add `--ui web/dist` to
 serve the build. (If `DV_Service` is not on your PATH — pip's per-user installs on Windows —
 `python -m derivus.service` is the same program.)

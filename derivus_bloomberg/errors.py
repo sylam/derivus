@@ -58,3 +58,17 @@ class SurfaceNotInstalled(BloombergFXError):
 
 class BloombergConfigurationError(BloombergFXError):
     pass
+
+
+def raise_response_error(text: str) -> None:
+    """Bloomberg's own refusal text, typed and raised - an entitlement problem is a thing to go
+    and fix, anything else is a request that failed.
+
+    It lives here rather than in the reader because two callers now make the same refusal: the
+    session's strict reader, and `fxvol`, which reads the value out of the TOLERANT reader and
+    applies the strict policy to it itself. One wording, one typing, whichever side spots it.
+    """
+    error_type = BloombergEntitlementError if any(
+        token in text.upper() for token in ('NOT_AUTHORIZED', 'NOT_ENTITLED', 'NO_AUTH')) \
+        else BloombergRequestError
+    raise error_type(text)

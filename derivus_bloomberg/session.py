@@ -14,10 +14,13 @@
 import importlib
 from collections.abc import Sequence
 
-from .errors import BloombergEntitlementError, BloombergRequestError, BloombergUnavailable
+from .errors import BloombergRequestError, BloombergUnavailable, raise_response_error
 
 
-def _blpapi():
+def blpapi_module():
+    """The Bloomberg SDK, or the refusal that names what is missing. Public because a CALLER may
+    need to know before it commits to anything - `DV_Service --tick` refuses at startup rather
+    than beating forever on a workstation that could never answer."""
     try:
         return importlib.import_module('blpapi')
     except ImportError as error:
@@ -28,13 +31,6 @@ def _blpapi():
 
 def _error_text(element) -> str:
     return str(element).strip()
-
-
-def _raise_response_error(text: str) -> None:
-    error_type = BloombergEntitlementError if any(
-        token in text.upper() for token in ('NOT_AUTHORIZED', 'NOT_ENTITLED', 'NO_AUTH')) \
-        else BloombergRequestError
-    raise error_type(text)
 
 
 class BloombergSession:
@@ -51,7 +47,7 @@ class BloombergSession:
     def start(self):
         session = None
         try:
-            api = _blpapi()
+            api = blpapi_module()
             options = api.SessionOptions()
             options.setServerHost(self.host)
             options.setServerPort(self.port)
@@ -93,7 +89,7 @@ class BloombergSession:
         response = {}
         for security, error, values in self._walked(securities, fields):
             if error is not None:
-                _raise_response_error('{}: {}'.format(security, error))
+                raise_response_error('{}: {}'.format(security, error))
             response[security] = values
         return response
 
@@ -143,7 +139,7 @@ class BloombergSession:
                 raise BloombergRequestError('Bloomberg reference-data request timed out')
             for message in event:
                 if message.hasElement('responseError'):
-                    _raise_response_error(_error_text(message.getElement('responseError')))
+                    raise_response_error(_error_text(message.getElement('responseError')))
                 if not message.hasElement('securityData'):
                     continue
                 security_data = message.getElement('securityData')

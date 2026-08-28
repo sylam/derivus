@@ -19,23 +19,22 @@ import pandas as pd
 
 from .errors import (BloombergConfigurationError, DuplicateSurfacePoint, IncompleteSurface,
                      InvalidQuote, SurfaceAlreadyInstalled, SurfaceNotInstalled,
-                     SurfaceStructureChanged, UnsupportedFXConvention)
+                     SurfaceStructureChanged, UnsupportedFXConvention, raise_response_error)
 from .types import (FXQuoteSecurity, FXVolDefinition, FXVolPoint, FXVolSnapshot, QuoteCoordinate,
                     RawBloombergObservation)
 
 SUPPORTED_CONVENTION = ('Forward', True, 'Delta_Neutral_Straddle')
 BOOTSTRAPPER = 'FXVolSurfaceParameters'
-#: The two-way a vol pillar carries beside its last print. Asked for in the same fetch as the
+#: The two-way a vol pillar carries beside its last print. Asked for in the same request as the
 #: value and NEVER required: the mid is what the surface, the bootstrap and every mark are built
 #: from, and a pillar the terminal quotes no two-way for must cost a desk its spread, never its
-#: tick. That is also why it is read through the REPORT reader below rather than beside the value.
+#: tick.
 TWO_SIDED_FIELDS = ('PX_BID', 'PX_ASK')
 
 
 class ReferenceDataSource(Protocol):
-    def reference_data(self, securities: list[str], fields: list[str]) -> Mapping[str, Mapping[str, object]]:
-        ...
-
+    #: The TOLERANT reader alone - one request carries the value and both sides of the two-way,
+    #: and the strict policy is applied to the value here rather than by the reader.
     def reference_data_report(self, securities: list[str],
                               fields: list[str]) -> Mapping[str, Mapping[str, object]]:
         ...
@@ -144,45 +143,40 @@ def _scaled_side(side, quote_scale: float) -> float | None:
     return scaled if math.isfinite(scaled) else None
 
 
-def _two_way(source: ReferenceDataSource, securities) -> dict:
-    """`{security: (bid, ask)}` off a SECOND, tolerant request over the same names.
+def _value_of(security: str, field: str, row: Mapping[str, object]):
+    """The strict policy applied CLIENT-SIDE to one security's value, off a tolerant row.
 
-    Not folded into the value request on purpose. `reference_data` refuses the whole batch on one
-    field exception - right for the value, since a tick built from a partial answer is a wrong
-    market - and a vol pillar the terminal publishes no two-way for raises exactly that. So the
-    two-way rides `reference_data_report`, the reader `security_map.freshness` already uses for
-    the same reason: one name's silence is a finding, not a failure. A source with no report
-    reader quotes mid-only rather than refusing.
+    The two readers differ only in policy, so the policy can be moved to where it belongs while
+    the REQUEST is made once. `reference_data` refuses the whole batch on any per-security error,
+    which is right for the value - a tick built from a partial answer is a wrong market - and
+    wrong for the two-way, since a pillar the terminal quotes no bid for raises exactly that
+    error and would take the mid down with it. So the value is held to the strict rule in the
+    strict reader's own wording and typing, and the sides beside it are simply read.
     """
-    report = getattr(source, 'reference_data_report', None)
-    if report is None:
-        return {}
-    answered = report(list(securities), list(TWO_SIDED_FIELDS))
-    return {security: tuple(row.get('fields', {}).get(field) for field in TWO_SIDED_FIELDS)
-            for security, row in answered.items()}
+    values = row.get('fields', {})
+    if field in values:
+        return values[field]
+    if row.get('error'):
+        raise_response_error('{}: {}'.format(security, row['error']))
+    raise IncompleteSurface('{} {} is missing from the Bloomberg response'.format(security, field))
 
 
 def fetch_fx_vol(source: ReferenceDataSource, definition: FXVolDefinition) -> FXVolSnapshot:
     validate_definition(definition)
-    securities_by_field = {}
-    for quote in definition.securities.values():
-        securities_by_field.setdefault(quote.value_field, set()).add(quote.security)
-    response = {}
-    for field in sorted(securities_by_field):
-        field_response = source.reference_data(sorted(securities_by_field[field]), [field])
-        for security, values in field_response.items():
-            response.setdefault(security, {}).update(values)
-    two_way = _two_way(source, sorted({quote.security for quote in definition.securities.values()}))
+    # ONE terminal round trip: every security, its value field and both sides of the two-way in
+    # the same request, read through the tolerant reader because a mid-only pillar's PX_BID
+    # exception must not refuse the pillar that answered
+    fields = sorted({quote.value_field for quote in definition.securities.values()})
+    response = source.reference_data_report(
+        sorted({quote.security for quote in definition.securities.values()}),
+        fields + list(TWO_SIDED_FIELDS))
     retrieved_at = pd.Timestamp.now(tz='UTC')
 
     observations = []
     for (expiry, quote_type, pillar), quote in definition.securities.items():
-        try:
-            value = response[quote.security][quote.value_field]
-        except KeyError as error:
-            raise IncompleteSurface('{} {} is missing from the Bloomberg response'.format(
-                quote.security, quote.value_field)) from error
-        bid, ask = two_way.get(quote.security, (None, None))
+        row = response.get(quote.security, {'error': None, 'fields': {}})
+        value = _value_of(quote.security, quote.value_field, row)
+        bid, ask = (row['fields'].get(field) for field in TWO_SIDED_FIELDS)
         observations.append(RawBloombergObservation(
             expiry, quote_type, pillar, quote.security, quote.value_field, value, bid, ask))
     return normalize_fx_vol(definition, observations, retrieved_at)

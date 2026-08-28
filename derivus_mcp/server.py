@@ -439,6 +439,12 @@ async def tick_market_from_bloomberg(pairs: list = None, expiries: list = None,
     """Tick the live book's FX market off THIS workstation's Bloomberg terminal - the whole "get
     me today's market" move, and on a fresh machine the call that PROVISIONS the desk.
 
+    WHEN THE SERVICE RUNS WITH `--tick`, THE MARKET REFRESHES ITSELF on a cadence, through this
+    same job - so call this verb only to FORCE a refresh between beats, or to provision on first
+    use, which the cadence deliberately never does. On a ticking service a book that already
+    carries today's surfaces does not need this call; on an unprovisioned one, nothing else will
+    make the cadence start working.
+
     First use does the setup before it fetches anything: it creates `DV_HOME` (`~/.derivus`
     unless the variable says otherwise), copies the packaged seed - the ticker vocabulary the
     desk owns and edits - into it, then asks this terminal about every candidate the seed spells

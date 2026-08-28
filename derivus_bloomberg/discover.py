@@ -225,6 +225,18 @@ def discover(seed, session, as_of, stale_days=STALE_DAYS, on_batch=None):
     return build_map(seed, verdicts, as_of.isoformat()), verdicts
 
 
+def provisioned(home=None):
+    """The map on disk, or None - the question `provision` answers first, asked on its own.
+
+    A ROUTINE fetch (a cadence, a cron) must never provision: verifying a workstation's whole
+    vocabulary is minutes of terminal time and an interactive act. So it asks this before it
+    opens a session at all, and refuses by name on None rather than discovering its way into a
+    map nobody was watching being built.
+    """
+    path = os.path.join(home or security_map.home(), 'security_map.json')
+    return path if os.path.isfile(path) else None
+
+
 def provision(session, as_of, home=None, stale_days=STALE_DAYS, on_batch=None):
     """First use, once: `(document, created)` for `$DV_HOME/security_map.json`.
 
@@ -239,9 +251,10 @@ def provision(session, as_of, home=None, stale_days=STALE_DAYS, on_batch=None):
     map - and the retry starts from an edited seed instead of from a map nobody trusts.
     """
     home = home or security_map.home()
-    map_path = os.path.join(home, 'security_map.json')
-    if os.path.isfile(map_path):
+    map_path = provisioned(home)
+    if map_path:
         return load(map_path), False
+    map_path = os.path.join(home, 'security_map.json')
     os.makedirs(home, exist_ok=True)
     seed_path = os.path.join(home, 'seed.json')
     if not os.path.isfile(seed_path):
