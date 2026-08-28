@@ -1284,6 +1284,10 @@ def test_a_quoted_collar_is_filed_pending_and_books_at_zero(quoting, tmp_path):
     assert node['Instrument']['.Deal']['Object'] == 'StructuredDeal'
     assert [child['Instrument']['.Deal']['Reference'] for child in node['Children']] == [
         leg['reference'] for leg in quote['legs']]
+    # the quote is client paper and the book holds the bank's position: the approval books the
+    # MIRROR, so every booked leg carries the opposite side from the one the client was quoted
+    assert [child['Instrument']['.Deal']['Buy_Sell'] for child in node['Children']] == [
+        {'Buy': 'Sell', 'Sell': 'Buy'}[leg['buy_sell']] for leg in quote['legs']]
     # the file is the audit trail of what was quoted at what market - booking does not consume it
     assert pending.is_file()
 

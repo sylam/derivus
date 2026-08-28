@@ -113,6 +113,15 @@ back the document ITSELF rather than a copy, and the quote is bit-identical to t
 has always given — the gate compares it float for float against a book carrying a zero-wide
 two-way, so the presence of the data cannot move a price. `spread_note` names the absence.
 
+**The mirror.** Everything above is CLIENT paper — the legs carry the client's side, `net` is what
+the client pays — and a trading book holds the BANK's position, so `structures.mirror` is the one
+seam where paper becomes position: every leg's `Buy_Sell` flipped, nothing else touched, sales
+margin never entering (a mirror is a pure change of side). `/book/quote` books the mirror, so a
+two-sided quote's `edge` lands on the book as positive day-one P&L, and the risk-impact step
+prices the book PLUS the same mirror — the risk measured and the trade booked are one object, and
+a sign cannot disagree between them. The pending file keeps the client frame it was quoted in; the
+flip is the booking's act, by the owner's ruling: quote client-frame, mirror once, book the mirror.
+
 ## The quote lifecycle
 
 `POST /book/structure` runs the recipe as one queued job and files TWO artifacts under

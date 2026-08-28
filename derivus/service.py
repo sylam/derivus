@@ -964,6 +964,12 @@ def book_quote(request: dict):
     it is NOW rather than as it was quoted - an approval is a booking, and a booking is refused on
     what it would land in. The file is not deleted: what was quoted, at what market, under what
     id, is why the book carries what it carries.
+
+    What books is the MIRROR of the pending deal: the quote is client paper, and the book holds
+    the bank's position, so the approval is where the side flips - `structures.mirror`, the same
+    verb the risk-impact step will price the book-plus-candidate through, so the risk measured
+    and the trade booked cannot disagree by a sign. The file keeps the client frame it was quoted
+    in; the flip is the booking's act, not the quote's.
     """
     live = live_book()
     quote_id = request.get('quote_id')
@@ -979,8 +985,9 @@ def book_quote(request: dict):
     with open(path, encoding='utf-8') as handle:
         pending = json.load(handle)
 
+    from . import structures
     try:
-        return live.mutate(lambda document: deal_edit(document, pending['deal']))
+        return live.mutate(lambda document: deal_edit(document, structures.mirror(pending['deal'])))
     except ValueError as error:
         raise HTTPException(422, str(error))
 

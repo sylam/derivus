@@ -569,7 +569,9 @@ def book_quote(quote_id: str) -> dict:
     turns a quote into a trade.
 
     `quote_id` is the one the quote carries. The service reads the pending trade back from
-    `DV_HOME/tmp/<quote_id>.json` and books its deal through the SAME validate-before-write seam
+    `DV_HOME/tmp/<quote_id>.json` and books the MIRROR of its deal - the quote's legs carry the
+    CLIENT's side, and the book holds the bank's position, so every booked leg lands on the
+    opposite side from the one quoted - through the SAME validate-before-write seam
     `book_deal` uses: validated against the book as it is NOW - the market may have moved since
     the quote was given - written atomically, and refused as `{written: false, refused:
     [messages]}` with the file untouched. A refusal is an answer; an id with no file behind it is

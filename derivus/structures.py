@@ -657,6 +657,24 @@ def book_node(deal):
     return node
 
 
+def mirror(deal):
+    """The desk's side of a quoted deal: every leg's `Buy_Sell` flipped, nothing else touched.
+
+    A quote is CLIENT paper - its legs carry the client's side and its net is what the client
+    pays - while a trading book holds the BANK's position, so the one seam where paper becomes
+    position flips the sign. Both consumers read this one verb: the approval that books the
+    trade, and the risk-impact step that prices the book PLUS the candidate - the risk measured
+    and the trade booked are the same object, so a sign cannot disagree between them. Sales
+    margin never enters here: a mirror is a pure change of side.
+    """
+    flipped = copy.deepcopy(deal)
+    blocks = [flipped] + [child['Instrument']['.Deal'] for child in flipped.get('Children', [])]
+    for block in blocks:
+        if 'Buy_Sell' in block:
+            block['Buy_Sell'] = 'Sell' if block['Buy_Sell'] == 'Buy' else 'Buy'
+    return flipped
+
+
 def quote(document, structure_name, params):
     """Price a structure against a book, and hand back the quote plus the deal it would book.
 
