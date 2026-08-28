@@ -1,6 +1,8 @@
 # derivus web UI
 
-A client over the derivus HTTP service: the portfolio tree, the market data (curves and surfaces
+A client over the derivus HTTP service: the portfolio tree, the **blotter** (the same tree read
+as a desk list — one row per deal, containers holding their legs, sorted by days-to-roll against
+the book's `Base_Date`, with a roll-off window filter), the market data (curves and surfaces
 plotted), the calculation, and a run's results. **View + run + scalar edit**: over the live book,
 declared scalar fields (amounts, dates, rates, dropdowns) edit in place — saved through the
 service's validate-before-write `amend` verb, refusals rendered verbatim, the etag poll doing the

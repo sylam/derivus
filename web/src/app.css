@@ -212,6 +212,82 @@ table.data td.n { text-align: right; font-family: var(--mono); font-size: 12px; 
 
 table.data tr:hover td { background: var(--surface-2); }
 
+/* ---- blotter ---- */
+
+.blotterbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px;
+}
+
+.blotterbar .spacer { flex: 1; }
+
+.blotterbar .hint { color: var(--text-muted); font-size: 12.5px; }
+
+.blotterbar .hint b { color: var(--text); }
+
+.blotterbar button.chip {
+  appearance: none; border: 1px solid var(--border); cursor: pointer;
+  font: 550 12px var(--sans);
+}
+
+table.blotter { background: var(--surface); }
+
+table.blotter th.n { text-align: right; }
+
+table.blotter tbody tr { cursor: pointer; }
+
+table.blotter td:first-child { border-left: 2px solid transparent; }
+
+table.blotter td.type, table.blotter td.date {
+  color: var(--text-muted); font-family: var(--mono); font-size: 12px;
+}
+
+table.blotter tr.group td:first-child { font-weight: 600; }
+
+table.blotter tr.muted td { color: var(--text-muted); text-decoration: line-through; }
+
+table.blotter tr.selected td { background: var(--accent-soft); }
+
+/* the roll-off emphasis: the scan target, so it reads before anything else on the row */
+table.blotter tr.rolling td:first-child { border-left-color: var(--warn); }
+
+table.blotter tr.rolling td { background: color-mix(in srgb, var(--warn) 7%, transparent); }
+
+table.blotter tr.rolling.selected td { background: var(--accent-soft); }
+
+table.blotter td.days { font-weight: 600; }
+
+table.blotter td.days.hot { color: var(--bad); }
+
+table.blotter td.days.warm { color: var(--warn); }
+
+table.blotter td.days.past { color: var(--text-muted); font-weight: 400; }
+
+table.blotter .caret {
+  display: inline-block; width: 12px; color: var(--text-muted); font-size: 10px;
+}
+
+table.blotter .badge {
+  margin-left: 6px; font-size: 10.5px; padding: 0 6px; border-radius: 999px;
+  background: var(--surface-2); color: var(--text-muted);
+}
+
+table.blotter .side {
+  display: inline-block; padding: 0 7px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 600;
+}
+
+table.blotter .side.buy { background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good); }
+
+table.blotter .side.sell { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
+
+table.blotter td.opener { text-align: right; color: var(--text-muted); width: 28px; }
+
+table.blotter td.opener span { cursor: pointer; padding: 0 4px; }
+
+table.blotter tr.detail td { background: var(--bg); padding: 12px 16px; white-space: normal; }
+
+table.blotter tr.detail:hover td { background: var(--bg); }
+
 /* ---- json fallback ---- */
 
 pre.json {
@@ -245,6 +321,9 @@ button.ghost {
   border: 1px solid var(--border); border-radius: 6px;
   padding: 6px 12px; font: 550 12.5px var(--sans);
 }
+
+/* a selected filter, not a run status - the .chip vocabulary stays the results' own */
+button.ghost.on { background: var(--accent-soft); border-color: var(--accent); }
 
 select, input[type='file'] { font: 13px var(--sans); color: var(--text); }
 

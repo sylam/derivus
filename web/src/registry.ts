@@ -3,6 +3,7 @@
 // not functions) moved into the client.
 
 import type { ComponentType } from 'react';
+import { BlotterView } from './views/BlotterView';
 import { CalculationView } from './views/CalculationView';
 import { MarketDataView } from './views/MarketDataView';
 import { PortfolioView } from './views/PortfolioView';
@@ -12,6 +13,7 @@ export type Workspace = { id: string; label: string; view: ComponentType };
 
 export const WORKSPACES: Workspace[] = [
   { id: 'portfolio', label: 'Portfolio', view: PortfolioView },
+  { id: 'blotter', label: 'Blotter', view: BlotterView },
   { id: 'market', label: 'Market Data', view: MarketDataView },
   { id: 'calculation', label: 'Calculation', view: CalculationView },
   { id: 'settings', label: 'Settings', view: SettingsView },
