@@ -4,7 +4,7 @@ The internal object walk behind a calculation. The public entry points and outpu
 
 ## Dispatch
 
-`Context.run_job` branches on `Calculation['Object']` into `run_cmc` / `run_baseval` / `run_hedgemontecarlo`, which set device/seed defaults then call `construct_calculation`. That constructor is `globals().get(calc_type)(config, **kwargs)` — a class-name `globals()` dispatch. The three classes are `Credit_Monte_Carlo`, `Base_Revaluation`, and `Hedge_Monte_Carlo`, all in `calculation.py`.
+`Context.run_job` branches on `Calculation['Object']` into its own three methods, which call `run_cmc` / `run_baseval` / `run_hedgemontecarlo` — those set device/seed defaults then call `construct_calculation`. That constructor is `globals().get(calc_type)(config, **kwargs)` — a class-name `globals()` dispatch. The three classes are `Credit_Monte_Carlo`, `Base_Revaluation` and `HedgeMonteCarlo`, all in `calculation.py`.
 
 ## Compile phase 1 — `calculate_dependencies`
 
@@ -73,7 +73,7 @@ Two deals compile outside a `DealStructure` and therefore bind for themselves: `
 
 **`Base_Revaluation`** is the degenerate lifecycle: a single time point (`TimeGrid({base_date}, …)`), no stochastic factors, everything a static leaf — no cholesky, no generate loop. `resolve_structure` runs once; greeks via `pricing.greeks`. It is the compile-plus-single-eval reference for reconciliation.
 
-**`Hedge_Monte_Carlo`** inherits the full CMC scenario engine and diverges in what happens to the marks:
+**`HedgeMonteCarlo`** inherits the full CMC scenario engine and diverges in what happens to the marks:
 
 - **Own dependency assembly** (`update_factors`): merges deal-driven factors with the JSON `Scenario_Factors` list (factors no deal reaches, e.g. a basis consumed only by a composed spot), collapses per-factor tenors to a single horizon, caps the time grid at the liability terminal, then calls `_build_factor_state` directly.
 - **Inner-MC shared state** (`_init_shared_mem`): builds `CMC_State_Inner` so one `shared_mem` hosts outer mode (`reset()`, pseudo-random `(F,T,B)`) and inner mode (`reset_inner()`, Sobol quasi-random `(F,T,B,B2)`); processes dispatch on `Z.ndim`.
@@ -100,7 +100,7 @@ Two deals compile outside a `DealStructure` and therefore bind for themselves: `
 
 ## Inner-MC subsystem
 
-`_run_inner_mc_at_t` forks the simulator from each outer-path state at outer step `t`: truncates the grid (`TimeGrid.truncate_to`), windows every deal's `Time_dep` to `{t,t+1}` (`copy_window`), and runs ONE pass at `Batch_Size x Inner_Sub_Batch` flat samples (no partition: peak memory is a function of those two JSON fields, and an over-wide config raises CUDA OOM naming the fork). The pass: `reset_inner` (Sobol), per-process `precalculate` from `outer_buf[key][t]` (a grad leaf under `with_grad`, and the same leaf backs the fork's print-seed state so the conditioning rides the AAD tape), then EVERY seed before ANY generate — `inner_fork_seed` off the detached outer buffer plus `print_seed` off the leaf-backed day-`t` snapshot, ordered so a seed may condition a topologically-upstream consumer (the fixing bridge conditions its parent's first step) — then generate and `reseed_inner_state`, then **publishes every path series the fork produced as a `ScenarioSource`** — the outer-realized past at `B_outer` followed by the forked rows flattened `(B,B2)→B*B2` — for one real pricing pass on restricted `DealStructure`s. *Every* series, not every factor: a process's own `(key, kind)` publication (`BasisLinkedSpotModel`'s `basis_mu`) is read through the same `calc_time_grid_spot_rate` seam as a factor, so a series the OUTER snapshot also carries gets the same logical grid — one expression covers both, and the seeds a fork publishes (`<kind>_inner`) are excluded by that same rule because the outer path does not carry them. Publishing the factors alone left such a series at the fork's own two rows while the pricer asked it for outer row `t`: not a wrong number but an unrunnable configuration (`tests/test_fork_published_state.py`). It uses the model-agnostic verb protocol so the loop is uniform across model worlds — see [The process protocol](dependency_system.md#the-process-protocol).
+`_run_inner_mc_at_t` forks the simulator from each outer-path state at outer step `t`: truncates the grid (`TimeGrid.truncate_to`), windows every deal's `Time_dep` to `{t,t+1}` (`copy_window`), and runs ONE pass at `Batch_Size x Inner_Sub_Batch` flat samples (no partition: peak memory is a function of those two JSON fields, and an over-wide config raises CUDA OOM naming the fork). The pass: `reset_inner` (Sobol), per-process `precalculate` from `outer_buf[key][t]` (a grad leaf under `with_grad`, and the same leaf backs the fork's print-seed state so the conditioning rides the AAD tape), then EVERY seed before ANY generate — `inner_fork_seed` off the detached outer buffer plus `print_seed` off the leaf-backed day-`t` snapshot, ordered so a seed may condition a topologically-upstream consumer (the fixing bridge conditions its parent's first step) — then generate and `reseed_inner_state`, then **publishes every path series the fork produced as a `ScenarioSource`** — the outer-realized past at `B_outer` followed by the forked rows flattened `(B,B2)→B*B2` — for one real pricing pass on restricted `DealStructure`s. *Every* series, not every factor: a process's own `(key, kind)` publication (`BasisLinkedSpotModel`'s `basis_mu`) is read through the same `calc_time_grid_spot_rate` seam as a factor, so a series the OUTER snapshot also carries gets the same logical grid — one expression covers both, and the seeds a fork publishes (`<kind>_inner`) are excluded by that same rule because the outer path does not carry them. Publishing the factors alone left such a series at the fork's own two rows while the pricer asked it for outer row `t`: not a wrong number but an unrunnable configuration (gated by `tests/test_fork_published_state.py`, removed in the 2026-08-21 purge; `tests/test_fork_pricing_failures.py` is a different gate and does not replace it). It uses the model-agnostic verb protocol so the loop is uniform across model worlds — see [The process protocol](dependency_system.md#the-process-protocol).
 
 !!! note "Four objects, one query: rows route by block, tenors route by segment"
     The curve read splits into a **query**, **logical scenario storage** and **one physical
@@ -181,8 +181,8 @@ inputs, and its backward re-runs **the same callable** under `enable_grad` and c
 cotangent through that one graph, which dies as soon as it has. Peak is one inner graph rather than
 all of them.
 
-**One switch, three adopters, one line.** `pv_MC_Tarf`, `pv_MC_AutoCallSwap` and
-`pv_discrete_barrier_option` all reach it through `InnerMCRecompute.run(shared, simulate, *theta)`
+**One switch, four adopters, one line.** `pv_MC_Tarf`, `pv_MC_AutoCallSwap`, `pv_MC_Accumulator`
+and `pv_discrete_barrier_option` all reach it through `InnerMCRecompute.run(shared, simulate, *theta)`
 — the node when the switch is on, the callable when it is off, with the RNG position taken at the
 call site. There is no per-pricer flag: which pricings a run can afford to tape is a property of
 the valuation engine and the machine, not of the trade. `run` uses `cls.apply`, so a gate that
@@ -218,9 +218,9 @@ Three contracts fall out of it, and each is a way to be silently wrong:
   caller performs them once off the forward's result.
 - **Its inputs are its whole theta surface.** Autograd only returns a gradient for a tensor passed
   to `apply`, so anything the simulation reads out of a closure is differentiated as a constant.
-  all three pricers build their vol strip at the call site (`forward_vol_strip` differenced by
+  all four pricers build their vol strip at the call site (`forward_vol_strip` differenced by
   `forward_vol_rate`) rather than in the fixing loop; the autocall hoists its
-  floating leg and its past equity fixings; all three pass in the Heston–Nandi scalars they used to
+  floating leg and its past equity fixings; all four pass in the Heston–Nandi scalars they used to
   read off `t_Static_Buffer` in the enclosing scope. That last one is what
   `test_the_heston_nandi_theta_survives_the_node` exists for — reverting the barrier's hoist turns
   it red and nothing about the GBM fixtures notices.
@@ -334,13 +334,15 @@ It has its own lifecycle, and it straddles the phases above:
     invisible to a single-set fixture, and it is worst precisely where the machinery is aimed,
     because a collateralised set's post-collateral net sits at the relu kink by construction.
 
-Three `BoundarySet` subclasses exist, and they differ in **how far a decision reaches** — which is
+Two `BoundarySet` subclasses exist, plus `MTABoundarySet`, which shares only `objective_jumps` and
+rides `boundary_sets` alongside them. They differ in **how far a decision reaches** — which is
 why one class with a mode flag would be the wrong shape:
 
 | subclass | reach | carries |
 | --- | --- | --- |
-| `LatchedBoundarySet` | read by every row from the decision onward (barrier, swaption, autocall) | two whole-profile branches shared across decisions; optionally, per decision, an own-row fired/survived override, the per-event payment facts (`cash_events`) its scoring derives every ledger row from, and per row the survived-weighted pending head (`pending`) that makes the dead branch a function of the latch state |
+| `LatchedBoundarySet` | read by every row from the decision onward (barrier, swaption, TARF, autocall, accumulator, extendable forward) | two whole-profile branches shared across decisions; optionally, per decision, an own-row fired/survived override, the per-event payment facts (`cash_events`) its scoring derives every ledger row from, and per row the survived-weighted pending head (`pending`) that makes the dead branch a function of the latch state |
 | `InnerBoundarySet` | a decision inside a pricer's inner MC | the objective's *derivative*, not a difference — one inner path moves the row by `1/n`, a jump the value never takes |
+| `MTABoundarySet` (not a subclass) | a netting SET's collateral transfer clearing its minimum, and every later balance the recursion carries | the margin events, the realised balance path, and the `replay` / `rescan` callables that restart the same collateral recursion from a forced opening balance — nothing re-simulated, re-priced or bumped |
 
 One decision registers **one** counterfactual carrying its whole reach. The autocall's observed
 coupon forks fired-against-survived on its own row — a hard indicator neither whole-profile
@@ -366,14 +368,18 @@ counterfactual of the sum.
 
     The converse is the rule, and it is about **where the graph lives** rather than about symmetry.
     A decision taken on OUTER state keeps its own graph whatever the node does to the inner pass,
-    so its registration stays outside it. The three adopters split both ways and each way is
+    so its registration stays outside it. Three of the four adopters split both ways and each way is
     measured: the TARF's knock-in (decided on `Sj`, an inner draw) and the autocall's coupon trigger
     (decided on `Sj` selected by loop state) are node outputs — dropping that cotangent is
     bit-identical to removing the correction outright; the TARF's redemption latch (the block
     loop's own accrual series) and the discrete barrier's crossing latch (`spot_block[-1]` at an
     observation date) are built outside — for the barrier, dropping every cotangent reproduces the
     corrected gradient bit for bit while suppressing the correction moves it 0.30%, which is what
-    says the latch is live and simply does not ride the node.
+    says the latch is live and simply does not ride the node. The fourth adopter,
+    `pv_MC_Accumulator`, is unplaced: its `LatchedBoundarySet` is assembled after the node's call
+    and off `block_alive`, one of that call's own outputs, which puts it on the node-output side by
+    construction — but the dropped-cotangent reading that decides it for the other three has not
+    been taken.
 
 There is **no JSON switch**: `shared_mem.boundary_aad = calc_greeks is not None`. Wanting
 sensitivities *is* the switch, and registration is gated on it so the cost is zero when greeks are
@@ -390,9 +396,11 @@ the middle.
     the whole of a 73% gradient error. Since the weights sum to one, `||weights||_1` **is** that
     amplification, and `pricing.BOUNDARY_MAX_AMPLIFICATION` bounds it; past the bound the weights
     go to zero and the decision contributes exactly what an empty kernel would.
-    Gated by `tests/test_boundary_weight_amplification.py`, whose first job is to prove the refusal
-    is *reachable* — the constant it replaced (`1e-30` on a Cauchy-Schwarz ratio pinned into
-    `[0, 1]`) never refused anything and could not.
+    It was gated by `tests/test_boundary_weight_amplification.py`, whose first job was to prove the
+    refusal *reachable* — the constant it replaced (`1e-30` on a Cauchy-Schwarz ratio pinned into
+    `[0, 1]`) never refused anything and could not. That gate went with the 2026-08-21 purge, so
+    the reachability is currently unproven: `tests/test_boundary_pricer_events.py` records readings
+    taken on the repaired guard and asserts nothing about the refusal firing.
 
 Acceptance is AAD against a common-random-numbers bump ladder (`tests/crn_ladder.py`), which reports
 agreement **and flatness** separately. Agreement at one bump size proves nothing; a ladder that

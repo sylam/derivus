@@ -18,8 +18,8 @@ The generic `get_*` layer in `instruments.py` is the **only** place a factor nam
 | 0 | `FACTOR_INDEX_Stoch` | `True` stochastic / `False` static |
 | 1 | `FACTOR_INDEX_Offset` | the **`Factor` key** (legacy misnomer — not an int) |
 | 2 | `FACTOR_INDEX_SubType` | factor subtype |
-| 3 | `Tenor_Index` | `CurveTenor` payload (curves only) |
-| 4 | `Daycount` | daycount closure (curves only) |
+| 3 | `FACTOR_INDEX_Tenor_Index` | `CurveTenor` payload (curves only) |
+| 4 | `FACTOR_INDEX_Daycount` | daycount closure (curves only) |
 
 !!! warning "Invariant — the code-tuple layout is fixed"
     `[0]` stoch bool, `[1]` a single `Factor` key, `[2]` subtype, `[3+]` tenor payload from `all_tenors`. `calc_factor_index` is the sole producer. The stable hashable identity is `x[:2] = (stoch, Factor)`; indices `3+` (CurveTenor / daycount closure) are unhashable.
@@ -48,7 +48,7 @@ The two trailing args tell you the axis:
 
 ## The list-at-index-1 idiom — `get_spot_model_params_factor`
 
-`get_spot_model_params_factor(spot_model, name, all_factors, …)`: `spot_model=='None'` → `None` (GBM); unknown → `ValueError`; switch-on-but-absent → `KeyError`. Otherwise it returns a single-element code whose **index 1 is a *list* of per-parameter sub-factors** and whose **index 2 (subtype slot) is the model name** — the same shape as the SVI/Skew vol code in `get_equity_price_vol_factor`. These list-shaped codes never take the generic `x[:2]` cache path.
+`get_spot_model_params_factor(spot_model, name, all_factors, …)`: `spot_model=='None'` → `None` (GBM); switch-on-but-absent → `KeyError`. An unknown model never reaches here — `Deal.__init__` refuses it against the type's `spot_models` declaration. Otherwise it returns a single-element code whose **index 1 is a *list* of per-parameter sub-factors** and whose **index 2 (subtype slot) is the model name** — the same shape as the SVI/Skew vol code in `get_equity_price_vol_factor`. These list-shaped codes never take the generic `x[:2]` cache path.
 
 !!! warning "Invariant — `t_Buffer` cache-key discipline"
     Cache keys slice `x[:2] = (stoch, Factor)` and **exclude** indices `3+`. That requires index 1 be a single `Factor`. SVI/HN codes carry a **list** at index 1 and are consumed only by dedicated vol/HN paths that tuple-flatten the list (`calc_time_grid_vol_rate`) or read `t_Static_Buffer` directly. Do not route a list-shaped code through the generic `(stoch, Factor)` key path.

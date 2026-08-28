@@ -20,7 +20,7 @@ scenario engine is written for it.
 Optional extras:
 
 ```
-pip install "derivus[desk]"         # the working stack: the HTTP service, the MCP binding, the quote ticket
+pip install "derivus[desk]"         # the working stack: the HTTP service, the MCP binding, the quote ticket (python 3.10+, mcp's floor)
 pip install "derivus[service]"      # DV_Service alone (fastapi, uvicorn)
 pip install "derivus[mcp]"          # the MCP binding alone (python 3.10+)
 pip install "derivus[quote]"        # the Excel quote ticket alone (xlsxwriter)
@@ -57,6 +57,12 @@ need to import derivus internals. Six console scripts are installed:
 | `DV_MCP` | the MCP binding over stdio, for an LLM host (`derivus[mcp]`) |
 | `DV_Bloomberg` | builds and re-verifies a Bloomberg security map on a terminal workstation |
 
+`DV_Service` also serves a **desk** over the same engine: a live book that validates before it
+writes, and named structures — a collar, a seagull, a forward extra — quoted two-sided in the
+client's frame, solved server-side and booked as the desk's mirror through `/book/structure` and
+`/book/quote`, which is what an LLM host drives over `DV_MCP`. See
+[`docs_src/getting_started.md`](docs_src/getting_started.md).
+
 ## Layout
 
 | | |
@@ -89,12 +95,13 @@ supply your own.
 
 The suite needs nothing from you. Its inputs live in `tests/fixtures/` and are calibrated
 *parameters* — HMM transition matrices, VAR coefficients, GARCH fits — because a fitted statistic
-is not the series it was fitted to. A fresh clone runs the whole suite green, with two calibration
-tests skipping and naming the file they want.
+is not the series it was fitted to. A fresh clone runs the whole suite green. The only tests that
+skip are the ones whose precondition this box cannot meet — `torch.compile` with no backend for
+its device, and one CRN gate calibrated under CUDA — and each names it.
 
-To run those two, put a CSV at `data/pl_exp.csv` with a date index and a `CommodityPrice.PLATINUM`
-column. `tests/fixtures/calibration_config.json` shows the wider shape the calibration scripts
-expect.
+The platinum drivers under `experiments/` and `gates/` do want real data: put a CSV at
+`data/pl_exp.csv` with a date index and a `CommodityPrice.PLATINUM` column.
+`tests/fixtures/calibration_config.json` shows the wider shape the calibration scripts expect.
 
 ## Documentation
 

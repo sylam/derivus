@@ -7,12 +7,12 @@ so anything a tool needs that an endpoint cannot answer is a missing verb on the
 code in this layer. It lives outside the `derivus` package on purpose — a sibling package in the
 same wheel, `derivus_bloomberg`'s shape: importing any of the engine's package pulls the whole
 engine (torch included, ~3s) into a process that only talks HTTP, and the import gate in
-`tests/test_mcp.py` holds the module to `requests` + `mcp` and nothing else.
+`tests/test_mcp.py` holds the module to `requests`, `mcp` and `mcp_types` and nothing else.
 
 ## Running it
 
 ```
-pip install 'derivus[desk]'                     # service + binding; mcp needs python 3.10+
+pip install 'derivus[desk]'                     # service + binding + quote sheet; mcp needs python 3.10+
 DV_Service --book path/to/job.json &            # the service does the work
 claude mcp add derivus -- DV_MCP
 # a service somewhere else:
@@ -37,8 +37,8 @@ repo — and `DV_MCP` takes the path out of the command altogether.
 | `book_deal` / `delete_deal` | write verbs onto `POST /book/deals` |
 | `price_candidate` / `execute_book` | `POST /book/price` — the what-if; waits, then hands back the id |
 | `solve_deal` | `POST /book/solve` — solve one field to a target, get the deal back ready to book |
-| `solve_structure` | `POST /book/structure` — quote a declared structure: legs priced, strikes solved, the pending trade filed under its id |
-| `book_quote` | `POST /book/quote` — approve a quote by id and book it, refused exactly as a booking is |
+| `solve_structure` | `POST /book/structure` — quote a declared structure: legs priced at the client's side of a two-way, strikes solved, the mid and the edge said, the pending trade filed under its id |
+| `book_quote` | `POST /book/quote` — approve a quote by id and book its mirror, refused exactly as a booking is |
 | `update_market_quotes` / `patch_market_values` | `POST /book/market` — quote blocks in (values-only updates, bootstrap judging the write), spot/vol values patched |
 | `tick_market_from_bloomberg` | `POST /book/bloomberg` — today's surfaces off this workstation's terminal; provisions the desk on first use, reporting progress while it waits |
 | `validate_book` / `describe_book` | the read verbs over the live document |
@@ -78,10 +78,16 @@ that declaration off `/schema`, so a model reads what a zero-cost collar IS inst
 it, and fills the structure's own parameters — strikes in **market terms** (a USDZAR strike is
 15.50; the runner puts it on the engine's axis, and that inversion is the one thing never done
 by hand). `solve_structure` runs the recipe server-side and answers with the composed deal, the
-per-leg premiums and the net, writing nothing into the book: the quote lands in
+per-leg premiums and the net — and where the book's `FXVolPrices` carries a two-way, each leg's
+`vol_spread`, the `net_mid` the trade will mark at, and the `edge` between them (`spread_note`
+says so where there is no two-way) — writing nothing into the book: the quote lands in
 `DV_HOME/tmp/<quote_id>.json` as one pending trade, its sheet beside it when the `quote` extra is
 installed (a missing `xlsxwriter` names the install in `files.sheet_note` and never refuses a
-quote). `book_quote(quote_id)` is the approval that makes it a trade — the same
+quote). A quote prices on the LIVE spot when this workstation's terminal is up and on the book's
+last ticked one when it is not, with the outcome's `spot` block naming which and why — the
+surface and the curves are always the book's. `book_quote(quote_id)` is the approval that makes
+it a trade — booking the MIRROR of the
+pending deal, because a quote is client paper and a book holds the bank's position — the same
 validate-before-write seam a booking rides — and the file stays afterwards, because what was
 quoted at what market is why the book carries what it carries.
 
@@ -128,4 +134,5 @@ run with no stdio and no sockets: the import discipline, the registry's contract
 hints, schema tools equal to the declarations, a booking that prices to the closed form, a
 refusal that writes nothing, the byte-identical book-then-delete round trip, and the quoting day
 end to end — a structure named, its collar solved to a zero net, the pending trade filed under
-`DV_HOME/tmp` and approved into a book that marks it at what was quoted.
+`DV_HOME/tmp` and approved into a book that marks the desk's mirror of it — zero-cost, so the
+quoted net and the booked mark meet at zero.

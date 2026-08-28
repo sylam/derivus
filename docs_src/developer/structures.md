@@ -93,6 +93,13 @@ the block is not read again inside `run_job`, which the two-sided gate demonstra
 assumes. RR and BF rows carry their own two-way and v1 does not consume it — a wing spread has to
 skew the smile rather than shift it.
 
+Two refusals sit in that reading and both are the same rule. A CROSSED print — a stale bid through
+a live offer — reads as ZERO-WIDE rather than as a negative spread, `max(0.0, (ask − bid) / 2)`,
+because the one thing a desk must not do with a broken print is pay a client for it. And a leg
+carrying no `Buy_Sell` at all refuses outright wherever the book has a two-way: a leg with no side
+has no side of the market to be dealt on, and either guess charges the spread the wrong way round.
+Both are stated where the half-spread is read, not left to the caller.
+
 **The sign rule.** A leg's `Buy_Sell` is the CLIENT's side. What the client buys is offered at the
 **ask** vol (`+half`); what they sell is taken at the **bid** (`−half`). A solve then iterates its
 leg on that leg's own shifted copy against targets taken from the other legs' shifted copies, so
@@ -142,13 +149,19 @@ document the legs actually priced against, so what is reported and what was pric
 `DV_HOME/tmp/<quote_id>`: the pending trade (`.json` — the outcome plus the composed
 `StructuredDeal`, ready to book) and its ticket (`.xlsx` via `derivus/quote_sheet.py`, the
 `quote` extra — legs in market terms, the market data used, values only, no formulas, `created`
-pinned to the book's `Base_Date`). The quote id names the ACT — book etag, structure, params,
-and the submission clock — so two identical asks are two quotes and a refusal is never pinned.
+pinned to the book's `Base_Date`).
+
+TWO ids name the quoting ACT, and they are not the same hash. The runner's `quote_id` — structure,
+params, the market the document was carrying, and a submission clock — is what both files are
+named by, and it is the one an approval quotes. The service's `result_id` — book etag, structure,
+params, and its own submission clock — names the queued JOB, exactly as `/execute` does. Both
+carry a clock for the same reason: a quote is an ACT, so two identical asks are two quotes, never
+one coalesced result, and a refusal is never pinned.
 
 `POST /book/quote` is the approval: the pending deal booked through the SAME validate-before-write
 seam as any booking, refused in the same wording, against the book as it stands NOW — and the
 pending file survives the booking as the audit trail. A missing `xlsxwriter` never refuses a
-quote; the outcome names the install under `sheet_note` instead.
+quote; the outcome names the install under `files['sheet_note']` instead, beside the paths.
 
 The composed deal carries its legs inside the block under `Children`, and `splice_deal` lifts
 them onto the node — the engine walks `node['Children']` and never inside a deal block, and
@@ -171,8 +184,8 @@ composition and not an approximation of it.
 
 ## V1 scope, and the named next steps
 
-Five structures ship: `Straddle`, `Strangle` (no solve — the registry handles recipe-free
-entries), `ZeroCostCollar` (floor given, cap solved to premium parity), `Seagull` (three legs,
+Five structures ship: `Straddle`, `Strangle` (no SOLVE — the registry handles recipes that only
+price), `ZeroCostCollar` (floor given, cap solved to premium parity), `Seagull` (three legs,
 two given, one solved to net zero) and `ForwardExtra` (the protected rate given, the BARRIER
 solved — protection plus a sold knock-in call at the same strike, so the client keeps the
 favourable move until the pair trades through the level and the structure reverts to a plain

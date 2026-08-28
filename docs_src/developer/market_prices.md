@@ -5,8 +5,8 @@ observed curves and surfaces a historical calibration produces, this section hol
 a risk-neutral model is fitted to, and a *bootstrapper* turns each block into the factor or model
 parameters the simulation reads.
 
-This page is the design. All five families are built; the interest-rate curve was the last, and the
-section below is what it was built to.
+This page is the design. All six families are built; `FXVolPrices` was the last, and the two
+sections below are what each was built to.
 
 ## A quote is an instrument, a quote type and a number {#a-quote}
 
@@ -21,9 +21,10 @@ Every quote in this section is the same three things:
 The first is the load-bearing one. A quote does not restate an instrument's fields; it **names an
 instrument type and carries a block of that type**, so the `Instrument` store's declarations *are*
 the quote's schema. A family names the types its quotes may be — `quote_instruments` on the
-bootstrapper class — and that list is what a `DealType` dropdown offers and what a gate holds to
-the declared deal types. Nothing about a swap has to be described twice for a swap to be
-quotable.
+bootstrapper class — and that list is what a `DealType` dropdown offers. The gate that held it to
+the declared deal types went with the mock-built suite; the structure registry's twin
+(`test_the_registry_publishes_exactly_the_declared_structures`) is the surviving copy of the rule.
+Nothing about a swap has to be described twice for a swap to be quotable.
 
 `Quote_Type` is per family, not global. The Clewlow–Strickland family takes implied vols only;
 Heston-Nandi takes a vol or a premium; an interest-rate quote is a par rate, a rate or a price.
@@ -67,14 +68,16 @@ on.
 `Day_Count` its tenors are expressed in, an optional `Discount_Rate` naming the curve the quotes
 discount on, the solver's three tuning knobs (`N_Iter`, `Tol`, `Damping_Halvings` — the same
 vocabulary the calibration classes tune with, and each read with its declared default as the
-engine's fallback), and the quote `Points`. A blank `Discount_Rate` builds a **self-discounting**
-curve, which is the single-curve configuration.
+engine's fallback), the three lifecycle switches (`Quote_Sensitivity`, `Quote_Propagation` and the
+`Drift_Tolerance` a ride is refused outside — see [Quote Propagation](quote_propagation.md)), and
+the quote `Points`. A blank `Discount_Rate` builds a **self-discounting** curve, which is the
+single-curve configuration.
 
 **The quotes.** Each point carries a `Deal` — a deposit, an FRA, a swap, an `FXForwardDeal`, or a
 `StructuredDeal` over two legs, authored exactly as it would be in `Trade Data`, because it is the
-same declaration — plus `DealType`, `Quote_Type` and `Quoted_Market_Value`, and a `Use` flag so a
-quote can be held out without being deleted. `DealType` supplies the block's `Object`, and the
-family stamps `Discount_Rate`: what an instrument *projects* off is its own business and it names
+same declaration — plus `DealType`, `Quote_Type`, `Quoted_Market_Value` and a free-text
+`Descriptor`, and a `Use` flag so a quote can be held out without being deleted. `DealType`
+supplies the block's `Object`, and the family stamps `Discount_Rate`: what an instrument *projects* off is its own business and it names
 that curve itself, what the quote set *discounts* on belongs to the curve set and is stated once.
 
 `Quoted_Market_Value` is read in the unit its own `DealType` reads, and where it lands is a
@@ -141,11 +144,11 @@ which is the whole point of a quote carrying an instrument rather than describin
 on a different basis are conventions the family would have to author differently, and a value the
 solve does not implement is the same defect as a field nothing reads.
 
-**The loose ends, settled.** The curve this writes is an `InterestRate`, not the `<ClassName>`
-parameter block the other four write, so the class declares `price_factor_type` and
-`Config.bootstrap`'s "wrote no `<name>.*` price factor" check reads it. And the interpolation of a
-solved curve comes from `Price Factor Interpolation` rather than from the block — see the
-`Interpolation` note in [Conventions](conventions.md#registries-not-functions).
+**The loose ends, settled.** The curve this writes is an `InterestRate`, not a `<ClassName>`
+parameter block, so the class declares `price_factor_type` — as `FXVolPrices` does for its
+`FXVol` — and `Config.bootstrap`'s "wrote no `<name>.*` price factor" check reads it. And the
+interpolation of a solved curve comes from `Price Factor Interpolation` rather than from the
+block — see the `Interpolation` note in [Conventions](conventions.md#registries-not-functions).
 
 ## `FXVolPrices` — a smile quoted in delta, and where the conversion runs {#fxvolprices}
 
@@ -182,16 +185,19 @@ family writes, and it falls straight through with its grid intact.
 inside it, per point, per expiry, per refinement pass. It is now one bisection over the whole grid
 (`Factor2D.malz_sigma`), which refines the identical grid, agrees with the loop to 5e-14 vol —
 well inside `brentq`'s own 2e-12 `xtol` — and is made of operations an autograd tape can carry,
-which the scipy call is not. `tests/test_fx_vol_prices.py` keeps the loop as its oracle.
+which the scipy call is not. The `brentq` loop that was its oracle lived in
+`tests/test_fx_vol_prices.py` and went with the mock-built suite, so the 5e-14 agreement is a
+recorded measurement rather than a standing gate.
 
 **The conventions are declared, and each offers exactly one value**, because the solve implements
 exactly one: `Delta_Type` `Forward`, `Premium_Adjusted` `Yes` — the pillar delta is `(K/F)N(d₂)` —
 and `ATM_Convention` `Delta_Neutral_Straddle`, the strike `K = F exp(−σ²T/2)` at which that
 convention's straddle is delta neutral. A spot delta or an ATMF quote needs different algebra, and
-a value the engine cannot honour is the same defect as a field nothing reads. They are gated as
-maths rather than as strings: the surface must carry the pillar's vol at the strike whose
+a value the engine cannot honour is the same defect as a field nothing reads. They WERE gated as
+maths rather than as strings — the surface must carry the pillar's vol at the strike whose
 premium-adjusted forward delta IS the pillar, and must fail the same statement under the
-unadjusted delta.
+unadjusted delta — and that gate went with the mock-built suite; today only the single-valued
+declarations hold the line.
 
 **The ATM row is the surface's ATM vol, and a second family reads it as one.** `malz_skew` places
 the ±0.5 label's vol at the delta-neutral straddle strike, so the ATM vol of the surface this

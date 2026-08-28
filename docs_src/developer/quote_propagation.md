@@ -411,5 +411,13 @@ tick after a restart, which is the correct one: a plan the store cannot answer i
 `BenchmarkInstruments` has one reporting currency, and reaching past it is a change to the benchmark
 compiler rather than to this lifecycle.
 
+**No ride off an amount-valued quote.** An `FXForwardDeal` outright lands in `Buy_Amount` rather
+than in a schedule column, so the operator's quote side reaches nothing and the block refuses by
+name — `Quote_Sensitivity` and `Quote_Propagation` both stay at `No` on a block carrying such a
+quote — rather than publishing a `J` with a silent zero `dF/dq` row
+(`test_a_forward_block_cannot_publish_a_ride_operator`, which also shows the cross-currency
+refusal firing first when both blocks solve together and the overlay refusal firing when the ZAR
+block solves alone).
+
 **Not generalised past curves.** The artifact shape does not assume a square Jacobian, and no other
 family publishes one yet.

@@ -41,7 +41,7 @@ Extension points are **data**, not control flow. Adding a factor type, a process
 
 ## Where valuation modes diverge
 
-`run_job` (`Context.run_job`) is a 3-way branch on `Calculation['Object']`: `Base_Valuation` (single-date static reval), `Credit_Monte_Carlo` (the full scenario engine — CVA/FVA/exposure), and `Hedge_Monte_Carlo` (inherits the CMC engine but harvests raw marks for the diff-ML hedge solver and forks an inner Monte-Carlo). All three share the compile phases above; they differ only in what the execute phase does with the priced tensors. See [Calc Lifecycle](calc_lifecycle.md#valuation-modes).
+`run_job` (`Context.run_job`) is a 3-way branch on `Calculation['Object']`: `BaseValuation` (single-date static reval), `CreditMonteCarlo` (the full scenario engine — CVA/FVA/exposure), and `HedgeMonteCarlo` (inherits the CMC engine but harvests raw marks for the diff-ML hedge solver and forks an inner Monte-Carlo). All three share the compile phases above; they differ only in what the execute phase does with the priced tensors. See [Calc Lifecycle](calc_lifecycle.md#valuation-modes).
 
 ## Design direction
 

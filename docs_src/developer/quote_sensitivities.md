@@ -55,8 +55,12 @@ over an OIS-compounded floating leg and a fixed leg. The node's PV is the sum of
 already converted to the reporting currency by its own `pv_*_leg`. There is no netting or
 collateral rule to apply on top, which is what keeps this out of `DealStructure`.
 
-The reporting currency **is** the curve's currency, which makes every `calc_fx_cross` the identity
-and keeps an FX rate out of the residual. A curve solve is single-currency by construction.
+The reporting currency **is** the curve's currency, so a rate benchmark crosses nothing and every
+`calc_fx_cross` is the identity. A forward outright is the exception the family now carries: its
+other leg discounts on that currency's own solved curve and converts at a spot the residual reads
+as a **detached constant**, so an FX rate is in the residual as a number rather than as a route
+anything differentiates through. (The identical single-currency claim survives as a comment in
+`bootstrappers.py`; the tree half-agrees with itself here.)
 
 ## The graph audit {#the-graph-audit}
 
@@ -68,7 +72,7 @@ silently reports a zero gradient.
 | --- | --- | --- |
 | `Calculation._build_factor_state`, `Base_Revaluation.update_factors` | Every leaf is minted as `torch.tensor(factor.current_value(offset=…), requires_grad=…)` — a fresh leaf built out of a **numpy array**. Anything upstream is severed by construction. This is the *only* way a curve becomes a tensor on the ordinary path. | θ is written straight into `t_Static_Buffer`, which is where the pricers read a static curve from. `current_value` is never called for a curve being solved. |
 | `riskfactors.Factor1D.current_value` | numpy end to end — `param['Curve'].array[:, 1] + self.delta`, `np.interp`, `np.concatenate`. Handed a tensor it would still return numpy. | Not on the closure's path. It is still used for the **constants** — every factor the solve is not solving for — where a detached leaf is the right answer. |
-| `Factor1D.__init__` → `check_interpolation` | Precomputes the Hermite `(g, c)` coefficient pair from the numpy rate column at construction. Those coefficients are constants in θ. | The pricing path does not read them. `utils.Interpolation.build` re-derives the pair from the buffer **tensor** (`hermite_interpolation_tensor`), and `all_tenors` carries only the interpolation *kind* and the tenor grid, both θ-independent. A Hermite curve therefore differentiates, and there is a gate per interpolation kind saying so. |
+| `Factor1D.__init__` → `check_interpolation` | Precomputes the Hermite `(g, c)` coefficient pair from the numpy rate column at construction. Those coefficients are constants in θ. | The pricing path does not read them. `utils.Interpolation.build` re-derives the pair from the buffer **tensor** (`hermite_interpolation_tensor`), and `all_tenors` carries only the interpolation *kind* and the tenor grid, both θ-independent. A Hermite curve therefore differentiates; the gate per interpolation kind that said so was culled with the closure suite, and the property now stands on the code alone. |
 | `utils.TensorSchedule.bind` | Copies the whole cashflow schedule across with `new_tensor` — notionals, accruals, margins **and the fixed rate**. This is where the **quote** stopped being differentiable. | **Closed.** `TensorSchedule.carry` gives the *tensor* half an optional per-column overlay, spliced into the copy `bind` makes; see [The quote side](#the-quote-side). θ never passed through this seam, so the θ-side closure is unchanged either way. |
 
 Two traps that are not severances, and would each be silent:
@@ -76,8 +80,8 @@ Two traps that are not severances, and would each be silent:
 - **`t_Buffer` is a memo table keyed by `(stoch, Factor)` and a time hash, not by the tensor's
   identity.** A pricing state reused across two different θ answers the second call with the first
   call's discount factors — a solver built on a reused state converges to whatever it started at.
-  `Benchmark_State` is therefore built fresh per evaluation, and a gate holds the trap in place so
-  that it stays a known property rather than a surprise.
+  `Benchmark_State` is therefore built fresh per evaluation; the gate that pinned the trap was
+  culled with the closure suite, so this is a property of the code and no longer a measured one.
 - **`utils.CurveTenor` caches its tenor grid as a tensor built from the first tensor that queries
   it.** `all_tenors` is rebuilt per closure instance, so a float64 solve cannot inherit a float32
   grid from whatever ran before it.
@@ -94,11 +98,16 @@ it happens before the copy exists and raises after — see
 outside a calculation, so `BenchmarkInstruments` binds its own schedules, last, once every overlay
 is on.
 
-Only **value** columns are overlaid. Measured, not assumed: compiling the four benchmark shapes at
-three quotes moves exactly one column, `CASHFLOW_INDEX_FixedRate`/`FloatMargin` (they are the same
-index 6), on the deposit, the FRA, the swap's fixed leg and the OIS fixed leg alike — and moves it
-*linearly*, second difference exactly zero. No reset column moves, and `_carry_quotes` raises if one
-ever does, because a reset value also leaves through `known_resets`, which reads numpy.
+Only **value** columns are overlaid. Measured, not assumed: compiling the four SCHEDULE-CARRIED
+benchmark shapes at three quotes moves exactly one column,
+`CASHFLOW_INDEX_FixedRate`/`FloatMargin` (they are the same index 6), on the deposit, the FRA, the
+swap's fixed leg and the OIS fixed leg alike — and moves it *linearly*, second difference exactly
+zero. No reset column moves, and `_carry_quotes` raises if one ever does, because a reset value
+also leaves through `known_resets`, which reads numpy. The fifth quotable shape, an
+`FXForwardDeal` outright, moves no column at all — its quote lands in `Buy_Amount`, read off the
+deal rather than off a schedule — and `_carry_quotes` refuses it by name rather than report a
+zero `dV/dq` row (`test_a_forward_block_refuses_quote_sensitivity`, which asserts both
+`FXForwardDeal` and the benchmark's own name in the message, and its mutation).
 
 `BenchmarkInstruments` therefore takes the benchmark set **twice**: at its quotes, and one percent
 higher. The difference between the two compiles is the exact ∂(schedule)/∂q, so
@@ -109,7 +118,7 @@ The splice is
 
 $$\text{column} = \text{base} + \big(q - \texttt{detach}(q)\big)\,\frac{\partial \text{column}}{\partial q}$$
 
-which is the [boundary correction](calc_lifecycle.md#boundary-corrections--the-sensitivity-subsystem)'s
+which is the [boundary correction](calc_lifecycle.md#boundary-corrections-the-sensitivity-subsystem)'s
 shape and is there for the same reason: worth **exactly zero** in the forward pass, derivative one.
 The tensor half is bit-identical to the plain copy, so enabling quote gradients cannot move a
 single PV — asserted with `np.array_equal`, not a tolerance.
@@ -596,6 +605,10 @@ and θ\* reaches the calculation through [`factor_leaf`](#the-attachment), under
 vector leaf** per block — the curve family's shape, because the whole ATM column enters one map,
 rather than the swaption family's tuple of scalars.
 
+These were the gates as measured at the increment. The suite that held them —
+`tests/test_gbm_ts_quotes.py` and `tests/test_vol_term_structure_strip.py` — was culled in
+104bd08, so the numbers below are a record rather than a running check.
+
 | gate | what it isolates | result |
 | --- | --- | --- |
 | written curve, gradients on vs off | the forward, on the authored-surface path | `np.array_equal`; a basis point on one quote moves it |
@@ -819,6 +832,10 @@ log-moneyness node resolves to. Measured **0.8656 … 1.0537**, everywhere posit
 
 ### The gates {#the-fx-vol-gates}
 
+These were the gates as measured at the increment. `tests/test_fx_vol_quotes.py` and
+`tests/test_fx_vol_prices.py` were culled in 104bd08 and nothing under `tests/` exercises the Malz
+lookup as maths today, so the numbers below are a record rather than a running check.
+
 | gate | what it isolates | result |
 | --- | --- | --- |
 | written surface, gradients on vs off, and vs c77740e | the forward | `np.array_equal`; SHA-256 of the parent commit's surface |
@@ -837,7 +854,7 @@ log-moneyness node resolves to. Measured **0.8656 … 1.0537**, everywhere posit
 | a wing with a flat segment | why the bracketed anti-assertion is conditioned | a BRACKETED node reads exactly **1.0** — 1 of 16 here, 5 of 90 on the fuller smile |
 | an ATM-only smile | the one-knot wing | `J` finite and equal to the **expiry indicator** |
 | `dV/dq` vs `J' dV/dθ`, one backward | the attachment | **1.0e-16** relative; vega chain 7.039e6 against a Black vega of 7.032e6 |
-| `market_patch` round trip, then re-bootstrap | the pin the derivative rides | grid `array_equal`, `J` `array_equal` |
+| `market_patch` round trip, then re-bootstrap (gate removed with the culled suite; the verbs `Context.market_patch` and `patch_market` are intact) | the pin the derivative rides | grid `array_equal`, `J` `array_equal` |
 | `Quote_Sensitivity` Yes → No, re-bootstrapped | the publish seam | the connected tensor and its leaf are **gone**, not stale |
 
 The FD rung is taken through the **whole family** — re-authored smile, re-prepared wings, re-solved
@@ -875,7 +892,7 @@ Those three sites were the first row of [the graph audit](#the-graph-audit) — 
 
 $$\text{leaf} + \big(\theta^* - \texttt{detach}(\theta^*)\big)$$
 
-which is the [boundary correction](calc_lifecycle.md#boundary-corrections--the-sensitivity-subsystem)'s
+which is the [boundary correction](calc_lifecycle.md#boundary-corrections-the-sensitivity-subsystem)'s
 shape and is here for its reason: **change what reaches `backward()`, nothing about what is
 reported**. `leaf` stays a leaf, so it is still the tensor the pricers read, and `retain_grad`
 keeps `.grad` populated on the sum — the factor greek reported for that curve is the same number it
@@ -883,9 +900,9 @@ always was, and `dV/dq` arrives in the *same* pass. Nothing about discovery orde
 `process_ofs` moves, which is a feature: a quote bump and its reval are bit-comparable.
 
 The switch is the declared field `Quote_Sensitivity` on the block being solved, not a module
-constant. `Config.bootstrap` harvests `calibrated_factors` and `quote_leaves` off the bootstrapper —
-they are tensors, so they cannot live in `Price Factors`, which is data and gets written back out as
-JSON.
+constant. `Config.bootstrap` harvests `calibrated` and `quote_leaves` off the bootstrapper — into
+`calibrated_factors` and `quote_leaves` on the config. They are tensors, so they cannot live in
+`Price Factors`, which is data and gets written back out as JSON.
 
 **The harvest removes as well as adds, and it has to.** A run that publishes nothing for a factor it
 owns takes back what the last run left: flip `Quote_Sensitivity` to `No`, re-bootstrap with quotes
@@ -900,8 +917,8 @@ time and the others' entries have to survive it.
 `FXVol` surface is a *static* factor: `current_value()` hands back the flat vol column of the
 surface sorted by (expiry, moneyness), and `factor_leaf` mints one leaf out of it — so increment 4
 publishes its connected tensor under `Factor('FXVol', name)` and is offered where that leaf is
-born, on both the `_build_factor_state` path and `Base_Revaluation.update_factors`. Three of the
-four families now write a `<ClassName>` parameter block and one writes an ordinary typed factor,
+born, on both the `_build_factor_state` path and `Base_Revaluation.update_factors`. Two of the
+four families write a `<ClassName>` parameter block and two write an ordinary typed factor,
 and the attachment does not distinguish them. `Gradient_Variables` governs it as `Factors` or
 `All` here rather than `Implied` or `All`, for the same reason: it is a factor, not a model.
 
@@ -934,14 +951,15 @@ that go wrong, because the splice is worth zero *whatever* is attached.
 !!! note "The dedupe invariant survives by construction"
     A `…ModelParameters` factor reachable *both* as a spot process's implied factor and as an
     ordinary static dependent must map to **one** tensor — see
-    [the invariant](calc_lifecycle.md#compile-phase-2--_build_factor_state). The static branch reuses
+    [the invariant](calc_lifecycle.md#compile-phase-2-_build_factor_state). The static branch reuses
     `implied_leaves`, so it now reuses the *connected* tensor and the quote gradient cannot split
     across two leaves. Nothing in the deal tree pulls an HW2F block in that way today, so the
     collision is authored in the gate rather than waited for.
 
 **Two `quote_leaves` shapes, and a reporting layer has to honour both.** The value is
 `(descriptors, leaves)` in every family, but the second half is not the same object: a curve solve
-publishes **one vector leaf** whose entries are the block's `Points`, and a swaption calibration
+publishes **one vector leaf** whose entries are the coupled SET's `Points`, block-prefixed where
+the set has more than one member and filed under every member's key, and a swaption calibration
 publishes a **tuple of scalar leaves**, one per `Instrument_Definitions` row. The two shapes are the
 quotes' own — a curve's quotes enter one residual as a vector, a swaption's quote is a leaf per
 benchmark because each carries its own Black preamble — so anything reading `dV/dq` off them
@@ -974,7 +992,11 @@ The bootstrap and its Jacobian are **float64 regardless of the simulation's prec
 `BenchmarkInstruments.dtype` states it once, and `construct_bootstrapper`'s own `dtype` — float32 by
 default — does not reach it. A solve that has to converge to 1e-10 cannot be done in float32, and
 the Jacobian handed to the implicit function theorem is only as good as the residual it came from.
-Setting that one attribute to float32 fails eight of the nine round-trip gates.
+Setting that one attribute to float32 broke eight of the nine round-trip gates the increment
+shipped with. What stands today is the single dtype gate,
+`test_the_solve_is_float64_whatever_the_bootstrapper_was_built_with` — `dtype == np.float64` and a
+1e-10 recovery, over the two worlds `tests/test_interest_rate_prices.py` parametrises — rather
+than a count of failures.
 
 **θ\* crosses back into the simulation at the `Function` boundary**, and the cast is one `.to()`
 inside `factor_leaf`. Three things follow.
@@ -1016,6 +1038,12 @@ optimizer that makes thousands. The seam is therefore *inside* the backward rath
 
 Three corners, deliberately independent, plus three identities that need no bump at all.
 
+These were the gates as measured at the increment. Of the six rows only **round trip vs θ_true**
+still runs — `tests/test_interest_rate_prices.py`, asserting < 1e-10; the CRN ladder, the
+self-delta matrix, the one-pass-vs-FD rung and the reference exposure run went with
+`tests/test_quote_jacobian.py` and `tests/test_crn_ladder.py` in 104bd08. The rest of the column
+is a record rather than a running check.
+
 | gate | what it isolates | result |
 | --- | --- | --- |
 | θ\* bit-identical, gradients on vs off | the forward pass | `np.array_equal`, max diff **0.0** |
@@ -1052,6 +1080,11 @@ unconstrained stationarity cannot hold at all.
 Full column rank makes `θ*(q)` a function only if the solve **reaches** the minimum, and it does not.
 So the re-solve reference fails a third time, and the ladder built on it still scatters. What the
 gates hold is everything that does not need it.
+
+These were the gates as measured at the increment; the swaption suite that held them
+(`test_swaption_calibration_solve.py`, `test_swaption_quote_attachment.py`,
+`test_swaption_quote_graph.py`, `test_swaption_quote_triangle.py`) was culled in 104bd08, so the
+numbers below are a record rather than a running check.
 
 | gate | what it isolates | result |
 | --- | --- | --- |

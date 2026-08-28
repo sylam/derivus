@@ -22,6 +22,10 @@ cx = rf.Context()
 cx.load_json('fxfwd.json')
 ```
 
+(The alias is arbitrary and `rf` is the one this page and the rest of `docs_src` were written
+under — the same pre-rename initials the `RF_SERVICE_URL` wire variable keeps on purpose. The
+README says `dv`; both are `import derivus as`.)
+
 A context can hold *multiple* loaded configurations — each `load_json` call adds another
 `Config` to `cx.config_cache`, and the most recently loaded one is set as `cx.current_cfg`. All
 calculation methods read from `cx.current_cfg`, so to switch which configuration is active you
@@ -130,8 +134,7 @@ visible CUDA devices and merges the results.
 A specialisation of Credit Monte Carlo wired into a differential-ML hedging solver (DiffSolver).
 The same scenario engine generates trajectories which are consumed by a backward-DP value-function
 solver that hedges a portfolio of liabilities by trading a configured set of futures or other
-instruments. See the [Hedging_Problem](json/index.md#calculation) JSON section for the
-configuration contract.
+instruments. See [Hedging](hedging/overview.md) for the `Hedging_Problem` configuration contract.
 
 ```python
 calc, out = cx.Hedge_Monte_Carlo(overrides={'Random_Seed': 42})
@@ -227,8 +230,11 @@ just before execution. Common overrides:
 - `Run_Date` / `Base_Date` — switch the valuation date without editing the JSON
 - `Currency` — change the reporting currency
 - `Random_Seed`, `Batch_Size`, `Simulation_Batches` — control Monte Carlo reproducibility and size
-- `Greeks` — enable sensitivities (`'No'` / `'Factors'` / `'All'`)
-- `Time_Grid` — re-shape the simulation time grid (Credit / Hedge Monte Carlo)
+- `Greeks` — Base Valuation sensitivities (`'No'` / `'First'` / `'All'`); a Monte Carlo turns
+  gradients on per sub-block (`Gradient`) and picks its variables with `Gradient_Variables`
+  (`'All'` / `'Factors'` / `'Implied'`)
+- `Time_grid` — re-shape the simulation time grid (Credit Monte Carlo reads it as `Time_grid`,
+  Hedge Monte Carlo as `Time_Grid`)
 
 Overrides are merged shallowly into the loaded `Calculation` object, so nested fields (e.g.
 `Hedging_Problem.Solver.Object`) need to be passed as a complete sub-dict if you want to change
@@ -262,10 +268,10 @@ top-level keys:
 
 One vocabulary, two bindings. Everything above is the in-process binding; `derivus.service` is the
 same verbs over HTTP and owns no logic of its own — every endpoint builds a `Context` from the
-posted job, calls one of the methods above, and serialises what comes back. A browser SPA, a marimo
-notebook and an Excel add-in are clients of the same endpoints, so nothing specific to any one of
-them belongs on the surface. `fastapi` and `uvicorn` are the `service` extra, imported only there,
-so `import derivus` needs neither:
+posted job, calls one of the methods above, and serialises what comes back. A browser SPA, an MCP
+binding, a marimo notebook and an Excel add-in are clients of the same endpoints, so nothing
+specific to any one of them belongs on the surface. `fastapi` and `uvicorn` are the `service`
+extra, imported only there, so `import derivus` needs neither:
 
 ```
 pip install derivus[service]
@@ -284,13 +290,13 @@ DV_Service --port 8000
 | `GET` | `/results/{result_id}/{table}` | one table, `?offset=&limit=` |
 | `GET` | `/ui` | a built web UI - the wheel's own by default, or the `DV_Service --ui <dir>` build |
 | `GET` | `/book` | the live job document `DV_Service --book <file>` serves, with the etag naming its state |
-| `POST` | `/book/deals` | book or delete one deal — validated BEFORE an atomic write; a refusal is `{"written": false, "refused": […]}` and touches nothing |
+| `POST` | `/book/deals` | book, amend or delete one deal — validated BEFORE an atomic write; a refusal is `{"written": false, "refused": […]}` and touches nothing |
 | `POST` | `/book/price` | price the book plus an optional candidate deal — a what-if; writes nothing |
 | `POST` | `/book/solve` | solve one field of a candidate deal to a target value — a root find over base valuations; the solved coordinates arrive under the result's `stats.Solved` |
 | `POST` | `/book/market` | tick the book's market: quote blocks installed or value-updated (structure refused), a `patch_market`-shaped values patch, the bootstrap run — one atomic write, refused whole if the bootstrap complains |
 | `POST` | `/book/bloomberg` | provision the security map (first use creates `DV_HOME`, copies the packaged seed, verifies every candidate against the terminal), fetch the desk's FX vol surfaces and tick the book — a queued job whose `/results/{id}` carries `progress` while it runs |
-| `POST` | `/book/structure` | quote a named structure against the book — the declared recipe solved server-side, the pending trade and its ticket filed under the quote id in `DV_HOME/tmp` |
-| `POST` | `/book/quote` | book a quote already given — the approval half, validated and refused exactly as a booking is; the pending file survives as the audit trail |
+| `POST` | `/book/structure` | quote a named structure against the book — the declared recipe solved server-side on the live spot where the terminal is up, each leg on the side of any two-way the book carries, the pending trade and its ticket filed under the quote id in `DV_HOME/tmp` |
+| `POST` | `/book/quote` | book a quote already given — the approval half, which books the MIRROR of the pending deal (a quote is client paper; a book holds the bank's position), validated and refused exactly as a booking is; the pending file survives as the audit trail |
 
 The book's FILE is the source of truth: every client — the web UI, an MCP tool, the Excel add-in —
 reads and writes it through these verbs, so a deal booked by one appears to the others on their
@@ -299,7 +305,9 @@ not unique in a book.
 
 `mapping['Instrument']` also publishes `containers` — the deal types that accept `Children`
 (`Deal.accepts_children` emitted into the store), so a client can tell a leaf from a structure
-without importing the engine.
+without importing the engine. `mapping['Structure']` publishes the desk's quotable structures —
+the vernacular a salesperson says, the parameters, the legs and the recipe — which is what
+`POST /book/structure` runs and a client renders a quote ticket from.
 
 A posted job is a job *file* — the same document `load_json` reads, parsed by the same decoder, so
 its `.Curve`, `.Timestamp` and `.DateList` tokens travel as themselves. `/execute` takes one extra

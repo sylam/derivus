@@ -10,7 +10,7 @@ The [Quick Start](quickstart.md) covers the three-line in-process route (`load_j
 ## Install
 
 ```
-pip install "derivus[desk]"            # the engine, DV_Service, and the MCP binding
+pip install "derivus[desk]"            # the engine, DV_Service, the MCP binding and the quote ticket
 pip install torch                      # the CUDA build if you have an NVIDIA GPU
 ```
 
@@ -33,8 +33,9 @@ pip install --index-url=https://blpapi.bloomberg.com/repository/releases/python/
 ```
 
 Sanity check: start the service and `GET /schema` answers with `engine_version`. From a clone,
-`pytest tests -q -rs` runs the suite — on CPU expect a handful of skips that name their reasons
-(licensed market data; CUDA-calibrated oracles).
+`pytest tests -q -rs` runs the suite — on CPU expect a skip or two that name their reasons (a
+`torch.compile` backend for the fused Heston-Nandi sub-step; one CRN oracle calibrated under
+CUDA; the quote sheet without `derivus[quote]`).
 
 ## Start the stack
 
@@ -52,7 +53,8 @@ in, so `DV_Service` alone is a working desk. `--no-book` serves the verbs with n
 On a Bloomberg workstation, add `--tick 30` and the book re-marks itself off the terminal every
 30 seconds — the same queued job `POST /book/bloomberg` submits, so a tick serialises with your
 pricings; it never provisions (run the fetch once by hand first), and a failure is one warning
-line with the book untouched.
+line with the book untouched, three in a row stretch the interval fivefold until one lands, and a
+beat whose last tick is still in flight is skipped rather than queued.
 
 A wheel serves the UI it shipped with at `/ui` by itself; from a clone, add `--ui web/dist` to
 serve the build. (If `DV_Service` is not on your PATH — pip's per-user installs on Windows —
@@ -94,9 +96,10 @@ in [the MCP page](developer/mcp.md).
 ## The same verbs from Python or Excel
 
 Every client is a thin binding of the same HTTP verbs — see the
-[API Overview](api_overview.md) for the full table. From a script or notebook (`ServiceClient`
-rides the **clone** — `excel_integration` is an add-in in the repo, not in the wheel; a wheel
-user talks the same verbs with plain `requests`):
+[API Overview](api_overview.md) for the full table (the structure and quote verbs are MCP- and
+HTTP-side today; `ServiceClient` binds the book, market, price and solve half). From a script or
+notebook (`ServiceClient` rides the **clone** — `excel_integration` is an add-in in the repo, not
+in the wheel; a wheel user talks the same verbs with plain `requests`):
 
 ```python
 from excel_integration.service_client import ServiceClient
@@ -137,10 +140,31 @@ Data tab.
 
 ## Structure against it
 
-`solve_deal` is the structuring verb: a root find over ordinary base valuations, run server-side.
-Par forwards (target 0), sales margins (target the margin), a strike to a premium (bounds around
-spot), a zero-cost collar (fix one strike, solve the other). The answer carries the solved
-coordinates and the deal ready to book; a linear payoff solves exactly in two pricings.
+The desk's vocabulary is **declared**, not composed by whoever is driving. `derivus/structures.py`
+ships five structures — `Straddle`, `Strangle`, `ZeroCostCollar`, `Seagull` and `ForwardExtra` —
+each a class naming its sales names, its legs and a recipe (price this leg, solve that one to the
+other's premium). `POST /book/structure` runs the recipe server-side and files the pending trade
+plus its `.xlsx` ticket under `DV_HOME/tmp`, named by the quote id; `POST /book/quote` is the
+approval. Over MCP the same three acts are `describe_structure` (what a zero-cost collar IS, and
+the parameters it takes — strikes in **market** terms, a USDZAR floor of 17.50), `solve_structure`
+and `book_quote(quote_id)`, so this is a sentence:
+
+> quote a one-year zero-cost collar on 1m USD ZAR with the floor at 17.50
+
+A quote is **client paper**. Where the book's `FXVolPrices` carry `Quoted_Bid`/`Quoted_Ask` each
+leg prices at the side of the two-way it deals on — what the client buys at the ask vol, what they
+sell at the bid — and the outcome carries `net` (the two-sided price quoted), `net_mid` (what the
+trade marks at once booked), the `edge` between them, each leg's `vol_spread`, and a `spread_note`
+where the book quotes no two-way at all. The quote prices on this workstation's **live** spot when
+the terminal is up and on the book's last ticked one, with the reason named, when it is not — the
+`spot` block says which was used. `book_quote` books the **mirror** of the pending deal, the
+desk's side, because a book holds the bank's position; the pending file survives as the audit
+trail. The full contract is on [the structures page](developer/structures.md).
+
+Underneath all of it `solve_deal` is still the single-field verb: a root find over ordinary base
+valuations, run server-side. Par forwards (target 0), sales margins (target the margin), a strike
+to a premium (bounds around spot). The answer carries the solved coordinate and the deal ready to
+book; a linear payoff solves exactly in two pricings.
 
 Greeks ride the same requests: `calculation_overrides={'Greeks': 'First'}` returns the AAD delta
 vector, `{'Greeks': 'All'}` the full second-order block — `Greeks_Second` is the cross-gamma

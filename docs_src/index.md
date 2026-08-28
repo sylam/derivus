@@ -26,9 +26,9 @@ read, run and validate. Commercial use requires a separate licence — contact t
   discontinuously, and the flux of scenarios across the trigger is carried onto the tape rather
   than dropped
 * Sensitivities to market **quotes**, not only to calibrated factors: zero curves solved from
-  deposit, FRA and swap benchmarks, swaption-vol model calibration, and FX smiles built from
-  ATM / risk-reversal / butterfly quotes all differentiate through their calibration, so one
-  backward pass reports `dV/dq` beside `dV/dθ`
+  deposit, FRA, swap, OIS and FX-forward-outright benchmarks, swaption-vol model calibration, and
+  FX smiles built from ATM / risk-reversal / butterfly quotes all differentiate through their
+  calibration, so one backward pass reports `dV/dq` beside `dV/dθ`
 * Bootstrapping inside the library: benchmark instruments are priced by the engine's own pricers,
   and between calibrations a moved quote can *ride* the calibration Jacobian to a valuation with
   no re-solve — with the drift of the ridden curve measured against a declared tolerance and the
@@ -37,6 +37,9 @@ read, run and validate. Commercial use requires a separate licence — contact t
   deployment-faithful day-by-day backtest of the frozen policy on observed paths
 * An HTTP service over the same engine — the JSON schema is published, jobs post and replay, and
   spreadsheets or notebooks are ordinary clients
+* A quoting desk over that same service: a live book that validates before it writes, declared
+  structures quoted two-sided and solved server-side, an MCP binding a model books through, and a
+  Bloomberg tick that keeps the market current
 * Theoretical documentation beside the code, encouraging independent validation
 
 ## Motivation
@@ -65,5 +68,3 @@ itself is tracked separately in the [Developer Roadmap](developer/roadmap.md):
 - Wrong-way risk during the Monte Carlo simulation
 - Initial-margin analytics (SIMM) from the bucketed quote deltas the sensitivity work now
   produces
-- A structuring calculation: solve for a strike, a margin or a vol instead of a price
-- A web front end over the HTTP service, rendered from the published schema
