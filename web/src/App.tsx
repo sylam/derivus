@@ -1,5 +1,5 @@
 import { useEffect, useReducer } from 'react';
-import { getBook, getSchema, postDescribe } from './api';
+import { failure, getBook, getBookRisk, getBookXva, getSchema, postDescribe } from './api';
 import { DocumentLoader } from './components/DocumentLoader';
 import { JobHeader } from './components/JobHeader';
 import { WORKSPACES } from './registry';
@@ -49,6 +49,39 @@ export function App() {
     }, BOOK_POLL_MS);
     return () => clearInterval(timer);
   }, [state.source]);
+
+  // The desk's two data views ride the SAME etag: the poll above is the only clock in the client,
+  // and a booking, an amendment or a market tick moves the book here and the numbers follow.
+  //
+  // The risk verb RUNS the book on a miss, so it is fetched for a desk that is looking at it -
+  // the open tab, or a tab it has already been on this session - and never speculatively for a
+  // user who has not asked. `state.source` is a new object only when the etag moved, so this
+  // fires once per move rather than once per poll tick.
+  const riskWanted = state.tab === 'risk' || state.risk.data !== null;
+  useEffect(() => {
+    if (state.source?.kind !== 'book' || !riskWanted) return;
+    const bookEtag = state.source.etag;
+    let live = true;
+    dispatch({ type: 'RISK_FETCHING' });
+    getBookRisk()
+      .then((risk) => { if (live) dispatch({ type: 'RISK_LOADED', risk, bookEtag }); })
+      .catch((error) => { if (live) dispatch({ type: 'RISK_FAILED', ...failure(error) }); });
+    return () => { live = false; };
+  }, [state.source, riskWanted]);
+
+  // The XVA view is a file read, not a run: it re-reads on FOCUS - a recalc asked for through the
+  // MCP verbs lands in that file while nobody is looking at this screen - and again whenever the
+  // book moves under it, which is what turns a set that has left the book into an orphan row.
+  const onXva = state.tab === 'xva';
+  useEffect(() => {
+    if (state.source?.kind !== 'book' || !onXva) return;
+    let live = true;
+    dispatch({ type: 'XVA_FETCHING' });
+    getBookXva()
+      .then((xva) => { if (live) dispatch({ type: 'XVA_LOADED', xva }); })
+      .catch((error) => { if (live) dispatch({ type: 'XVA_FAILED', ...failure(error) }); });
+    return () => { live = false; };
+  }, [state.source, onXva]);
 
   // describe whenever the document moves
   useEffect(() => {

@@ -1484,3 +1484,223 @@ def test_a_composed_candidate_prices_its_legs_not_an_empty_container(book):
         assert abs(value) > 1.0  # a leg worth nothing would make the sum check vacuous
         assert values[reference] == pytest.approx(value, rel=1e-9)
     assert values['CMP1'] == pytest.approx(sum(expected.values()), rel=1e-9)
+
+
+# --------------------------------------------------------------------------------------------
+# the blotter's two data views: consolidated risk, and the XVA projection
+# --------------------------------------------------------------------------------------------
+def test_the_consolidated_risk_is_the_book_priced_once_and_it_follows_a_booking(quoting):
+    """`/book/risk` on the desk's own quoting book: coherent totals, a warm hit that changes
+    nothing, and a booking that moves the etag with the answer behind it.
+
+    Three things are held. COHERENCE: `mtm` is exactly the sum of `per_deal`, and each per-deal
+    value is the value the ORDINARY run reports for that deal - `/book/price`'s `mtm` table, the
+    path every other gate here prices through - so the view cannot be a second opinion about what
+    the book is worth. WARMTH: the same book answers the identical object off the cache, etag and
+    `as_of` included, which is what makes this pollable on the book's own beat. FOLLOWING: a
+    booking changes the content the run reads, so the etag moves and the new deal is in the answer
+    with the total behind it.
+
+    The book carries a real USDZAR surface, so the gradient is not vacuous either: the FX option
+    booked here puts `FXVol.USD.ZAR` rows in `greeks` on TWO tenor coordinates, which is the
+    surface-node case the flattening exists for, beside the one-coordinate curve rows and the
+    no-coordinate spot.
+    """
+    before = CLIENT.get('/book/risk').json()
+    assert CLIENT.get('/book/risk').json() == before, 'a warm hit re-ran the book'
+    assert before['mtm'] == pytest.approx(sum(row['value'] for row in before['per_deal']))
+
+    booked = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': FX_OPTION}),
+                         headers=JSON).json()
+    assert booked['written'] is True, booked
+    after = CLIENT.get('/book/risk').json()
+
+    assert after['etag'] != before['etag'], 'a booking left the risk etag standing'
+    assert [row['reference'] for row in after['per_deal']] == ['CF1', 'OPT1']
+    assert [row['deal_path'] for row in after['per_deal']] == ['0', '1']
+    assert after['mtm'] == pytest.approx(sum(row['value'] for row in after['per_deal']))
+    assert after['currency'] == 'USD'
+
+    # the decisive half: the same numbers the ordinary pricing path reports for the same book
+    priced = CLIENT.post('/book/price', content=dump({}), headers=JSON).json()
+    service.EXECUTOR.queue.join()
+    values = mtm(priced['result_id'])
+    for row in after['per_deal']:
+        assert abs(row['value']) > 1.0, 'a deal worth nothing makes the comparison vacuous'
+        assert row['value'] == pytest.approx(values[row['reference']], rel=1e-9)
+
+    greeks = {row['factor']: row for row in after['greeks']}
+    assert 'FxRate.ZAR' in greeks and 'tenor' not in greeks['FxRate.ZAR'], 'a spot has no tenor'
+    assert len(greeks['InterestRate.ZAR']['tenor']) == 1, 'a curve point is one coordinate'
+    assert len(greeks['FXVol.USD.ZAR']['tenor']) == 2, 'a surface node is two'
+    assert any(row['factor'] == 'FXVol.USD.ZAR' and row['value'] for row in after['greeks']), \
+        'the option booked no vega - the gradient is vacuous'
+
+
+#: A netting set's CSA tables, at zero thresholds - the shape the engine's own CVA fixtures use.
+CSA = {'.CreditSupportList': [[0.0, 0.0]]}
+
+#: The vanilla the sets hold: a one-year equity call, priced on the GBM the book declares - which
+#: is what gives a credit Monte Carlo an exposure PROFILE rather than a constant.
+VANILLA = {'Object': 'EquityOptionDeal', 'Currency': 'USD', 'Payoff_Currency': 'USD',
+           'Equity': 'EQ', 'Dividends': 'EQ', 'Discount_Rate': 'USD', 'Equity_Volatility': 'EQ',
+           'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Option_Style': 'European', 'Units': 1000.0,
+           'Strike_Price': EQ_SPOT, 'Expiry_Date': BASE + pd.DateOffset(years=1)}
+
+
+def netting_set(reference, counterparty, deals):
+    """One `NettingCollateralSet` node over its deals, uncollateralised, naming its counterparty
+    where the engine reads it: `Credit_Support_Amounts.Counterparty` IS the `SurvivalProb` factor
+    the CVA discounts by, which is why the recalc reads it from there and nowhere else."""
+    return {'Instrument': {'.Deal': {
+        'Object': 'NettingCollateralSet', 'Reference': reference, 'Netted': 'True',
+        'Collateralized': 'False', 'Agreement_Currency': 'USD', 'Balance_Currency': 'USD',
+        'Funding_Rate': 'USD', 'Liquidation_Period': 0.0, 'Settlement_Period': 0.0,
+        'Credit_Support_Amounts': {
+            'Counterparty': counterparty, 'Received_Threshold': CSA, 'Posted_Threshold': CSA,
+            'Independent_Amount': CSA, 'Minimum_Received': CSA, 'Minimum_Posted': CSA}}},
+        'Children': [{'Instrument': {'.Deal': deal}} for deal in deals]}
+
+
+def xva_book(tmp_path, sets, counterparties=('CPTY_A', 'CPTY_B')):
+    """A live book of netting sets, with a survival curve per counterparty and a GBM for the
+    equity - everything a credit Monte Carlo needs and nothing it does not. The hazard rises with
+    each counterparty, so the two sets' numbers are separable rather than coincidentally equal."""
+    factors = dict(FACTORS, **EQUITY)
+    for index, counterparty in enumerate(counterparties):
+        factors['SurvivalProb.' + counterparty] = {
+            'Recovery_Rate': 0.4,
+            'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.2 + 0.3 * index]])}
+    document = job(deals=(), factors=factors, sections={
+        'Price Models': {'GBMAssetPriceModel.EQ': {'Vol': VOL, 'Drift': 0.0}},
+        'Model Configuration': {'.ModelParams': {
+            'modeldefaults': {'EquityPrice': 'GBMAssetPriceModel'}, 'modelfilters': {}}}})
+    document['Calc']['Deals']['Deals']['Children'] = sets
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(document)), indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    return path
+
+
+@pytest.fixture
+def desk_xva(tmp_path, monkeypatch):
+    """Two counterparties, one vanilla each - the smallest book with a mosaic to keep. `DV_HOME`
+    is the declared surface for where a desk's files live, so the projection lands in the gate's
+    own tmp and the gate may read the file the service wrote."""
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    yield xva_book(tmp_path, [
+        netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')]),
+        netting_set('NS_B', 'CPTY_B', [dict(VANILLA, Reference='OPT_B')])])
+    service.BOOK = None
+
+
+def recalc(netting_sets=None):
+    """Ask for a recalc and wait for the one worker to drain every set it queued."""
+    answer = CLIENT.post('/book/xva', content=json.dumps({'netting_sets': netting_sets}),
+                         headers=JSON).json()
+    service.EXECUTOR.queue.join()
+    return answer
+
+
+def xva_rows():
+    return {entry['reference']: entry for entry in CLIENT.get('/book/xva').json()['sets']}
+
+
+def test_the_xva_projection_is_a_mosaic_a_partial_recalc_moves_one_row_of(desk_xva, tmp_path):
+    """The whole XVA lifecycle: never run, recalced, filed, and then partially recalced.
+
+    A CMC is minutes of device time, so this view is a CACHED PROJECTION and every claim below is
+    about the FILE. The sets read `never run` before anything is asked for. A full recalc queues
+    one job per set and each writes its own row - a real `cva`, and the replay tuple that names the
+    run it came from, so a number on the blotter is reproducible from its row alone. The file is
+    what the view reads: `xva.json` on disk carries the same rows, which is what makes the
+    projection survive the service restarting.
+
+    Then the mosaic. A deal is booked into ONE set and only THAT set is recalced: its row moves -
+    a new plan, a new id, a later stamp, a bigger number - and the other set's row is byte for byte
+    the one it already had, `as_of` included. That is the whole design in one assertion: staleness
+    is data, and a partial recalc is a partial WRITE rather than a file rebuilt from whatever
+    happened to be current.
+    """
+    assert {reference: entry['status'] for reference, entry in xva_rows().items()} == {
+        'NS_A': 'never run', 'NS_B': 'never run'}
+
+    queued = recalc()['queued']
+    assert [entry['reference'] for entry in queued] == ['NS_A', 'NS_B']
+    before = xva_rows()
+    for entry in queued:
+        row = before[entry['reference']]
+        assert row['status'] == 'done', row['error']
+        assert row['cva'] > 0.0, 'a CVA of nothing makes every comparison below vacuous'
+        assert row['result_id'] == entry['result_id']
+        assert row['plan_hash'] and row['values_hash'] and row['seed'] == 1
+    assert before['NS_A']['counterparty'] == 'CPTY_A'
+    assert before['NS_A']['collateralized'] is False
+    assert before['NS_B']['cva'] > before['NS_A']['cva'], 'the worse credit must cost more'
+
+    # the projection IS the file - the view is a read of it, not of anything held in memory
+    filed = json.loads((tmp_path / 'xva.json').read_text())['sets']
+    assert {reference: filed[reference]['cva'] for reference in filed} == {
+        reference: before[reference]['cva'] for reference in filed}
+    assert filed['NS_A']['as_of'] == before['NS_A']['as_of']
+
+    # an identical recalc over an unmoved book computes nothing and must AGE nothing: `as_of`
+    # means when the number was computed, and re-aging a standing row inverts staleness-is-data
+    repeat = recalc(None)['queued']
+    assert {entry['result_id'] for entry in repeat} == {
+        row['result_id'] for row in before.values()}
+    unmoved = xva_rows()
+    assert unmoved == before, 'a no-op recalc re-aged the projection'
+
+    booked = CLIENT.post('/book/deals', content=dump(
+        {'action': 'add', 'deal': dict(VANILLA, Reference='OPT_A2', Units=5000.0),
+         'parent_reference': 'NS_A'}), headers=JSON).json()
+    assert booked['written'] is True, booked
+
+    partial = recalc(['NS_A'])['queued']
+    assert [entry['reference'] for entry in partial] == ['NS_A']
+    after = xva_rows()
+    assert after['NS_A']['plan_hash'] != before['NS_A']['plan_hash']
+    assert after['NS_A']['result_id'] == partial[0]['result_id']
+    assert after['NS_A']['cva'] > before['NS_A']['cva'], 'a bigger position must cost more'
+    assert after['NS_A']['as_of'] > before['NS_A']['as_of']
+    assert after['NS_B'] == before['NS_B'], 'a partial recalc touched a row it was not asked for'
+
+
+def test_an_unknown_set_refuses_by_name_and_a_missing_survival_curve_lands_in_the_row(
+        tmp_path, monkeypatch):
+    """The two refusals, and neither of them loses the projection.
+
+    An unknown reference is a 422 that NAMES what was asked for and what the book actually holds,
+    and it queues nothing at all - not even the set that was spelled correctly, because a desk that
+    asked for two and got one would have to diff the answer to find out.
+
+    A counterparty the market data carries no `SurvivalProb` block for is the other kind: the book
+    is authored, the job is real, and it is the ENGINE that has the objection - so the row lands
+    `failed` carrying the engine's own wording, which is what a desk reads to find out why its
+    number is missing. The rest of the file stands: one set failing is one row, not a lost
+    projection.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')]),
+                        netting_set('NS_GHOST', 'GHOST', [dict(VANILLA, Reference='OPT_G')])])
+    try:
+        assert recalc(['NS_A'])['queued'][0]['reference'] == 'NS_A'
+        standing = xva_rows()['NS_A']
+        assert standing['status'] == 'done' and standing['cva'] > 0.0
+
+        refused = CLIENT.post('/book/xva', content=json.dumps(
+            {'netting_sets': ['NS_A', 'NOT_A_SET']}), headers=JSON)
+        assert refused.status_code == 422
+        assert 'NOT_A_SET' in refused.json()['detail']
+        assert 'NS_GHOST' in refused.json()['detail'], 'the refusal names the sets the book holds'
+        assert xva_rows()['NS_A'] == standing, 'a refused recalc queued a set anyway'
+
+        recalc(['NS_GHOST'])
+        rows = xva_rows()
+        assert rows['NS_GHOST']['status'] == 'failed'
+        assert rows['NS_GHOST']['cva'] is None
+        assert 'GHOST' in rows['NS_GHOST']['error']
+        assert rows['NS_A'] == standing, "a failed set took another set's row with it"
+    finally:
+        service.BOOK = None

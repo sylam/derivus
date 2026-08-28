@@ -2,7 +2,8 @@
 // build at /ui in production. No client class - the endpoints are the vocabulary.
 
 import type {
-  BookResponse, DescribeResult, JobDoc, ResultSummary, Schema, TablePage, ValidateResult,
+  BookResponse, BookRisk, BookXva, DescribeResult, JobDoc, ResultSummary, Schema, TablePage,
+  ValidateResult,
 } from './types';
 
 export class ApiError extends Error {
@@ -11,6 +12,19 @@ export class ApiError extends Error {
     super(message);
     this.status = status;
   }
+}
+
+/** A thrown error as the pair a view renders: the status, and the service's OWN wording. A book
+ * verb refusing carries its cause in `detail` (`the book will not price a consolidated risk run:
+ * ...`), and printing the JSON envelope at a reader would put a second author between the engine
+ * and the desk. Anything that is not an `ApiError` - the network being down - reads as itself. */
+export function failure(error: unknown): { status: number | null; error: string } {
+  if (!(error instanceof ApiError)) return { status: null, error: String(error) };
+  try {
+    const detail = (JSON.parse(error.message) as { detail?: unknown }).detail;
+    if (typeof detail === 'string') return { status: error.status, error: detail };
+  } catch { /* not JSON: the body is already the message */ }
+  return { status: error.status, error: error.message || `HTTP ${error.status}` };
 }
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -40,6 +54,11 @@ export const amendDeal = (dealPath: string, fields: Record<string, unknown>) =>
     { action: 'amend', deal_path: dealPath, fields });
 export const patchMarket = (factor: string, fields: Record<string, unknown>) =>
   call<BookDealOutcome>('POST', '/book/market', { patch: { [factor]: fields } });
+// the desk's two data views. Both are GETs: the risk verb runs the book on a cache miss and
+// answers from the cache afterwards, and the XVA verb never runs anything at all - a recalc is
+// asked for through the MCP verbs, and this client does not have that vocabulary on purpose.
+export const getBookRisk = () => call<BookRisk>('GET', '/book/risk');
+export const getBookXva = () => call<BookXva>('GET', '/book/xva');
 export const postDescribe = (doc: JobDoc) => call<DescribeResult>('POST', '/describe', doc);
 export const postValidate = (doc: JobDoc) => call<ValidateResult>('POST', '/validate', doc);
 export const postExecute = (doc: JobDoc) =>

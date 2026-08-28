@@ -41,8 +41,21 @@ repo — and `DV_MCP` takes the path out of the command altogether.
 | `book_quote` | `POST /book/quote` — approve a quote by id and book its mirror, refused exactly as a booking is |
 | `update_market_quotes` / `patch_market_values` | `POST /book/market` — quote blocks in (values-only updates, bootstrap judging the write), spot/vol values patched |
 | `tick_market_from_bloomberg` | `POST /book/bloomberg` — today's surfaces off this workstation's terminal; provisions the desk on first use, reporting progress while it waits |
+| `book_risk_summary` | `GET /book/risk` — the whole book's mark and its biggest gradient rows, counterparty-blind |
+| `xva_view` / `recalc_xva` | `GET`/`POST /book/xva` — the cached XVA projection per netting set, and the only thing that moves it |
 | `validate_book` / `describe_book` | the read verbs over the live document |
 | `poll_result` / `fetch_table` / `deal_values` | results: status, one paged table, `{reference: value}` |
+
+**The blotter's two data views, said out loud in the docstrings.** `book_risk_summary` and
+`xva_view` answer two different questions and a model has to know which is which. Risk is
+**whole-book and counterparty-blind** — one base valuation with first-order Greeks over everything
+the desk holds, cached service-side on the book's own content, so asking again after nothing moved
+costs nothing and a booking or a tick moves it. XVA is **per netting set and a cached projection**:
+a credit Monte Carlo takes minutes, so it never rides a tick, `xva_view` reads the last run of each
+set off `DV_HOME/xva.json` with each row carrying its own `as_of`, and `recalc_xva` — full, or the
+sets it names — is the only thing that moves them. Staleness there is data, not a failure, and the
+tool docstrings say so, which is what stops a model treating a three-hour-old CVA as live or
+paying for a whole book's Monte Carlo to answer "what's my delta".
 
 ## The contracts that matter
 

@@ -288,6 +288,79 @@ table.blotter tr.detail td { background: var(--bg); padding: 12px 16px; white-sp
 
 table.blotter tr.detail:hover td { background: var(--bg); }
 
+/* ---- the desk's two data views: risk and xva ---- */
+
+/* a standing statement about the screen itself - never a warning, so never the banner's tone */
+.note {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border-radius: 8px; padding: 9px 14px; margin-bottom: 14px;
+  font-size: 12.5px; line-height: 1.5;
+}
+
+.note b { color: var(--text); font-weight: 600; }
+
+.note code {
+  font-family: var(--mono); font-size: 12px; color: var(--accent);
+}
+
+table.desk { background: var(--surface); }
+
+table.desk th.n { text-align: right; }
+
+table.desk th.sort { cursor: pointer; user-select: none; }
+
+table.desk th.sort:hover { color: var(--text); }
+
+table.desk th .arrow { display: inline-block; width: 10px; font-size: 8px; margin-left: 4px; }
+
+table.desk td.n.neg { color: var(--bad); }
+
+table.desk td.tenor, table.desk td.path {
+  color: var(--text-muted); font-family: var(--mono); font-size: 12px;
+}
+
+table.desk .family { color: var(--text-muted); }
+
+table.desk tr.pick { cursor: pointer; }
+
+table.desk tr.selected td { background: var(--accent-soft); }
+
+table.desk tr.muted td { color: var(--text-muted); }
+
+table.desk tr.total td {
+  background: var(--surface-2); font-weight: 650; border-bottom: none;
+}
+
+table.desk td.age.fresh { color: var(--good); }
+
+table.desk td.age.stale { color: var(--warn); }
+
+/* no age at all - a set that has never run is not old, it is absent */
+table.desk td.age.none { color: var(--text-muted); }
+
+table.desk .badge {
+  margin-left: 6px; font-size: 10.5px; padding: 0 6px; border-radius: 999px;
+  background: var(--surface-2); color: var(--text-muted);
+}
+
+table.desk td.opener { text-align: right; color: var(--text-muted); width: 28px; }
+
+table.desk td.opener span { cursor: pointer; padding: 0 4px; }
+
+table.desk tr.detail td { background: var(--bg); padding: 12px 16px; white-space: normal; }
+
+table.desk tr.detail:hover td { background: var(--bg); }
+
+.chip.on { background: var(--accent-soft); color: var(--accent); }
+
+.stat .value.neg { color: var(--bad); }
+
+.stat .value .unit {
+  margin-left: 5px; font: 400 11.5px var(--sans); color: var(--text-muted);
+}
+
 /* ---- json fallback ---- */
 
 pre.json {

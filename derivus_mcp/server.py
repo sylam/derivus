@@ -22,6 +22,14 @@ tuple, its stats and each table's SHAPE; cells come one capped page at a time th
 `fetch_table`, a table too wide to read as text is refused by name (that is what the web UI is
 for), and `deal_values` checks a result's shape before it fetches anything.
 
+THE BLOTTER'S TWO DATA VIEWS are `book_risk_summary` and `xva_view`, and they answer two different
+questions on purpose. RISK is whole-book and COUNTERPARTY-BLIND: one base valuation with first-order
+Greeks over everything the desk holds, cached on the book's own content, so it refreshes with the
+book and costs nothing to ask again. XVA is PER NETTING SET and a CACHED PROJECTION: a credit Monte
+Carlo takes minutes, so it never rides a tick - `xva_view` reads the last run of each set off the
+desk's own file, each row carrying its own `as_of`, and `recalc_xva` is the only thing that moves
+them. Staleness there is data rather than a failure.
+
 A structure is DECLARED, never composed here: `describe_structure` reads the desk's own
 vocabulary - the sales names, the legs, the recipe - off that same `/schema`, `solve_structure`
 runs the recipe server-side and files the pending trade under its quote id, and `book_quote` is the
@@ -91,6 +99,11 @@ def service():
 #: table wider than this is a scenario cube the model should never hold as text.
 MAX_PAGE_ROWS = 200
 MAX_TABLE_COLUMNS = 60
+
+#: How many gradient rows a risk summary carries: the biggest by absolute size, which is what a
+#: trading read of a book is - the exposures worth saying out loud. The whole vector belongs in the
+#: blotter, and `execute_book({"Greeks": "First"})` plus `fetch_table` serves anyone who wants it.
+MAX_GREEK_ROWS = 15
 
 
 def _raw_result(result_id):
@@ -629,6 +642,84 @@ def describe_book() -> dict:
     factor universe (resolved and missing), the calculation as loaded, and a crude cost read."""
     live = service().call('GET', '/book')
     return service().call('POST', '/describe', json=live['document'])
+
+
+@MCP.tool(annotations=READ_ONLY)
+def book_risk_summary() -> dict:
+    """The desk's CONSOLIDATED risk: what the whole book is worth and what it is exposed to, in
+    one read - the question after every booking and every tick.
+
+    COUNTERPARTIES DO NOT MATTER HERE. This is one base valuation with first-order Greeks over the
+    book as it stands, aggregated across everything the desk holds, so there is nothing to slice by
+    counterparty and no netting set enters it. The per-counterparty number is XVA, which is a
+    different calculation for a different reason - see `xva_view`.
+
+    Answers the mark (`mtm` in the book's report currency), `as_of`, the `etag` the service cached
+    it under, how many deals it covers, and the LARGEST gradient rows by absolute size - `factor`
+    (the price factor), `tenor` (its coordinates, absent for a spot) and `value` (the derivative in
+    report currency per unit of that factor). Never the whole per-deal table: `deal_values` on an
+    `execute_book` run serves that, and the web blotter renders the lot.
+
+    Cheap and cached on the book's own content, so asking again after nothing moved costs nothing;
+    a booking or a market tick moves the etag and the numbers follow.
+    """
+    risk = service().call('GET', '/book/risk')
+    greeks = sorted(risk['greeks'], key=lambda row: -abs(row['value']))
+    return {'as_of': risk['as_of'], 'etag': risk['etag'], 'currency': risk['currency'],
+            'mtm': risk['mtm'], 'deals': len(risk['per_deal']),
+            'greeks': greeks[:MAX_GREEK_ROWS], 'greek_rows': len(greeks),
+            'hint': 'the per-deal values are behind execute_book + deal_values; XVA is xva_view'}
+
+
+@MCP.tool(annotations=READ_ONLY)
+def xva_view() -> dict:
+    """The XVA projection: one row per netting set, as the LAST recalculation left it.
+
+    A CACHED PROJECTION, not a live number, and deliberately so - a credit Monte Carlo takes
+    minutes, so it never rides a market tick. Every row carries its own `as_of`, and rows are as
+    old as their last recalc: STALENESS IS DATA here, not a failure. `recalc_xva` is what moves
+    them.
+
+    Netting sets are the instruments. Each row says what the book holds now (`reference`,
+    `deal_path`, `counterparty`, `collateralized`) over what the last run said (`cva`, `as_of`,
+    `status` and the replay tuple - `result_id`, `plan_hash`, `values_hash`, `seed`). `status` is
+    `done`, `failed` (with the engine's own wording in `error` - a counterparty with no survival
+    curve lands here) or `never run`. A set the book no longer holds is still reported, with a
+    `note` saying so and no `deal_path`; a recalc still in flight rides under `recalc`.
+    """
+    return service().call('GET', '/book/xva')
+
+
+@MCP.tool()
+def recalc_xva(netting_sets: list | None = None, wait_seconds: float = 600.0) -> dict:
+    """Recalculate the XVA projection - every netting set, or only the ones named.
+
+    THIS IS THE EXPENSIVE ONE. Each set is a credit Monte Carlo over that set's own subtree of the
+    book, minutes of device time apiece, which is exactly why the blotter reads a cached projection
+    instead of running one per tick. Ask for it when the market or the book has genuinely moved, or
+    when a desk wants today's number - and prefer naming the sets you care about
+    (`netting_sets=["NS_ACME"]`) over recalculating everything.
+
+    One job is queued PER SET, at the heavy cost class, so quotes and valuations keep jumping the
+    queue and the projection fills in row by row - a partial recalc writes only the rows it names
+    and leaves every other row's `as_of` exactly where it was. A reference that names no netting
+    set refuses BY NAME and queues nothing at all, so a typo never half-runs a book.
+
+    Waits up to `wait_seconds` for the LAST set queued and answers pointers - the queued
+    `{reference, result_id}` pairs and where that last run got to. Read the numbers with `xva_view`
+    once it is done; `poll_result` follows any one set.
+    """
+    submitted = service().call('POST', '/book/xva', json={'netting_sets': netting_sets})
+    queued = submitted['queued']
+    if not queued:
+        return dict(submitted, hint='the book carries no netting sets - there is no XVA to run')
+    # freshly queued sets drain in order through one worker, so the last settling usually means
+    # every one has - but a set the store already held answers 'done' at once, so the honest
+    # reading of progress is xva_view's per-row status, and the hint says so
+    last = _await_result(queued[-1]['result_id'], wait_seconds)
+    return {'queued': queued, 'last': last,
+            'hint': 'xva_view reads the rows and each row carries its own status; poll_result '
+                    'follows any one set by its result_id'}
 
 
 @MCP.tool(annotations=READ_ONLY)

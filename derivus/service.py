@@ -39,6 +39,18 @@ the verbs cannot answer is a missing verb on `Context`, not an endpoint that rea
 | `POST /book/bloomberg` | provision the security map, fetch the desk's FX vol surfaces off the terminal and tick the book |
 | `POST /book/structure` | quote a named structure against the book - legs solved, the pending trade filed under its quote id |
 | `POST /book/quote` | book a quote already given - the approval half, refused exactly as a booking is |
+| `GET /book/risk` | the book's CONSOLIDATED risk - one greeks run over every counterparty at once, cached on what it reads |
+| `POST /book/xva` | recalculate the XVA projection - one queued CMC per netting set, every set or the named ones |
+| `GET /book/xva` | the XVA projection as it stands - the last run per netting set, joined with the book's own set list |
+
+THE BLOTTER'S TWO DATA VIEWS are `/book/risk` and `/book/xva`, and they are deliberately not the
+same kind of thing. Risk is WHOLE-BOOK and counterparty-blind: one base valuation with `Greeks:
+'First'` over the book as it stands, answered inline and cached on the content of everything the
+run reads, so it refreshes with the book. XVA is PER NETTING SET and a CACHED PROJECTION: a credit
+Monte Carlo is minutes of device time and must never ride a tick, so `DV_HOME/xva.json` holds the
+last run of each set and a desk asks for a recalc - all the sets, or the ones it names - when it
+wants the file to move. The projection is a MOSAIC: each row carries its own `as_of`, a partial
+recalc moves only the rows it names, and staleness is data rather than a failure.
 
 Every POST body is either a job document or `{"plan_id": ...}` naming one already prepared, and
 nothing downstream can tell the two apart: the plan cache holds a pristine parse and every read of
@@ -78,7 +90,7 @@ from . import Context, content_hash, solve_deal_field
 from .schema import mapping
 from ._version import __version__
 from .config import (CustomJsonEncoder, deal_at, remove_deal, sniff_indent, splice_deal,
-                     update_market_quote)
+                     update_market_quote, walk_job_deals)
 
 LOG = logging.getLogger(__name__)
 
@@ -655,6 +667,435 @@ def book_price(request: dict):
             'status': EXECUTOR.submit(submitted, cost(calculation)['class'])}
 
 
+#: The blotter's consolidated risk by the content of everything the run reads, bounded - the
+#: `structures.RISK_CACHE` discipline, over the whole-book gradient rather than the vol block. A
+#: blotter polls this on the same beat it polls the book, so a standing book pays for ONE greeks
+#: run and every later poll is a dict lookup; bounded because a book that ticks every 30s would
+#: otherwise leak a vector per tick, and a superseded etag is never asked for again.
+BOOK_RISK_CACHE = OrderedDict()
+BOOK_RISK_LIMIT = 8
+
+
+def as_of():
+    """When a projection or a risk vector was computed, as one ISO stamp - what a blotter shows
+    beside a number to say how old it is.
+
+    Milliseconds, not seconds: two recalcs of one set can land inside the same second, and a
+    stamp that cannot tell them apart cannot be the ordering key a mosaic of rows is read by.
+    """
+    import datetime
+
+    return datetime.datetime.now().isoformat(timespec='milliseconds')
+
+
+def risk_etag(document):
+    """What a consolidated risk run READS, hashed - the cache key, and the etag the answer carries.
+
+    The whole `Deals` section, the whole `MergeMarketData` (a `MarketDataFile` path is market data
+    too) and the `Calculation` block. Anything less serves yesterday's vector: a rolled `Base_Date`
+    or a changed report currency over an unmoved deal tree is a different risk, and a patched spot
+    lives inside the market section rather than beside it.
+    """
+    return content_hash({'deals': document['Calc']['Deals'],
+                         'market': document['Calc']['MergeMarketData'],
+                         'calculation': document['Calc']['Calculation']})
+
+
+def top_level_paths(document):
+    """`{Reference: deal_path}` for the book's TOP-LEVEL deals - the trades a blotter shows a row
+    each for. A reference that is not unique maps to None rather than to one of the nodes it could
+    name, because the positional path is the identity and guessing it mis-labels a row."""
+    found = {}
+    for position, node in enumerate(document['Calc']['Deals']['Deals']['Children']):
+        reference = node['Instrument']['.Deal'].get('Reference')
+        found[reference] = None if reference in found else str(position)
+    return found
+
+
+def greek_rows(frame):
+    """The gradient frame flattened, AGGREGATED across the whole book - which is the point.
+
+    `Greeks_First` is indexed by `(Rate, Tenor, Tenor2, Tenor3)` and carries one column per
+    reporting node plus a `Value` column holding the FACTOR's own level, so the consolidated risk
+    is the sum across every column but that one.
+
+    The index is padded to three coordinates whatever the factor's real depth, and the depth is
+    read back PER FACTOR rather than per row: a curve's front point is a tenor of 0.0 and would
+    otherwise trim to nothing and read as a spot. So a factor whose every row is all zeros carries
+    no `tenor` key at all (a spot, one number), and a factor with any non-zero coordinate carries
+    the tenor list - the same length on every one of its rows - out to its own last used one.
+    """
+    table = as_json(frame)['.DataFrame']
+    columns = [position for position, name in enumerate(table['columns']) if name != 'Value']
+    depth = {}
+    for index in table['index']:
+        used = [position for position, value in enumerate(index[1:], 1) if value]
+        depth[index[0]] = max(depth.get(index[0], 0), used[-1] if used else 0)
+    rows = []
+    for index, data in zip(table['index'], table['data']):
+        row = {'factor': str(index[0])}
+        if depth[index[0]]:
+            row['tenor'] = list(index[1:1 + depth[index[0]]])
+        row['value'] = float(sum(data[position] or 0.0 for position in columns))
+        rows.append(row)
+    return rows
+
+
+def consolidated_risk(document):
+    """The consolidated view's whole computation: ONE base valuation with `Greeks: 'First'` over
+    the book as it stands, in its own Context.
+
+    One run, because the gradient is taken off the ROOT netting set - a leaf's contribution is
+    already the whole book's - and because the `mtm` frame's per-deal rows ride free in the same
+    forward pass. Counterparties do not enter here at all; that is what makes this the CONSOLIDATED
+    view and `/book/xva` the per-set one.
+
+    `per_deal` is the frame's TOP-LEVEL rows, one per trade, so `mtm` is exactly their sum: a
+    structure's legs and a netting set's members are inside the row their container reports, and
+    adding them again would double the book. An empty book has no value to differentiate and never
+    reaches a run.
+    """
+    run = deepcopy(document)
+    run['Calc']['Calculation'] = dict(run['Calc']['Calculation'],
+                                      Object='BaseValuation', Greeks='First')
+    answer = {'as_of': as_of(), 'currency': run['Calc']['Calculation'].get('Currency'),
+              'mtm': 0.0, 'per_deal': [], 'greeks': []}
+    if not run['Calc']['Deals']['Deals'].get('Children'):
+        return answer
+
+    _, out = load(run).run_job()
+    table = as_json(out['Results']['mtm'])['.DataFrame']
+    column = {name: position for position, name in enumerate(table['columns'])}
+    paths = top_level_paths(document)
+    # row 0 is the grand-total row the reporter inserts; every row naming IT as its parent is a
+    # top-level deal, and anything deeper is a leg inside one of them
+    root = table['data'][0][column['Reference']] if table['data'] else None
+    for row in table['data'][1:]:
+        if column.get('Parent') is None or row[column['Parent']] != root:
+            continue
+        reference = row[column['Reference']]
+        value = float(row[column['Value']] or 0.0)
+        answer['per_deal'].append({'reference': reference, 'deal_path': paths.get(reference),
+                                   'value': value})
+        answer['mtm'] += value
+    gradient = out['Results'].get('Greeks_First')
+    answer['greeks'] = [] if gradient is None else greek_rows(gradient)
+    return answer
+
+
+@app.get('/book/risk', summary="The book's consolidated risk - every counterparty at once")
+def book_risk():
+    """The consolidated view's feed: the book's mark and its whole-book gradient, in one answer.
+
+    COUNTERPARTIES DO NOT MATTER HERE. This is the desk's risk across everything it holds, so the
+    greeks are aggregated over the entire book and there is nothing to slice by - the per-set
+    reading is `/book/xva`, and it is a different kind of number for a different reason.
+
+    Computed on a MISS and cached under `etag`, which is a hash of everything the run reads. A
+    blotter therefore polls this on the same beat it polls `/book`: a standing book answers from
+    the cache, and a booking or a market tick moves the etag and the numbers follow in one place.
+    An empty book answers zeros without running anything. A book that will not price answers 422
+    naming the cause - never a half-filled shape, and nothing is cached, so fixing the book and
+    asking again works.
+
+    `mtm` is the sum of `per_deal`, which is one row per TOP-LEVEL trade (`reference`, its
+    positional `deal_path`, its value); `greeks` is `{factor, tenor?, value}` flattened off the
+    gradient frame, the tenor coordinates trimmed at the last non-zero one.
+    """
+    document, _ = live_book().read()
+    etag = risk_etag(document)
+    if etag not in BOOK_RISK_CACHE:
+        try:
+            answer = consolidated_risk(document)
+        except Exception as error:
+            raise HTTPException(422, 'the book will not price a consolidated risk run: {}'.format(
+                error))
+        if len(BOOK_RISK_CACHE) >= BOOK_RISK_LIMIT:
+            BOOK_RISK_CACHE.popitem(last=False)
+        BOOK_RISK_CACHE[etag] = answer
+    BOOK_RISK_CACHE.move_to_end(etag)
+    return dict(BOOK_RISK_CACHE[etag], etag=etag)
+
+
+#: The desk PROJECTION's own file, beside the book in `DV_HOME`. A file rather than memory because
+#: it is a desk file like the book: the blotter's XVA view is a READ of it, and it has to survive
+#: the service restarting without the desk paying for a whole recalc to see its own numbers again.
+XVA_FILE = 'xva.json'
+XVA_LOCK = threading.Lock()
+
+#: What a recalc runs at when the book's `Calculation` block states nothing of its own. THIS IS A
+#: DESK PROJECTION, NOT A REGULATORY NUMBER: a trader reads a trend and a relative size off it, so
+#: it is sized to answer while the desk waits rather than to a basis point. One batch of 1024 paths
+#: is the smallest count whose exposure profile is not visibly noisy; a book that means something
+#: larger says so in its own Calculation block and is never overridden.
+XVA_BATCH_SIZE = 1024
+XVA_SIMULATION_BATCHES = 1
+
+#: The CVA block a recalc switches on, in the shape the engine's own CVA fixtures configure it.
+#: `Calculate` and `Counterparty` are decided per set; the rest is what a desk PROJECTION wants -
+#: deterministic deflation and hazard rates, because a blotter reads a level and a wrong-way term
+#: would cost paths it does not have, and no gradient, because nothing on the blotter reads a CVA
+#: sensitivity. The whole container is spelled out rather than half of it: the engine reads these
+#: keys by name off the block as given, so a partial one is a KeyError inside the run.
+XVA_CVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '',
+                 'Deflate_Stochastically': 'No', 'Stochastic_Hazard_Rates': 'No',
+                 'Gradient': 'No'}
+
+#: The recalc in flight per netting set, as the POST filed it: `{Reference: result_id}`. The row in
+#: `xva.json` names the run that PRODUCED it, which is never the one still running, so the view
+#: reads the pending id here and reads where it got to off the executor's own store. Never cleaned:
+#: a settled id simply stops reading `queued`/`running`, which is exactly what the view wants.
+XVA_PENDING = {}
+
+
+def xva_path():
+    return os.path.join(dv_home(), XVA_FILE)
+
+
+def read_projection():
+    """The projection as it stands on disk - `{'sets': {Reference: row}}`, empty where no recalc
+    has ever run. A fresh parse every time, because the worker thread writes this file and the
+    request thread reads it; a file that is there but not JSON refuses BY NAME rather than
+    answering an empty projection, since "no XVA at all" and "the file is broken" are different
+    facts and a desk must not read the second as the first."""
+    try:
+        with open(xva_path(), encoding='utf-8') as handle:
+            return json.load(handle)
+    except FileNotFoundError:
+        return {'sets': {}}
+    except ValueError as error:
+        raise HTTPException(422, '{} is not readable as an XVA projection: {}'.format(
+            xva_path(), error))
+
+
+def write_row(reference, row):
+    """One set's row into the projection, atomically - the book writer's discipline, under one
+    lock: read, replace that row, write a temp, `os.replace`.
+
+    A MOSAIC on purpose. Only the named row moves, every other row keeps the `as_of` of the run
+    that produced it, and a partial recalc is therefore a partial WRITE rather than a whole file
+    rebuilt from whatever happened to be current. The lock is what lets the queue drain set after
+    set without one row's write losing another's.
+    """
+    with XVA_LOCK:
+        projection = read_projection()
+        projection.setdefault('sets', {})[reference] = row
+        text = json.dumps(projection, indent=2)
+        os.makedirs(dv_home(), exist_ok=True)
+        temporary = xva_path() + '.tmp'
+        with open(temporary, 'w', encoding='utf-8', newline='') as handle:
+            handle.write(text)
+        os.replace(temporary, xva_path())
+    return row
+
+
+def netting_sets(document):
+    """`[(deal_path, node)]` for every `NettingCollateralSet` the book carries, in book order -
+    the XVA view's instruments. A set nested inside another container is still a set, so the whole
+    tree is walked rather than the top level."""
+    return [(deal_path, node)
+            for deal_path, node in walk_job_deals(document['Calc']['Deals']['Deals']['Children'])
+            if node['Instrument']['.Deal'].get('Object') == 'NettingCollateralSet']
+
+
+def set_terms(deal):
+    """`(counterparty, collateralized)` off a netting set's own CSA fields.
+
+    `Credit_Support_Amounts.Counterparty` is the one the engine reads too - it is declared as the
+    `SurvivalProb` factor the CVA discounts by - so the recalc and the row cannot name two
+    different counterparties. `Collateralized` is declared as 'True'/'False' TEXT and a JSON string
+    "False" is truthy in every browser that reads it, so the row carries the READING rather than
+    the spelling.
+    """
+    support = deal.get('Credit_Support_Amounts') or {}
+    return (support.get('Counterparty') or '',
+            str(deal.get('Collateralized', 'False')).lower() == 'true')
+
+
+def xva_document(document, node, counterparty):
+    """A `Credit_Monte_Carlo` job over the book carrying ONE netting set's subtree.
+
+    The book's market data, calendars, bootstrappers and report currency travel WHOLE - the CVA
+    reads the counterparty's `SurvivalProb` block off them - and exactly three things are decided
+    here: the deal tree becomes that set alone, the calculation becomes a CMC, and the CVA block is
+    switched on against the counterparty the SET names.
+
+    The synthesized fields are a FLOOR, not a policy: `setdefault` leaves a book that states its
+    own path count, batching or deflation curve entirely alone. `Deflation_Interest_Rate` is
+    synthesized at all because the declaration's default names a ZAR curve, which a book need not
+    carry - the report currency's own curve is the one deflation a book that priced at all has.
+    """
+    run = deepcopy(document)
+    run['Calc']['Deals']['Deals']['Children'] = [node]
+    calculation = dict(run['Calc']['Calculation'], Object='CreditMonteCarlo')
+    calculation.setdefault('Batch_Size', XVA_BATCH_SIZE)
+    calculation.setdefault('Simulation_Batches', XVA_SIMULATION_BATCHES)
+    calculation.setdefault('Deflation_Interest_Rate', calculation.get('Currency'))
+    block = dict(XVA_CVA_BLOCK, **(calculation.get('Credit_Valuation_Adjustment') or {}))
+    block.update(Calculate='Yes', Counterparty=counterparty)
+    calculation['Credit_Valuation_Adjustment'] = block
+    run['Calc']['Calculation'] = calculation
+    return run
+
+
+class XvaJob:
+    """One netting set's CVA as ONE unit of queued work, and the projection row it lands as.
+
+    PER-SET GRANULARITY IS THE POINT. A whole-book recalc queues one of these per set rather than
+    one run over the lot, so the queue DRAINS between sets: a quote or a base valuation submitted
+    mid-recalc jumps every set still waiting (`COST_CLASS` puts a CMC at `HEAVY` and a
+    `BaseValuation` in front of it), the desk keeps working, and the projection fills in row by
+    row instead of all at once at the end.
+
+    The row is written on completion EITHER WAY. A run that fails - the commonest cause being a
+    counterparty the market data carries no `SurvivalProb` block for - lands `status: 'failed'`
+    carrying the engine's own wording, because a desk reads why a number is missing off the same
+    file the numbers are in. The error still travels on to the result store as an error, so
+    `/results/{result_id}` is never told a failed run succeeded.
+    """
+
+    def __init__(self, context, reference, terms, result_id, stamp):
+        self.context, self.reference = context, reference
+        self.counterparty, self.collateralized = terms
+        self.result_id, self.stamp = result_id, stamp
+
+    def row(self, **fields):
+        """The set's row: who it is against, what was run, and what came back - the replay tuple
+        included, so a number on the blotter can be reproduced from the row alone."""
+        return dict({'counterparty': self.counterparty, 'collateralized': self.collateralized,
+                     'result_id': self.result_id, 'plan_hash': self.stamp['plan_hash'],
+                     'values_hash': self.stamp['values_hash'], 'seed': self.stamp['seed'],
+                     'as_of': as_of()}, **fields)
+
+    def landed(self, result):
+        """The row a run the store ALREADY holds lands as.
+
+        Content addressing makes an identical recalc one execution, so a set whose numbers are
+        already filed is written up from them rather than paid for a second time - which is also
+        what keeps a projection whose file was lost (a fresh `DV_HOME`, a deleted row) one request
+        away from being whole again instead of one CMC away.
+        """
+        if result['status'] != 'done':
+            return self.row(cva=None, status='failed', error=result.get('error'))
+        return self.row(cva=float(result['tables']['cva']), status='done')
+
+    def run_job(self):
+        try:
+            _, out = self.context.run_job()
+            cva = float(out['Results']['cva'])
+        except Exception as error:
+            write_row(self.reference, self.row(cva=None, status='failed', error=str(error)))
+            raise
+        write_row(self.reference, self.row(cva=cva, status='done'))
+        return None, out
+
+
+@app.post('/book/xva', summary='Recalculate the XVA projection - every netting set, or the named ones')
+def book_xva(request: dict):
+    """`{netting_sets: [Reference] | null}` - null is every `NettingCollateralSet` in the book.
+
+    THE PROJECTION IS NOT REFRESHED ON THE TICK. A credit Monte Carlo is minutes of device time,
+    so `xva.json` moves only when a desk asks it to, and this is the asking. One job is queued PER
+    SET, at the CMC's own cost class, and each writes its own row on completion - so a partial
+    recalc moves the rows it names and nothing else, and the desk's quotes and valuations keep
+    jumping the queue while the sets drain.
+
+    Each job composes a `Credit_Monte_Carlo` over the book carrying THAT set's subtree, with
+    `Credit_Valuation_Adjustment.Calculate` on and the counterparty read off the set's own
+    `Credit_Support_Amounts`. A reference that names no netting set refuses BY NAME and queues
+    nothing at all - not even the sets that were spelled correctly, because a desk that asked for
+    three and got two would have to diff the answer to find out.
+
+    Answers `{queued: [{reference, result_id}]}`. Content addressing applies as it does everywhere
+    else: the same set over an unmoved book is one run, and asking twice hands back the id of the
+    first - the projection already holds the number that job produced.
+    """
+    document, _ = live_book().read()
+    found = {node['Instrument']['.Deal'].get('Reference'): node
+             for _, node in netting_sets(document)}
+    named = request.get('netting_sets')
+    references = sorted(found) if named is None else list(named)
+    unknown = [reference for reference in references if reference not in found]
+    if unknown:
+        raise HTTPException(422, 'the book carries no NettingCollateralSet called {} - its sets '
+                                 'are {}'.format(', '.join(map(repr, sorted(set(unknown)))),
+                                                 ', '.join(sorted(found)) or 'none'))
+
+    queued = []
+    for reference in references:
+        node = found[reference]
+        terms = set_terms(node['Instrument']['.Deal'])
+        context = load(xva_document(document, node, terms[0]))
+        stamp = replay(context)
+        result_id = content_hash(stamp)
+        run = XvaJob(context, reference, terms, result_id, stamp)
+        status = EXECUTOR.submit(Job(result_id, run, stamp), HEAVY)
+        XVA_PENDING[reference] = result_id
+        # a job still queued or running writes its own row when it lands; one that has ALREADY run
+        # writes it here ONLY where the row is missing or names a different run - recovering a
+        # lost projection, never re-aging a standing one: `as_of` means when the number was
+        # COMPUTED, and an identical recalc over an unmoved book computed nothing
+        if status not in ('queued', 'running'):
+            standing = read_projection()['sets'].get(reference)
+            if standing is None or standing.get('result_id') != result_id:
+                write_row(reference, run.landed(EXECUTOR.result(result_id)))
+        queued.append({'reference': reference, 'result_id': result_id})
+    return {'queued': queued}
+
+
+def projection_entry(row, **book):
+    """One row of the XVA view: what the BOOK says the set is now, over what the last RUN said
+    about it. Every field is always present - a never-run set reads `status: 'never run'` with
+    nulls beside it - so a blotter renders one table rather than branching per row."""
+    row = row or {}
+    entry = dict({'reference': None, 'deal_path': None, 'counterparty': row.get('counterparty'),
+                  'collateralized': row.get('collateralized'), 'note': None}, **book)
+    entry.update(status=row.get('status', 'never run'), cva=row.get('cva'),
+                 as_of=row.get('as_of'), result_id=row.get('result_id'),
+                 plan_hash=row.get('plan_hash'), values_hash=row.get('values_hash'),
+                 seed=row.get('seed'), error=row.get('error'), recalc=None)
+    pending = XVA_PENDING.get(entry['reference'])
+    outcome = EXECUTOR.result(pending) if pending is not None else None
+    if outcome is not None and outcome['status'] in ('queued', 'running'):
+        entry['recalc'] = {'result_id': pending, 'status': outcome['status']}
+    return entry
+
+
+@app.get('/book/xva', summary='The XVA projection - the last run per netting set, as it stands')
+def book_xva_view():
+    """The projection, joined with the book's own set list - the blotter's second data view, and a
+    READ: nothing here runs, and the numbers are as old as their rows say they are.
+
+    Netting sets are the instruments. Each entry carries what the book says the set is NOW
+    (`reference`, `deal_path`, `counterparty`, `collateralized`) over what the last run said about
+    it (`cva`, `as_of`, `status` and the replay tuple - `result_id`, `plan_hash`, `values_hash`,
+    `seed`). A set the book carries with no row yet reads `status: 'never run'`; a ROW whose set has
+    since left the book is reported with a `deal_path` of null and a `note` saying so, rather than
+    silently dropped, because a number that was on the blotter yesterday disappearing without a
+    word is how a desk loses track of a position. A recalc still queued or running rides under
+    `recalc`, read off the executor's own store.
+
+    STALENESS IS DATA. The rows carry different `as_of` stamps on purpose - that is what a partial
+    recalc means - so the view never blocks, never runs a CMC, and never hides how old a number is.
+    """
+    document, _ = live_book().read()
+    rows = read_projection().get('sets') or {}
+    entries, seen = [], set()
+    for deal_path, node in netting_sets(document):
+        deal = node['Instrument']['.Deal']
+        reference = deal.get('Reference')
+        counterparty, collateralized = set_terms(deal)
+        seen.add(reference)
+        entries.append(projection_entry(
+            rows.get(reference), reference=reference, deal_path=deal_path,
+            counterparty=counterparty, collateralized=collateralized))
+    for reference in sorted(set(rows) - seen):
+        entries.append(projection_entry(rows[reference], reference=reference, note=(
+            'no NettingCollateralSet called {!r} is in the book any more - this row is the last '
+            'run of a set that has since left it'.format(reference))))
+    return {'as_of': as_of(), 'path': xva_path(), 'sets': entries}
+
+
 class CapturedErrors(logging.Handler):
     """What the bootstrap has to say for itself: `Config.bootstrap` reports a family that could
     not run or wrote nothing at ERROR and carries on, so a market update captures that channel
@@ -843,7 +1284,10 @@ def submit_bloomberg(scope, routine=False):
     # clock names it: two ticks against an unmoved book are two trips, never one coalesced result
     result_id = content_hash({'book': etag, 'bloomberg': scope, 'at': time.perf_counter()})
     submitted = Job(result_id, BloombergJob(live, scope, result_id, routine), {})
-    return {'result_id': result_id, 'status': EXECUTOR.submit(submitted, HEAVY)}
+    # a tick is a fetch and a bootstrap, seconds of work - light, or the book stops ticking for
+    # the length of a whole-book recalc and then drains a burst of stale beats
+    return {'result_id': result_id,
+            'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
 
 
 @app.post('/book/bloomberg', summary="Fetch the desk's FX vol surfaces off Bloomberg and tick the book")
@@ -1022,7 +1466,9 @@ def book_solve(request: dict):
     submitted = Job(content_hash({'book': etag, 'solve': solve, 'deal': request['deal'],
                                   'calculation': document['Calc']['Calculation']}),
                     SolveJob(document, deal_path, solve), {})
-    return {'result_id': submitted.result_id, 'status': EXECUTOR.submit(submitted, HEAVY)}
+    # a solve is base valuations under the hood - light, so it jumps a draining recalc
+    return {'result_id': submitted.result_id,
+            'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
 
 
 def dv_home():
@@ -1248,7 +1694,10 @@ def book_structure(request: dict):
     result_id = content_hash({'book': etag, 'structure': structure, 'params': params,
                               'at': time.perf_counter()})
     submitted = Job(result_id, StructureJob(document, structure, params), {})
-    return {'result_id': result_id, 'status': EXECUTOR.submit(submitted, HEAVY)}
+    # a quote is base valuations under the hood - light, so a salesperson's ask jumps every
+    # XVA set still waiting rather than draining behind a whole-book recalc
+    return {'result_id': result_id,
+            'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
 
 
 @app.post('/book/quote', summary='Book a quote already given - the approval half of a structure')

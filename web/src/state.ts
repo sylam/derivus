@@ -4,7 +4,7 @@
 
 import { createContext, useContext, type Dispatch } from 'react';
 import type {
-  DescribeResult, JobDoc, ResultSummary, Schema, TablePage, ValidateResult,
+  BookRisk, BookXva, DescribeResult, JobDoc, ResultSummary, Schema, TablePage, ValidateResult,
 } from './types';
 
 export type Source =
@@ -22,6 +22,21 @@ export type RunState = {
   startedAt: number | null;
 };
 
+/** One fetched desk view: the answer, the failure that stands in its place, and whether a fetch
+ * is in flight. A failure keeps its STATUS, because the three a book verb gives - 404 no book,
+ * 422 a named cause, anything else - are three different screens. */
+export type Fetched<T> = {
+  data: T | null;
+  error: string | null;
+  status: number | null;
+  loading: boolean;
+};
+
+/** The consolidated risk, plus the BOOK etag it was fetched at. That second etag is what makes
+ * "the risk on screen is behind the book" answerable: the risk's own `etag` is a hash of a
+ * different thing, and comparing the two would always read stale. */
+export type RiskState = Fetched<BookRisk> & { bookEtag: string | null };
+
 export type AppState = {
   schema: Schema | null;
   schemaError: string | null;
@@ -33,6 +48,8 @@ export type AppState = {
   describe: DescribeResult | null;
   validate: ValidateResult | null;
   run: RunState;
+  risk: RiskState;
+  xva: Fetched<BookXva>;
 };
 
 export const IDLE_RUN: RunState = {
@@ -40,10 +57,15 @@ export const IDLE_RUN: RunState = {
   table: null, page: null, scalars: {}, startedAt: null,
 };
 
+const NOTHING_FETCHED = { data: null, error: null, status: null, loading: false };
+
+export const IDLE_RISK: RiskState = { ...NOTHING_FETCHED, bookEtag: null };
+export const IDLE_XVA: Fetched<BookXva> = NOTHING_FETCHED;
+
 export const INITIAL: AppState = {
   schema: null, schemaError: null, doc: null, source: null, docError: null,
   tab: 'portfolio', selection: { deal: null, factor: null },
-  describe: null, validate: null, run: IDLE_RUN,
+  describe: null, validate: null, run: IDLE_RUN, risk: IDLE_RISK, xva: IDLE_XVA,
 };
 
 export type Action =
@@ -62,7 +84,14 @@ export type Action =
   | { type: 'RUN_FAILED'; error: string }
   | { type: 'TABLE_SELECTED'; table: string }
   | { type: 'PAGE_LOADED'; page: TablePage }
-  | { type: 'SCALARS_LOADED'; scalars: Record<string, unknown> };
+  | { type: 'SCALARS_LOADED'; scalars: Record<string, unknown> }
+  // the desk views: one fetch each, off the etag the book poll already moves
+  | { type: 'RISK_FETCHING' }
+  | { type: 'RISK_LOADED'; risk: BookRisk; bookEtag: string }
+  | { type: 'RISK_FAILED'; error: string; status: number | null }
+  | { type: 'XVA_FETCHING' }
+  | { type: 'XVA_LOADED'; xva: BookXva }
+  | { type: 'XVA_FAILED'; error: string; status: number | null };
 
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -70,12 +99,16 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, schema: action.schema, schemaError: null };
     case 'SCHEMA_FAILED':
       return { ...state, schemaError: action.error };
+    // a REFRESH keeps the desk views standing: the numbers on screen were true of the book they
+    // were computed over, and the honest thing is to keep showing them while they are refetched,
+    // marked as behind. A different DOCUMENT is a different book, and they go.
     case 'DOC_LOADED':
       return action.refresh
         ? { ...state, doc: action.doc, source: action.source, docError: null, validate: null }
         : {
             ...state, doc: action.doc, source: action.source, docError: null,
             selection: { deal: null, factor: null }, describe: null, validate: null, run: IDLE_RUN,
+            risk: IDLE_RISK, xva: IDLE_XVA,
           };
     case 'DOC_FAILED':
       return { ...state, docError: action.error };
@@ -113,6 +146,29 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, run: { ...state.run, page: action.page } };
     case 'SCALARS_LOADED':
       return { ...state, run: { ...state.run, scalars: action.scalars } };
+    case 'RISK_FETCHING':
+      return { ...state, risk: { ...state.risk, loading: true } };
+    case 'RISK_LOADED':
+      return {
+        ...state,
+        risk: { data: action.risk, bookEtag: action.bookEtag, error: null, status: null, loading: false },
+      };
+    // a refusal REPLACES the numbers: a 422 says the book will not price, and a stale mark left
+    // on screen under a red box is a number a desk might still read
+    case 'RISK_FAILED':
+      return {
+        ...state,
+        risk: { data: null, bookEtag: null, error: action.error, status: action.status, loading: false },
+      };
+    case 'XVA_FETCHING':
+      return { ...state, xva: { ...state.xva, loading: true } };
+    case 'XVA_LOADED':
+      return { ...state, xva: { data: action.xva, error: null, status: null, loading: false } };
+    case 'XVA_FAILED':
+      return {
+        ...state,
+        xva: { data: null, error: action.error, status: action.status, loading: false },
+      };
   }
 }
 

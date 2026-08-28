@@ -678,7 +678,28 @@ the gate's book: a desk quoted the same collar it already holds tightens from a 
 against a mid of 19.23863. Named next for the registry: **incremental XVA as the v2 of that same
 step** — a counterparty on the quote and `CVA(book + mirror) − CVA(book)` through the
 `Credit_Monte_Carlo` engine, the same two-run seam with a different calculation in it — and a
-ratio-solve primitive for participating forwards.
+ratio-solve primitive for participating forwards. The v2's CVA half now has its service seam
+already built: `service.xva_document` composes exactly that job over one netting set, so the
+incremental step is a second call to it with the mirror spliced in.
+
+**THE BLOTTER'S TWO DATA VIEWS ARE BUILT**, and they are deliberately not the same kind of thing.
+`GET /book/risk` is the CONSOLIDATED view's feed — one base valuation with `Greeks: 'First'` over
+the whole book, counterparty-blind, computed on a miss and cached under a content etag over the
+deals, the whole `MergeMarketData` and the `Calculation` block, so a blotter polls it on the same
+beat it polls `/book` (measured on the quoting fixture book: **338 ms cold, 3 ms warm**, and the
+warm path is a dict lookup). `POST`/`GET /book/xva` is the XVA view, and it is a CACHED PROJECTION
+on purpose: a credit Monte Carlo is minutes of device time and must never ride a tick, so
+`DV_HOME/xva.json` holds the last run of each `NettingCollateralSet` — one atomic row-at-a-time
+write, the book writer's discipline — and a desk asks for a FULL or PARTIAL recalc when it wants
+the file to move. One queued job PER SET at the CMC's own cost class, so quotes and valuations keep
+jumping the queue and the projection fills in row by row; each row carries its own `as_of` and the
+replay tuple, a partial recalc moves only the rows it names, and staleness is DATA rather than a
+failure. A counterparty the market data carries no `SurvivalProb` block for lands `status: 'failed'`
+carrying the engine's own wording in its row, never as a lost projection. The three MCP tools
+(`book_risk_summary`, `xva_view`, `recalc_xva`) say the distinction out loud in their docstrings,
+because a model that treats a three-hour-old CVA as live is the failure mode this shape exists to
+prevent. Left for the web half: the two views as screens, and an `xva.json` row that also carries
+the exposure profile a client would chart.
 
 **The Excel add-in is the first real client.** `excel_integration/service_client.py` is a plain
 `requests` client of the verbs and imports neither `xlwings` nor `derivus` — it is the HTTP binding

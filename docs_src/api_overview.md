@@ -297,6 +297,18 @@ DV_Service --port 8000
 | `POST` | `/book/bloomberg` | provision the security map (first use creates `DV_HOME`, copies the packaged seed, verifies every candidate against the terminal), fetch the desk's FX vol surfaces and tick the book — a queued job whose `/results/{id}` carries `progress` while it runs |
 | `POST` | `/book/structure` | quote a named structure against the book — the declared recipe solved server-side on the live spot where the terminal is up, each leg on the side of any two-way the book carries, the pending trade and its ticket filed under the quote id in `DV_HOME/tmp` |
 | `POST` | `/book/quote` | book a quote already given — the approval half, which books the MIRROR of the pending deal (a quote is client paper; a book holds the bank's position), validated and refused exactly as a booking is; the pending file survives as the audit trail |
+| `GET` | `/book/risk` | the book's CONSOLIDATED risk — one base valuation with `Greeks: 'First'` over the whole book, counterparty-blind, computed on a miss and cached under the `etag` of everything the run reads; `{as_of, etag, currency, mtm, per_deal, greeks}`, an empty book zeros with no run, a book that will not price a 422 naming the cause |
+| `POST` | `/book/xva` | recalculate the XVA projection — `{"netting_sets": […] \| null}` queues ONE credit Monte Carlo per netting set, CVA on against the counterparty the set's own `Credit_Support_Amounts` names, each writing its own row; `{"queued": [{"reference", "result_id"}]}`, and an unknown reference refuses by name having queued nothing |
+| `GET` | `/book/xva` | the XVA projection as it stands — `DV_HOME/xva.json`'s rows joined with the book's current set list; a set with no row reads `never run`, a row whose set has left the book carries a `note`, and a recalc in flight rides under `recalc` |
+
+THE BLOTTER'S TWO DATA VIEWS are `/book/risk` and `/book/xva`, and they are not the same kind of
+thing. Risk is whole-book and counterparty-blind, answered inline and cached on the content of
+everything the run reads, so a client polls it on the same beat it polls `/book`. XVA is per
+netting set and a CACHED PROJECTION: a credit Monte Carlo is minutes of device time and must never
+ride a tick, so `DV_HOME/xva.json` holds the last run of each set — written atomically, one row at
+a time — and a desk asks for a FULL or PARTIAL recalc when it wants the file to move. The
+projection is a mosaic on purpose: each row carries its own `as_of`, a partial recalc moves only
+the rows it names, and staleness is data rather than a failure.
 
 The book's FILE is the source of truth: every client — the web UI, an MCP tool, the Excel add-in —
 reads and writes it through these verbs, so a deal booked by one appears to the others on their
