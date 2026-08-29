@@ -51,13 +51,188 @@ essentially nothing for."""
 
 
 # ======================================================================================
-# Heston-Nandi GARCH(1,1) OSS pricers (TARF, discrete barrier, autocall). Opt-in per deal via
-# the Valuation Configuration switch SpotModel='HestonNandi' (see the deal calc_dependencies
-# branches and pv_MC_Tarf for the OSS scheme + known limitations F1-F4). The per-step advance
-# (utils.hn_daily_advance / utils.hn_unmonitored_substeps) is owned by utils; both the
-# unmonitored sub-steps and the survival-truncated final step of every
-# fixing/observation interval, in ALL THREE pricers, route through it.
+# Heston-Nandi OSS pricers (TARF, accumulator, discrete barrier, autocall). Opt-in per deal via
+# the Valuation Configuration switch SpotModel='HestonNandi' or 'HestonNandiComponent' (see the
+# deal calc_dependencies branches and pv_MC_Tarf for the OSS scheme + known limitations F1-F4).
+# The per-step advance (utils.hn_daily_advance / utils.hn_unmonitored_substeps and their
+# hn_component_* siblings) is owned by utils; both the unmonitored sub-steps and the
+# survival-truncated final step of every fixing/observation interval, in ALL FOUR pricers, route
+# through it - now via the KIT below, so a pricer names the model once and walks it after that.
 # ======================================================================================
+
+
+class PlainHestonNandiKit(object):
+    """The plain Heston-Nandi model as an OSS walking kit: seed a state, sub-step it, advance it
+    on a truncated draw, and price the analytic legs off the seed.
+
+    WHY A KIT AND NOT FOUR MORE BRANCHES. Four pricers walk the same three verbs, and a second
+    GARCH family would have doubled every one of them - the `unification-siblings` failure this
+    repo has already paid for three times. The MATH stays where the house style puts it: free
+    functions in `utils` taking the recursion parameters as explicit trailing args. What the kit
+    owns is the name->args unpack, the opaque state (one tensor here, a pair plus a day counter
+    for the component sibling), and nothing else.
+
+    The state is OPAQUE to the pricer on purpose. A pricer that reached into it would be spelling
+    out which model it holds, which is the branch this exists to delete.
+    """
+
+    def __init__(self, scalars, knots, steps_per_year):
+        *self.params, self.h0 = scalars          # (omega, alpha, beta, gamma_star), H0
+
+    def seed(self):
+        return (self.h0,)
+
+    def h(self, state):
+        """The predictable variance of the NEXT step - what an OSS truncation bound is built off."""
+        return state[0]
+
+    def substeps(self, Sj, state, b_step, n_steps, shared, num_sims, antithetic):
+        Sj, h = utils.hn_unmonitored_substeps(
+            Sj, state[0], b_step, n_steps, self.params, shared, num_sims, antithetic)
+        return Sj, (h,)
+
+    def advance(self, Sj, state, b_step, Z):
+        Sj, h = utils.hn_daily_advance(Sj, state[0], b_step, Z, *self.params)
+        return Sj, (h,)
+
+    def scalar_state(self):
+        """The SEED state reduced to scalars, for the analytic legs - which price the remaining
+        horizon from the row's own entry state, never from a walked one."""
+        return (self.h0.reshape(-1)[0],)
+
+    def cdf_logret(self, x, n_steps, r_step):
+        """Q(R_n <= x) off the seed state - the already-hit / parity digital leg."""
+        om, al, be, ga = (v.reshape(-1)[0] for v in self.params)
+        return utils.hn_cdf_logret(x, n_steps, self.scalar_state()[0], om, al, be, ga, r_step)
+
+    def vanilla(self, S, K, n_steps, r_step, is_call):
+        """The European closed form off the seed state - the KI parity leg and the already-hit
+        leg, which must be THIS model rather than Black at the implied surface."""
+        om, al, be, ga = (v.reshape(-1)[0] for v in self.params)
+        return (utils.hn_call if is_call else utils.hn_put)(
+            S, K, n_steps, self.scalar_state()[0], om, al, be, ga, r_step)
+
+
+class ComponentHestonNandiKit(PlainHestonNandiKit):
+    """The COMPONENT Heston-Nandi model as an OSS walking kit - the same three verbs over the pair
+    (h, q) and a per-step intercept strip.
+
+    THE DAY COUNTER IS PART OF THE STATE, because omega_t is a function of calendar position:
+    omega_t = L_{t+1} - rho*L_t off the fitted L curve, on the calibration's own trading-day clock
+    from the BASE DATE. So the state carries how many daily steps this row's walk has taken, and
+    every verb slices the strip at it.
+
+    THE ROW RE-SEEDS AT DAY ZERO, which is the plain model's H0 re-seed said twice: every OSS leg
+    prices its MTM row's remaining horizon under the law seen FROM THE BASE DATE - h at H0, q at
+    L(0) by the anchoring, omega from omega_0. That is a known approximation of the same class as
+    the plain model's (a row at six months should enter at that row's own state), it is stated
+    here rather than discovered, and the closed-form gate prices exactly what the walk simulates
+    because both start at the same place.
+    """
+
+    def __init__(self, scalars, knots, steps_per_year):
+        *self.params, self.h0, self.l_values = scalars   # (alpha,beta,g1,rho,phi,g2), H0, L values
+        self.knots = knots
+        self.steps_per_year = float(steps_per_year)
+        # rho SQUEEZED to 0-dim for the strip. Every scalar parameter arrives (-1, 1) so it
+        # broadcasts against the [batch, sims] variance state, but the omega path is indexed by
+        # TRADING DAY and has no path axis at all - a (1, 1) rho there turns a (n,) strip into
+        # (1, n), whose elements then broadcast a phantom axis into the recursion. It surfaced as
+        # a fused-kernel shape error and a silently skipped deal, which is the failure mode a
+        # gate has to reach rather than a reviewer.
+        self.rho = self.params[3].reshape(())
+        self._omegas, self._built = None, 0
+
+    def omegas(self, day, n_steps):
+        """The `n_steps` intercepts starting at trading day `day`. The strip is built once and
+        DOUBLED when a longer walk asks for it, so a row's walk costs one L interpolation rather
+        than one per fixing.
+
+        THE `is None` IS NOT REDUNDANT WITH THE LENGTH TEST. A daily fixing walks ZERO unmonitored
+        sub-steps (`n_sub - 1` at n_sub = 1), so the FIRST call can be `omegas(0, 0)` - which the
+        length test alone answers by slicing a strip that was never built. Reachable from all four
+        OSS pricers whenever a fixing interval spans one trading day or less."""
+        if self._omegas is None or self._built < day + n_steps:
+            self._built = max(day + n_steps, 2 * self._built, 64)
+            l_path = utils.hn_component_l_path(
+                self.knots, self.l_values, self._built, self.steps_per_year)
+            self._omegas = utils.hn_component_omega_path(l_path, self.rho)
+        return self._omegas[day:day + n_steps]
+
+    def q0(self):
+        """q_0 = L(0), THE ANCHORING - read off the curve rather than carried as a second field."""
+        return utils.hn_component_l_path(self.knots, self.l_values, 0, self.steps_per_year)[0]
+
+    def seed(self):
+        return (self.h0, torch.zeros_like(self.h0) + self.q0(), 0)
+
+    def substeps(self, Sj, state, b_step, n_steps, shared, num_sims, antithetic):
+        h, q, day = state
+        Sj, h, q = utils.hn_component_unmonitored_substeps(
+            Sj, h, q, b_step, self.omegas(day, n_steps), self.params,
+            shared, num_sims, antithetic)
+        return Sj, (h, q, day + n_steps)
+
+    def advance(self, Sj, state, b_step, Z):
+        h, q, day = state
+        Sj, h, q = utils.hn_component_daily_advance(
+            Sj, h, q, b_step, Z, self.omegas(day, 1)[0], *self.params)
+        return Sj, (h, q, day + 1)
+
+    def scalar_state(self):
+        return (self.h0.reshape(-1)[0], self.q0().reshape(-1)[0])
+
+    def cdf_logret(self, x, n_steps, r_step):
+        h0, q0 = self.scalar_state()
+        return utils.hn_component_cdf_logret(
+            x, list(self.omegas(0, n_steps)), h0, q0, *self.params, r_step)
+
+    def vanilla(self, S, K, n_steps, r_step, is_call):
+        h0, q0 = self.scalar_state()
+        return (utils.hn_component_call if is_call else utils.hn_component_put)(
+            S, K, list(self.omegas(0, n_steps)), h0, q0, *self.params, r_step)
+
+
+#: The OSS kits, keyed by the `SpotModel` valuation option each deal declares. A pricer looks its
+#: model up ONCE (`oss_model_kit`) and never names one again - so a third GARCH family is a class
+#: here and a row in this dict, not a fifth branch in four pricers.
+OSS_SPOT_MODEL_KITS = {'HestonNandi': PlainHestonNandiKit,
+                       'HestonNandiComponent': ComponentHestonNandiKit}
+
+
+def oss_model_scalars(factor_dep, shared):
+    """The declared spot model's parameter tensors, in the order its own kit unpacks them.
+
+    The name->tensor unpack every OSS pricer used to spell out, by the canonical name tuple the
+    MODEL owns (`utils.HN_PARAM_NAMES` / `HN_COMPONENT_PARAM_NAMES` + its curve) rather than by a
+    list repeated at four call sites. Scalars come out (-1, 1) to broadcast against the [batch,
+    sims] state; a CURVE parameter comes out flat, because it is indexed by knot and not by path.
+    Empty tuple where the deal prices GBM, which is what `oss_model_kit` reads as None.
+    """
+    if 'HN_Params' not in factor_dep:
+        return ()
+    code = factor_dep['HN_Params'][0]
+    block = {x.name[-1]: shared.t_Static_Buffer[x] for x in code[utils.FACTOR_INDEX_Offset]}
+    if code[utils.FACTOR_INDEX_SubType] == 'HestonNandiComponent':
+        return tuple([block[k].reshape(-1, 1) for k in utils.HN_COMPONENT_PARAM_NAMES] +
+                     [block[utils.HN_COMPONENT_CURVE_NAME].reshape(-1)])
+    return tuple(block[k].reshape(-1, 1) for k in utils.HN_PARAM_NAMES)
+
+
+def oss_model_kit(factor_dep, scalars):
+    """The declared spot model's kit, built from the tensors the pure inner function was handed.
+
+    `scalars` are the model parameters as they cross the bound/theta split (`InnerMCRecompute`
+    needs every tensor an explicit argument, which is why they arrive here rather than off
+    `factor_dep`); the model NAME and the L curve's knots are compile-time facts and ride
+    `factor_dep`. An empty `scalars` is a GBM deal and answers None.
+    """
+    if not scalars:
+        return None
+    model = factor_dep['HN_Params'][0][utils.FACTOR_INDEX_SubType]
+    knots = factor_dep['HN_Params'][0][utils.FACTOR_INDEX_Tenor_Index].get(
+        utils.HN_COMPONENT_CURVE_NAME)
+    return OSS_SPOT_MODEL_KITS[model](scalars, knots, factor_dep['HN_Steps_Per_Year'])
 
 def cash_settle(shared, currency, time_index, value):
     # need to check if the time_index
@@ -1019,9 +1194,9 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         scalar closed form to integrate against.
         """
         eps = torch.finfo(shared.one.dtype).eps
-        hn = bool(hn_scalars)
-        if hn:
-            *hn_params, H0 = hn_scalars
+        # the declared model as a walking kit - the pricer names it once, here
+        kit = oss_model_kit(factor_dep, hn_scalars)
+        hn = kit is not None
 
         # `carry` is the INTERVAL carry rate (forward_carry_rate), so this product is the interval
         # integral. GBM folds it with the vol; HN keeps it raw (its recursion supplies variance).
@@ -1056,7 +1231,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                 # per-interval daily sub-step counts and per-step carry (r-q). n_sub floors at 1.
                 nj = [max(int(round(float(t) * hn_spy)), 1) for t in times[blk]]
                 b_steps = [(carry_int[blk][j] / nj[j]).reshape(-1, 1) for j in range(N_fix)]
-                h = H0
+                st = kit.seed()
 
             if direction == BARRIER_IN:
                 if not hn:
@@ -1083,16 +1258,12 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                             'carry or price this deal under GBM'.format(
                                 float(carry_total.max() - carry_total.min())))
                     r_step = carry_total[0] / n_total  # scalar b*T/n
-                    om, al, be, ga = (v.reshape(-1)[0] for v in hn_params)  # scalar recursion params
-                    H0_s = H0.reshape(-1)[0]
                     if isdigital:
-                        q_below = utils.hn_cdf_logret(
-                            torch.log(strike / s), n_total, H0_s, om, al, be, ga, r_step)
+                        q_below = kit.cdf_logret(torch.log(strike / s), n_total, r_step)
                         vanilla_pv = ((1.0 - q_below) if phi == OPTION_CALL else q_below) * D[-1]
                     else:
                         fwd_growth = torch.exp(r_step * n_total)
-                        vanilla = (utils.hn_call if phi == OPTION_CALL else utils.hn_put)(
-                            s, strike, n_total, H0_s, om, al, be, ga, r_step)
+                        vanilla = kit.vanilla(s, strike, n_total, r_step, phi == OPTION_CALL)
                         vanilla_pv = vanilla * fwd_growth * D[-1]
                 vanilla_pv = vanilla_pv.reshape(-1, 1)  # [batch, 1]
 
@@ -1108,10 +1279,10 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                     if isBarrierDate_block[j] > 0:
                         # nj-1 unmonitored daily steps + 1 monitored (OSS truncation at the
                         # CONSTANT barrier, F-measurable over the interval - exact, product unchanged)
-                        Sj, h = utils.hn_unmonitored_substeps(
-                            Sj, h, b_step, nj[j] - 1, hn_params, shared, num_sims, antithetic=True)
-                        sh = torch.sqrt(h)
-                        z_max = (torch.log(barrier / Sj) - (b_step - 0.5 * h)) / sh
+                        Sj, st = kit.substeps(
+                            Sj, st, b_step, nj[j] - 1, shared, num_sims, antithetic=True)
+                        h = kit.h(st)
+                        z_max = (torch.log(barrier / Sj) - (b_step - 0.5 * h)) / torch.sqrt(h)
                         if eta == BARRIER_UP:
                             p = utils.norm_cdf(z_max)
                             Z = utils.norm_icdf(torch.clamp(u[j] * p, eps, 1.0 - eps))
@@ -1121,11 +1292,11 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                         if direction == BARRIER_OUT:
                             P = P + (1.0 - p) * L * rebate_per_unit * D[j].reshape(-1, 1)
                         L = p * L
-                        Sj, h = utils.hn_daily_advance(Sj, h, b_step, Z, *hn_params)
+                        Sj, st = kit.advance(Sj, st, b_step, Z)
                     else:
                         # non-barrier observation date (incl. expiry): full nj unconditional steps
-                        Sj, h = utils.hn_unmonitored_substeps(
-                            Sj, h, b_step, nj[j], hn_params, shared, num_sims, antithetic=True)
+                        Sj, st = kit.substeps(
+                            Sj, st, b_step, nj[j], shared, num_sims, antithetic=True)
                     continue
 
                 r_j = r[j].reshape(-1, 1)      # [batch, 1]
@@ -1229,11 +1400,10 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     rebate_per_unit = cash_rebate / size
 
     # opt-in Heston-Nandi spot model (SpotModel='HestonNandi'); absent => byte-identical GBM path
-    hn = 'HN_Params' in factor_dep
+    # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
+    hn_scalars = oss_model_scalars(factor_dep, shared)
+    hn = bool(hn_scalars)
     if hn:
-        hn_p = {x.name[-1]: shared.t_Static_Buffer[x].reshape(-1, 1)
-                for x in factor_dep['HN_Params'][0][utils.FACTOR_INDEX_Offset]}
-        *hn_params, H0 = (hn_p[k] for k in utils.HN_PARAM_NAMES)  # the four recursion params + H0 (seeds h)
         hn_spy = factor_dep['HN_Steps_Per_Year']
 
 
@@ -1367,20 +1537,19 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                             'HN already-hit KI leg needs batch-constant carry; carry varies across '
                             'scenarios by {:.2e} (stochastic rates?) - extend hn_call to batched '
                             'carry or price this barrier under GBM'.format(carry_spread))
-                    om, al, be, ga = (v.reshape(-1)[0] for v in hn_params)
-                    H0_s = H0.reshape(-1)[0]
+                    kit = oss_model_kit(factor_dep, hn_scalars)
                     rows = []
                     for row, spot_row in enumerate(spot_block):
                         # n_steps drives the variance recursion, so it is a scalar per MTM row
                         n_total = sum(max(int(round(float(t) * hn_spy)), 1) for t in sample_ts[row])
                         r_step = log_fwd[row][0] / n_total
                         if isdigital:
-                            q_below = utils.hn_cdf_logret(
-                                torch.log(strike / spot_row), n_total, H0_s, om, al, be, ga, r_step)
+                            q_below = kit.cdf_logret(
+                                torch.log(strike / spot_row), n_total, r_step)
                             rows.append((1.0 - q_below) if phi == OPTION_CALL else q_below)
                         else:
-                            rows.append((utils.hn_call if phi == OPTION_CALL else utils.hn_put)(
-                                spot_row, strike, n_total, H0_s, om, al, be, ga, r_step
+                            rows.append(kit.vanilla(
+                                spot_row, strike, n_total, r_step, phi == OPTION_CALL
                             ) * torch.exp(r_step * n_total))
                     vanilla = torch.stack(rows)
                 else:
@@ -1404,7 +1573,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         else:
             simulate = partial(sim_spot_oss, sample_index_t, sobol, shared.MCMC_sims)
             theta = (spot_block, interval_vols, sd_to_expiry, sample_ts, fwd_drifts,
-                     discount_rates) + (tuple(hn_params) + (H0,) if hn else ())
+                     discount_rates) + hn_scalars
             # the SAME callable either way: under the node it is called twice (see InnerMCRecompute)
             oss_result, = InnerMCRecompute.run(shared, simulate, *theta)
             oss_result = nominal * oss_result
@@ -1978,9 +2147,9 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
         the block-local rows those land on. `prev_alive` is theta: it carries the (a.e. zero)
         graph of the observed samples that built it.
         """
-        hn = bool(hn_scalars)
-        if hn:
-            *hn_params, H0 = hn_scalars
+        # the declared model as a walking kit - the pricer names it once, here
+        kit = oss_model_kit(factor_dep, hn_scalars)
+        hn = kit is not None
         mcmc, alive, settled, settle_rows = [], [], [], []
         for i, (D, s, carry_rate, delta_t, tau) in enumerate(zip(
                 discount_rates, spot_prices, carry, times, settlement)):
@@ -1994,7 +2163,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                 vols = vols_all[i]
             u = oss_uniforms(shared, reduced_samples, num_sims, sobol)
             Sj = torch.unsqueeze(s, 1)
-            h = H0 if hn else None
+            st = kit.seed() if hn else None
             P = shared.one.new_zeros((shared.simulation_batch, 2 * num_sims))
             L = prev_alive.reshape(-1, 1) * shared.one.new_ones((shared.simulation_batch, 2 * num_sims))
             if boundary_aad:
@@ -2011,11 +2180,12 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                         # the constant barrier is exact (see sim_spot_tarf)
                         n_sub = max(int(round(float(dt) * hn_spy)), 1)
                         b_step = fwd_carry * dt / n_sub
-                        Sj, h = utils.hn_unmonitored_substeps(
-                            Sj, h, b_step, n_sub - 1, hn_params, shared, num_sims, antithetic=True)
+                        Sj, st = kit.substeps(
+                            Sj, st, b_step, n_sub - 1, shared, num_sims, antithetic=True)
+                        h = kit.h(st)
                         z_bound = (torch.log(barrier / Sj) - (b_step - 0.5 * h)) / torch.sqrt(h)
                         p, Z = oss_truncated_draw(u[j], z_bound, barrier_up)
-                        Sj, h = utils.hn_daily_advance(Sj, h, b_step, Z, *hn_params)
+                        Sj, st = kit.advance(Sj, st, b_step, Z)
                     else:
                         fwd_vol = vols[j].reshape(-1, 1)
                         vol_dt = fwd_vol * torch.sqrt(dt)
@@ -2101,11 +2271,10 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     b_gaps, b_crossed, b_obs_before, alive_blocks, b_pending = [], [], [], [], []
 
     # opt-in Heston-Nandi spot model; absent => byte-identical GBM path (see sim_spot_tarf)
-    hn = 'HN_Params' in factor_dep
+    # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
+    hn_scalars = oss_model_scalars(factor_dep, shared)
+    hn = bool(hn_scalars)
     if hn:
-        hn_p = {x.name[-1]: shared.t_Static_Buffer[x].reshape(-1, 1)
-                for x in factor_dep['HN_Params'][0][utils.FACTOR_INDEX_Offset]}
-        *hn_params, H0 = (hn_p[k] for k in utils.HN_PARAM_NAMES)
         hn_spy = factor_dep['HN_Steps_Per_Year']
 
     # prefix knock-out state: the declared flag OR any observed sample's own breach. `Barrier_Hit`
@@ -2149,7 +2318,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
 
         simulate = partial(sim_spot_accumulator, settlement, settle_index_local, sobol, shared.MCMC_sims)
         theta = (spot_block, sample_ts, fwd_drifts, alive_seq[settle_index_local],
-                 discount_rates, vols, all_samples) + (tuple(hn_params) + (H0,) if hn else ())
+                 discount_rates, vols, all_samples) + hn_scalars
         # the SAME callable either way: under the node it is called twice (see InnerMCRecompute)
         block_mtm, block_alive, block_settled, settle_rows = InnerMCRecompute.run(
             shared, simulate, *theta)
@@ -2790,9 +2959,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
         # easier to type
         K = strike
-        hn = bool(hn_scalars)
-        if hn:
-            *hn_params, H0 = hn_scalars
+        # the declared model as a walking kit - the pricer names it once, here
+        kit = oss_model_kit(factor_dep, hn_scalars)
+        hn = kit is not None
         # Per-block results, and the by-products the caller performs once (see docstring)
         mcmc, alive, settled, gaps, jumps = [], [], [], [], []
         settle_rows, knock_rows = [], []
@@ -2810,7 +2979,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
             Sj = torch.unsqueeze(s, 1)  # [batch, 1] as you do
             # HN predictable variance of the first daily step; re-seeded per MTM row (see docstring)
-            h = H0 if hn else None
+            st = kit.seed() if hn else None
             # Running PV and survival weight
             P = shared.one.new_zeros((shared.simulation_batch, 2*num_sims))
             L = shared.one.new_ones((shared.simulation_batch, 2*num_sims))
@@ -2866,11 +3035,11 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                         b_step = fwd_carry * dt / n_sub  # per-step cost-of-carry r-q; total = fwd_carry*dt
                         # the first n_sub-1 unmonitored daily steps (shared advance; antithetic to
                         # align with the u<->1-u halves of the truncated final draw below)
-                        Sj, h = utils.hn_unmonitored_substeps(
-                            Sj, h, b_step, n_sub - 1, hn_params, shared, num_sims, antithetic=True)
-                        sh = torch.sqrt(h)
+                        Sj, st = kit.substeps(
+                            Sj, st, b_step, n_sub - 1, shared, num_sims, antithetic=True)
+                        h = kit.h(st)
                         fwd_drift = b_step - 0.5 * h  # per-step drift of the FINAL (monitored) daily step
-                        z_max = (torch.log(B_pnl / Sj) - fwd_drift) / sh
+                        z_max = (torch.log(B_pnl / Sj) - fwd_drift) / torch.sqrt(h)
                     else:
                         # Lognormal cap -> z_max
                         # NOTE: use current Sj as “S_{i-1}”
@@ -2888,7 +3057,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     if hn:
                         # HN increment + h-recursion on the truncated final draw (shared advance;
                         # leverage-asymmetric because Z is survival-truncated - see hn_daily_advance)
-                        Sj, h = utils.hn_daily_advance(Sj, h, b_step, Z, *hn_params)
+                        Sj, st = kit.advance(Sj, st, b_step, Z)
                     else:
                         # GBM increment
                         Sj = Sj * (torch.exp(fwd_drift + vol_dt * Z) if dt > 0 else 1.0)
@@ -3001,11 +3170,10 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     b_gaps, b_fired, b_obs_before, b_inner, alive, row_ofs = [], [], [], [], [], 0
 
     # opt-in Heston-Nandi spot model; absent => byte-identical GBM path (see docstring)
-    hn = 'HN_Params' in factor_dep
+    # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
+    hn_scalars = oss_model_scalars(factor_dep, shared)
+    hn = bool(hn_scalars)
     if hn:
-        hn_p = {x.name[-1]: shared.t_Static_Buffer[x].reshape(-1, 1)
-                for x in factor_dep['HN_Params'][0][utils.FACTOR_INDEX_Offset]}
-        *hn_params, H0 = (hn_p[k] for k in utils.HN_PARAM_NAMES)  # the four recursion params + H0 (seeds h)
         hn_spy = factor_dep['HN_Steps_Per_Year']
 
 
@@ -3065,7 +3233,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
         simulate = partial(sim_spot_tarf, settlement, sobol, shared.MCMC_sims)
         theta = (spot_block, sample_ts, fwd_drifts, accumulation[settle_index_local],
-                 discount_rates, vols, all_samples) + (tuple(hn_params) + (H0,) if hn else ())
+                 discount_rates, vols, all_samples) + hn_scalars
         # the SAME callable either way: under the node it is called twice (see InnerMCRecompute)
         outputs = InnerMCRecompute.run(shared, simulate, *theta)
         block_mtm, block_alive, block_settled, settle_rows, knock_rows = outputs[:5]
@@ -3226,9 +3394,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         """
 
         timesteps, num_samples = times.shape
-        hn = bool(hn_scalars)
-        if hn:
-            *hn_params, H0 = hn_scalars
+        # the declared model as a walking kit - the pricer names it once, here
+        kit = oss_model_kit(factor_dep, hn_scalars)
+        hn = kit is not None
         # the by-products the caller performs once (see docstring)
         settled, settle_rows, event_rows, gaps, fired, survived = [], [], [], [], [], []
         alive, cash_on = [], []
@@ -3266,7 +3434,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                     Sj = torch.unsqueeze(past_fixings[last_fixing], 1)
                     fixing_aligned = False
                 if hn:
-                    h = H0  # re-seed the HN variance at the start of this MTM row
+                    st = kit.seed()  # re-seed the variance state at the start of this MTM row
 
                 P = torch.zeros((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
                 L = torch.ones((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
@@ -3299,10 +3467,11 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                 # BELOW the autocall threshold K - applies only on the final daily step)
                                 n_sub = max(int(round(float(dt) * hn_spy)), 1)
                                 b_step = forward_carry * dt / n_sub
-                                Sj, h = utils.hn_unmonitored_substeps(
-                                    Sj, h, b_step, n_sub - 1, hn_params, shared, num_sims, antithetic=False)
-                                sh = torch.sqrt(h)
-                                p = utils.norm_cdf((torch.log(K / Sj) - (b_step - 0.5 * h)) / sh)
+                                Sj, st = kit.substeps(
+                                    Sj, st, b_step, n_sub - 1, shared, num_sims, antithetic=False)
+                                h = kit.h(st)
+                                p = utils.norm_cdf(
+                                    (torch.log(K / Sj) - (b_step - 0.5 * h)) / torch.sqrt(h))
                             else:
                                 vol = v[coupon_index].reshape(-1, 1)  # [batch,1]
                                 vol_dt = vol * torch.sqrt(dt)
@@ -3367,8 +3536,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             if hn:
                                 # survival-truncated final draw + h-recursion (shared advance)
                                 if dt > 0:
-                                    Sj, h = utils.hn_daily_advance(
-                                        Sj, h, b_step, utils.norm_icdf(safe_pu), *hn_params)
+                                    Sj, st = kit.advance(
+                                        Sj, st, b_step, utils.norm_icdf(safe_pu))
                                 # dt<=0 (terminal fixing): no interval, Sj/h unchanged (mirrors Sj*1.0)
                             else:
                                 Sj = Sj * (torch.exp(
@@ -3510,11 +3679,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     # Heston-Nandi spot model (present iff HestonNandiModelParameters.<equity> was resolved): the
     # five GARCH scalars ride the AAD graph out of t_Static_Buffer, unpacked exactly like the TARF.
     # When absent, sim_spot takes the byte-identical GBM path. HN is only wired into no_averaging.
-    hn = 'HN_Params' in factor_dep
+    # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
+    hn_scalars = oss_model_scalars(factor_dep, shared)
+    hn = bool(hn_scalars)
     if hn:
-        hn_p = {x.name[-1]: shared.t_Static_Buffer[x].reshape(-1, 1)
-                for x in factor_dep['HN_Params'][0][utils.FACTOR_INDEX_Offset]}
-        *hn_params, H0 = (hn_p[k] for k in utils.HN_PARAM_NAMES)  # the four recursion params + H0 (seeds h)
         hn_spy = factor_dep['HN_Steps_Per_Year']
 
 
@@ -3642,7 +3810,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             theta = (spot_block, interval_vols, fwd_drifts, terminationDate, discount_rates,
                      floating_leg,
                      all_eq_samples if factor_dep['no_averaging'] else spot_block.new_empty(0)
-                     ) + (tuple(hn_params) + (H0,) if hn else ())
+                     ) + hn_scalars
             # the SAME callable either way: under the node it is called twice (see InnerMCRecompute)
             outputs = InnerMCRecompute.run(shared, simulate, *theta)
             # `terminationDate` comes back stamped by this block's observed fixing and is handed to

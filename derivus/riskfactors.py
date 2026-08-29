@@ -1169,6 +1169,82 @@ class HestonNandiModelParameters(Factor0D):
         return {x: np.array([self.param[x]]) for x in self.parameters}
 
 
+class HestonNandiComponentModelParameters(Factor0D):
+    """The bootstrapped COMPONENT Heston-Nandi (Christoffersen-Jacobs-Ornthanalai-Wang) parameters.
+
+    The variance splits into a long-run component $q_t$ and a short-run deviation, under the
+    risk-neutral recursions
+
+    $$h_{t+1}=q_{t+1}+\\beta(h_t-q_t)+\\alpha\\Big[(z_t-\\gamma_1\\sqrt{h_t})^2-(1+\\gamma_1^2h_t)\\Big]$$
+    $$q_{t+1}=\\omega_t+\\rho q_t+\\phi\\Big[(z_t-\\gamma_2\\sqrt{h_t})^2-(1+\\gamma_2^2h_t)\\Big]$$
+
+    Both bracketed terms are exactly centered, so the short-run deviation $h_t-q_t$ is a pure
+    AR(1) at $\\beta$ and $E_t[q_{t+k}]$ is driven by $\\omega$ alone.
+
+    THERE IS NO OMEGA FIELD. $\\omega_t=L_{t+1}-\\rho L_t$ is a function of the **L_Curve**, whose
+    ANCHORING ($q_0=L(0)$) makes $E_0[q_t]=L_t$ exactly - so L is not a reparametrisation, it IS
+    the model's expected long-run variance path and is directly comparable to the market's forward
+    variance strip. L is piecewise-linear in $t$ between its knots and flat outside them.
+
+    AND THERE IS NO Q0 FIELD EITHER: $q_0$ is $L(0)$, read off the curve's own first knot, because
+    the anchoring is what makes L mean what it says. The curve the bootstrapper writes carries an
+    explicit knot at tenor 0 whose value is **H0** - at the base date the two states are held
+    equal, since no option is quoted at zero maturity to separate them - so the anchoring is a
+    property of the stored factor rather than a convention a reader has to remember.
+
+    The knots are STRUCTURAL (they are the calibration ladder's own pillars); the curve's VALUES
+    are `bind='value'` leaves, so a greek flows to each fitted pillar exactly as it does to the
+    seven scalars.
+    """
+    fields = [
+        F('Alpha', 'Float', default=0, bind='value',
+          description='Short-run ARCH coefficient $\\alpha$'),
+        F('Beta', 'Float', default=0, bind='value',
+          description='Short-run persistence $\\beta$ - the AR(1) coefficient of $h_t-q_t$'),
+        F('Gamma_1', 'Float', default=0, bind='value',
+          description='Short-run leverage $\\gamma_1$ (its SIGN is the direction of the smile)'),
+        F('Rho', 'Float', default=0, bind='value',
+          description='Long-run persistence $\\rho$ of the component $q_t$'),
+        F('Phi', 'Float', default=0, bind='value',
+          description='Long-run ARCH coefficient $\\phi$'),
+        F('Gamma_2', 'Float', default=0, bind='value',
+          description='Long-run leverage $\\gamma_2$'),
+        F('H0', 'Float', default=0, bind='value',
+          description='The predictable variance $h_0$ of the first step from the base date'),
+        F('L_Curve', 'Curve', bind='value',
+          description='The expected long-run per-step variance path $L_t$, in years - '
+                      '$\\omega_t=L_{t+1}-\\rho L_t$ and $q_0=L(0)$')
+    ]
+    # one source of truth for the scalar key set (utils owns the canonical tuple - the explicit-arg
+    # hn_component_* pricers/simulator consume the same set) plus the one curve parameter
+    parameters = utils.HN_COMPONENT_PARAM_NAMES
+    curve = utils.HN_COMPONENT_CURVE_NAME
+
+    def __init__(self, param):
+        super(HestonNandiComponentModelParameters, self).__init__(param)
+
+    def get_tenor(self):
+        """The L curve's knots, in years - the ONE term structure this factor carries."""
+        return self.param[self.curve].array[:, 0]
+
+    def get_tenor_indices(self):
+        zero = np.array([[0.0]])
+        return dict({x: zero for x in self.parameters},
+                    **{self.curve: self.get_tenor().reshape(-1, 1)})
+
+    def curve_tenors(self):
+        """`{parameter: knots}` for every CURVE parameter - what a consumer needs to read the
+        values back as a function of time, and structural, so it is resolved once at dependency
+        time rather than carried on the tensor side."""
+        return {self.curve: self.get_tenor()}
+
+    def current_value(self, tenors=None, offset=0.0):
+        """Returns the parameters of the component factor model as a dictionary. The curve answers
+        its VALUES (one per knot), which is what `bind='value'` publishes as leaves."""
+        return dict({x: np.array([self.param[x]]) for x in self.parameters},
+                    **{self.curve: self.param[self.curve].array[:, 1]})
+
+
 class GBMAssetPriceTSModelParameters(Factor1D):
     """
     Represents the Bootstrapped TS implied parameters for a risk neutral process

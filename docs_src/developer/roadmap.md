@@ -792,6 +792,103 @@ compiled cashflow object would say the same thing without the inference.
 
 ## Model punchlist
 
+**Component Heston-Nandi (CJOW) is BUILT, end to end**, and it is a strict extension of the plain
+family rather than a second one beside it: `utils.hn_component_*` (the pair recursion, its fused
+log sub-step, the A/B/C recursion and the European/OSS closed forms),
+`HestonNandiComponentModelParameters` on both sides (the price factor carrying an **L curve** whose
+values are `bind='value'` leaves, and the calibration family),
+`HestonNandiComponentImpliedSpotModel`, and a kit in `pricing.py` that all four OSS pricers walk so
+a third GARCH family is a class and a dict row rather than a fifth branch in four pricers. The
+long-run intercept is a CURVE — `ω_t = L_{t+1} − ρL_t`, anchored `q_0 = L(0)` so `E_0[q_t] = L_t`
+exactly — fitted by an inner triangular bootstrap with the skew globals concentrated over it; the
+whole construction, its two pins and its negative-omega guard are in
+[Market Prices](market_prices.md#hestonnandi-component). Gates:
+`tests/test_hn_component.py`, whose spine is the NESTING identity (φ=0, `L` flat: the component
+closed form IS `hn_call`, measured 1.5e-13 relative, and the sub-step walks the plain path on
+bitwise-identical draws). **4.79 s an outer evaluation** on the four-pillar USDZAR ladder, so the
+declared 300-evaluation cap is 24 minutes and the fit reports itself CAPPED rather than claiming a
+tolerance it did not reach.
+
+Six things it owes.
+
+- **`Quote_Sensitivity` is REFUSED by name**, and this is the roadmap row for it. The quote
+  derivative would have to pass through the inner `brentq` on each `L` pillar by the implicit
+  function theorem AND through the outer derivative-free search. The IFT half is tractable and is
+  the same arithmetic `CalibrationSolve.backward` already runs — the residual is written once and
+  differentiated twice — but the outer half is not a root find at all, so what a quote tick means
+  for the skew globals has to be decided before it can be computed. Real work, and the family says
+  so rather than answering zeros.
+
+- **The fixing-jump sampler is v2, and the day-step is its oracle.** Every OSS interval currently
+  walks `n_sub` daily sub-steps because the recursion is calibrated per trading day, which is
+  exact and is most of the pricer's cost. A sampler that jumped fixing to fixing — drawing the
+  interval's aggregate return and its terminal `(h, q)` from their joint law — would be the same
+  speed lever the correlated sub-stepping already took on the scenario grid, and the acceptance
+  test writes itself: it has to reproduce the DAY-STEPPED path's distribution, which is the thing
+  that already exists and is already gated. Nothing about it is designed yet; what is recorded is
+  that the oracle is not a closed form but the walk it would replace.
+
+- **The quadrature bound is derived per PRICE, and the 4x for reusing one is still on the table —
+  soundly this time.** The adaptive `φ_max` scan is 35–184 ms against 8–94 ms for the price itself,
+  so a bound derived once and reused across a ladder is most of the calibration's wall clock. This
+  family shipped exactly that for an evening — one scan on the shortest pillar, on the reasoning
+  that more steps means more variance means faster decay — and it MISPRICED: past a parameter- and
+  step-count-dependent point the component A/B/C recursion diverges rather than decaying, so a
+  bound that is too LARGE integrates garbage. Measured, one converged optimum: a 126-step price is
+  0.7353321384 at `φ_max` 128/256/512 (converged at 64, 256 and 1024 panels alike), 0.7323069671 at
+  1024, 9.4e+55 at 2048, while the 21-step contract in the same strip wants 512. Because the ATM
+  ladder is bootstrapped it repriced exactly anyway and the only symptom was the report's own
+  recompute reading 3.5e-3 where it should read 1e-12. The trap is gated
+  (`test_a_quadrature_bound_is_not_transferable_between_contracts`) and the shortcut is out. What
+  would keep the speed and stay sound is a PER-PILLAR bound VERIFIED at the solved level: derive
+  once at the bracket, re-derive at the root, re-solve only if it moved — one extra scan per pillar
+  instead of one per brentq step. Not built. The same caution applies to the plain family's own
+  "cheaper envelope" entry above, which was written before this was known.
+
+- **The OSS row re-seeds at day zero, and the L curve makes that a bigger approximation than it
+  was.** The plain model's known limitation F4 — `h` re-seeds to `H0` at every MTM row, so a row
+  six months out prices its remaining horizon from the base date's variance state — carries over,
+  and the component model adds a second axis to it: the intercept strip restarts at `ω_0`, so that
+  row also prices under the FRONT of the `L` curve rather than the part of it the row has reached.
+  On a term structure that moves 2 vol points over six months that is a real level error on the
+  back rows of an exposure profile. The fix is not deep (the kit's day counter would start at the
+  row's own trading-day offset, and the state would come off the outer path the way
+  `inner_fork_seed` already does for the process) but it is a decision about WHICH state a row
+  inherits, and it should be taken for both families at once rather than for this one alone.
+
+- **Positivity has no certificate**, and that is the model's property rather than the
+  parametrisation's: `q_{t+1} ≥ ω_t + ρq_t − φ − φγ₂²h_t` has no sign for free once `φ > 0`. The
+  simulator floors at `utils.HN_COMPONENT_VARIANCE_FLOOR` (declared, measured at 2 of 8192 inner
+  paths over 248 steps on the TARF gate) while the closed form integrates the unfloored law, so
+  the two agree only where the floor is inactive — asserted in the gate rather than assumed.
+  Whether the right answer is a floor, a bound on `φγ₂²`, or a different long-run innovation is a
+  modelling decision nobody has taken.
+
+- **The COARSE-GRID walk has no accuracy gate, and its plain sibling has one.**
+  `utils.hn_component_correlated_substeps` is what the scenario process walks between exposure
+  dates — whole trading days plus the fractional remainder, the framework draw riding the
+  `sqrt(E[h·dt])`-weighted combination of the sub-step normals — and nothing measures its
+  distribution against the daily-grid witness. The plain and GARCH(1,1)-t siblings do have that
+  measurement (`gates/hn_pfe_stepping.py`: return quantiles at the PFE the exposure grid reads,
+  four ways, oracle / coarse / daily / bridge), and it is exactly the two ingredients this function
+  reimplements that it caught: the FRACTIONAL REMAINDER (the previous `round(f)` truncation cost up
+  to **13% of interval variance**, −13% on the framework's own default CVA grid) and the FORWARDED
+  MEAN that sets the correlation weights. The component version forwards a PAIR
+  (`E[q_{j+1}] = ω_j + ρq_j`, `E[h_{j+1}] = E[q_{j+1}] + β(h_j−q_j)`) and slices a per-sub-step ω
+  strip, so it has strictly more to get wrong and no oracle would be needed — the daily witness is
+  the same comparison the plain gate already runs. Until it exists, the component exposure profile
+  is gated for SHAPE (rows, dispersion, a finite CVA) and not for accuracy.
+
+**The `Steps_Per_Year` mismatch — the plain model's known limitation F2, stated in
+`pricing.pv_MC_Tarf` — is AMPLIFIED here.** A deal's valuation option agreeing with
+the factor's calibrated clock by convention rather than by a check costs the plain model one
+rescaled variance horizon; on this family it rescales TWO things at once, because the `L` knots are
+in YEARS while `ω_t` is a per-STEP difference. A spy mismatch moves the number of steps per knot
+interval (so a pillar's segment is walked at the wrong length) AND moves `ρⁿ` over that interval
+(so the long-run component decays over the wrong number of steps) — the level error and the
+persistence error, from one silent disagreement. The emitted block states the clock it was fitted
+on, read off the field's own declaration; nothing yet refuses a deal that declares another.
+
 `GARCHSpotModel` and the Heston-Nandi stack are built end to end; what remains is narrow:
 batched-carry `hn_call` (stochastic-rate CVA raises loud today rather than mispricing silently —
 and the already-hit leg raises the same refusal in its own name, which is the second caller that

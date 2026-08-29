@@ -53,6 +53,7 @@ The six families, and what each fits:
 | `GBMAssetPriceTSModelPrices` | a vol surface, ATM column only — or, where `FXVolPrices` built that surface, [its ATM rows](#fxvolprices) | `GBMAssetPriceTSModelParameters` — an integrated vol curve |
 | `CSForwardPriceModelPrices` | European energy futures options | `CSForwardPriceModelParameters` — sigma, alpha |
 | `HestonNandiModelPrices` | European options on any spot | `HestonNandiModelParameters` — omega, alpha, beta, gamma\*, H0 |
+| `HestonNandiComponentModelPrices` | the same ladder, wings widened | `HestonNandiComponentModelParameters` — alpha, beta, gamma₁, rho, phi, gamma₂, H0 **and an L curve** |
 | `HullWhite2FactorModelPrices` | forward-starting swaps against a swaption surface | `HullWhite2FactorModelParameters` — two sigma curves, two alphas, a correlation |
 | `InterestRatePrices` | deposits, FRAs, swaps and FX forward outrights | an `InterestRate` zero curve |
 | `FXVolPrices` | ATM vols, risk reversals and butterflies | an `FXVol` log-moneyness surface |
@@ -247,6 +248,183 @@ re-fitting is this verb being called again. It drops its own block before re-ins
 strikes are a FUNCTION of the surface: re-emitting after a tick legitimately moves them, which
 `update_market_quote` would refuse by name and be right to. There is no GET side — the written
 factor in `Price Factors` is the projection, and `GET /book` already serves it.
+
+## `HestonNandiComponentModelPrices` — a term structure fitted as a curve {#hestonnandi-component}
+
+The plain family fits ONE `Omega`, so the model has one long-run variance and the whole ATM term
+structure has to be bought with `H0`, `Beta` and that constant. The component model of Christoffersen,
+Jacobs, Ornthanalai and Wang splits the variance into a long-run component `q` and a short-run
+deviation, and this family fits the long-run component's own PATH:
+
+$$h_{t+1}=q_{t+1}+\beta(h_t-q_t)+\alpha\Big[(z_t-\gamma_1\sqrt{h_t})^2-(1+\gamma_1^2h_t)\Big]$$
+$$q_{t+1}=\omega_t+\rho q_t+\phi\Big[(z_t-\gamma_2\sqrt{h_t})^2-(1+\gamma_2^2h_t)\Big]$$
+
+Both bracketed terms are **exactly centered**, so `h − q` is a pure AR(1) at `β` and `E_t[q_{t+k}]`
+is driven by `ω` alone. Two things follow, and everything below is one of them.
+
+**`Ω` is not a number here, it is a curve.** Writing `ω_t = L_{t+1} − ρL_t` makes `q_t − L_t` a
+homogeneous AR(1), so ANCHORING `q_0 = L(0)` gives `E_0[q_t] = L_t` **exactly**. `L` is therefore
+not a reparametrisation trick — it IS the model's expected long-run variance path, and it is
+directly comparable to the market's own forward variance strip. It is piecewise-LINEAR in `t`
+between pillar knots and flat outside them, so `ω_t` is AFFINE within a pillar - it drifts by
+`(B−A)(1−ρ)/n` per step and kinks only AT a pillar, which is also what gives the
+declining-variance floor below a closed form.
+
+The stored curve carries a knot at tenor 0 whose value is `H0`: at the base date the two states are
+held equal, because no option is quoted at zero maturity to separate them, and that knot is what
+makes `q_0 = L(0)` a property of the written factor rather than a convention a reader has to
+remember. There is no `Omega` field and no `Q0` field.
+
+**It NESTS the plain family exactly**, which is the whole correctness argument and the spine of its
+gates. Set `φ = 0` and hold `L` flat and the h-recursion collapses onto the plain one under
+
+    ω_p = L(1−β) − α,   β_p = β − αγ₁²,   α_p = α,   γ_p = γ₁
+
+whose inverse is `β = ψ_p` (the plain PERSISTENCE, not the plain `Beta`) and `L` = the plain
+STATIONARY variance. `utils.hn_component_from_plain` / `hn_component_to_plain` are that map, and
+`tests/test_hn_component.py` holds the two closed forms to each other across a strike/expiry grid
+at **1.5e-13 relative** — machine precision, not a quadrature tolerance, because the map is exact.
+The A/B/C recursion's third coefficient is what makes it close: `A` alone does NOT reduce to the
+plain `A`, and it is the anchoring `q_0 = L(0)` that reconciles them.
+
+### The fit is two nested solves
+
+**Inner — a triangular bootstrap.** Given candidate globals, the `L` pillars are solved
+SEQUENTIALLY, each against its own ATM expiry's premium, by `brentq` on the pillar level. An option
+to `T` reads `L` only on `[0, T]` — the backward recursion consumes exactly `n` intercepts — so the
+system is exactly triangular, and the price is monotone in the pillar's level, so a bracketed root
+is unique. The ATM ladder therefore reprices to **solver precision** (measured 2.4e-15 relative),
+which is a statement about the root find and not about the model.
+
+**Outer — the smile, with `L` concentrated out.** The skew globals are fitted to the WING quotes
+with the whole `L` strip re-bootstrapped at every iterate, so every candidate reprices the term
+structure exactly and is judged only on the smile. It is DERIVATIVE-FREE (Nelder–Mead): the inner
+solve is a root find, so no gradient passes through it. It inherits the plain family's
+[sign-free leverage reparametrisation](#hestonnandi-fx) — both skew directions in one box, the
+share carrying the sign, `β(1−|l|) ≥ 0` keeping the recursion positive — and adds a second share.
+
+**`α` is a share of the level's own room, and that constraint is not optional.** The plain family
+fits `ω` directly in logs, so `h_{t+1} ≥ ω > 0` for free. Here the intercept is DERIVED from `L`,
+so an `α` larger than `L(1−β)` makes the variance recursion — and the moment generating function
+the pricer inverts — diverge. Measured before this was a share: the adaptive `φ_max` scan ran to
+its `2²⁴` cap and every price came back NaN. So `α = a·H0·(1−β)` with `a ∈ (0,1)`, and `γ₁` is
+DERIVED as `sgn(l)√(|l|β/α)` rather than fitted. `φ` is a share of `α` (same units, scale-free,
+zero is the nested face).
+
+**Two pins, both declared.** `Rho` is **pinned at 0.99 per step** and **refused outside `[0, 1)` at
+the read**: the L-parametrisation has
+evicted `ρ` from the ATM fit — `L` hits the term structure whatever `ρ` is — into the smile's term
+structure alone, and sub-year wings do not identify it. A `ρ ≥ 1` is not merely non-stationary
+(`E_0[q_t] = L_t` stops holding, so `L` stops meaning the path it is fitted as) — it turns the
+least admissible level below NEGATIVE, and `max(floor, 1e-12)` then admits everything, so the
+negative-omega guard is DISABLED rather than tripped. `Tie_Gamma_2` holds `γ₂ = γ₁` by default;
+**No** fits the ratio, whose SIGN stays tied because a smile that rises with strike at one horizon
+and falls at another is a second kink in an objective that already has one.
+
+**The ladder is the plain one with the wings widened**: the same six ATM rungs, plus 25 delta wings
+at 1M, 3M, 6M and 1Y rather than 3M and 6M alone, and `fx_surface_block` is INHERITED unchanged —
+same vega weights, same surface-own strikes, same nothing-past-1Y rule, same substitution note. Six
+globals reduce to five free ones under the two pins, and five free globals judged on the smile
+alone want more than four wing quotes, because the ATM rungs are spent on the `L` pillars and
+identify nothing else. The distinct-contract floor rises from six to **eight** for the same reason.
+
+### The negative-omega guard
+
+A pillar demanding `L` to fall FASTER than `ρ` decays it makes `ω_t < 0`, which drives `q` — and
+then `h` — negative. On a segment of `n` steps running linearly from `A` to `B`,
+`ω_i = A(1−ρ) + (B−A)(1 + i(1−ρ))/n`, so the least admissible level is a closed form:
+
+    B_min = A · (1 − (1−ρ)n / (1 + (n−1)(1−ρ)))
+
+`Declining_Variance` decides what happens there: **Refuse** (default) names the pillar, the level
+it wanted, the least admissible one, the premium it can reach and both remedies; **Floor** takes
+`B_min` and the note travels into the log beside the fitted parameters. There is no silent third
+option. INSIDE the outer search the floor is always taken and its relative miss is added to the
+objective at `atm_constraint_weight` (1e4, so a one basis point ATM miss already outweighs the
+whole smile residual) — a simplex walks into the corner of a box routinely and an exception there
+kills a fit that would have recovered, while `inf` is a wall with no slope out of it.
+
+**Why the guard binds on a RISING term structure, which is worth knowing before reading an `L`.**
+A piecewise-linear `L` matched to SEGMENT INTEGRALS is the recurrence `L_k = 2A_k − L_{k−1}`, whose
+multiplier is −1: marginally stable, so an error in `L(0)` alternates in sign and never decays.
+`H0` therefore sets the PHASE of the whole strip. MEASURED on the four-pillar USDZAR fixture: at
+the cold start (`H0` at the front rung's own implied variance, 14.02% annualised) the bootstrapped
+strip ZIG-ZAGS — 14.02 / 13.83 / 15.33 / 14.46 / 16.32 percent — and at the converged optimum
+(`H0` 13.56%) it is MONOTONE — 13.56 / 14.64 / 14.69 / 15.38 / 15.59. So the oscillation is not
+removed by seeding; it is removed by the fit, and what pins `H0` is the smile residual together
+with the declining-variance floor rather than any smoothness prior. That is not a defect of the
+guard; it is what identifies `H0` here.
+
+The seed still matters, for a DIFFERENT reason and one that is also measured, at the COLD START on
+the same ladder: `H0` at the front rung (14.02%) bootstraps 14.02 / 13.85 / 15.30 / 14.48 / 16.31
+with nothing floored, while `H0` at the ladder's MEAN (14.44%) bootstraps 14.44 / 13.37 / 15.76 /
+14.32 / 16.34 and floors the 3M pillar. Both zig-zag — the seed does not fix that and is not meant
+to. What it buys is a FEASIBLE start, which under `Declining_Variance: Refuse` is the difference
+between a fit and a refusal.
+
+### Wall time, measured
+
+The outer objective re-bootstraps `L` per iterate and every closed-form call is a per-day backward
+recursion, so this family is minutes like its plain sibling. **4.79 s an outer evaluation** on the
+four-pillar ladder reaching six months, which puts the declared 300-evaluation cap at **24 minutes**
+and 400 at 32 — the default is the largest that fits the half hour, and a fit that stops there
+reports itself CAPPED with the residual it actually reached rather than the tolerance it did not.
+
+One reading past the cap, measured on that ladder: at **400** evaluations the fit reads `Alpha`
+3.186e-06, `Beta` 0.8271, `Gamma_1` −78.56, `Phi` 1.716e-06, `H0` 7.257e-05, an `L` strip of
+13.52 / 14.64 / 14.66 / 15.38 / 15.55 percent annualised, an ATM residual of **0.000e+00** and a
+worst wing of 5.66% of premium (0.393 vol points). WHAT FULL CONVERGENCE COSTS AND BUYS IS NOT
+MEASURED: the one run taken to Nelder–Mead's own tolerance (1268 evaluations) was taken under the
+reused-quadrature-bound defect above, so its numbers are void and it has not been repeated. The cap
+is therefore justified on WALL CLOCK, which is measured, and not on a diminishing-returns argument,
+which is not.
+
+**It runs on the CPU**, whatever device the job was constructed with, and that is measured rather
+than assumed. The A/B/C recursion is `n` SEQUENTIAL steps of about ten elementwise operations over
+a 512-element complex vector, which is kernel-launch bound on a GPU: one 126-step price is
+**47 ms on the CPU against 186 ms on CUDA** (RTX 3090), and the `φ_max` scan 172 ms against 775 ms.
+The gap does not close with panels (16 to 128 measured).
+
+**Every price derives its own `φ_max`, and the shortcut that says otherwise is a trap.** The scan
+is 35–184 ms against 8–94 ms for the price itself, so reusing one bound across the ladder is worth
+about 4x — and this family shipped that for an evening before it was caught. The reasoning was
+that more steps means more variance means faster decay, so the front pillar's bound must cover the
+back one. It is right about DECAY and silent about DIVERGENCE: past a parameter- and
+step-count-dependent point the A/B/C recursion blows up, so a bound that is too LARGE integrates
+garbage. MEASURED at a converged optimum, a 126-step price is 0.7353321384 at `φ_max` 128/256/512
+(converged — identical at 64, 256 and 1024 panels), **0.7323069671 at 1024** and **9.4e+55 at
+2048**, while the 21-step contract in the same strip wants 512. Carrying the front bound to the
+back solved that pillar's `L` against a price 0.4% wrong, and because the ATM ladder is
+BOOTSTRAPPED it repriced exactly anyway — the only symptom was the report's own recompute reading a
+3.5e-3 residual where it should read 1e-12. Gate:
+`test_a_quadrature_bound_is_not_transferable_between_contracts`. The lever is still real, and is
+now a [roadmap](roadmap.md) row: a per-pillar bound VERIFIED at the solved level.
+
+### `Quote_Sensitivity` is refused
+
+By name, with the reason: the quote derivative would have to pass through the inner root find by
+the implicit function theorem AND through the outer Nelder–Mead. That is real work and it is not
+built; a family that answered zeros would be worse than one that says so, and the IFT half is a
+[roadmap](roadmap.md) row. **The plain family is NOT the alternative** — the refusal used to name
+it, and `HestonNandiModelPrices` declares no `Quote_Sensitivity` field at all, so that sent a desk
+to a block which would ignore the switch. What the refusal names now is the quote chains that
+really are differentiable: the surface and curve families (`FXVolPrices`, `InterestRatePrices`,
+`GBMAssetPriceTSModelPrices`, `HullWhite2FactorModelPrices`), which solve through torch rather than
+through `brentq`.
+
+### Positivity is a property of the model, not of the box
+
+Unlike plain Heston-Nandi, the CJOW pair has **no positivity guarantee** for `φ > 0`: the worst
+innovation `z = γ₂√h` leaves `q_{t+1} ≥ ω_t + ρq_t − φ − φγ₂²h_t`, whose last term grows with `h`.
+No box on the parameters closes this. The simulator therefore floors both states at
+`utils.HN_COMPONENT_VARIANCE_FLOOR` (1e-12 per step — 1.6 basis points of annualised vol), which is
+DECLARED rather than applied quietly, and the calibration reports the worst-case certificate
+`worst_case_variance_drift` instead of pretending to enforce one. Measured on the component TARF
+gate: **2 of 8192 inner paths** over 248 daily steps at a fitted `φ` share of 0.56 — exactly the
+frequency that is easy to miss, and without the floor it is a NaN in an exposure profile and a CVA.
+The closed form does NOT floor, so the two agree only where the floor is inactive; the
+closed-form-versus-Monte-Carlo gate asserts the margin (measured 2.6e+07 to 3.9e+07 times the
+floor) rather than assuming it.
 
 ## `FXVolPrices` — a smile quoted in delta, and where the conversion runs {#fxvolprices}
 

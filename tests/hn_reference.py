@@ -150,6 +150,40 @@ def hn_simulate(p, n_steps, h1, n_paths, seed=0, device='cpu', dtype=torch.float
 
 
 @torch.no_grad()
+def hnc_simulate(omegas, h0, q0, params, r, n_paths, seed=0, device='cpu',
+                 dtype=torch.float64, chunk=2 ** 21):
+    """Daily-stepped exact simulation of the risk-neutral COMPONENT recursion.
+
+    The sibling of :func:`hn_simulate`, and the reference the component closed form is checked
+    against. It rides ``utils.hn_component_variance_step`` directly, so the pair recursion stays a
+    single source of truth: nothing here re-spells it. ``omegas`` is the per-step intercept strip
+    (its length IS the step count - the same object the closed form integrates), ``params`` the
+    ``(alpha, beta, gamma1, rho, phi, gamma2)`` block and ``r`` the per-step cost of carry.
+
+    Returns ``(R, floor_margin)``: the aggregate log-return of shape ``(n_paths,)`` and the SMALLEST
+    variance either state reached, divided by ``utils.HN_COMPONENT_VARIANCE_FLOOR``. The margin is
+    what makes a closed-form comparison honest - the Fourier inversion integrates the UNFLOORED law,
+    so the two are the same law only where the floor did not bind, and a margin of 1.0 says it did.
+    """
+    g = torch.Generator(device=device).manual_seed(int(seed))
+    outs, done, lowest = [], 0, float('inf')
+    while done < n_paths:
+        m = min(chunk, n_paths - done)
+        h = torch.full((m,), float(h0), dtype=dtype, device=device)
+        q = torch.full((m,), float(q0), dtype=dtype, device=device)
+        x = torch.zeros((m,), dtype=dtype, device=device)
+        for omega_t in omegas:
+            z = torch.randn((m,), generator=g, dtype=dtype, device=device)
+            sh = h.sqrt()
+            x = x + (float(r) - 0.5 * h + sh * z)
+            h, q = utils.hn_component_variance_step(h, q, sh, z, omega_t, *params)
+            lowest = min(lowest, float(h.min()), float(q.min()))
+        outs.append(x)
+        done += m
+    return torch.cat(outs), lowest / utils.HN_COMPONENT_VARIANCE_FLOOR
+
+
+@torch.no_grad()
 def hn_simulate_sum_h(p, n_steps, h1, n_paths, seed=0, device='cpu',
                       dtype=torch.float64, chunk=2 ** 21):
     """Brute-force E_t[Sum_{k=1..n} h_{t+k}] -- the check on :func:`hn_expected_sum_h`.

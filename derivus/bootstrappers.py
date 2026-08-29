@@ -536,6 +536,12 @@ class HestonNandiModelParameters(object):
     tabular_surfaces = ('Explicit', 'Relative_Forward', 'Malz')
 
     market_factor_type = 'HestonNandiModelPrices'
+    #: WHAT A COLLAPSED LADDER COSTS, in this family's own terms - interpolated into the refusal
+    #: rather than spelled inside it, because the component family inherits the emitter and its
+    #: ladder identifies something else. A refusal that names the wrong loss is a refusal a reader
+    #: cannot act on.
+    identification_note = ('five parameters: the ATM term structure is what identifies H0, Beta '
+                           'and Omega')
     # the four factor references, each with the optional `_Type` its `resolve` reads, whose valid
     # values ARE the candidate list - one source, so a new candidate cannot miss the schema.
     # `Yield` is the one reference the fit runs without; the rest are hard-read.
@@ -976,16 +982,16 @@ class HestonNandiModelParameters(object):
         if len(contracts) < cls.fx_minimum_contracts:
             raise ValueError(
                 '{} carries pillars {} - the ladder (ATM {}, {:g}d wings {}) collapses onto {} '
-                'distinct contract{} on it, and {} do not identify five parameters: the ATM term '
-                'structure is what identifies H0, Beta and Omega, and a collapsed ladder has no '
-                'term structure in it. Quote the pair at more expiries (at least {} distinct '
+                'distinct contract{} on it, and {} do not identify {}, and a collapsed ladder has '
+                'no term structure in it. Quote the pair at more expiries (at least {} distinct '
                 'contracts, so at least three pillars at or under {:g}), or author the '
-                'HestonNandiModelPrices block by hand. What each rung did: {}'.format(
+                '{} block by hand. What each rung did: {}'.format(
                     vol_name, '/'.join('{:g}'.format(x) for x in surface.expiry),
                     '/'.join('{:g}'.format(x) for x in cls.fx_atm_expiries), cls.fx_wing_pillar,
                     '/'.join('{:g}'.format(x) for x in cls.fx_wing_expiries), len(contracts),
                     '' if len(contracts) == 1 else 's', len(contracts),
-                    cls.fx_minimum_contracts, cap,
+                    cls.identification_note, cls.fx_minimum_contracts, cap,
+                    cls.market_factor_type,
                     ', '.join(substituted) or 'every rung landed on a pillar it was asked for'))
 
         # NORMALISED, over the rungs as emitted: the weights are relative in the objective, and a
@@ -1220,6 +1226,805 @@ class HestonNandiModelParameters(object):
                 price_factors[param_name] = {
                     'Property_Aliases': None,
                     **dict(zip(utils.HN_PARAM_NAMES, (omega, alpha, beta, gamma, h0)))}
+
+
+class HestonNandiComponentModelParameters(HestonNandiModelParameters):
+    documentation = (
+        'Fx And Equity',
+        ['The COMPONENT Heston-Nandi model of Christoffersen, Jacobs, Ornthanalai and Wang splits the',
+         'variance into a long-run component $q_t$ and a short-run deviation. Under the LRNVR measure',
+         '',
+         '$$h_{t+1}=q_{t+1}+\\beta(h_t-q_t)+\\alpha\\Big[(z_t-\\gamma_1\\sqrt{h_t})^2-'
+         '(1+\\gamma_1^2h_t)\\Big]$$',
+         '',
+         '$$q_{t+1}=\\omega_t+\\rho q_t+\\phi\\Big[(z_t-\\gamma_2\\sqrt{h_t})^2-(1+\\gamma_2^2h_t)'
+         '\\Big]$$',
+         '',
+         'Both bracketed terms are EXACTLY centered, so $h_t-q_t$ is a pure AR(1) at $\\beta$ and',
+         '$E_t[q_{t+k}]$ is driven by $\\omega$ alone. Setting $\\phi=0$ and holding $q$ flat recovers',
+         'plain Heston-Nandi exactly, with $\\beta$ its persistence $\\psi$ and the flat level its',
+         'stationary variance - so this family is a strict extension of *HestonNandiModelPrices*.',
+         '',
+         'THE L CURVE. The intercept is parametrised by a curve rather than a constant:',
+         '$\\omega_t=L_{t+1}-\\rho L_t$. Then $q_t-L_t$ is a homogeneous AR(1), so ANCHORING',
+         '$q_0=L(0)$ gives $E_0[q_t]=L_t$ exactly - the fitted $L$ IS the model\'s expected long-run',
+         'variance path and is directly comparable to the market\'s forward variance strip. $L$ is',
+         'piecewise-linear in $t$ between pillar knots and flat outside them, so $\\omega_t$ is',
+         'AFFINE within a pillar - it drifts by $(B-A)(1-\\rho)/n$ per step over a segment of $n$',
+         'steps from $A$ to $B$ - and KINKS only at one. The curve carries a knot at tenor 0 whose',
+         'value is $h_0$: at the base date the two states are held equal, because no option is quoted',
+         'at zero maturity to separate them, and that knot is what makes $q_0=L(0)$ a property of the',
+         'written factor rather than a convention.',
+         '',
+         'THE FIT IS TWO NESTED SOLVES, because the two halves of the surface identify two different',
+         'things.',
+         '',
+         '1. THE INNER TRIANGULAR BOOTSTRAP. Given candidate globals, the $L$ pillars are solved',
+         'SEQUENTIALLY, each against its own ATM expiry\'s premium, by *brentq* on the pillar level.',
+         'An option to $T$ never reads $L$ beyond $T$, so the system is exactly triangular; and the',
+         'price is monotone in the pillar\'s level (raising it raises $\\omega_t$ over that segment,',
+         'hence $E[h_t]$, hence the premium), so a bracketed root is unique. A pillar with no',
+         'admissible level REFUSES BY NAME with the bracket it searched.',
+         '',
+         '2. THE OUTER FIT concentrates $L$ out: the skew globals are fitted to the WING quotes with',
+         'the whole $L$ strip re-bootstrapped at every iterate, so every candidate reprices the ATM',
+         'term structure exactly and is judged only on the smile. It inherits the plain family\'s',
+         'SIGN-FREE LEVERAGE REPARAMETRISATION - $\\alpha=|l|\\beta/\\gamma_1^2$, $\\gamma_1=\\mathrm{sgn}',
+         '(l)|\\gamma_1|$ for a signed share $l\\in[-1,1]$ - so both skew directions live in one box and',
+         '$\\beta(1-|l|)\\ge0$ keeps the variance recursion positive. $\\phi$ is fitted as a SHARE of',
+         '$\\alpha$ (same units, and the share is scale-free), and the search is derivative-free',
+         '(Nelder-Mead): the inner solve is a root find, so no gradient passes through it.',
+         '',
+         'TWO PINS, both declared rather than hidden. *Rho* is PINNED (default 0.99 per step): the',
+         'L-parametrisation has evicted $\\rho$ from the ATM fit - $L$ hits the term structure',
+         'whatever $\\rho$ is - into the smile\'s term structure alone, and sub-year wings do not',
+         'identify it. *Tie_Gamma_2* holds $\\gamma_2=\\gamma_1$ by default; set it to **No** to fit the',
+         'long-run leverage separately, which needs a wing ladder deep enough to tell the two apart.',
+         '',
+         'THE NEGATIVE-OMEGA GUARD. A pillar demanding $L$ to fall FASTER than $\\rho$ decays it makes',
+         '$\\omega_t<0$, which drives $q$ - and then $h$ - negative. *Declining_Variance* decides:',
+         '**Refuse** (default) names the pillar, the level it wanted and the least admissible one;',
+         '**Floor** takes that least admissible level and says so. There is no silent third option.',
+         '',
+         'THE LADDER is the plain family\'s, WIDENED AT THE WINGS: the same six ATM rungs, plus 25',
+         'delta wings at 1M, 3M, 6M and 1Y rather than 3M and 6M alone. Six globals reduce to five',
+         'free ones under the two pins, and five free globals judged on the smile alone want more',
+         'than four wing quotes - the ATM rungs are spent on the $L$ pillars and identify nothing',
+         'else. Everything else - the vega weights, the surface\'s own strikes, nothing past 1Y, the',
+         'substitution note - is inherited unchanged from *HestonNandiModelPrices*.',
+         '',
+         '*Quote_Sensitivity* is REFUSED on this family. The quote derivative would have to pass',
+         'through the inner root find by the implicit function theorem, which is real work and is',
+         'not built; a family that answered zeros would be worse than one that says so.'
+         ]
+    )
+
+    market_factor_type = 'HestonNandiComponentModelPrices'
+
+    #: THE FIT RUNS ON THE CPU, whatever device the job was constructed with, and this is measured
+    #: rather than assumed. The A/B/C recursion is `n` SEQUENTIAL steps of about ten elementwise
+    #: operations over a 512-element complex vector - 252 of them for a one-year expiry - which is
+    #: kernel-launch bound on a GPU and not bandwidth bound at all. On this workstation's RTX 3090,
+    #: one 126-step price: 47 ms on the CPU against 186 ms on CUDA, and the adaptive phi_max scan
+    #: 172 ms against 775 ms. The gap does not close with panels (16 to 128 measured), because the
+    #: launches dominate at every width. The plain family inherits its device from the job and is
+    #: welcome to; this one states what it measured.
+    device = torch.device('cpu')
+
+    def __init__(self, param, device, dtype):
+        # the constructed device is deliberately ignored, exactly as the constructed dtype is (the
+        # inversion needs float64) - see the `device` note above
+        self.param = param
+
+    #: THE WINGS WIDEN. Five free globals are judged on the SMILE alone (the ATM rungs are spent on
+    #: the L pillars), so the wing ladder carries four expiries rather than two - eight quotes for
+    #: five parameters. The ATM rungs, the cap and the snapping rule are the plain family's.
+    fx_wing_expiries = (1.0 / 12.0, 0.25, 0.5, 1.0)
+    #: THE ATM LADDER IS A CONSTRAINT, NOT A TERM. A candidate whose pillars hit the
+    #: declining-variance floor cannot reprice its ATM quotes, and no improvement in the smile may
+    #: pay for that - the whole premise of concentrating L out is that the term structure is hit
+    #: EXACTLY. So the floor's relative miss enters the outer objective at this weight, on the same
+    #: relative scale as the (normalised) wing residual: at 1e4, a ONE BASIS POINT ATM miss already
+    #: costs as much as the entire smile residual of a good fit, so the optimum lands feasible.
+    #: Measured on the four-pillar USDZAR fixture: at weight 1 the simplex settled 0.63% inside the
+    #: infeasible region and the final strip refused; at 1e4 it settles feasible.
+    atm_constraint_weight = 1.0e4
+
+    #: More contracts than the plain family's six, for the same reason: the ATM rungs are consumed
+    #: by the bootstrap, so what identifies the globals is what is LEFT, and a ladder that collapses
+    #: its wings onto one expiry has no smile term structure in it at all.
+    fx_minimum_contracts = 8
+    identification_note = ('five free globals off the smile: the ATM term structure is spent on '
+                           'the L pillars, which are bootstrapped rather than fitted')
+
+    #: x = (beta, SIGNED leverage share, ARCH share of the level's own room, phi share of alpha,
+    #: log H0) - see reparam. beta is the SHORT-RUN persistence and is bounded below 1 for the same
+    #: reason the plain family's psi is: it is that model's psi under the exact nesting map.
+    bounds = [(1e-4, 1.0 - 1e-6), (-1.0, 1.0), (1e-3, 1.0 - 1e-6), (0.0, 1.0),
+              (np.log(1e-10), np.log(1e-2))]
+
+    fields = HestonNandiModelParameters.fields[:-1] + [
+        F('Rho', 'Float', default=0.99,
+          description='PINNED long-run persistence per step, 0 <= Rho < 1 and REFUSED outside it '
+                      '(q is an AR(1) at rho: at rho >= 1 the long-run component is '
+                      'non-stationary and the negative-omega floor turns negative, which disables '
+                      'the guard). The L parametrisation evicts rho from '
+                      'the ATM fit - L reprices the term structure whatever rho is - into the '
+                      'smile\'s own term structure, and sub-year wings under-identify it. Declared '
+                      'so a desk that has a view can state it, not so the fit can wander'),
+        F('Tie_Gamma_2', 'Text', default='Yes', values=['Yes', 'No'],
+          description='Hold the long-run leverage equal to the short-run one. No fits Gamma_2 '
+                      'separately, which needs wings deep enough to tell the two apart'),
+        F('Declining_Variance', 'Text', default='Refuse', values=['Refuse', 'Floor'],
+          description='What a pillar demanding L to fall faster than rho decays it does. Refuse '
+                      'names the pillar; Floor takes the least admissible level and says so. '
+                      'Never a silent negative variance'),
+        F('Max_Iterations', 'Integer', default=300,
+          description='Outer (Nelder-Mead) function evaluations. The objective re-bootstraps the '
+                      'whole L strip per iterate and every price derives its own quadrature bound, '
+                      'so this is THE wall-clock knob: measured at 4.79 s an evaluation on the '
+                      'four-pillar USDZAR ladder, which puts 300 at 24 minutes and 400 at 32. The '
+                      'default is the largest that fits the half hour; a fit that stops here '
+                      'reports itself CAPPED with the residual it actually reached rather than the '
+                      'tolerance it did not'),
+        F('Tolerance', 'Float', default=1e-8,
+          description='Outer convergence tolerance on the weighted premium residual'),
+        F('Pillar_Tolerance', 'Float', default=1e-14,
+          description='brentq tolerance on a pillar\'s L level, relative to its bracket'),
+        F('Quote_Sensitivity', 'Text', default='No', values=['Yes', 'No'],
+          description='REFUSED on this family: the quote derivative would have to pass through the '
+                      'inner root find by the implicit function theorem, which is not built')
+    ] + HestonNandiModelParameters.fields[-1:]
+
+    # ----------------------------------------------------------------------------------
+    # the parametrisation
+    # ----------------------------------------------------------------------------------
+
+    @staticmethod
+    def reparam(x):
+        """Maps the fitted vector ``x = (beta, signed leverage share, ARCH share, phi share,
+        log H0)`` to (Alpha, Beta, Gamma_1, Phi, H0).
+
+        TWO SHARES, AND EACH ONE MAKES A DIFFERENT POSITIVITY CONSTRAINT AUTOMATIC. What the box
+        buys is FEASIBLE ALGEBRA at every point of it - alpha, H0 and the nested-face intercept are
+        positive by construction, so no iterate needs a penalty to hold them there, exactly as in
+        the plain family. It does NOT buy a finite PRICE: away from the nested face the moment
+        generating function can still diverge, and there the phi_max scan caps and the objective
+        reads the candidate as infeasible (+inf) rather than scoring it - the wall described four
+        paragraphs down. MEASURED at flat L over 21 steps: the (beta 0.5, l 0.9, a 0.5) point of
+        the box prices NaN, the (beta 1-1e-6, |l| 1, a 1e-3) corner prices 1.5619.
+
+        * THE LEVERAGE SHARE l in [-1, 1] holds Alpha*Gamma_1^2 = |l|*Beta, so the plain-equivalent
+          GARCH coefficient Beta - Alpha*Gamma_1^2 = Beta(1-|l|) is non-negative. It CARRIES THE
+          SIGN of Gamma_1, for the reason the plain family's does: a smile rising with strike in the
+          underlying's own units is a negative leverage, an FX pair read on its `FxRate` axis
+          routinely wants it, and a one-signed box answers such a surface with a flat smile it calls
+          converged.
+
+        * THE ARCH SHARE a in (0, 1) holds Alpha = a*H0*(1-Beta), so the plain-equivalent intercept
+          on the nested face, omega_p = L(1-Beta) - Alpha at L = H0, is H0(1-Beta)(1-a) > 0. THIS IS
+          THE CONSTRAINT THE PLAIN FAMILY GETS FOR FREE and this one does not: there, omega is
+          fitted directly in logs and h_{t+1} >= omega > 0 by construction; here the intercept is
+          DERIVED from the L curve, so an Alpha larger than the level's own room makes the variance
+          recursion - and the moment generating function the pricer inverts - diverge. Measured
+          before this was a share: the adaptive phi_max scan ran to its 2^24 cap and every price
+          came back NaN.
+
+        GAMMA_1 IS THEREFORE DERIVED, not fitted: Gamma_1 = sgn(l) sqrt(|l| Beta / Alpha). That is
+        the one substantive departure from the plain family's box, and it is what buys both
+        constraints at once. Its scale is set by the shares alone: the dimensionless leverage
+        Gamma_1*sqrt(H0) = sqrt(|l| Beta / (a(1-Beta))) does not depend on H0, and over the box it
+        runs from 0 at l = 0 - symmetric ARCH with no leverage channel, which is what a flat surface
+        should report - to 31,623 at the (Beta 1-1e-6, |l| 1, a 1e-3) corner, which still prices
+        finite (measured, flat L over 21 steps). The fits this family has landed read 0.56 to 7.4.
+
+        PHI IS A SHARE OF ALPHA. The two multiply the same squared normal and so share units; a
+        share is scale-free, cannot go negative, and phi_share = 0 is exactly the nested face where
+        the long-run component stops responding to shocks and this model IS the plain one.
+
+        WHAT NO BOX CAN GIVE: positivity of the FULL component recursion away from the nested face.
+        h_{t+1} >= omega_t + (rho-beta) q_t + [beta(1-|l|) - phi gamma_2^2] h_t - alpha - phi has no
+        sign for free once rho != beta and phi > 0 - that is a property of the CJOW model, not of
+        this parametrisation. It is loud rather than silent: a divergent MGF caps the phi_max scan
+        and the fit reads the candidate as infeasible; a negative h in the simulator is a NaN out of
+        sqrt. The fit reports the worst-case bound it landed on.
+        """
+        beta, share, arch = x[0], x[1], x[2]
+        h0 = torch.exp(x[4])
+        alpha = arch * h0 * (1.0 - beta)
+        lev = torch.abs(share)
+        magnitude = torch.sqrt(lev * beta / alpha)
+        gamma1 = torch.where(share < 0.0, -magnitude, magnitude)
+        return alpha, beta, gamma1, x[3] * alpha, h0
+
+    @staticmethod
+    def unreparam(alpha, beta, gamma1, phi, h0):
+        """Inverse of reparam (used to warm start off an existing price factor)."""
+        share = alpha * gamma1 ** 2 / beta
+        return np.array([beta, -share if gamma1 < 0.0 else share,
+                         alpha / (h0 * (1.0 - beta)),
+                         phi / alpha if alpha else 0.0, np.log(h0)])
+
+    @staticmethod
+    def worst_case_variance_drift(alpha, beta, gamma1, rho, phi, gamma2, omega_min):
+        """The deterministic lower bound on one step's SHORT-run variance, as
+        `(intercept, q_loading, h_slope)`:
+
+            h_{t+1} >= intercept + q_loading * q_t + h_slope * h_t
+
+        DROPPING BOTH QUADRATICS. Substituting the q step into the h step leaves
+        `alpha(z - gamma_1 sqrt h)^2 + phi(z - gamma_2 sqrt h)^2` on top of an affine part, and this
+        sets both to zero. NO SINGLE INNOVATION DOES THAT unless gamma_1 = gamma_2 - the worst
+        z = gamma_1 sqrt(h) still leaves phi(gamma_1-gamma_2)^2 h - so what is returned is the
+        LOOSER of the two bounds, which is still a bound and is what the arithmetic below is. The
+        centering terms cancel the quadratics' own h coefficients, leaving `omega_min - alpha - phi`
+        as the constant, `rho - beta` on q, and `beta - alpha*gamma_1^2 - phi*gamma_2^2` on h.
+        `omega_min` is the SMALLEST intercept over the whole horizon - the strip between the knots
+        AND the flat tail past the last one (see `omega_floor`) - which is what makes the constant a
+        bound rather than a per-step quantity.
+
+        THREE NON-NEGATIVE NUMBERS IS A CERTIFICATE FOR h GIVEN q >= 0, AND NOTHING MORE. q has no
+        certificate of its own whenever phi*gamma_2^2 > 0 - `q_{t+1} >= omega_t + rho*q_t - phi -
+        phi*gamma_2^2*h_t` has a term that grows with h and no bound on h to set against it - so a
+        fit with a live long-run ARCH channel cannot be certified positive at all. That is the CJOW
+        model's own property, and this reports it instead of pretending otherwise; the simulator's
+        declared floor (`utils.HN_COMPONENT_VARIANCE_FLOOR`) is what keeps a tail path finite.
+        """
+        return (float(omega_min) - float(alpha) - float(phi),
+                float(rho) - float(beta),
+                float(beta) - float(alpha) * float(gamma1) ** 2
+                - float(phi) * float(gamma2) ** 2)
+
+    @staticmethod
+    def admissible_level(previous, days, rho):
+        """The LEAST pillar level whose segment keeps omega_t >= 0 - the declining-variance floor.
+
+        On a segment of `days` steps running linearly from `previous` to a level B,
+        L_i = A + (B-A)i/n and omega_i = A(1-rho) + (B-A)(1 + i(1-rho))/n, which is increasing in B
+        and (for a FALLING segment) smallest at the last step. Setting that to zero gives
+
+            B_min = A * (1 - (1-rho)*n / (1 + (n-1)(1-rho)))
+
+        a closed form rather than a search, so the refusal can name the number it wanted. A RISING
+        segment has its minimum at i = 0 and is admissible whenever A(1-rho) >= 0, which it is.
+
+        THE MARGIN IS ONE PART IN 1e9 ABOVE the exact crossing, and it is not decoration. The level
+        is written to a Curve and the omega strip is REBUILT from it - interpolated, differenced,
+        in a different order - so the exact crossing comes back an ulp either side of zero;
+        measured at -2.7e-20 on the humped fixture, which is 5e-15 of the omega scale and still a
+        negative variance to anything that reads the sign. A curve that has to be non-negative
+        should be non-negative by construction, and 1e-9 of a level is orders below any
+        calibration precision.
+        """
+        gap = 1.0 - rho
+        exact = float(previous) * (1.0 - gap * days / (1.0 + (days - 1) * gap))
+        return exact * (1.0 + 1e-9) if exact > 0.0 else exact
+
+    # ----------------------------------------------------------------------------------
+    # pricing + the inner triangular bootstrap
+    # ----------------------------------------------------------------------------------
+
+    @classmethod
+    def price(cls, spot, strike, is_call, units, omegas, h0, q0, params, r, panels,
+              yield_discount=1.0):
+        """Component European option value - puts by put-call parity off the call, exactly as the
+        plain family's `price` does, and with the same `yield_discount` rescale (the internal price
+        discounts at the carry r-q; the value discounts at r, and parity survives the rescale)."""
+        # NO phi_max KNOB: every price derives its own quadrature bound, because for this model a
+        # reused one is not conservative - see `bootstrap_l` and `utils.hn_component_auto_phi_max`.
+        # A parameter nothing may pass is a parameter that should not exist.
+        call = utils.hn_component_call(spot, strike, omegas, h0, q0, *params, r, panels=panels)
+        n = len(omegas)
+        return units * yield_discount * (
+            call - (1.0 - is_call) * (spot - strike * torch.exp(-r * n)))
+
+    @classmethod
+    def l_strip(cls, knots, levels, steps, rho, spy):
+        """The omega strip over `steps` daily steps from the (knots, levels) L curve."""
+        l_path = utils.hn_component_l_path(knots, levels, steps, spy)
+        return list(utils.hn_component_omega_path(l_path, rho))
+
+    @classmethod
+    def omega_floor(cls, knots, levels, rho, spy):
+        """The SMALLEST omega_t over the whole horizon - the strip between the knots AND the flat
+        tail past the last one, where omega = L_last(1-rho). This is the certificate's `omega_min`.
+
+        THE TAIL IS ROUTINELY THE MINIMUM AND A STRIP THAT STOPS AT THE LAST KNOT NEVER LOOKS AT IT.
+        On a RISING segment of n steps from A to B the least intercept is A(1-rho) + (B-A)/n at
+        i = 0, which is below the tail's B(1-rho) only while n > 1/(1-rho) - 100 steps at the pinned
+        rho. So a curve whose every segment rises and whose last segment is shorter than that has
+        its global minimum past the last knot. MEASURED on L = [9e-5, 9.9e-5, 1e-4] at knots
+        0/0.25/0.5y: 1.006e-6 read off the strip alone against 1.000e-6 true.
+        """
+        strip = cls.l_strip(knots, levels, max(int(round(float(knots[-1]) * spy)), 1), rho, spy)
+        return min([float(x) for x in strip] + [float(levels[-1]) * (1.0 - float(rho))])
+
+    def bootstrap_l(self, atm, params, h0, rho, spy, panels, knots, declining, tolerance,
+                    refuse=True):
+        """THE INNER TRIANGULAR BOOTSTRAP: the L pillars, solved one at a time against their own
+        ATM premium. Returns `(levels, notes, shortfall)` - the level at each knot (levels[0] is
+        L(0) = h0 by the anchoring), any floors applied by name, and the summed squared RELATIVE
+        premium miss on the floored pillars (zero when every pillar solved).
+
+        TRIANGULAR BECAUSE THE MODEL IS. An option to T reads L only on [0, T] - the backward
+        recursion consumes exactly `n` intercepts - so pillar k's premium is a function of pillars
+        0..k and of nothing later. Each is therefore a ONE-dimensional root find rather than a
+        coordinate of a six-dimensional one, and the whole strip costs one bracketed solve apiece.
+
+        MONOTONE, WHICH IS WHAT MAKES BRENTQ THE RIGHT TOOL. Raising pillar k raises omega_t over
+        its own segment, hence E[h_t] over it, hence the option's total expected variance, hence an
+        ATM premium. The bracket is EXPANDED rather than guessed: it starts around the previous
+        pillar and doubles out until the premium straddles the target, and a bracket that runs out
+        REFUSES BY NAME with what it searched - a silently clamped pillar would put a level nobody
+        solved for into a curve the process then simulates.
+
+        `refuse` IS WHAT SEPARATES THE SEARCH FROM THE ANSWER. Inside the outer optimizer the
+        floor is taken and the miss is RETURNED as a shortfall the objective adds to its residual,
+        because a simplex walks into the corner of a box routinely and an exception there kills a
+        fit that would have recovered - and because the shortfall is a slope out of the infeasible
+        region where `inf` is a wall. On the FINAL strip, at the parameters actually reported,
+        `Declining_Variance` decides for real: **Refuse** raises with the pillar named, **Floor**
+        takes the level and the note travels into the log beside the fitted parameters.
+
+        EVERY PRICE DERIVES ITS OWN PHI_MAX, and that costs about 4x. This was written the other
+        way - one scan on the shortest pillar, reused for every later one, on the reasoning that
+        more steps means more variance means faster decay so the front bound must cover the back.
+        THAT IS FALSE FOR THIS MODEL, and it silently mispriced. MEASURED at a converged optimum
+        (Alpha 3.297e-06, Beta 0.8326, Gamma_1 -55.94, Phi 2.077e-06): the 21-step contract's own
+        bound is 512, the 126-step contract's is 256, and the 126-step price is 0.7353321384 at
+        phi_max 128/256/512 (identical at 64, 256 and 1024 panels - it is converged), 0.7323069671
+        at 1024 and 9.4e+55 at 2048. The component log-CF does not merely decay slowly out there;
+        past a parameter-dependent point the A/B/C recursion diverges, so a bound that is too LARGE
+        is not conservative - it integrates garbage. Carrying the front pillar's 512 to the back one
+        solved that pillar's L against a price 0.4% wrong, which the report then caught as a
+        3.5e-3 ATM residual on a ladder that is supposed to reprice exactly.
+
+        The speed lever is real and is now a roadmap row rather than a shortcut: a per-pillar bound
+        VERIFIED at the solved level (re-derive once, re-solve only if it moved) would keep most of
+        the 4x and stay sound. It is not built, and this pays the full cost instead.
+
+        WHY THE FLOOR BINDS AT ALL ON A RISING TERM STRUCTURE, which is worth stating because it
+        surprised this build: a piecewise-LINEAR L matched to SEGMENT INTEGRALS is the recurrence
+        L_k = 2*A_k - L_(k-1) (A_k the segment's average forward variance), whose multiplier is -1.
+        It is marginally stable - an error in L(0) alternates in sign and never decays - so H0 sets
+        the PHASE of the whole strip and a mis-seeded H0 makes L oscillate about the forward
+        variance curve until the guard stops it. That is not a defect of the guard; it is what
+        IDENTIFIES H0 here, and the outer fit's own smile residual is the other half of it.
+        """
+        levels, notes, shortfall = [h0], [], 0.0
+        for k, (n, quote) in enumerate(atm):
+            days = int(n - (0 if not k else atm[k - 1][0]))
+            floor = self.admissible_level(levels[-1], days, float(rho))
+            spot, strike, is_call, units, target, b, q = quote
+            if not target:
+                # every reading of this pillar is RELATIVE to its own premium (the bracket's miss,
+                # the floored note, the shortfall the objective adds), so a zero is a
+                # ZeroDivisionError three lines down rather than a wide bracket
+                raise ValueError(
+                    'HestonNandiComponent: the {:g}y ATM pillar quotes a premium of {:g}, and a '
+                    'pillar with no premium cannot anchor an L level - the bootstrap solves each '
+                    'level against its own quote and reports every miss relative to it. Drop that '
+                    'rung, or quote it at a positive vol (Quote_Type Implied_Volatility) or a '
+                    'positive premium'.format(n / spy, target))
+
+            def premium(level):
+                omegas = self.l_strip(knots[:k + 2], torch.stack(levels + [level]),
+                                      int(n), rho, spy)
+                return float(self.price(spot, strike, is_call, units, omegas, h0, levels[0],
+                                        params, b, panels, q))
+
+            low = max(floor, 1e-12)
+            high = max(float(levels[-1]) * 2.0, low * 4.0)
+            error = lambda x: premium(self.tensor(x)) - target
+            lo_err = error(low)
+            if lo_err > 0.0:
+                # the pillar wants LESS variance than the floor admits - the declining-variance
+                # case, named on every path out of here (never a silent negative omega)
+                message = (
+                    'HestonNandiComponent: the {:g}y ATM pillar demands a long-run variance BELOW '
+                    '{:.6g}, the least level whose segment keeps omega_t = L_(t+1) - rho*L_t '
+                    'non-negative from {:.6g} over {} steps at rho={:g}. Its premium there is '
+                    '{:.6g} against a target of {:.6g} ({:+.2%}). A negative omega drives the '
+                    'long-run component - and then the variance - negative, so this refuses rather '
+                    'than floors: set Declining_Variance to Floor to take {:.6g} and have the fit '
+                    'say so, or lower Rho so the level is allowed to decay faster'.format(
+                        n / spy, low, float(levels[-1]), days, float(rho),
+                        lo_err + target, target, lo_err / target, low))
+                if refuse and declining == 'Refuse':
+                    raise ValueError(message)
+                notes.append('pillar {:g}y FLOORED at {:.6g} - its own level would need L to fall '
+                             'faster than rho={:g} decays it; the pillar reprices {:+.2%}'.format(
+                                 n / spy, low, float(rho), lo_err / target))
+                shortfall += (lo_err / target) ** 2
+                levels.append(self.tensor(low))
+                continue
+            expansions = 0
+            while error(high) < 0.0:
+                high *= 2.0
+                expansions += 1
+                if expansions > 40:
+                    raise ValueError(
+                        'HestonNandiComponent: no long-run variance level reprices the {:g}y ATM '
+                        'pillar - its premium is still {:.6g} below the target {:.6g} at a level '
+                        'of {:.6g} (annualised vol {:.1%}), searched up from {:.6g}. The quote is '
+                        'not reachable under these globals; check the ATM vol on that rung'.format(
+                            n / spy, -error(high), target, high, float(np.sqrt(high * spy)), low))
+            levels.append(self.tensor(scipy.optimize.brentq(
+                error, low, high, xtol=tolerance * max(high, 1e-12), rtol=8.9e-16)))
+        return levels, notes, shortfall
+
+    def tensor(self, x):
+        return torch.tensor(float(x), device=self.device, dtype=self.prec)
+
+    # ----------------------------------------------------------------------------------
+    # the outer fit
+    # ----------------------------------------------------------------------------------
+
+    def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices,
+                  calendars, debug=None):
+        """Calibrates the component Heston-Nandi parameters and writes them out as a
+        `HestonNandiComponentModelParameters` price factor.
+
+        The quote preparation is the plain family's, quote for quote: the same day-count accrual off
+        `Expiry_Date`, the same forward, the same Black target premium at the surface's own vol (or
+        the quoted premium), the same `Volatility_Delta` applied ONCE. What differs is everything
+        after: the quotes SPLIT into an ATM ladder that the L bootstrap consumes exactly and a wing
+        ladder the outer fit is judged on.
+
+        THE ATM QUOTE AT AN EXPIRY IS THE ONE NEAREST ITS OWN FORWARD, which is how a hand-authored
+        block is read as well as an emitted one - the emitter's ordering is not a marker anything
+        may depend on.
+
+        ONE ATM EQUATION PER EXPIRY, and repeated wings stay as WEIGHT. A thin surface snaps
+        several rungs onto one pillar, so the same contract arrives more than once; on the ATM side
+        that would be the same pillar solved twice against itself, so the group answers a single
+        equation. On the wing side a repeat is exactly what the emitter's own normalisation makes
+        it - a heavier weight on a pillar the surface actually carries - and the objective is a
+        weighted least squares, so it is left alone rather than deduplicated into a different
+        weighting than the block declares.
+        """
+        for market_price, implied_params in market_prices.items():
+            rate = utils.check_rate_name(market_price)
+            market_factor = utils.Factor(rate[0], rate[1:])
+            if market_factor.type != self.market_factor_type:
+                continue
+            instrument = implied_params['instrument']
+
+            if instrument.get('Quote_Sensitivity', 'No') == 'Yes':
+                raise Exception(
+                    'Quote_Sensitivity: {} concentrates the L curve out through a bracketed root '
+                    'find (brentq), which carries no derivative. Propagating a quote tick would '
+                    'need the implicit function theorem across the inner solve AND the outer '
+                    'Nelder-Mead, which is not built - the IFT half is a roadmap row. Set '
+                    'Quote_Sensitivity to No. The plain HestonNandiModelPrices family is NOT the '
+                    'remedy - it declares no Quote_Sensitivity field at all; the differentiable '
+                    'quote chains are the surface and curve families (FXVolPrices, '
+                    'InterestRatePrices, GBMAssetPriceTSModelPrices, HullWhite2FactorModelPrices), '
+                    'which solve through torch rather than through brentq'.format(market_price))
+
+            try:
+                vol_surface = riskfactors.construct_factor(
+                    self.resolve(instrument, 'Volatility', price_factors), price_factors, factor_interp)
+                vol_surface.delta = sys_params.get('Volatility_Delta', 0.0)
+                underlying = riskfactors.construct_factor(
+                    self.resolve(instrument, 'Underlying', price_factors), price_factors, factor_interp)
+                discount = riskfactors.construct_factor(
+                    self.resolve(instrument, 'Discount_Rate', price_factors), price_factors, factor_interp)
+                yield_factor = self.resolve(instrument, 'Yield', price_factors)
+                carry = riskfactors.construct_factor(
+                    yield_factor, price_factors, factor_interp) if yield_factor else None
+            except Exception:
+                logging.error('Unable to bootstrap {0} - skipping'.format(market_price), exc_info=True)
+                continue
+
+            spot = float(underlying.current_value()[0])
+            quote_type = instrument['Quote_Type']
+            # EVERY default read off the field's own declaration - the discipline the emitter
+            # states at `fx_surface_block`: a block and a field cannot hold two different defaults
+            declared = {field.name: field.default for field in self.fields}
+            spy = float(instrument.get('Steps_Per_Year', declared['Steps_Per_Year']))
+            panels = instrument.get('Quadrature_Panels', declared['Quadrature_Panels'])
+            use_forward = instrument.get('Use_Forward') == 'Yes'
+            invert_moneyness = instrument.get('Invert_Moneyness') == 'Yes'
+            rho = float(instrument.get('Rho', declared['Rho']))
+            if not 0.0 <= rho < 1.0:
+                raise ValueError(
+                    'Rho: {} declares Rho={:g}, which is outside [0, 1). q_t is an AR(1) at Rho, '
+                    'so at Rho >= 1 the long-run component is NON-STATIONARY - E_0[q_t] = L_t no '
+                    'longer holds and the L curve stops meaning the expected variance path it is '
+                    'fitted as - and the least admissible level '
+                    'A(1 - (1-Rho)n/(1 + (n-1)(1-Rho))) goes NEGATIVE, so max(floor, 1e-12) '
+                    'silently disables the negative-omega guard rather than tripping it. Pin Rho '
+                    'in [0, 1); the declared default is {:g}'.format(
+                        market_price, rho, declared['Rho']))
+            rho = self.tensor(rho)
+            tie = instrument.get('Tie_Gamma_2', declared['Tie_Gamma_2']) == 'Yes'
+            declining = instrument.get('Declining_Variance', declared['Declining_Variance'])
+            max_iter = int(instrument.get('Max_Iterations', declared['Max_Iterations']))
+            tolerance = float(instrument.get('Tolerance', declared['Tolerance']))
+            pillar_tol = float(instrument.get('Pillar_Tolerance', declared['Pillar_Tolerance']))
+
+            subtype = vol_surface.get_subtype()
+            if quote_type == 'Implied_Volatility' and subtype[0] not in self.tabular_surfaces:
+                logging.error(
+                    'Cannot bootstrap {0} - volatility {1} has Surface_Type {2} (Moneyness_Rule {3}); '
+                    'only {4} surfaces can be queried at a strike. Quote premiums directly '
+                    '(Quote_Type Premium) instead'.format(
+                        market_price, instrument['Volatility'], subtype[0], subtype[1],
+                        '/'.join(self.tabular_surfaces)))
+                continue
+
+            rows = []
+            for option in instrument['European_Options']:
+                t = discount.get_day_count_accrual(
+                    sys_params['Base_Date'], (option['Expiry_Date'] - sys_params['Base_Date']).days)
+                r = float(discount.current_value(t))
+                q = float(carry.current_value(t)) if carry is not None else 0.0
+                forward = spot * np.exp((r - q) * t)
+                sign = 1.0 if option['Option_Type'] == 'Call' else -1.0
+                option['Strike'] = forward if not option['Strike'] else option['Strike']
+                option['T'] = t
+                option['n'] = max(int(round(t * spy)), 1)
+                if quote_type == 'Implied_Volatility':
+                    moneyness = self.moneyness(
+                        option['Strike'], spot, forward, vol_surface, use_forward, invert_moneyness)
+                    sigma = vol_surface.current_value([[moneyness, t]])[0] if not option[
+                        'Quoted_Market_Value'] else option['Quoted_Market_Value']
+                    sigma += vol_surface.delta
+                    option['Premium'] = utils.black_european_option_price(
+                        forward, option['Strike'], r, sigma, t, option['Units'], sign)
+                elif quote_type == 'Premium':
+                    option['Premium'] = option['Units'] * option['Quoted_Market_Value']
+                    call = option['Quoted_Market_Value'] + (0.0 if sign > 0 else
+                                                            forward - option['Strike']) * np.exp(-r * t)
+                    sigma = np.sqrt(utils.bs_implied_total_var(
+                        call, spot * np.exp(-q * t), option['Strike'], r * t, 1) / t)
+                else:
+                    logging.error('quote_type {} not supported yet'.format(quote_type))
+                    continue
+                option['sigma'] = sigma
+                # the per-step carry and the yield rescale, exactly as the plain family builds them
+                rows.append((option, (r - q) * t / option['n'], np.exp(-q * t), forward))
+
+            # THE SPLIT. One ATM per distinct expiry (nearest its own forward), deduplicated; the
+            # rest are wings. A repeated contract is a weight, not a second equation.
+            by_expiry = {}
+            for option, b, yq, forward in rows:
+                by_expiry.setdefault(option['n'], []).append((option, b, yq, forward))
+            atm_rows, wing_rows = [], []
+            for n in sorted(by_expiry):
+                group = by_expiry[n]
+                pick = min(group, key=lambda row: abs(row[0]['Strike'] / row[3] - 1.0))
+                atm_rows.append(pick)
+                wing_rows += [row for row in group
+                              if row[0]['Strike'] != pick[0]['Strike']]
+            if not atm_rows:
+                logging.error('{} carries no quotes - nothing to bootstrap'.format(market_price))
+                continue
+
+            # knots land ON the step count each pillar is priced at, so the L path's own day index
+            # and the option's step count are the same clock (see hn_component_l_path)
+            knots = np.array([0.0] + [row[0]['n'] / spy for row in atm_rows])
+            atm = [(row[0]['n'],
+                    (spot, self.tensor(row[0]['Strike']),
+                     1.0 if row[0]['Option_Type'] == 'Call' else 0.0,
+                     self.tensor(row[0]['Units']), row[0]['Premium'],
+                     self.tensor(row[1]), self.tensor(row[2])))
+                   for row in atm_rows]
+            wings = [(row[0]['n'], self.tensor(row[0]['Strike']),
+                      1.0 if row[0]['Option_Type'] == 'Call' else 0.0,
+                      self.tensor(row[0]['Units']), row[0]['Premium'], row[0]['Weight'],
+                      self.tensor(row[1]), self.tensor(row[2])) for row in wing_rows]
+            if not wings:
+                logging.warning(
+                    '{} carries no wing quotes - the L bootstrap will reprice the ATM ladder '
+                    'exactly and the skew globals are unidentified by it'.format(market_price))
+
+            price_param = utils.Factor(self.__class__.__name__, market_factor.name)
+            param_name = utils.check_tuple_name(price_param)
+            x0 = self.seed(price_factors.get(param_name), atm_rows, by_expiry, spy, tie)
+
+            scale = np.mean([w[4] ** 2 for w in wings]) if wings else 1.0
+            calls = {'n': 0}
+            state = {}
+
+            def objective(x):
+                """One outer iterate: re-bootstrap L, then score the WINGS.
+
+                L is concentrated out, so the ATM ladder is repriced exactly at every candidate the
+                bootstrap could solve and the number this returns is a pure smile residual. A
+                candidate whose pillars hit the declining-variance floor carries that miss too -
+                the floor's own relative shortfall at `atm_constraint_weight`, which turns the
+                infeasible region into a SLOPE the simplex can walk down rather than a wall it
+                bounces off, while making it steep enough that no smile gain can pay for an ATM
+                miss. A candidate whose MGF diverges (the box does not
+                guarantee positivity away from the nested face) scores +inf, which is the wall it
+                should be.
+                """
+                calls['n'] += 1
+                params = self.unpack(x, tie, rho)
+                h0 = float(params[-1])
+                try:
+                    # the notes are dropped here on purpose: what gets reported is the FINAL
+                    # strip's, bootstrapped at the parameters actually written
+                    levels, _, shortfall = self.bootstrap_l(
+                        atm, params[:-1], self.tensor(h0), rho, spy, panels, knots, declining,
+                        pillar_tol, refuse=False)
+                    error = self.atm_constraint_weight * shortfall
+                    for n, strike, is_call, units, premium, weight, b, yq in wings:
+                        omegas = self.l_strip(knots, torch.stack(levels), int(n), rho, spy)
+                        fitted = float(self.price(spot, strike, is_call, units, omegas,
+                                                  self.tensor(h0), levels[0], params[:-1], b,
+                                                  panels, yq))
+                        error += weight * (premium - fitted) ** 2 / scale
+                except (ValueError, RuntimeError) as refusal:
+                    state['last_refusal'] = str(refusal)
+                    return np.inf
+                if not np.isfinite(error):
+                    state['last_refusal'] = 'the characteristic function diverged at this candidate'
+                    return np.inf
+                return error
+
+            started = time.time()
+            result = scipy.optimize.minimize(
+                objective, x0, method='Nelder-Mead', bounds=self.box(tie),
+                options={'maxfev': max_iter, 'xatol': 1e-10, 'fatol': tolerance})
+            elapsed = time.time() - started
+
+            params = self.unpack(result.x, tie, rho)
+            alpha, beta, gamma1, phi, gamma2, h0 = [float(x) for x in (
+                params[0], params[1], params[2], params[4], params[5], params[6])]
+            # the FINAL strip is bootstrapped at the reported parameters, so what is written is
+            # what was scored - never the last iterate the simplex happened to try - and THIS is
+            # the call `Declining_Variance` decides for real (see bootstrap_l's `refuse`)
+            levels, notes, _ = self.bootstrap_l(
+                atm, params[:-1], self.tensor(h0), rho, spy, panels, knots, declining, pillar_tol)
+            curve = utils.Curve([], [[float(k), float(v)] for k, v in zip(knots, levels)])
+
+            self.report(instrument, market_price, spot, atm, wings, knots, levels, params,
+                        rho, spy, panels, result, elapsed, calls['n'], notes, state, max_iter)
+
+            price_factors[param_name] = {
+                'Property_Aliases': None,
+                **dict(zip(utils.HN_COMPONENT_PARAM_NAMES,
+                           (alpha, beta, gamma1, float(rho), phi, gamma2, h0))),
+                utils.HN_COMPONENT_CURVE_NAME: curve}
+
+    def unpack(self, x, tie, rho):
+        """The fitted vector as `(alpha, beta, gamma1, rho, phi, gamma2, h0)` - the six-parameter
+        positional block every `utils.hn_component_*` function takes, plus h0.
+
+        The PIN and the TIE live here rather than at each call site: rho arrives already pinned and
+        Gamma_2 is Gamma_1 unless the block asked for it separately, so nothing downstream has to
+        remember which two of the seven the fit did not move.
+
+        UNTIED, the vector grows a SIXTH coordinate: Gamma_2 as a RATIO to Gamma_1, in [0, 5]. The
+        magnitude is free - that is the long-run smile's own width - but the DIRECTION is not,
+        because a smile that rises with strike at one horizon and falls at another is a second kink
+        in an objective that already has one, and no sub-year wing ladder identifies it. Ratio 1 is
+        the tie, and it is where the untied fit starts."""
+        x = torch.tensor(np.asarray(x, dtype=float), device=self.device, dtype=self.prec)
+        alpha, beta, gamma1, phi, h0 = self.reparam(x)
+        return alpha, beta, gamma1, rho, phi, gamma1 if tie else gamma1 * x[5], h0
+
+    @classmethod
+    def box(cls, tie):
+        """The fitted box - `bounds`, plus the untied Gamma_2 magnitude's own."""
+        return cls.bounds if tie else cls.bounds + [(0.0, 5.0)]
+
+    def seed(self, previous, atm_rows, by_expiry, spy, tie):
+        """The cold/warm start. THE SIGN IS SEEDED OFF THE QUOTES, exactly as the plain family
+        seeds it and for the same reason: the objective has a kink at zero leverage, where Gamma_1
+        stops mattering at all, so a local search started on the wrong side would have to cross it.
+        A smile whose vol RISES with strike in the underlying's own units is a negative Gamma_1.
+        """
+        box = np.array(self.box(tie)).T
+        if previous:
+            start = list(self.unreparam(
+                *(previous[k] for k in ('Alpha', 'Beta', 'Gamma_1', 'Phi', 'H0'))))
+            if not tie:
+                start.append(abs(previous['Gamma_2'] / previous['Gamma_1']))
+            return np.clip(np.array(start), *box)
+        # H0 SEEDS OFF THE FRONT PILLAR, not the ladder's mean: h_0 is the variance of the FIRST
+        # step and it also sets L(0), whose phase the whole piecewise-linear strip alternates
+        # about (see bootstrap_l). Seeding it at the mean of a rising term structure starts the
+        # strip half a cycle out and walks a pillar straight into the declining-variance floor.
+        # MEASURED at the cold start on the four-pillar USDZAR ladder: front rung (H0 14.02%)
+        # bootstraps 14.02/13.85/15.30/14.48/16.31 with NOTHING floored, the ladder's mean
+        # (H0 14.44%) bootstraps 14.44/13.37/15.76/14.32/16.34 and floors the 3M pillar at
+        # 8.135e-5. Both zig-zag - the seed does not fix that and is not meant to; what it buys
+        # is a FEASIBLE start, which under `Declining_Variance: Refuse` is the difference between
+        # a fit and a refusal.
+        var = atm_rows[0][0]['sigma'] ** 2 / spy
+        # the sign off the quotes: at every expiry carrying more than one strike, the highest
+        # strike's vol against the lowest - the plain family's own cold-start rule, read over the
+        # SMILE (`by_expiry`) rather than over the ATM ladder, which has one strike per expiry
+        rise = sum(max(group, key=lambda r: r[0]['Strike'])[0]['sigma'] -
+                   min(group, key=lambda r: r[0]['Strike'])[0]['sigma']
+                   for group in by_expiry.values() if len(group) > 1)
+        start = [0.9, -0.5 if rise > 0.0 else 0.5, 0.05, 0.05, np.log(var)]
+        return np.clip(np.array(start + ([1.0] if not tie else [])), *box)
+
+    @staticmethod
+    def quote_vol(fitted, premium, spot, strike, is_call, units, b, n, yield_discount):
+        """The fitted-minus-quoted difference IN BLACK VOL POINTS, per step-count `n`.
+
+        Both premia are put back through the same total-variance bisection - the family's own
+        `bs_implied_total_var`, off the FORWARD, with the units and the yield rescale stripped so
+        the two sides are the same contract. A premium residual is what the objective minimises; a
+        vol residual is what the quote was, and a desk reads the second one. Returned in ABSOLUTE
+        vol; the caller scales to vol points."""
+        forward = float(spot) * np.exp(float(b) * int(n))
+        scale = float(units) * float(yield_discount)
+        both = []
+        for value in (fitted, premium):
+            call = value / scale + (0.0 if is_call else (float(spot) - float(strike)))
+            both.append(np.sqrt(max(utils.bs_implied_total_var(
+                call, float(spot), float(strike), float(b), int(n)), 0.0) / (int(n) / 252.0)))
+        return both[0] - both[1]
+
+    def report(self, instrument, market_price, spot, atm, wings, knots, levels, params,
+               rho, spy, panels, result, elapsed, calls, notes, state, max_iter):
+        """What the fit MEASURED, logged beside what it wrote - the ATM residual (which is the
+        bootstrap's own convergence, not a fit quality), the worst wing, the L curve as annualised
+        vol, and the wall clock against the iteration cap it was given."""
+        atm_resid = 0.0
+        for n, (s, strike, is_call, units, target, b, q) in atm:
+            omegas = self.l_strip(knots, torch.stack(levels), int(n), rho, spy)
+            fitted = float(self.price(s, strike, is_call, units, omegas, levels[0], levels[0],
+                                      params[:-1], b, panels, q))
+            atm_resid = max(atm_resid, abs(fitted / target - 1.0) if target else abs(fitted))
+        worst, worst_vol, total = 0.0, 0.0, 0.0
+        for n, strike, is_call, units, premium, weight, b, yq in wings:
+            omegas = self.l_strip(knots, torch.stack(levels), int(n), rho, spy)
+            fitted = float(self.price(spot, strike, is_call, units, omegas, params[-1], levels[0],
+                                      params[:-1], b, panels, yq))
+            worst = max(worst, abs(fitted / premium - 1.0))
+            # AND IN VOL POINTS, which is the number a desk reads: a 5% miss on a 25 delta wing
+            # premium is a few tenths of a vol, and the two readings are not interchangeable
+            # x100: the vol residual is reported in VOL POINTS, which is what a quote is quoted in
+            worst_vol = max(worst_vol, 100.0 * abs(self.quote_vol(
+                fitted, premium, spot, strike, is_call, units, b, n, yq)))
+            total += weight * (premium - fitted) ** 2
+        logging.info(
+            '{} component Heston-Nandi: Alpha {:.6g}, Beta {:.6g}, Gamma_1 {:.6g}, Rho {:g} '
+            '(pinned), Phi {:.6g}, Gamma_2 {:.6g}, H0 {:.6g}'.format(
+                market_price, float(params[0]), float(params[1]), float(params[2]), float(rho),
+                float(params[4]), float(params[5]), float(params[6])))
+        logging.info('  L curve (annualised vol): {}'.format(', '.join(
+            '{:g}y {:.2%}'.format(k, float(np.sqrt(float(v) * spy)))
+            for k, v in zip(knots, levels))))
+        # THE POSITIVITY CERTIFICATE, reported rather than enforced - there is no box that
+        # guarantees it (see the class documentation), so what the family owes is the number, said
+        # once, beside the parameters it applies to
+        certificate = self.worst_case_variance_drift(
+            *[float(x) for x in (params[0], params[1], params[2], rho, params[4], params[5])],
+            self.omega_floor(knots, torch.stack(levels), rho, spy))
+        certified = all(x >= 0.0 for x in certificate) and not float(params[4])
+        logging.info(
+            '  worst-case variance step: h_(t+1) >= {:.3e} + {:.4f}*q_t + {:.4f}*h_t - {}'.format(
+                *certificate + ('POSITIVE for every reachable state' if certified else
+                                'NOT a certificate (Phi > 0 leaves q itself uncertified); the '
+                                'simulator floors at {:g} per step and the closed form does not, '
+                                'so the two part company in the tail'.format(
+                                    utils.HN_COMPONENT_VARIANCE_FLOOR),)))
+        logging.info(
+            '  {} outer evaluations in {:.1f}s ({}), ATM residual {:.3e} (bootstrapped), worst '
+            'wing {:.2%} of premium / {:.3f} vol points, weighted wing residual {:.3e}'.format(
+                calls, elapsed,
+                'converged: ' + str(result.message) if calls < max_iter else
+                'CAPPED at Max_Iterations={} - the tolerance actually reached is the residual '
+                'above, not the declared one'.format(max_iter),
+                atm_resid, worst, worst_vol, total))
+        for note in notes:
+            logging.warning('  declining variance: {}'.format(note))
+        if state.get('last_refusal'):
+            logging.info('  the search visited infeasible candidates; the last said: {}'.format(
+                state['last_refusal']))
+        if instrument.get('Quote_Source') or instrument.get('Quote_Timestamp'):
+            logging.info('  quotes: {} (as at {})'.format(
+                instrument.get('Quote_Source') or 'authored by hand',
+                instrument.get('Quote_Timestamp') or 'no stated time'))
 
 
 class GBMAssetPriceTSModelParameters(object):

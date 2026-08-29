@@ -3231,23 +3231,11 @@ class HestonNandiImpliedSpotModel(StochasticProcess):
         implied_tensor branch when greeks are on (0-dim AAD leaves), else the calibrated scalars.
         The five scalars feed the explicit-arg utils.hn_* functions; H0 is the variance state
         (it seeds h), the rest are the recursion params.
-        """
-        self.z_offset = process_ofs
-        self.scenario_horizon = time_grid.scen_time_grid.size
 
-        # Fractional trading clock, anchored at time_grid_years[0].
-        tg_years = time_grid.time_grid_years
-        dt_arr = np.diff(np.hstack(([tg_years[0]], tg_years)))
-        dt_c = 1.0 / float(self.implied.param.get('Steps_Per_Year', 252.0))
-        self.dt_c = dt_c
-        self.f = shared.one.new_tensor(dt_arr / dt_c)                             # (T,) trading-time step length
-        self.sub_dt = utils.substep_schedule(dt_arr / dt_c)
-        self.n_sub = np.array([len(s) for s in self.sub_dt])
-        if np.any(self.n_sub >= 2):
-            # INFO (precalculate reruns on every inner fork).
-            logging.info('HestonNandiImpliedSpotModel coarse grid: n_sub up to %d — exact daily '
-                         'sub-stepping, the correlated draw rides the √E[h]-weighted combination.',
-                         int(self.n_sub.max()))
+        The clock and drift plumbing are in `_precalculate_clock`, which the COMPONENT sibling
+        reuses verbatim - it shares every one of those decisions and differs only in the model.
+        """
+        self._precalculate_clock(ref_date, time_grid, tensor, shared, process_ofs)
 
         # Parameters ride the implied tensors when greeks are on (mirrors CS's numpy-vs-implied_tensor
         # branch); otherwise the calibrated scalars from the implied factor. Either way they are 0-dim
@@ -3263,6 +3251,27 @@ class HestonNandiImpliedSpotModel(StochasticProcess):
         om, al = float(p['Omega']), float(p['Alpha'])
         be, ga = float(p['Beta']), float(p['Gamma_Star'])
         self._log_lr_var = float(np.log((om + al) / (1.0 - (be + al * ga ** 2))))
+
+    def _precalculate_clock(self, ref_date, time_grid, tensor, shared, process_ofs):
+        """The fractional trading clock, the sub-step schedule and the risk-neutral drift plumbing -
+        everything in `precalculate` that is NOT the model's own parameters. Split out so the
+        component sibling reuses it rather than copying a dozen decisions that must not drift."""
+        self.z_offset = process_ofs
+        self.scenario_horizon = time_grid.scen_time_grid.size
+
+        # Fractional trading clock, anchored at time_grid_years[0].
+        tg_years = time_grid.time_grid_years
+        dt_arr = np.diff(np.hstack(([tg_years[0]], tg_years)))
+        dt_c = 1.0 / float(self.implied.param.get('Steps_Per_Year', 252.0))
+        self.dt_c = dt_c
+        self.f = shared.one.new_tensor(dt_arr / dt_c)                             # (T,) trading-time step length
+        self.sub_dt = utils.substep_schedule(dt_arr / dt_c)
+        self.n_sub = np.array([len(s) for s in self.sub_dt])
+        if np.any(self.n_sub >= 2):
+            # INFO (precalculate reruns on every inner fork).
+            logging.info('%s coarse grid: n_sub up to %d — exact daily '
+                         'sub-stepping, the correlated draw rides the √E[h]-weighted combination.',
+                         type(self).__name__, int(self.n_sub.max()))
 
         # Risk-neutral drift plumbing — identical to GBMAssetPriceTSModelImplied: the per-step carry
         # (r-q)·dt is read from the curve as-of each step's START node, anchored at today (t=0) so the
@@ -3459,6 +3468,204 @@ class HestonNandiImpliedSpotModel(StochasticProcess):
         """σ_t = √(exp(log h_t)/dt_c): the exactly-observed conditional vol annualized off the
         calibration trading-day clock (h_t is the per-trading-day variance)."""
         return (log_h.exp() / self.dt_c).sqrt()
+
+
+class HestonNandiComponentImpliedSpotModel(HestonNandiImpliedSpotModel):
+    """COMPONENT Heston-Nandi spot under the risk-neutral (LRNVR) measure — the sibling of
+    `HestonNandiImpliedSpotModel`, carrying TWO variance states through one recursion.
+
+    Everything the plain process owns is owned here unchanged and inherited rather than copied:
+    the r/q curve gather (`calc_references` / `_carry_per_step`), the fractional trading clock, the
+    7-verb privileged-state protocol, the outer/inner `generate` shapes and the `hn_log_h` buffer.
+    What this class replaces is exactly the model: the state is the PAIR (h_t, q_t), the recursion
+    is `utils.hn_component_variance_step` (ONE source of truth, shared with the OSS pricers and
+    the closed form), and the intercept it consumes is TIME-VARYING.
+
+    * THE OMEGA STRIP. omega_t = L_{t+1} - rho*L_t comes off the fitted `L_Curve`, sampled on the
+      calibration's own trading-day clock from the BASE DATE, so a scenario node at trading time
+      tau takes omega[floor(tau)]. On a daily grid that is the exact strip the closed form
+      integrates; on a coarser one each sub-step takes the intercept of the day it starts in,
+      which is the same fractional-clock approximation the variance blend already is.
+
+    * REVEALED STATE stays log h_t alone — the SHORT-run variance is what the return loads on and
+      what the value function needs. q_t is carried internally; publishing it would change the
+      privileged layout, and every consumer of `hn_log_h` (the diff-ML burn-in, the inner fork,
+      the replay) reads the same coordinate it always did.
+
+    * THE FORK SEEDS RE-ANCHOR q. `h0_inner` / `h0_outer` carry the short-run state, and the
+      forked long-run state is L(0) — the anchoring, applied at the fork exactly as it is applied
+      at the base date. A fork that inherited the outer path's q would need a second buffer key
+      and a second reveal coordinate; what it would buy is the long-run state's own path
+      dependence, which is a v2 question (roadmap) and not a silent difference.
+    """
+
+    documentation = (
+        'Asset Pricing',
+        ['A COMPONENT Heston-Nandi risk-neutral spot model (Christoffersen, Jacobs, Ornthanalai and '
+         'Wang). The variance splits into a long-run component $q_t$ and a short-run deviation, and '
+         'the daily step is',
+         '',
+         '$$ \\Delta\\log S = (r-q) - \\tfrac12 h_t + \\sqrt{h_t}\\,z_t $$',
+         '',
+         '$$ h_{t+1}=q_{t+1}+\\beta(h_t-q_t)+\\alpha\\Big[(z_t-\\gamma_1\\sqrt{h_t})^2-'
+         '(1+\\gamma_1^2h_t)\\Big] $$',
+         '',
+         '$$ q_{t+1}=\\omega_t+\\rho q_t+\\phi\\Big[(z_t-\\gamma_2\\sqrt{h_t})^2-'
+         '(1+\\gamma_2^2h_t)\\Big] $$',
+         '',
+         'with $z\\sim N(0,1)$ iid and $(r-q)$ the per-step cost of carry from the underlying\'s own '
+         'curves. Both bracketed terms are EXACTLY centered, so the short-run deviation $h_t-q_t$ is '
+         'a pure AR(1) at $\\beta$ and the long-run component is driven by $\\omega$ alone.',
+         '',
+         'The intercept is parametrised by a CURVE rather than a constant: $\\omega_t=L_{t+1}-\\rho '
+         'L_t$, and anchoring $q_0=L(0)$ gives $E_0[q_t]=L_t$ exactly — so the fitted $L$ IS the '
+         'model\'s expected long-run variance path and is directly comparable to the market\'s '
+         'forward variance strip. $L$ is piecewise-linear in $t$ between its knots.',
+         '',
+         'The parameters are the implied $HestonNandiComponentModelParameters$ factor bootstrapped '
+         'from the option surface — the same factor the semi-analytic pricer consumes. Setting '
+         '$\\phi=0$ and holding $L$ flat at $\\frac{\\omega_p+\\alpha}{1-\\psi_p}$ recovers the plain '
+         'Heston-Nandi model exactly, with $\\beta=\\psi_p$ its persistence; the simulation clock is '
+         'the plain model\'s ($f=dt/dt_c$, exact at $f=1$, blended below and sub-stepped above).'])
+
+    factor_types = ('EquityPrice', 'FxRate')
+    # the parameters live on the implied HestonNandiComponentModelParameters factor, not in this block
+    fields = []
+
+    @property
+    def correlation_name(self):
+        return 'HestonNandiComponentSpotProcess', [()]
+
+    def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
+        """The plain model's clock and drift plumbing, then the component parameters and the omega
+        strip that replaces its single Omega.
+
+        The strip is built over the whole scenario horizon ONCE, from the L curve's knots (read off
+        the implied factor, structural) and its values (read off `implied_tensor` when greeks are
+        on, so a greek flows to each fitted pillar, else the calibrated numbers). Its length is one
+        entry per WHOLE trading day spanned, and a coarse grid's sub-steps index into it.
+        """
+        self._precalculate_clock(ref_date, time_grid, tensor, shared, process_ofs)
+        p = self.implied.param
+        names = utils.HN_COMPONENT_PARAM_NAMES
+        if implied_tensor is not None:
+            vals = [implied_tensor[k].reshape(()) for k in names]
+            l_values = implied_tensor[utils.HN_COMPONENT_CURVE_NAME].reshape(-1)
+        else:
+            vals = [shared.one.new_tensor(float(p[k])) for k in names]
+            l_values = shared.one.new_tensor(p[utils.HN_COMPONENT_CURVE_NAME].array[:, 1])
+        (self.alpha, self.beta, self.gamma1, self.rho,
+         self.phi, self.gamma2, self.h0_default) = vals
+        self.l_knots = self.implied.get_tenor()
+
+        # the omega strip over the horizon, on the calibration's own trading-day clock. One extra
+        # day of headroom so the LAST sub-step of the last interval still has an intercept.
+        total_days = int(np.ceil(float(np.sum(np.concatenate(self.sub_dt))))) + 2
+        self.l_path = utils.hn_component_l_path(
+            self.l_knots, l_values, total_days, 1.0 / self.dt_c)
+        self.omegas = utils.hn_component_omega_path(self.l_path, self.rho)
+        # q_0 IS L(0) - the anchoring, read off the curve rather than declared a second time
+        self.q0_default = self.l_path[0]
+        # detached scalar long-run log-variance for the reveal fallback (buffer key absent): the
+        # long-run component's own terminal level, which is what L flattens to past its last knot
+        self._log_lr_var = float(torch.log(self.l_path[-1]).detach())
+        # trading-time position of each scenario step's START, so a sub-step reads the intercept of
+        # the day it begins in (self.f[0] is the t=0 anchor and contributes nothing)
+        self.step_start_day = np.concatenate(
+            [[0.0], np.cumsum([float(x) for x in self.f.detach().cpu().numpy()])[:-1]])
+
+    def _omega_slice(self, t, count):
+        """The `count` intercepts spanning scenario step `t`, one per sub-step.
+
+        A SHORT SLICE RAISES rather than being handed on. Every consumer of this zips it against
+        the sub-step schedule, and `zip` truncates in silence - so a strip one entry short would
+        drop the interval's last sub-step and shorten the horizon by a day with nothing said. The
+        strip is sized with headroom in `precalculate`; this is the assertion that the sizing is
+        right rather than the hope that it is."""
+        start = int(self.step_start_day[t])
+        window = self.omegas[start:start + count]
+        if window.numel() != count:
+            raise ValueError(
+                'HestonNandiComponentImpliedSpotModel: the omega strip runs out at scenario step '
+                '{} - {} intercepts wanted from trading day {}, {} available of {}. The horizon '
+                'was sized in precalculate; a grid that outran it is a sizing defect, not a '
+                'market-data one'.format(t, count, start, window.numel(), self.omegas.numel()))
+        return window
+
+    def _component_params(self):
+        return (self.alpha, self.beta, self.gamma1, self.rho, self.phi, self.gamma2)
+
+    def _simulate_returns(self, z, h, carry):
+        """The component recursion on the FRACTIONAL TRADING CLOCK. Same contract as the plain
+        model's: ds[t] is the log-return landing at t (ds[0]=0, the dt=0 anchor) and log_h[t] the
+        revealed SHORT-run variance of the move t->t+1, F_t-measurable. q rides alongside, seeded
+        at L(0) by the anchoring."""
+        log_h = torch.empty_like(z)
+        ds = torch.zeros_like(z)
+        log_h[0] = h.log()
+        q = torch.zeros_like(h) + self.q0_default
+        for t in range(1, z.shape[0]):
+            if self.n_sub[t] <= 1:
+                h, q, var_step, r = self._advance_component(h, q, t, lambda v: z[t])
+            else:
+                h, q, var_step, r = utils.hn_component_correlated_substeps(
+                    h, q, z[t], self.sub_dt[t], self._omega_slice(t, self.n_sub[t]),
+                    *self._component_params())
+            ds[t] = carry[t] - 0.5 * var_step + r
+            log_h[t] = h.log()
+        return ds, log_h
+
+    def _advance_component(self, h, q, t, standard_normal):
+        """One fractional-clock component step (n_sub <= 1), shared by the forward sim and the
+        observed-path replay so forward == replay is STRUCTURAL. Both states blend by f, so at
+        f = 1 this is exactly `utils.hn_component_variance_step`."""
+        ft = self.f[t]
+        var_step = h * ft
+        sh = h.sqrt()
+        z = standard_normal(var_step)
+        r = var_step.sqrt() * z
+        step_h, step_q = utils.hn_component_variance_step(
+            h, q, sh, z, self._omega_slice(t, 1)[0], *self._component_params())
+        return h + ft * (step_h - h), q + ft * (step_q - q), var_step, r
+
+    def _advance_variance(self, h, t, standard_normal):
+        """The plain model's single-state verb, refused rather than inherited: it would advance h
+        through `hn_variance_step` with a `self.omega` this class does not carry, so a caller that
+        reached it would be simulating a different model under this one's name. Use
+        `_advance_component`."""
+        raise NotImplementedError(
+            'HestonNandiComponentImpliedSpotModel advances the PAIR (h, q) - call '
+            '_advance_component, which takes and returns q as well')
+
+    def reseed_from_path(self, simulated, shared_mem):
+        """Observed-path replay, the component pair. Same recovery as the plain model's - the
+        innovation comes off the realized return with the SAME carry/convexity the forward sim
+        used - and q replays alongside h from the anchored L(0)."""
+        if np.any(self.n_sub >= 2):
+            raise ValueError('reseed_from_path needs n_sub == 1 everywhere; grid is coarser than '
+                             f'the trading day (n_sub up to {int(self.n_sub.max())})')
+        obs = simulated.detach()
+        logret = obs.clamp_min(1.0e-30).log()
+        carry = self._carry_per_step(shared_mem, obs.shape).detach()
+        h = torch.zeros_like(obs[0]) + self.h0_default
+        q = torch.zeros_like(obs[0]) + self.q0_default
+        log_h = torch.empty_like(obs)
+        log_h[0] = h.log()
+
+        def realized(var_step, t):
+            return ((logret[t] - logret[t - 1]) - carry[t] + 0.5 * var_step) / var_step.sqrt()
+
+        for t in range(1, obs.shape[0]):
+            h, q, _, _ = self._advance_component(h, q, t, lambda v: realized(v, t))
+            log_h[t] = h.log()
+        shared_mem.t_Scenario_Buffer[(self.factor_key, 'hn_log_h')] = log_h.unsqueeze(1)
+        shared_mem.t_Scenario_Buffer[(self.factor_key, 'h0_outer')] = h
+
+    def calibrated_annual_vol(self):
+        """Long-run annualised vol √(L_last / dt_c) - the LEVEL the long-run component flattens to
+        past the curve's last knot, which is this model's answer to the plain one's stationary
+        (omega+alpha)/(1-psi)."""
+        return float(np.sqrt(float(self.l_path[-1].detach()) / self.dt_c))
 
 
 class QuadraticCarryCurveModel(StochasticProcess):

@@ -873,6 +873,10 @@ def test_a_quote_type_means_different_things_to_different_families():
     quote_type = {t: find(d) for t, d in MARKET_PRICES['types'].items()}
     assert quote_type == {'CSForwardPriceModelPrices': ['Implied_Volatility'],
                           'HestonNandiModelPrices': ['Implied_Volatility', 'Premium'],
+                          # the component family INHERITS the Heston-Nandi block's own quote
+                          # declarations, so it answers the same question - which is the point of
+                          # a per-family store rather than a flat one
+                          'HestonNandiComponentModelPrices': ['Implied_Volatility', 'Premium'],
                           'GBMAssetPriceTSModelPrices': None,
                           'HullWhite2FactorModelPrices': None,
                           'FXVolPrices': ['ATM', 'RR', 'BF'],

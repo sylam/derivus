@@ -83,7 +83,8 @@ class ModelParams(object):
             'CSImpliedForwardPriceModel': 'CSForwardPriceModelParameters',
             'GBMAssetPriceTSModelImplied': 'GBMAssetPriceTSModelParameters',
             'HullWhite2FactorImpliedInterestRateModel': 'HullWhite2FactorModelParameters',
-            'HestonNandiImpliedSpotModel': 'HestonNandiModelParameters'
+            'HestonNandiImpliedSpotModel': 'HestonNandiModelParameters',
+            'HestonNandiComponentImpliedSpotModel': 'HestonNandiComponentModelParameters'
         }
 
         self.modeldefaults = {}

@@ -2602,6 +2602,407 @@ def hn_unmonitored_substeps(Sj, h, b_step, n_steps, hn_params, shared, num_sims,
     return Sj * log_S.exp(), h
 
 
+# ======================================================================================
+# COMPONENT Heston-Nandi (Christoffersen-Jacobs-Ornthanalai-Wang 2008): the variance splits
+# into a long-run component q_t and a short-run deviation h_t - q_t.
+# ======================================================================================
+#
+# THE Q-MEASURE RECURSIONS, in the CENTERED CJOW form and on this framework's step convention
+# (h_t is the PREDICTABLE variance of the step from t to t+1, and z_t is the innovation that
+# drives BOTH that return and the update - exactly as ``hn_variance_step``):
+#
+#   h_{t+1} = q_{t+1} + beta*(h_t - q_t) + alpha*[(z_t - gamma1*sqrt(h_t))^2 - (1 + gamma1^2 h_t)]
+#   q_{t+1} = omega_t  + rho*q_t         + phi  *[(z_t - gamma2*sqrt(h_t))^2 - (1 + gamma2^2 h_t)]
+#
+# Both bracketed terms are EXACTLY centered: E_t[(z - g sqrt(h))^2] = 1 + g^2 h, so each is a
+# martingale difference. Two consequences carry the whole design:
+#
+#   * the short-run deviation d_t = h_t - q_t is a PURE AR(1) with coefficient beta, so beta is
+#     the short-run persistence and rho the long-run one - and beta plays the role the plain
+#     model's psi = beta_p + alpha_p*gamma_p^2 does, not the role its beta_p does;
+#   * E_t[q_{t+k}] is driven by omega alone.
+#
+# THE L-CURVE. Parametrising omega_t = L_{t+1} - rho*L_t makes d^q_t = q_t - L_t a homogeneous
+# AR(1), so ANCHORING q_0 = L_0 gives E_0[q_t] = L_t EXACTLY. L is therefore not a nuisance
+# reparametrisation - it IS the model's expected long-run variance path, directly comparable to
+# the market's forward variance strip, and the calibration bootstraps it pillar by pillar
+# (``bootstrappers.HestonNandiComponentModelParameters``).
+#
+# THE NESTING, which is the spine of the gates. Set phi = 0 and hold L flat at level L. Then
+# q_t == L for every t and the h-recursion collapses to the PLAIN one with
+#
+#   omega_p = L*(1 - beta) - alpha,   beta_p = beta - alpha*gamma1^2,   alpha_p = alpha,
+#   gamma_p = gamma1                     (inverse: beta = psi_p, L = plain stationary variance)
+#
+# so plain HN is this model on a two-dimensional face of its parameter space, and
+# ``tests/test_hn_component.py`` holds the closed forms to each other there.
+
+#: The `HestonNandiComponentModelParameters` price factor's SCALAR parameters, in canonical order -
+#: the single source of that name set, shared with the riskfactors class (which derives its list
+#: from here) and with every consumption site, exactly as ``HN_PARAM_NAMES``. There is NO Omega:
+#: omega_t is a function of the L curve, and there is no Q0 either - q_0 is L(0) by the anchoring.
+HN_COMPONENT_PARAM_NAMES = ('Alpha', 'Beta', 'Gamma_1', 'Rho', 'Phi', 'Gamma_2', 'H0')
+
+#: The CURVE parameter's name. Its VALUES are fitted leaves; its knots are structural.
+HN_COMPONENT_CURVE_NAME = 'L_Curve'
+
+
+def hn_component_l_path(knots, values, n_steps, steps_per_year=252.0):
+    """The long-run variance path ``L_t`` for t = 0..n_steps, on the trading-day clock.
+
+    PIECEWISE-LINEAR IN t BETWEEN PILLAR KNOTS, flat outside them - stated because the choice is
+    the model, not a detail: omega_t = L_{t+1} - rho*L_t differences this curve, so a piecewise
+    CONSTANT L would make omega_t a SPIKE at each pillar and a spline would let it oscillate
+    between pillars that nobody quoted. Linear in t makes omega_t AFFINE within a pillar and
+    kinked only AT one: on a segment of n steps from A to B,
+
+        omega_i = A(1-rho) + (B-A)(1 + i(1-rho))/n
+
+    so it drifts by (B-A)(1-rho)/n per step - the same discipline the framework's forward-variance
+    curves already keep, and the reason the declining-variance floor has a closed form.
+
+    ``knots`` are tenors in YEARS (structural, a numpy array), ``values`` the per-step variances
+    at them (a differentiable tensor - this is the fitted leaf). Returns an (n_steps+1,) tensor
+    including L_0, which IS q_0 by the anchoring.
+    """
+    t = torch.arange(int(n_steps) + 1, dtype=values.dtype, device=values.device) / steps_per_year
+    k = torch.as_tensor(np.ascontiguousarray(knots, dtype=float),
+                        dtype=values.dtype, device=values.device)
+    if k.numel() == 1:
+        return values[0].expand(int(n_steps) + 1).clone()
+    # right-hand knot of the bracketing segment, clamped so both ends flat-extrapolate
+    j = torch.clamp(torch.searchsorted(k, t), 1, k.numel() - 1)
+    lo, hi = k[j - 1], k[j]
+    frac = ((t - lo) / (hi - lo)).clamp(0.0, 1.0)
+    return values[j - 1] + frac * (values[j] - values[j - 1])
+
+
+def hn_component_omega_path(l_path, rho):
+    """``omega_t = L_{t+1} - rho*L_t`` for t = 0..n-1, from an (n+1,) L path.
+
+    This is the whole content of the L parametrisation. A NEGATIVE entry is a long-run variance
+    demanded to fall FASTER than rho decays it, which drives q (and hence h) negative - the
+    calibration refuses or floors it BY NAME rather than simulating a negative variance; see
+    ``HestonNandiComponentModelParameters.negative_omega``.
+    """
+    return l_path[1:] - rho * l_path[:-1]
+
+
+# --------------------------------------------------------------------------------------
+# The component daily-step recursion -- ONE SOURCE OF TRUTH for the component HN step
+# --------------------------------------------------------------------------------------
+#
+# The pair recursion above lives ONLY in ``hn_component_variance_step``.  Every consumer routes
+# through it: the OSS Monte Carlo pricers in ``derivus/pricing.py`` (via
+# ``hn_component_daily_advance`` / ``hn_component_unmonitored_substeps``), the
+# ``HestonNandiComponentImpliedSpotModel`` diffusion in ``derivus/stochasticprocess.py``, the
+# component log sub-step and its fused build below, AND the reference simulator in
+# ``tests/hn_reference.py`` (``hnc_simulate``).  So a single mutation-kill matrix on this step
+# covers every component pricer, exactly as ``hn_variance_step`` does for the plain model.
+
+#: THE VARIANCE FLOOR, and it is a DECLARED PROPERTY OF THIS MODEL rather than a repair applied
+#: quietly. Unlike plain Heston-Nandi - where h_{t+1} = omega + beta_p h + alpha(...)^2 >= omega > 0
+#: by construction, which is why `hn_variance_step` needs no floor and has none - the CJOW pair has
+#: NO positivity guarantee for phi > 0. The worst innovation z = gamma_2 sqrt(h) leaves
+#:
+#:     q_{t+1} >= omega_t + rho q_t - phi - phi gamma_2^2 h_t
+#:
+#: whose last term grows with h, so a large enough short-run variance drags the long-run component
+#: negative and h with it. No box on the parameters closes this: it is a property of the model, not
+#: of a parametrisation, and the calibration REPORTS the worst-case certificate
+#: (`worst_case_variance_drift`) rather than pretending to enforce one.
+#:
+#: 1e-12 per step is 1.6 basis points of annualised vol - numerically zero, but a number `sqrt` can
+#: take. Without it a tail path returns NaN, which propagates into an exposure profile and a CVA as
+#: a silent hole: MEASURED on the component TARF gate, 2 of 8192 inner paths over 248 daily steps
+#: at a fitted phi share of 0.56, which is exactly the frequency that is easy to miss.
+#:
+#: WHAT IT COSTS. The closed form does NOT floor - the Fourier inversion integrates the unfloored
+#: law - so the two agree only where the floor does not bind. That is a real gap and it is gated
+#: rather than assumed: `test_the_closed_form_matches_day_stepped_monte_carlo` asserts the minimum
+#: variance over 2^20 reference paths stays orders of magnitude above this floor, so the law it
+#: compares is the same one on both sides.
+HN_COMPONENT_VARIANCE_FLOOR = 1.0e-12
+
+
+def hn_component_variance_step(h, q, sh, z, omega_t, alpha, beta, gamma1, rho, phi, gamma2):
+    """The component recursion, returning ``(h_{t+1}, q_{t+1})``, both floored at
+    :data:`HN_COMPONENT_VARIANCE_FLOOR` (see that note - the floor is the model's, not a patch).
+
+    ``sh`` = sqrt(h) is passed in (the caller already needs it for the log-spot step), so the
+    square root is computed exactly once. ``omega_t`` is THIS step's long-run intercept,
+    ``L_{t+1} - rho*L_t``; every other argument is a global. All args broadcast on the
+    simulation axis.
+
+    q IS COMPUTED FIRST and h reads it, because the CJOW form defines h_{t+1} off q_{t+1} - the
+    long-run level moves and the short-run deviation is measured against the level it moved TO.
+    Reading q_t there instead is a different model (it makes the deviation's own persistence
+    beta - rho rather than beta) and is what the nesting gate would kill first.
+
+    The clamp is `torch.clamp(x, min=floor)`, which returns x ITSELF above the floor - so on the
+    nested face (where positivity is guaranteed) this function is bit-identical to the unfloored
+    one and the nesting gate is untouched by it.
+    """
+    e1 = z - gamma1 * sh
+    e2 = z - gamma2 * sh
+    q_next = omega_t + rho * q + phi * (e2 * e2 - (1.0 + gamma2 * gamma2 * h))
+    h_next = q_next + beta * (h - q) + alpha * (e1 * e1 - (1.0 + gamma1 * gamma1 * h))
+    return (h_next.clamp(min=HN_COMPONENT_VARIANCE_FLOOR),
+            q_next.clamp(min=HN_COMPONENT_VARIANCE_FLOOR))
+
+
+def hn_component_daily_advance(Sj, h, q, b_step, z, omega_t, alpha, beta, gamma1, rho, phi, gamma2):
+    """One daily component step under the risk-neutral (LRNVR) measure. Returns ``(Sj, h, q)``.
+
+    The log-spot advance is IDENTICAL to :func:`hn_daily_advance` - the component structure lives
+    entirely in the variance recursion - so the same note applies: ``z`` is either a fresh
+    unconditional normal or the survival-truncated final draw of a monitored interval, and in
+    BOTH cases the recursion is fed the REALISED z.
+    """
+    sh = torch.sqrt(h)
+    Sj = Sj * torch.exp((b_step - 0.5 * h) + sh * z)
+    h, q = hn_component_variance_step(h, q, sh, z, omega_t, alpha, beta, gamma1, rho, phi, gamma2)
+    return Sj, h, q
+
+
+def hn_component_log_substep(log_S, h, q, z, b_step, omega_t, alpha, beta, gamma1, rho, phi, gamma2):
+    """One unmonitored component day, accumulating the LOG increment - the same step as
+    :func:`hn_component_daily_advance` with the exponential left to the caller.
+
+    Kept separate for the same reason its plain sibling is: it is the chain the OSS pricers repeat
+    n_sub times per fixing, it is bandwidth-bound at their batch shapes, and three of its outputs
+    carry state forward where the plain one carries two.
+
+    THE INCREMENT IS BUILT FIRST, from the PREDICTABLE h_t, and only then is the state advanced -
+    the plain sibling gets this for free by returning both in one expression, and a spelling that
+    rebinds `h` before the `-0.5*h` reads it uses NEXT step's variance for THIS step's return. That
+    is a different model (it drifts the log-spot by a quantity that is not F_t-measurable) and it
+    is what `test_the_component_substep_walks_the_plain_path_draw_for_draw` caught: 1.9e-3 relative
+    on the log path over 40 steps, against the 4.9e-16 the centered algebra actually costs.
+    """
+    sh = torch.sqrt(h)
+    increment = log_S + (b_step - 0.5 * h) + sh * z
+    h, q = hn_component_variance_step(h, q, sh, z, omega_t, alpha, beta, gamma1, rho, phi, gamma2)
+    return increment, h, q
+
+
+#: The fused build, and the one every ordinary run takes. SAME RULE AS THE PLAIN SUB-STEP: it is
+#: NOT twice differentiable (AOTAutograd's compiled backward raises `does not currently support
+#: double backward`), so a `Greeks: 'All'` valuation walks the eager function above instead - same
+#: numbers, and only for the run that asked for a second derivative.
+hn_component_log_substep_fused = torch.compile(hn_component_log_substep, dynamic=True)
+
+
+def hn_component_unmonitored_substeps(Sj, h, q, b_step, omegas, hnc_params, shared,
+                                      num_sims, antithetic):
+    """Advance ``(Sj, h, q)`` through ``len(omegas)`` UNCONDITIONAL daily component steps.
+
+    The sibling of :func:`hn_unmonitored_substeps`, and every note there holds: these carry no
+    barrier (the OSS truncation applies only to the monitored final step, done by the caller),
+    fresh regular-stream normals per step, the antithetic pairing aligning with the u<->1-u halves
+    of the truncated final draw, and the walk running in log space so the exponential is taken
+    ONCE. ``omegas`` is the per-step intercept strip (its LENGTH is the step count, so a daily
+    fixing passes an empty one); ``hnc_params`` = (alpha, beta, gamma1, rho, phi, gamma2).
+    """
+    if not len(omegas):                                          # a daily fixing walks nothing
+        return Sj, h, q
+    # picked once per interval, not per step, exactly as the plain sub-step picks it
+    substep = hn_component_log_substep if shared.gamma else hn_component_log_substep_fused
+    log_S = torch.zeros_like(b_step)
+    for omega_t in omegas:
+        zc = torch.randn([shared.simulation_batch, num_sims],
+                         dtype=shared.one.dtype, device=shared.one.device)
+        z = torch.cat([zc, -zc], dim=-1) if antithetic else zc
+        log_S, h, q = substep(log_S, h, q, z, b_step, omega_t, *hnc_params)
+    return Sj * log_S.exp(), h, q
+
+
+# --------------------------------------------------------------------------------------
+# The component A/B/C recursion + semi-analytic pricing
+# --------------------------------------------------------------------------------------
+# A SIBLING of ``hn_ab`` / ``_p1_p2``, NOT a generalisation they route through, and the choice is
+# deliberate. The plain recursion's loop body is four tensor statements; carrying a second
+# coefficient and a per-step omega through it - even behind a branch - changes the expression the
+# `A = A + phir + B*omega - 0.5*logw` line compiles to, and floating-point reassociation would
+# then move plain HN's own numbers. The plain path is the ORACLE for the nesting gate and for
+# every HN gate already in the suite, so it is left byte for byte alone. What is actually shared
+# is the part worth sharing: both siblings hand their log-CF to the SAME model-agnostic
+# ``cf_european_probabilities`` / ``cf_adaptive_phi_max`` primitives, so the duplication is
+# fifteen lines of this model's own algebra and none of the inversion machinery.
+
+def hn_component_abc(phi, omegas, alpha, beta, gamma1, rho, phi_q, gamma2, r,
+                     unwrap=True, phi_dim=-1):
+    """Backward A/B/C recursion over the ``omegas`` strip.  Returns ``(A, B, C)`` satisfying
+
+        E_t[S_{t+n}^phi] = S_t^phi * exp(A + B*h_t + C*q_t)
+
+    so the component affine log-CF of the aggregate log-return is ``A + B*h_0 + C*q_0`` - the
+    closure handed to :func:`cf_european_probabilities`.
+
+    THE ALGEBRA, one step back, writing D = B + C, b = alpha*B + D*phi_q and
+    G = alpha*B*gamma1 + D*phi_q*gamma2 (so w = 1 - 2b is the Gaussian normalisation of the
+    combined quadratic in z, whose two centers gamma1 and gamma2 do NOT coincide):
+
+        A <- A + phi*r + D*omega_t - b - 0.5*log(w)
+        B <- -phi/2 + beta*B + (phi - 2G)^2 / (2w)
+        C <- D*rho - beta*B                       (B on the RIGHT is the OLD B)
+
+    The ``-b`` is what the two CENTERING subtractions leave once the (1 + gamma^2 h) terms have
+    cancelled the quadratics' own h-coefficients; drop it and the price is wrong by a factor that
+    grows with the step count, which the nesting gate reads immediately.
+
+    ``omegas`` is consumed in REVERSE (the backward induction reaches step t last), so
+    ``omegas[0]`` is the intercept of the FIRST step - the same orientation
+    :func:`hn_component_omega_path` emits.
+
+    ``phi`` : real OR complex tensor; if complex it must vary smoothly and ascending along
+    ``phi_dim`` for the branch unwrap of ``log(w)`` (the same discrete-Heston-trap guard the plain
+    recursion takes).
+    """
+    A = torch.zeros_like(phi)
+    B = torch.zeros_like(phi)
+    C = torch.zeros_like(phi)
+    half_phi = 0.5 * phi
+    phir = phi * r
+    for omega_t in reversed(omegas):
+        D = B + C
+        Bq = D * phi_q
+        b = alpha * B + Bq
+        G = alpha * B * gamma1 + Bq * gamma2
+        w = 1.0 - 2.0 * b
+        logw = complex_log_unwrap(w, dim=phi_dim) if (unwrap and w.is_complex()) else torch.log(w)
+        A = A + phir + D * omega_t - b - 0.5 * logw
+        B, C = -half_phi + beta * B + (phi - 2.0 * G) ** 2 / (2.0 * w), D * rho - beta * B
+    return A, B, C
+
+
+def hn_component_logmgf(phi, omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, gamma2, r, **kw):
+    """log E_t[exp(phi * R_n)] where R_n = log(S_{t+n}/S_t).  = A + B*h0 + C*q0."""
+    A, B, C = hn_component_abc(phi, omegas, alpha, beta, gamma1, rho, phi_q, gamma2, r, **kw)
+    return A + B * h0 + C * q0
+
+
+def hn_component_auto_phi_max(omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, gamma2, r,
+                              log_tol=-40.0, start=8.0, cap=2.0 ** 24):
+    """Smallest power-of-two phi_max with Re(A + B*h0 + C*q0) - ln(phi) < log_tol.
+
+    The component glue for :func:`cf_adaptive_phi_max`: it reduces the batch to the EXTREME states
+    so the scan runs on a 4-element phi and checks both inversion contours.
+
+    ALL FOUR CORNERS OF THE (h0, q0) BOX, not the two diagonal ones. The log-MGF is B*h0 + C*q0 and
+    B and C are free to carry OPPOSITE signs, so the slowest-decaying state can be (h.max, q.min) -
+    which pairing h with q by rank never probes. Latent today, because every call site here is
+    scalar (one h0, one q0, so all four corners are the same state); it is the batched caller that
+    would otherwise get a bound derived at a state it does not price.
+
+    THIS SCAN IS THE CALIBRATION'S WALL CLOCK, measured at 75-82% of a plain HN option price
+    (roadmap: 'the calibration's wall time is the adaptive phi_max scan') and at 35-184 ms against
+    8-94 ms for the price itself here. It is tempting to derive it once and reuse it across a
+    ladder; DO NOT. A LARGER BOUND IS NOT CONSERVATIVE FOR THIS MODEL. Past a parameter- and
+    step-count-dependent point the A/B/C recursion DIVERGES rather than decaying, so integrating
+    beyond a contract's own bound integrates garbage: measured on a converged four-pillar fit, a
+    126-step price is 0.7353321384 at phi_max 128/256/512 (converged - identical at 64, 256 and
+    1024 panels), 0.7323069671 at 1024 and 9.4e+55 at 2048, while the 21-step contract in the SAME
+    strip wants 512. Reusing the front bound at the back solved a bootstrap pillar against a price
+    0.4% wrong, which surfaced only as a 3.5e-3 residual on an ATM ladder that reprices exactly by
+    construction. Every price derives its own; the speed lever is a per-pillar bound VERIFIED at
+    the solved level, and that is a roadmap row rather than a shortcut.
+    """
+    h = torch.as_tensor(h0).detach().to(alpha.dtype).reshape(-1)
+    q = torch.as_tensor(q0).detach().to(alpha.dtype).reshape(-1)
+    hs = torch.stack([h.min(), h.min(), h.max(), h.max()]).reshape(-1, 1)
+    qs = torch.stack([q.min(), q.max(), q.min(), q.max()]).reshape(-1, 1)
+    carry = torch.as_tensor(r).detach() * len(omegas)
+    return cf_adaptive_phi_max(
+        lambda z: hn_component_logmgf(z, omegas, hs, qs, alpha, beta, gamma1, rho, phi_q,
+                                      gamma2, r), carry, alpha.dtype, alpha.device,
+        log_tol, start, cap)
+
+
+def _component_p1_p2(logm, omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, gamma2, r,
+                     phi_max, panels, order, unwrap, want=3):
+    """P1, P2 for log-moneyness ``logm`` = ln(K/S).  ``logm``/``h0``/``q0`` broadcast together.
+
+    The component sibling of :func:`_p1_p2`, and the SAME thin glue over
+    :func:`cf_european_probabilities`: the affine log-CF ``A + B*h0 + C*q0`` as the ``logcf``
+    closure, ``r*n`` as the P1-contour normalisation. ``want`` is a bit mask: 1 = P1, 2 = P2.
+    """
+    logm = torch.as_tensor(logm, dtype=alpha.dtype, device=alpha.device)
+    h0 = torch.as_tensor(h0, dtype=alpha.dtype, device=alpha.device)
+    q0 = torch.as_tensor(q0, dtype=alpha.dtype, device=alpha.device)
+    logm, h0, q0 = torch.broadcast_tensors(logm, h0, q0)
+    if phi_max is None:
+        phi_max = hn_component_auto_phi_max(
+            omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, gamma2, r)
+    if panels is None:
+        panels = 256
+    hh, qq = h0.unsqueeze(-1), q0.unsqueeze(-1)
+
+    def logcf(phi):
+        A, B, C = hn_component_abc(phi, omegas, alpha, beta, gamma1, rho, phi_q, gamma2, r,
+                                   unwrap=unwrap)
+        return A + B * hh + C * qq
+
+    return cf_european_probabilities(
+        logcf, logm, r * len(omegas), phi_max, panels, order, alpha.dtype, alpha.device, want)
+
+
+def hn_component_call(S, K, omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, gamma2, r,
+                      phi_max=None, panels=None, order=8, unwrap=True):
+    """European CALL under the component model, ``len(omegas)`` steps to expiry.
+
+    ``h0``/``q0`` are the (predictable) short- and long-run variances of the FIRST step - q0 is
+    L(0) by the anchoring - and ``r`` the PER-STEP cost of carry. Differentiable w.r.t. every
+    parameter, the omega strip (hence the L curve behind it), h0, q0, S and K.
+    """
+    S = torch.as_tensor(S, dtype=alpha.dtype, device=alpha.device)
+    K = torch.as_tensor(K, dtype=alpha.dtype, device=alpha.device)
+    P1, P2 = _component_p1_p2(torch.log(K / S), omegas, h0, q0, alpha, beta, gamma1, rho,
+                              phi_q, gamma2, r, phi_max, panels, order, unwrap)
+    return S * P1 - K * torch.exp(-r * len(omegas)) * P2
+
+
+def hn_component_put(S, K, omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, gamma2, r, **kw):
+    """European PUT.  By put-call parity off :func:`hn_component_call`, exactly as the plain
+    model's put is."""
+    S = torch.as_tensor(S, dtype=alpha.dtype, device=alpha.device)
+    K = torch.as_tensor(K, dtype=alpha.dtype, device=alpha.device)
+    return (hn_component_call(S, K, omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, gamma2, r,
+                              **kw) - S + K * torch.exp(-r * len(omegas)))
+
+
+def hn_component_cdf_logret(x, omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, gamma2, r,
+                            phi_max=None, panels=None, order=8, unwrap=True):
+    """EXACT  Q( R_n <= x )  where R_n = log(S_{t+n}/S_t), by Fourier inversion.
+
+    The one-step-survival analogue the OSS loop needs for an UP barrier at S*exp(x) (survival =
+    stay below); spot-free by construction, and the component sibling of
+    :func:`hn_cdf_logret`. ``x``, ``h0`` and ``q0`` broadcast together.
+    """
+    _, P2 = _component_p1_p2(x, omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, gamma2, r,
+                             phi_max, panels, order, unwrap, want=2)
+    return 1.0 - P2
+
+
+def hn_component_from_plain(omega, alpha, beta, gamma_star):
+    """The plain HN parameters as a point of the COMPONENT parameter space - the exact map the
+    nesting rests on.  Returns ``(alpha, beta_c, gamma1, L)`` with phi = 0 and L FLAT.
+
+    beta_c is the plain PERSISTENCE psi = beta + alpha*gamma*^2 (the component's beta is the
+    short-run deviation's own AR(1) coefficient, and under the plain recursion that deviation
+    decays at psi, not at beta), and L is the plain STATIONARY variance (omega + alpha)/(1 - psi),
+    which is what a flat long-run component must sit at for the two to agree.
+    """
+    psi = hn_persistence(alpha, beta, gamma_star)
+    return alpha, psi, gamma_star, (omega + alpha) / (1.0 - psi)
+
+
+def hn_component_to_plain(alpha, beta, gamma1, level):
+    """The inverse of :func:`hn_component_from_plain` - a flat-L, phi=0 component parameter set as
+    the plain ``(omega, alpha, beta, gamma_star)`` it is identical to."""
+    return level * (1.0 - beta) - alpha, alpha, beta - alpha * gamma1 ** 2, gamma1
+
+
 # --------------------------------------------------------------------------------------
 # Correlated sub-stepping -- exact within-interval dynamics between coarse scenario nodes
 # --------------------------------------------------------------------------------------
@@ -2675,6 +3076,38 @@ def hn_correlated_substeps(h, z_fw, sub_dt, omega, alpha, beta, gamma_star):
         r_sum = r_sum + var_j.sqrt() * z[j]
         h = h + dt * (hn_variance_step(h, sh, z[j], omega, alpha, beta, gamma_star) - h)
     return h, var_sum, r_sum
+
+
+def hn_component_correlated_substeps(h, q, z_fw, sub_dt, omegas, alpha, beta, gamma1,
+                                     rho, phi, gamma2):
+    """Walk one coarse scenario interval as the `sub_dt` fractional COMPONENT steps that span it.
+    Returns (h_end, q_end, var_sum, r_sum) - the sibling of :func:`hn_correlated_substeps`, and
+    every note there holds (the interval return carry - var_sum/2 + r_sum is a price-martingale by
+    iterated expectations, exact at every sub-step; each step is the same fractional recursion the
+    fine grid takes, exactly `hn_component_variance_step` at dt=1).
+
+    `omegas` is this interval's own intercept strip, one entry per sub-step, sliced off the whole
+    horizon's omega path by the process. The FORWARDED MEAN that sets the correlation weights is
+    the component one: E[q_{j+1}] = omega_j + rho*q_j and E[h_{j+1}] = E[q_{j+1}] + beta*(h_j-q_j),
+    both centering terms having conditional mean zero.
+    """
+    var_bar, mean_h, mean_q = [], h, q
+    for dt, omega_t in zip(sub_dt, omegas):
+        var_bar.append(mean_h * dt)
+        step_q = omega_t + rho * mean_q
+        step_h = step_q + beta * (mean_h - mean_q)
+        mean_h, mean_q = mean_h + dt * (step_h - mean_h), mean_q + dt * (step_q - mean_q)
+    z = substep_normals(torch.stack(var_bar).sqrt(), z_fw)
+    var_sum, r_sum = torch.zeros_like(h), torch.zeros_like(h)
+    for j, (dt, omega_t) in enumerate(zip(sub_dt, omegas)):
+        sh = h.sqrt()
+        var_j = h * dt
+        var_sum = var_sum + var_j
+        r_sum = r_sum + var_j.sqrt() * z[j]
+        step_h, step_q = hn_component_variance_step(
+            h, q, sh, z[j], omega_t, alpha, beta, gamma1, rho, phi, gamma2)
+        h, q = h + dt * (step_h - h), q + dt * (step_q - q)
+    return h, q, var_sum, r_sum
 
 
 def garch_correlated_substeps(h, z_fw, sub_dt, omega, alpha, beta, nu):

@@ -262,11 +262,29 @@ def test_unknown_spot_model_fails_loudly(build, name):
     (never a silent GBM fallback). The refusal MOVED (V6) from the dependency loop, which logged
     and skipped the deal, to `Deal.__init__` checking the class's `spot_models` declaration - the
     switch is keyed by deal TYPE, so a bad value mis-declares every deal of that type rather than
-    breaking one. See tests/test_spot_model_declaration.py."""
+    breaking one. See tests/test_spot_model_declaration.py.
+
+    The accepted set is read off the CLASS rather than spelled here: a hand-copy of the tuple is a
+    second declaration, and it went stale the day a second GARCH family was declared.
+
+    THAT ALONE IS SELF-REFERENTIAL - the message quotes the class's own declaration, so it would
+    hold on a deal that accepted a model no pricer can walk. The second source is the KIT REGISTRY:
+    `pricing.OSS_SPOT_MODEL_KITS` is what `oss_model_kit` looks a name up in, so a deal type may
+    declare exactly the models that have a kit, plus 'None' (GBM, which has no kit by definition).
+    A family added to one side and not the other is a deal that declares a model it cannot price,
+    or a kit nothing reaches."""
+    import derivus.instruments as _i
+    import derivus.pricing as _p
+
     with pytest.raises(ValueError) as e:
         build(hn_params=STRONG, spot_model='Heston_Nandi')
     assert name in str(e.value)
-    assert 'Heston_Nandi' in str(e.value) and "('None', 'HestonNandi')" in str(e.value)
+    accepted = getattr(_i, name).spot_models
+    assert 'HestonNandi' in accepted, 'the fixture deal no longer declares a GARCH family at all'
+    assert 'Heston_Nandi' in str(e.value) and str(accepted) in str(e.value)
+    assert set(accepted) == set(_p.OSS_SPOT_MODEL_KITS) | {'None'}, (
+        '%s declares %r but the OSS kit registry carries %r - one side grew a GARCH family the '
+        'other has not' % (name, sorted(accepted), sorted(_p.OSS_SPOT_MODEL_KITS)))
 
 
 @pytest.mark.parametrize('build', [

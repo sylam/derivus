@@ -464,12 +464,18 @@ def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, 
     """Resolve a non-GBM spot model's parameter factor by NAMING CONVENTION off the underlying the
     deal already references: <spot_model>ModelParameters.<name>. Model-agnostic - HestonNandi today,
     Heston/SLV/... add zero code here (only a <Model>ModelParameters factor + a pricer branch).
-    Returns the SVI-shaped index [(stoch, [per-parameter sub-factors], spot_model)] - subtype tagged
+    Returns the SVI-shaped index
+    [(stoch, [per-parameter sub-factors], spot_model, {curve parameter: knots})] - subtype tagged
     with spot_model for the pricer's branch - or None for spot_model=='None' (GBM, byte-identical).
     The VALUE is already validated against the deal type's `Deal.spot_models` declaration at
     construction, so what is left here is presence: switch on but the factor absent from the market
     data -> KeyError, propagated to the engine's dependency loop (deal skipped, ERROR logged),
-    never a silent GBM fallback."""
+    never a silent GBM fallback.
+
+    THE FOURTH SLOT IS THE TENOR INDEX, and it is what a model whose parameters include a CURVE
+    needs: the values ride the static buffer as leaves like every other parameter, but their KNOTS
+    are structural, so they are resolved once here rather than carried on the tensor side. A model
+    whose parameters are all scalars publishes an empty dict and no consumer looks."""
     if spot_model == 'None':
         return None
     mp = utils.Factor(spot_model + 'ModelParameters', name)
@@ -480,8 +486,10 @@ def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, 
     else:
         raise KeyError('SpotModel=%s but %s not in the market data'
                        % (spot_model, utils.check_tuple_name(mp)))
+    factor = get_factor_component(mp, all_factors)
     return [tuple([stoch, [utils.Factor(mp.type, mp.name + (param,))
-                           for param in get_factor_component(mp, all_factors).current_value()], spot_model])]
+                           for param in factor.current_value()], spot_model,
+                   factor.curve_tenors() if hasattr(factor, 'curve_tenors') else {}])]
 
 
 def get_interest_vol_factor(fieldname, tenor, static_offsets, stochastic_offsets, all_tenors):
@@ -3636,7 +3644,7 @@ class EquityBarrierBinaryOption(Deal):
         F('Settlement_Date', 'Date', default='')
 ])]
 
-    spot_models = ('None', 'HestonNandi')
+    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent')
 
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
@@ -3905,7 +3913,7 @@ class EquityBinaryOption(EquityOptionDeal):
 class QEDI_CustomAutoCallSwap(Deal):
     fields = [ADMIN, EQUITYOPTIONBASE, QEDI_CUSTOMAUTOCALLSWAP]
 
-    spot_models = ('None', 'HestonNandi')
+    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent')
 
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
@@ -4350,7 +4358,7 @@ class EquityBarrierOption(Deal):
         F('Payoff_Type', 'Text', default='Standard', values=['Standard', 'Quanto', 'Compo'])
 ])]
 
-    spot_models = ('None', 'HestonNandi')
+    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent')
 
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
@@ -5619,7 +5627,7 @@ class FXTARFOptionDeal(Deal):
         F('Barrier', 'Float', default=0)
 ])]
 
-    spot_models = ('None', 'HestonNandi')
+    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent')
 
     factor_fields = {'Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
@@ -5767,7 +5775,7 @@ class FXAccumulatorOptionDeal(Deal):
             F('Fixing Date', 'Date'), F('Settlement Date', 'Date'), F('Value', 'Float')]))
 ])]
 
-    spot_models = ('None', 'HestonNandi')
+    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent')
 
     factor_fields = {'Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
