@@ -4,9 +4,9 @@
 desk box is the edge of. The full workstream design (seven increments: log, identity, booking
 verbs, projections, workflow tiers, distribution, bindings) lives in the owner's brief outside
 the tree, per the no-specs-in-the-repo rule; this page documents what is BUILT, which is
-**increment 1**: the log, the blob store, the chain, and their gates. No identity, no verbs on
-`Context`, no projections, no network — a library, a CLI, and 103 gates. Nothing under
-`derivus/` is touched, and nothing here imports it.
+**increments 1 and 2**: the log, the blob store, the chain — and riding them, identity,
+capability enforcement and key custody. No verbs on `Context`, no projections, no network — a
+library, a CLI, and 167 gates. Nothing under `derivus/` is touched, and nothing here imports it.
 
 ## The package, and the one dependency
 
@@ -117,12 +117,61 @@ Eleven mutants were run against the finished build and each now dies by a named 
 that survived the first pass (checkpoint-key provenance, the blinded-tag recomputation) are
 exactly the assertions the review added.
 
-## What increment 1 is not
+## Increment 2 — identity, attribution, key custody
 
-No OIDC, no capabilities, no actor authentication — `actor` is a declared string until
-increment 2 gates write paths and brings key custody. No booking verbs on `Context`, no
-`result_pinned`, no attestation lanes — increment 3, which also waits on the engine's
-`Market Prices` partition row before quote pinning is wired. No projections, no diary, no
-DuckDB — increment 4. No tier policy, no doorbell, no generated MCP binding — 5 through 7. The
-external anchor hook is the checkpoint pair on `DV_Spine status`; wiring it to an anchor target
-is deployment data, out of scope by the design's own sentence.
+**Identity is bought, not built.** `identity.py` VERIFIES an OIDC ID token against a JWKS the
+deployment hands in as data — nothing is fetched, verification stays local — under an
+RS256/ES256 allowlist that refuses `none` and every HMAC by name before any key is selected
+(the alg-confusion attacks are gates, not warnings), with `kid` selection across key types, the
+ES256 raw-`R||S` signature contract, `exp`/`nbf` on an injectable clock, and OIDC Core's `azp`
+rule for multi-audience tokens — a co-audienced client cannot replay its own token as a spine
+credential. The subject reference is the token's `sub`, pseudonymous by the brief's rule;
+display names live in `names.json`, a mutable side table OUTSIDE the log whose erasure is gated
+to leave every chain byte identical.
+
+**Capabilities are one document and one pure function.** The document — grants of (verb × book)
+over `draft | validate | book | approve | mark | admin`, plus READ over entitlement classes —
+is a hashed blob declared through the ordinary writer (`policy_declared` with the RESERVED
+policy name `capabilities`), each declaration a complete replacement, resolved by fold-at-LSN
+so "could X do Y in March" replays from the log like every other question. Enforcement
+activates BY DECLARATION: a home with no document runs as the single-user instrument it is —
+which is why every increment-1 home and gate is bit-for-bit untouched — and once one is in
+force the writer refuses an unscoped append AND logs the refusal as a `capability_denied` fact
+under the writer's reserved actor, because a decision is a fact. A document whose blob has been
+doctored or lost folds to UNREADABLE rather than raising: every verb refuses by name, custody
+hands out no key, and the break-glass walk leads OUT — the condition the recovery grant exists
+for cannot brick the recovery itself. `break_glass_used` is gated on the genesis grant from
+event one, the admin it restores is revocable by the next capabilities declaration (a recovery
+is not a coup), and the classifier seam (`vocabulary.classify`) now derives the entitlement
+class the envelope carries — "firm" for everything until desk two, one function instead of one
+constant.
+
+**Custody.** Per-seat X25519 keypairs at enrollment; the firm class key wrapped per
+READ-entitled subject — ephemeral ECDH, HKDF, AES-GCM with the (class, subject) pair bound
+into the AAD, so a wrap re-addressed to another seat refuses to open — plus an escrow wrap
+under a declared escrow key. `rewrap` is idempotent and driven by the document in force;
+`grant` reports the rewrap it now owes, so "rewrap on grant change" is a printed obligation
+rather than operator memory; `materialize` turns a chain-only replica entitled off its wrap
+without overwriting anything; escrow recovery is gated on a crypto-shredded copy. THREE
+residuals are declared: the brief's two (forward-only revocation, traffic shape) and this
+increment's own — a hub-minted seat key is a bootstrap the hub has seen, stated in
+`custody.py`'s docstring, with seat-generated `--public-key` enrollment as the form that
+eliminates it.
+
+The CLI grows `enroll | grant | rewrap | name | whoami`. Of the 64 new gates, the shapes worth
+naming: the strand-and-recover walk (a document stranding the last admin, every later
+declaration refused, the genesis seat walking out, the recovered admin later revoked); the
+stale-fold check (a revocation lands and the same open handle answers off the platter, never a
+snapshot — the TOCTOU the review caught on the custody path); and the review's eleven mutants
+plus the fix pass's thirteen, each dead by a named test.
+
+## What is not built yet
+
+No booking verbs on `Context`, no `result_pinned`, no attestation lanes — increment 3, which
+waits on the engine's `Market Prices` partition row before quote pinning is wired. No
+projections, no diary, no DuckDB — increment 4. No tier policy, no doorbell, no generated MCP
+binding — 5 through 7. No network anywhere yet: tokens are verified, never fetched, and the
+write path beyond localhost that increment 2 exists to gate arrives with increment 3's verbs —
+already gated when it does. No class-key rotation (rewrap adds recipients; rotation is a later
+logged event). The external anchor hook is the checkpoint pair on `DV_Spine status`; wiring it
+to an anchor target is deployment data, out of scope by the design's own sentence.

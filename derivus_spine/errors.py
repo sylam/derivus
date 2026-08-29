@@ -85,3 +85,21 @@ class HomeExists(SpineRefusal):
 
 class HomeMissing(SpineRefusal):
     """A home that is not there, or is there without the log/blobs/keys a home is made of."""
+
+
+class IdentityRefused(SpineRefusal):
+    """A token that does not prove who it claims - a signature that does not verify under the
+    deployment's published JWKS, a wrong audience or issuer, an expired claim, or an algorithm
+    outside the allowlist (the `none` and HMAC confusions land here by design)."""
+
+
+class CapabilityDenied(SpineRefusal):
+    """An actor without the (verb, book) scope the event demands, under the capability policy in
+    force at this LSN. The denial is itself logged - a decision is a fact - so catching this is
+    reading the record's own refusal back."""
+
+
+class CustodyRefusal(SpineRefusal):
+    """Key custody declining - a wrap that does not open under the seat's own private key, an
+    enrollment the log does not carry, or an escrow recovery asked of a home that declared no
+    escrow key."""

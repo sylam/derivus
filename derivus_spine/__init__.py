@@ -38,6 +38,9 @@ from .errors import (
     WriterBusy,
     HomeExists,
     HomeMissing,
+    IdentityRefused,
+    CapabilityDenied,
+    CustodyRefusal,
 )
 from .store import BlobStore
 from .log import SpineLog
@@ -68,4 +71,7 @@ __all__ = [
     'WriterBusy',
     'HomeExists',
     'HomeMissing',
+    'IdentityRefused',
+    'CapabilityDenied',
+    'CustodyRefusal',
 ]

@@ -39,6 +39,17 @@ carries the twelve fields and NO THIRTEENTH: a surplus field would sit outside e
 signature while every projector downstream read it, so `check_frame` refuses one exactly as the
 vocabulary refuses a surplus key in a body.
 
+The writer also ENFORCES, and it enforces by declaration. Until a capabilities document is in the
+log there is nothing to consult and every append lands as it always did; once one is in force, an
+append whose actor lacks the event's verb is refused AND the refusal is appended as an ordinary
+fact, because a decision is a fact and a denial recorded only in someone's log file is a decision
+nobody can replay. Two authorizations sit outside that rule in opposite directions: the writer's own
+denial is never gated, or a refusal could itself be refused; and the break-glass handle is gated from
+event one rather than by declaration, because no document grants it and so no document's absence can
+open it. The evaluation itself is not here - it is `capability.evaluate`, one pure function over a
+fold this writer keeps current - so what lives in this file is the hook, and the one path allowed to
+speak the writer's own reserved type.
+
 One writer, and it is claimed rather than declared. A second `SpineLog` appending to the same home
 would assign an LSN the first has already taken, and nothing in this package may edit or remove the
 line that results - so the first append takes an exclusive claim on the home, re-reads the head
@@ -63,12 +74,16 @@ import os
 from pathlib import Path
 
 from .canon import canonical_bytes
+from .capability import (
+    CAPABILITIES_POLICY, CAPABILITY_EVENTS, UNREADABLE, apply_event, build_state, denial_body,
+    evaluate, parse_document, verb_for)
 from .errors import (
-    ChainBroken, CollisionRefusal, HomeMissing, MalformedEvent, MissingBlobRefusal,
-    SealedBodyUnreadable, WriterBusy)
+    CapabilityDenied, ChainBroken, CollisionRefusal, HomeMissing, MalformedEvent,
+    MissingBlobRefusal, SealedBodyUnreadable, WriterBusy)
 from .seal import Keys
 from .store import BlobStore
-from .vocabulary import cited_blobs, validate
+from .vocabulary import (
+    FIRM_CLASS, RECOVERY, WRITER, WRITER_TYPES, cited_blobs, classify, is_hash, validate)
 
 LOG = logging.getLogger(__name__)
 
@@ -78,8 +93,10 @@ TIME_FORMAT = '%Y-%m-%dT%H:%M:%S.%fZ'
 #: What the first event chains onto. Sixty-four zeros is not a hash of anything - it is the edge.
 GENESIS_PREV = '0' * 64
 #: One class in phase 1. The mechanism ships dormant; the day desk two arrives this is a
-#: classification decision recorded in policy, not a redesign.
-ENTITLEMENT_CLASS = 'firm'
+#: classification decision recorded in policy, not a redesign - which is why the envelope asks
+#: `vocabulary.classify` for the class rather than stamping this constant into the frame: the class
+#: is DERIVED from provenance, and this is the name of the one class that derivation can answer yet.
+ENTITLEMENT_CLASS = FIRM_CLASS
 EVENT_VERSION = 1
 #: Roll past 64 MiB. Segments are an operational convenience - the chain does not know they exist.
 SEGMENT_LIMIT = 64 * 1024 * 1024
@@ -249,6 +266,10 @@ class SpineLog:
 
     def __init__(self, home):
         self._lock = None
+        # The writer's own voice, off. Set only around the internal denial path, so that the one
+        # type no submitter may speak is still a type the writer can, and so that the denial itself
+        # is never gated - a refusal that could be refused is a regress, not a record.
+        self._reserved = False
         self.home = Path(home)
         self.log = self.home / 'log'
         # log/ and blobs/, and NOT keys/. The brief's replica holds the full log and the blob store
@@ -301,13 +322,18 @@ class SpineLog:
     def frames(self, start_lsn=1, end_lsn=None):
         """Every frame from `start_lsn` to `end_lsn`, in LSN order, read from disk.
 
-        Read rather than remembered: the index says where a frame is, never what it says. A caller
-        folding this stream is looking at the bytes on the platter.
+        Read rather than remembered, and the SEGMENT LISTING is re-read too. A handle held across
+        somebody else's append - reading never claims the home, so this is ordinary - would otherwise
+        walk the segments that existed when it opened, and a fold over that stream is a fold over a
+        log that has moved on. The only remembered thing left is the lower bound of a segment already
+        seen, which cannot change once the segment holds a line.
         """
-        for index, path in enumerate(self._segments):
-            if self._segment_last[index] < start_lsn:
-                continue
-            if end_lsn is not None and self._segment_first[index] > end_lsn:
+        seen = dict((path, index) for index, path in enumerate(self._segments))
+        for path in sorted(self.log.glob(SEGMENT_GLOB)):
+            index = seen.get(path)
+            if index is not None and end_lsn is not None \
+                    and self._segment_first[index] is not None \
+                    and self._segment_first[index] > end_lsn:
                 return
             with path.open('rb') as handle:
                 for raw in handle:
@@ -393,6 +419,7 @@ class SpineLog:
                 'policy, checkpoints, official market declarations'.format(book))
         if effective_time is not None:
             check_time(effective_time)
+        self._authorize(event_type, body, actor, book)
         record_time = now_stamp()
 
         canonical = canonical_bytes(semantic_tuple(event_type, body, actor, book, effective_time))
@@ -423,7 +450,7 @@ class SpineLog:
                         reference, self.store.blobs, event_type, field))
 
         envelope = {'actor': actor, 'book': book, 'effective_time': effective_time,
-                    'entitlement_class': ENTITLEMENT_CLASS, 'event_type': event_type,
+                    'entitlement_class': classify(event_type, book), 'event_type': event_type,
                     'event_version': EVENT_VERSION, 'idempotency_tag': tag,
                     'prev_hash': self._head_hash, 'record_time': record_time}
         sealed = self.keys.seal(
@@ -446,6 +473,11 @@ class SpineLog:
         self._head_hash = frame['event_hash']
         if frame['lsn'] == 1:
             self._genesis_actor = actor
+        if event_type in CAPABILITY_EVENTS and self._capability is not None:
+            # The fold moves with the log rather than being re-read from it: the same step
+            # `build_state` repeats, applied to the one event that just landed. Safe only because
+            # this handle holds the home's claim - nothing else can have appended since.
+            apply_event(self._capability, event_type, actor, body, self.store)
 
         envelope['event_hash'] = frame['event_hash']
         envelope['lsn'] = frame['lsn']
@@ -481,6 +513,130 @@ class SpineLog:
         envelope = dict((key, value) for key, value in stored.items() if key != 'body')
         envelope['coalesced'] = True
         return envelope
+
+    def _authorize(self, event_type, body, actor, book):
+        """The enforcement hook: may this actor say this, and is what they are saying evaluable?
+
+        Enforcement activates BY DECLARATION for the six document verbs. Until a capabilities
+        document is in the log there is no document to consult, `evaluate` is not called about them,
+        and the home runs as the single-user instrument it is - which is not a compatibility shim but
+        the honest reading of a record that has never been told who may do what. It is also why every
+        increment-1 home still writes.
+
+        The break-glass handle is the one exception and is gated from event one, because it is the
+        one authorization that does not come FROM a document: no declaration grants it, so no
+        declaration's absence can mean "anybody may", and the alternative is an unscoped actor
+        appending free text into a sealed body of the record on a home nobody has governed yet.
+
+        Once a document IS in force, a refusal is a fact. The writer appends `capability_denied`
+        under its own name and then raises, so the decision is in the record where a fold, an
+        auditor and a surveillance projection can all read it - rather than in a log line on a
+        machine nobody replays. Two appends therefore leave this method: the denial, and nothing.
+
+        Three things are checked and the order is the design. The reserved type first, because it
+        must be refused whether or not any document exists. Then scope, because that is the question
+        the brief asks. Then the DOCUMENT ITSELF, last, so that a malformed policy is met at the
+        moment it is declared - by the seat that has the right to declare it, holding the file that
+        needs fixing - rather than discovered at the next append by a home that can no longer write.
+
+        The fold this consults cannot fail. A capabilities blob that has been doctored under its own
+        address folds to `UNREADABLE` rather than raising, so a home in that state refuses every verb
+        by name and is still rescued through the break-glass seat and the admin it recovers - the
+        bricked writer being exactly what the brief's recovery grant exists to prevent.
+        """
+        if event_type in WRITER_TYPES and not self._reserved:
+            raise CapabilityDenied(
+                '{0} is the writer\'s own voice and no submitter appends one: a denial is a fact '
+                'ABOUT a refusal, emitted by the writer under the actor {1!r} on the path that '
+                'refuses - read the denials back off the log (they are ordinary chained events), '
+                'and do not write one'.format(event_type, WRITER))
+        if self._reserved:
+            return
+        doc, genesis = self._capability_state()
+        verb = verb_for(event_type)
+        # Enforcement activates by declaration for the six document verbs, and from event one for
+        # the RECOVERY handle. The handle is the exception because it is not IN a document - that is
+        # the whole point of it - so "no document yet" is not a reason to let anybody at all speak as
+        # the seat genesis named, and an ungated `break_glass_used` is free text into a sealed body
+        # of the record under any name that asks.
+        if (doc is not None or verb == RECOVERY) \
+                and not evaluate(doc, genesis, actor, verb, book):
+            scope = book if book is not None else '*'
+            denial = self._deny(actor, verb, book, event_type)
+            raise CapabilityDenied(
+                'actor {0!r} holds no {1} scope over {2!r}, so the {3} does not append: {4}. The '
+                'refusal is itself recorded at LSN {5}'.format(
+                    actor, verb, scope, event_type,
+                    self._why(doc, genesis, actor, verb, scope), denial['lsn']))
+        if event_type == 'policy_declared' and isinstance(body, dict) \
+                and body.get('policy') == CAPABILITIES_POLICY:
+            blob = body.get('blob')
+            if not is_hash(blob):
+                raise CapabilityDenied(
+                    'a {} declaration names {!r} as its blob: the document is bulk and lives in '
+                    'the store, so the body carries its 64-hex address and nothing else - put the '
+                    'canonical document with `BlobStore.put` and declare the hash it '
+                    'answers'.format(CAPABILITIES_POLICY, blob))
+            parse_document(self.store.get(blob),
+                           'the capabilities document {}'.format(blob))
+
+    def _why(self, doc, genesis, actor, verb, scope):
+        """The middle of a denial: what the record actually says, and what would change it.
+
+        Three different refusals wear one sentence otherwise, and the operator reading it needs the
+        most specific true thing - a home whose policy blob was doctored is not a home that forgot to
+        grant somebody a scope, and neither is a stranger reaching for the break-glass handle.
+        """
+        if verb == RECOVERY:
+            return (
+                'the break-glass seat this home named at genesis is {!r}, and that grant is the '
+                'whole of who may reach for the handle - it lives outside every document, so no '
+                'document widens it either. Have the seat genesis named append the use'.format(
+                    genesis.get('break_glass')))
+        if doc is UNREADABLE:
+            return (
+                'the capabilities document in force here will not READ - its blob was altered under '
+                'its own address, or is gone from the store - so it grants nothing to anybody. '
+                'Restore blobs/ from a verified replica, or have the genesis break-glass seat append '
+                '`break_glass_used` and declare a replacement through `DV_Spine grant --file`')
+        return (
+            'the capabilities document in force here grants it nothing that reaches this event. '
+            'Declare a document granting ({!r}, {}, {!r}) through `DV_Spine grant --file`, or - if '
+            'a declaration stranded the last admin - recover through the break-glass seat genesis '
+            'named'.format(actor, verb, scope))
+
+    def _capability_state(self):
+        """`(document, genesis)` in force at this head, folded once and then kept current.
+
+        The capability state is one more thing opening a home derives: it is built the first time an
+        append needs it and updated as later ones land, so a writer does not pay the length of the
+        book to answer a question about a handful of declarations. The cache is safe because this
+        handle holds the home's exclusive claim before it may append, and `_claim` re-scans - a fold
+        nobody else can move underneath is a fold worth remembering.
+
+        It cannot fail. A declared document whose blob no longer answers for it folds to `UNREADABLE`
+        rather than raising, because the alternative is an exception thrown from inside the writer's
+        own authorization hook - which brings down `break_glass_used` and the replacement declaration
+        with it, and that is a bricked home rather than a refused append.
+        """
+        if self._capability is None:
+            self._capability = build_state(self)
+        return (self._capability['doc'], self._capability['genesis'])
+
+    def _deny(self, subject, verb, book, attempted_type):
+        """Append the refusal as a fact, under the writer's own name. Answers its envelope.
+
+        The one path that may speak the reserved type, and the one append that is never gated. A
+        second identical denial coalesces onto the first by the ordinary tag rule, because "this
+        subject was refused this verb over this book for this type" is one fact however many times
+        it is attempted - the tempo of the attempts is serving-layer telemetry, not the record.
+        """
+        self._reserved = True
+        try:
+            return self.append('capability_denied',
+                               denial_body(subject, verb, book, attempted_type), actor=WRITER)
+        finally:
+            self._reserved = False
 
     def _claim(self):
         """Take this home's writer claim, and re-read the head under it.
@@ -526,6 +682,10 @@ class SpineLog:
         self._segment_last = [0] * len(self._segments)
         self._at = {}
         self._tags = {}
+        # The capability fold, dropped: a reopen may have found history this handle had not seen, so
+        # the cached answer is thrown away rather than carried across the scan that replaced its
+        # inputs. It is rebuilt from the platter the next time an append needs it.
+        self._capability = None
         self._head_lsn = 0
         self._head_hash = GENESIS_PREV
         self._genesis_actor = None

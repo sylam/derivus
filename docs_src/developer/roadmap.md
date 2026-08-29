@@ -40,7 +40,16 @@ Two rules apply to everything here, from [Conventions](conventions.md):
 
 ## Designed, not built
 
-**The trading spine — increment 1 of 7 is BUILT.** `derivus_spine/` is the append-only book of
+**The trading spine — increments 1 and 2 of 7 are BUILT.** Increment 2 adds identity,
+attribution and key custody on the increment-1 log with its wire formats frozen: local OIDC
+verification (RS256/ES256 allowlist, `azp` for multi-audience tokens), capabilities as one
+hashed policy document and one pure evaluator resolved by fold-at-LSN, writer enforcement that
+activates by declaration and logs every denial as a fact, an UNREADABLE fold sentinel so a
+doctored policy blob cannot brick the break-glass recovery, revocable break-glass, per-seat
+X25519 wrapping with the subject bound into the AAD, escrow recovery gated on a shredded copy,
+and a third DECLARED residual (the hub-minted seat-key bootstrap). 167 gates total, twice-run
+deterministic; 24 review mutants dead by named tests. `DV_Spine` grows
+`enroll | grant | rewrap | name | whoami`. Details continue on [The Spine](spine.md): `derivus_spine/` is the append-only book of
 record's truth layer: a vendored RFC 8785 canonicaliser gated on the RFC's own vectors, sealed
 chained log segments (AES-GCM bodies, a blinded idempotency tag in the envelope so no plaintext
 hash is a dictionary oracle, `event_hash` chaining from genesis), a content-addressed blob
@@ -50,9 +59,9 @@ retro-invalidates it, an enforced single writer, and a two-mode verifier honest 
 keyless replica cannot assess. Import surface: stdlib + `cryptography`, held by AST and
 subprocess gates; `pip install derivus[enterprise]`; `DV_Spine` is the CLI. 103 gates, every
 fault injected as data on disk, eleven mutants each killed by a named test. See
-[The Spine](spine.md). What remains is increments 2–7 (identity + key custody, booking verbs +
-`result_pinned`, projections + the diary, tier policy, the doorbell, the generated binding) —
-increments 3 and 5 wait on the `Market Prices` partition row above, per the workstream brief.
+[The Spine](spine.md). What remains is increments 3–7 (booking verbs + `result_pinned`, projections + the diary, tier
+policy, the doorbell, the generated binding) — increments 3 and 5 wait on the `Market Prices`
+partition row above, per the workstream brief.
 
 **Sensitivity estimators as first-class objects.** Every Greek should carry the estimator that
 produced it — a `SensitivityProfile` per pricer — so a consumer can tell a pathwise derivative from
