@@ -40,6 +40,20 @@ Two rules apply to everything here, from [Conventions](conventions.md):
 
 ## Designed, not built
 
+**The trading spine — increment 1 of 7 is BUILT.** `derivus_spine/` is the append-only book of
+record's truth layer: a vendored RFC 8785 canonicaliser gated on the RFC's own vectors, sealed
+chained log segments (AES-GCM bodies, a blinded idempotency tag in the envelope so no plaintext
+hash is a dictionary oracle, `event_hash` chaining from genesis), a content-addressed blob
+store with no verb for forgetting, Ed25519 checkpoints whose verifying key is published as a
+genesis policy blob and resolved by fold-at-LSN so a logged rotation neither bricks history nor
+retro-invalidates it, an enforced single writer, and a two-mode verifier honest about what a
+keyless replica cannot assess. Import surface: stdlib + `cryptography`, held by AST and
+subprocess gates; `pip install derivus[enterprise]`; `DV_Spine` is the CLI. 103 gates, every
+fault injected as data on disk, eleven mutants each killed by a named test. See
+[The Spine](spine.md). What remains is increments 2–7 (identity + key custody, booking verbs +
+`result_pinned`, projections + the diary, tier policy, the doorbell, the generated binding) —
+increments 3 and 5 wait on the `Market Prices` partition row above, per the workstream brief.
+
 **Sensitivity estimators as first-class objects.** Every Greek should carry the estimator that
 produced it — a `SensitivityProfile` per pricer — so a consumer can tell a pathwise derivative from
 one carrying a boundary term. Related and also unbuilt: **Hessian-vector products** instead of

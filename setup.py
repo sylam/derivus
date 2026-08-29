@@ -18,15 +18,18 @@ MCP = ['mcp>=2,<3', 'mcp-types', 'requests']
 # derivus/quote_sheet.py is the sole importer and the service imports it inside the job, so a
 # missing xlsxwriter costs a desk its sheet and never its quote
 XLSX = ['xlsxwriter>=3.1']
+# AES-GCM sealing and Ed25519 checkpoints - the spine's only non-stdlib import, held by a gate
+ENTERPRISE = ['cryptography>=42']
 
 setup(
     name='derivus',
     version=version_ns['__version__'],
     # excel_integration is an add-in that lives in the repo, not part of the installed library.
-    # derivus_mcp and derivus_bloomberg are sibling packages on the same terms as each other:
-    # in the wheel, but never importing the engine (gates read their imports)
+    # derivus_mcp, derivus_bloomberg and derivus_spine are sibling packages on the same terms as
+    # each other: in the wheel, but never importing the engine (gates read their imports)
     packages=find_packages(include=['derivus', 'derivus.*', 'derivus_bloomberg', 'derivus_bloomberg.*',
-                                    'derivus_mcp', 'derivus_mcp.*']),
+                                    'derivus_mcp', 'derivus_mcp.*',
+                                    'derivus_spine', 'derivus_spine.*']),
     # the release pipeline builds web/ and copies web/dist here before `python -m build`, so a
     # wheel serves the UI it was released with; the repo tree carries neither the build nor the copy
     package_data={'derivus': ['_ui/*', '_ui/assets/*'],
@@ -69,6 +72,9 @@ setup(
         # stack now hands a counterparty a workbook as well as a number
         'quote': XLSX,
         'desk': SERVICE + MCP + XLSX,
+        # the spine's truth layer - it composes with the edge rather than joining it:
+        # `derivus[desk,enterprise]` is a desk that also keeps the book of record
+        'enterprise': ENTERPRISE,
     },
     entry_points={
         'console_scripts': [
@@ -77,7 +83,8 @@ setup(
             'DV_Docs = derivus_docs:main',
             'DV_Service = derivus.service:main',
             'DV_MCP = derivus_mcp.server:main',
-            'DV_Bloomberg = derivus_bloomberg.discover:main'
+            'DV_Bloomberg = derivus_bloomberg.discover:main',
+            'DV_Spine = derivus_spine.cli:main'
         ]},
     # PolyForm is source-available rather than OSI-approved, so Other/Proprietary is the
     # closest PyPI classifier; the SPDX identifier in `license` is the precise statement
