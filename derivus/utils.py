@@ -1221,6 +1221,12 @@ class Calculation_State(object):
         # sweep runs with `create_graph`. Declared here for the same reason as the switch above -
         # a pricer that has to avoid a first-order-only kernel reads it without a fallback.
         self.gamma = False
+        # The smooth (branch-and-weight) value estimator is wanted (`Branch_And_Weight`, base
+        # valuation only in v1); off is the crisp one-step-survival path bit for bit. Declared here
+        # for the same reason as the two above, and False here is what makes `Credit_Monte_Carlo`
+        # structurally untouched by it - CMC declares no such field, so the exposure, cashflow and
+        # collateral semantics keep the crisp estimator whatever a base valuation asks for.
+        self.branch_and_weight = False
         # where the memoized quasi-random stream stands, per (dimension, sample_size) - only
         # `CMC_State.quasi_rng` advances it, but `rng_position` seeks every state's streams
         self.t_quasi_rng_batch = {}

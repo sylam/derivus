@@ -438,11 +438,24 @@ def oss_truncated_draw(u, z_bound, survive_below):
     legitimately differ in.
 
     Adopters: ``sim_spot_tarf`` (bit-identically) and ``pv_MC_Accumulator``. Three call sites stay
-    enumerated rather than absorbed: ``sim_spot_oss`` twice (its down-side base ``(1-p) + u*p``
-    differs from ``Phi + u*p`` in the last bit wherever ``Phi < 0.5``, so absorbing it is a
-    results-changing event that must re-baseline the barrier's pinned fixtures), and
-    ``pv_MC_AutoCallSwap`` (up-side only, non-antithetic uniforms). A defect fixed here must be
-    checked against all three until they are absorbed.
+    enumerated rather than absorbed, and ``tests/test_branch_and_weight.py`` GATES each inline
+    spelling against this one so the copies cannot drift while they wait:
+
+    - ``sim_spot_oss`` twice (the HN arm and the GBM arm of ``pv_discrete_barrier_option``). Its
+      down-side base ``(1-p) + u*p`` differs from ``Phi + u*p`` in the last bit wherever
+      ``Phi < 0.5`` - ``1 - (1 - Phi)`` is exact only above a half - so absorbing it is a
+      results-changing event that must re-baseline the barrier's pinned fixtures. Its UP side is
+      already bit-identical, and the gate says so at both.
+    - ``pv_MC_AutoCallSwap`` (up-side only). Bit-identical arithmetic - ``p * u`` and ``u * p``
+      are the same IEEE product, and this primitive is indifferent to how ``u`` was DRAWN, so the
+      non-antithetic uniforms are no obstacle to it. What blocks absorption is the SHAPE: ``p`` is
+      formed in the coupon branch and consumed a screen later under ``fixing_aligned``, on an
+      iteration where the draw is deliberately skipped, so calling this there would spend an
+      ``icdf`` per coupon on a result nobody reads. It comes in when the autocall's loop is
+      restructured, not before - and that restructure is the same one integrating the put leg needs
+      (``pv_MC_AutoCallSwap``'s BRANCH AND WEIGHT section), so the two arrive together or not at all.
+
+    A defect fixed here must be checked against all three until they are absorbed.
     """
     eps = torch.finfo(u.dtype).eps
     Phi = utils.norm_cdf(z_bound)
@@ -453,6 +466,249 @@ def oss_truncated_draw(u, z_bound, survive_below):
         p = 1.0 - Phi
         Z = utils.norm_icdf(torch.clamp(Phi + u * p, eps, 1.0 - eps))
     return p, Z
+
+
+def branch_and_weight(shared, deal_data):
+    """Is the SMOOTH estimator on for this deal - and under a non-GBM spot model, the refusal.
+
+    ``Branch_And_Weight`` (declared on ``Base_Revaluation`` alone, default 'No') SWAPS the value
+    estimator rather than adding to it: at each fixing the fired branch is integrated analytically
+    against the conditioning step's own law and the continuing branch draws from the truncated one,
+    so the same expectation comes back with lower variance and no indicator left on the tape. It is
+    a switch and not an addition because one decision must have ONE estimator - on the smooth path
+    a deal registers no ``BoundarySet``, or the boundary flux is counted twice. Off, and absent, is
+    the crisp OSS path bit for bit.
+
+    THE CONDITIONING STEP IS THE FIXING INTERVAL'S OWN LOGNORMAL LAW. That is what makes ``p`` a
+    ``Phi`` and the continuing draw a ``Phi^-1`` (``oss_truncated_draw``), and under GBM the fixing
+    interval IS the simulated step, so the strips this pricer already walks
+    (``forward_carry_rate`` / ``forward_vol_rate``) are the ``m`` and ``s`` the construction wants.
+
+    Under Heston-Nandi that law is NOT in hand and this refuses by name. The HN walk is daily, so
+    the only Gaussian conditional available today is the last daily sub-step - the ``s^-3`` regime
+    the roadmap costs the build order on, and it bites at monthly fixings too because the WALK is
+    daily whatever the fixing spacing is. The fixing-interval conditional needs the k-step law
+    ``exp(A_k + B_k h + C_k q)``, which is THE STRIDE's cached ``Phi`` and its survival-truncated
+    inverse verbatim (``utils.hn_cdf_logret`` is the existing half of it, already required to be
+    exactly differentiable by that design). HN branch-and-weight lands the day the stride does, as
+    the same construction with ``Phi_stride`` in place of ``Phi``; until then a Gaussian ``p``
+    applied under HN would be a wrong number wearing the right estimator's name, which is the one
+    failure a switch like this must not be able to produce.
+
+    Read ONCE per deal at the top of a pricer, so the refusal lands before a draw is taken.
+    """
+    if not shared.branch_and_weight:
+        return False
+    factor_dep = deal_data.Factor_dep
+    if 'HN_Params' in factor_dep:
+        model = factor_dep['HN_Params'][0][utils.FACTOR_INDEX_SubType]
+        raise ValueError(
+            "Branch_And_Weight: 'Yes' is refused on {} under SpotModel={!r} - the smooth estimator "
+            "conditions on the FIXING interval's own lognormal law, and a {} walk is DAILY, so the "
+            'only Gaussian conditional in hand is the last daily sub-step (the s^-3 regime, at '
+            'monthly fixings too, because the walk is daily whatever the fixings are). The '
+            'fixing-interval law and its survival-truncated inversion are THE STRIDE\'s cached Phi '
+            'and inverse-CDF verbatim - utils.hn_cdf_logret is the existing half - and HN '
+            'branch-and-weight lands the day the stride does (roadmap.md, "Branch and weight for '
+            'TARFs and autocalls"). Applying a Gaussian p here would be a wrong number wearing the '
+            "right estimator's name. What works today: price this deal under GBM (drop SpotModel), "
+            "or run it with Branch_And_Weight: 'No', which is the default and is the crisp OSS "
+            'estimator this deal already prices under, unchanged.'.format(
+                deal_data.Instrument.field.get('Reference'), model, model))
+    return True
+
+
+# `TargetAdjustment` as the three payments a fired fixing can carry, by the spellings a desk
+# writes. Blank is EXACT because that is what the crisp estimator has always paid - see
+# `tarf_target_adjustment` for why the default is a reading of the code rather than a choice.
+TARF_TARGET_ADJUSTMENTS = {
+    '': 'Exact', 'Exact': 'Exact', 'Exact Gain': 'Exact', 'Exact_Gain': 'Exact',
+    'Full': 'Full', 'Full Gain': 'Full', 'Full_Gain': 'Full',
+    'None': 'None', 'No Gain': 'None', 'No_Gain': 'None'}
+
+
+def tarf_target_adjustment(deal_data):
+    """Which payment the fixing that FILLS the target makes - the TARF's own declared convention.
+
+    ``FXTARFOptionDeal.TargetAdjustment`` is a declared field (``default=''``) that nothing has ever
+    read. The three conventions a desk writes are the three closed forms a fired branch can take,
+    and ``pv_MC_Tarf`` under ``Branch_And_Weight`` is the first caller that can honour them, because
+    each one is an expectation under the conditioning step's own law rather than a payoff on a
+    sample (``lognormal_fired_gain``):
+
+    - EXACT (also 'Exact Gain'): the client's total gain is trimmed to the target, so the payment is
+      the remaining target ``R`` - measurable one fixing back, so its conditional expectation IS
+      itself and the branch is ``(1 - p) * R``.
+    - FULL (also 'Full Gain'): the whole final gain is paid even though it overshoots the target,
+      so the payment is the lognormal partial expectation ``E[N * cp * (S_k - K) | fired]``. Its
+      relu is inert on this branch by construction - fired MEANS the gain cleared ``R >= 0``.
+    - NONE (also 'No Gain'): the filling fixing pays nothing. Exactly zero, and needs no code.
+
+    BLANK IS 'EXACT', AND THAT IS A READING OF THE CRISP PATH RATHER THAN A CHOICE. ``pv_MC_Tarf``'s
+    one-step-survival estimator pays ``(1 - p) * L * R`` unconditionally, whatever the deal
+    declares, so 'Exact' is the convention every TARF in this repo has actually been priced under -
+    which is what makes the switch bit-identical on the documents that leave the field blank, and
+    what lets the unbiasedness gate compare two estimators of ONE number.
+
+    THE ASYMMETRY IS DECLARED, NOT REPAIRED, AND IT SAYS SO OUT LOUD. A deal declaring 'Full' or
+    'None' prices as 'Exact' on the crisp path and as itself under the switch, so the two estimators
+    are then pricing different deals on purpose. Teaching the crisp path to read the field would
+    move numbers with the switch OFF, which its own contract forbids; the honest place for that
+    repair is a separate change with its own re-baselined fixtures.
+
+    Until then this function WARNS on every deal it resolves to something other than 'Exact', and
+    that warning is the fix rather than a decoration. ``Branch_And_Weight``'s own field description
+    says "same expectation, lower variance", which is true per DECISION and true of every deal that
+    leaves this field blank - but a book carrying one 'Full Gain' TARF reprices 44% on a flag
+    documented as variance reduction (measured: -37.54 crisp against -21.09 smooth, both correct for
+    the deal each one is pricing). A docstring is not where a desk finds that out, so the deal names
+    itself as it is read and the move is attributable to the declaration that caused it.
+
+    An unrecognised spelling REFUSES here rather than falling through to a default, which is the
+    defect ``pv_one_touch_option``'s ``Payment_Timing`` chain shipped with: a third value priced as
+    whatever the last assignment left. Only reached under the switch, so no crisp run can newly
+    raise on a document that priced yesterday.
+    """
+    declared = deal_data.Instrument.field.get('TargetAdjustment', '')
+    key = ('' if declared is None else str(declared)).strip()
+    if key not in TARF_TARGET_ADJUSTMENTS:
+        raise ValueError(
+            "Branch_And_Weight: 'Yes' is refused on {} - TargetAdjustment={!r} is not a convention "
+            'this pricer knows, and the payment the FILLING fixing makes is exactly what the '
+            'declaration decides, so guessing it would price a different deal under the right '
+            "deal's name. What works today: declare one of {} (blank and 'Exact' are the same "
+            'convention, and are what the crisp estimator has always paid); or run this deal with '
+            "Branch_And_Weight: 'No', whose one-step-survival estimator pays the remaining target "
+            'whatever this field says.'.format(
+                deal_data.Instrument.field.get('Reference'), declared,
+                ', '.join(repr(k) for k in sorted(TARF_TARGET_ADJUSTMENTS) if k)))
+    convention = TARF_TARGET_ADJUSTMENTS[key]
+    if convention != 'Exact':
+        # the one deal on which the switch is NOT a re-estimation, saying so where a desk reads it
+        logging.warning(
+            'Branch_And_Weight CHANGES THE DEAL on %s, not just its estimator: '
+            'TargetAdjustment=%r pays the FILLING fixing as %r here, while the crisp path pays the '
+            'remaining target whatever this field says, so switching this deal on is not the '
+            'variance reduction the field description promises. Declare %r (or leave the field '
+            'blank) for the convention both estimators share; see pricing.tarf_target_adjustment '
+            'for why the crisp path is the one that cannot be taught to read it.',
+            deal_data.Instrument.field.get('Reference'), declared, convention, 'Exact')
+    return convention
+
+
+def lognormal_partial_moment(spot, drift, vol, z_bound, fired_above, power=1.0):
+    """``E[S_k**power * 1{fired}]`` under ONE fixing interval's lognormal law - the analytic half of
+    a fired branch.
+
+    ``S_k = spot * exp(drift + vol * Z)`` with ``Z`` standard normal over the interval (``drift``
+    and ``vol`` are the interval's own ``m`` and ``s``, the strips the crisp path already steps on),
+    and ``z_bound`` is the trigger standardised the way ``oss_truncated_draw`` standardises it.
+    ``fired_above`` says which tail fires: True for a trigger crossed from below.
+
+    ``E[S^a 1{Z > z}] = spot^a exp(a*m + a^2 s^2/2) Phi(a*s - z)``, and the down side reflects, so
+    ONE expression carries every moment a fired payoff is built from:
+
+    - ``power=0`` IS the fired PROBABILITY, ``Phi(-z)`` up / ``Phi(z)`` down. Cheap, but a caller
+      that already holds the survival ``p`` from ``oss_truncated_draw`` should use ``1 - p``
+      instead: those two are exact complements, and the survival ledger's telescoping identity is
+      exact only because they are (``SurvivalLedger``).
+    - ``power=1`` is the forward-weighted mass ``E[S 1{fired}]`` every gain reads.
+    - ``power=-1`` is the same for an INVERTED accrual, whose payoff is written in ``1/S``
+      (``pv_MC_Tarf``'s ``InvertedTarget``) - the reciprocal is a lognormal too and needs no second
+      derivation.
+
+    THE FIRED BRANCH IS AN EXPECTATION, NEVER A PROBABILITY TIMES A SAMPLE. The jump and the
+    decision share the fixing, so ``p * (realised payoff)`` is biased downward-or-up depending on
+    which tail fires and does not vanish with path count; every closed form here is
+    ``E[payoff * 1{fired}]``, conditional on the state one step back.
+    """
+    sign = 1.0 if fired_above else -1.0
+    tail = utils.norm_cdf(sign * (power * vol - z_bound))
+    if not power:
+        # the fired probability, whose two scale factors are identities - skipped rather than
+        # evaluated, because this runs once per fixing per path
+        return tail
+    return (spot ** power) * torch.exp(power * (drift + 0.5 * power * vol * vol)) * tail
+
+
+def lognormal_fired_gain(spot, drift, vol, z_bound, strike, fired_above, power=1.0):
+    """``E[(S_k**power - strike**power) * 1{fired}]`` - the FULL-GAIN convention's fired payment.
+
+    Black's own difference of two partial moments, in the conditioning step's law rather than the
+    expiry's. ``power=-1`` prices the inverted accrual, where the gain is written in reciprocals and
+    ``strike**power`` is ``1/K``; the caller supplies the payoff's sign, because which side is a
+    gain is the deal's convention and not this expression's.
+
+    The three settlement conventions a fired fixing can carry are readings of this file's two
+    moments and nothing else, which is why there is no dispatcher here to pick between them:
+
+    - CAPPED / EXACT: the payment is the remaining target ``R``, which is measurable one fixing
+      back, so its conditional expectation IS itself and the fired branch is ``(1 - p) * R``. That
+      is the arithmetic form of the no-``p``-times-sample ruling, not an exception to it.
+    - FULL GAIN: this function, times the notional.
+    - NONE: exactly zero, and needs no code.
+    """
+    return (lognormal_partial_moment(spot, drift, vol, z_bound, fired_above, power) -
+            (strike ** power) * lognormal_partial_moment(
+                spot, drift, vol, z_bound, fired_above, 0.0))
+
+
+class SurvivalLedger(object):
+    """The alive weight down a fixing strip, and what mass each fixing FIRED - one object, so the
+    telescoping identity is checkable rather than implicit.
+
+    Every branch-and-weight product walks the same two lines: the fixing fires with weight
+    ``alive * (1 - p)`` and pays its analytic tail expectation, and the alive weight advances to
+    ``alive * p`` for the truncated draw to carry on from. Written inline in three pricers those are
+    six lines that must agree; written here they are one, and the conservation statement the
+    construction rests on has somewhere to live.
+
+    THE IDENTITY: ``sum_j alive_{j-1} * (1 - p_j) + alive_final == alive_0``, per path, exactly to
+    float roundoff. It is stated against the STARTING weight rather than against one, because a
+    block that opens on a partly-resolved deal starts at whatever the observed prefix left
+    (``pv_MC_Accumulator``'s ``prev_alive``); with ``alive_0 = 1`` it is the roadmap's own
+    statement. It holds through observed fixings too, where ``p`` is an exact 0/1 indicator rather
+    than a ``Phi``.
+
+    It is exact only because the fired mass is spelled ``1 - p`` off the SAME ``p`` the draw was
+    truncated with. Computing the fired probability independently as ``Phi(-z)`` beside a survival
+    ``Phi(z)`` would leave a residual that no longer says anything about the ledger, only about
+    ``norm_cdf``'s own symmetry - which is why ``lognormal_partial_moment(power=0)`` carries a
+    docstring pointing back here.
+
+    ``check`` logs the residual at DEBUG, per block, the way every other estimator in this file
+    reports what it did rather than asserting in a hot path; ``conservation`` is the number itself,
+    for a gate to hold to roundoff.
+    """
+
+    def __init__(self, alive):
+        self.initial = alive
+        self.alive = alive
+        # the running fired mass; None until the first fixing, so a strip with no fixings at all
+        # conserves trivially rather than needing a zero of the right shape up front
+        self.fired = None
+
+    def fire(self, p_survive):
+        """This fixing's FIRED weight; the alive weight advances behind it. ``p_survive`` is the
+        survival probability the truncated draw was taken with (``oss_truncated_draw``), so the
+        fired mass is its exact complement."""
+        weight = self.alive * (1.0 - p_survive)
+        self.fired = weight if self.fired is None else self.fired + weight
+        self.alive = self.alive * p_survive
+        return weight
+
+    def conservation(self):
+        """The telescoping residual, per path: zero to roundoff or the ledger has lost mass."""
+        return (self.alive - self.initial) if self.fired is None else (
+            self.fired + self.alive - self.initial)
+
+    def check(self, label):
+        """The identity at DEBUG - one line per block, naming what walked it. The residual is the
+        reading a value cannot show: a ledger that has lost mass prices a deal that is only mostly
+        there, and every such price is plausible."""
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            logging.debug('LEDGER %s conservation=%.3g alive=%.6g', label,
+                          float(self.conservation().abs().max()), float(self.alive.mean()))
 
 
 def boundary_weights(gap, bandwidth):
@@ -556,6 +812,130 @@ def _kink_density_at_zero(Vbar, width, n_paths_axis):
         dim=n_paths_axis, keepdim=True) / (width * math.sqrt(2.0 * math.pi))
 
 
+def kink_kernel(Gbar, axis, label):
+    """The kernel machinery every ``max(x, 0)`` on a simulated quantity needs: Silverman per row,
+    the atom LADDER, and the normalised Gaussian kernel evaluated AT the kink.
+
+    ``Gbar`` is the relu's argument, already DETACHED by the caller - that discipline is the whole
+    construction and it stays the caller's, so this cannot silently put ``K'`` on a tape. ``axis``
+    is the sample axis the bandwidth and the density are taken over: reporting PATHS for
+    ``exposure_kink_term``, the inner sims of one fixing for ``accrual_kink_term``. Everything else
+    broadcasts, so one bandwidth per row (or per fixing, per scenario) reaches its own samples.
+
+    Returns ``(kernel, atom, rungs)``. The REFUSAL is not raised here on purpose: an atom means the
+    same thing at both callers - the density does not settle as the bandwidth narrows, it climbs as
+    ``1/h``, so the number would be a lie about a divergence - but what a caller can DO about it is
+    different at a reporting row and at a fixing, and a refusal that cannot name a remedy is not a
+    refusal. The caller reads ``atom`` and says its own sentence, carrying ``rungs`` as the reading.
+
+    ``KINK_ATOM_LADDER`` / ``KINK_ATOM_LADDER_DIVERGENCE`` / ``KINK_ATOM_BANDWIDTH_FLOOR`` are the
+    three constants at the top of this module and their docstrings are the argument for each. The
+    floor DECIDES NOTHING ABOUT ATOMS: it says where the bandwidth has collapsed under the row's own
+    scale, and there the kernel is WRITTEN to zero rather than evaluated, because a zero bandwidth
+    is 0/0 forward and NaN backward. The ladder still runs under it, so a row pinned at the kink on
+    a handful of samples is refused rather than quietly written off.
+    """
+    n = Gbar.shape[axis]
+    # one sample -> zero width; std() would be NaN and a single path has no density to estimate
+    spread = Gbar.std(dim=axis, keepdim=True) if n > 1 else torch.zeros_like(
+        Gbar.narrow(axis, 0, 1))
+    eps = 1.06 * spread * n ** -0.2
+    # the row's OWN scale, so the floor is scale-free in the argument's units
+    floor = KINK_ATOM_BANDWIDTH_FLOOR * Gbar.abs().mean(dim=axis, keepdim=True)
+    collapsed = eps <= floor
+
+    # THE LADDER, which is what says atom - and it runs under the floor too, so a row pinned at zero
+    # on a few samples is refused rather than written off. A rung on a row with no bandwidth at all
+    # is substituted, not divided, so no branch of this reaches a comparison as NaN
+    has_width = eps > 0
+    unit = torch.ones_like(eps)
+    with torch.no_grad():
+        rungs = [_kink_density_at_zero(Gbar, torch.where(has_width, c * eps, unit), axis)
+                 for c in KINK_ATOM_LADDER]
+    # stated as a product rather than a ratio: the widest rung is exactly zero wherever the kernel
+    # underflows at every width, and that row is far from the kink rather than divergent
+    atom = has_width & (rungs[0] > 0) & (rungs[-1] >= KINK_ATOM_LADDER_DIVERGENCE * rungs[0])
+
+    if logging.getLogger().isEnabledFor(logging.DEBUG):
+        # the term's forward value is an exact zero on every row and says nothing; the LADDER is
+        # the reading, and it is how a row that passed is told from a row that had nothing to say
+        for r, rung in enumerate(torch.stack([x.reshape(-1) for x in rungs], dim=-1).tolist()):
+            logging.debug('KINK %s row=%d f(0)=%.6g ladder=%s climb=%.3f collapsed=%d', label, r,
+                          rung[1], '/'.join('{:.6g}'.format(x) for x in rung),
+                          rung[-1] / rung[0] if rung[0] else float('nan'),
+                          int(collapsed.reshape(-1)[r]))
+
+    # a collapsed row admits nothing: written, not evaluated, because eps is an exact zero there
+    # and 0/0 would reach backward() as NaN through the unselected branch
+    width = torch.where(collapsed, unit, eps)
+    kernel = torch.where(collapsed, torch.zeros_like(eps), torch.exp(
+        -0.5 * (Gbar / width) ** 2) / (width * math.sqrt(2.0 * math.pi)))
+    return kernel, atom, rungs
+
+
+def _kink_atom_reading(atom, rungs):
+    """The rows an atom was diagnosed on, the worst of them, and its ladder rendered - the three
+    things both kink refusals quote. Split out because the SENTENCE differs and the READING does
+    not."""
+    flat = atom.reshape(-1)
+    rows = torch.nonzero(flat).reshape(-1).tolist()
+    readings = torch.stack([rung.reshape(-1)[flat] for rung in rungs], dim=-1)
+    worst = int(torch.argmax(readings[:, -1] / readings[:, 0]))
+    return (rows, rows[worst],
+            ' / '.join('{:.4g}'.format(float(x)) for x in readings[worst]),
+            ' / '.join('{:g}'.format(c) for c in KINK_ATOM_LADDER),
+            float(readings[worst, -1] / readings[worst, 0]),
+            KINK_ATOM_LADDER[0] / KINK_ATOM_LADDER[-1])
+
+
+def accrual_kink_term(gain, fixing, n_paths_axis=1):
+    """``exposure_kink_term``'s statement one product in: the per-fixing accrual's missing SECOND
+    derivative, on the CONTINUING branch of a branch-and-weight simulation.
+
+    An accrual pays ``max(cp * (S_j - K), 0)`` at every fixing, so every fixing carries the same
+    kink the exposure relu does, and second-order AAD drops the same object there:
+    ``delta(g) * g_theta g_theta^T``, a density AT the strike times an outer product. With
+    ``u = gain - gain.detach()`` this returns ``0.5 * K_eps(gain.detach()) * u**2`` per (scenario,
+    path), for the caller to weight by that path's SURVIVAL weight and the payment's own discount -
+    the weights belong to the caller because they are the deal's, not the kink's.
+
+    ``gain`` is the relu's ARGUMENT, ``cp * (S_j - K)``, not the payoff. Value is an exact zero
+    because ``u`` is an exact IEEE zero; first order accumulates ``+0.0`` bit for bit; the Hessian
+    contributes the kernel estimate of ``f_g(0) * E[g_theta g_theta^T | g = 0]``. So the admission
+    test is the same one order stricter than the boundary correction's, and the term is NEVER built
+    when second order is not asked for - wanting curvature IS the switch, so the cost is zero
+    otherwise.
+
+    ONLY the continuing branch. A fixing the row has already OBSERVED is a point mass by
+    construction - one spot on every inner path - and it is not on this branch at all: the fired
+    mass at an observed fixing is an exact indicator and its payment is arithmetic, with no density
+    anywhere in it. The bandwidth would collapse and the kernel would be written to zero, which is
+    the right answer for the wrong reason, so callers keep observed fixings out rather than relying
+    on that.
+
+    A fixing whose conditional law carries a genuine ATOM at the strike REFUSES by name, on the same
+    ladder and the same divergence threshold - what the crisp path returns there is a gamma of
+    exactly zero, which is not the smaller error.
+    """
+    Gbar = gain.detach()
+    kernel, atom, rungs = kink_kernel(Gbar, n_paths_axis, 'accrual')
+    if bool(atom.any()):
+        rows, worst, reading, ladder, climb, span = _kink_atom_reading(atom, rungs)
+        raise utils.SecondOrderRefused(
+            'accrual_kink_term: fixing {} carries an ATOM of accrual at the strike on scenario(s) '
+            '{} - the density f_g(0) this term estimates does not settle as its bandwidth narrows, '
+            'it CLIMBS. Scenario {} reads {} at {} x its own Silverman width: a factor of {:.2f} '
+            'across a ladder of {:.0f}, which is the 1/bandwidth signature of a point mass rather '
+            "than the plateau of a density. What works today: ask for first order alone (Greeks: "
+            "'First'), which this term does not touch and which the branch-and-weight path reports "
+            'unchanged; or run the deal with Branch_And_Weight off, whose crisp estimator answers '
+            'zero there rather than refusing - a smaller number, not a smaller error; or move the '
+            'fixing off the strike it is pinned against.'.format(
+                fixing, rows, worst, reading, ladder, climb, span))
+    u = gain - Gbar
+    return 0.5 * kernel * u * u
+
+
 def exposure_kink_term(V, n_paths_axis=1):
     """A term worth EXACTLY ZERO in the forward pass and BIT-IDENTICALLY zero at first order that
     carries the exposure relu's missing SECOND derivative into the double backward.
@@ -579,7 +959,9 @@ def exposure_kink_term(V, n_paths_axis=1):
 
     ``eps`` is Silverman per ROW, ``1.06 * std * n**-0.2`` over the path axis with keepdim so one
     bandwidth per reporting date broadcasts across its own paths. No JSON knob: there is one
-    defensible width and nobody has asked for another.
+    defensible width and nobody has asked for another. The bandwidth, the ladder and the kernel are
+    ``kink_kernel``'s, shared with ``accrual_kink_term`` rather than copied beside it; what stays
+    here is the REFUSAL, because the remedies at a reporting row are not the remedies at a fixing.
 
     AN ATOM IS DIAGNOSED ON THE BANDWIDTH LADDER, which is the roadmap's own criterion and the only
     instrument that can tell the two apart. A point mass at the kink and a narrow density at the
@@ -622,32 +1004,10 @@ def exposure_kink_term(V, n_paths_axis=1):
     ``tests/test_cva_gamma_kink.py`` re-takes the shape of that table through the real objective.
     """
     Vbar = V.detach()
-    n = Vbar.shape[n_paths_axis]
-    # one sample -> zero width; std() would be NaN and a single path has no density to estimate
-    spread = Vbar.std(dim=n_paths_axis, keepdim=True) if n > 1 else torch.zeros_like(
-        Vbar.narrow(n_paths_axis, 0, 1))
-    eps = 1.06 * spread * n ** -0.2
-    # the row's OWN scale, so the floor is scale-free in the exposure's units
-    floor = KINK_ATOM_BANDWIDTH_FLOOR * Vbar.abs().mean(dim=n_paths_axis, keepdim=True)
-    collapsed = eps <= floor
-
-    # THE LADDER, which is what says atom - and it runs under the floor too, so a row pinned at zero
-    # on a few paths is refused rather than written off. A rung on a row with no bandwidth at all is
-    # substituted, not divided, so no branch of this reaches a comparison as NaN
-    has_width = eps > 0
-    unit = torch.ones_like(eps)
-    with torch.no_grad():
-        rungs = [_kink_density_at_zero(Vbar, torch.where(has_width, c * eps, unit), n_paths_axis)
-                 for c in KINK_ATOM_LADDER]
-    # stated as a product rather than a ratio: the widest rung is exactly zero wherever the kernel
-    # underflows at every width, and that row is far from the kink rather than divergent
-    atom = has_width & (rungs[0] > 0) & (rungs[-1] >= KINK_ATOM_LADDER_DIVERGENCE * rungs[0])
+    kernel, atom, rungs = kink_kernel(Vbar, n_paths_axis, 'exposure')
 
     if bool(atom.any()):
-        flat = atom.reshape(-1)
-        rows = torch.nonzero(flat).reshape(-1).tolist()
-        readings = torch.stack([rung.reshape(-1)[flat] for rung in rungs], dim=-1)
-        worst = int(torch.argmax(readings[:, -1] / readings[:, 0]))
+        rows, worst_row, reading, ladder, climb, span = _kink_atom_reading(atom, rungs)
         raise utils.SecondOrderRefused(
             'exposure_kink_term: reporting row(s) {} carry an ATOM of exposure at the kink - the '
             'density f_V(0) this term estimates does not settle as its bandwidth narrows, it '
@@ -662,26 +1022,8 @@ def exposure_kink_term(V, n_paths_axis=1):
             'yet - a collateralised set registers an MTA boundary correction and is refused one '
             'step earlier - and estimating through one is the conditional-p mixture on the roadmap '
             '(Second-order flux at a JUMP), pinned to the stride.'.format(
-                rows, rows[worst],
-                ' / '.join('{:.4g}'.format(float(x)) for x in readings[worst]),
-                ' / '.join('{:g}'.format(c) for c in KINK_ATOM_LADDER),
-                float(readings[worst, -1] / readings[worst, 0]),
-                KINK_ATOM_LADDER[0] / KINK_ATOM_LADDER[-1]))
+                rows, worst_row, reading, ladder, climb, span))
 
-    if logging.getLogger().isEnabledFor(logging.DEBUG):
-        # the term's forward value is an exact zero on every row and says nothing; the LADDER is
-        # the reading, and it is how a row that passed is told from a row that had nothing to say
-        for r, rung in enumerate(torch.stack([x.reshape(-1) for x in rungs], dim=-1).tolist()):
-            logging.debug('KINK row=%d f(0)=%.6g ladder=%s climb=%.3f collapsed=%d', r, rung[1],
-                          '/'.join('{:.6g}'.format(x) for x in rung),
-                          rung[-1] / rung[0] if rung[0] else float('nan'),
-                          int(collapsed.reshape(-1)[r]))
-
-    # a collapsed row admits nothing: written, not evaluated, because eps is an exact zero there
-    # and 0/0 would reach backward() as NaN through the unselected branch
-    width = torch.where(collapsed, unit, eps)
-    kernel = torch.where(collapsed, torch.zeros_like(eps), torch.exp(
-        -0.5 * (Vbar / width) ** 2) / (width * math.sqrt(2.0 * math.pi)))
     u = V - Vbar
     return 0.5 * kernel * u * u
 
@@ -1364,6 +1706,52 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     resolved skip the OSS and carry no counterfactual - running one would draw random numbers and
     move the reported value. ``sim_spot_oss`` is pure (no cash settled, nothing registered), so the
     recompute port only hoists the Heston-Nandi scalars into theta.
+
+    BRANCH AND WEIGHT (``Branch_And_Weight: 'Yes'``, base valuation only) SWAPS the estimator for
+    that registration rather than joining it. Off, and absent, is every line above bit for bit.
+
+    THIS SAMPLER WAS THE SMOOTH ESTIMATOR ALREADY - it is where the idiom came from, and the switch
+    is the VERIFICATION of that rather than a rewrite. Every monitored step is an analytic ``p`` with
+    a survival-truncated continuation, the knock-out's rebate is paid analytically at the fixing it
+    falls due (``(1 - p) * L * rebate * D_j``), the knock-IN's is the same survival weight carried to
+    expiry on the parity leg, and a digital's terminal step is INTEGRATED. No indicator is formed on
+    the simulated tape at all, so the value under the switch is bit-identical - measured across the
+    whole deal family (knock-out and knock-in, up and down, call and put, bought and sold, with and
+    without a cash rebate, and the binary sibling) at absent == 'No' == 'Yes' to the last bit. What
+    changes is only what a run may then DO with it:
+
+    - THE OUTER REGISTRATION IS SKIPPED, so ``Greeks: 'All'`` flows where it used to refuse. That
+      decision is an OBSERVED scenario crossing - data, not simulated state - which
+      branch-and-weight has no conditioning step to integrate against. What makes skipping it lose
+      NOTHING is not that it carries no graph (the gap is built from the scenario spot and does),
+      but that base valuation - the one calculation declaring the switch - has ONE scenario, so
+      ``boundary_weights`` finds no spread for a kernel width and returns the empty-kernel branch:
+      the correction is exactly zero. That is gated as byte identity of the whole first-order frame
+      with the switch on and off, rather than argued.
+    - THE TERMINAL EUROPEAN'S KINK gets its second-order term (``accrual_kink_term``), because after
+      every barrier decision has become a ``Phi`` that relu is the only place left where pathwise
+      AAD would answer a gamma of exactly zero. It is added to ``surv_payoff``, which is BEFORE the
+      in-out parity subtraction, so both legs carry one corrected quantity - and that is what keeps
+      parity true at second order rather than only at value.
+
+    IN-OUT PARITY IS THIS PRICER'S CONSERVATION STATEMENT, and it is exact on the smooth path:
+    ``KO + KI == vanilla + rebate`` in a zero-rate world, at VALUE, DELTA and GAMMA, measured to
+    0.0e+00 at 16384 paths against Black's 9.9476449660 / 0.5497382248 / 0.0158335075. The rebate
+    half is the ``SurvivalLedger`` identity read off two prices and nothing else: the knock-out pays
+    ``sum_j fired_j * D_j`` of it and the knock-in ``alive_T * D_T``, so their sum is the rebate
+    exactly when the telescoping holds, and the residual stays 0.0e+00 as the rebate is walked from
+    0 to 12.5. A ledger that lost mass would show up here as a rebate-proportional error in a price.
+
+    MEASURED under the switch, 32768 paths, one year at 25% vol: a LIVE monthly down-and-out at 90
+    reports gamma 0.00969411 against a CRN ladder of its own corrected delta at 0.00974971 - 0.57%
+    agreement at 2.12% flatness, on a deal whose second order was refused outright before. The
+    never-knocking control lands on Black (0.01560843 against 0.01583351, 1.42%), and without the
+    terminal kink term that control is an EXACT zero, which is what says the term is being read.
+    On the LIVE barrier the term is worth 0.00108005 of that 0.00969411 - about a ninth - because
+    the barrier decisions are already `Phi`s whose curvature pathwise AAD carries; dropping it there
+    leaves 0.00861379, a perfectly plausible-looking number 13.19% off its own ladder. Which is why
+    both mutants are gated and neither gate is the other's: parity catches the term reaching one
+    leg only, the ladder catches it reaching neither.
     """
 
     def sim_spot_oss(offset, sobol, num_sims,
@@ -1547,8 +1935,14 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             # terminal payoff on paths that survived all barrier dates; surv_payoff is already
             # L-weighted when the last step was integrated rather than sampled (GBM digitals)
             if surv_payoff is None:
-                payoff = ((phi * (Sj - strike) > 0).to(D_T.dtype) if isdigital
-                          else torch.relu(phi * (Sj - strike)))
+                gain = phi * (Sj - strike)
+                payoff = (gain > 0).to(D_T.dtype) if isdigital else torch.relu(gain)
+                if second_order and not isdigital:
+                    # the ONE kink this loop still samples. Every barrier decision above is already
+                    # a `Phi`, so the terminal European is the only place pathwise AAD would hand
+                    # back a gamma of exactly zero - and a digital never reaches here, its terminal
+                    # step being integrated rather than sampled (see the docstring)
+                    payoff = payoff + accrual_kink_term(gain, N_fix - 1)
                 surv_payoff = L * payoff
 
             if direction == BARRIER_OUT:
@@ -1621,7 +2015,11 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     # A crossing is OBSERVED, so its value jump is real and must not be smoothed; what ordinary AAD
     # drops is the flux of scenarios across the barrier. Recording the decision costs nothing when
     # sensitivities are not wanted, so it is gated rather than always on.
-    boundary_aad = getattr(shared, 'boundary_aad', False)
+    # THE SWITCH, read once before a draw is taken so a non-GBM refusal lands first; it SUPERSEDES
+    # the registration rather than joining it (see the docstring's BRANCH AND WEIGHT section)
+    smooth = branch_and_weight(shared, deal_data)
+    second_order = smooth and getattr(shared, 'gamma', False)
+    boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
     b_gaps, b_crossed, b_obs_before, b_alive, b_dead = [], [], [], [], []
 
     for index, (discount_block, spot_block, moneyness_block, rem_exp) in enumerate(
@@ -2323,6 +2721,33 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     accuracy. A deal declared ``Barrier_Hit`` registers nothing: its death is data, not simulated
     state. The alive prefix folds ``Barrier_Hit`` with every settled fixing's own breach test, so
     the deal prices from the data even without the flag.
+
+    BRANCH AND WEIGHT (``Branch_And_Weight: 'Yes'``, base valuation only) SWAPS the estimator for
+    that registration rather than joining it - one decision, one estimator. Off, and absent, is
+    every line above bit for bit.
+
+    THIS PRICER'S LOOP WAS ALREADY THE SMOOTH ESTIMATOR, and the switch is where that is verified
+    rather than believed. Survival at a future fixing is ``oss_truncated_draw``'s analytic ``p``, the
+    continuation is its truncated draw, and the fired branch's payment is exactly zero - the fixing
+    that breaches pays nothing - so there is no ``p x realised`` shortcut anywhere in it and no
+    indicator on the tape between the observed fixings. The VALUE under the switch is therefore
+    bit-identical to the crisp one on every document; what changes is what the run may do with it:
+
+    - THE REGISTRATION IS SKIPPED, so ``Greeks: 'All'`` flows where it used to refuse.
+    - THE PER-FIXING ACCRUAL KINK is built at second order (``accrual_kink_term``), because both
+      legs are ``relu``s of one argument and pathwise AAD reports their gamma as an exact zero.
+
+    THE PENDING HEAD IS ARITHMETIC HERE, not a branch to build. Each fixing is already discounted to
+    its OWN settlement date and paid with weight ``L_{j-1} * p_j``, so a path knocking at fixing
+    ``k`` has already been paid for every fixing before it whatever their settlement lag - the value
+    owes nothing. ``LatchedBoundarySet.pending`` exists for the COUNTERFACTUAL profile a dead cell
+    reports, which is part of a registration; with no registration there is no head to derive.
+
+    WHAT THE SWITCH DOES NOT SMOOTH: the observed fixings' own breach tests and the ``Barrier_Hit``
+    flag. Those are data rather than simulated state, so there is no conditioning step to integrate
+    them against and their indicators stay exact. Under base valuation - the one calculation that
+    declares the switch - they are historic prints carrying no graph, so the skipped registration
+    contributes exactly zero.
     """
 
     def survives(s):
@@ -2363,6 +2788,10 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                 # the alive branch: observed indicators (the latch's decisions) never zero it;
                 # the smooth future survivals still apply - the left limit, not a re-simulation
                 P_alive, L_alive = P, torch.ones_like(L)
+            # the alive weight and what each fixing FIRED in one object, so the telescoping identity
+            # has somewhere to live. Started at `prev_alive`, not at one - the observed prefix has
+            # already killed paths (SurvivalLedger)
+            ledger = SurvivalLedger(L) if smooth else None
             for j in range(reduced_samples):
                 dt = delta_t[j]
                 Dj = D[j].reshape(-1, 1)
@@ -2396,9 +2825,21 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                     p_alive = 1.0
                 intrinsic = (payoff_spot - strike) * callOrPut
                 cashflow = F.relu(intrinsic) * notional_itm - F.relu(-intrinsic) * notional_otm
+                if second_order and dt > 0:
+                    # the accrual kinks at the strike on the CONTINUING branch and second-order AAD
+                    # drops a density there. ONE kernel serves both legs - `relu(-x)` kinks where
+                    # `relu(x)` does and the term is even - so the net carries (N1 - N2) of it, and
+                    # an unleveraged accumulator has no kink at all. An OBSERVED fixing is kept out
+                    # by `dt > 0`: its spot is one point per path, a mass rather than a density
+                    kink = accrual_kink_term(intrinsic, j)
+                    cashflow = cashflow + kink * (notional_itm - notional_otm)
                 cf_step = L * p * cashflow
                 P = P + Dj * cf_step
-                L = L * p
+                if ledger is not None:
+                    ledger.fire(p)
+                    L = ledger.alive
+                else:
+                    L = L * p
                 if boundary_aad:
                     P_alive = P_alive + Dj * L_alive * p_alive * cashflow
                     L_alive = L_alive * p_alive
@@ -2407,6 +2848,8 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                 if tau[j] == 0:
                     settled.append(cf_step.mean(axis=1))
                     settle_rows.append(i)
+            if ledger is not None:
+                ledger.check('ACCUMULATOR row {}'.format(i))
             mcmc.append(P.mean(axis=1))
             if boundary_aad:
                 alive.append(P_alive.mean(axis=1))
@@ -2458,9 +2901,17 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                   len(known_resets) + len(sim_samples), barrier, int(barrier_up),
                   int(bool(factor_dep['Barrier_Hit'])), len(counts))
 
+    # THE SWITCH, read once before a draw is taken so a non-GBM refusal lands first; it SUPERSEDES
+    # the registration below rather than joining it (see the docstring's BRANCH AND WEIGHT section)
+    smooth = branch_and_weight(shared, deal_data)
+    # curvature is the switch: the per-fixing kink term is never BUILT unless a second derivative
+    # was asked for, so it costs exactly nothing on a first-order run
+    second_order = smooth and getattr(shared, 'gamma', False)
+
     # a declared-dead deal has no flux to record - folding that in here rather than at the
     # registration keeps the simulation from building an alive branch nobody reads
-    boundary_aad = getattr(shared, 'boundary_aad', False) and not factor_dep['Barrier_Hit']
+    boundary_aad = (getattr(shared, 'boundary_aad', False) and
+                    not factor_dep['Barrier_Hit'] and not smooth)
     b_gaps, b_crossed, b_obs_before, alive_blocks, b_pending = [], [], [], [], []
 
     # opt-in Heston-Nandi spot model; absent => byte-identical GBM path (see sim_spot_tarf)
@@ -3109,6 +3560,47 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     ``gap.std()``, making the estimator invariant to the gap's scale. A graphless historic decision
     (a target already filled at the base date) is registered anyway: it contributes exactly zero,
     and skipping it would corrupt the latch reconstruction.
+
+    BRANCH AND WEIGHT (``Branch_And_Weight: 'Yes'``, base valuation only) SWAPS the estimator for
+    both of those registrations rather than joining them - one decision, one estimator, or the flux
+    is counted twice. Off, and absent, is every line above bit for bit.
+
+    Most of the construction was already here: the KO-in-step term IS the fired branch integrated
+    against the fixing interval's own lognormal law, the moving trigger ``B_pnl = K + R/N`` IS
+    ``K + R_{k-1}``, and the continuation IS the truncated draw. What the switch adds is the three
+    things the crisp path could not do:
+
+    - THE FIRED PAYMENT BY THE DEAL'S OWN CONVENTION. The crisp path pays the remaining target
+      whatever ``TargetAdjustment`` says; under the switch each convention is its own closed form
+      (``tarf_target_adjustment``), and the declared asymmetry is recorded there.
+    - THE KNOCK-IN INTEGRATED RATHER THAN SAMPLED. ``relu(-eff_intr) * 1{hit}`` is supported on one
+      tail of the conditioning step's law, wholly inside the surviving set, so it closes in the same
+      partial moment the fired branch does (``lognormal_fired_gain``) and the indicator - the whole
+      reason for the ``InnerBoundarySet`` - leaves the tape. Rao-Blackwellisation, not smoothing:
+      the same expectation with that leg's sampling noise removed.
+    - THE PER-FIXING ACCRUAL KINK at second order (``accrual_kink_term``), added to ``cf_itm`` so it
+      reaches BOTH of its consumers - the payment, and the running target ``R``, which is what
+      carries an accrual across later decisions. Never built when curvature is not asked for.
+
+    THE TARGET PIN BECOMES EXACT. The Known-defects row records a pin whose flux neither its
+    estimator (13% bandwidth spread) nor its oracle (8.9% flatness) resolves better than ~10%; on
+    this path the pinned payment is a conditional expectation the loop evaluates in closed form, so
+    there is nothing left to estimate and nothing left to register. That row named this switch as
+    its own designed resolution, and this is it.
+
+    WHAT THE SWITCH DOES NOT SMOOTH, stated so it is not assumed: a decision taken on an OBSERVED
+    sample. The redemption latch's gaps are the accrual of fixings the row has already seen, and an
+    observed fixing is data rather than simulated state - there is no conditioning step to integrate
+    it against, and its indicator stays exact. Under base valuation, the one calculation that
+    declares the switch, those samples are historic prints carrying no graph, so the registration
+    this skips contributes exactly zero and skipping it moves no derivative. ``Credit_Monte_Carlo``,
+    where they WOULD carry one, declares no such field.
+
+    DAILY FIXINGS ARE A DECLARATION, NOT A REFUSAL. Second-order variance in the conditioning step
+    scales like ``s_k**-3``, which is fine at monthly and quarterly spacing and rough at daily - and
+    a daily accumulator's economically right gamma is the desk's own call-spread width anyway, a
+    fixed smoothing converging at the ordinary rate, which is what actually gets hedged. The
+    measured spread is in ``tests/test_branch_and_weight.py``.
     """
 
     # --- Accumulated target from past observed fixings --------------------------
@@ -3185,6 +3677,10 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             L_alive = L if not boundary_aad else torch.ones_like(L)
             P_alive = P
             L = torch.where(q, torch.zeros_like(L), L)
+            # the alive weight and what each fixing FIRED, in one object, so the telescoping
+            # identity has somewhere to live (SurvivalLedger). Started at the weight the observed
+            # prefix left, not at one - a redeemed path is dead before the strip begins
+            ledger = SurvivalLedger(L) if smooth else None
             # Update the remaining targets
             R = (remaining_target * factor_dep['Notional1']).expand_as(P)
             # Per-fixing notional tensors (broadcastable to [batch, sims])
@@ -3244,9 +3740,30 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                         
                     # ---- Analytic KO-in-step contribution -------------------------------------
                     # KO pays the *remaining target* this step, discounted at the j-th discount point
-                    P = P + (1.0 - p) * L * R * Dj
+                    if smooth and target_adjustment != 'Exact':
+                        # the fired branch by the deal's OWN convention, each an expectation under
+                        # this interval's law rather than a payoff on a sample: FULL pays the whole
+                        # gain (its relu is inert here - fired MEANS the gain cleared R >= 0), NONE
+                        # pays nothing (see tarf_target_adjustment)
+                        if target_adjustment == 'Full':
+                            P = P + Dj * L * N_i * gain_sign * lognormal_fired_gain(
+                                Sj, fwd_drift, vol_dt, z_max, K, callOrPut > 0, gain_power)
+                    else:
+                        P = P + (1.0 - p) * L * R * Dj
                     if boundary_aad:
                         P_alive = P_alive + (1.0 - p) * L_alive * R * Dj
+                    # THE KNOCK-IN, INTEGRATED RATHER THAN SAMPLED. `relu(-eff_intr) * 1{hit}` is
+                    # supported on one tail of THIS interval's own law - `otm_bound` carries the
+                    # strike's side and the barrier's at once - so the leg closes in the same
+                    # partial moment the fired branch does, and the indicator leaves the tape. The
+                    # survival truncation is redundant over it: `otm_bound` is on the strike's side
+                    # of `B_pnl = K + R/N` for every R >= 0, so the knocked-in set lies wholly
+                    # inside the surviving one and the two conditions do not have to be crossed.
+                    otm_analytic = None
+                    if smooth and otm_bound is not None:
+                        z_otm = (torch.log(otm_bound / Sj) - fwd_drift) / vol_dt
+                        otm_analytic = Dj * L * N_otm * (-gain_sign) * lognormal_fired_gain(
+                            Sj, fwd_drift, vol_dt, z_otm, K, callOrPut < 0, gain_power)
                     if hn:
                         # HN increment + h-recursion on the truncated final draw (shared advance;
                         # leverage-asymmetric because Z is survival-truncated - see hn_daily_advance)
@@ -3257,6 +3774,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 else:
                     Sj = past_fixings[-min(reduced_samples, num_samples)].reshape(-1, 1)
                     p = 1.0
+                    # an OBSERVED fixing has no conditioning step to integrate against: its spot is
+                    # data, so its knock-in is an exact indicator and its accrual carries no density
+                    otm_analytic = None
                 # ---- Economic PV for this fixing -----------------------------------------
                 # compute effective intrinsic in the correct measure
                 if not invertedTarget:
@@ -3266,8 +3786,17 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 # clamp at the per-path remaining target (R is in currency units; divide back to target units)
                 intr = eff_intr.clamp(max=remaining_target)
                 itm_mask = (intr > 0.0)  # ITM
+                # the accrual kinks at the strike on the CONTINUING branch, and second-order AAD
+                # drops a density there. ONE kernel serves both legs: `relu(-x)` kinks exactly where
+                # `relu(x)` does and the term is even in its argument, so the net cashflow carries
+                # `(N_itm - N_otm)` of it - which is also why an unleveraged deal has no kink at all
+                kink = accrual_kink_term(intr, j) if (
+                    second_order and not use_past_fixing) else None
                 # Optional knock-in on OTM leg
-                if barrier > 0.0:
+                if otm_analytic is not None:
+                    # integrated above; nothing of this leg is sampled, so no indicator is formed
+                    barrier_hit = torch.zeros_like(Sj)
+                elif barrier > 0.0:
                     barrier_intr = (barrier - Sj) * callOrPut
                     barrier_hit = (barrier_intr >= 0.0).to(Sj.dtype)
                 else:
@@ -3275,9 +3804,17 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 # economic per-fixing cashflow (signed)
                 cf_itm = F.relu(intr) * N_itm  # ≥ 0
                 cf_otm = F.relu(-intr) * N_otm * barrier_hit  # ≤ 0
+                if kink is not None:
+                    # worth an exact zero forward and bit-zero at first order, so it rides the
+                    # deal's own weights rather than a detached copy of them
+                    cf_itm = cf_itm + kink * N_itm
+                    if otm_analytic is None:
+                        cf_otm = cf_otm + kink * N_otm * barrier_hit
                 cf_step = L * p * (cf_itm - cf_otm)  # signed
                 # add discounted PV to P
                 P = P + Dj * cf_step
+                if otm_analytic is not None:
+                    P = P - otm_analytic
                 if boundary_aad:
                     P_alive = P_alive + Dj * L_alive * p * (cf_itm - cf_otm)
                     if barrier > 0.0:
@@ -3289,9 +3826,20 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                         knock_rows.append(i)
                 # ---- Update remaining target R on survivors ------------------------------
                 accr = cf_itm  # = F.relu(intr) * N_itm, correct for both standard and inverted
-                R = torch.where(itm_mask, R - accr, R)  # survival construction ensures no overshoot
+                if smooth:
+                    # the mask is inert at value and first order - `accr` is an exact zero off it -
+                    # and it would SEVER the kink term's curvature from the moving trigger that
+                    # curvature has to reach. R is what carries an accrual across decisions, so on
+                    # this path the accrual reaches it whole
+                    R = R - accr
+                else:
+                    R = torch.where(itm_mask, R - accr, R)  # survival construction: no overshoot
                 # ---- Update survival weight ----------------------------------------------
-                L = p * L
+                if smooth:
+                    ledger.fire(p)
+                    L = ledger.alive
+                else:
+                    L = p * L
                 if boundary_aad:
                     L_alive = p * L_alive
                 # (Optional) settlement at tau==0 - RETURNED, because a recompute would settle twice
@@ -3299,6 +3847,10 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     settled.append(cf_step.mean(axis=1))
                     settle_rows.append(i)
             # End-of-block: push mean PV over sims
+            if ledger is not None:
+                # the identity the construction rests on, per row, at DEBUG - the one reading a
+                # value cannot show (SurvivalLedger.check)
+                ledger.check('TARF row {}'.format(i))
             mcmc.append(P.mean(axis=1))
             if boundary_aad:
                 alive.append(P_alive.mean(axis=1))
@@ -3358,8 +3910,28 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                   deal_data.Instrument.field.get('Reference'), len(fx_samples.schedule),
                   len(known_resets) + len(sim_samples), targetValue, barrier, len(counts))
 
+    # THE SWITCH, read once before a draw is taken so a non-GBM refusal lands first. It SUPERSEDES
+    # the two registrations below rather than joining them - one decision, one estimator (see the
+    # docstring's BRANCH AND WEIGHT section)
+    smooth = branch_and_weight(shared, deal_data)
+    # the payment the FILLING fixing makes, by the deal's own declaration - read only under the
+    # switch, because the crisp estimator pays the remaining target whatever the field says
+    target_adjustment = tarf_target_adjustment(deal_data) if smooth else None
+    # `eff_intr = gain_sign * (S**gain_power - K**gain_power)` on BOTH targets, which is what lets
+    # one closed form serve the inverted accrual (`lognormal_fired_gain`'s own `power`)
+    gain_power = -1.0 if invertedTarget else 1.0
+    gain_sign = -callOrPut if invertedTarget else callOrPut
+    # the OTM leg's support once the knock-in is folded in: `relu(-eff_intr)` needs the OTM side of
+    # the strike and `barrier_hit` needs the barrier's, so ONE bound carries both. In spot, not in
+    # the accrual's units - the knock-in is declared on spot however the target is written
+    otm_bound = (min(barrier, strike) if callOrPut > 0 else max(barrier, strike)) if barrier > 0.0 \
+        else None
+    # curvature is the switch: the per-fixing kink term is never BUILT when nobody asked for a
+    # second derivative, so it costs exactly nothing on a first-order run
+    second_order = smooth and getattr(shared, 'gamma', False)
+
     # gated: the target filling and the OTM knock-in both jump on simulated state (see docstring)
-    boundary_aad = getattr(shared, 'boundary_aad', False)
+    boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
     b_gaps, b_fired, b_obs_before, b_inner, alive, row_ofs = [], [], [], [], [], 0
 
     # opt-in Heston-Nandi spot model; absent => byte-identical GBM path (see docstring)
@@ -3506,6 +4078,27 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     controls, which a collateralised exposure reads through ``C_ts_te``. One decision is ONE
     counterfactual: an objective with a kink scores two partial counterfactuals differently from
     their sum. A re-observation of an old decision in a pending window registers nothing.
+
+    BRANCH AND WEIGHT DOES NOT REACH THIS PRICER, and the reason is not the averaging branch. The
+    no-averaging arm is ALREADY the construction on its own terms - a constant coupon makes
+    ``(1 - p) * L * coup * D_j`` a conditional expectation rather than a probability times a
+    sample, the funding leg pays on the survival weight, and the continuation is the truncated draw
+    - and it shares no line of pricing with the averaging arm, whose registration is gated on
+    ``no_averaging`` anyway. What blocks it is that this deal takes TWO decisions per fixing and
+    only one of them is integrated: beside the autocall trigger sits the put barrier, a bare
+    ``Sj <= putBarrier`` indicator whose payoff ``rebate - (1 - S/K)`` is an exact zero AT the
+    strike and a genuine JUMP anywhere below it, which is where a real autocall puts it. Honouring
+    the switch here would put the construction's name on a product half of whose decisions are step
+    functions - measured at 18-22% off a CRN ladder at FIRST order on a 70% barrier, against 0.00%
+    on the same document with the barrier at the strike (``tests/test_branch_and_weight.py``).
+
+    WHAT WOULD LAND IT: the put leg closes in the same partial moments the TARF's knock-in does -
+    ``{S <= B}`` lies inside the surviving ``{S <= K}`` whenever ``B <= K``, so
+    ``lognormal_partial_moment`` at powers 0 and 1 against ``min(B, K)`` integrates it exactly. The
+    cost is the loop RESTRUCTURE this file already owes ``oss_truncated_draw``: the barrier is read
+    a screen after the coupon block that holds the interval's ``m``, ``s`` and ``S_prev``, and a
+    barrier date not aligned with a coupon date has no conditioning step at all and must refuse by
+    name. Until then the switch is a no-op here, gated as one.
     """
     def sim_autocall(S, isBarrierDate, isFixingDate, isFloatDate, floating, threshold, coupon, terminationDate):
         avg = 0.0

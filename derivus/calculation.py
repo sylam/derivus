@@ -1841,6 +1841,16 @@ class Base_Revaluation(Calculation):
     TWO THINGS REFUSE RATHER THAN REPORT, both because the failure would otherwise be a plausible
     number: a deal that registered a `BoundarySet` (`execute` below) and `Recompute_Inner_MC`
     (`pricing.InnerMCRecompute.backward`).
+
+    `Branch_And_Weight` IS THE ANSWER TO THE FIRST OF THOSE, and it is declared here and nowhere
+    else. The refusal fires because a decision taken on simulated state needs a boundary
+    correction, and that correction is a detached coefficient that cannot be differentiated twice;
+    the smooth estimator removes the decision instead of correcting it, so a deal priced under the
+    switch REGISTERS NOTHING and the full Hessian flows. One estimator per decision - the switch
+    swaps them, it does not add. `Credit_Monte_Carlo` does not declare the field in v1, so its
+    exposure, cashflow and collateral semantics are structurally untouched: the xVA-layer half is
+    the roadmap's own costed later work (a knock between reporting rows branches `max(V_t, 0)` and
+    the collateral scan, so the netting set owes a rescan per branch).
     """
     documentation = ('Calculations',
                      ['This applies the valuation models mentioned earlier to the portfolio per deal.',
@@ -1875,7 +1885,22 @@ class Base_Revaluation(Calculation):
           description='Kernel bandwidth of the boundary correction assembled into backward()'),
         F('Recompute_Inner_MC', 'Text', default='No', values=['Yes', 'No'],
           description='Re-simulate a Monte Carlo pricer\'s inner paths in backward() rather than '
-                      'taping them; trades a second forward pass for the graph of every pricing')
+                      'taping them; trades a second forward pass for the graph of every pricing'),
+        F('Branch_And_Weight', 'Text', default='No', values=['Yes', 'No'],
+          description='Price fixing-observed knockouts (TARF, accumulator, discrete barrier) with '
+                      'the SMOOTH estimator: the fired branch of each fixing integrated '
+                      'analytically against that interval\'s own lognormal law and the continuing '
+                      'branch drawn from the truncated one. Same expectation, lower variance, and '
+                      'no indicator on the tape - so second-order greeks flow where the crisp '
+                      'estimator has to refuse them. GBM only; a non-GBM spot model refuses by '
+                      'name (`pricing.branch_and_weight`). Off is the crisp path bit for bit. '
+                      'ONE EXCEPTION to same-expectation, and it moves money rather than noise: a '
+                      'TARF declaring a non-blank `TargetAdjustment` (\'Full Gain\', \'No Gain\') '
+                      'is priced by that convention here and as \'Exact\' on the crisp path, which '
+                      'the crisp path cannot be taught to read without moving numbers with this '
+                      'switch OFF - so on those deals this flag changes the DEAL, not the '
+                      'estimator. Each one warns by name as it is priced; '
+                      '`pricing.tarf_target_adjustment` is the reason')
     ]
 
     def __init__(self, config, **kwargs):
@@ -1961,6 +1986,10 @@ class Base_Revaluation(Calculation):
             mcmc_sim, get_fxrate_factor(utils.check_rate_name(reporting_currency), self.static_factors, {}),
             all_vars_concat, self.params['Greeks'] == 'All')
         shared_mem.recompute_inner_mc = self.params.get('Recompute_Inner_MC', 'No') == 'Yes'
+        # the SMOOTH estimator (`pricing.branch_and_weight`), which lives on this calculation and
+        # not on `Credit_Monte_Carlo`. `execute` has already completed the block through
+        # `declared_defaults`, so the key is present and the read is direct
+        shared_mem.branch_and_weight = self.params['Branch_And_Weight'] == 'Yes'
         return shared_mem
 
     def report(self):
