@@ -68,8 +68,34 @@ produced it — a `SensitivityProfile` per pricer — so a consumer can tell a p
 one carrying a boundary term. Related and also unbuilt: **Hessian-vector products** instead of
 materialising full Hessians.
 
-**Exposure gamma at a KINK — the ½Ku² term (owner's construction, ratified 2026-08-30;
-buildable now).** What second-order AAD drops at a relu is `δ(V)·V_θV_θᵀ` — a density at the
+**Exposure gamma at a KINK — the ½Ku² term (owner's construction, ratified 2026-08-30) — is
+BUILT**, on the CVA-Hessian route (`Hessian: 'Yes'` on the CVA block is the switch;
+`pricing.exposure_kink_term`, hooked into `cva_for_aad` beside the boundary correction under
+the mirrored trapezoid; `tests/test_cva_gamma_kink.py`, 11 gates). Measured in-house on the
+linear-payoff fixture (65536 paths, r 4% / q 1%, non-flat vol): pathwise gamma 0.0 →
+corrected 4.2419e-04 against a CRN ladder of `grad_cva` at 4.2609e-04 (0.45% agreement, 3.09%
+flatness); pathwise vanna +4.964e-03 (wrong sign AND size) → corrected −1.2844e-02 against
+−1.3044e-02, with `|2·vanna − ladder|` at 96.9% pinning the doubling off one run; deep-ITM
+control 1e-26 of the live entry; seed spread 0.41%/0.69% at 65536 paths. Admission verified
+one order stricter than gated: sha256 over the raw buffers, CVA, profile and the whole
+`grad_cva` frame byte-identical with the term on or off, and the term never BUILT under
+`Hessian: 'No'` (frame-counted, not assumed). Three findings of the build's own review are
+worth keeping: the ATOM refusal is re-gated on this row's own criterion — a bandwidth ladder
+whose f̂(0) climbs as 1/ε (measured 8.000 across a factor-8 ladder on pinned rows against
+1.03–1.06 on healthy ones, threshold 2.0) refuses by name, while an exactly-zero netted mirror
+correctly contributes an exact zero rather than refusing (no v1 document reaches the atom —
+collateralised sets are preempted one step earlier by the decision-product refusal, which
+covers `MTABoundarySet` too, so v1 CVA gamma is for uncollateralised books of smooth products;
+the conditional-p row is the route out for both); the detach on K's argument is SECOND-ORDER INERT
+(every K′ term carries a factor of u — the undetached mutant is bit-identical through second
+order) and is kept for tape hygiene, pinned by a probe gate asserting `requires_grad False`
+and a third derivative that refuses; and the reported Hessian on a grid whose first row is t0
+carries pre-existing NaN rows the new switch merely exposes. Declared limits, unfixed and
+carried: `Hessian: 'Yes'` with `Gradient: 'No'` is a silent no-op (the second-order block
+rides the first-order tape — should refuse by name, small); the Silverman bandwidth is
+per-BATCH, so `Simulation_Batches > 1` oversmooths relative to the run's true path count.
+Next consumers: the SIMM calc's dSIMM/dθ HVP; FVA's splits. The original construction and
+external measurements stand below as the design record. What second-order AAD drops at a relu is `δ(V)·V_θV_θᵀ` — a density at the
 boundary times an outer product, the same object the first-order boundary fix already estimates,
 so exposure gamma is a first-order-difficulty problem wearing second-order clothes. The term:
 with `u = V − V.detach()`, add `T = ½·K_ε(V.detach())·u²` beside `relu(V)` in the objective,

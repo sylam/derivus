@@ -1339,6 +1339,23 @@ class Credit_Monte_Carlo(Calculation):
         where 0.05 upward is visibly biased. It needs enough paths for the near-boundary band to be
         populated - measured at 32768 - so a thin run should widen it and expect bias rather than
         noise.
+
+        THE CVA HESSIAN (`Hessian: 'Yes'`) is admitted on the same terms, and wanting second order
+        IS its switch - nothing is built when only the gradient is asked for.
+        `pricing.exposure_kink_term` rides the relu's own argument through the identical trapezoid,
+        so tensors['cva'], the profile and grad_cva are untouched by construction. What it restores
+        is the `delta(V) * V_theta V_theta^T` the double backward drops at the exposure relu:
+        without it a LINEAR book reports a spot gamma of exactly zero and a spot-vol entry that is
+        plausible and wrong - measured on `tests/test_cva_gamma_kink.py`'s forward, +4.964e-03
+        against a bump ladder of -1.304e-02, the wrong SIGN at 39% of the size.
+        Two things REFUSE here rather than report a plausible wrong matrix - a book that
+        registered a boundary correction (a first-order estimator differentiated twice loses its
+        flux block silently) and a reporting row whose bandwidth LADDER diverges
+        (`exposure_kink_term`, where f_V(0) climbs as 1/bandwidth because it is a point mass rather
+        than a density) - which is `Base_Revaluation`'s posture, one calculation over. A row merely
+        PINNED at zero is not the second of those and is not refused: its V_theta is zero too, so
+        its contribution is zero whatever the density does, and a grid left open past a book's last
+        maturity keeps its whole second-order block.
         """
         # the declaration is the single source of an omitted field's default
         params = declared_defaults(type(self), params)
@@ -1684,6 +1701,21 @@ class Credit_Monte_Carlo(Calculation):
 
                     # calculate all the derivatives of cva
                     hessian = params['Credit_Valuation_Adjustment'].get('Hessian', 'No') == 'Yes'
+                    if hessian and shared_mem.boundary_sets:
+                        raise utils.SecondOrderRefused(
+                            "Credit_Valuation_Adjustment Hessian: 'Yes' is refused - this book "
+                            'takes decisions on simulated state and registered a boundary '
+                            'correction: {}. That correction is what makes their FIRST derivative '
+                            'right and it is a FIRST-ORDER estimator - (gap - gap.detach()) times '
+                            'a DETACHED coefficient - so a second derivative through it comes back '
+                            'with the density-DERIVATIVE flux block silently missing: a '
+                            'plausible-looking cross-gamma rather than a failure, which is the '
+                            'failure mode this refusal exists to prevent. Two remedies: drop '
+                            'Hessian and keep grad_cva, which is unaffected, or ask for the '
+                            'second-order block on a book without decision products. The estimator '
+                            'that will answer this is the conditional-p mixture on the roadmap '
+                            '(Second-order flux at a JUMP), pinned to the stride.'.format(
+                                ', '.join(sorted({str(b.deal) for b in shared_mem.boundary_sets}))))
                     # boundary correction is zero forward; only the differentiated scalar gains a
                     # term. Bandwidth 0.01 (see docstring) needs ~32768 paths to be noise, not bias
                     cva_for_aad = tensors['cva']
@@ -1695,6 +1727,15 @@ class Credit_Monte_Carlo(Calculation):
                             float(params.get('Boundary_AAD_Bandwidth', 0.01)))
                         if correction is not None:
                             cva_for_aad = cva_for_aad + correction
+                    if hessian:
+                        # the relu's argument above, SIGNED - wanting second order is the whole
+                        # switch, so nothing is built at all when only the gradient is asked for
+                        kink = pricing.exposure_kink_term(
+                            tensors['mtm'] * fx_report * Dt_T / fx_report[0])
+                        # mirrors the reported reduction exactly: same trapezoid, same prob, same
+                        # recovery, so the (exact-zero) term rides the objective's own weights
+                        cva_for_aad = cva_for_aad + (1.0 - recovery) * (
+                                0.5 * (kink[1:] + kink[:-1]) * prob).mean(axis=1).sum()
                     sensitivity = SensitivitiesEstimator(
                         cva_for_aad, self.all_var, create_graph=hessian)
 

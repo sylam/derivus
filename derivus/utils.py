@@ -593,13 +593,19 @@ class ScheduleLifecycleError(Exception):
 
 
 class SecondOrderRefused(Exception):
-    """`Greeks: 'All'` will not be answered on this portfolio, because the answer would be a
-    plausible wrong number rather than a failure (`Base_Revaluation.execute`).
+    """A second-order block will not be answered on this portfolio, because the answer would be a
+    plausible wrong number rather than a failure.
+
+    Three sites raise it, one posture. `Base_Revaluation.execute` refuses `Greeks: 'All'` on a
+    registered `BoundarySet`; the CVA-Hessian route refuses `Hessian: 'Yes'` on the same thing
+    (`Credit_Monte_Carlo.execute`) and again on a reporting row whose bandwidth ladder DIVERGES,
+    where the density the exposure-gamma term estimates climbs as 1/bandwidth because it is a point
+    mass rather than a density (`pricing.exposure_kink_term`).
 
     Named so a caller can FALL BACK rather than lose the run: the value and the first-order block
-    are unaffected, so re-running the same job at `Greeks: 'First'` keeps everything except the
-    thing that was refused. That is a different response from the one any other exception out of a
-    valuation deserves, and a blanket `except` cannot tell them apart."""
+    are unaffected, so re-running the same job at `Greeks: 'First'` / `Hessian: 'No'` keeps
+    everything except the thing that was refused. That is a different response from the one any
+    other exception out of a valuation deserves, and a blanket `except` cannot tell them apart."""
 
 
 class CalibrationStale(Exception):

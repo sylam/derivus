@@ -49,6 +49,57 @@ the largest legitimate reading and 4.0x below that one. The other six solves abo
 transfer decisions whose kernel mass is 1e-9 or less, which the estimator was already returning
 essentially nothing for."""
 
+KINK_ATOM_BANDWIDTH_FLOOR = 0.01
+"""How far below a reporting row's OWN scale its Silverman bandwidth may fall before the kernel is
+WRITTEN to zero instead of evaluated (``exposure_kink_term``). It decides nothing about atoms.
+
+What the test measures is the row's COEFFICIENT OF VARIATION, not its dispersion outright: Silverman
+at n paths is ``1.06 * std * n**-0.2``, so ``eps <= 0.01 * mean|V|`` is exactly
+``std / mean|V| <= 0.01 / (1.06 * n**-0.2)`` - 0.0867 at 65536 paths, 0.0657 at 16384, 0.0377 at
+1024. Scale-free, and that is all it is; the arithmetic is ``1.06 * 16384**-0.2 = 0.152 * std``, not
+the ``0.20 * std`` this docstring used to claim, and the headroom is not the order of magnitude it
+used to claim either - ``tests/test_cva_gamma_kink.py``'s own first row reads ``std/mean|V| =
+0.1343``, 1.55x above the 65536-path threshold.
+
+That margin is harmless because of WHERE such a row sits, not because it is wide. A row carrying
+mass at the kink cannot land under this floor: a sample straddling zero has ``mean|V| ~ 0.8 * std``
+and a coefficient of variation near 1.25, fourteen times the threshold. What lands under it is a row
+whose whole mass sits at ONE level - a constant row (one scenario, a book whose deals have all
+matured, a deal booked against its exact mirror), where the bandwidth is an exact zero and the
+kernel is 0/0 rather than small - or a row so tightly clustered away from zero that the kernel
+underflows there anyway. Both are the same zero, which is why one branch serves both, and the gate
+fixture's row 0 sits 7.4 bandwidths out where either branch writes it.
+
+A row that is merely NARROW and does carry mass at zero is not written off here: the ladder below
+runs wherever a bandwidth exists at all, under this floor included, so it is refused rather than
+silently zeroed."""
+
+KINK_ATOM_LADDER = (2.0, 1.0, 0.5, 0.25)
+"""The bandwidth ladder ``exposure_kink_term`` classifies a row on, as multiples of that row's own
+Silverman width - a factor of EIGHT end to end.
+
+The roadmap's criterion for this term is that a row REFUSES when its bandwidth ladder DIVERGES, and
+the ladder is the only instrument that can say so: a kernel estimate of a density holds still as the
+width narrows, while a kernel estimate of a point MASS reads ``p / (h * sqrt(2 pi))`` and climbs as
+``1/h``. Nothing else here separates them - a row's spread, its mass near zero and its bandwidth are
+all one number apiece and a point mass and a narrow density share every one of them."""
+
+KINK_ATOM_LADDER_DIVERGENCE = 2.0
+"""How far ``f_V(0)`` may CLIMB from the widest rung of ``KINK_ATOM_LADDER`` to the narrowest before
+the row is refused as an ATOM (``exposure_kink_term``).
+
+The two families are 7.7x apart on this reading, which is why one threshold separates them and why
+it need not be argued to a second digit. Measured at 65536 paths on a row with an atom of weight p
+at zero and the rest at 1.0: 54.46 / 108.9 / 217.9 / 435.7 across the four rungs at p = 0.999, a
+factor of 8.000 across a ladder of 8 - and the reading is 8.000 at EVERY p swept from 0.999 down to
+0.0001, because the climb is the mass's ``1/h`` and not its weight. Against the reporting rows of
+``tests/test_cva_gamma_kink.py``'s live document, which do carry crossing mass: 1.003 / 1.031 /
+1.027 / 1.045, the widest being 0.0172896 / 0.0176152 / 0.0178078 / 0.0180594. Two sits 1.9x above
+the density and 4.0x below the mass, and no path count moves either end.
+
+Read the ladder itself off any book at DEBUG - ``exposure_kink_term`` logs one line per reporting
+row, which is how a row that PASSED is told from a row that had nothing to say."""
+
 
 # ======================================================================================
 # Heston-Nandi OSS pricers (TARF, accumulator, discrete barrier, autocall). Opt-in per deal via
@@ -491,6 +542,148 @@ def boundary_correction(shared, objective, reported_mtm, bandwidth):
                               type(bset).__name__, k,
                               float((density * weights * jump).sum()))
     return torch.stack(corrections).sum() if corrections else None
+
+
+def _kink_density_at_zero(Vbar, width, n_paths_axis):
+    """``f_V(0)`` per reporting row, by the same normalised Gaussian kernel ``exposure_kink_term``
+    carries into the tape - but at an ARBITRARY width, which is the whole point of it.
+
+    The term itself only ever evaluates the kernel at the row's own Silverman bandwidth, so it can
+    report a density but never say whether that density is one. Reading the same estimator at
+    another width is what turns one number into a ladder.
+    """
+    return torch.exp(-0.5 * (Vbar / width) ** 2).mean(
+        dim=n_paths_axis, keepdim=True) / (width * math.sqrt(2.0 * math.pi))
+
+
+def exposure_kink_term(V, n_paths_axis=1):
+    """A term worth EXACTLY ZERO in the forward pass and BIT-IDENTICALLY zero at first order that
+    carries the exposure relu's missing SECOND derivative into the double backward.
+
+    What second-order AAD drops at ``relu(V)`` is ``delta(V) * V_theta V_theta^T`` - a density AT
+    the boundary times an outer product, the same object the first-order boundary fix already
+    estimates, so exposure gamma is a first-order-difficulty problem wearing second-order clothes.
+    With ``u = V - V.detach()`` this returns ``0.5 * K_eps(V.detach()) * u**2`` per (row, path),
+    added beside ``relu(V)`` under the objective's own weights. Its value is an exact zero because
+    ``u`` is an exact IEEE zero; its gradient is ``K*u*V_theta``, which accumulates ``+0.0``
+    bit-for-bit; its Hessian is ``K_eps(Vbar) * V_theta V_theta^T``, whose weighted path MEAN is
+    the kernel estimate of ``f_V(0) * E[V_theta V_theta^T | V = 0]`` - exactly the dropped term. So
+    the admission test is ONE ORDER STRICTER than the boundary correction's: ``np.array_equal`` at
+    value AND at first order, term on versus off.
+
+    ``K``'s argument is DETACHED. That is what confines the construction to the density's VALUE and
+    keeps ``K'`` off the tape entirely - the estimator a JUMP needs (the density's DERIVATIVE) is a
+    different, noisier object and is not built here. ``K`` is the NORMALISED Gaussian kernel,
+    ``phi(x/eps)/eps``, because the caller's reduction is a mean over paths and it is that mean that
+    has to be the density estimate.
+
+    ``eps`` is Silverman per ROW, ``1.06 * std * n**-0.2`` over the path axis with keepdim so one
+    bandwidth per reporting date broadcasts across its own paths. No JSON knob: there is one
+    defensible width and nobody has asked for another.
+
+    AN ATOM IS DIAGNOSED ON THE BANDWIDTH LADDER, which is the roadmap's own criterion and the only
+    instrument that can tell the two apart. A point mass at the kink and a narrow density at the
+    kink have the same spread, the same near-zero mass and the same Silverman width; what separates
+    them is what ``f_V(0)`` DOES when the width is varied. A density holds still; a mass of weight
+    ``p`` reads ``p / (h * sqrt(2 pi))`` and climbs as ``1/h``. So ``f_V(0)`` is re-estimated across
+    ``KINK_ATOM_LADDER`` and a row whose narrowest rung stands ``KINK_ATOM_LADDER_DIVERGENCE`` times
+    its widest is REFUSED by name, carrying its row index and its readings: the gamma there is
+    genuinely singular rather than merely noisy, and a number would be a lie about a divergence.
+
+    The ladder runs wherever a bandwidth EXISTS - including on rows under the floor below, so a row
+    pinned at zero on a handful of its paths is refused rather than quietly written off.
+
+    SEPARATELY, and deciding nothing about atoms: where the bandwidth collapses under
+    ``KINK_ATOM_BANDWIDTH_FLOOR`` of the row's own scale the kernel is WRITTEN to zero rather than
+    evaluated, because a zero bandwidth is 0/0 in the forward pass and NaN in the backward one. Such
+    a row is one whose whole mass sits at a single level, and both answers there are zero: away from
+    the kink the kernel underflows, and AT the kink - a book whose deals have all matured, a deal
+    booked against its exact mirror - the exposure is functionally zero in every factor, so
+    ``V_theta`` is zero and ``K * V_theta V_theta^T`` is zero whatever ``K`` is. The construction is
+    self-limiting there; only the 0/0 needs handling.
+
+    THE COLLATERALISED CASE this refusal was written for - a net matched inside its threshold,
+    pinned at the kink with real ``V_theta`` - cannot reach here in v1. A ``NettingCollateralSet``
+    with ``Collateralized: 'True'`` registers an ``MTABoundarySet`` whatever it holds, so
+    ``Hessian: 'Yes'`` is refused one step earlier by the decision-product refusal in
+    ``Credit_Monte_Carlo.execute``. A margin period is what would smear that atom into a density,
+    and estimating through one is the roadmap's conditional-p row (Second-order flux at a JUMP),
+    pinned to the stride - it is future work, not a remedy a caller can take today, and the refusal
+    below says so rather than sending anyone to build a book this build refuses for another reason.
+
+    ONE sample has no spread for a kernel width, as in ``boundary_weights``: ``std()`` would be NaN
+    and reach ``backward()`` silently, so zero width is returned and the row is classified on that.
+
+    THE RECORD THIS RE-TAKES, measured externally by the owner (JAX prototype, ATM forward-style
+    exposure under GBM, theta = (S0, sigma), 400k paths, Silverman bandwidth): pathwise gamma 0.0000
+    and vanna 0.3966 (double the truth) become 2.6415 and 0.1992 against Black 2.6521 / 0.1989; at
+    xVA cross-sections, 1024 paths per row gives gamma 2.59 +/- 0.13 and 4096 gives +/- 0.07. The
+    O(eps^2) bias shows on volga, which is why this is a gamma-and-vanna term and not a volga one.
+    ``tests/test_cva_gamma_kink.py`` re-takes the shape of that table through the real objective.
+    """
+    Vbar = V.detach()
+    n = Vbar.shape[n_paths_axis]
+    # one sample -> zero width; std() would be NaN and a single path has no density to estimate
+    spread = Vbar.std(dim=n_paths_axis, keepdim=True) if n > 1 else torch.zeros_like(
+        Vbar.narrow(n_paths_axis, 0, 1))
+    eps = 1.06 * spread * n ** -0.2
+    # the row's OWN scale, so the floor is scale-free in the exposure's units
+    floor = KINK_ATOM_BANDWIDTH_FLOOR * Vbar.abs().mean(dim=n_paths_axis, keepdim=True)
+    collapsed = eps <= floor
+
+    # THE LADDER, which is what says atom - and it runs under the floor too, so a row pinned at zero
+    # on a few paths is refused rather than written off. A rung on a row with no bandwidth at all is
+    # substituted, not divided, so no branch of this reaches a comparison as NaN
+    has_width = eps > 0
+    unit = torch.ones_like(eps)
+    with torch.no_grad():
+        rungs = [_kink_density_at_zero(Vbar, torch.where(has_width, c * eps, unit), n_paths_axis)
+                 for c in KINK_ATOM_LADDER]
+    # stated as a product rather than a ratio: the widest rung is exactly zero wherever the kernel
+    # underflows at every width, and that row is far from the kink rather than divergent
+    atom = has_width & (rungs[0] > 0) & (rungs[-1] >= KINK_ATOM_LADDER_DIVERGENCE * rungs[0])
+
+    if bool(atom.any()):
+        flat = atom.reshape(-1)
+        rows = torch.nonzero(flat).reshape(-1).tolist()
+        readings = torch.stack([rung.reshape(-1)[flat] for rung in rungs], dim=-1)
+        worst = int(torch.argmax(readings[:, -1] / readings[:, 0]))
+        raise utils.SecondOrderRefused(
+            'exposure_kink_term: reporting row(s) {} carry an ATOM of exposure at the kink - the '
+            'density f_V(0) this term estimates does not settle as its bandwidth narrows, it '
+            'CLIMBS. Row {} reads {} at {} x its own Silverman width: a factor of {:.2f} across a '
+            'ladder of {:.0f}, which is the 1/bandwidth signature of a point mass rather than the '
+            'plateau of a density. The gamma there is genuinely singular, not merely noisy, and a '
+            'number would be a lie about a divergence. What works today: ask for the first-order '
+            "block alone (Hessian: 'No'), which this term does not touch and which still reports "
+            'grad_cva; or clip the reporting grid off the named row(s) if they are not rows you '
+            'need; or drop the position that pins the net. A MARGIN PERIOD or a transfer THRESHOLD '
+            'is what would smear an atom into a density, but that is not a book you can price here '
+            'yet - a collateralised set registers an MTA boundary correction and is refused one '
+            'step earlier - and estimating through one is the conditional-p mixture on the roadmap '
+            '(Second-order flux at a JUMP), pinned to the stride.'.format(
+                rows, rows[worst],
+                ' / '.join('{:.4g}'.format(float(x)) for x in readings[worst]),
+                ' / '.join('{:g}'.format(c) for c in KINK_ATOM_LADDER),
+                float(readings[worst, -1] / readings[worst, 0]),
+                KINK_ATOM_LADDER[0] / KINK_ATOM_LADDER[-1]))
+
+    if logging.getLogger().isEnabledFor(logging.DEBUG):
+        # the term's forward value is an exact zero on every row and says nothing; the LADDER is
+        # the reading, and it is how a row that passed is told from a row that had nothing to say
+        for r, rung in enumerate(torch.stack([x.reshape(-1) for x in rungs], dim=-1).tolist()):
+            logging.debug('KINK row=%d f(0)=%.6g ladder=%s climb=%.3f collapsed=%d', r, rung[1],
+                          '/'.join('{:.6g}'.format(x) for x in rung),
+                          rung[-1] / rung[0] if rung[0] else float('nan'),
+                          int(collapsed.reshape(-1)[r]))
+
+    # a collapsed row admits nothing: written, not evaluated, because eps is an exact zero there
+    # and 0/0 would reach backward() as NaN through the unselected branch
+    width = torch.where(collapsed, unit, eps)
+    kernel = torch.where(collapsed, torch.zeros_like(eps), torch.exp(
+        -0.5 * (Vbar / width) ** 2) / (width * math.sqrt(2.0 * math.pi)))
+    u = V - Vbar
+    return 0.5 * kernel * u * u
 
 
 class InnerMCRecompute(torch.autograd.Function):
