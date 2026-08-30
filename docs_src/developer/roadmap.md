@@ -15,7 +15,7 @@ Two rules apply to everything here, from [Conventions](conventions.md):
 | --- | --- | --- |
 | Collateralised boundary counterfactual does not resolve | autocall registration x collateral chain | **CLOSED.** One mechanism, found by dumping the engine's counterfactual net rows and diffing them row-by-row against a chain replica on identical branch inputs: the per-decision ledger flipped only the decision's OWN payment, so a trigger forced ON left every later coupon's booked cash sitting in the margin period's `C_ts_te` windows, and forced OFF never paid the coupon the off-world reaches at the path's first later firing. `LatchedBoundarySet` now derives each decision's full ledger reach from its declared per-event `cash_events` facts with the latch algebra the set already owns; `net_from_gross` sums a list of ledger rows. Two-coupon cut: +6.5% mean excess over four seeds closes to +0.4% (inside estimator noise, ±1.4% each seed); the shipped six-coupon gate reads 0.14% against its CRN ladder, own-row-only mutant +7.73%. The previously suspected second channel ("+5.9% in a cash-free world") was the discriminator's own artifact: its stub emptied the forward ledger via `cash_settle` while the counterfactual still flipped `settle_map` cash - an inconsistent world, not an engine term. Gate: `test_autocall_json.py::test_a_collateralised_cva_delta_carries_the_settled_coupon`, xfail marker off. |
 | Extendable forward: boundary flux, mirror booking | `pv_MC_ExtendableForward` | The deal ships forward-value complete (Black-oracle gates, both styles). The boundary registration is **DONE**: reconstructed decisions register a `LatchedBoundarySet` whose alive branch is the facts-only world and whose dead branch is the survived-weighted `pending` head, both derived from the pricer's own `value = fixed + state * live` split - the `EXTENDABLE_LATCH` organ reads reconstruction at 5.5e-8 relative, and the CVA delta closes from -3.17% (registration suppressed) to -0.07% against its CRN ladder (`test_the_cva_delta_carries_the_extension_flux`). REMAINING declared limits: (1) the settled-cash channel under a CSA is not registered, BY MEASURED RULING: across four amplifying documents (ITM extension, vol 0.30 / 20-day margin period, a one-fixing zero-lag tail that makes the flipped object nearly pure cash) the residual reads +0.25% / -0.02% / +0.26% / +0.03% against CRN ladders that resolve no finer - the flipped payments' exposure rides the VALUE side (scored exactly by `pending`) until settlement, then one hazard-weighted margin window; the pay-on-surviving `cash_alive` design is recorded in `test_a_collateralised_cva_delta_carries_the_surviving_cash` and waits for a document that can falsify it. (2) The exercise right rides the REPORTED book (`forward_sign` orients payoff and rule together), so the mirror booking — the client side of a bank-exercisable deal, where the exerciser optimises AGAINST the reporter — is unrepresentable; needs an Exercised_By field, min instead of max in the backward pass, and flipped truncation. (3) The rolling backward pass carries a small one-signed smoothing bias (Gauss-Hermite over the relu kink, interpolated); single-decision measures inside 5e-3 of Black and the multi-decision case is bounded by the dominance gates only — the `Boundary_*` valuation options are the accuracy dials. |
-| TARF target pin | `pricing` (TARF block) | Material — fires on 27–61% of paths, 27% short uncorrected — but neither the estimator (13% bandwidth spread) nor the **oracle** (8.9% flatness) resolves better than ~10%, so it is gated structurally with no tolerance asserted. Do not tune one on: the oracle cannot see it either. |
+| TARF target pin | `pricing` (TARF block) | Material — fires on 27–61% of paths, 27% short uncorrected — but neither the estimator (13% bandwidth spread) nor the **oracle** (8.9% flatness) resolves better than ~10%, so it is gated structurally with no tolerance asserted. Do not tune one on: the oracle cannot see it either. **A designed exact resolution now exists**: under branch-and-weight (Designed, not built) the pinned payment is a closed-form conditional expectation on the fired branch — exact, not estimated — behind that row's own valuation switch. |
 | ~~`pv_partial_barrier_option`~~ **REVIEWED AND CLOSED** | `pricing` | Three structural defects and two formula defects, all fixed, gated by an independent bridge-corrected Monte Carlo oracle (`test_partial_barrier_json.py`, worst 0.43% over all eight direction/window configurations). Structural: (1) the suspected NaN was real - rows at/past `Barrier_Limit_Date` fed a non-positive window into `sqrt` (inf-inf in the e-terms at zero); the clamp is also the valuation there, both window types collapsing to the right limit of the same formula. (2) The outer `touched` monitoring ignored the window entirely - a crossing outside it knocked anyway, measured -87% on realised payoffs. (3) Down + end-window + continuous monitoring NEVER PRICED: a float barrier made `strike < barrier` a python bool and `torch.where` refused - silent skip, NaN mark. Formula (adjudicated by workflow against exact-BivN + 4M-path MC): the eta==0 B1 branch had an INVERTED strike-vs-barrier selection and wrong e3/e4 signs in the reflected terms (max error 8.69 on 100-spot cases, negative out-option prices) - unreachable from the FX deal's declared Barrier_Type values, fixed anyway; the suspected eta==-1 argument slip was REFUTED (bivariate-normal symmetry). ApproxBivN edge ledger, all currently unreachable from this sole consumer post-clamp (rho strictly inside (0,1)): NaN grads for rho=0 rows in mixed batches, silent zero rho-grad at exact rho=0, rho=+-1 NaN-or-wrong, P/Q=+-inf rho-grad NaN; true worst accuracy ~7e-4 not the claimed 4 decimals. STILL OPEN: (a) the `touched` latch registers no boundary set, so a CVA gradient drops the window-touch flux - the same registration family as the autocall/accumulator/extendable (the bridge-probability `touched` is already smooth, so only the closed-form/knocked branch selection needs the registration); (b) `Cash_Rebate` is entirely UNGATED - every gate here runs rebate 0 - and the knock-in's rebate carries no pre-expiry value in the closed-form rows (it enters only through the expiry pad), so an untouched KI's mark ignores its discounted rebate until the last row. |
 | A sibling fallback may name a factor discovery never fetched | each deal's `calc_dependencies` | Discovery iterates `factor_fields` over the RAW field and `get_fieldname` drops blanks, so a blank reference loads no factor. A fallback is only safe if it names one something ELSE already pulled in. `Discount_Rate ← Currency` is safe — 34 sites — because `Currency` is an `FxRate` and `dependant_fields` pulls its `InterestRate` transitively. Adding a fallback to a field whose sibling has no such edge silently resolves to whatever the sibling's chain did load. The one cross-leg instance (`FXForwardDeal.Sell_Discount_Rate ← Buy_Currency`) is fixed: both rates are `default=REQUIRED` with no fallback. |
 | Four tables the Workbench cannot save | `derivus_jupyter.set_value_from_widget` | `set_repr` picks a deserializer from the `obj` token, and for an untagged table falls to a hardcoded whitelist of field NAMES. `Names`, `Sampling_Data_1`, `Sampling_Data_2` and `Barrier_Dates` are outside it and raise. The token table is per-field knowledge the `Row` now carries — the fix is to render from the declaration, not to add a fifth token. **SUPERSEDED for viewing**: the web UI (`web/`) renders every table from its declared `col_names` and never re-derives a deserializer; the whitelist only bites the Jupyter app's WRITE path, which the web UI's edit slice will replace rather than repair. |
@@ -120,6 +120,57 @@ exactly differentiable by that design. So the stride gains a second consumer: it
 lever, and it is also the bandwidth-free jump-gamma estimator for every latched decision. HN
 books get this estimator the day the stride lands, as the same registration reuse with
 `Φ_stride` as `p`.
+
+**Branch and weight for TARFs and autocalls — the sequential case (owner's construction,
+ratified 2026-08-30; GBM buildable now, HN pinned to the stride).** Three things change at an
+accrual product, and the second is why the kernel route gets ugly fast: the decisions are
+sequential and COUPLED (a knock at fixing k reaches every later row, and the TARF trigger moves
+with the path — remaining target = T − accrued); the jump and the decision SHARE a fixing, so
+the tempting shortcut "p_k × payoff on the realised path" is BIASED — the fired branch must be
+the expectation of the payoff GIVEN the decision, never a probability times a sample; and the
+accrual `max(S_j − K, 0)` is a kink at every fixing with the pin `min(gain, remaining)` another
+at the last. The construction is the discrete-observation sibling of the Brownian-bridge
+survival method (which is why the bridge `touched` is already smooth): at each fixing, given
+the state one conditioning step before, `zB = (log(B_k/S_prev) − m_k)/s_k`; the fired branch
+closes ANALYTICALLY — `p_k = 1 − Φ(zB)`, payoff `E[J_k(S_k) | S_k > B_k]` (a coupon exactly;
+the pinned TARF payment a call spread) — and the continuing branch draws `S_k` from the
+truncated law by `Φ⁻¹(U_k · Φ(zB))` with weight `(1 − p_k)`, the alive path carrying
+`Π(1 − p_j)`. Every indicator is gone, the barrier enters only through `Φ` and `Φ⁻¹`, and the
+estimator is UNBIASED — not a smoothing. Once the path is smooth, double backward carries every
+cross-decision term itself: the per-decision counterfactual DERIVATIVE algebra retires for
+these products — but only that half of the ledger, because the set-level branches are VALUES:
+a knock between reporting rows branches `max(V_t, 0)` and the collateral scan (the relu-kink
+nonlinearity the boundary pages already flag), so the netting set pays a collateral rescan per
+branch — the `MTABoundarySet` replay/rescan callables are that machinery — with the exposure
+kink term applied per branch. Measured externally (two-observation autocall against a
+differentiable quadrature reference, 65k paths): hard indicators read gamma 0.0000 and get
+vanna and volga with the wrong SIGN (−0.1783 / +0.2211 against +0.4915 / −1.0219); the
+truncated sample lands 0.024018 / 0.2205 / −0.1902 / −1.4205 / 0.4912 / −1.0210 against
+0.024036 / 0.2203 / −0.1901 / −1.4201 / 0.4915 / −1.0219. At 4096 paths (an inner-MC width),
+20 seeds: gamma −1.419 ± 0.014, vanna ± 0.007, volga ± 0.005 — 1% noise, no bandwidth, no
+bias, against the kernel B-term's 27% at 400k. FOR THE TARF: the continuing-branch trigger is
+`K + R_{k−1}` (the target's path-dependence is just a moving barrier) and the fired payment
+`E[min(g(S_k), R) | S_k > K + R]` is CLOSED FORM — so the target-pin row in Known defects
+above, which neither its estimator nor its oracle resolves better than ~10%, becomes EXACT
+rather than estimated; the accrual kinks take ½Ku² per fixing (a density, not its derivative);
+the knock-IN stays on the bridge. THE CONDITIONING STEP DECIDES THE BUILD ORDER: second-order
+variance scales like `s_k⁻³` per fixing — fine at monthly and quarterly, rough at daily, and a
+daily accumulator's economically right gamma is the desk's own call-spread width anyway (a
+fixed smoothing converging at the ordinary rate: what gets hedged). Under GBM the conditioning
+step is the fixing interval itself (`sim_spot_oss`'s vol-strip lognormal step) — buildable
+now. Under Heston–Nandi the step available today is the last DAILY Gaussian sub-step — the
+`s⁻³`-at-daily regime even for monthly fixings, since the walk is daily — while the
+fixing-interval law and the truncated inversion are, verbatim, THE STRIDE's cached Φ and its
+survival-truncated inverse-CDF: the stride's THIRD consumer, and HN branch-and-weight lands
+the day it does. SUPERSESSION IS A SWITCH, NOT AN ADDITION: the value estimator changes (same
+expectation, lower variance), so it ships as a declared valuation option, default off and
+bit-identical, with re-baselined gates behind the switch — or the derivative-only detach
+substitution at the cost of running both. THE MEMORY WALL stands until the recompute node
+grows a **`jvp` rule** — forward-over-reverse HVPs are tape-free, and `InnerMCRecompute`'s
+one-function-called-twice discipline extends to forward mode; engineering rather than maths,
+and now the named task under the Hessian-vector-product row above. Until then: directional CRN
+bumps of the now-smooth delta, whose ladder going FLAT is this suite's own definition of a
+derivative that exists.
 
 **Calibration Jacobians — ALL FOUR increments are BUILT.** Bumping a market *quote* now flows
 through the calibration rather than stopping at the calibrated factor: one `backward()` reports
