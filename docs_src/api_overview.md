@@ -200,6 +200,18 @@ patch['FxRate.ZAR']['Spot'] = 19.0
 cx.patch_market(patch)             # applied in place; anything structural raises, naming it
 ```
 
+The values half spans BOTH market sections. A `Market Prices` quote block contributes its
+`Points` rows' quoted values — the mid, the two-way, the timestamp — as
+`{block_name: {'Points': [{...} per row]}}`, index-aligned with the block's own row order
+(which is structural, so a changed row count refuses naming both lengths). Per row the patch
+is a delta: a named field replaces, an omitted field keeps, a JSON `null` clears a two-way
+side or a timestamp and refuses on the mid — a mid is moved, never cleared. A `null` in the
+DOCUMENT is an absence, so `patch_market(market_patch())` is the identity: neither hash moves.
+A patched quote re-bootstraps nothing — the written factors stand, `values_hash` records the
+board honestly, and the consumer that reads quotes at execute time is `Quote_Propagation`'s
+ride. The live book is deliberately stricter: `/book/market` refuses a quote-values patch and
+names the quote-update path (which bootstraps atomically) as the remedy.
+
 `patch_market` takes what `market_patch` emits. Two verbs hash the two halves:
 
 | Verb | What it hashes |

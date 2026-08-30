@@ -301,7 +301,9 @@ def update_market_quote(document, name, block):
     - a plan and a pinned grid hang off them, so a moved node is a re-authoring, never a tick. A
     two-way is on the value side of that line for the reason the mid is: a spread widens between
     one print and the next, and a pillar that starts or stops being quoted two-sided is the same
-    node of the same plan. The same rule `derivus_bloomberg.update_fx_vol_snapshot` enforces
+    node of the same plan. That line is `schema.MARKET_QUOTE_VALUES` and this guard reads it, so
+    the split `plan_hash` and `market_patch` take over the section IS this guard rather than a
+    second copy of it. The same rule `derivus_bloomberg.update_fx_vol_snapshot` enforces
     snapshot-side, held here for whatever posts a block. Returns 'installed' or 'updated'.
     """
     if not isinstance(block, dict) or 'instrument' not in block:
@@ -313,7 +315,7 @@ def update_market_quote(document, name, block):
             instrument = dict(b['instrument'])
             instrument['Points'] = [
                 {key: value for key, value in point.items()
-                 if key not in ('Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask', 'Timestamp')}
+                 if key not in schema.MARKET_QUOTE_VALUES}
                 for point in instrument.get('Points', [])]
             return instrument
         if structure(prices[name]) != structure(block):

@@ -70,6 +70,20 @@ SHAPED = tuple(BLANK)
 #: read the same declarations, so neither can drift from the other.
 FACTOR_FIELDS = {}
 
+#: The VALUE keys of a `Market Prices` quote row - the plan/values line for that whole section, for
+#: every family at once rather than per family, because a boundary that depended on which block you
+#: were looking at would not be a boundary. `config.update_market_quote` is where the line was first
+#: drawn, as a tick guard; `partition_market_price` is the same line read as a projection, and the
+#: guard now reads this tuple rather than carrying its own copy of it.
+MARKET_QUOTE_VALUES = ('Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask', 'Timestamp')
+
+#: Which of those a row cannot be without. A mid is MOVED and never removed, so a patch clearing it
+#: refuses; the two-way sides and the stamp are absent whenever the source has no print for them,
+#: which is the same statement key-presence already makes on the values plane. Declared beside the
+#: split rather than spelled as a magic string in the one caller that enforces it, so a fifth value
+#: key has to be classified here rather than becoming null-clearable by default.
+MARKET_QUOTE_REQUIRED = ('Quoted_Market_Value',)
+
 #: How `mapping` renders each type for Handsontable. Rendering only: derived on the way out
 #: and never declared, which is the point - a front end that is not Handsontable ignores all of it.
 WIDGET_FORMAT = {
@@ -492,6 +506,76 @@ def apply_values(type_name, structural, values):
             content = utils.Curve(coords.meta, np.column_stack((coords.array, content)))
         block[key] = content
     return block
+
+
+def partition_market_price(block):
+    """Split one `Market Prices` block into `(structural, values)`.
+
+    A block is the `{"instrument": {...}}` shape both the wire and `cfg.params['Market Prices']`
+    carry. STRUCTURAL is everything but `MARKET_QUOTE_VALUES` on each `Points` row: the pillars,
+    the expiries, the conventions, `Use`, `Weight`, `Quote_Type`, the `Deal` a quote is a price
+    for, the solver knobs and the lifecycle switches. A moved node is a re-authoring and a plan of
+    its own; only the numbers on a node are values. VALUES is one dict per `Points` row, carrying
+    exactly the value keys that row HAS a number for - row ORDER is structural and is what aligns
+    the two halves, so nothing is padded and no absence is spelled as a null.
+
+    A `null` IN THE DOCUMENT is an absence, not a value that happens to be nothing: a source with no
+    print for a pillar posts the key holding `null`, and `quote_delta` already reads a null in a
+    PATCH as "this pillar stopped being quoted two-sided". Reading it as content here instead would
+    make `patch_market(market_patch())` - the values-plane identity - drop the key on one shape and
+    refuse its own output on another. So the round trip below is an identity on every block whose
+    value keys hold numbers, and a CANONICALISATION on one that spells an absence as a null.
+
+    A family whose quotes do not live in `Points` rows - `HullWhite2FactorModelPrices` in
+    `Instrument_Definitions`, the two Heston-Nandi families and `CSForwardPriceModelPrices` in
+    their option tables, `GBMAssetPriceTSModelPrices` with no quote table at all - has an EMPTY
+    values half and stays wholly plan-side. That is the one rule applied uniformly rather than an
+    exemption: a tick on such a block is a new plan, which is what it has always been.
+
+    DROPPED, not shadowed to `None` - a deliberate divergence from `partition_factor`, whose key
+    SET is structural because adding a field there costs a recompile. Here the tick guard has
+    already ruled the other way: a pillar that starts or stops being quoted two-sided is the SAME
+    node of the SAME plan (a spread widens between prints), so `Quoted_Bid` KEY-PRESENCE is itself
+    value-plane, and the mid's key goes with it so the projection is one uniform statement equal to
+    the guard's rather than two rules sharing a loop.
+
+    `apply_market_values` is the exact inverse: `apply_market_values(*partition_market_price(b))`
+    is `b` again - the same CONTENT, the value keys landing last in each row rather than where they
+    were, which the canonical encoder sorts away.
+    """
+    points = block['instrument'].get('Points')
+    if not points:
+        return dict(block), []
+    values = [{key: point[key] for key in MARKET_QUOTE_VALUES if point.get(key) is not None}
+              for point in points]
+    structural = dict(block, instrument=dict(block['instrument'], Points=[
+        {key: content for key, content in point.items() if key not in MARKET_QUOTE_VALUES}
+        for point in points]))
+    # a block no row of which carries a value key contributes nothing to the values half, exactly
+    # as one with no Points does - the two are the same statement about the same block
+    return structural, values if any(values) else []
+
+
+def apply_market_values(structural, values):
+    """Put a values patch back onto a structural projection, returning the whole block.
+
+    The caller owns the check that `values` names only `MARKET_QUOTE_VALUES`, and the NAMED refusal
+    for a row count that moved - it is the one holding the block name, which is what a message has
+    to say, and the one that knows a changed row count is a new plan rather than a short patch.
+    What is held HERE is that a short values half cannot land silently: row order is the only thing
+    pairing the two halves, so a `zip` over mismatched lengths would return a block shorter than the
+    one it was projected from and lose quotes with no refusal anywhere.
+    """
+    if not values:
+        return dict(structural)
+    instrument = structural['instrument']
+    points = instrument['Points']
+    if len(values) != len(points):
+        raise ValueError('a values half of {} row(s) against {} Points - row ORDER is what pairs '
+                         'the two halves, so the caller must align them'.format(
+                             len(values), len(points)))
+    return dict(structural, instrument=dict(instrument, Points=[
+        dict(point, **row) for point, row in zip(points, values)]))
 
 
 # Shared field blocks - metadata that spans classes lives HERE, beside the vocabulary, so there

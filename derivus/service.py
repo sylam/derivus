@@ -1116,6 +1116,19 @@ class CapturedErrors(logging.Handler):
 NO_BOOTSTRAPPER = ('the book declares no Bootstrapper Configuration - nothing can turn quotes '
                    'into price factors')
 
+#: Why a quote is not a values patch HERE, though the engine takes one. `patch_market` composes a
+#: moved quote with an EXECUTE that re-derives its curve (the ride); a values patch on the live book
+#: reaches no such consumer at all, so the tick would land on disk with the written price factors
+#: standing against quotes they no longer solve and nothing anywhere to turn one into the other.
+#: `quotes` is the path that CAN bootstrap, and does by default - `bootstrap: 'No'` beside it is a
+#: caller deliberately deferring the solve, which is a different thing from a patch that has no
+#: solve to defer.
+QUOTE_NOT_A_PATCH = ('{} is a Market Prices block - post it under `quotes`, which value-updates it '
+                     'and bootstraps in the same atomic write. A values patch has no consumer on a '
+                     'live book - the engine takes one because an EXECUTE that rides re-derives its '
+                     'curve from it - so it would leave the written price factors stale against '
+                     'their own quotes with nothing to re-solve them')
+
 #: What a ROUTINE tick refuses on when this workstation has never been verified. The metronome
 #: does not provision - that is a person's act, minutes of terminal time - so it says so, names
 #: the home it looked in, and keeps beating.
@@ -1133,6 +1146,10 @@ def market_edit(document, quotes, patch, bootstrap=None):
     ERROR writes NOTHING and hands its messages back, because a book must never carry a market its
     own bootstrap complained about. `bootstrap` is `'Yes'`/`'No'`, or None for the default - run it
     iff quotes arrived.
+
+    `patch` is the `Price Factors` half of `patch_market` here and nothing else: a quote IS a
+    patchable value to the engine, but on the live book it moves through `quotes`, which
+    bootstraps. See `QUOTE_NOT_A_PATCH`.
     """
     outcome = {'installed': [], 'updated': []}
     for name in sorted(quotes):
@@ -1140,6 +1157,9 @@ def market_edit(document, quotes, patch, bootstrap=None):
     wants_bootstrap = (bootstrap if bootstrap is not None else
                        ('Yes' if quotes else 'No')) == 'Yes'
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    quoted = sorted(set(patch) & set(market.get('Market Prices', {})))
+    if quoted:
+        raise ValueError(QUOTE_NOT_A_PATCH.format(', '.join(quoted)))
     if wants_bootstrap and not market.get('Bootstrapper Configuration'):
         raise ValueError(NO_BOOTSTRAPPER)
     if not (wants_bootstrap or patch):
@@ -1170,11 +1190,18 @@ def book_market(request: dict):
 
     The practical tick path: a quote source (`derivus_bloomberg.to_market_prices_block`, a desk
     script, an MCP tool) posts `Market Prices` blocks; an update may move only each point's
-    `Quoted_Market_Value` and `Timestamp` - structure is a re-authoring, refused by name. `patch`
-    is the values delta exactly as `patch_market` takes it, so the engine's own refusal guards
-    the structural half. The bootstrap (default: run iff quotes arrived) turns the quotes into
-    the price factors the pricers read, and the book file gains the whole result in one atomic
-    write - a bootstrap that reports an error writes NOTHING and hands the messages back.
+    `Quoted_Market_Value`, its two-way sides and its `Timestamp` - structure is a re-authoring,
+    refused by name. `patch` is the values delta as `patch_market` takes it, less the
+    `Market Prices` half, so the engine's own refusal guards the structural half of a price factor
+    and the refusal below guards the section. The bootstrap (default: run iff quotes
+    arrived) turns the quotes into the price factors the pricers read, and the book file gains the
+    whole result in one atomic write - a bootstrap that reports an error writes NOTHING and hands
+    the messages back.
+
+    A `patch` naming a `Market Prices` block is refused with the remedy, and that is the one place
+    the book is stricter than the engine: `patch_market` takes a quote because an EXECUTE that
+    rides re-derives its curve from it, and a live book has no such step between the patch and the
+    marks it would leave standing.
     """
     live = live_book()
 

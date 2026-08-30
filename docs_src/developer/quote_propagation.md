@@ -83,11 +83,12 @@ on columns of norm 1.3e-2, which is the finite difference's own resolution.
 The artifact is a **plan-side** object with two names, and it needs both.
 
 **The slot** — `plan_key` — is every member block of the coupled set, the base date, the
-interpolation scheme and the engine version, with the quote NUMBERS shadowed to `None`. That is
-exactly [`partition_factor`'s](market_prices.md) split applied to a `Market Prices` block: a value is
-shadowed rather than dropped, so the key SET stays structural and adding a quote is a different
-plan. Every tick of one strip therefore lands on the **same slot**, which is what makes a ride
-possible at all — key it by the numbers and the artifact would move with the quote that moved.
+interpolation scheme and the engine version, with the quote VALUES and the `lifecycle_fields`
+projected out. That is literally `schema.partition_market_price`'s structural half, the same
+projection `plan_hash` takes over the section, so the two cannot drift. Every tick of one strip
+therefore lands on the **same slot**, which is what makes a ride possible at all — key it by the
+numbers and the artifact would move with the quote that moved. A row that gains a `Quoted_Bid`
+keeps its slot for the same reason a moved mid does: the solve reads neither.
 
 It names the SET, so re-authoring a discount strip moves the slot of every curve solved against it —
 an operator whose `J` was fitted against quotes that no longer exist is exactly the one that must not
@@ -383,15 +384,31 @@ slow object named by plan-side coordinates, with a fast path over it. The ride r
 at EXECUTE and writes nothing, so it composes with `patch_market`: a patched spot and a moved quote
 in one job is a reval with no re-bootstrap in it.
 
-!!! warning "A quote is not a patchable VALUE yet, and that is a gap with a name"
-    `market_patch` covers `Price Factors` only, and the whole `Market Prices` section is inside
-    `plan_hash`. So a moved quote today changes the **plan id** rather than the **values hash** —
-    even though the engine now carries it without recompiling anything, which is the exact
-    condition `bind='value'` describes. Closing it means partitioning a `Market Prices` block the
-    way `partition_factor` partitions a factor, and it is a change to the split for **every**
-    family rather than this one; doing it per-family would make the plan/values boundary depend on
-    which block you are looking at. The current contract is pinned by a gate rather than left
-    implicit, so the day quotes move to the values half nothing goes quiet.
+!!! note "A quote IS a patchable value — the split is `schema.MARKET_QUOTE_VALUES`"
+    `market_patch` covers both market sections. Per `Points` row, `Quoted_Market_Value`, the
+    two-way `Quoted_Bid`/`Quoted_Ask` and the `Timestamp` are **values**; every other key of the
+    row, and everything else on the block — pillars, expiries, conventions, `Use`, `Weight`,
+    `Quote_Type`, the `Deal` a quote is a price for, the solver knobs, the lifecycle switches — is
+    **structure**. So a vol tick moves `values_hash` and leaves `plan_hash` bit-identical, which is
+    what makes the two staleness dimensions disjoint, and a moved pillar is a plan of its own.
+
+    It is ONE rule for **every** family rather than this one: a boundary that depended on which
+    block you were looking at would not be a boundary. Five of the seven families do not quote in
+    `Points` at all — `HullWhite2FactorModelPrices` in `Instrument_Definitions`, the two
+    Heston-Nandi families and `CSForwardPriceModelPrices` in their own option tables,
+    `GBMAssetPriceTSModelPrices` with no quote table whatever — so their values half is **empty**
+    and a tick on one of them is still a new plan. That is the rule applied uniformly, not an
+    exemption, and `tests/test_market_prices_partition.py` states it per family by name.
+
+    `config.update_market_quote`'s tick guard, `Config.plan_hash`, `market_patch`/`patch_market`
+    and `CalibrationArtifact.plan_key` all read that one tuple. The projection **drops** the four
+    keys where [`partition_factor`](market_prices.md) shadows a value to `None`, because the guard
+    had already ruled that a pillar which starts or stops being quoted two-sided is the same node
+    of the same plan — so `Quoted_Bid` key-presence is itself value-plane.
+
+    A quote patch does **not** re-bootstrap: the written factors stand and `values_hash` records
+    the board standing now. The consumer that turns one into the other is the ride, which is why
+    this closed here — `patch_market` and the ride compose into one EXECUTE with no solve in it.
 
 ## Non-goals {#non-goals}
 

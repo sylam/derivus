@@ -27,7 +27,7 @@ import torch
 
 # Internal modules
 from . import utils, pricing, instruments, riskfactors, stochasticprocess
-from .schema import F, OPTION_QUOTE, REQUIRED, Row
+from .schema import F, OPTION_QUOTE, REQUIRED, Row, partition_market_price
 from ._version import __version__
 
 import scipy.optimize
@@ -4086,15 +4086,16 @@ class InterestRateCurveParameters(object):
     @classmethod
     def plan_key(cls, members, factor_interp, base_date):
         """The SLOT an artifact lives in: every member block of the coupled set, the base date, the
-        interpolation scheme and the engine version - with the quote NUMBERS and the
-        `lifecycle_fields` shadowed out.
+        interpolation scheme and the engine version - with the `lifecycle_fields` shadowed out and
+        the quote VALUES projected away.
 
-        Plan-side coordinates, and the same split `Config.plan_hash` takes over a price factor - a
-        value is shadowed to `None` rather than dropped, so the key SET stays structural and adding
-        a quote is a different plan. Every tick of one strip therefore lands on the SAME slot,
-        which is what makes a ride possible at all, while a re-authored instrument, a flipped
-        `Use`, a different `Day_Count`, a different solver knob or a new engine build lands on a
-        different one and finds nothing to ride.
+        Plan-side coordinates, and literally the split `Config.plan_hash` takes over the same
+        section: `schema.partition_market_price`'s structural half, which is why the two cannot
+        drift. Every tick of one strip therefore lands on the SAME slot, which is what makes a ride
+        possible at all, while a re-authored instrument, a flipped `Use`, a different `Day_Count`,
+        a different solver knob or a new engine build lands on a different one and finds nothing to
+        ride. A row that gains a `Quoted_Bid` keeps its slot for the same reason a moved mid does -
+        the solve reads neither - which is the partition's own rule reaching this sibling.
 
         The key names the SET rather than the block, so re-authoring a discount strip moves the slot
         of every curve solved against it - which is the point: a projection curve riding a `J` fitted
@@ -4112,8 +4113,7 @@ class InterestRateCurveParameters(object):
         return content_hash({
             'engine_version': __version__, 'base_date': base_date, 'interpolation': factor_interp,
             'set': [{'market_price': market_price,
-                     'block': dict(block, Points=[dict(point, Quoted_Market_Value=None)
-                                                  for point in block['Points']],
+                     'block': dict(partition_market_price({'instrument': block})[0]['instrument'],
                                    **{field: None for field in cls.lifecycle_fields})}
                     for market_price, block in members]})
 
@@ -4348,7 +4348,9 @@ class FXVolSurfaceParameters(object):
                           'wing pair\'s average over ATM)'),
             F('Quoted_Market_Value', 'Float',
               description='The quote, in the surface\'s own units - 0.12 for 12 vols, and a risk '
-                          'reversal of -0.35 vols is -0.0035'),
+                          'reversal of -0.35 vols is -0.0035. The one value key a patch cannot '
+                          'clear (schema.MARKET_QUOTE_REQUIRED): a mid is moved, never removed, '
+                          'where the sides and the stamp are absent whenever nothing printed'),
             F('Quoted_Bid', 'Float',
               description='The bid side of this quote, in the surface\'s own units. QUOTE-LAYER '
                           'data: nothing below reads it, and the surface, the pinned grid and '

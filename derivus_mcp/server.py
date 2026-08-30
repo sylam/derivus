@@ -441,7 +441,9 @@ def patch_market_values(patch: dict) -> dict:
     """Move market VALUES in the live book - `{factor: {field: value}}`, e.g.
     `{"FxRate.ZAR": {"Spot": 19.25}}`. Only value-bound fields move (spots, rate columns, vols);
     a structural key - anything that would change the plan - is refused by the engine's own rule.
-    One atomic write; every client sees it on its next read."""
+    A `Market Prices` block is refused here too, naming `update_market_quotes` as the remedy: a
+    quote moves the book through the path that bootstraps, never through a values patch. One atomic
+    write; every client sees it on its next read."""
     return service().call('POST', '/book/market', json={'patch': patch})
 
 

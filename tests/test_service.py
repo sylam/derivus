@@ -614,7 +614,12 @@ def test_gamma_travels_the_served_path(tmp_path):
 def test_a_quote_update_may_move_only_the_numbers(book):
     """The structure guard, generalized to every family: a re-post moving only
     `Quoted_Market_Value`/`Timestamp` updates; one moving a pillar refuses by name with the file
-    untouched - a moved node is a new plan, never a tick."""
+    untouched - a moved node is a new plan, never a tick.
+
+    The stamp MOVES here, because it is the one member of `schema.MARKET_QUOTE_VALUES` nothing else
+    in the repo re-posts through the guard: this docstring claimed it while the body sent the mid
+    alone, and a guard misspelling `Timestamp` passed `test_market_prices_partition`, `test_service`
+    and `test_mcp` together at 118 passed."""
     quotes = fx_vol_quotes()
     doc = json.loads(book.read_text())
     doc['Calc']['MergeMarketData']['ExplicitMarketData'][
@@ -625,9 +630,14 @@ def test_a_quote_update_may_move_only_the_numbers(book):
     assert first['installed'] == ['FXVolPrices.USD.ZAR']
 
     ticked = json.loads(dump(fx_vol_quotes()))
+    later = json.loads(dump({'stamp': pd.Timestamp('2024-06-28 17:45')}))['stamp']
     for point in ticked['FXVolPrices.USD.ZAR']['instrument']['Points']:
+        point['Timestamp'] = later
         if point['Quote_Type'] == 'ATM':
             point['Quoted_Market_Value'] += 0.01
+    assert all(point['Timestamp'] != later for point in
+               json.loads(dump(fx_vol_quotes()))['FXVolPrices.USD.ZAR']['instrument']['Points']), (
+        'the stamp was posted back at the one it already carried')
     before = book.read_bytes()
     second = CLIENT.post('/book/market', content=dump({'quotes': ticked}), headers=JSON).json()
     assert second['updated'] == ['FXVolPrices.USD.ZAR'] and second['written'] is True

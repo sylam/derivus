@@ -515,7 +515,11 @@ quote's; the mid is the book's.*
 They tick like the mid, too. Both are on the value side of `update_market_quote`'s structure guard,
 because a spread widens between one print and the next and a pillar that starts or stops being
 quoted two-sided is still the same node of the same plan; a moved `Pillar` or `Expiry` refuses as
-it always did.
+it always did. That guard IS the section's plan/values split — `schema.MARKET_QUOTE_VALUES`, read
+by the guard, by `plan_hash`, by `market_patch`/`patch_market` and by the artifact slot alike, so a
+vol tick moves `values_hash` and leaves `plan_hash` alone. See
+[Quote Propagation](quote_propagation.md#protocol) for what that buys and for the five families
+whose quotes are not `Points` rows and are therefore wholly plan-side.
 
 **Timestamps are data the engine stores and reports.** Each quote row carries when it was seen;
 the written surface carries the latest of the rows that built it as `Quote_Timestamp`, its own

@@ -60,8 +60,8 @@ keyless replica cannot assess. Import surface: stdlib + `cryptography`, held by 
 subprocess gates; `pip install derivus[enterprise]`; `DV_Spine` is the CLI. 103 gates, every
 fault injected as data on disk, eleven mutants each killed by a named test. See
 [The Spine](spine.md). What remains is increments 3–7 (booking verbs + `result_pinned`, projections + the diary, tier
-policy, the doorbell, the generated binding) — increments 3 and 5 wait on the `Market Prices`
-partition row above, per the workstream brief.
+policy, the doorbell, the generated binding) — and the `Market Prices` partition their firmness
+rule waited on LANDED (see PREPARE/EXECUTE below), so increment 3 is unblocked.
 
 **Sensitivity estimators as first-class objects.** Every Greek should carry the estimator that
 produced it — a `SensitivityProfile` per pricer — so a consumer can tell a pathwise derivative from
@@ -620,10 +620,26 @@ identity `(plan_hash, values_hash, engine_version, seed)` is documented for call
 The same plan/values split now has a MARKET-DATA half: a calibration artifact is a slow object
 named by plan-side coordinates with a fast path over it, so a quote that moves between bootstraps
 reaches a valuation as a matvec rather than a recompile — see
-[Quote Propagation](quote_propagation.md). It also names the one place the split does not yet
-reach: `Market Prices` is inside `plan_hash` whole, so a moved QUOTE is a new plan id even though
-the engine now carries it without recompiling anything. Closing that means partitioning a market-
-price block the way `partition_factor` partitions a factor, for every family at once.
+[Quote Propagation](quote_propagation.md). **The one place the split did not reach is CLOSED
+(2026-08-30): quotes are on the values plane.** `schema.MARKET_QUOTE_VALUES` is the one
+declaration (`Quoted_Market_Value`, `Quoted_Bid`, `Quoted_Ask`, `Timestamp` per `Points` row —
+exactly the tick guard's line, which now READS it), `partition_market_price` /
+`apply_market_values` are the projection pair on the `partition_factor` precedent (DROPPED
+rather than shadowed, per the guard's own ruling that a pillar starting or stopping to be
+quoted two-sided is the same node of the same plan), `plan_hash` hashes the structural
+projection, `market_patch` emits the quote rows and `patch_market` applies them — so a vol tick
+moves `values_hash` and leaves `plan_hash` bit-identical, which is the disjointness the spine's
+two-hash quote firmness needed and the flipped composition gate in
+`test_quote_propagation.py` now pins. One rule, all seven families at once: the two that carry
+`Points` (`InterestRatePrices`, `FXVolPrices`) have a values half; the five that do not are
+asserted empty BY NAME in `tests/test_market_prices_partition.py`, never exempted. The BOOK is
+stricter than the engine on purpose: `/book/market` refuses a quote-values patch with the
+quote-update path as the named remedy, because on a live book the factors must never go
+silently stale against their own quotes. A JSON `null` in a document is an ABSENCE, so the
+values plane is an identity over it — `patch_market(market_patch())` changes neither hash. The
+artifact's `plan_key` and `derivus_bloomberg`'s snapshot guard are the unification's other two
+siblings: the first consumes the partition, the second cannot import the engine and is held
+equal by an AST parity gate.
 
 What remains is the rest of the service layer, then the live-refill EXECUTE path — in that order, re-sequenced
 by decision: the derivus_jupyter successor is a web SPA (Angular/React) rendering from the schema

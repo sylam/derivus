@@ -800,32 +800,77 @@ def test_the_refit_publishes_the_drift_of_the_ride_it_replaced(caplog):
 
 
 # ---------------------------------------------------------------------------------------------
-# How a tick arrives - and the one thing that is NOT yet a values patch
+# How a tick arrives - one patch carrying a spot AND a quote
 # ---------------------------------------------------------------------------------------------
 
-def test_a_price_factor_patch_composes_with_the_ride_and_a_quote_is_not_a_patch_yet():
-    """The ride reads `Market Prices` at EXECUTE, so a values patch and a moved quote compose: the
-    plan is untouched, `patch_market` applies, and the curve is ridden - no bootstrap between them.
+def test_one_values_patch_carrying_a_spot_and_a_quote_composes_with_the_ride():
+    """THE CLOSED CONTRACT. A quote is a patchable VALUE now, so the tick and the reval it reaches
+    are one `patch_market` call and one EXECUTE, with no bootstrap anywhere between them.
 
-    The second half NAMES A GAP rather than papering over it. `market_patch` covers `Price Factors`
-    only, so a moved QUOTE does not move `values_hash` - it moves `plan_hash`, because the whole
-    `Market Prices` section is plan-side today. That makes a quote tick a new plan id at the
-    service boundary even though the engine now carries it without recompiling anything. Pinned
-    here so the day quotes join the values half, this gate says so instead of going quiet.
+    Three claims, and the third is what makes the first two worth having. The plan is UNTOUCHED by
+    a moved quote and `values_hash` carries it, which is the split this whole lifecycle needed -
+    the two staleness dimensions are disjoint, so a vol tick is a values event and a re-authored
+    strip is a plan event. And the ridden reval off the PATCH is bit-for-bit the ridden reval off
+    the same tick applied by EDITING the document: that is what says the patch is a real tick and
+    not a bookkeeping entry against a number the engine reads somewhere else.
+
+    BOTH halves of the patch have to MOVE something, or a composition gate is one section wearing
+    the other's name. The spot moves OFF the 1.0 this world bootstraps at and where it landed is
+    asserted, as are the quote rows: patching a field to the content it already holds would leave
+    every claim below resting on the other half alone. What the spot half cannot do here is reach a
+    mark - `FxRate.ZAR` is the reporting currency's own rate on this world, so it moves
+    `values_hash` and prices identically - so the EDITED reference carries the same spot, which
+    makes the bit-equality a statement about the whole patch rather than about its priced half.
+
+    AND THE HASH CLAIM IS TAKEN TWICE, because on the composed patch it is not attributable: the
+    spot is `bind='value'`, so `values_hash` moves on the spot alone and a quote reaching neither
+    hash would read as a pass. So a second `Context` over the same world takes the QUOTE half by
+    itself first. MUTANT: delete the `Market Prices` loop from `Context.market_patch` and every
+    other assertion in this file stays green - measured, 49 of 49 passing with quotes off the
+    values plane entirely. The quote-only reading is what dies, and it is the assertion that pins
+    the closed contract.
+
+    This gate used to pin the gap - `market_patch` covered `Price Factors` only, so a moved quote
+    moved the plan id at the service boundary for a number the engine already carried without
+    recompiling anything. The partition closed it for every family at once.
     """
+    tick, spot, rate = 0.02, 1.25, 'FxRate.{}'.format(CCY)
+    edited = with_deals(bootstrapped(market(True)))
+    plain = baseval(edited)[1]
+    ticked(edited, tick)
+    edited.params['Price Factors'][rate]['Spot'] = spot
+    rode = baseval(with_deals(edited))[1]
+    moved = [{'Quoted_Market_Value': point['Quoted_Market_Value']}
+             for point in edited.params['Market Prices'][BLOCK]['instrument']['Points']]
+
+    alone = derivus.Context()
+    alone.current_cfg = with_deals(bootstrapped(market(True)))
+    quiet = (alone.plan_hash(), alone.values_hash())
+    alone.patch_market({BLOCK: {'Points': moved}})
+
+    assert BLOCK in alone.market_patch(), 'the quote never reached the values half at all'
+    assert alone.plan_hash() == quiet[0], 'a quote-only patch moved the plan hash'
+    assert alone.values_hash() != quiet[1], (
+        'a quote-only patch left `values_hash` alone - the quote half of the patch is on neither '
+        'plane, which is the replay collision this whole split exists to close')
+
     context = derivus.Context()
     context.current_cfg = with_deals(bootstrapped(market(True)))
     before = (context.plan_hash(), context.values_hash())
-
-    context.patch_market({'FxRate.{}'.format(CCY): {'Spot': 1.0}})
-    ticked(context.current_cfg, 0.02)
+    context.patch_market({rate: {'Spot': spot}, BLOCK: {'Points': moved}})
     after = (context.plan_hash(), context.values_hash())
+    patched = context.current_cfg.params
 
-    assert after[0] != before[0], 'a moved quote left the plan hash alone - has the split moved?'
-    assert after[1] == before[1], (
-        'a moved quote moved the values hash - quotes have joined the values half, so this gate '
-        'and the propagation page both need rewriting')
-    assert baseval(with_deals(context.current_cfg))[1] != 0.0
+    assert after[0] == before[0], (
+        'a moved quote moved the plan hash - the section is plan-side again')
+    assert after[1] != before[1], 'the composed patch left the values hash alone'
+    assert patched['Price Factors'][rate]['Spot'] == spot, 'the spot half never landed'
+    assert [{'Quoted_Market_Value': point['Quoted_Market_Value']} for point in
+            patched['Market Prices'][BLOCK]['instrument']['Points']] == moved, (
+        'the quote half never landed')
+    assert rode != plain, 'the tick never reached the book - nothing is being composed'
+    assert baseval(with_deals(context.current_cfg))[1] == rode, (
+        'the patched tick and the edited one rode to different marks')
 
 
 # ---------------------------------------------------------------------------------------------

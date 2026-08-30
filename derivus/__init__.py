@@ -341,7 +341,51 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
         res_queue.put({'Results': out['Results'], 'Stats': out['Stats'], 'Params':params_mc, 'Reference':context.deals['Attributes']['Reference']})
 
     return calc, out
-        
+
+
+def quote_delta(name, points, values):
+    """One `Market Prices` block's patched value rows: the delta merged onto what each row carries.
+
+    Separated from `Context.patch_market` only because every refusal here has to NAME the block,
+    and a message is the whole of what this returns when it does not return rows.
+
+    `Points` is the one key a quote patch may name - everything else on a block is a plan of its
+    own - and the row list is exactly as long as the block's, because dropping or adding a quote
+    re-authors the instrument set rather than moving a number. Per row: a named field replaces, an
+    omitted one keeps, and `null` clears every value key but `schema.MARKET_QUOTE_REQUIRED` - the
+    guard's own ruling that a pillar which stops being quoted two-sided is the same node of the
+    same plan, read back the other way. A null `Quoted_Market_Value` refuses: a mid is moved.
+    WHICH keys may be cleared is a declaration and not a name spelled here, so a fifth value key
+    arrives classified rather than null-clearable by whoever adds it.
+    """
+    for field in values:
+        if field != 'Points':
+            raise ValueError('{}: {} is structural, not a value'.format(name, field))
+    patched = values.get('Points', [])
+    if len(patched) != len(points):
+        raise ValueError(
+            '{}: the patch carries {} Points row(s) against the block\'s {} - a changed row count '
+            'is a new plan; re-author the block deliberately'.format(
+                name, len(patched), len(points)))
+    rows = []
+    for point, row in zip(points, patched):
+        # key-presence, not content: a null the patch does not name is the row's own current
+        # content and keeps, which is what "an omitted field keeps" says about it
+        current = {key: point[key] for key in schema.MARKET_QUOTE_VALUES if key in point}
+        for field, content in row.items():
+            if field not in schema.MARKET_QUOTE_VALUES:
+                raise ValueError('{}: {} is structural, not a value'.format(name, field))
+            if content is None:
+                if field in schema.MARKET_QUOTE_REQUIRED:
+                    raise ValueError(
+                        '{}: {} cannot be cleared - a mid is moved, never removed; a two-way '
+                        'side or a Timestamp is what null clears'.format(name, field))
+                current.pop(field, None)
+            else:
+                current[field] = content
+        rows.append(current)
+    return rows
+
 
 class Context:
     def __init__(self, path_transform={}, file_transform={}):
@@ -514,18 +558,30 @@ class Context:
         return self.current_cfg.bootstrap()
 
     def market_patch(self):
-        """The VALUES half of the market data: `{factor_name: {field: content}}`.
+        """The VALUES half of the market data: `{name: {field: content}}` over both market sections.
 
         Everything a job may change without recompiling - spots, the rate column of every curve,
-        the vol column of every surface, and the calibrated model parameters. What sizes a tenor
-        grid, wires a process or picks a code path is absent, because that is the plan. A factor
-        whose block holds no value-bound field does not appear at all.
+        the vol column of every surface, the calibrated model parameters, and every QUOTE a
+        `Market Prices` block carries on a `Points` row. What sizes a tenor grid, wires a process or
+        picks a code path is absent, because that is the plan. A factor whose block holds no
+        value-bound field, and a market-price block whose quotes are not `Points` rows, do not
+        appear at all - nor does a quote key holding `null`, which is a source with no print rather
+        than a number, and is what `patch_market` reads it back as.
+
+        The two sections cannot collide in one dict: every family type string ends in `Prices` and
+        no factor type does, so a name resolves to exactly one section. A market-price entry is
+        keyed by the one field a quote patch may name, `{'Points': [row, ...]}`, which is the shape
+        `patch_market` takes it back in.
         """
         patch = {}
         for name, block in self.current_cfg.params['Price Factors'].items():
             values = schema.partition_factor(utils.check_rate_name(name)[0], block)[1]
             if values:
                 patch[name] = values
+        for name, block in self.current_cfg.params.get('Market Prices', {}).items():
+            values = schema.partition_market_price(block)[1]
+            if values:
+                patch[name] = {'Points': values}
         return patch
 
     def patch_market(self, patch):
@@ -536,26 +592,57 @@ class Context:
         tick never needs the rest of the block. A key naming no value-bound field of that factor
         raises - including a field the block does not carry, since a key set that grows or shrinks
         is a different plan, not a different value.
+
+        A name is resolved against `Price Factors` first and `Market Prices` second, and one in
+        neither section says so naming both. A market-price name takes exactly one key, `Points`,
+        carrying a list as long as the block's own - a changed row count is a new plan, not a new
+        number - and only `schema.MARKET_QUOTE_VALUES` per row. `null` CLEARS a two-way side or a
+        `Timestamp`, because a pillar that stops being quoted two-sided is still the same node of
+        the same plan; a null MID refuses, because a mid is moved and never removed.
+
+        A quote patch does NOT re-bootstrap. The price factors the last bootstrap wrote stand
+        exactly as they are and `values_hash` records the board that is actually standing, which is
+        the honest statement - the consumer that reads quotes at EXECUTE is the ride
+        (`Quote_Propagation`), deriving theta from `(artifact, q_now)` rather than from anything
+        written here.
         """
         factors = self.current_cfg.params['Price Factors']
+        prices = self.current_cfg.params['Market Prices']
         for name, values in patch.items():
-            if name not in factors:
-                raise KeyError('{} is not a price factor'.format(name))
-            type_name = utils.check_rate_name(name)[0]
-            structural, value_fields = schema.partition_factor(type_name, factors[name])
-            for field in values:
-                if field not in value_fields:
-                    raise ValueError(
-                        '{}: {} is structural, not a value'.format(name, field))
-            factors[name] = schema.apply_values(type_name, structural, {**value_fields, **values})
+            if name in factors:
+                type_name = utils.check_rate_name(name)[0]
+                structural, value_fields = schema.partition_factor(type_name, factors[name])
+                for field in values:
+                    if field not in value_fields:
+                        raise ValueError(
+                            '{}: {} is structural, not a value'.format(name, field))
+                factors[name] = schema.apply_values(
+                    type_name, structural, {**value_fields, **values})
+            elif name in prices:
+                prices[name] = schema.apply_market_values(
+                    schema.partition_market_price(prices[name])[0],
+                    quote_delta(name, prices[name]['instrument'].get('Points') or [], values))
+            else:
+                raise KeyError(
+                    '{} is neither a price factor nor a market price'.format(name))
 
     def plan_hash(self):
         """The content hash of the PROGRAM: everything a run compiles, market values excluded.
 
-        A plan is `params` and `deals` less the two things that are replay coordinates of their own -
-        every `bind='value'` field, which `values_hash` carries, and `Random_Seed`. Everything else
-        is in, `Batch_Size` and `Simulation_Batches` included: they change the realized numbers, so a
-        replay has to pin them.
+        A plan is `params` and `deals` less the THREE things that are replay coordinates of their
+        own - every `bind='value'` field of a price factor, `schema.MARKET_QUOTE_VALUES` on a
+        `Market Prices` `Points` row, both of which `values_hash` carries, and `Random_Seed`.
+        Everything else is in, `Batch_Size` and `Simulation_Batches` included: they change the
+        realized numbers, so a replay has to pin them.
+
+        Two declarations rather than one because the two sections state the line differently and
+        deliberately: a factor field DECLARES `bind='value'`, while a quote row's four value keys
+        are named once for every family at once - a boundary that depended on which block you were
+        looking at would not be a boundary. Either way the rule is the same rule: the NUMBERS are
+        values and everything the solve reads is plan. A vol tick therefore moves `values_hash` and
+        leaves this bit-identical, which is what makes the two staleness dimensions disjoint; a
+        moved pillar, a flipped `Use` or a re-authored benchmark lands here, because that is a
+        different program and not a different number.
 
         `params['Correlations']` is the SIMULATION matrix feeding the cholesky - a compile input, and
         a different thing entirely from the `Correlation` price factor a quanto reads. It is re-keyed
@@ -566,6 +653,9 @@ class Context:
         params['Price Factors'] = {
             name: schema.partition_factor(utils.check_rate_name(name)[0], block)[0]
             for name, block in cfg.params['Price Factors'].items()}
+        params['Market Prices'] = {
+            name: schema.partition_market_price(block)[0]
+            for name, block in cfg.params.get('Market Prices', {}).items()}
         params['Correlations'] = {'{}/{}'.format(*pair): value
                                   for pair, value in cfg.params['Correlations'].items()}
         calculation = {k: v for k, v in cfg.deals['Calculation'].items() if k != 'Random_Seed'}
