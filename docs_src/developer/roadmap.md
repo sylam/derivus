@@ -68,6 +68,59 @@ produced it — a `SensitivityProfile` per pricer — so a consumer can tell a p
 one carrying a boundary term. Related and also unbuilt: **Hessian-vector products** instead of
 materialising full Hessians.
 
+**Exposure gamma at a KINK — the ½Ku² term (owner's construction, ratified 2026-08-30;
+buildable now).** What second-order AAD drops at a relu is `δ(V)·V_θV_θᵀ` — a density at the
+boundary times an outer product, the same object the first-order boundary fix already estimates,
+so exposure gamma is a first-order-difficulty problem wearing second-order clothes. The term:
+with `u = V − V.detach()`, add `T = ½·K_ε(V.detach())·u²` beside `relu(V)` in the objective,
+under the same detached discount × ΔPD weights, per row with its own bandwidth. `K`'s argument
+is DETACHED, so `K′` never enters the tape — the construction is confined to the density's
+VALUE by design. Value is an exact zero; the gradient contribution is `K·u·V_θ` with `u` an
+exact IEEE zero, so first order accumulates `+0.0` bit-for-bit; the Hessian contributes
+`K_ε(V̄)·V_θV_θᵀ`, whose weighted path sum is the kernel estimate of `f_V(0)·E[V_θV_θᵀ|V=0]` —
+exactly the dropped term. The admission test is therefore ONE ORDER STRICTER than the boundary
+correction's: `np.array_equal` at value AND at first order, term on versus off. Wanting
+second-order sensitivities IS the switch, so the cost is zero otherwise. Measured externally
+(JAX prototype, ATM forward-style exposure under GBM, θ = (S₀, σ), 400k paths, Silverman
+bandwidth): pathwise gamma 0.0000 and vanna 0.3966 (double the truth) become 2.6415 and 0.1992
+against Black 2.6521 / 0.1989; at xVA cross-sections, 1024 paths per row gives gamma
+2.59 ± 0.13 and 4096 gives ± 0.07; the O(ε²) bias shows on volga, and the upgrade is reusing
+`boundary_weights` (½ Σ wᵢuᵢ²) — which also inherits `BOUNDARY_MAX_AMPLIFICATION`, and that is
+load-bearing: a collateralised net can sit AT the kink with an ATOM at zero (collateral matched
+inside the threshold), where gamma is genuinely singular and the row must REFUSE by name when
+its bandwidth ladder diverges — the margin-period windows are what normally keep `f(0)` finite.
+Declared limits: the taped path only — the recompute node's `create_graph` refusal stands, so
+inner-MC products' own curvature falls back to a directional bump of the corrected delta.
+Gates on entry: the external table re-taken through the real objective (CRN Hessian ladder,
+agreement AND flatness), the admission equality at both orders, and the mutation — term off →
+gamma to zero, vanna to double, kill magnitudes in the docstring. First consumers: CVA gamma,
+then the SIMM calc's dSIMM/dθ (one HVP with ∂SIMM/∂s as the cotangent). The same term belongs
+at every max/min on a simulated quantity — the collateral relu, FVA's splits.
+
+**Second-order flux at a JUMP — conditional-p, pinned to the stride (ratified 2026-08-30;
+builds WITH the stride, not before).** A jump needs the density's DERIVATIVE, and the kernel
+form pays for it: the `½·K′_ε(ḡ)·J̄·u²` estimator works (a digital's pathwise gamma of 0.000
+becomes −1.29 ± 0.36 against −1.33) but at 27% noise where the kink term sits at 0.5%, and its
+bandwidth ladder never plateaus (−2.06 / −1.16 / −1.38 / −1.46 across a factor of 8). The
+answer is to stop estimating the density: the decision is a return past a level, the fired
+probability `p` given the prior state is computed analytically, and the latch's two
+whole-profile branches are the mixture components — `P_vib = p·fired + (1−p)·not`, spliced as
+`P + (P_vib − P_vib.detach()) − (P − P.detach())` so the reported value is the crisp
+estimator's bit-for-bit while EVERY derivative is the mixture's: first order
+Rao–Blackwellised (lower variance than the kernel), second order analytic, no bandwidth.
+Where the mixture takes a decision it REPLACES that decision's kernel-flux estimator at every
+order — one estimator per registration, never both, or the flux double-counts. The cost is
+variance growing like Δt^(−3/2) in the conditioning step, which decides the build order: under
+GBM the fixing-interval conditional is exactly Gaussian, so GBM books get the mixture verbatim
+with `p = Φ(·)` — buildable now. Under Heston–Nandi the per-DAY conditional is Gaussian but
+the walk is daily and conditioning on the last day is the bad regime; conditioning at the
+FIXING interval needs the k-step conditional law `exp(A_k + B_k h + C_k q)` — which is THE
+STRIDE's cached Φ, verbatim (`hn_cdf_logret` is the existing half), already required to be
+exactly differentiable by that design. So the stride gains a second consumer: it was a speed
+lever, and it is also the bandwidth-free jump-gamma estimator for every latched decision. HN
+books get this estimator the day the stride lands, as the same registration reuse with
+`Φ_stride` as `p`.
+
 **Calibration Jacobians — ALL FOUR increments are BUILT.** Bumping a market *quote* now flows
 through the calibration rather than stopping at the calibrated factor: one `backward()` reports
 `dV/dq` beside `dV/dθ`, for a zero curve solved from deposits, FRAs and swaps, for the HW2F model
