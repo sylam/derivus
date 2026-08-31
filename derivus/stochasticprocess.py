@@ -1261,11 +1261,37 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         nothing downstream could tell the two apart. Put the expiry in the `TimeGrid`; the warning
         names the step it would otherwise cross.
 
-        NOT WIRED INTO THE OBJECTIVE. `calc_loss_on_ir_curve` prices its benchmarks by brute-force
-        Monte Carlo and still does; this lives on the process so a checker can reach it at the
-        calibrated theta*, and whether it can replace that Monte Carlo is a measurement nobody has
-        made yet. It is differentiable in $(\\alpha,\\sigma,\\rho)$ off the same tensors the
-        calibration already carries, so nothing stands in the way of the wiring except the reading.
+        THIS IS AN OBJECTIVE NOW, behind a declared field. `HullWhite2FactorModelParameters` takes
+        `Objective: 'Analytic'` and differences these normal vols against the market's - see
+        `bootstrappers.market_swap_class.normal_vol_error` - with `'Monte_Carlo'` the default and
+        the oracle. It is differentiable in $(\\alpha,\\sigma,\\rho)$ off the same tensors the
+        calibration already carries, which is what made the wiring a residual rather than a build.
+
+        AND IT IS QUANTO-FREE, WHICH IS CORRECT AND IS NOT WHAT THE SIMULATION DOES. Everything here
+        is read off $J$, the covariance of the scaled martingales under the RATE currency's own
+        risk-neutral measure, so this is the DOMESTIC swaption - the right measure for a domestic
+        payoff, whatever the base currency of the job. The Monte Carlo objective simulates through
+        the same `precalculate`, and that installs the quanto drift $K$ into `KtT`, so on a
+        non-base-currency curve the two objectives are not pricing under the same measure.
+
+        MEASURED, on the identified fixture's ZAR curve made FOREIGN under a USD base - a 15-20%
+        FX vol curve and a 0.4 FX/IR correlation, at the recorded theta*, on one Sobol sample, over
+        the FOUR benchmarks `tests/test_hw2f_analytic.py`'s own gate prices (`CHECKER_BENCHMARKS`,
+        which is the set to re-read this on: the premiums move with the benchmark block's TimeGrid):
+
+            benchmark      MC premium, rho=0.4    rho=0     moves by    SP moves by
+            1Y x 1Y             0.006789635    0.006407690    +5.96%    0 (bitwise)
+            2Y x 5Y             0.039594307    0.036378626    +8.84%    0 (bitwise)
+            3Y x 3Y             0.030439928    0.027227734   +11.80%    0 (bitwise)
+            10Y x 10Y           0.066546269    0.059192866   +12.42%    0 (bitwise)
+
+        which is 10.9 to 24.4 basis points of ATM normal vol, an ATM Bachelier premium being linear
+        in the vol. Against the 0.13 to 2.17 bp this approximation costs, that is five to eleven
+        times the worst corner of its bias. So the two objectives DO NOT AGREE on a quanto'd currency,
+        and the disagreement is the MONTE CARLO's: a domestic swaption deflated domestically but
+        simulated under the base measure's drift. It is recorded as a Known-defects candidate rather
+        than repaired here, because changing that drift moves every calibrated foreign-curve
+        parameter set in existence and that is a decision, not a patch.
 
         The t=0 curve is read in NUMPY, `get_par_swap_rate`'s own spelling of $P(0,T)$, so this
         price carries no derivative in the curve - the same severance the calibration already

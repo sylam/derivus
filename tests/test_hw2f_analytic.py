@@ -133,15 +133,64 @@ removed: `Var` carried a spurious `e^{-(alpha_k+alpha_l)T_0}` in front of `J`, w
 +13.5% of the normal vol at theta*. See `test_reinstating_the_prefactor_is_visible_against_the_
 simulation` for the grid of it and `schrager_pelsser_swaption` for why no prefactor belongs.
 
-Three more findings sit beside it, each with its own gate: `num_batches` is an undeclared class
-constant that buys NO paths when raised, because `t_Buffer` is cleared once before the batch loop
-and never inside it; the identified fixture's solved `Alpha_2` is -0.0179, so the repository's own
-calibrated point DOES engage the part-one series branch; and reading `J` off a node costs whatever
-the LOCAL grid step does, which is 0.0013 basis points across ten days and up to 2.07 across the
-two-year steps past the last benchmark - the size of the approximation error the whole checker
-exists to measure, which is why that read now warns and names its step.
+Two more findings sit beside it, each with its own gate: the identified fixture's solved `Alpha_2`
+is -0.0179, so the repository's own calibrated point DOES engage the part-one series branch; and
+reading `J` off a node costs whatever the LOCAL grid step does, which is 0.0013 basis points across
+ten days and up to 2.07 across the two-year steps past the last benchmark - the size of the
+approximation error the whole checker exists to measure, which is why that read now warns and names
+its step.
+
+THE OBJECTIVE, fourth part of this file and what the checker's measurement licensed.
+`HullWhite2FactorModelParameters` declares `Objective`: `Monte_Carlo` by default and bit-identical
+to what this family always did, `Analytic` differencing the Schrager-Pelsser normal vols against the
+market's - PLAIN, because the Monte Carlo residual is already a square and that is the pathology the
+analytic path retires. The market side is a CLOSED-FORM Bachelier inversion of the same numpy
+premium the simulation's residual uses, `P sqrt(2pi/T0) / A` at the money on SP's own annuity, so
+every quoting convention rides in through the premium and no root find enters an objective
+evaluation.
+
+    the quartic, measured    on the identified 25-quote block, ||J'r|| at theta* is 8.24e3 under
+                             the Monte Carlo objective (||r|| 45.97, down from 2.86e11 at the
+                             seed) and 3.85e-6 under the analytic one (||r|| 2.26e-3, from
+                             6.00e-2). Seven orders OUTSIDE the declared Stationarity_Tol default
+                             of 1e-3, against three orders inside it.
+    the two answers          agree in repriced vol space - 5.14bp rms against the market at
+                             theta*_MC, 4.51 at theta*_An, 2.52 apart on the 25-quote grid - and
+                             share nothing in theta space, which is rank deficiency rather than
+                             disagreement. On the four-quote block each objective INTERPOLATES in
+                             its own metric, and the 2.45bp rms between them there is the
+                             simulation's numeraire error plus SP's freezing bias, adding at the
+                             10Y x 10Y corner to the 4.13bp printed.
+    the wall clock           four-quote chain over three seeds: 75.1s Monte Carlo against 13.4s
+                             analytic on this box in float64, a factor of 5.6. 12x per evaluation
+                             against 2.2x the evaluations. The 25-quote block solves analytically
+                             in 836s over 1915 evaluations - 0.437s each, twelve times the
+                             four-quote block's 0.036 for six times the benchmarks, because SP is
+                             one scalar call per benchmark against one batched kernel.
+    what it owes             Quote_Sensitivity on the analytic path REFUSES by name, and an
+                             analytic solve ends by reporting what the engine's own Monte Carlo
+                             makes of theta* - -4.64% at its worst benchmark on the 25-quote block.
+
+Riding along with it: `num_batches` and `batch_size` were undeclared class constants and the first
+bought NO paths when raised, because `t_Buffer` was cleared once before the batch loop and never
+inside it. Both are declared now (`Simulations`, `Batches`) and the loop clears per iteration, so
+(2048 x 4) and (8192 x 1) are the same estimate to one ulp where they used to be the 2048-path
+answer twice over. Declaring them made the sample shape PER BLOCK, and `bootstrap` runs every curve
+in `market_prices` through ONE bootstrapper, so the shape the closure divides by is captured as a
+local: through `self` it would be block A's paths over block B's count, in a residual
+`LeastSquaresSolve` differentiates after the loop has ended
+(`test_a_second_block_does_not_rescale_the_first_blocks_residual` has the factor of four and the
+||J'r|| it moves).
+
+AND A FINDING TAKEN RATHER THAN PATCHED: the two objectives do NOT agree on a quanto'd currency.
+Schrager-Pelsser prices the domestic swaption, which is correct; the simulation carries
+`precalculate`'s quanto drift. On a ZAR curve under a USD base, forcing the FX/IR correlation to
+zero moves the simulated premiums 5.96% to 12.42% - 10.9 to 24.4 basis points of normal vol, five
+to eleven times the worst corner of the approximation it would be confused with - and the analytic
+price not at all.
 """
 import itertools
+import logging
 import os
 import sys
 
@@ -374,19 +423,21 @@ def calibration():
     vol_surface.set_premiums(None, ir_curve.get_currency())
 
     model = HullWhite2FactorModelParameters({}, DEVICE, DTYPE)
-    # a gate's path count is its own business - the class default of 8192 is a code constant and
-    # this reads finiteness and continuity, neither of which is a function of the sample size
-    model.batch_size = 1024
     implied_obj, process, vol_tenors = model.implied_process(CCY, price_factors, {}, ir_curve, rate)
 
-    instrument = {'Instrument_Definitions': instrument_definitions(), 'Swaption_Volatility': CURVE}
+    # a gate's path count is its own business, and it is now the BLOCK's business too - `Simulations`
+    # is declared, so a gate that wants 1024 paths says so in the JSON rather than writing an
+    # attribute the schema knows nothing about. This reads finiteness and continuity, neither of
+    # which is a function of the sample size.
+    instrument = {'Instrument_Definitions': instrument_definitions(), 'Swaption_Volatility': CURVE,
+                  'Simulations': 1024}
     mtm_dates = set([BASE + x['Start'] for x in instrument['Instrument_Definitions']])
     time_grid = utils.TimeGrid(mtm_dates, mtm_dates, mtm_dates)
     time_grid.set_base_date(BASE, delta=(10, vol_tenors * utils.DAYS_IN_YEAR))
 
-    implied_var, loss, market_swaps, _ = model.calc_loss_on_ir_curve(
+    implied_var, objective, market_swaps, _ = model.calc_loss_on_ir_curve(
         {'instrument': instrument}, BASE, time_grid, process, implied_obj, ir_factor, vol_surface)
-    return process, implied_var, loss, market_swaps
+    return process, implied_var, objective.loss, market_swaps
 
 
 def price_at(calibration, alpha_1, alpha_2, sigma=None):
@@ -1095,17 +1146,32 @@ def identified_definitions(benchmarks):
             for e, t, fm, xm in benchmarks]
 
 
+def identified_calibration(benchmarks=CHECKER_BENCHMARKS, **extra):
+    """A full `SwaptionCalibration` on the identified fixture - the OPTIMIZER CHAIN included.
+
+    `identified_closure` stops at the residual, which is what most of this file reads. This goes the
+    one step further, through `calc_loss`, so the gates that solve drive exactly what `bootstrap`
+    drives: the same two adapters, the same seeded generator, the same acceptance rule. The
+    parameters are left AT THE SEED, because `calc_loss` captures `x0` off them.
+    """
+    from derivus.bootstrappers import SwaptionCalibration
+    world = identified_closure(benchmarks=benchmarks, theta={}, chain=True, **extra)
+    return SwaptionCalibration('gate', world['objective'], world['implied_var'],
+                               world['optimizers'], world['process'], world['swaps']), world
+
+
 def identified_closure(benchmarks=CHECKER_BENCHMARKS, zero=ID_ZERO, batch_size=8192,
-                       theta=None, device=DEVICE, dtype=DTYPE):
+                       theta=None, device=DEVICE, dtype=DTYPE, world=None, chain=False, **extra):
     """The calibration's own residual closure on the identified fixture, standing at `theta`.
 
     Built the way `RiskNeutralInterestRateModel.bootstrap` builds it and nothing patched: the
-    parameters are moved through `implied_var`, which is the seam the two scipy adapters use.
+    parameters are moved through `implied_var`, which is the seam the two scipy adapters use, and
+    every knob the block carries - `Simulations`, `Batches`, `Objective` - is DECLARED and set in
+    the JSON rather than written onto the bootstrapper as an attribute.
     """
     from derivus import bootstrappers
-    factors, interp = identified_world(zero), ModelParams()
+    factors, interp = (world or identified_world(zero)), ModelParams()
     boot = HullWhite2FactorModelParameters({}, device, dtype)
-    boot.batch_size = batch_size
     rate = utils.check_rate_name(ID_BLOCK)
     ir_factor = utils.Factor('InterestRate', rate[1:])
     surface = riskfactors.construct_factor(
@@ -1113,19 +1179,29 @@ def identified_closure(benchmarks=CHECKER_BENCHMARKS, zero=ID_ZERO, batch_size=8
     surface.delta = 0.0
     ir_curve = riskfactors.construct_factor(ir_factor, factors, interp)
     surface.set_premiums(None, ir_curve.get_currency())
-    implied_obj, process, vol_tenors = boot.implied_process(ID_CCY, factors, {}, ir_curve, rate)
+    implied_obj, process, vol_tenors = boot.implied_process(
+        extra.pop('base_currency', ID_CCY), factors, {}, ir_curve, rate)
     block = {'Swaption_Volatility': ID_VOL, 'Generate_Instruments': 'No', 'Random_Seed': ID_SEED,
              'Stationarity_Tol': ID_STATIONARITY, 'Quote_Sensitivity': 'No',
+             'Simulations': batch_size, 'Batches': 1,
              'Instrument_Definitions': identified_definitions(benchmarks)}
+    block.update(extra)
     mtm = set([BASE + x['Start'] for x in block['Instrument_Definitions']])
     time_grid = utils.TimeGrid(mtm, mtm, mtm)
     time_grid.set_base_date(BASE, delta=(10, vol_tenors * utils.DAYS_IN_YEAR))
-    implied_var, loss, swaps, _ = boot.calc_loss_on_ir_curve(
-        {'instrument': block}, BASE, time_grid, process, implied_obj, ir_factor, surface)
-    for name, value in (theta or ID_THETA).items():
+    optimizers = None
+    if chain:
+        objective, optimizers, implied_var, swaps, _ = boot.calc_loss(
+            {'instrument': block}, BASE, time_grid, process, implied_obj, ir_factor, surface)
+    else:
+        implied_var, objective, swaps, _ = boot.calc_loss_on_ir_curve(
+            {'instrument': block}, BASE, time_grid, process, implied_obj, ir_factor, surface)
+    for name, value in (ID_THETA if theta is None else theta).items():
         implied_var[name].data = torch.tensor(value, dtype=dtype, device=device)
-    return dict(model=boot, process=process, implied_var=implied_var, loss=loss, swaps=swaps,
-                block=block, time_grid=time_grid, curve=ir_curve, ir_factor=ir_factor)
+    return dict(model=boot, process=process, implied_var=implied_var, loss=objective.loss,
+                objective=objective, swaps=swaps, block=block, time_grid=time_grid,
+                curve=ir_curve, ir_factor=ir_factor, implied_obj=implied_obj, factors=factors,
+                optimizers=optimizers, surface=surface)
 
 
 def checker_legs(world):
@@ -1174,13 +1250,14 @@ def checker_legs(world):
 def checker_mc(world, leg_map, num_batches, batch_size):
     """Per-BATCH means of every route, `{benchmark: {route: array(num_batches)}}`.
 
-    THE HARNESS HOLDS ITS OWN BATCH, and that is a repair rather than a convenience:
-    `calc_loss_on_ir_curve` clears `t_Buffer` ONCE, before its batch loop, and every gather after
-    the first therefore reads the FIRST batch's cached curve straight back out of it. Raising
-    `num_batches` on the class costs N times the wall clock and buys nothing -
-    `test_raising_num_batches_buys_no_paths` measures exactly that - so the loop below clears the
-    buffer per batch and leaves `t_PreCalc` alone, which holds `precalculate`'s own integrals and is
-    a function of theta rather than of the sample.
+    THE HARNESS HOLDS ITS OWN BATCH because it reads per-batch means rather than one pooled one -
+    `mean_se` needs the batches apart. Its `t_Buffer.clear()` is the same line the library's own
+    batch loop now carries: when this was written the library cleared ONCE before the loop and every
+    gather after the first read the FIRST batch's cached curve straight back out, so `Batches` cost
+    N times the wall clock and bought nothing. That is fixed in `calc_loss_on_ir_curve`, and
+    `test_batches_now_buy_paths_and_shrink_the_estimates_spread` is the reading of the repair.
+    `t_PreCalc` is left alone on both sides: it holds `precalculate`'s own integrals and is a
+    function of theta rather than of the sample.
 
     The routes, all off the SAME paths so every difference between them is a common-random-number
     one and carries a far smaller error bar than a difference of two independent means would:
@@ -1637,35 +1714,117 @@ def test_reinstating_the_prefactor_is_visible_against_the_simulation(checker):
     assert corner['sp_nvol'] > 180.0 and corner['sim_nvol'] > 178.0
 
 
-def test_raising_num_batches_buys_no_paths():
-    """A FINDING, not a repair: `num_batches` and `batch_size` are undeclared class constants on
-    `RiskNeutralInterestRateModel` (1 and 8192, `bootstrappers.py:2489-2490`), and the first of them
-    does not do what raising it looks like it does.
+def test_batches_now_buy_paths_and_shrink_the_estimates_spread():
+    """THE DEFECT AND ITS REPAIR, in one gate, because the repair is only meaningful beside it.
 
-    `calc_loss_on_ir_curve` clears `t_Buffer` ONCE, in the `shared_mem.reset` before its batch loop,
-    and never again inside it. `calc_time_grid_curve_rate` keys its cache on the curve code and the
-    time grid - not on the batch - so batch 1 onwards gathers batch 0's simulated curve straight
-    back out of the buffer. The prices come out BIT-IDENTICAL at 1, 4 and 8 batches, which is what
-    this holds, and the cost is linear in `num_batches` for no paths at all.
+    `num_batches` and `batch_size` were UNDECLARED class constants on `RiskNeutralInterestRateModel`
+    (1 and 8192), and the first did not do what raising it looks like it does.
+    `calc_loss_on_ir_curve` cleared `t_Buffer` ONCE, in the `shared_mem.reset` before its batch loop,
+    and never again inside it; `calc_time_grid_curve_rate` keys its cache on the curve code and the
+    time grid rather than on the batch, so batch 1 onwards gathered batch 0's simulated curve
+    straight back out of the buffer. The prices came out BIT-IDENTICAL at 1, 4 and 8 batches and
+    the cost was linear in the batch count for no paths at all.
 
-    THE REMEDY is one line - clear `t_Buffer` (and NOT `t_PreCalc`, which holds `precalculate`'s
-    integrals and is a function of theta rather than of the sample) at the top of the batch loop,
-    which is what `checker_mc` does. It is not applied to the class here: the objective's path count
-    is a calibration decision with a wall-clock price on it, and this workstream was asked to
-    measure the approximation rather than to re-tune the solve.
+    Both are now DECLARED - `Simulations` and `Batches` - and the loop clears `t_Buffer` (and NOT
+    `t_PreCalc`, which holds `precalculate`'s integrals and is a function of theta rather than of
+    the sample) at the top of each iteration. Three things are held here, and the first is the one
+    that would fail if the clear went back outside the loop.
+
+    THE IDENTITY, which is the decisive half and needs no tolerance to speak of. `reset` draws
+    `Simulations x Batches` Sobol points ONCE and reshapes them into blocks, so `Batches` is a
+    BLOCKING of one sample and not a second sample: (2048 x 4) and (8192 x 1) are the same 8192
+    points in the same order, summed in a different grouping. They agree to ONE ULP - 2.2e-16
+    relative, and 0.0 on the second benchmark - which is a statement about the whole loop that no
+    error bar can be fudged into. Before the repair (2048 x 4) was the 2048-path answer, four
+    times over.
+
+        shape            1Y x 1Y             5Y x 5Y
+        8192 x 1      0.00634279527552446  0.0427816484939556
+        4096 x 2      same to 2.2e-16      same to 0.0
+        2048 x 4      same to 2.2e-16      same to 0.0
+        1024 x 8      same to 2.2e-16      same to 1.1e-16
+
+    THE ESTIMATE MOVES with the sample, which is what it could not do before. At 2048 paths a
+    batch, the pooled premium at 1 / 2 / 4 / 8 batches:
+
+        benchmark          1 batch       2 batches     4 batches     8 batches
+        1Y x 1Y          0.006323968   0.006340595   0.006342795   0.006374788
+        5Y x 5Y          0.042794526   0.042843707   0.042781648   0.042638971
+
+    so a four-batch reading is 30 basis points of relative value away from the one-batch one on the
+    short benchmark, where before it was zero to the last bit.
+
+    WHAT IT BUYS is one batch's own scatter divided down, and the honest version of that is not a
+    root-B law: on sixteen batches of 2048, the batch-mean standard deviation is 6.21e-5 on
+    1Y x 1Y and grouping them in twos brings it to 4.32e-5 (a factor of 1.44 against root-two's
+    1.41) - but grouping in fours brings it only to 4.25e-5. Consecutive blocks of a SCRAMBLED
+    SOBOL rule are not independent draws, so the first halving behaves and the next does not, and
+    the estimator's error bar is a batch-mean one rather than a confidence interval. That is the
+    same caveat `mean_se` carries, and it is why the gate below holds the identity and the move
+    rather than a variance law.
     """
-    price = {}
-    for batches in (1, 4, 8):
-        world = identified_closure(benchmarks=((1, 1, 3, 3), (5, 5, 3, 3)), batch_size=2048)
-        world['model'].num_batches = batches
+    estimate = {}
+    for batches in (1, 2, 4, 8):
+        world = identified_closure(benchmarks=((1, 1, 3, 3), (5, 5, 3, 3)), batch_size=2048,
+                                   Batches=batches)
         prices, _ = world['loss'](world['implied_var'])
-        price[batches] = {k: as_float(v) for k, v in prices.items()}
-    for batches in (4, 8):
-        for name, value in price[batches].items():
-            assert abs(value / price[1][name] - 1.0) < 1e-14, (
-                '{} at num_batches={} is {:.12g} against {:.12g} at 1 - if those now differ, the '
-                'buffer is being cleared per batch and this finding is fixed'.format(
-                    name, batches, value, price[1][name]))
+        estimate[batches] = {k: as_float(v) for k, v in prices.items()}
+
+    for name in estimate[1]:
+        moved = abs(estimate[4][name] / estimate[1][name] - 1.0)
+        assert moved > 1e-4, (
+            '{} at Batches=4 is {:.12g} against {:.12g} at 1 - identical to that many figures means '
+            'the buffer is being cleared once outside the loop again and the batches are re-pricing '
+            'batch zero'.format(name, estimate[4][name], estimate[1][name]))
+
+    # the identity: the same 8192 points, four ways of blocking them
+    whole = identified_closure(benchmarks=((1, 1, 3, 3), (5, 5, 3, 3)), batch_size=8192)
+    pooled, _ = whole['loss'](whole['implied_var'])
+    pooled = {k: as_float(v) for k, v in pooled.items()}
+    for sims, batches in ((4096, 2), (2048, 4), (1024, 8)):
+        split = identified_closure(benchmarks=((1, 1, 3, 3), (5, 5, 3, 3)), batch_size=sims,
+                                   Batches=batches)
+        prices, _ = split['loss'](split['implied_var'])
+        for name, value in prices.items():
+            assert abs(as_float(value) / pooled[name] - 1.0) < 1e-14, (
+                '{} at {} x {} is {:.17g} against {:.17g} at 8192 x 1 - those are the SAME Sobol '
+                'points, so a difference means the batch loop is not walking all of them'.format(
+                    name, sims, batches, as_float(value), pooled[name]))
+
+
+def test_the_declared_sample_shape_is_the_shape_the_engine_uses():
+    """`Simulations` and `Batches` are DECLARED, so a block omitting them and a block declaring the
+    declaration's own values have to be the same job.
+
+    The schema-emission suite holds the AST half of this - that the `.get` fallback and the `F`
+    default are one number. What it cannot see is whether the number reaches the sample, so this
+    reads the shape off the state the closure built and off the residual it returns.
+    """
+    for field, value in (('Simulations', 8192), ('Batches', 1), ('Objective', 'Monte_Carlo')):
+        f = next(x for x in HullWhite2FactorModelParameters.fields if x.name == field)
+        assert f.default == value, (field, f.default)
+
+    # a block that declares the declaration's own values, and one that omits all three
+    declared = identified_closure(benchmarks=((1, 1, 3, 3),), batch_size=8192)
+    assert (declared['model'].batch_size, declared['model'].num_batches) == (8192, 1)
+    world = identified_closure(benchmarks=((1, 1, 3, 3),), batch_size=8192)
+    for key in ('Simulations', 'Batches', 'Objective'):
+        world['block'].pop(key, None)
+    implied_var, objective, _, _ = world['model'].calc_loss_on_ir_curve(
+        {'instrument': world['block']}, BASE, world['time_grid'], world['process'],
+        world['implied_obj'], world['ir_factor'], world['surface'])
+    assert (world['model'].batch_size, world['model'].num_batches) == (8192, 1), (
+        'a block omitting Simulations and Batches did not fall back to the declared 8192 and 1')
+    assert objective.reprice is None, 'the Objective absent has to BE the Monte Carlo objective'
+    # and the same residual, to the bit, as the block that spelled all three out
+    for name, value in (ID_THETA.items()):
+        implied_var[name].data = torch.tensor(value, dtype=DTYPE, device=DEVICE)
+    absent = objective.loss(implied_var)[1]
+    spelled = declared['loss'](declared['implied_var'])[1]
+    for name in absent:
+        assert as_float(absent[name]) == as_float(spelled[name]), (
+            '{}: the field absent reads {:.17g} against {:.17g} spelled out'.format(
+                name, as_float(absent[name]), as_float(spelled[name])))
 
 
 def test_the_solved_fixture_engages_the_series_branch():
@@ -1710,3 +1869,742 @@ def test_the_recorded_theta_is_a_stationary_point_of_the_recorded_world(checker)
             '{} prices {:.6g} against a market {:.6g} - theta* fitted this grid to 4.4% at its '
             'worst, so a tenth means the recorded vector and the recorded world have parted'.format(
                 name, as_float(value), market))
+
+
+# ------------------------------- THE ANALYTIC OBJECTIVE: the declared field, and what it retires
+
+#: The identified fixture's own 5x5 grid, which is what `ID_THETA` was solved on - the four rows
+#: `CHECKER_BENCHMARKS` prices are a subset of it plus two mixed-frequency variants.
+ID_GRID = tuple((e, t, 3, 3) for e in (1, 2, 3, 5, 10) for t in (1, 2, 3, 5, 10))
+
+#: theta* on that grid with `Objective: 'Analytic'`, AS SOLVED - the analytic twin of `ID_THETA`,
+#: so a gate reads the analytic answer without paying 836 seconds for it. `Random_Seed` 5120, CPU
+#: float64, 8192 paths declared but never drawn (the analytic closure draws none).
+#:
+#: THAT IT IS A SOLVE OUTPUT IS CHECKABLE IN SECONDS and is not taken on trust:
+#: `test_the_analytic_objective_reaches_a_stationarity_the_quartic_cannot` reads `||J'r||` here and
+#: gets 3.85e-6, which no authored vector lands on. Two coordinates sit ON a bound - `Sigma_1`'s
+#: 5th knot at the 0.09 ceiling and its 6th at the 1e-5 floor - so the point is not interior and
+#: unconstrained stationarity is not owed there; that it holds anyway says those directions carry
+#: no gradient rather than that the bound is doing the work.
+#: AND IT HAS BEEN RE-DERIVED THE LONG WAY: a full analytic chain on this block returns this vector
+#: in 836 s over 1915 evaluations, with `||J'r||` 3.853e-6 and `||r||` 2.256e-3 - the numbers below.
+#: Six of the twenty sigma knots are written here at SEVENTEEN significant digits because sixteen
+#: does not round-trip a float64: transcribed at 16 they came back one ulp out, which is invisible
+#: in every reading this file takes and is exactly why the constant is written to round-trip anyway.
+ID_ANALYTIC_THETA = {
+    'Alpha_1': [0.019636043320534653],
+    'Alpha_2': [0.052303947299117401],
+    'Correlation': [-0.94086243266563796],
+    'Sigma_1': [0.0093430763366823093, 0.0078472524308586793, 0.010534180253796762,
+                0.024972435422619753, 0.089999295056638492, 1.0000000000000003e-05,
+                0.043491067322455008, 0.082356319833777003, 0.034608001948002336,
+                0.028132036904066834],
+    'Sigma_2': [0.0063492865790124309, 0.0041844033445664437, 0.0088736732224940721,
+                0.0089213613978900604, 0.074641807429185525, 0.02053997401379614,
+                0.063694656668906141, 0.074318374104084511, 0.026604763684314203,
+                0.021751976358139601]}
+
+#: theta* on the FOUR-quote fixture under the DEFAULT objective, as solved on this box in float64.
+#: It is the bit-identity baseline: the same vector, to the bit, before and after the analytic
+#: objective was built - `test_the_default_objective_still_solves_to_this_vector` is the gate and
+#: says what re-records it.
+MC_FOUR_THETA = {
+    'Alpha_1': [0.022545754213621216],
+    'Alpha_2': [0.0018553868685500575],
+    'Correlation': [-0.26307585773035419],
+    'Sigma_1': [0.0059719210783128326, 0.0038731463946331019, 0.0053526691500668669,
+                0.01877328396894392, 0.021282629111535927, 0.016109986402646746,
+                0.0058307925191234539, 0.016199603181997538, 0.022549554433431374,
+                0.01412973457408096],
+    'Sigma_2': [0.0083557613189397927, 0.0068394360667839212, 0.0051707900399454295,
+                0.010321136905445082, 0.021028822081422899, 0.016774750165862013,
+                0.012819327482685442, 0.017221307246261863, 0.016757484356760555,
+                0.019917356820708082]}
+
+#: theta* on the FOUR-quote fixture under `Objective: 'Analytic'`, AS SOLVED - the analytic twin of
+#: `MC_FOUR_THETA` and the second half of the theta-comparison, so the reading is taken on the
+#: under-determined block as well as on the identified one. `Random_Seed` 5120, CPU float64;
+#: 12.8 seconds over 351 evaluations, against 76.3 over 170 for the vector above.
+#:
+#: THAT IT IS A SOLVE OUTPUT IS CHECKABLE IN SECONDS: `||J'r||` here is 6.91e-8 against `||r||`
+#: 4.01e-7, which is a fit that INTERPOLATES - four quotes against 23 parameters - and no authored
+#: vector lands on it. `test_the_analytic_solve_is_deterministic_and_the_seed_moves_what_the_quotes_
+#: do_not` re-solves it at this seed and is what would catch it going stale.
+AN_FOUR_THETA = {
+    'Alpha_1': [0.048592845601884482],
+    'Alpha_2': [0.09440744561345675],
+    'Correlation': [-0.11090827716509652],
+    'Sigma_1': [1.2465372443084727e-02, 7.2778260503007170e-03, 1.4006085393093904e-02,
+                3.5430024521239784e-03, 1.5960553435155459e-02, 9.6506709744549873e-03,
+                1.2706915235818215e-02, 6.2807358340067013e-03, 1.8440690247164576e-02,
+                2.8377539119097413e-02],
+    'Sigma_2': [4.3376162862581984e-03, 1.4350349838542796e-02, 9.0120452652106865e-03,
+                4.0131799581242791e-03, 3.4400275670176540e-02, 2.2503998642944115e-02,
+                1.0268145640508276e-02, 3.1668568515472173e-02, 3.8415424141668202e-02,
+                4.1795126093191949e-02]}
+
+
+def flat_theta(calibration, named):
+    """`named` as the flat vector `SwaptionCalibration` speaks in, in ITS parameter order."""
+    return torch.tensor(np.concatenate([np.atleast_1d(named[k]) for k in calibration.keys]),
+                        dtype=DTYPE)
+
+
+def stationarity(calibration, theta):
+    """`(||J'r||, ||r||)` at a flat theta - the quantity `LeastSquaresSolve.backward` refuses on.
+
+    Read exactly the way that backward reads it: one fresh evaluation of the residual through
+    `SwaptionCalibration.__call__`, one `autograd.grad` per row, promoted to float64. So this is
+    the library's own stationarity measure rather than a second opinion of it.
+    """
+    x = theta.detach().clone().requires_grad_(True)
+    residual = calibration(x)
+    jacobian = torch.stack([torch.autograd.grad(residual[i], x, retain_graph=True)[0]
+                            for i in range(residual.numel())]).double()
+    residual = residual.detach().double()
+    return float((jacobian.t() @ residual).norm()), float(residual.norm())
+
+
+def calibration_at(theta, benchmarks=ID_GRID, **extra):
+    """`(SwaptionCalibration, world)` standing at `theta` - no optimizer chain, so nothing solves."""
+    from derivus.bootstrappers import SwaptionCalibration
+    world = identified_closure(benchmarks=benchmarks, theta=theta, **extra)
+    return SwaptionCalibration('gate', world['objective'], world['implied_var'], None,
+                               world['process'], world['swaps']), world
+
+
+def test_a_second_block_does_not_rescale_the_first_blocks_residual():
+    """ONE BOOTSTRAPPER, MANY BLOCKS. `bootstrap` loops over `market_prices` on a single
+    `RiskNeutralInterestRateModel`, so a residual closure that read its sample shape off `self`
+    would be re-scaled by whatever the NEXT curve in that loop declares.
+
+    THE MUTANT THIS NAMES is the sample shape reaching the closure through the instance -
+    `shared_mem.reset(self.num_batches, ...)`, `range(self.num_batches)` and
+    `v / (self.batch_size * self.num_batches)` in place of the locals `calc_loss_on_ir_curve` binds
+    per block. Both attributes are written at the top of that call and read at CALL time, while
+    `shared_mem` - which carries the drawn Sobol block and the `simulation_batch` it was drawn at -
+    is built per block, so block A's closure goes on walking A's 2048 paths and divides them by B's
+    8192.
+
+    It is not a stale number nobody reads. `LeastSquaresSolve` keeps block A's calibration alive in
+    `ctx` for a backward that runs after the whole loop has finished, so the corrupted closure is
+    exactly the one an implicit-function-theorem Jacobian comes off. Measured with the mutant in
+    place, block A at `Simulations=2048` against a block B at 8192:
+
+        quantity              A alone         A after B was built
+        Swaption_1Y_1Y      0.0063239682      0.0015809920      x 0.250000
+        Swaption_5Y_5Y      0.0427945259      0.0106986315      x 0.250000
+        ||J'r||               776642.6        7.4013242e+11     x 9.5e+05
+        ||r||                 31.928282       113492
+
+    so a quote-side solve either returns the Jacobian of a residual scaled by the wrong sample
+    count, or `backward` fires its stationarity refusal naming a norm that belongs to no evaluation
+    anyone made. With `Batches` differing rather than `Simulations` it is not a rescale but an
+    index: a `Batches=1` block re-priced after a `Batches=4` one was built raises `IndexError: index
+    1 is out of bounds for dimension 0 with size 1` out of `t_random_numbers`, because its own
+    sample was drawn one block deep.
+
+    Nothing else in this file can see it - `identified_closure` builds a fresh bootstrapper per
+    world, which is why this gate builds its second block on the FIRST world's.
+    """
+    pair = ((1, 1, 3, 3), (5, 5, 3, 3))
+
+    def second_block(world, **fields):
+        """Another curve's block, built on THIS world's bootstrapper - `bootstrap`'s own loop."""
+        return world['model'].calc_loss_on_ir_curve(
+            {'instrument': dict(world['block'], **fields)}, BASE, world['time_grid'],
+            world['process'], world['implied_obj'], world['ir_factor'], world['surface'])
+
+    a = identified_closure(benchmarks=pair, batch_size=2048)
+    alone = {k: as_float(v) for k, v in a['loss'](a['implied_var'])[0].items()}
+    second_block(a, Simulations=8192)
+    after = {k: as_float(v) for k, v in a['loss'](a['implied_var'])[0].items()}
+    for name, value in alone.items():
+        assert after[name] == value, (
+            '{}: a 2048-path block prices {:.17g} on its own and {:.17g} once an 8192-path block '
+            'was built on the same bootstrapper - a factor of {:.6f}, which is the closure reading '
+            'its sample count off `self`'.format(name, value, after[name], after[name] / value))
+    # the attributes are a REPORT of the last block, and the declared-shape gate reads them as one
+    assert (a['model'].batch_size, a['model'].num_batches) == (8192, 1), (
+        'the mirror onto `self` has to keep tracking the last block built - '
+        'test_the_declared_sample_shape_is_the_shape_the_engine_uses reads it')
+
+    # the same seam, in the quantity `LeastSquaresSolve.backward` refuses on
+    cal, quoted = calibration_at(ID_THETA, benchmarks=pair, batch_size=2048,
+                                 Quote_Sensitivity='Yes')
+    theta = flat_theta(cal, ID_THETA)
+    before = stationarity(cal, theta)
+    second_block(quoted, Simulations=8192)
+    assert stationarity(cal, theta) == before, (
+        "||J'r||, ||r|| read {} at theta* and {} after a second block was built - the backward's "
+        'own measure, so a quote-side Jacobian there is one of a rescaled residual'.format(
+            before, stationarity(cal, theta)))
+
+    # and the `Batches` half, which does not rescale - it indexes off the end of the sample
+    c = identified_closure(benchmarks=pair, batch_size=2048, Batches=1)
+    priced = {k: as_float(v) for k, v in c['loss'](c['implied_var'])[0].items()}
+    second_block(c, Batches=4)
+    assert {k: as_float(v) for k, v in c['loss'](c['implied_var'])[0].items()} == priced, (
+        'a Batches=1 block did not survive a Batches=4 block being built beside it')
+
+
+def test_the_objective_field_declares_two_spellings_and_builds_two_things():
+    """The declaration IS the menu, and the engine's fallback IS the declared default.
+
+    The schema-emission suite holds the AST half - `Objective` is declared and the `.get` fallback
+    beside it is the same string. What this holds is the half a store cannot see: that the two
+    spellings the menu offers build two different objectives, and that the scalar each hands the
+    optimizer chain is a different reduction.
+    """
+    field = next(f for f in HullWhite2FactorModelParameters.fields if f.name == 'Objective')
+    assert field.default == 'Monte_Carlo'
+    assert sorted(field.values) == ['Analytic', 'Monte_Carlo']
+
+    mc = identified_closure(benchmarks=((2, 5, 3, 6),), batch_size=2048)
+    an = identified_closure(benchmarks=((2, 5, 3, 6),), batch_size=2048, Objective='Analytic')
+    assert mc['objective'].reprice is None, 'the Monte Carlo objective audits nothing'
+    assert an['objective'].reprice is not None, (
+        'the Analytic objective has to carry the Monte Carlo closure as its auditor')
+    # the model VALUE each returns is a premium either way, which is what keeps the solve's log
+    # one thing - and the residuals are different quantities, so they must not read the same
+    mc_value, mc_error = (list(x.values())[0] for x in mc['loss'](mc['implied_var']))
+    an_value, an_error = (list(x.values())[0] for x in an['loss'](an['implied_var']))
+    assert 1e-3 < as_float(mc_value) < 1.0 and 1e-3 < as_float(an_value) < 1.0
+    assert abs(as_float(mc_error)) > 1.0 and abs(as_float(an_error)) < 1e-2, (
+        'a weighted squared percentage and an absolute normal vol should not be the same size')
+    # the scalar the chain compares: a sum on one path, a sum of SQUARES on the other
+    probe = torch.tensor([2.0, -3.0], dtype=DTYPE)
+    assert float(mc['objective'].reduce(probe)) == -1.0
+    assert float(an['objective'].reduce(probe)) == 13.0
+    assert float(an['objective'].reduce(probe.numpy())) == 13.0, 'numpy is the other caller'
+
+
+def test_an_unknown_objective_refuses_and_names_the_two_it_knows():
+    """The one-touch lesson: a spelling the engine does not know RAISES naming the menu, rather
+    than falling through to whichever branch the `if` happens to end on."""
+    for spelling in ('analytic', 'SchragerPelsser', 'MonteCarlo', ''):
+        with pytest.raises(Exception, match='Monte_Carlo'):
+            identified_closure(benchmarks=((1, 1, 3, 3),), batch_size=1024, Objective=spelling)
+    try:
+        identified_closure(benchmarks=((1, 1, 3, 3),), batch_size=1024, Objective='analytic')
+    except Exception as e:
+        assert 'Analytic' in str(e), 'the refusal has to name both spellings: {}'.format(e)
+
+
+def test_the_analytic_quote_side_refuses_and_names_todays_remedy():
+    """`Quote_Sensitivity` on the analytic objective is NOT BUILT, and says so rather than handing
+    back a quote Jacobian of a residual nothing spliced a quote into.
+
+    The splice `market_swap_class.error` carries is simply absent from `normal_vol_error`, so
+    without this refusal a solve would run to completion and the backward would report zeros -
+    the quiet-garbage failure the rest of this file exists to remove. The refusal names the thing
+    (the market vol enters that residual linearly, through the closed-form Bachelier inversion of
+    the premium) and the remedy (Monte_Carlo for a quote-differentiable solve today).
+    """
+    with pytest.raises(Exception, match='Quote_Sensitivity'):
+        identified_closure(benchmarks=((1, 1, 3, 3),), batch_size=1024,
+                           Objective='Analytic', Quote_Sensitivity='Yes')
+    try:
+        identified_closure(benchmarks=((1, 1, 3, 3),), batch_size=1024,
+                           Objective='Analytic', Quote_Sensitivity='Yes')
+    except Exception as e:
+        assert 'Monte_Carlo' in str(e), 'the refusal has to name the remedy: {}'.format(e)
+    # the Monte Carlo path with the quote side on still builds, which is what makes it a remedy
+    world = identified_closure(benchmarks=((1, 1, 3, 3),), batch_size=1024, Quote_Sensitivity='Yes')
+    assert world['swaps']['Swaption_1Y_1Y'].quote is not None
+    # and the analytic path with it OFF is the ordinary case, so the refusal is on the pair
+    assert identified_closure(benchmarks=((1, 1, 3, 3),), batch_size=1024,
+                              Objective='Analytic')['objective'].reprice is not None
+
+
+def test_the_market_normal_vol_is_a_division_and_it_round_trips():
+    """THE CLOSED-FORM INVERSION, held against the pair it inverts.
+
+    At the money the Bachelier premium is `A sigma_N sqrt(T0/2pi)`, so
+    `sigma_N = P sqrt(2pi/T0) / A` is a DIVISION - no brentq, no bracket, nothing that could fail
+    to converge inside an optimizer evaluation. The round trip is the identity itself: hand
+    `market_normal_vol` the analytic price's OWN premium and it gives back that price's own normal
+    vol, to float precision.
+
+    Then the thing that matters: hand it the MARKET premium `create_market_swaps` built, and the
+    residual `normal_vol_error` returns is the premium residual rescaled by exactly
+    `weight sqrt(2pi/T0) / A`. That is what makes vols-against-vols and premium-against-premium the
+    same zero rather than two different fits, and it is why no quoting convention can be inherited
+    by half: all of them arrive as that premium.
+    """
+    world = identified_closure(benchmarks=CHECKER_BENCHMARKS, Objective='Analytic', batch_size=2048)
+    world['loss'](world['implied_var'])
+    for name, swap in world['swaps'].items():
+        sp = world['process'].schrager_pelsser_swaption(
+            swap.schedule.expiry, swap.schedule.pay_times, swap.schedule.accruals)
+        got = as_float(sp.premium * np.sqrt(2.0 * np.pi / swap.schedule.expiry) / sp.annuity)
+        assert abs(got / as_float(sp.normal_vol) - 1.0) < 1e-15, (
+            '{}: inverting SP\'s own premium reads {:.17g} against its own vol {:.17g}'.format(
+                name, got, as_float(sp.normal_vol)))
+        scale = float(swap.weight) * np.sqrt(2.0 * np.pi / swap.schedule.expiry) / as_float(
+            sp.annuity)
+        assert abs(as_float(swap.normal_vol_error(sp)) /
+                   (scale * (as_float(sp.premium) - swap.price)) - 1.0) < 1e-12, name
+        # something is being measured: a market vol of zero would pass both lines above
+        assert 1e-2 < as_float(swap.market_normal_vol(sp.annuity)) < 5e-2, name
+    # and the annuity is SP's OWN, not a second spelling: it is the pvbp `create_market_swaps`
+    # struck the premium on, which is the whole reason the rescaling above is exact
+    swap = world['swaps']['Swaption_2Y_5Y']
+    sp = world['process'].schrager_pelsser_swaption(
+        swap.schedule.expiry, swap.schedule.pay_times, swap.schedule.accruals)
+    assert abs(as_float(sp.annuity) / (swap.price / utils.black_european_option_price(
+        as_float(sp.swap_rate), as_float(sp.swap_rate), 0.0, 0.20, swap.schedule.expiry,
+        1.0, 1.0)) - 1.0) < 1e-3, 'SP\'s annuity is not the pvbp the market premium was struck on'
+
+
+def test_a_displaced_surface_reaches_the_bachelier_side_through_the_premium_only():
+    """THE CONVENTION INHERITANCE, on the convention most likely to be dropped.
+
+    A shifted-lognormal surface strikes its Black premium at `K + shift`; `create_market_swaps`
+    does that and nothing downstream of it knows. So the shift has to reach the analytic residual
+    through `swap.price` and NOWHERE else - the Bachelier inversion carries no displacement term,
+    because a normal vol has nothing to displace.
+
+    Held both ways: the market normal vol MOVES with the shift, because the premium did, and it is
+    exactly the shifted premium's own inversion on an annuity that did not move at all.
+    """
+    reading = {}
+    for shift in (0.0, 2.0):
+        factors = identified_world()
+        # the displacement rides on `Property_Aliases`, which is where `create_market_swaps` reads
+        # it - not on the `Shift` field, which is the quote's own and never reaches the strike
+        factors['InterestYieldVol.' + ID_VOL]['Property_Aliases'] = (
+            [{'BlackScholesDisplacedShiftValue': shift}] if shift else None)
+        world = identified_closure(benchmarks=CHECKER_BENCHMARKS, world=factors,
+                                   Objective='Analytic', batch_size=2048)
+        assert world['surface'].BlackScholesDisplacedShiftValue == shift
+        world['loss'](world['implied_var'])
+        reading[shift] = {}
+        for name, swap in world['swaps'].items():
+            sp = world['process'].schrager_pelsser_swaption(
+                swap.schedule.expiry, swap.schedule.pay_times, swap.schedule.accruals)
+            market = as_float(swap.market_normal_vol(sp.annuity))
+            assert abs(market / (swap.price * np.sqrt(2.0 * np.pi / swap.schedule.expiry) /
+                                 as_float(sp.annuity)) - 1.0) < 1e-15, name
+            reading[shift][name] = (market, swap.price, as_float(sp.annuity))
+    for name in reading[0.0]:
+        flat, shifted = reading[0.0][name], reading[2.0][name]
+        assert flat[2] == shifted[2], '{}: the shift moved the ANNUITY, which it cannot'.format(name)
+        assert abs(shifted[0] / flat[0] - 1.0) > 1e-3, (
+            '{}: a 2% displacement moved the market normal vol by {:.3e} relative - if that is now '
+            'zero the shift has stopped reaching the residual at all'.format(
+                name, shifted[0] / flat[0] - 1.0))
+
+
+def test_the_analytic_objective_reaches_a_stationarity_the_quartic_cannot():
+    """THE CLAIM THE BUILD WAS FOR, on the repository's own identified 25-quote fixture, measured.
+
+    `market_swap_class.error` returns a residual that is ALREADY a square, so `least_squares`
+    minimises a QUARTIC in the pricing error and stops where a quartic goes flat. The recorded
+    Monte Carlo theta* reads `||J'r||` **8.24e3** against `||r||` **45.97** on this box in float64
+    - `docs_src/developer/quote_sensitivities.md` recorded 8.6e3 and 46.1 in float32 on CUDA, the
+    same reading - having come down from **2.86e11** at the seed. Seven and a half of the eleven
+    orders, and it stops: which is why this file's own `ID_STATIONARITY` is **1e5**, because the
+    quote-side backward would otherwise refuse the fixture it was built for.
+
+    `normal_vol_error` returns the difference itself, so `least_squares` minimises the sum of
+    squares it was written for. At the analytic theta*, same fixture, `||J'r||` is **3.85e-6**
+    against `||r||` **2.26e-3**, down from **6.00e-2** at the seed. In the units of the declared
+    field that is the whole finding:
+
+        objective        ||J'r|| at theta*     the Stationarity_Tol that accepts it
+        Monte Carlo             8.24e+03       1e5   (this file has to declare it)
+        Analytic                3.85e-06       1e-3  (the field's own DEFAULT)
+
+    EIGHT ORDERS of declared tolerance, and the analytic path is the one that clears the default.
+    The raw norms are in different units - a weighted squared PERCENTAGE against an absolute
+    normal VOL - so the 9.3 orders between them is not a like-for-like ratio and is not claimed as
+    one. What IS like-for-like is the tolerance each needs, and the shape of the descent: the
+    quartic falls 7.5 orders and stops 8240 short of zero; the quadratic falls 4.2 orders and
+    lands 3.9e-6 short of it.
+    """
+    field = next(f for f in HullWhite2FactorModelParameters.fields if f.name == 'Stationarity_Tol')
+    assert field.default == 1e-3 and ID_STATIONARITY == 1e5, (field.default, ID_STATIONARITY)
+
+    for tag, extra, theta, bound, resid in (
+            ('Monte_Carlo', {}, ID_THETA, (1e3, 1e5), (40.0, 55.0)),
+            ('Analytic', {'Objective': 'Analytic'}, ID_ANALYTIC_THETA, (0.0, 1e-3), (1e-3, 5e-3))):
+        calibration, _ = calibration_at(theta, **extra)
+        norm, residual = stationarity(calibration, flat_theta(calibration, theta))
+        assert bound[0] <= norm < bound[1], (
+            '{} at its own theta* reads ||J\'r|| {:.4g} against a recorded band {} - the whole '
+            'point of the plain residual is which side of Stationarity_Tol\'s 1e-3 default it '
+            'lands on'.format(tag, norm, bound))
+        assert resid[0] < residual < resid[1], '{}: ||r|| is {:.4g}'.format(tag, residual)
+
+    # the seed, so the descent has two ends and the stopping point is not read alone
+    calibration, world = calibration_at({}, Objective='Analytic')
+    seed = torch.cat([v.detach().clone() for v in world['implied_var'].values()]).double()
+    norm, _ = stationarity(calibration, seed)
+    assert 1e-3 < norm < 1.0, (
+        'the analytic gradient at the seed reads {:.4g} against a recorded 6.0e-2 - if it is now '
+        'tiny the seed is already stationary and the solve below measures nothing'.format(norm))
+
+
+def repriced_vols(theta, benchmarks):
+    """`{benchmark: (SP normal vol, the market's own inverted premium)}` in bp, at `theta`.
+
+    Both sides through the ANALYTIC closure, so the model vol and the market vol are read off one
+    annuity - `market_normal_vol` takes SP's own - and the difference below is the premium residual
+    rescaled rather than two conventions differenced.
+    """
+    world = identified_closure(benchmarks=benchmarks, theta=theta, Objective='Analytic')
+    world['loss'](world['implied_var'])
+    out = {}
+    for name, swap in world['swaps'].items():
+        sp = world['process'].schrager_pelsser_swaption(
+            swap.schedule.expiry, swap.schedule.pay_times, swap.schedule.accruals)
+        out[name] = (as_float(sp.normal_vol) * 1e4,
+                     as_float(swap.market_normal_vol(sp.annuity)) * 1e4)
+    return out
+
+
+def test_the_two_answers_agree_in_vol_space_and_share_nothing_in_theta_space():
+    """THE THETA-COMPARISON, on BOTH fixtures, and it comes out as two findings rather than one.
+
+    IN REPRICED NORMAL-VOL SPACE THEY AGREE. Every benchmark's ATM vol at both solved points,
+    against the market's own inverted premium, in basis points. On the identified 25-quote grid,
+    level 175 to 208:
+
+        rms |SP - market|      at Monte Carlo theta* 5.14bp      at Analytic theta* 4.51bp
+        worst benchmark        10.97bp (5Y x 5Y)                  9.43bp (5Y x 5Y)
+        rms |the two apart|    2.52bp, worst 6.38bp at 3Y x 10Y
+
+    So the analytic solve fits the grid 12% better in the metric it is fitting, and the two answers
+    price the whole cube within 6.4 basis points of each other - the band the measured SP bias
+    itself spans (-0.13 to +2.17bp) plus one evaluation of the Monte Carlo's own noise (0.5 to
+    1.8bp), which is as close as two objectives on an unidentified block can be asked to come.
+
+    ON THE FOUR-QUOTE BLOCK THE SAME COMPARISON READS DIFFERENTLY, AND THAT IS THE POINT OF TAKING
+    IT TWICE. Four quotes against 23 parameters is UNDER-determined, so each objective interpolates
+    exactly in ITS OWN metric and the gap between them is the two metrics', not a disagreement
+    about the market:
+
+        benchmark        market   SP @ theta*_MC   SP @ theta*_An   the two apart
+        1Y x 1Y          175.49       174.86           175.49          -0.63
+        2Y x 5Y          202.45       203.89           202.45          +1.44
+        3Y x 3Y          205.46       207.58           205.46          +2.12
+        10Y x 10Y        180.00       184.13           180.00          +4.13
+
+        rms |SP - market|    at theta*_MC 2.45bp    at theta*_An 0.00bp (it interpolates)
+
+    The analytic column is the market column TO THE PRINTED DIGIT because `||r||` there is 4.0e-7 -
+    that is under-determination and not accuracy, and it is why the 25-quote block is the fixture
+    the objective is judged on. What the OTHER column measures is worth having: at theta*_MC the
+    Monte Carlo premium residual is ~0 (`||r||` 4.4e-8), so 2.45bp rms is the whole SP-versus-MC gap
+    at a point where the simulation fits exactly - SP's freezing bias and the simulation's own
+    numeraire error, and at 10Y x 10Y they ADD rather than cancel. SP reads 4.13bp HIGH there:
+    about 2.9bp of it is the -1.61% numeraire error `test_the_monte_carlo_carries_a_bias_of_its_own`
+    measures at that benchmark on this 1Y-first-node curve (the model has to be pumped up to make a
+    biased-low estimator hit the market premium) and about 2.2bp is SP's own worst corner. Two
+    biases with two names, summing to the number printed, on the block where nothing else is moving.
+
+    IN THETA SPACE THEY SHARE NOTHING ON EITHER FIXTURE, and that is rank deficiency
+    ([Quote Sensitivities](quote_sensitivities.md#rank-deficiency)) rather than a disagreement:
+
+        fixture       Correlation           Alpha_1          Alpha_2       max |theta apart|
+        25-quote      -0.0046 / -0.9409   0.122 / 0.020   -0.018 / 0.052        0.936
+        4-quote       -0.2631 / -0.1109   0.023 / 0.049    0.002 / 0.094        0.152
+
+    The 25-quote block's singular spectrum runs `sigma_min/sigma_max` 4.6e-6 and the declared cutoff
+    keeps 18 of 23 directions, so most of theta is a direction 25 flat quotes cannot choose in; the
+    four-quote block has a 19-dimensional null space outright. Two objectives landing in different
+    parts of that null space is the expected result, and it is why the comparison that means
+    anything is the one above, in the space the quotes live in.
+    """
+    for tag, benchmarks, mc_theta, an_theta, bound in (
+            ('25-quote', ID_GRID, ID_THETA, ID_ANALYTIC_THETA,
+             dict(rms_mc=(3.0, 8.0), rms_an=(3.0, 7.0), apart=(4.0, 9.0), theta=0.9)),
+            ('4-quote', CHECKER_BENCHMARKS, MC_FOUR_THETA, AN_FOUR_THETA,
+             dict(rms_mc=(1.2, 4.0), rms_an=(0.0, 0.05), apart=(4.0, 7.0), theta=0.05))):
+        reading = {'mc': repriced_vols(mc_theta, benchmarks),
+                   'analytic': repriced_vols(an_theta, benchmarks)}
+        gaps = {k: np.array([model - market for model, market in r.values()])
+                for k, r in reading.items()}
+        apart = np.array([reading['mc'][n][0] - reading['analytic'][n][0] for n in reading['mc']])
+        rms = {k: float(np.sqrt((g * g).mean())) for k, g in gaps.items()}
+        level = [market for _, market in reading['mc'].values()]
+
+        assert 170.0 < min(level) and max(level) < 215.0, (
+            '{}: the level has moved off the recorded band'.format(tag))
+        assert rms['analytic'] < rms['mc'], (
+            '{}: the analytic solve fits the vols it is fitting no better than the Monte Carlo one '
+            'does: {:.3f}bp against {:.3f}'.format(tag, rms['analytic'], rms['mc']))
+        assert bound['rms_mc'][0] < rms['mc'] < bound['rms_mc'][1], (tag, rms)
+        assert bound['rms_an'][0] <= rms['analytic'] < bound['rms_an'][1], (tag, rms)
+        assert (float(np.sqrt((apart * apart).mean())) < bound['apart'][0]
+                and float(np.abs(apart).max()) < bound['apart'][1]), (
+            '{}: the two answers price the cube {:.3f}bp apart rms, worst {:.3f}'.format(
+                tag, float(np.sqrt((apart * apart).mean())), float(np.abs(apart).max())))
+        # and the theta-space half, which is the finding rather than the agreement
+        assert abs(mc_theta['Correlation'][0] - an_theta['Correlation'][0]) > bound['theta'], (
+            '{}: the two correlations have converged - if that is real this fixture has become '
+            'identified and the null-space reading above needs re-taking'.format(tag))
+
+
+def bootstrap_the_block(**extra):
+    """One `RiskNeutralInterestRateModel.bootstrap` on the identified fixture, run whole.
+
+    Every gate above stops at the closure or at `SwaptionCalibration`; this drives the entry point a
+    job drives, because the honesty reprice and the parameters it writes only exist out here.
+    """
+    factors = identified_world()
+    block = {'Swaption_Volatility': ID_VOL, 'Generate_Instruments': 'No', 'Random_Seed': ID_SEED,
+             'Stationarity_Tol': ID_STATIONARITY, 'Quote_Sensitivity': 'No',
+             'Simulations': 2048, 'Batches': 1,
+             'Instrument_Definitions': identified_definitions(CHECKER_BENCHMARKS)}
+    block.update(extra)
+    model = HullWhite2FactorModelParameters({}, DEVICE, DTYPE)
+    model.bootstrap({'Base_Date': BASE, 'Base_Currency': ID_CCY}, {}, factors, ModelParams(),
+                    {ID_BLOCK: {'instrument': block}}, {})
+    return model, factors
+
+
+def test_the_analytic_solve_reports_what_the_engines_own_estimator_makes_of_it(caplog):
+    """THE HONESTY REPRICE, which is the analytic objective's own CAPPED line.
+
+    An analytic solve fits Schrager-Pelsser vols and Schrager-Pelsser freezes the annuity's
+    weights, so nothing in that solve has ever asked the Monte Carlo the rest of the library prices
+    with what it makes of the answer. `SwaptionCalibration.honesty_reprice` runs one pass of that
+    estimator at theta* and `bootstrap` LOGS the worst benchmark's relative premium residual by
+    name - not as a check with a tolerance, the way the component Heston-Nandi fit reports itself
+    CAPPED rather than claiming a tolerance it did not reach.
+
+    THE NUMBER IS MOSTLY THE SIMULATION'S, which is why it is reported and not asserted tightly -
+    and the four-quote block says so almost exactly. There the reprice names **10Y x 10Y** and
+    reads **-1.67% / -1.65% / -1.78%** across seeds 5120 / 7 / 99, against the **-1.61%** that
+    `test_the_monte_carlo_carries_a_bias_of_its_own` measures for the SIMULATION'S OWN numeraire
+    error at that same benchmark on this fixture's 1Y-first-node curve. So the honesty reprice is
+    reporting the estimator's own bias with a tenth of a percent of approximation on top, which is
+    the honest thing for it to be reporting. On the 25-quote grid it reads -4.64% at 1Y x 5Y.
+
+    THE NUMBER MOVES WITH THE REPRICE'S OWN PATH COUNT, which is the other reason it is reported
+    rather than asserted tightly: this gate declares `Simulations: 2048` to stay under a minute and
+    reads **-2.29%** at the same benchmark, against -1.67% at the declared default of 8192. The
+    reprice prices at the block's own count, so a block that wants a tighter audit buys one.
+
+    The Monte Carlo objective logs NOTHING here, because there is nothing to audit: it IS the
+    estimator.
+    """
+    with caplog.at_level(logging.INFO, logger=''):
+        bootstrap_the_block(Objective='Analytic')
+    lines = [r.getMessage() for r in caplog.records if 'Analytic objective' in r.getMessage()]
+    assert len(lines) == 1, 'the analytic solve has to report itself exactly once: {}'.format(lines)
+    named = [n for n in identified_definitions(CHECKER_BENCHMARKS)
+             if 'Swaption_{}Y_{}Y'.format(n['Start'].years, n['Tenor'].years) in lines[0]]
+    assert named, 'the reprice has to name a benchmark: {}'.format(lines[0])
+    percent = float(lines[0].rsplit(',', 1)[1].split('%')[0])
+    assert 0.05 < abs(percent) < 25.0, (
+        'the reprice reads {:+.2f}% - against the -0.35% to -1.61% this fixture\'s own numeraire '
+        'error carries, a number that small means it is not repricing and one that large means the '
+        'analytic answer has stopped being an answer'.format(percent))
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=''):
+        bootstrap_the_block()
+    assert not [r for r in caplog.records if 'Analytic objective' in r.getMessage()], (
+        'the Monte Carlo objective audited itself - it IS the estimator, so there is nothing to say')
+
+
+def test_the_analytic_solve_is_deterministic_and_the_seed_moves_what_the_quotes_do_not():
+    """DETERMINISM, and the seed spread beside the Monte Carlo path's - measured, not assumed.
+
+    The analytic objective draws no sample at all, so the only randomness left in the chain is
+    basin hopping's own search, and `Random_Seed` is the single generator serving its step taker
+    and its Metropolis test. Two runs at one seed therefore have to agree TO THE BIT, and they do.
+
+    THE SEED SPREAD IS LARGER THAN THE MONTE CARLO PATH'S ON THIS FIXTURE, and that is recorded
+    because the opposite was expected. Across seeds 5120 / 7 / 99 on the four-quote identified
+    block, this box, CPU float64:
+
+        objective       evaluations    s/evaluation    max |theta* apart|   where it lives
+        Monte Carlo    170/170/170    0.438..0.449            0.0       nowhere: bit-identical
+        Analytic       351/358/394    0.0362..0.0364          0.250     Correlation (0.155 in
+                                                                        Alpha_2, 0.075 Alpha_1)
+
+    Neither number is noise and both come from the same thing. FOUR quotes against 23 parameters
+    leaves a 19-dimensional null space, so theta* is a MANIFOLD and both objectives fit it
+    essentially exactly - `||r||` is 4.4e-8 on the Monte Carlo path and 4.0e-7 on the analytic one.
+    What differs is which point of that manifold the search reaches. The Monte Carlo chain lands
+    0.273 off its seed and lands there for EVERY seed - bit-identical theta*, all three - so its
+    basin stage is contributing nothing the least-squares stage does not; the analytic evaluation is
+    twelve times cheaper, the chain makes twice as many of them, and it moves 0.121 / 0.368 / 0.371
+    off the seed on the three - the search is actually exploring. The correlation carrying all of
+    the spread is exactly the coordinate four ATM quotes say least about.
+
+    So this is a DETERMINISM gate and a spread READING, and the spread is not evidence FOR the
+    analytic objective - it is evidence that this fixture does not identify its parameters, which
+    is the same thing `test_the_two_answers_agree_in_vol_space_and_share_nothing_in_theta_space`
+    reads off the 25-quote block. The evidence for the objective is
+    `test_the_analytic_objective_reaches_a_stationarity_the_quartic_cannot`.
+
+    WALL CLOCK, this box, CPU float64, nothing else running, over the same three seeds: the
+    four-quote chain is 76.3 / 74.4 / 74.6 s under the Monte Carlo objective and 12.8 / 13.0 /
+    14.3 s under the analytic one - 75.1 s against 13.4 s on the mean, a factor of 5.6 bought as
+    12x per evaluation against 2.2x the evaluations. The chain needs MORE iterations, not fewer,
+    which is what a smooth deterministic residual buys: `least_squares` can keep making progress on
+    one.
+
+    The 25-quote identified block solves analytically in 836 s on the same box, over 1915
+    evaluations at 0.437 s each - and that per-evaluation figure is the one to read, because it is
+    TWELVE times the four-quote block's 0.036 for six times the benchmarks. Schrager-Pelsser is
+    called once per benchmark and the grid it integrates `J` over grows with the expiry set, so the
+    analytic pass scales worse than the simulation's single batched kernel does. Batching it across
+    the benchmark set is the open build; what the objective buys today is exactness and a gradient.
+
+    THAT 836 IS NOT TO BE READ AGAINST THE 531 the roadmap records for the Monte Carlo objective on
+    the same block: that figure is float32 on CUDA, which is what `construct_bootstrapper` hands a
+    job, and this one is float64 on CPU. The two like-for-like readings are the four-quote pair
+    above. Per EVALUATION on CUDA float32 the analytic price is still the slower of the two -
+    0.158 s against 0.140 s, twenty-five scalar calls against one batched kernel - so batching it
+    across the benchmark set is the build this leaves on the table, and what the objective buys
+    today is exactness, a gradient, and a chain that agrees with itself.
+    """
+    first, second = (identified_calibration(Objective='Analytic')[0].solve() for _ in range(2))
+    assert [float(v).hex() for v in first.numpy()] == [float(v).hex() for v in second.numpy()], (
+        'two analytic solves at one seed disagree - the objective draws no sample, so the only '
+        'thing left that could move is the search, and it is seeded')
+    # and the answer is not the seed, or determinism would be free
+    calibration, world = identified_calibration(Objective='Analytic')
+    seed = torch.cat([v.detach().clone() for v in world['implied_var'].values()]).double()
+    assert float((first.double() - seed).abs().max()) > 1e-3, 'the chain returned its own seed'
+    # and it is the vector the theta-comparison reads, so that constant is a SOLVE OUTPUT rather
+    # than an authored one - the same claim `MC_FOUR_THETA` makes, and re-recorded the same way
+    got = calibration.unflatten(first)
+    for name, recorded in AN_FOUR_THETA.items():
+        assert [float(v).hex() for v in np.atleast_1d(got[name])] == [
+            float(v).hex() for v in recorded], (
+            '{} solved to {} against the recorded {}'.format(name, list(got[name]), recorded))
+    # the fit is essentially exact, which is what makes theta* a manifold rather than a point
+    residual = stationarity(calibration, first)[1]
+    assert residual < 1e-5, (
+        'the four-quote analytic fit reads ||r|| {:.3e} against a recorded 4.0e-7 - it is 4 quotes '
+        'against 23 parameters, so it interpolates'.format(residual))
+
+
+def test_the_default_objective_still_solves_to_this_vector():
+    """THE BIT-IDENTITY BASELINE: the whole chain, on the four-quote fixture, at the default.
+
+    `MC_FOUR_THETA` was solved before this workstream and re-solved after it, and the 23 doubles
+    came back IDENTICAL to the bit - same seed, same frozen Sobol sample, same acceptance rule.
+    That is the claim `Objective`'s default is making, and it is the reason the batch repair had to
+    be a no-op at `Batches: 1`: the clear at the top of iteration zero runs against a `t_Buffer`
+    that `reset` has just emptied and `precalculate` only writes `t_PreCalc`, so it removes nothing.
+
+    This gate pays 70 seconds for it because nothing cheaper is the claim. If a scipy or torch
+    upgrade moves the last bits, the honest repair is to RE-RECORD this vector after checking that
+    the residual at a fixed theta has not moved - the residual is arithmetic and cannot drift; an
+    optimizer's stopping point can.
+    """
+    calibration, _ = identified_calibration()
+    theta = calibration.solve()
+    got = calibration.unflatten(theta)
+    for name, recorded in MC_FOUR_THETA.items():
+        assert [float(v).hex() for v in np.atleast_1d(got[name])] == [
+            float(v).hex() for v in recorded], (
+            '{} solved to {} against the recorded {}'.format(name, list(got[name]), recorded))
+
+
+def test_the_two_spellings_of_the_default_drive_the_adapters_identically():
+    """`Objective` absent and `Objective: 'Monte_Carlo'` are one job, held at the SEAMS the chain
+    uses rather than only at the residual.
+
+    Three of them, at three different parameter vectors: the residual `SwaptionCalibration.__call__`
+    hands the implicit-function wrapper, the scalar-and-gradient pair basin hopping reads, and the
+    residual-and-Jacobian pair `least_squares` reads. All bitwise. A gate that only compared the
+    residual would miss a `reduce` that differed, which is the one new thing in that path.
+    """
+    a_cal, a_world = identified_calibration(batch_size=2048, Objective='Monte_Carlo')
+    b_cal, b_world = identified_calibration(batch_size=2048)
+    assert a_world['block']['Objective'] == 'Monte_Carlo'
+    assert 'Objective' not in b_world['block'], 'the second block has to OMIT the field'
+    x0 = a_cal.optimizers[0][1]
+    for step in (0.0, 0.01, -0.005):
+        x = x0 * (1.0 + step)
+        a_basin, a_grad = a_cal.optimizers[0][2](x)
+        b_basin, b_grad = b_cal.optimizers[0][2](x)
+        assert float(a_basin) == float(b_basin) and np.array_equal(a_grad, b_grad), step
+        assert np.array_equal(a_cal.optimizers[1][2](x), b_cal.optimizers[1][2](x)), step
+        assert np.array_equal(a_cal.optimizers[1][3](x), b_cal.optimizers[1][3](x)), step
+        theta = torch.tensor(x, dtype=DTYPE)
+        assert torch.equal(a_cal(theta), b_cal(theta)), step
+
+
+def test_the_analytic_price_is_quanto_free_where_the_simulation_is_not():
+    """A FINDING ABOUT THE MONTE CARLO, taken and recorded rather than patched.
+
+    Schrager-Pelsser reads `J` alone - the covariance of the scaled martingales under the RATE
+    currency's own risk-neutral measure - so it prices the DOMESTIC swaption, which is the correct
+    measure for a domestic payoff whatever the base currency of the job. The Monte Carlo objective
+    simulates through the same `precalculate`, and that installs the quanto drift `K` into `KtT`,
+    so on a non-base-currency curve THE TWO OBJECTIVES ARE NOT PRICING UNDER THE SAME MEASURE.
+
+    Measured here, on the four benchmarks this gate prices: the identified fixture's ZAR curve made
+    foreign under a USD base, with a 15-20% FX vol curve and a 0.4 FX/IR correlation, at the
+    recorded theta* on one Sobol sample.
+
+        benchmark      MC premium, rho=0.4       rho=0      moves by     SP moves by
+        1Y x 1Y             0.006789635      0.006407690     +5.96%      0 (bitwise)
+        2Y x 5Y             0.039594307      0.036378626     +8.84%      0 (bitwise)
+        3Y x 3Y             0.030439928      0.027227734    +11.80%      0 (bitwise)
+        10Y x 10Y           0.066546269      0.059192866    +12.42%      0 (bitwise)
+
+    THE BENCHMARK SET IS PART OF THE READING. These are `CHECKER_BENCHMARKS`, and the block's
+    `Instrument_Definitions` set its `TimeGrid` and therefore its Sobol sample - swapping the third
+    row for a 5Y x 5Y moves that row to +14.08% AND the untouched 10Y x 10Y to +12.43%. So a table
+    taken on one set is not a reading of another, and this one names its set.
+
+    Which is 10.9 to 24.4 basis points of ATM normal vol - an ATM Bachelier premium is linear in the
+    vol, so the two percentages are the same percentage. Against the 0.13 to 2.17bp the
+    approximation itself costs, that is FIVE TO ELEVEN TIMES the worst corner of SP's own bias and
+    fifty to two hundred times its typical one. The disagreement is the MONTE CARLO'S - a domestic swaption
+    deflated domestically but simulated under the base measure's drift - and repairing it moves
+    every calibrated foreign-curve parameter set in existence, so it is a Known-defects row and a
+    decision rather than a patch. What this gate holds is the shape of the finding: the simulation
+    moves with the correlation and the analytic price does not move at all.
+    """
+    def quanto_world(correlation):
+        factors = identified_world()
+        factors['GBMAssetPriceTSModelParameters.{}'.format(ID_CCY)] = {
+            'Property_Aliases': None, 'Quanto_FX_Volatility': None, 'Quanto_FX_Correlation': 0.0,
+            'Vol': utils.Curve([], [(0.0, 0.15), (1.0, 0.15), (3.0, 0.17), (5.0, 0.18),
+                                    (10.0, 0.20)])}
+        factors['Correlation.FxRate.USD.{}/InterestRate.{}'.format(ID_CCY, ID_CCY)] = {
+            'Value': correlation}
+        return factors
+
+    reading = {}
+    for correlation in (0.4, 0.0):
+        world = identified_closure(benchmarks=CHECKER_BENCHMARKS, world=quanto_world(correlation),
+                                   base_currency='USD', batch_size=8192)
+        prices, _ = world['loss'](world['implied_var'])
+        analytic = {}
+        for name, swap in world['swaps'].items():
+            sp = world['process'].schrager_pelsser_swaption(
+                swap.schedule.expiry, swap.schedule.pay_times, swap.schedule.accruals)
+            analytic[name] = as_float(sp.premium)
+        reading[correlation] = ({k: as_float(v) for k, v in prices.items()}, analytic,
+                                float(world['process'].KtT[0].abs().max().detach()))
+
+    (mc_on, sp_on, k_on), (mc_off, sp_off, k_off) = reading[0.4], reading[0.0]
+    assert k_on > 0.0 and k_off == 0.0, (
+        'the quanto drift is {} with the correlation on and {} with it off - if the first is zero '
+        'this world is not quanto at all and the gate measures nothing'.format(k_on, k_off))
+    for name in mc_on:
+        assert sp_on[name] == sp_off[name], (
+            '{}: the analytic price moved with the FX/IR correlation, which it must not - it reads '
+            'J alone and J carries no quanto drift'.format(name))
+        moved = mc_on[name] / mc_off[name] - 1.0
+        assert 0.03 < moved < 0.25, (
+            '{}: the simulated premium moves {:+.2%} with the correlation against a recorded +5.96% '
+            'to +12.42% - this is the measure inconsistency, and it is the finding'.format(
+                name, moved))
+    # the size of it against the approximation it would be confused with: SP's own bias is at most
+    # 2.17bp on a ~180bp level, and the smallest quanto move here is five times that
+    assert min(mc_on[n] / mc_off[n] - 1.0 for n in mc_on) > 4.0 * (2.17 / 180.0)

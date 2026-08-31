@@ -288,9 +288,23 @@ on.
 The Sobol engine is seeded once, on the state the closure builds, and `reset` re-draws nothing once
 a sample exists — it clears `t_Buffer` and `t_PreCalc`, which is the memo trap, not the sample. So
 every evaluation the optimizer makes, every Jacobian, and the backward pass itself price the **same
-paths**, and `dθ/dq` is the derivative *conditional on that draw*. This is the same philosophy as a
-pinned `process_ofs`: the number reported is the derivative of the number reported, and a sample
-re-drawn per evaluation would have the optimizer — and then the ladder — differencing the noise.
+paths**, and `dθ/dq` is the derivative *conditional on that draw*.
+
+!!! note "There is a second objective now, and this page's contract is the Monte Carlo one"
+    `HullWhite2FactorModelParameters` declares `Objective`, `Monte_Carlo` by default — everything
+    above and below is that path, unchanged to the bit. `Analytic` prices the same benchmarks with
+    `schrager_pelsser_swaption` and differences NORMAL VOLS, **plain**, so `least_squares` sees the
+    quadratic it was written for and the two stages of the chain minimise the same function for the
+    first time. The [Model punchlist](roadmap.md#model-punchlist) carries the measurement:
+    `‖J'r‖` at θ\* falls from **8.24e3** on the quartic to **3.85e-6** on the plain residual — from
+    seven orders outside the declared `Stationarity_Tol` default to three orders inside it. That
+    path is **not on this page's chain**: `Quote_Sensitivity` with `Objective: 'Analytic'` REFUSES
+    by name, because the market vol enters that residual linearly through a closed-form Bachelier
+    inversion and its quote side is a build of its own rather than a corollary of this one.
+
+This is the same philosophy as a pinned `process_ofs`: the number reported is the derivative of
+the number reported, and a sample re-drawn per evaluation would have the optimizer — and then the
+ladder — differencing the noise.
 
 ### What the quote side closes, and what stays severed {#the-swaption-quote-side}
 
@@ -399,7 +413,10 @@ goes round the splice rather than through it.
     **On an over-determined block the chain does not get there.** It closes seven and a half of the
     eight orders between its seed and stationarity — 2.9e11 down to 8.6e3 — and stops, because it is
     minimising a QUARTIC in the pricing error and a quartic is flat enough near its minimum that the
-    relative-improvement test fires long before the gradient does. On a block quoting fewer swaptions
+    relative-improvement test fires long before the gradient does. The analytic objective is the
+    same chain over a residual that is not pre-squared, and on the same block it reaches
+    **3.85e-6** — so this is a property of the OBJECTIVE'S SHAPE and not of the optimizer, measured
+    from both sides. On a block quoting fewer swaptions
     than the model has parameters this never shows: the fit is then interpolating and `‖J'r‖` is
     small for free. It is the whole reason `θ*(q)` is the optimizer's stopping point rather than the
     argmin, and therefore the reason the classic oracle is unavailable here too.

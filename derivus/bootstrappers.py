@@ -46,10 +46,29 @@ def resolve_factor(name, price_factors, candidates):
         utils.Factor(x, rate)) in price_factors), rate)
 
 
-class market_swap_class(namedtuple('market_swap', 'deal_data price weight quote premium',
+class swaption_schedule_class(namedtuple('swaption_schedule', 'expiry pay_times accruals')):
+    """One benchmark swaption's FIXED leg, in the CURVE's own year fractions.
+
+    THE CLOCK IS THE DAY COUNT AND NOT `utils.DAYS_IN_YEAR`. `create_market_swaps` measures the
+    Black expiry it prices the market premium with in 365.25ths; `read_cache` builds
+    `time_grid_years` - and therefore the grid every `J` integral is taken on - with the interest
+    rate factor's own `get_day_count_accrual`. The two are 7e-4 years apart at a 1Y expiry, which
+    is enough to miss the grid node the benchmark put there, so this is converted ONCE here where
+    both the schedule and the curve are in hand. `schrager_pelsser_swaption` says the same thing
+    from its own side and leaves the conversion to its caller; this is that caller.
+
+    `accruals` and `pay_times` are the FIXED leg's, because the annuity is the fixed leg's. Where
+    the two legs share a frequency there is no separate fixed schedule - `set_fixed_amount` writes
+    the coupon into the float leg's own `FixedAmt` column against that leg's year fractions - so
+    the leg this reads is the leg the coupon was struck on either way.
+    """
+
+
+class market_swap_class(namedtuple('market_swap', 'deal_data price weight schedule quote premium',
                                    defaults=(None, None))):
     """One benchmark swaption of a risk-neutral IR calibration: the compiled par swap, the market
-    premium the model has to reproduce, and the weight it carries in the objective.
+    premium the model has to reproduce, the weight it carries in the objective, and the fixed leg
+    the analytic objective reads.
 
     `quote` and `premium` are the QUOTE SIDE and are ABSENT by default - the float64 leaf the market
     number arrived on, and the MAP from that leaf to this swaption's premium. See
@@ -91,6 +110,49 @@ class market_swap_class(namedtuple('market_swap', 'deal_data price weight quote 
         carried = self.weight * resid(100.0 * (self.premium(self.quote) / model.detach() - 1.0))
         return base + (carried - carried.detach()).to(base.dtype)
 
+    def market_normal_vol(self, annuity):
+        """This swaption's market premium as an ATM NORMAL (Bachelier) vol, in closed form.
+
+        At the money the Bachelier premium is $A\\sigma_N\\sqrt{T_0/2\\pi}$ - the normal density is
+        evaluated only at zero and the cumulative only at a half - so the inversion is a DIVISION
+        and not a root find:
+
+        $$\\sigma_N = \\frac{P}{A}\\sqrt{\\frac{2\\pi}{T_0}}$$
+
+        Every quoting convention this family carries therefore rides in THROUGH THE PREMIUM, exactly
+        as it does on the Monte Carlo path: a `Market_Volatility` on the row, the surface's ATM read
+        where that column is zero, a shifted-lognormal displacement, a premium file, a
+        `Volatility_Delta` bump and its brentq re-strike. `create_market_swaps` has already turned
+        every one of them into `self.price`, so nothing here re-reads a quote and no convention can
+        be inherited by half.
+
+        `annuity` is the ANALYTIC price's own annuity, off the same t=0 curve - one spelling, so the
+        residual below is the premium residual divided by a positive constant and the two sides
+        cannot disagree about which discount factors a swaption is worth. It is built in numpy on
+        that price (`schrager_pelsser_swaption` reads $P(0,T)$ with `current_value`), so it carries
+        no derivative in theta and the model half of the residual is the only half that does.
+        """
+        return self.price * np.sqrt(2.0 * np.pi / self.schedule.expiry) / annuity
+
+    def normal_vol_error(self, swaption):
+        """This swaption's weighted normal-vol residual against the market, PLAIN.
+
+        VOLS AGAINST VOLS AND NOT SQUARED, which is the whole of what the analytic objective buys.
+        `error` above returns a residual that is ALREADY a square, so `least_squares` minimises a
+        QUARTIC in the pricing error and $J = \\partial r/\\partial\\theta$ carries a factor of that
+        error in every row: at an exact fit $J$ is not merely small, it is zero, and near one the
+        relative-improvement test fires long before the gradient does - eight orders short of
+        stationarity on the repository's own identified block
+        ([Quote Sensitivities](quote_sensitivities.md#the-stationarity-contract) has the reading).
+        Here the residual is the difference itself and `least_squares` does the squaring, which is
+        its job.
+
+        The units are absolute normal vol, not basis points and not a percentage of the market, so
+        `Weight` means on this path what it means on the other one - a relative weight between
+        benchmarks - and the block's `Stationarity_Tol` is per block either way.
+        """
+        return self.weight * (swaption.normal_vol - self.market_normal_vol(swaption.annuity))
+
 
 date_desc = {'years': 'Y', 'months': 'M', 'days': 'D'}
 # date formatter
@@ -112,10 +174,21 @@ class RiskNeutralInterestRate_State(utils.Calculation_State):
     def t_random_numbers(self):
         return self.t_random_batch[self.batch_index]
 
-    def reset(self, num_batches, numfactors, time_grid):
-        # clear the buffers
+    def clear(self):
+        """The memo trap, and the ONE spelling of it.
+
+        `t_Buffer` is keyed by factor and time and `t_PreCalc` by factor and integrand - neither by
+        the tensor's identity - so a state carried across two parameter sets would answer the second
+        call with the first call's curves. Both objectives clear this before every evaluation; only
+        the Monte Carlo one goes on to need a sample, which is why `reset` and this are two calls
+        rather than one.
+        """
         self.t_Buffer.clear()
         self.t_PreCalc.clear()
+
+    def reset(self, num_batches, numfactors, time_grid):
+        # clear the buffers
+        self.clear()
 
         if self.t_random_batch is None:
             # the sobol engine in torch > 1.8 goes up to dimension 21201 - so this should be fine
@@ -185,6 +258,13 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
     one carries the PREMIUM itself and the map is the identity. The vol surface's own interpolation
     is numpy (`RectBivariateSpline`), so the leaf is the ATM vol AT this swaption's expiry and
     tenor rather than a node of the surface.
+
+    THE SCHEDULE THE ANALYTIC OBJECTIVE READS is extracted here and nowhere else. Both leg
+    generators have already run by the time the premium is priced, so the fixed leg's pay days and
+    accruals are in hand and converting them to the curve's own year fractions is a line - see
+    `swaption_schedule_class` for why that clock and not the 365.25 the Black expiry above uses. It
+    is built for EVERY benchmark whatever the block's `Objective`, because a second extraction
+    behind a switch is exactly how the two would drift apart, and it costs two numpy reads.
     """
     # a premium bumped by `Volatility_Delta` reaches the residual through a brentq implied-vol
     # solve, and a numerical root find carries no derivative - so the quote side declines it
@@ -238,8 +318,17 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
             # set the float leg fixed amount
             float_cash.schedule[fixed_indices, utils.CASHFLOW_INDEX_FixedAmt] = \
                 -fixed_cash[:, utils.CASHFLOW_INDEX_FixedAmt]
+            fixed_schedule = fixed_cash.schedule
         else:
             float_cash.set_fixed_amount(-K)
+            fixed_schedule = float_cash.schedule
+
+        # the annuity's own leg, in the CURVE's year fractions - see `swaption_schedule_class`
+        schedule = swaption_schedule_class(
+            expiry=float(curve_factor.get_day_count_accrual(base_date, exp_days)),
+            pay_times=curve_factor.get_day_count_accrual(
+                base_date, fixed_schedule[:, utils.CASHFLOW_INDEX_Pay_Day]),
+            accruals=fixed_schedule[:, utils.CASHFLOW_INDEX_Year_Frac].copy())
 
         # get the atm vol
         if instrument['Market_Volatility'].amount:
@@ -288,7 +377,7 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
         # store this
         all_deals[swaption_name] = market_swap_class(
             deal_data=deal_data, price=swaption_price, weight=instrument['Weight'],
-            quote=quote, premium=premium)
+            schedule=schedule, quote=quote, premium=premium)
 
         # store the benchmark
         if rate is not None:
@@ -2291,14 +2380,38 @@ class GBMAssetPriceTSModelParameters(object):
                         market_price, ', '.join('{:g}'.format(expiry) for expiry in floored)))
 
 
+class swaption_objective_class(namedtuple('swaption_objective', 'loss reduce reprice')):
+    """What a risk-neutral swaption calibration MINIMISES, as one record: the residual closure, the
+    scalar the optimizer chain compares two candidates with, and the estimator that audits the
+    answer.
+
+    `loss(implied_var)` is `(model value per benchmark, residual per benchmark)`. The model value is
+    a PREMIUM under either objective, which is what keeps `SwaptionCalibration.solve`'s log one
+    thing rather than two; the residual is the objective's own and the two are not the same shape.
+
+    `reduce(residuals)` is the scalar, and it exists because THE TWO STAGES OF THE CHAIN DO NOT
+    MINIMISE THE SAME FUNCTION ON THE MONTE CARLO PATH. `market_swap_class.error` returns a residual
+    that is already a square, so basin hopping's `sum(r)` is the sum of squared pricing errors -
+    quadratic, correct - while `least_squares` minimises `sum(r^2)` and is therefore looking at a
+    quartic. On the analytic path the residual is PLAIN, so `sum(r^2)` is both stages' objective and
+    the chain agrees with itself for the first time. Written once here and read by the basin adapter
+    and by `solve`'s acceptance test, so the two cannot answer differently. It takes a numpy array
+    or a torch tensor because those are the two places the chain hands it one.
+
+    `reprice` is the Monte Carlo closure on a block that solved ANALYTICALLY, and `None` otherwise -
+    see `SwaptionCalibration.honesty_reprice`.
+    """
+
+
 class SwaptionCalibration(object):
     """One risk-neutral swaption calibration as an operand: the residual, and the solve over it.
 
-    The residual is what `calc_loss_on_ir_curve` builds - one weighted relative pricing error per
-    `Instrument_Definitions` row, priced by brute-force Monte Carlo under a FROZEN Sobol sample -
-    and the solve is the optimizer chain `calc_loss` hands over. Holding both beside the parameter
-    dict they share is what lets `LeastSquaresSolve` run the ordinary solve in its forward pass and
-    then differentiate the same residual in its backward.
+    The residual is what `calc_loss_on_ir_curve` builds - one weighted error per
+    `Instrument_Definitions` row, from benchmarks priced by brute-force Monte Carlo under a FROZEN
+    Sobol sample or by the Schrager-Pelsser closed form, per the block's `Objective` - and the solve
+    is the optimizer chain `calc_loss` hands over. Holding both beside the parameter dict they share
+    is what lets `LeastSquaresSolve` run the ordinary solve in its forward pass and then
+    differentiate the same residual in its backward.
 
     The parameter vector is FLAT here and a dict everywhere else: scipy takes a vector, the process
     takes `{name: tensor}`, and the two scipy adapters own that boundary with `tn_var.data =
@@ -2307,9 +2420,9 @@ class SwaptionCalibration(object):
     needs an edge from the residual back to the parameters and `.data` is exactly what severs one.
     """
 
-    def __init__(self, name, loss_fn, implied_var, optimizers, process, market_swaps):
+    def __init__(self, name, objective, implied_var, optimizers, process, market_swaps):
         self.name = name
-        self.loss_fn = loss_fn
+        self.objective = objective
         self.implied_var = implied_var
         self.optimizers = optimizers
         self.process = process
@@ -2350,7 +2463,35 @@ class SwaptionCalibration(object):
         the same number the solve stopped on - the float64 promotion belongs to the linear algebra
         downstream, not to the pricing.
         """
-        return torch.stack(list(self.loss_fn(self.split(x))[1].values()))
+        return torch.stack(list(self.objective.loss(self.split(x))[1].values()))
+
+    def honesty_reprice(self, theta):
+        """What the ENGINE'S OWN estimator makes of an analytically-solved theta*, or `None`.
+
+        An analytic objective fits the Schrager-Pelsser normal vols, and Schrager-Pelsser freezes
+        the annuity's weights - so a block that solved this way has never once been asked what the
+        Monte Carlo the rest of the library prices with thinks of the answer. One pass of that
+        estimator at theta*, at the block's own path count, and the worst benchmark's relative
+        premium residual is REPORTED BY NAME. It is not a check with a tolerance and it does not
+        move theta*: the calibration states what its own simulation reads, the way the component
+        Heston-Nandi fit reports itself CAPPED rather than claiming a tolerance it did not meet.
+
+        The residual is on the PREMIUM and not the vol, deliberately: the vol gap is what the
+        approximation costs and is measured elsewhere, while the premium gap is what a mark moves
+        by, and it also carries the simulation's own numeraire error - which on a curve with no
+        short tenors is the larger of the two (`tests/test_hw2f_analytic.py` has both).
+        """
+        if self.objective.reprice is None:
+            return None
+        # `.data` on a CLONE, not on the view: the scipy adapters own that seam and a leaf left
+        # aliasing theta's storage would move with anything that later wrote through theta
+        for name, value in self.split(theta).items():
+            self.implied_var[name].data = value.detach().clone()
+        prices, _ = self.objective.reprice(self.implied_var)
+        errors = {name: float(value.detach()) / self.market_swaps[name].price - 1.0
+                  for name, value in prices.items()}
+        worst = max(errors, key=lambda name: abs(errors[name]))
+        return worst, errors[worst]
 
     def solve(self):
         """theta* as a flat tensor: the optimizer chain, run exactly as a bootstrap runs it.
@@ -2358,9 +2499,16 @@ class SwaptionCalibration(object):
         Basin hopping then least squares, `x0` chained from one to the next, and a candidate is
         ACCEPTED only if it beats the running best AND the process it implies is well posed - so
         the answer can be the seed, which is what `LeastSquaresSolve` checks stationarity for.
+
+        THE ACCEPTANCE TEST COMPARES ONE SCALAR ACROSS THREE PLACES - the seed, basin hopping's own
+        minimum and the least-squares one - so that scalar is `objective.reduce` and not a `sum`
+        spelled three times. On the Monte Carlo path it IS that sum, to the bit, because the
+        residual is already squared there; on the analytic path it is the sum of squares, which is
+        what `least_squares` minimises and what basin hopping is handed.
         """
-        calibrated_swaptions, errors = self.loss_fn(self.implied_var)
-        batch_loss = torch.stack(list(errors.values())).sum().cpu().detach().numpy()
+        calibrated_swaptions, errors = self.objective.loss(self.implied_var)
+        batch_loss = self.objective.reduce(
+            torch.stack(list(errors.values()))).cpu().detach().numpy()
         vars = {k: v.cpu().detach().numpy() for k, v in self.implied_var.items()}
         # initialize the soln with the current values
         soln = (batch_loss, vars)
@@ -2389,10 +2537,10 @@ class SwaptionCalibration(object):
             elif optim[0] == 'leastsq':
                 result = scipy.optimize.least_squares(
                     optim[2], x0=x0, jac=optim[3], bounds=optim[4])
-                batch_loss = optim[2](result['x']).sum()
+                batch_loss = self.objective.reduce(optim[2](result['x']))
 
             if batch_loss < soln[0] and self.process.params_ok:
-                sim_swaptions, errors = self.loss_fn(self.implied_var)
+                sim_swaptions, errors = self.objective.loss(self.implied_var)
                 vars = {k: v.cpu().detach().numpy() for k, v in self.implied_var.items()}
                 soln = (batch_loss, vars)
                 logging.info('{} - run {} - Batch loss {}'.format(self.name, op_loop, batch_loss))
@@ -2486,10 +2634,18 @@ class LeastSquaresSolve(torch.autograd.Function):
 class RiskNeutralInterestRateModel(object):
     def __init__(self, param, device, dtype):
         self.param = param
-        self.num_batches = 1
-        self.batch_size = 8192
         self.device = device
         self.prec = dtype
+        #: The Monte Carlo objective's sample shape, DECLARED (`Simulations` / `Batches`) and read
+        #: off the block by `calc_loss_on_ir_curve`. They are a REPORT of the last block built and
+        #: nothing reads them to price: the residual closure captures its own shape as LOCALS,
+        #: because `bootstrap` runs every curve in `market_prices` through ONE bootstrapper and a
+        #: closure reaching through `self` would divide by the NEXT block's sample count - long
+        #: after its own block was solved, since `LeastSquaresSolve` keeps that residual alive to
+        #: differentiate it in a backward that runs after the whole loop. They are not defaults
+        #: either, because a default spelled here as well as in the declaration is two defaults.
+        self.batch_size = None
+        self.num_batches = None
         #: What a block asking for `Quote_Sensitivity` leaves behind: theta* STILL CONNECTED to its
         #: quotes, one entry per named model parameter, and the quote leaf per block.
         #: `Config.bootstrap` harvests both - they are tensors, so they cannot live in
@@ -2499,9 +2655,22 @@ class RiskNeutralInterestRateModel(object):
 
     def calc_loss_on_ir_curve(self, implied_params, base_date, time_grid, process,
                               implied_obj, ir_factor, vol_surface, resid=lambda x: x * x, jac=False):
-        """The swaption calibration's residual closure: implied parameters in, one weighted relative
-        pricing error per benchmark out, priced by brute-force Monte Carlo through the engine's own
-        `pv_float_cashflow_list`.
+        """The swaption calibration's residual closure: implied parameters in, one weighted error
+        per benchmark out.
+
+        TWO OBJECTIVES, ONE DECLARED SWITCH. `Objective` is `Monte_Carlo` by default and that path
+        is what it always was, to the bit: each benchmark priced by brute-force Monte Carlo through
+        the engine's own `pv_float_cashflow_list`, and the residual the weighted relative pricing
+        error, ALREADY SQUARED. `Analytic` prices the same benchmarks with
+        `stochasticprocess.HullWhite2FactorImpliedInterestRateModel.schrager_pelsser_swaption` and
+        differences NORMAL VOLS, plain - see `market_swap_class.normal_vol_error` for why the
+        squaring is the thing that path exists to retire, and the Model punchlist on the roadmap for
+        the measurement that says the approximation is good enough to be an objective at all (SP
+        sits inside one Monte Carlo evaluation's own noise at 22 of 25 benchmarks, and is the more
+        accurate of the two over most of the grid).
+
+        The Monte Carlo closure is built EITHER WAY: on an analytic block it is not the objective
+        but the auditor, and `SwaptionCalibration.honesty_reprice` runs it once at theta*.
 
         COMMON RANDOM NUMBERS ARE FROZEN PER SOLVE. The Sobol engine is built once, on the state
         this call creates - `reset` re-seeds nothing once `t_random_batch` exists - so every
@@ -2509,7 +2678,22 @@ class RiskNeutralInterestRateModel(object):
         parameters rather than the sample. What `reset` DOES clear is `t_Buffer` and `t_PreCalc`,
         which is the memo trap: those tables are keyed by factor and time, not by the tensor's
         identity, so a state carried across two parameter sets would answer the second call with
-        the first call's curves.
+        the first call's curves. `clear` is that half on its own, which is all the analytic path
+        needs - it draws no sample. THE SAMPLE SHAPE IS FROZEN WITH THE PATHS, as LOCALS:
+        `bootstrap` builds every curve in `market_prices` on ONE bootstrapper, and this residual
+        outlives its own block - `LeastSquaresSolve` holds it to differentiate in a backward that
+        runs after the whole loop - so a closure dividing by `self.batch_size` would be rescaled by
+        the NEXT block's declaration. See `__init__`, and
+        `test_a_second_block_does_not_rescale_the_first_blocks_residual` for the reading.
+
+        THE BATCH LOOP CLEARS `t_Buffer` AND NOT `t_PreCalc`. `calc_time_grid_curve_rate` keys its
+        cache on the curve code and the time grid rather than on the batch, so with the clear only
+        outside the loop every batch after the first gathered batch zero's simulated curve straight
+        back out of the buffer: `Batches` bought nothing and cost its own multiple of the wall
+        clock, bit-identically (it was a Known-defects row, and `tests/test_hw2f_analytic.py` holds
+        both the reading and the repair). `t_PreCalc` holds `precalculate`'s integrals, which are a
+        function of theta rather than of the sample, so clearing it per batch would re-integrate
+        them N times for the same numbers.
 
         THE QUOTE SIDE severs at the market price and nowhere else. `swap.price` is a numpy scalar,
         built out of scipy by `create_market_swaps`, so the swaption vol behind it reaches the
@@ -2522,17 +2706,42 @@ class RiskNeutralInterestRateModel(object):
         the third is the surface-node-to-ATM map, which is a quote of the surface rather than of the
         swaption.
         """
+        block = implied_params['instrument']
+        objective = block.get('Objective', 'Monte_Carlo')
+        quote_sensitivity = block.get('Quote_Sensitivity', 'No')
+        if objective not in ('Monte_Carlo', 'Analytic'):
+            raise Exception(
+                "Swaption calibration: Objective '{}' is not one this family prices - it is "
+                "'Monte_Carlo' (the default: every benchmark through the engine's own Monte Carlo) "
+                "or 'Analytic' (the Schrager-Pelsser normal vols). Correct the block's Objective "
+                "to one of those two".format(objective))
+        if objective == 'Analytic' and quote_sensitivity == 'Yes':
+            raise Exception(
+                'Swaption calibration: Quote_Sensitivity is not built on the Analytic objective. '
+                'The market vol enters that residual LINEARLY, through the closed-form Bachelier '
+                'inversion of the premium, so the quote side there is nearly trivial and deserves '
+                'its own gated build rather than riding this one. Set Objective to Monte_Carlo for '
+                'a quote-differentiable solve today; the analytic quote side is the next step and '
+                'is a roadmap row in its own name')
+        # the sample shape is DECLARED - see `__init__` for why it is not defaulted twice, and why
+        # the closures below capture THESE rather than the attributes they are mirrored onto
+        batch_size = int(block.get('Simulations', 8192))
+        num_batches = int(block.get('Batches', 1))
+        self.batch_size, self.num_batches = batch_size, num_batches
 
         def loss(implied_var):
             # first, reset the shared_mem
-            shared_mem.reset(self.num_batches, numfactors, time_grid)
+            shared_mem.reset(num_batches, numfactors, time_grid)
             # now set up the calc
             process.precalculate(base_date, time_grid, stoch_var, shared_mem, 0, implied_tensor=implied_var)
             tensor_swaptions = {}
             # needed to interpolate the zero curve
             delta_scen_t = np.diff(time_grid.scen_time_grid).reshape(-1, 1)
 
-            for batch_index in range(self.num_batches):
+            for batch_index in range(num_batches):
+                # the curve memo is keyed by curve and time and NOT by batch, so without this every
+                # batch after the first re-reads batch zero - see the docstring. `t_PreCalc` stays.
+                shared_mem.t_Buffer.clear()
                 # load up the batch
                 shared_mem.batch_index = batch_index
                 # simulate the price factor - only need the full curve at the mtm time points
@@ -2557,10 +2766,33 @@ class RiskNeutralInterestRateModel(object):
                     else:
                         tensor_swaptions[swaption_name] = sum_swaption
 
-            calibrated_swaptions = {k: v / (self.batch_size * self.num_batches) for k, v in tensor_swaptions.items()}
+            calibrated_swaptions = {k: v / (batch_size * num_batches) for k, v in tensor_swaptions.items()}
             errors = {k: swap.error(calibrated_swaptions[k], resid)
                       for k, swap in market_swaps.items()}
             return calibrated_swaptions, errors
+
+        def analytic_loss(implied_var):
+            """The same benchmarks, priced by Schrager-Pelsser, differenced as NORMAL VOLS.
+
+            `precalculate` is the differentiable path that builds H, I and J and it is the ONLY
+            thing this closure runs - no sample is drawn, no curve is simulated, and the price is
+            assembled from the arrays that pass already left behind. So the two objectives share
+            their whole front half: the same reversion-speed floors, the same series branches, the
+            same `params_ok`, and the same `Correlation` off the same leaves.
+
+            `clear` and not `reset`: the memo tables have to go per evaluation for the reason the
+            docstring gives, but the Sobol draw would be paid for nothing.
+            """
+            shared_mem.clear()
+            process.precalculate(
+                base_date, time_grid, stoch_var, shared_mem, 0, implied_tensor=implied_var)
+            swaptions = {name: process.schrager_pelsser_swaption(
+                market_data.schedule.expiry, market_data.schedule.pay_times,
+                market_data.schedule.accruals)
+                for name, market_data in market_swaps.items()}
+            return ({name: swaption.premium for name, swaption in swaptions.items()},
+                    {name: market_swaps[name].normal_vol_error(swaption)
+                     for name, swaption in swaptions.items()})
 
         # set up the stochastic factors
         stochastic_factors = {ir_factor: process}
@@ -2575,14 +2807,13 @@ class RiskNeutralInterestRateModel(object):
         curve_index = [(c_index[utils.FACTOR_INDEX_Stoch], index_keys['full']) + c_index[2:]]
         curve_index_reduced = [(c_index[utils.FACTOR_INDEX_Stoch], index_keys['reduced']) + c_index[2:]]
         # set up a common context - we leave out the random numbers and pass it in explicitly below
-        shared_mem = RiskNeutralInterestRate_State(index_keys, self.batch_size, self.device, self.prec)
+        shared_mem = RiskNeutralInterestRate_State(index_keys, batch_size, self.device, self.prec)
         # calc the market swap rates and instrument_definitions - the unit tensor is what switches
         # the quote side on, and puts its leaves on the calculation's own device
         market_swaps, benchmarks = create_market_swaps(
             base_date, time_grid, curve_index, vol_surface, process.factor,
-            implied_params['instrument']['Instrument_Definitions'], ir_factor.name,
-            shared_mem.one if implied_params['instrument'].get(
-                'Quote_Sensitivity', 'No') == 'Yes' else None)
+            block['Instrument_Definitions'], ir_factor.name,
+            shared_mem.one if quote_sensitivity == 'Yes' else None)
         # number of random factors to use
         numfactors = process.num_factors()
         # the calibration swaps are compiled here rather than by a DealStructure, so they bind here
@@ -2597,10 +2828,18 @@ class RiskNeutralInterestRateModel(object):
             implied_var[param_name] = torch.tensor(
                 param_value, dtype=self.prec, device=self.device, requires_grad=True)
 
+        # `reduce` squares on the analytic path because the residual does not, and `reprice` is the
+        # Monte Carlo standing by as the auditor rather than as the objective - see
+        # `swaption_objective_class` for both. The switch is read ONCE, here.
+        chosen = swaption_objective_class(
+            loss=analytic_loss, reduce=lambda r: (r * r).sum(), reprice=loss
+        ) if objective == 'Analytic' else swaption_objective_class(
+            loss=loss, reduce=lambda r: r.sum(), reprice=None)
+
         if jac:
-            return stoch_var, implied_var, loss
+            return stoch_var, implied_var, chosen.loss
         else:
-            return implied_var, loss, market_swaps, benchmarks
+            return implied_var, chosen, market_swaps, benchmarks
 
     def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices, calendars, debug=None):
         base_date = sys_params['Base_Date']
@@ -2654,7 +2893,7 @@ class RiskNeutralInterestRateModel(object):
                 time_grid.set_base_date(base_date, delta=(10, vol_tenors * utils.DAYS_IN_YEAR))
 
                 # calculate the error
-                loss_fn, optimizers, implied_var, market_swaptions, benchmarks = self.calc_loss(
+                objective, optimizers, implied_var, market_swaptions, benchmarks = self.calc_loss(
                     implied_params, base_date, time_grid, process, implied_obj, ir_factor, swaptionvol)
 
                 if debug is not None:
@@ -2667,7 +2906,8 @@ class RiskNeutralInterestRateModel(object):
                 # check the time
                 time_now = time.monotonic()
                 calibration = SwaptionCalibration(
-                    market_factor.name[0], loss_fn, implied_var, optimizers, process, market_swaptions)
+                    market_factor.name[0], objective, implied_var, optimizers, process,
+                    market_swaptions)
                 # the chain goes through the implicit-function wrapper either way: with no quotes
                 # on the tape no edge is recorded and the wrapper is a pass-through, which is what
                 # makes "gradients cannot move theta*" structural rather than a claim
@@ -2676,6 +2916,15 @@ class RiskNeutralInterestRateModel(object):
                     float(implied_params['instrument'].get('Jacobian_Rcond', 1e-8)),
                     float(implied_params['instrument'].get('Stationarity_Tol', 1e-3)),
                     *calibration.quotes)
+
+                # what the engine's OWN estimator makes of an analytically-solved theta*, reported
+                # by name rather than checked against a tolerance - see `honesty_reprice`
+                reprice = calibration.honesty_reprice(theta)
+                if reprice is not None:
+                    logging.info(
+                        '{} - Analytic objective - at theta* the engine\'s own Monte Carlo prices '
+                        'its worst benchmark, {}, {:+.2f}% away from market'.format(
+                            market_factor.name[0], reprice[0], 100.0 * reprice[1]))
 
                 # save this - `unflatten` detaches, so `Price Factors` gets plain numpy
                 self.save_params(calibration.unflatten(theta), price_factors, implied_obj, rate)
@@ -2766,6 +3015,25 @@ scipy.optimize.leastsq.html) are used.',
               description='The quoted ATM vol; 0 reads the swaption surface'),
             F('Weight', 'Float', description='Relative weight in the objective')]),
           description='The forward starting swaps the swaptions are struck on'),
+        F('Objective', 'Text', default='Monte_Carlo', values=['Monte_Carlo', 'Analytic'],
+          description='What the solve minimises. Monte_Carlo prices every benchmark through the '
+                      'engine\'s own paths and differences the squared relative PREMIUM error, '
+                      'which is what this family has always done. Analytic prices them with the '
+                      'Schrager-Pelsser closed form and differences NORMAL VOLS, plain - so the '
+                      'chain minimises a quadratic in the pricing error rather than a quartic, and '
+                      'the objective is deterministic in the sample. Monte_Carlo stays the default '
+                      'and the oracle: the analytic price sits inside one Monte Carlo evaluation\'s '
+                      'own noise at 22 of the 25 benchmarks it was measured on, and outside it only '
+                      'on the 10Y tenor column. Quote_Sensitivity is not built on the analytic path'),
+        F('Simulations', 'Integer', default=8192,
+          description='Paths per batch the Monte Carlo objective prices its benchmarks on, from a '
+                      'Sobol sample frozen for the whole solve. Ignored by the Analytic objective, '
+                      'which draws none - except by its honesty reprice, which prices at this count'),
+        F('Batches', 'Integer', default=1,
+          description='How many such batches. The sample is Simulations x Batches Sobol points '
+                      'drawn once and walked a block at a time, so batches buy PATHS at the cost '
+                      'of wall clock while leaving the memory one batch needs where it was: '
+                      '(2048 x 4) is the same estimate as (8192 x 1) to one ulp'),
         F('Random_Seed', 'Integer', default=5120,
           description='Seeds the basin-hopping random search - the step taker and the Metropolis '
                       'accept test both draw from it. Without it the search draws from the process '
@@ -2777,7 +3045,8 @@ scipy.optimize.leastsq.html) are used.',
                       'row\'s Market_Volatility, the surface\'s ATM read, or the premium - so the '
                       'residual differentiates in the quote as well as in the model parameters. '
                       'The splice is worth exactly zero in the forward pass, so the calibrated '
-                      'parameters are identical either way'),
+                      'parameters are identical either way. Refused on the Analytic objective, '
+                      'which has its own quote side still to build'),
         F('Jacobian_Rcond', 'Float', default=1e-8,
           description='Relative cutoff on the eigenvalues of the Gauss-Newton matrix J\'J when the '
                       'backward pass inverts it. J has one row per benchmark and 23 columns, so '
@@ -2850,8 +3119,16 @@ scipy.optimize.leastsq.html) are used.',
 
             return bounds_check, basin_step
 
-        def make_basin_hopping_loss(loss_fn, implied_vars, device, with_grad=False):
-            # makes it possible to call the scipy basinhopper
+        def make_basin_hopping_loss(objective, implied_vars, device, with_grad=False):
+            """The scipy basinhopper's scalar-and-gradient adapter over the residual closure.
+
+            The scalar is `objective.reduce` and not a `sum` written here, because `solve`'s
+            acceptance test compares this number against the one it reads off the least-squares
+            stage - see `swaption_objective_class` for what the two objectives put in it, and why
+            only the analytic one has both stages minimising the same function.
+            """
+            loss_fn = objective.loss
+
             def basin_hopper(x):
                 for tn_var, np_var in zip(implied_vars.values(), np.split(x, split_param)):
                     tn_var.grad = None
@@ -2863,7 +3140,7 @@ scipy.optimize.leastsq.html) are used.',
                     print("Warning x ({}) - {}".format(x, e.args))
                     return 100.0 * sum(len_vars), [100.0 * sum(len_vars)] * sum(len_vars)
                 else:
-                    total_loss = torch.sum(torch.stack(list(error.values())))
+                    total_loss = objective.reduce(torch.stack(list(error.values())))
                     if with_grad:
                         total_loss.backward()
                         grad = torch.cat([x.grad for x in implied_vars.values()]).cpu().detach().numpy()
@@ -2900,7 +3177,7 @@ scipy.optimize.leastsq.html) are used.',
             return least_squares, jacobian
 
         # get the swaption error and market values
-        implied_var_dict, loss_fn, market_swaptions, benchmarks = self.calc_loss_on_ir_curve(
+        implied_var_dict, objective, market_swaptions, benchmarks = self.calc_loss_on_ir_curve(
             implied_params, base_date, time_grid, process, implied_obj, ir_factor, vol_surface)
 
         bounds = []
@@ -2920,14 +3197,16 @@ scipy.optimize.leastsq.html) are used.',
         bounds_ok, make_step = make_basin_callbacks(
             0.125, self.sigma_bounds, self.alpha_bounds, self.corr_bounds, rng)
 
-        basin_hopper_fn_grad = make_basin_hopping_loss(loss_fn, implied_var_dict, self.device, True)
+        # the two adapters are the objective's, whichever objective the block declared: the analytic
+        # residual reaches scipy through the same two seams and the same `.data` boundary
+        basin_hopper_fn_grad = make_basin_hopping_loss(objective, implied_var_dict, self.device, True)
         x0 = torch.cat(list(implied_var_dict.values())).cpu().detach().numpy()
-        lsq_fn, jacobian = make_least_squares_loss(loss_fn, implied_var_dict, self.device)
+        lsq_fn, jacobian = make_least_squares_loss(objective.loss, implied_var_dict, self.device)
 
         optimizers = [('basin', x0, basin_hopper_fn_grad, make_step, bounds_ok, var_to_bounds, rng),
                       ('leastsq', x0, lsq_fn, jacobian, list(zip(*var_to_bounds)))]
 
-        return loss_fn, optimizers, implied_var_dict, market_swaptions, benchmarks
+        return objective, optimizers, implied_var_dict, market_swaptions, benchmarks
 
     def implied_process(self, base_currency, price_factors, price_models, ir_curve, rate):
         vol_tenors = np.array([0, 1, 3, 6, 12, 24, 48, 72, 96, 120]) / 12.0
