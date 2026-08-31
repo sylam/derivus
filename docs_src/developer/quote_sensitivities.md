@@ -16,6 +16,18 @@
     `dV/dq` at every one of those coordinates. The last non-goal of increment 3, "no differentiable
     Malz solve", is [retracted below](#the-retraction).
 
+    **And the HW2F calibration's second objective is on the chain too — as the DEFAULT.**
+    `Objective: 'Analytic'` used to REFUSE `Quote_Sensitivity` by name; it is
+    [built and gated](#the-analytic-quote-side), off the same quote leaf and through the same
+    wrapper, and what it buys is a residual that is **separable** in (θ, q) — one of the two terms
+    Gauss–Newton drops is then structurally zero and the other is 8.75e-4 rather than a half. It
+    also lets [the re-solve oracle be tried on a solve that actually reaches its minimum](#the-re-solve-fourth-time),
+    which is the fourth refutation of that reference and the one that says why. That build was one
+    of the two prerequisites for the **2026-08-31 default flip** — a declared field cannot become
+    the default while it refuses another declared field — and the flip is
+    [ruled and recorded](roadmap.md#model-punchlist). `Monte_Carlo` remains fully supported as the
+    engine's own estimator and as this page's oracle.
+
 The autograd tape started at *calibrated* factors, so a greek was reported in zero-curve-node or
 model-parameter space. Desks explain P&L in **quote** space — par swap rates, FRA strips, OIS
 quotes, swaption vols. This workstream extends the tape one layer upstream, by owning the
@@ -290,17 +302,29 @@ a sample exists — it clears `t_Buffer` and `t_PreCalc`, which is the memo trap
 every evaluation the optimizer makes, every Jacobian, and the backward pass itself price the **same
 paths**, and `dθ/dq` is the derivative *conditional on that draw*.
 
-!!! note "There is a second objective now, and this page's contract is the Monte Carlo one"
-    `HullWhite2FactorModelParameters` declares `Objective`, `Monte_Carlo` by default — everything
-    above and below is that path, unchanged to the bit. `Analytic` prices the same benchmarks with
-    `schrager_pelsser_swaption` and differences NORMAL VOLS, **plain**, so `least_squares` sees the
-    quadratic it was written for and the two stages of the chain minimise the same function for the
-    first time. The [Model punchlist](roadmap.md#model-punchlist) carries the measurement:
+!!! note "There is a second objective, it is the DEFAULT now, and everything until [its own section](#the-analytic-quote-side) is the Monte Carlo one"
+    `HullWhite2FactorModelParameters` declares `Objective`. Everything from here to that section is
+    the `Monte_Carlo` path — unchanged to the bit, and a block wanting it now **names** it, because
+    since **2026-08-31** the declared default is `Analytic`. That path prices the same benchmarks
+    with `schrager_pelsser_swaption` and differences NORMAL VOLS, **plain**, so `least_squares` sees
+    the quadratic it was written for and the two stages of the chain minimise the same function.
+    The [Model punchlist](roadmap.md#model-punchlist) carries the measurement and the ruling:
     `‖J'r‖` at θ\* falls from **8.24e3** on the quartic to **3.85e-6** on the plain residual — from
-    seven orders outside the declared `Stationarity_Tol` default to three orders inside it. That
-    path is **not on this page's chain**: `Quote_Sensitivity` with `Objective: 'Analytic'` REFUSES
-    by name, because the market vol enters that residual linearly through a closed-form Bachelier
-    inversion and its quote side is a build of its own rather than a corollary of this one.
+    seven orders *outside* the declared `Stationarity_Tol` default to three orders *inside* it.
+
+    **The default is on this page's own chain, which is why it could flip at all.** The refusal
+    `Quote_Sensitivity` used to meet on the analytic path has retired: the quote leaves are the same
+    leaves and the wrapper is the same wrapper, what changes is only which residual the splice lands
+    on, and the Gauss–Newton approximation that carries it is *better* there — the residual is
+    **separable** in (θ, q), a θ-function minus a q-function, so of the two terms Gauss–Newton drops
+    one is **structurally zero** and the other is 8.75e-4 of `J'J` against the Monte Carlo
+    residual's 0.500064. The whole argument is [the section](#the-analytic-quote-side). Two
+    consequences a reader of this page should carry: the default path runs at `Stationarity_Tol`'s
+    own **1e-3** where the Monte Carlo one needs a block-declared 1e5, and it reaches a stationarity
+    that *holds* — so a `dθ/dq` off an undeclared block is now taken at a fixed point rather than
+    8240 short of one. The Monte Carlo path stays the **estimator and the oracle**: every
+    comparison on this page is taken against it, and an analytic solve ends by repricing θ\* through
+    it and logging what it makes of the answer.
 
 This is the same philosophy as a pinned `process_ofs`: the number reported is the derivative of
 the number reported, and a sample re-drawn per evaluation would have the optimizer — and then the
@@ -340,10 +364,13 @@ writes that strike into the schedule's numpy half, and the surface's ATM read in
 `RectBivariateSpline`. The first two are the calibrated curve — increment 1's quote. The third is the
 surface-node-to-ATM map, which is a quote of the *surface* rather than of the swaption.
 
-!!! warning "A premium re-struck by `Volatility_Delta` declines the quote side"
+!!! warning "A premium re-struck by `Volatility_Delta` declines the quote side — on either objective"
     That path recovers an implied vol with a `brentq` root find and re-strikes the premium off it,
     and a numerical root find carries no derivative. Reporting zero there would be the exact failure
-    this workstream exists to prevent, so `Quote_Sensitivity` **raises** instead.
+    this workstream exists to prevent, so `Quote_Sensitivity` **raises** instead. The refusal is in
+    `create_market_swaps`, which runs *before* either objective exists — the severance is at the
+    market premium and the objective is only what the residual then does with it — so
+    `Objective: 'Analytic'` inherits it word for word rather than declaring a second one.
 
 ### Gauss–Newton, and the two terms it drops {#the-dropped-term}
 
@@ -496,7 +523,139 @@ is what the ladder would have been if a ladder were available.
 All three refutations are pinned as gates of their own, so they stay known properties rather than
 surprises, and so nobody later "fixes" the derivative against an oracle that is not one. They pass by
 *failing* to agree; if any flips, the solve has started returning a function of its quotes and the
-comparison has become available.
+comparison has become available. **There is a fourth now**, taken on the analytic objective, and it
+is [the one that says which half of the diagnosis was load-bearing](#the-re-solve-fourth-time).
+
+### The analytic objective's quote side — separable, and that is the whole of it {#the-analytic-quote-side}
+
+`Objective: 'Analytic'` — **the declared default since 2026-08-31**, so what follows is the quote
+side an undeclared block gets — differences **normal vols, plain**, and its quote side is the same
+splice on a different line. There is no second contract: the leaf, the map, the descriptor, the wrapper, the
+pseudo-inverse, the stationarity refusal and the `create_graph` refusal are all the ones above. What
+is new is the SHAPE of the residual,
+
+$$r_j(\theta, q_j) = w_j\Big(\sigma^{SP}_j(\theta) - \sigma^{mkt}_j(q_j)\Big),
+\qquad
+\sigma^{mkt}_j = \frac{P_j(q_j)}{A_j}\sqrt{\frac{2\pi}{T_{0,j}}}$$
+
+and every difference below is a consequence of it.
+
+**One severance, one splice, one leaf.** The severance is where it always was — the market premium,
+built by scipy — so the repair is the twin `create_market_swaps` already built for the Monte Carlo
+path, `utils.black_european_option` under `black_premium`, carried through the closed-form Bachelier
+inversion. `market_swap_class.market_normal_vol` is the whole of it. The splice is worth **exactly
+zero** forward: the residual, the model value, the market normal vol and `‖J'r‖` are bit-identical
+with the quote side on and off, `np.array_equal` and hex comparison rather than a tolerance — and so
+is **θ\* itself**, taken through two whole optimizer chains rather than at a fixed θ.
+
+**It runs at the declared `Stationarity_Tol`.** No fixture tolerance is written on this path and
+none is allowed: the analytic chain reaches 3.85e-6 on the identified block against the field's own
+**1e-3**, where the Monte Carlo path has to declare a **1e5** to be differentiated at all. That is
+the objective's shape showing up as a JSON default rather than as an argument.
+
+**Nothing is detached, and that is the difference.** `error` divides the twin by the MODEL price and
+has to detach it or the calibration Jacobian doubles. `market_normal_vol` divides it by the
+**annuity**, which `schrager_pelsser_swaption` builds with `new_tensor` off a numpy curve read — so
+it carries no derivative in θ at all, and the market side is a function of $q$ alone while the model
+side is a function of θ alone.
+
+**The residual is therefore SEPARABLE, and the cross term is not small but ABSENT.**
+$\partial^2 r/\partial\theta\,\partial q \equiv 0$ exactly, so of the two terms
+[Gauss–Newton drops](#the-dropped-term) one is structurally zero and the other is the textbook
+$O(\|r\|)$ — nothing pre-squared this residual, so there is no factor of a half on either side and
+no cancellation to rely on. Measured on the identified block at its own θ\*, and measured **around
+the splice** rather than through it, because a mixed partial read off the tape is the tape agreeing
+with itself:
+
+| what | how it was taken | reading |
+| --- | --- | --- |
+| $\partial r/\partial q$ is DIAGONAL | autograd, off the unstacked residual | **600 of 625** pairs structurally absent; materialised off-diagonal **exactly 0.0**; the diagonal −0.10232 … −0.08704 |
+| $\partial^2 r/\partial\theta\,\partial q = 0$ | $J$ across RE-AUTHORED quote rungs | `np.array_equal` — the block rebuilt from the JSON, the premium re-priced out of scipy |
+| the same, other way round | $\partial r/\partial q$ across θ rungs | `np.array_equal` |
+| the annuity is severed | `sp.annuity.requires_grad` | **False** — which is why the two above are exact rather than small |
+| the θ-side dropped term | double backward at θ\* | $\|\sum_i r_i\nabla^2 r_i\|_F$ **2.980e-3** against $\|J^\top J\|_F$ **3.405** — a ratio of **8.75e-4** beside a $\|r\|$ of 2.26e-3, and 6.31e-5 / −1.31e-3 / −4.47e-4 in the first, second and fourth eigen-directions |
+
+The Monte Carlo path's θ-side term is **0.500064** of what it corrects at any residual level. This
+one is 8.75e-4 and shrinks with the fit. Two objectives, one contraction, two different reasons it
+is the exact leading-order derivative.
+
+**The spectrum is this objective's own.** $J$ is 25 × 23 with singular values from **1.806** down to
+1.97e-13, and the declared `Jacobian_Rcond` keeps **13** of the 23 directions against 18 on the
+squared residual. Nothing is wrong: σ knots past the last benchmark expiry are in no swaption's
+variance integral and two coordinates of this θ\* sit ON a bound. Those are directions 25 flat
+quotes do not identify, and `dθ/dq` along them is the minimum-norm representative exactly as
+[rank deficiency](#rank-deficiency) says.
+
+**The triangle closes, and the honest rung is a re-authored one.** `V` is the four benchmarks priced
+by the engine's **own Monte Carlo** at θ\* — the auditor an analytic block already carries, so the
+value chain shares no arithmetic with the residual under test. One backward through
+`LeastSquaresSolve` reports `dV/dq`; three routes reproduce it.
+
+| route | reading |
+| --- | --- |
+| the contraction spelled out, $-(\partial r/\partial q)^\top J (J^\top J)^{+} v$ | **2.22e-16** relative |
+| the same as $v\cdot d\theta/dq$, with $d\theta/dq$ the OPERATOR | **1.088e-14** relative |
+| the same with $\partial r/\partial q$ from a RE-AUTHORED central difference | **9.376e-06 / 3.750e-07 / 1.500e-08** at h = 0.5 / 0.1 / 0.02 vol points — 25.0× and 25.0×, $h^2$ twice |
+
+and stepping θ by `dθ/dq · h` and re-pricing **without re-solving** closes on 1 from both sides and
+linearly in h — 1.0382 / 0.9561 at a tenth of a vol point on the worst of the four benchmarks,
+1.0013 / 0.9997 on the best, halving as h does. The mandated sign flip in the backward turns every
+one of those into its own negative.
+
+!!! warning "`.grad` after an analytic chain is 0.3–2.3% of the answer, which is worse than six orders out"
+    Basin hopping calls `total_loss.backward()` on every evaluation and the quote leaves accumulate
+    across all of them, so a harvested `.grad` is the sum over the optimizer's whole path on this
+    path too. On the Monte Carlo residual that is six orders out with a `NaN` in it and could not be
+    mistaken for an answer. Here it is **2.11e-4 / 4.72e-3 / 3.65e-4 / 4.05e-3** against one-pass
+    numbers of 0.0258 / 0.2024 / 0.1189 / 0.2702 — **0.31% to 2.33%**, a plausible-looking number
+    that is nobody's derivative. The backward reads `dV/dq` functionally through `autograd.grad` and
+    `bootstrap` clears the leaves before publishing them; both were already true, and this is the
+    measurement that says the second one is load-bearing rather than tidy.
+
+!!! note "Honest negative result — the basin stage alone is already stationary here"
+    The stationarity refusal is reached from the SEED on this path, not from a truncated chain. On
+    the four-quote block the seed reads `‖J'r‖` **9.64e-3** and is refused against the declared
+    1e-3; basin hopping ALONE reaches **5.85e-7** and is accepted; the full chain reaches 6.91e-8.
+    The Monte Carlo path's basin-only reading is **2.9e10**. So the gate that reaches the refusal had
+    to change instrument, and the reason it did is the same property the objective was built for.
+
+#### The re-solve reference, refuted a fourth time — and now with one half of its diagnosis removed {#the-re-solve-fourth-time}
+
+The three refutations above had one diagnosis with two halves: the solve wanders in the directions
+the objective is **flat** in, *and* on the identified block it **stops short** — `‖J'r‖` 8.24e3,
+seven and a half of eleven orders and no further, so `θ*(q)` was the optimizer's stopping point
+rather than the argmin and full column rank bought nothing. The analytic objective removes the
+second half outright, which is the measurement this build made possible: every re-solve below lands
+at `‖J'r‖` between **8.6e-7 and 1.6e-5**, at worst an order and a half inside the declared 1e-3 and
+nine below the Monte Carlo chain's stopping point. Same fixture, same chain, same seed.
+
+**It changes nothing.** Quote 12 (3Y × 3Y) of the flat 25-quote grid, cold-started both sides,
+against a one-pass `‖dθ/dq‖` of **36.70** in that column:
+
+| h (vol points) | ‖θ(+h) − θ(−h)‖ | ÷ 2h | × 36.70 | cosine with it | in the kept 13 | MC path, same rung |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0.5 | 0.03872 | 3.872 | 0.1055 | 0.0607 | 0.820 | 0.037, quotient 3.7 |
+| 0.2 | 0.02182 | 5.456 | 0.1486 | 0.1657 | 0.576 | 0.021, quotient 5.3 |
+| 0.1 | **1.92016** | **960.1** | 26.16 | 0.0197 | 0.807 | 0.013, quotient 6.7 |
+
+The quotient **grows** as h shrinks — two and a half orders at the finest rung, where the up-bumped
+solve found a different basin outright (`‖r‖` 2.25e-3 against 1.46e-3, and 1.899 from θ\* against
+0.279 for its own partner). And the displacement points **nowhere**: cosines of 0.02 to 0.17 against
+the 1/√23 = 0.209 a random direction scores, and a fraction inside the 13 directions the cutoff
+keeps of 0.58 to 0.82 against a random vector's √(13/23) = 0.752. It is not preferentially in the
+*discarded* directions — which is what the Monte Carlo path measured, 0.26 / 0.70 / 0.44 — it is
+simply not the derivative.
+
+**Every re-solve lands 0.27 to 0.30 from θ\* whatever h is** — 0.2967 / 0.2870 / 0.2788 on the down
+side, against bumps worth 0.18 / 0.073 / 0.037 in θ — so what sets the displacement is where each
+search stopped, not the quote. And the two coarse rungs are the Monte Carlo ladder *to two digits*:
+an objective that reaches stationarity and one that stops eight orders short displace by the same
+amount in the same way. **That settles which half of the diagnosis was load-bearing** — it is the
+flat directions, and stationarity was never the obstacle. The classic oracle stays unavailable,
+`dθ/dq` is not gated against it, and the value-space direction check remains the reference.
+
+Six cold analytic solves of the 25-quote block, **237 to 333 s each** on this box in CPU float64, is
+what keeping that refuted costs, and it is why the ladder is one column rather than the grid.
 
 ## The closed-form map — increment 3 {#the-closed-form-map}
 

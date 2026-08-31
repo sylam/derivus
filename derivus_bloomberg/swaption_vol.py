@@ -480,6 +480,12 @@ def hw2f_block(ladder, curve=None, screen=None):
     Heston-Nandi emitter states `Steps_Per_Year` for the opposite reason: there the step clock is
     what the fitted parameters MEAN.)
 
+    SO AN EMITTED LADDER FOLLOWS THE FAMILY'S DEFAULT WHEREVER IT GOES, which is the point of not
+    stating it and is worth saying once: `Objective` flipped to `Analytic` on 2026-08-31, so a grid
+    fetched here now solves through Schrager-Pelsser rather than through the simulation. Nothing
+    about this emission moved - the bytes are the same bytes - and the change is entirely the
+    engine's, which is the behaviour a field left to its default is asking for.
+
     `Quote_Source` is written and is NOT declared by this family, which is a finding rather than an
     oversight here: both Heston-Nandi families declare `Quote_Source` and `Quote_Timestamp` and this
     one declares neither, so a machine-fetched ladder has nowhere inside its own block to say where

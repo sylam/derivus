@@ -72,7 +72,10 @@ class market_swap_class(namedtuple('market_swap', 'deal_data price weight schedu
 
     `quote` and `premium` are the QUOTE SIDE and are ABSENT by default - the float64 leaf the market
     number arrived on, and the MAP from that leaf to this swaption's premium. See
-    `create_market_swaps` for what a quote is here and what the map is.
+    `create_market_swaps` for what a quote is here and what the map is. BOTH objectives splice the
+    same pair onto their own residual, one line each: `error` divides the twin premium by the model
+    premium, `market_normal_vol` inverts it to a normal vol. The leaf, the map and the descriptor
+    are identical either way, which is what keeps `quote_leaves` one shape rather than two.
 
     `premium` is a callable and not a tensor, so the twin is rebuilt inside every evaluation rather
     than compiled once with the benchmark set. That is not a style choice: `make_basin_hopping_loss`
@@ -131,8 +134,34 @@ class market_swap_class(namedtuple('market_swap', 'deal_data price weight schedu
         cannot disagree about which discount factors a swaption is worth. It is built in numpy on
         that price (`schrager_pelsser_swaption` reads $P(0,T)$ with `current_value`), so it carries
         no derivative in theta and the model half of the residual is the only half that does.
+
+        THE QUOTE SIDE IS THIS ONE LINE, and it is the house splice - `base + (carried -
+        detach(carried))`, worth EXACTLY zero in the forward pass with derivative one, so
+        `Quote_Sensitivity` cannot move a calibrated parameter by construction. `base` is the numpy
+        market premium inverted in the calculation's own precision, which is what every mark comes
+        out of; `carried` is the same inversion off `black_premium`, the float64 tensor twin
+        `create_market_swaps` already built for the Monte Carlo path. ONE spelling of the twin, not
+        a second one for this objective.
+
+        NOTHING IS DETACHED HERE, and that is the difference from `error` rather than an omission.
+        There the carried half divides by the MODEL price, so leaving it attached doubles the
+        calibration Jacobian; here the carried half divides by the ANNUITY, which is severed at
+        source - `schrager_pelsser_swaption` builds it with `new_tensor` off a numpy curve read - so
+        the market side is a function of the quote ALONE and the model side of theta alone. That
+        separability is the whole shape of this residual: $\\partial^2 r/\\partial\\theta\\partial q$
+        is structurally ZERO, so the cross term Gauss-Newton drops is not small but absent, and
+        `LeastSquaresSolve.backward` reports the exact leading-order derivative with nothing owed on
+        that side. It is measured the honest way, AROUND the splice rather than through it - $J$ is
+        bit-identical across re-authored quote rungs, and $\\partial r/\\partial q$ bit-identical
+        across theta rungs - because an attached annuity would put the quote back into $J$ and no
+        price gate could see it.
         """
-        return self.price * np.sqrt(2.0 * np.pi / self.schedule.expiry) / annuity
+        base = self.price * np.sqrt(2.0 * np.pi / self.schedule.expiry) / annuity
+        if self.premium is None:
+            return base
+        carried = self.premium(self.quote) * np.sqrt(
+            2.0 * np.pi / self.schedule.expiry) / annuity.double()
+        return base + (carried - carried.detach()).to(base.dtype)
 
     def normal_vol_error(self, swaption):
         """This swaption's weighted normal-vol residual against the market, PLAIN.
@@ -149,7 +178,15 @@ class market_swap_class(namedtuple('market_swap', 'deal_data price weight schedu
 
         The units are absolute normal vol, not basis points and not a percentage of the market, so
         `Weight` means on this path what it means on the other one - a relative weight between
-        benchmarks - and the block's `Stationarity_Tol` is per block either way.
+        benchmarks - and the block's `Stationarity_Tol` is per block either way. What that buys the
+        quote side is the field's DEFAULT: this chain reaches $\\|J^Tr\\|$ 3.85e-6 on the
+        repository's identified block, inside the declared 1e-3, where the squared residual stops at
+        8.24e3 and needs a block-declared 1e5 to be differentiated at all.
+
+        THE RESIDUAL IS SEPARABLE, which is what the quote side is built on: this is a difference of
+        a theta-function and a q-function, so $\\partial r/\\partial q$ is DIAGONAL - each benchmark's
+        vol enters its own residual and no other - and the mixed second derivative is exactly zero.
+        `market_normal_vol` carries the splice that puts the market half on the tape.
         """
         return self.weight * (swaption.normal_vol - self.market_normal_vol(swaption.annuity))
 
@@ -2400,6 +2437,18 @@ class swaption_objective_class(namedtuple('swaption_objective', 'loss reduce rep
 
     `reprice` is the Monte Carlo closure on a block that solved ANALYTICALLY, and `None` otherwise -
     see `SwaptionCalibration.honesty_reprice`.
+
+    BOTH OBJECTIVES CARRY A QUOTE SIDE, and they are the same leaf spliced onto two different
+    residuals. `market_swap_class.error` divides the twin premium by the model premium, so its
+    carried half has to DETACH that price or the calibration Jacobian doubles, and the residual is
+    already squared - which is why the dropped Gauss-Newton terms there are each HALF what they
+    correct and cancel against each other - see
+    [Quote Sensitivities](quote_sensitivities.md#the-dropped-term).
+    `market_swap_class.market_normal_vol` inverts the same twin premium to a normal vol against an
+    annuity nothing differentiates, so the analytic residual is a difference of a theta-function and
+    a q-function: the cross term is structurally ZERO rather than half, and the theta-side term is
+    genuinely $O(\\|r\\|)$ because nothing pre-squared it. Two objectives, one leaf, two different
+    reasons the same Gauss-Newton contraction is exact to leading order.
     """
 
 
@@ -2576,6 +2625,17 @@ class LeastSquaresSolve(torch.autograd.Function):
         (J^T J) dtheta/dq = -J^T dr/dq
 
     so a cotangent `v = dL/dtheta*` contracts as `w = (J^T J)^+ v` then `dL/dq = -(dr/dq)^T (J w)`.
+
+    ONE CONTRACTION, TWO RESIDUALS, TWO DIFFERENT REASONS IT IS EXACT TO LEADING ORDER. The Monte
+    Carlo residual is already a square, so both dropped terms are HALF what they correct and cancel
+    - Gauss-Newton is invariant under the per-residual reparameterisation squaring amounts to. The
+    analytic residual is SEPARABLE - a theta-function minus a q-function - so `d^2r/dtheta dq` is
+    exactly zero and the cross term is absent rather than cancelled, while the theta-side term is
+    the textbook `O(||r||)` because nothing pre-squared it: 8.75e-4 of `J^T J` in Frobenius norm on
+    the identified block, beside a `||r||` of 2.26e-3 - against the Monte Carlo path's 0.500064,
+    which is a HALF at any residual level and stays one. Nothing here switches on the
+    objective, which is the point - the wrapper differentiates whatever residual the block declared.
+
     Both derivatives come from autograd on ONE fresh evaluation of the residual at `(theta*, q)`,
     functionally through `autograd.grad` rather than off `.grad`: the scipy adapters clear `.grad`
     per evaluation and the quote leaves accumulate across them, so a harvested `.grad` is the sum
@@ -2658,19 +2718,33 @@ class RiskNeutralInterestRateModel(object):
         """The swaption calibration's residual closure: implied parameters in, one weighted error
         per benchmark out.
 
-        TWO OBJECTIVES, ONE DECLARED SWITCH. `Objective` is `Monte_Carlo` by default and that path
-        is what it always was, to the bit: each benchmark priced by brute-force Monte Carlo through
+        TWO OBJECTIVES, ONE DECLARED SWITCH, AND `Analytic` IS THE DEFAULT. It prices each benchmark
+        with `stochasticprocess.HullWhite2FactorImpliedInterestRateModel.schrager_pelsser_swaption`
+        and differences NORMAL VOLS, plain - see `market_swap_class.normal_vol_error` for why the
+        squaring is the thing that path exists to retire. `Monte_Carlo` is the path this family
+        always had, unchanged to the bit: each benchmark priced by brute-force Monte Carlo through
         the engine's own `pv_float_cashflow_list`, and the residual the weighted relative pricing
-        error, ALREADY SQUARED. `Analytic` prices the same benchmarks with
-        `stochasticprocess.HullWhite2FactorImpliedInterestRateModel.schrager_pelsser_swaption` and
-        differences NORMAL VOLS, plain - see `market_swap_class.normal_vol_error` for why the
-        squaring is the thing that path exists to retire, and the Model punchlist on the roadmap for
-        the measurement that says the approximation is good enough to be an objective at all (SP
-        sits inside one Monte Carlo evaluation's own noise at 22 of 25 benchmarks, and is the more
-        accurate of the two over most of the grid).
+        error, ALREADY SQUARED.
+
+        WHY THE DEFAULT IS THE CLOSED FORM, and every clause is a measurement on the roadmap's Model
+        punchlist. SP sits inside one Monte Carlo evaluation's own noise at 22 of 25 benchmarks and
+        is the more accurate of the two over most of the grid, because the simulation's numeraire
+        bias (-0.35% to -1.61%) exceeds SP's freezing bias (-0.13 to +2.17bp) almost everywhere. The
+        residual is a QUADRATIC rather than a quartic, so `||J'r||` at theta* is 3.85e-6 against
+        8.24e3 - inside `Stationarity_Tol`'s own 1e-3 default rather than seven orders outside it,
+        which is what lets a quote-side backward run on the declared field. It is deterministic in
+        the sample, so two solves at one seed agree to the bit. And it is 5.6x faster on the
+        four-quote block. What Monte_Carlo keeps is being the engine's OWN estimator: it is the
+        oracle the whole comparison was taken against, and it is the honesty reprice's instrument.
 
         The Monte Carlo closure is built EITHER WAY: on an analytic block it is not the objective
         but the auditor, and `SwaptionCalibration.honesty_reprice` runs it once at theta*.
+
+        BOTH OBJECTIVES PRICE UNDER THE DOMESTIC MEASURE, and neither of them arranges it here:
+        `process` arrives already built on a quanto-suppressed implied object, so `precalculate`
+        assembles `K = 0` for every evaluation of `loss`, of its Jacobian and of the reprice above.
+        See `implied_process` for the Girsanov argument and for what carries the quanto drift
+        instead (the emitted factor, read by the scenario run).
 
         COMMON RANDOM NUMBERS ARE FROZEN PER SOLVE. The Sobol engine is built once, on the state
         this call creates - `reset` re-seeds nothing once `t_random_batch` exists - so every
@@ -2695,10 +2769,16 @@ class RiskNeutralInterestRateModel(object):
         function of theta rather than of the sample, so clearing it per batch would re-integrate
         them N times for the same numbers.
 
-        THE QUOTE SIDE severs at the market price and nowhere else. `swap.price` is a numpy scalar,
-        built out of scipy by `create_market_swaps`, so the swaption vol behind it reaches the
-        residual as a constant; `market_swap_class.error` is where the splice that closes it goes,
-        and it is absent unless the block asked for `Quote_Sensitivity`. Three severances stay open
+        THE QUOTE SIDE severs at the market price and nowhere else, ON EITHER OBJECTIVE.
+        `swap.price` is a numpy scalar, built out of scipy by `create_market_swaps`, so the swaption
+        vol behind it reaches the residual as a constant; the splice that closes it goes on
+        `market_swap_class.error` for the Monte Carlo path and on
+        `market_swap_class.market_normal_vol` for the analytic one, both absent unless the block
+        asked for `Quote_Sensitivity`. ONE quote
+        leaf per benchmark serves both, because the severance and the twin premium that repairs it
+        are the same on either side of the switch - what differs is only what the residual then does
+        with that premium, and the analytic one does something SEPARABLE with it (see
+        `market_swap_class.normal_vol_error`). Three severances stay open
         deliberately, because their upstream is not a quote of THIS calibration: `get_par_swap_rate`
         prices the strike and the pvbp in numpy off the zero curve, `set_fixed_amount` writes that
         strike into the schedule's numpy half, and the ATM read interpolates the vol SURFACE with
@@ -2707,22 +2787,14 @@ class RiskNeutralInterestRateModel(object):
         swaption.
         """
         block = implied_params['instrument']
-        objective = block.get('Objective', 'Monte_Carlo')
+        objective = block.get('Objective', 'Analytic')
         quote_sensitivity = block.get('Quote_Sensitivity', 'No')
         if objective not in ('Monte_Carlo', 'Analytic'):
             raise Exception(
                 "Swaption calibration: Objective '{}' is not one this family prices - it is "
-                "'Monte_Carlo' (the default: every benchmark through the engine's own Monte Carlo) "
-                "or 'Analytic' (the Schrager-Pelsser normal vols). Correct the block's Objective "
-                "to one of those two".format(objective))
-        if objective == 'Analytic' and quote_sensitivity == 'Yes':
-            raise Exception(
-                'Swaption calibration: Quote_Sensitivity is not built on the Analytic objective. '
-                'The market vol enters that residual LINEARLY, through the closed-form Bachelier '
-                'inversion of the premium, so the quote side there is nearly trivial and deserves '
-                'its own gated build rather than riding this one. Set Objective to Monte_Carlo for '
-                'a quote-differentiable solve today; the analytic quote side is the next step and '
-                'is a roadmap row in its own name')
+                "'Analytic' (the default: the Schrager-Pelsser normal vols) or 'Monte_Carlo' "
+                "(every benchmark through the engine's own Monte Carlo). Correct the block's "
+                "Objective to one of those two".format(objective))
         # the sample shape is DECLARED - see `__init__` for why it is not defaulted twice, and why
         # the closures below capture THESE rather than the attributes they are mirrored onto
         batch_size = int(block.get('Simulations', 8192))
@@ -2937,8 +3009,9 @@ class RiskNeutralInterestRateModel(object):
                         utils.Factor(params_factor.type, params_factor.name + (name,)): value
                         for name, value in calibration.split(theta).items()})
                     # the optimizer chain called backward() on every evaluation it made, so `.grad`
-                    # standing here is the sum over its whole path - six orders out, with a NaN in
-                    # it. A calculation reports what IT accumulates, so the leaf is handed over clean
+                    # standing here is the sum over its whole path - six orders out with a NaN in it
+                    # on the Monte Carlo objective, 0.31%-2.33% of the answer on the analytic one.
+                    # A calculation reports what IT accumulates, so the leaf is handed over clean
                     for quote in calibration.quotes:
                         quote.grad = None
                     self.quote_leaves[market_price] = (calibration.descriptors, calibration.quotes)
@@ -2996,6 +3069,15 @@ scipy.optimize.leastsq.html) are used.',
          '$$\\bar\\rho_1=F(1,\\rho)C$$',
          '',
          '$$\\bar\\rho_2=F(\\rho,1)C$$',
+         '',
+         'That correction belongs to the SIMULATION and not to this fit. The market premium being',
+         'repriced is $E^{Q_{dom}}[D_{dom}\\cdot\\text{payoff}]$ - struck, deflated and quoted in the',
+         'rate currency - so the calibration prices it on domestic-measure paths whatever the base',
+         'currency of the job, and $\\bar\\rho_1,\\bar\\rho_2$ are held at zero throughout the solve.',
+         'Girsanov moves drifts and leaves quadratic variation alone, so the fitted',
+         '$\\sigma_1,\\sigma_2,\\alpha_1,\\alpha_2,\\rho$ are the same numbers under either measure:',
+         'they are calibrated domestically and $\\bar\\rho_1,\\bar\\rho_2$ are assembled from them',
+         'above and written to the price factor, where a scenario run reads them.',
          ]
     )
 
@@ -3015,16 +3097,25 @@ scipy.optimize.leastsq.html) are used.',
               description='The quoted ATM vol; 0 reads the swaption surface'),
             F('Weight', 'Float', description='Relative weight in the objective')]),
           description='The forward starting swaps the swaptions are struck on'),
-        F('Objective', 'Text', default='Monte_Carlo', values=['Monte_Carlo', 'Analytic'],
-          description='What the solve minimises. Monte_Carlo prices every benchmark through the '
+        F('Objective', 'Text', default='Analytic', values=['Monte_Carlo', 'Analytic'],
+          description='What the solve minimises. Analytic is the default: it prices every benchmark '
+                      'with the Schrager-Pelsser closed form and differences NORMAL VOLS, plain, so '
+                      'it is exact in the sample rather than estimated, deterministic at a given '
+                      'Random_Seed, quadratic in the pricing error where the other path is quartic '
+                      '(||J\'r|| at theta* 3.85e-6 against 8.24e3, inside Stationarity_Tol\'s own '
+                      '1e-3 default rather than seven orders outside it), differentiable in the '
+                      'quotes off a residual that is separable in (theta, q), and 5.6x faster on '
+                      'the four-quote block. Monte_Carlo prices every benchmark through the '
                       'engine\'s own paths and differences the squared relative PREMIUM error, '
-                      'which is what this family has always done. Analytic prices them with the '
-                      'Schrager-Pelsser closed form and differences NORMAL VOLS, plain - so the '
-                      'chain minimises a quadratic in the pricing error rather than a quartic, and '
-                      'the objective is deterministic in the sample. Monte_Carlo stays the default '
-                      'and the oracle: the analytic price sits inside one Monte Carlo evaluation\'s '
-                      'own noise at 22 of the 25 benchmarks it was measured on, and outside it only '
-                      'on the 10Y tenor column. Quote_Sensitivity is not built on the analytic path'),
+                      'which is what this family did before the measurement: it remains fully '
+                      'supported as the engine\'s own estimator and is the oracle the closed form '
+                      'was measured against - the analytic price sits inside one Monte Carlo '
+                      'evaluation\'s own noise at 22 of the 25 benchmarks and is the MORE accurate '
+                      'of the two over most of that grid, because the simulation\'s numeraire bias '
+                      'exceeds Schrager-Pelsser\'s freezing bias almost everywhere. An analytic '
+                      'solve ends by repricing theta* through that estimator and logging what it '
+                      'makes of it. Quote_Sensitivity works on either, off the same quote leaf - '
+                      'what differs is the residual it is spliced onto'),
         F('Simulations', 'Integer', default=8192,
           description='Paths per batch the Monte Carlo objective prices its benchmarks on, from a '
                       'Sobol sample frozen for the whole solve. Ignored by the Analytic objective, '
@@ -3045,8 +3136,11 @@ scipy.optimize.leastsq.html) are used.',
                       'row\'s Market_Volatility, the surface\'s ATM read, or the premium - so the '
                       'residual differentiates in the quote as well as in the model parameters. '
                       'The splice is worth exactly zero in the forward pass, so the calibrated '
-                      'parameters are identical either way. Refused on the Analytic objective, '
-                      'which has its own quote side still to build'),
+                      'parameters are identical either way. Built on BOTH objectives, off the same '
+                      'leaf: Monte_Carlo splices the twin premium onto the squared relative pricing '
+                      'error, Analytic inverts it to a normal vol, and the analytic residual is '
+                      'separable in (theta, q) so its Gauss-Newton cross term is structurally zero. '
+                      'A premium re-struck by Volatility_Delta is refused on either'),
         F('Jacobian_Rcond', 'Float', default=1e-8,
           description='Relative cutoff on the eigenvalues of the Gauss-Newton matrix J\'J when the '
                       'backward pass inverts it. J has one row per benchmark and 23 columns, so '
@@ -3059,7 +3153,11 @@ scipy.optimize.leastsq.html) are used.',
                       'as the 2-norm of J\'r. The optimizer chain accepts whatever it returned - '
                       'possibly the seed, if nothing beat it - and the implicit function theorem '
                       'holds only where that gradient vanishes, so above this the backward raises '
-                      'and names the norm rather than reporting a quietly wrong number'),
+                      'and names the norm rather than reporting a quietly wrong number. The norm is '
+                      'absolute and the objective sets its scale, so the default is the Analytic '
+                      'path\'s: that chain reaches 3.85e-6 on the repository\'s identified block '
+                      'while the Monte_Carlo one stops at 8.24e3 and has to declare a tolerance of '
+                      'its own'),
         F('Generate_Instruments', 'Text', default='No', values=['Yes', 'No'],
           description='Unbuilt: generate the definitions from Generation_Parameters instead'),
         F('Generation_Parameters', 'Container', default={
@@ -3209,6 +3307,31 @@ scipy.optimize.leastsq.html) are used.',
         return objective, optimizers, implied_var_dict, market_swaptions, benchmarks
 
     def implied_process(self, base_currency, price_factors, price_models, ir_curve, rate):
+        """The seed parameters and the process the objective prices through - which are TWO implied
+        objects on a quanto'd curve, carrying the same numbers.
+
+        CALIBRATE DOMESTICALLY, SIMULATE GLOBALLY. The market premium this objective reprices is
+        $E^{Q_{dom}}[D_{dom}\\cdot(\\text{payoff})]$ - struck, deflated and quoted in the RATE
+        currency - so the paths it is priced on are domestic-measure paths whatever the base
+        currency of the job. Girsanov moves DRIFTS and leaves quadratic variation alone, so the
+        parameters being fitted - $\\sigma_1,\\sigma_2,\\alpha_1,\\alpha_2,\\rho$ - are the same
+        numbers under either measure: fit them where the premium lives, and let the scenario run
+        put its own base-measure quanto drift on the invariants it is handed.
+
+        So the two FX inputs `precalculate` builds $K$ out of - the quanto FX vol and the
+        instantaneous FX/short-rate correlation - are SUPPRESSED on the implied object the process
+        is built on, which takes that assembly down its base-currency branch ($\\tilde\\rho_i = 0$,
+        $K_i \\equiv 0$) to the bit, and are left standing on the object this returns, which is
+        what `save_params` emits `Quanto_FX_Volatility` and `Quanto_FX_Correlation_1/2` off. One
+        seam covers all three consumers of the objective, because all three go through this one
+        process: the Monte Carlo loss, its Jacobian, and `SwaptionCalibration.honesty_reprice`.
+
+        THE SIMULATOR IS NOT TOUCHED. `precalculate` still installs $K$ for a foreign curve in a
+        scenario run - it is handed the emitted factor, not this twin - and
+        `tests/test_hw2f_analytic.py` holds both halves of the split by name
+        (`test_the_simulator_still_carries_the_quanto_drift`,
+        `test_the_calibration_objective_is_measure_free_on_a_quanto_world`).
+        """
         vol_tenors = np.array([0, 1, 3, 6, 12, 24, 48, 72, 96, 120]) / 12.0
         # construct an initial guess - need to read from params
         param_name = utils.check_tuple_name(
@@ -3255,9 +3378,16 @@ scipy.optimize.leastsq.html) are used.',
                  'Sigma_1': utils.Curve([], list(zip(vol_tenors, [0.01] * vol_tenors.size))),
                  'Sigma_2': utils.Curve([], list(zip(vol_tenors, [0.01] * vol_tenors.size)))})
 
+        # the objective's own measure - see the docstring. The twin shares every invariant (the
+        # same Curve objects) and drops the two FX inputs, so `precalculate` assembles K = 0.
+        # The None survives `read_cache` only because Factor1D.__init__'s get_tenor() normalizes
+        # it to a zero Curve at construction - load-bearing for every foreign calibration
+        domestic_obj = riskfactors.HullWhite2FactorModelParameters(
+            dict(implied_obj.param, Quanto_FX_Volatility=None, short_rate_fx_correlation=None))
+
         # need to create a process and params as variables to pass to tf
         process = stochasticprocess.HullWhite2FactorImpliedInterestRateModel(
-            ir_curve, {'Lambda_1': 0.0, 'Lambda_2': 0.0}, implied_obj)
+            ir_curve, {'Lambda_1': 0.0, 'Lambda_2': 0.0}, domestic_obj)
 
         return implied_obj, process, vol_tenors
 
