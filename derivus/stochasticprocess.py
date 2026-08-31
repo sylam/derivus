@@ -12,9 +12,11 @@
 ########################################################################
 
 # import standard libraries
+import collections
 import copy
 import itertools
 import logging
+import warnings
 
 # 3rd party libraries
 import numpy as np
@@ -87,25 +89,150 @@ def integrate_piecewise_linear(fn_norm, shared, time_grid, tenor1, val1, tenor2=
 
 # Hull white analytic integrals for 1 and 2 factor models (assuming piecewise linear vols)
 
+#: Reversion speeds below these are evaluated from the integrand's own power series in `a` instead
+#: of from the closed form. Every closed form here divides by a power of `a` and every one of those
+#: is a REMOVABLE singularity - the numerator is O(a^k) assembled out of O(1) terms - so what fails
+#: as `a` approaches zero is silent cancellation and not a raise, and the price degrades while the
+#: calibration objective happily rewards it. The constants are READINGS: `tests/test_hw2f_analytic`
+#: sweeps |a| from 1e-8 to 1 against a Taylor reference and each threshold sits where that
+#: function's relative error crosses 1e-10, on the worst sigma term structure inside `sigma_bounds`
+#: - the crossings are 2e-3 for H, 1.5e-2 for IJK and 1.3e-4 for B - while staying a clear step
+#: below the 0.1 that every authored reversion speed carries, because above the threshold nothing
+#: changes at all. At their thresholds the closed forms read 1.2e-11, 1.7e-10 and 1.1e-11.
+HW_ALPHA_SERIES_H = 1e-2
+HW_ALPHA_SERIES_IJK = 3e-2
+HW_ALPHA_SERIES_B = 1e-3
+#: 16 terms is where the truncation drops under the closed form's own error at the threshold even
+#: on a 40-year integration step - 5.2e-12 against the 4e-11 the closed form carries there. The
+#: series runs in `a * dt`, so it is the integration step and not the horizon that sets this.
+HW_SERIES_TERMS = 16
+#: The AtT cross term divides by the OTHER reversion speed and its numerator vanishes with it, so
+#: that quotient is a first-order difference and not a closed form with a removable power of alpha
+#: in it - see `hw_alpha_floor`.
+HW_ALPHA_FLOOR = 1e-8
+
+
+def hw_alpha_floor(a):
+    """A reversion speed held off exact zero, sign kept, for the ONE division no series repairs.
+
+    `Alpha_1` and `Alpha_2` both default to 0 on the 2 factor price factor, the 1 factor model's
+    `Alpha` does too, and `scipy.least_squares` runs under bounds that straddle zero - so
+    alpha == 0.0 exactly is reachable by authoring and by solving alike. Everywhere else in these
+    models that is a removable singularity with a series - `hw_calc_H`, `hw_calc_IJK`, `hw_calc_B` -
+    but BOTH `AtT` assemblies divide by a reversion speed a difference of integrals that vanishes
+    with it, and that quotient's limit is a $(t-s)$-weighted moment integral this module does not
+    carry. Spelling it would be a new integral rather than a second reading of `J`, so what happens
+    here instead is a floor.
+
+    THE 2 FACTOR CROSS TERM divides by ONE reversion speed a difference of two integrals taken at
+    the OTHER. THE 1 FACTOR ASSEMBLY is the same shape with one factor:
+    $(B/\\alpha)e^{-\\alpha t}(2I(t)-(e^{-\\alpha t}+e^{-\\alpha T})J(t))$, whose bracket is
+    IDENTICALLY zero at $\\alpha=0$ because $I$ and $J$ are then the same integral, so $0\\cdot\\inf$
+    puts a NaN where a repaired $B$ looks handled. Both are floored, in their own `precalculate`.
+
+    WHERE THE FLOOR IS AND WHY, measured in `tests/test_hw2f_analytic.py`. The quotient's error is
+    the closed form's own error at the OTHER reversion speed - 1.3e-11 at 0.1, not machine epsilon -
+    amplified by $1/\\alpha$: 9.8e-6 at 1e-6, 4.3e-4 at 1e-8, 5.4e-2 at 1e-10 and O(10) by 1e-12, so
+    it stops carrying information around 1e-10. The floor sits two orders above that. Below it the
+    model is evaluated at $\\pm$`HW_ALPHA_FLOOR` rather than at the alpha asked for, which is a
+    perturbation of 1e-8 to a parameter whose scale is 0.1 - 1.4e-7 relative on $B$ at thirty years
+    - against a quotient that would otherwise be noise. Clamping the DIVISOR alone instead of the
+    reversion speed zeroes that term, which is a third of AtT, and moves the benchmark price 0.5%.
+
+    Bit-identical above the floor: neither `where` rounds, it selects. The library comes off `a`
+    for `hw_alpha_branch`'s reason - the 2 factor model hands a tensor and the 1 factor one a python
+    float off the price factor, and the floor is spelled once for both or it is not spelled at all.
+    """
+    if isinstance(a, torch.Tensor):
+        return torch.where(
+            a.abs() < HW_ALPHA_FLOOR, torch.copysign(a.new_tensor(HW_ALPHA_FLOOR), a), a)
+    return np.where(np.abs(a) < HW_ALPHA_FLOOR, np.copysign(HW_ALPHA_FLOOR, a), a)
+
+
+def hw_alpha_branch(a, threshold):
+    """`(is_small, where)` for a reversion speed that may be at, or through, zero.
+
+    `where` is the caller's own array library, because these integrands are handed `torch.exp` by
+    the 2 factor model and `np.exp` by the 1 factor one and the branch has to be spelled once for
+    both. It selects rather than short-circuits on purpose: a python `if` on a tensor is a host
+    sync and takes the whole batch down one leg, and the reversion speed is a calibrated variable
+    with a gradient on it.
+    """
+    if isinstance(a, torch.Tensor):
+        return a.abs() < threshold, torch.where
+    return abs(a) < threshold, np.where
+
+
 def hw_calc_H(a, exp):
     # sympy.simplify(sympy.integrate(sympy.exp(a * s) * (v + m * (s - t)), (s, t, t + dt)))
     # leave the division till later and simplify
-    def H(t, v, dt, m):
-        return (-a * v + m) * exp(a * t) + (a * m * dt + a * v - m) * exp(a * (dt + t))
+    small, where = hw_alpha_branch(a, HW_ALPHA_SERIES_H)
 
-    return H, a * a
+    def H(t, v, dt, m):
+        closed = (-a * v + m) * exp(a * t) + (a * m * dt + a * v - m) * exp(a * (dt + t))
+        # the same integral as its power series in `a`, which is entire and so converges for every
+        # one of them - int_0^dt e^{au}(v+mu)du = dt sum_k (a dt)^k/k! (v/(k+1) + m dt/(k+2))
+        x, acc, term = a * dt, 0.0 * v, 1.0 + 0.0 * (a * dt)
+        for k in range(HW_SERIES_TERMS):
+            acc = acc + term * (v / (k + 1) + m * dt / (k + 2))
+            term = term * x / (k + 1)
+        return where(small, acc * dt * exp(a * t), closed)
+
+    # the divisor goes to ONE under the series branch rather than to something small: the series is
+    # the integral itself and not its numerator, so nothing divides by a near-zero number at all
+    return H, where(small, 1.0 + 0.0 * a, a * a)
 
 
 def hw_calc_IJK(a, exp):
     # sympy.simplify(sympy.integrate(sympy.exp(a*s)*(vi+mi*(s-t))*(vj+mj*(s-t)), (s,t,t+dt)))
     # leave the division till later and simplify
+    small, where = hw_alpha_branch(a, HW_ALPHA_SERIES_IJK)
+
     def IJK(t, vi, vj, dt, mi, mj):
         a2, dt2, mi_mj, mj_vi_p_mi_vj, vi_vj = a * a, dt * dt, mi * mj, mj * vi + mi * vj, vi * vj
 
-        return ((a2 * (dt2 * mi_mj + dt * mj_vi_p_mi_vj + vi_vj) + 2 * mi_mj * (1 - a * dt) - a * mj_vi_p_mi_vj)
-                * exp(a * dt) - a2 * vi_vj + a * mj_vi_p_mi_vj - 2 * mi_mj) * exp(a * t)
+        closed = ((a2 * (dt2 * mi_mj + dt * mj_vi_p_mi_vj + vi_vj) + 2 * mi_mj * (1 - a * dt)
+                   - a * mj_vi_p_mi_vj) * exp(a * dt)
+                  - a2 * vi_vj + a * mj_vi_p_mi_vj - 2 * mi_mj) * exp(a * t)
+        # this numerator is O(a^3) built from O(1) terms, so the closed form's relative error runs
+        # like eps/a^3 - 1e9 out at a=1e-8 on a sloped vol curve, measured. The series carries the
+        # a^3 analytically instead: dt sum_k (a dt)^k/k! (vivj/(k+1) + S dt/(k+2) + Q dt^2/(k+3))
+        S, Q = mj_vi_p_mi_vj * dt, mi_mj * dt2
+        x, acc, term = a * dt, 0.0 * vi, 1.0 + 0.0 * (a * dt)
+        for k in range(HW_SERIES_TERMS):
+            acc = acc + term * (vi_vj / (k + 1) + S / (k + 2) + Q / (k + 3))
+            term = term * x / (k + 1)
+        return where(small, acc * dt * exp(a * t), closed)
 
-    return IJK, a ** 3
+    return IJK, where(small, 1.0 + 0.0 * a, a ** 3)
+
+
+def hw_calc_B(a, tenor):
+    """$B(T)=\\frac{1-e^{-aT}}{a}$, the Hull-White tenor loading, spelled once for both models.
+
+    Divides by the reversion speed, so it carries the same removable singularity as `hw_calc_H` and
+    `hw_calc_IJK` - more forgiving than either, because the numerator is only O(a), but 1.7e-6
+    relative out at a=1e-8 on a one-day tenor and NaN at a=0 exactly.
+
+    `torch.where` evaluates BOTH branches, so a divisor of zero puts a NaN in the branch that is
+    not taken and NaN * 0 poisons the gradient in the backward. The divisor is therefore clamped
+    INSIDE the dividing branch and the selection made after it.
+
+    A FINITE $B$ IS NOT A FINITE $A$: both models assemble `AtT` by dividing this by the reversion
+    speed again, and that quotient is `hw_alpha_floor`'s business rather than this series'.
+    """
+    small, where = hw_alpha_branch(a, HW_ALPHA_SERIES_B)
+    # keyed off `a` and not off `tenor`, so this and the branch above cannot disagree about which
+    # library they are in - the 2 factor model hands both as tensors and the 1 factor one both as
+    # numpy, and a torch reversion speed against a numpy tenor still lands in torch
+    exp = torch.exp if isinstance(a, torch.Tensor) else np.exp
+    safe = where(small, 1.0 + 0.0 * a, a)
+    # sum_k (-a)^k T^{k+1}/(k+1)!
+    acc, term = 0.0 * tenor, tenor
+    for k in range(HW_SERIES_TERMS):
+        acc = acc + term
+        term = term * (-a) * tenor / (k + 2)
+    return where(small, acc, (1.0 - exp(-safe * tenor)) / safe)
 
 
 def hmm_forward_backward(log_pi, log_P, log_emit):
@@ -838,6 +965,14 @@ class GBMPriceIndexCalibration(object):
         return utils.CalibrationInfo({'Vol': sigma, 'Drift': mu}, [[1.0]], delta)
 
 
+#: One analytic ATM swaption. `premium` and `normal_vol` are the two readings a desk compares -
+#: a premium against a premium, and vols against vols - and the rest is the working, kept because
+#: what a checker has to separate is WHICH of the annuity, the swap rate or the frozen loadings a
+#: disagreement with the Monte Carlo lives in.
+HW2FSwaption = collections.namedtuple(
+    'HW2FSwaption', 'premium normal_vol annuity swap_rate variance loadings')
+
+
 class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
     """Hull white 2 factor implied interest rate model for risk neutral simulation of yield curves"""
 
@@ -893,6 +1028,8 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         self.factor_tenor = None
         self.grid_index = None
         self.BtT = None
+        # what `schrager_pelsser_swaption` reads, and None until a precalculate has run
+        self.J = self.alpha = self.rho = None
 
     @staticmethod
     def num_factors():
@@ -941,8 +1078,8 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         time_grid_years, fwd_curve, t = self.read_cache(ref_date, time_grid, tensor, shared, process_ofs)
 
         # calculate known functions
-        alpha = [implied_tensor['Alpha_1'][0].type(torch.float64),
-                 implied_tensor['Alpha_2'][0].type(torch.float64)]
+        alpha = [hw_alpha_floor(implied_tensor['Alpha_1'][0].type(torch.float64)),
+                 hw_alpha_floor(implied_tensor['Alpha_2'][0].type(torch.float64))]
         lam = [self.param['Lambda_1'], self.param['Lambda_2']]
         corr = implied_tensor['Correlation'].type(torch.float64)
         vols = [implied_tensor['Sigma_1'].type(torch.float64),
@@ -979,7 +1116,7 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
 
         # now calculate the AtT
         AtT = 0.0
-        BtT = [(1.0 - torch.exp(-alpha[i] * self.factor_tenor_full)) / alpha[i] for i in range(2)]
+        BtT = [hw_calc_B(alpha[i], self.factor_tenor_full) for i in range(2)]
         CtT = []
         rho = [[1.0, corr], [corr, 1.0]]
 
@@ -991,7 +1128,11 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
             # get the covariance
             CtT.append(rho[i][j] * J[i][j])
 
-            # all together now
+            # all together now - `second_part` and `third_part` vanish LINEARLY as the reversion
+            # speed they are divided by does, so these two divisions are removable singularities of
+            # the PRODUCT rather than of either factor: at alpha == 0 the numerator is exactly 0.0
+            # and 0 * inf is NaN. `hw_alpha_floor` is what keeps the divisor off zero, and see it
+            # for what that costs and why no series in this module can spell the limit instead.
             AtT += rho[i][j] * torch.matmul(
                 torch.cat([first_part, second_part, third_part], dim=1),
                 torch.stack([BtT[j] * BtT[i], BtT[i] / alpha[j], BtT[j] / alpha[i]]))
@@ -1018,6 +1159,15 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
             self.params_ok = False
             C = torch.stack(cholesky)
 
+        # WHAT THE ANALYTIC SWAPTION READS, and the one thing this assembly used to drop. `J` is
+        # built above and consumed only through `CtT`, so `schrager_pelsser_swaption` would
+        # otherwise have to spell the same integral a second time - a reference costs nothing and
+        # keeps one spelling of it. The reversion speeds ride along FLOORED and the correlation
+        # matrix ASSEMBLED, because those are the ones this covariance was built out of, not the
+        # raw implied tensors. Left in float64: the simulation's dtype is the calc's business, but
+        # the analytic price is a reference and is read against one.
+        self.J, self.alpha, self.rho = J, alpha, rho
+
         # intermediate results
         self.BtT = [Bi.type(shared.one.dtype).reshape(-1, 1) for Bi in BtT]
         self.YtT = [torch.exp(-alpha[i] * t).type(shared.one.dtype) for i in range(2)]
@@ -1037,6 +1187,143 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         # appends the broadcast axis vs the stochastic component in `sim_curve`.
         AtT = AtT.type(shared.one.dtype)
         self.drift = fwd_curve + 0.5 * self.align_rank(AtT, fwd_curve.ndim)
+
+    def schrager_pelsser_swaption(self, expiry, pay_times, accruals):
+        """The Schrager-Pelsser ATM payer swaption, analytic, off the arrays `precalculate` built.
+
+        THE APPROXIMATION IN ONE LINE. Every discount factor in the forward swap rate is an exact
+        function of the two state variables $x_k(t)=e^{-\\alpha_k t}Y_k(t)$, so $S(t)$ is too, and
+        under the annuity measure it is a martingale with no drift to model. What is not exact is
+        its diffusion: $\\partial S/\\partial x_k$ moves with the state. Schrager-Pelsser FREEZES
+        those two loadings at their $t=0$ values
+
+        $$q_k = -\\Big(\\frac{P(0,T_0)B_k(T_0)-P(0,T_n)B_k(T_n)}{A(0)}
+                       - S(0)\\sum_j w_j B_k(T_j)\\Big)$$
+
+        with $A(0)=\\sum_i\\tau_iP(0,T_i)$ the annuity and $w_i=\\tau_iP(0,T_i)/A(0)$ its weights,
+        which makes $S(T_0)-S(0)$ gaussian with
+
+        $$\\mathrm{Var}=\\sum_{k,l}\\rho_{kl}q_kq_lJ_{kl}(T_0)$$
+
+        and the ATM premium the Bachelier one, $A(0)\\sqrt{\\mathrm{Var}/2\\pi}$. `normal_vol` is
+        $\\sqrt{\\mathrm{Var}/T_0}$, which is the reading a desk compares rather than the premium.
+
+        $J$ ENTERS BARE, and no $e^{-(\\alpha_k+\\alpha_l)T_0}$ belongs in front of it, because $q$
+        is already a loading on the SCALED martingale. The time-$t$ loading $\\partial S/\\partial
+        x_k(t)$ is the expression above with every $B_k(T_j)$ read over the REMAINING tenor
+        $B_k(T_j-t)$; substitute $B_k(T_j-t)=e^{\\alpha_kt}(B_k(T_j)-B_k(t))$ and the $B_k(t)$ terms
+        cancel between the two halves - $S\\sum_jw_jB_k(t)$ against
+        $(P(t,T_0)-P(t,T_n))B_k(t)/A(t)$, the same number - leaving
+        $\\partial S/\\partial x_k(t)=e^{\\alpha_kt}q_k(t)$ exactly, for every reversion speed
+        including a negative one. Freezing the bracket at $t=0$ therefore freezes the loading on
+        $Y_k=e^{\\alpha_kt}x_k$ rather than on $x_k$, and $J_{kl}$ is $Y$'s own covariance -
+        $\\mathrm{Cov}(Y_k(T_0),Y_l(T_0))=\\rho_{kl}J_{kl}(T_0)$, which is exactly why `CtT` carries
+        no prefactor either. Putting one here as well scales the state twice.
+
+        THE PREFACTOR WAS THERE AND IT IS A DEFECT THE CHECKER FOUND, recorded with its number in
+        `tests/test_hw2f_analytic.py` rather than quietly removed. On the identified fixture's
+        theta* it moved the normal vol by between $+1.1$ and $-37.9$ basis points across the 5x5
+        grid - $-18.1\\%$ to $+13.5\\%$ of the level - and it is not signed, because $\\alpha_2$
+        solves NEGATIVE there and $e^{-(\\alpha_2+\\alpha_2)T_0}$ is then above one. It is not a
+        small-parameter effect and no tolerance would have absorbed it: it is hundreds of Monte
+        Carlo standard errors wide at half a million paths.
+
+        WHAT THE FREEZING COSTS is the annuity's WEIGHTS, not the annuity: $A(T_0)$ is still
+        stochastic and still divides out under its own measure, so the bias is second order in the
+        state. Its SIZE and its direction are not claimed here, in either the tenor or the
+        correlation, because nothing has read them yet - that is the whole point of measuring this
+        against the brute-force Monte Carlo before anything is wired to it.
+
+        THE CLOCK IS THE CURVE'S OWN DAY COUNT. `expiry`, `pay_times` and `accruals` are year
+        fractions under `factor.get_day_count_accrual` - ACT_365 on an ACT_365 curve - because that
+        is the clock `read_cache` builds `time_grid_years` on and therefore the clock $J$ is
+        integrated against. `utils.DAYS_IN_YEAR` is 365.25 and `create_market_swaps` measures its
+        expiries with it, so a caller pairing the two is 7e-4 years out at a 1Y expiry; converting
+        is the caller's job because only the caller knows which of the two its schedule came from.
+
+        $J$ IS READ AT THE EXPIRY, linearly in $t$ between grid nodes and bit-exact at one -
+        `utils.interpolate_tensor`, which is `piecewise_linear`'s own read of a curve on its own
+        grid, so this is a second reading of that rule and not a second rule. Interpolation is the
+        fallback and not the normal case: `TimeGrid` is built out of the benchmark expiries, so a
+        calibration's own $T_0$ is always a node. Off a node the chord costs whatever the LOCAL grid
+        step does - 3.7e-5 on the variance and 0.0014 basis points of normal vol across a ten-day
+        step, measured in `tests/test_hw2f_analytic.py` - and that step is NOT uniform, which is why
+        an expiry off a node WARNS rather than being interpolated quietly.
+
+        THE STEP IS THE WHOLE NUMBER, and past the last benchmark it is not ten days. The grid is
+        ten-daily out to the last benchmark expiry and then jumps to the vol knots, so a
+        two-benchmark world steps 2.0027 -> 4.0027 -> 6.0055 -> 8.0055 -> 10.0055 and an expiry in
+        one of those gaps is read across TWO YEARS. Measured on that world: the chord over-reads the
+        variance by 3.8e-2 to 7.8e-2 and the normal vol by +0.79 to +2.07 basis points, against
+        0.0013 on the ten-day stretch. That is the SIZE OF THE THING THIS PRICE EXISTS TO MEASURE -
+        SP's own approximation error is 2.17bp at the identified fixture's worst corner - so an
+        expiry in the gap would carry an interpolation error as large as the approximation error and
+        nothing downstream could tell the two apart. Put the expiry in the `TimeGrid`; the warning
+        names the step it would otherwise cross.
+
+        NOT WIRED INTO THE OBJECTIVE. `calc_loss_on_ir_curve` prices its benchmarks by brute-force
+        Monte Carlo and still does; this lives on the process so a checker can reach it at the
+        calibrated theta*, and whether it can replace that Monte Carlo is a measurement nobody has
+        made yet. It is differentiable in $(\\alpha,\\sigma,\\rho)$ off the same tensors the
+        calibration already carries, so nothing stands in the way of the wiring except the reading.
+
+        The t=0 curve is read in NUMPY, `get_par_swap_rate`'s own spelling of $P(0,T)$, so this
+        price carries no derivative in the curve - the same severance the calibration already
+        declares, because the curve is the bootstrap's quote and not the swaption's.
+        """
+        if self.J is None:
+            raise Exception(
+                'HullWhite2FactorImpliedInterestRateModel: schrager_pelsser_swaption reads J, the '
+                'reversion speeds and the correlation off precalculate, and none has run - call '
+                'precalculate against this swaption\'s TimeGrid first')
+        grid = self.cache['time_grid_years']
+        if not 0.0 < expiry <= grid[-1]:
+            raise Exception(
+                'HullWhite2FactorImpliedInterestRateModel: a swaption expiry of {:g} years is '
+                'outside the (0, {:g}] that J was integrated over - add the expiry to the TimeGrid '
+                'this process was precalculated against'.format(expiry, grid[-1]))
+        node = int(grid.searchsorted(expiry))
+        if grid[node] != expiry:
+            # the chord's cost is the LOCAL step's and this grid's steps run from one day to two
+            # years, so the step is named rather than the fact - see the docstring for both numbers
+            warnings.warn(
+                'HullWhite2FactorImpliedInterestRateModel: a swaption expiry of {:g} years is not a '
+                'node of the grid J was integrated on - it is read as the chord across the '
+                '[{:g}, {:g}] step, {:g} years wide, which costs 0.0013 basis points of normal vol '
+                'across ten days and up to 2.1 across two years - add the expiry to the TimeGrid '
+                'this process was precalculated against'.format(
+                    expiry, grid[node - 1], grid[node], grid[node] - grid[node - 1]))
+
+        times = np.concatenate(([expiry], np.asarray(pay_times, dtype=np.float64)))
+        # P(0,T) off the t=0 curve in numpy - see the docstring for why it is severed here
+        P = self.J[0][0].new_tensor(np.exp(-self.factor.current_value(times) * times))
+        tau = P.new_tensor(np.asarray(accruals, dtype=np.float64))
+        annuity = (tau * P[1:]).sum()
+        swap_rate = (P[0] - P[-1]) / annuity
+        weight = tau * P[1:] / annuity
+        # B inherits the reversion speed's series branch, so the loadings hold through alpha -> 0
+        t_times = P.new_tensor(times)
+        B = [hw_calc_B(a, t_times) for a in self.alpha]
+        q = [swap_rate * (weight * Bk[1:]).sum() - (P[0] * Bk[0] - P[-1] * Bk[-1]) / annuity
+             for Bk in B]
+
+        # the ONE read of J, at the expiry - see the docstring for the interpolation and its cost
+        at_expiry = np.array([expiry])
+        J_T0 = [[utils.interpolate_tensor(at_expiry, grid, self.J[k][l])[0] for l in range(2)]
+                for k in range(2)]
+        # no e^{-(alpha_k+alpha_l)T_0} in front of J - `q` is the loading on the SCALED martingale
+        # Y, whose covariance J already is, so a prefactor here would scale the state twice
+        variance = 0.0
+        for k, l in itertools.product(range(2), range(2)):
+            variance = variance + self.rho[k][l] * q[k] * q[l] * J_T0[k][l]
+
+        # `Correlation` is a one-element parameter VECTOR, so the two off-diagonal terms come out
+        # rank 1 and carry the sum with them - flattened once here rather than in four places
+        variance = variance.reshape(())
+        return HW2FSwaption(
+            premium=annuity * torch.sqrt(variance / (2.0 * np.pi)),
+            normal_vol=torch.sqrt(variance / expiry),
+            annuity=annuity, swap_rate=swap_rate, variance=variance, loadings=q)
 
     def calc_factors(self, factor1, factor1and2):
         if factor1.ndim == 2:
@@ -1165,7 +1452,11 @@ class HullWhite1FactorInterestRateModel(StochasticProcess):
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
         # ensures that tenors used are the same as the price factor
         factor_tenor = self.factor.get_tenor()
-        alpha = self.param['Alpha']
+        # the AtT assembly below divides by this and its bracket vanishes with it, which is the
+        # same removable singularity `hw_alpha_floor` holds off zero on the 2 factor side - and
+        # `Alpha` declares default=0, so a price factor that omits it reaches that division at
+        # exactly zero without anyone solving for it
+        alpha = hw_alpha_floor(self.param['Alpha'])
 
         # store randomnumber id's
         self.z_offset = process_ofs
@@ -1201,7 +1492,7 @@ class HullWhite1FactorInterestRateModel(StochasticProcess):
             vols[:, 0], vols[:, 1], quantofx[:, 0], quantofx[:, 1])
 
         # Now precalculate the A and B matrices
-        BtT = (1.0 - np.exp(-alpha * factor_tenor)) / alpha
+        BtT = hw_calc_B(alpha, factor_tenor)
         AtT = np.array([(BtT / alpha) * np.exp(-alpha * t) * (
                 2.0 * It - (np.exp(-alpha * t) + np.exp(-alpha * (t + factor_tenor))) * Jt) for (It, Jt, t) in
                         zip(I, J, time_grid_years)])
