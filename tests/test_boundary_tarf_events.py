@@ -81,7 +81,7 @@ def _tarf(target, fix_days, barrier=None, leverage=N2, buy_sell='Buy'):
         'Buy_Sell': buy_sell, 'Expiry_Date': fix_dates[-1], 'Underlying_Amount': N1,
         'Option_Type': 'Call', 'Strike_Price': STRIKE, 'Settlement_Style': 'Physical',
         'Option_Style': 'European', 'InvertedTarget': False, 'LeverageNotional': leverage,
-        'TargetAdjustment': '', 'TargetLevel': target,
+        'TargetLevel': target,
         'TARF_ExpiryDates': [[d, d, None] for d in fix_dates]}
     if barrier is not None:
         deal['Barrier'] = barrier

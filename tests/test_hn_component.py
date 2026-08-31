@@ -830,7 +830,7 @@ def _tarf_deal(fix_days, target=UNREACHABLE, buy_sell='Buy'):
             'Buy_Sell': buy_sell, 'Expiry_Date': dates[-1], 'Underlying_Amount': TARF_N1,
             'Option_Type': 'Call', 'Strike_Price': TARF_STRIKE, 'Settlement_Style': 'Cash',
             'Option_Style': 'European', 'InvertedTarget': False, 'LeverageNotional': 0.0,
-            'TargetAdjustment': '', 'TargetLevel': target,
+            'TargetLevel': target,
             'TARF_ExpiryDates': [[d, d, None] for d in dates]}
 
 

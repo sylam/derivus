@@ -5615,7 +5615,6 @@ class FXTARFOptionDeal(Deal):
         F('FX_Volatility', 'Text', default='', obj='Tuple'),
         F('InvertedTarget', 'Text', default=''),
         F('LeverageNotional', 'Float', default=0),
-        F('TargetAdjustment', 'Text', default=''),
         F('TargetLevel', 'Float', default=0),
         # NO `tag`, for the reason FXAccumulatorOptionDeal's schedule carries none: a tag names
         # the container the WIRE form uses, and this table is read by iterating rows

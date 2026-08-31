@@ -13,9 +13,10 @@ built wrong and still look right:
 1. THE FIRED BRANCH IS A CONDITIONAL EXPECTATION, NEVER `p x realised payoff`. The jump and the
    decision share the fixing, so the shortcut samples the payoff on the SURVIVING side of the
    trigger and weights it by the FIRED probability. Measured below on a one-fixing fixture, both
-   halves exact: the full-gain convention reads 0.009525 against a truth of 0.105802 (11.11x low),
-   the capped convention 0.007585 against 0.024929 (3.29x low), and written with the raw gain it
-   reads -0.015531 - a SIGN error. None of it is variance; it does not shrink with paths.
+   halves exact: a gain-over-a-tail payoff (the shape the knock-IN leg pays) reads 0.009525 against
+   a truth of 0.105802 (11.11x low), a capped one 0.007585 against 0.024929 (3.29x low), and
+   written with the raw gain it reads -0.015531 - a SIGN error. None of it is variance; it does
+   not shrink with paths.
 2. SUPERSESSION IS A SWITCH. `Branch_And_Weight` is declared on `Base_Revaluation` and nowhere
    else, defaults to 'No', and off is the crisp one-step-survival path bit for bit.
 3. GBM ONLY. The conditioning step must be the fixing interval's own lognormal law; a non-GBM spot
@@ -32,11 +33,24 @@ is where the truncated-draw idiom came from, so the switch is a VERIFICATION rat
 and its section reads accordingly: bit-identity walked across the whole deal family, the skipped
 registration shown to lose nothing at first order, in-out parity standing in for the survival
 ledger at value, delta and gamma, and a LIVE barrier's gamma on a CRN ladder where it used to be
-refused outright. THE AUTOCALL IS DEFERRED, and the last gate in the file is the measurement that
-defers it rather than an assertion that it is - its put leg is a second decision per fixing which
-the construction does not integrate, so a document whose put barrier sits below the strike misses
-its own bump ladder by 18-22% while the same document with the barrier ON the strike, where that
-payoff is continuous, is exact to 0.00%.
+refused outright.
+
+THE AUTOCALL IS THE FOURTH PRODUCT, and the section that closes this file used to be the
+measurement that DEFERRED it: its put leg was a second decision per fixing which the construction
+did not integrate, so a document whose put barrier sat below the strike missed its own bump ladder
+by 18-22% while the same document with the barrier ON the strike, where that payoff is continuous,
+was exact to 0.00%. The leg is now integrated - the breach payoff is a lognormal partial moment
+over `{S <= min(B, K)}`, conditional on the survival truncation the sample it replaces was drawn
+under - and the same two rows are the gate that says so: the jumping row LANDS on its ladder and
+the on-strike control still does. Beside it the autocall gets what the other three products have -
+a quadrature table over value, delta, gamma and vanna, parametrised over the REBATE because a
+zero-rebate fixture cannot see a wrong rebate term - and its averaging arm REFUSES by name, because
+the distribution of a mean of spots is not one fixing interval's lognormal. THE LEG STILL KEEPS AN
+INDICATOR where there is no conditioning step to integrate against, and one of the three ways that
+happens is not exact on the spot the deal names: a barrier date whose coupon row is ZERO reads the
+PREVIOUS fixing's. That is the crisp arm's defect rather than the switch's - the same indicator runs
+either way - and it is pinned here as a READING against both references, a Known-defects row with a
+named remedy rather than a claim this file makes.
 
 THE REFERENCES ARE WRITTEN HERE AND SCIPY-FREE. Every tail expectation is checked against a
 trapezoid quadrature built in this file out of `math.erf` and `math.exp` alone - it shares no line
@@ -48,6 +62,7 @@ and the reference has a delta, a gamma and a vanna of its own - built out of `to
 normal DENSITY alone, with no lognormal closed form anywhere in it.
 """
 import datetime
+import inspect
 import io
 import json
 import logging
@@ -311,7 +326,9 @@ def test_p_times_the_realised_payoff_is_biased():
     which is not a magnitude error at all but a SIGN one: truncating the upper 41.5% of the
     interval drags the surviving mean to 1.16257, below the strike, so the branch that is supposed
     to pay for knocking out pays a negative number. "Conservative" is not a defence, and neither is
-    "small": these are the two conventions the TARF actually ships, and both are wrong by a factor.
+    "small": these are the two payoff shapes the TARF actually ships - the capped one is the
+    filling fixing's own payment, the gain-over-a-tail one is the knock-IN leg's - and the shortcut
+    is wrong by a factor on both.
     """
     args = (_t(S0), _t(DRIFT), _t(VOL), _t(Z_TRIGGER))
     p_fired = float(pricing.lognormal_partial_moment(*args, True, 0.0))
@@ -838,7 +855,7 @@ def _intervals():
     return dt, disc
 
 
-def _tarf_reference(spot, sigma, target=TARGET, adjustment='Exact', n_out=600, n_in=400):
+def _tarf_reference(spot, sigma, target=TARGET, n_out=600, n_in=400):
     """The two-fixing TARF as a nested region integral, differentiable end to end.
 
     Written from the DEAL and nothing else. Per fixing the real line splits at three levels the
@@ -848,7 +865,7 @@ def _tarf_reference(spot, sigma, target=TARGET, adjustment='Exact', n_out=600, n
         z < zBar         knocked in and OTM        -N2 * (K - S)
         zBar < z < zK    OTM, not knocked in        0
         zK < z < zB      ITM, target not yet full  +N1 * (S - K)
-        z > zB           the target FILLS           the declared convention's payment
+        z > zB           the target FILLS          +N1 * r, the remaining target
 
     The second fixing's three levels ride the FIRST fixing's outcome, because `r` does - that
     coupling is what makes a TARF a TARF, and it is the reason a one-dimensional oracle cannot see
@@ -883,21 +900,15 @@ def _tarf_reference(spot, sigma, target=TARGET, adjustment='Exact', n_out=600, n
 
         value = _seg(torch.full_like(zBar2, -Z_INF), zBar2, lambda z: -N_OTM * (K - s2(z)), n_in)
         value = value + _seg(zK2, zB2, lambda z: N_ITM * (s2(z) - K), n_in)
+        # the filling fixing pays what is LEFT of the target - fixing one's own outcome, a
+        # per-path constant over this interval, and the coupling that makes a TARF a TARF
         top = torch.full_like(zB2, Z_INF)
-        if adjustment == 'Full':
-            value = value + _seg(zB2, top, lambda z: N_ITM * (s2(z) - K), n_in)
-        elif adjustment == 'Exact':
-            paid = (N_ITM * r1)[..., None]
-            value = value + _seg(zB2, top, lambda z: paid * torch.ones_like(z), n_in)
+        paid = (N_ITM * r1)[..., None]
+        value = value + _seg(zB2, top, lambda z: paid * torch.ones_like(z), n_in)
         return D2 * value
 
     top1 = torch.as_tensor(Z_INF, dtype=DT)
-    if adjustment == 'Full':
-        total = D1 * N_ITM * _seg(zB1, top1, lambda z: spot * torch.exp(m1 + v1 * z) - K, n_out)
-    elif adjustment == 'Exact':
-        total = D1 * N_ITM * target * _seg(zB1, top1, torch.ones_like, n_out)
-    else:
-        total = torch.zeros((), dtype=DT)
+    total = D1 * N_ITM * target * _seg(zB1, top1, torch.ones_like, n_out)
 
     for lo, hi, leg in ((torch.as_tensor(-Z_INF, dtype=DT), zBar1, lambda s: -N_OTM * (K - s)),
                         (zBar1, zK1, None),
@@ -947,10 +958,14 @@ def _acc_reference(spot, sigma, n_out=600, n_in=400):
     return total
 
 
-def _reference_table(build, **kwargs):
-    """value / delta / vega / gamma / vanna off one reference, by double backward."""
-    spot = torch.tensor(SPOT_FX, dtype=DT, requires_grad=True)
-    sigma = torch.tensor(SIGMA_FLAT, dtype=DT, requires_grad=True)
+def _reference_table(build, base_spot=SPOT_FX, base_sigma=SIGMA_FLAT, **kwargs):
+    """value / delta / vega / gamma / vanna off one reference, by double backward.
+
+    `base_spot` / `base_sigma` are where the derivatives are taken; the FX products share one world
+    and default to it, and the autocall's own world is a different pair of numbers rather than a
+    different mechanism."""
+    spot = torch.tensor(base_spot, dtype=DT, requires_grad=True)
+    sigma = torch.tensor(base_sigma, dtype=DT, requires_grad=True)
     value = build(spot, sigma, **kwargs)
     first = torch.autograd.grad(value, (spot, sigma), create_graph=True)
     second = torch.autograd.grad(first[0], (spot, sigma), retain_graph=True)
@@ -1187,89 +1202,52 @@ def test_the_target_pin_is_exact_under_the_switch(tmp_path):
 
 
 # ======================================================================================
-# THE DEAL'S OWN SETTLEMENT CONVENTION
+# ONE SETTLEMENT CONVENTION, ON BOTH ESTIMATORS
 # ======================================================================================
 
-@pytest.mark.parametrize('declared,convention', [
-    ('', 'Exact'), ('Exact', 'Exact'), ('Exact Gain', 'Exact'),
-    ('Full', 'Full'), ('Full Gain', 'Full'), ('None', 'None'), ('No Gain', 'None')])
-def test_the_declared_target_adjustment_reaches_the_fired_branch(declared, convention, tmp_path):
-    """`TargetAdjustment` is a declared field nothing has ever read, and each of its three
-    conventions is one closed form on the fired branch. Against the quadrature, 262144 paths:
+def test_the_filling_fixing_pays_the_remaining_target_under_both_estimators(tmp_path):
+    """THE CONVENTION IS THE CODE'S, not a declaration's, and both estimators state it.
 
-        Exact  engine -37.40   quadrature -37.3594     the remaining target
-        Full   engine -21.09   quadrature -21.0697     the whole gain, overshoot included
-        None   engine -52.96   quadrature -52.9211     nothing at all
+    The fixing that fills the target pays the remaining target `R` - measurable one fixing back, so
+    `(1 - p) * R` IS its conditional expectation and the crisp and smooth branches are the same
+    arithmetic. `TargetAdjustment` was a declared field the engine's history never read, and
+    honouring it under the switch made a flag documented as variance reduction reprice a deal 44%;
+    it is gone, along with the fork it fed.
 
-    Ordered as the economics demand - paying the client more on the filling fixing is worth more to
-    a buyer - and each spelling a desk writes lands on its own number rather than the nearest one.
+    Gated as the property that removal buys: the SAME document under both estimators lands on the
+    SAME quadrature, whose fired branch pays `N1 * r` and nothing else. Two estimators of one
+    number, which is the only reading that says the asymmetry is gone by construction rather than
+    by assertion.
     """
-    job = _smooth(_tarf_doc(sims=1 << 18))
-    job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal'][
-        'TargetAdjustment'] = declared
-    value, _, _ = _run_doc(job, tmp_path, 'adj')
-    truth = _table(_tarf_reference, adjustment=convention)['value']
-    assert _rel(value, truth) < 0.01, (declared, convention, value, truth)
+    truth = _table(_tarf_reference)['value']
+    crisp, _, _ = _run_doc(_tarf_doc(sims=1 << 18), tmp_path, 'conv_off')
+    smooth, _, _ = _run_doc(_smooth(_tarf_doc(sims=1 << 18)), tmp_path, 'conv_on')
+    for label, got in (('crisp', crisp), ('smooth', smooth)):
+        assert _rel(got, truth) < 0.01, (
+            'the {} estimator reads {:.6f} against the remaining-target quadrature {:.6f} '
+            '({:.3%}) - the two are meant to price ONE deal'.format(
+                label, got, truth, _rel(got, truth)))
 
 
-def test_the_crisp_path_ignores_the_convention_and_the_switch_does_not(tmp_path):
-    """THE DECLARED ASYMMETRY, gated so it is a recorded decision rather than a surprise.
+def test_a_target_adjustment_key_is_inert_wherever_it_survives(tmp_path):
+    """A RETIRED FIELD IS NOT A REFUSAL. `TargetAdjustment` is off the declaration, so a document
+    that still carries one - a book authored before the sweep, or a desk's own template - is not a
+    deal this engine can price differently. It loads, it prices, and the value is the blank
+    document's TO THE BIT under both estimators.
 
-    The one-step-survival estimator pays the remaining target whatever the field says. Teaching it
-    to read the field would move numbers with the switch OFF, which its own contract forbids, so
-    the repair belongs to a separate change with its own re-baselined fixtures - and until then a
-    deal declaring 'Full' prices as 'Exact' crisp and as itself smooth. Both halves are asserted,
-    because only the pair says which way round it is.
-
-    AND THE ASYMMETRY IS AUDIBLE, which is the half a docstring cannot do. `Branch_And_Weight` is
-    documented as "same expectation, lower variance"; on this one deal it is neither - -37.54 crisp
-    against -21.09 smooth, a 44% reprice on a flag a desk reads as variance reduction. So
-    `tarf_target_adjustment` warns by name on every deal it resolves to something other than
-    'Exact', and this gate holds that warning in place from both sides: delete the
-    `logging.warning` and `assert warned` fails; widen it to fire on every TARF and the 'Exact'
-    silence check fails. A warning nothing asserts is a warning the next cleanup deletes.
+    Asserted rather than assumed, because the two failure modes are opposite and both plausible: a
+    surviving reader would move the number, and a strict loader would reject a live book.
     """
-    def priced(adjustment, on, debug=False):
-        job = _tarf_doc()
+    for on in (False, True):
+        base, _, _ = _run_doc(_smooth(_tarf_doc(), on=on), tmp_path, 'inert_base')
+        job = _smooth(_tarf_doc(), on=on)
         job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal'][
-            'TargetAdjustment'] = adjustment
-        value, _, log = _run_doc(_smooth(job, on=on), tmp_path, 'asym', debug=debug)
-        return value, log
-
-    assert priced('Full', on=False)[0] == priced('Exact', on=False)[0], (
-        'the crisp path has started reading TargetAdjustment - that is a numbers-moving change '
-        'with the switch OFF, and every pinned TARF fixture in the repo has to be re-baselined')
-
-    full, full_log = priced('Full', on=True, debug=True)
-    exact, exact_log = priced('Exact', on=True, debug=True)
-    assert full != exact
-
-    warned = [ln for ln in full_log.splitlines() if 'CHANGES THE DEAL' in ln]
-    assert warned, (
-        'a deal whose price moves 44% with this switch said nothing about it - the whole asymmetry '
-        'lives in a docstring again, and the desk that flips the flag on a live book has no way to '
-        'attribute the move')
-    assert "'Full'" in warned[0] and 'TargetAdjustment' in warned[0], warned
-    assert 'Branch_And_Weight' in warned[0], 'the warning must name the flag that caused the move'
-    assert not [ln for ln in exact_log.splitlines() if 'CHANGES THE DEAL' in ln], (
-        "the warning fired on 'Exact', where the switch really is same-expectation - a warning on "
-        'every TARF is a warning on none of them')
-
-
-def test_an_unknown_target_adjustment_refuses_by_name(tmp_path):
-    """A convention this pricer does not know is refused rather than defaulted - the defect
-    `pv_one_touch_option`'s `Payment_Timing` chain shipped with, where a third value priced as
-    whatever the last assignment left. The refusal names the field, the value, the accepted set and
-    the two things a caller can do today."""
-    job = _smooth(_tarf_doc())
-    job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal'][
-        'TargetAdjustment'] = 'Knockout'
-    value, _, log = _run_doc(job, tmp_path, 'badadj', debug=True)
-    log = log.replace('\\', '')          # the loader logs the exception's args, quotes escaped
-    assert 'TargetAdjustment' in log and 'Knockout' in log, log[-1500:]
-    assert "'Exact'" in log and "'Full'" in log, 'the refusal must name its accepted set'
-    assert "Branch_And_Weight: 'No'" in log, 'a refusal names a remedy'
-    assert math.isnan(value), 'the deal priced anyway, so nothing was actually refused'
+            'TargetAdjustment'] = 'Full Gain'
+        stale, _, _ = _run_doc(job, tmp_path, 'inert_stale')
+        assert base == stale, (
+            "a document carrying a stale 'Full Gain' priced differently with the switch {} - "
+            'something still reads the retired field: {} against {}'.format(
+                'on' if on else 'off', stale, base))
 
 
 # ======================================================================================
@@ -1751,53 +1729,45 @@ def test_a_heston_nandi_document_under_the_switch_does_not_price(tmp_path):
     assert 'GBM' in log and "Branch_And_Weight: 'No'" in log, 'a refusal names its remedies'
 
 
+# ======================================================================================
+# THE AUTOCALL - the fourth product, and the put leg that used to defer it
+# ======================================================================================
+
 AUTOCALL_TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  'fixtures', 'autocall_job.json')
 
+# THE AUTOCALL'S OWN WORLD, written over the fixture the way `_world` writes the FX one and for the
+# same reason: the reference below is built from the DEAL and the market data, so both have to be
+# this file's rather than a fixture's to drift under it. Flat and DIFFERENT (4% funding against a
+# 1% dividend, so the carry is live at 3% and no gate passes on a degenerate zero drift) and a flat
+# surface, which is what makes an interval strip exactly the quote.
+AC_R, AC_Q, AC_SIGMA = 0.04, 0.01, 0.25
+AUTOCALL_SPOT = AC_STRIKE = 100.0
+AC_COUPON, AC_UNITS = 0.08, 10.0
+AC_DAYS = (180, 365)
 
-def test_the_switch_claims_exactly_three_products_and_no_more(tmp_path):
-    """SCOPE, pinned so it cannot be assumed wider than it is.
 
-    `Branch_And_Weight` is honoured by `pv_MC_Tarf`, `pv_MC_Accumulator` and
-    `pv_discrete_barrier_option` - the three pricers whose fixing-observed decisions the
-    construction covers - and the field's own declaration enumerates them. `pv_MC_AutoCallSwap`,
-    the roadmap's stretch half, is NOT one of them; the gate below this one is the measurement the
-    deferral rests on, and it names a reason that has nothing to do with the averaging branch.
+def _ac_surface(vol):
+    """The fixture's explicit (moneyness, tenor, vol) grid, held flat."""
+    return {'.Curve': {'meta': [],
+                       'data': [[m, t, vol] for m in (0.8, 1.0, 1.2) for t in (0.02, 2.0)]}}
 
-    So the switch is a NO-OP on an autocall, at every order: the pricer never reads it, and the
-    value and the whole second-order block come back bit-identical with it on and off. That is the
-    honest behaviour - a switch that quietly half-applied to a fourth product would be
-    indistinguishable from one that applied correctly - and this gate is what goes red the day
-    somebody teaches the autocall the construction without also giving it the quadrature table,
-    the pin and the variance ratio the TARF and the accumulator have above.
-    """
+
+# The autocall's own document, authored here because the fixture is a single coupon with no put
+# barrier at all - which is exactly the configuration that cannot see what this section is about.
+def _autocall_doc(put_barrier=0.0, coupon_days=AC_DAYS, threshold=1.0, rebate=None, greeks='No',
+                  spot=AUTOCALL_SPOT, sims=1 << 14, seed=1, same_day=False):
     with open(AUTOCALL_TEMPLATE) as f:
         job = json.load(f)
-    job['Calc']['Calculation'].update({'Greeks': 'All', 'MCMC_Simulations': 1 << 13})
-    crisp, out_c, _ = _run_doc(job, tmp_path, 'ac_off')
-    smooth, out_s, _ = _run_doc(_smooth(job), tmp_path, 'ac_on')
-    assert crisp == smooth, (crisp, smooth)
-    assert np.array_equal(out_c['Results']['Greeks_First'].values,
-                          out_s['Results']['Greeks_First'].values)
-    assert np.array_equal(out_c['Results']['Greeks_Second'].values,
-                          out_s['Results']['Greeks_Second'].values), (
-        'the autocall moved at SECOND order under a switch it does not read')
-    field = {f.key: f for f in calculation.Base_Revaluation.fields}['Branch_And_Weight']
-    for named in ('TARF', 'accumulator', 'discrete barrier'):
-        assert named in field.description, (
-            'the declaration must enumerate the products it actually covers, and it is missing '
-            '{!r}: {}'.format(named, field.description))
-
-
-# The autocall's own document, built here because the fixture is a single coupon with no put
-# barrier at all - which is exactly the configuration that cannot see what the deferral is about.
-def _autocall_doc(put_barrier, coupon_days=(180, 365), threshold=1.0, greeks='No', spot=None,
-                  sims=1 << 14, seed=1):
-    with open(AUTOCALL_TEMPLATE) as f:
-        job = json.load(f)
+    pf = job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    pf['InterestRate.USD']['Curve'] = _flat(AC_R)
+    pf['DividendRate.EQ']['Curve'] = _flat(AC_Q)
+    pf['VolatilityGrid.EQ']['Surface'] = _ac_surface(AC_SIGMA)
+    pf['EquityPrice.EQ']['Spot'] = spot
     deal = job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']
+    deal.update(Strike_Price=AC_STRIKE, Units=AC_UNITS)
     dates = [_stamp(d) for d in coupon_days]
-    deal['Autocall_Coupons'] = [[d, 0.08] for d in dates]
+    deal['Autocall_Coupons'] = [[d, AC_COUPON] for d in dates]
     deal['Autocall_Thresholds'] = [[d, threshold] for d in dates]
     # one price fixing per coupon date IS the no-averaging branch - the only one in scope
     deal['Price_Fixing'] = [[d, 0.0] for d in dates]
@@ -1806,84 +1776,608 @@ def _autocall_doc(put_barrier, coupon_days=(180, 365), threshold=1.0, greeks='No
     # 0.7 is a knock-in 30% below the strike and 1.0 sits exactly on it
     deal['Barrier'] = put_barrier
     deal['Barrier_Dates'] = [dates[-1]] if put_barrier else []
+    if rebate is not None:
+        # NOT a declared field - `pv_MC_AutoCallSwap` reads it with `.get`, so a document carrying
+        # one is the only way this term can be exercised at all (asserted below)
+        deal['Rebate'] = rebate
+    if same_day:
+        # a coupon dated ON the base date is decided off the SIMULATED spot, which is what gives
+        # the latch a graph-carrying gap and makes `Greeks: 'All'` refuse. Its threshold sits ABOVE
+        # the spot on purpose: it registers a decision without taking one, so the deal still has
+        # the rest of its life to price and the ladder below has something to converge on
+        d0 = _stamp(0)
+        deal['Autocall_Coupons'] = [[d0, AC_COUPON]] + deal['Autocall_Coupons']
+        deal['Autocall_Thresholds'] = [[d0, 1.02]] + deal['Autocall_Thresholds']
+        deal['Price_Fixing'] = [[d0, spot]] + deal['Price_Fixing']
     job['Calc']['Calculation'].update(
         {'Greeks': greeks, 'MCMC_Simulations': sims, 'Random_Seed': seed})
-    if spot is not None:
-        job['Calc']['MergeMarketData']['ExplicitMarketData'][
-            'Price Factors']['EquityPrice.EQ']['Spot'] = spot
     return job
 
 
-AUTOCALL_SPOT = 100.0
+def _barrier_on_the_base_date(job):
+    """Move the deal's ONLY barrier date onto the coupon the base date observes."""
+    job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal'][
+        'Barrier_Dates'] = [_stamp(0)]
+    return job
 
 
-@pytest.mark.parametrize('put_barrier,jumps', [(1.0, False), (0.7, True)],
+def _averaging(job, by='fixings'):
+    """Push the SAME deal onto the averaging arm, the two ways `calc_dependencies` decides it:
+    more than one price fixing per coupon, or a barrier date off the coupon dates."""
+    deal = job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']
+    if by == 'fixings':
+        deal['Price_Fixing'] = [[_stamp(d), 0.0] for d in (170, 180, 355, 365)]
+    else:
+        deal['Barrier_Dates'] = [_stamp(300)]
+    return job
+
+
+def _autocall_reference(spot, sigma, put_barrier=0.7, rebate=0.0, threshold=1.0,
+                        n_out=1200, n_in=800):
+    """The two-coupon autocall with a put barrier, as a nested region integral, differentiable end
+    to end. Written from the DEAL and the flat world above, and from nothing else.
+
+    Per coupon the line splits at the autocall threshold `K = threshold * strike`: above it the
+    deal REDEEMS and pays its coupon, below it survives to the next one, and a surviving path at
+    the end is worth nothing (the OSS arm books coupons and the put leg, no terminal payoff). The
+    put leg pays on the surviving side over `{S <= B}` - and because the second coupon's own
+    survival has already truncated the law to `{S <= K}`, the region that pays is
+    `{S <= min(B, K)}` and nothing else.
+
+    THAT INTERSECTION IS THE WHOLE CONTENT OF THE CLOSED FORM UNDER TEST, so this states it as a
+    region LIMIT rather than as an indicator: `_seg`'s ends move with theta, so `torch.autograd`
+    differentiates it the way Leibniz's rule does and the reference owns a delta, a gamma and a
+    vanna that are really its value's. Nothing here knows a lognormal closed form.
+    """
+    dt1, dt2 = AC_DAYS[0] / 365.0, (AC_DAYS[1] - AC_DAYS[0]) / 365.0
+    D1, D2 = (math.exp(-AC_R * d / 365.0) for d in AC_DAYS)
+    carry = AC_R - AC_Q
+    s1, s2 = sigma * math.sqrt(dt1), sigma * math.sqrt(dt2)
+    m1 = (carry - 0.5 * sigma ** 2) * dt1
+    m2 = (carry - 0.5 * sigma ** 2) * dt2
+    K = torch.as_tensor(threshold * AC_STRIKE, dtype=DT)
+    b_eff = torch.minimum(torch.as_tensor(put_barrier * AC_STRIKE, dtype=DT), K)
+    z1K = (torch.log(K / spot) - m1) / s1
+
+    def tail(z1):
+        """Everything the second coupon is worth, given the first one's own draw."""
+        S1 = spot * torch.exp(m1 + s1 * z1)
+        S1c = S1[..., None]
+        z2K = (torch.log(K / S1) - m2) / s2
+        z2B = (torch.log(b_eff / S1) - m2) / s2
+        top = torch.full_like(z2K, Z_INF)
+        value = AC_COUPON * D2 * _seg(z2K, top, torch.ones_like, n_in)
+        return value + D2 * _seg(
+            torch.full_like(z2B, -Z_INF), z2B,
+            lambda w: rebate - 1.0 + S1c * torch.exp(m2 + s2 * w) / AC_STRIKE, n_in)
+
+    total = AC_COUPON * D1 * _seg(z1K, torch.as_tensor(Z_INF, dtype=DT), torch.ones_like, n_out)
+    total = total + _seg(torch.as_tensor(-Z_INF, dtype=DT), z1K, tail, n_out)
+    return AC_UNITS * total
+
+
+AC_ZERO_DAYS = (180, 270, 365)
+AC_ZERO_BARRIER = 0.7      # the document and its references read ONE barrier, from here
+
+
+def _zero_coupon_doc(**kwargs):
+    """The autocall with a ZERO coupon row carrying the deal's only barrier date.
+
+    `calc_dependencies` still calls this the no-averaging arm - `ac_dates` counts the zero row and
+    day 270 IS a coupon date, so neither the one-fixing-per-coupon test nor the barrier-alignment
+    test objects - and the pricer's `if coup > 0` is then FALSE at the barrier's own `j`. Nothing
+    else in this file has a coupon row that is not a coupon.
+    """
+    job = _autocall_doc(AC_ZERO_BARRIER, coupon_days=AC_ZERO_DAYS, **kwargs)
+    deal = job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']
+    dates = [_stamp(d) for d in AC_ZERO_DAYS]
+    deal['Autocall_Coupons'] = [[dates[0], AC_COUPON], [dates[1], 0.0], [dates[2], AC_COUPON]]
+    deal['Barrier_Dates'] = [dates[1]]
+    return job
+
+
+def _zero_coupon_reference(spot, sigma, at_its_own_date, n_out=1200, n_in=800):
+    """The document above as a region integral, written TWICE: once as the loop reads it and once
+    as the deal is authored. The pair is what turns "stale spot" from a claim into a number.
+
+    `at_its_own_date=False` IS THE CODE AS WRITTEN. The zero row runs no coupon block, so `Sj` is
+    still the day-180 draw when the breach indicator reads it - which makes the breach a region of
+    the OUTER line rather than an inner one - and `coupon_index`, un-advanced, hands the 365-day
+    coupon the price-fixing strip's 180->270 interval of 90 days.
+
+    `at_its_own_date=True` is the deal: the breach is decided on the day-270 spot, drawn off the
+    surviving day-180 one over its own 90-day step and truncated by nothing (there is no autocall
+    decision on a zero coupon), and the last coupon runs the real 185 days. Its coupon leg needs no
+    day-270 split at all - given S(180) the day-365 fixing is one lognormal either way, and an
+    expectation of a sum is the sum of the expectations.
+
+    No `Phi` here, like every other reference in this file: a firing probability is the density
+    integrated over a segment whose end moves with theta.
+    """
+    d1, db, d2 = AC_ZERO_DAYS
+    D1, DB, D2 = (math.exp(-AC_R * d / 365.0) for d in AC_ZERO_DAYS)
+    carry = AC_R - AC_Q
+    K = torch.as_tensor(AC_STRIKE, dtype=DT)
+    B = torch.as_tensor(AC_ZERO_BARRIER * AC_STRIKE, dtype=DT)
+    minus_inf = torch.as_tensor(-Z_INF, dtype=DT)
+
+    def leg(days):
+        dt = days / 365.0
+        return (carry - 0.5 * sigma ** 2) * dt, sigma * math.sqrt(dt)
+
+    m1, s1 = leg(d1)
+    mb, sb = leg(db - d1)
+    # THE TENOR THE LOOP GIVES THE LAST COUPON is the barrier row's, not the coupon's own
+    m2, s2 = leg(d2 - d1 if at_its_own_date else db - d1)
+    z1K = (torch.log(K / spot) - m1) / s1
+
+    def put(S):
+        """The breach payoff. This document declares no rebate, which is the pricer's `.get`
+        default - the rebate term is gated on the put leg's own rows, not here; what is on test
+        below is WHICH spot the indicator reads, and that is rebate-blind."""
+        return S / AC_STRIKE - 1.0
+
+    def coupon_two(S1):
+        """`AC_COUPON * D2 *` the probability the last fixing FIRES, given the day-180 spot."""
+        z = (torch.log(K / S1) - m2) / s2
+        return AC_COUPON * D2 * _seg(z, torch.full_like(z, Z_INF), torch.ones_like, n_in)
+
+    def surviving(z1):
+        S1 = spot * torch.exp(m1 + s1 * z1)
+        value = coupon_two(S1)
+        if at_its_own_date:
+            S1c = S1[..., None]
+            zB = (torch.log(B / S1) - mb) / sb
+            value = value + DB * _seg(
+                torch.full_like(zB, -Z_INF), zB,
+                lambda w: put(S1c * torch.exp(mb + sb * w)), n_in)
+        return value
+
+    top = torch.as_tensor(Z_INF, dtype=DT)
+    total = AC_COUPON * D1 * _seg(z1K, top, torch.ones_like, n_out)
+    total = total + _seg(minus_inf, z1K, surviving, n_out)
+    if not at_its_own_date:
+        # the breach is decided on `S1` ITSELF, so it is a region of the outer line - and it lies
+        # inside the surviving set already, since the barrier is below the autocall threshold
+        z1B = (torch.log(B / spot) - m1) / s1
+        total = total + DB * _seg(
+            minus_inf, z1B, lambda z: put(spot * torch.exp(m1 + s1 * z)), n_out)
+    return AC_UNITS * total
+
+
+def _ac_table(**kwargs):
+    return _table(_autocall_reference, base_spot=AUTOCALL_SPOT, base_sigma=AC_SIGMA, **kwargs)
+
+
+def _ac_run(job, tmp_path, name):
+    """(value, delta, vega) and, where the run asked for them, (gamma, vanna) - off the equity."""
+    value, out, _ = _run_doc(job, tmp_path, name)
+    got = {'value': value, 'delta': _first(out, factor='EquityPrice.EQ')}
+    frame = out['Results']['Greeks_First']
+    column = [c for c in frame.columns if c != 'Value'][0]
+    got['vega'] = sum(float(frame.loc[i, column]) for i in frame.index
+                      if str(i[0]) == 'EquityPriceVol.EQ')
+    if 'Greeks_Second' in out['Results']:
+        got['gamma'], got['vanna'] = _second(
+            out, spot='EquityPrice.EQ', vol='EquityPriceVol.EQ')
+    return got
+
+
+# ======================================================================================
+# THE PUT LEG - the deferral, flipped
+# ======================================================================================
+
+@pytest.mark.parametrize('rebate', [0.0, 0.05], ids=['no rebate', 'rebate 0.05'])
+@pytest.mark.parametrize('put_barrier', [1.0, 0.7],
                          ids=['put barrier AT the strike', 'put barrier BELOW the strike'])
-def test_the_autocall_is_deferred_because_its_put_leg_still_jumps(put_barrier, jumps, tmp_path):
-    """THE DEFERRAL, and the measurement it rests on. This is the fourth product's whole file.
+def test_the_autocall_put_leg_lands_on_its_own_ladder(put_barrier, rebate, tmp_path):
+    """THE DEFERRAL, FLIPPED. This gate used to record why the autocall could not have the switch.
 
     The inherited reason was that the no-averaging loop is entangled with the AVERAGING branch the
-    construction excludes. THAT IS NOT TRUE and it is worth saying so plainly: the two arms are a
-    plain `if factor_dep['no_averaging']` / `else` inside `sim_spot`, sharing no line of pricing;
-    the boundary registration is already gated on `no_averaging`, so the averaging arm registers
-    nothing to skip; and `terminationDate` is threaded through both as a VALUE mechanism the switch
-    would not touch. On the contract's own scope the no-averaging arm is ALREADY the construction:
-    the coupon is constant so its fired branch `(1 - p) * L * coup * D_j` is a conditional
-    expectation rather than a probability times a sample, the funding leg pays on the survival
-    weight `L`, and the continuation is `Phi^-1(p * U)` - the same truncated draw, spelled inline
-    (`oss_truncated_draw`'s third named adopter). Turning the switch on would be a one-line change.
+    construction excludes. THAT WAS NEVER TRUE: the two arms are a plain
+    `if factor_dep['no_averaging']` / `else` inside `sim_spot`, sharing no line of pricing. The
+    real blocker was that the deal takes TWO decisions per fixing and only one of them was
+    integrated - beside the autocall trigger sat the put barrier, a bare indicator on the drawn
+    spot whose payoff `rebate - (1 - S/strike)` is an exact zero only ON the strike with no rebate
+    and a genuine JUMP anywhere below it, which is where every real autocall puts it.
 
-    THE REAL BLOCKER IS THAT THE AUTOCALL TAKES TWO DECISIONS PER FIXING AND ONLY ONE OF THEM IS
-    INTEGRATED. Beside the autocall trigger there is the put barrier, and it is a bare indicator on
-    the drawn spot:
+    IT IS INTEGRATED NOW, and the rows below are the reading that says so. A two-coupon autocall,
+    spot and strike at 100, 25% vol, delta against a CRN ladder of the reported value, four rungs
+    from 1e-3 to 1e-2 relative:
 
-        breach = torch.where(Sj <= putBarrier, 1.0, 0.0)
-        P = P + L * D[j] * fx * breach * (rebate - (1.0 - Sj / strike))
+        put barrier      rebate    CRISP (the old estimator)      SMOOTH (this switch)
+        1.0 on strike     0.00      0.15% and flat                0.07% and flat
+        1.0 on strike     0.05      0.14% and flat                0.09% and flat
+        0.7 below         0.00      16.2%, ladder scattering      0.16% and flat
+        0.7 below         0.05      14.6%, ladder scattering      0.15% and flat
 
-    whose payoff at the barrier is `rebate - (1 - B/K)` - an exact zero when the barrier sits ON
-    the strike, and a genuine JUMP of that size anywhere below it, which is where every real
-    autocall puts it. Ruling 2 is one estimator per decision; shipping the switch here would put
-    the construction's name on a product where one decision is integrated and the other is a step
-    function, which is ruling 3's failure - a wrong number wearing the right estimator's name -
-    arriving through a different door.
-
-    MEASURED, and the two rows of this gate are the control and the finding. A two-coupon autocall,
-    16384 paths, spot and strike at 100, 25% vol, delta against a CRN ladder of the reported value:
-
-        put barrier AT the strike (payoff continuous)   0.00% disagreement, 0.00% flatness
-        put barrier at 0.7 (payoff jumps by -0.3)      18-22% disagreement, ladder SCATTERING
-
-    across three seeds each. The scatter is `crn_ladder`'s own signature for differencing over a
-    discontinuity, and the first-order reading is already wrong, so the second-order one is not
-    worth quoting. THE ESTIMATOR IS EXACT WHEREVER THE PUT LEG DOES NOT JUMP, which is what says
-    the diagnosis is the jump and not the loop.
-
-    WHAT WOULD LAND IT, so the deferral names a remedy like any other refusal: the put leg closes
-    in the same partial moments the TARF's knock-in does. `{S <= B}` lies wholly inside the
-    surviving set `{S <= K}` whenever `B <= K`, so `lognormal_partial_moment` at powers 0 and 1
-    against `min(B, K)` integrates it exactly, with no second derivation. What it costs is a loop
-    RESTRUCTURE - the barrier is observed a screen after the coupon block that holds the interval's
-    `m`, `s` and `S_prev`, and a barrier date that does not align with a coupon date has no
-    conditioning step at all and would have to refuse by name. That is outside the stretch's
-    declared scope ("the terminal put prices on the surviving truncated sample"), and a clean
-    three-product landing beats a smeared four. This gate is what goes red when it is done: the
-    jumping row starts agreeing, and the autocall is then owed the quadrature table, the pin and
-    the variance ratio before the switch may name it.
+    THE ON-STRIKE ROWS ARE THE CONTROL and they were always exact - which is what says the
+    diagnosis was the jump and not the loop. THE REBATE ROWS ARE NOT DECORATION: `Rebate` is read
+    off the deal with a `.get` and defaults to zero, so a zero-rebate-only fixture cannot tell a
+    correct rebate term from a missing one - the closed form carries it inside the effective strike
+    `strike * (1 - rebate)`, and getting that wrong moves the value by 14% here.
     """
-    delta_out = _run_doc(_autocall_doc(put_barrier, greeks='First'), tmp_path, 'ac_d')[1]
-    aad = _first(delta_out, factor='EquityPrice.EQ')
+    def doc(**kw):
+        return _smooth(_autocall_doc(put_barrier, rebate=rebate, sims=1 << 16, **kw))
+
+    aad = _first(_run_doc(doc(greeks='First'), tmp_path, 'ac_d')[1], factor='EquityPrice.EQ')
     assert abs(aad) > 1e-6, 'a live autocall must have a spot delta to compare against'
-    rung = ladder(
-        price=lambda s: _run_doc(_autocall_doc(put_barrier, spot=s), tmp_path, 'ac_v')[0],
-        aad=aad, base=AUTOCALL_SPOT, rungs=(1e-3, 2e-3, 5e-3, 1e-2))
-    miss = abs(rung.best - rung.aad) / max(abs(rung.aad), 1e-30)
-    if jumps:
-        assert miss > 0.10, (
-            'the autocall put leg no longer misses its own bump ladder ({:.2%}) - the `breach` '
-            'indicator has been integrated, so the deferral this file records is stale and the '
-            'autocall is owed the switch AND the gates the other three products carry\n{}'.format(
-                miss, rung))
-    else:
-        assert rung.agrees(tol=0.02), (
-            'the autocall is inexact even where its put payoff is CONTINUOUS, so the deferral is '
-            'blaming the wrong thing - the diagnosis above needs redoing\n{}'.format(rung))
+    rung = ladder(price=lambda s: _run_doc(doc(spot=s), tmp_path, 'ac_v')[0],
+                  aad=aad, base=AUTOCALL_SPOT, rungs=(1e-3, 2e-3, 5e-3, 1e-2))
+    assert rung.agrees(tol=0.02), (
+        'the smooth autocall delta is not the derivative of the value the same document reports - '
+        'the put leg is the only decision on this deal that is not the coupon trigger, so this is '
+        'where a wrong effective strike, a missed `min(B, K)` or a dropped 1/p shows up\n'
+        '{}'.format(rung))
+
+
+def test_the_crisp_put_leg_still_jumps_and_the_switch_is_what_fixes_it(tmp_path):
+    """THE KILL, kept as a live measurement rather than as history. The SAME document under the
+    crisp estimator misses its own ladder wherever the put payoff jumps - 16.2% at a 70% barrier -
+    while landing on it where that payoff is continuous. Two estimators, one document, one
+    mutation: the switch.
+
+    This is the gate that goes red if the crisp path is ever quietly smoothed, which would make
+    the row above pass for the wrong reason."""
+    def miss(put_barrier, smooth):
+        def job(**kw):
+            built = _autocall_doc(put_barrier, sims=1 << 16, **kw)
+            return _smooth(built) if smooth else built
+
+        aad = _first(_run_doc(job(greeks='First'), tmp_path, 'k_d')[1], factor='EquityPrice.EQ')
+        rung = ladder(price=lambda s: _run_doc(job(spot=s), tmp_path, 'k_v')[0],
+                      aad=aad, base=AUTOCALL_SPOT, rungs=(1e-3, 2e-3, 5e-3, 1e-2))
+        return abs(rung.best - rung.aad) / max(abs(rung.aad), 1e-30), rung
+
+    jump_crisp, rung = miss(0.7, smooth=False)
+    assert jump_crisp > 0.10, (
+        'the CRISP autocall put leg no longer misses its own bump ladder ({:.2%}) - either the '
+        'indicator has been smoothed on the default path, which is a re-baseline nobody asked '
+        'for, or this document no longer has a jumping put leg to measure\n{}'.format(
+            jump_crisp, rung))
+    flat_crisp, rung = miss(1.0, smooth=False)
+    assert flat_crisp < 0.02, (
+        'the crisp autocall is inexact even where its put payoff is CONTINUOUS, so the diagnosis '
+        'this section rests on is blaming the wrong thing\n{}'.format(rung))
+    jump_smooth, _ = miss(0.7, smooth=True)
+    assert jump_smooth < 0.02 and jump_crisp / max(jump_smooth, 1e-30) > 10.0, (
+        'the switch is not what closes the gap: crisp {:.2%} against smooth {:.2%}'.format(
+            jump_crisp, jump_smooth))
+
+
+# ======================================================================================
+# THE QUADRATURE TABLE
+# ======================================================================================
+
+@pytest.mark.parametrize('rebate', [0.0, 0.05], ids=['no rebate', 'rebate 0.05'])
+def test_the_two_coupon_autocall_lands_on_the_quadrature_table(rebate, tmp_path):
+    """THE TABLE. A two-coupon autocall with a JUMPING put barrier, priced under the switch at
+    `Greeks: 'All'`, against the differentiable region integral - value, delta, vega, gamma, vanna.
+
+    Measured on this document (spot and strike 100, thresholds 1.0, coupon 0.08, put barrier 0.7,
+    10 units, r 4% q 1%, vol 25%, coupons at 180 and 365 days, 262144 inner paths):
+
+                        engine        quadrature      relative
+        value          +0.2202478     +0.2210455       0.361%
+        delta          +0.03690466    +0.03684703      0.156%
+        vega           -3.801398      -3.795778        0.148%
+        gamma          -0.001890364   -0.001887619     0.145%
+        vanna          +0.0956566     +0.09563154      0.026%
+
+    and with a 0.05 rebate, +0.2560977 / +0.03408181 / -3.368577 / -0.001699146 / +0.07971977
+    against +0.2568038 / +0.03403085 / -3.363476 / -0.001696697 / +0.07967986. THE CRISP READING
+    BESIDE THEM, for the history and not gated: value +0.2191984 (0.836%) and delta +0.03087349 -
+    16.2% out, which is the whole point.
+
+    THE VEGA ROW IS NOT DECORATION. The reference differentiates ONE scalar vol and the report
+    spreads it across the surface's live knots, so summing them has to reproduce the reference's
+    vega before summing them for vanna means anything.
+
+    THE `1/p` IS WHAT THIS TABLE ARBITRATES. The put leg's sample is drawn from the law truncated
+    to the surviving `{S <= K}` and already carries that fixing's survival in `L`, so the analytic
+    term is a CONDITIONAL expectation - the partial moments over the region divided by `p`. Written
+    without that division the same code reads +0.254135 against +0.2210455 here (15.0% out) and
+    -0.081302 against -0.2128747 on the on-strike document (61.8%), so the reference resolves the
+    question the loop order poses rather than leaving it to be argued.
+    """
+    ref = _ac_table(rebate=rebate)
+    got = _ac_run(_smooth(_autocall_doc(0.7, rebate=rebate, greeks='All', sims=1 << 18)),
+                  tmp_path, 'ac_table')
+    tol = {'value': 0.01, 'delta': 0.01, 'vega': 0.01, 'gamma': 0.01, 'vanna': 0.02}
+    bad = {k: (got[k], ref[k], _rel(got[k], ref[k])) for k in tol if _rel(got[k], ref[k]) > tol[k]}
+    assert not bad, bad
+
+
+def test_the_put_barrier_above_the_threshold_is_the_whole_surviving_set(tmp_path):
+    """`min(B, K)` IS LOAD-BEARING, and this is the document that reads it. A put barrier at or
+    above the autocall threshold pays on EVERY surviving path - the breach region is the whole
+    truncated support - and integrating the raw `{S <= B}` instead would count mass the draw was
+    truncated away from. On the strike (`B == K`) the two agree; the gate walks both.
+
+    Measured at 262144 paths: on-strike value -0.2136573 against -0.2128747 (0.368%), delta
+    +0.05835698 against +0.0583142 (0.073%), gamma -0.002207117 against -0.002206393 (0.033%).
+    """
+    for put_barrier in (1.0, 1.2):
+        ref = _ac_table(put_barrier=put_barrier)
+        got = _ac_run(_smooth(_autocall_doc(put_barrier, greeks='All', sims=1 << 18)),
+                      tmp_path, 'ac_above')
+        for key, tol in (('value', 0.01), ('delta', 0.01), ('gamma', 0.01)):
+            assert _rel(got[key], ref[key]) < tol, (
+                'put barrier {}: {} reads {:.8g} against {:.8g} ({:.3%})'.format(
+                    put_barrier, key, got[key], ref[key], _rel(got[key], ref[key])))
+
+
+# ======================================================================================
+# OFF IS OFF, and what the switch is attributable for on this product
+# ======================================================================================
+
+@pytest.mark.parametrize('kwargs,name', [
+    ({}, 'one coupon, no put barrier'),
+    ({'put_barrier': 0.7}, 'two coupons, jumping put barrier'),
+    ({'put_barrier': 0.7, 'rebate': 0.05}, 'two coupons, put barrier and rebate'),
+    ({'coupon_days': (91, 182, 273), 'put_barrier': 0.6}, 'three coupons'),
+    ({'same_day': True, 'put_barrier': 0.7}, 'a coupon observed on the base date')])
+def test_off_is_off_on_an_autocall_document(kwargs, name, tmp_path):
+    """THE KEY ABSENT AND THE KEY WRITTEN 'No' ARE THE SAME RUN - value, the whole reported mtm
+    frame, and every first-order greek, by `np.array_equal` rather than a tolerance.
+
+    The identity is absent == 'No' and it stops there: 'Yes' now LEGITIMATELY changes the
+    estimator on this product, so it is checked against the quadrature above instead of against
+    the crisp number. That is the whole shape of the landing - a switch that moved nothing would
+    not have been worth building, and one that moved something with the key absent would be a
+    defect in every other gate in the repo.
+    """
+    absent, out_a, _ = _run_doc(_autocall_doc(greeks='First', **kwargs), tmp_path, 'ac_absent')
+    written, out_w, _ = _run_doc(
+        _smooth(_autocall_doc(greeks='First', **kwargs), on=False), tmp_path, 'ac_no')
+    assert absent == written, (name, absent, written)
+    assert out_a['Results']['mtm'].equals(out_w['Results']['mtm']), 'the reported frame moved'
+    assert np.array_equal(out_a['Results']['Greeks_First'].values,
+                          out_w['Results']['Greeks_First'].values), 'a first-order greek moved'
+
+
+def test_an_autocall_with_no_put_barrier_is_bit_identical_under_the_switch(tmp_path):
+    """ATTRIBUTION, and the sharpest thing this section can say about what the switch does here.
+
+    The no-averaging loop was ALREADY the construction for its coupon trigger - the fired branch is
+    `(1 - p) * L * coup * D_j`, a conditional expectation rather than a probability times a sample,
+    and the continuation is the truncated draw. So with no put barrier there is nothing left for
+    the switch to change, and the two estimators agree TO THE BIT at value and at both greek
+    blocks. Put a barrier below the strike and they part company, which is the section above.
+
+    The `Greeks: 'All'` half also says the registration this document never made is not what is
+    being measured: it flows either way here."""
+    crisp, out_c, _ = _run_doc(_autocall_doc(greeks='All'), tmp_path, 'ac_nobar_off')
+    smooth, out_s, _ = _run_doc(_smooth(_autocall_doc(greeks='All')), tmp_path, 'ac_nobar_on')
+    assert crisp == smooth, (crisp, smooth)
+    assert np.array_equal(out_c['Results']['Greeks_First'].values,
+                          out_s['Results']['Greeks_First'].values)
+    assert np.array_equal(out_c['Results']['Greeks_Second'].values,
+                          out_s['Results']['Greeks_Second'].values), (
+        'the autocall moved at SECOND order on a document whose only decision was already smooth')
+
+
+def test_the_switch_claims_exactly_four_products_and_no_more(tmp_path):
+    """SCOPE, pinned so it cannot be assumed wider than it is.
+
+    `Branch_And_Weight` is honoured by `pv_MC_Tarf`, `pv_MC_Accumulator`,
+    `pv_discrete_barrier_option` and now `pv_MC_AutoCallSwap` - the four pricers whose
+    fixing-observed decisions the construction covers - and the field's own declaration enumerates
+    them. The autocall arrived last and arrived with what the other three carry: a quadrature
+    table, a CRN ladder, conservation on a live run and a named refusal for the arm it does not
+    reach. This gate is what goes red the day a FIFTH pricer starts reading the switch without
+    also earning those."""
+    field = {f.key: f for f in calculation.Base_Revaluation.fields}['Branch_And_Weight']
+    for named in ('TARF', 'accumulator', 'discrete barrier', 'autocall'):
+        assert named in field.description, (
+            'the declaration must enumerate the products it actually covers, and it is missing '
+            '{!r}: {}'.format(named, field.description))
+    readers = sorted(name for name, fn in vars(pricing).items()
+                     if name.startswith('pv_') and inspect.isfunction(fn) and
+                     'branch_and_weight(shared' in inspect.getsource(fn))
+    assert readers == ['pv_MC_Accumulator', 'pv_MC_AutoCallSwap', 'pv_MC_Tarf',
+                       'pv_discrete_barrier_option'], (
+        'a pricer reads the switch that this declaration does not enumerate, or one that does no '
+        'longer reads it: {}'.format(readers))
+
+
+# ======================================================================================
+# THE SECOND-ORDER BLOCK, CONSERVATION, AND THE ARM THE SWITCH DOES NOT REACH
+# ======================================================================================
+
+def test_the_autocall_gamma_flows_under_the_switch_and_is_refused_without_it(tmp_path):
+    """`Greeks: 'All'` on an autocall whose first coupon is OBSERVED is REFUSED without the switch
+    and RUNS with it, and what comes back is the derivative of the delta the same run reports.
+
+    An observed coupon is decided off the scenario's own spot, so the pricer registers a
+    `LatchedBoundarySet` and the second-order block refuses a Hessian it cannot deserve. Under the
+    switch the decision is integrated instead of corrected - one estimator per decision - so
+    nothing registers and the block flows.
+
+    Measured, 65536 paths: the reported spot-spot entry against a common-random-numbers ladder of
+    the reported delta, four rungs from 1e-3 to 1e-2, landing inside 2% at better than 10%
+    flatness.
+
+    WHAT SAYS NOTHING WAS LOST is the gate below this one, and it has to be a document with NO put
+    barrier: on one that has a barrier the switch legitimately moves first order too (delta 3.08
+    crisp against 3.70 smooth here), so a bit-identity assertion on THIS document would be asking
+    the wrong question of the right pair of runs.
+    """
+    with pytest.raises(utils.SecondOrderRefused) as refusal:
+        _run_doc(_autocall_doc(0.7, same_day=True, greeks='All'), tmp_path, 'ac_all_off')
+    assert 'boundary correction' in str(refusal.value)
+
+    _, out, _ = _run_doc(_smooth(_autocall_doc(0.7, same_day=True, greeks='All', sims=1 << 16)),
+                         tmp_path, 'ac_all_on')
+    gamma, _ = _second(out, spot='EquityPrice.EQ', vol='EquityPriceVol.EQ')
+    assert np.isfinite(gamma)
+
+    def delta_at(spot):
+        return _first(_run_doc(
+            _smooth(_autocall_doc(0.7, same_day=True, greeks='First', sims=1 << 16, spot=spot)),
+            tmp_path, 'ac_ladder')[1], factor='EquityPrice.EQ')
+
+    result = ladder(price=delta_at, aad=gamma, base=AUTOCALL_SPOT,
+                    rungs=(1e-3, 2e-3, 5e-3, 1e-2))
+    assert result.agrees(tol=0.02), (
+        'the reported autocall gamma is not the derivative of the reported delta\n{}'.format(
+            result))
+
+
+def test_the_autocall_registration_is_superseded_not_lost(tmp_path):
+    """THE OTHER HALF OF THE SUPERSESSION, isolated onto a document where the switch has nothing
+    ELSE to change: an observed coupon, and no put barrier.
+
+    The registration is skipped and the Hessian flows, and the first-order comparison beside it
+    comes back BIT FOR BIT. Base valuation has one scenario, a one-sample gap supports no
+    local-linear fit, and the boundary correction on it is exactly zero by construction - so the
+    estimator this skips was contributing exactly nothing here, which is the claim the pricer's
+    docstring makes and this is where it is checked rather than believed.
+    """
+    with pytest.raises(utils.SecondOrderRefused):
+        _run_doc(_autocall_doc(same_day=True, greeks='All'), tmp_path, 'ac_sd_off')
+    _, out, _ = _run_doc(_smooth(_autocall_doc(same_day=True, greeks='All')),
+                         tmp_path, 'ac_sd_on')
+    assert np.isfinite(_second(out, spot='EquityPrice.EQ', vol='EquityPriceVol.EQ')[0])
+    crisp, out_c, _ = _run_doc(_autocall_doc(same_day=True, greeks='First'),
+                               tmp_path, 'ac_sd1_off')
+    smooth, out_s, _ = _run_doc(_smooth(_autocall_doc(same_day=True, greeks='First')),
+                                tmp_path, 'ac_sd1_on')
+    assert crisp == smooth, (crisp, smooth)
+    assert np.array_equal(out_c['Results']['Greeks_First'].values,
+                          out_s['Results']['Greeks_First'].values), (
+        'the skipped registration was carrying flux after all - it is not zero here, and the '
+        'supersession is losing a derivative rather than replacing an estimator')
+
+
+def test_an_observed_breach_is_data_and_the_switch_does_not_touch_it(tmp_path):
+    """WHAT THE SWITCH DOES NOT SMOOTH, on a document that reaches it rather than on an argument.
+
+    A barrier date on an OBSERVED coupon has no conditioning step: `Sj` is the scenario's own spot,
+    so the breach is DATA and its indicator is exact - the same statement the observed autocall
+    trigger already carries. The document below puts the deal's only barrier date on the base
+    date's own coupon, and puts the spot BELOW the strike with the barrier ABOVE it, so the breach
+    is live and pays a real -0.10 per unit rather than a vacuous zero.
+
+    Under the switch that leg is untouched and nothing else on the deal has a barrier to integrate,
+    so the run comes back BIT-IDENTICAL at value and at first order - which is the reading that
+    says the indicator was KEPT here rather than quietly integrated against an interval that does
+    not exist. Every other barrier date in this file sits on a future coupon with a live interval,
+    measured - with ONE exception, the zero-coupon document in the gate below, which reaches this
+    same branch by the door that is not exact.
+    """
+    def job(**kw):
+        return _barrier_on_the_base_date(
+            _autocall_doc(1.1, same_day=True, spot=90.0, greeks='First', **kw))
+
+    crisp, out_c, _ = _run_doc(job(), tmp_path, 'ac_obs_off')
+    smooth, out_s, _ = _run_doc(_smooth(job()), tmp_path, 'ac_obs_on')
+    assert crisp == smooth, (
+        'an OBSERVED breach moved under the switch - its `Sj` is the scenario\'s own spot, so '
+        'there is no interval to integrate it against and it must stay an exact indicator: '
+        '{} against {}'.format(crisp, smooth))
+    assert np.array_equal(out_c['Results']['Greeks_First'].values,
+                          out_s['Results']['Greeks_First'].values)
+    # and the leg is live rather than a zero agreeing with a zero
+    without, _, _ = _run_doc(_smooth(_autocall_doc(
+        0.0, same_day=True, spot=90.0, greeks='First')), tmp_path, 'ac_obs_none')
+    assert _rel(crisp, without) > 0.05, (
+        'the observed put leg pays nothing on this document, so the identity above is two zeros '
+        'agreeing: {} against {} with no barrier at all'.format(crisp, without))
+
+
+def test_a_zero_coupon_barrier_date_reads_a_stale_spot(tmp_path):
+    """THE THIRD SUB-CASE, WHICH IS NOT EXACT - a Known-defects row pinned as a reading.
+
+    The branch above keeps a crisp indicator wherever this iteration's coupon block did not advance
+    `Sj`, and two of the three ways that happens are exact on the spot the deal names. The third is
+    not. A coupon row of ZERO carrying a barrier date runs no coupon block at all, so the indicator
+    reads the PREVIOUS fixing's spot, and `coupon_index` - un-advanced with it - hands the coupon
+    after it the barrier row's interval (90 days here) in place of its own 185. Nothing objects on
+    the way in: the zero row is still a coupon date, so `calc_dependencies` passes it on both the
+    one-fixing-per-coupon test and the barrier-alignment test and the deal takes the fast arm.
+
+    WHAT IS ASSERTED IS THE READING, WITH ITS MUTANT NAMED. The engine prices +0.394809 against a
+    reference written from the DEAL to reproduce the loop as written, +0.395432 - 0.16%, estimator
+    noise at 524288 paths. The SAME reference reading the barrier at its own date over the real
+    95-day tail says +0.317939, 24.2% away, so the fix the roadmap names - advance `Sj` over the
+    zero row, untruncated, and advance `coupon_index` with it - turns this gate red rather than
+    sliding past it. That is deliberate: the remedy and this gate close that row together.
+
+    AND THE SWITCH IS NOT WHAT DOES IT. No interval is built at that `j`, so both estimators take
+    the same indicator and the three runs come back byte-identical - which is what says the defect
+    is the arm's and predates the landing, and is why the branch is left alone rather than
+    integrated against a conditioning step that does not exist.
+    """
+    absent, _, log = _run_doc(_zero_coupon_doc(sims=1 << 19), tmp_path, 'zc_absent', debug=True)
+    # the engine's own line, so the document is known to REACH the branch rather than assumed to:
+    # the fast arm, and three threshold rows carrying two coupons
+    line, = [ln for ln in log.splitlines() if 'AUTOCALL AC1' in ln]
+    assert 'averaging=0' in line and 'coupons=2 thresholds=3' in line, (
+        'this document no longer has a zero coupon row on the no-averaging arm, so it no longer '
+        'reaches the branch it exists to read: {}'.format(line))
+
+    off, _, _ = _run_doc(_smooth(_zero_coupon_doc(sims=1 << 19), on=False), tmp_path, 'zc_no')
+    on, _, _ = _run_doc(_smooth(_zero_coupon_doc(sims=1 << 19)), tmp_path, 'zc_yes')
+    assert absent == off == on, (
+        'the zero-coupon barrier date moved under the switch - it has no conditioning step to '
+        'integrate against, so all three runs must be the same indicator: {} / {} / {}'.format(
+            absent, off, on))
+
+    as_written = float(_zero_coupon_reference(AUTOCALL_SPOT, AC_SIGMA, at_its_own_date=False))
+    authored = float(_zero_coupon_reference(AUTOCALL_SPOT, AC_SIGMA, at_its_own_date=True))
+    assert _rel(on, as_written) < 0.01, (
+        'the loop no longer reads the PREVIOUS fixing at a zero-coupon barrier date: {:.8g} '
+        'against {:.8g} ({:.3%}). If the Known-defects remedy has landed, close that row and '
+        'rewrite this gate onto the authored reading'.format(on, as_written, _rel(on, as_written)))
+    assert _rel(on, authored) > 0.10, (
+        'the two readings no longer differ enough for this gate to say anything - the mutant it '
+        'names (reading the barrier at its OWN date) is {:.8g} against {:.8g}'.format(
+            authored, as_written))
+
+
+def test_the_autocall_ledger_conserves_on_a_real_document(tmp_path):
+    """CONSERVATION, on a live run rather than on a constructed tensor: per path, the mass every
+    coupon fired plus the mass still alive is the mass the strip opened with, exactly to float
+    roundoff. Measured on this document at 0.0 with 37.6% of the weight surviving both coupons -
+    which is the other half of the reading, since a ledger that fired everything or nothing would
+    conserve trivially."""
+    _, _, log = _run_doc(_smooth(_autocall_doc(0.7, sims=1 << 12)), tmp_path, 'ac_ledger',
+                         debug=True)
+    lines = [ln for ln in log.splitlines() if 'LEDGER AUTOCALL' in ln]
+    assert lines, 'the smooth path ran no ledger at all'
+    residual = max(float(ln.split('conservation=')[1].split()[0]) for ln in lines)
+    alive = [float(ln.split('alive=')[1].split()[0]) for ln in lines]
+    assert residual < 1e-12, (residual, lines)
+    assert 0.05 < max(alive) < 0.95, (
+        'this document fires on almost none or almost all of its weight, so conservation on it '
+        'says nothing: alive={}'.format(alive))
+
+
+@pytest.mark.parametrize('by', ['fixings', 'barrier'])
+def test_an_averaging_autocall_under_the_switch_refuses_by_name(by, tmp_path):
+    """THE ARM THE SWITCH DOES NOT REACH, refused rather than quietly no-opped.
+
+    The averaging arm's termination is a smoothed per-inner-path weight (`smooth_heaviside_up`)
+    with no crisp per-scenario decision to replace, and its own breach is a hard indicator on the
+    AVERAGE - whose conditioning law is the distribution of a mean of spots, not one fixing
+    interval's lognormal. A no-op would leave the switch's name on that estimator, which is exactly
+    the failure the deferral this section replaced was protecting against.
+
+    Both ways `calc_dependencies` puts a deal on that arm are walked: more than one price fixing
+    per coupon, and a barrier date off the coupon dates. The same documents price perfectly well
+    with the switch OFF, which is what says the refusal is the switch's and not the document's.
+    """
+    priced, _, _ = _run_doc(_averaging(_autocall_doc(0.7), by), tmp_path, 'avg_off')
+    assert np.isfinite(priced) and priced != 0.0, (
+        'the averaging document does not price with the switch OFF either, so the refusal below '
+        'would be attributable to the deal rather than to the switch')
+    refused, _, log = _run_doc(_smooth(_averaging(_autocall_doc(0.7), by)), tmp_path, 'avg_on',
+                               debug=True)
+    assert math.isnan(refused), 'the deal priced on an arm the switch has no conditioning law for'
+    # the loader logs the raised exception's ARGS, so every quote arrives escaped
+    log = log.replace('\\', '')
+    assert 'averages' in log and 'AVERAGING arm' in log, log[-1200:]
+    assert 'smooth_heaviside_up' in log, 'the refusal names what it will not put its name on'
+    assert 'ONE price fixing per coupon' in log and "Branch_And_Weight: 'No'" in log, (
+        'a refusal names its remedies')

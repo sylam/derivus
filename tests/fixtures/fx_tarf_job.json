@@ -159,7 +159,6 @@
                 "Option_Style": "European",
                 "InvertedTarget": false,
                 "LeverageNotional": 2000.0,
-                "TargetAdjustment": "",
                 "TargetLevel": 1000000000.0,
                 "Barrier": 0.0,
                 "TARF_ExpiryDates": [

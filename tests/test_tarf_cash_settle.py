@@ -48,7 +48,7 @@ def _job(buy_sell):
         'FX_Volatility': 'EUR.USD', 'Buy_Sell': buy_sell, 'Option_Type': 'Call',
         'Expiry_Date': {'.Timestamp': _day(152)}, 'Underlying_Amount': N1,
         'Strike_Price': STRIKE, 'Settlement_Style': 'Cash', 'Option_Style': 'European',
-        'InvertedTarget': False, 'LeverageNotional': N2, 'TargetAdjustment': '',
+        'InvertedTarget': False, 'LeverageNotional': N2,
         'TargetLevel': 0.5, 'Barrier': 0.0,
         # a plain array of rows: the field declares no `tag`, so it arrives as rows and the deal
         # reads it by iterating them. Authored as `{'.DateEqualList': ...}` - which is what the

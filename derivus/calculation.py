@@ -1887,20 +1887,17 @@ class Base_Revaluation(Calculation):
           description='Re-simulate a Monte Carlo pricer\'s inner paths in backward() rather than '
                       'taping them; trades a second forward pass for the graph of every pricing'),
         F('Branch_And_Weight', 'Text', default='No', values=['Yes', 'No'],
-          description='Price fixing-observed knockouts (TARF, accumulator, discrete barrier) with '
-                      'the SMOOTH estimator: the fired branch of each fixing integrated '
-                      'analytically against that interval\'s own lognormal law and the continuing '
-                      'branch drawn from the truncated one. Same expectation, lower variance, and '
-                      'no indicator on the tape - so second-order greeks flow where the crisp '
-                      'estimator has to refuse them. GBM only; a non-GBM spot model refuses by '
-                      'name (`pricing.branch_and_weight`). Off is the crisp path bit for bit. '
-                      'ONE EXCEPTION to same-expectation, and it moves money rather than noise: a '
-                      'TARF declaring a non-blank `TargetAdjustment` (\'Full Gain\', \'No Gain\') '
-                      'is priced by that convention here and as \'Exact\' on the crisp path, which '
-                      'the crisp path cannot be taught to read without moving numbers with this '
-                      'switch OFF - so on those deals this flag changes the DEAL, not the '
-                      'estimator. Each one warns by name as it is priced; '
-                      '`pricing.tarf_target_adjustment` is the reason')
+          description='Price fixing-observed knockouts (TARF, accumulator, discrete barrier, '
+                      'autocall) with the SMOOTH estimator: the fired branch of each fixing '
+                      'integrated analytically against that interval\'s own lognormal law and the '
+                      'continuing branch drawn from the truncated one. Same expectation, lower '
+                      'variance, and no indicator on the tape - so second-order greeks flow where '
+                      'the crisp estimator has to refuse them. GBM only; a non-GBM spot model '
+                      'refuses by name (`pricing.branch_and_weight`), as does an AVERAGING '
+                      'autocall, whose conditioning law is the distribution of a mean of spots '
+                      'rather than one fixing interval\'s. Off is the crisp path bit for bit, and '
+                      'on it is a RE-ESTIMATION of the same deal - it changes which estimator '
+                      'prices a settlement convention, never which convention the deal settles on')
     ]
 
     def __init__(self, config, **kwargs):

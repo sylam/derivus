@@ -518,84 +518,6 @@ def branch_and_weight(shared, deal_data):
     return True
 
 
-# `TargetAdjustment` as the three payments a fired fixing can carry, by the spellings a desk
-# writes. Blank is EXACT because that is what the crisp estimator has always paid - see
-# `tarf_target_adjustment` for why the default is a reading of the code rather than a choice.
-TARF_TARGET_ADJUSTMENTS = {
-    '': 'Exact', 'Exact': 'Exact', 'Exact Gain': 'Exact', 'Exact_Gain': 'Exact',
-    'Full': 'Full', 'Full Gain': 'Full', 'Full_Gain': 'Full',
-    'None': 'None', 'No Gain': 'None', 'No_Gain': 'None'}
-
-
-def tarf_target_adjustment(deal_data):
-    """Which payment the fixing that FILLS the target makes - the TARF's own declared convention.
-
-    ``FXTARFOptionDeal.TargetAdjustment`` is a declared field (``default=''``) that nothing has ever
-    read. The three conventions a desk writes are the three closed forms a fired branch can take,
-    and ``pv_MC_Tarf`` under ``Branch_And_Weight`` is the first caller that can honour them, because
-    each one is an expectation under the conditioning step's own law rather than a payoff on a
-    sample (``lognormal_fired_gain``):
-
-    - EXACT (also 'Exact Gain'): the client's total gain is trimmed to the target, so the payment is
-      the remaining target ``R`` - measurable one fixing back, so its conditional expectation IS
-      itself and the branch is ``(1 - p) * R``.
-    - FULL (also 'Full Gain'): the whole final gain is paid even though it overshoots the target,
-      so the payment is the lognormal partial expectation ``E[N * cp * (S_k - K) | fired]``. Its
-      relu is inert on this branch by construction - fired MEANS the gain cleared ``R >= 0``.
-    - NONE (also 'No Gain'): the filling fixing pays nothing. Exactly zero, and needs no code.
-
-    BLANK IS 'EXACT', AND THAT IS A READING OF THE CRISP PATH RATHER THAN A CHOICE. ``pv_MC_Tarf``'s
-    one-step-survival estimator pays ``(1 - p) * L * R`` unconditionally, whatever the deal
-    declares, so 'Exact' is the convention every TARF in this repo has actually been priced under -
-    which is what makes the switch bit-identical on the documents that leave the field blank, and
-    what lets the unbiasedness gate compare two estimators of ONE number.
-
-    THE ASYMMETRY IS DECLARED, NOT REPAIRED, AND IT SAYS SO OUT LOUD. A deal declaring 'Full' or
-    'None' prices as 'Exact' on the crisp path and as itself under the switch, so the two estimators
-    are then pricing different deals on purpose. Teaching the crisp path to read the field would
-    move numbers with the switch OFF, which its own contract forbids; the honest place for that
-    repair is a separate change with its own re-baselined fixtures.
-
-    Until then this function WARNS on every deal it resolves to something other than 'Exact', and
-    that warning is the fix rather than a decoration. ``Branch_And_Weight``'s own field description
-    says "same expectation, lower variance", which is true per DECISION and true of every deal that
-    leaves this field blank - but a book carrying one 'Full Gain' TARF reprices 44% on a flag
-    documented as variance reduction (measured: -37.54 crisp against -21.09 smooth, both correct for
-    the deal each one is pricing). A docstring is not where a desk finds that out, so the deal names
-    itself as it is read and the move is attributable to the declaration that caused it.
-
-    An unrecognised spelling REFUSES here rather than falling through to a default, which is the
-    defect ``pv_one_touch_option``'s ``Payment_Timing`` chain shipped with: a third value priced as
-    whatever the last assignment left. Only reached under the switch, so no crisp run can newly
-    raise on a document that priced yesterday.
-    """
-    declared = deal_data.Instrument.field.get('TargetAdjustment', '')
-    key = ('' if declared is None else str(declared)).strip()
-    if key not in TARF_TARGET_ADJUSTMENTS:
-        raise ValueError(
-            "Branch_And_Weight: 'Yes' is refused on {} - TargetAdjustment={!r} is not a convention "
-            'this pricer knows, and the payment the FILLING fixing makes is exactly what the '
-            'declaration decides, so guessing it would price a different deal under the right '
-            "deal's name. What works today: declare one of {} (blank and 'Exact' are the same "
-            'convention, and are what the crisp estimator has always paid); or run this deal with '
-            "Branch_And_Weight: 'No', whose one-step-survival estimator pays the remaining target "
-            'whatever this field says.'.format(
-                deal_data.Instrument.field.get('Reference'), declared,
-                ', '.join(repr(k) for k in sorted(TARF_TARGET_ADJUSTMENTS) if k)))
-    convention = TARF_TARGET_ADJUSTMENTS[key]
-    if convention != 'Exact':
-        # the one deal on which the switch is NOT a re-estimation, saying so where a desk reads it
-        logging.warning(
-            'Branch_And_Weight CHANGES THE DEAL on %s, not just its estimator: '
-            'TargetAdjustment=%r pays the FILLING fixing as %r here, while the crisp path pays the '
-            'remaining target whatever this field says, so switching this deal on is not the '
-            'variance reduction the field description promises. Declare %r (or leave the field '
-            'blank) for the convention both estimators share; see pricing.tarf_target_adjustment '
-            'for why the crisp path is the one that cannot be taught to read it.',
-            deal_data.Instrument.field.get('Reference'), declared, convention, 'Exact')
-    return convention
-
-
 def lognormal_partial_moment(spot, drift, vol, z_bound, fired_above, power=1.0):
     """``E[S_k**power * 1{fired}]`` under ONE fixing interval's lognormal law - the analytic half of
     a fired branch.
@@ -632,21 +554,20 @@ def lognormal_partial_moment(spot, drift, vol, z_bound, fired_above, power=1.0):
 
 
 def lognormal_fired_gain(spot, drift, vol, z_bound, strike, fired_above, power=1.0):
-    """``E[(S_k**power - strike**power) * 1{fired}]`` - the FULL-GAIN convention's fired payment.
+    """``E[(S_k**power - strike**power) * 1{fired}]`` - a gain paid on one tail of the interval.
 
     Black's own difference of two partial moments, in the conditioning step's law rather than the
     expiry's. ``power=-1`` prices the inverted accrual, where the gain is written in reciprocals and
     ``strike**power`` is ``1/K``; the caller supplies the payoff's sign, because which side is a
     gain is the deal's convention and not this expression's.
 
-    The three settlement conventions a fired fixing can carry are readings of this file's two
-    moments and nothing else, which is why there is no dispatcher here to pick between them:
-
-    - CAPPED / EXACT: the payment is the remaining target ``R``, which is measurable one fixing
-      back, so its conditional expectation IS itself and the fired branch is ``(1 - p) * R``. That
-      is the arithmetic form of the no-``p``-times-sample ruling, not an exception to it.
-    - FULL GAIN: this function, times the notional.
-    - NONE: exactly zero, and needs no code.
+    ITS CALLER IS A LEG WHOSE PAYOFF IS A GAIN OVER A TAIL - ``pv_MC_Tarf``'s knock-IN, where
+    ``relu(-eff_intr) * 1{hit}`` is exactly this difference over the OTM side of the strike. The
+    TARF's own FIRED branch is NOT built from it and never was: the fixing that fills the target
+    pays the remaining target ``R``, which is measurable one fixing back, so its conditional
+    expectation IS itself and the branch is ``(1 - p) * R``. That is the arithmetic form of the
+    no-``p``-times-sample ruling rather than an exception to it, and it is the one settlement
+    convention both estimators state.
     """
     return (lognormal_partial_moment(spot, drift, vol, z_bound, fired_above, power) -
             (strike ** power) * lognormal_partial_moment(
@@ -3567,15 +3488,14 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
     Most of the construction was already here: the KO-in-step term IS the fired branch integrated
     against the fixing interval's own lognormal law, the moving trigger ``B_pnl = K + R/N`` IS
-    ``K + R_{k-1}``, and the continuation IS the truncated draw. What the switch adds is the three
-    things the crisp path could not do:
+    ``K + R_{k-1}``, and the continuation IS the truncated draw. THE FIRED PAYMENT IS THE SAME ONE
+    ON BOTH PATHS - the fixing that fills the target pays the remaining target ``R``, which is
+    measurable one fixing back, so its conditional expectation is itself. What the switch adds is
+    the two things the crisp path could not do:
 
-    - THE FIRED PAYMENT BY THE DEAL'S OWN CONVENTION. The crisp path pays the remaining target
-      whatever ``TargetAdjustment`` says; under the switch each convention is its own closed form
-      (``tarf_target_adjustment``), and the declared asymmetry is recorded there.
     - THE KNOCK-IN INTEGRATED RATHER THAN SAMPLED. ``relu(-eff_intr) * 1{hit}`` is supported on one
-      tail of the conditioning step's law, wholly inside the surviving set, so it closes in the same
-      partial moment the fired branch does (``lognormal_fired_gain``) and the indicator - the whole
+      tail of the conditioning step's law, wholly inside the surviving set, so it closes in that
+      law's own partial moments (``lognormal_fired_gain``) and the indicator - the whole
       reason for the ``InnerBoundarySet`` - leaves the tape. Rao-Blackwellisation, not smoothing:
       the same expectation with that leg's sampling noise removed.
     - THE PER-FIXING ACCRUAL KINK at second order (``accrual_kink_term``), added to ``cf_itm`` so it
@@ -3739,23 +3659,16 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     p, Z = oss_truncated_draw(u[j], z_max, callOrPut > 0)
                         
                     # ---- Analytic KO-in-step contribution -------------------------------------
-                    # KO pays the *remaining target* this step, discounted at the j-th discount point
-                    if smooth and target_adjustment != 'Exact':
-                        # the fired branch by the deal's OWN convention, each an expectation under
-                        # this interval's law rather than a payoff on a sample: FULL pays the whole
-                        # gain (its relu is inert here - fired MEANS the gain cleared R >= 0), NONE
-                        # pays nothing (see tarf_target_adjustment)
-                        if target_adjustment == 'Full':
-                            P = P + Dj * L * N_i * gain_sign * lognormal_fired_gain(
-                                Sj, fwd_drift, vol_dt, z_max, K, callOrPut > 0, gain_power)
-                    else:
-                        P = P + (1.0 - p) * L * R * Dj
+                    # KO pays the *remaining target* this step, discounted at the j-th discount
+                    # point - ONE convention, stated the same way on both estimators: R is
+                    # measurable one fixing back, so `(1 - p) * R` IS its conditional expectation
+                    P = P + (1.0 - p) * L * R * Dj
                     if boundary_aad:
                         P_alive = P_alive + (1.0 - p) * L_alive * R * Dj
                     # THE KNOCK-IN, INTEGRATED RATHER THAN SAMPLED. `relu(-eff_intr) * 1{hit}` is
                     # supported on one tail of THIS interval's own law - `otm_bound` carries the
-                    # strike's side and the barrier's at once - so the leg closes in the same
-                    # partial moment the fired branch does, and the indicator leaves the tape. The
+                    # strike's side and the barrier's at once - so the leg closes in that law's
+                    # own partial moments, and the indicator leaves the tape. The
                     # survival truncation is redundant over it: `otm_bound` is on the strike's side
                     # of `B_pnl = K + R/N` for every R >= 0, so the knocked-in set lies wholly
                     # inside the surviving one and the two conditions do not have to be crossed.
@@ -3914,9 +3827,6 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     # the two registrations below rather than joining them - one decision, one estimator (see the
     # docstring's BRANCH AND WEIGHT section)
     smooth = branch_and_weight(shared, deal_data)
-    # the payment the FILLING fixing makes, by the deal's own declaration - read only under the
-    # switch, because the crisp estimator pays the remaining target whatever the field says
-    target_adjustment = tarf_target_adjustment(deal_data) if smooth else None
     # `eff_intr = gain_sign * (S**gain_power - K**gain_power)` on BOTH targets, which is what lets
     # one closed form serve the inverted accrual (`lognormal_fired_gain`'s own `power`)
     gain_power = -1.0 if invertedTarget else 1.0
@@ -4079,26 +3989,45 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     counterfactual: an objective with a kink scores two partial counterfactuals differently from
     their sum. A re-observation of an old decision in a pending window registers nothing.
 
-    BRANCH AND WEIGHT DOES NOT REACH THIS PRICER, and the reason is not the averaging branch. The
-    no-averaging arm is ALREADY the construction on its own terms - a constant coupon makes
+    BRANCH AND WEIGHT REACHES THE NO-AVERAGING ARM (``Branch_And_Weight: 'Yes'``, base valuation
+    only), and it SUPERSEDES the registration above rather than joining it - one decision, one
+    estimator. Most of the construction was already here: a constant coupon makes
     ``(1 - p) * L * coup * D_j`` a conditional expectation rather than a probability times a
-    sample, the funding leg pays on the survival weight, and the continuation is the truncated draw
-    - and it shares no line of pricing with the averaging arm, whose registration is gated on
-    ``no_averaging`` anyway. What blocks it is that this deal takes TWO decisions per fixing and
-    only one of them is integrated: beside the autocall trigger sits the put barrier, a bare
-    ``Sj <= putBarrier`` indicator whose payoff ``rebate - (1 - S/K)`` is an exact zero AT the
-    strike and a genuine JUMP anywhere below it, which is where a real autocall puts it. Honouring
-    the switch here would put the construction's name on a product half of whose decisions are step
-    functions - measured at 18-22% off a CRN ladder at FIRST order on a 70% barrier, against 0.00%
-    on the same document with the barrier at the strike (``tests/test_branch_and_weight.py``).
+    sample, the funding leg pays on the survival weight, and the continuation is the truncated
+    draw. What the switch adds is the SECOND decision this deal takes per fixing.
 
-    WHAT WOULD LAND IT: the put leg closes in the same partial moments the TARF's knock-in does -
-    ``{S <= B}`` lies inside the surviving ``{S <= K}`` whenever ``B <= K``, so
-    ``lognormal_partial_moment`` at powers 0 and 1 against ``min(B, K)`` integrates it exactly. The
-    cost is the loop RESTRUCTURE this file already owes ``oss_truncated_draw``: the barrier is read
-    a screen after the coupon block that holds the interval's ``m``, ``s`` and ``S_prev``, and a
-    barrier date not aligned with a coupon date has no conditioning step at all and must refuse by
-    name. Until then the switch is a no-op here, gated as one.
+    THE PUT LEG IS INTEGRATED RATHER THAN SAMPLED. ``breach * (rebate - (1 - S/strike))`` is
+    ``(S - strike * (1 - rebate)) * 1{S <= B} / strike`` - a gain over one tail of the interval's
+    own law - so it closes in that law's partial moments (``lognormal_fired_gain``) and the
+    indicator leaves the tape. Crisp it is a bare jump of ``rebate - (1 - B/strike)``, an exact zero
+    only where the barrier sits ON the strike with no rebate: measured 18-22% off its own CRN delta
+    ladder at a 70% barrier, which is where a real autocall puts it, against 0.00% on the strike.
+
+    THE ORDER IN THE LOOP DECIDES THE FORM, and it is the thing to read before touching this. The
+    coupon block computes the SURVIVAL ``p``, pays ``(1 - p) * L``, advances ``L`` to ``p * L``, and
+    only then advances ``Sj`` by a survival-truncated draw; the barrier block runs after all four.
+    So the sample it replaces is drawn from the law truncated to the surviving ``{S <= K}`` AND is
+    already carrying that fixing's ``p`` in ``L`` - which makes the analytic term a CONDITIONAL
+    expectation: the raw partial moments over the breach region, divided by ``p``. That division is
+    spelled as the weight from before ``p`` entered ``L`` - exactly ``L / p``, without the ``0/0``
+    on a fixing every path fires - and the region is intersected with the surviving set,
+    ``min(B, K)``, so what is integrated lies inside the truncated support.
+
+    WHAT STAYS AN INDICATOR, because there is no conditioning step to integrate it against: a
+    barrier date this iteration's coupon block did not advance ``Sj`` over. Two of the three ways
+    that happens are EXACT - an OBSERVED fixing (``dt <= 0`` - ``Sj`` is the scenario's own spot and
+    the breach is DATA, exactly as the observed autocall trigger is) and a block opening on a fixing
+    that is not aligned (``Sj`` is that coupon's own observed price fixing). THE THIRD IS NOT: on a
+    barrier date whose coupon row is ``<= 0`` the indicator is exact on a STALE spot - the previous
+    fixing's - and ``coupon_index``, un-advanced, mis-tenors the next coupon with it. That is a
+    pre-existing defect of this arm and not of the switch, which leaves the branch byte for byte;
+    it is a row in roadmap.md's Known-defects table with its remedy, and the gate that pins the
+    reading is ``test_branch_and_weight.py::test_a_zero_coupon_barrier_date_reads_a_stale_spot``.
+
+    THE AVERAGING ARM REFUSES BY NAME rather than no-opping: its termination is a smoothed
+    per-inner-path weight with no crisp per-scenario decision to replace, and its own ``breached``
+    is a hard indicator on the AVERAGE, so pricing it under the switch would put the construction's
+    name on an estimator that is not it.
     """
     def sim_autocall(S, isBarrierDate, isFixingDate, isFloatDate, floating, threshold, coupon, terminationDate):
         avg = 0.0
@@ -4227,6 +4156,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 # counterfactual for this row's OBSERVED autocall; it does not exist until the
                 # trigger is met, at most once per row (see docstring)
                 P_cf = L_cf = None
+                # the alive weight and what each coupon FIRED, in one object, so the telescoping
+                # identity the construction rests on has somewhere to live (SurvivalLedger). The
+                # accumulators run alive, so it opens at one
+                ledger = SurvivalLedger(L) if smooth else None
                 # set the correct shape for discounting; the vol is per INTERVAL, so it is picked
                 # off the strip at the coupon's own index rather than hoisted out of the loop
                 D = df.unsqueeze(2)
@@ -4235,6 +4168,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
                 for j, (coup, thresh, FloatingDate, barrier) in enumerate(
                         zip(coupon, threshold, isFloatingDate, isBarrierDate)):
+                    # the conditioning step THIS iteration's coupon block advanced `Sj` over, or
+                    # None - the put leg below integrates against it, and only a fresh one is one
+                    interval = None
 
                     if FloatingDate > 0:
                         P = P + L * fx * -FloatingDate * D[j]
@@ -4263,6 +4199,19 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                 vol_dt = vol * torch.sqrt(dt)
                                 p = utils.norm_cdf(
                                     (torch.log(K / Sj) - (forward_carry - 0.5 * vol * vol) * dt) / vol_dt)
+                                if smooth and putBarrier > 0.0:
+                                    # this interval, held for the barrier block a screen below
+                                    # because THIS is where it exists: `Sj` before the advance, the
+                                    # interval's own `m` and `s`, the weight from BEFORE this
+                                    # fixing's `p` enters `L`, and the breach region intersected
+                                    # with the surviving set `{S <= K}` the draw is truncated to.
+                                    # `m` is SPELLED AGAIN rather than hoisted out of the two
+                                    # crisp sites: one node collecting two cotangents rounds its
+                                    # gradient differently from two collecting one each, which
+                                    # moved this pricer's reported greeks in the last bit with the
+                                    # switch OFF - and off is bit-identical or it is a defect
+                                    interval = (Sj, (forward_carry - 0.5 * vol * vol) * dt,
+                                                vol_dt, L, min(putBarrier, K))
                         else:
                             p = torch.where(K > Sj, 1.0, 0.0)
                             if tau == 0.0:
@@ -4298,7 +4247,14 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         # (dt <= 0) that discount is 1 and this IS the cash that changes hands.
                         coupon_cash = fx * (1 - p) * L * coup * D[j]
                         P = P + coupon_cash
-                        L = p * L
+                        if ledger is not None:
+                            # `L * p` and `p * L` are the same IEEE product, so the ledger's
+                            # advance is the crisp line's - what it adds is the fired mass beside
+                            # it, spelled off the SAME `p`, which is what makes the identity exact
+                            ledger.fire(p)
+                            L = ledger.alive
+                        else:
+                            L = p * L
                         if tau == 0.0 and dt <= 0:
                             # SETTLE HERE, not at the bottom of the loop. `tau` is row-level, so a
                             # test down there holds for every coupon and books the running `P`
@@ -4333,13 +4289,39 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         else:
                             fixing_aligned = True
 
-                    if barrier > 0:
+                    if barrier > 0 and interval is not None:
+                        # THE PUT LEG, INTEGRATED. `breach * (rebate - (1 - S/strike))` is
+                        # `(S - strike * (1 - rebate)) * 1{S <= b_eff} / strike` - a gain over one
+                        # tail of this interval's own law - so it closes in that law's partial
+                        # moments and the indicator leaves the tape. `b_eff = min(B, K)` puts the
+                        # breach region inside the SURVIVING set, and `L_prev` is the weight from
+                        # before this fixing's `p` entered `L`: the sample being replaced was drawn
+                        # survival-truncated, so the expectation is conditional on that truncation,
+                        # and `L_prev` IS `L / p` without the 0/0 where every path fired
+                        Sj_prev, m, s, L_prev, b_eff = interval
+                        z_b = (torch.log(b_eff / Sj_prev) - m) / s
+                        P = P + L_prev * D[j] * fx * lognormal_fired_gain(
+                            Sj_prev, m, s, z_b, strike * (1.0 - rebate), False) / strike
+                    elif barrier > 0:
+                        # no conditioning step this iteration, and the three sub-cases do NOT read
+                        # alike. EXACT, on the spot the deal names: an OBSERVED fixing (`Sj` is the
+                        # scenario's own spot and the breach is DATA, exactly as the observed
+                        # autocall trigger is), and a block opening on an unaligned fixing (`Sj` is
+                        # that coupon's own observed price fixing). EXACT ON A STALE SPOT: a barrier
+                        # date whose coupon row is <= 0 never ran the block above, so this reads the
+                        # PREVIOUS fixing's `Sj` and `coupon_index` mis-tenors the next coupon with
+                        # it - a pre-existing defect of the arm rather than of the switch, which
+                        # leaves it alone byte for byte; roadmap.md's Known-defects table carries it
                         breach = torch.where(Sj <= putBarrier, 1.0, 0.0)
                         P = P + L * D[j] * fx * breach * (rebate - (1.0 - Sj / strike))
                         if P_cf is not None:
                             P_cf = P_cf + L_cf * D[j] * fx * breach * (rebate - (1.0 - Sj / strike))
 
 
+                if ledger is not None:
+                    # the identity the construction rests on, per row, at DEBUG - the one reading a
+                    # value cannot show (SurvivalLedger.check)
+                    ledger.check('AUTOCALL row {}'.format(i))
                 row_value = P.mean(axis=1)
                 alive.append(row_value)
                 mcmc.append(torch.where(dead, torch.zeros_like(row_value), row_value))
@@ -4462,6 +4444,26 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                   deal_data.Instrument.field.get('Reference'), int((np.asarray(Coupon) > 0).sum()),
                   len(Threshold), int(not factor_dep['no_averaging']), putBarrier, len(counts))
 
+    # THE SWITCH, read once before a draw is taken so a non-GBM refusal lands first. It SUPERSEDES
+    # the registration below rather than joining it - one decision, one estimator (see the
+    # docstring's BRANCH AND WEIGHT section)
+    smooth = branch_and_weight(shared, deal_data)
+    if smooth and not factor_dep['no_averaging']:
+        raise ValueError(
+            "Branch_And_Weight: 'Yes' is refused on {} because it averages - more than one price "
+            'fixing per coupon, or a barrier date off the coupon dates, so the deal prices on the '
+            'AVERAGING arm. That arm has no crisp per-scenario decision for the switch to replace: '
+            'its termination is a smoothed per-inner-path weight (pricing.smooth_heaviside_up) and '
+            'its breach is a hard indicator on the AVERAGE, whose conditioning law is the '
+            'distribution of a MEAN of spots and not one fixing interval\'s lognormal - which the '
+            'construction does not have (roadmap.md, "Branch and weight for TARFs and autocalls"). '
+            'Pricing it here would put the smooth estimator\'s name on an estimator that is not it. '
+            'What works today: book this deal with ONE price fixing per coupon date and every '
+            "barrier date ON a coupon date, which is the no-averaging arm the switch does price; or "
+            "run it with Branch_And_Weight: 'No', the default, which is the crisp estimator this "
+            'deal already prices under, unchanged.'.format(
+                deal_data.Instrument.field.get('Reference')))
+
     # Heston-Nandi spot model (present iff HestonNandiModelParameters.<equity> was resolved): the
     # five GARCH scalars ride the AAD graph out of t_Static_Buffer, unpacked exactly like the TARF.
     # When absent, sim_spot takes the byte-identical GBM path. HN is only wired into no_averaging.
@@ -4481,8 +4483,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
     # An autocall taken on the reporting row's own spot is a real redemption, so the value is not
     # what is wrong; what ordinary AAD drops is the flux of scenarios across the threshold.
-    # Recording it costs nothing when sensitivities are not wanted, so it is gated rather than on.
-    boundary_aad = getattr(shared, 'boundary_aad', False)
+    # Recording it costs nothing when sensitivities are not wanted, so it is gated rather than on -
+    # and superseded, not joined, where the smooth estimator removes the decision instead
+    boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
     row_ofs = 0
     b_latch, b_obs, b_alive, b_cash = [], [], [], []
 

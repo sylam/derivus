@@ -1036,9 +1036,6 @@ def furnish_accrual(deal, params, document, base_date, underlying, inverted):
         deal['Expiry_Date'] = dict(schedule[-1][1])
         # the deal accrues and pays on its OWN axis - see the docstring for what the flag would do
         deal['InvertedTarget'] = False
-        # declared, unread today, and written anyway: a deal block IS the field dict, so a field
-        # the pricer starts reading is a KeyError on every quote rather than on the next author's
-        deal.setdefault('TargetAdjustment', '')
         # the OTM knock-in this desk does not sell; `> 0.0` is the pricer's own off switch
         deal.setdefault('Barrier', 0.0)
     else:
