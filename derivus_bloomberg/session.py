@@ -33,6 +33,35 @@ def _error_text(element) -> str:
     return str(element).strip()
 
 
+def _scalar_value(element):
+    """One field element as the reader has always read it - `getValue()`, element zero."""
+    return element.getValue()
+
+
+def _bulk_value(element):
+    """One field element as a BULK field: the list of rows it carries, each row a dict of its own
+    sub-fields, and a plain `getValue()` where the field is not an array after all.
+
+    `getValue()` ALONE IS A SILENT TRUNCATION HERE, which is the whole reason this exists: on an
+    array element it returns value ZERO, so `OPT_CHAIN` - two thousand listed contracts - arrives
+    as one opaque row with no error anywhere. A reader that cannot see the shape of what it read is
+    the dead-benchmark trap in another costume.
+    """
+    if not element.isArray():
+        return element.getValue()
+    rows = []
+    for index in range(element.numValues()):
+        try:
+            row = element.getValueAsElement(index)
+        except Exception:
+            # an array of plain scalars - the value IS the row
+            rows.append(element.getValue(index))
+            continue
+        rows.append({str(row.getElement(position).name()): row.getElement(position).getValue()
+                     for position in range(row.numElements())})
+    return rows
+
+
 class BloombergSession:
     """Small synchronous wrapper over Bloomberg Desktop API reference data."""
 
@@ -114,8 +143,26 @@ class BloombergSession:
         every requested name answered. One bad ticker in a batch of fifty is the finding there,
         not a failure - `reference_data` above is the production reader. A request-level error
         (a timeout, a `responseError`) still raises: that is transport, not a fact about a name."""
+        return self._reported(securities, self._walked(securities, fields))
+
+    def bulk_reference_data_report(self, securities: Sequence[str],
+                                   fields: Sequence[str]) -> dict[str, dict[str, object]]:
+        """`reference_data_report`'s contract over BULK fields: same `{security: {'ok', 'error',
+        'fields'}}`, same tolerance, but each field answers a LIST OF ROWS rather than one value.
+
+        A SECOND READER RATHER THAN A FLAG ON THE FIRST, because the two differ in what a FIELD IS
+        and not in policy - and because the scalar reader's `getValue()` cannot be made to answer
+        `OPT_CHAIN` without truncating it to one row in silence (see `_bulk_value`). The walk itself
+        is shared: `_walk` and `_walk_bulk` are one `_request` under two extractors, so a change to
+        the event loop cannot land on one reader and miss the other. `discover.probe` batches this
+        one unchanged, since the contract it batches against is the same.
+        """
+        return self._reported(securities, self._walked_bulk(securities, fields))
+
+    @staticmethod
+    def _reported(securities, walked):
         report = {}
-        for security, error, values in self._walked(securities, fields):
+        for security, error, values in walked:
             report[security] = {'ok': error is None, 'error': error, 'fields': values}
         for security in securities:
             report.setdefault(security, {'ok': False, 'error': 'no answer in the response',
@@ -123,22 +170,39 @@ class BloombergSession:
         return report
 
     def _walked(self, securities, fields):
-        """The one event walk both readers share, materialized so the wrapping below covers the
-        whole response: `(security, error, values)` per name, `error` carrying Bloomberg's own
+        """The one event walk the SCALAR readers share, materialized so the wrapping below covers
+        the whole response: `(security, error, values)` per name, `error` carrying Bloomberg's own
         text where it refused one. Materializing means the response is DRAINED before either
         policy raises - deliberately: the strict reader used to abandon the event loop
         mid-response, leaving the session dirty for its next request. The cost is that a
-        transport failure on a later event outranks a per-security error already walked."""
+        transport failure on a later event outranks a per-security error already walked.
+
+        The bulk reader walks the SAME `_request` under its own extractor, and this signature is
+        left alone on purpose: the gates drive a session by overriding `_walk` with canned rows."""
+        return self._drained(lambda: self._walk(securities, fields))
+
+    def _walked_bulk(self, securities, fields):
+        """`_walked` over the bulk extractor - the same drain, the same wrapping, the same
+        precedence, so the two readers cannot come to differ in how a failure is typed."""
+        return self._drained(lambda: self._walk_bulk(securities, fields))
+
+    def _drained(self, walk):
         if self._session is None or self._service is None or self._api is None:
             raise BloombergUnavailable('BloombergSession must be started before requesting data')
         try:
-            return list(self._walk(securities, fields))
+            return list(walk())
         except (BloombergRequestError, BloombergUnavailable):
             raise
         except Exception as error:
             raise BloombergRequestError('Bloomberg reference-data request failed: {}'.format(error)) from error
 
     def _walk(self, securities, fields):
+        yield from self._request(securities, fields, _scalar_value)
+
+    def _walk_bulk(self, securities, fields):
+        yield from self._request(securities, fields, _bulk_value)
+
+    def _request(self, securities, fields, value_of):
         request = self._service.createRequest('ReferenceDataRequest')
         security_element = request.getElement('securities')
         field_element = request.getElement('fields')
@@ -171,7 +235,7 @@ class BloombergSession:
                     values = {}
                     if item.hasElement('fieldData'):
                         data = item.getElement('fieldData')
-                        values = {field: data.getElement(field).getValue()
+                        values = {field: value_of(data.getElement(field))
                                   for field in fields if data.hasElement(field)}
                     yield security, error, values
             if event.eventType() == self._api.Event.RESPONSE:

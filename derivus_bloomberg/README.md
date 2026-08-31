@@ -1,8 +1,14 @@
-# Derivus Bloomberg FX Adapter
+# Derivus Bloomberg Market-Data Adapter
 
 `derivus_bloomberg` reads a caller-configured Bloomberg FX volatility snapshot and writes the
 existing Derivus `FXVolPrices` market-price block. It does not construct a smile or price a deal;
 `FXVolSurfaceParameters` remains the owner of those operations.
+
+It also reads a listed **equity option chain** and writes a Heston-Nandi quote block
+(`equity_chain`, below). The two halves share one discipline and nothing else: FX calibrates off
+the desk's own built surface because that surface *is* the market, while an equity's market is the
+listed chain — so equities quote **premiums off actual listed contracts**, never implied vols off
+somebody's fit.
 
 ## Requirements
 
@@ -125,6 +131,65 @@ paid in the base currency (`USDJPY`, `USDCHF`, `USDCAD`, `USDZAR`), while `EURUS
 this adapter can honestly write today. Each point receives one UTC retrieval timestamp. Install
 and refresh validate a complete block before assigning it; after that assignment, the caller owns
 `Config.bootstrap()`. If bootstrap fails, discard or reload that configuration.
+
+## The equity option chain
+
+`equity_chain` turns an index's listed chain into one `HestonNandiComponentModelPrices` (or
+`HestonNandiModelPrices`) block. It reaches the terminal twice — the underlying and its `OPT_CHAIN`
+membership through `BloombergSession.bulk_reference_data_report`, then every member in batches
+through the tolerant scalar reader — and spells no ticker of its own: a listed chain's membership
+is the terminal's to state, so the trust boundary is the **screen** rather than a grammar.
+
+```python
+from derivus_bloomberg.equity_chain import EquityForward, EquityLadder, equity_hn_block, \
+    fetch_equity_chain
+from derivus_bloomberg.session import BloombergSession
+
+with BloombergSession(timeout_ms=30000) as bloomberg:
+    chain = fetch_equity_chain(bloomberg, 'SPX Index', datetime.date.today())
+
+name, block = equity_hn_block(chain, EquityForward(
+    underlying_factor='SPX', volatility_factor='SPX', discount_rate='USD',
+    dividend_reference='SPX', rate=0.04, dividend_yield=0.015))
+```
+
+- **Premiums, not implied vols.** A listed price is a print; its implied vol is a convention.
+  `Quote_Type` is `Premium`, `Quoted_Market_Value` is the terminal's own two-way mid, and
+  `Quoted_Bid`/`Quoted_Ask`/`Timestamp` ride beside it.
+- **Every answer is screened, in an order of distrust**, and every refusal lands on a ledger by
+  name: `malformed`, `expired`, `unstated-exercise`, `american`, `unpriced`, `one-sided`,
+  `crossed`, `off-market`, `wide`, `no-open-interest`, `undated`, `stale`. Half of any index chain
+  is dead strikes, and this is where they stop. The **spot** is screened on the same two questions
+  every contract is — a blank price and an absent or stale `LAST_UPDATE_DT` both refuse by name —
+  because it is the number every strike, forward and weight in the block hangs off.
+- **Indices only.** An American premium is not the European premium the fit prices against. A mixed
+  board drops its American listings per contract and calibrates on what is left; a chain whose
+  **census** says exercise style is what killed the ladder refuses by name with the remedy, rather
+  than reporting the distinct-contract floor about a chain that is quoted at plenty of both.
+- **The ladder reaches the product horizon** — 3M/6M/1Y/2Y/3Y ATM rungs plus 25-delta-equivalent
+  wings at the first four — because equity autocalls run three to five years and a multi-year ATM
+  term structure is what the component family's `L` curve is for. Every rung **snaps to a listed
+  contract**; pillars and listed expiries are matched **one to one** (nearest claim wins, and a
+  pillar left with nothing is dropped by name), so a board with a missing LEAP cannot put one
+  contract into the block as two equations or write an `L` strip short of a knot. Two rungs that
+  do land on one contract are emitted **once at their summed weight** — a repeated contract is a
+  weight, not a second equation — and a ladder that collapses below eight distinct contracts
+  refuses, naming the chain's own expiries.
+- **The weight is `vega x sqrt(open interest) / (1 + spread/cap)`, normalised** — liquidity joins
+  the vega weight, because a dead strike is not evidence.
+- **The forward is declared.** `EquityForward` names the curve that funds the carry and the
+  dividend reference, and carries the numbers the strikes were actually placed with; the chain's
+  own parity-implied dividend yield is measured beside the declared one and reported in
+  `Quote_Source` rather than averaged into it. Declare nothing and the chain's own carry is used —
+  and then it is *screened*: a **median** over the strikes nearest the forward, so one fat-fingered
+  print cannot move a pillar, inside a declared `parity_band`, so a whole bad neighbourhood refuses
+  by name instead of placing the ladder.
+
+The module imports the standard library and this package's own `errors` — no engine, no pandas, no
+blpapi at import time — and `tests/test_equity_chain.py` holds it there, in a fresh interpreter as
+well as in the source. That is also why this package re-exports the pandas-carrying FX names
+lazily: importing a submodule imports its package first, so an eager `from .fxvol import ...` would
+land pandas on a workstation that only wanted to read a listed chain.
 
 Never commit Bloomberg values, credentials, or workstation-specific security maps - the map
 `DV_Bloomberg discover` writes belongs outside any repo.
