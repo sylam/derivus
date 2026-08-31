@@ -191,5 +191,88 @@ well as in the source. That is also why this package re-exports the pandas-carry
 lazily: importing a submodule imports its package first, so an eager `from .fxvol import ...` would
 land pandas on a workstation that only wanted to read a listed chain.
 
+## The rates emitters — a curve strip and a swaption grid
+
+`ir_curve` turns a verified swap strip into one `InterestRatePrices` block, and `swaption_vol`
+turns a verified ATM swaption grid into one `HullWhite2FactorModelPrices` block. Neither spells a
+ticker: both ask `discover` for its candidates and keep the ones this workstation's map believed,
+so the grammar lives in exactly one place. Neither imports the engine — the blocks are emitted as
+wire JSON (`{".Timestamp": ...}`, `{".DateOffset": "3M"}`, `{".Percent": 1.45}`), which is what
+`Config.read_json` reads and `CustomJsonEncoder` writes.
+
+**The conventions are seed-declared, not guessed.** A par swap rate means nothing without the
+accrual it pays on, and nothing in `USOSFR10` says annual/annual ACT/360. So each seeded currency
+carries a `conventions` block, the emitters READ it, and a currency without one refuses by name
+listing every missing field. A wrong convention is then a **data fix in your seed**, never a code
+fix. What ships:
+
+```
+"rates": {"USD": {..., "conventions": {
+              "curve_day_count": "ACT_365", "spot_days": 2,
+              "front": "overnight", "front_day_count": "ACT_360", "authoring": "OIS",
+              "fixed_frequency": "1Y", "float_frequency": "1Y",
+              "fixed_day_count": "ACT_360", "float_day_count": "ACT_360",
+              "notional": 1000000.0, "quote_scale": 1.0}},
+          "ZAR": {..., "conventions": {
+              "curve_day_count": "ACT_365", "spot_days": 0,
+              "front": "fixings/3M", "front_day_count": "ACT_365", "authoring": "Swap",
+              "fixed_frequency": "3M", "float_frequency": "3M",
+              "fixed_day_count": "ACT_365", "float_day_count": "ACT_365",
+              "notional": 1000000.0, "quote_scale": 1.0}}},
+"swaption": {"ZAR": {..., "conventions": {
+              "fixed_frequency": "3M", "float_frequency": "3M",
+              "fixed_day_count": "ACT_365", "float_day_count": "ACT_365",
+              "distribution": "Normal", "quote_scale": 0.01, "weight": 1.0}}}
+```
+
+- **`front` is which verified entry seeds the short end**, and it is a declaration because the
+  wrong answer is free: a SOFR OIS curve's front is the overnight print, a JIBAR-3M curve's front
+  is the **3M JIBAR fixing**, and seeding a JIBAR curve with the ZARONIA print sitting beside it in
+  the same map is a basis error nothing downstream reports. The other seeded fixings are ledgered
+  `not-a-benchmark` rather than silently dropped. It is **validated against the seed's own
+  vocabulary** — `overnight` or `fixings/<label>` — because unlike every other convention it is a
+  *path*, and a path that names nothing does not fail, it aims somewhere else: `front: "strip/1Y"`
+  would author the 1Y par swap as a one-day deposit and call it `overnight` in the Descriptor.
+- **`authoring` is the shape.** `OIS` writes a `StructuredDeal` over an OIS-compounded floating leg
+  and a fixed leg, **one float item per fixing window** — that is what makes the leg compound
+  geometrically rather than average, see the compounding note in `quote_sensitivities.md`. `Swap`
+  writes a vanilla `SwapInterestDeal` and the engine generates its legs. Coupons roll **backward**
+  from maturity, unadjusted: the deals carry no calendars, so the engine rolls nothing either.
+- **The OIS fixing windows partition the coupon**, which is what puts the two legs on one
+  convention. Windows start on business days *inside* a coupon, but the coupon's own start is a
+  boundary **whatever weekday it falls on** — a fixing accrues through a weekend at a coupon
+  boundary exactly as it does inside one. Starting the leg at the first business day instead drops
+  real accrual: on the USD 5Y effective 2026-09-02 the coupon starting Saturday 2028-09-02 accrued
+  `1.00833333` against the fixed leg's `1.01388889`, two days of a one-year coupon lost on one side
+  of a swap the solve holds at PV zero. Per-coupon accrual equality is gated.
+- **`float_frequency` is refused where it would not be read.** V1 rolls both OIS legs off one
+  schedule, so an `OIS` declaration whose `float_frequency` differs from its `fixed_frequency`
+  refuses by name rather than emitting a block that ignores it. The `Swap` path reads both.
+- **The quote never enters the deal.** Every rate-carrying field is authored at a neutral zero and
+  the print rides in `Quoted_Market_Value`, because `QUOTE_WRITERS` is where the family puts a
+  number. That is what makes a value-only re-tick pass `config.update_market_quote` as *updated*
+  instead of refusing as a moved plan.
+- **Size, stated up front.** An OIS block grows with the *sum* of its strip's tenors: the shipped
+  USD strip is about 26,000 authored fixings and **~14 MB** of JSON (measured live). `CurveScreen.
+  maximum_fixings` bounds it and refuses with the arithmetic rather than with a MemoryError.
+- **The swaption grid quotes NORMAL vols and the engine prices a LOGNORMAL Black.** `SASN` is
+  `ZAR SWPT NVOL` — basis points of Bachelier vol. `create_market_swaps` prices every benchmark
+  with `utils.black_european_option_price` and reads no `Distribution_Type`, although
+  `InterestYieldVol` declares one. The emitter transcribes, scales into the family's `Percent`
+  column, and says so loudly in `Quote_Source`; the gap is the engine's and is gated in its current
+  shape. A **zero** vol is refused from the ladder by name, because a zero `Market_Volatility` is
+  not a bad number to the engine — it is a silent instruction to read the surface's ATM instead.
+- **A re-quoted grid is a re-authoring.** `HullWhite2FactorModelPrices` quotes in
+  `Instrument_Definitions` rather than `Points`, so `schema.partition_market_price` gives it an
+  empty values half and no tick reaches it. `reauthor` drops the block and re-installs it, as
+  `POST /book/hn` does. **A curve strip needs it too, for a weaker reason:** that family *does*
+  have a values half and a same-day re-tick passes as *updated*, but `Effective_Date` and
+  `Maturity_Date` are structure — so the next day's strip of the same benchmarks refuses, rightly,
+  and reaches the book through `reauthor`. One function, exported as
+  `derivus_bloomberg.reauthor`, reached by both emitters.
+- **V1 scope:** a self-discounting single curve (blank `Discount_Rate`), the declared front point
+  and the swap strip as seeded. No FRAs, no FX-forward outrights, no cross-currency, no projection
+  curve; `ACT_365` and `ACT_360` accruals only. No `/book` verb for either emitter yet.
+
 Never commit Bloomberg values, credentials, or workstation-specific security maps - the map
 `DV_Bloomberg discover` writes belongs outside any repo.

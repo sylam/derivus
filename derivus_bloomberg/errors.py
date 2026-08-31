@@ -74,6 +74,18 @@ class UnsupportedExerciseStyle(BloombergFXError):
     European premium a Heston-Nandi calibration prices against, so it refuses rather than fits."""
 
 
+# The two the RATES emitters add, on the same terms: one base, one taxonomy, and a name per thing
+# that can go wrong rather than a surface's refusal borrowed for a strip.
+class IncompleteStrip(BloombergFXError):
+    """The verified strip does not carry the curve that was asked of it - too few points survived
+    screening, or two benchmarks land on one knot, which the bootstrap cannot identify apart."""
+
+
+class IncompleteLadder(BloombergFXError):
+    """The swaption grid does not carry the ladder that was asked of it - too few cells survived
+    screening for the fitted parameters to be identified by what the terminal served."""
+
+
 def raise_response_error(text: str) -> None:
     """Bloomberg's own refusal text, typed and raised - an entitlement problem is a thing to go
     and fix, anything else is a request that failed.

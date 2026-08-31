@@ -11,7 +11,13 @@
  "rates": {
   "USD": {"prefix": "USOSFR", "expect": "USD OIS", "weeks": true, "months": true,
           "years": [1, 2, 3, 5, 7, 10, 15, 20, 30],
-          "overnight": {"security": "SOFRRATE Index", "expect": "SOFR"}},
+          "overnight": {"security": "SOFRRATE Index", "expect": "SOFR"},
+          "conventions": {"curve_day_count": "ACT_365", "spot_days": 2,
+                          "front": "overnight", "front_day_count": "ACT_360",
+                          "authoring": "OIS",
+                          "fixed_frequency": "1Y", "float_frequency": "1Y",
+                          "fixed_day_count": "ACT_360", "float_day_count": "ACT_360",
+                          "notional": 1000000.0, "quote_scale": 1.0}},
   "EUR": {"prefix": "EESWE", "expect": "EUR SWAP (ESTR)", "weeks": true, "months": true,
           "years": [1, 2, 3, 5, 7, 10, 15, 20, 30],
           "overnight": {"security": "ESTRON Index", "expect": "ESTR"}},
@@ -35,12 +41,21 @@
           "fixings": {"1M": {"security": "JIBA1M Index", "expect": "Johannesburg"},
                       "3M": {"security": "JIBA3M Index", "expect": "Johannesburg"},
                       "6M": {"security": "JIBA6M Index", "expect": "Johannesburg"},
-                      "12M": {"security": "JIBA12M Index", "expect": "Johannesburg"}}}
+                      "12M": {"security": "JIBA12M Index", "expect": "Johannesburg"}},
+          "conventions": {"curve_day_count": "ACT_365", "spot_days": 0,
+                          "front": "fixings/3M", "front_day_count": "ACT_365",
+                          "authoring": "Swap",
+                          "fixed_frequency": "3M", "float_frequency": "3M",
+                          "fixed_day_count": "ACT_365", "float_day_count": "ACT_365",
+                          "notional": 1000000.0, "quote_scale": 1.0}}
  },
  "swaption": {
   "ZAR": {"prefix": "SASN", "expect": "ZAR SWPT NVOL",
           "expiries": {"1M": "0A", "3M": "0C", "6M": "0F", "9M": "0I",
                        "1Y": "01", "2Y": "02", "5Y": "05", "7Y": "07", "10Y": "10"},
-          "tenor_years": [1, 2, 3, 4, 5, 7, 10]}
+          "tenor_years": [1, 2, 3, 4, 5, 7, 10],
+          "conventions": {"fixed_frequency": "3M", "float_frequency": "3M",
+                          "fixed_day_count": "ACT_365", "float_day_count": "ACT_365",
+                          "distribution": "Normal", "quote_scale": 0.01, "weight": 1.0}}
  }
 }
