@@ -13,54 +13,38 @@
 
 """Who holds the class key - a seat per subject, the key wrapped to each of them, and the way back.
 
-The log is classified: envelopes are firm-visible and bodies are sealed under a class key. That is
-only an entitlement rather than a shared password if the key REACHES the entitled and no one else,
-and this module is the whole of how it travels. Nothing here invents cryptography; it composes the
-one construction the deployment can afford to be boring about - ephemeral X25519 to the recipient's
-published public key, HKDF-SHA256 over the shared secret, AES-256-GCM over the class key - and
-spends its care on what the record says about each step.
+Bodies are sealed under a class key, which is an entitlement rather than a shared password only if
+the key reaches the entitled and nobody else. The construction is one composition and nothing
+invented: ephemeral X25519 to the recipient's published public key, HKDF-SHA256 over the shared
+secret, AES-256-GCM over the class key.
 
-Every step is a FACT, because custody is exactly the kind of thing that becomes a rumour otherwise.
-A seat exists because `seat_enrolled` says its public key is at a hash; the key reached a subject
-because `key_wrapped` says the wrap is at a hash. Both go through the ordinary writer, under the
-ordinary durability law - the blob is fsynced before the event that speaks of it - so "who could
-read the firm's bodies in March" is a fold over the log like every other authorization question,
-and no side table anywhere holds a second opinion about it.
+Every step is a fact through the ordinary writer, under the ordinary durability law. A seat exists
+because `seat_enrolled` publishes its public key at a hash; the key reached a subject because
+`key_wrapped` names the wrap at a hash. So "who could read the firm's bodies in March" is a fold
+over the log, with no side table holding a second opinion.
 
-The WRAP IS ADDRESSED, and that is the load-bearing detail. GCM's additional data binds the
-`{"class", "subject"}` pair the `key_wrapped` event carries in the clear, so a wrap is not merely
-"a class key encrypted to a public key" - it is a class key encrypted to THIS subject for THIS
-class. Move one subject's wrap blob onto another subject's row and it stops opening: the record and
-the ciphertext have to agree about who the recipient is, so a hub that mislabels a wrap produces a
-refusal rather than a quiet mis-delivery. It is also what makes recovery possible on a replica that
-cannot read a single body - see `materialize`.
+The wrap is addressed: GCM's additional data binds the `{"class", "subject"}` pair the `key_wrapped`
+event carries in the clear, so moving one subject's wrap blob onto another subject's row stops it
+opening. That binding is also what makes recovery possible on a replica that cannot read a single
+body - see `materialize`.
 
-Revocation is FORWARD-ONLY, and this module does not pretend otherwise. There is no unwrap verb, no
-deletion, no re-sealing of history: a seat that once held the key holds the history it already
-pulled, which is the brief's declared residual rather than a gap. `rewrap` ADDS recipients and
-nothing else; a subject dropped from the document simply stops receiving new wraps, and the honest
-remedy for a compromised seat is a class-key rotation, which is a later increment's logged event.
+Revocation is forward-only. There is no unwrap verb, no deletion and no re-sealing of history:
+`rewrap` adds recipients, a subject dropped from the document stops receiving new wraps and keeps
+what it already pulled, and the remedy for a compromised seat is a class-key rotation.
 
-Two keys never enter the log and never leave the machine that holds them. A seat's private half
-lives at `keys/seats/<sha256(subject)[:16]>.key`, hashed so that a directory listing is not a
-membership roster - a path is data too, and the record is pseudonymous by rule. The escrow private
-half is not here at all: escrow publishes a PUBLIC key through policy and the private half lives
-wherever the deployment's custodian keeps it, which is the entire point of an escrow.
+Two private keys never enter the log. A seat's lives at `keys/seats/<sha256(subject)[:16]>.key`,
+hashed so a directory listing is not a membership roster. The escrow private half is not in this
+package at all: escrow publishes a public key through policy and the custodian keeps the rest.
 
-A THIRD RESIDUAL is declared here rather than left to be discovered, in the voice the brief declares
-its other two in. `enroll` will MINT a seat's keypair on the hub, and the hub then holds every seat's
-private half on one filesystem - so per-seat wrapping is an access boundary between seats and not one
-against the hub or its backups, and because revocation is forward-only there is no remedy for a hub
-read short of a class-key rotation this increment does not have. It is declared rather than solved
-because the honest fix is a key-management posture the non-goals rule out ("no password or secret
-storage"), and it is BOUNDED rather than accepted: hand `enroll` a `public_key` the seat generated on
-its own machine and the private half is never on the hub at all, which is the posture a deployment
-that cares should run. The hub-minted form is the BOOTSTRAP case - convenient for a desk being stood
-up, and the seat key it writes should be handed to its seat and shredded off the hub afterwards.
+Declared limitation: `enroll` will mint a seat's keypair on the hub, and the hub then holds every
+such seat's private half on one filesystem - so per-seat wrapping is an access boundary between
+seats, not against the hub or its backups, with no remedy short of a class-key rotation. It is
+bounded rather than accepted: hand `enroll` a `public_key` the seat generated on its own machine and
+the private half is never on the hub. The hub-minted form is the bootstrap case, and the seat key it
+writes should be handed to its seat and shredded off the hub.
 
-Phase 1 has one class, so `firm` is the default everywhere and the class is carried as a parameter
-rather than assumed - the day desk two arrives, a second class key is a second file and a second
-wrap, not a redesign.
+Phase 1 has one class, so `FIRM_CLASS` is the default everywhere; the class is carried as a
+parameter rather than assumed, so a second class is a second key file and a second wrap.
 """
 import hashlib
 import json
@@ -81,49 +65,42 @@ from .log import SpineLog
 from .seal import KEY_BYTES, NONCE_BYTES
 from .vocabulary import FIRM_CLASS, is_hash
 
-#: The wrap construction, named in the blob itself so a reader never has to guess which one it is
-#: holding. Versioned in the name: a second construction is a second string and an old wrap keeps
+#: The wrap construction, named in the blob itself and versioned in the name, so an old wrap keeps
 #: opening under the rule it was written by.
 ALGORITHM = 'x25519-hkdf-sha256-aesgcm-v1'
-#: HKDF's `info`, pinned. Domain separation is what stops a shared secret derived here from being
-#: the same 32 bytes as one derived by some other protocol that happens to use the same curve.
+#: HKDF's `info`, pinned for domain separation: a secret derived here is not the same 32 bytes as
+#: one derived by another protocol over the same curve.
 WRAP_INFO = b'derivus-spine-wrap-v1'
-#: The four fields of a wrap blob, closed exactly as an event body is: a fifth would be a channel
-#: into the recovery path that no AAD covers.
+#: The four fields of a wrap blob, closed as an event body is: a fifth would be a channel into the
+#: recovery path that no AAD covers.
 WRAP_FIELDS = ('algorithm', 'ephemeral_public', 'nonce', 'wrapped')
-#: A wrap blob is a few hundred bytes. The bound exists so that scanning a store for one never
-#: parses a vol cube - see `_open_wrap`, which reads blobs it was not handed the address of.
+#: Size bound on a wrap blob, so scanning a store for one never parses a vol cube - see
+#: `_open_wrap`, which reads blobs it was not handed the address of.
 WRAP_BLOB_LIMIT = 4096
 
 #: What a seat's keypair is, said in the enrollment so the record carries its own algorithm agility.
 SEAT_ALGORITHM = 'x25519'
 #: Raw X25519 keys, private and public alike.
 X25519_BYTES = 32
-#: `keys/seats/` under the home, and the filename is the SUBJECT HASHED - sixteen hex characters of
-#: SHA-256. A directory listing of a hub would otherwise be a membership roster of the deployment,
-#: and the record is pseudonymous by rule; the hash is a name that is stable, collision-free at desk
-#: scale, and says nothing.
+#: `keys/seats/` under the home. A seat file is named by the subject HASHED - sixteen hex characters
+#: of SHA-256 - so a directory listing is not a membership roster of the deployment.
 SEATS = 'seats'
 SEAT_NAME_HEX = 16
-#: The class key file, spelled the way `seal.py` spells it. `CLASS_KEY_FILE.format(FIRM_CLASS)` is
-#: `seal.FIRM`, and a gate pins the two together so the one class phase 1 has cannot drift into two.
+#: The class key file, spelled the way `seal.py` spells it: `CLASS_KEY_FILE.format(FIRM_CLASS)` is
+#: `seal.FIRM`.
 CLASS_KEY_FILE = 'class_{}.key'
 
 #: The escrow declaration: an ordinary `policy_declared` naming the escrow PUBLIC key's blob. The
 #: private half is the custodian's and is not in this package, this home, or this log.
 ESCROW_POLICY = 'escrow_key'
-#: Escrow rides the ordinary `key_wrapped` row under a reserved subject reference, so the lost
-#: laptop and the custodian's copy are the same mechanism read twice rather than two mechanisms.
-#: `enroll` refuses the name, which is what keeps a seat from wearing it.
+#: The reserved subject reference escrow's `key_wrapped` row rides under, so the lost laptop and the
+#: custodian's copy are one mechanism read twice. `enroll` refuses this name.
 ESCROW_SUBJECT = 'escrow'
 
 
 def seat_key_path(home, subject) -> Path:
-    """Where `subject`'s private seat key lives under `home`.
-
-    Public because an operator, a gate and the lost-laptop runbook all need to name the file, and
-    recomputing the hash in three places is how three spellings of one path are born.
-    """
+    """Where `subject`'s private seat key lives under `home`. Public so an operator, a gate and a
+    runbook name the file one way rather than recomputing the hash three times."""
     digest = hashlib.sha256(_subject(subject).encode('utf-8')).hexdigest()
     return Path(home) / 'keys' / SEATS / '{}.key'.format(digest[:SEAT_NAME_HEX])
 
@@ -131,8 +108,8 @@ def seat_key_path(home, subject) -> Path:
 def wrap_aad(subject, entitlement_class=FIRM_CLASS) -> bytes:
     """The additional data a wrap is bound to: `{"class", "subject"}`, canonical.
 
-    Exactly the pair the `key_wrapped` envelope's own body carries in the clear, so the ciphertext
-    and the record have to agree about who the recipient is or nothing opens.
+    Exactly the pair the `key_wrapped` body carries in the clear, so the ciphertext and the record
+    must agree about the recipient or nothing opens.
     """
     return canonical_bytes({'class': _text(entitlement_class, 'the entitlement class'),
                             'subject': _subject(subject)})
@@ -140,17 +117,14 @@ def wrap_aad(subject, entitlement_class=FIRM_CLASS) -> bytes:
 
 def wrap_key(class_key: bytes, recipient_public: bytes, subject: str,
              entitlement_class: str = FIRM_CLASS) -> bytes:
-    """Wrap `class_key` to `recipient_public`, addressed to `subject`. Answers the wrap blob's bytes.
+    """Wrap `class_key` to `recipient_public`, addressed to `subject`. Returns the wrap blob's bytes.
 
-    Ephemeral X25519 to the recipient, HKDF-SHA256 over the shared secret with the pinned info
-    string, AES-256-GCM under a fresh 12-byte nonce and the `{class, subject}` AAD. The ephemeral
-    half is fresh per wrap, so wrapping the same key to the same seat twice yields two different
-    blobs and neither leaks that they carry the same secret.
+    Ephemeral X25519 to the recipient, HKDF-SHA256 over the shared secret under the pinned info
+    string, AES-256-GCM under a fresh nonce and the `{class, subject}` AAD. The ephemeral half is
+    fresh per wrap, so the same key wrapped twice to one seat yields two unrelated blobs.
 
-    The recipient's subject is a PARAMETER rather than something read out of the blob, and it has
-    to be: an AAD a reader could take from the ciphertext it is checking would authenticate nothing.
-    The caller supplies it from the `key_wrapped` row, which is where the record says who this is
-    for.
+    `subject` is a parameter rather than read out of the blob: an AAD taken from the ciphertext it
+    checks would authenticate nothing. The caller supplies it from the `key_wrapped` row.
     """
     material = _secret(class_key, 'the class key')
     public = _recipient(recipient_public, 'the recipient public key')
@@ -169,13 +143,11 @@ def wrap_key(class_key: bytes, recipient_public: bytes, subject: str,
 
 def unwrap_key(wrap_blob: bytes, seat_private: bytes, subject: str,
                entitlement_class: str = FIRM_CLASS) -> bytes:
-    """Open `wrap_blob` with `seat_private` as `subject`. Answers the class key.
+    """Open `wrap_blob` with `seat_private` as `subject` and return the class key.
 
-    Every failure is one `CustodyRefusal`, and deliberately one: a blob that is not the shape, an
-    algorithm this version does not speak, a private key that is not the recipient's, a wrap
-    addressed to somebody else, a flipped byte. GCM cannot tell the last three apart and neither
-    should a caller - what they have in common is that these bytes are not this seat's class key,
-    and reporting anything finer would be describing a key nobody here holds.
+    Every failure raises `CustodyRefusal` - a wrong shape, an algorithm this build does not speak, a
+    private key that is not the recipient's, a wrap addressed elsewhere, a flipped byte. GCM cannot
+    tell the last three apart, and what they share is that these bytes are not this seat's class key.
     """
     document = _wrap_document(wrap_blob)
     private = _seat_private(seat_private)
@@ -199,26 +171,19 @@ def unwrap_key(wrap_blob: bytes, seat_private: bytes, subject: str,
 
 def enroll(log, subject, actor, public_key: bytes = None) -> dict:
     """Mint `subject`'s seat: the public half published as a blob, `seat_enrolled` in the log.
-    Answers the envelope plus what was minted.
+    Returns the envelope plus what was minted.
 
-    TWO FORMS, and the difference between them is the residual this module's header declares. Hand
-    in `public_key` - 32 raw bytes the seat generated on its own machine - and the hub publishes it
-    and writes NO private key: the private half never existed here, so a hub filesystem read yields
-    nothing about that seat. Omit it and the hub mints the keypair and keeps the private half at
-    `seat_key_path`, which is the BOOTSTRAP convenience: fine for standing a desk up, and the file
-    should be handed to its seat and shredded off the hub once it has arrived.
+    Two forms. With `public_key` - 32 raw bytes the seat generated on its own machine - the hub
+    publishes it and writes no private key. Without, the hub mints the keypair and keeps the private
+    half at `seat_key_path`; see this module's declared limitation.
 
-    The order is the durability law and one deliberate refinement of it. The public key is fsynced
-    into the store first, because no event may cite a blob that is not on the platter. A hub-minted
-    private half is written to scratch NEXT and moved into place only after the enrollment appends:
-    a refused append - an actor without admin, most likely - therefore leaves an existing seat key
-    exactly as it was, rather than clobbering a working seat on the way to being told no.
+    The public key is fsynced into the store first. A hub-minted private half is staged to scratch
+    and moved into place only after the enrollment appends, so a refused append leaves an existing
+    seat key exactly as it was.
 
-    Re-enrollment REPLACES the seat key, and that is the lost laptop's remedy rather than an
-    oversight: the old wrap simply stops being openable by anyone, the new public key is published,
-    and `rewrap` notices the enrollment is younger than the wrap and issues a new one. Nothing is
-    stranded by it, which is exactly why this refuses to overwrite nothing while `Keys.generate`
-    refuses to overwrite everything - a class key seals history, a seat key only receives it.
+    Re-enrollment replaces the seat key - the lost laptop's remedy. The old wrap stops being openable
+    by anyone, and `rewrap` sees the enrollment is younger than the wrap and issues a new one.
+    `ESCROW_SUBJECT` is refused as a subject.
     """
     subject = _subject(subject)
     if subject == ESCROW_SUBJECT:
@@ -245,8 +210,8 @@ def enroll(log, subject, actor, public_key: bytes = None) -> dict:
             {'subject': subject, 'algorithm': SEAT_ALGORITHM, 'public_key': blob},
             actor=actor, blob_refs=(blob,))
     except BaseException:
-        # A key nobody published is not a seat and cannot be cited: clearing it is hygiene, and the
-        # seat that was already there keeps working.
+        # A key nobody published is not a seat, so clearing the scratch leaves the existing seat
+        # working.
         if scratch is not None:
             _discard(scratch)
         raise
@@ -258,13 +223,11 @@ def enroll(log, subject, actor, public_key: bytes = None) -> dict:
 
 
 def declare_escrow(log, escrow_public, actor) -> dict:
-    """Declare the deployment's escrow public key: the blob, then `policy_declared`. Answers the
+    """Declare the deployment's escrow public key: the blob, then `policy_declared`. Returns the
     envelope plus the blob.
 
-    The escrow is a PUBLIC key in the record and a private key in a safe. Declaring it is an
-    ordinary policy declaration - the same open-bodied `policy_declared` every other policy rides -
-    so the day the custodian's key changes, that is one more declaration and `rewrap` wraps to the
-    new one because the declaration is younger than the wrap.
+    An ordinary open-bodied policy declaration, so a changed custodian key is one more declaration
+    and `rewrap` wraps to it because the declaration is younger than the wrap.
     """
     material = _recipient_bytes(escrow_public, 'the escrow public key')
     blob = log.store.put(material)
@@ -274,25 +237,16 @@ def declare_escrow(log, escrow_public, actor) -> dict:
 
 
 def rewrap(log, actor, entitlement_class=FIRM_CLASS) -> dict:
-    """Wrap the class key to everyone the document in force now admits, and to escrow. Answers a
-    report of what it did and what it could not.
+    """Wrap the class key to every subject the document in force admits, and to escrow. Returns a
+    report of what was written and what could not be.
 
-    Who is "everyone": the subjects the capabilities document grants READ over this class, plus the
-    declared escrow key. What counts as MISSING is answered by LSN order and nothing else - a wrap
-    is current when it was appended AFTER the enrollment (or the escrow declaration) it is addressed
-    to. That single rule buys both halves of the contract: a second call finds every wrap younger
-    than its enrollment and emits nothing, while a re-enrolled seat's old wrap is older than the new
-    public key and is reissued without anybody having to remember to ask.
+    Recipients are the subjects granted read over `entitlement_class`, plus the declared escrow key.
+    A wrap counts as current when it was appended after the enrollment (or escrow declaration) it is
+    addressed to, so a second call emits nothing while a re-enrolled seat's stale wrap is reissued.
 
-    A subject with READ and no enrollment gets no wrap and is NAMED in the report. It is not an
-    error - the document is allowed to describe a person who has not sat down yet - but a silent
-    omission is how an entitlement becomes a rumour, so the report says the sentence out loud. A
-    subject whose latest `key_wrapped` cites a blob that is not a wrap is named too, under
-    `unresolved`, and is reissued: see `wrap_drift`.
-
-    Revocation is forward-only: nothing here removes a wrap, and nothing can. A subject dropped from
-    the document stops receiving new ones and keeps what it already pulled, which is the brief's
-    declared residual.
+    A subject with read and no enrollment gets no wrap and is named under `unenrolled`; one whose
+    latest `key_wrapped` cites a blob that is not a wrap is named under `unresolved` and reissued.
+    Nothing here removes a wrap: revocation is forward-only.
     """
     class_key = read_class_key(log.home, entitlement_class)
     drift = wrap_drift(log, entitlement_class)
@@ -313,19 +267,16 @@ def rewrap(log, actor, entitlement_class=FIRM_CLASS) -> dict:
 
 
 def wrap_drift(log, entitlement_class=FIRM_CLASS) -> dict:
-    """What the document in force says the store OWES: who is entitled and has no current wrap.
+    """What the document in force says the store owes: who is entitled and has no current wrap.
 
-    Read-only, and separated from `rewrap` because the answer is owed to two callers. `rewrap` acts
-    on it; the `grant` verb REPORTS it, because "rewrap on grant change" is a property of the system
-    or it is a line in a runbook, and a runbook line is the failure mode where a subject is granted
-    READ, is told nothing, and finds out when a body will not open.
+    Read-only, and separate from `rewrap` because two callers need it - `rewrap` acts on it and the
+    `grant` verb reports it, so a subject granted read is never left to find out when a body will
+    not open.
 
-    Three ways to be owed a wrap and each is named separately, because the remedies differ. `pending`
-    holds the ones a rewrap can issue now. `unenrolled` holds subjects the document admits who have
-    no seat: enroll them first. `unresolved` holds subjects whose newest `key_wrapped` cites a blob
-    that is NOT a wrap - the fact says an entitlement was delivered and the store does not bear it
-    out, so the row does not count as current and the wrap is reissued, which is the whole reason the
-    fold opens the blob instead of trusting the citation.
+    Three ways to be owed a wrap, named separately since the remedies differ. `pending` is what a
+    rewrap can issue now; `unenrolled` is subjects with no seat, who must be enrolled first;
+    `unresolved` is subjects whose newest `key_wrapped` cites a blob that is not a wrap, which does
+    not count as current and is reissued.
     """
     document, _ = state_at(log)
     entitled = read_subjects(document, entitlement_class)
@@ -355,24 +306,17 @@ def wrap_drift(log, entitlement_class=FIRM_CLASS) -> dict:
 
 
 def materialize(home, subject, seat_private: bytes, entitlement_class=FIRM_CLASS) -> dict:
-    """Put the class key into a replica `home` out of `subject`'s wrap. Answers what was recovered.
+    """Put the class key into a replica `home` out of `subject`'s wrap, and report what was
+    recovered.
 
-    This is what makes a wrapped key an ENTITLEMENT rather than decoration: a replica that arrived
-    holding `log/` and `blobs/` and nothing else verifies its chain over ciphertext, and after this
-    call it verifies entitled, reads its own bodies, and folds its own projections.
+    A replica arriving with `log/` and `blobs/` alone verifies its chain over ciphertext; after this
+    it verifies entitled, reads its bodies, and folds its own projections.
 
-    It refuses to overwrite an existing class key, and the refusal is the file creation itself
-    (`O_EXCL`), so a race loses the same way a retype does. Overwriting would be crypto-shredding by
-    accident - every body sealed under the key that was there would become unreadable in the one
-    move that looks like it is granting access.
-
-    Which wrap is `subject`'s is answered by the AAD rather than by the log, and that is forced
-    rather than chosen: the `key_wrapped` row naming the wrap has a SEALED body, sealed under the
-    very key this call exists to recover. So the wraps the store holds are trial-opened under
-    `{class, subject}`, and the binding is what makes the answer unambiguous - only the blob
-    addressed to this subject and openable by this private key comes apart. Two wraps that open to
-    DIFFERENT keys is not a choice this verb makes: it refuses and names both, because materializing
-    either would be a guess about which history the home belongs to.
+    It refuses to overwrite an existing class key, the exclusive file creation being the refusal, so
+    a race loses the way a retype does - overwriting would be crypto-shredding by accident. Which
+    wrap belongs to `subject` is answered by the AAD rather than by the log, since the `key_wrapped`
+    row naming it is sealed under the very key being recovered: the store's wraps are trial-opened
+    under `{class, subject}`. Two wraps opening to different keys is refused, not chosen.
     """
     log = SpineLog(home)
     target = Path(home) / 'keys' / CLASS_KEY_FILE.format(
@@ -399,8 +343,7 @@ def materialize(home, subject, seat_private: bytes, entitlement_class=FIRM_CLASS
         if frame is not None:
             log.open_body(frame)
     except SealedBodyUnreadable:
-        # The wrap opened but what came out does not seal this log: the home and the wrap belong to
-        # two histories. Leave no half-materialized home behind.
+        # The wrap opened but the key does not seal this log, so leave no half-materialized home.
         _discard(target)
         raise CustodyRefusal(
             'the wrap {} opened for {!r} but the key inside it does not open this log\'s bodies, so '
@@ -412,18 +355,12 @@ def materialize(home, subject, seat_private: bytes, entitlement_class=FIRM_CLASS
 
 
 def recover_escrow(log, escrow_private: bytes, entitlement_class=FIRM_CLASS) -> bytes:
-    """The class key, off the escrow wrap. Answers the raw key bytes.
+    """The class key recovered from the escrow wrap, as raw bytes.
 
-    The lost laptop, and the lost hub: with the custodian's private half an admin gets the class key
-    back in hand, re-enrolls whoever needs a seat and rewraps. Nothing is written here - the caller
-    decides where the key goes, and `materialize(home, ESCROW_SUBJECT, escrow_private)` is the same
-    recovery run as a write, since escrow rides an ordinary `key_wrapped` row under its reserved
-    subject.
-
-    A home that declared no escrow key and a wrong private key are ONE refusal, because from here
-    they are one fact: no wrap in this store opens for escrow with what was handed in. Naming both
-    is honest; picking one would require reading the policy declaration out of a body that, in the
-    situation this verb exists for, is sealed under the key being recovered.
+    Nothing is written: the caller decides where the key goes, and
+    `materialize(home, ESCROW_SUBJECT, escrow_private)` is the same recovery run as a write. A home
+    that declared no escrow key and a wrong private key raise the same refusal, since from here they
+    are one fact - no wrap in this store opens for escrow with what was handed in.
     """
     return _open_wrap(
         log.store, ESCROW_SUBJECT, escrow_private, entitlement_class,
@@ -437,10 +374,9 @@ def recover_escrow(log, escrow_private: bytes, entitlement_class=FIRM_CLASS) -> 
 def read_class_key(home, entitlement_class=FIRM_CLASS) -> bytes:
     """The class key of `home`, read off `keys/class_<class>.key`.
 
-    Read at every use rather than held: a key destroyed at 14:02 is destroyed at 14:02, which is
-    `seal.py`'s rule and is what crypto-shredding means. The refusal is custody's own, because the
-    caller here is not trying to open a body - it is trying to give the key away, and a home that
-    cannot read its own bodies has nothing to hand out.
+    Read at every use rather than held, so a key destroyed at 14:02 is destroyed at 14:02. An absent
+    or wrong-width file raises `CustodyRefusal`: the caller is giving the key away, not opening a
+    body.
     """
     path = Path(home) / 'keys' / CLASS_KEY_FILE.format(
         _text(entitlement_class, 'the entitlement class'))
@@ -467,18 +403,14 @@ def _custody_state(log, entitlement_class):
     """`(seats, wraps, escrow, unresolved)` folded out of the log - who has a seat, who has a current
     wrap, which escrow key is declared, and whose wrap row does not bear itself out.
 
-    Located by ENVELOPE and read by body: only the three types that can move custody are opened, so
-    the fold costs the length of the custody history rather than of the book. Latest wins in LSN
-    order, which is what makes a re-enrollment supersede and a redeclared escrow key take over.
+    Located by envelope and read by body: only the three types that can move custody are opened, so
+    the fold costs the length of the custody history. Latest wins in LSN order, so a re-enrollment
+    supersedes and a redeclared escrow key takes over.
 
-    A `key_wrapped` row is COUNTED only once the blob it cites is opened and found to be a wrap. The
-    citation alone is not the entitlement: durability closure proves some bytes are on the platter at
-    that address, not that they are a wrap, and a row citing anything else would suppress the reissue
-    for that seat forever while this fold reported the subject current - the silent omission this
-    module exists to refuse, wearing the report's own word for delivered. The AAD cannot be checked
-    here (that needs a private key nobody in this process holds), so the check is the wrap's shape,
-    its declared construction and its fields decoding, which is what distinguishes a wrap from a
-    surface, a public key, or an operator's mistake.
+    A `key_wrapped` row counts only once the blob it cites opens as a wrap. Durability closure proves
+    bytes are at that address, not that they are a wrap, and a row citing anything else would report
+    the subject current while suppressing the reissue forever. The AAD cannot be checked here - that
+    needs a private key - so the test is the blob's shape, declared construction and decodable fields.
     """
     seats, wraps, escrow, unresolved = {}, {}, None, {}
     for frame in log.frames():
@@ -502,11 +434,11 @@ def _custody_state(log, entitlement_class):
 
 
 def _is_wrap(store, address):
-    """Whether `address` resolves to something that is actually a wrap blob.
+    """Whether `address` resolves to a wrap blob.
 
-    Every refusal is one answer - absent, altered under its own name, oversized, not the four-field
-    object, another construction, a field that will not decode - because the caller has one question:
-    may this row be counted as a key delivered. Anything short of yes is no.
+    Every way of failing - absent, altered, oversized, not the four-field object, another
+    construction, a field that will not decode - answers False: the caller's one question is whether
+    this row counts as a key delivered.
     """
     if not is_hash(address):
         return False
@@ -527,17 +459,13 @@ def _is_wrap(store, address):
 
 
 def _open_wrap(store, subject, private, entitlement_class, absence, remedy):
-    """`(blob id, class key)` for the one wrap in `store` that opens for `subject`. Or refuses.
+    """`(blob id, class key)` for the one wrap in `store` that opens for `subject`, or
+    `CustodyRefusal` carrying `absence` and `remedy`.
 
-    A scan rather than a lookup, because the caller is by definition a holder that cannot read the
-    bodies naming the wraps - see `materialize`. The AAD does the selecting: a blob addressed to
-    another subject or another class does not come apart under this key, so trial-opening is exact
-    rather than a heuristic, and the store's own walk order makes the answer deterministic.
-
-    Two wraps opening to different keys is a refusal, not a choice. In this increment the class key
-    does not rotate, so two openable wraps carry the same secret and the second is redundant; if
-    they ever disagree, the home is holding blobs from two histories and picking one silently is how
-    a replica ends up unable to say which record it is a replica of.
+    A scan rather than a lookup, because the caller cannot read the bodies naming the wraps - see
+    `materialize`. The AAD does the selecting, so trial-opening is exact rather than heuristic and
+    the store's walk order makes it deterministic. Two wraps opening to different keys is refused:
+    the home is holding blobs from two histories.
     """
     material = _secret_or_none(private)
     if material is None:
@@ -572,20 +500,16 @@ def _open_wrap(store, subject, private, entitlement_class, absence, remedy):
 def _derive(shared):
     """HKDF-SHA256 over the ECDH shared secret - 32 bytes for AES-256, under the pinned info string.
 
-    The raw X25519 output is never used as a key directly: it is a curve point's coordinate, not a
-    uniform string, and the KDF is what makes "32 bytes out of the exchange" mean the same thing to
-    every implementation that ever reads these blobs.
+    The raw X25519 output is never a key directly: it is a curve point's coordinate rather than a
+    uniform string.
     """
     return HKDF(algorithm=hashes.SHA256(), length=KEY_BYTES, salt=None,
                 info=WRAP_INFO).derive(shared)
 
 
 def _wrap_document(wrap_blob):
-    """A wrap blob's four fields, or `CustodyRefusal` naming what it is instead.
-
-    Closed at the field level like an event body: a fifth key would be bytes the AAD does not cover
-    sitting in the middle of the recovery path.
-    """
+    """`wrap_blob` parsed as the four-field wrap document, or `CustodyRefusal` naming what it is
+    instead. Closed at the field level: a fifth key would be bytes the AAD does not cover."""
     if not isinstance(wrap_blob, (bytes, bytearray)):
         raise CustodyRefusal(
             'the wrap is {}, not bytes: hand in the blob\'s own bytes (`log.store.get(wrap)`) - '
@@ -616,7 +540,8 @@ def _wrap_document(wrap_blob):
 
 
 def _hex(value, length, field):
-    """One hex field of a wrap blob, decoded and length-checked where the length is fixed."""
+    """The wrap field `field` decoded from hex, checked against `length` where one is fixed, and
+    required to be non-empty."""
     try:
         material = bytes.fromhex(value)
     except (AttributeError, TypeError, ValueError):
@@ -636,7 +561,8 @@ def _hex(value, length, field):
 
 
 def _secret(material, what):
-    """Key material of the width every key file in this home has."""
+    """`material` asserted to be `KEY_BYTES` of raw key material, the width every key file here
+    has."""
     if not isinstance(material, (bytes, bytearray)) or len(material) != KEY_BYTES:
         raise CustodyRefusal(
             '{} is {} bytes, not the {} a class key is: pass the raw key material '
@@ -647,15 +573,15 @@ def _secret(material, what):
 
 
 def _secret_or_none(material):
-    """A raw X25519 private key, or None - the scan's own check, which must not raise before it has
-    a chance to say which wrap it was looking for."""
+    """`material` as a raw X25519 private key's bytes, or None. The scan's own check, which must not
+    raise before it can say which wrap it was looking for."""
     if not isinstance(material, (bytes, bytearray)) or len(material) != X25519_BYTES:
         return None
     return bytes(material)
 
 
 def _seat_private(material):
-    """The seat's private key, as the object the exchange needs."""
+    """The seat's private key as the `X25519PrivateKey` the exchange needs."""
     raw = _secret_or_none(material)
     if raw is None:
         raise CustodyRefusal(
@@ -673,7 +599,7 @@ def _seat_private(material):
 
 
 def _recipient_bytes(material, what):
-    """A raw X25519 public key's bytes, checked."""
+    """`material` asserted to be a raw X25519 public key's bytes. `what` names it in refusals."""
     if not isinstance(material, (bytes, bytearray)) or len(material) != X25519_BYTES:
         raise CustodyRefusal(
             '{} is {} bytes, not the {} of a raw X25519 public key: publish the key as raw bytes '
@@ -693,16 +619,17 @@ def _recipient_bytes(material, what):
 
 
 def _recipient(material, what):
-    """The recipient's public key, as the object the exchange needs."""
+    """The recipient's public key as the `X25519PublicKey` the exchange needs."""
     return X25519PublicKey.from_public_bytes(_recipient_bytes(material, what))
 
 
 def _subject(subject):
-    """A subject reference: a non-empty string, and nothing else is a name."""
+    """`subject` asserted to be a non-empty subject reference."""
     return _text(subject, 'the subject reference')
 
 
 def _text(value, what):
+    """`value` asserted to be a non-empty string. `what` names it in the refusal."""
     if not isinstance(value, str) or value == '':
         raise CustodyRefusal(
             '{} is {!r}, and a name that names nothing is not a name: pass the pseudonymous '
@@ -711,11 +638,11 @@ def _text(value, what):
 
 
 def _stage_secret(path, material):
-    """Write `material` beside `path` as scratch and answer where. Fsynced, and 0600 where the
-    platform has an opinion.
+    """Write `material` beside `path` as scratch, fsynced and 0600 where the platform has an
+    opinion, and return the scratch path.
 
-    Scratch first so that the move into place is the last thing that happens: a refused append must
-    not leave a seat holding a private key the record never published.
+    Scratch first, so the move into place is the last thing that happens and a refused append leaves
+    no private key the record never published.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     scratch = path.parent / '{}.{}'.format(path.name, os.urandom(8).hex())
@@ -724,8 +651,8 @@ def _stage_secret(path, material):
 
 
 def _write_class_key(path, material):
-    """The class key into a home that lacks one. The exclusive create IS the no-overwrite rule - a
-    race loses the same way a retype does."""
+    """Write the class key into a home that lacks one. The exclusive create is the no-overwrite
+    rule, so a race loses the same way a retype does."""
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         _write_secret(path, material)
@@ -737,12 +664,10 @@ def _write_class_key(path, material):
 
 
 def _write_secret(path, material):
-    """One key file on the platter, durable, and as private as the platform admits.
+    """Write one key file, fsynced and as private as the platform admits.
 
-    `xb` and not `wb`: exclusive creation is how this module refuses to overwrite, and BINARY is not
-    optional - a key is 32 bytes of noise, about one in eight of them carries a `0x0A`, and a text
-    handle on Windows would write that byte as two. A key file that is a byte longer than a key is
-    a recovery that hands back something no body was ever sealed under.
+    `xb` and not `wb`: exclusive creation is how this module refuses to overwrite, and the mode must
+    be binary - a text handle on Windows would rewrite the `0x0A` bytes a random key contains.
     """
     with open(str(path), 'xb') as handle:
         handle.write(material)
@@ -751,14 +676,13 @@ def _write_secret(path, material):
     try:
         os.chmod(str(path), 0o600)
     except (IOError, OSError):
-        # Best effort, as in seal.py: Windows ACLs are not this mode, and a key the owner can read
-        # is the posture either way.
+        # Best effort, as in seal.py: Windows ACLs are not this mode.
         pass
 
 
 def _discard(path):
-    """Remove a key file that never became one. Scratch has no address and nothing can cite it, so
-    this is hygiene rather than retention - the record is untouched either way."""
+    """Remove a key file that never became one, ignoring a failure to. Scratch has no address and
+    nothing can cite it, so this is not deletion of anything the record names."""
     try:
         os.unlink(str(path))
     except (IOError, OSError):

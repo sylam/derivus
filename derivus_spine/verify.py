@@ -11,49 +11,36 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""Re-deriving a home from its own bytes - the replica's posture, run locally, trusting nothing.
+"""Re-deriving a home from its own bytes - the replica's posture, run locally.
 
-The record never trusts what it can re-derive, and this is where that law is cashed. Nothing here
-reads an index, a manifest or a cached head: every hash is recomputed from the line on the platter,
-and the head this reports is the one the recomputation arrived at rather than the one the log
-claims.
+Nothing here reads an index, a manifest or a cached head: every hash is recomputed from the line on
+the platter, and the head reported is the one the recomputation arrived at. There are two modes,
+and the report states which one ran.
 
-Two modes, because there are two kinds of holder, and the difference is stated in the report rather
-than hidden in it.
+CHAIN-ONLY is the unentitled replica: bodies stay sealed. It recomputes the ciphertext hash off the
+base64, the event hash over (ciphertext_hash, idempotency_tag, prev_hash, record_time), the prev
+linkage and the dense LSN sequence from genesis. It cannot check a checkpoint, whose signature
+lives in a body it cannot open, so that field reports `not assessed` in words rather than a zero a
+caller would read as a count.
 
-CHAIN-ONLY is the unentitled replica: bodies stay sealed and are never opened. It still recomputes
-every link - the ciphertext hash off the base64, the event hash over (ciphertext_hash,
-idempotency_tag, prev_hash, record_time), the prev linkage and the dense LSN sequence from
-genesis - so a replica that will never hold a key still proves it holds the same history. What it
-CANNOT do is check a checkpoint: the signature lives in a body it cannot open. So the report says
-`not assessed` in that field, in words, rather than a zero a script would read as a count. A
-verification that quietly skipped something is worse than one that refused.
+ENTITLED adds the plaintext half: every body opened under the AAD rebuilt from its own envelope
+(which catches an edited actor or effective_time, since the seal authenticates the envelope it does
+not encrypt), the interior `content_hash` recomputed, every idempotency tag recomputed where the
+blind key is present, and every checkpoint signature checked against the verifying key read out of
+a policy blob in the log rather than out of `keys/`.
 
-ENTITLED adds the plaintext half: every body opened under the AAD rebuilt from its own envelope -
-which is what catches an edited actor or effective_time, since the envelope is authenticated by the
-seal even though it is not encrypted - the interior `content_hash` recomputed over the envelope
-plus the decrypted payload, every idempotency tag recomputed where the blind key is present, and
-every checkpoint signature checked against the verifying key read out of a policy BLOB in the log.
-Out of the blob, not out of `keys/`: that is the assertion a replica makes, and running the same
-code here is what keeps it exercised.
-
-The verifying key is a LADDER, not a single value, and this is the difference between a design that
-admits rotation and one that only says it does. Key rotation is itself a logged event, so every
+The verifying key is a ladder, not a single value. Rotation is a logged event, so each
 `checkpoint_verifying_key` declaration is recorded with the LSN it landed at and each checkpoint is
-checked under the key in force AT OR BEFORE its own position - genesis's key for genesis's
-checkpoint, forever. Reading the newest declaration instead would let one ordinary appended row
-retro-invalidate every checkpoint written before it, which is a book of record destroyed by a legal
-event; and a declaration naming no blob names no key, so it neither enters the ladder nor empties
-it.
+checked under the key in force at or before its own position - reading the newest declaration
+instead would let one appended row retro-invalidate every checkpoint before it. A declaration
+naming no blob is not a rung and does not empty the ladder.
 
-Referential closure is asked of the whole history rather than only of the moment each event was
-written: the manifest is a walk of the blob store, and any blob a body says lives there must be in
-it. That is where the retention law is cashed - a class reduces through a logged retention event
-and never silently, so a citation that no longer resolves is a blob that went quietly.
+Referential closure is asked of the whole history: the manifest is a walk of the blob store, and
+any blob a body cites must be in it. A blob class reduces only through a logged retention event, so
+a citation that no longer resolves is a blob that went silently.
 
-A home whose class key was destroyed is not broken and does not verify entitled: it refuses with
-`SealedBodyUnreadable` naming the key, and its chain still verifies with `entitled=False`. That is
-crypto-shredding working, and it is a different sentence from tampering.
+A home whose class key was destroyed raises `SealedBodyUnreadable` under `entitled=True` and still
+verifies its chain under `entitled=False`. That is crypto-shredding, not tampering.
 """
 import base64
 import binascii
@@ -67,13 +54,13 @@ from .log import GENESIS_PREV, SpineLog, check_frame, event_hash, semantic_tuple
 from .seal import Keys
 from .vocabulary import cited_blobs, is_hash
 
-#: What `checkpoint_verified` carries when the bodies are sealed. A sentence rather than a zero:
-#: zero is a number a caller would compare against and believe.
+#: What `checkpoints_verified` carries when the bodies are sealed - a sentence rather than a zero a
+#: caller would read as a count.
 NOT_ASSESSED = 'not assessed'
 
 
 def verify_home(home, entitled=True):
-    """Verify every hash, link and signature in `home` and answer the report.
+    """Verify every hash, link and signature in `home` and return the report.
 
     Raises `ChainBroken` or `CheckpointInvalid` naming the LSN where the recomputation parts
     company with the bytes; `SealedBodyUnreadable` when an entitled verification is asked of a home
@@ -125,17 +112,15 @@ def verify_home(home, entitled=True):
 
         if entitled:
             payload = _interior(log, frame, blinded)
-            # The two body shapes verification itself reads. Bodies are NOT re-validated against
-            # today's vocabulary - a v1 event must stay verifiable under a v(n+1) writer - so what
-            # is checked here is only that these two can be read at all.
+            # Bodies are not re-validated against today's vocabulary - a v1 event must stay
+            # verifiable under a v(n+1) writer - so only these two shapes are read.
             if frame['event_type'] == 'checkpoint':
                 checkpoints.append((lsn, payload))
             elif (frame['event_type'] == 'policy_declared' and isinstance(payload, dict)
                     and payload.get('policy') == VERIFYING_KEY_POLICY
                     and is_hash(payload.get('blob'))):
-                # A rung of the ladder, at the position it was declared. A declaration naming no
-                # blob names no key: it is not a rung, and it does not cost the ladder the rungs
-                # already on it - one open-bodied policy row must never be able to unverify a home.
+                # A rung of the ladder at the position it was declared. A declaration naming no
+                # blob is not a rung and does not remove the rungs already on it.
                 declarations.append((lsn, payload['blob']))
             citations.extend((lsn, frame['event_type'], field, digest)
                              for field, digest in cited_blobs(frame['event_type'], payload))
@@ -146,9 +131,8 @@ def verify_home(home, entitled=True):
 
     verified = NOT_ASSESSED
     if entitled:
-        # Checkpoints before the manifest: the published verifying key is itself a citation, and a
-        # home that has lost it should hear which assertion it can no longer make rather than a
-        # sentence about a file.
+        # Checkpoints before the manifest: the published verifying key is itself a citation, so a
+        # home that lost it hears which assertion it can no longer make.
         verified = _checkpoints(log, checkpoints, declarations, heads)
         _closure(log, citations)
     return {'mode': 'entitled' if entitled else 'chain-only', 'events': events,
@@ -156,11 +140,12 @@ def verify_home(home, entitled=True):
 
 
 def _interior(log, frame, blinded):
-    """Open one body and check what it binds. Answers the payload.
+    """Open one body, check the interior binding and (when `blinded`) the tag, and return the
+    payload.
 
     The seal covers the envelope as additional data, so a failure here is an altered frame in
-    EITHER half - and it is `ChainBroken` naming the LSN rather than `SealedBodyUnreadable`,
-    because the key is known to be present: this is tampering, not entitlement.
+    either half. It raises `ChainBroken` naming the LSN, not `SealedBodyUnreadable`: the key is
+    known present, so this is tampering rather than entitlement.
     """
     lsn = frame['lsn']
     try:
@@ -189,14 +174,11 @@ def _interior(log, frame, blinded):
 
 
 def _checkpoints(log, checkpoints, declarations, heads):
-    """Every checkpoint signature, against the key the log published for its position. Answers the
-    count.
+    """Verify every checkpoint signature and return the count.
 
-    Three things are asserted, and the last two matter as much as the first: the signature verifies,
-    it covers a position this log actually has - a valid signature over a head nobody here ever
-    reached is a checkpoint from another history - and it is checked under the key IN FORCE AT ITS
-    OWN LSN, so a later rotation moves the checkpoints after it and leaves every earlier one
-    verifying under the key that actually signed it.
+    Three assertions per checkpoint: the signature verifies, it covers a position this log actually
+    reached, and it is checked under the key in force at its own LSN, so a later rotation moves only
+    the checkpoints after it.
     """
     if not checkpoints:
         return 0
@@ -247,8 +229,7 @@ def _checkpoints(log, checkpoints, declarations, heads):
 def _key_in_force(declarations, lsn):
     """The verifying key blob standing at or before `lsn`, or None if none does.
 
-    A fold, spelled out: the ladder is short and in LSN order, so the last rung not above the
-    checkpoint is the key that signed it.
+    `declarations` is in LSN order, so the last rung not above `lsn` is the key that signed it.
     """
     blob = None
     for declared_at, candidate in declarations:
@@ -259,13 +240,11 @@ def _key_in_force(declarations, lsn):
 
 
 def _closure(log, citations):
-    """Every blob the log says lives in the store, resolved against a walk of the store itself.
+    """Resolve every blob `citations` names against a walk of the store, raising
+    `MissingBlobRefusal` on the first that does not resolve.
 
-    Referential closure is a property of the WHOLE history, not only of the moment an event was
-    written. The writer refuses an event whose blob is not yet on the platter; this asks the same
-    question of a log nobody here wrote, and it is also where the retention law is cashed - any
-    blob class reduces through an explicit logged retention event and NEVER silently, so a citation
-    that no longer resolves is exactly the silent expiry the law forbids.
+    Referential closure is a property of the whole history, not only of the moment each event was
+    written, and a blob class reduces only through a logged retention event.
     """
     if not citations:
         return

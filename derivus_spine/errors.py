@@ -11,19 +11,13 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""Every way the spine says no, typed - because a refusal is the design working, not the design
-failing.
+"""Every way the spine says no, typed.
 
-The record never repairs: nothing is edited in place, a duplicate that is not identical is not
-deduplicated, an event citing a blob nobody fsynced does not append. That discipline is only real
-if the writer has a name for each refusal and the caller can catch the one it means to handle, so
-these are the vocabulary of the whole package and every module raises from this list rather than
-inventing its own. `SpineRefusal` is the one thing to catch at a boundary - the CLI turns it into
-exit 1 and prints the refusal's own wording, which is why every message here must NAME the thing
-that was wrong and the remedy that fixes it.
-
-They are all deliberately thin. The message carries the case (this LSN, this hash, this field);
-the class carries the kind, so callers branch on the kind and operators read the case.
+These are the refusal vocabulary of the whole package: every module raises from this list rather
+than inventing its own, and `SpineRefusal` is the one type to catch at a boundary (the CLI turns
+it into exit 1 and prints the refusal's own wording, so every message must name the thing that was
+wrong and the remedy that fixes it). The class carries the kind, so callers branch on it; the
+message carries the case - this LSN, this hash, this field.
 """
 
 
@@ -74,8 +68,7 @@ class CheckpointInvalid(SpineRefusal):
 
 class WriterBusy(SpineRefusal):
     """A second writer reaching for a home one writer already holds. One deployment, one log, one
-    writer: the second would assign an LSN that is already taken, and nothing here may edit or
-    remove the line that results."""
+    writer: the second would assign an LSN that is already taken."""
 
 
 class HomeExists(SpineRefusal):
@@ -95,8 +88,7 @@ class IdentityRefused(SpineRefusal):
 
 class CapabilityDenied(SpineRefusal):
     """An actor without the (verb, book) scope the event demands, under the capability policy in
-    force at this LSN. The denial is itself logged - a decision is a fact - so catching this is
-    reading the record's own refusal back."""
+    force at this LSN. The denial is itself appended to the log."""
 
 
 class ReplayRefused(SpineRefusal):
@@ -107,9 +99,8 @@ class ReplayRefused(SpineRefusal):
 
 class QuoteNotFirm(SpineRefusal):
     """A quote whose pins no longer stand: the market moved or aged under it (the VALUES
-    dimension), or the book moved or aged under it (the PLAN dimension). The refusal names which
-    dimension, because the two have different remedies and conflating them is how an aged quote
-    gets approved at a dead market's solve."""
+    dimension), or the book moved or aged under it (the PLAN dimension). The message names which
+    dimension - the two have different remedies."""
 
 
 class CustodyRefusal(SpineRefusal):

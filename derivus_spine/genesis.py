@@ -11,30 +11,17 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""Minting a home - four events that make every later question answerable from inside the log.
+"""Minting a home - the first four events, so every later question is answerable from the log.
 
-Genesis is not setup. It is the first four FACTS, and each one exists because of a question a
-replica would otherwise have to ask a human.
+LSN 1 is the admin grant: who may govern this deployment, and the first row of the fold that
+answers "could X approve in March". LSN 2 is the break-glass grant, declared beside the first admin
+grant so a policy that strands the last admin is recoverable through a path that already existed.
+LSN 3 publishes the checkpoint verifying key as a firm-class blob cited by hash, which is what lets
+a replica check every signature from checkpoint one holding nothing secret. LSN 4 is the first
+checkpoint, signed over the head after LSN 3 so the three grants are covered from the start.
 
-LSN 1, the admin grant: who may govern this deployment. Authorization replays like everything
-else - "could X approve in March" is a fold over policy declarations - and a fold needs a first
-row.
-
-LSN 2, the break-glass grant: declared BESIDE the first admin grant rather than after the accident.
-A policy declaration that would strand the last admin or brick writes is recoverable only through a
-path that already existed, and its use is itself an appended fact - so the recovery is in the
-record rather than in someone's memory of a weekend.
-
-LSN 3, the checkpoint verifying key, published as a firm-class blob and cited by hash. This is what
-turns checkpoints from self-assertion into authenticity: a replica reads the key out of the log's
-own history and checks every signature from checkpoint one, holding nothing secret.
-
-LSN 4, the first checkpoint - signed over the head after LSN 3, so the three grants above are
-covered by a signature from the moment the home exists.
-
-The blob goes in BEFORE the event citing it: durability ordering is law, and genesis obeys it like
-every other write. A second genesis over a directory that already holds a log is `HomeExists` - a
-home is minted once, and forking the record is not a thing a retyped command should be able to do.
+The key blob is fsynced before the event citing it, and a second genesis over a directory that
+already holds a log raises `HomeExists`.
 """
 from pathlib import Path
 
@@ -44,18 +31,19 @@ from .log import SpineLog
 from .seal import Keys
 from .store import BlobStore
 
-#: The three genesis policy bodies, spelled here rather than in a caller: they are the shape a
-#: replica folds, so they belong to the mint.
+#: The three genesis policy names, spelled at the mint rather than in a caller: they are the shape
+#: a replica folds.
 GENESIS_POLICY = 'genesis'
 BREAK_GLASS_POLICY = 'break_glass'
 VERIFYING_KEY_POLICY = 'checkpoint_verifying_key'
 
 
 def init_home(home, actor):
-    """Mint the spine home at `home`, attributed to `actor`. Answers a summary of what was written.
+    """Mint the spine home at `home`, attributed to `actor`, and return a summary of what was
+    written.
 
-    Directories, then keys, then the published verifying key, then the four events through the
-    ordinary writer - nothing here is a special path into the log.
+    Directories, then keys, then the published verifying key blob, then the four genesis events
+    through the ordinary writer. Raises `HomeExists` if `home` already holds a log.
     """
     home = Path(home)
     log_dir = home / 'log'
@@ -84,8 +72,7 @@ def init_home(home, actor):
     write_checkpoint(log, actor=actor)
 
     lsn, head = log.head()
-    # Genesis is done writing, so it lets go of the home: the next writer is whoever the deployment
-    # runs, not the process that happened to mint the directory.
+    # Release the writer lock: the next writer is whoever the deployment runs.
     log.close()
     return {'home': str(home), 'actor': actor, 'events': lsn, 'head_lsn': lsn, 'head_hash': head,
             'checkpoint_verifying_key': blob}

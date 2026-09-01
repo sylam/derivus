@@ -13,35 +13,25 @@
 
 """The four keys a home is made of - one that blinds, one that seals, and a pair that signs.
 
-The log is CLASSIFIED: the envelope is firm-visible and the body is sealed, so the three jobs a
-naive design gives to one plaintext hash are split across three keys held here.
+The log is classified: the envelope is firm-visible and the body is sealed, so three jobs are split
+across three keys rather than resting on one plaintext hash.
 
-`blind.key` answers idempotency. A raw plaintext hash sitting in a firm-visible envelope is a
-dictionary oracle - an approval over a plan hash visible elsewhere, a status transition, any
-low-entropy body could be CONFIRMED by hashing candidates - so the envelope carries an HMAC of the
-canonical plaintext instead, and the writer, which holds every key, enforces uniqueness on that.
-The tag is therefore key-dependent by construction: the same fact appended into two homes wears two
-tags, which is what makes the no-keyless-check assertion in the gate true rather than hopeful. The
-blind key never leaves the hub and never couples to revocation rotation.
+`blind.key` answers idempotency. A raw plaintext hash in a firm-visible envelope would be a
+dictionary oracle over low-entropy bodies, so the envelope carries an HMAC of the canonical
+plaintext instead and the writer enforces uniqueness on that. The tag is key-dependent: the same
+fact appended into two homes wears two tags. This key never leaves the hub.
 
-`class_firm.key` seals bodies under AES-256-GCM from genesis, even with one class and one desk,
-for two reasons that outrank stdlib purity: genesis-era bodies must be crypto-shreddable (a
-determination's reasoning, a relayed client utterance - erasure of the body inside an untouched
-chain is this system's answer to erasure regimes), and phase 1 is already multi-seat, so
-sealed-at-rest is what makes the share-and-backup posture true on day one. Destroying this ONE
-file is the crypto-shred: the chain still verifies over ciphertext nobody can read, which is why
-its absence is `SealedBodyUnreadable` - a state the design has a name for - while a missing blind
-or signing key is `HomeMissing`, a home that is not equipped to write.
+`class_firm.key` seals bodies under AES-256-GCM from genesis, so bodies are crypto-shreddable and
+sealed at rest across seats. Destroying this one file is the crypto-shred - the chain still
+verifies over ciphertext nobody can read, which is why its absence raises `SealedBodyUnreadable`
+while a missing blind or signing key raises `HomeMissing`.
 
-`checkpoint_signing.key` / `checkpoint_verify.key` are the deployment's Ed25519 pair. Signatures
-rather than an HMAC economization, because the sealing dependency already ships them and a
-signature is the only thing a REPLICA can check: the verifying key is published as a firm-class
-policy blob at genesis, so every replica asserts checkpoint AUTHENTICITY from checkpoint one
-instead of merely re-walking a chain it was handed.
+`checkpoint_signing.key` / `checkpoint_verify.key` are the deployment's Ed25519 pair. The verifying
+key is published as a firm-class policy blob at genesis, so a replica can assert checkpoint
+authenticity rather than merely re-walk a chain it was handed.
 
-Keys are read from disk at every use rather than cached at construction. A key destroyed at 14:02
-is destroyed at 14:02, and a `Keys` held open across that moment must not be the thing that
-remembers it.
+Keys are read from disk at every use rather than cached at construction, so a key destroyed at
+14:02 is destroyed at 14:02 even for a `Keys` held open across that moment.
 """
 import hashlib
 import hmac
@@ -58,8 +48,8 @@ from .errors import CheckpointInvalid, HomeExists, HomeMissing, SealedBodyUnread
 #: AES-256 and HMAC-SHA256 both take 32 bytes, and an Ed25519 key is 32 bytes raw - one width for
 #: every file in `keys/`, so a truncated key is a length check rather than a subtle failure later.
 KEY_BYTES = 32
-#: GCM's nonce, prepended to the ciphertext: 12 bytes is the size the mode is defined over, and a
-#: fresh random one per body is what keeps two identical payloads from looking identical at rest.
+#: GCM's nonce, prepended to the ciphertext. Fresh and random per body, so two identical payloads
+#: do not look identical at rest.
 NONCE_BYTES = 12
 #: GCM's tag, the minimum a sealed body can carry beyond its nonce.
 TAG_BYTES = 16
@@ -73,10 +63,8 @@ VERIFYING = 'checkpoint_verify.key'
 class Keys:
     """The `keys/` directory of one spine home, read on demand.
 
-    Construction never touches the disk and never refuses: a replica that holds no key at all still
-    builds one of these, opens its log, and verifies its chain over ciphertext. The refusals happen
-    where a key is actually USED, which is the only place the difference between "unentitled" and
-    "broken" is knowable.
+    Construction never touches the disk and never refuses, so a replica holding no key still builds
+    one of these and verifies its chain over ciphertext. Refusals happen where a key is used.
     """
 
     def __init__(self, home):
@@ -88,10 +76,10 @@ class Keys:
 
     @classmethod
     def generate(cls, home):
-        """Mint a home's four keys and answer the `Keys` over them.
+        """Mint a home's four keys and return the `Keys` over them.
 
-        Called once, by genesis. It refuses to overwrite: a second mint would strand every body
-        already sealed under the key it replaced, which is crypto-shredding by accident.
+        Called once, by genesis. Raises `HomeExists` rather than overwrite: a second mint would
+        strand every body already sealed under the key it replaced.
         """
         keys = cls(home)
         keys.keys.mkdir(parents=True, exist_ok=True)
@@ -113,8 +101,7 @@ class Keys:
         return keys
 
     def has_blind(self):
-        """Whether the tag can be recomputed here. A verifier that cannot recompute tags says so
-        rather than reporting a check it did not run."""
+        """Whether `blind.key` is present, so idempotency tags can be recomputed here."""
         return (self.keys / BLIND).is_file()
 
     def has_firm(self):
@@ -123,36 +110,33 @@ class Keys:
 
     def verifying_key(self):
         """The raw 32-byte Ed25519 public key, for genesis to publish as a blob. Verification
-        elsewhere reads the BLOB, never this file - a replica has the blob and does not have
-        `keys/`."""
+        elsewhere reads that blob, never this file - a replica has no `keys/`."""
         return self._require(VERIFYING, HomeMissing)
 
     def blind_tag(self, canonical):
         """HMAC-SHA256 of the canonical semantic bytes under `blind.key`, hex.
 
-        This is the idempotency key the writer enforces uniqueness on, and the reason an unentitled
-        replica holding every envelope has no computable check against a candidate plaintext.
+        The idempotency tag the writer enforces uniqueness on. Being keyed is what denies an
+        unentitled holder of the envelopes any check against a candidate plaintext.
         """
         return hmac.new(self._require(BLIND, HomeMissing), canonical, hashlib.sha256).hexdigest()
 
     def seal(self, plaintext, aad):
-        """AES-256-GCM under the firm class key: `nonce || ciphertext+tag`.
+        """Seal `plaintext` under the firm class key: `nonce || ciphertext+tag`, AES-256-GCM.
 
-        `aad` is the envelope the body is being bound to. It is authenticated but not encrypted, so
-        an envelope field edited after the fact - an actor, a book - makes the body stop opening:
-        the seal is what makes the plaintext envelope tamper-evident, not merely the chain.
+        `aad` is the envelope the body binds to - authenticated but not encrypted, so an envelope
+        field edited afterwards makes the body stop opening.
         """
         nonce = os.urandom(NONCE_BYTES)
         return nonce + AESGCM(self._require(FIRM, SealedBodyUnreadable)).encrypt(
             nonce, plaintext, aad)
 
     def open(self, sealed, aad):
-        """The plaintext of `sealed` under `aad`, or `SealedBodyUnreadable`.
+        """The plaintext of `sealed` under `aad`.
 
-        Every failure lands on that one refusal - an absent class key, a truncated body, a flipped
-        ciphertext byte, an envelope that no longer matches the AAD it was sealed against. The
-        caller that can tell the cases apart is the one that knows which key it holds; verification
-        checks the key first and reads a failure here as tampering.
+        Every failure raises `SealedBodyUnreadable` - an absent class key, a truncated body, a
+        flipped ciphertext byte, an envelope that no longer matches the AAD it was sealed against.
+        A caller that needs to tell those apart checks key presence first.
         """
         key = self._require(FIRM, SealedBodyUnreadable)
         if not isinstance(sealed, (bytes, bytearray)) or len(sealed) < NONCE_BYTES + TAG_BYTES:
@@ -164,8 +148,7 @@ class Keys:
         try:
             return AESGCM(key).decrypt(sealed[:NONCE_BYTES], sealed[NONCE_BYTES:], aad)
         except Exception:
-            # GCM does not say WHICH of the two failed, and neither will this: either the
-            # ciphertext moved or the envelope it was bound to did.
+            # GCM does not say which of the two failed - the ciphertext moved or the envelope did.
             raise SealedBodyUnreadable(
                 'the sealed body does not authenticate under its envelope: the ciphertext or one '
                 'of the nine envelope fields it is bound to has been altered - restore the frame '
@@ -178,12 +161,11 @@ class Keys:
 
     @staticmethod
     def verify_checkpoint(payload, sig_hex, verify_key_bytes, where='a checkpoint'):
-        """Assert `sig_hex` is `verify_key_bytes`' signature over `payload`; `CheckpointInvalid`
-        otherwise, naming `where`.
+        """Assert `sig_hex` is `verify_key_bytes`' signature over `payload`, raising
+        `CheckpointInvalid` naming `where` otherwise.
 
-        Static because this is the REPLICA's check: it needs the published verifying key and
-        nothing out of `keys/`, so the same code runs on a machine that could never have produced
-        the signature it is checking.
+        Static because it is the replica's check: it needs the published verifying key and nothing
+        out of `keys/`.
         """
         try:
             signature = bytes.fromhex(sig_hex)
@@ -201,7 +183,7 @@ class Keys:
                     where))
 
     def _require(self, name, refusal):
-        """The key material behind `name`, or `refusal` naming the file and the remedy."""
+        """The key material behind `name`, raising `refusal` if it is absent or the wrong width."""
         path = self.keys / name
         try:
             material = path.read_bytes()
@@ -223,7 +205,7 @@ class Keys:
 
     @staticmethod
     def _write(path, material):
-        """One key file, fsynced, and 0600 where the platform has an opinion."""
+        """Write `material` to `path`, fsynced, and 0600 where the platform has an opinion."""
         with open(str(path), 'wb') as handle:
             handle.write(material)
             handle.flush()
@@ -231,6 +213,5 @@ class Keys:
         try:
             os.chmod(str(path), 0o600)
         except (IOError, OSError):
-            # Best effort: Windows ACLs are not this mode, and a key the owner can read is the
-            # posture either way. Custody is increment 2's business, not a chmod's.
+            # Best effort: Windows ACLs are not this mode, and custody is enforced elsewhere.
             pass

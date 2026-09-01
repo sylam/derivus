@@ -13,30 +13,21 @@
 
 """The field-declaration vocabulary, the emitters that read it off the classes, and `mapping`.
 
-This is what `fields.py` was: 1,931 lines of hand-written stores keyed one descriptor per field
-NAME, so two deals needing different valid values for the same field had to invent a key and carry
-the real name elsewhere - 21 entries in `ALIASED_KEYS` at its worst. A class that owns its own
-fields has no such collision, and the alias list is empty. What is left hand-written is `System`,
-whose consumer is `Config` itself, and the create-deal menu. `System`'s one "type" is a UI panel
-name rather than anything the JSON dispatches on, and giving `Config` a `fields` list would make
-"a class that declares fields IS a type" mean something else in that module.
+A deal's schema is composition of named field GROUPS rather than the class hierarchy - `FXAdmin`
+is shared by eight deals with no common base and `Admin` by all 47 - so a group is a module-level
+constant a class lists. A price factor's JSON block is one flat dict, so a factor class declares a
+flat list and `emit_factor` files the descriptors per type. `System` and the create-deal menu are
+the only hand-written stores left.
 
-A deal's schema is composition of named field GROUPS, not the class hierarchy: `FXAdmin` is shared
-by eight deals with no common base, and `Admin` by all 47. Groups are therefore ordinary
-module-level constants a class lists, not something recovered from the MRO. A price factor has no
-such structure - its JSON block is one flat dict - so a factor class declares a flat list and
-`emit_factor` files the descriptors per TYPE.
-
-Nothing here is read at valuation time. `construct_instrument` takes the raw JSON and `Deal.__init__`
-stores it unfiltered; `construct_factor` hands the raw block to the factor class. So this is
-authoring-time metadata: the UI, the docs generator and the Excel add-in. A front end needs no other
-source - a type's entry IS its descriptors, each keyed by the JSON key an author writes, so a panel,
-its defaults and the write-back key all come from one lookup.
+Nothing here is read at valuation time: `Deal.__init__` stores the raw JSON unfiltered and
+`construct_factor` hands the raw block to the factor class. This is authoring-time metadata for
+the UI, the docs generator and the Excel add-in - a type's entry IS its descriptors, each keyed by
+the JSON key an author writes, so a panel, its defaults and the write-back key are one lookup.
 
 `bind=` adds the second axis a front end needs: which fields a job may change without recompiling.
 See `partition_factor`.
 
-`mapping` is assembled at the BOTTOM of this file, because the declaring modules import `F` from
+`mapping` is assembled at the bottom of this file, because the declaring modules import `F` from
 here and the edge only runs one way.
 """
 
@@ -61,31 +52,26 @@ BLANK = {
 }
 
 #: The types whose content is a coordinate grid plus ONE value column - `[[tenor, rate], ...]`,
-#: `[[moneyness, expiry, vol], ...]`, `[[moneyness, expiry, tenor, vol], ...]`. The coordinates
-#: size `all_tenors` when the factor is constructed; only the last column is content. So `bind` on
-#: these splits the field rather than choosing it, which is why `BLANK` and this share a key set.
+#: `[[moneyness, expiry, vol], ...]`. The coordinates size `all_tenors` when the factor is
+#: constructed; only the last column is content, so `bind` on these splits the field.
 SHAPED = tuple(BLANK)
 
 #: `{factor_type: {json_key: F}}`, filled by `emit_factor`. The partition and the emitted store
 #: read the same declarations, so neither can drift from the other.
 FACTOR_FIELDS = {}
 
-#: The VALUE keys of a `Market Prices` quote row - the plan/values line for that whole section, for
-#: every family at once rather than per family, because a boundary that depended on which block you
-#: were looking at would not be a boundary. `config.update_market_quote` is where the line was first
-#: drawn, as a tick guard; `partition_market_price` is the same line read as a projection, and the
-#: guard now reads this tuple rather than carrying its own copy of it.
+#: The VALUE keys of a `Market Prices` quote row - the plan/values line for that whole section,
+#: for every family at once rather than per family. Both `config.update_market_quote`'s tick guard
+#: and `partition_market_price`'s projection read this one tuple.
 MARKET_QUOTE_VALUES = ('Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask', 'Timestamp')
 
-#: Which of those a row cannot be without. A mid is MOVED and never removed, so a patch clearing it
-#: refuses; the two-way sides and the stamp are absent whenever the source has no print for them,
-#: which is the same statement key-presence already makes on the values plane. Declared beside the
-#: split rather than spelled as a magic string in the one caller that enforces it, so a fifth value
-#: key has to be classified here rather than becoming null-clearable by default.
+#: Which of those a row cannot be without. A mid is MOVED and never removed, so a patch clearing
+#: it refuses; the two-way sides and the stamp are absent whenever the source has no print for
+#: them. A fifth value key has to be classified here rather than becoming null-clearable.
 MARKET_QUOTE_REQUIRED = ('Quoted_Market_Value',)
 
-#: How `mapping` renders each type for Handsontable. Rendering only: derived on the way out
-#: and never declared, which is the point - a front end that is not Handsontable ignores all of it.
+#: How `mapping` renders each type for Handsontable. Rendering only: derived on the way out and
+#: never declared, so a front end that is not Handsontable ignores all of it.
 WIDGET_FORMAT = {
     'Date': {'type': 'date', 'dateFormat': 'YYYY-MM-DD'},
     'Float': {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}},
@@ -103,13 +89,8 @@ OBJ_TOKEN = {'Date': 'DatePicker', 'Float': 'Float', 'Integer': 'Integer', 'Text
 
 
 class Row(object):
-    """The ordered fields of one table row.
-
-    A table's columns were two parallel lists - names in `col_names`, rendering specs in
-    `sub_types` - matched by position, with no per-column default, type or required-ness. That is
-    why a column could not be declared nullable and why 21 columns could sit in a table of which
-    four are read: there was nothing to declare them ON.
-    """
+    """The ordered fields of one table row - each column a full `F`, carrying its own type,
+    default, valid values and required-ness."""
     __slots__ = ('fields',)
 
     def __init__(self, fields):
@@ -120,32 +101,26 @@ class F(object):
     """One field of one deal or one price factor.
 
     `type` is semantic (Text/Float/Integer/Date/Percent/Basis/Period/Table/Container, plus the
-    market-data shapes Curve/Surface/Space); the WIDGET name is the front end's business and is
-    only reintroduced when emitting `mapping`. A choice list is not a type - it is a Text
-    whose `values` are a fixed set, and the dropdown falls out of that.
-    `json_name` is the escape hatch the name-keyed dict needed constantly and a per-class list
-    needs almost never - the cashflow shapes that genuinely share a JSON key.
+    market-data shapes Curve/Surface/Space); the widget name is the front end's business and is
+    only reintroduced when emitting `mapping`. A choice list is not a type - it is a Text whose
+    `values` are a fixed set. `json_name` overrides the key the descriptor is filed under, for the
+    cashflow shapes that genuinely share a JSON key.
 
     A Table declares its columns as a `Row`; `tag` names the utils container the wire form uses
     (`DateList`, `DateValueList`, `CreditSupportList`), absent for a plain array of rows.
-
-    `description` is free text: the JSON key is the key the descriptor is FILED under, so a front
-    end reads it from the store rather than reconstructing it from a label.
+    `description` is free text a front end reads from the store rather than rebuilding it.
 
     `bind` is STRUCTURAL by default. `bind='value'` says the engine reads this field's CONTENT and
-    nothing about discovery, tenor grids, process wiring, correlation or the code paths depends on
-    it - see `partition_factor`. Declare it only from the consumption site, and leave it alone when
-    unsure: a wrong structural costs a recompile, a wrong value corrupts a plan silently.
+    that nothing about discovery, tenor grids, process wiring, correlation or the code paths
+    depends on it - see `partition_factor`. Declare it only from the consumption site: a wrong
+    structural costs a recompile, a wrong value corrupts a plan silently.
 
-    `Boolean` is a bare JSON `true`/`false`, which is NOT the `'Yes'`/`'No'` string the rest of the
-    vocabulary spells a flag with: a calibration reading `bool(param.get(...))` takes `'No'` as
+    `Boolean` is a bare JSON `true`/`false`, not the `'Yes'`/`'No'` string the rest of the
+    vocabulary spells a flag with - a calibration reading `bool(param.get(...))` takes `'No'` as
     true, so the two cannot share a descriptor.
     """
-    # The shape widgets are named for what they denote, not for a plotting library: 'Curve' is a 1d
-    # list of indexed numbers, 'Surface' covers BOTH shaped types (a Space is a tenor-keyed
-    # surface), so a renderer branches on the value's row arity, never on the token. 'Surface' is
-    # also a JSON field key (`VolatilityGrid.Surface`) - namespaced inside a descriptor map, so the
-    # two senses cannot collide. Legacy spellings ('Flot', 'Three') are the front end's business.
+    # 'Surface' covers BOTH shaped types (a Space is a tenor-keyed surface), so a renderer branches
+    # on the value's row arity, never on the token.
     WIDGET = {'Text': 'Text', 'Float': 'Float', 'Integer': 'Integer', 'Date': 'DatePicker',
               'Percent': 'Float', 'Basis': 'Float', 'Period': 'Text', 'Boolean': 'Checkbox',
               'Table': 'Table', 'Container': 'Container',
@@ -165,8 +140,8 @@ class F(object):
         self.tag = tag
         self.sub_fields = sub_fields
         self.json_name = json_name
-        # parse token on SCALARS only ('Tuple' = a dotted factor reference); tables no longer
-        # carry it, `row` and `tag` say it properly
+        # parse token, scalars only ('Tuple' = a dotted factor reference); a table says it as
+        # `row` and `tag` instead
         self.obj = obj
         # (min, max) on a Float the author cannot sensibly exceed - a recovery rate is a fraction
         self.bounds = bounds
@@ -174,20 +149,15 @@ class F(object):
 
     @property
     def key(self):
-        """The key an author writes in the JSON, which is what the descriptor is filed under.
-
-        This used to be the descriptor's own name with `json_name` carried alongside as an alias,
-        because a store keyed by field name across all 47 deals cannot hold two `Cashflows`. Filed
-        per SECTION, each one holds its own, and the alias has nothing left to do.
-        """
+        """The key an author writes in the JSON, which is what the descriptor is filed under."""
         return self.json_name or self.name
 
     def descriptor(self):
         """This field as a `mapping[...]['fields']` entry.
 
-        `col_names`, `sub_types` and `obj` are DERIVED from the row rather than stored: they are
-        Handsontable's rendering vocabulary, and a front end that is not Handsontable wants none
-        of it. Deriving them is also what stops the two parallel lists drifting apart.
+        `col_names`, `sub_types` and `obj` are derived from the row rather than stored: they are
+        Handsontable's rendering vocabulary, and deriving them is what keeps the parallel lists
+        from drifting apart.
         """
         widget = ('Dropdown' if self.values is not None else
                   'BoundedFloat' if self.bounds is not None else self.WIDGET[self.type])
@@ -240,12 +210,12 @@ def required_fields(cls):
 
 
 def declared_defaults(cls, params):
-    """A calculation block completed by its own declarations - the F defaults under every key the
-    author omitted, so the schema is the single source of an engine default and a stale `.get`
-    fallback cannot disagree with it. Reads inside `execute` may then index directly.
+    """A calculation block completed by its own declarations - the `F` default under every key the
+    author omitted, so the schema is the single source of an engine default and reads inside
+    `execute` may index directly.
 
-    Mutable defaults are copied per call: a run edits its params freely without writing into the
-    class declaration. `REQUIRED` and `None` defaults are skipped - the first has nothing to offer,
+    Mutable defaults are deep-copied per call, so a run edits its params without writing into the
+    class declaration. `REQUIRED` and `None` defaults are skipped: the first has nothing to offer,
     the second declares a field the engine is content to find missing."""
     merged = {f.key: copy.deepcopy(f.default) for f in cls.fields
               if f.default is not REQUIRED and f.default is not None}
@@ -256,20 +226,16 @@ def declared_defaults(cls, params):
 def validate_instrument(deal):
     """Authoring-time messages for one constructed deal; empty when it has nothing to say.
 
-    Two layers. The declarations give the REQUIRED fields for free. A rule spanning several fields
-    cannot be declared on any one of them, so a class states those in its own `validate()` - as
-    code, because the predicates have no common shape: a value being non-zero, two fields being
-    alternatives, one column of a table row implying another.
+    Two layers: the declarations give the REQUIRED fields for free, and a rule spanning several
+    fields is stated as code in the class's own `validate()`, because those predicates have no
+    common shape.
 
-    Missing means FALSY, not absent. Optional fields are declared with an empty default, so a UI
-    writes the key present and empty where hand-written JSON omits it, and every fallback in the
-    engine already tests the value for exactly that reason.
+    Missing means FALSY, not absent - optional fields are declared with an empty default, and
+    every fallback in the engine tests the value rather than the key.
 
-    `validate` is looked up normally rather than own-attr-only, unlike `fields`: an alias subclass
-    inherits the `calc_dependencies` whose reads these rules describe, so it inherits the rules.
-
-    Nothing in the valuation path calls this, and a message never stops a deal pricing. The engine
-    still fails exactly where it failed before - this says so first, naming the field.
+    `validate` is looked up normally rather than own-attr-only, unlike `fields`, so an alias
+    subclass inherits the rules along with the `calc_dependencies` they describe. Nothing in the
+    valuation path calls this, and a message never stops a deal pricing.
     """
     messages = ['{} is required'.format(name) for name in required_fields(type(deal))
                 if not deal.field.get(name)]
@@ -278,24 +244,17 @@ def validate_instrument(deal):
 
 
 def emit_instrument(module):
-    """The `types` and `sections` of `mapping['Instrument']`, from the classes.
+    """The `types`, `sections` and `containers` of `mapping['Instrument']`, from the classes.
 
     Scans `module` for classes declaring their own `fields` list. Own-attr only, so a subclass that
     inherits its parent's declaration does not re-emit it as a second deal type. Declaration order
     is preserved: the UI lays panels out in `types[T]` order and widgets within a panel in section
-    order, and a set-backed view scrambles both silently, with no exception.
+    order.
 
-    A section OWNS its descriptors. The store used to key them by field name across every deal,
-    which admits one descriptor per name - so a field needing different valid values in two deals
-    had to invent a key and carry the real one as an alias. `Payment_Timing` is `Touch`/`Expiry` on
-    a one-touch and `End`/`Begin`/`Discounted` on a cashflow leg, and both are right, because the
-    JSON is per-deal and only the flat view was ambiguous.
-
-    `containers` names the types that can HOLD other deals. It is a property of the deal
-    (`Deal.accepts_children`, read with `getattr` exactly as `instruments.accepts_children` reads
-    it) rather than of the create menu, and it is emitted here so a client rendering from this
-    store - a browser SPA, an MCP tool booking under a netting set - can answer "may this take
-    children" without importing the engine to ask.
+    A section OWNS its descriptors, so `Payment_Timing` is `Touch`/`Expiry` on a one-touch and
+    `End`/`Begin`/`Discounted` on a cashflow leg and both are right. `containers` names the types
+    that can hold other deals, read off `Deal.accepts_children`, so a client rendering from this
+    store answers that without importing the engine.
     """
     types, sections, containers = {}, {}, []
     for deal_type, cls in vars(module).items():
@@ -315,13 +274,11 @@ def emit_factor(module):
 
     A price factor has no sections to compose: its `Price Factors` block is one flat dict, so a
     class declares a flat list and the type IS that list's descriptors, keyed by the JSON key.
+    Own-attr only, matching `emit_instrument`, so a subclass inheriting the declaration is an alias
+    for the same block rather than a second factor type.
 
-    Own-attr only, matching `emit_instrument`. `ForwardRate` subclasses `ForwardPrice` and carries
-    no `Fixings`, so it declares its own; a subclass that inherits the declaration is an alias for
-    the same block rather than a second factor type.
-
-    It also records the declarations themselves in `FACTOR_FIELDS`, which is what `partition_factor`
-    reads - one scan, one source.
+    The declarations themselves are also recorded in `FACTOR_FIELDS`, which is what
+    `partition_factor` reads - one scan, one source.
     """
     declared = {factor_type: {f.key: f for f in cls.__dict__['fields']}
                 for factor_type, cls in vars(module).items()
@@ -335,17 +292,13 @@ def emit_process(module, factor_types):
     """The `types` of `mapping['Process']`, and the `Process_factor_map` beside it.
 
     A process's `Price Models` block is one flat dict, like a price factor's, so a class declares a
-    flat list and the type IS its descriptors. Own-attr only, matching the other two emitters:
-    `CSImpliedForwardPriceModel` subclasses `CSForwardPriceModel` and takes its parameters from the
-    implied factor instead, so it declares its own empty list rather than re-emitting the parent's.
-
-    The map is the same declaration read the other way round. A class names the price factors it can
-    drive; the UI wants the inverse, a menu per factor. Every factor type is a key, including the
-    ones no process drives, because the Workbench indexes it by the type of the factor in front of
-    it - a missing key is a KeyError, not an empty menu.
-
-    A process is a class declaring `fields` AND `factor_types`; the calibration classes share this
+    flat list and the type IS its descriptors. Own-attr only, matching the other emitters. A
+    process is a class declaring `fields` AND `factor_types`; the calibration classes share this
     module and declare `fields` and `model_type` - see `emit_calibration`.
+
+    `Process_factor_map` is the same declaration read the other way round: a class names the price
+    factors it can drive, the UI wants a menu per factor. Every factor type is a key, including the
+    ones no process drives, because a missing key is a KeyError rather than an empty menu.
     """
     declared = [(name, cls) for name, cls in vars(module).items()
                 if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)
@@ -363,13 +316,11 @@ def emit_interpolation(module):
 
     `Interpolation` is NOT a key an author writes in a `Price Factors` block: `construct_factor`
     reads it out of the `Price Factor Interpolation` section and injects it, and only for the
-    factor types that opt in. So the class declares which METHODS it can be set to rather than an
-    `F` for the block, and the map is that read straight off - the same shape as a process naming
-    the `factor_types` it drives.
+    factor types that opt in. So a class declares which METHODS it can be set to rather than an
+    `F` for the block, and the map is that read straight off.
 
-    The restriction the two hand-written rows carried is real and is exactly this opt-in. Every
-    `Factor1D` honours an `Interpolation` in its block, but only a routed type is ever given one,
-    so publishing the menu for the rest would offer a setting the engine drops on the floor.
+    Every `Factor1D` honours an `Interpolation` in its block, but only a routed type is ever given
+    one, so publishing the menu for the rest would offer a setting the engine drops.
     """
     return {factor_type: list(cls.__dict__['interpolation_methods'])
             for factor_type, cls in vars(module).items()
@@ -382,8 +333,7 @@ def emit_calculation(module):
     Keyed by the `Object` string a job document writes, which is NOT the class name: `run_job`
     branches on `CreditMonteCarlo` / `BaseValuation` / `HedgeMonteCarlo` while the classes are
     `Credit_Monte_Carlo` / `Base_Revaluation` / `HedgeMonteCarlo`. The class states its own with
-    `calc_type` rather than the emitter unmangling underscores, because `Base_Revaluation` and
-    `BaseValuation` are not the same word and no rule recovers one from the other.
+    `calc_type` because no rule recovers one of those names from the other.
     """
     return {cls.__dict__['calc_type']: {f.key: f.descriptor() for f in cls.__dict__['fields']}
             for cls in vars(module).values()
@@ -394,11 +344,9 @@ def emit_market_prices(module):
     """The `types` of `mapping['MarketPrices']` - each price FAMILY holding its own.
 
     Keyed by the `Market Prices` type string the engine selects work by, which the class declares
-    as `market_factor_type` rather than the emitter recovering it from the class name: the block is
-    named for the model with a `Prices` suffix and the class with a `Parameters` one.
-
-    Own-attr only, matching the other emitters. `HullWhite2FactorModelParameters` subclasses
-    `RiskNeutralInterestRateModel`, which declares nothing and is not a family of its own.
+    as `market_factor_type`: the block is named for the model with a `Prices` suffix and the class
+    with a `Parameters` one, so neither name recovers the other. Own-attr only, matching the other
+    emitters, so a base declaring nothing is not a family of its own.
     """
     return {cls.__dict__['market_factor_type']: {f.key: f.descriptor() for f in cls.__dict__['fields']}
             for cls in vars(module).values()
@@ -409,15 +357,13 @@ def emit_market_prices(module):
 def emit_calibration(module):
     """The `types` of `mapping['Calibration']` - each PROCESS holding its tuning block.
 
-    Keyed by the stochastic-process class name, because that is what a `Calibrations` entry is filed
-    under, while the entry's own `Method` is the CALIBRATION class `construct_calibration_config`
-    dispatches on. The class states the process it calibrates with `model_type` for the reason a
-    calculation states its `calc_type`: `HWInterestRateCalibration` calibrates
-    `HullWhite1FactorInterestRateModel` and no rule recovers one of those names from the other.
+    Keyed by the stochastic-process class name, because that is what a `Calibrations` entry is
+    filed under, while the entry's own `Method` is the CALIBRATION class
+    `construct_calibration_config` dispatches on. A class states the process it calibrates with
+    `model_type`, since no rule recovers one of those names from the other.
 
-    `Method` is stamped from the class NAME rather than declared, so the dispatch key cannot drift
-    from the class it dispatches to, and the process/calibration wiring needs no map of its own -
-    it is this store's key paired with its `Method`.
+    `Method` is stamped from the class name rather than declared, so the dispatch key cannot drift
+    from the class it dispatches to and the process/calibration wiring needs no map of its own.
     """
     return {cls.__dict__['model_type']: dict(
         {'Method': F('Method', 'Text', default=name,
@@ -434,17 +380,14 @@ def emit_structures(module):
     Keyed by the class name, which is the registry key `structures.structure_named` dispatches on,
     so a front end offering a menu and the runner pricing the choice read the same word.
 
-    A structure declares four things and this publishes all four: `vernacular` (what a desk calls
-    it, so a search for "range forward" lands on `ZeroCostCollar`), `fields` as descriptors in the
-    usual idiom, `legs` as a deal type plus the block the structure pins and the parameter slots it
-    maps, and `recipe` as the readable step list. The legs are deliberately NOT expanded into deal
-    schemas: a leg names a declared `Instrument` type, and that type's entry in the Instrument store
-    IS its field schema - the `Market Prices` quote pattern, reused by reference so the two cannot
-    drift.
+    All four of a structure's declarations are published: `vernacular` (what a desk calls it),
+    `fields` as descriptors, `legs` as a deal type plus the block the structure pins and the
+    parameter slots it maps, and `recipe` as the readable step list. Legs are NOT expanded into
+    deal schemas - a leg names a declared `Instrument` type, whose entry in the Instrument store
+    IS its field schema, referenced so the two cannot drift.
 
     Own-attr only, matching the other emitters, and gated on `vernacular` rather than on `fields`
-    alone: the module's own vocabulary classes (`Leg`, `Premium`, `Price`, `Solve`) are not
-    structures and must not emit as empty ones.
+    alone, so the module's own vocabulary classes do not emit as empty structures.
     """
     return {name: {'vernacular': cls.__dict__['vernacular'],
                    'fields': {f.key: f.descriptor() for f in cls.__dict__['fields']},
@@ -460,14 +403,12 @@ def partition_factor(type_name, block):
 
     STRUCTURAL is the PLAN's half: everything discovery, the tenor grids, process wiring,
     correlation and the code paths read. That is every field unless its declaration says
-    `bind='value'`, and an undeclared field is structural for the same reason a blank one is - the
-    safe answer costs a recompile.
+    `bind='value'`, an undeclared field included - the safe answer costs only a recompile.
 
-    A shape-valued field splits INSIDE itself rather than falling to one side. A curve's knots size
-    `all_tenors` when the factor is constructed while its rate column is content, so the structural
-    half keeps the coordinate columns and the value half is the last one. A scalar shadows to
-    `None`, which still says the key is THERE: the key SET is structural even where the content is
-    not, so adding or dropping a field is a new plan.
+    A shape-valued field splits INSIDE itself rather than falling to one side: the structural half
+    keeps the coordinate columns, the value half is the last one. A scalar shadows to `None`, which
+    still says the key is THERE - the key SET is structural even where the content is not, so
+    adding or dropping a field is a new plan.
 
     `apply_values` is the exact inverse: `apply_values(t, *partition_factor(t, block)) == block`.
     """
@@ -490,12 +431,11 @@ def apply_values(type_name, structural, values):
     """Put a values patch back onto a structural projection, returning the whole block.
 
     The caller owns the check that `values` names only value-bound fields - it is the one holding
-    the factor NAME, which is what a message has to say.
+    the factor name, which is what a message has to say.
     """
     declared = FACTOR_FIELDS[type_name]
     for key, f in declared.items():
-        # a value-bound field absent from `values` stays a coordinate shell - reconstructible
-        # only on purpose, so say so where the caller can hear it
+        # a value-bound field absent from `values` stays a coordinate shell
         if f.bind == 'value' and key in structural and key not in values:
             logging.warning('%s.%s reconstructed without its values - left as a coordinate shell',
                             type_name, key)
@@ -512,36 +452,25 @@ def partition_market_price(block):
     """Split one `Market Prices` block into `(structural, values)`.
 
     A block is the `{"instrument": {...}}` shape both the wire and `cfg.params['Market Prices']`
-    carry. STRUCTURAL is everything but `MARKET_QUOTE_VALUES` on each `Points` row: the pillars,
-    the expiries, the conventions, `Use`, `Weight`, `Quote_Type`, the `Deal` a quote is a price
-    for, the solver knobs and the lifecycle switches. A moved node is a re-authoring and a plan of
-    its own; only the numbers on a node are values. VALUES is one dict per `Points` row, carrying
-    exactly the value keys that row HAS a number for - row ORDER is structural and is what aligns
-    the two halves, so nothing is padded and no absence is spelled as a null.
+    carry. STRUCTURAL is everything but `MARKET_QUOTE_VALUES` on each `Points` row - the pillars,
+    the expiries, the conventions, the `Deal` a quote is a price for, the solver knobs and the
+    lifecycle switches - because a moved node is a re-authoring and a plan of its own. VALUES is
+    one dict per `Points` row, carrying exactly the value keys that row HAS a number for: row ORDER
+    is structural and is what aligns the two halves, so nothing is padded.
 
-    A `null` IN THE DOCUMENT is an absence, not a value that happens to be nothing: a source with no
-    print for a pillar posts the key holding `null`, and `quote_delta` already reads a null in a
-    PATCH as "this pillar stopped being quoted two-sided". Reading it as content here instead would
-    make `patch_market(market_patch())` - the values-plane identity - drop the key on one shape and
-    refuse its own output on another. So the round trip below is an identity on every block whose
-    value keys hold numbers, and a CANONICALISATION on one that spells an absence as a null.
+    A `null` in the document is an ABSENCE rather than a value that happens to be nothing, matching
+    how `quote_delta` reads a null in a patch. So the round trip is an identity on every block
+    whose value keys hold numbers, and a canonicalisation on one spelling an absence as a null.
 
-    A family whose quotes do not live in `Points` rows - `HullWhite2FactorModelPrices` in
-    `Instrument_Definitions`, the two Heston-Nandi families and `CSForwardPriceModelPrices` in
-    their option tables, `GBMAssetPriceTSModelPrices` with no quote table at all - has an EMPTY
-    values half and stays wholly plan-side. That is the one rule applied uniformly rather than an
-    exemption: a tick on such a block is a new plan, which is what it has always been.
+    A family whose quotes do not live in `Points` rows has an EMPTY values half and stays wholly
+    plan-side: a tick on such a block is a new plan.
 
-    DROPPED, not shadowed to `None` - a deliberate divergence from `partition_factor`, whose key
-    SET is structural because adding a field there costs a recompile. Here the tick guard has
-    already ruled the other way: a pillar that starts or stops being quoted two-sided is the SAME
-    node of the SAME plan (a spread widens between prints), so `Quoted_Bid` KEY-PRESENCE is itself
-    value-plane, and the mid's key goes with it so the projection is one uniform statement equal to
-    the guard's rather than two rules sharing a loop.
+    Value keys are DROPPED rather than shadowed to `None` - a deliberate divergence from
+    `partition_factor`, because a pillar that starts or stops being quoted two-sided is the same
+    node of the same plan, which makes key-presence itself value-plane here.
 
     `apply_market_values` is the exact inverse: `apply_market_values(*partition_market_price(b))`
-    is `b` again - the same CONTENT, the value keys landing last in each row rather than where they
-    were, which the canonical encoder sorts away.
+    is `b` again, with the value keys landing last in each row rather than where they were.
     """
     points = block['instrument'].get('Points')
     if not points:
@@ -551,20 +480,17 @@ def partition_market_price(block):
     structural = dict(block, instrument=dict(block['instrument'], Points=[
         {key: content for key, content in point.items() if key not in MARKET_QUOTE_VALUES}
         for point in points]))
-    # a block no row of which carries a value key contributes nothing to the values half, exactly
-    # as one with no Points does - the two are the same statement about the same block
+    # a block no row of which carries a value key contributes nothing, exactly as one with no Points
     return structural, values if any(values) else []
 
 
 def apply_market_values(structural, values):
     """Put a values patch back onto a structural projection, returning the whole block.
 
-    The caller owns the check that `values` names only `MARKET_QUOTE_VALUES`, and the NAMED refusal
-    for a row count that moved - it is the one holding the block name, which is what a message has
-    to say, and the one that knows a changed row count is a new plan rather than a short patch.
-    What is held HERE is that a short values half cannot land silently: row order is the only thing
-    pairing the two halves, so a `zip` over mismatched lengths would return a block shorter than the
-    one it was projected from and lose quotes with no refusal anywhere.
+    The caller owns the check that `values` names only `MARKET_QUOTE_VALUES` and the named refusal
+    for a row count that moved - it is the one holding the block name. What is held here is that a
+    short values half cannot land silently: row order is the only thing pairing the two halves, so
+    a `zip` over mismatched lengths would drop quotes with no refusal anywhere.
     """
     if not values:
         return dict(structural)
@@ -578,9 +504,8 @@ def apply_market_values(structural, values):
         dict(point, **row) for point, row in zip(points, values)]))
 
 
-# Shared field blocks - metadata that spans classes lives HERE, beside the vocabulary, so there
-# is one place to grab all of it. The schema's inheritance is composition of named GROUPS, not
-# the class hierarchy: FXAdmin is shared by eight deals with no common base, Admin by all of them.
+# Shared field blocks - the groups a class lists rather than inherits, so metadata spanning
+# classes lives here beside the vocabulary.
 CASHFLOWLISTDEAL = Group('CashflowListDeal.Fields', [
     F('Repo_Rate', 'Text', default='', obj='Tuple'),
     F('Recovery_Rate', 'Text', default='', obj='Tuple'),
@@ -643,7 +568,7 @@ FX_ADMIN = Group('FXAdmin', [
 ])
 
 #: The columns every option quote carries, whatever the family: the contract, what it is worth,
-#: and how much the fit cares. `Weight` was read by two bootstrappers and declared by neither.
+#: and how much the fit cares.
 OPTION_QUOTE = [F('Expiry_Date', 'Date'), F('Strike', 'Float', description='0 reads the forward'),
                 F('Option_Type', 'Text', values=['Call', 'Put']), F('Units', 'Float'),
                 F('Weight', 'Float', description='Relative weight in the objective'),
@@ -651,12 +576,11 @@ OPTION_QUOTE = [F('Expiry_Date', 'Date'), F('Strike', 'Float', description='0 re
                   description='The quote, read per Quote_Type; 0 reads the vol surface')]
 
 
-# The declaring modules import `F` from here, so the edge only runs one way and the assembly below
-# has to come after the vocabulary above it. Any `import derivus.<anything>` initialises the
-# package first, and `derivus/__init__` imports this module before any declaring one.
+# The declaring modules import `F` from here, so the edge runs one way and the assembly below has
+# to come after the vocabulary above it.
 from . import bootstrappers, calculation, instruments, riskfactors, stochasticprocess  # noqa: E402
-# structures is last of the declaring modules: it names Instrument types in its legs, so the store
-# it publishes is only meaningful beside one already emitted
+# structures is last: it names Instrument types in its legs, so the store it publishes is only
+# meaningful beside one already emitted
 from . import structures  # noqa: E402
 
 _types, _sections, _containers = emit_instrument(instruments)
@@ -664,8 +588,7 @@ _factor_types = emit_factor(riskfactors)
 _process_types, _process_factor_map = emit_process(stochasticprocess, _factor_types)
 
 #: The blank value of a table COLUMN, keyed by the `obj` token that column declares. A shape is
-#: never a column, so a blank curve or surface is not here - `BLANK`, keyed by TYPE, is the one
-#: definition of those.
+#: never a column, so a blank curve or surface is in `BLANK` instead, keyed by type.
 default = {
     'Integer': 0,
     'Float': 0.0,
@@ -676,8 +599,8 @@ default = {
     'DatePicker': ''
 }
 
-#: Every JSON store a front end renders from, and the last of it that is hand-written is `System`
-#: and the create-deal menu. Everything else is emitted from the declarations on the classes.
+#: Every JSON store a front end renders from. Only `System` and the create-deal menu are
+#: hand-written; the rest is emitted from the declarations on the classes.
 mapping = {
     # keyed by the PROCESS a `Calibrations` entry is filed under, while its `Method` names the
     # calibration class the engine dispatches on
@@ -690,8 +613,8 @@ mapping = {
     # a price FAMILY holds its own, keyed by the `Market Prices` type string the engine selects
     # work by
     'MarketPrices': {'types': emit_market_prices(bootstrappers)},
-    # a SALES structure holds its vernacular, its parameters, its legs and its recipe, keyed by the
-    # name the runner dispatches on
+    # a SALES structure holds its vernacular, parameters, legs and recipe, keyed by the name the
+    # runner dispatches on
     'Structure': {'types': emit_structures(structures)},
     # the UI's two menus: a valid-processes-per-factor one and a valid-interpolations-per-factor
     # one, both the same declarations read the other way round

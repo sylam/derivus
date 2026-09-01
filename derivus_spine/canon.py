@@ -14,30 +14,20 @@
 """RFC 8785 (JSON Canonicalization Scheme), vendored - one spelling per value, so a hash means
 something.
 
-Every hash in the spine is taken over the bytes this module emits: the content hash that IS an
+Every hash in the spine is taken over the bytes this module emits: the content hash that is an
 instrument's id, the idempotency tag the writer blinds, the interior binding sealed inside a body,
-the payload a checkpoint signs. So the rules here are the record's rules, and the RFC is adopted
-outright rather than approximated - the point of a standard is that a second implementation, on
-another stack, in another decade, agrees byte for byte about what was signed.
+the payload a checkpoint signs. The RFC is adopted outright, not approximated. `json.dumps` is not
+this: the RFC serialises numbers the way ECMAScript does, so `repr`'s `1e+16` must be written
+`10000000000000000` and `1e-07` must be written `1e-7`. Keys sort by UTF-16 CODE UNIT rather than
+code point, which puts an astral character ahead of U+E000..U+FFFF where a plain `sorted()` puts
+it after.
 
-`json.dumps` is NOT this, and the gap is not cosmetic. The RFC serializes numbers the way
-ECMAScript does; CPython's `repr` writes `1e+16` where the RFC writes `10000000000000000`, and
-`1e-07` where the RFC writes `1e-7`. A repr passthrough therefore produces hashes nobody else can
-reproduce, which is why `tests/test_spine_canon.py` asserts those two spellings by name: it is the
-trap the file exists to spring. Keys sort by UTF-16 CODE UNIT, not code point, so an astral
-character sorts before U+E000..U+FFFF and a plain `sorted()` is wrong in exactly one place - the
-RFC's own key-order vector is in the gate to hold it.
+Declared limitation: canonical bytes are not a fixpoint of `json.loads` for magnitudes at or past
+2**53. Such a value canonicalises to a plain integer literal, and re-parsing yields a Python `int`,
+which this module then refuses. The failure is loud, never a differing hash; anything re-parsing
+canonical bytes passes `parse_int` to map oversized literals back to `float`.
 
-One asymmetry is DECLARED rather than hidden. A magnitude at or past 2**53 canonicalises to a
-plain integer literal (`295147905179352830000`), and a JSON parser hands that literal back as a
-Python `int` - which this module then refuses, because an `int` carries an exactness a double
-cannot. So canonical bytes are not a fixpoint of `json.loads` at that size. The failure is LOUD,
-never a differing hash, and the remedy is one argument: anything re-parsing canonical bytes - a
-verifier recomputing an interior binding, say - reads them with `parse_int` mapping the oversized
-ones back to `float`, or keeps the object it already had rather than re-parsing at all.
-
-Stdlib only, and it imports nothing from the spine but its refusal type: a canonicaliser that
-needed the log to run would be a canonicaliser nobody could independently check.
+Stdlib only, importing nothing from the spine but its refusal type.
 """
 
 import hashlib
@@ -50,9 +40,9 @@ from .errors import CanonRefusal
 #: is written in - the record refuses rather than quietly losing a digit.
 MAX_SAFE_INTEGER = 2 ** 53
 
-#: `repr` of a positive finite float, taken apart. CPython gives the shortest round-tripping
-#: digits, which is the `k`-minimal digit string ECMAScript's ToString is defined over - so the
-#: work here is re-dressing those digits under the RFC's formatting rules, never re-deriving them.
+#: `repr` of a positive finite float, taken apart. CPython's shortest round-tripping digits are
+#: the `k`-minimal digit string ECMAScript's ToString is defined over, so those digits are
+#: re-dressed under the RFC's formatting rules, never re-derived.
 _REPR = re.compile(r'^(\d+)(?:\.(\d+))?(?:[eE]([-+]?\d+))?$')
 
 #: The two-character escapes RFC 8785 mandates. Everything else below U+0020 goes out as
@@ -72,9 +62,7 @@ def canonical_bytes(obj):
     """The RFC 8785 canonical UTF-8 encoding of `obj`.
 
     Accepts the JSON types and nothing else: `dict` with string keys, `list`/`tuple`, `str`,
-    `bool`, `int`, `float`, `None`. Anything else - bytes, sets, datetimes, Decimals - is a
-    `CanonRefusal` naming where it sat, because the alternative is a coercion the reader would
-    have to guess at years later.
+    `bool`, `int`, `float`, `None`. Anything else raises `CanonRefusal` naming the path it sat at.
     """
     out = []
     _emit(obj, out, '$')
@@ -139,9 +127,10 @@ def _emit(value, out, path):
 
 
 def _sorted_keys(mapping, path):
-    """Keys in UTF-16 code-unit order. The encoding IS the sort key: big-endian UTF-16 compares
-    bytewise exactly as the code units compare, which is what makes an astral character sort ahead
-    of U+E000..U+FFFF where a plain `sorted()` puts it after.
+    """`mapping`'s keys in UTF-16 code-unit order, refusing any non-string key.
+
+    The big-endian UTF-16 encoding is the sort key: it compares bytewise exactly as the code units
+    compare, placing an astral character ahead of U+E000..U+FFFF.
     """
     for key in mapping:
         if not isinstance(key, str):
@@ -153,10 +142,10 @@ def _sorted_keys(mapping, path):
 
 
 def _number(value, path='$'):
-    """ECMAScript `Number::toString`, which is what RFC 8785 means by a number.
+    """ECMAScript `Number::toString` of `value`, which is what RFC 8785 means by a number.
 
-    The shortest round-tripping digits come from `repr`; this re-dresses them: fixed notation while
-    the decimal exponent sits in (-7, 21], exponential outside it, and `0` for both zeros.
+    Fixed notation while the decimal exponent sits in (-7, 21], exponential outside it, `0` for
+    both zeros. Non-finite values raise `CanonRefusal`.
     """
     if not math.isfinite(value):
         raise CanonRefusal(
@@ -182,8 +171,7 @@ def _number(value, path='$'):
 
 def _digits(magnitude):
     """`(digits, n)` for a positive finite float, with magnitude == 0.<digits> * 10**n and
-    `digits` carrying no leading or trailing zero - the (s, k, n) triple ECMAScript's ToString is
-    written in, read straight off `repr`'s shortest digits.
+    `digits` carrying no leading or trailing zero - the triple ECMAScript's ToString is written in.
     """
     match = _REPR.match(repr(magnitude))
     integer, fraction, exponent = match.group(1), match.group(2) or '', match.group(3)

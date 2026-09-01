@@ -13,15 +13,11 @@
 
 """The derivus trading spine - the append-only book of record the engine is priced against.
 
-A sibling package like `derivus_mcp` and `derivus_bloomberg`: shipped in the same wheel, holding
-none of the engine, and importing STDLIB PLUS `cryptography` and nothing else - not `derivus`, not
-torch, not requests (a gate in `tests/test_spine_imports.py` reads the source and says so). The
-truth layer is files: fsynced append-only JSONL segments chained from genesis, and a
-content-addressed blob tree beside them. Everything else - positions, the blotter, lifecycle
-state - is a fold, and a wrong fold is fixed by fixing the projector and replaying, never by
-editing a row.
-
-Nothing here is ever edited in place. The writer refuses; it does not repair.
+A sibling package to `derivus_mcp` and `derivus_bloomberg`: shipped in the same wheel, holding
+none of the engine, and importing stdlib plus `cryptography` and nothing else. Truth is files -
+fsynced append-only JSONL segments chained from genesis, and a content-addressed blob tree beside
+them. Positions, the blotter and lifecycle state are folds over that log; a wrong fold is fixed by
+fixing the projector and replaying, never by editing a row. Nothing here is edited in place.
 """
 
 from .canon import canonical_bytes, content_hash
@@ -50,9 +46,8 @@ from .checkpoint import write_checkpoint
 from .genesis import init_home
 from .verify import verify_home
 
-# One import for a caller, and a surface small enough to read: mint a home, open its log, verify it,
-# sign its head, address bytes by content. Everything else - the keys, the vocabulary, the wire
-# format's own helpers - is reached module by module by the code that has business with it.
+# The small surface: mint a home, open its log, verify it, sign its head, address bytes by
+# content. The keys, the vocabulary and the wire helpers are reached module by module.
 __all__ = [
     'canonical_bytes',
     'content_hash',

@@ -11,40 +11,29 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""Who the actor is - verified rather than asserted - and the one mutable place a human name lives.
+"""Verifying who an actor is, and the one mutable place a human name lives.
 
-Identity is BOUGHT, not built. The deployment already runs an IdP; this module does the one thing
-the spine cannot delegate, which is to CHECK the token that IdP issued before an actor reference
-gets stamped into a fact that outlives everyone in the room. There is no HTTP here, no discovery
-document, no token acquisition and no JWKS fetching: the key set arrives as a `dict` the deployment
-hands in as data, which is what keeps the truth layer's import surface at stdlib plus
-`cryptography` and keeps a verifier honest on a machine with no network at all.
+The deployment runs its own IdP; this module checks the token that IdP issued before an actor
+reference is stamped into a fact. There is no HTTP here, no discovery document, no token
+acquisition and no JWKS fetching - the key set arrives as a `dict` the deployment hands in as data,
+so the import surface stays stdlib plus `cryptography` and a verifier works with no network.
 
-The allowlist is the whole security posture in one line: RS256 and ES256, and nothing else, ever.
-`alg: none` and every HMAC family are refused BY NAME rather than falling through some default,
-because the classic forgery against a JWT verifier is not a broken signature - it is a token that
-declares HS256 and is "signed" with the RSA public key the JWKS PUBLISHES, which a naive verifier
-happily checks with the attacker's own material. Refusing on the declared algorithm before a key is
-ever selected is what makes that attack unrepresentable instead of merely unlikely.
+The algorithm allowlist is the security posture: RS256 and ES256, nothing else. `alg: none` and
+every HMAC family are refused by name before a key is ever selected, which is what makes the
+alg-confusion forgery - a token declaring HS256 and "signed" with the RSA public key the JWKS
+publishes - unrepresentable rather than merely unlikely.
 
-Order matters as much as the checks do. Segments are split, the header is read, the algorithm is
-allowlisted, a key is selected by `kid`, the SIGNATURE is verified - and only then is the payload
-parsed and its claims read. Nothing in this module makes a decision on unverified bytes, which is
-why one altered payload byte lands as a signature refusal rather than as a claim the verifier went
-on to reason about. One encoding trap is written into the contract because it silently half-works
-otherwise: a JWS ES256 signature is the RAW fixed-width pair `R || S` (64 bytes, RFC 7518 3.4)
-while `cryptography` verifies the DER SEQUENCE that OpenSSL emits, so a DER signature arriving here
-is refused on its length rather than converted for the sender's convenience.
+Order is part of the contract: split the segments, read the header, allowlist the algorithm, select
+a key by `kid`, verify the signature, and only then parse the payload and read its claims. Nothing
+here decides on unverified bytes. One encoding trap is stated because it half-works silently: a JWS
+ES256 signature is the raw fixed-width pair `R || S` (64 bytes, RFC 7518 3.4) while `cryptography`
+verifies the DER SEQUENCE OpenSSL emits, so a DER signature is refused on its length rather than
+converted.
 
-What comes back is a SUBJECT REFERENCE - the token's `sub`, verbatim - and the log gets nothing
-else. The record stays pseudonymous by rule, and nothing secret is written anywhere by anything in
-this file: no token, no claim set, no key material reaches the disk on the verification path, which
-holds no path at all. Display names are the counterpart to that rule and the exception that proves
-it: they live in `<home>/names.json`, a mutable, unhashed side table beside the log and never
-inside it, so an erasure request is a dict key going away rather than a chain to rewrite. That is
-the whole reason the side table exists - a name in a sealed body would be crypto-shreddable, but a
-name in the ENVELOPE would be permanent, and erasure regimes do not accept "the hash chain says no"
-as an answer.
+Verification returns the subject reference - the token's `sub`, verbatim - and writes nothing to
+disk. Display names are the counterpart: they live in `<home>/names.json`, a mutable unhashed side
+table beside the log and never inside it, so an erasure is a dict key going away rather than a
+chain to rewrite. A name in an envelope would be permanent, which erasure regimes do not accept.
 """
 import base64
 import binascii
@@ -62,23 +51,20 @@ from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from .errors import IdentityRefused
 
 #: The allowlist, as `alg -> the JWK key type that alg is signed with`. Two asymmetric algorithms
-#: and no third: a symmetric alg in an ID token means the verifier holds the signing secret, which
-#: is exactly the confusion this map exists to refuse.
+#: and no third: a symmetric alg would mean the verifier holds the signing secret.
 ALGORITHMS = {'RS256': 'RSA', 'ES256': 'EC'}
 #: The only curve ES256 is defined over.
 ES256_CURVE = 'P-256'
 #: RFC 7518 3.4: the ES256 signature is `R || S`, each coordinate a fixed 32 bytes big-endian.
 ES256_SIGNATURE_BYTES = 64
 P256_COORDINATE_BYTES = 32
-#: Clock skew between the IdP and this box. Sixty seconds is slack, not policy - a token an hour
-#: dead is dead here, and `now` is injectable so a gate never has to ask the wall clock what time
-#: it is.
+#: Clock skew allowed between the IdP and this box, in seconds. Slack rather than policy.
 LEEWAY_SECONDS = 60.0
-#: The side table, at the home's ROOT. Never under `log/` - the log directory is what a replica
-#: file-copies and what the chain covers, and an erasable attribute may not live in either.
+#: The display-name side table, at the home's root. Never under `log/`, which is what a replica
+#: file-copies and what the chain covers; an erasable attribute may live in neither.
 NAMES_FILE = 'names.json'
 #: base64url's alphabet, checked before decoding so a segment carrying `+` or `/` is a named
-#: refusal rather than something Python's decoder quietly tolerates.
+#: refusal rather than something Python's decoder tolerates.
 B64URL_ALPHABET = frozenset(
     'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_')
 #: The padding character, which is not in the alphabet and is read only where padding may be.
@@ -86,12 +72,11 @@ B64URL_PAD = '='
 
 
 def verify_id_token(token: str, jwks: dict, issuer: str, audience: str, now: float = None) -> dict:
-    """Verify an OIDC ID token against `jwks` and answer `{subject, issuer, claims}`.
+    """Verify an OIDC ID token against `jwks` and return `{subject, issuer, claims}`.
 
-    Every way this can fail is an `IdentityRefused` naming what was wrong and what fixes it. The
-    sequence is the security property: parse, allowlist the algorithm, select the key, VERIFY, and
-    only then believe a claim. `now` is seconds since the epoch and defaults to the wall clock;
-    callers that need a deterministic answer - gates, as-of replays - pass it.
+    The sequence is the security property: parse, allowlist the algorithm, select the key, verify,
+    and only then read a claim. `now` is seconds since the epoch and defaults to the wall clock.
+    Every failure raises `IdentityRefused`.
     """
     header, segments = _parse(token)
     algorithm = _allowed_algorithm(header.get('alg'))
@@ -102,16 +87,15 @@ def verify_id_token(token: str, jwks: dict, issuer: str, audience: str, now: flo
 
     claims = _json_object(_b64url_decode(segments[1], 'the JWS payload'), 'the JWS payload')
     _check_claims(claims, issuer, audience, time.time() if now is None else now)
-    # The subject reference and nothing else: the log is pseudonymous by rule, so the caller gets
-    # the claims to decide with and the RECORD gets `subject`.
+    # The record takes `subject` alone; the caller gets the claims to decide with.
     return {'subject': claims['sub'], 'issuer': claims['iss'], 'claims': dict(claims)}
 
 
 def display_names(home) -> dict:
-    """The `subject -> display name` side table of the home at `home`, or `{}` where there is none.
+    """The `subject -> display name` side table at `home`, or `{}` where there is none.
 
-    A read never provisions: a home with no side table has no names, which is not an error and not
-    a reason to write a file.
+    A read never provisions. A table that is present but not an object of string to string raises
+    `IdentityRefused`.
     """
     try:
         raw = (Path(home) / NAMES_FILE).read_bytes()
@@ -134,10 +118,10 @@ def display_names(home) -> dict:
 
 
 def set_display_name(home, subject, name) -> dict:
-    """Name `subject` in the home's side table. Answers the whole table as it now stands.
+    """Name `subject` in the home's side table and return the whole table as it now stands.
 
-    The subject is the reference the log carries; the name is the erasable attribute that must
-    never go near it.
+    `subject` is the reference the log carries; `name` must be a non-empty string - use
+    `erase_display_name` to remove an entry.
     """
     subject = _subject_reference(subject)
     if not isinstance(name, str) or not name.strip():
@@ -151,12 +135,10 @@ def set_display_name(home, subject, name) -> dict:
 
 
 def erase_display_name(home, subject) -> dict:
-    """Forget `subject`'s display name. Answers the whole table as it now stands.
+    """Forget `subject`'s display name and return the whole table as it now stands.
 
-    This is the erasure path, and it is deliberately the ONLY one: the name is a dict key going
-    away in a file no hash covers, so not one byte of the log, the chain, or the blob store moves -
-    which is the property a gate asserts by hashing the segments either side of this call. Erasing
-    a name that is not there is already true, so it is not an error.
+    The only erasure path: a dict key going away in a file no hash covers, so no byte of the log,
+    the chain or the blob store moves. Erasing a name that is not there is not an error.
     """
     table = display_names(home)
     table.pop(_subject_reference(subject), None)
@@ -164,10 +146,8 @@ def erase_display_name(home, subject) -> dict:
 
 
 def _parse(token):
-    """The three segments of a compact JWS and its parsed header.
-
-    Only the header is read here. The payload stays raw text until a signature has vouched for it.
-    """
+    """`(header, segments)` for a compact JWS. Only the header is parsed - the payload stays raw
+    text until a signature has vouched for it."""
     if not isinstance(token, str) or not token:
         raise IdentityRefused(
             'the ID token is {}, not a compact JWS string: hand the token the IdP issued in '
@@ -186,13 +166,10 @@ def _parse(token):
 
 
 def _check_alphabet(segment, what):
-    """base64url and nothing else, with `=` tolerated where padding lives and nowhere else.
+    """Assert `segment` is base64url, `=` tolerated as trailing padding and nowhere else.
 
-    Emptiness is allowed here and refused at the decode, so that an unsigned token is refused for its
-    ALGORITHM rather than for its missing bytes. The trailing `=` is tolerated for the same reason
-    `_b64url_decode` re-pads: JWS strips padding, and most copy-pastes and a few issuers do not, so a
-    padded token is a paste to read rather than a corruption to report. Inside a segment `=` is still
-    a refusal - that is a re-encoded token, which is what this check exists to catch.
+    Emptiness passes here and is refused at the decode, so an unsigned token is refused for its
+    algorithm rather than for its missing bytes.
     """
     if not isinstance(segment, str) or not B64URL_ALPHABET.issuperset(segment.rstrip(B64URL_PAD)):
         raise IdentityRefused(
@@ -202,15 +179,11 @@ def _check_alphabet(segment, what):
 
 
 def _b64url_decode(segment, what):
-    """The bytes behind one base64url segment, padding tolerated (JWS strips it; some issuers and
-    most copy-pastes do not) and the encoding required to be CANONICAL.
+    """The bytes behind one base64url segment, trailing padding tolerated.
 
-    Canonical means the trailing character's unused bits are zero, which base64's own arithmetic
-    leaves them: a 256-byte RSA signature is 342 characters plus 2 significant bits in the last one,
-    so four spellings of that character decode to identical bytes. A decoder that accepts all four
-    accepts four spellings of one signed token - and a gate flipping that character to prove tamper
-    detection silently proves nothing. JWS mandates the canonical spelling; this is where it is
-    enforced, by re-encoding what came out and requiring it to be what went in.
+    The encoding is required to be canonical - the trailing character's unused bits zero - by
+    re-encoding the result and requiring it to match. Otherwise several spellings of one signed
+    token would decode alike, and a flipped final character would go undetected.
     """
     if isinstance(segment, str):
         segment = segment.rstrip(B64URL_PAD)
@@ -235,7 +208,8 @@ def _b64url_decode(segment, what):
 
 
 def _json_object(raw, what):
-    """A JSON object, or a refusal naming which segment was not one."""
+    """`raw` parsed as a UTF-8 JSON object, raising `IdentityRefused` naming `what` if it is not
+    one."""
     try:
         value = json.loads(raw.decode('utf-8'))
     except (ValueError, UnicodeDecodeError):
@@ -250,12 +224,10 @@ def _json_object(raw, what):
 
 
 def _allowed_algorithm(alg):
-    """`alg` itself once it is on the allowlist, or the refusal that closes the confusion.
+    """`alg` itself once it is on the allowlist, otherwise `IdentityRefused`.
 
-    This runs BEFORE any key is selected, which is the point. The HMAC families are refused here
-    because a verifier that accepts one will check an attacker's forgery against the very public
-    key the JWKS publishes, and `none` is refused here because the alternative is a signature check
-    that is skipped rather than failed.
+    Runs before any key is selected: `none` would skip the signature check rather than fail it, and
+    an HMAC alg would check a forgery against the public key the JWKS publishes.
     """
     if not isinstance(alg, str) or not alg:
         raise IdentityRefused(
@@ -272,12 +244,11 @@ def _allowed_algorithm(alg):
 
 
 def _candidates(jwks, header, algorithm):
-    """The JWKS entries this token may be checked against, selected by `kid` where it has one.
+    """The JWKS entries this token may be checked against.
 
-    A token with a `kid` is checked against that key and no other. A token without one is checked
-    against every key of the right type, which is the rotation case an IdP that omits `kid` leaves
-    a verifier in - it is a wider door, so it is narrowed by key type, declared `alg` and `use`
-    rather than left open.
+    A token carrying a `kid` is checked against that key alone. One without is checked against every
+    key of the right type - the rotation case an IdP omitting `kid` leaves a verifier in - narrowed
+    by key type, declared `alg` and `use`.
     """
     key_type = ALGORITHMS[algorithm]
     if not isinstance(jwks, dict) or not isinstance(jwks.get('keys'), list):
@@ -309,19 +280,12 @@ def _candidates(jwks, header, algorithm):
 
 
 def _verify_signature(candidates, algorithm, signing_input, signature):
-    """Check `signature` over `signing_input` under each candidate; refuse if none vouches for it.
+    """Check `signature` over `signing_input` under each candidate, returning the key that vouches
+    for it and raising `IdentityRefused` if none does.
 
-    Nothing downstream of this runs on bytes it did not authenticate, so a single altered payload
-    byte stops here rather than surfacing as a claim.
-
-    An UNUSABLE candidate does not end the sweep. A kidless token is checked against every key of the
-    right type, which is the rotation case an IdP that omits `kid` leaves a verifier in - and a real
-    key set carries entries this build cannot turn into a key: a P-384 EC entry beside the live P-256
-    one, a JWK missing a member. Letting the first of those out of the loop would sink every kidless
-    token behind it and report the wrong reason for it. So they are collected instead, and one is
-    re-raised only when EVERY candidate was unusable - which is the case where naming the broken
-    member is the most specific true thing, and is what a single named `kid` resolving to a malformed
-    entry still gets.
+    An unusable candidate - a P-384 entry beside the live P-256 one, a JWK missing a member - does
+    not end the sweep: those refusals are collected and one is re-raised only if every candidate was
+    unusable, so a malformed entry cannot sink the kidless tokens behind it.
     """
     if algorithm == 'ES256':
         signature = _der_from_raw(signature)
@@ -352,11 +316,9 @@ def _verify_signature(candidates, algorithm, signing_input, signature):
 def _der_from_raw(signature):
     """The DER SEQUENCE `cryptography` verifies, built from the raw `R || S` pair JWS carries.
 
-    The trap, stated out loud: RFC 7518 3.4 defines the ES256 signature as two fixed-width
-    32-byte integers concatenated, while every OpenSSL-shaped library - this one included - signs
-    and verifies the DER encoding, which for P-256 is 70 or 71 bytes of tag-length-value. They are
-    the same signature in two spellings and neither library will tell you which one it got, so the
-    encoding is part of this verifier's contract and a DER blob is refused on its LENGTH.
+    RFC 7518 3.4 defines the ES256 signature as two fixed-width 32-byte integers concatenated,
+    while OpenSSL-shaped libraries verify the DER encoding (70-71 bytes for P-256). A signature of
+    any other length is refused rather than converted.
     """
     if len(signature) != ES256_SIGNATURE_BYTES:
         raise IdentityRefused(
@@ -371,8 +333,8 @@ def _der_from_raw(signature):
 
 
 def _public_key(key, algorithm):
-    """One JWK turned into a `cryptography` public key - `kty`/`n`/`e` for RSA, `crv`/`x`/`y` for
-    P-256 - or a refusal naming the field that was not a key."""
+    """One JWK as a `cryptography` public key - `n`/`e` for RS256, `crv`/`x`/`y` for ES256 - or
+    `IdentityRefused` naming the member that was not a key."""
     if algorithm == 'RS256':
         modulus = _b64url_int(key, 'n')
         exponent = _b64url_int(key, 'e')
@@ -410,7 +372,7 @@ def _public_key(key, algorithm):
 
 
 def _field(key, name):
-    """One required JWK member, or the refusal naming it."""
+    """The required JWK member `name` as a non-empty string, or `IdentityRefused` naming it."""
     value = key.get(name)
     if not isinstance(value, str) or not value:
         raise IdentityRefused(
@@ -427,11 +389,10 @@ def _b64url_int(key, name):
 
 
 def _check_claims(claims, issuer, audience, now):
-    """`iss`, `aud`, `exp`, `nbf` and a subject, each its own named refusal.
+    """Check `sub`, `iss`, `aud`, `azp`, `exp` and `nbf`, each with its own named refusal.
 
-    Ordered from the identity questions to the clock ones, so an operator reading a refusal learns
-    the most specific true thing: a token for another deployment says so, rather than saying it
-    expired.
+    Ordered identity questions first and clock questions second, so a token belonging to another
+    deployment says so rather than reporting that it expired.
     """
     subject = claims.get('sub')
     if not isinstance(subject, str) or not subject:
@@ -485,16 +446,11 @@ def _check_claims(claims, issuer, audience, now):
 
 
 def _check_authorized_party(claims, audiences, audience):
-    """`azp`, which is who the token was minted FOR when `aud` names more than one client.
+    """Check `azp` - who the token was minted for - per OIDC Core 3.1.3.7.
 
-    Membership in `aud` is not enough on a multi-audience token, and OIDC Core 3.1.3.7 says so in
-    two rules this implements as one. A token minted for another client of the same IdP, co-audienced
-    to this one, is a token that client HOLDS - so accepting it lets any application the deployment's
-    IdP will co-audience speak for an actor in this record, and the subject it speaks under is
-    stamped into facts that outlive everyone in the room. So a multi-audience token must name its
-    authorized party and that party must be us; and wherever `azp` is present at all it must be us,
-    single audience or not, because a present `azp` naming somebody else is the IdP saying out loud
-    who this was issued to.
+    Membership in `aud` is not enough on a multi-audience token, which must name an authorized
+    party equal to `audience`. Wherever `azp` is present at all it must equal `audience`, single
+    audience or not: a present `azp` naming another client is the IdP saying who holds this token.
     """
     party = claims.get('azp')
     if party is None:
@@ -515,13 +471,14 @@ def _check_authorized_party(claims, audiences, audience):
 
 
 def _finite(value):
-    """A real point on the timeline. `True` is an int in Python and is not one of these."""
+    """Whether `value` is a finite point on the timeline. `True` is an int in Python and is not
+    one."""
     return (isinstance(value, (int, float)) and not isinstance(value, bool)
             and math.isfinite(value))
 
 
 def _subject_reference(subject):
-    """The subject reference a side-table verb was handed, or the refusal naming it."""
+    """`subject` asserted to be a non-empty subject reference, the one the log carries."""
     if not isinstance(subject, str) or not subject:
         raise IdentityRefused(
             'the side table is keyed by subject reference and was handed {!r}: use the `subject` '
@@ -531,11 +488,10 @@ def _subject_reference(subject):
 
 
 def _write_names(home, table):
-    """The side table, replaced atomically. Answers the table it wrote.
+    """Replace the side table with `table` atomically and return it.
 
-    tmp-then-`os.replace`, like every other write in this package: a reader sees the whole table or
-    the previous one, never half of an erasure. The scratch file sits at the home's root beside the
-    table, so nothing this function does can put a byte under `log/`.
+    tmp-then-`os.replace`, so a reader sees the whole table or the previous one, never half of an
+    erasure. The scratch file sits at the home's root, so nothing here writes under `log/`.
     """
     home = Path(home)
     if not home.is_dir():
@@ -551,8 +507,7 @@ def _write_names(home, table):
             os.fsync(handle.fileno())
         os.replace(str(scratch), str(home / NAMES_FILE))
     except BaseException:
-        # Scratch is not the side table - nothing reads it and nothing names it - so clearing a
-        # failed write is hygiene, and the table that was there is untouched.
+        # Nothing reads or names the scratch file, and the table that was there is untouched.
         if scratch.exists():
             os.unlink(str(scratch))
         raise

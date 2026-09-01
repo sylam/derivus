@@ -11,28 +11,21 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""The content-addressed blob store - write-once bytes under their own SHA-256, and no way back.
+"""The content-addressed blob store - write-once bytes under their own SHA-256.
 
-A blob is named by what it IS, so the same bytes put twice are one file and one answer, and every
-reference anywhere in the spine is a hash rather than a path: surfaces, curves, plans, values
-vectors and raw tape live here once and are spoken of by hash forever, while the log inlines only
-a value that IS the fact and tiny. Two disciplines make that name trustworthy.
+Every reference in the spine is a hash rather than a path: surfaces, curves, plans, values vectors
+and raw tape live here once and are spoken of by hash, while the log inlines only a value that is
+itself the fact and is tiny. Two disciplines make the address trustworthy.
 
-Writes land ATOMICALLY. Bytes go to `blobs/tmp`, are flushed and fsynced, and only then are
-`os.replace`d onto their address, so a reader sees the whole blob or nothing and a crash leaves
-scratch rather than a half blob under a name that promises the rest. Durability ordering is law -
-no event may cite a blob that is not yet on the platter - and that promise is only worth what the
-fsync makes it.
+Writes land atomically. Bytes go to `blobs/tmp`, are flushed and fsynced, then `os.replace`d onto
+their address, so a reader sees the whole blob or nothing. Durability ordering is law: no event may
+cite a blob that is not yet on the platter.
 
-Dedup VERIFIES. A path that already exists is byte-compared against the incoming bytes: equal is
-the dedup, different is a named refusal. The store never swaps content under an address, so even a
-cryptanalytic surprise degrades into a loud stop rather than a silent substitution - and the same
-suspicion runs on the way out, since bytes that no longer hash to the name they were filed under
-are not the blob that was asked for.
+Dedup verifies. An address that already exists is byte-compared against the incoming bytes - equal
+dedups, different raises `CollisionRefusal` - and the same check runs on the way out, so the store
+never swaps content under an address.
 
-There is NO deletion verb here, public or private. Retention arrives in a later increment as a
-logged event - a blob class reduces because the record says so - and until then the absence of the
-method IS the guarantee: nothing in this package can be asked to forget.
+There is no deletion verb here, public or private; retention arrives as a logged event.
 """
 import hashlib
 import os
@@ -51,9 +44,8 @@ class BlobStore:
     """The blob tree under `root` (the spine home): `blobs/<h[:2]>/<h[2:4]>/<h>`, two levels of
     256 so no directory holds the whole store, plus `blobs/tmp` for scratch.
 
-    Reads never provision - only `put` makes directories - so a store pointed at a home that does
-    not exist answers "empty" instead of conjuring one, and the home's own refusals stay the ones
-    that fire.
+    Only `put` creates directories, so a store pointed at a home that does not exist reads as empty
+    rather than conjuring one.
     """
 
     def __init__(self, root: Path):
@@ -65,10 +57,10 @@ class BlobStore:
         return 'BlobStore({!r})'.format(str(self.root))
 
     def put(self, data: bytes) -> str:
-        """File `data` under its SHA-256 and answer the hex id.
+        """File `data` under its SHA-256 and return the hex id.
 
-        The existing-path branch is the collision discipline: byte-compare first, dedup only on
-        equality, refuse by name otherwise.
+        An address that already exists is byte-compared: equal dedups, different raises
+        `CollisionRefusal`. Non-bytes input is a `TypeError`.
         """
         if not isinstance(data, (bytes, bytearray, memoryview)):
             raise TypeError(
@@ -96,8 +88,7 @@ class BlobStore:
             path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(str(scratch), str(path))
         except BaseException:
-            # Scratch is not a blob - it never had an address, and nothing can cite it - so
-            # clearing a failed write is hygiene rather than retention.
+            # Scratch never had an address and nothing can cite it, so clearing it is not deletion.
             if scratch.exists():
                 os.unlink(str(scratch))
             raise
@@ -107,8 +98,8 @@ class BlobStore:
     def get(self, digest: str) -> bytes:
         """The bytes filed under `digest`, re-hashed on the way out.
 
-        The record never trusts what it can re-derive, and a blob is the cheapest case of it: the
-        store hands back what was asked for or it refuses.
+        Raises `MissingBlobRefusal` if the address does not resolve, `CollisionRefusal` if the file
+        no longer hashes to the name it was filed under.
         """
         if not self.has(digest):
             raise MissingBlobRefusal(
@@ -124,16 +115,15 @@ class BlobStore:
         return data
 
     def has(self, digest: str) -> bool:
-        """Whether `digest` resolves here. The referential-closure check the writer runs before it
-        may append an event that cites a blob."""
+        """Whether `digest` resolves here - the referential-closure check the writer runs before
+        appending an event that cites a blob."""
         return self._is_id(digest) and self._path(digest).is_file()
 
     def walk(self) -> Iterator[str]:
-        """Every blob id on disk, shard order. The manifest is a projection and this is the walk
-        that rebuilds it.
+        """Every blob id on disk, in shard order - the walk that rebuilds the manifest projection.
 
-        Only well-formed ids sitting at their OWN address are content: `blobs/tmp` is scratch, and
-        anything else under the tree is unaddressable by construction, so neither is yielded.
+        Only well-formed ids sitting at their own address are yielded; `blobs/tmp` and anything
+        else under the tree is skipped.
         """
         if not self.blobs.is_dir():
             return
@@ -154,16 +144,14 @@ class BlobStore:
 
     @staticmethod
     def _is_id(digest):
-        """A store address is 64 lowercase hex. Anything else cannot be present, so `has` says no
-        and `get` refuses by the name it was given."""
+        """Whether `digest` is a well-formed store address: 64 lowercase hex characters."""
         return (isinstance(digest, str) and len(digest) == HEX_LENGTH
                 and HEX_DIGITS.issuperset(digest))
 
     @staticmethod
     def _fsync_dir(path):
-        """POSIX only: a rename is durable once its directory is synced. Windows has no directory
-        handle to open for that and `os.replace` is atomic there regardless, so it is skipped
-        rather than faked."""
+        """Sync `path` so the rename into it is durable. POSIX only - Windows offers no directory
+        handle to sync and `os.replace` is atomic there regardless, so it is skipped."""
         if os.name != 'posix':
             return
         handle = os.open(str(path), os.O_RDONLY)

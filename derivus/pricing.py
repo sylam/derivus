@@ -101,30 +101,19 @@ Read the ladder itself off any book at DEBUG - ``exposure_kink_term`` logs one l
 row, which is how a row that PASSED is told from a row that had nothing to say."""
 
 
-# ======================================================================================
-# Heston-Nandi OSS pricers (TARF, accumulator, discrete barrier, autocall). Opt-in per deal via
-# the Valuation Configuration switch SpotModel='HestonNandi' or 'HestonNandiComponent' (see the
-# deal calc_dependencies branches and pv_MC_Tarf for the OSS scheme + known limitations F1-F4).
-# The per-step advance (utils.hn_daily_advance / utils.hn_unmonitored_substeps and their
-# hn_component_* siblings) is owned by utils; both the unmonitored sub-steps and the
-# survival-truncated final step of every fixing/observation interval, in ALL FOUR pricers, route
-# through it - now via the KIT below, so a pricer names the model once and walks it after that.
-# ======================================================================================
+# Heston-Nandi OSS spot models, opt-in per deal via the Valuation Configuration switch
+# SpotModel='HestonNandi' or 'HestonNandiComponent'. The per-step advance is owned by utils;
+# a pricer names its model once through the KIT below and walks it after that.
 
 
 class PlainHestonNandiKit(object):
     """The plain Heston-Nandi model as an OSS walking kit: seed a state, sub-step it, advance it
     on a truncated draw, and price the analytic legs off the seed.
 
-    WHY A KIT AND NOT FOUR MORE BRANCHES. Four pricers walk the same three verbs, and a second
-    GARCH family would have doubled every one of them - the `unification-siblings` failure this
-    repo has already paid for three times. The MATH stays where the house style puts it: free
-    functions in `utils` taking the recursion parameters as explicit trailing args. What the kit
-    owns is the name->args unpack, the opaque state (one tensor here, a pair plus a day counter
-    for the component sibling), and nothing else.
-
-    The state is OPAQUE to the pricer on purpose. A pricer that reached into it would be spelling
-    out which model it holds, which is the branch this exists to delete.
+    The MATH stays in `utils` as free functions taking the recursion parameters as explicit
+    trailing args; the kit owns the name->args unpack and the state. That state is OPAQUE to the
+    pricer: reaching into it would spell out which model is held, which is the branch this exists
+    to delete.
     """
 
     def __init__(self, scalars, knots, steps_per_year):
@@ -157,8 +146,8 @@ class PlainHestonNandiKit(object):
         return utils.hn_cdf_logret(x, n_steps, self.scalar_state()[0], om, al, be, ga, r_step)
 
     def vanilla(self, S, K, n_steps, r_step, is_call):
-        """The European closed form off the seed state - the KI parity leg and the already-hit
-        leg, which must be THIS model rather than Black at the implied surface."""
+        """The European closed form off the seed state, under THIS model rather than Black at the
+        implied surface - the KI parity leg and the already-hit leg."""
         om, al, be, ga = (v.reshape(-1)[0] for v in self.params)
         return (utils.hn_call if is_call else utils.hn_put)(
             S, K, n_steps, self.scalar_state()[0], om, al, be, ga, r_step)
@@ -173,24 +162,20 @@ class ComponentHestonNandiKit(PlainHestonNandiKit):
     from the BASE DATE. So the state carries how many daily steps this row's walk has taken, and
     every verb slices the strip at it.
 
-    THE ROW RE-SEEDS AT DAY ZERO, which is the plain model's H0 re-seed said twice: every OSS leg
-    prices its MTM row's remaining horizon under the law seen FROM THE BASE DATE - h at H0, q at
-    L(0) by the anchoring, omega from omega_0. That is a known approximation of the same class as
-    the plain model's (a row at six months should enter at that row's own state), it is stated
-    here rather than discovered, and the closed-form gate prices exactly what the walk simulates
-    because both start at the same place.
+    THE ROW RE-SEEDS AT DAY ZERO: every OSS leg prices its MTM row's remaining horizon under the
+    law seen FROM THE BASE DATE - h at H0, q at L(0) by the anchoring, omega from omega_0. A
+    declared approximation of the same class as the plain model's H0 re-seed (a row at six months
+    should enter at that row's own state); the closed-form gate prices exactly what the walk
+    simulates because both start at the same place.
     """
 
     def __init__(self, scalars, knots, steps_per_year):
         *self.params, self.h0, self.l_values = scalars   # (alpha,beta,g1,rho,phi,g2), H0, L values
         self.knots = knots
         self.steps_per_year = float(steps_per_year)
-        # rho SQUEEZED to 0-dim for the strip. Every scalar parameter arrives (-1, 1) so it
-        # broadcasts against the [batch, sims] variance state, but the omega path is indexed by
-        # TRADING DAY and has no path axis at all - a (1, 1) rho there turns a (n,) strip into
-        # (1, n), whose elements then broadcast a phantom axis into the recursion. It surfaced as
-        # a fused-kernel shape error and a silently skipped deal, which is the failure mode a
-        # gate has to reach rather than a reviewer.
+        # rho SQUEEZED to 0-dim for the strip: scalar parameters arrive (-1, 1) to broadcast
+        # against the [batch, sims] variance state, but the omega path is indexed by TRADING DAY
+        # and has no path axis - a (1, 1) rho turns a (n,) strip into (1, n)
         self.rho = self.params[3].reshape(())
         self._omegas, self._built = None, 0
 
@@ -199,10 +184,9 @@ class ComponentHestonNandiKit(PlainHestonNandiKit):
         DOUBLED when a longer walk asks for it, so a row's walk costs one L interpolation rather
         than one per fixing.
 
-        THE `is None` IS NOT REDUNDANT WITH THE LENGTH TEST. A daily fixing walks ZERO unmonitored
-        sub-steps (`n_sub - 1` at n_sub = 1), so the FIRST call can be `omegas(0, 0)` - which the
-        length test alone answers by slicing a strip that was never built. Reachable from all four
-        OSS pricers whenever a fixing interval spans one trading day or less."""
+        THE `is None` IS NOT REDUNDANT WITH THE LENGTH TEST: a daily fixing walks ZERO unmonitored
+        sub-steps, so the FIRST call can be `omegas(0, 0)`, which the length test alone answers by
+        slicing a strip that was never built."""
         if self._omegas is None or self._built < day + n_steps:
             self._built = max(day + n_steps, 2 * self._built, 64)
             l_path = utils.hn_component_l_path(
@@ -245,8 +229,8 @@ class ComponentHestonNandiKit(PlainHestonNandiKit):
 
 
 #: The OSS kits, keyed by the `SpotModel` valuation option each deal declares. A pricer looks its
-#: model up ONCE (`oss_model_kit`) and never names one again - so a third GARCH family is a class
-#: here and a row in this dict, not a fifth branch in four pricers.
+#: model up ONCE (`oss_model_kit`) and never names one again, so a third GARCH family is a class
+#: here and a row in this dict rather than a fifth branch in four pricers.
 OSS_SPOT_MODEL_KITS = {'HestonNandi': PlainHestonNandiKit,
                        'HestonNandiComponent': ComponentHestonNandiKit}
 
@@ -254,10 +238,9 @@ OSS_SPOT_MODEL_KITS = {'HestonNandi': PlainHestonNandiKit,
 def oss_model_scalars(factor_dep, shared):
     """The declared spot model's parameter tensors, in the order its own kit unpacks them.
 
-    The name->tensor unpack every OSS pricer used to spell out, by the canonical name tuple the
-    MODEL owns (`utils.HN_PARAM_NAMES` / `HN_COMPONENT_PARAM_NAMES` + its curve) rather than by a
-    list repeated at four call sites. Scalars come out (-1, 1) to broadcast against the [batch,
-    sims] state; a CURVE parameter comes out flat, because it is indexed by knot and not by path.
+    Read by the canonical name tuple the MODEL owns (`utils.HN_PARAM_NAMES` /
+    `HN_COMPONENT_PARAM_NAMES` plus its curve). Scalars come out (-1, 1) to broadcast against the
+    [batch, sims] state; a CURVE parameter comes out flat, being indexed by knot and not by path.
     Empty tuple where the deal prices GBM, which is what `oss_model_kit` reads as None.
     """
     if 'HN_Params' not in factor_dep:
@@ -273,10 +256,10 @@ def oss_model_scalars(factor_dep, shared):
 def oss_model_kit(factor_dep, scalars):
     """The declared spot model's kit, built from the tensors the pure inner function was handed.
 
-    `scalars` are the model parameters as they cross the bound/theta split (`InnerMCRecompute`
-    needs every tensor an explicit argument, which is why they arrive here rather than off
-    `factor_dep`); the model NAME and the L curve's knots are compile-time facts and ride
-    `factor_dep`. An empty `scalars` is a GBM deal and answers None.
+    `scalars` are the model parameters as they cross the bound/theta split - `InnerMCRecompute`
+    needs every tensor an explicit argument, so they arrive here rather than off `factor_dep`; the
+    model NAME and the L curve's knots are compile-time facts and ride `factor_dep`. An empty
+    `scalars` is a GBM deal and answers None.
     """
     if not scalars:
         return None
@@ -286,7 +269,7 @@ def oss_model_kit(factor_dep, scalars):
     return OSS_SPOT_MODEL_KITS[model](scalars, knots, factor_dep['HN_Steps_Per_Year'])
 
 def cash_settle(shared, currency, time_index, value):
-    # need to check if the time_index
+    """Book `value` against `currency` at `time_index`, if that date is a settlement point."""
     if shared.t_Cashflows is not None and time_index in shared.t_Cashflows.get(currency, []):
         shared.t_Cashflows[currency][time_index] += value
 
@@ -305,9 +288,8 @@ def calc_moneyness(strike, spot, forward, deal_data, use_forward=False, invert_m
     '''
     subtype = deal_data.Factor_dep['Volatility'][0][utils.FACTOR_INDEX_SubType]
     if subtype[0] in ['SVI', 'Skew']:
-        # need to divide the strike by the ATM_Ref (can only be done later)
-        # so we just return the strike here (we know the moneyness rule and will do the rest later)
-        # otherwise, (Sticky_Moneyness) - we return log of strike over forward
+        # Sticky_Strike divides by the ATM_Ref, which can only be done later, so the raw strike
+        # is returned here; Sticky_Moneyness is log of strike over forward
         return strike if subtype[1]=='Sticky_Strike' else torch.log(strike/forward)
     elif subtype[0] == 'Relative_Forward':
         return (strike - forward)/forward
@@ -315,7 +297,7 @@ def calc_moneyness(strike, spot, forward, deal_data, use_forward=False, invert_m
         forward_or_spot = forward if use_forward else spot
         return torch.log(strike / forward_or_spot if invert_moneyness else forward_or_spot / strike)
     else:
-        # regular 2d vol surface assumed to be sticky_moneyness - need to handle other moneyness rules (TODO!)
+        # a regular 2d surface is assumed sticky_moneyness (TODO: other moneyness rules)
         forward_or_spot = forward if use_forward else spot
         return strike / forward_or_spot if invert_moneyness else forward_or_spot / strike
 
@@ -326,9 +308,7 @@ def forward_carry_rate(carry_rate, cum_t, dt):
     ``carry_rate[j]`` (a ``calc_eq_drift``/``calc_fx_drift`` gather with ``multiply_by_time=False``)
     is the AVERAGE rate over ``[t, T_j]``, so the interval ending at ``T_j`` carries a DIFFERENCE of
     cumulative integrals, ``(c_j*T_j - c_{j-1}*T_{j-1}) / dt_j`` - equal to ``c_j`` only on the
-    first interval or a flat curve. All four OSS adopters read the strip from here, so a simulated
-    drift and a closed-form forward cannot be spelled apart; the strip sums (telescopes) to
-    ``total_log_forward``. Background: conventions.md#unification-siblings.
+    first interval or a flat curve. The strip telescopes to ``total_log_forward``.
 
     Rank-polymorphic: ``[N_fix, batch]`` for one MTM row or ``[N_block, N_fix, batch]`` for a block,
     with ``cum_t``/``dt`` carrying no batch axis. A zero-length interval (an already-observed
@@ -345,13 +325,11 @@ def forward_carry_rate(carry_rate, cum_t, dt):
 def total_log_forward(carry_rate, times):
     """``log F(t,T) / S(t)``: the interval carry strip integrated over a fixing strip.
 
-    THE forward to expiry for every leg that needs one - the sum telescopes to ``c_N*T_N``, one
-    gather at expiry. Takes ``forward_carry_rate``'s strip, never raw zero rates. Rank-polymorphic
-    (``[N_fix, batch]`` or ``[N_block, N_fix, batch]``; ``times`` carries no batch axis), so a leg
-    valuing one row and a leg valuing the block are the same expression. It is a function rather
-    than an inline expression because two legs of ``pv_discrete_barrier_option`` value the SAME
-    European on the same state: a shared spelling makes divergence unrepresentable rather than
-    detected (conventions.md#unification-siblings).
+    THE forward to expiry for every leg that needs one - the sum telescopes to ``c_N*T_N``. Takes
+    ``forward_carry_rate``'s strip, never raw zero rates. Rank-polymorphic (``[N_fix, batch]`` or
+    ``[N_block, N_fix, batch]``; ``times`` carries no batch axis), so a leg valuing one row and a
+    leg valuing the block are the same expression - which is what keeps the two legs of
+    ``pv_discrete_barrier_option`` on one forward.
     """
     return (carry_rate * times.unsqueeze(-1)).sum(dim=-2)
 
@@ -363,13 +341,9 @@ def forward_vol_strip(deal_data, strike, spot, carry_rate, cum_t, shared,
     A surface is quoted against an option's EXPIRY, so a simulation stepping a fixing strip reads it
     once per fixing. ``carry_rate`` is the ZERO carry (the raw gather - a forward wants the
     cumulative integral ``F_j = S * exp(c_j * T_j)``), and ``cum_t`` arrives as NUMPY because it is
-    also the surface's hashable expiry key.
-
-    ``use_forwards`` is the DEAL's declaration, threaded through so the strip reads the surface at
-    the same moneyness the pricer marks its own European legs with; the per-fixing smile convention
-    is an open modelling question (roadmap.md). Moneyness goes through ``calc_moneyness`` - the one
-    place that knows a surface subtype's query - with the spot broadcast onto the fixing axis first,
-    without which the result is one rank short.
+    also the surface's hashable expiry key. ``use_forwards`` is the DEAL's declaration, so the strip
+    reads the surface at the same moneyness the pricer marks its own European legs with; the
+    per-fixing smile convention is an open modelling question (roadmap.md).
 
     Rank-polymorphic as ``forward_carry_rate``; the fixing axis returns at ``-2`` so the strip drops
     straight into ``forward_vol_rate``.
@@ -390,13 +364,13 @@ def forward_vol_rate(vols, cum_t, dt):
     ending at ``T_j`` carries ``(sigma_j^2 T_j - sigma_{j-1}^2 T_{j-1}) / dt_j``, not
     ``sigma_j^2`` - ``forward_carry_rate``'s statement one factor over, with the same failure mode:
     the wrong allocation telescopes to the right TOTAL variance, so every European limit stays exact
-    and only path-dependent monitoring is biased (conventions.md#unification-siblings).
+    and only path-dependent monitoring is biased.
 
     ``clamp(min=eps)`` floors a DECLINING cumulative variance (an arbitrageable surface) rather than
     taking a negative square root. The floor does NOT telescope: the strip's total then exceeds the
     surface's own, so in-out parity against the simulated vanilla breaks while the analytic half
-    stays exact. That is inherent to flooring - the fix is an arbitrage-free surface, not a
-    different floor. ``j == 0`` takes ``vols[0]`` directly, its window being the interval itself.
+    stays exact. The fix for that is an arbitrage-free surface, not a different floor. ``j == 0``
+    takes ``vols[0]`` directly, its window being the interval itself.
 
     Rank-polymorphic as ``forward_carry_rate``; a zero-length interval divides by one; a flat
     surface is NOT bit-identical, so gates on this must not use ``torch.equal``.
@@ -411,13 +385,10 @@ def forward_vol_rate(vols, cum_t, dt):
 def oss_uniforms(shared, n_fix, num_sims, sobol):
     """Antithetic uniforms for a one-step-survival loop: ``[n_fix, batch, 2 * num_sims]``.
 
-    One Sobol/pseudo draw plus its ``1 - u`` mirror, which is what pairs the truncated final draws
-    of an OSS step with the antithetic halves of ``hn_unmonitored_substeps``. TWO pricers spelled
-    this block identically - ``sim_spot_oss`` and ``sim_spot_tarf`` - and both now read it here,
-    bit for bit; ``pv_MC_Accumulator`` is new and was written against it. The sibling NOT absorbed:
-    ``pv_MC_AutoCallSwap``'s no-averaging loop draws the same Sobol block but consumes it RAW
-    (no antithetic mirror), so bringing it in would change its estimator - an upgrade, not a
-    refactor, and a results-changing one.
+    One Sobol/pseudo draw plus its ``1 - u`` mirror, which pairs the truncated final draws of an OSS
+    step with the antithetic halves of ``hn_unmonitored_substeps``. NOT used by
+    ``pv_MC_AutoCallSwap``'s no-averaging loop, which draws the same Sobol block but consumes it RAW
+    - adopting this there would change that estimator.
     """
     if sobol:
         u = shared.quasi_rng(shared.simulation_batch, n_fix * num_sims)[1].T.reshape(
@@ -434,28 +405,14 @@ def oss_truncated_draw(u, z_bound, survive_below):
     Given the standardised bound of this step's barrier: ``survive_below=True`` means survival is
     ``{Z <= z_bound}`` and the draw maps into the lower tail, ``icdf(u * p)``; ``False`` means
     ``{Z >= z_bound}`` and the upper tail, ``icdf(Phi + u * p)``. Returns ``(p, Z)`` - what the
-    knocked-out weight ``(1 - p) * L`` is worth belongs to the caller, the one thing adopters
-    legitimately differ in.
+    knocked-out weight ``(1 - p) * L`` is worth belongs to the caller.
 
-    Adopters: ``sim_spot_tarf`` (bit-identically) and ``pv_MC_Accumulator``. Three call sites stay
-    enumerated rather than absorbed, and ``tests/test_branch_and_weight.py`` GATES each inline
-    spelling against this one so the copies cannot drift while they wait:
-
-    - ``sim_spot_oss`` twice (the HN arm and the GBM arm of ``pv_discrete_barrier_option``). Its
-      down-side base ``(1-p) + u*p`` differs from ``Phi + u*p`` in the last bit wherever
-      ``Phi < 0.5`` - ``1 - (1 - Phi)`` is exact only above a half - so absorbing it is a
-      results-changing event that must re-baseline the barrier's pinned fixtures. Its UP side is
-      already bit-identical, and the gate says so at both.
-    - ``pv_MC_AutoCallSwap`` (up-side only). Bit-identical arithmetic - ``p * u`` and ``u * p``
-      are the same IEEE product, and this primitive is indifferent to how ``u`` was DRAWN, so the
-      non-antithetic uniforms are no obstacle to it. What blocks absorption is the SHAPE: ``p`` is
-      formed in the coupon branch and consumed a screen later under ``fixing_aligned``, on an
-      iteration where the draw is deliberately skipped, so calling this there would spend an
-      ``icdf`` per coupon on a result nobody reads. It comes in when the autocall's loop is
-      restructured, not before - and that restructure is the same one integrating the put leg needs
-      (``pv_MC_AutoCallSwap``'s BRANCH AND WEIGHT section), so the two arrive together or not at all.
-
-    A defect fixed here must be checked against all three until they are absorbed.
+    Adopted by ``sim_spot_tarf`` and ``pv_MC_Accumulator``. THREE call sites still spell it inline
+    and a defect fixed here must be checked against all three: ``sim_spot_oss`` twice (its down-side
+    base ``(1-p) + u*p`` differs from ``Phi + u*p`` in the last bit below a half, so absorbing it
+    would re-baseline the barrier's pinned fixtures) and ``pv_MC_AutoCallSwap`` up-side only (whose
+    ``p`` is formed a screen away from where the draw is taken).
+    ``tests/test_branch_and_weight.py`` gates each inline spelling against this one.
     """
     eps = torch.finfo(u.dtype).eps
     Phi = utils.norm_cdf(z_bound)
@@ -479,21 +436,15 @@ def branch_and_weight(shared, deal_data):
     a deal registers no ``BoundarySet``, or the boundary flux is counted twice. Off, and absent, is
     the crisp OSS path bit for bit.
 
-    THE CONDITIONING STEP IS THE FIXING INTERVAL'S OWN LOGNORMAL LAW. That is what makes ``p`` a
-    ``Phi`` and the continuing draw a ``Phi^-1`` (``oss_truncated_draw``), and under GBM the fixing
-    interval IS the simulated step, so the strips this pricer already walks
-    (``forward_carry_rate`` / ``forward_vol_rate``) are the ``m`` and ``s`` the construction wants.
+    THE CONDITIONING STEP IS THE FIXING INTERVAL'S OWN LOGNORMAL LAW, which is what makes ``p`` a
+    ``Phi`` and the continuing draw a ``Phi^-1`` (``oss_truncated_draw``). Under GBM the fixing
+    interval IS the simulated step, so the strips a pricer already walks (``forward_carry_rate`` /
+    ``forward_vol_rate``) are the ``m`` and ``s`` the construction wants.
 
-    Under Heston-Nandi that law is NOT in hand and this refuses by name. The HN walk is daily, so
-    the only Gaussian conditional available today is the last daily sub-step - the ``s^-3`` regime
-    the roadmap costs the build order on, and it bites at monthly fixings too because the WALK is
-    daily whatever the fixing spacing is. The fixing-interval conditional needs the k-step law
-    ``exp(A_k + B_k h + C_k q)``, which is THE STRIDE's cached ``Phi`` and its survival-truncated
-    inverse verbatim (``utils.hn_cdf_logret`` is the existing half of it, already required to be
-    exactly differentiable by that design). HN branch-and-weight lands the day the stride does, as
-    the same construction with ``Phi_stride`` in place of ``Phi``; until then a Gaussian ``p``
-    applied under HN would be a wrong number wearing the right estimator's name, which is the one
-    failure a switch like this must not be able to produce.
+    Under Heston-Nandi that law is not in hand and this REFUSES by name: the HN walk is daily, so
+    the only Gaussian conditional available is the last daily sub-step, whatever the fixing spacing.
+    The fixing-interval conditional needs the k-step law ``exp(A_k + B_k h + C_k q)`` - the stride's
+    cached ``Phi`` and its survival-truncated inverse - and HN branch-and-weight lands with it.
 
     Read ONCE per deal at the top of a pricer, so the refusal lands before a draw is taken.
     """
@@ -523,32 +474,28 @@ def lognormal_partial_moment(spot, drift, vol, z_bound, fired_above, power=1.0):
     a fired branch.
 
     ``S_k = spot * exp(drift + vol * Z)`` with ``Z`` standard normal over the interval (``drift``
-    and ``vol`` are the interval's own ``m`` and ``s``, the strips the crisp path already steps on),
-    and ``z_bound`` is the trigger standardised the way ``oss_truncated_draw`` standardises it.
-    ``fired_above`` says which tail fires: True for a trigger crossed from below.
+    and ``vol`` are the interval's own ``m`` and ``s``), and ``z_bound`` is the trigger standardised
+    the way ``oss_truncated_draw`` standardises it. ``fired_above`` says which tail fires: True for
+    a trigger crossed from below. ``E[S^a 1{Z > z}] = spot^a exp(a*m + a^2 s^2/2) Phi(a*s - z)``,
+    and the down side reflects, so one expression carries every moment a fired payoff needs:
 
-    ``E[S^a 1{Z > z}] = spot^a exp(a*m + a^2 s^2/2) Phi(a*s - z)``, and the down side reflects, so
-    ONE expression carries every moment a fired payoff is built from:
-
-    - ``power=0`` IS the fired PROBABILITY, ``Phi(-z)`` up / ``Phi(z)`` down. Cheap, but a caller
-      that already holds the survival ``p`` from ``oss_truncated_draw`` should use ``1 - p``
-      instead: those two are exact complements, and the survival ledger's telescoping identity is
-      exact only because they are (``SurvivalLedger``).
+    - ``power=0`` IS the fired PROBABILITY. A caller already holding the survival ``p`` from
+      ``oss_truncated_draw`` should use ``1 - p`` instead: those two are exact complements, and the
+      survival ledger's telescoping identity is exact only because they are (``SurvivalLedger``).
     - ``power=1`` is the forward-weighted mass ``E[S 1{fired}]`` every gain reads.
     - ``power=-1`` is the same for an INVERTED accrual, whose payoff is written in ``1/S``
-      (``pv_MC_Tarf``'s ``InvertedTarget``) - the reciprocal is a lognormal too and needs no second
-      derivation.
+      (``pv_MC_Tarf``'s ``InvertedTarget``).
 
     THE FIRED BRANCH IS AN EXPECTATION, NEVER A PROBABILITY TIMES A SAMPLE. The jump and the
-    decision share the fixing, so ``p * (realised payoff)`` is biased downward-or-up depending on
-    which tail fires and does not vanish with path count; every closed form here is
-    ``E[payoff * 1{fired}]``, conditional on the state one step back.
+    decision share the fixing, so ``p * (realised payoff)`` is biased and does not vanish with path
+    count; every closed form here is ``E[payoff * 1{fired}]``, conditional on the state one step
+    back.
     """
     sign = 1.0 if fired_above else -1.0
     tail = utils.norm_cdf(sign * (power * vol - z_bound))
     if not power:
-        # the fired probability, whose two scale factors are identities - skipped rather than
-        # evaluated, because this runs once per fixing per path
+        # the fired probability: both scale factors are identities, skipped rather than evaluated
+        # because this runs once per fixing per path
         return tail
     return (spot ** power) * torch.exp(power * (drift + 0.5 * power * vol * vol)) * tail
 
@@ -561,13 +508,10 @@ def lognormal_fired_gain(spot, drift, vol, z_bound, strike, fired_above, power=1
     ``strike**power`` is ``1/K``; the caller supplies the payoff's sign, because which side is a
     gain is the deal's convention and not this expression's.
 
-    ITS CALLER IS A LEG WHOSE PAYOFF IS A GAIN OVER A TAIL - ``pv_MC_Tarf``'s knock-IN, where
-    ``relu(-eff_intr) * 1{hit}`` is exactly this difference over the OTM side of the strike. The
-    TARF's own FIRED branch is NOT built from it and never was: the fixing that fills the target
-    pays the remaining target ``R``, which is measurable one fixing back, so its conditional
-    expectation IS itself and the branch is ``(1 - p) * R``. That is the arithmetic form of the
-    no-``p``-times-sample ruling rather than an exception to it, and it is the one settlement
-    convention both estimators state.
+    FOR A LEG WHOSE PAYOFF IS A GAIN OVER A TAIL - ``pv_MC_Tarf``'s knock-IN and
+    ``pv_MC_AutoCallSwap``'s put leg. A TARF's own fired branch is NOT built from it: the fixing
+    that fills the target pays the remaining target ``R``, measurable one fixing back, so its
+    conditional expectation is itself and the branch is ``(1 - p) * R``.
     """
     return (lognormal_partial_moment(spot, drift, vol, z_bound, fired_above, power) -
             (strike ** power) * lognormal_partial_moment(
@@ -580,33 +524,25 @@ class SurvivalLedger(object):
 
     Every branch-and-weight product walks the same two lines: the fixing fires with weight
     ``alive * (1 - p)`` and pays its analytic tail expectation, and the alive weight advances to
-    ``alive * p`` for the truncated draw to carry on from. Written inline in three pricers those are
-    six lines that must agree; written here they are one, and the conservation statement the
-    construction rests on has somewhere to live.
+    ``alive * p`` for the truncated draw to carry on from.
 
     THE IDENTITY: ``sum_j alive_{j-1} * (1 - p_j) + alive_final == alive_0``, per path, exactly to
-    float roundoff. It is stated against the STARTING weight rather than against one, because a
-    block that opens on a partly-resolved deal starts at whatever the observed prefix left
-    (``pv_MC_Accumulator``'s ``prev_alive``); with ``alive_0 = 1`` it is the roadmap's own
-    statement. It holds through observed fixings too, where ``p`` is an exact 0/1 indicator rather
-    than a ``Phi``.
+    float roundoff. Stated against the STARTING weight rather than against one, because a block that
+    opens on a partly-resolved deal starts at whatever the observed prefix left. It holds through
+    observed fixings too, where ``p`` is an exact 0/1 indicator rather than a ``Phi``. It is exact
+    only because the fired mass is spelled ``1 - p`` off the SAME ``p`` the draw was truncated with;
+    an independent ``Phi(-z)`` beside a survival ``Phi(z)`` leaves a residual that says nothing
+    about the ledger.
 
-    It is exact only because the fired mass is spelled ``1 - p`` off the SAME ``p`` the draw was
-    truncated with. Computing the fired probability independently as ``Phi(-z)`` beside a survival
-    ``Phi(z)`` would leave a residual that no longer says anything about the ledger, only about
-    ``norm_cdf``'s own symmetry - which is why ``lognormal_partial_moment(power=0)`` carries a
-    docstring pointing back here.
-
-    ``check`` logs the residual at DEBUG, per block, the way every other estimator in this file
-    reports what it did rather than asserting in a hot path; ``conservation`` is the number itself,
-    for a gate to hold to roundoff.
+    ``check`` logs the residual at DEBUG per block rather than asserting in a hot path;
+    ``conservation`` is the number itself, for a gate to hold to roundoff.
     """
 
     def __init__(self, alive):
         self.initial = alive
         self.alive = alive
-        # the running fired mass; None until the first fixing, so a strip with no fixings at all
-        # conserves trivially rather than needing a zero of the right shape up front
+        # None until the first fixing, so a strip with no fixings conserves trivially rather than
+        # needing a zero of the right shape up front
         self.fired = None
 
     def fire(self, p_survive):
@@ -624,9 +560,7 @@ class SurvivalLedger(object):
             self.fired + self.alive - self.initial)
 
     def check(self, label):
-        """The identity at DEBUG - one line per block, naming what walked it. The residual is the
-        reading a value cannot show: a ledger that has lost mass prices a deal that is only mostly
-        there, and every such price is plausible."""
+        """Log the identity at DEBUG - one line per block, naming what walked it."""
         if logging.getLogger().isEnabledFor(logging.DEBUG):
             logging.debug('LEDGER %s conservation=%.3g alive=%.6g', label,
                           float(self.conservation().abs().max()), float(self.alive.mean()))
@@ -637,32 +571,27 @@ def boundary_weights(gap, bandwidth):
 
     The term to recover is ``f_G(0) * E[jump * dG/dtheta | G = 0]``. Folding both halves into one
     kernel is a local-CONSTANT estimator whose O(bandwidth) bias never settles; local-linear weights
-    cancel the first-order term, so the estimate holds still over a range of bandwidths - the only
-    acceptance available when no single bandwidth can be argued for.
+    cancel the first-order term, so the estimate holds still over a range of bandwidths.
 
     Returns ``(density_at_zero, weights)`` with the weights summing to one, so the caller multiplies
-    rather than averages - and that sum makes ``||weights||_1`` exactly the solve's amplification: a
-    kernel admitting two far-apart neighbours cancels the first-order term by subtracting two
-    enormous numbers, so the solve is refused on what it PRODUCED, past
-    ``BOUNDARY_MAX_AMPLIFICATION``, landing on the empty-kernel branch (weights zero, correction
-    exactly zero).
+    rather than averages - and that sum makes ``||weights||_1`` exactly the solve's amplification.
+    Past ``BOUNDARY_MAX_AMPLIFICATION`` the solve is refused on what it PRODUCED and lands on the
+    empty-kernel branch (weights zero, correction exactly zero).
 
-    ONE sample has no spread for a kernel width: ``std()`` would be NaN and reach ``backward()``
-    silently, so zero width is returned - the kernel admits nothing and the correction is exactly
-    zero, which is what one scenario means. Base valuation reaches this path.
+    ONE sample has no spread for a kernel width - ``std()`` would be NaN and reach ``backward()``
+    silently - so zero width is returned and the correction is exactly zero, which is what one
+    scenario means. Base valuation reaches this path.
     """
     g = gap.detach()
-    # one sample -> zero width; std() would be NaN and the correction is exactly zero anyway
     spread = g.std() if g.numel() > 1 else torch.zeros_like(g.reshape(-1)[:1].squeeze())
     width = bandwidth * spread.clamp_min(torch.finfo(g.dtype).eps)
     k = torch.exp(-0.5 * (g / width) ** 2)
     s0, s1, s2 = k.sum(), (k * g).sum(), (k * g * g).sum()
-    # nothing at all near the boundary makes this exactly 0; float64 cannot land it any nearer
+    # nothing at all near the boundary makes this exactly 0
     denominator = s2 * s0 - s1 * s1
     solvable = denominator != 0
     weights = torch.where(solvable, k * (s2 - g * s1) / torch.where(
         solvable, denominator, torch.ones_like(denominator)), torch.zeros_like(k))
-    # the solve is refused on what it PRODUCED, which is the only thing that separates the two
     weights = torch.where(weights.abs().sum() <= BOUNDARY_MAX_AMPLIFICATION,
                           weights, torch.zeros_like(weights))
     density = s0 / (g.numel() * math.sqrt(2.0 * math.pi) * width)
@@ -676,13 +605,10 @@ def stochastic_boundary_correction(gap, objective_jump, bandwidth):
     Ordinary AAD differentiates an expectation containing 1{gap > 0} with the decision frozen,
     dropping ``f_G(0) * E[jump * dG/dtheta | G = 0]``. ``gap - gap.detach()`` is numerically zero
     with derivative one, so adding this to the scalar handed to backward() reports an unchanged
-    number and still propagates the missing term through ``gap`` to every factor at once - no
-    bump, no second valuation, cost independent of how many factors there are.
+    number and still propagates the missing term through ``gap`` to every factor at once.
 
-    ``objective_jump`` is a COEFFICIENT and stays detached: its own pathwise derivatives are
-    already in the ordinary AAD value, and differentiating the counterfactual would count them
-    twice.
-
+    ``objective_jump`` is a COEFFICIENT and stays detached: its own pathwise derivatives are already
+    in the ordinary AAD value, and differentiating the counterfactual would count them twice.
     Summed, not averaged: the local-linear weights already carry the 1/N through the density.
     """
     density, weights = boundary_weights(gap, bandwidth)
@@ -693,16 +619,11 @@ def boundary_correction(shared, objective, reported_mtm, bandwidth):
     """Total boundary correction for every recorded decision - a margin call's transfer, a barrier
     crossing, an autocall trigger, any observed event whose value jump is real.
 
-    They are one defect: a decision taken on simulated state whose derivative the frozen-decision
-    graph drops. They differ only in how the counterfactual is produced - a replayed balance scan,
-    branches the pricer already evaluated - and that half belongs to the set that recorded it,
-    along with the netting arithmetic that carries its decision out to the portfolio.
-
-    This half is `score`: the reported PORTFOLIO plus a change to it. Never a set's own level,
-    because the objective is applied to `resolve_structure`'s root sum over every netting set, and
-    a collateralised set's post-collateral net sits at the relu kink by construction - which is
-    where scoring it in isolation goes furthest wrong. `gap > 0` means the trigger fired, matching
-    a jump of J(fired) - J(did not).
+    How each counterfactual is produced belongs to the set that recorded it. This half is `score`:
+    the reported PORTFOLIO plus a change to it. Never a set's own level, because the objective is
+    applied to `resolve_structure`'s root sum over every netting set, and a collateralised set's
+    post-collateral net sits at the relu kink by construction. `gap > 0` means the trigger fired,
+    matching a jump of J(fired) - J(did not).
     """
     def score(delta):
         return objective(reported_mtm + delta)
@@ -712,8 +633,8 @@ def boundary_correction(shared, objective, reported_mtm, bandwidth):
         for k, (gap, jump) in enumerate(bset.objective_jumps(score)):
             corrections.append(stochastic_boundary_correction(gap, jump, bandwidth))
             if logging.getLogger().isEnabledFor(logging.DEBUG):
-                # the correction's forward value is zero by construction; the COEFFICIENT it
-                # multiplies into the gap's graph is the reading
+                # the forward value is zero by construction; the COEFFICIENT it multiplies into
+                # the gap's graph is the reading
                 density, weights = boundary_weights(gap, bandwidth)
                 logging.debug('BOUNDARY %s decision=%d coeff=%.6g',
                               type(bset).__name__, k,
@@ -723,12 +644,8 @@ def boundary_correction(shared, objective, reported_mtm, bandwidth):
 
 def _kink_density_at_zero(Vbar, width, n_paths_axis):
     """``f_V(0)`` per reporting row, by the same normalised Gaussian kernel ``exposure_kink_term``
-    carries into the tape - but at an ARBITRARY width, which is the whole point of it.
-
-    The term itself only ever evaluates the kernel at the row's own Silverman bandwidth, so it can
-    report a density but never say whether that density is one. Reading the same estimator at
-    another width is what turns one number into a ladder.
-    """
+    carries into the tape but at an ARBITRARY width - which is what turns one density reading into
+    the ladder that can say whether it is a density at all."""
     return torch.exp(-0.5 * (Vbar / width) ** 2).mean(
         dim=n_paths_axis, keepdim=True) / (width * math.sqrt(2.0 * math.pi))
 
@@ -737,24 +654,20 @@ def kink_kernel(Gbar, axis, label):
     """The kernel machinery every ``max(x, 0)`` on a simulated quantity needs: Silverman per row,
     the atom LADDER, and the normalised Gaussian kernel evaluated AT the kink.
 
-    ``Gbar`` is the relu's argument, already DETACHED by the caller - that discipline is the whole
-    construction and it stays the caller's, so this cannot silently put ``K'`` on a tape. ``axis``
-    is the sample axis the bandwidth and the density are taken over: reporting PATHS for
-    ``exposure_kink_term``, the inner sims of one fixing for ``accrual_kink_term``. Everything else
-    broadcasts, so one bandwidth per row (or per fixing, per scenario) reaches its own samples.
+    ``Gbar`` is the relu's argument, already DETACHED by the caller - that discipline stays the
+    caller's, so this cannot silently put ``K'`` on a tape. ``axis`` is the sample axis the
+    bandwidth and the density are taken over: reporting PATHS for ``exposure_kink_term``, the inner
+    sims of one fixing for ``accrual_kink_term``. Everything else broadcasts, so one bandwidth per
+    row (or per fixing, per scenario) reaches its own samples.
 
-    Returns ``(kernel, atom, rungs)``. The REFUSAL is not raised here on purpose: an atom means the
-    same thing at both callers - the density does not settle as the bandwidth narrows, it climbs as
-    ``1/h``, so the number would be a lie about a divergence - but what a caller can DO about it is
-    different at a reporting row and at a fixing, and a refusal that cannot name a remedy is not a
-    refusal. The caller reads ``atom`` and says its own sentence, carrying ``rungs`` as the reading.
+    Returns ``(kernel, atom, rungs)``. The REFUSAL is the CALLER's: an atom means the same thing at
+    both, but the remedies at a reporting row are not the remedies at a fixing, so the caller reads
+    ``atom`` and says its own sentence carrying ``rungs`` as the reading.
 
-    ``KINK_ATOM_LADDER`` / ``KINK_ATOM_LADDER_DIVERGENCE`` / ``KINK_ATOM_BANDWIDTH_FLOOR`` are the
-    three constants at the top of this module and their docstrings are the argument for each. The
-    floor DECIDES NOTHING ABOUT ATOMS: it says where the bandwidth has collapsed under the row's own
-    scale, and there the kernel is WRITTEN to zero rather than evaluated, because a zero bandwidth
-    is 0/0 forward and NaN backward. The ladder still runs under it, so a row pinned at the kink on
-    a handful of samples is refused rather than quietly written off.
+    ``KINK_ATOM_BANDWIDTH_FLOOR`` DECIDES NOTHING ABOUT ATOMS: it says where the bandwidth has
+    collapsed under the row's own scale, and there the kernel is WRITTEN to zero rather than
+    evaluated, because a zero bandwidth is 0/0 forward and NaN backward. The ladder still runs under
+    it, so a row pinned at the kink on a handful of samples is refused rather than written off.
     """
     n = Gbar.shape[axis]
     # one sample -> zero width; std() would be NaN and a single path has no density to estimate
@@ -765,21 +678,20 @@ def kink_kernel(Gbar, axis, label):
     floor = KINK_ATOM_BANDWIDTH_FLOOR * Gbar.abs().mean(dim=axis, keepdim=True)
     collapsed = eps <= floor
 
-    # THE LADDER, which is what says atom - and it runs under the floor too, so a row pinned at zero
-    # on a few samples is refused rather than written off. A rung on a row with no bandwidth at all
-    # is substituted, not divided, so no branch of this reaches a comparison as NaN
+    # THE LADDER, which is what says atom - and it runs under the floor too. A rung on a row with
+    # no bandwidth at all is substituted, not divided, so no branch reaches a comparison as NaN
     has_width = eps > 0
     unit = torch.ones_like(eps)
     with torch.no_grad():
         rungs = [_kink_density_at_zero(Gbar, torch.where(has_width, c * eps, unit), axis)
                  for c in KINK_ATOM_LADDER]
-    # stated as a product rather than a ratio: the widest rung is exactly zero wherever the kernel
-    # underflows at every width, and that row is far from the kink rather than divergent
+    # a product rather than a ratio: the widest rung is exactly zero wherever the kernel underflows
+    # at every width, and that row is far from the kink rather than divergent
     atom = has_width & (rungs[0] > 0) & (rungs[-1] >= KINK_ATOM_LADDER_DIVERGENCE * rungs[0])
 
     if logging.getLogger().isEnabledFor(logging.DEBUG):
-        # the term's forward value is an exact zero on every row and says nothing; the LADDER is
-        # the reading, and it is how a row that passed is told from a row that had nothing to say
+        # the term's forward value is an exact zero on every row; the LADDER is the reading, and
+        # it is how a row that passed is told from a row that had nothing to say
         for r, rung in enumerate(torch.stack([x.reshape(-1) for x in rungs], dim=-1).tolist()):
             logging.debug('KINK %s row=%d f(0)=%.6g ladder=%s climb=%.3f collapsed=%d', label, r,
                           rung[1], '/'.join('{:.6g}'.format(x) for x in rung),
@@ -795,9 +707,8 @@ def kink_kernel(Gbar, axis, label):
 
 
 def _kink_atom_reading(atom, rungs):
-    """The rows an atom was diagnosed on, the worst of them, and its ladder rendered - the three
-    things both kink refusals quote. Split out because the SENTENCE differs and the READING does
-    not."""
+    """The rows an atom was diagnosed on, the worst of them, and its ladder rendered - the reading
+    both kink refusals quote."""
     flat = atom.reshape(-1)
     rows = torch.nonzero(flat).reshape(-1).tolist()
     readings = torch.stack([rung.reshape(-1)[flat] for rung in rungs], dim=-1)
@@ -810,33 +721,24 @@ def _kink_atom_reading(atom, rungs):
 
 
 def accrual_kink_term(gain, fixing, n_paths_axis=1):
-    """``exposure_kink_term``'s statement one product in: the per-fixing accrual's missing SECOND
-    derivative, on the CONTINUING branch of a branch-and-weight simulation.
+    """The per-fixing accrual's missing SECOND derivative, on the CONTINUING branch of a
+    branch-and-weight simulation - ``exposure_kink_term``'s statement one product in.
 
-    An accrual pays ``max(cp * (S_j - K), 0)`` at every fixing, so every fixing carries the same
-    kink the exposure relu does, and second-order AAD drops the same object there:
-    ``delta(g) * g_theta g_theta^T``, a density AT the strike times an outer product. With
-    ``u = gain - gain.detach()`` this returns ``0.5 * K_eps(gain.detach()) * u**2`` per (scenario,
-    path), for the caller to weight by that path's SURVIVAL weight and the payment's own discount -
-    the weights belong to the caller because they are the deal's, not the kink's.
+    An accrual pays ``max(cp * (S_j - K), 0)`` at every fixing, and second-order AAD drops
+    ``delta(g) * g_theta g_theta^T`` there. With ``u = gain - gain.detach()`` this returns
+    ``0.5 * K_eps(gain.detach()) * u**2`` per (scenario, path), for the caller to weight by that
+    path's SURVIVAL weight and the payment's own discount - those weights are the deal's, not the
+    kink's. ``gain`` is the relu's ARGUMENT, ``cp * (S_j - K)``, not the payoff.
 
-    ``gain`` is the relu's ARGUMENT, ``cp * (S_j - K)``, not the payoff. Value is an exact zero
-    because ``u`` is an exact IEEE zero; first order accumulates ``+0.0`` bit for bit; the Hessian
-    contributes the kernel estimate of ``f_g(0) * E[g_theta g_theta^T | g = 0]``. So the admission
-    test is the same one order stricter than the boundary correction's, and the term is NEVER built
-    when second order is not asked for - wanting curvature IS the switch, so the cost is zero
-    otherwise.
+    Value is an exact zero because ``u`` is an exact IEEE zero; first order accumulates ``+0.0`` bit
+    for bit; the Hessian contributes the kernel estimate of
+    ``f_g(0) * E[g_theta g_theta^T | g = 0]``. Never BUILT when second order is not asked for, so
+    the cost is zero otherwise.
 
-    ONLY the continuing branch. A fixing the row has already OBSERVED is a point mass by
-    construction - one spot on every inner path - and it is not on this branch at all: the fired
-    mass at an observed fixing is an exact indicator and its payment is arithmetic, with no density
-    anywhere in it. The bandwidth would collapse and the kernel would be written to zero, which is
-    the right answer for the wrong reason, so callers keep observed fixings out rather than relying
-    on that.
-
-    A fixing whose conditional law carries a genuine ATOM at the strike REFUSES by name, on the same
-    ladder and the same divergence threshold - what the crisp path returns there is a gamma of
-    exactly zero, which is not the smaller error.
+    ONLY the continuing branch: a fixing the row has already OBSERVED is a point mass by
+    construction - one spot on every inner path - so callers keep observed fixings out rather than
+    relying on the bandwidth collapsing. A fixing whose conditional law carries a genuine ATOM at
+    the strike REFUSES by name, on the same ladder and divergence threshold as the exposure term.
     """
     Gbar = gain.detach()
     kernel, atom, rungs = kink_kernel(Gbar, n_paths_axis, 'accrual')
@@ -862,67 +764,41 @@ def exposure_kink_term(V, n_paths_axis=1):
     carries the exposure relu's missing SECOND derivative into the double backward.
 
     What second-order AAD drops at ``relu(V)`` is ``delta(V) * V_theta V_theta^T`` - a density AT
-    the boundary times an outer product, the same object the first-order boundary fix already
-    estimates, so exposure gamma is a first-order-difficulty problem wearing second-order clothes.
+    the boundary times an outer product, the same object the first-order boundary fix estimates.
     With ``u = V - V.detach()`` this returns ``0.5 * K_eps(V.detach()) * u**2`` per (row, path),
-    added beside ``relu(V)`` under the objective's own weights. Its value is an exact zero because
-    ``u`` is an exact IEEE zero; its gradient is ``K*u*V_theta``, which accumulates ``+0.0``
-    bit-for-bit; its Hessian is ``K_eps(Vbar) * V_theta V_theta^T``, whose weighted path MEAN is
-    the kernel estimate of ``f_V(0) * E[V_theta V_theta^T | V = 0]`` - exactly the dropped term. So
-    the admission test is ONE ORDER STRICTER than the boundary correction's: ``np.array_equal`` at
-    value AND at first order, term on versus off.
+    added beside ``relu(V)`` under the objective's own weights. Value is an exact zero because ``u``
+    is an exact IEEE zero; the gradient ``K*u*V_theta`` accumulates ``+0.0`` bit for bit; the
+    Hessian ``K_eps(Vbar) * V_theta V_theta^T`` has weighted path mean
+    ``f_V(0) * E[V_theta V_theta^T | V = 0]``, the dropped term.
 
-    ``K``'s argument is DETACHED. That is what confines the construction to the density's VALUE and
-    keeps ``K'`` off the tape entirely - the estimator a JUMP needs (the density's DERIVATIVE) is a
-    different, noisier object and is not built here. ``K`` is the NORMALISED Gaussian kernel,
-    ``phi(x/eps)/eps``, because the caller's reduction is a mean over paths and it is that mean that
-    has to be the density estimate.
+    ``K``'s argument is DETACHED, which confines the construction to the density's VALUE and keeps
+    ``K'`` off the tape. ``K`` is the NORMALISED Gaussian kernel ``phi(x/eps)/eps``, because the
+    caller's reduction is a mean over paths and it is that mean that has to be the density estimate.
+    The bandwidth, the ladder and the kernel are ``kink_kernel``'s; what stays here is the REFUSAL.
 
-    ``eps`` is Silverman per ROW, ``1.06 * std * n**-0.2`` over the path axis with keepdim so one
-    bandwidth per reporting date broadcasts across its own paths. No JSON knob: there is one
-    defensible width and nobody has asked for another. The bandwidth, the ladder and the kernel are
-    ``kink_kernel``'s, shared with ``accrual_kink_term`` rather than copied beside it; what stays
-    here is the REFUSAL, because the remedies at a reporting row are not the remedies at a fixing.
+    AN ATOM IS DIAGNOSED ON THE BANDWIDTH LADDER, the only instrument that separates a point mass at
+    the kink from a narrow density there: both have the same spread, near-zero mass and Silverman
+    width, and only ``f_V(0)``'s behaviour under a varying width tells them apart. A row whose
+    narrowest rung stands ``KINK_ATOM_LADDER_DIVERGENCE`` times its widest is REFUSED by name with
+    its row index and readings - the gamma there is genuinely singular rather than merely noisy.
 
-    AN ATOM IS DIAGNOSED ON THE BANDWIDTH LADDER, which is the roadmap's own criterion and the only
-    instrument that can tell the two apart. A point mass at the kink and a narrow density at the
-    kink have the same spread, the same near-zero mass and the same Silverman width; what separates
-    them is what ``f_V(0)`` DOES when the width is varied. A density holds still; a mass of weight
-    ``p`` reads ``p / (h * sqrt(2 pi))`` and climbs as ``1/h``. So ``f_V(0)`` is re-estimated across
-    ``KINK_ATOM_LADDER`` and a row whose narrowest rung stands ``KINK_ATOM_LADDER_DIVERGENCE`` times
-    its widest is REFUSED by name, carrying its row index and its readings: the gamma there is
-    genuinely singular rather than merely noisy, and a number would be a lie about a divergence.
-
-    The ladder runs wherever a bandwidth EXISTS - including on rows under the floor below, so a row
-    pinned at zero on a handful of its paths is refused rather than quietly written off.
-
-    SEPARATELY, and deciding nothing about atoms: where the bandwidth collapses under
-    ``KINK_ATOM_BANDWIDTH_FLOOR`` of the row's own scale the kernel is WRITTEN to zero rather than
-    evaluated, because a zero bandwidth is 0/0 in the forward pass and NaN in the backward one. Such
-    a row is one whose whole mass sits at a single level, and both answers there are zero: away from
-    the kink the kernel underflows, and AT the kink - a book whose deals have all matured, a deal
-    booked against its exact mirror - the exposure is functionally zero in every factor, so
-    ``V_theta`` is zero and ``K * V_theta V_theta^T`` is zero whatever ``K`` is. The construction is
-    self-limiting there; only the 0/0 needs handling.
+    Where the bandwidth collapses under ``KINK_ATOM_BANDWIDTH_FLOOR`` of the row's own scale the
+    kernel is WRITTEN to zero rather than evaluated (0/0 forward, NaN backward). Both answers there
+    are zero anyway: such a row's whole mass sits at one level, so ``V_theta`` is zero at the kink
+    and the kernel underflows away from it.
 
     THE COLLATERALISED CASE this refusal was written for - a net matched inside its threshold,
-    pinned at the kink with real ``V_theta`` - cannot reach here in v1. A ``NettingCollateralSet``
-    with ``Collateralized: 'True'`` registers an ``MTABoundarySet`` whatever it holds, so
-    ``Hessian: 'Yes'`` is refused one step earlier by the decision-product refusal in
-    ``Credit_Monte_Carlo.execute``. A margin period is what would smear that atom into a density,
-    and estimating through one is the roadmap's conditional-p row (Second-order flux at a JUMP),
-    pinned to the stride - it is future work, not a remedy a caller can take today, and the refusal
-    below says so rather than sending anyone to build a book this build refuses for another reason.
+    pinned at the kink with real ``V_theta`` - cannot reach here: a ``NettingCollateralSet`` with
+    ``Collateralized: 'True'`` registers an ``MTABoundarySet``, so ``Hessian: 'Yes'`` is refused one
+    step earlier in ``Credit_Monte_Carlo.execute``. Estimating through a margin period, which is
+    what would smear such an atom into a density, is future work.
 
-    ONE sample has no spread for a kernel width, as in ``boundary_weights``: ``std()`` would be NaN
-    and reach ``backward()`` silently, so zero width is returned and the row is classified on that.
+    ONE sample has no spread for a kernel width, as in ``boundary_weights``: zero width is returned
+    and the row is classified on that.
 
-    THE RECORD THIS RE-TAKES, measured externally by the owner (JAX prototype, ATM forward-style
-    exposure under GBM, theta = (S0, sigma), 400k paths, Silverman bandwidth): pathwise gamma 0.0000
-    and vanna 0.3966 (double the truth) become 2.6415 and 0.1992 against Black 2.6521 / 0.1989; at
-    xVA cross-sections, 1024 paths per row gives gamma 2.59 +/- 0.13 and 4096 gives +/- 0.07. The
-    O(eps^2) bias shows on volga, which is why this is a gamma-and-vanna term and not a volga one.
-    ``tests/test_cva_gamma_kink.py`` re-takes the shape of that table through the real objective.
+    DECLARED LIMITATION: the O(eps^2) bandwidth bias shows on volga, so this is a gamma-and-vanna
+    term rather than a volga one. Reference readings against Black 2.6521 / 0.1989: gamma 2.6415 and
+    vanna 0.1992 at 400k paths, and +/- 0.13 per xVA row at 1024 paths, +/- 0.07 at 4096.
     """
     Vbar = V.detach()
     kernel, atom, rungs = kink_kernel(Vbar, n_paths_axis, 'exposure')
@@ -953,10 +829,9 @@ class InnerMCRecompute(torch.autograd.Function):
     """A pricer's inner Monte Carlo as one node: simulated untaped, RE-simulated to differentiate.
 
     The autograd tape of every inner pricing is what does not fit in memory; the simulation itself
-    is cheap. The forward therefore runs under ``no_grad`` and keeps nothing but its inputs, and the
-    backward re-runs the SAME callable under ``enable_grad``, contracting the cotangent through one
-    block's graph at a time. Subsystem documentation and measurements:
-    calc_lifecycle.md#recompute-inner-mc.
+    is cheap. The forward runs under ``no_grad`` and keeps nothing but its inputs, and the backward
+    re-runs the SAME callable under ``enable_grad``, contracting the cotangent through one block's
+    graph at a time. Subsystem documentation: calc_lifecycle.md#recompute-inner-mc.
 
     THE COUNTER IS THE STORAGE. What is saved is where each random stream stood
     (``utils.rng_position``), never what it produced: Sobol draws are memoized, so rewinding the
@@ -982,15 +857,14 @@ class InnerMCRecompute(torch.autograd.Function):
 
     SECOND DERIVATIVES ARE REFUSED. The replay is rooted at DETACHED copies of the saved inputs -
     what stops the inner ``autograd.grad`` double-counting the first derivative - so a second
-    derivative taken through the node comes back partly ZERO: a Hessian that looks like a Hessian.
-    Ask for the second-order block with the switch off.
+    derivative taken through the node comes back partly ZERO. Ask for the second-order block with
+    the switch off.
     """
 
     @staticmethod
     def forward(ctx, simulate, position, shared, *theta):
-        # undefined cotangents stay undefined: most outputs (detached jumps, counterfactual
-        # branches) are coefficients nothing differentiates, and materializing zeros for them
-        # would allocate in backward exactly what this node exists to avoid
+        # undefined cotangents stay undefined: most outputs are coefficients nothing
+        # differentiates, and materializing zeros allocates in backward what this node avoids
         ctx.set_materialize_grads(False)
         with torch.no_grad():
             outputs = simulate(*theta)
@@ -1032,17 +906,12 @@ class InnerMCRecompute(torch.autograd.Function):
 
     @classmethod
     def run(cls, shared, simulate, *theta):
-        """The node, or not - the ONE line an adopting pricer writes, and the whole switch.
+        """The node, or not - the ONE line an adopting pricer writes.
 
         `Recompute_Inner_MC` is a property of the valuation engine and the machine it is on, so it
         governs every adopter at once and no pricer carries a flag of its own. Off, `simulate` is
-        called and taped exactly as it always was; on, it goes through the node with the RNG
-        position taken at the call site - which is where the streams still stand where the replay
-        must find them.
-
-        `cls.apply` so a subclass runs itself. The mutation gates rebind the module global, which
-        either spelling follows (measured) - the spelling states the intent, it is not what the
-        gates enforce.
+        called and taped directly; on, it goes through the node with the RNG position taken at the
+        call site, which is where the streams stand where the replay must find them.
         """
         return (cls.apply(simulate, utils.rng_position(shared), shared, *theta)
                 if shared.recompute_inner_mc else simulate(*theta))
@@ -1051,14 +920,10 @@ class InnerMCRecompute(torch.autograd.Function):
 def cva_per_scenario(pv_exposure, prob, recovery):
     """CVA as a PER-SCENARIO vector, whose mean is the reported CVA.
 
-    Pulled out of Credit_Monte_Carlo.execute so a counterfactual netting-set MTM can be scored on
-    the same objective without re-deriving it. The reduction order is load-bearing: the reported
-    number is a MEAN over paths of a SUM over time, so any boundary correction assembled against
-    it must also be a mean over paths or it is silently scaled by the path count - silently,
-    because such a correction has zero forward value and only the gradients would be wrong.
-
-    The `<xva>_per_scenario` family grows one member per adjustment that wants a boundary
-    counterfactual; at the third member it becomes per-adjustment objects living here.
+    THE REDUCTION ORDER IS LOAD-BEARING: the reported number is a MEAN over paths of a SUM over
+    time, so any boundary correction assembled against it must also be a mean over paths or it is
+    silently scaled by the path count - silently, because such a correction has zero forward value
+    and only the gradients would be wrong.
     """
     return ((1.0 - recovery) * 0.5 * (pv_exposure[1:] + pv_exposure[:-1]) * prob).sum(axis=0)
 
@@ -1067,10 +932,8 @@ def fva_per_scenario(pv, cost_spread, benefit_spread):
     """FVA as a PER-SCENARIO vector, whose mean is the reported FCA_t - FBA_t.
 
     `pv` is SIGNED - the funding cost rides its positive part and the benefit its negative one -
-    where `cva_per_scenario`'s exposure arrives already relu'd; the two must not share a
-    parameter name with opposite preconditions. Same estimator, same load-bearing reduction
-    order: a per-path vector of a sum over time, so a boundary correction assembled against it
-    is a mean over paths rather than silently scaled by the path count.
+    where `cva_per_scenario`'s exposure arrives already relu'd. Same load-bearing reduction order:
+    a per-path vector of a sum over time.
     """
     plus, minus = torch.relu(pv), torch.relu(-pv)
     return (torch.sum(cost_spread * (plus[1:] + plus[:-1]) / 2, dim=0)
@@ -1078,17 +941,12 @@ def fva_per_scenario(pv, cost_spread, benefit_spread):
 
 
 class SensitivitiesEstimator(object):
-    """ Implements the AAD sensitivities (both first and second derivatives)"""
+    """AAD sensitivities of one value against a list of model parameters, first and second order."""
 
     def __init__(self, value, params, create_graph=False):
-        """
-        Args:
-            value: function output (tensor)
-            params: List of model parameters (list of tensor(s))
-        """
-        # run the backward pass
+        """Run the backward pass over `value` and keep the gradient of every parameter that has
+        one. `create_graph` retains the graph the second-order block differentiates through."""
         value.backward(retain_graph=True, create_graph=create_graph)
-        # store associated gradients
         self.params = {key: tensor for key, tensor in params if tensor.grad is not None}
         self.grad = {key: tensor.grad for key, tensor in self.params.items()}
         self.flat_grad = self.flatten(list(self.grad.values()))
@@ -1100,10 +958,9 @@ class SensitivitiesEstimator(object):
     def report_grad(self):
         """Per-factor gradients as numpy arrays, COPIED off the live ``.grad`` buffers.
 
-        ``np.array`` copies; ``.numpy()`` on a CPU tensor would return a VIEW of the ``.grad``
-        buffer torch keeps accumulating into, so a second ``backward()`` through the same leaves
-        silently rewrites a report already handed out. On CUDA ``.cpu()`` copies and hides that; on
-        the default device it does not, and the two disagree.
+        ``np.array`` must copy: ``.numpy()`` on a CPU tensor returns a VIEW of the ``.grad`` buffer
+        torch keeps accumulating into, so a later ``backward()`` through the same leaves would
+        rewrite a report already handed out.
         """
         return {utils.check_scope_name(factor): np.array(tensor.cpu().detach())
                 for factor, tensor in self.grad.items()}
@@ -1113,41 +970,29 @@ class SensitivitiesEstimator(object):
         ``report_grad`` concatenates - which is what lets the report label both of its axes off
         the first-order index.
 
-        Assembled UPPER-TRIANGLE-ONLY and mirrored: ``get_H_op`` differentiates factor i's
-        gradient against factors i onwards, so the blocks below the diagonal are never computed,
-        and the strict lower triangle is wiped before the mirror so the diagonal block's own
-        sub-diagonal is not counted twice. Symmetry is therefore exact by construction rather
-        than approximately - a gate reading ``H - H.T`` measures the assembly, not the AAD.
+        Assembled UPPER-TRIANGLE-ONLY and mirrored: ``get_H_op`` differentiates factor i's gradient
+        against factors i onwards, so the blocks below the diagonal are never computed, and the
+        strict lower triangle is wiped before the mirror so the diagonal block's own sub-diagonal is
+        not counted twice. Symmetry is therefore exact by construction.
 
         ``allow_unused`` is what a portfolio needs and a single objective does not: a factor the
-        value depends on LINEARLY has no second-order path at all, and autograd returns None
-        rather than zeros for it.
+        value depends on LINEARLY has no second-order path at all, and autograd returns None rather
+        than zeros for it.
         """
         h_op = self.get_H_op(allow_unused)
         hessian = np.zeros((self.P, self.P))
 
-        # store it in a matrix
         j = 0
         for row in h_op:
             v, _ = row.shape
             hessian[j:j + v, j:] = row
             j += v
 
-        # zero out the lower indices
         hessian[np.tril_indices(self.P, k=-1)] = 0.0
         return hessian + np.triu(hessian, k=1).T
 
     def get_Hv_op(self, v):
-        """
-        Implements a Hessian vector product estimator Hv op defined as the
-        matrix multiplication of the Hessian matrix H with the vector v.
-
-        Args:
-            v: Vector to multiply with Hessian (tensor)
-
-        Returns:
-            Hv_op: Hessian vector product op (tensor)
-        """
+        """The Hessian-vector product H @ v, flattened."""
         hv = self.flatten(torch.autograd.grad(
             self.flat_grad, self.list_param, grad_outputs=v, only_inputs=True, retain_graph=True))
 
@@ -1155,29 +1000,13 @@ class SensitivitiesEstimator(object):
 
     @staticmethod
     def flatten(params):
-        """
-        Flattens the list of tensor(s) into a 1D tensor
-        
-        Args:
-            params: List of model parameters (List of tensor(s))
-        
-        Returns:
-            A flattened 1D tensor
-        """
+        """Concatenate a list of tensors into one 1D tensor."""
         return torch.cat([_params.reshape(-1) for _params in params], dim=0)
 
     def get_H_op(self, allow_unused):
-        """ 
-        Implements a Hessian estimator op by forming p Hessian vector
-        products using HessianEstimator.get_Hv_op(v) for all v's in R^P
-        
-        Args:
-            None
-        
-        Returns:
-            H_op: Hessian matrix op (tensor)
-            :param allow_unused:
-        """
+        """The Hessian's upper-triangular blocks, one per factor, as numpy arrays: factor i's
+        gradient differentiated against factors i onwards. `allow_unused` substitutes zeros where
+        autograd returns None for a factor the value depends on linearly."""
 
         glist = self.grad.values()
         plist = self.list_param
@@ -1205,26 +1034,17 @@ class SensitivitiesEstimator(object):
 
 
 def greeks(shared, deal_data, mtm):
-    """`Greeks_First` always, `Greeks_Second` when `Greeks: 'All'` asked for it - the two blocks
-    the base valuation reports, in that order because the second-order report labels its axes off
-    the first-order index (`Calculation.gradients_as_df`)."""
+    """Report `Greeks_First`, and `Greeks_Second` when `Greeks: 'All'` asked for it - in that
+    order, because the second-order report labels its axes off the first-order index
+    (`Calculation.gradients_as_df`)."""
     greeks_calc = SensitivitiesEstimator(mtm, shared.calc_greeks, create_graph=shared.gamma)
     deal_data.Calc_res['Greeks_First'] = greeks_calc.report_grad()
     # use this only when all the vols and curves are sparsely represented (check greeks_calc.P)
     if shared.gamma:
         deal_data.Calc_res['Greeks_Second'] = greeks_calc.report_hessian(allow_unused=True)
-        # `create_graph` leaves every leaf holding a `.grad` whose own graph reaches back to it -
-        # a cycle refcounting cannot break, so the whole second-order tape survives the run and
-        # waits for a gc pass to free it (on CUDA, holding device memory). Both reports are
-        # numpy copies by now, so dropping the buffers costs nothing and is what torch's own
-        # create_graph warning prescribes.
-        # PARTIAL, and honestly so: this reaches the tensors the estimator was OFFERED. A
-        # bootstrapped factor is offered `leaf + (theta - theta.detach())` (`factor_leaf`), a
-        # NON-leaf with `retain_grad`, and the true leaf inside it - and every leaf upstream
-        # through theta, the quotes included - keeps its own `.grad` and its own cycle until gc
-        # gets there. Chasing them would mean walking `grad_fn` from a reported tensor, which is
-        # more machinery than the residue is worth: it costs memory only, gc recovers it, and no
-        # reported number depends on it either way.
+        # `create_graph` leaves every leaf holding a `.grad` whose graph reaches back to it, a cycle
+        # refcounting cannot break; both reports are numpy copies by now. PARTIAL: leaves upstream
+        # of what the estimator was offered keep their own cycle until gc gets there
         for tensor in greeks_calc.params.values():
             tensor.grad = None
 
@@ -1233,16 +1053,12 @@ def interp_to_mtm_grid(mtm, time_grid, deal_data, interpolate_grid=True):
     """Deal grid -> MTM grid: the purely LINEAR half of `interpolate`, with no result stashing.
 
     A boundary counterfactual has to put its branch values on exactly the grid the reported value
-    landed on. Reproducing the gather and the pad at the call site is how they drift apart, and a
-    delta misaligned by a row is invisible in a forward pass worth exactly zero - it would only
-    show up as a wrong gradient. So both go through this rather than through two copies of it.
+    landed on, so both go through this rather than through two copies of the gather and the pad.
     """
     if interpolate_grid and deal_data.Time_dep.interp.size > deal_data.Time_dep.deal_time_grid.size:
-        # interpolate it
         mtm = utils.gather_interp_matrix(mtm, deal_data.Time_dep)
 
     if mtm.shape != (1, 1) and mtm.shape[0] < time_grid.mtm_time_grid.size:
-        # pad it with zeros and return
         return F.pad(mtm, [0, 0, 0, time_grid.mtm_time_grid.size - deal_data.Time_dep.interp.size])
     else:
         return mtm
@@ -1252,28 +1068,25 @@ def deal_to_mtm_grid(time_grid, deal_data, fx_rep):
     """The map from a pricer's own output to the MTM-grid rows the deal reports on, detached.
 
     Everything ``Deal.generate``/``calculate`` do to a theo price and nothing else: scale into the
-    reporting currency, then interpolate. A boundary branch is an alternative value for the SAME
-    deal, so it travels the same two steps in the same order - fx BEFORE interpolation.
+    reporting currency, then interpolate - fx BEFORE interpolation, since a boundary branch is an
+    alternative value for the same deal.
 
-    Two things this closure must NOT hold. ``fx_rep`` is detached AT CAPTURE: a boundary set
-    outlives the pricing call, and a closure over a live cross pins the deal's whole autograd graph
-    until the batch's backward pass. And it does not take ``shared``: that closure is a reference
-    cycle (shared -> boundary_sets -> closure -> shared) refcounting cannot break, leaving the whole
-    calculation state resident until the cyclic collector runs.
+    Two things this closure must NOT hold. ``fx_rep`` is detached AT CAPTURE, or a boundary set
+    outliving the pricing call pins the deal's whole autograd graph until the batch's backward pass.
+    And it does not take ``shared``, which would be a reference cycle
+    (shared -> boundary_sets -> closure -> shared) refcounting cannot break.
     """
     scale = fx_rep.detach()
     return lambda profile: interp_to_mtm_grid(profile * scale, time_grid, deal_data).detach()
 
 
 def interpolate(mtm, shared, time_grid, deal_data, interpolate_grid=True):
+    """Deal grid -> MTM grid, stashing the interpolated value on the deal's result block."""
     if interpolate_grid and deal_data.Time_dep.interp.size > deal_data.Time_dep.deal_time_grid.size:
-        # interpolate it
         mtm = utils.gather_interp_matrix(mtm, deal_data.Time_dep)
 
-    # check if we want to store the mtm value for this instrument
     if deal_data.Calc_res is not None:
         shared.save_results(deal_data.Calc_res, {'Value': mtm})
-        # add this as a tensor if we need to
         if shared.keep_tensor:
             deal_data.Calc_res['tensor'] = mtm
 
@@ -1283,9 +1096,10 @@ def interpolate(mtm, shared, time_grid, deal_data, interpolate_grid=True):
 
 def getbarrierpayoff(direction, eta, phi, strike, H):
     '''
-    Function to generate the barrier payoff function using these formulae:
-    (import sympy with the necessary symbols to see how to derive the code below)
-    
+    Build the single-barrier payoff function for one (direction, eta, phi, strike, H) combination,
+    by Merton, Reiner and Rubinstein. The branches below select sums of these six terms, which is
+    what their labels name:
+
     A = phi * ( spot * sympy.exp ( (b-r)*expiry ) * normcdf ( phi * x1 ) -
             strike * sympy.exp( -r*expiry ) * normcdf ( phi * ( x1 - vol ) ) )
     B = phi * ( spot * sympy.exp ( (b-r)*expiry ) * normcdf ( phi * x2 ) -
@@ -1299,8 +1113,6 @@ def getbarrierpayoff(direction, eta, phi, strike, H):
         sympy.exp(log_bar*2*mu) * normcdf ( eta * ( y2 - vol ) ) )
     F = cash_rebate * ( sympy.exp ( log_bar*(mu+lam) ) * normcdf (eta*z) +
         sympy.exp (log_bar*(mu-lam)) * normcdf ( eta * ( z - 2*lam*vol) ) )
-
-    This is for single Barrier options and based on Merton, Reiner and Rubinstein.
     '''
 
     def barrier_option(sigma, expiry, cash_rebate, b, r, spot, barrier):
@@ -1422,9 +1234,8 @@ def getbarrierpayoff(direction, eta, phi, strike, H):
 
 
 def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBarrier, limit, expiry, r, b, sigma):
-    '''
-    Function to generate the partial barrier payoff function
-    '''
+    '''Value a partial-time barrier option: the barrier is monitored only over the window that
+    starts (`startBarrier`) or ends at `limit`. Knock-ins are priced by parity off the vanilla.'''
 
     def BarrierPutCallTransformation(spot, strike, barrier, r, b, upDown):
         return strike, spot, spot * strike / barrier, r - b, -b, -upDown
@@ -1475,9 +1286,7 @@ def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBar
                 temp -= PartialBarrierCalc(
                     forward, strike, log1, log2, rho, -rho, -d1, -e1, -f1, e3, -d2, -e2, -f2, e4)
 
-                # `pv` is the X >= H expression and `temp` the X < H one - adjudicated against a
-                # 4M-path bridge Monte Carlo with an exact bivariate normal, which also fixed the
-                # reflected terms' e3/e4 signs above; the original selection was inverted
+                # `pv` is the X >= H expression and `temp` the X < H one
                 pv = torch.where(torch.as_tensor(strike < barrier, device=forward.device),
                                  temp, pv)
             else:
@@ -1519,8 +1328,8 @@ def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBar
 
 def compo_vol(vols, fx_vols, rho):
     """Vol of the PRODUCT S*X from its two lognormal legs. Exact for the joint law; the simulating
-    pricers apply it per INTERVAL with the fx leg read at expiry - the same deal-level fidelity as
-    the quanto carry adjustment beside it."""
+    pricers apply it per INTERVAL with the fx leg read at expiry, which is the same deal-level
+    fidelity as the quanto carry adjustment beside it."""
     return torch.sqrt(vols * vols + 2.0 * rho * vols * fx_vols + fx_vols * fx_vols)
 
 
@@ -1528,12 +1337,11 @@ def calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared, fixings=Non
     """The quanto/compo adjustment, factored for BOTH consumer shapes.
 
     A forward-based pricer (`pv_european_option`) rebuilds its terminal law as
-    `s_adj * forward * exp(b_adj * T)` - quanto bends the carry, compo swaps the underlying for
-    S*X so its fx half arrives as the outright fx forward. A SIMULATING pricer (the OSS pair)
-    takes the same information factored the way a path steps: `spot_scale` (the fx cross, 1 for
-    quanto), `carry_adj` (per-fixing, built only when `fixings` is passed), and `fx_vol`/`rho` to
-    compose its interval vol strip (None for quanto, whose measure change touches no vol). The
-    compo defect history is in the roadmap.
+    `s_adj * forward * exp(b_adj * T)` - quanto bends the carry, compo swaps the underlying for S*X
+    so its fx half arrives as the outright fx forward. A SIMULATING pricer takes the same
+    information factored the way a path steps: `spot_scale` (the fx cross, 1 for quanto),
+    `carry_adj` (per-fixing, built only when `fixings` is passed), and `fx_vol`/`rho` to compose its
+    interval vol strip (None for quanto, whose measure change touches no vol).
     """
     # None means get the ATM vol for this expiry (can change depending on the vol surface type)
     fx_vols = utils.calc_time_grid_vol_rate(factor_dep['FXVol'], None, expiry, shared)
@@ -1596,13 +1404,11 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     Reads. The carry arrives as the interval strip (``forward_carry_rate``) and the vol as TWO
     quantities: the per-interval strip (``forward_vol_rate(forward_vol_strip(...))``) the simulation
     steps on, and ``sd_to_expiry = sigma(K, tau) * sqrt(tau)`` for the European legs - two
-    legitimate reads of one surface, deliberately not unified (conventions.md#unification-siblings).
-    The strip reads the moneyness the deal declares (``use_forwards``); the per-fixing smile
-    convention is an open modelling question (roadmap.md). Under Heston-Nandi neither vol quantity
-    is built - nothing correct reads an implied surface under a non-GBM spot model, so a leg that
-    reaches for one fails on the shape rather than quietly pricing a second model. Quanto bends the
-    per-fixing carry; compo prices the product S*X - spot scaled by the fx cross, fx carry added per
-    fixing, interval strip composed with the fx expiry vol (``calc_vol_adjustment``).
+    legitimate reads of one surface, deliberately not unified. The strip reads the moneyness the
+    deal declares (``use_forwards``); the per-fixing smile convention is an open modelling question
+    (roadmap.md). Under Heston-Nandi neither vol quantity is built, so a leg that reaches for an
+    implied surface fails on the shape rather than quietly pricing a second model. Quanto bends the
+    per-fixing carry; compo prices the product S*X (``calc_vol_adjustment``).
 
     Conventions this loop owns:
 
@@ -1611,68 +1417,48 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
       rebate as a receipt.
     - The per-row hit mask carries STRICTLY EARLIER observations only. The block's own date is
       priced by ``sim_spot_oss`` as its zero-length first step, so folding it in would count the
-      same crossing twice; the barrier is observed only on its own dates.
+      same crossing twice.
     - The rebate settles on the date it falls due, excluding the TERMINAL row - the single settle
       after the loop already pays that one in full inside ``mtm_list[-1][-1]``.
     - ONE model and ONE forward price every leg: the already-hit KI vanilla runs the parity leg's
       own algebra on the parity leg's own discretisation (and raises the same batch-constant-carry
-      refusal), and both legs read ``total_log_forward`` so a second spelling is unrepresentable.
-      The variance floor binds only on the zero-length first interval (roadmap.md for the open
-      exact-indicator item).
+      refusal), and both legs read ``total_log_forward``. The variance floor binds only on the
+      zero-length first interval.
 
     BOUNDARY AAD (``shared.boundary_aad``): the gap is each crossing's margin, graph retained,
     signed so ``gap > 0`` means CROSSED - a down barrier is crossed from above, so its gap is
-    ``log(barrier/spot)``. The whole latch is built OUTSIDE the recompute node: the decision is an
-    outer scenario spot, whose graph the node does not untape. Blocks where every scenario has
-    resolved skip the OSS and carry no counterfactual - running one would draw random numbers and
-    move the reported value. ``sim_spot_oss`` is pure (no cash settled, nothing registered), so the
-    recompute port only hoists the Heston-Nandi scalars into theta.
+    ``log(barrier/spot)``. The whole latch is built OUTSIDE the recompute node, the decision being
+    an outer scenario spot. Blocks where every scenario has resolved skip the OSS and carry no
+    counterfactual - running one would draw random numbers and move the reported value.
+    ``sim_spot_oss`` is pure, so the recompute port only hoists the Heston-Nandi scalars into theta.
 
     BRANCH AND WEIGHT (``Branch_And_Weight: 'Yes'``, base valuation only) SWAPS the estimator for
     that registration rather than joining it. Off, and absent, is every line above bit for bit.
 
-    THIS SAMPLER WAS THE SMOOTH ESTIMATOR ALREADY - it is where the idiom came from, and the switch
-    is the VERIFICATION of that rather than a rewrite. Every monitored step is an analytic ``p`` with
-    a survival-truncated continuation, the knock-out's rebate is paid analytically at the fixing it
+    THIS SAMPLER IS ALREADY THE SMOOTH ESTIMATOR: every monitored step is an analytic ``p`` with a
+    survival-truncated continuation, the knock-out's rebate is paid analytically at the fixing it
     falls due (``(1 - p) * L * rebate * D_j``), the knock-IN's is the same survival weight carried to
     expiry on the parity leg, and a digital's terminal step is INTEGRATED. No indicator is formed on
-    the simulated tape at all, so the value under the switch is bit-identical - measured across the
-    whole deal family (knock-out and knock-in, up and down, call and put, bought and sold, with and
-    without a cash rebate, and the binary sibling) at absent == 'No' == 'Yes' to the last bit. What
-    changes is only what a run may then DO with it:
+    the simulated tape, so the value under the switch is bit-identical. What changes is what a run
+    may then do with it:
 
-    - THE OUTER REGISTRATION IS SKIPPED, so ``Greeks: 'All'`` flows where it used to refuse. That
-      decision is an OBSERVED scenario crossing - data, not simulated state - which
-      branch-and-weight has no conditioning step to integrate against. What makes skipping it lose
-      NOTHING is not that it carries no graph (the gap is built from the scenario spot and does),
-      but that base valuation - the one calculation declaring the switch - has ONE scenario, so
-      ``boundary_weights`` finds no spread for a kernel width and returns the empty-kernel branch:
-      the correction is exactly zero. That is gated as byte identity of the whole first-order frame
-      with the switch on and off, rather than argued.
-    - THE TERMINAL EUROPEAN'S KINK gets its second-order term (``accrual_kink_term``), because after
-      every barrier decision has become a ``Phi`` that relu is the only place left where pathwise
-      AAD would answer a gamma of exactly zero. It is added to ``surv_payoff``, which is BEFORE the
-      in-out parity subtraction, so both legs carry one corrected quantity - and that is what keeps
-      parity true at second order rather than only at value.
+    - THE OUTER REGISTRATION IS SKIPPED, so ``Greeks: 'All'`` flows where it used to refuse. Base
+      valuation - the one calculation declaring the switch - has ONE scenario, so
+      ``boundary_weights`` finds no spread for a kernel width and the correction is exactly zero.
+    - THE TERMINAL EUROPEAN'S KINK gets its second-order term (``accrual_kink_term``), that relu
+      being the only place left where pathwise AAD would answer a gamma of exactly zero. It is added
+      to ``surv_payoff``, BEFORE the in-out parity subtraction, so both legs carry one corrected
+      quantity and parity holds at second order rather than only at value.
 
-    IN-OUT PARITY IS THIS PRICER'S CONSERVATION STATEMENT, and it is exact on the smooth path:
-    ``KO + KI == vanilla + rebate`` in a zero-rate world, at VALUE, DELTA and GAMMA, measured to
-    0.0e+00 at 16384 paths against Black's 9.9476449660 / 0.5497382248 / 0.0158335075. The rebate
-    half is the ``SurvivalLedger`` identity read off two prices and nothing else: the knock-out pays
+    IN-OUT PARITY IS THIS PRICER'S CONSERVATION STATEMENT and is exact on the smooth path:
+    ``KO + KI == vanilla + rebate`` in a zero-rate world, at VALUE, DELTA and GAMMA. The rebate half
+    is the ``SurvivalLedger`` identity read off two prices: the knock-out pays
     ``sum_j fired_j * D_j`` of it and the knock-in ``alive_T * D_T``, so their sum is the rebate
-    exactly when the telescoping holds, and the residual stays 0.0e+00 as the rebate is walked from
-    0 to 12.5. A ledger that lost mass would show up here as a rebate-proportional error in a price.
+    exactly when the telescoping holds.
 
-    MEASURED under the switch, 32768 paths, one year at 25% vol: a LIVE monthly down-and-out at 90
-    reports gamma 0.00969411 against a CRN ladder of its own corrected delta at 0.00974971 - 0.57%
-    agreement at 2.12% flatness, on a deal whose second order was refused outright before. The
-    never-knocking control lands on Black (0.01560843 against 0.01583351, 1.42%), and without the
-    terminal kink term that control is an EXACT zero, which is what says the term is being read.
-    On the LIVE barrier the term is worth 0.00108005 of that 0.00969411 - about a ninth - because
-    the barrier decisions are already `Phi`s whose curvature pathwise AAD carries; dropping it there
-    leaves 0.00861379, a perfectly plausible-looking number 13.19% off its own ladder. Which is why
-    both mutants are gated and neither gate is the other's: parity catches the term reaching one
-    leg only, the ladder catches it reaching neither.
+    DECLARED LIMITATION at second order: a LIVE monthly down-and-out reports gamma within ~0.6% of a
+    CRN ladder of its own corrected delta at 32768 paths, at ~2% ladder flatness; the never-knocking
+    control lands within ~1.4% of Black.
     """
 
     def sim_spot_oss(offset, sobol, num_sims,
@@ -1686,14 +1472,14 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         the simulation steps on, ``sd_to_expiry`` the European standard deviation ``[N_block, batch]``
         the parity vanilla is valued at.
 
-        Under Heston-Nandi the KI parity vanilla is the HN closed form over ``n_total`` daily steps with
-        a scalar per-step carry - valid only while the carry is batch-constant, hence the loud refusal
-        under stochastic rates (the extension is a batched-carry ``hn_call``).
+        Under Heston-Nandi the KI parity vanilla is the HN closed form over ``n_total`` daily steps
+        with a scalar per-step carry, valid only while the carry is batch-constant - hence the loud
+        refusal under stochastic rates.
 
         A digital's TERMINAL step is INTEGRATED, not sampled: an indicator on a drawn spot has zero
-        derivative almost everywhere, so sampling it loses the density term that is most of a digital's
-        delta and vega. The HN branch keeps the indicator - its per-path conditional variance has no
-        scalar closed form to integrate against.
+        derivative almost everywhere, so sampling it loses the density term that is most of a
+        digital's delta and vega. The HN branch keeps the indicator - its per-path conditional
+        variance has no scalar closed form to integrate against.
         """
         eps = torch.finfo(shared.one.dtype).eps
         # the declared model as a walking kit - the pricer names it once, here
@@ -1701,16 +1487,14 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         hn = kit is not None
 
         # `carry` is the INTERVAL carry rate (forward_carry_rate), so this product is the interval
-        # integral. GBM folds it with the vol; HN keeps it raw (its recursion supplies variance).
+        # integral. GBM folds it with the vol; HN keeps it raw, its recursion supplying variance
         dt = times.unsqueeze(axis=2)                        # [N_block, N_fix, 1]
         carry_int = carry * dt                              # [N_block, N_fix, batch]
         if not hn:
-            # `vols` is the INTERVAL vol strip (forward_vol_rate), so this product is the interval
-            # variance - one implied vol applied to every interval is the defect one factor over
+            # `vols` is the INTERVAL vol strip (forward_vol_rate), so this is interval variance
             var = vols * vols * dt                          # [N_block, N_fix, batch]
-            # the floor is the ZERO-LENGTH interval's survival width and only that (see docstring);
-            # a real interval simulates at its own dispersion, and both consumers read the SAME
-            # variance so every interval is a martingale under the law it is actually drawn from
+            # the floor is the ZERO-LENGTH interval's survival width and only that; both consumers
+            # read the SAME variance, so every interval is a martingale under its own drawn law
             var = torch.where(dt > 0, var, var.clamp(min=1e-4))
             drift = carry_int - 0.5 * var                   # [N_block, N_fix, batch]
             vol = torch.sqrt(var)                           # [N_block, N_fix, batch]
@@ -1737,9 +1521,9 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
             if direction == BARRIER_IN:
                 if not hn:
-                    # Precompute analytic vanilla for parity: KI = Vanilla - KO_pure + rebate * E[L_T]
-                    # ONE VOL prices every European leg, as ONE FORWARD does: this is the same
-                    # `sd_to_expiry` the already-hit leg marks with, not the strip's own total.
+                    # the parity vanilla: KI = Vanilla - KO_pure + rebate * E[L_T]. ONE VOL prices
+                    # every European leg - the same `sd_to_expiry` the already-hit leg marks with,
+                    # not the strip's own total
                     fwd_to_T = s * torch.exp(total_log_forward(carry[blk], times[blk]))
                     vol_to_T = sd_to_expiry[blk]
                     if isdigital:
@@ -1749,8 +1533,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                         vanilla_pv = utils.black_european_option(
                             fwd_to_T, strike, vol_to_T, 1.0, 1.0, phi, shared) * D[-1]
                 else:
-                    # HN parity vanilla = HN closed form; scalar r_step needs batch-constant
-                    # carry, so the guard is loud rather than silent (see docstring)
+                    # the HN closed form; a scalar r_step needs batch-constant carry, so the guard
+                    # is loud rather than silent
                     n_total = int(sum(nj))
                     carry_total = total_log_forward(carry[blk], times[blk]).reshape(-1)
                     if float(carry_total.detach().max() - carry_total.detach().min()) > 1.0e-9:
@@ -1779,8 +1563,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                 if hn:
                     b_step = b_steps[j]
                     if isBarrierDate_block[j] > 0:
-                        # nj-1 unmonitored daily steps + 1 monitored (OSS truncation at the
-                        # CONSTANT barrier, F-measurable over the interval - exact, product unchanged)
+                        # nj-1 unmonitored daily steps + 1 monitored: the OSS truncation is at the
+                        # CONSTANT barrier, F-measurable over the interval, so the scheme is exact
                         Sj, st = kit.substeps(
                             Sj, st, b_step, nj[j] - 1, shared, num_sims, antithetic=True)
                         h = kit.h(st)
@@ -1806,7 +1590,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
                 if isdigital and j == N_fix - 1:
                     # integrate the terminal step: a sampled indicator puts no density term on the
-                    # tape, and the delta/vega it costs are measured in the docstring
+                    # tape, which is most of a digital's delta and vega
                     z_pay = (torch.log(strike / Sj) - r_j) / sig_j
                     lo, hi = (z_pay, None) if phi == OPTION_CALL else (None, z_pay)
                     if isBarrierDate_block[j] > 0:
@@ -1829,8 +1613,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                     continue
 
                 if isBarrierDate_block[j] > 0:
-                    # z_max: the standard-normal threshold at which spot = H
-                    # GBM: log(S_j/S_{j-1}) = r_j + sig_j * Z  (r_j already includes -0.5*var term)
+                    # z_max: the standard-normal threshold at which spot = H, under
+                    # log(S_j/S_{j-1}) = r_j + sig_j * Z (r_j already carries -0.5*var)
                     z_max = (torch.log(barrier / Sj) - r_j) / sig_j  # [batch, 2*num_sims]
 
                     if eta == BARRIER_UP:
@@ -1859,10 +1643,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                 gain = phi * (Sj - strike)
                 payoff = (gain > 0).to(D_T.dtype) if isdigital else torch.relu(gain)
                 if second_order and not isdigital:
-                    # the ONE kink this loop still samples. Every barrier decision above is already
-                    # a `Phi`, so the terminal European is the only place pathwise AAD would hand
-                    # back a gamma of exactly zero - and a digital never reaches here, its terminal
-                    # step being integrated rather than sampled (see the docstring)
+                    # the ONE kink this loop still samples: every barrier decision above is already
+                    # a `Phi`, and a digital's terminal step is integrated rather than sampled
                     payoff = payoff + accrual_kink_term(gain, N_fix - 1)
                 surv_payoff = L * payoff
 
@@ -1870,16 +1652,15 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                 # survivors receive the vanilla payoff at expiry
                 P = P + surv_payoff * D_T
             else:
-                # BARRIER_IN via in-out parity: KI = Vanilla - KO_pure + rebate * E[survival]
-                # Individual paths can go negative (P is a control-variate estimator, not a
-                # per-path price), but the option value is always ≥ 0, so clamp the mean.
+                # in-out parity: KI = Vanilla - KO_pure + rebate * E[survival]. Individual paths
+                # can go negative - P is a control-variate estimator, not a per-path price - but
+                # the option value is always >= 0, so the mean is clamped
                 P = vanilla_pv - D_T * (surv_payoff - L * rebate_per_unit)
 
             mcmc.append(P.mean(dim=1).clamp(min=0.0))
 
         return (torch.stack(mcmc),)
 
-    # --- outer block loop (identical setup to pv_discrete_barrier_option) ---
     mtm_list = []
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -1903,11 +1684,10 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     size = deal_data.Instrument.field['Cash_Payoff'] if isdigital else deal_data.Instrument.field['Units']
     nominal = factor_dep['Buy_Sell'] * size
 
-    # per-unit because sim_spot_oss scales by nominal; divide by the UNSIGNED size or Buy_Sell,
-    # already inside nominal, cancels and a sold knock-out books the rebate it pays as a receipt
+    # per-unit because sim_spot_oss scales by nominal; the UNSIGNED size, or Buy_Sell (already
+    # inside nominal) cancels and a sold knock-out books the rebate it pays as a receipt
     rebate_per_unit = cash_rebate / size
 
-    # opt-in Heston-Nandi spot model (SpotModel='HestonNandi'); absent => byte-identical GBM path
     # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
     hn_scalars = oss_model_scalars(factor_dep, shared)
     hn = bool(hn_scalars)
@@ -1929,15 +1709,12 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     forward = spot * torch.exp(b * expiry_years)
     moneyness = calc_moneyness(shared.one * strike, spot, forward, deal_data, use_forwards, invert_moneyness)
 
-    # Per-scenario flag: has the barrier been crossed at a past discrete observation date?
-    # Once set, KO scenarios are worth 0 and KI scenarios are worth the vanilla European.
+    # per-scenario flag: has the barrier been crossed at a past discrete observation date? Once
+    # set, KO scenarios are worth 0 and KI scenarios are worth the vanilla European
     barrier_hit = shared.one.new_zeros(shared.simulation_batch, dtype=torch.bool)
     row_ofs = 0
-    # A crossing is OBSERVED, so its value jump is real and must not be smoothed; what ordinary AAD
-    # drops is the flux of scenarios across the barrier. Recording the decision costs nothing when
-    # sensitivities are not wanted, so it is gated rather than always on.
-    # THE SWITCH, read once before a draw is taken so a non-GBM refusal lands first; it SUPERSEDES
-    # the registration rather than joining it (see the docstring's BRANCH AND WEIGHT section)
+    # read once before a draw is taken so a non-GBM refusal lands first; it SUPERSEDES the
+    # registration below rather than joining it
     smooth = branch_and_weight(shared, deal_data)
     second_order = smooth and getattr(shared, 'gamma', False)
     boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
@@ -1950,7 +1727,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         sample_index_t = start_index[index]
 
         # per-row hit mask [N_mtm, batch]: hits at STRICTLY EARLIER observations only - this block's
-        # own date is priced by sim_spot_oss as its zero-length first step (see docstring)
+        # own date is priced by sim_spot_oss as its zero-length first step
         row_barrier_hit = barrier_hit.unsqueeze(0).expand(len(t_block), -1)
         row_ofs += len(t_block)
         if boundary_aad:
@@ -1984,21 +1761,16 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
         fixing_block = daycount_fn(fixings)
         expiry = daycount_fn(tenor_block)
-        # the EUROPEAN read: the surface's own vol at (K, remaining expiry). The implied surface
-        # has NO consumer under a non-GBM spot model - the OSS steps the recursion and the
-        # already-hit leg is the same closed form - so neither vol quantity is built there, and a
-        # leg that reaches for one fails on the shape instead of quietly pricing another model
+        # the EUROPEAN read: the surface's own vol at (K, remaining expiry). Under a non-GBM spot
+        # model the implied surface has no consumer, so neither vol quantity is built there
         expiry_vols = utils.calc_time_grid_vol_rate(
             factor_dep['Volatility'], moneyness_block, expiry,
             shared) if not hn else spot_block.new_empty(0)
 
         adj = None
         if factor_dep.get('Check_Payoff_Type', False):
-            # a DEAL-LEVEL adjustment, so its vol input stays the expiry read. Quanto bends the
-            # per-fixing carry; compo changes the UNDERLYING to S*X - the spot scaled by the fx
-            # cross, the fx carry added per fixing, and the interval strip composed with the fx
-            # expiry vol below. Barrier and strike are payoff-currency quantities, so they compare
-            # against the scaled spot as authored.
+            # a DEAL-LEVEL adjustment, so its vol input stays the expiry read. Barrier and strike
+            # are payoff-currency quantities, so they compare against the scaled spot as authored
             adj = calc_vol_adjustment(factor_dep, deal_time, expiry, expiry_vols, shared, fixings)
             expiry_vols = adj['vol']
             drifts = drifts + adj['carry_adj']
@@ -2007,19 +1779,17 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         sample_ts = drifts.new(
             np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)]))
         cum_t = drifts.new(fixing_block)
-        # the carry over each INTERVAL, which is not the zero carry to each fixing (see
-        # forward_carry_rate); `fixing_block` is the cumulative strip the difference needs
+        # the carry over each INTERVAL, which is not the zero carry to each fixing
+        # (forward_carry_rate); `fixing_block` is the cumulative strip the difference needs
         fwd_drifts = forward_carry_rate(drifts, cum_t, sample_ts)
         # the SIMULATION read: the surface at every fixing's own TENOR and the deal's own declared
-        # moneyness, differenced into forward variance. An implied vol is cumulative, so an
-        # interval's variance is a DIFFERENCE and not sigma(T)^2*dt - which telescopes to the same
-        # total and is therefore invisible to every European limit (see forward_vol_rate).
+        # moneyness, differenced into forward variance (forward_vol_rate)
         interval_vols = forward_vol_rate(forward_vol_strip(
             deal_data, shared.one * strike, spot_block, drifts, fixing_block, shared,
             invert_moneyness, use_forwards), cum_t, sample_ts) if not hn else spot_block.new_empty(0)
         if adj is not None and adj['fx_vol'] is not None:
             # compo: the simulation steps S*X, so each interval's vol is the PRODUCT's - the
-            # asset's own interval strip composed with the fx expiry read (see compo_vol)
+            # asset's own interval strip composed with the fx expiry read
             interval_vols = compo_vol(interval_vols, adj['fx_vol'].unsqueeze(1), adj['rho'])
         # sigma(K, tau) * sqrt(tau): the ONE European standard deviation, marked by the already-hit
         # leg below and by the in-out-parity vanilla inside `sim_spot_oss`
@@ -2036,12 +1806,11 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         if some_hit or boundary_aad:
             if direction == BARRIER_IN:
                 # ONE forward, shared with the in-out-parity leg inside sim_spot_oss - the two
-                # value the same European on the same state, so they read one expression
+                # value the same European on the same state
                 log_fwd = total_log_forward(fwd_drifts, sample_ts)              # [N_block, batch]
                 if hn:
-                    # an already-knocked-in KI IS a vanilla, and it is priced under the DECLARED
-                    # model on the parity leg's own discretisation - same per-row n_total, same
-                    # scalar carry - so one law prices both legs of this pricer (see sim_spot_oss)
+                    # an already-knocked-in KI IS a vanilla, priced under the DECLARED model on the
+                    # parity leg's own discretisation - same per-row n_total, same scalar carry
                     carry_det = log_fwd.detach()  # a guard reads a magnitude, not the tape
                     carry_spread = float((carry_det.amax(dim=1) - carry_det.amin(dim=1)).max())
                     if carry_spread > 1.0e-9:
@@ -2080,16 +1849,16 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                 hit_value = shared.one.new_zeros(len(t_block), shared.simulation_batch)
 
         if all_hit:
-            # Every row of every scenario has already resolved — skip OSS entirely
+            # every row of every scenario has already resolved - skip OSS entirely
             theo_cashflow = hit_value
         else:
             simulate = partial(sim_spot_oss, sample_index_t, sobol, shared.MCMC_sims)
             theta = (spot_block, interval_vols, sd_to_expiry, sample_ts, fwd_drifts,
                      discount_rates) + hn_scalars
-            # the SAME callable either way: under the node it is called twice (see InnerMCRecompute)
+            # the SAME callable either way: under the node it is called twice
             oss_result, = InnerMCRecompute.run(shared, simulate, *theta)
             oss_result = nominal * oss_result
-            # some_hit: override per-row per-scenario where the barrier had already been crossed
+            # override per-row per-scenario where the barrier had already been crossed
             theo_cashflow = torch.where(
                 row_barrier_hit, hit_value, oss_result) if some_hit else oss_result
 
@@ -2101,11 +1870,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         mtm_list.append(theo_cashflow)
 
     if boundary_aad and b_gaps and time_grid.report_index is not None:
-        # Branches stay on THIS pricer's grid and in its own currency; `to_mtm` is the deal's own
-        # map onto the MTM grid, which the collateral chain consumes. report_index rides along so
-        # the additive route can go on to the reporting grid at the point of use - and is None on
-        # a grid nobody reports off (an HMC tradable, a calibration's benchmark grid), which is
-        # what makes the registration not worth making.
+        # branches stay on THIS pricer's grid and in its own currency; report_index is None on a
+        # grid nobody reports off, where there is no reporting row to register against
         shared.boundary_sets.append(utils.LatchedBoundarySet(
             gaps=b_gaps, fired=b_crossed, obs_before=np.array(b_obs_before),
             untriggered=torch.cat(b_alive, dim=0), triggered=torch.cat(b_dead, dim=0),
@@ -2119,22 +1885,18 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
 def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
                       tau, payoff_currency, invert_moneyness=False, use_forwards=False):
-    """
-    Single-barrier option valued by closed form at each scenario date, weighted by a Brownian-bridge
-    touch probability.
+    """Single-barrier option valued by closed form at each scenario date, weighted by a
+    Brownian-bridge touch probability.
 
     A barrier is monitored CONTINUOUSLY but the scenario grid only observes its own dates, so asking
-    "is the spot beyond the barrier now" misses every path that crossed and came back - measured on a
-    quarterly grid, that overstates survival by 0.18, i.e. 61% too many paths treated as still alive.
-    ``touched`` is that probability and it WEIGHTS both branches, so it carries through with no
-    further change - which is what makes the deal value the correct expectation instead of one draw,
-    and what makes it differentiable where an indicator was not.
+    "is the spot beyond the barrier now" misses every path that crossed and came back - on a
+    quarterly grid that overstates survival by 0.18. ``touched`` is the bridge probability and it
+    WEIGHTS both branches, which is what makes the deal value an expectation rather than one draw,
+    and differentiable where an indicator was not.
 
-    Discrete monitoring uses Broadie-Glasserman-Kou: a discretely monitored barrier is priced by the
-    continuous formula against a barrier shifted AWAY from the live region by the monitoring
-    interval's vol. The shift direction is the barrier TYPE, not where the spot happens to sit - the
-    older ``2 * (barrier > s_t) - 1`` evaluates to exactly this on the surviving support, and the
-    surviving support is all that is ever weighted, so dropping the indicator is inert.
+    Discrete monitoring uses Broadie-Glasserman-Kou: the continuous formula against a barrier
+    shifted AWAY from the live region by the monitoring interval's vol. The shift direction is the
+    barrier TYPE, not where the spot happens to sit.
     """
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
 
@@ -2175,7 +1937,6 @@ def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
 
     mtm_list = []
     prev_touched = 0.0
-    # `touched` is a bridge PROBABILITY weighting both branches, not an indicator (see docstring)
     interval_variance = utils.bridge_interval_variance(shared, factor_dep, deal_time)
     prev_spot = None
 
@@ -2185,15 +1946,13 @@ def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
         # barrier options are very sensitive to vols - so we clamp them to 5%
         sig = raw_sig.clamp(min=0.05)
 
-        # Broadie-Glasserman-Kou shift, AWAY from the live region by the monitoring interval's vol;
-        # the direction is the barrier TYPE, not the spot's side (see docstring)
+        # Broadie-Glasserman-Kou shift, AWAY from the live region by the monitoring interval's vol
         barrier_t = barrier * torch.exp(
             (1.0 if eta == BARRIER_UP else -1.0) * sig * factor_dep['Barrier_Monitoring']
         ) if factor_dep['Barrier_Monitoring'] else barrier
 
-        # The bridge has to test the SAME barrier the closed form prices against. Handed the raw
-        # one it monitored continuously a barrier the product observes monthly, and the two
-        # disagreed: the profile decayed 11.6% where it must be a martingale.
+        # the bridge tests the SAME barrier the closed form prices against, or the profile is not
+        # a martingale
         touched = utils.barrier_touched(prev_touched, prev_spot, s_t, barrier_t,
                                         interval_variance[index], eta == BARRIER_UP)
         prev_spot = s_t
@@ -2203,9 +1962,8 @@ def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
             payoff = buy_or_sell * nominal * barrierOption(
                 sig, exp, cash_rebate / nominal, b_t, r_t, s_t, barrier_t)
         elif direction == BARRIER_OUT and expiry[index] == 0.0:
-            # the closed form divides by sqrt(expiry), so it cannot be asked for the value AT
-            # expiry - where a surviving knock-out is worth exactly its intrinsic. The knock-IN
-            # branch already carries its own expiry case and reaches here worth only its rebate.
+            # the closed form divides by sqrt(expiry) and cannot be asked for the value AT expiry,
+            # where a surviving knock-out is worth exactly its intrinsic
             payoff = buy_or_sell * nominal * torch.relu(phi * (f_t - strike))
         else:
             payoff = 0.0
@@ -2213,7 +1971,6 @@ def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
         barrier_part = (1.0 - touched) * payoff
 
         if direction == BARRIER_IN:
-            # barrier ? and in
             payoff_european = buy_or_sell * (
                 utils.black_european_option(f_t, strike, sig, expiry[index], 1.0, phi, shared) * torch.exp(
                     -r_t * exp) if expiry[index] else torch.relu(phi * (f_t - strike))
@@ -2222,30 +1979,25 @@ def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
             rebate_part = buy_or_sell * cash_rebate * (1 - touched) if expiry[index] == 0.0 else 0.0
             mtm_list.append(rebate_part + european_part + barrier_part)
         else:
-            # barrier ? and out
             rebate_part = buy_or_sell * cash_rebate * (touched - prev_touched)
             mtm_list.append(rebate_part + barrier_part)
-            # settle cashflows (The potential rebate)
             if cash_rebate and expiry[index] > 0.0:
                 cash_settle(shared, payoff_currency, cash_index, rebate_part)
 
         prev_touched = touched
 
-    # settle cashflows (The one at expiry)
     cash_settle(shared, payoff_currency, deal_data.Time_dep.deal_time_grid[-1], mtm_list[-1])
     return torch.stack(mtm_list)
 
 
 def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
                         tau, payoff_currency, invert_moneyness=False, use_forwards=False):
-    """
-    One-touch (or no-touch) digital valued by closed form at each scenario date, weighted by the same
-    Brownian-bridge touch probability ``pv_barrier_option`` uses.
+    """One-touch (or no-touch) digital valued by closed form at each scenario date, weighted by the
+    same Brownian-bridge touch probability ``pv_barrier_option`` uses.
 
     Under ``Payment_Timing='Expiry'`` the nominal is paid at expiry if the barrier was EVER touched,
-    so between the touch and expiry the path holds a CERTAIN claim on the nominal - worth its
-    discounted value, not nothing. Carrying zero there reported a touched one-touch as worthless for
-    the rest of its life and then jumped it to the nominal on the last date.
+    so between the touch and expiry the path holds a CERTAIN claim on the nominal, worth its
+    discounted value rather than nothing.
     """
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -2283,16 +2035,15 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
     mtm_list = []
     prev_touched = 0.0
     eta_scale = 0.7071067811865476 * eta
-    # Same continuous-vs-observed mismatch as pv_barrier_option, but this payoff pays ON touch,
-    # so missing a crossing UNDERSTATES it rather than overstating survival.
+    # the same continuous-vs-observed mismatch as pv_barrier_option, but this payoff pays ON touch,
+    # so missing a crossing UNDERSTATES it rather than overstating survival
     interval_variance = utils.bridge_interval_variance(shared, factor_dep, deal_time)
     prev_spot = None
 
     for index, (raw_sig, exp, b_t, r_t, s_t, cash_index) in enumerate(zip(
             sigma, expiry_years, b, r, spot, deal_data.Time_dep.deal_time_grid)):
 
-        # the same monitoring-adjusted barrier the closed form below prices against - see
-        # pv_barrier_option for why the shift direction is the barrier type and not the spot's side
+        # the same monitoring-adjusted barrier the closed form below prices against
         barrier_t = barrier * torch.exp(
             (1.0 if eta == BARRIER_UP else -1.0) * raw_sig * factor_dep['Barrier_Monitoring']
         ) if factor_dep['Barrier_Monitoring'] else barrier
@@ -2328,7 +2079,6 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
         # value still contingent on a touch that has not happened yet
         one_touch_part = (1.0 - touched) * buy_or_sell * nominal * payoff
 
-        # settle cashflows (The potential rebate)
         if deal_data.Instrument.field['Payment_Timing'] == 'Touch':
             # paid AT the touch, so it settles here and leaves the deal - already-touched paths
             # carry nothing forward, which is why only the increment appears
@@ -2341,7 +2091,7 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
                 cash_settle(shared, payoff_currency, cash_index, rebate_part)
         else:
             # touched but paid at expiry: a CERTAIN claim on the nominal, so carry its discounted
-            # value rather than zero (see docstring)
+            # value rather than zero
             rebate_part = touched * buy_or_sell * nominal * torch.exp(-r_t * exp)
 
         mtm_list.append(rebate_part + one_touch_part)
@@ -2352,6 +2102,9 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
 
 def pv_partial_barrier_option(shared, time_grid, deal_data, nominal,
                               spot, b, tau, tau1, payoff_currency, invert_moneyness=False):
+    """Partial-time barrier option over the deal's scenario grid: the closed form on the surviving
+    branch, the vanilla (knock-in) or the rebate (knock-out) on the touched one, weighted by a
+    Brownian-bridge touch probability accumulated only INSIDE the barrier window."""
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     factor_dep = deal_data.Factor_dep
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
@@ -2383,8 +2136,7 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal,
     sigma = utils.calc_time_grid_vol_rate(factor_dep['Volatility'], moneyness, expiry, shared)
 
     if factor_dep['Barrier_Monitoring']:
-        # Broadie-Glasserman-Kou shift, AWAY from the live region by the barrier TYPE - the
-        # spot's side is not the shift's direction (`pv_barrier_option` states the convention)
+        # Broadie-Glasserman-Kou shift, AWAY from the live region by the barrier TYPE
         adj_barrier = barrier * torch.exp(
             (1.0 if eta == BARRIER_UP else -1.0) * sigma * factor_dep['Barrier_Monitoring'])
     else:
@@ -2401,21 +2153,17 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal,
     expiry_years, limit_years = factor_dep[expiry_years_key]
 
     at_start = deal_data.Instrument.field['Barrier_At_Start'] == 'Yes'
-    # rows at and past the limit date fed the closed form a non-positive window and priced NaN
-    # through sqrt (inf - inf in the e-terms at zero). The clamp is also the VALUATION there: a
-    # start-window repriced over a vanishing window IS the vanilla on its surviving branch, and
-    # an end-window row sits inside its window, where a vanishing head IS the full barrier for
-    # the remainder - both limits of the same formula, to O(clamp)
+    # the clamp keeps the window positive (the closed form is NaN at zero) and is also the
+    # VALUATION there, both cases being limits of the same formula to O(clamp): a vanishing start
+    # window IS the vanilla on its surviving branch, a vanishing head IS the full barrier
     barrier_payoff = buy_or_sell * nominal * getpartialbarrierpayoff(
         isKnockIn, eta, phi, spot_prior, strike, adj_barrier, at_start,
         limit_years.clamp(min=1e-6), expiry_years, r, b, sigma)
 
     if need_spot_at_expiry:
-        # the SAME running touch probability as `pv_barrier_option`: an endpoint beyond the
-        # barrier is a certain touch, an interior crossing the exact Brownian-bridge one -
-        # accumulated ONLY inside the barrier window, because the window is the deal. The
-        # interval straddling the limit date is attributed to the side its far end sits on,
-        # and the bridge tests the SAME shifted barrier the closed form prices against
+        # the SAME running touch probability as `pv_barrier_option`, accumulated ONLY inside the
+        # barrier window. The interval straddling the limit date is attributed to the side its far
+        # end sits on, and the bridge tests the SAME shifted barrier the closed form prices against
         interval_variance = utils.bridge_interval_variance(shared, factor_dep, deal_time)
         interval_days = deal_time[:, utils.TIME_GRID_MTM]
         in_window = np.concatenate([
@@ -2436,7 +2184,6 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal,
             rows.append(prev_touched)
         barrier_touched = torch.stack(rows)
         first_touch = barrier_touched[1:] - barrier_touched[:-1]
-        # final payoff
         payoff_at = buy_or_sell * torch.relu(phi * (spot_at - strike))
 
         if direction == BARRIER_IN:
@@ -2447,16 +2194,13 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal,
             barrier_part = (1.0 - barrier_touched) * F.pad(
                 barrier_payoff, [0, 0, 0, 1], value=buy_or_sell * cash_rebate)
             combined = european_part + barrier_part
-            # settle cashflows (can only happen at the end)
+            # the knock-in can only settle at the end
             cash_settle(shared, payoff_currency, deal_data.Time_dep.deal_time_grid[-1], combined[-1])
         else:
-            # barrier out
             barrier_part = (1.0 - barrier_touched) * torch.cat([barrier_payoff, nominal * payoff_at], dim=0)
             rebate_part = buy_or_sell * cash_rebate * first_touch
             combined = F.pad(buy_or_sell * cash_rebate * first_touch, [0, 0, 1, 0]) + barrier_part
-            # settle cashflows (The one at expiry)
             cash_settle(shared, payoff_currency, deal_data.Time_dep.deal_time_grid[-1], barrier_part[-1])
-            # settle cashflows (The potential rebate knockout)
             if cash_rebate:
                 for cash_index, cash in zip(deal_data.Time_dep.deal_time_grid[1:], rebate_part):
                     cash_settle(shared, payoff_currency, cash_index, cash)
@@ -2467,6 +2211,12 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal,
 
 
 def pv_american_option(shared, time_grid, deal_data, nominal, moneyness, spot, forward):
+    """American option by the Bjerksund-Stensland trigger approximation, floored at Black.
+
+    Rows where the carry is at or above the rate hold no early exercise premium and take Black
+    directly. A scenario whose spot reaches the exercise trigger settles its intrinsic on that date
+    and is worth nothing after.
+    """
     def phi(gamma, H, I):
         kappa = (2.0 * safe_b) / sigma2 + 2.0 * gamma - 1.0
         d = (torch.log(H / safe_S) - (safe_b + (gamma - 0.5) * sigma2) * tau) / vol
@@ -2483,16 +2233,13 @@ def pv_american_option(shared, time_grid, deal_data, nominal, moneyness, spot, f
     expiry = discount.code[0][utils.FACTOR_INDEX_Daycount](tenor_in_days)
     sigma = utils.calc_time_grid_vol_rate(factor_dep['Volatility'], moneyness, expiry, shared)
 
-    # make sure there are no zeros
+    # clamped away from zero: the formulae below divide by tau
     tau = spot.new(expiry.reshape(-1, 1)).clamp(min=1e-5)
-    # cost of carry
     b = torch.log(forward / spot) / tau
-    # interest rates
     r = torch.squeeze(
         discount.gather_weighted_curve(shared, tenor_in_days.reshape(-1, 1), multiply_by_time=False), dim=1)
-    # actual volatility
     vol = sigma * torch.sqrt(tau)
-    # adjust if this is a put option
+    # a put is the call on the transposed (spot, strike) with the carry reflected
     if factor_dep['Option_Type'] > 0:
         S, K = spot, factor_dep['Strike_Price'] * shared.one
     else:
@@ -2505,15 +2252,14 @@ def pv_american_option(shared, time_grid, deal_data, nominal, moneyness, spot, f
     b_over_sigma2 = safe_b / sigma2
     # pad all non american exercise points (0.375 is arbitrary)
     safe_r = american * r + ~american * 0.375 * sigma2
-    # make sure we avoid nans
+    # clamped to keep the root and the gradients defined on the padded points
     safe_sqrt = ((b_over_sigma2 - 0.5) ** 2 + 2.0 * safe_r / sigma2).clamp(min=1e-6)
     beta = (0.5 - b_over_sigma2) + torch.sqrt(safe_sqrt)
     r_b = safe_r - safe_b
-    # calculate the barrier
+    # the exercise trigger, at zero maturity and at infinity
     B_0 = K * torch.maximum(safe_r / r_b, torch.ones_like(safe_r))
     B_inf = K * beta / (beta - 1)
 
-    # check if the strike is > 0
     if (K > 0.0).all():
         h_tau = -(b * tau + 2 * vol) * (B_0 / (B_inf - B_0))
         I = B_0 + (B_inf - B_0) * (1 - torch.exp(h_tau))
@@ -2537,14 +2283,12 @@ def pv_american_option(shared, time_grid, deal_data, nominal, moneyness, spot, f
     theo_price = (b >= r) * Black + (b < r) * ((S < I) * C_BS + (S >= I) * (S - K))
     early_exercise = (b < r) * (S >= I)
 
-    # check the first knockout
     knocked_out = early_exercise.cumsum(axis=0) > 0
     first_knockout = torch.concat([knocked_out[0].reshape(1, -1), knocked_out[1:] ^ knocked_out[:-1]])
-    # make sure we are still in force today
+    # the deal is in force today whatever today's spot does
     knocked_out[0] = False
     value = factor_dep['Buy_Sell'] * nominal * theo_price * ~knocked_out
 
-    # handle cashflows
     exercise_val = factor_dep['Buy_Sell'] * nominal * (S - K) * first_knockout
     for t, cashflows in zip(deal_data.Time_dep.deal_time_grid, exercise_val):
         if cashflows.any():
@@ -2555,6 +2299,11 @@ def pv_american_option(shared, time_grid, deal_data, nominal, moneyness, spot, f
 
 def pv_european_option(shared, time_grid, deal_data, nominal, moneyness, forward, binary=False,
                        digital_spread=None):
+    """European option (or, under `binary`, its cash-or-nothing digital) at each scenario date.
+
+    `digital_spread` prices the digital as a tight call/put spread instead of a closed-form binary,
+    which is what puts the smile's dVol/dK term into the price.
+    """
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     discount = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
@@ -2563,20 +2312,17 @@ def pv_european_option(shared, time_grid, deal_data, nominal, moneyness, forward
     expiry = discount.code[0][utils.FACTOR_INDEX_Daycount](tenor_in_days)
     vols = utils.calc_time_grid_vol_rate(factor_dep['Volatility'], moneyness, expiry, shared)
 
-    # check if this is a compo or quanto deal
     adj = None
     if factor_dep.get('Check_Payoff_Type', False):
-        # need quanto/compo adjustments
         adj = calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared)
         vols = adj['vol']
         forward = adj['s_adj'] * forward * torch.exp(adj['b_adj'] * shared.one.new(expiry.reshape(-1, 1)))
 
     if binary:
         if digital_spread is not None:
-            # digital as a tight call/put spread: each leg re-queries the surface at its OWN
-            # strike, so the smile's dVol/dK term enters the price as the finite difference the
-            # spread takes. The quanto drift bend (ATM-vol b_adj) and the compo forward are
-            # strike-free and already in `forward`; a compo leg composes its own strike's vol.
+            # each leg re-queries the surface at its OWN strike. The quanto drift bend (ATM-vol
+            # b_adj) and the compo forward are strike-free and already in `forward`; a compo leg
+            # composes its own strike's vol
             eps, m_lo, m_hi = digital_spread
             strike = factor_dep['Strike_Price']
             legs = []
@@ -2605,7 +2351,6 @@ def pv_european_option(shared, time_grid, deal_data, nominal, moneyness, forward
     discount_rates = torch.squeeze(
         utils.calc_discount_rate(discount, settle_in_days.reshape(-1, 1), shared), dim=1)
 
-    # handle cashflows (if necessary)
     cash_settle(shared, factor_dep['SettleCurrency'], deal_data.Time_dep.deal_time_grid[-1], value[-1])
 
     return value * discount_rates
@@ -2634,41 +2379,37 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
 
     BOUNDARY AAD: the knock-out is decided on OUTER scenario state, so the whole latch is built
     outside the node - gaps signed so ``gap > 0`` means CROSSED, ``untriggered`` the alive branch on
-    a weight the observed indicators never zero, ``triggered`` ZEROS. The zero dead branch is a
-    NAMED approximation: it omits the pending settlements a knocked deal still owes - exact wherever
-    the settlement lag is shorter than the fixing spacing, NOT one-signed on a leveraged deal, and
-    confined to cells the latch calls dead (measurements: roadmap.md). An exact branch is a
-    per-decision head profile - a fourth BoundarySet shape, not built ahead of a caller needing the
-    accuracy. A deal declared ``Barrier_Hit`` registers nothing: its death is data, not simulated
-    state. The alive prefix folds ``Barrier_Hit`` with every settled fixing's own breach test, so
-    the deal prices from the data even without the flag.
+    a weight the observed indicators never zero, ``triggered`` ZEROS. A deal declared
+    ``Barrier_Hit`` registers nothing: its death is data, not simulated state. The alive prefix
+    folds ``Barrier_Hit`` with every settled fixing's own breach test, so the deal prices from the
+    data even without the flag.
+
+    DECLARED LIMITATION: the zero dead branch omits the pending settlements a knocked deal still
+    owes - exact wherever the settlement lag is shorter than the fixing spacing, NOT one-signed on a
+    leveraged deal, and confined to cells the latch calls dead (magnitudes in roadmap.md). An exact
+    branch would be a per-decision head profile, a fourth BoundarySet shape.
 
     BRANCH AND WEIGHT (``Branch_And_Weight: 'Yes'``, base valuation only) SWAPS the estimator for
     that registration rather than joining it - one decision, one estimator. Off, and absent, is
     every line above bit for bit.
 
-    THIS PRICER'S LOOP WAS ALREADY THE SMOOTH ESTIMATOR, and the switch is where that is verified
-    rather than believed. Survival at a future fixing is ``oss_truncated_draw``'s analytic ``p``, the
-    continuation is its truncated draw, and the fired branch's payment is exactly zero - the fixing
-    that breaches pays nothing - so there is no ``p x realised`` shortcut anywhere in it and no
-    indicator on the tape between the observed fixings. The VALUE under the switch is therefore
-    bit-identical to the crisp one on every document; what changes is what the run may do with it:
+    THIS LOOP IS ALREADY THE SMOOTH ESTIMATOR: survival at a future fixing is
+    ``oss_truncated_draw``'s analytic ``p``, the continuation is its truncated draw, and the fired
+    branch pays exactly zero, so there is no ``p x realised`` shortcut in it and no indicator on the
+    tape between the observed fixings. The VALUE under the switch is bit-identical; what changes is:
 
     - THE REGISTRATION IS SKIPPED, so ``Greeks: 'All'`` flows where it used to refuse.
     - THE PER-FIXING ACCRUAL KINK is built at second order (``accrual_kink_term``), because both
       legs are ``relu``s of one argument and pathwise AAD reports their gamma as an exact zero.
 
-    THE PENDING HEAD IS ARITHMETIC HERE, not a branch to build. Each fixing is already discounted to
+    THE PENDING HEAD IS ARITHMETIC HERE, not a branch to build: each fixing is already discounted to
     its OWN settlement date and paid with weight ``L_{j-1} * p_j``, so a path knocking at fixing
-    ``k`` has already been paid for every fixing before it whatever their settlement lag - the value
-    owes nothing. ``LatchedBoundarySet.pending`` exists for the COUNTERFACTUAL profile a dead cell
-    reports, which is part of a registration; with no registration there is no head to derive.
+    ``k`` has already been paid for every fixing before it, whatever their settlement lag.
 
     WHAT THE SWITCH DOES NOT SMOOTH: the observed fixings' own breach tests and the ``Barrier_Hit``
-    flag. Those are data rather than simulated state, so there is no conditioning step to integrate
-    them against and their indicators stay exact. Under base valuation - the one calculation that
-    declares the switch - they are historic prints carrying no graph, so the skipped registration
-    contributes exactly zero.
+    flag, which are data rather than simulated state, so their indicators stay exact. Under base
+    valuation they are historic prints carrying no graph, so the skipped registration contributes
+    exactly zero.
     """
 
     def survives(s):
@@ -2679,12 +2420,11 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                              past_fixings, *hn_scalars):
         """OSS inner Monte Carlo over one block of MTM rows; mean PV and alive-branch PV per row.
 
-        PURE, and split into a bound half and a theta half for `InnerMCRecompute` (see
-        `sim_spot_tarf` - same contract, same reason). Returns `(mtm, alive_pv, settled,
+        PURE bound/theta split for `InnerMCRecompute`. Returns `(mtm, alive_pv, settled,
         settle_rows)`: the block's rows, the never-knocked branch the latch needs (empty when
         sensitivities are off), and the first-fixing cashflow of every row that settles today with
-        the block-local rows those land on. `prev_alive` is theta: it carries the (a.e. zero)
-        graph of the observed samples that built it.
+        the block-local rows those land on. `prev_alive` is theta, carrying the (a.e. zero) graph
+        of the observed samples that built it.
         """
         # the declared model as a walking kit - the pricer names it once, here
         kit = oss_model_kit(factor_dep, hn_scalars)
@@ -2709,9 +2449,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                 # the alive branch: observed indicators (the latch's decisions) never zero it;
                 # the smooth future survivals still apply - the left limit, not a re-simulation
                 P_alive, L_alive = P, torch.ones_like(L)
-            # the alive weight and what each fixing FIRED in one object, so the telescoping identity
-            # has somewhere to live. Started at `prev_alive`, not at one - the observed prefix has
-            # already killed paths (SurvivalLedger)
+            # started at `prev_alive`, not at one: the observed prefix has already killed paths
             ledger = SurvivalLedger(L) if smooth else None
             for j in range(reduced_samples):
                 dt = delta_t[j]
@@ -2720,7 +2458,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                     fwd_carry = carry_rate[j].reshape(-1, 1)
                     if hn:
                         # daily HN sub-steps; only the LAST is monitored, so the OSS truncation at
-                        # the constant barrier is exact (see sim_spot_tarf)
+                        # the constant barrier is exact
                         n_sub = max(int(round(float(dt) * hn_spy)), 1)
                         b_step = fwd_carry * dt / n_sub
                         Sj, st = kit.substeps(
@@ -2747,11 +2485,9 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                 intrinsic = (payoff_spot - strike) * callOrPut
                 cashflow = F.relu(intrinsic) * notional_itm - F.relu(-intrinsic) * notional_otm
                 if second_order and dt > 0:
-                    # the accrual kinks at the strike on the CONTINUING branch and second-order AAD
-                    # drops a density there. ONE kernel serves both legs - `relu(-x)` kinks where
-                    # `relu(x)` does and the term is even - so the net carries (N1 - N2) of it, and
-                    # an unleveraged accumulator has no kink at all. An OBSERVED fixing is kept out
-                    # by `dt > 0`: its spot is one point per path, a mass rather than a density
+                    # ONE kernel serves both legs - `relu(-x)` kinks where `relu(x)` does and the
+                    # term is even - so the net carries (N1 - N2) of it. `dt > 0` keeps OBSERVED
+                    # fixings out: their spot is one point per path, a mass rather than a density
                     kink = accrual_kink_term(intrinsic, j)
                     cashflow = cashflow + kink * (notional_itm - notional_otm)
                 cf_step = L * p * cashflow
@@ -2779,7 +2515,6 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                 torch.stack(settled) if settled else prev_alive.new_empty(0),
                 settle_rows)
 
-    # --- main block loop (the TARF's setup, fixing for fixing) ---
     mtm_list = []
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -2813,29 +2548,26 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     notional_itm = factor_dep['Notional1'] * shared.one
     notional_otm = factor_dep['Notional2'] * shared.one
 
-    # What the pricer DECIDED, which a value cannot show: how many fixings it resolved off the
-    # outer path rather than simulating, whether the deal came in already dead, and how the book
-    # split into blocks. A misclassified fixing moves the mark by an amount a tolerance absorbs;
-    # it moves `resolved` by one, visibly.
+    # what the pricer DECIDED, which a value cannot show: how many fixings it resolved off the
+    # outer path, whether the deal came in already dead, and how the book split into blocks
     logging.debug('ACCUMULATOR %s fixings=%d resolved=%d barrier=%.6g up=%d dead=%d blocks=%d',
                   deal_data.Instrument.field.get('Reference'), len(fx_samples.schedule),
                   len(known_resets) + len(sim_samples), barrier, int(barrier_up),
                   int(bool(factor_dep['Barrier_Hit'])), len(counts))
 
-    # THE SWITCH, read once before a draw is taken so a non-GBM refusal lands first; it SUPERSEDES
-    # the registration below rather than joining it (see the docstring's BRANCH AND WEIGHT section)
+    # read once before a draw is taken so a non-GBM refusal lands first; it SUPERSEDES the
+    # registration below rather than joining it
     smooth = branch_and_weight(shared, deal_data)
     # curvature is the switch: the per-fixing kink term is never BUILT unless a second derivative
     # was asked for, so it costs exactly nothing on a first-order run
     second_order = smooth and getattr(shared, 'gamma', False)
 
-    # a declared-dead deal has no flux to record - folding that in here rather than at the
-    # registration keeps the simulation from building an alive branch nobody reads
+    # a declared-dead deal has no flux to record, and folding that in here keeps the simulation
+    # from building an alive branch nobody reads
     boundary_aad = (getattr(shared, 'boundary_aad', False) and
                     not factor_dep['Barrier_Hit'] and not smooth)
     b_gaps, b_crossed, b_obs_before, alive_blocks, b_pending = [], [], [], [], []
 
-    # opt-in Heston-Nandi spot model; absent => byte-identical GBM path (see sim_spot_tarf)
     # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
     hn_scalars = oss_model_scalars(factor_dep, shared)
     hn = bool(hn_scalars)
@@ -2844,7 +2576,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
 
     # prefix knock-out state: the declared flag OR any observed sample's own breach. `Barrier_Hit`
     # and the settled fixings' tests are folded in calc_dependencies; the unsettled observed and
-    # simulated fixings fold here, per sample, exactly as the TARF accumulates its target
+    # simulated fixings fold here, per sample
     state = shared.one.new_ones(shared.simulation_batch) * (0.0 if factor_dep['Barrier_Hit'] else 1.0)
     alive_seq = [state]
     for k in range(len(all_samples)):
@@ -2884,29 +2616,20 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
         simulate = partial(sim_spot_accumulator, settlement, settle_index_local, sobol, shared.MCMC_sims)
         theta = (spot_block, sample_ts, fwd_drifts, alive_seq[settle_index_local],
                  discount_rates, vols, all_samples) + hn_scalars
-        # the SAME callable either way: under the node it is called twice (see InnerMCRecompute)
+        # the SAME callable either way: under the node it is called twice
         block_mtm, block_alive, block_settled, settle_rows = InnerMCRecompute.run(
             shared, simulate, *theta)
         theo_price = buy_sell * block_mtm
 
-        # the by-products, performed once off the forward's result (see sim_spot_accumulator)
+        # the by-products, performed once off the forward's result
         for row, value in zip(settle_rows, block_settled):
             cash_settle(shared, factor_dep['SettleCurrency'], np.searchsorted(
                 time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]), buy_sell * value)
 
         if boundary_aad:
-            # Every observed fixing (prefix AND in-block) is a latched decision, and `obs_before`
-            # is stamped PER ROW. Blocks are cut on `Fixings` - the UNION of fixing and settlement
-            # dates - so a fixing date is routinely a block's LAST row, and one count taken at the
-            # block's FIRST row is short by exactly that decision on exactly the row it first
-            # bites. The gap COUNT therefore comes off the block's last row, or the decision a row
-            # names would have no gap to be scored against.
-            # A row's own fixing COUNTS here, where `pv_discrete_barrier_option` counts only
-            # strictly-earlier observations: that pricer's untriggered branch prices the current
-            # date's crossing itself, while this one's sets `p_alive = 1.0` and leaves it out. With
-            # the row's own decision counted the latch reconstructs the reported profile to 4.5e-13;
-            # taking it from the first row instead hands the ALIVE branch to 2.3% of the dead cells
-            # (max 85.7 on a ~250 profile) and loses 1.6% of the boundary correction.
+            # `obs_before` is stamped PER ROW off the block's LAST row: blocks are cut on the UNION
+            # of fixing and settlement dates, so a fixing date is routinely a block's last row and a
+            # count taken at its first is short by exactly that decision. A row's own fixing COUNTS
             rows_obs = np.searchsorted(fixing_days, t_block[:, utils.TIME_GRID_MTM], side='right')
             while len(b_gaps) < int(rows_obs[-1]):
                 s_k = all_samples[len(b_gaps)]
@@ -2914,10 +2637,9 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                 b_crossed.append(~survives(s_k).detach())
             b_obs_before.extend(rows_obs.tolist())
             alive_blocks.append(block_alive)
-            # the pending head, per row: fixings this row has OBSERVED whose settlements have
-            # not landed - what a DEAD path still carries. Blocks break on every schedule date,
-            # so the block's unsettled window [settle_index_local, rows_obs) is every row's
-            # window, and the block's own discounts are the right ones
+            # the pending head, per row: fixings this row has OBSERVED whose settlements have not
+            # landed. Blocks break on every schedule date, so the block's unsettled window
+            # [settle_index_local, rows_obs) is every row's window
             for r_local in range(len(t_block)):
                 j_hi = int(rows_obs[r_local])
                 if j_hi > settle_index_local:
@@ -2946,9 +2668,8 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
             report_index=time_grid.report_index)
         shared.boundary_sets.append(latch)
         if logging.getLogger().isEnabledFor(logging.DEBUG):
-            # the registration reconstructed at the BOOKED flags against the engine's own rows:
-            # the one number that says the counterfactual profiles - dead branch, pending head
-            # and all - describe the deal the pricer actually reported
+            # the registration reconstructed at the BOOKED flags against the engine's own rows -
+            # the number that says the counterfactual profiles describe the reported deal
             with torch.no_grad():
                 prefix = [torch.zeros_like(b_crossed[0])]
                 for flag in b_crossed:
@@ -2976,16 +2697,14 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
     builds the zero-continuation boundary H_j per rolling decision (for the strip the single
     boundary is closed-form, K2*B/A), and the forward pass draws only the continuing branch,
     weighting it by the analytic continuation probability. Truncated draws happen ONLY at
-    decisions; between them cashflows are propagated as exact lognormal expectations. The
-    boundary is detached: by value matching C_j(H_j) = 0, the first-order moving-boundary term
-    vanishes (envelope argument).
+    decisions; between them cashflows are propagated as exact lognormal expectations. The boundary
+    is detached: by value matching C_j(H_j) = 0, the first-order moving-boundary term vanishes.
 
-    Scope: GBM off the implied surface, the smile frozen at K2 moneyness for transition
-    variances. Heston-Nandi would make the continuation state two-dimensional and is deliberately
-    not approximated. Reconstructed outer-grid decisions register a `LatchedBoundarySet` carrying
-    their flux: the alive branch is the facts-only world, the dead branch the survived-weighted
-    pending head - both derived from the same `value = fixed + state * live` row arithmetic the
-    forward reports, which is what the `EXTENDABLE_LATCH` organ states.
+    SCOPE: GBM off the implied surface, the smile frozen at K2 moneyness for transition variances.
+    Heston-Nandi would make the continuation state two-dimensional and is deliberately not
+    approximated. Reconstructed outer-grid decisions register a `LatchedBoundarySet`: the alive
+    branch is the facts-only world, the dead branch the survived-weighted pending head, both
+    derived from the same `value = fixed + state * live` row arithmetic the forward reports.
     """
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -3082,9 +2801,8 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
         vols = torch.stack(vols)
         total_var = (vols * vols * full).clamp(min=0.0)
         if len(total_var) > 1 and float((total_var[1:] - total_var[:-1]).min()) < -1e-10:
-            # every fixing-to-fixing transition variance is a difference of these rows; a
-            # materially decreasing total variance would be silently clamped into a degenerate
-            # transition whose survival probability saturates - refuse the surface instead
+            # every transition variance is a difference of these rows, so a decreasing total
+            # variance would clamp into a degenerate transition whose survival saturates
             raise ValueError('total variance decreases across extendable-forward fixings')
         return {
             'first': first_index,
@@ -3108,9 +2826,9 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
         return (y0 + w * (y1 - y0)).reshape_as(x)
 
     def root_from_continuation(x_grid, continuation):
+        """The spot at which the continuation value crosses zero, per batch row."""
         # forward_sign makes the continuation increasing for both deal directions; cummax only
-        # removes quadrature/interpolation ripples for LOCATING the zero - the unmodified
-        # continuation is what the recursion keeps
+        # removes quadrature ripples for LOCATING the zero - the recursion keeps the raw values
         monotone = torch.cummax(continuation * forward_sign, dim=1).values
         count = (monotone <= 0.0).sum(dim=1)
         gather = count.clamp(1, x_grid.shape[1] - 1).reshape(-1, 1)
@@ -3154,9 +2872,9 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
             boundary_cache[cache_key] = result
             return result
 
-        # rolling: C_j(s) = PV at f_j of the next K2 fixing plus the option to continue again,
-        # by backward Gauss-Hermite recursion on a per-scenario spot grid. Chunked: the
-        # [batch, grid, quadrature] temporary is otherwise too large for XVA batches.
+        # rolling: C_j(s) = PV at f_j of the next K2 fixing plus the option to continue again, by
+        # backward Gauss-Hermite recursion on a per-scenario spot grid. Chunked because the
+        # [batch, grid, quadrature] temporary is otherwise too large for XVA batches
         B_total = log_fwd.shape[1]
         pieces = {j: [] for j in range(first_decision, n_fix - 1)}
         final_local = n_fix - 1 - first
@@ -3195,10 +2913,9 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
         boundary_cache[cache_key] = result
         return result
 
-    # the outer-path lifecycle, built once: a supplied historical Yes/No is authoritative,
-    # otherwise the decision is reconstructed at the fixing row from that scenario's own spot
-    # and boundary. `fact` twins `alive` counting only the CODE-supplied decisions - the world
-    # where every RECONSTRUCTED decision extends, which is the latch registration's alive branch
+    # the outer-path lifecycle: a supplied historical Yes/No is authoritative, otherwise the
+    # decision is reconstructed from that scenario's own spot and boundary. `fact` twins `alive`
+    # counting only the CODE-supplied decisions, which is the latch's alive branch
     boundary_aad = getattr(shared, 'boundary_aad', False)
     alive = shared.one.new_ones(shared.simulation_batch)
     fact = alive
@@ -3206,10 +2923,8 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
     for j in range(n_fix):
         alive_enter.append(alive)
         fact_enter.append(fact)
-        # a decision the outer grid never reaches is never read - no row's `current_alive` looks
-        # past its own day, and the OSS pass owns every future decision. A state already dead on
-        # every path stays dead without being reconstructed: a decision the termination made moot
-        # was never taken and has no boundary to build
+        # a decision the outer grid never reaches is never read - the OSS pass owns every future
+        # decision - and a state already dead on every path has no boundary to build
         if j in decision_set and fixing_days[j] <= max_mtm and bool((alive != 0).any()):
             code = int(decision_codes[j])
             if code >= 0:
@@ -3228,7 +2943,7 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
                 extend = (s_fix > H) if forward_sign > 0 else (s_fix < H)
                 if boundary_aad:
                     # gap > 0 means the latch FIRED - the deal terminated; the graph rides the
-                    # scenario's own spot, the boundary is detached (envelope argument)
+                    # scenario's own spot and the boundary is detached
                     gap = torch.log(H / s_fix) if forward_sign > 0 else torch.log(s_fix / H)
                     b_latch.append((j, gap, (~extend).detach()))
             alive = alive * extend.to(alive.dtype)
@@ -3274,8 +2989,8 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
         pos = lambda j: j - first
         state_now = state_at(alive_after, mtm_day)
         fact_now = state_at(fact_after, mtm_day)
-        # `live` is the STATE-FREE live part: value = fixed + state * live, and the latch
-        # registration's alive branch is the same arithmetic at the facts-only state
+        # `live` is the STATE-FREE live part: value = fixed + state * live, and the latch's alive
+        # branch is the same arithmetic at the facts-only state
         fixed = shared.one.new_zeros(shared.simulation_batch)
         fixed_fact = shared.one.new_zeros(shared.simulation_batch)
         trig_row = shared.one.new_zeros(shared.simulation_batch)
@@ -3293,8 +3008,8 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
                 if fixing_days[j] == mtm_day:
                     observed = s0
                 elif not bool((alive_enter[j] != 0).any()):
-                    # terminated before this fixing on every path: nothing fixed, nothing owed -
-                    # a dead deal's unprinted dates are not missing data
+                    # terminated before this fixing on every path: a dead deal's unprinted dates
+                    # are not missing data
                     continue
                 else:
                     raise ValueError('Missing observed extendable-forward fixing {}'.format(j))
@@ -3320,9 +3035,8 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
             cash_settle(shared, factor_dep['SettleCurrency'],
                         deal_data.Time_dep.deal_time_grid[row_index], settlement_cf)
 
-        # future K1 fixings through the extension date are guaranteed and linear - valued
-        # analytically. The extension fixing itself belongs here; the decision only controls
-        # LATER K2 fixings
+        # future K1 fixings through the extension date are guaranteed and linear. The extension
+        # fixing itself belongs here; the decision only controls LATER K2 fixings
         for j in range(max(start_idx, 0), extension_index + 1):
             if fixing_days[j] <= mtm_day:
                 continue
@@ -3407,8 +3121,7 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
                     u_ptr += 1
                     L = L * p_ext
                     # prev_index tracks where prev_spot LIVES - the last drawn decision - so a
-                    # non-decision fixing must not advance it: its expectation was taken off the
-                    # decision spot, and the next increment starts there too
+                    # non-decision fixing must not advance it
                     prev_index = j
 
             live = live + P.mean(dim=1)
@@ -3428,8 +3141,8 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
 
     mtm = torch.stack(mtm_values)
 
-    # the latch registration: the reconstructed decisions' whole reach - the alive branch is the
-    # facts-only world, the dead branch the survived-weighted pending head on `triggered`
+    # the reconstructed decisions' whole reach: the alive branch is the facts-only world, the dead
+    # branch the survived-weighted pending head on `triggered`
     if boundary_aad and b_latch and time_grid.report_index is not None:
         latch = utils.LatchedBoundarySet(
             gaps=[g for _, g, _ in b_latch], fired=[f for _, _, f in b_latch],
@@ -3472,59 +3185,49 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     byte-identical. RECOMPUTE: the vol strip is built at the call site and the simulation RETURNS
     its settled cashflows and registrations - the node's inputs are its whole theta surface.
 
-    BOUNDARY AAD registers two decisions taken on simulated state: the target FILLING (the deal has
-    redeemed and is worth nothing after - the LATCHED shape, since a later block's accrual is only
-    ever larger) and the OTM leg KNOCKING IN (per inner path). The redemption gap is built from the
-    UNCLAMPED accrual ``raw``: ``accumulation == min(raw, target)`` exactly, and the clamp kills the
-    derivative at the decision, so a gap built from the clamped series would carry no graph on the
-    very paths that decided. It stays in target units - ``boundary_weights`` scales its kernel by
-    ``gap.std()``, making the estimator invariant to the gap's scale. A graphless historic decision
-    (a target already filled at the base date) is registered anyway: it contributes exactly zero,
-    and skipping it would corrupt the latch reconstruction.
+    BOUNDARY AAD registers two decisions taken on simulated state: the target FILLING (the LATCHED
+    shape, since a later block's accrual is only ever larger) and the OTM leg KNOCKING IN (per inner
+    path). The redemption gap is built from the UNCLAMPED accrual ``raw``, because
+    ``accumulation == min(raw, target)`` and the clamp kills the derivative at the decision, so a
+    gap built from the clamped series would carry no graph on the very paths that decided. It stays
+    in target units, ``boundary_weights`` scaling its kernel by ``gap.std()``. A graphless historic
+    decision is registered anyway: it contributes exactly zero, and skipping it would corrupt the
+    latch reconstruction.
 
     BRANCH AND WEIGHT (``Branch_And_Weight: 'Yes'``, base valuation only) SWAPS the estimator for
     both of those registrations rather than joining them - one decision, one estimator, or the flux
     is counted twice. Off, and absent, is every line above bit for bit.
 
-    Most of the construction was already here: the KO-in-step term IS the fired branch integrated
+    Most of the construction is already here: the KO-in-step term IS the fired branch integrated
     against the fixing interval's own lognormal law, the moving trigger ``B_pnl = K + R/N`` IS
     ``K + R_{k-1}``, and the continuation IS the truncated draw. THE FIRED PAYMENT IS THE SAME ONE
-    ON BOTH PATHS - the fixing that fills the target pays the remaining target ``R``, which is
-    measurable one fixing back, so its conditional expectation is itself. What the switch adds is
-    the two things the crisp path could not do:
+    ON BOTH PATHS - the fixing that fills the target pays the remaining target ``R``, measurable one
+    fixing back, so its conditional expectation is itself. What the switch adds:
 
     - THE KNOCK-IN INTEGRATED RATHER THAN SAMPLED. ``relu(-eff_intr) * 1{hit}`` is supported on one
       tail of the conditioning step's law, wholly inside the surviving set, so it closes in that
-      law's own partial moments (``lognormal_fired_gain``) and the indicator - the whole
-      reason for the ``InnerBoundarySet`` - leaves the tape. Rao-Blackwellisation, not smoothing:
-      the same expectation with that leg's sampling noise removed.
+      law's own partial moments (``lognormal_fired_gain``) and the indicator - the whole reason for
+      the ``InnerBoundarySet`` - leaves the tape. Rao-Blackwellisation, not smoothing.
     - THE PER-FIXING ACCRUAL KINK at second order (``accrual_kink_term``), added to ``cf_itm`` so it
       reaches BOTH of its consumers - the payment, and the running target ``R``, which is what
       carries an accrual across later decisions. Never built when curvature is not asked for.
+    - THE TARGET PIN BECOMES EXACT: the pinned payment is a conditional expectation the loop
+      evaluates in closed form, so there is nothing left to estimate or register. Crisp, that pin's
+      flux resolves no better than ~10%.
 
-    THE TARGET PIN BECOMES EXACT. The Known-defects row records a pin whose flux neither its
-    estimator (13% bandwidth spread) nor its oracle (8.9% flatness) resolves better than ~10%; on
-    this path the pinned payment is a conditional expectation the loop evaluates in closed form, so
-    there is nothing left to estimate and nothing left to register. That row named this switch as
-    its own designed resolution, and this is it.
+    WHAT THE SWITCH DOES NOT SMOOTH: a decision taken on an OBSERVED sample. The redemption latch's
+    gaps are the accrual of fixings the row has already seen, which is data rather than simulated
+    state, so its indicator stays exact. Under base valuation those samples are historic prints
+    carrying no graph, so the skipped registration contributes exactly zero.
 
-    WHAT THE SWITCH DOES NOT SMOOTH, stated so it is not assumed: a decision taken on an OBSERVED
-    sample. The redemption latch's gaps are the accrual of fixings the row has already seen, and an
-    observed fixing is data rather than simulated state - there is no conditioning step to integrate
-    it against, and its indicator stays exact. Under base valuation, the one calculation that
-    declares the switch, those samples are historic prints carrying no graph, so the registration
-    this skips contributes exactly zero and skipping it moves no derivative. ``Credit_Monte_Carlo``,
-    where they WOULD carry one, declares no such field.
-
-    DAILY FIXINGS ARE A DECLARATION, NOT A REFUSAL. Second-order variance in the conditioning step
-    scales like ``s_k**-3``, which is fine at monthly and quarterly spacing and rough at daily - and
-    a daily accumulator's economically right gamma is the desk's own call-spread width anyway, a
-    fixed smoothing converging at the ordinary rate, which is what actually gets hedged. The
-    measured spread is in ``tests/test_branch_and_weight.py``.
+    DECLARED LIMITATION: second-order variance in the conditioning step scales like ``s_k**-3``,
+    which is fine at monthly and quarterly fixing spacing and rough at daily. A daily accumulator's
+    economically right gamma is the desk's own call-spread width, which is a fixed smoothing
+    converging at the ordinary rate; the measured spread is in ``tests/test_branch_and_weight.py``.
     """
 
-    # --- Accumulated target from past observed fixings --------------------------
     def accrued(s, k, C, inverted):
+        """One fixing's accrual toward the target, standard or inverted."""
         if inverted:
             iv = (1.0 / s - 1.0 / k) * C * (-1.0)
         else:
@@ -3532,84 +3235,78 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         return F.relu(iv).reshape(-1, 1)
 
     def calc_accum_value(targetValue, accumulated, s, k, C, inverted):
+        """The running accrual after one more fixing, clamped at the target."""
         return (accumulated + accrued(s, k, C, inverted)).clamp(max=targetValue)
 
     def sim_spot_tarf(settlement, sobol, num_sims,
                       spot_prices, times, carry, prev_accum, discount_rates, vols_all,
                       past_fixings, *hn_scalars):
-        """Inner one-step-survival Monte Carlo over one block of MTM rows; returns the mean PV per row.
+        """Inner one-step-survival Monte Carlo over one block of MTM rows; the mean PV per row.
 
-        PURE bound/theta split for ``InnerMCRecompute``; by-products are RETURNED and performed once by
-        the caller. Returns ``(mtm, untriggered, settled, settle_rows, knock_rows) + gaps + jumps``: the
-        block's rows, the redemption latch's counterfactual rows, the cashflows settling today, the
-        block-local rows they and the knock-in decisions land on, then one gap and one jump per
-        (row, fixing) - the gaps are the outputs whose cotangent carries the boundary correction.
+        PURE bound/theta split for ``InnerMCRecompute``; by-products are RETURNED and performed once
+        by the caller. Returns ``(mtm, untriggered, settled, settle_rows, knock_rows) + gaps +
+        jumps``: the block's rows, the redemption latch's counterfactual rows, the cashflows
+        settling today, the block-local rows they and the knock-in decisions land on, then one gap
+        and one jump per (row, fixing) - the gaps being the outputs whose cotangent carries the
+        correction.
 
-        Heston-Nandi: ``h`` re-seeds to ``H0`` per MTM row and recurses continuously through every daily
-        sub-step. Only the LAST step of each fixing is truncated - the TARF accrues and knocks AT the
-        fixing - and the PnL barrier depends only on the remaining target, constant over the interval
-        and F-measurable at the truncation, so the scheme is exact.
+        Heston-Nandi: ``h`` re-seeds to ``H0`` per MTM row and recurses through every daily
+        sub-step. Only the LAST step of a fixing is truncated - the TARF accrues and knocks AT it -
+        and the PnL barrier depends only on the remaining target, constant over the interval and
+        F-measurable at the truncation, so the scheme is exact.
 
         Two decisions fork here under ``boundary_aad``:
 
-        - REDEMPTION: the accrual clamps AT ``targetValue``, so the equality fires on a positive-measure
-          set - a knock-out like any other. The counterfactual is the same loop on a weight that was
-          never zeroed (the left limit): one extra accumulator, nothing re-simulated, no draw consumed.
-        - KNOCK-IN: decided on ``Sj``, an inner draw - one decision per inner path, with jump
-          ``J(knocked in) - J(did not) = -Dj * L * p * relu(-intr) * N_otm`` and the gap in log space so
-          a bandwidth means the same as at a barrier. At an already-observed fixing (``dt <= 0``) the
-          decision is per SCENARIO and the gap is expanded along the inner axis - exact, because the
-          pooled kernel's ``1/n`` weights cancel the ``n`` copies of each jump.
+        - REDEMPTION: the accrual clamps AT ``targetValue``, so the equality fires on a
+          positive-measure set. The counterfactual is the same loop on a weight that was never
+          zeroed - one extra accumulator, nothing re-simulated, no draw consumed.
+        - KNOCK-IN: decided on ``Sj``, one decision per inner path, with jump
+          ``J(knocked in) - J(did not) = -Dj * L * p * relu(-intr) * N_otm`` and the gap in log
+          space so a bandwidth means the same as at a barrier. At an already-observed fixing
+          (``dt <= 0``) the decision is per SCENARIO and the gap is expanded along the inner axis -
+          exact, because the pooled kernel's ``1/n`` weights cancel the ``n`` copies of each jump.
         """
 
-        # easier to type
         K = strike
         # the declared model as a walking kit - the pricer names it once, here
         kit = oss_model_kit(factor_dep, hn_scalars)
         hn = kit is not None
-        # Per-block results, and the by-products the caller performs once (see docstring)
+        # per-block results, and the by-products the caller performs once
         mcmc, alive, settled, gaps, jumps = [], [], [], [], []
         settle_rows, knock_rows = [], []
-        # Loop over block rows (same zipped signature you use)
         for i, (D, s, carry_rate, delta_t, tau) in enumerate(zip(
                 discount_rates, spot_prices, carry, times, settlement)):
 
-            # reduced_samples = number of GBM “substeps” in this coupon/fixing leg
+            # the number of fixings still to simulate in this block
             reduced_samples = len(delta_t)
             if not hn:
                 vols = vols_all[i]
-            # RNG (antithetic uniforms for truncated draws; shared OSS spelling, bit-identical)
             if reduced_samples:
                 u = oss_uniforms(shared, reduced_samples, num_sims, sobol)
 
-            Sj = torch.unsqueeze(s, 1)  # [batch, 1] as you do
-            # HN predictable variance of the first daily step; re-seeded per MTM row (see docstring)
+            Sj = torch.unsqueeze(s, 1)  # [batch, 1]
+            # the HN variance state, re-seeded per MTM row
             st = kit.seed() if hn else None
-            # Running PV and survival weight
             P = shared.one.new_zeros((shared.simulation_batch, 2*num_sims))
             L = shared.one.new_ones((shared.simulation_batch, 2*num_sims))
-            # Remaining target (R) per path at this block start
             remaining_target = targetValue-prev_accum
-            # which simulations are still alive?
+            # paths that have already redeemed
             q = remaining_target == 0.0
-            # redemption is a knock-out decision like any other; L_alive runs the same loop on a
-            # weight that was never zeroed - the left limit, not a re-simulation (see docstring)
+            # L_alive runs the same loop on a weight that was never zeroed - the left limit, not a
+            # re-simulation
             L_alive = L if not boundary_aad else torch.ones_like(L)
             P_alive = P
             L = torch.where(q, torch.zeros_like(L), L)
-            # the alive weight and what each fixing FIRED, in one object, so the telescoping
-            # identity has somewhere to live (SurvivalLedger). Started at the weight the observed
-            # prefix left, not at one - a redeemed path is dead before the strip begins
+            # started at the weight the observed prefix left, not at one - a redeemed path is dead
+            # before the strip begins
             ledger = SurvivalLedger(L) if smooth else None
-            # Update the remaining targets
+            # the remaining target in currency units, per path
             R = (remaining_target * factor_dep['Notional1']).expand_as(P)
-            # Per-fixing notional tensors (broadcastable to [batch, sims])
             N_itm = notional1
             N_otm = notional2
-            # Iterate over fixings within this block using your “coupon_index”-like stepper
             for j in range(reduced_samples):
                 # `carry` and `vols` both arrive as INTERVAL strips (forward_carry_rate,
-                # forward_vol_rate) - the differencing they need is the same statement twice
+                # forward_vol_rate)
                 dt = delta_t[j]
                 Dj = D[j].reshape(-1, 1)
                 use_past_fixing = False
@@ -3620,69 +3317,59 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                         fwd_vol = vols[j].reshape(-1, 1)      # [batch,1]
                         vol_dt = fwd_vol * torch.sqrt(dt)
                 else:
-                    #use past fixing
                     use_past_fixing = True
 
                 if not use_past_fixing:
-                    # ---- ONE-STEP SURVIVAL: compute p_survive via PnL barrier -----------------
-                    # Standard accrual: KO within this step if (S_i - K)*cp >= R/N_itm and ITM
-                    # => spot-level cap B_pnl = K + (R/N_itm) for cp=+1; inverted has reciprocal form
+                    # ONE-STEP SURVIVAL against the PnL barrier: the step knocks out if
+                    # (S_i - K)*cp >= R/N_itm and ITM, so the spot-level cap is
+                    # B_pnl = K + (R/N_itm)*cp; an inverted target has the reciprocal form
                     N_i = N_itm
                     if not invertedTarget:
                         B_pnl = K + (R / N_i) * callOrPut # [batch, sims]
                     else:
-                        # (1/S_i - 1/K)*(-cp) * N_i >= R
-                        # call (cp=+1): 1/K - 1/S >= R/N  =>  S >= 1/(1/K - R/N)  =>  rhs = 1/K - R/N = 1/K + (R/N)*(-cp)
-                        # put  (cp=-1): 1/S - 1/K >= R/N  =>  S <= 1/(1/K + R/N)  =>  rhs = 1/K + R/N = 1/K + (R/N)*(-cp)
+                        # (1/S_i - 1/K)*(-cp) * N_i >= R, i.e. rhs = 1/K + (R/N)*(-cp) either way:
+                        # a call needs S >= 1/(1/K - R/N), a put needs S <= 1/(1/K + R/N)
                         rhs = (1.0 / K) + (R / N_i) * (-callOrPut)
                         B_pnl = 1.0 / rhs
 
                     if hn:
-                        # HN calibrates per day, so this fixing spans n_sub daily steps and only the
-                        # LAST is truncated - which is what makes the scheme exact (see docstring)
+                        # HN calibrates per day, so this fixing spans n_sub daily steps and only
+                        # the LAST is truncated, which is what makes the scheme exact
                         n_sub = max(int(round(float(dt) * hn_spy)), 1)
-                        b_step = fwd_carry * dt / n_sub  # per-step cost-of-carry r-q; total = fwd_carry*dt
-                        # the first n_sub-1 unmonitored daily steps (shared advance; antithetic to
-                        # align with the u<->1-u halves of the truncated final draw below)
+                        b_step = fwd_carry * dt / n_sub  # per-step r-q; the total is fwd_carry*dt
+                        # the first n_sub-1 unmonitored daily steps, antithetic to align with the
+                        # u <-> 1-u halves of the truncated final draw below
                         Sj, st = kit.substeps(
                             Sj, st, b_step, n_sub - 1, shared, num_sims, antithetic=True)
                         h = kit.h(st)
-                        fwd_drift = b_step - 0.5 * h  # per-step drift of the FINAL (monitored) daily step
+                        fwd_drift = b_step - 0.5 * h  # the FINAL (monitored) daily step's drift
                         z_max = (torch.log(B_pnl / Sj) - fwd_drift) / torch.sqrt(h)
                     else:
-                        # Lognormal cap -> z_max
-                        # NOTE: use current Sj as “S_{i-1}”
+                        # the lognormal cap standardised, off the current Sj as S_{i-1}
                         fwd_drift = (fwd_carry - 0.5 * fwd_vol * fwd_vol) * dt
                         z_max = (torch.log(B_pnl/Sj) - fwd_drift) / vol_dt
-                    # survival side follows the PnL cap's direction; the kernel is the shared
-                    # OSS spelling, adopted bit-identically (see oss_truncated_draw)
+                    # the survival side follows the PnL cap's direction
                     p, Z = oss_truncated_draw(u[j], z_max, callOrPut > 0)
-                        
-                    # ---- Analytic KO-in-step contribution -------------------------------------
-                    # KO pays the *remaining target* this step, discounted at the j-th discount
-                    # point - ONE convention, stated the same way on both estimators: R is
-                    # measurable one fixing back, so `(1 - p) * R` IS its conditional expectation
+
+                    # the analytic KO-in-step: the knocked-out weight pays the REMAINING TARGET,
+                    # discounted at the j-th point. R is measurable one fixing back, so
+                    # `(1 - p) * R` IS its conditional expectation
                     P = P + (1.0 - p) * L * R * Dj
                     if boundary_aad:
                         P_alive = P_alive + (1.0 - p) * L_alive * R * Dj
-                    # THE KNOCK-IN, INTEGRATED RATHER THAN SAMPLED. `relu(-eff_intr) * 1{hit}` is
-                    # supported on one tail of THIS interval's own law - `otm_bound` carries the
-                    # strike's side and the barrier's at once - so the leg closes in that law's
-                    # own partial moments, and the indicator leaves the tape. The
-                    # survival truncation is redundant over it: `otm_bound` is on the strike's side
-                    # of `B_pnl = K + R/N` for every R >= 0, so the knocked-in set lies wholly
-                    # inside the surviving one and the two conditions do not have to be crossed.
+                    # THE KNOCK-IN, INTEGRATED: `relu(-eff_intr) * 1{hit}` is supported on one tail
+                    # of THIS interval's law, `otm_bound` carrying the strike's side and the
+                    # barrier's, and lies wholly inside the surviving set for every R >= 0
                     otm_analytic = None
                     if smooth and otm_bound is not None:
                         z_otm = (torch.log(otm_bound / Sj) - fwd_drift) / vol_dt
                         otm_analytic = Dj * L * N_otm * (-gain_sign) * lognormal_fired_gain(
                             Sj, fwd_drift, vol_dt, z_otm, K, callOrPut < 0, gain_power)
                     if hn:
-                        # HN increment + h-recursion on the truncated final draw (shared advance;
-                        # leverage-asymmetric because Z is survival-truncated - see hn_daily_advance)
+                        # HN increment + h-recursion on the truncated final draw; leverage-
+                        # asymmetric because Z is survival-truncated (see hn_daily_advance)
                         Sj, st = kit.advance(Sj, st, b_step, Z)
                     else:
-                        # GBM increment
                         Sj = Sj * (torch.exp(fwd_drift + vol_dt * Z) if dt > 0 else 1.0)
                 else:
                     Sj = past_fixings[-min(reduced_samples, num_samples)].reshape(-1, 1)
@@ -3690,22 +3377,19 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     # an OBSERVED fixing has no conditioning step to integrate against: its spot is
                     # data, so its knock-in is an exact indicator and its accrual carries no density
                     otm_analytic = None
-                # ---- Economic PV for this fixing -----------------------------------------
-                # compute effective intrinsic in the correct measure
+                # the effective intrinsic in the target's own measure, clamped at the per-path
+                # remaining target
                 if not invertedTarget:
                     eff_intr = (Sj - K) * callOrPut
                 else:
                     eff_intr = (1.0 / Sj - 1.0 / K) * (-callOrPut)
-                # clamp at the per-path remaining target (R is in currency units; divide back to target units)
                 intr = eff_intr.clamp(max=remaining_target)
-                itm_mask = (intr > 0.0)  # ITM
-                # the accrual kinks at the strike on the CONTINUING branch, and second-order AAD
-                # drops a density there. ONE kernel serves both legs: `relu(-x)` kinks exactly where
-                # `relu(x)` does and the term is even in its argument, so the net cashflow carries
-                # `(N_itm - N_otm)` of it - which is also why an unleveraged deal has no kink at all
+                itm_mask = (intr > 0.0)
+                # ONE kernel serves both legs: `relu(-x)` kinks exactly where `relu(x)` does and the
+                # term is even, so the net cashflow carries `(N_itm - N_otm)` of it - which is also
+                # why an unleveraged deal has no kink at all
                 kink = accrual_kink_term(intr, j) if (
                     second_order and not use_past_fixing) else None
-                # Optional knock-in on OTM leg
                 if otm_analytic is not None:
                     # integrated above; nothing of this leg is sampled, so no indicator is formed
                     barrier_hit = torch.zeros_like(Sj)
@@ -3714,17 +3398,16 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     barrier_hit = (barrier_intr >= 0.0).to(Sj.dtype)
                 else:
                     barrier_hit = torch.ones_like(Sj)
-                # economic per-fixing cashflow (signed)
-                cf_itm = F.relu(intr) * N_itm  # ≥ 0
-                cf_otm = F.relu(-intr) * N_otm * barrier_hit  # ≤ 0
+                # the signed per-fixing cashflow
+                cf_itm = F.relu(intr) * N_itm
+                cf_otm = F.relu(-intr) * N_otm * barrier_hit
                 if kink is not None:
                     # worth an exact zero forward and bit-zero at first order, so it rides the
                     # deal's own weights rather than a detached copy of them
                     cf_itm = cf_itm + kink * N_itm
                     if otm_analytic is None:
                         cf_otm = cf_otm + kink * N_otm * barrier_hit
-                cf_step = L * p * (cf_itm - cf_otm)  # signed
-                # add discounted PV to P
+                cf_step = L * p * (cf_itm - cf_otm)
                 P = P + Dj * cf_step
                 if otm_analytic is not None:
                     P = P - otm_analytic
@@ -3732,22 +3415,20 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     P_alive = P_alive + Dj * L_alive * p * (cf_itm - cf_otm)
                     if barrier > 0.0:
                         # one decision per inner path; gap > 0 means KNOCKED IN, in log space, and
-                        # `expand_as` also covers the already-observed fixing (see docstring)
+                        # `expand_as` also covers the already-observed fixing
                         jump = (-buy_sell * Dj * L * p * F.relu(-intr) * N_otm).detach()
                         gaps.append((callOrPut * torch.log(barrier / Sj)).expand_as(jump))
                         jumps.append(jump)
                         knock_rows.append(i)
-                # ---- Update remaining target R on survivors ------------------------------
-                accr = cf_itm  # = F.relu(intr) * N_itm, correct for both standard and inverted
+                # the remaining target, decremented by this fixing's accrual on survivors
+                accr = cf_itm  # correct for both standard and inverted targets
                 if smooth:
                     # the mask is inert at value and first order - `accr` is an exact zero off it -
                     # and it would SEVER the kink term's curvature from the moving trigger that
-                    # curvature has to reach. R is what carries an accrual across decisions, so on
-                    # this path the accrual reaches it whole
+                    # curvature has to reach
                     R = R - accr
                 else:
-                    R = torch.where(itm_mask, R - accr, R)  # survival construction: no overshoot
-                # ---- Update survival weight ----------------------------------------------
+                    R = torch.where(itm_mask, R - accr, R)  # no overshoot: R stays >= 0
                 if smooth:
                     ledger.fire(p)
                     L = ledger.alive
@@ -3755,14 +3436,11 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     L = p * L
                 if boundary_aad:
                     L_alive = p * L_alive
-                # (Optional) settlement at tau==0 - RETURNED, because a recompute would settle twice
+                # a settlement at tau == 0 is RETURNED, because a recompute would settle twice
                 if j == 0 and tau[0] == 0:
                     settled.append(cf_step.mean(axis=1))
                     settle_rows.append(i)
-            # End-of-block: push mean PV over sims
             if ledger is not None:
-                # the identity the construction rests on, per row, at DEBUG - the one reading a
-                # value cannot show (SurvivalLedger.check)
                 ledger.check('TARF row {}'.format(i))
             mcmc.append(P.mean(axis=1))
             if boundary_aad:
@@ -3775,19 +3453,17 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 torch.stack(settled) if settled else prev_accum.new_empty(0),
                 settle_rows, knock_rows) + tuple(gaps) + tuple(jumps)
 
-    # --- Main block loop --------------------------------
     mtm_list = []
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     discount = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
 
-    # now precalc all past resets - Fixings includes settlement and fixings dates
+    # `Fixings` includes settlement dates as well as fixing dates
     samples = factor_dep['Fixings']
     start_idx = samples.get_start_index(deal_time)
     start_index, counts = np.unique(start_idx, return_counts=True)
 
-    # make sure we can access the numpy and tensor components
     fx_samples = factor_dep['Price_Fixings']
     known_resets = fx_samples.known_resets(shared.simulation_batch)
     sim_samples = fx_samples.schedule[
@@ -3801,11 +3477,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     num_samples = len(all_samples)
 
     settle_idx = np.searchsorted(factor_dep['Settlement'], deal_time[:, utils.TIME_GRID_MTM]).astype(np.int64)
-    # need to get the index of the fixing and the equity
     fixing_indices = counts.cumsum() - 1
     settle_index = settle_idx[fixing_indices]
 
-    # params for the tarf
     targetValue = deal_data.Instrument.field['TargetLevel']
     barrier = deal_data.Instrument.field.get('Barrier', 0.0)
     notional1 = factor_dep['Notional1'] * shared.one
@@ -3815,17 +3489,15 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     callOrPut = factor_dep['Option_Type']
     buy_sell = factor_dep['Buy_Sell']
 
-    # `resolved` counts the fixings taken off the realized path, and it is NOT `num_samples`:
+    # `resolved` counts the fixings taken off the realized path and is NOT `num_samples`:
     # `calc_fx_cross` on an empty schedule returns a broadcast row, so `len(all_samples)` reads 1
-    # where nothing is resolved at all. Harmless today - the past-fixing branch is unreachable
-    # when the count is zero - but it is not the quantity a reader would take it for.
+    # where nothing is resolved at all
     logging.debug('TARF %s fixings=%d resolved=%d target=%.6g barrier=%.6g blocks=%d',
                   deal_data.Instrument.field.get('Reference'), len(fx_samples.schedule),
                   len(known_resets) + len(sim_samples), targetValue, barrier, len(counts))
 
-    # THE SWITCH, read once before a draw is taken so a non-GBM refusal lands first. It SUPERSEDES
-    # the two registrations below rather than joining them - one decision, one estimator (see the
-    # docstring's BRANCH AND WEIGHT section)
+    # read once before a draw is taken so a non-GBM refusal lands first. It SUPERSEDES the two
+    # registrations below rather than joining them - one decision, one estimator
     smooth = branch_and_weight(shared, deal_data)
     # `eff_intr = gain_sign * (S**gain_power - K**gain_power)` on BOTH targets, which is what lets
     # one closed form serve the inverted accrual (`lognormal_fired_gain`'s own `power`)
@@ -3840,11 +3512,10 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     # second derivative, so it costs exactly nothing on a first-order run
     second_order = smooth and getattr(shared, 'gamma', False)
 
-    # gated: the target filling and the OTM knock-in both jump on simulated state (see docstring)
+    # gated: the target filling and the OTM knock-in both jump on simulated state
     boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
     b_gaps, b_fired, b_obs_before, b_inner, alive, row_ofs = [], [], [], [], [], 0
 
-    # opt-in Heston-Nandi spot model; absent => byte-identical GBM path (see docstring)
     # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
     hn_scalars = oss_model_scalars(factor_dep, shared)
     hn = bool(hn_scalars)
@@ -3852,7 +3523,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         hn_spy = factor_dep['HN_Steps_Per_Year']
 
 
-    # calculate the correct accumulation to date
+    # the accumulation to date, over the declared past values and then the simulated fixings
     acc = shared.one * 0.0
     for sample_val in fx_samples.schedule[:, utils.RESET_INDEX_Value]:
         if sample_val:
@@ -3870,18 +3541,15 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             raw.append(raw[-1] + accrued(sample_val, strike, callOrPut, invertedTarget))
 
     sobol = False
-    # use a quasi random generator if we are simulating a large batch
+    # a quasi random generator for large batches; the counter is reset so that subsequent runs
+    # reuse the same quasi random numbers
     if shared.simulation_batch > 16:
-        # reset the sobol counter (so that subsequent runs reuse the same quasi random numbers)
         sobol = True
         shared.reset_qrg()
 
-    # split vectors into blocks based on start_index/counts
     for b_idx, (discount_block, spot_block) in enumerate(
             utils.split_counts([discount, spot], counts, shared)):
-        # get the starting index for fixings/settlement
         settle_index_local = settle_index[b_idx]
-        # calculate the fixing dates
         t_block = discount_block.time_grid
         fixings = (fx_samples[np.newaxis, settle_index_local:, utils.RESET_INDEX_End_Day] -
                    t_block[:, utils.TIME_GRID_MTM, np.newaxis]).clip(min=0)
@@ -3889,17 +3557,15 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             deal_data.Factor_dep['Underlying_Currency'], deal_data.Factor_dep['Currency'],
             fixings, t_block, shared, multiply_by_time=False)
         fixing_block = daycount_fn(fixings)
-        # Discounting and settlement
         settlement = (factor_dep['Settlement'][np.newaxis, settle_index_local:] -
                       t_block[:, utils.TIME_GRID_MTM, np.newaxis])
         sample_ts = drifts.new(
             np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)]))
         discount_rates = utils.calc_discount_rate(discount_block, settlement, shared)
         cum_t = drifts.new(fixing_block)
-        # the interval carry and vol strips, both theta rather than loop state, and both built
-        # where their siblings build theirs (forward_carry_rate, forward_vol_rate). Both take the
-        # ZERO carry `drifts`: a forward to each tenor is the CUMULATIVE integral. This pricer
-        # reads the surface NOWHERE else, so the forward moneyness IS what it declares.
+        # the interval carry and vol strips, both theta rather than loop state. Both take the ZERO
+        # carry `drifts`, a forward to each tenor being the CUMULATIVE integral. This pricer reads
+        # the surface NOWHERE else, so the forward moneyness IS what it declares
         fwd_drifts = forward_carry_rate(drifts, cum_t, sample_ts)
         vols = forward_vol_rate(forward_vol_strip(
             deal_data, strike, spot_block, drifts, fixing_block, shared,
@@ -3909,14 +3575,13 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         simulate = partial(sim_spot_tarf, settlement, sobol, shared.MCMC_sims)
         theta = (spot_block, sample_ts, fwd_drifts, accumulation[settle_index_local],
                  discount_rates, vols, all_samples) + hn_scalars
-        # the SAME callable either way: under the node it is called twice (see InnerMCRecompute)
+        # the SAME callable either way: under the node it is called twice
         outputs = InnerMCRecompute.run(shared, simulate, *theta)
         block_mtm, block_alive, block_settled, settle_rows, knock_rows = outputs[:5]
         theo_price = buy_sell * block_mtm
 
-        # the by-products, performed once off the forward's result (see sim_spot_tarf). The
-        # ledger carries the deal's direction exactly as the mtm does - it was booked unsigned,
-        # so a sold TARF settled its fixing as a receipt (tests/test_tarf_cash_settle.py)
+        # the by-products, performed once off the forward's result. The settled cash carries the
+        # deal's direction exactly as the mtm does, or a sold TARF books its fixing as a receipt
         for row, value in zip(settle_rows, block_settled):
             cash_settle(shared, factor_dep['SettleCurrency'], np.searchsorted(
                 time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]), buy_sell * value)
@@ -3929,7 +3594,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             b_inner.extend([[row_ofs + row, outputs[fixed + k], outputs[fixed + n_inner + k]]
                             for k, row in enumerate(knock_rows)])
             # one latched redemption decision per block; `expand` because block 0's accrual is the
-            # HISTORIC one, a single number rather than a per-scenario tensor (see docstring)
+            # HISTORIC one, a single number rather than a per-scenario tensor
             b_gaps.append((raw[settle_index_local] - targetValue).squeeze(dim=1).expand(
                 shared.simulation_batch))
             b_fired.append((targetValue - accumulation[settle_index_local] == 0.0).squeeze(
@@ -3938,16 +3603,15 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         row_ofs += theo_price.shape[0]
         mtm_list.append(theo_price)
 
-    # Reporting currency MTM
     mtm = torch.cat(mtm_list, dim=0)
 
-    # report_index is None on a grid nobody reports off - an HMC tradable, a calibration's
-    # benchmark grid - and there is no reporting row for a counterfactual to land on
+    # report_index is None on a grid nobody reports off, where there is no reporting row for a
+    # counterfactual to land on
     if boundary_aad and time_grid.report_index is not None:
         to_mtm = deal_to_mtm_grid(time_grid, deal_data, fx_rep)
         if b_gaps:
-            # Redemption: `triggered` is worth zero for every row the decision reaches, and
-            # `untriggered` is the SAME loop run on a weight that was never zeroed.
+            # redemption: `triggered` is worth zero for every row the decision reaches, and
+            # `untriggered` is the SAME loop run on a weight that was never zeroed
             untriggered = buy_sell * torch.cat(alive, dim=0).detach()
             shared.boundary_sets.append(utils.LatchedBoundarySet(
                 gaps=b_gaps, fired=b_fired, obs_before=np.array(b_obs_before),
@@ -3970,71 +3634,67 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     trigger registrations are RETURNED, not performed. THE VOL IS AN INTERVAL STRIP in both branches
     (``forward_vol_rate(forward_vol_strip(...))``), read at the moneyness the deal declares; the
     per-fixing smile convention is open in roadmap.md. Quanto bends the carry at the expiry read;
-    compo prices the product S*X - spot scaled by the fx cross, fx carry per fixing, interval strip
-    composed with the fx expiry vol (``calc_vol_adjustment``).
+    compo prices the product S*X (``calc_vol_adjustment``).
 
     THE KNOCK-OUT LATCH IS CARRIED. ``terminationDate`` is stamped inside ``sim_spot`` at each
     observed fixing, returned as a by-product and handed to the next block's theta - an autocalled
-    path settles its coupon once and marks zero from then on. The averaging branch cannot stamp it
-    (its termination is a smoothed per-inner-path weight, with no crisp per-scenario decision) and
-    returns it unchanged; the lagging-payment schedule case is open in roadmap.md.
+    path settles its coupon once and marks zero from then on. The averaging branch cannot stamp it,
+    its termination being a smoothed per-inner-path weight with no crisp per-scenario decision, and
+    returns it unchanged.
 
     BOUNDARY AAD: the trigger's gap is decided on ``Sj`` INSIDE the simulation, so under the node it
     is an OUTPUT whose cotangent carries the correction. Each STAMPED decision (``tau == 0``)
     registers ONE ``LatchedBoundarySet`` entry carrying its whole reach: the carried latch killing
-    every later row (alive against zero - the alive branch costs nothing, since the accumulators
-    run alive and the latch masks the exits), the own-row override forking the decision row itself
-    (fired against survived, a hard indicator), and the ledger triple for the payment the decision
-    controls, which a collateralised exposure reads through ``C_ts_te``. One decision is ONE
-    counterfactual: an objective with a kink scores two partial counterfactuals differently from
-    their sum. A re-observation of an old decision in a pending window registers nothing.
+    every later row, the own-row override forking the decision row itself, and the ledger triple for
+    the payment the decision controls, which a collateralised exposure reads through ``C_ts_te``.
+    One decision is ONE counterfactual: an objective with a kink scores two partial counterfactuals
+    differently from their sum. A re-observation of an old decision registers nothing.
 
     BRANCH AND WEIGHT REACHES THE NO-AVERAGING ARM (``Branch_And_Weight: 'Yes'``, base valuation
-    only), and it SUPERSEDES the registration above rather than joining it - one decision, one
-    estimator. Most of the construction was already here: a constant coupon makes
-    ``(1 - p) * L * coup * D_j`` a conditional expectation rather than a probability times a
-    sample, the funding leg pays on the survival weight, and the continuation is the truncated
-    draw. What the switch adds is the SECOND decision this deal takes per fixing.
+    only), and it SUPERSEDES the registration above rather than joining it. Most of the construction
+    is already here: a constant coupon makes ``(1 - p) * L * coup * D_j`` a conditional expectation
+    rather than a probability times a sample, the funding leg pays on the survival weight, and the
+    continuation is the truncated draw. What the switch adds is the deal's SECOND per-fixing
+    decision:
 
     THE PUT LEG IS INTEGRATED RATHER THAN SAMPLED. ``breach * (rebate - (1 - S/strike))`` is
     ``(S - strike * (1 - rebate)) * 1{S <= B} / strike`` - a gain over one tail of the interval's
     own law - so it closes in that law's partial moments (``lognormal_fired_gain``) and the
     indicator leaves the tape. Crisp it is a bare jump of ``rebate - (1 - B/strike)``, an exact zero
-    only where the barrier sits ON the strike with no rebate: measured 18-22% off its own CRN delta
-    ladder at a 70% barrier, which is where a real autocall puts it, against 0.00% on the strike.
+    only where the barrier sits ON the strike with no rebate: 18-22% off its own CRN delta ladder
+    at a 70% barrier, against 0.00% on the strike.
 
     THE ORDER IN THE LOOP DECIDES THE FORM, and it is the thing to read before touching this. The
     coupon block computes the SURVIVAL ``p``, pays ``(1 - p) * L``, advances ``L`` to ``p * L``, and
     only then advances ``Sj`` by a survival-truncated draw; the barrier block runs after all four.
-    So the sample it replaces is drawn from the law truncated to the surviving ``{S <= K}`` AND is
-    already carrying that fixing's ``p`` in ``L`` - which makes the analytic term a CONDITIONAL
+    So the sample it replaces is drawn from the law truncated to the surviving ``{S <= K}`` and
+    already carries that fixing's ``p`` in ``L``, which makes the analytic term a CONDITIONAL
     expectation: the raw partial moments over the breach region, divided by ``p``. That division is
     spelled as the weight from before ``p`` entered ``L`` - exactly ``L / p``, without the ``0/0``
     on a fixing every path fires - and the region is intersected with the surviving set,
     ``min(B, K)``, so what is integrated lies inside the truncated support.
 
-    WHAT STAYS AN INDICATOR, because there is no conditioning step to integrate it against: a
-    barrier date this iteration's coupon block did not advance ``Sj`` over. Two of the three ways
-    that happens are EXACT - an OBSERVED fixing (``dt <= 0`` - ``Sj`` is the scenario's own spot and
-    the breach is DATA, exactly as the observed autocall trigger is) and a block opening on a fixing
-    that is not aligned (``Sj`` is that coupon's own observed price fixing). THE THIRD IS NOT: on a
-    barrier date whose coupon row is ``<= 0`` the indicator is exact on a STALE spot - the previous
-    fixing's - and ``coupon_index``, un-advanced, mis-tenors the next coupon with it. That is a
-    pre-existing defect of this arm and not of the switch, which leaves the branch byte for byte;
-    it is a row in roadmap.md's Known-defects table with its remedy, and the gate that pins the
-    reading is ``test_branch_and_weight.py::test_a_zero_coupon_barrier_date_reads_a_stale_spot``.
+    WHAT STAYS AN INDICATOR, there being no conditioning step to integrate it against: a barrier
+    date this iteration's coupon block did not advance ``Sj`` over. Two of the three ways that
+    happens are EXACT - an OBSERVED fixing (``dt <= 0``, where ``Sj`` is the scenario's own spot and
+    the breach is DATA) and a block opening on a fixing that is not aligned (``Sj`` is that coupon's
+    own observed price fixing). DECLARED DEFECT, the third: on a barrier date whose coupon row is
+    ``<= 0`` the indicator is exact on a STALE spot - the previous fixing's - and ``coupon_index``,
+    un-advanced, mis-tenors the next coupon with it. It belongs to this arm rather than to the
+    switch, which leaves the branch byte for byte; roadmap.md carries it with its remedy, and
+    ``test_branch_and_weight.py::test_a_zero_coupon_barrier_date_reads_a_stale_spot`` pins it.
 
     THE AVERAGING ARM REFUSES BY NAME rather than no-opping: its termination is a smoothed
     per-inner-path weight with no crisp per-scenario decision to replace, and its own ``breached``
-    is a hard indicator on the AVERAGE, so pricing it under the switch would put the construction's
-    name on an estimator that is not it.
+    is a hard indicator on the AVERAGE.
     """
     def sim_autocall(S, isBarrierDate, isFixingDate, isFloatDate, floating, threshold, coupon, terminationDate):
+        """The AVERAGING arm's inner path walk: coupons trigger off the running average of spots
+        and termination is a smoothed heaviside, so there is no crisp per-scenario decision."""
         avg = 0.0
         averageCounter = 0.0
         fx = isQuanto * (fixFXRate - 1.0) + 1.0
 
-        # MAIN LOOP
         resetTime = 0
         breachEvent = barrierIsHit - 0.01
         floatingTime = 0
@@ -4082,37 +3742,36 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     def sim_spot(offset, times, t_tenor, last_fixing, sobol, num_sims,
                  spot_prices, vols, carry, terminationDate, discount_rates, floating_leg,
                  past_fixings, *hn_scalars):
-        """Inner one-step-survival Monte Carlo over one block of MTM rows; returns the mean PV per row.
+        """Inner one-step-survival Monte Carlo over one block of MTM rows; the mean PV per row.
 
-        PURE bound/theta split for ``InnerMCRecompute``: leading arguments are the block's shape, bound
-        per block; trailing ones are every graph-carrying tensor. ``times`` is bound because it is built
-        from numpy and stays numpy on a block whose fixings have all been observed.
+        PURE bound/theta split for ``InnerMCRecompute``: leading arguments are the block's shape,
+        bound per block; trailing ones are every graph-carrying tensor. ``times`` is bound because
+        it is built from numpy and stays numpy on a block whose fixings have all been observed.
 
         Returns ``(mtm, settled, settle_rows, event_rows, terminationDate, alive) + gaps + fired +
         survived + cash_on`` - the marks, the by-products the caller performs once, then per
-        decision: a gap (carrying the correction's cotangent), two detached branch coefficients,
-        and the payment the trigger controls had it fired (the collateral chain's cash
-        counterfactual).
+        decision: a gap (carrying the correction's cotangent), two detached branch coefficients, and
+        the payment the trigger controls had it fired.
 
         ``terminationDate`` arrives as the latch a PRIOR block left (-1 alive, else the fixing index
-        that killed the path), is stamped where a fixing is observed (``tau == 0``, off the scenario's
-        own spot) and returned for the next block. The accumulators run ALIVE with the latch masking the
-        exits: ``P`` is homogeneous in its initial weight, so the masked exit equals the killed weight
-        bit for bit, and the same pass yields the ``alive`` rows the latched registration needs - which
-        a killed weight could never produce.
+        that killed the path), is stamped where a fixing is observed (``tau == 0``, off the
+        scenario's own spot) and returned for the next block. The accumulators run ALIVE with the
+        latch masking the exits: ``P`` is homogeneous in its initial weight, so the masked exit
+        equals the killed weight bit for bit, and the same pass yields the ``alive`` rows the
+        latched registration needs, which a killed weight could never produce.
 
         Under ``boundary_aad`` a row whose autocall is OBSERVED (``dt == 0``: the fixing IS the row,
-        ``Sj`` the scenario's own spot) forks a counterfactual. The gap is signed so ``gap > 0`` means
-        FIRED (``p == 0``). Firing zeroes the weight, so the fired branch is exactly that coupon; the
-        surviving branch (``P_cf``/``L_cf``) is the same accumulation on a weight the trigger never
-        touched, created at most once per row - a fixing lands on the last row of its block.
+        ``Sj`` the scenario's own spot) forks a counterfactual. The gap is signed so ``gap > 0``
+        means FIRED (``p == 0``). Firing zeroes the weight, so the fired branch is exactly that
+        coupon; the surviving branch (``P_cf``/``L_cf``) is the same accumulation on a weight the
+        trigger never touched, created at most once per row.
         """
 
         timesteps, num_samples = times.shape
         # the declared model as a walking kit - the pricer names it once, here
         kit = oss_model_kit(factor_dep, hn_scalars)
         hn = kit is not None
-        # the by-products the caller performs once (see docstring)
+        # the by-products the caller performs once
         settled, settle_rows, event_rows, gaps, fired, survived = [], [], [], [], [], []
         alive, cash_on = [], []
 
@@ -4121,20 +3780,19 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         threshold = Threshold[offset:]
         coupon = Coupon[offset:]
 
-        # if there is exactly 1 fixing per coupon date, then there is no averaging
+        # exactly one fixing per coupon date means there is no averaging
         if factor_dep['no_averaging']:
-            # needed for numerical stability
             eps = torch.finfo(shared.one.dtype).eps
             fx = isQuanto * (fixFXRate - 1.0) + 1.0
             # block-entry latch state: a scenario that fires at THIS block's fixing settles its
-            # coupon here and dies from the next block on (see docstring)
+            # coupon here and dies from the next block on
             dead = (terminationDate != -1).squeeze(1)
             mcmc = []
             for i, (tau, df, s, v, carry_rate, delta_t, floating) in enumerate(zip(
                     t_tenor, discount_rates, spot_prices, vols, carry, times, floating_leg)):
 
+                # zero when only the floating leg is left
                 reduced_samples = len(delta_t)
-                # reduced samples can be zero if there's just the floating leg left
                 if reduced_samples:
                     if sobol:
                         u = shared.quasi_rng(shared.simulation_batch, reduced_samples * num_sims)[1].T.reshape(
@@ -4153,15 +3811,13 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
                 P = torch.zeros((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
                 L = torch.ones((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
-                # counterfactual for this row's OBSERVED autocall; it does not exist until the
-                # trigger is met, at most once per row (see docstring)
+                # the counterfactual for this row's OBSERVED autocall; it does not exist until the
+                # trigger is met, at most once per row
                 P_cf = L_cf = None
-                # the alive weight and what each coupon FIRED, in one object, so the telescoping
-                # identity the construction rests on has somewhere to live (SurvivalLedger). The
-                # accumulators run alive, so it opens at one
+                # the accumulators run alive, so the ledger opens at one
                 ledger = SurvivalLedger(L) if smooth else None
-                # set the correct shape for discounting; the vol is per INTERVAL, so it is picked
-                # off the strip at the coupon's own index rather than hoisted out of the loop
+                # the vol is per INTERVAL, so it is picked off the strip at the coupon's own index
+                # rather than hoisted out of the loop
                 D = df.unsqueeze(2)
 
                 coupon_index = 0
@@ -4184,9 +3840,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             # `carry` arrives as the INTERVAL carry strip (forward_carry_rate)
                             forward_carry = carry_rate[coupon_index].reshape(-1, 1)
                             if hn:
-                                # HN daily sub-stepping to the coupon date (autocall knocks out only
-                                # AT the coupon observation, so the OSS truncation - survival = spot
-                                # BELOW the autocall threshold K - applies only on the final daily step)
+                                # HN daily sub-stepping to the coupon date. The autocall knocks out
+                                # only AT the coupon observation, so the OSS truncation - survival
+                                # is spot BELOW K - applies only on the final daily step
                                 n_sub = max(int(round(float(dt) * hn_spy)), 1)
                                 b_step = forward_carry * dt / n_sub
                                 Sj, st = kit.substeps(
@@ -4200,16 +3856,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                 p = utils.norm_cdf(
                                     (torch.log(K / Sj) - (forward_carry - 0.5 * vol * vol) * dt) / vol_dt)
                                 if smooth and putBarrier > 0.0:
-                                    # this interval, held for the barrier block a screen below
-                                    # because THIS is where it exists: `Sj` before the advance, the
-                                    # interval's own `m` and `s`, the weight from BEFORE this
-                                    # fixing's `p` enters `L`, and the breach region intersected
-                                    # with the surviving set `{S <= K}` the draw is truncated to.
-                                    # `m` is SPELLED AGAIN rather than hoisted out of the two
-                                    # crisp sites: one node collecting two cotangents rounds its
-                                    # gradient differently from two collecting one each, which
-                                    # moved this pricer's reported greeks in the last bit with the
-                                    # switch OFF - and off is bit-identical or it is a defect
+                                    # held for the barrier block a screen below: `Sj` before the
+                                    # advance, this interval's `m` and `s`, the weight from BEFORE
+                                    # `p` enters `L`, and the breach region inside the surviving set
                                     interval = (Sj, (forward_carry - 0.5 * vol * vol) * dt,
                                                 vol_dt, L, min(putBarrier, K))
                         else:
@@ -4228,17 +3877,15 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             L_cf = p * L_cf
                         elif boundary_aad and dt <= 0:
                             # the autocall is OBSERVED here (dt == 0), so Sj is the scenario's own
-                            # spot and gap > 0 means the trigger FIRED (see docstring); the
-                            # branches are DEAD-AWARE - a scenario an earlier fixing latched has
-                            # nothing left to jump
+                            # spot and gap > 0 means the trigger FIRED. The branches are DEAD-AWARE:
+                            # a scenario an earlier fixing latched has nothing left to jump
                             event_rows.append(i)
                             gaps.append(torch.log(Sj / K).squeeze(dim=1))
                             fired.append(torch.where(
                                 dead, 0.0, (P + fx * L * coup * D[j]).mean(axis=1)).detach())
-                            # the payment the trigger makes IF it fires - UNMASKED: which worlds
-                            # reach it is the latch's question (`cash_events`), and a scenario
-                            # dead as booked is alive in the world where an earlier trigger is
-                            # forced off
+                            # the payment the trigger makes IF it fires, UNMASKED: which worlds
+                            # reach it is the latch's question, and a scenario dead as booked is
+                            # alive in the world where an earlier trigger is forced off
                             cash_on.append((fx * coup * D[j]).squeeze(1).detach())
                             P_cf, L_cf = P, L
 
@@ -4249,20 +3896,16 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         P = P + coupon_cash
                         if ledger is not None:
                             # `L * p` and `p * L` are the same IEEE product, so the ledger's
-                            # advance is the crisp line's - what it adds is the fired mass beside
+                            # advance is the crisp line's; what it adds is the fired mass beside
                             # it, spelled off the SAME `p`, which is what makes the identity exact
                             ledger.fire(p)
                             L = ledger.alive
                         else:
                             L = p * L
                         if tau == 0.0 and dt <= 0:
-                            # SETTLE HERE, not at the bottom of the loop. `tau` is row-level, so a
-                            # test down there holds for every coupon and books the running `P`
-                            # once per coupon - measured at 3x on a three-coupon document, and
-                            # `P` is the deal's accumulated VALUE rather than the payment anyway.
-                            # This is the autocall's analogue of the TARF's `cf_step`. A scenario
-                            # an earlier fixing latched pays nothing again - the mask, since the
-                            # accumulators run alive.
+                            # SETTLE HERE, not at the bottom of the loop: `tau` is row-level, so a
+                            # test down there holds for every coupon and would book the running `P`
+                            # - the accumulated VALUE, not the payment - once per coupon
                             row_cash = torch.where(dead, 0.0, coupon_cash.mean(axis=1))
                             if logging.getLogger().isEnabledFor(logging.DEBUG):
                                 logging.debug(
@@ -4276,11 +3919,11 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             safe_pu = torch.clamp(p * u[coupon_index], min=eps, max=1.0-eps)
 
                             if hn:
-                                # survival-truncated final draw + h-recursion (shared advance)
+                                # the survival-truncated final draw and its h-recursion; at
+                                # dt <= 0 (the terminal fixing) there is no interval to advance
                                 if dt > 0:
                                     Sj, st = kit.advance(
                                         Sj, st, b_step, utils.norm_icdf(safe_pu))
-                                # dt<=0 (terminal fixing): no interval, Sj/h unchanged (mirrors Sj*1.0)
                             else:
                                 Sj = Sj * (torch.exp(
                                     (forward_carry - 0.5 * vol * vol) * dt + vol_dt * utils.norm_icdf(
@@ -4290,28 +3933,17 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             fixing_aligned = True
 
                     if barrier > 0 and interval is not None:
-                        # THE PUT LEG, INTEGRATED. `breach * (rebate - (1 - S/strike))` is
-                        # `(S - strike * (1 - rebate)) * 1{S <= b_eff} / strike` - a gain over one
-                        # tail of this interval's own law - so it closes in that law's partial
-                        # moments and the indicator leaves the tape. `b_eff = min(B, K)` puts the
-                        # breach region inside the SURVIVING set, and `L_prev` is the weight from
-                        # before this fixing's `p` entered `L`: the sample being replaced was drawn
-                        # survival-truncated, so the expectation is conditional on that truncation,
-                        # and `L_prev` IS `L / p` without the 0/0 where every path fired
+                        # THE PUT LEG, INTEGRATED: `b_eff = min(B, K)` puts the breach region inside
+                        # the SURVIVING set, and `L_prev` - the weight from before `p` entered `L` -
+                        # IS `L / p` without the 0/0 where every path fired
                         Sj_prev, m, s, L_prev, b_eff = interval
                         z_b = (torch.log(b_eff / Sj_prev) - m) / s
                         P = P + L_prev * D[j] * fx * lognormal_fired_gain(
                             Sj_prev, m, s, z_b, strike * (1.0 - rebate), False) / strike
                     elif barrier > 0:
-                        # no conditioning step this iteration, and the three sub-cases do NOT read
-                        # alike. EXACT, on the spot the deal names: an OBSERVED fixing (`Sj` is the
-                        # scenario's own spot and the breach is DATA, exactly as the observed
-                        # autocall trigger is), and a block opening on an unaligned fixing (`Sj` is
-                        # that coupon's own observed price fixing). EXACT ON A STALE SPOT: a barrier
-                        # date whose coupon row is <= 0 never ran the block above, so this reads the
-                        # PREVIOUS fixing's `Sj` and `coupon_index` mis-tenors the next coupon with
-                        # it - a pre-existing defect of the arm rather than of the switch, which
-                        # leaves it alone byte for byte; roadmap.md's Known-defects table carries it
+                        # no conditioning step this iteration: EXACT on the spot the deal names for
+                        # an OBSERVED fixing and an unaligned block opening, but on a STALE spot
+                        # where the coupon row is <= 0 (roadmap.md's Known-defects)
                         breach = torch.where(Sj <= putBarrier, 1.0, 0.0)
                         P = P + L * D[j] * fx * breach * (rebate - (1.0 - Sj / strike))
                         if P_cf is not None:
@@ -4319,8 +3951,6 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
 
                 if ledger is not None:
-                    # the identity the construction rests on, per row, at DEBUG - the one reading a
-                    # value cannot show (SurvivalLedger.check)
                     ledger.check('AUTOCALL row {}'.format(i))
                 row_value = P.mean(axis=1)
                 alive.append(row_value)
@@ -4331,9 +3961,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             isFixingDate = FixingDates[offset:]
             dt = times.unsqueeze(axis=2)
             # `vols` is the INTERVAL strip (forward_vol_rate), so this product is the interval
-            # variance rather than one implied vol applied to every interval. The floor is the
-            # ZERO-LENGTH interval's width and only that - `sim_spot_oss` carries the same
-            # expression and the same statement - and both consumers read the SAME variance
+            # variance. The floor is the ZERO-LENGTH interval's width and only that, and both
+            # consumers read the SAME variance
             var = vols * vols * dt
             var = torch.where(dt > 0, var, var.clamp(min=1e-4))
             drift = carry * dt - 0.5 * var
@@ -4356,14 +3985,13 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 pv = (val * D).sum(axis=0)
                 mcmc.append(pv)
 
-                # settle potential cashflows - RETURNED, a replay would settle them twice
+                # RETURNED, because a replay would settle these twice
                 if tau == 0.0:
                     settled.append(pv)
                     settle_rows.append(i)
             # the averaging branch carries NO latch out: its termination is a smoothed
-            # per-inner-path weight (sim_autocall's smooth_heaviside), so there is no crisp
-            # per-scenario decision to stamp - open in the roadmap; the incoming latch is
-            # respected (sim_autocall's `inforce`) and returned unchanged
+            # per-inner-path weight, so there is no crisp per-scenario decision to stamp. The
+            # incoming latch is respected (sim_autocall's `inforce`) and returned unchanged
 
         return (torch.stack(mcmc),
                 torch.stack(settled) if settled else spot_prices.new_empty(0),
@@ -4375,23 +4003,20 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
 
-    # get the discount curve and daycount
     discount = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
 
-    # set up the calculation grid
     samples = factor_dep['Fixings']
     start_idx = samples.get_start_index(deal_time)
     dual_samples = samples.dual()
     start_index, counts = np.unique(start_idx, return_counts=True)
 
     if factor_dep['no_averaging']:
-        # resets could be prior to the coupon date - need to store this
+        # a reset can be prior to its coupon date, so the two schedules are tracked separately
         equity_samples = factor_dep['Price_Fixing']
         coupon_samples = factor_dep['Coupon_Fixing']
         eq_start_idx = equity_samples.get_start_index(deal_time)
         cp_start_idx = coupon_samples.get_start_index(deal_time)
-        # grab the known fixings and join with any potential simulated fixings
         known_resets = equity_samples.known_resets(shared.simulation_batch)
         sim_samples = equity_samples.schedule[
             (equity_samples.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
@@ -4400,7 +4025,6 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             deal_data.Factor_dep['Equity'], sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)
         all_eq_samples = torch.cat(
             [torch.cat(known_resets, dim=0), past_samples], dim=0) if known_resets else past_samples
-        # need to get the index of the fixing and the equity
         fixing_indices = counts.cumsum() - 1
         eq_start_index = eq_start_idx[fixing_indices]
         cp_start_index = cp_start_idx[fixing_indices]
@@ -4408,7 +4032,6 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             coupon_samples.schedule[:, utils.RESET_INDEX_Reset_Day], 'right') - 1
         coupon_equity_index = np.append(coupon_equity_index, coupon_equity_index[-1] + 1)
 
-    # make sure we can price the floating leg (if present)
     if 'Forward' in factor_dep:
         resets = factor_dep['Cashflows'].Resets
         forward = utils.calc_time_grid_curve_rate(factor_dep['Forward'], deal_time, shared)
@@ -4418,10 +4041,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         cash_start_idx = factor_dep['Cashflows'].get_cashflow_start_index(deal_time)
         cash_start_index = dict(zip(start_idx, cash_start_idx))
     else:
-        # not used - set it to discount
+        # unused: there is no floating leg
         forward = discount
 
-    # params for the autocallable
     BarrierDates = factor_dep['Barrier_Dates']
     if not factor_dep['no_averaging']:
         FixingDates = [1 if x != -1 else -1 for x in factor_dep['Price_Fixing']]
@@ -4437,16 +4059,14 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     nominal = factor_dep['Buy_Sell'] * deal_data.Instrument.field['Units']
     terminationDate = -shared.one.new_ones(shared.simulation_batch, 1)
 
-    # `averaging` is the branch selector and it changes the PRODUCT, not just the estimator: the
-    # OSS path integrates each coupon's survival analytically, the averaging path simulates a mean
-    # of spots. Which one ran is invisible in a single number and decisive for what was priced.
+    # `averaging` changes the PRODUCT, not just the estimator: the OSS path integrates each
+    # coupon's survival analytically, the averaging path simulates a mean of spots
     logging.debug('AUTOCALL %s coupons=%d thresholds=%d averaging=%d barrier=%.6g blocks=%d',
                   deal_data.Instrument.field.get('Reference'), int((np.asarray(Coupon) > 0).sum()),
                   len(Threshold), int(not factor_dep['no_averaging']), putBarrier, len(counts))
 
-    # THE SWITCH, read once before a draw is taken so a non-GBM refusal lands first. It SUPERSEDES
-    # the registration below rather than joining it - one decision, one estimator (see the
-    # docstring's BRANCH AND WEIGHT section)
+    # read once before a draw is taken so a non-GBM refusal lands first. It SUPERSEDES the
+    # registration below rather than joining it - one decision, one estimator
     smooth = branch_and_weight(shared, deal_data)
     if smooth and not factor_dep['no_averaging']:
         raise ValueError(
@@ -4464,10 +4084,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             'deal already prices under, unchanged.'.format(
                 deal_data.Instrument.field.get('Reference')))
 
-    # Heston-Nandi spot model (present iff HestonNandiModelParameters.<equity> was resolved): the
-    # five GARCH scalars ride the AAD graph out of t_Static_Buffer, unpacked exactly like the TARF.
-    # When absent, sim_spot takes the byte-identical GBM path. HN is only wired into no_averaging.
-    # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
+    # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM. HN is
+    # only wired into the no_averaging arm
     hn_scalars = oss_model_scalars(factor_dep, shared)
     hn = bool(hn_scalars)
     if hn:
@@ -4475,16 +4093,14 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
 
     sobol = False
-    # use a quasi random generator if we are simulating a large batch
+    # a quasi random generator for large batches; the counter is reset so that subsequent runs
+    # reuse the same quasi random numbers
     if shared.simulation_batch > 16:
-        # reset the sobol counter (so that subsequent runs reuse the same quasi random numbers)
         sobol = True
         shared.reset_qrg()
 
-    # An autocall taken on the reporting row's own spot is a real redemption, so the value is not
-    # what is wrong; what ordinary AAD drops is the flux of scenarios across the threshold.
-    # Recording it costs nothing when sensitivities are not wanted, so it is gated rather than on -
-    # and superseded, not joined, where the smooth estimator removes the decision instead
+    # an autocall taken on the reporting row's own spot is a real redemption, so the value is not
+    # what is wrong; what ordinary AAD drops is the flux of scenarios across the threshold
     boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
     row_ofs = 0
     b_latch, b_obs, b_alive, b_cash = [], [], [], []
@@ -4507,17 +4123,15 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         fixing_block = daycount_fn(fixings)
 
         # the EXPIRY read - a deal-level quantity, which is all the quanto/compo adjustment wants.
-        # It is NOT what the simulation steps on: that is the interval strip below.
+        # It is NOT what the simulation steps on: that is the interval strip below
         expiry = daycount_fn(tenor_block)
         expiry_vols = utils.calc_time_grid_vol_rate(
             factor_dep['Volatility'], moneyness_block, expiry, shared)
 
         adj = None
         if factor_dep.get('Check_Payoff_Type', False):
-            # quanto bends the per-fixing carry; compo changes the UNDERLYING to S*X - the spot
-            # scaled by the fx cross, the fx carry added per fixing, the interval strip composed
-            # with the fx expiry vol below. Strike and thresholds are payoff-currency quantities,
-            # so they compare against the scaled spot as authored.
+            # strike and thresholds are payoff-currency quantities, so they compare against the
+            # scaled spot as authored
             adj = calc_vol_adjustment(factor_dep, deal_time, expiry, expiry_vols, shared, fixings)
             expiry_vols = adj['vol']
             drifts = drifts + adj['carry_adj']
@@ -4551,22 +4165,18 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 future_resets = torch.expm1(forward_rates.gather_weighted_curve(
                     shared, future_ends, future_starts)) * future_weights
 
-                # now deal with past resets
                 past_resets = torch.tile(
                     torch.unsqueeze(old_resets[reset_offset:reset_offset + offset], dim=0), [size, 1, 1])
                 all_resets = torch.concat([past_resets, future_resets], dim=1) if past_resets.any() else future_resets
-                # we now have all the expected floating payments for each scenario
                 all_int, _ = pricer_float_cashflows(all_resets, cashflows.tn, shared)
-                # need to reshape this for the mcmc pricing
+                # the trailing axis is the inner-simulation one
                 floating_legs.append(torch.unsqueeze(all_int, dim=-1))
 
-            # Sometimes we need to combine the floating legs
             floating_leg = torch.concat(floating_legs) if len(floating_legs) > 1 else floating_legs[0]
         else:
-            # not used - set it to the spot_block
+            # unused: there is no floating leg
             floating_leg = spot_block
 
-        # calc the discount rates
         discount_rates = utils.calc_discount_rate(discount_block, all_fixings, shared)
         if boundary_aad and factor_dep['no_averaging']:
             # decisions latched STRICTLY BEFORE this block's rows, at block granularity - the
@@ -4579,11 +4189,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 last_fixing = None if fixing_index == eq_start_index[index] else fixing_index
             else:
                 last_fixing = None
-            # the interval carry and vol strips, built where their siblings build theirs - which is
-            # also what puts the AVERAGING branch's `carry * dt` and `vols * vols * dt` on interval
-            # integrals. Both take the ZERO carry `drifts`; a forward to a tenor is cumulative. The
-            # strip takes the default (spot) moneyness because that is what `moneyness` above - the
-            # quote this pricer marks its own Europeans with - was built with.
+            # the interval carry and vol strips, which is also what puts the AVERAGING branch's
+            # `carry * dt` and `vols * vols * dt` on interval integrals. Both take the ZERO carry
+            # `drifts`; the strip takes the spot moneyness this pricer marks its Europeans with
             cum_t = drifts.new(fixing_block) if fixing_block.any() else fixing_block
             fwd_drifts = forward_carry_rate(
                 drifts, cum_t, sample_ts) if fixing_block.any() else drifts
@@ -4600,16 +4208,15 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                      floating_leg,
                      all_eq_samples if factor_dep['no_averaging'] else spot_block.new_empty(0)
                      ) + hn_scalars
-            # the SAME callable either way: under the node it is called twice (see InnerMCRecompute)
+            # the SAME callable either way: under the node it is called twice
             outputs = InnerMCRecompute.run(shared, simulate, *theta)
             # `terminationDate` comes back stamped by this block's observed fixing and is handed to
             # the NEXT block's theta - an autocalled path pays once and is worth nothing after
             theo_cashflow, block_settled, settle_rows, event_rows, terminationDate, block_alive = \
                 outputs[:6]
-            # the by-products, performed once off the forward's result (see sim_spot). `nominal`
-            # is `Buy_Sell * Units` and scales the MARK three lines down; the ledger carries the
-            # same deal, so it carries the same scaling - without it a 10-unit deal booked one
-            # unit's cash and a sold one booked a receipt.
+            # the by-products, performed once off the forward's result. `nominal` is
+            # `Buy_Sell * Units` and scales the MARK three lines down, so the settled cash carries
+            # the same scaling
             for row, value in zip(settle_rows, block_settled):
                 cash_settle(shared, factor_dep['SettleCurrency'], np.searchsorted(
                     time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]), nominal * value)
@@ -4618,9 +4225,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 b_alive.append(block_alive)
                 settle_map = dict(zip(settle_rows, block_settled))
                 # per STAMPED decision (tau == 0): gap, flag (`gap >= 0` IS the trigger), the
-                # own-row fork, and the payment as a per-event `(mtm_row, amount, booked)` fact
-                # in reporting currency; a pending window's re-observation is not a new decision
-                # and registers nothing
+                # own-row fork, and the payment as a per-event `(mtm_row, amount, booked)` fact in
+                # reporting currency. A pending window's re-observation is not a new decision
                 for k, row in enumerate(event_rows):
                     if all_fixings[row, 0] != 0.0:
                         continue
@@ -4644,14 +4250,12 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         row_ofs += theo_price.shape[0]
         mtm_list.append(theo_price)
 
-    # mtm in reporting currency
     mtm = torch.cat(mtm_list, dim=0)
 
     if b_latch and time_grid.report_index is not None:
         # one counterfactual per decision, its whole reach: latch + own-row fork + every payment
-        # row the flip touches (see the docstring). Branches stay on the pricer's grid;
-        # report_index is None on a grid nobody reports off (an HMC tradable, a calibration's
-        # benchmark grid)
+        # row the flip touches. Branches stay on the pricer's grid; report_index is None on a grid
+        # nobody reports off
         gaps, flags, own_rows, on_v, off_v = zip(*b_latch)
         untriggered = (nominal * torch.cat(b_alive, dim=0)).detach()
         shared.boundary_sets.append(utils.LatchedBoundarySet(
@@ -4668,6 +4272,12 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
 def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forward,
                              past_factor_list, invert_moneyness=False, use_forwards=False):
+    """Discretely sampled Asian option by two-moment matching: the average of the remaining samples
+    is fitted to a lognormal and priced by Black against a strike net of the realised average.
+
+    Past the averaging period the value is the intrinsic on the realised average, priced at a token
+    maturity so the AAD graph stays defined.
+    """
     mtm_list = []
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -4675,11 +4285,9 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
 
     expiry = daycount_fn(factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
-    # make sure there are no zeros
+    # clamped away from zero: the carry below divides by it
     safe_expiry = spot.new(expiry.reshape(-1, 1)).clamp(min=1e-5)
-    # cost of carry
     b = torch.log(forward / spot) / safe_expiry
-    # now precalc all past resets
     eps = torch.finfo(shared.one.dtype).eps
     samples = factor_dep['Samples']
     known_resets = samples.known_resets(shared.simulation_batch)
@@ -4688,7 +4296,7 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
         (samples.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
         (samples.schedule[:, utils.RESET_INDEX_Reset_Day] <= deal_time[:, utils.TIME_GRID_MTM].max())]
 
-    # check if the spot was simulated - if not, hold it flat
+    # an unsimulated spot is held flat across the samples
     if spot.shape != forward.shape:
         past_samples = spot.expand(sim_samples.shape[0], shared.simulation_batch)
         spot = spot.expand(*forward.shape)
@@ -4701,7 +4309,6 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
 
     all_samples = torch.cat(
         [torch.cat(known_resets, dim=0), past_samples], dim=0) if known_resets else past_samples
-    # make sure we can access the numpy and tensor components
     dual_samples = samples.dual()
 
     start_index, counts = np.unique(start_idx, return_counts=True)
@@ -4723,20 +4330,19 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
             all_samples[:sample_index_t] * dual_samples.tn[:sample_index_t, utils.RESET_INDEX_Weight].reshape(-1, 1),
             dim=0)
 
-        # check if we still need to account for future averages.
         if sample_tau.size:
-            # strike_bar can be negative if the average is higher than the original strike price - need to clamp this.
+            # strike_bar goes negative when the realised average exceeds the strike, which Black
+            # cannot take
             strike_bar = torch.clamp(
                 factor_dep['Strike'] - average.reshape(1, -1).expand(counts[index], -1), min=1e-5)
             sample_fwd = spot_block.unsqueeze(1) * torch.exp(carry_block.unsqueeze(1) * sample_ts.unsqueeze(2))
             moneyness = calc_moneyness(
                 (strike_bar / normalize.clamp(min=eps)).unsqueeze(1), spot_block.unsqueeze(1), sample_fwd,
                 deal_data, use_forwards, invert_moneyness)
-            # get the vol per sample tau - might need to generalize this if we start modelling vols through time
+            # the vol at each sample's own tenor (TODO: generalise if vols become time-dependent)
             vols = torch.stack([utils.calc_time_grid_vol_rate(
                 factor_dep['Volatility'], mon, s_tau, shared) for mon, s_tau in zip(moneyness, sample_tau)])
             if factor_dep.get('Check_Payoff_Type', False):
-                # need quanto/compo adjustments
                 adj = [calc_vol_adjustment(
                     factor_dep, deal_time, s_tau, vol, shared) for s_tau, vol in zip(sample_tau, vols)]
                 vols = torch.stack([x['vol'] for x in adj])
@@ -4751,16 +4357,16 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
             sum_t = F.pad(torch.cumsum(product_t[:, :-1], dim=1), [0, 0, 1, 0, 0, 0])
             M2 = torch.sum(sample_ft * (product_t + 2.0 * sum_t), dim=1)
 
-            # trick to avoid nans in the gradients
+            # the clamps keep the logs and the root defined, so the gradients are not NaN
             MM = torch.log(M2.clamp(min=eps)) - 2.0 * torch.log(M1.clamp(min=eps))
             var_t = torch.where((M1 > eps) & (M2 > eps), MM, 0.0)
             vol_t = torch.where(var_t > 0.0, torch.sqrt(var_t.clamp(min=eps)), 0.0)
             tau = 1.0
             forward_price = M1 * spot_block
         else:
-            # We're past the averaging period - we know the intrinsic value
+            # past the averaging period, so the intrinsic is known
             strike_bar = factor_dep['Strike']
-            # can't set tau exactly to 0 - it will break the AAD
+            # tau cannot be exactly zero without breaking the AAD
             tau = 1e-5
             vol_t = torch.zeros_like(average)
             forward_price = average
@@ -4782,9 +4388,7 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
 
         mtm_list.append(value * discount_rates)
 
-    # potential cashflows
     cash_settle(shared, factor_dep['SettleCurrency'], deal_data.Time_dep.deal_time_grid[-1], value[-1])
-    # mtm in reporting currency
     mtm = torch.cat(mtm_list, dim=0)
 
     return mtm
@@ -4792,6 +4396,9 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
 
 def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot, forward,
                                     past_factor_list, invert_moneyness=False, use_forwards=False):
+    """Spread option on two discretely sampled averages, by two-moment matching on each leg and
+    Bjerksund-Stensland on the pair. Past both averaging periods it is the intrinsic on the
+    realised spread."""
     mtm_list = []
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -4799,19 +4406,16 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
 
     expiry = daycount_fn(factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
-    # make sure there are no zeros
+    # clamped away from zero: the carry below divides by it
     safe_expiry = spot.new(expiry.reshape(-1, 1)).clamp(min=1e-5)
-    # cost of carry
     b = torch.log(forward / spot) / safe_expiry
-    # load the alpha multipliers (usually just 1)
+    # the alpha multipliers, usually just 1
     alphas = [factor_dep['Alpha_1'], factor_dep['Alpha_2']]
-    # merge the resets for both samples before calculating the start_idx
+    # the resets of both samples merged, so a block boundary serves either schedule
     sample_reset_days = np.union1d(
         *[factor_dep[i].schedule[:, utils.RESET_INDEX_Reset_Day] for i in ['Samples_1', 'Samples_2']])
     start_idx = np.searchsorted(sample_reset_days, deal_time[:, utils.TIME_GRID_MTM], side='right').astype(np.int64)
-    # set the unique index
     start_index, counts = np.unique(start_idx, return_counts=True)
-    # now precalc all past resets
 
     all_samples = []
     dual_samples = []
@@ -4825,7 +4429,7 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
                                        (samples.schedule[:, utils.RESET_INDEX_Reset_Day] <=
                                         deal_time[:, utils.TIME_GRID_MTM].max())]
 
-        # check if the spot was simulated - if not, hold it flat
+        # an unsimulated spot is held flat across the samples
         if spot.shape != forward.shape:
             past_samples = spot.expand(sim_samples.shape[0], shared.simulation_batch)
             spot = spot.expand(*forward.shape)
@@ -4838,12 +4442,11 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
 
         full_sample = torch.cat(
             [torch.cat(known_resets, dim=0), past_samples], dim=0) if known_resets else past_samples
-        # make sure we can access the numpy and tensor components
         dual_sample = samples.dual()
         dual_samples.append(dual_sample)
-        # store the sample with the weights applied
+        # the samples carry their weights already applied
         all_samples.append(full_sample * dual_sample.tn[:, utils.RESET_INDEX_Weight].reshape(-1, 1))
-        # record the index of this sample relative the merged resets calculated earlier
+        # this sample's index relative to the merged resets above
         start_samples.append({x: y for x, y in zip(start_idx, sample_idx)})
 
     for index, (discount_block, spot_block, forward_block, carry_block) in enumerate(
@@ -4851,9 +4454,9 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
         t_block = discount_block.time_grid
         tenor_block = factor_dep['Expiry'] - t_block[:, utils.TIME_GRID_MTM]
 
-        # only do moment matching for tenors prior to expiry
+        # moment matching only applies before expiry
         if tenor_block.any():
-            # use at the money vols
+            # at-the-money vols
             moneyness_block = (forward_block if use_forwards else spot_block) / spot_block
             moneyness = 1.0 / moneyness_block if invert_moneyness else moneyness_block
             vols = utils.calc_time_grid_vol_rate(factor_dep['Volatility'], moneyness, daycount_fn(tenor_block), shared)
@@ -4865,7 +4468,6 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
             sample_tss = []
 
             for alpha, start_idx, dual_sample, all_sample in zip(alphas, start_samples, dual_samples, all_samples):
-                # get the sample at time t
                 sample_index_t = start_idx[index]
                 sample_ts = carry_block.new(
                     daycount_fn(dual_sample.np[sample_index_t:, utils.RESET_INDEX_End_Day].reshape(1, -1) -
@@ -4875,7 +4477,7 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
                 sample_ft = weight_t * torch.exp(
                     torch.unsqueeze(carry_block, dim=1) * torch.unsqueeze(sample_ts, dim=2))
                 M1 = torch.sum(sample_ft, dim=1)
-                # realized average so far
+                # the realized average so far
                 average = torch.sum(all_sample[:sample_index_t], dim=0)
 
                 product_t = sample_ft * torch.exp(
@@ -4883,7 +4485,7 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
                 sum_t = F.pad(torch.cumsum(product_t[:, :-1], dim=1), [0, 0, 1, 0, 0, 0])
                 M2 = torch.sum(sample_ft * (product_t + 2.0 * sum_t), dim=1)
 
-                # trick to avoid nans in the gradients
+                # the clamp keeps the root defined, so the gradients are not NaN
                 MM = torch.log(M2) - 2.0 * torch.log(M1)
                 MM_ok = MM.clamp(min=1e-6)
                 vol_t = torch.sqrt(MM_ok)
@@ -4919,21 +4521,21 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
         cash = nominal * theo_price
         mtm_list.append(cash * discount_rates)
 
-    # potential cashflows
     cash_settle(shared, factor_dep['SettleCurrency'], deal_data.Time_dep.deal_time_grid[-1], cash[-1])
-    # mtm in reporting currency
     mtm = torch.cat(mtm_list, dim=0)
 
     return mtm
 
 
 def pv_energy_option(shared, time_grid, deal_data, nominal):
+    """Average-price energy option: the remaining forward-price samples, converted at their own fx
+    forwards, are two-moment matched to a lognormal and priced by Black against a strike net of the
+    realised average. Past the sampling period it is the intrinsic on that average."""
     mtm_list = []
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
 
-    # first precalc all past resets
     samples = factor_dep['Cashflow'].Resets
     known_samples = samples.known_resets(shared.simulation_batch)
     start_idx = samples.get_start_index(deal_time)
@@ -4956,7 +4558,6 @@ def pv_energy_option(shared, time_grid, deal_data, nominal):
 
     forwards = utils.calc_time_grid_curve_rate(factor_dep['ForwardPrice'], deal_time, shared)
     discounts = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
-    # need the tensor and numpy data
     dual_samples = samples.dual()
     start_index, start_counts = np.unique(start_idx, return_counts=True)
 
@@ -4987,7 +4588,7 @@ def pv_energy_option(shared, time_grid, deal_data, nominal):
 
             sample_ft = weight_t * future_resets * forwardfx
 
-            # needed for vol lookup
+            # the tenor each sample's vol is read at
             sample_block = daycount_fn(
                 sample_t.np[:, utils.RESET_INDEX_Start_Day].reshape(1, -1)
                 - t_block[:, utils.TIME_GRID_MTM, np.newaxis])
@@ -4999,13 +4600,13 @@ def pv_energy_option(shared, time_grid, deal_data, nominal):
                 strike_bar.unsqueeze(0), None, future_resets * forwardfx,
                 deal_data, use_forward=True)
 
-            # get the vol per sample tau - might need to generalize this if we start modelling vols through time
+            # the vol at each sample's own tenor (TODO: generalise if vols become time-dependent)
             vols = torch.stack([utils.calc_time_grid_vol_rate(
                 factor_dep['Volatility'], mon, s_tau, shared) for mon, s_tau in zip(moneyness, sample_block)])
 
             vol2 = vols * vols
 
-            # Note - need to allow for compo deals
+            # a compo deal prices the product, so each sample's variance is the PRODUCT's
             if 'FXCompoVol' in factor_dep:
                 fx_vols = torch.stack(
                     [utils.calc_time_grid_vol_rate(factor_dep['FXCompoVol'], None, sb, shared)
@@ -5016,11 +4617,11 @@ def pv_energy_option(shared, time_grid, deal_data, nominal):
             product_t = sample_ft * torch.exp(
                 sample_ft.new(np.expand_dims(sample_block, axis=2)) * vol2)
 
-            # do an exclusive cumsum on axis=1
+            # an exclusive cumsum on axis=1
             sum_t = F.pad(torch.cumsum(product_t[:, :-1], dim=1), [0, 0, 1, 0, 0, 0])
             M2 = torch.sum(sample_ft * (product_t + 2.0 * sum_t), dim=1)
             MM = torch.log(M2) - 2.0 * torch.log(M1)
-            # trick to allow the gradients to be defined
+            # the clamp keeps the root defined, so the gradients are not NaN
             MM_ok = MM.clamp(min=1e-5)
             vol_t = torch.sqrt(MM_ok)
             theo_price = utils.black_european_option(
@@ -5037,15 +4638,14 @@ def pv_energy_option(shared, time_grid, deal_data, nominal):
         cash = nominal * theo_price
         mtm_list.append(cash * discount_rates)
 
-    # potential cashflows
     cash_settle(shared, factor_dep['SettleCurrency'], deal_data.Time_dep.deal_time_grid[-1], cash[-1])
-    # mtm in reporting currency
     mtm = fx_rep * torch.cat(mtm_list, dim=0)
 
     return mtm
 
 
 def pricer_float_cashflows(all_resets, t_cash, shared):
+    """Plain floating interest per cashflow, `(rate + margin) * accrual`, and the margin term."""
     margin = (t_cash[:, utils.CASHFLOW_INDEX_FloatMargin] * t_cash[:, utils.CASHFLOW_INDEX_Year_Frac])
     all_int = all_resets * t_cash[:, utils.CASHFLOW_INDEX_Year_Frac].reshape(1, -1, 1) + margin.reshape(1, -1, 1)
 
@@ -5064,11 +4664,9 @@ def _cap_floor_payoff(all_resets, strike, factor_dep, expiries, tenor, call_or_p
     pricing_fn = utils.black_european_option if dist == 'Lognormal' else utils.bachelier_european_option
 
     if digital_payoff and factor_dep.get('Digital_Spread', 0.0) > 0:
-        # call/put spread replication: vols are re-queried at the two spread strikes so the
-        # smile is automatically picked up - no separate dvol/dK correction needed. The
-        # half-width is ABSOLUTE in rate (a relative width dies at a zero strike and flips its
-        # legs at a negative one), and `call_or_put` orients the difference: a digital floorlet
-        # is the PUT spread (P(K+eps) - P(K-eps)) / 2 eps.
+        # call/put spread replication, with vols re-queried at the two spread strikes so the smile
+        # is picked up. The half-width is ABSOLUTE in rate - a relative width dies at a zero strike
+        # and flips its legs at a negative one - and `call_or_put` orients the difference
         eps = factor_dep['Digital_Spread']
         strike_lo = strike - eps
         strike_hi = strike + eps
@@ -5092,6 +4690,7 @@ def _cap_floor_payoff(all_resets, strike, factor_dep, expiries, tenor, call_or_p
 
 
 def _pricer_cap_floor(all_resets, t_cash, factor_dep, expiries, tenor, call_or_put, shared, vol_expiries):
+    """One optionlet per cashflow on that cashflow's compounded rate, times its year fraction."""
     strike = t_cash[:, utils.CASHFLOW_INDEX_Strike].reshape(1, -1, 1)
     payoff = _cap_floor_payoff(
         all_resets, strike, factor_dep, expiries, tenor, call_or_put, shared, vol_expiries)
@@ -5116,10 +4715,12 @@ def _pricer_cap_floor_daily(all_resets, strike, accrual, expiries, tenor, factor
 
 
 def pricer_cap(all_resets, t_cash, factor_dep, expiries, tenor, shared, vol_expiries):
+    """Caplet interest per cashflow."""
     return _pricer_cap_floor(all_resets, t_cash, factor_dep, expiries, tenor, 1.0, shared, vol_expiries)
 
 
 def pricer_floor(all_resets, t_cash, factor_dep, expiries, tenor, shared, vol_expiries):
+    """Floorlet interest per cashflow."""
     return _pricer_cap_floor(all_resets, t_cash, factor_dep, expiries, tenor, -1.0, shared, vol_expiries)
 
 
@@ -5132,15 +4733,15 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
 
     - **Averaging** happens at COMPILE. `make_float_cashflows` writes `Weight = 1/n` on each of a
       row's `n` resets and `get_simulated_resets` applies `Weight / Accrual`, so several fixings
-      arrive as one already-averaged rate. The weight is baked in, which is why it must never reach
-      a path that compounds - a `1/n` weighted reset compounded geometrically compounds at `1/n` of
-      its rate.
+      arrive as one already-averaged rate. The weight is baked in, so it must never reach a path
+      that compounds - a `1/n` weighted reset compounded geometrically compounds at `1/n` of its
+      rate.
     - **OIS** happens HERE, and the switch is a SHAPE difference:
-      `all_resets.shape[1] != reset_cashflows.np.shape[0]` means a row owns several resets, which
-      `compress_no_compounding(groupsize=-1)` is what produces. Those are compounded geometrically
-      by `segment_reduce` back to one rate per row.
-    - **Method compounding** is the ordered ragged fold at the end, and it is a different axis: it
-      is several cashflow ROWS sharing one payment date (`cash_counts > 1`), each already canonical,
+      `all_resets.shape[1] != reset_cashflows.np.shape[0]` means a row owns several resets, which is
+      what `compress_no_compounding(groupsize=-1)` produces. Those are compounded geometrically by
+      `segment_reduce` back to one rate per row.
+    - **Method compounding** is the ordered ragged fold at the end, on a different axis: several
+      cashflow ROWS sharing one payment date (`cash_counts > 1`), each already canonical,
       accumulated in order with the margin placed by convention.
 
     The three margin conventions differ only in where the spread sits. Writing `int` for
@@ -5152,23 +4753,20 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
     | `Flat` | `total + int * N + total * (int - mrg)` |
     | `Exclude_Margin` | `comp = comp + (int - mrg) * (comp + N)`; `simple += mrg * N`; pays `comp + simple` |
 
-    Per the convention spec: under `Flat`, cashflow i pays `P.I_i.(1+J_{i+1})...(1+J_n)` - the FULL
-    interest enters the compounding pot and the pot grows at rate-only `J = I - m.alpha`. Under
-    `Exclude_Margin` it pays `P.m_i.alpha_i + P.J_i.(1+J_{i+1})...(1+J_n)` - each period's margin
-    is SIMPLE on the nominal and only the rate part compounds. The two therefore differ by
-    `sum_i m_i.alpha_i.N.(prod_{j>i}(1+J_j) - 1)` at any positive spread, and Exclude cannot be a
-    single-accumulator fold: a margin lump inside `total` would earn `(1+J)` in every later step,
-    which is exactly `Flat` - the trap a one-line restatement of the convention falls into.
+    Under `Flat`, cashflow i pays `P.I_i.(1+J_{i+1})...(1+J_n)`: the FULL interest enters the
+    compounding pot and the pot grows at rate-only `J = I - m.alpha`. Under `Exclude_Margin` it pays
+    `P.m_i.alpha_i + P.J_i.(1+J_{i+1})...(1+J_n)`: each period's margin is SIMPLE on the nominal and
+    only the rate part compounds. The two differ by `sum_i m_i.alpha_i.N.(prod_{j>i}(1+J_j) - 1)` at
+    any positive spread, so Exclude cannot be a single-accumulator fold - a margin lump inside
+    `total` would earn `(1+J)` in every later step, which is exactly `Flat`.
     """
     mtm_list = []
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
 
-    # first precalc all past resets
     resets = factor_dep['Cashflows'].Resets
 
     if mtm_currency:
-        # precalc the FX forwards
         sim_fx_forward = utils.calc_fx_forward(
             mtm_currency, factor_dep['Currency'], factor_dep['Cashflows'].FXResets[:, utils.RESET_INDEX_Reset_Day],
             factor_dep['Cashflows'].FXResets[:, :utils.RESET_INDEX_Scenario + 1], shared, only_diag=True)
@@ -5176,7 +4774,7 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
         known_fx = factor_dep['Cashflows'].known_resets(
             shared.simulation_batch, utils.CASHFLOW_INDEX_FXResetValue, utils.CASHFLOW_INDEX_FXResetDate)
 
-        # fetch fx rates - note that there is a slight difference between this and the spot fx rate
+        # the fx FORWARDS at each reset, which differ slightly from the spot fx rate
         old_fx_rates = (torch.cat([torch.stack(known_fx), sim_fx_forward], dim=0)
                         if known_fx else sim_fx_forward).squeeze(dim=1)
 
@@ -5192,7 +4790,7 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
     for index, (forward_block, discount_block) in enumerate(utils.split_counts(
             [forwards, discounts], start_counts, shared)):
 
-        # cashflows is a dual representation
+        # a dual (numpy and tensor) representation of the same cashflows
         cashflows = factor_dep['Cashflows'].dual(start_index[index])
 
         cash_pmts, cash_index, cash_counts = np.unique(
@@ -5208,14 +4806,12 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
         reset_ofs, reset_count = np.unique(resets.split_block_resets(
             reset_offset, time_block), return_counts=True)
 
-        # discount rates
         discount_rates = utils.calc_discount_rate(discount_block, future_pmts, shared)
 
-        # do we need to split the forward block further?
+        # the forward block splits again where rows within it own different reset counts
         forward_blocks = forward_block.split_counts(
             reset_count, shared) if len(reset_count) > 1 else [forward_block]
 
-        # empty list for payments
         payments = []
 
         for offset, size, forward_rates in zip(*[reset_ofs, reset_count, forward_blocks]):
@@ -5227,11 +4823,10 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
             future_resets = torch.expm1(forward_rates.gather_weighted_curve(
                 shared, future_ends, future_starts)) * future_weights
 
-            # now deal with past resets
             all_resets = torch.cat(
                 [old_resets[reset_offset:reset_offset + offset].expand(size, -1, -1), future_resets], dim=1)
 
-            # handle cashflows that don't pay interest (e.g. bullets)
+            # cashflows that pay no interest (bullets) own no resets and are held out of the fold
             if cashflows.np[:, utils.CASHFLOW_INDEX_NumResets].all():
                 reset_cashflows = cashflows
             else:
@@ -5243,15 +4838,13 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
             if mtm_currency:
                 fx_past_index = start_index[index]
                 if cashflows.np[:, utils.CASHFLOW_INDEX_FXResetDate].min() < time_slice.max():
-                    # get the past fx rates - only works if not forward starting
                     fx_end_index = fx_past_index+1
                 else:
-                    # forward starting
+                    # forward starting: there are no past fx resets
                     fx_end_index = fx_past_index
 
                 past_fx_resets = old_fx_rates[fx_past_index: fx_end_index].expand(size, -1, -1)
 
-                # now deal with fx rates
                 future_fx_resets = utils.calc_fx_forward(
                     mtm_currency, factor_dep['Currency'],
                     cashflows.np[past_fx_resets.shape[1]:, utils.CASHFLOW_INDEX_FXResetDate],
@@ -5259,7 +4852,7 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
 
                 all_fx_resets = torch.cat([past_fx_resets, future_fx_resets], dim=1)
 
-                # calculate the Nominal in the correct currency
+                # the nominal in the resetting currency, and the next period's
                 Pi = all_fx_resets * cashflows.tn[:, utils.CASHFLOW_INDEX_Nominal].reshape(1, -1, 1)
                 Pi_1 = F.pad(Pi[:, 1:, :], [0, 0, 0, 1, 0, 0])
 
@@ -5270,31 +4863,28 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                 # OIS: a row owning several resets is the SHAPE the compile side produces on
                 # purpose - see docs_src/developer/quote_sensitivities.md#curve-contracts
                 reset_per_cashflows = factor_dep['Cashflows'].offsets[start_index[index]:, 0]
-                accrual = reset_block.tn[:, utils.RESET_INDEX_Accrual]  # should align with all_resets dim=1
+                accrual = reset_block.tn[:, utils.RESET_INDEX_Accrual]  # aligns with all_resets[1]
                 reset_split = torch.as_tensor(
                     reset_per_cashflows[reset_per_cashflows > 0], device=shared.one.device, dtype=torch.long)
                 lengths = reset_split.unsqueeze(0).expand(all_resets.shape[0], -1)
                 if factor_dep['AveragingMethod'] != 'Pre_Aggregation':
-                    # compound the resets into one rate per cashflow - Pre_Aggregation keeps them
+                    # compound the resets into one rate per cashflow; Pre_Aggregation keeps them
                     # separate for the daily pricer below, which caps each BEFORE aggregating.
-                    # note that if we want to do average rate (not compounding) - we just need
-                    # to drop log1p and expm1
+                    # Dropping log1p/expm1 would make this an average rate rather than a compound
                     log_rt = torch.log1p(all_resets * accrual.view(1, -1, 1))
                     sum_log = torch.segment_reduce(log_rt, reduce="sum", lengths=lengths, axis=1)
                     sum_acc = torch.segment_reduce(accrual, reduce="sum", lengths=reset_split, axis=0)
                     all_resets = torch.expm1(sum_log)/sum_acc.view(1, -1, 1)
 
-            # check if we need extra information to price caps or floors
             if cashflow_pricer in [pricer_cap, pricer_floor]:
-                # note that the tenor (Year Frac) is averaged
-                # all the cashflows are supposed to have the same year frac
-                # (but practically not - should be ok to do this)
+                # the vol surface's tenor axis: averaged because the cashflows are meant to share
+                # one year fraction, which in practice they do not exactly
                 tenor = cashflows.np[:, utils.CASHFLOW_INDEX_Year_Frac].mean()
                 expiries = cashflows.np[:, utils.CASHFLOW_INDEX_Start_Day] - time_slice
                 if factor_dep['AveragingMethod'] == 'Pre_Aggregation' and needs_aggregation:
-                    # price each reset in the period as its own optionlet (its own dates, accrual
-                    # and a strike broadcast from its parent cashflow) instead of compounding the
-                    # period into one rate and pricing one option on that
+                    # each reset in the period is its own optionlet - its own dates, accrual and a
+                    # strike broadcast from its parent cashflow - rather than one option on the
+                    # compounded period
                     daily_ends = reset_block.np[:, utils.RESET_INDEX_End_Day] - time_slice
                     strike_daily = torch.repeat_interleave(
                         reset_cashflows.tn[:, utils.CASHFLOW_INDEX_Strike], reset_split).reshape(1, -1, 1)
@@ -5304,10 +4894,9 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                         factor_dep, call_or_put, lengths, shared)
                 else:
                     if factor_dep['AveragingMethod'] == 'Post_Aggregation':
-                        # an option on the average: the vol is read at the period END, and the
-                        # Black time carries the averaging decay - variance accrues on the
-                        # not-yet-fixed remainder, integrated exactly when the valuation date
-                        # sits inside the period
+                        # an option on the average: the vol is read at the period END and the Black
+                        # time carries the averaging decay, variance accruing on the not-yet-fixed
+                        # remainder, integrated exactly inside the period
                         t_k = cashflows.np[:, utils.CASHFLOW_INDEX_Start_Day] - time_slice
                         t_kp1 = cashflows.np[:, utils.CASHFLOW_INDEX_End_Day] - time_slice
                         expiries = t_kp1
@@ -5322,7 +4911,7 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
             else:
                 all_int, all_margin = cashflow_pricer(all_resets, reset_cashflows.tn, shared)
 
-            # handle the common case of no compounding or OIS compounding
+            # the common case: no method compounding, so rows sharing a payment date simply sum
             if mtm_currency is None and factor_dep['CompoundingMethod'] in ['None', 'OIS']:
                 interest = all_int * reset_cashflows.tn[:, utils.CASHFLOW_INDEX_Nominal].reshape(1, -1, 1)
                 if (cash_counts == 1).all():
@@ -5331,11 +4920,9 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                     split_interest = torch.split(interest, tuple(cash_counts), dim=1)
                     total = torch.stack([i.sum(dim=1) for i in split_interest], dim=1)
             else:
-                # check if there are a different number of resets per cashflow
+                # a ragged fold pads by one, so the default offset lands on an inert row
                 if cash_counts.min() != cash_counts.max():
                     interest = F.pad(all_int, [0, 0, 0, 1, 0, 0])
-                    # nom = torch.ones_like(reset_cashflows.tn[:, utils.CASHFLOW_INDEX_Nominal])
-                    # nominal = F.pad(nom, [0, 1])
                     nominal = F.pad(reset_cashflows.tn[:, utils.CASHFLOW_INDEX_Nominal], [0, 1])
                     margin = F.pad(all_margin, [0, 1])
                 else:
@@ -5360,13 +4947,13 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                     elif factor_dep['CompoundingMethod'] == 'Include_Margin':
                         total = total + int_i * (total + nominal[offst].reshape(1, -1, 1))
                     elif factor_dep['CompoundingMethod'] == 'Flat':
-                        # spec: cashflow i pays P.I_i.(1+J_{i+1})...(1+J_n) - FULL interest enters
-                        # the pot, the pot compounds at rate-only J = I - m.alpha
+                        # cashflow i pays P.I_i.(1+J_{i+1})...(1+J_n): the FULL interest enters the
+                        # pot and the pot compounds at rate-only J = I - m.alpha
                         total = total + (int_i * nominal[offst].reshape(1, -1, 1)) + total * (
                                 int_i - margin[offst].reshape(1, -1, 1))
                     elif factor_dep['CompoundingMethod'] == 'Exclude_Margin':
-                        # spec: cashflow i pays P.m_i.alpha_i + P.J_i.(1+J_{i+1})...(1+J_n) - only
-                        # the rate part compounds; the margin of each period is simple on nominal
+                        # cashflow i pays P.m_i.alpha_i + P.J_i.(1+J_{i+1})...(1+J_n): only the rate
+                        # part compounds, each period's margin being simple on the nominal
                         margin_i = margin[offst].reshape(1, -1, 1)
                         nominal_i = nominal[offst].reshape(1, -1, 1)
                         total = total + (int_i - margin_i) * (total + nominal_i)
@@ -5381,20 +4968,20 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
             payments.append(total + cashflows.tn[
                 pmts_offset, utils.CASHFLOW_INDEX_FixedAmt].reshape(1, -1, 1))
 
-        # now finish the payments
         all_payments = torch.cat(payments, dim=0) if len(payments) > 1 else payments[0]
 
-        # settle any cashflows
         if settle_cash:
             cash_settle(shared, factor_dep['SettleCurrency'],
                         np.searchsorted(time_grid.mtm_time_grid, cash_pmts[0]), all_payments[-1][0])
-        # add it to the list
         mtm_list.append(torch.sum(all_payments * discount_rates, dim=1))
 
     return torch.cat(mtm_list, dim=0)
 
 
 def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, settle_cash=True):
+    """The fixed leg. `ignore_fixed_rate` prices it at a unit rate, which is what a par-rate solve
+    divides by; `Settlement_Amount` makes it a forward, carried to the settlement date on repo and
+    discounted back on the settlement curve."""
     mtm_list = []
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -5403,7 +4990,7 @@ def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, se
     cash_start_idx = schedule.get_cashflow_start_index(deal_time)
     settlement_amt = factor_dep.get('Settlement_Amount', 0.0)
     discounts = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
-    # there could be a repo curve if this is settled in future
+    # a forward-settled deal carries its own repo curve
     repo_code = factor_dep.get('Repo_Rate', factor_dep['Discount'])
     repo = utils.calc_time_grid_curve_rate(repo_code, deal_time, shared)
     settlement_code = factor_dep.get('Settlement_Rate', factor_dep['Discount'])
@@ -5417,11 +5004,9 @@ def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, se
 
         cash_pmts, cash_index, cash_counts = np.unique(
             cashflows.np[:, utils.CASHFLOW_INDEX_Pay_Day], return_index=True, return_counts=True)
-        # payment times
         time_block = discount_block.time_grid[:, utils.TIME_GRID_MTM]
         future_pmts = cash_pmts.reshape(1, -1) - time_block.reshape(-1, 1)
 
-        # discount rates
         discount_rates = utils.calc_discount_rate(discount_block, future_pmts, shared)
 
         if 'SettleFX' in factor_dep:
@@ -5431,25 +5016,23 @@ def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, se
         else:
             discountfx = shared.one
 
-        # is this a forward?
         if settlement_amt:
             settlement_days = (factor_dep['Settlement_Date'] - time_block).clip(min=0).reshape(-1, 1)
             repo_discount = utils.calc_discount_rate(repo_block, settlement_days, shared)
             settlement_discount = torch.squeeze(
                 utils.calc_discount_rate(settle_block, settlement_days, shared), dim=1)
-            # For forward-style deals, carry the post-settlement indexed bond value to the
-            # forward date on repo, then discount that settlement value on the bond curve.
+            # a forward carries the post-settlement bond value to the forward date on repo, then
+            # discounts that settlement value on the bond curve
             discount_rates = discount_rates / repo_discount
         else:
             settlement_discount = shared.one
 
-        # empty list for payments
         all_int = (1.0 if ignore_fixed_rate else cashflows.tn[:, utils.CASHFLOW_INDEX_FixedRate]
                    ) * cashflows.tn[:, utils.CASHFLOW_INDEX_Year_Frac]
 
-        # Built from the schedule's tensor half and nothing else, so it lives exactly as long as
-        # that half - not in `t_Buffer`, which clears per batch. Keyed by the slice it sums, so a
-        # deal priced on two grids (the inner-MC fork windows one) cannot read the other's.
+        # cached on the schedule's tensor half, so it lives exactly as long as that half - not in
+        # `t_Buffer`, which clears per batch. Keyed by the slice it sums, so a deal priced on two
+        # grids cannot read the other's
         payment_key = ('Payments', start_index[index], ignore_fixed_rate)
 
         if schedule.derived.get(payment_key) is None:
@@ -5478,13 +5061,11 @@ def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, se
 
             schedule.derived[payment_key] = payments
 
-        # add to the mtm
         mtm_list.append(
             (torch.sum(
                 discountfx * discount_rates * schedule.derived[payment_key].reshape(1, -1, 1), dim=1) -
              settlement_amt) * settlement_discount)
 
-        # settle any cashflows
         if settle_cash:
             if factor_dep.get('Settlement_Date') is not None:
                 cash_settle(shared, factor_dep['SettleCurrency'],
@@ -5499,14 +5080,18 @@ def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, se
 
 
 def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=True):
+    """The inflation-linked leg: each cashflow's fixed interest grown by the ratio of its final to
+    its base index reference, discounted at the pay date. A `Settlement_Date` makes it a forward,
+    carried on repo and discounted back on the settlement curve."""
     def calc_index(schedule, sim_schedule):
+        """The index level at each reset, projected off the last published print."""
         weight = schedule.tn[:, utils.RESET_INDEX_Weight].reshape(1, -1, 1)
         dates = schedule.np[np.newaxis, :, utils.RESET_INDEX_Reset_Day] - \
                 last_pub_block[:, np.newaxis, utils.RESET_INDEX_Reset_Day]
         index_t = torch.unsqueeze(last_index_block, dim=1) / utils.calc_discount_rate(
             forecast_block, dates, shared)
 
-        # split if necessary
+        # rows straddling the last publication mix published prints with projections
         if dates[dates < 0].any():
             future_indices = (dates >= 0).all(axis=1).argmin()
             future_index_t, past_index_t = torch.split(
@@ -5531,6 +5116,7 @@ def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=True):
             return values
 
     def get_index_val(cash_index_vals, schedule, sim_schedule, resets_per_cf, offset):
+        """A cashflow's index reference: its declared value if it has one, else the projection."""
         if (cash_index_vals.np < 0).any():
             num_known = cash_index_vals.np[cash_index_vals.np > 0].size
             reset_offset = resets_per_cf * (offset + num_known)
@@ -5545,6 +5131,7 @@ def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=True):
             return cash_index_vals.tn.reshape(1, -1, 1)
 
     def filter_resets(resets, index):
+        """Every reset the outer grid has reached: the declared prints, then the simulated ones."""
         known_resets = resets.known_resets(shared.simulation_batch)
         sim_resets = resets.schedule[(resets.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
                                      (resets.schedule[:, utils.RESET_INDEX_Reset_Day] <=
@@ -5579,17 +5166,15 @@ def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=True):
             utils.split_counts([index_forecast, discounts, repo, settlement, last_published_index], start_counts, shared)):
 
         last_pub_block = last_pub_blocks[index]
-        # cashflows is a dual representation (numpy and tensor) of the same cashflows
+        # a dual (numpy and tensor) representation of the same cashflows
         cashflows = factor_dep['Cashflows'].dual(start_index[index])
 
         cash_pmts, cash_index, cash_counts = np.unique(
             cashflows.np[:, utils.CASHFLOW_INDEX_Pay_Day], return_index=True, return_counts=True)
 
-        # payment times            
         time_block = discount_block.time_grid[:, utils.TIME_GRID_MTM]
         future_pmts = cash_pmts.reshape(1, -1) - time_block.reshape(-1, 1)
 
-        # discount rates
         discount_rates = utils.calc_discount_rate(discount_block, future_pmts, shared)
 
         all_base_index_vals = get_index_val(
@@ -5599,14 +5184,13 @@ def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=True):
             cashflows[:, utils.CASHFLOW_INDEX_FinalReference], final_resets.dual(),
             all_final_resets, resets_per_cf, start_index[index])
 
-        # empty list for payments
         interest = (cashflows.tn[:, utils.CASHFLOW_INDEX_FixedRate] *
                     cashflows.tn[:, utils.CASHFLOW_INDEX_Year_Frac]).reshape(1, -1, 1)
         growth = cashflows.tn[:, utils.CASHFLOW_INDEX_FixedAmt].reshape(1, -1, 1) * (
                 all_final_index_vals / all_base_index_vals)
         payment_all = cashflows.tn[:, utils.CASHFLOW_INDEX_Nominal].reshape(1, -1, 1) * growth * interest
 
-        # reduce if any counts are duplicated
+        # rows sharing a payment date sum
         if (cash_counts == 1).all():
             payments = payment_all
         else:
@@ -5620,16 +5204,14 @@ def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=True):
             repo_discount = torch.squeeze(utils.calc_discount_rate(repo_block, settlement_days, shared), dim=1)
             settlement_discount = torch.squeeze(
                 utils.calc_discount_rate(settle_block, settlement_days, shared), dim=1)
-            # For forward-style deals, carry the post-settlement indexed bond value to the
-            # forward date on repo, then discount that settlement value on the bond curve.
+            # a forward carries the post-settlement indexed bond value to the forward date on repo,
+            # then discounts that settlement value on the bond curve
             mtm = asset_pv * settlement_discount / repo_discount
         else:
             mtm = asset_pv
 
-        # add it to the list
         mtm_list.append(mtm)
 
-        # settle any cashflows
         if settle_cash:
             if factor_dep['Settlement_Date'] is not None:
                 cash_settle(shared, factor_dep['SettleCurrency'],
@@ -5644,12 +5226,13 @@ def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=True):
 
 
 def pv_energy_cashflows(shared, time_grid, deal_data):
+    """The energy leg: each cashflow's weighted average of forward prices, converted at the fx
+    forwards of its own reset dates, scaled by the nominal and discounted at the pay date."""
     mtm_list = []
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     cash_start_idx = factor_dep['Cashflows'].get_cashflow_start_index(deal_time)
 
-    # first precalc all past resets
     resets = factor_dep['Cashflows'].Resets
     known_resets = resets.known_resets(shared.simulation_batch)
     sim_resets = resets.schedule[
@@ -5659,8 +5242,9 @@ def pv_energy_cashflows(shared, time_grid, deal_data):
         factor_dep['ForwardFX'][0], factor_dep['CashFX'][0], sim_resets, shared)
 
     if factor_dep['ForwardPrice'] is None:
-        # reconstruct the forward curve from the simulated components - spot x exp((carry + repo) tau);
-        # past resets sample F(reset_day, fixing_day) off the same curve (F(t,t) = spot)
+        # the forward curve reconstructed from the simulated components,
+        # spot x exp((carry + repo) tau); past resets sample F(reset_day, fixing_day) off the same
+        # curve, where F(t,t) is the spot
         forwards = utils.DerivedForwardCurve(
             utils.calc_time_grid_spot_rate(factor_dep['Commodity'], deal_time, shared),
             utils.calc_time_grid_curve_rate(factor_dep['Carry_Rate'], deal_time, shared),
@@ -5703,26 +5287,22 @@ def pv_energy_cashflows(shared, time_grid, deal_data):
         reset_ofs, reset_count = np.unique(
             resets.split_block_resets(reset_offset, time_block), return_counts=True)
 
-        # discount rates
         discount_rates = utils.calc_discount_rate(discount_block, future_pmts, shared)
-        # fx adjustment when payoff currency differs from deal currency
+        # the fx adjustment where the payoff currency differs from the deal currency
         discountfx = utils.calc_fx_forward(
             factor_dep['CashFX'], factor_dep['Currency'],
             cash_pmts, discount_block.time_grid, shared)
 
-        # we need to split the forward block further
+        # the forward block splits again where rows within it own different reset counts
         forward_blocks = forward_block.split_counts(
             reset_count, shared) if len(reset_count) > 1 else [forward_block]
 
-        # empty list for payments
         payments = []
 
         for offset, size, forward_rates in zip(*[reset_ofs, reset_count, forward_blocks]):
-            # past resets
             past_resets = torch.unsqueeze(
                 old_resets[reset_offset:reset_offset + offset], dim=0).expand(size, -1, -1)
 
-            # future resets
             future_ends = np.tile(reset_block.np[offset:, utils.RESET_INDEX_End_Day], [size, 1])
 
             if future_ends.any():
@@ -5745,20 +5325,16 @@ def pv_energy_cashflows(shared, time_grid, deal_data):
             payoff = torch.stack([torch.sum(x, dim=1) for x in torch.split(
                 all_payoffs, split_payoffs, dim=1)], dim=1)
 
-            # now we can price the cashflows
             payment = cashflows.tn[:, utils.CASHFLOW_INDEX_Nominal] * (
                     cashflows.tn[:, utils.CASHFLOW_INDEX_Start_Mult] * payoff +
                     cashflows.tn[:, utils.CASHFLOW_INDEX_FloatMargin])
 
             payments.append(payment)
 
-        # now finish the payments
         all_payments = torch.cat(payments, dim=0)
 
-        # settle any cashflows
         cash_settle(shared, factor_dep['SettleCurrency'],
                     np.searchsorted(time_grid.mtm_time_grid, cash_pmts[0]), all_payments[-1][0])
-        # add it to the list
         mtm_list.append(torch.sum(discountfx * all_payments * discount_rates, dim=1))
 
     return torch.cat(mtm_list, dim=0)
@@ -5783,26 +5359,23 @@ def pv_average_price_swap(shared, time_grid, deal_data):
     exponential; it projects under ITS OWN simulated law. With the slow mean on, that law is the
     coupled pair ``b_t = mu_{t-1} + phi (b_{t-1} - mu_{t-1})``,
     ``mu_t = lam mu_{t-1} + (1-lam) b_t``, whose mean matrix is row-stochastic (eigenvalues 1 and
-    ``lam*phi``), so
-
-    $$E_t[b(T_j)] = \mu_t + \big(\pi_b + (1-\pi_b)(\lambda\phi)^{n_j}\big)(b_t - \mu_t),
-    \qquad \pi_b = \tfrac{(1-\lambda)\phi}{(1-\lambda)\phi + 1 - \phi}$$
+    ``lam*phi``), so ``E_t[b(T_j)] = mu_t + (pi_b + (1-pi_b) (lam phi)**n_j) (b_t - mu_t)`` with
+    ``pi_b = (1-lam) phi / ((1-lam) phi + 1 - phi)``.
 
     A deviation does NOT die: the pair has a unit root and keeps ``pi_b`` of it forever, so a naive
-    ``phi^n`` decay misprices every unrealised fixing by ``pi_b (b_t - mu_t)``. ``Phi``/``lam`` are
+    ``phi**n`` decay misprices every unrealised fixing by ``pi_b (b_t - mu_t)``. ``Phi``/``lam`` are
     the simulated model's declared coefficients and ``mu_t`` its published slow mean, read per path
     off ``(key, 'basis_mu')`` in the fork-index convention (``state[t]`` is what the step t->t+1
-    consumes). With the slow-mean extension off there is no published series and no unit root: the
-    plain ``phi^{n_j}`` is exact.
+    consumes). With the slow-mean extension off there is no published series and no unit root, and
+    the plain ``phi**n_j`` is exact.
 
     ``n_j`` counts SIMULATION STEPS between the two rows, fractionally, because a simulation step is
-    what the basis model applies ``Phi`` to - decaying in calendar days or calibration steps
-    projects a different model from the one being simulated; the two coincide only on a
-    calendar-daily grid.
+    what the basis model applies ``Phi`` to; decaying in calendar days or calibration steps projects
+    a different model from the one being simulated, and the two coincide only on a calendar-daily
+    grid.
 
     Both halves carry the same normalised weights, so ``K`` comes off the average once. The
-    settlement books once, at the deal grid's last row - ``Settlement_Date``, the deal's latest
-    reval date.
+    settlement books once, at the deal grid's last row.
     """
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -5822,7 +5395,7 @@ def pv_average_price_swap(shared, time_grid, deal_data):
     # for a block boundary to serve, and every projected term is well defined at a realised fixing
     t_mtm = deal_time[:, utils.TIME_GRID_MTM].reshape(-1, 1)
     # make_sampling_data writes reset == start == end, so one column is both "has it fixed" and
-    # "what date is being sampled"
+    # "what date is sampled"
     fixing_day = dual.np[:, utils.RESET_INDEX_End_Day].reshape(1, -1)
     past = shared.one.new_tensor(1.0 * (fixing_day < t_mtm)).unsqueeze(-1)
     weight = dual.tn[:, utils.RESET_INDEX_Weight].reshape(1, -1, 1)
@@ -5849,7 +5422,7 @@ def pv_average_price_swap(shared, time_grid, deal_data):
         if factor_dep['Basis_Mu']:
             mean = utils.calc_time_grid_spot_rate(
                 factor_dep['Basis_Mu'], deal_time, shared).unsqueeze(1)
-            # the simulated (b, mu) pair is row-stochastic - eigenvalues 1 and lam*phi - so a
+            # the simulated (b, mu) pair is row-stochastic (eigenvalues 1 and lam*phi), so a
             # deviation keeps the unit root's share pi_b of itself forever rather than dying
             lam = factor_dep['Basis_Lambda']
             pi_b = (1.0 - lam) * phi / ((1.0 - lam) * phi + 1.0 - phi)
@@ -5877,6 +5450,9 @@ def pv_average_price_swap(shared, time_grid, deal_data):
 
 
 def pv_credit_cashflows(shared, time_grid, deal_data, return_par_spread=False):
+    """A single-name CDS: the premium leg survival-weighted (with an accrued-on-default adjustment
+    where `Accrue_Fee` is set) against the protection leg on each period's marginal default
+    probability. `return_par_spread` answers the breakeven spread instead of the value."""
     mtm_list = []
     factor_dep = deal_data.Factor_dep
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
@@ -5889,12 +5465,11 @@ def pv_credit_cashflows(shared, time_grid, deal_data, return_par_spread=False):
 
     for index, (discount_block, surv_block) in enumerate(
             utils.split_counts([discounts, surv], counts, shared)):
-        # get the duel cashflow at the correct index
+        # a dual (numpy and tensor) representation of the same cashflows
         cashflows = factor_dep['Cashflows'].dual(start_index[index])
         cash_pmts, cash_index = np.unique(cashflows.np[:, utils.CASHFLOW_INDEX_Pay_Day], return_index=True)
         cash_sts = np.unique(cashflows.np[:, utils.CASHFLOW_INDEX_Start_Day])
 
-        # payment times            
         time_block = discount_block.time_grid[:, utils.TIME_GRID_MTM]
         future_pmts = cash_pmts.reshape(1, -1) - time_block.reshape(-1, 1)
         start_pmts = (cash_sts.reshape(1, -1) - time_block.reshape(-1, 1))
@@ -5916,7 +5491,7 @@ def pv_credit_cashflows(shared, time_grid, deal_data, return_par_spread=False):
         else:
             adjustment = 0.0
 
-        # note the minus sign here
+        # negative by convention: the protection buyer PAYS the premium
         premium = -(interest[cash_index] * cashflows.tn[cash_index, utils.CASHFLOW_INDEX_Nominal]).reshape(1, -1, 1)
         pv_premium = premium * (survival_T + adjustment * marginal_PD) * Dt_T
         pv_credit = (1.0 - factor_dep['Recovery_Rate'].recovery_rate()) * cashflows.tn[
@@ -5926,7 +5501,6 @@ def pv_credit_cashflows(shared, time_grid, deal_data, return_par_spread=False):
         if return_par_spread:
             value = pv_credit.sum(1)/-pv_premium.sum(1)
         else:
-            # settle any cashflows
             cash_settle(shared, factor_dep['SettleCurrency'],
                         np.searchsorted(time_grid.mtm_time_grid, cash_pmts[0]), premium[0, 0, 0])
             value = torch.sum(pv_credit + pv_premium, dim=1)
@@ -5955,37 +5529,36 @@ def expected_rate_gaussian_copula(
     default), the only case in which this equals c P(k < n).
 
     Conditional on the common factor z each name defaults independently with probability
-    q_j = Φ((Φ^{-1}(p_j) - √ρ z)/√(1-ρ)), so P(k = m | z) = P0 e_m(r) with P0 = ∏(1-q_j) and e_m
-    the m-th elementary symmetric polynomial of the odds r_j = q_j/(1-q_j). Only e_0..e_{n-k0-1}
-    can carry a non-zero rate, so the recurrence stops there - it is O(N (n-k0)) and, unlike the
-    closed forms e_2 = (S_1^2 - S_2)/2, free of cancellation in float32.
+    q_j = Phi((Phi^-1(p_j) - sqrt(rho) z)/sqrt(1-rho)), so P(k = m | z) = P0 e_m(r) with
+    P0 = prod(1-q_j) and e_m the m-th elementary symmetric polynomial of the odds
+    r_j = q_j/(1-q_j). Only e_0..e_{n-k0-1} can carry a non-zero rate, so the recurrence stops
+    there: it is O(N (n-k0)) and, unlike the closed form e_2 = (S_1^2 - S_2)/2, free of
+    cancellation in float32.
 
-    The z integral is Gauss-Hermite on the caller's (`z`, `w`) nodes, which is EXACT in z at
-    ρ = 0 and progressively harder as ρ → 1 - see `Quadrature_Points`.
+    The z integral is Gauss-Hermite on the caller's (`z`, `w`) nodes, EXACT in z at rho = 0 and
+    progressively harder as rho approaches 1 (`Quadrature_Points`).
 
-    Returns:
-      E_rate: (T, Pm, S) = E[ rate(horizon) ] at each hazard sample point.
+    Returns (T, Pm, S): E[rate(horizon)] at each hazard sample point.
     """
     eps = torch.finfo(shared.one.dtype).eps
 
     Tsteps, Pm, Sscen, Nnames = p_default.shape
 
-    # Clamp for stability
+    # clamped off 0 and 1, where the inverse CDF diverges
     p = p_default.clamp(eps, 1.0 - eps)
 
-    # a = Φ^{-1}(p): (T,Pm,S,N)
-    a = utils.norm_icdf(p)
+    a = utils.norm_icdf(p)                                    # (T,Pm,S,N)
 
     sr = np.sqrt(rho)
     s1 = np.sqrt(1.0 - rho)
 
-    # Broadcast over GH nodes: (G, T, Pm, S, N)
+    # broadcast over the GH nodes: (G, T, Pm, S, N)
     z_ = z.view(-1, 1, 1, 1, 1)
     a_ = a.unsqueeze(0)
 
     q = utils.norm_cdf((a_ - sr * z_) / s1).clamp(eps, 1.0 - eps)  # (G,T,Pm,S,N)
 
-    # P0 = ∏(1-q): (G,T,Pm,S)
+    # P0 = prod(1-q), in logs: (G,T,Pm,S)
     logP0 = torch.log1p(-q).sum(dim=-1)
     P0 = torch.exp(logP0)
 
@@ -6004,7 +5577,7 @@ def expected_rate_gaussian_copula(
     rate_k = (c * (1.0 - (k0 + ks) / float(n))).clamp_min(0.0)
     rate_z = (P0.unsqueeze(-1) * e * rate_k.view(1, 1, 1, 1, -1)).sum(dim=-1)  # (G,T,Pm,S)
 
-    # Integrate over z with GH weights => (T,Pm,S)
+    # integrate over z with the GH weights
     w_ = w.view(-1, 1, 1, 1)  # (G,1,1,1)
     E_rate = (w_ * rate_z).sum(dim=0)  # (T,Pm,S)
 
@@ -6025,9 +5598,9 @@ def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
     The accrual window opens at the first unpaid period's own `Start_Day`, so a forward-starting
     deal accrues from its effective date and a seasoned one from the start of the period it is in.
     `get_cashflows` builds every period as (start_i, pay_i) = (reset_i, reset_{i+1}), so periods
-    are contiguous by construction and that one start plus the pay days ARE all the boundaries.
-    Samples before the valuation date give a negative hazard time, clipped to zero survival
-    weight: the already-accrued part of the running coupon is earned at the full rate.
+    are contiguous and that one start plus the pay days ARE all the boundaries. Samples before the
+    valuation date give a negative hazard time, clipped to zero survival weight: the already-accrued
+    part of the running coupon is earned at the full rate.
     """
     mtm_list = []
     factor_dep = deal_data.Factor_dep
@@ -6036,30 +5609,28 @@ def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
     cash_start_idx = factor_dep['Cashflows'].get_cashflow_start_index(deal_time)
     rho = factor_dep['Correlation']
     discounts = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
-    # this is the index proxy
+    # the index proxy the per-name hazards are scaled against
     surv = utils.calc_time_grid_curve_rate(factor_dep['Name'], deal_time, shared)
     surv_base = utils.calc_time_grid_curve_rate(factor_dep['Name'], np.zeros((1, 3)), shared)
     names = [utils.calc_time_grid_curve_rate(name, deal_time, shared) for name in factor_dep['Names']]
-    # calculate the gassian weights
-    x, w = np.polynomial.hermite.hermgauss(factor_dep['Quadrature_Points'])  # for ∫ e^{-x^2} f(x) dx
-    z = np.sqrt(2.0) * x  # transform to standard normal
-    ww = w / np.sqrt(np.pi)  # weights for φ(z)
+    # Gauss-Hermite nodes for integral of exp(-x^2) f(x) dx, transformed to the standard normal
+    x, w = np.polynomial.hermite.hermgauss(factor_dep['Quadrature_Points'])
+    z = np.sqrt(2.0) * x
+    ww = w / np.sqrt(np.pi)
     z_t = shared.one.new(z)
     w_t = shared.one.new(ww)
-    # cashflow start dates
     start_index, counts = np.unique(cash_start_idx, return_counts=True)
 
     for index, (discount_block, surv_block) in enumerate(
             utils.split_counts([discounts, surv], counts, shared)):
-        # get the duel cashflow at the correct index
+        # a dual (numpy and tensor) representation of the same cashflows
         cashflows = factor_dep['Cashflows'].dual(start_index[index])
         cash_pmts, cash_index = np.unique(cashflows.np[:, utils.CASHFLOW_INDEX_Pay_Day], return_index=True)
-        # payment times
         time_block = discount_block.time_grid[:, utils.TIME_GRID_MTM]
         future_pmts = cash_pmts.reshape(1, -1) - time_block.reshape(-1, 1)
-        # samples for estimating default - the window opens at the first unpaid period's start
+        # the default-sampling window, which opens at the first unpaid period's start
         samples_points = np.r_[cashflows.np[0, utils.CASHFLOW_INDEX_Start_Day], cash_pmts].astype(np.int64)
-        # note hazard_t can contain negative times - represents accrued payments
+        # hazard_t can be negative, which is the accrued part of the running coupon
         hazard_t = (np.unique(
             np.r_[samples_points, np.concatenate(
                 [np.arange(a + 30, b, 30) for a, b in zip(
@@ -6076,7 +5647,7 @@ def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
 
         S_nodes = torch.exp(-fwd_hazard_names)  # (T, M+1, S, N)
         Cum_PD = (1.0 - S_nodes)
-        # allow dt to be negative (to account for accrued coupons)
+        # in the deal's own ACCRUAL day count, and left signed so accrued coupons carry
         dt = shared.one.new(np.diff(accrual_daycount_fn(hazard_t), axis=1)).unsqueeze(2)
         E_rate = expected_rate_gaussian_copula(
             shared=shared,
@@ -6089,7 +5660,7 @@ def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
             w=w_t
         )  # (Sc,P)
 
-        # use trapazoid rule to calc E[rate] over the horizon
+        # integrate E[rate] over each accrual window by the trapezoid rule
         trap = 0.5 * (E_rate[:, :-1, :] + E_rate[:, 1:, :])
         trapz = trap * dt # (T,Pm-1,S)
         lengths = torch.as_tensor(
@@ -6100,7 +5671,6 @@ def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
         # pv_credit_cashflows' premium convention - the buyer PAYS the coupon
         premium = -expected_coupons * cashflows.tn[cash_index, utils.CASHFLOW_INDEX_Nominal].reshape(1, -1, 1)
 
-        # settle any cashflows
         cash_settle(shared, factor_dep['SettleCurrency'],
                     np.searchsorted(time_grid.mtm_time_grid, cash_pmts[0]), premium[-1, 0])
 
@@ -6110,6 +5680,9 @@ def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
 
 
 def pv_equity_cashflows(shared, time_grid, deal_data):
+    """The equity leg: each period pays its start/end multiples of the equity level plus the
+    realized dividends between them. A period is valued off its observed samples once both ends
+    have fixed, off forwards while both are ahead, and off the mix in between."""
     mtm_list = []
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -6117,14 +5690,13 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
     eq_spot = utils.calc_time_grid_spot_rate(factor_dep['Equity'], deal_time, shared)
     cash = factor_dep['Flows']
 
-    # needed for grouping 
+    # the three indices a block is grouped on: start fixed, end fixed, and paid
     cash_start_idx = np.searchsorted(
         cash.schedule[:, utils.CASHFLOW_INDEX_Start_Day], deal_time[:, utils.TIME_GRID_MTM], side='right')
     cash_end_idx = np.searchsorted(
         cash.schedule[:, utils.CASHFLOW_INDEX_End_Day], deal_time[:, utils.TIME_GRID_MTM], side='right')
     cash_pay_idx = cash.get_cashflow_start_index(deal_time)
 
-    # first precalc all past resets
     all_samples = []
 
     for samples in cash.Resets.split_groups(2):
@@ -6136,7 +5708,7 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
         past_samples = utils.calc_time_grid_spot_rate(
             factor_dep['Equity'], sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)
 
-        # fetch all fixed resets
+        # an unsimulated spot is held flat across the scenarios
         if past_samples.shape[1] != shared.simulation_batch:
             past_samples = past_samples.expand(sim_samples.shape[0], shared.simulation_batch)
 
@@ -6166,7 +5738,7 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
         future_pmts = cashflow_pay - time_block.reshape(-1, 1)
         discount_rates = utils.calc_discount_rate(discount_block, future_pmts, shared)
 
-        # need equity forwards for start and end cashflows
+        # both ends fixed: the period is valued off its own observed samples
         if pay_idx < end_idx:
             St0 = torch.unsqueeze(all_samples[0][pay_idx:end_idx], 0)
             St1 = torch.unsqueeze(all_samples[1][pay_idx:end_idx], 0)
@@ -6190,11 +5762,11 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
 
             payoffs.append(payment.expand(time_block.size, -1, -1) if time_block.size > 1 else payment)
 
-            # settle cashflow if necessary
             cash_settle(shared, factor_dep['SettleCurrency'],
                         np.searchsorted(time_grid.mtm_time_grid, cashflow_pay[0][0]),
                         torch.sum(payment, dim=1)[0])
 
+        # the start fixed and the end still ahead: the observed sample against a forward
         if end_idx < start_idx:
             cf_end = cashflows.np[end_idx, utils.CASHFLOW_INDEX_End_Adj] - time_block.reshape(-1, 1)
             cf_settle = forward_settle_days[time_block_index:time_block_index+all_counts[index]].reshape(-1,1)
@@ -6221,6 +5793,7 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
 
             payoffs.append(payoff * units)
 
+        # both ends still ahead: forwards at each
         if cashflow_start.any():
             cf_start = cashflows.np[start_idx:, utils.CASHFLOW_INDEX_Start_Adj] - time_block.reshape(-1, 1)
             cf_end  = cashflows.np[start_idx:, utils.CASHFLOW_INDEX_End_Adj] - time_block.reshape(-1, 1)
@@ -6250,9 +5823,7 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
 
             payoffs.append(payoff * units)
 
-        # update the time block
         time_block_index += all_counts[index]
-        # now finish the payments
         payments = torch.cat(payoffs, dim=1) if len(payoffs) > 1 else payoffs[0]
         mtm_list.append(torch.sum(payments * discount_rates, dim=1))
 
@@ -6261,6 +5832,7 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
 
 @utils.log_exception
 def pv_fixed_leg(shared, time_grid, deal_data):
+    """The fixed leg in the reporting currency."""
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     FX_rep = utils.calc_fx_cross(
         deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
@@ -6271,6 +5843,7 @@ def pv_fixed_leg(shared, time_grid, deal_data):
 
 @utils.log_exception
 def pv_energy_leg(shared, time_grid, deal_data):
+    """The energy leg in the reporting currency."""
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     FX_rep = utils.calc_fx_cross(
         deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
@@ -6281,6 +5854,7 @@ def pv_energy_leg(shared, time_grid, deal_data):
 
 @utils.log_exception
 def pv_float_leg(shared, time_grid, deal_data):
+    """The floating leg in the reporting currency, under the cashflow pricer the deal declares."""
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     FX_rep = utils.calc_fx_cross(
         deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
@@ -6292,6 +5866,7 @@ def pv_float_leg(shared, time_grid, deal_data):
 
 @utils.log_exception
 def pv_index_leg(shared, time_grid, deal_data):
+    """The inflation-linked leg in the reporting currency."""
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     FX_rep = utils.calc_fx_cross(
         deal_data.Factor_dep['Currency'], shared.Report_Currency, deal_time, shared)
@@ -6302,6 +5877,7 @@ def pv_index_leg(shared, time_grid, deal_data):
 
 @utils.log_exception
 def pv_cds_leg(shared, time_grid, deal_data):
+    """The single-name CDS in the reporting currency."""
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     FX_rep = utils.calc_fx_cross(
         deal_data.Factor_dep['Currency'], shared.Report_Currency, deal_time, shared)
@@ -6312,6 +5888,7 @@ def pv_cds_leg(shared, time_grid, deal_data):
 
 @utils.log_exception
 def pv_credit_step_down_leg(shared, time_grid, deal_data):
+    """The basket premium leg in the reporting currency."""
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     FX_rep = utils.calc_fx_cross(
         deal_data.Factor_dep['Currency'], shared.Report_Currency, deal_time, shared)
@@ -6322,6 +5899,7 @@ def pv_credit_step_down_leg(shared, time_grid, deal_data):
 
 @utils.log_exception
 def pv_equity_leg(shared, time_grid, deal_data):
+    """The equity leg in the reporting currency."""
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     FX_rep = utils.calc_fx_cross(
         deal_data.Factor_dep['Currency'], shared.Report_Currency, deal_time, shared)

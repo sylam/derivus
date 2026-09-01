@@ -11,39 +11,23 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""Is this quote still firm - asked in TWO dimensions, and answered separately in each.
+"""Is a quote still firm, asked in two dimensions and answered separately in each.
 
-A quote pins two hashes because it can go stale in two unrelated ways, and an approval that checked
-one of them would be an approval that let the other through. The VALUES dimension asks about the
-market: the board the price was struck on has moved, or the pin on it has aged past the cadence
-that refreshes it. The PLAN dimension asks about the book: the marginal charge was solved against a
-portfolio, and that portfolio has moved since - somebody booked, somebody amended, the base date
-rolled - so the residual this trade would actually leave is not the one that was priced.
+A quote pins two hashes because it goes stale in two unrelated ways. The VALUES dimension asks
+about the market: the board the price was struck on has moved, or the pin on it has aged past the
+cadence that refreshes it. The PLAN dimension asks about the book: the marginal charge was solved
+against a portfolio that has since moved, so the residual this trade would leave is not the one
+that was priced.
 
-They are DISJOINT by measurement rather than by assumption, and that is an engine property this
-module is the consumer of. Since the `Market Prices` partition landed, a vol tick moves
-`values_hash` and leaves `plan_hash` bit-identical: quote values are the values plane, pillars and
-conventions and everything a solve reads is the plan. So a market that ticked under a standing
-quote trips the values dimension and CANNOT trip the plan one, and the gate says so on a fixture
-that ticks a vol with no booking in sight. Conflating the two would produce exactly the failure the
-brief names - an aged quote approvable at a dead market's solve - dressed as a single "staleness"
-number nobody could act on.
+The two are disjoint by measurement: a vol tick moves `values_hash` and leaves `plan_hash`
+bit-identical, because quote values are the values plane while pillars, conventions and everything
+a solve reads are the plan. Each dimension carries its own refusal wording, since a moved market, a
+dead tick, a moved book and an aged book pin have four different remedies.
 
-Four refusals, two per dimension, each naming its own remedy, because a desk does different things
-about them. A moved market means re-quote at the market that is standing. An aged pin means the
-cadence stopped and somebody should look at the terminal before re-quoting. A moved book means the
-charge has to be re-solved against the book this trade would now join. An aged book pin is the
-backstop under all of it.
-
-This is a PURE FUNCTION over plain data - two pairs of hashes, two ages, two windows - and it holds
-no log, no clock and no home. Everything it needs was folded out of the record before it was called
-(`policy.firmness_in_force`) and the caller measured the ages against its own clock, so the same
-inputs answer the same way on the hub, on a replica and in a gate. `assess` answers a verdict;
-`check` is the same answer raised as the refusal a booking meets. The engine's existing
-`Quote Policy.firm_seconds` clock is NOT superseded by any of this: it is the desk's own mandate
-about how long its salespeople may stand behind a price, it keeps firing exactly as it did, and it
-is named beside these two dimensions rather than replaced by them - a desk window and a provenance
-window are two different promises to two different people.
+Pure functions over plain data - two pairs of hashes, two ages, two windows - holding no log, clock
+or home, so the same inputs answer the same way on the hub, on a replica and in a gate. `assess`
+returns a verdict; `check` raises the same answer as `QuoteNotFirm`. This does not supersede the
+engine's `Quote Policy.firm_seconds`, which is the desk's own mandate and still fires as before.
 """
 from .errors import MalformedEvent, QuoteNotFirm
 from .vocabulary import is_hash, is_number
@@ -53,12 +37,11 @@ VALUES = 'values'
 PLAN = 'plan'
 DIMENSIONS = (VALUES, PLAN)
 
-#: dimension -> (the hash field it compares, the window field it reads). The whole difference
-#: between the two dimensions is this table plus the sentences below it.
+#: dimension -> (the hash field it compares, the window field it reads). This table plus the
+#: wordings below it are the whole difference between the two dimensions.
 PINNED = {VALUES: ('values_hash', 'values_seconds'), PLAN: ('plan_hash', 'plan_seconds')}
 
-#: What each dimension means when it refuses - the sentence a salesperson reads. Kept here rather
-#: than inline so the two remedies stay visibly different from each other.
+#: The refusal wording for a dimension whose pinned hash no longer matches the standing one.
 MOVED = {
     VALUES: 'the market moved under it: the quote was struck on values {pinned} and the board '
             'standing now is {current} - re-quote, because the price that was given belongs to a '
@@ -75,8 +58,8 @@ AGED = {
           'by booking rather than by clock, so a pin this old is one nobody has compared against '
           'the book since',
 }
-#: An age nobody can establish, which is not an age inside a window - the edge's own ruling about a
-#: pending file with no stamp, met here in the general case.
+#: The refusal wording for a pin whose age cannot be established: an unknown age is not an age
+#: inside the window.
 UNKNOWN = ('the {dimension} pin carries no age this check could establish, and an unknown age is '
            'not an age inside the {window:.0f}s window - re-quote: the pin has had an unknown '
            'number of seconds to go stale')
@@ -91,8 +74,7 @@ def assess(pinned, current, ages, policy):
     `policy.firmness_in_force` answers it.
 
     Each dimension is answered on its own and reports everything it read - the two hashes, the age
-    and the window - so a caller can show a desk why a quote refused without re-deriving the
-    comparison, and so a verdict is a document rather than a boolean somebody has to trust.
+    and the window - so a caller can show why a quote refused without re-deriving the comparison.
     """
     for name, mapping in (('pinned', pinned), ('current', current)):
         if not isinstance(mapping, dict):
@@ -124,12 +106,10 @@ def assess(pinned, current, ages, policy):
 
 
 def check(pinned, current, ages, policy, quote_id=None):
-    """`assess`, raised. Answers the verdict when the quote is firm; `QuoteNotFirm` naming EVERY
-    dimension that refused when it is not.
+    """`assess`, raised: the verdict when the quote is firm, `QuoteNotFirm` when it is not.
 
-    Every one of them, not the first: a quote that is stale on both dimensions has two things wrong
-    with it and two remedies, and reporting one of them sends a salesperson back to re-quote into
-    the same refusal.
+    The refusal names every dimension that failed, not the first - two stale dimensions have two
+    remedies, and reporting one sends the caller back into the other.
     """
     verdict = assess(pinned, current, ages, policy)
     if not verdict['firm']:
@@ -139,8 +119,8 @@ def check(pinned, current, ages, policy, quote_id=None):
 
 
 def _windows(policy):
-    """The two windows, checked. A policy that will not read is refused here rather than compared
-    against, because a window nobody can read is one no approval could be measured against."""
+    """The two staleness windows out of `policy`, as floats. Each must be a finite non-negative
+    number of seconds; anything else raises `MalformedEvent`."""
     if not isinstance(policy, dict):
         raise MalformedEvent(
             'firmness: the policy is {}, not the {{values_seconds, plan_seconds}} pair - hand in '
@@ -159,8 +139,8 @@ def _windows(policy):
 
 
 def _hash(mapping, field, whose):
-    """One pinned or standing hash, or a refusal naming which side was not one. A comparison
-    between a hash and something that is not one would answer "not firm" for the wrong reason."""
+    """`mapping[field]`, asserted to be a content hash. `whose` names the side in the refusal - a
+    comparison against a non-hash would answer "not firm" for the wrong reason."""
     value = mapping.get(field)
     if not is_hash(value):
         raise MalformedEvent(
@@ -171,9 +151,11 @@ def _hash(mapping, field, whose):
 
 
 def _age(ages, dimension):
-    """One dimension's age in seconds, or None where it cannot be established. A negative age is a
-    clock that ran backwards between the pin and the check, and it reads as unknown rather than as
-    fresh - a future stamp is the one reading that would let an arbitrarily stale quote through."""
+    """One dimension's age in seconds, or None where it cannot be established.
+
+    A negative age - a clock that ran backwards between the pin and the check - reads as unknown
+    rather than fresh, since a future stamp would otherwise pass an arbitrarily stale quote.
+    """
     if not isinstance(ages, dict):
         raise MalformedEvent(
             'firmness: ages is {}, not the {{values, plan}} pair in seconds - each dimension has '

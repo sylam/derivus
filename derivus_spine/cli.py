@@ -11,40 +11,26 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""`DV_Spine` - the home verbs, the identity verbs, and no third kind.
+"""`DV_Spine` - the home verbs and the identity verbs.
 
-A home is a DIRECTORY, never a service: `log/` segments, `blobs/`, `keys/`. Nothing here holds
-state, listens on anything, or repairs anything - `init` mints a home, `verify` re-derives every
-hash in one from the bytes on disk, `checkpoint` signs the head, `status` reads it. Which home is
-answered the way `DV_HOME` answers it one level over: `--home`, else `DV_SPINE_HOME`, else
-`~/.derivus_spine`, resolved at the call rather than captured at import, so a script that moves
-the variable moves the next verb with it.
+A home is a directory, never a service: `log/` segments, `blobs/`, `keys/`. The home verbs are
+`init` (mint one), `verify` (re-derive every hash from the bytes on disk), `checkpoint` (sign the
+head) and `status` (read it). The identity verbs are `enroll` (mint a seat keypair), `grant`
+(declare a capabilities document), `rewrap` (wrap the class key to whoever the document now
+admits), `name` (the mutable display-name side table) and `whoami` (verify an OIDC token against a
+JWKS the deployment hands in as a file). Nothing here fetches, listens or stores a secret.
 
-Increment 2 adds five more, and they are the same kind of thing: `enroll` mints a seat's keypair,
-`grant` declares a capabilities document, `rewrap` wraps the class key to whoever the document now
-admits, `name` writes the mutable display-name side table, and `whoami` verifies an OIDC token
-against a JWKS the deployment hands in as a FILE. That last one is the whole identity posture in a
-sentence: identity is bought, not built, and nothing here fetches, listens or stores a secret. The
-four home verbs keep their own spelling because each carries its own flags; the five identity verbs
-register from one table, because they are uniform - a home, an actor where they append, and their
-own two or three arguments.
+Which home a verb works on: `--home`, else `DV_SPINE_HOME`, else `~/.derivus_spine`, resolved at
+the call rather than captured at import. The four home verbs are spelled out individually since
+each carries its own flags; the five identity verbs register from `IDENTITY_VERBS`.
 
-`enroll` and `rewrap` reach `derivus_spine.custody` INSIDE their functions rather than at import.
-The mouth must not be the reason the package fails to load on a machine that has not built custody
-yet, and the same holds for `name` and `whoami` against `derivus_spine.identity`: a CLI that cannot
-run `status` because an unrelated verb's module is missing is a CLI with a dependency it does not
-have.
+`custody` and `identity` are imported inside the verbs that need them, so a missing module for one
+verb cannot stop the CLI loading for the others.
 
-This module is a MOUTH, not a mechanism. Every verb is one call into the package's public
-surface, and the answer is that call's own dict as JSON on stdout - what reads a spine CLI is a
-script or an auditor, and both want the report rather than a paragraph about it. A refusal is the
-library's own sentence on stderr and exit 1, verbatim: a CLI that rewords a refusal becomes a
-second source of truth about what went wrong, which is the one thing this whole workstream exists
-to forbid. Usage errors stay argparse's (exit 2) - they are about the command line, not the log.
-
-Verification is local by construction here: `verify` reads files and recomputes, so it needs no
-network, no writer and, in `--chain-only`, no key it is entitled to. That is the replica's posture
-run from a terminal.
+This module is a mouth, not a mechanism: every verb is one call into the package's public surface,
+and the answer is that call's own dict as JSON on stdout. A refusal is the library's own sentence
+on stderr with exit 1, verbatim - rewording one would make the CLI a second source of truth. Usage
+errors stay argparse's exit 2.
 
 Run: `DV_Spine init` (`python -m derivus_spine.cli init` from a source tree).
 """
@@ -62,56 +48,50 @@ HOME_HELP = ('the spine home to work on; defaults to DV_SPINE_HOME, else ~/.deri
 
 
 def spine_home(named):
-    """Which home a verb works on. Read on every call rather than captured at import, for the
-    reason `dv_home` gives one level over: the home a script names and the home the environment
-    names are the same setting answered at two different moments."""
+    """The absolute home path: `named`, else `DV_SPINE_HOME`, else `~/.derivus_spine`. Read on
+    every call rather than captured at import."""
     named = named or os.environ.get('DV_SPINE_HOME') or os.path.join('~', '.derivus_spine')
     return os.path.abspath(os.path.expanduser(named))
 
 
 def local_actor():
-    """Who genesis is attributed to when nobody said. Increment 2 buys identity; until it does,
-    the local account name is the honest stand-in - stamped into the first events, never inferred
-    afterwards - and `DV_SPINE_ACTOR` is how a deployment seats its own subject reference from
-    event one instead of renaming history later."""
+    """Who an append is attributed to when nobody said: `DV_SPINE_ACTOR`, else this account's
+    name, else `'local'`."""
     try:
         return os.environ.get('DV_SPINE_ACTOR') or getpass.getuser()
     except (KeyError, OSError):
-        # no account name to read (a bare container, a service seat): say so as the actor rather
-        # than fail the mint, since the alternative is a home nobody can create
+        # No account name to read (a bare container, a service seat): name that rather than fail
+        # the mint, since the alternative is a home nobody can create.
         return 'local'
 
 
 def report(payload):
-    """One JSON object per run, sorted and indented - the answer is a document a script parses
-    and a human diffs, so it is stable under repetition rather than pretty."""
+    """Write `payload` to stdout as one JSON object, sorted and indented, and return exit code 0.
+    Sorted so the output is stable under repetition and diffable."""
     json.dump(payload, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write('\n')
     return 0
 
 
 def do_init(args):
-    """Mint a home. `HomeExists` is the refusal that makes this safe to retype."""
+    """Mint a home and report what genesis wrote. A second run raises `HomeExists`."""
     return report(init_home(spine_home(args.home), args.actor or local_actor()))
 
 
 def do_verify(args):
-    """Re-derive the whole chain. `--chain-only` is the UNENTITLED posture - bodies stay sealed
-    and the report says which mode it read in, because a verification that quietly skipped
-    something is worse than one that refused."""
+    """Re-derive the whole chain and report it. `--chain-only` runs the unentitled posture, leaving
+    bodies sealed; the report names which mode it read in."""
     return report(verify_home(spine_home(args.home), entitled=not args.chain_only))
 
 
 def do_checkpoint(args):
-    """Sign the head. An ordinary event through the ordinary writer - the signature is the point,
-    the append is not special."""
+    """Append a signed checkpoint over the current head and report its envelope."""
     return report(write_checkpoint(SpineLog(spine_home(args.home))))
 
 
 def do_status(args):
-    """Where the log stands, in four fields and no fold. `bodies_readable` is the crypto-shred
-    question asked plainly: a home whose firm key was destroyed still verifies its chain, and a
-    terminal should be able to see which of the two it is holding."""
+    """Report the head position in four fields and no fold. `bodies_readable` says whether the
+    class key is present - a crypto-shredded home still verifies its chain."""
     home = spine_home(args.home)
     lsn, event_hash = SpineLog(home).head()
     return report({'home': home, 'head_lsn': lsn, 'head_hash': event_hash,
@@ -120,9 +100,8 @@ def do_status(args):
 
 
 def read_json(path, what):
-    """One JSON file, read as data. A file the operator names is the deployment handing something
-    in - a policy document, a JWKS - and a file that is not the shape it claims is a refusal that
-    names the path, because the path is what the operator can go and fix."""
+    """The JSON at `path`, read as data. Unreadable or non-JSON raises `CapabilityDenied` naming
+    the path and `what` it was meant to be."""
     try:
         with open(path, 'rb') as handle:
             return json.loads(handle.read().decode('utf-8'))
@@ -137,13 +116,11 @@ def read_json(path, what):
 
 
 def do_enroll(args):
-    """Mint a seat. The keypair, the published public key and the `seat_enrolled` fact are custody's
-    business; this verb is the mouth that names the subject and the actor doing the enrolling.
+    """Mint a seat and report the enrollment.
 
-    `--public-key` is the posture, and its absence is the bootstrap. Hand in 32 raw bytes as hex and
-    the seat generated its own keypair on its own machine, so the hub publishes a public key and
-    stores no private one; omit it and the hub mints both and keeps the private half, which is the
-    declared residual custody's header names and a file that should be handed over and shredded.
+    With `--public-key` (32 raw X25519 bytes as hex) the seat generated its own keypair, so the hub
+    publishes a public key and stores no private one. Without it the hub mints both and keeps the
+    private half - the bootstrap case, and a file to hand over and shred.
     """
     from derivus_spine import custody
     public_key = None
@@ -163,21 +140,13 @@ def do_enroll(args):
 
 
 def do_grant(args):
-    """Declare a capabilities document - the policy-file editor the non-goals allow, and nothing
-    more than that.
+    """Declare the capabilities document in `--file` and report the declaration plus the key drift
+    it owes.
 
-    The file is CANONICALISED before it is stored, which is the whole difference between an editor
-    and a second source of truth: one policy is one blob however the operator spelled their JSON,
-    so the same decision declared twice is the same hash and history stays addressable. The
-    document is checked here too, so a malformed grant is met while the operator still has the file
-    open rather than by a home that can no longer write.
-
-    And the report says what the declaration OWES. A grant that adds a READ row creates key drift the
-    moment it lands - the subject is entitled and the store holds no wrap for it - and the brief's
-    "rewrap on grant change" is a property of the system or it is a line in a runbook nobody read.
-    So the drift is computed against the document that is now in force and named here, where the
-    operator is still at the keyboard, rather than discovered by an entitled seat whose body will not
-    open. `rewrap` is what clears it, and this verb says how much of it there is.
+    The document is checked and canonicalised before it is stored, so one policy is one blob however
+    the operator spelled their JSON. A grant that adds a read row leaves the subject entitled with no
+    wrap in the store; that drift is computed against the document now in force and named here, and
+    `rewrap` is what clears it.
     """
     from derivus_spine import custody
     document = read_json(args.file, 'capabilities document')
@@ -197,9 +166,8 @@ def do_grant(args):
 
 
 def do_rewrap(args):
-    """Wrap the class key to whoever the document in force now admits. Idempotent by custody's own
-    law - a second run emits nothing - so this is safe to put in a runbook after every grant, and
-    `grant`'s own report names what it will find when it gets there."""
+    """Wrap the class key to every seat the document in force now admits, and report what was
+    written. Idempotent: a second run emits nothing."""
     from derivus_spine import custody
     log = SpineLog(spine_home(args.home))
     try:
@@ -209,11 +177,10 @@ def do_rewrap(args):
 
 
 def do_name(args):
-    """Read, set or erase a display name.
+    """Read, set or erase a display name, and report the name standing afterwards.
 
-    The side table is MUTABLE and lives outside the log by design: the record is pseudonymous, so
-    the erasable attributes are here, where an erasure touches no chain byte. With neither flag this
-    reads rather than writes, which is what makes it safe to type first.
+    The side table is mutable and lives outside the log, so an erasure touches no chain byte. With
+    neither `--display` nor `--erase` this reads rather than writes.
     """
     from derivus_spine import identity
     home = spine_home(args.home)
@@ -226,20 +193,18 @@ def do_name(args):
 
 
 def do_whoami(args):
-    """Verify an OIDC id token against a JWKS the deployment hands in as a FILE and print the
-    subject reference.
+    """Verify an OIDC id token against a JWKS file and report the pseudonymous subject reference.
 
-    No fetching, no network, no token written anywhere: the JWKS is data, the answer is a
-    pseudonymous reference, and a token that does not prove who it claims is `IdentityRefused` on
-    stderr with exit 1 like every other refusal.
+    No fetching and no token written anywhere: the JWKS is data the deployment hands in. A token
+    that does not prove who it claims raises `IdentityRefused`.
     """
     from derivus_spine import identity
     return report(identity.verify_id_token(
         args.token, read_json(args.jwks, 'JWKS'), args.issuer, args.audience))
 
 
-#: flag -> how it is declared. Spelled once so that `--actor` means the same thing on every verb
-#: that appends, and so the identity verbs stay a table rather than five near-copies of each other.
+#: flag -> how it is declared, spelled once so `--actor` means the same thing on every verb that
+#: appends.
 ARGUMENTS = {
     'subject': {'help': 'the pseudonymous subject reference to name'},
     '--subject': {'required': True, 'help': 'the pseudonymous subject reference to enroll'},
@@ -264,9 +229,8 @@ ARGUMENTS = {
     '--audience': {'required': True, 'help': 'the audience the token must carry'},
 }
 
-#: `(verb, help, arguments, runner)` for the identity verbs. A nested tuple of flags is a mutually
-#: exclusive group - `name` either writes a display name or erases one, and asking for both is a
-#: command-line mistake rather than a question about the record.
+#: `(verb, help, arguments, runner)` for the identity verbs. A nested tuple of flags declares a
+#: mutually exclusive group.
 IDENTITY_VERBS = (
     ('enroll', 'mint a seat keypair, publish its public key and record the enrollment',
      ('--subject', '--actor', '--public-key'), do_enroll),
@@ -282,14 +246,13 @@ IDENTITY_VERBS = (
 
 
 def build_parser():
-    """The argument table, and the only logic in this file.
+    """The `DV_Spine` argument parser.
 
-    Built rather than held at module scope: a parser is cheap, and one constructed per call cannot
-    accumulate state between the CLI's own gates and a runbook's two invocations in one process.
+    Built per call rather than held at module scope, so two invocations in one process cannot
+    accumulate state between them.
     """
     common = argparse.ArgumentParser(add_help=False)
-    # every verb takes --home, and it hangs off the SUBcommands so that `DV_Spine init --home X`
-    # reads the way anyone would type it
+    # --home hangs off the subcommands, so `DV_Spine init --home X` reads as typed.
     common.add_argument('--home', type=str, default=None, help=HOME_HELP)
 
     parser = argparse.ArgumentParser(
@@ -335,14 +298,13 @@ def build_parser():
 
 
 def main(argv=None):
-    """`DV_Spine` - dispatch one verb, print its answer, and translate a refusal into an exit
-    code."""
+    """Dispatch one `DV_Spine` verb, print its answer, and return the exit code: 0, or 1 for a
+    refusal."""
     args = build_parser().parse_args(argv)
     try:
         return args.run(args)
     except SpineRefusal as refusal:
-        # the library's own wording, unedited: it already names the thing and the remedy, and
-        # anything added here would be a paraphrase competing with it
+        # The library's own wording, unedited: it already names the thing and the remedy.
         sys.stderr.write('{}\n'.format(refusal))
         return 1
 

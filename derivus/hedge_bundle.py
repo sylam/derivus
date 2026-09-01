@@ -41,34 +41,30 @@ def wealth_step(W, q, contract_size, dF, dL):
         W_{t+1} = W_t + Σ_i q_i·cs_i·dF_i + dL,   W_t = cumulative hedge P&L + marked liability L_t
 
     `q` (…,n_hedge) is the per-instrument position, `dF` (…,n_hedge) the per-instrument price
-    move F_{t+1}−F_t, `dL` (…) the marked-liability change L_{t+1}−L_t. This is the frictionless
-    law DiffSolver rolls (bank/verdict) and, crucially, the one the twin loss DIFFERENTIATES:
-    u(W_{t+1}) is taped back to a wealth leaf + the state-at-t market leaves, so this MUST stay a
-    pure tensor op — no .item()/.detach()/.cpu()/.to(); callers own the grad context.
+    move F_{t+1}−F_t, `dL` (…) the marked-liability change L_{t+1}−L_t. This is the law DiffSolver
+    rolls and the one the twin loss DIFFERENTIATES: u(W_{t+1}) is taped back to a wealth leaf and
+    the state-at-t market leaves, so it MUST stay a pure tensor op — no `.item()`/`.detach()`/
+    `.cpu()`/`.to()`; callers own the grad context.
 
-    `BundleStepper` is the DEPLOYMENT discretization of this same law: it books the same
-    Σ q·cs·dF as per-instrument variation margin `pos·(price−settlement)·cs`, then layers the
-    deployment extras this frictionless form deliberately omits — overnight financing (growth on
-    cash/margin), transaction cost, per-instrument settlement/expiry, and terminal forced-flat.
-    `_tracking_error_value` is its state-based read. That gap is an intentional fidelity
-    difference (the value is position-free / freely-repositioning), not a bug — the faithful
-    walk-forward path is hedge_solver `_rollout_on_stepper`, which rolls the real stepper.
+    `BundleStepper` is the DEPLOYMENT discretization of the same law: it books the same
+    `Σ q·cs·dF` as per-instrument variation margin `pos·(price−settlement)·cs`, then layers on the
+    extras this frictionless form omits — overnight financing, transaction cost, per-instrument
+    settlement/expiry and the terminal forced-flat. The faithful walk-forward path is hedge_solver
+    `_rollout_on_stepper`, which rolls the real stepper.
     """
     return W + (q * contract_size * dF).sum(dim=-1) + dL
 
 
-# The terminal-utility SHAPES (all map dollars→O(1) utility via the deal scale c: x = W/c).
-# symlog is odd/symmetric; huber and cara are asymmetric (downside-averse). Selected by
-# `Objective.Object`; any non-utility Object takes the identity (no-op) path.
-# All consume the same scale `c` and live in "utility space" (the DP / value-fn recursion).
+# Terminal-utility SHAPES: each maps dollars→O(1) utility via the deal scale c (x = W/c) and
+# lives in utility space (the DP / value-fn recursion). symlog is odd/symmetric, huber and cara
+# downside-averse; any Object outside this tuple takes the identity (no-op) path.
 _UTILITY_OBJECTS = (
     "asymmetricutility_symlog", "asymmetricutility_huber", "asymmetricutility_cara")
 
 
 def _is_utility_objective(runtime):
-    """True iff the objective transforms wealth through a utility shape (symlog/huber/cara) —
-    so the DP/value-fn live in utility space and a scale `c` is required. False for the legacy
-    identity objective."""
+    """True iff the objective transforms wealth through a utility shape (symlog/huber/cara), so
+    the DP and value function live in utility space and a scale `c` is required."""
     return (runtime.get("objective") or {}).get("object") in _UTILITY_OBJECTS
 
 
@@ -78,19 +74,13 @@ def _utility_scale(objective, t=None):
 
     `Objective.Utility_Scale_Mode='conditional_sim'` locks a per-step SCHEDULE at the frame lock
     (`Bundle.utility_scale_schedule`, mirrored onto the runtime objective beside the scalar): a
-    caller that NAMES its step reads that step's knee, and one that does not — a TERMINAL read,
-    which is what the benchmark tracks and the verdict's terminal stats take — reads the scalar,
-    which under a schedule IS the schedule's terminal entry. So the two agree at the terminal by
-    construction rather than by coincidence, and an ensemble keeps that: its run-level scalar is
-    the MEAN of its members' terminal knees (`DiffSolver._restore_frame`), which is what its
-    averaged terminal continuation is a reading of.
+    caller that NAMES its step reads that step's knee, and one that does not — a TERMINAL read —
+    reads the scalar, which under a schedule IS the schedule's terminal entry. An ensemble's
+    run-level scalar is the MEAN of its members' terminal knees.
 
-    Missing it is fail-loud: the silent fallback (c = 1.0) produces plausible-looking-but-wrong
-    rewards (log1p($1M / 1.0) ≈ 14) with no error at the call site. A NON-POSITIVE one is the same
-    contract read the other way — `x = (W − R)/c` is then infinite or NaN, every label from that
-    step with it, and the fit spreads the NaN through the nets and reports a finished run — so
-    zero is refused HERE, at the one place c is resolved, rather than at each source that could
-    produce one."""
+    A missing or NON-POSITIVE c is refused HERE rather than at each source that could produce one:
+    `x = (W − R)/c` would otherwise be infinite or NaN, every label from that step with it, and
+    the fit would spread the NaN through the nets and report a finished run."""
     schedule = objective.get("utility_scale_schedule")
     c = objective.get("utility_scale") if schedule is None or t is None else schedule[int(t)]
     if c is None:
@@ -119,31 +109,25 @@ def _utility_wrap_signed(x_dollars, runtime, t=None):
                (loss = max(−x,0), gain = max(x,0))   on the GAIN wing, off at a⁺ = 0
       cara   : (1 − exp(−γ·x)) / γ                  — bounded gains, exponentially-penalised loss
 
-    `reference_wealth` R (DOLLARS, default 0) is the benchmark the utility is measured against —
-    subtract it BEFORE the /c scaling and "loss" means underperforming the desk's risk-free
-    alternative rather than falling below an arbitrary zero, which is what puts huber's knee at
-    the operating point. All shapes read it.
+    `reference_wealth` R (DOLLARS, default 0) is the benchmark the utility is measured against and
+    is subtracted BEFORE the /c scaling, which puts huber's knee at the operating point. All
+    shapes read it.
 
     Huber's gain wing mirrors the loss wing: curvature `up_aversion` a⁺ (default 0 ⇒ exactly
-    linear gains, today's shape) out to the knee `up_knee` κ, linear beyond with the level-matching
-    constant, so deep gains keep marginal utility 1 − 2a⁺κ > 0 — the keep-upside asymmetry
-    survives while the objective is curved on BOTH sides of R, with no risk-regime boundary at 0.
+    linear gains) out to the knee `up_knee` κ, linear beyond with the level-matching constant, so
+    deep gains keep marginal utility 1 − 2a⁺κ > 0 and the objective is curved on both sides of R.
 
-    Shape params (huber a/δ/a⁺/κ, cara γ) are DIMENSIONLESS in c-units. Differentiable in `w`
-    (AAD path: twin-loss labels, DP penalty, baseline B) — both huber knees are C¹, cara is smooth.
+    Shape params (huber a/δ/a⁺/κ, cara γ) are DIMENSIONLESS in c-units. Differentiable in `w` —
+    both huber knees are C¹, cara is smooth.
 
-    `c` is `Bundle.utility_scale`, mirrored onto the runtime objective when the bundle is built —
-    or, when a step `t` is named under a locked `Utility_Scale_Mode='conditional_sim'` schedule,
-    that step's knee (`_utility_scale`, which owns the whole of that choice). What u is applied TO
-    is the CALLER's business: under `Objective.Reference_Mode='Running_Wealth'` the solver hands it
-    the day's wealth INCREMENT rather than terminal wealth, and this transform is unchanged."""
+    `c` is `Bundle.utility_scale`, or, when a step `t` is named under a locked
+    `Utility_Scale_Mode='conditional_sim'` schedule, that step's knee (`_utility_scale`). What u is
+    applied TO is the CALLER's business: under `Objective.Reference_Mode='Running_Wealth'` the
+    solver hands it the day's wealth INCREMENT, and this transform is unchanged."""
     if ((runtime.get("objective") or {}).get("object")) == "logwealth":
-        # The growth objective has no terminal transform: its reward is the per-step ratio
-        # log(W1/W0), owned by the solver's `_u_step`. Any caller reaching this wrap under
-        # LogWealth (a benchmark track, a terminal verdict) is asking for a number the
-        # objective does not define — refuse by name rather than hand back dollars. Checked
-        # BEFORE `_is_utility_objective`, whose meaning is "consumes a scale c" (LogWealth
-        # deliberately does not, so it must not fall into the identity path either).
+        # LogWealth has no terminal transform - its reward is the per-step ratio log(W1/W0), owned
+        # by the solver's `_u_step`. Checked BEFORE `_is_utility_objective`, whose meaning is
+        # "consumes a scale c": LogWealth does not, so it must not take the identity path either.
         raise ValueError(
             "Objective 'LogWealth' defines no terminal utility — the reward is the per-step "
             "growth ratio (DiffSolver._u_step). This caller must be step-sum-aware or disabled "
@@ -189,9 +173,9 @@ def _utility_local_curvature(W, runtime, t=None):
       identity (no utility objective): (1, 0) — there is no curvature to report.
 
     u'' jumps at the reference itself (the two wings carry different curvatures), so x < 0 reads
-    the loss wing and x ≥ 0 the gain wing — the same side-convention the clamps in
-    `_utility_wrap_signed` take. Written out rather than differentiated because the caller is a
-    diagnostic on a no-grad rollout: it wants the two numbers at one wealth, not a tape."""
+    the loss wing and x ≥ 0 the gain wing — the same side convention `_utility_wrap_signed`'s
+    clamps take. Written out rather than differentiated: the caller is a diagnostic on a no-grad
+    rollout and wants the two numbers at one wealth, not a tape."""
     if not _is_utility_objective(runtime):
         return 1.0, 0.0
     obj = runtime["objective"]
@@ -202,7 +186,7 @@ def _utility_local_curvature(W, runtime, t=None):
         f1 = 1.0 / (1.0 + abs(x))
         return f1 / c, math.copysign(f1, x) / c
     if shape == "asymmetricutility_huber":
-        # the loss wing steepens the slope, the gain wing flattens it; the curvature is +2a either way
+        # the loss wing steepens the slope and the gain wing flattens it; curvature is +2a either way
         a, knee, d, s = ((float(obj.get("huber_aversion", 2.5)), float(obj.get("huber_delta", 1.0)),
                           -x, 1.0) if x < 0.0 else
                          (float(obj.get("up_aversion", 0.0)), float(obj.get("up_knee", 0.15)),
@@ -218,11 +202,9 @@ def _loss_side_curvature(runtime, t=None):
     reference, which is the dose a hedging objective is actually run at.
 
     At EXACTLY R the closed form takes the gain wing by its side convention, and that wing's
-    curvature is `Up_Aversion` — zero for every book that never armed it. So a caller that asks
-    "how averse is this objective here" at the reference is told 'not at all', which is the wrong
-    answer for the loss-side knee the whole shape exists for. Both callers that report a DOSE
+    curvature is `Up_Aversion` — zero for every book that never armed it. Callers reporting a DOSE
     rather than a position (the frame-lock log, and the decision-curve dump under an increment
-    objective, where the increment IS ~0 before the day happens) want this one."""
+    objective, where the increment is ~0 before the day happens) want this one."""
     obj = runtime["objective"] or {}
     reference = float(obj.get("reference_wealth", 0.0))
     return _utility_local_curvature(reference - 1.0e-6 * _utility_scale(obj, t), runtime, t)
@@ -246,11 +228,9 @@ def _realized_vol_series(spot, window=PRICE_ZSCORE_WINDOW):
 
 def _history_key(commodity_field):
     """The `spot_price_history` key for a deal's raw `Commodity` field: the PRIMARY spot's full
-    factor name, which is the key space `_spot_price_history` validates the dict against
-    (`check_tuple_name` over the live `CommodityPrice` factors). The deal carries the bare name
-    (`'PLATINUM_CME'`, or a composed `'PLATINUM_CME.LME_CME'` whose history is its primary's by
-    the resolver layer's ultimate-primary rule); keying the lookup by that raw field can never
-    match, and every tradable then silently takes the flat first-row prefix."""
+    factor name, which is the key space `_spot_price_history` validates the dict against. The deal
+    carries the bare name (`'PLATINUM_CME'`, or a composed `'PLATINUM_CME.LME_CME'` whose history
+    is its primary's), and keying the lookup by that raw field can never match."""
     if not commodity_field:
         return None
     return utils.check_tuple_name(
@@ -265,13 +245,11 @@ def _roll_rebate(deltas, prices, runtime, vol=None):
     half-spreads. The env debits the full L1 turnover leg by leg; this is what it CREDITS back,
     `(B,)` per path.
 
-    The matching and the pricing are `hedge_runtime.turnover_charge` — the single rule the
-    solver's decision charge also reads, so the realized cost of a reposition and the cost the
-    argmax ranked it at are the same function of the same move, whatever its shape. Absent a
-    `Calendar_Spread_Bps`, the matched leg falls back to half the sum of the two OUTRIGHT kappas
-    (today's default, composing with the per-instrument / Vol_Scale spread automatically) by
-    handing that rule the outright kappa as the calendar one. `deltas`/`prices` key by hedge
-    name; `vol` is the step's scalar annualized vol."""
+    The matching and the pricing are `hedge_runtime.turnover_charge` — the same rule the solver's
+    decision charge reads, so the realized cost of a reposition and the cost the argmax ranked it
+    at are one function of one move. Absent a `Calendar_Spread_Bps` the matched leg falls back to
+    half the sum of the two OUTRIGHT kappas, by handing that rule the outright kappa as the
+    calendar one. `deltas`/`prices` key by hedge name; `vol` is the step's annualized vol."""
     hedges = list(runtime["names"]["hedges"])
     delta = torch.stack([deltas[h].to(torch.float32) for h in hedges], dim=-1)   # (B, n_hedge)
     kappa = torch.stack([per_contract_kappa(runtime, prices[h].abs(), h, vol)
@@ -283,20 +261,19 @@ def _roll_rebate(deltas, prices, runtime, vol=None):
 
 
 def _im_funding_charge(positions, prices, runtime, vol, dt):
-    """Per-hedge-leg initial-margin funding debit `{name: (B,)}` on a step's POST-trade book. The
-    desk posts vol-linked IM on GROSS per-leg |q| — conservative: it over-margins calendar spreads,
-    since a −1/+1 roll posts two legs' IM, not a netted spread margin —
+    """Per-hedge-leg initial-margin funding debit `{name: (B,)}` on a step's POST-trade book:
+
         IM_i = IM_Vol_Multiplier · (σ_t/IM_Ref_Vol) · F_i · |q_i^post| · cs_i
-    and pays `IM_i · IM_Funding_Spread_Bps · 1e-4 · dt` to FUND it over the calendar step. This is
-    the spread the desk pays ABOVE the risk-free the margin ledger already earns, so it is a pure
-    debit. σ_t is the SAME shared per-step vol that drives the Vol_Scale bid/offer spread, so
-    funding rises with vol — a documented coupling. Anchoring: with IM_Ref_Vol and
-    IM_Vol_Multiplier chosen so IM_i at the base σ_0/F_0 equals today's flat Initial_Margin.Amount
-    per contract, the level is pinned to reality (calibration sets the knobs). Only called when
-    `im_funding_spread_bps` is truthy — at which point the bundle's vol series exists so `vol` is
-    a scalar, never None (per `Bundle._resolve_step_vol` gating)."""
+
+    funded at `IM_i · IM_Funding_Spread_Bps · 1e-4 · dt` over the calendar step. That is the spread
+    the desk pays ABOVE the risk-free the margin ledger already earns, so it is a pure debit.
+
+    IM is posted on GROSS per-leg |q|, which over-margins calendar spreads: a −1/+1 roll posts two
+    legs' IM rather than a netted spread margin. σ_t is the SAME per-step vol that drives the
+    Vol_Scale bid/offer spread, so funding rises with vol. Only called when
+    `im_funding_spread_bps` is truthy, at which point `vol` is a scalar and never None."""
     acc = runtime["accounting"]
-    # mult · (σ/ref) · spread_bps · 1e-4 · dt — the per-leg scalar; ×(F_i·|q_i|·cs_i) gives funding_i.
+    # the per-leg scalar; x (F_i·|q_i|·cs_i) gives funding_i
     factor = (acc["im_vol_multiplier"] * (vol / acc["im_ref_vol"])
               * acc["im_funding_spread_bps"] * 1.0e-4 * dt)
     return {n: factor * prices[n].abs() * positions[n].abs()
@@ -305,20 +282,18 @@ def _im_funding_charge(positions, prices, runtime, vol, dt):
 
 
 def _portfolio_value(state, runtime):
-    """Absolute total wealth (cash + margin + unrealized VM + position value where applicable).
-    Use `_pnl_excess` to get wealth change since inception — that's what the asymmetric utility
-    needs so the floor at zero correctly discriminates loss from gain.
+    """Absolute total wealth: cash + margin + unrealized VM + position value where applicable.
+    `_pnl_excess` is the wealth change since inception, which is what the asymmetric utility needs.
 
-    Cash and margin balances are stored as raw dollars and compounded daily (each step multiplies
-    by cash_tv(next)/cash_tv(curr) ≈ 1 + SOFR·dt, then adds today's flows), so each dollar earns
+    Cash and margin balances are raw dollars compounded daily (each step multiplies by
+    `cash_tv(next)/cash_tv(curr)` ≈ 1 + SOFR·dt, then adds today's flows), so each dollar earns
     interest only from the day it landed.
 
     Two accounting modes. `cash_account`: position × price × contract_size plus the cash balances.
     Futures: cash is FROZEN at starting capital and margin carries every VM and trade-cost flow
-    since inception, so the unrealized term position × (current_price − last_settlement_price) × cs
-    is what closes the gap between the most recent settlement and the current observable price —
-    typically zero within an episode, but non-zero at t=0 when the book opens with an overnight
-    position whose prior settlement is yesterday's close."""
+    since inception, so the unrealized `position × (price − last_settlement) × cs` term closes the
+    gap between the most recent settlement and the current observable price — zero within an
+    episode, non-zero at t=0 when the book opens with an overnight position."""
     hedges = runtime["names"]["hedges"]
     tradables = runtime["tradables"]
     positions, prices = state["positions"], state["tradable_values"]
@@ -333,7 +308,7 @@ def _portfolio_value(state, runtime):
             v = balance.to(dtype=torch.float32)
             cash = v if cash is None else cash + v
         return total if cash is None else total + cash
-    # Futures mode: margin carries the flows, the unrealized term closes the settlement→price gap.
+    # futures mode: margin carries the flows, the unrealized term closes the settlement/price gap
     for accounts in (state["margin_accounts"], state["cash_accounts"]):
         balances = None
         for balance in accounts.values():
@@ -353,9 +328,8 @@ def _portfolio_value(state, runtime):
 
 
 def _pnl_excess(state, runtime):
-    """Wealth change since inception: portfolio_value - initial_portfolio_value. Used by the
-    asymmetric utility and reported metrics — anywhere we want net P&L rather than absolute
-    wealth so the floor at zero is meaningful. The initial baseline is snapshotted when the
+    """Wealth change since inception: `portfolio_value - initial_portfolio_value`, which is what
+    makes the utility's floor at zero meaningful. The initial baseline is snapshotted when the
     stepper builds its opening state and threaded through every transition."""
     pv = _portfolio_value(state, runtime)
     initial = state.get("initial_portfolio_value")
@@ -368,11 +342,9 @@ def _tracking_error_value(state, runtime):
     """The hedge-quality read — `pnl_excess + liability_mtm + cumulative_liability_value`, which
     an optimal hedge holds at ≈0 at EVERY step.
 
-    All three channels are required because `liability_mtm` alone drops by the cashflow amount on
-    a payment date (the cashflow moves to realized cash, summed into `cumulative_liability_value`),
-    which would inject a ±cf shock unrelated to any action. The sum across the two liability
-    channels is continuous across that payment boundary and matches the terminal invariant
-    (`pnl_excess + cumulative_liability_value`, once everything has been paid)."""
+    All three channels are required: `liability_mtm` alone drops by the cashflow amount on a
+    payment date, injecting a ±cf shock unrelated to any action. The sum across the two liability
+    channels is continuous across that boundary and matches the terminal invariant."""
     pnl_excess = _pnl_excess(state, runtime).to(dtype=torch.float32)
     liability_mtm = state["liability_mtm_value"].to(dtype=torch.float32, device=pnl_excess.device)
     cumulative = state["cumulative_liability_value"].to(dtype=torch.float32, device=pnl_excess.device)
@@ -399,13 +371,12 @@ class Bundle:
     grid, so full-grid indexing is `initial_time_index + t`; the `*_sim` views strip that prefix
     for solver code that indexes by simulation-grid `t`.
 
-    The frame — `utility_scale` (the symlog/Huber/CARA scale c, with its per-decision-step
+    The frame — `utility_scale` (the objective's scale c, with its per-decision-step
     `utility_scale_schedule` under `Utility_Scale_Mode='conditional_sim'`, both mirrored onto the
     runtime objective) and `step_annual_vol` (the per-step vol driving the state-dependent spread
     and IM funding) — is resolved here and never recomputed: a per-rollout c silently rescales
     every reward. `inner_mc` / `inner_mc_grad` are attached by `HedgeMonteCarlo.execute` in
-    solve_hedge mode; they fork the simulator at a decision step and price the {t, t+1}
-    window."""
+    solve_hedge mode; they fork the simulator at a decision step and price the {t, t+1} window."""
 
     documentation = ('Bundle', [
         'Every time-indexed tensor the solver and the environment read, built ONCE per batch by',
@@ -465,8 +436,7 @@ class Bundle:
         self.total_leg_volume = 0.0
         self.last_settlement_index = None
         self.last_live_mtm_index = 0
-        # Inner-MC forks (attached by HedgeMonteCarlo.execute for Execution_Mode='solve_hedge').
-        # Single-pass: peak is a function of Batch_Size x Inner_Sub_Batch, both JSON.
+        # inner-MC forks, attached by HedgeMonteCarlo.execute for Execution_Mode='solve_hedge'
         self.inner_mc = None
         self.inner_mc_grad = None
 
@@ -503,10 +473,9 @@ class Bundle:
     def _resolve_tradables(self, tradables, time_grid_days, steps, runtime):
         """Stage 1 — the time axis and the per-instrument mark series, both carrying the realized
         history prefix. `History_Lookback_Business_Days` rows of realized spot are prepended so a
-        rolling-window feature at sim-day-0 already has its lookback: a tradable whose `Commodity`
+        rolling-window feature at sim-day-0 already has its lookback; a tradable whose `Commodity`
         has a history takes that series, every other series broadcasts its first row. Also derives
-        the CPU day mirror, the scenario dates, the sim origin `initial_time_index` and the
-        business-day decision indices."""
+        the CPU day mirror, the scenario dates, `initial_time_index` and the decision indices."""
         grid = _align_time_axis(time_grid_days, steps)
         tradables = {n: _align_time_axis(t, steps) for n, t in tradables.items()}
         history = runtime['portfolio_state']['spot_price_history']
@@ -543,8 +512,8 @@ class Bundle:
         days = self.time_grid_days_cpu
         self.scenario_dates = pd.DatetimeIndex(
             [base_ts + pd.Timedelta(days=int(d)) for d in days])
-        # Index where the history prefix ends and the simulation grid begins (history rows carry
-        # negative day offsets). Solvers strip this offset to index time tensors by sim-grid t.
+        # where the history prefix ends and the simulation grid begins (history rows carry negative
+        # day offsets); solvers strip this offset to index time tensors by sim-grid t
         self.initial_time_index = next(
             (i for i, d in enumerate(days) if int(d) >= 0), len(days))
         self.business_indices = tuple(
@@ -562,8 +531,7 @@ class Bundle:
         """Stage 2 — the marked liability, the realized cashflow ledger, and the two schedule
         scalars the utility scale needs. `last_live_mtm_index` is the structural pre-settlement
         terminal: the grid appends one clean-exit row where the liability settles to zero, so the
-        last LIVE mtm row is `steps - 2` — the single source for the DP depth (DiffSolver.T_dec)
-        and the realized-path L_T read (no magnitude heuristic)."""
+        last LIVE mtm row is `steps - 2` — the single source for the DP depth and the L_T read."""
         prefixed = bool(self.spot_price_history)          # the stage-1 prefix gate
         if mtm is not None:
             mtm = _align_time_axis(mtm, steps)
@@ -598,9 +566,9 @@ class Bundle:
             self.factors = {n: torch.cat([self._history_prefix(t), t], dim=0)
                             for n, t in self.factors.items()}
         privileged = assemble_privileged_factors(privileged_factor_blocks, stoch_factors)
-        # NOTE: the privileged prefix is gated on the lookback ALONE (the other series need a
-        # realized history to prefix onto); with a lookback but no Spot_Price_History these rows
-        # are prepended while nothing else is, which offsets the surface by `history_rows`.
+        # the privileged prefix is gated on the lookback ALONE, so with a lookback but no
+        # Spot_Price_History these rows are prepended while nothing else is, which offsets the
+        # surface by `history_rows`
         if self.history_rows > 0 and privileged:
             privileged = {n: torch.cat([self._history_prefix(t), t], dim=0)
                           for n, t in privileged.items()}
@@ -629,9 +597,8 @@ class Bundle:
         `runtime['objective']['utility_scale'] == bundle.utility_scale` for any rollout that
         computes rewards against this bundle.
 
-        The per-step SCHEDULE travels with it — one frame, mirrored in one place — so a caller
-        that keeps a checkpoint's scale (`BundleStepper(mirror_scale=False)`) keeps its knees
-        too, and one that re-mirrors gets both from this bundle."""
+        The per-step SCHEDULE travels with it, so a caller that keeps a checkpoint's scale
+        (`BundleStepper(mirror_scale=False)`) keeps its knees too."""
         if runtime['objective'] is not None:
             runtime['objective']['utility_scale'] = float(self.utility_scale)
             runtime['objective']['utility_scale_schedule'] = self.utility_scale_schedule
@@ -649,9 +616,9 @@ class Bundle:
         return torch.cat([hist_t, sim_full[int(hist_t.shape[0]):]], dim=0)
 
     def _spot_realized_vol(self, window=PRICE_ZSCORE_WINDOW, min_periods=5):
-        """Annualized rolling realized log-vol of each underlying spot, `{commodity: (T, B)}`.
-        In MR regimes with σ scaled to keep the stationary std fixed, realized vol increases with
-        kappa — making this a regime signal as well as the utility-scale σ source."""
+        """Annualized rolling realized log-vol of each underlying spot, `{commodity: (T, B)}`. In
+        mean-reverting regimes with σ scaled to hold the stationary std fixed, realized vol rises
+        with kappa, which makes this a regime signal as well as the utility-scale σ source."""
         out = {}
         for commodity in self.spot_price_history:
             S = self._spot_timeline(commodity)
@@ -670,12 +637,11 @@ class Bundle:
         return out
 
     def _calibrated_utility_inputs(self, runtime, stoch_factors):
-        """Utility-scale (commodity, spot, σ) sourced from CALIBRATED market data — the
-        Spot_Price_History-absent fallback. Spot is the sim-day-0 CommodityPrice level (factor
-        row 0 = the price-factor Spot); σ is the process's calibrated annualized vol. With several
-        CommodityPrice factors (cross-market strips) the sufficient-statistic-owning primary is
-        preferred — the martingale the tradeable futures reference. None when no referenced
-        underlying reports a calibrated vol."""
+        """Utility-scale `(commodity, spot, σ)` sourced from CALIBRATED market data — the
+        `Spot_Price_History`-absent fallback. Spot is the sim-day-0 CommodityPrice level; σ is the
+        process's calibrated annualized vol. With several CommodityPrice factors the
+        sufficient-statistic-owning primary is preferred. None when none reports a calibrated
+        vol."""
         referenced = set(runtime['referenced_commodities'])
         candidates = []
         for key, proc in (stoch_factors or {}).items():
@@ -685,8 +651,8 @@ class Bundle:
             sigma = proc.calibrated_annual_vol()
             if sigma is None or sigma <= 0.0:
                 continue
-            # Spots exposing a revealed sufficient statistic (HMM belief, GARCH log-variance) sort
-            # first — the martingale primary of a cross-market strip.
+            # spots exposing a revealed sufficient statistic (HMM belief, GARCH log-variance) sort
+            # first: the martingale primary of a cross-market strip
             candidates.append((not bool(proc.privileged_layout(proc.param)), name, float(sigma)))
         if not candidates:
             return None
@@ -704,16 +670,14 @@ class Bundle:
         scalar (`_conditional_sim_schedule`); `Objective.Utility_Scale_Explicit` overrides the
         formula with a literal dollar value and is REFUSED beside the schedule mode.
 
-        Under a utility objective every degenerate path RAISES: a floor-c symlog silently breaks
-        tail compression (log1p($1M/$1k) ≈ 7 ≈ log1p($100M/$1k) ≈ 11.5 — a 100× dollar gap
-        becomes a 1.6× utility gap), which defeats the whole point. The legacy identity objective
-        doesn't consume c, so it gets the harmless $1k floor.
+        Under a utility objective every degenerate path RAISES: a floor-c symlog breaks tail
+        compression (log1p($1M/$1k) ≈ 7 against log1p($100M/$1k) ≈ 11.5 — a 100x dollar gap
+        becomes a 1.6x utility gap). The identity objective does not consume c and gets the $1k
+        floor.
 
         The history path reads spot and realized σ at the history/sim boundary H as a BATCH MEDIAN
-        rather than slot [H, 0]. The rolling-vol window at H spans broadcast history rows, so all
-        batch entries are equal in well-behaved cases — but `full[H]` is the FIRST sim step, and a
-        process emitting a stochastic initial draw would otherwise make c silently path-dependent
-        off path 0. Cost is negligible (one (B,) reduce)."""
+        rather than slot [H, 0]: `full[H]` is the first sim step, and a process emitting a
+        stochastic initial draw would otherwise make c path-dependent off path 0."""
         objective = runtime['objective'] or {}
         needs_scale = _is_utility_objective(runtime)   # symlog / huber / cara all consume c
 
@@ -744,21 +708,18 @@ class Bundle:
             self.utility_scale_schedule = self._conditional_sim_schedule(objective)
             if self.utility_scale_schedule is not None:
                 return float(self.utility_scale_schedule[-1])
-            # One outer path carries no cross-section to measure (see `_conditional_sim_schedule`).
-            # The formula below stands in for the placeholder frame a frozen roll replaces from
-            # its checkpoint, and DiffSolver refuses to TRAIN without a schedule.
+            # one outer path carries no cross-section to measure, so the formula below stands in
+            # as the placeholder frame a frozen roll replaces from its checkpoint
         if explicit is not None:
-            # An EXPLICIT override is honored exactly, including below the $1k production floor:
-            # silently clamping would make a cell-by-cell oracle comparison fail for a reason
-            # unrelated to the method. The floor only guards the formula path.
+            # an EXPLICIT override is honored exactly, including below the $1k production floor,
+            # which only guards the formula path
             c_explicit = float(explicit)
             if c_explicit < 1.0e3:
                 logging.info(
                     'utility_scale Explicit override: c=%.4g (below the $1k '
                     'production floor — test mode; trust mode active)', c_explicit)
             return c_explicit
-        # τ measures the SIM horizon, so anchor it at the sim-grid origin (== the history
-        # lookback H when Spot_Price_History is present, 0 when it is absent).
+        # tau measures the SIM horizon, so anchor it at the sim-grid origin
         H = self.initial_time_index
         if self.last_settlement_index is None:
             return _degenerate("last_settlement_index missing from the bundle")
@@ -770,15 +731,15 @@ class Bundle:
         if not self.total_leg_volume:
             return _degenerate("total_leg_volume is zero")
         if self.spot_price_history:
-            # History path (bit-anchored): spot + realized σ read at the history/sim boundary H.
+            # history path: spot and realized sigma read at the history/sim boundary H
             commodity = next(iter(self.spot_price_history))
             full = self._spot_timeline(commodity)
             if full is None or H >= int(full.shape[0]):
                 return _degenerate(
                     f"spot timeline for {commodity!r} has length "
                     f"{0 if full is None else int(full.shape[0])} ≤ history_lookback H={H}")
-            # Batch-median at H, never slot [H, 0]: keeps c path-independent under a stochastic
-            # initial draw.
+            # batch-median at H, never slot [H, 0]: keeps c path-independent under a stochastic
+            # initial draw
             initial_spot = float(full[H].median().item())
             rv = self.spot_realized_vol.get(commodity)
             sigma = float(rv[H].median().item()) if rv is not None and H < int(rv.shape[0]) else 0.0
@@ -797,17 +758,13 @@ class Bundle:
         return c
 
     def _log_scale_dose(self, runtime):
-        """Say what a `conditional_sim` schedule DOES to the objective, not only what it measured.
+        """Log what a `conditional_sim` schedule DOES to the objective, not only what it measured.
 
-        The schedule sets the LEVEL of c as well as its shape — there is no `Utility_Scale_Explicit`
-        under this mode, and that is deliberate: the measured dispersion IS the design scale, and a
-        literal that disagreed with it was the diagnosed bug. But the utility's shape params are
-        DIMENSIONLESS in units of c, so re-levelling c re-doses the risk aversion by the same
-        factor: a book that armed the mode and kept its old `Huber_Aversion` has quietly changed
-        how averse the DP is. That is the recorded 'utility scale mis-sized ⇒ aversion inert'
-        failure, and the only defence is that the new dose is visible in the run log where it can
-        be acted on — so this reports the absolute risk aversion per dollar the shape actually
-        applies at the reference, under the first knee and under the terminal one."""
+        The schedule sets the LEVEL of c as well as its shape, and the utility's shape params are
+        DIMENSIONLESS in units of c, so arming the mode re-doses the risk aversion by the same
+        factor. This reports the absolute risk aversion per dollar the shape applies at the
+        reference, under the first knee and the terminal one, so a stale `Huber_Aversion` is
+        visible in the run log."""
         sched = self.utility_scale_schedule
         _, ara_0 = _loss_side_curvature(runtime, 0)
         _, ara_T = _loss_side_curvature(runtime, len(sched) - 1)
@@ -827,37 +784,29 @@ class Bundle:
         world itself carries that day, so the utility's knee sits where the mass is on EVERY
         decision rather than only at the terminal.
 
-        WHICH OBJECT, and why. `liability_sim[t]` is the wealth the DP itself carries under a flat
-        book — `DiffSolver._build_bank` opens at `W = L[0]` and telescopes
-        `W + Σ q·cs·dF + (L[t+1] − L[t])`, and the verdict's no-hedge leg IS this path — so its
-        dispersion at t is the money the day's decision is about, in the units the reward is
-        measured in. `BundleStepper._tracking_error_value` is the same read one layer down, but it
-        is a POSITION-dependent state read defined only on a rollout: it cannot be frame-locked
-        from a bundle, and a scale that depended on the policy would move with it.
+        WHICH OBJECT. `liability_sim[t]` is the wealth the DP itself carries under a flat book —
+        `DiffSolver._build_bank` opens at `W = L[0]` and telescopes `W + Σ q·cs·dF + (L[t+1] −
+        L[t])` — so its dispersion at t is the money the day's decision is about, in the reward's
+        own units. `BundleStepper._tracking_error_value` is the same read one layer down, but it is
+        POSITION-dependent and defined only on a rollout, so it cannot be frame-locked.
 
-        WHY A FLOOR, and what it is a fraction OF. Every outer path shares `L_0`, so the dispersion
-        of the first steps is ~0 and an unfloored `x = (W − R)/c_0` is unbounded. The floor is a
-        fraction of the TERMINAL entry — the dispersion the deal ENDS on, which for an average-rate
-        swap is the post-fixing residual and can sit well below the mid-horizon peak (the gate's own
-        fixture tapers). So it is a materially tighter floor than a fraction of the maximum would
-        be, and deliberately: the residual is what the hedge could not remove, and no knee should
-        price a day as if less were at stake than that.
+        THE FLOOR is a fraction of the TERMINAL entry. Every outer path shares `L_0`, so the
+        dispersion of the first steps is ~0 and an unfloored `x = (W − R)/c_0` is unbounded. The
+        terminal entry is the dispersion the deal ENDS on — for an average-rate swap the
+        post-fixing residual, which can sit well below the mid-horizon peak — so this is a
+        materially tighter floor than a fraction of the maximum.
 
-        THE LEVEL is the schedule's too, not only the shape — there is no `Utility_Scale_Explicit`
-        under this mode. The shape params are dimensionless in c, so arming it RE-DOSES the risk
-        aversion; `_log_scale_dose` reports the resulting aversion per dollar at the frame lock.
+        THE LEVEL is the schedule's too, not only the shape: there is no `Utility_Scale_Explicit`
+        under this mode, and `_log_scale_dose` reports the resulting aversion per dollar.
 
         ONE ENTRY per step a continuation is ever read at: decisions 0..T_dec−1 plus the terminal
-        mark T_dec (`last_live_mtm_index`), where `DiffSolver._continuation` evaluates the anchor
-        with no residual. `None` when the batch carries a single outer path: one path has no
-        cross-section, and the only 1-path world is the frozen ROLL, which evaluates in its
-        checkpoint's frame regardless.
+        mark T_dec (`last_live_mtm_index`). `None` when the batch carries a single outer path,
+        which has no cross-section; the only 1-path world is the frozen roll, which evaluates in
+        its checkpoint's frame regardless.
 
-        The 'symlog c locked, never adaptive' rule is about EVALUATION worlds — a c each rollout
-        re-derives silently rescales every reward. This schedule is measured ONCE at the frame
-        lock, frozen by the solver, stamped into the checkpoint and refused on mismatch: it is
-        deterministic in the state and identical across every world the policy is rolled in, so
-        the lock holds."""
+        Measured ONCE at the frame lock, frozen by the solver, stamped into the checkpoint and
+        refused on mismatch: it is deterministic in the state and identical across every world the
+        policy is rolled in."""
         if self.liability_mtm is None:
             raise ValueError(
                 "Objective.Utility_Scale_Mode='conditional_sim' needs a marked liability: the "
@@ -866,12 +815,9 @@ class Bundle:
         L = self.liability_sim[:self.last_live_mtm_index + 1].to(dtype=torch.float32)
         if int(L.shape[-1]) < 2:
             return None
-        # Measured FROM THE START: the knee is the dispersion the WORLD generates by day t,
-        # not the dispersion the experimenter injected at t0 — under Randomize_Initial_State
-        # (a bank-coverage device) std(L[t]) is dominated by the start scatter, the schedule
-        # comes out ~flat at the terminal scale, and a growth objective read against it is
-        # linear everywhere (risk-neutral: the trained roll rode the fork's conditional mean
-        # to max-long through a crash). With identical starts the two spellings are equal.
+        # measured FROM THE START, so the knee is the dispersion the WORLD generates by day t
+        # rather than the start scatter Randomize_Initial_State injects at t0 - which would
+        # otherwise flatten the schedule onto the terminal scale. Identical starts make them equal.
         c = (L - L[0]).std(dim=-1)
         terminal = float(c[-1])
         if not terminal > 0.0:
@@ -886,12 +832,11 @@ class Bundle:
         """Per-step scalar annualized-vol series `(T,)` driving BOTH the state-dependent bid/offer
         half-spread (`per_contract_kappa` Vol_Scale) and the vol-linked IM funding charge. Built
         ONLY when a Vol_Scale spec OR IM funding is active — None otherwise, so `per_contract_kappa`
-        ignores vol and no funding accrues. World-agnostic source: PREFER a process-revealed
-        conditional vol (GARCH publishes log h_t → σ_t = √(exp(log h_t)/dt_c)); else the trailing
-        realized-vol proxy off the primary spot factor path. Batch-reduced to one scalar per step —
-        the cost model charges a single spread per step, matching the solver's mean-mark kappa. The
-        chosen source is logged EXACTLY once per build: a silent proxy fallback under a GARCH
-        retrain would invalidate the whole vol coupling, so it must be observable + test-pinned."""
+        ignores vol and no funding accrues. The source PREFERS a process-revealed conditional vol
+        (GARCH publishes log h_t → σ_t = √(exp(log h_t)/dt_c)), falling back to the trailing
+        realized-vol proxy off the primary spot factor path. Batch-reduced to one scalar per step,
+        matching the solver's mean-mark kappa. The chosen source is logged once per build: a silent
+        proxy fallback under a GARCH retrain would invalidate the whole vol coupling."""
         acc = runtime['accounting']
         spec = acc['bid_offer_spread_spec']
         vol_scale_active = bool(spec and spec['vol_scale'])
@@ -989,9 +934,9 @@ class BundleStepper:
     inspects; the caller chooses the next action. Supports `copy.deepcopy(stepper)` to fork into
     counterfactual branches, and records its own trajectory for `write_diagnostic_csvs`.
 
-    Vectorized over the bundle's full batch (B paths advance in lockstep). Action values can be
-    scalars (broadcast) or per-path `(B,)` tensors. `runtime` is a PARAMETER of the replay, not
-    the bundle's: passing a variant (e.g. one accounting switch flipped) is how the cost
+    Vectorized over the bundle's full batch (B paths advance in lockstep). Action values may be
+    scalars (broadcast) or per-path `(B,)` tensors. `runtime` is a PARAMETER of the replay rather
+    than the bundle's: passing a variant with one accounting switch flipped is how the cost
     decomposition isolates each friction on an unchanged world. `mirror_scale=False` keeps the
     runtime's utility scale as the caller set it (see `__init__`)."""
 
@@ -1028,13 +973,11 @@ class BundleStepper:
         """Bind the environment to `bundle` + `runtime` and open the state at sim-day-0.
 
         The replay's rewards are marked against THIS bundle, so `mirror_scale=True` (the default)
-        re-mirrors its scale onto the (possibly variant) runtime. TRAP: under a frozen-policy run
-        (DiffV2_Load_Value_Fn) the solver has already restored the CHECKPOINT's scale — the value
-        function's own frame — and re-mirroring overwrites it with the eval world's, so the policy
-        rollout decides under a different `c` than the solver's own verdict did. `mirror_scale`
-        =False leaves the runtime's scale alone, which is what a rollout of a FROZEN value function
-        wants (hedge_solver passes it in streaming mode). The default stays True because every
-        walk-forward anchor to date was measured through the re-mirror."""
+        re-mirrors its scale onto the possibly-variant runtime. Under a frozen-policy run
+        (`DiffV2_Load_Value_Fn`) the solver has already restored the CHECKPOINT's scale — the value
+        function's own frame — and re-mirroring would overwrite it with the eval world's, leaving
+        the policy rollout deciding under a different `c` than the verdict did. `mirror_scale=False`
+        leaves the runtime's scale alone, which is what a frozen rollout wants."""
         self.bundle = bundle
         self.runtime = runtime
         self._accounting = runtime['accounting']
@@ -1047,12 +990,11 @@ class BundleStepper:
         self._batch_size = bundle.batch_size
         self._last_idx = bundle.last_index
         self._decision_set = set(int(i) for i in bundle.business_indices)
-        # Default re-mirrors THIS bundle's scale; False keeps a checkpoint's frame (see docstring).
+        # the default re-mirrors THIS bundle's scale; False keeps a checkpoint's frame
         if mirror_scale:
             bundle.mirror_utility_scale(runtime)
         self._state = self._initial_state()
-        # Per-decision recording for post-hoc diagnostic CSV writing. Cheap (a few (B,) tensors
-        # per decision step); always-on so write_diagnostic_csvs has data to use.
+        # per-decision recording, always on so write_diagnostic_csvs has data to use
         self._times = []
         self._position_history = {n: [] for n in self._instrument_order}
         self._trade_history = {n: [] for n in self._instrument_order}
@@ -1091,7 +1033,7 @@ class BundleStepper:
         pnl_excess + liability_value."""
         was_decision_step = self.is_decision_step
         if was_decision_step:
-            # Record pre-step position + price for the diagnostic CSV.
+            # record the pre-step position and price for the diagnostic CSV
             self._times.append(self.time_index)
             for n in self._instrument_order:
                 self._position_history[n].append(self._state['positions'][n].detach().cpu().clone())
@@ -1101,14 +1043,12 @@ class BundleStepper:
         next_state = self._step_state(self._state, structured)
         transition = self._payoff(next_state)
         if was_decision_step:
-            # Realized trade = post-step position − pre-step position (handles env clips/forces).
+            # realized trade = post-step position - pre-step position, so env clips and forces land
             for n in self._instrument_order:
                 self._trade_history[n].append(
                     next_state['positions'][n].detach().cpu() - self._position_history[n][-1])
         if self._batch_size == 1 and logging.getLogger().isEnabledFor(logging.DEBUG):
-            # Reconciliation organ (B=1 rolls, EVERY step so daily identities close exactly):
-            # decision-time marks, post-trade book, realized trade, the engine's own VM and
-            # spread cost for the day, post-step margin, funding discounts, cumulative P&L legs.
+            # reconciliation organ for B=1 rolls, every step so the daily identities close exactly
             cur = self.time_index
             deltas = self._trade_deltas(structured)
             vol_t = self.bundle.vol_at(cur)
@@ -1219,14 +1159,13 @@ class BundleStepper:
 
     def _initial_state(self):
         """The opening state at sim-day-0 (bundle row `initial_time_index`) — the history prefix
-        feeds features only, never the simulator. JSON-supplied positions are "today's overnight
-        book", not "H days ago".
+        feeds features only, never the simulator, so JSON-supplied positions are today's overnight
+        book rather than H days ago.
 
-        `settlement_prices` are re-seated to the simulator's sim-day-0 price once the inception
-        baseline is snapshotted: the seed (yesterday's close) vs sim-day-0 forward gap has just
-        been absorbed into `initial_portfolio_value` via the unrealized-VM term, so subsequent
-        steps' VM is clean step-over-step P&L. Without the re-seat the first trade carries a
-        seed-gap noise of (price_H − seed) × delta × cs."""
+        `settlement_prices` are re-seated to the sim-day-0 price once the inception baseline is
+        snapshotted: the seed-to-sim-day-0 gap has just been absorbed into
+        `initial_portfolio_value` through the unrealized-VM term, so subsequent VM is clean
+        step-over-step P&L rather than carrying `(price_H − seed) × delta × cs`."""
         portfolio_state = self.runtime['portfolio_state']
         initial_time_index = self.bundle.initial_time_index
         fallback = self._values_at(initial_time_index)
@@ -1249,10 +1188,9 @@ class BundleStepper:
                 for name in self._hedges if name in fallback},
         }
         state = self._refresh(state, initial_time_index)
-        # Snapshot the inception baseline (cash + margin + initial unrealized VM if positions
-        # started non-zero against a stale settlement) so `_pnl_excess` returns the change.
+        # snapshot the inception baseline so `_pnl_excess` returns the change
         state['initial_portfolio_value'] = _portfolio_value(state, self.runtime).detach().clone()
-        # Re-seat settlement to the sim-day-0 price — the seed gap now lives in the baseline.
+        # re-seat settlement to the sim-day-0 price; the seed gap now lives in the baseline
         for name, current_price in state['tradable_values'].items():
             if name in state['settlement_prices']:
                 state['settlement_prices'][name] = current_price.detach().clone()
@@ -1377,15 +1315,15 @@ class BundleStepper:
             positions[n] = positions[n] + delta
 
     def _cash_account_step(self, state, action):
-        # `done` is purely a function of time_index vs the last bundle index; checking the python
-        # int avoids a CUDA-CPU sync that would fire on every step.
+        # `done` is a function of time_index against the last bundle index; checking the python int
+        # avoids a CUDA-CPU sync on every step
         current = int(state['time_index'])
         last = self._last_idx
         if current >= last:
             return state
         next_idx = min(current + 1, last)
         acc = self._accounting
-        # Shallow dict copy: tensors are replaced in-slot, never mutated in place.
+        # shallow dict copy: tensors are replaced in-slot, never mutated in place
         next_positions = dict(state['positions'])
         next_cash = self._compound(state['cash_accounts'], self._growth_factors(current, next_idx))
         deltas = self._trade_deltas(action)
@@ -1397,8 +1335,7 @@ class BundleStepper:
             cs = float(self.runtime['tradables'][n]['contract_size'])
             account = self._account_of[n]
             if account is not None:
-                # Notional debit is `delta × price × contract_size` — each contract is
-                # `contract_size` units of the underlying.
+                # each contract is `contract_size` units of the underlying
                 next_cash[account] = next_cash[account] - (delta * price * cs + cost)
             next_positions[n] = (next_positions[n] + delta).round()
         if acc['roll_as_calendar_spread']:
@@ -1406,17 +1343,16 @@ class BundleStepper:
                                   self.runtime, vol_t)
             self._credit(next_cash, self._account_of[self._hedges[0]], rebate)
         if acc['im_funding_spread_bps']:
-            # Vol-linked IM funding on the post-trade book over the calendar step — a pure debit
-            # into the same realized cash P&L path as transaction cost (per-leg, routed by
-            # currency), so it flows through _portfolio_value → _pnl_excess → the utility.
+            # a pure debit into the same realized cash P&L path as transaction cost, per leg and
+            # routed by currency, so it flows through _portfolio_value -> _pnl_excess -> utility
             dt = self.bundle.calendar_dt(current, next_idx)
             for n, funding in _im_funding_charge(next_positions, state['tradable_values'],
                                                  self.runtime, vol_t, dt).items():
                 self._credit(next_cash, self._account_of[n], -funding)
         if acc['force_flat_at_end'] and current >= last - 1:
             self._flatten_cash(next_positions, next_cash, self._values_at(last), vol_t)
-        # Cash mode tracks no daily VM (realized_pnl / variation_margin stay zero), but
-        # cumulative_pnl still resets at flat for the same per-trade-lifetime semantics.
+        # cash mode tracks no daily VM, but cumulative_pnl still resets at flat for the same
+        # per-trade-lifetime semantics
         zero_vm = self._zeros_by_name(self._hedges)
         next_state = {
             'done': torch.full_like(state['done'], next_idx >= last, dtype=torch.bool),
@@ -1439,9 +1375,9 @@ class BundleStepper:
         and only margin tracks variation margin and trade cost.
 
         The trade is applied BEFORE VM is computed so the new delta participates in the
-        price(t)→price(t+1) accrual: the agent transacted at the decision-time price
-        (= settlement_old in steady state) and the whole post-trade position is then marked at
-        price(t+1). Positions round to integer contracts so float drift can't accumulate."""
+        price(t) → price(t+1) accrual: the agent transacted at the decision-time price and the
+        whole post-trade position is then marked at price(t+1). Positions round to integer
+        contracts so float drift cannot accumulate."""
         current = int(state['time_index'])
         last = self._last_idx
         if current >= last:
@@ -1457,7 +1393,7 @@ class BundleStepper:
         variation_margin = self._zeros_by_name(self._hedges)
         deltas = self._trade_deltas(action)
         next_values = self._values_at(settlement_idx)
-        # Trade first, then mark: the new delta accrues price(t)→price(t+1) (see docstring).
+        # trade first, then mark: the new delta accrues price(t) -> price(t+1)
         for n in self._hedges:
             cs = float(self.runtime['tradables'][n]['contract_size'])
             next_positions[n] = (next_positions[n] + deltas[n]).round()
@@ -1468,8 +1404,8 @@ class BundleStepper:
             self._credit(next_margin, self._account_of[n], vm)
         vol_t = self.bundle.vol_at(current)
         for n in self._instrument_order:
-            # Trade cost references the price the agent actually saw and acted on (decision-time):
-            # using next_values would let unrelated overnight mid moves distort the spread cost.
+            # trade cost references the DECISION-TIME price the agent acted on; next_values would
+            # let unrelated overnight mid moves distort the spread cost
             self._credit(next_margin, self._account_of[n],
                          -self._cost(deltas[n], state['tradable_values'][n], n, vol_t))
         if acc['roll_as_calendar_spread']:
@@ -1544,9 +1480,8 @@ class BundleStepper:
         realised = mtm_running.gather(0, last_nz.unsqueeze(0)).expand(T, B)
         mtm = torch.where(fill_mask, realised, mtm_running)
 
-        # Per-step vol `(T, 1)` for the vol-scaled kappa — index-aligned with the full-grid marks.
-        # None when no vol series was built; inert on the scalar-spread fast-path, so threading it
-        # reconciles the reconstructed cost with the realized vol-scaled debit when Vol_Scale is on.
+        # per-step vol `(T, 1)` for the vol-scaled kappa, index-aligned with the full-grid marks;
+        # None when no vol series was built, and inert on the scalar-spread fast path
         vol_series = bundle.step_annual_vol
         diag_vol = None if vol_series is None else vol_series.detach().cpu().float().unsqueeze(-1)
         times = [int(t) for t in rollout['times']]
@@ -1575,8 +1510,8 @@ class BundleStepper:
         portfolio_pos_mtm = sum(p['position_mtm'] for p in per_instr.values())
         portfolio_cum_cash = sum(p['cum_cash'] for p in per_instr.values())
         portfolio_cum_cost = sum(p['cum_cost'] for p in per_instr.values())
-        # Roll rebate threaded with the SAME per-step vol as the cost above, so the matched-roll
-        # credit reconstructs the realized vol-scaled rebate.
+        # threaded with the SAME per-step vol as the cost above, so the matched-roll credit
+        # reconstructs the realized vol-scaled rebate
         if runtime['accounting']['roll_as_calendar_spread']:
             rebate = torch.stack([
                 _roll_rebate({h: per_instr[h]['trd'][t] for h in self._hedges},
@@ -1639,11 +1574,10 @@ class BundleStepper:
 class HedgeRuntimeExecutionResult:
     """High-level result for HedgeMonteCarlo's hedge-bundle handoff.
 
-    Carries the `Bundle` + normalized runtime + evaluation summary + the solver artifact
-    (`policy_artifact` = DiffSolver's saved value-function nets, JSON-serializable) so
-    downstream consumers (post-hoc analysis, streaming-service handlers) can do their own
-    work without touching framework internals. `create_stepper()` spawns a `BundleStepper`
-    to drive the simulator day-by-day with any explicit policy (e.g. the textbook hedge).
+    Carries the `Bundle`, the normalized runtime, the evaluation summary and the solver artifact
+    (`policy_artifact`, DiffSolver's saved value-function nets in JSON-serializable form), so
+    downstream consumers work without touching framework internals. `create_stepper()` spawns a
+    `BundleStepper` to drive the simulator day by day under any explicit policy.
     """
     def __init__(self, *, bundle=None, runtime=None, evaluation_summary=None,
                  optimizer_diagnostics=None, policy_artifact=None, metadata=None):
@@ -1655,10 +1589,8 @@ class HedgeRuntimeExecutionResult:
         self.metadata = metadata or {}
 
     def create_stepper(self) -> 'BundleStepper':
-        """Spawn an interactive `BundleStepper` for the bundle. Lets client code drive
-        the simulator one step at a time with arbitrary actions — useful for textbook
-        hedges, custom policies, debugging, counterfactual what-ifs (deep-copy the
-        stepper to fork branches)."""
+        """An interactive `BundleStepper` for the bundle, so client code drives the simulator one
+        step at a time under arbitrary actions. Deep-copy the stepper to fork branches."""
         return BundleStepper(self.bundle, self.runtime)
 
 
@@ -1666,8 +1598,7 @@ def run_hedge_execution(bundle, runtime):
     """Roll the env forward with zero trades and report the terminal P&L summary — the unhedged
     baseline for `Execution_Mode='simulate_only'`. Callers drive an explicit policy on top via
     `HedgeRuntimeExecutionResult.create_stepper()`. `solve_hedge` does not come through here:
-    `HedgeMonteCarlo.execute` drives `StreamingSolve` a batch at a time, and the mode itself is
-    validated at the JSON boundary in `construct_hedge_runtime`."""
+    `HedgeMonteCarlo.execute` drives `StreamingSolve` a batch at a time."""
     started = time.perf_counter()
     stepper = BundleStepper(bundle, runtime)
     while not stepper.done:

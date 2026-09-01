@@ -11,33 +11,23 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""The deployment signing where it stands - the one thing in the log a replica cannot forge.
+"""Checkpoint events: the deployment's signature over its own log position.
 
-A chain proves internal consistency and nothing else: hand someone a log and they can re-derive
-every link in it, including a log rewritten from genesis. A CHECKPOINT is the deployment's Ed25519
-signature over the pair `(lsn, event_hash)`, and the verifying key is published at genesis as a
-firm-class policy blob, so a replica asserts AUTHENTICITY - this really is the history that hub
-wrote, up to here - from checkpoint one, holding no secret at all.
-
-The append is ordinary on purpose. A checkpoint is a fact like any other: validated by the closed
-vocabulary, tagged, sealed, chained, and covered by the checkpoints that come after it. Nothing in
-the writer knows this event is special, which is what keeps the mechanism honest - the signature is
-the point, and it is data inside a body rather than a privilege in the log.
-
-The signed payload is deliberately thin: `{"event_hash", "lsn"}` canonicalised, and nothing else.
-An external anchor hook exports exactly those two fields; anything richer would be a second
-statement about the log that could disagree with the log.
+A chain proves only internal consistency; a checkpoint proves authenticity. It carries the
+deployment's Ed25519 signature over the canonicalised pair `{"event_hash", "lsn"}` and nothing
+else, and the verifying key is published at genesis as a firm-class policy blob, so a replica
+holding no secret can check it. The append is ordinary - validated by the closed vocabulary,
+sealed and chained like any other event, and covered by the checkpoints that follow it.
 """
 from .canon import canonical_bytes
 from .errors import HomeMissing
 
 
 def write_checkpoint(log, actor=None):
-    """Sign `log`'s current head and append the checkpoint. Answers the envelope.
+    """Sign `log`'s current head and append the checkpoint event, returning its envelope.
 
-    `actor` defaults to the seat that minted the home - read off LSN 1's envelope - because a
-    periodic checkpoint is the deployment attesting to its own position, not a person acting. A
-    deployment that wants an operator's name on it passes one.
+    `actor` defaults to the seat that minted the home, read off LSN 1. Raises `HomeMissing` on an
+    empty log.
     """
     lsn, head = log.head()
     if lsn == 0:

@@ -11,14 +11,12 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-# import standard libraries
 import collections
 import copy
 import itertools
 import logging
 import warnings
 
-# 3rd party libraries
 import numpy as np
 import pandas as pd
 import scipy.interpolate
@@ -26,7 +24,6 @@ from scipy.linalg import expm as matrix_expm, logm as matrix_logm
 import torch
 import torch.nn.functional as nnf
 
-# Internal modules
 from . import utils
 from .schema import F, REQUIRED
 from .instruments import get_fx_zero_rate_factor, get_equity_zero_rate_factor, get_dividend_rate_factor
@@ -42,13 +39,11 @@ def piecewise_linear(t, tenor, values, shared):
         key_code = ('piecewise_linear', values.data_ptr(), id(tenor), t.tobytes())
 
     if key_code not in shared.t_PreCalc:
-        # linear interpolation of the vols at vol_tenor to the grid t
         dt = values.new(np.diff(t))
         interp = utils.interpolate_tensor(t, tenor, values)
         grad = (interp[1:] - interp[:-1]) / dt
         shared.t_PreCalc[key_code] = (dt, interp[:-1], grad)
 
-    # interpolated vol
     return shared.t_PreCalc[key_code]
 
 
@@ -89,16 +84,13 @@ def integrate_piecewise_linear(fn_norm, shared, time_grid, tenor1, val1, tenor2=
 
 # Hull white analytic integrals for 1 and 2 factor models (assuming piecewise linear vols)
 
-#: Reversion speeds below these are evaluated from the integrand's own power series in `a` instead
-#: of from the closed form. Every closed form here divides by a power of `a` and every one of those
-#: is a REMOVABLE singularity - the numerator is O(a^k) assembled out of O(1) terms - so what fails
-#: as `a` approaches zero is silent cancellation and not a raise, and the price degrades while the
-#: calibration objective happily rewards it. The constants are READINGS: `tests/test_hw2f_analytic`
-#: sweeps |a| from 1e-8 to 1 against a Taylor reference and each threshold sits where that
-#: function's relative error crosses 1e-10, on the worst sigma term structure inside `sigma_bounds`
-#: - the crossings are 2e-3 for H, 1.5e-2 for IJK and 1.3e-4 for B - while staying a clear step
-#: below the 0.1 that every authored reversion speed carries, because above the threshold nothing
-#: changes at all. At their thresholds the closed forms read 1.2e-11, 1.7e-10 and 1.1e-11.
+#: Reversion speeds below these are evaluated from the integrand's own power series in `a`
+#: rather than from the closed form: every closed form here divides by a power of `a`, and
+#: every one of those is a REMOVABLE singularity, so what fails as `a` approaches zero is
+#: silent cancellation rather than a raise. The constants are READINGS from
+#: `tests/test_hw2f_analytic`, each set where that function's relative error crosses 1e-10 on
+#: the worst sigma term structure (2e-3 for H, 1.5e-2 for IJK, 1.3e-4 for B) and a clear step
+#: below the 0.1 every authored reversion speed carries, above which nothing changes at all.
 HW_ALPHA_SERIES_H = 1e-2
 HW_ALPHA_SERIES_IJK = 3e-2
 HW_ALPHA_SERIES_B = 1e-3
@@ -115,33 +107,24 @@ HW_ALPHA_FLOOR = 1e-8
 def hw_alpha_floor(a):
     """A reversion speed held off exact zero, sign kept, for the ONE division no series repairs.
 
-    `Alpha_1` and `Alpha_2` both default to 0 on the 2 factor price factor, the 1 factor model's
-    `Alpha` does too, and `scipy.least_squares` runs under bounds that straddle zero - so
-    alpha == 0.0 exactly is reachable by authoring and by solving alike. Everywhere else in these
-    models that is a removable singularity with a series - `hw_calc_H`, `hw_calc_IJK`, `hw_calc_B` -
-    but BOTH `AtT` assemblies divide by a reversion speed a difference of integrals that vanishes
-    with it, and that quotient's limit is a $(t-s)$-weighted moment integral this module does not
-    carry. Spelling it would be a new integral rather than a second reading of `J`, so what happens
-    here instead is a floor.
+    Alpha defaults to 0 on both price factors and `scipy.least_squares` runs under bounds that
+    straddle zero, so alpha == 0.0 exactly is reachable by authoring and by solving alike.
+    Everywhere else that is a removable singularity with a series (`hw_calc_H`, `hw_calc_IJK`,
+    `hw_calc_B`), but BOTH `AtT` assemblies divide by a reversion speed a difference of
+    integrals that vanishes with it, and that quotient's limit is a $(t-s)$-weighted moment
+    integral this module does not carry - so a floor stands in for a series that cannot be
+    spelled here. The 1 factor bracket is IDENTICALLY zero at $\\alpha=0$, so $0\\cdot\\inf$
+    puts a NaN where a repaired $B$ looks handled; both are floored in their own `precalculate`.
 
-    THE 2 FACTOR CROSS TERM divides by ONE reversion speed a difference of two integrals taken at
-    the OTHER. THE 1 FACTOR ASSEMBLY is the same shape with one factor:
-    $(B/\\alpha)e^{-\\alpha t}(2I(t)-(e^{-\\alpha t}+e^{-\\alpha T})J(t))$, whose bracket is
-    IDENTICALLY zero at $\\alpha=0$ because $I$ and $J$ are then the same integral, so $0\\cdot\\inf$
-    puts a NaN where a repaired $B$ looks handled. Both are floored, in their own `precalculate`.
+    THE FLOOR SITS TWO ORDERS ABOVE where the quotient stops carrying information: its error is
+    the closed form's own error at the OTHER reversion speed amplified by $1/\\alpha$, reaching
+    5.4e-2 at 1e-10 and O(10) by 1e-12 (`tests/test_hw2f_analytic.py`). Below the floor the
+    model is evaluated at $\\pm$`HW_ALPHA_FLOOR` rather than at the alpha asked for, a
+    perturbation of 1.4e-7 relative on $B$ at thirty years. Clamping the DIVISOR alone instead
+    zeroes a third of AtT and moves the benchmark price 0.5%.
 
-    WHERE THE FLOOR IS AND WHY, measured in `tests/test_hw2f_analytic.py`. The quotient's error is
-    the closed form's own error at the OTHER reversion speed - 1.3e-11 at 0.1, not machine epsilon -
-    amplified by $1/\\alpha$: 9.8e-6 at 1e-6, 4.3e-4 at 1e-8, 5.4e-2 at 1e-10 and O(10) by 1e-12, so
-    it stops carrying information around 1e-10. The floor sits two orders above that. Below it the
-    model is evaluated at $\\pm$`HW_ALPHA_FLOOR` rather than at the alpha asked for, which is a
-    perturbation of 1e-8 to a parameter whose scale is 0.1 - 1.4e-7 relative on $B$ at thirty years
-    - against a quotient that would otherwise be noise. Clamping the DIVISOR alone instead of the
-    reversion speed zeroes that term, which is a third of AtT, and moves the benchmark price 0.5%.
-
-    Bit-identical above the floor: neither `where` rounds, it selects. The library comes off `a`
-    for `hw_alpha_branch`'s reason - the 2 factor model hands a tensor and the 1 factor one a python
-    float off the price factor, and the floor is spelled once for both or it is not spelled at all.
+    Bit-identical above the floor: `where` selects, it does not round. The array library comes
+    off `a` because the 2 factor model hands a tensor and the 1 factor one a python float.
     """
     if isinstance(a, torch.Tensor):
         return torch.where(
@@ -152,11 +135,10 @@ def hw_alpha_floor(a):
 def hw_alpha_branch(a, threshold):
     """`(is_small, where)` for a reversion speed that may be at, or through, zero.
 
-    `where` is the caller's own array library, because these integrands are handed `torch.exp` by
-    the 2 factor model and `np.exp` by the 1 factor one and the branch has to be spelled once for
-    both. It selects rather than short-circuits on purpose: a python `if` on a tensor is a host
-    sync and takes the whole batch down one leg, and the reversion speed is a calibrated variable
-    with a gradient on it.
+    `where` is the caller's own array library: these integrands are handed `torch.exp` by the 2
+    factor model and `np.exp` by the 1 factor one. It selects rather than short-circuits on
+    purpose - a python `if` on a tensor is a host sync and takes the whole batch down one leg,
+    and the reversion speed is a calibrated variable with a gradient on it.
     """
     if isinstance(a, torch.Tensor):
         return a.abs() < threshold, torch.where
@@ -194,9 +176,8 @@ def hw_calc_IJK(a, exp):
         closed = ((a2 * (dt2 * mi_mj + dt * mj_vi_p_mi_vj + vi_vj) + 2 * mi_mj * (1 - a * dt)
                    - a * mj_vi_p_mi_vj) * exp(a * dt)
                   - a2 * vi_vj + a * mj_vi_p_mi_vj - 2 * mi_mj) * exp(a * t)
-        # this numerator is O(a^3) built from O(1) terms, so the closed form's relative error runs
-        # like eps/a^3 - 1e9 out at a=1e-8 on a sloped vol curve, measured. The series carries the
-        # a^3 analytically instead: dt sum_k (a dt)^k/k! (vivj/(k+1) + S dt/(k+2) + Q dt^2/(k+3))
+        # this numerator is O(a^3) built from O(1) terms, so the closed form's relative error
+        # runs like eps/a^3 - 1e9 out at a=1e-8, measured. The series carries the a^3 instead
         S, Q = mj_vi_p_mi_vj * dt, mi_mj * dt2
         x, acc, term = a * dt, 0.0 * vi, 1.0 + 0.0 * (a * dt)
         for k in range(HW_SERIES_TERMS):
@@ -210,21 +191,19 @@ def hw_calc_IJK(a, exp):
 def hw_calc_B(a, tenor):
     """$B(T)=\\frac{1-e^{-aT}}{a}$, the Hull-White tenor loading, spelled once for both models.
 
-    Divides by the reversion speed, so it carries the same removable singularity as `hw_calc_H` and
-    `hw_calc_IJK` - more forgiving than either, because the numerator is only O(a), but 1.7e-6
-    relative out at a=1e-8 on a one-day tenor and NaN at a=0 exactly.
+    Divides by the reversion speed, so it carries the same removable singularity as
+    `hw_calc_H` and `hw_calc_IJK` - more forgiving, since the numerator is only O(a), but
+    1.7e-6 relative at a=1e-8 on a one-day tenor and NaN at a=0 exactly. `torch.where`
+    evaluates BOTH branches, so the divisor is clamped INSIDE the dividing branch and the
+    selection made after it; otherwise a NaN in the untaken branch poisons the backward.
 
-    `torch.where` evaluates BOTH branches, so a divisor of zero puts a NaN in the branch that is
-    not taken and NaN * 0 poisons the gradient in the backward. The divisor is therefore clamped
-    INSIDE the dividing branch and the selection made after it.
-
-    A FINITE $B$ IS NOT A FINITE $A$: both models assemble `AtT` by dividing this by the reversion
-    speed again, and that quotient is `hw_alpha_floor`'s business rather than this series'.
+    A FINITE $B$ IS NOT A FINITE $A$: both models divide this by the reversion speed again
+    when they assemble `AtT`, and that quotient is `hw_alpha_floor`'s business, not this
+    series'.
     """
     small, where = hw_alpha_branch(a, HW_ALPHA_SERIES_B)
-    # keyed off `a` and not off `tenor`, so this and the branch above cannot disagree about which
-    # library they are in - the 2 factor model hands both as tensors and the 1 factor one both as
-    # numpy, and a torch reversion speed against a numpy tenor still lands in torch
+    # keyed off `a` and not off `tenor`, so this and the branch above cannot disagree about
+    # which library they are in - a torch reversion speed against a numpy tenor lands in torch
     exp = torch.exp if isinstance(a, torch.Tensor) else np.exp
     safe = where(small, 1.0 + 0.0 * a, a)
     # sum_k (-a)^k T^{k+1}/(k+1)!
@@ -262,20 +241,15 @@ def hmm_forward_backward(log_pi, log_P, log_emit):
 
 def garch11_t_mle(x):
     """Zero-mean GARCH(1,1) with standardised Student-t innovations, MLE on the series `x`.
-    Returns `(omega, alpha, beta, nu, h, se)` in the UNITS OF `x` — the caller owns any rescaling
-    (`GARCHSpotCalibration` fits percent log returns and converts back). `h` is the filtered
-    conditional-variance path off the fitted parameters, seeded at the sample variance, so `h[-1]`
-    is the variance OF the last observation — one step stale as a "today's state" stamp, which is
-    what `H0` carries.
 
-    ONE caller now: `BasisLinkedSpotCalibration` used to fit its innovation here, on the residual of
-    a separately estimated conditional mean, and that two-likelihood split is what
-    `arx1_t_mle(..., garch=True)` absorbed. The recursion and the `h[0]` seeding convention there are
-    this function's, deliberately, so the two estimators stamp seeds that mean the same thing.
+    Returns `(omega, alpha, beta, nu, h, se)` in the UNITS OF `x` - the caller owns any
+    rescaling. `h` is the filtered conditional-variance path off the fitted parameters, seeded
+    at the sample variance, so `h[-1]` is the variance OF the last observation: one step stale
+    as a "today's state" stamp, which is what `H0` carries.
 
     Uses `arch` if importable, else scipy L-BFGS-B on the identical log-likelihood, with
-    asymptotic standard errors from a central-difference numerical Hessian (per-coordinate step,
-    since ω~1e-2 and ν~7.5 differ by orders of magnitude)."""
+    asymptotic standard errors from a central-difference numerical Hessian (per-coordinate
+    step, since omega ~1e-2 and nu ~7.5 differ by orders of magnitude)."""
     from scipy.special import gammaln
     var0 = float(np.var(x))
 
@@ -328,37 +302,29 @@ def arx1_t_mle(equations, nu_bounds=(3.0, 50.0), mean=None, garch=False):
 
         y_t = mu_t + phi(y_{t-1} - mu_t) + gamma*x_t + sigma_t*e_t,  e_t ~ standardised t_nu
 
-    `equations` is `[(y, x), ...]`, `x` None for a plain AR(1) and otherwise aligned to the TARGET
-    rows (`len(x) == len(y) - 1`), so a same-step regressor is `np.diff(other)`. Returns
+    `equations` is `[(y, x), ...]`, `x` None for a plain AR(1) and otherwise aligned to the
+    TARGET rows (`len(x) == len(y) - 1`), so a same-step regressor is `np.diff(other)`. Returns
     `([ARX1Fit, ...], nu, se)`.
 
-    ONE nu, fitted jointly, because the process it calibrates draws ONE chi2 per step and shares it
-    across its factors: the innovation vector is an elliptical multivariate t rather than t
-    marginals under a Gaussian copula. Fitting the marginals separately and reconciling their two
-    nu's afterwards would estimate a model nobody wrote. The same argument is why the two optional
-    switches exist rather than a second estimator beside this one - a mean fitted under one loss and
-    a variance under another is the same defect one level down:
+    ONE nu, fitted jointly, because the process it calibrates draws ONE chi2 per step and
+    shares it across its factors: the innovation vector is an elliptical multivariate t rather
+    than t marginals under a Gaussian copula. The two optional switches exist for the same
+    reason - a mean fitted under one loss and a variance under another is that defect one
+    level down.
 
-    `mean` is the level the AR reverts to. None fits a scalar intercept per equation (the AR's own
-    long-run mean). An ARRAY makes mu_t an OBSERVABLE the caller supplies, aligned to the target
-    rows and applied to BOTH sides of the AR, and no intercept is fitted - which is the shape of a
-    slow-mean model whose mu_t is a declared recursion on the realised path rather than a parameter
-    (a zero array is then "no intercept"). It must be the mean the SIMULATOR will revert to at the
-    same row, i.e. strictly lagged, or the fit is done against a filtration the model does not have.
+    `mean` is the level the AR reverts to. None fits a scalar intercept per equation. An ARRAY
+    makes mu_t an OBSERVABLE the caller supplies, aligned to the target rows and applied to
+    BOTH sides of the AR with no intercept fitted (a zero array is then "no intercept"). It
+    must be the mean the SIMULATOR reverts to at the same row, i.e. strictly lagged, or the
+    fit is done against a filtration the model does not have.
 
     `garch` replaces the per-equation constant sigma with its own GARCH(1,1),
-    sigma_t^2 = omega + alpha*e_{t-1}^2 + beta*sigma_{t-1}^2, seeded at the OLS residual variance -
-    `garch11_t_mle`'s recursion and seeding convention, fitted HERE inside the same likelihood as
-    the conditional mean instead of afterwards on the mean fit's residual.
+    sigma_t^2 = omega + alpha*e_{t-1}^2 + beta*sigma_{t-1}^2, seeded at the OLS residual
+    variance - `garch11_t_mle`'s recursion and seeding convention - and fitted HERE inside the
+    same likelihood as the conditional mean rather than afterwards on its residual.
 
-    scipy L-BFGS-B on the exact log-likelihood from an OLS start, with asymptotic standard errors
-    from a central-difference numerical Hessian (per-coordinate step, since phi ~ 1 and nu ~ 5
-    differ by orders of magnitude) - the construction `garch11_t_mle` uses.
-
-    Two callers: `QuadraticCarryCurveCalibration` (both switches off, bit-identically) and
-    `BasisLinkedSpotCalibration`'s EXTENDED path, the sibling this estimator was written next to
-    and which it now absorbs. That calibration's DEFAULT path is still OLS plus a moment-matched
-    nu, and stays so by rule: it is what every shipped platinum world was calibrated with."""
+    scipy L-BFGS-B on the exact log-likelihood from an OLS start, with asymptotic standard
+    errors from a central-difference numerical Hessian."""
     from scipy.optimize import minimize
     from scipy.special import gammaln
 
@@ -463,12 +429,11 @@ class StochasticProcess(object):
         self.params_ok = True
 
     def copy(self):
-        """Shallow copy. Use case: forking a process for nested simulation (inner MC)
-        so the fork can be precalculated against a different shared state / time grid
-        without clobbering the outer instance's precalc-derived attributes (`spot0`,
-        `scenario_horizon`, `z_offset`, etc.). Construction-time references (`factor`,
-        `param`, `implied`) are shared by reference, which is intentional — these are
-        read-only after setup."""
+        """Shallow copy, for forking a process for nested simulation (inner MC): the fork can
+        be precalculated against a different shared state / time grid without clobbering the
+        outer instance's precalc-derived attributes (`spot0`, `scenario_horizon`, `z_offset`,
+        ...). Construction-time references (`factor`, `param`, `implied`) are shared, which is
+        intentional - they are read-only after setup."""
         return copy.copy(self)
 
     def link_references(self, implied_tensor, implied_var, implied_factors):
@@ -519,43 +484,34 @@ class StochasticProcess(object):
     def bridge_variance_rate(self):
         """Annualized log-variance rate of THIS factor as a scalar, or None.
 
-        A barrier is monitored continuously but a deal's time grid only observes the spot at its
-        own dates, so whether a path crossed in between is a conditional probability rather than
-        an observation - and a Brownian bridge needs the variance of the interval it spans.
+        A barrier is monitored continuously while a deal's time grid only observes its own
+        dates, so whether a path crossed in between is a conditional probability rather than an
+        observation - and a Brownian bridge needs the variance of the interval it spans.
 
-        A RATE against elapsed time rather than a per-interval array, because a deal's grid and
-        the scenario grid are different arrays (`deal_time_grid` indexes `mtm_time_grid`, while a
-        process discretises `scen_time_grid`); an array would have to be indexed by one and is
-        reached with the other. Elapsed time is common to both, so a rate cannot be misindexed.
-        This is exact where the vol is constant; a process whose interval variance is not
-        proportional to elapsed time should return None until it is given a form that can express
-        that, rather than a rate that silently means something else.
-
-        It must come from the SIMULATION model, not from a pricing implied vol: the latter is the
-        vol for the option's remaining life, which is a different quantity that happens to have
-        the same units. Processes returning None fall back to observing endpoints, which is what
-        the engine did everywhere before.
+        A RATE against elapsed time rather than a per-interval array: a deal grid and the
+        scenario grid are different arrays, and elapsed time is the one coordinate common to
+        both, so a rate cannot be misindexed. This is exact where the vol is constant; a
+        process whose interval variance is not proportional to elapsed time should return None
+        rather than a rate that silently means something else. It must come from the SIMULATION
+        model, never a pricing implied vol - that is the vol for the option's remaining life,
+        a different quantity with the same units. Processes returning None fall back to
+        observing endpoints.
         """
         return None
 
     def reveal_state_at(self, t, buffer):
         """Ordered market-state segments `[(block, reveal_kind), ...]` this factor exposes to
-        the value function at scenario-time index `t` — the informative deep-state the DP/MPC
+        the value function at scenario-time index `t` - the informative deep-state the DP/MPC
         solvers consume. `block` is factor-dims-leading with the batch axis TRAILING; the CALC
-        owns the batch reshape (it knows outer `(*, B)` vs inner `(*, B, B2)` mode), so no batch
-        rank leaks into this signature. Default: the whole factor state at `t` as ONE continuous
-        segment — `buffer[self.factor_key][t]` covers a scalar spot, a compact carry curve, and a
-        full tenor curve alike (a curve declares every tenor; the reducer decides what survives).
-        `self.factor_key` is set for every stochastic factor by the calc before reveal is ever
-        called (calculation.py, `value.factor_key = key`)."""
+        owns the batch reshape, so no batch rank leaks into this signature. Default: the whole
+        factor state at `t` as ONE continuous segment, which covers a scalar spot, a compact
+        carry curve and a full tenor curve alike. `self.factor_key` is set for every stochastic
+        factor by the calc before reveal is ever called."""
         return [(buffer[self.factor_key][t], REVEAL_CONTINUOUS)]
 
-    # ---- Model-agnostic seed/publish protocol (the calc speaks only these verbs) ------------
-    # A process owns every model-specific buffer key and recursion; the calc loops uniformly
-    # and never mentions a regime, belief, variance or print. Two roles, strictly ordered:
-    # SEEDS run before ANY generate (`inner_fork_seed`, `print_seed`, `outer_reseed`) and read
-    # only the handed state; PUBLICATIONS run after a generate/replay (`reseed_from_path`,
-    # `reseed_inner_state`) and re-derive revealed state along a path. Base = inert no-ops.
+    # Model-agnostic seed/publish protocol - the only verbs the calc speaks. SEEDS run before
+    # ANY generate (`inner_fork_seed`, `print_seed`, `outer_reseed`) and read only the handed
+    # state; PUBLICATIONS run after a generate/replay and re-derive revealed state along a path.
     def inner_fork_seed(self, factor_key, outer_buf, t):
         """Buffer entries seeding this process's inner-MC fork at outer time `t` from the
         outer path — the per-outer-path t=0 privileged sufficient statistic the fork reprices
@@ -565,21 +521,20 @@ class StochasticProcess(object):
         return {}
 
     def print_seed(self, factor_key, state, t):
-        """First-step conditioning from a STATE SNAPSHOT — the session-print protocol. The
+        """First-step conditioning from a STATE SNAPSHOT - the session-print protocol. The
         state at any start (the calibrated t0, a burn-in restart, an inner fork at day t)
         already CONTAINS the observed session prints as the print factors' own values, and a
         bridge/chain law places a print ON the path to the next own-session value with unit
         loading. A process implementing this publishes the per-path first-step conditional
         shift for the factor it informs; consumers fold it where their step drift is built, so
-        forward and replay share it structurally. Present in state ⇒ condition; absent ⇒
-        nothing to condition on — no grid predicate, no stamped parameter. `state` maps factor
-        key → a row-indexable snapshot (`state[key][t]`).
+        forward and replay share it structurally. Present in state means condition, absent
+        means nothing to condition on. `state` maps factor key to a row-indexable snapshot.
 
-        TWO INVARIANTS THE CALLER OWNS: (1) the returned keys are FOREIGN — keyed to a factor
-        this process does not own — so every seed must be published before ANY generate (the
-        consumer may be topologically upstream); (2) the keys are CONSUMED state, not path
-        series — the caller drops them once the run has generated, or a fork's republication
-        filter mistakes a per-path scalar for a path. Default: nothing to publish."""
+        TWO INVARIANTS THE CALLER OWNS: the returned keys are FOREIGN, keyed to a factor this
+        process does not own, so every seed must be published before ANY generate (the consumer
+        may be topologically upstream); and they are CONSUMED state rather than path series, so
+        the caller drops them once the run has generated, or a fork's republication filter
+        mistakes a per-path scalar for a path. Default: nothing to publish."""
         return {}
 
 
@@ -612,14 +567,11 @@ class StochasticProcess(object):
         return ()
 
     def forward_curve(self, tensor, time_grid_years, shared, mul_time=True):
-        """`utils.calc_curve_forwards` lifted to a per-path BATCH of curves. `tensor` is
-        the t=0 curve: `(n_tenors,)` calibrated, or `(n_tenors, B)` per-path (inner-MC
-        fork or diff-ML t=0 burn-in). Calibrated → one call returning `(T, n_tenors)`.
-        Per-path → loop the B columns and stack on a trailing batch axis → `(T, n_tenors, B)`.
-
-        `utils.calc_curve_forwards` is shape-dispatched, so BOTH cases are one call — the
-        per-path Python loop this used to run measured 0.92 ms per path (a 31-tenor curve at
-        B=2048 cost 1.93 s, perfectly linear in B) and was the inner-MC fork's dominant cost."""
+        """`utils.calc_curve_forwards` lifted to a per-path BATCH of curves. `tensor` is the
+        t=0 curve: `(n_tenors,)` calibrated, or `(n_tenors, B)` per-path (inner-MC fork or
+        diff-ML t=0 burn-in). Calibrated gives one call returning `(T, n_tenors)`; per-path
+        returns `(T, n_tenors, B)`. `utils.calc_curve_forwards` is shape-dispatched, so both
+        cases are one call."""
         return utils.calc_curve_forwards(
             self.factor, tensor, time_grid_years, shared, mul_time=mul_time)
 
@@ -667,17 +619,14 @@ class GBMAssetPriceModel(StochasticProcess):
         return 1
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
-        # store randomnumber id's
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
 
         dt = np.diff(np.hstack(([0], time_grid.time_grid_years)))
         var = self.param['Vol'] * self.param['Vol'] * dt
-        # store params in tensors
         self.drift = tensor.new((self.param['Drift'] * dt - 0.5 * var).reshape(-1, 1))
         self.vol = tensor.new((np.sqrt(var)).reshape(-1, 1))
 
-        # store a reference to the current tensor
         self.spot = tensor
 
     @property
@@ -766,9 +715,7 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
     def __init__(self, factor, param, implied_factor=None):
         super(GBMAssetPriceTSModelImplied, self).__init__(factor, param)
         self.implied = implied_factor
-        # get the name of the underlying factor
         self.factor_type = self.factor.__class__.__name__
-        # potentially handle quanto fx volatility
         self.quanto_fx_tenor = None
 
     @staticmethod
@@ -784,28 +731,22 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
             ''' sympy.simplify(sympy.integrate((vi + mi * (s - t)) * (vj + mj * (s - t)), (s, t, t + dt))) '''
             return dt * (2 * dt ** 2 * mi * mj + 3 * dt * mi * vj + 3 * dt * mj * vi + 6 * vi * vj) / 6
 
-        # store randomnumber id's
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
-        # calc vols
         vol_tenor = self.implied.param['Vol'].array[:, 0]
         self.V = torch.unsqueeze(integrate_piecewise_linear(
             (calc_vol, 1.0), shared, time_grid.time_grid_years, vol_tenor, implied_tensor['Vol']), dim=1)
         # per-step incremental vol, anchored at V(0)=0 so the first step evolves from today (t=0)
         self.delta_vol = torch.sqrt(self.V - nnf.pad(self.V[:-1], (0, 0, 1, 0)))
-        # we always evolve from today: prepend 0 to the sample times so the step sizes are the diffs
-        # [t_1, t_2 - t_1, ...] and each step's drift is read from the curve as-of its start node
-        # [0, t_1, ..., t_{N-1}] (when t_1 = 0 the first step is a no-op and we match spot today)
+        # we always evolve from today: prepend 0 to the sample times so the step sizes are the
+        # diffs and each step's drift is read from the curve as-of its start node
         self.delta_scen_t = np.diff(np.insert(time_grid.scen_time_grid, 0, 0)).reshape(-1, 1)
-        # store a reference to the current tensor
         self.spot = tensor
         # the curve-read grid is the step starts: today (t=0) followed by all but the final sample
         today = time_grid.scenario_grid[:1].copy()
         today[:, utils.TIME_GRID_MTM] = 0.0
         self.scen_grid = np.vstack([today, time_grid.scenario_grid[:-1]])
-        # check if we need to calculate the quanto fx vol
         if self.factor_type == 'EquityPrice' and self.quanto_fx_tenor is not None:
-            # need to get the quantofx rate if necessary
             self.C = torch.unsqueeze(integrate_piecewise_linear(
                 (cal_quanto_fx_vol, 1.0), shared, time_grid.time_grid_years,
                 vol_tenor, implied_tensor['Vol'], self.quanto_fx_tenor, implied_tensor['Quanto_FX_Volatility']),
@@ -849,19 +790,16 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
         return 'LognormalDiffusionProcess', [()]
 
     def generate(self, shared_mem):
-        """
-        Simulate the asset price path; drift comes from the foreign/domestic (or dividend/repo)
-        zero curves.
+        """Simulate the asset price path; drift comes from the foreign/domestic (or
+        dividend/repo) zero curves.
 
-        Dual-mode on Z.ndim — outer (T, B) or inner MC (T, B, B2). Under inner MC the rate curves
-        are simulated to (scen, n_tenors, B, B2) and gathered with n_batch_dims=2, which collapses
-        the curve stack (B,B2) -> B*B2, so the drift returns (T, B*B2) and is reshaped to
-        (T, B, B2). Own per-step arrays (T,1) -> (T,1,1) and the per-outer-path spot (B,)/(1,) ->
-        (1,B,1)/(1,1,1) so both broadcast across the B2 fan-out.
+        Dual-mode on Z.ndim - outer (T, B) or inner MC (T, B, B2). Under inner MC the rate
+        curves are gathered with n_batch_dims=2, which collapses the curve stack (B,B2) into
+        B*B2, so the drift comes back (T, B*B2) and is reshaped to (T, B, B2); the own per-step
+        arrays and the per-outer-path spot broadcast across the B2 fan-out.
         """
         Z = shared_mem.t_random_numbers[self.z_offset, :self.scenario_horizon]
         if Z.ndim == 2:
-            # Outer: drift from the foreign/domestic (or div/repo) zero curves; single batch.
             rt = utils.calc_time_grid_curve_rate(self.r_t, self.scen_grid, shared_mem)
             qt = utils.calc_time_grid_curve_rate(self.q_t, self.scen_grid, shared_mem)
             rt_rates = rt.gather_weighted_curve(shared_mem, self.delta_scen_t)
@@ -914,14 +852,12 @@ class GBMPriceIndexModel(StochasticProcess):
         return 1
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
-        # store randomnumber id's
         self.z_offset = process_ofs
         # calculate the correct scenario grid
         scenario_time_grid = np.array(
             [(x - self.factor.param['Last_Period_Start']).days
              for x in self.factor.get_last_publication_dates(ref_date, time_grid.scen_time_grid.tolist())],
             dtype=np.float64)
-        # record the horizon
         self.scenario_horizon = scenario_time_grid.size
 
         dt = np.diff(np.hstack(([0], scenario_time_grid / utils.DAYS_IN_YEAR)))
@@ -929,7 +865,6 @@ class GBMPriceIndexModel(StochasticProcess):
         self.drift = tensor.new(self.param['Drift'] * dt - 0.5 * var).reshape(-1, 1)
         self.vol = tensor.new(np.sqrt(var)).reshape(-1, 1)
 
-        # store a reference to the current tensor
         self.spot = tensor
 
     @property
@@ -966,9 +901,9 @@ class GBMPriceIndexCalibration(object):
 
 
 #: One analytic ATM swaption. `premium` and `normal_vol` are the two readings a desk compares -
-#: a premium against a premium, and vols against vols - and the rest is the working, kept because
-#: what a checker has to separate is WHICH of the annuity, the swap rate or the frozen loadings a
-#: disagreement with the Monte Carlo lives in.
+#: a premium against a premium, vols against vols - and the rest is the working, kept because
+#: what a checker has to separate is WHICH of the annuity, the swap rate or the frozen loadings
+#: a disagreement with the Monte Carlo lives in.
 HW2FSwaption = collections.namedtuple(
     'HW2FSwaption', 'premium normal_vol annuity swap_rate variance loadings')
 
@@ -1055,15 +990,11 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
             self.scenario_horizon = time_grid.scen_time_grid.size
             time_grid_years = np.array([self.factor.get_day_count_accrual(
                 ref_date, t) for t in time_grid.scen_time_grid])
-            # get the factor's tenor points
             self.factor_tenor = tensor.new(self.factor.get_tenor().reshape(-1, 1))
-            # flatten the tenor
             self.factor_tenor_full = tensor.new_tensor(self.factor.get_tenor(), dtype=torch.float64)
-            # get the quanto vol
             self.quantofx = tensor.new_tensor(
                 self.implied.param['Quanto_FX_Volatility'].array[:, 1], dtype=torch.float64)
 
-            # cache the time-grid-derived tensors/variables
             self.cache['time_grid_years'] = time_grid_years
             self.cache['t'] = tensor.new(time_grid_years.reshape(-1, 1))
 
@@ -1074,10 +1005,8 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         return self.cache['time_grid_years'], fwd_curve, self.cache['t']
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
-        # get the factor's tenor points
         time_grid_years, fwd_curve, t = self.read_cache(ref_date, time_grid, tensor, shared, process_ofs)
 
-        # calculate known functions
         alpha = [hw_alpha_floor(implied_tensor['Alpha_1'][0].type(torch.float64)),
                  hw_alpha_floor(implied_tensor['Alpha_2'][0].type(torch.float64))]
         lam = [self.param['Lambda_1'], self.param['Lambda_2']]
@@ -1114,7 +1043,6 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
             quantofxcorr = [0.0, 0.0]
             K = [corr.new_zeros(time_grid_years.size) for i in range(2)]
 
-        # now calculate the AtT
         AtT = 0.0
         BtT = [hw_calc_B(alpha[i], self.factor_tenor_full) for i in range(2)]
         CtT = []
@@ -1125,26 +1053,20 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
             second_part = torch.exp(-alpha[i] * t) * I[i][j].reshape(-1, 1) - first_part
             third_part = torch.exp(-alpha[j] * t) * I[j][i].reshape(-1, 1) - first_part
 
-            # get the covariance
             CtT.append(rho[i][j] * J[i][j])
 
-            # all together now - `second_part` and `third_part` vanish LINEARLY as the reversion
-            # speed they are divided by does, so these two divisions are removable singularities of
-            # the PRODUCT rather than of either factor: at alpha == 0 the numerator is exactly 0.0
-            # and 0 * inf is NaN. `hw_alpha_floor` is what keeps the divisor off zero, and see it
-            # for what that costs and why no series in this module can spell the limit instead.
+            # `second_part` and `third_part` vanish LINEARLY as the reversion speed they are
+            # divided by does, so these are removable singularities of the PRODUCT: at alpha
+            # == 0 the numerator is exactly 0.0 and 0 * inf is NaN. See `hw_alpha_floor`.
             AtT += rho[i][j] * torch.matmul(
                 torch.cat([first_part, second_part, third_part], dim=1),
                 torch.stack([BtT[j] * BtT[i], BtT[i] / alpha[j], BtT[j] / alpha[i]]))
 
         t_CtT = torch.stack(CtT).T
-        # get the change in variance
         delta_CtT = t_CtT[1:] - t_CtT[:-1]
         # check if the entire cholesky is +ve definite
         if (delta_CtT[:, 0] * delta_CtT[:, 3] > delta_CtT[:, 1] * delta_CtT[:, 2]).all():
-            # get the correlation through time
             C = nnf.pad(torch.linalg.cholesky(delta_CtT.reshape(-1, 2, 2)), (0, 0, 0, 0, 1, 0))
-            # all good
             self.params_ok = True
         else:
             # need to fix the cholesky
@@ -1155,153 +1077,79 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
                 else:
                     cholesky.append(cholesky[-1])
 
-            # the cholesky was broken
             self.params_ok = False
             C = torch.stack(cholesky)
 
-        # WHAT THE ANALYTIC SWAPTION READS, and the one thing this assembly used to drop. `J` is
-        # built above and consumed only through `CtT`, so `schrager_pelsser_swaption` would
-        # otherwise have to spell the same integral a second time - a reference costs nothing and
-        # keeps one spelling of it. The reversion speeds ride along FLOORED and the correlation
-        # matrix ASSEMBLED, because those are the ones this covariance was built out of, not the
-        # raw implied tensors. Left in float64: the simulation's dtype is the calc's business, but
-        # the analytic price is a reference and is read against one.
+        # WHAT THE ANALYTIC SWAPTION READS. `J` is built above and consumed only through
+        # `CtT`, so a reference here keeps one spelling of the integral. The reversion speeds
+        # ride along FLOORED and the correlation ASSEMBLED - what this covariance was built of.
         self.J, self.alpha, self.rho = J, alpha, rho
 
-        # intermediate results
         self.BtT = [Bi.type(shared.one.dtype).reshape(-1, 1) for Bi in BtT]
         self.YtT = [torch.exp(-alpha[i] * t).type(shared.one.dtype) for i in range(2)]
         self.KtT = [(quantofxcorr[i] * K[i].reshape(-1, 1)).type(shared.one.dtype) for i in range(2)]
         self.HtT = [(lam[i] * H[i].reshape(-1, 1)).type(shared.one.dtype) for i in range(2)]
 
-        # needed for factor calcs later
         self.F1 = C[:, 0, 0].reshape(-1, 1).type(shared.one.dtype)
         self.F2 = C[:, 1].t().unsqueeze(axis=2).type(shared.one.dtype)
 
-        # store the grid points used if necessary
         if len(time_grid.scenario_grid) != time_grid_years.size:
             self.grid_index = time_grid.scen_time_grid.searchsorted(time_grid.scenario_grid[:, utils.TIME_GRID_MTM])
 
-        # Canonical (mode-agnostic): (T, n_tenors) calibrated / (T, n_tenors, B) per-path.
-        # AtT is (T, n_tenors); align it to the curve rank so the sum broadcasts. generate
-        # appends the broadcast axis vs the stochastic component in `sim_curve`.
+        # canonical (mode-agnostic): (T, n_tenors) calibrated / (T, n_tenors, B) per-path. AtT
+        # is (T, n_tenors); align it to the curve rank so the sum broadcasts
         AtT = AtT.type(shared.one.dtype)
         self.drift = fwd_curve + 0.5 * self.align_rank(AtT, fwd_curve.ndim)
 
     def schrager_pelsser_swaption(self, expiry, pay_times, accruals):
         """The Schrager-Pelsser ATM payer swaption, analytic, off the arrays `precalculate` built.
 
-        THE APPROXIMATION IN ONE LINE. Every discount factor in the forward swap rate is an exact
-        function of the two state variables $x_k(t)=e^{-\\alpha_k t}Y_k(t)$, so $S(t)$ is too, and
-        under the annuity measure it is a martingale with no drift to model. What is not exact is
-        its diffusion: $\\partial S/\\partial x_k$ moves with the state. Schrager-Pelsser FREEZES
-        those two loadings at their $t=0$ values
+        THE APPROXIMATION IN ONE LINE. Every discount factor in the forward swap rate is an
+        exact function of the two state variables $x_k(t)=e^{-\\alpha_k t}Y_k(t)$, so $S(t)$ is
+        too, and under the annuity measure it is a martingale with no drift to model. What is
+        not exact is its diffusion: Schrager-Pelsser FREEZES the two loadings $\\partial
+        S/\\partial x_k$ at their $t=0$ values
 
         $$q_k = -\\Big(\\frac{P(0,T_0)B_k(T_0)-P(0,T_n)B_k(T_n)}{A(0)}
                        - S(0)\\sum_j w_j B_k(T_j)\\Big)$$
 
-        with $A(0)=\\sum_i\\tau_iP(0,T_i)$ the annuity and $w_i=\\tau_iP(0,T_i)/A(0)$ its weights,
-        which makes $S(T_0)-S(0)$ gaussian with
+        with $A(0)=\\sum_i\\tau_iP(0,T_i)$ the annuity and $w_i=\\tau_iP(0,T_i)/A(0)$ its
+        weights, which makes $S(T_0)-S(0)$ gaussian with
+        $\\mathrm{Var}=\\sum_{k,l}\\rho_{kl}q_kq_lJ_{kl}(T_0)$ and the ATM premium the
+        Bachelier one, $A(0)\\sqrt{\\mathrm{Var}/2\\pi}$. `normal_vol` is
+        $\\sqrt{\\mathrm{Var}/T_0}$, the reading a desk compares rather than the premium.
 
-        $$\\mathrm{Var}=\\sum_{k,l}\\rho_{kl}q_kq_lJ_{kl}(T_0)$$
+        $J$ ENTERS BARE, with no $e^{-(\\alpha_k+\\alpha_l)T_0}$ in front of it, because $q$
+        is already a loading on the SCALED martingale $Y_k=e^{\\alpha_kt}x_k$, whose own
+        covariance $J$ is - which is why `CtT` carries no prefactor either. Putting one here
+        scales the state twice. What the freezing costs is the annuity's WEIGHTS rather than
+        the annuity, so the bias is second order in the state.
 
-        and the ATM premium the Bachelier one, $A(0)\\sqrt{\\mathrm{Var}/2\\pi}$. `normal_vol` is
-        $\\sqrt{\\mathrm{Var}/T_0}$, which is the reading a desk compares rather than the premium.
+        THE CLOCK IS THE CURVE'S OWN DAY COUNT: `expiry`, `pay_times` and `accruals` are year
+        fractions under `factor.get_day_count_accrual`, the clock `read_cache` builds
+        `time_grid_years` on and therefore the clock $J$ is integrated against.
+        `utils.DAYS_IN_YEAR` is 365.25, so a caller pairing the two is 7e-4 years out at a 1Y
+        expiry; converting is the caller's job, since only the caller knows which schedule its
+        expiries came from.
 
-        $J$ ENTERS BARE, and no $e^{-(\\alpha_k+\\alpha_l)T_0}$ belongs in front of it, because $q$
-        is already a loading on the SCALED martingale. The time-$t$ loading $\\partial S/\\partial
-        x_k(t)$ is the expression above with every $B_k(T_j)$ read over the REMAINING tenor
-        $B_k(T_j-t)$; substitute $B_k(T_j-t)=e^{\\alpha_kt}(B_k(T_j)-B_k(t))$ and the $B_k(t)$ terms
-        cancel between the two halves - $S\\sum_jw_jB_k(t)$ against
-        $(P(t,T_0)-P(t,T_n))B_k(t)/A(t)$, the same number - leaving
-        $\\partial S/\\partial x_k(t)=e^{\\alpha_kt}q_k(t)$ exactly, for every reversion speed
-        including a negative one. Freezing the bracket at $t=0$ therefore freezes the loading on
-        $Y_k=e^{\\alpha_kt}x_k$ rather than on $x_k$, and $J_{kl}$ is $Y$'s own covariance -
-        $\\mathrm{Cov}(Y_k(T_0),Y_l(T_0))=\\rho_{kl}J_{kl}(T_0)$, which is exactly why `CtT` carries
-        no prefactor either. Putting one here as well scales the state twice.
+        $J$ IS READ AT THE EXPIRY, linearly between grid nodes and bit-exact at one. That is
+        the fallback rather than the normal case - `TimeGrid` is built out of the benchmark
+        expiries - and the chord costs whatever the LOCAL step does, from 0.0013 basis points
+        of normal vol across ten days to 2.1 across the two-year steps past the last benchmark.
+        That is the size of the thing this price exists to measure (SP's own approximation
+        error is 2.17bp at the identified fixture's worst corner), so an expiry off a node
+        WARNS rather than being interpolated quietly.
 
-        THE PREFACTOR WAS THERE AND IT IS A DEFECT THE CHECKER FOUND, recorded with its number in
-        `tests/test_hw2f_analytic.py` rather than quietly removed. On the identified fixture's
-        theta* it moved the normal vol by between $+1.1$ and $-37.9$ basis points across the 5x5
-        grid - $-18.1\\%$ to $+13.5\\%$ of the level - and it is not signed, because $\\alpha_2$
-        solves NEGATIVE there and $e^{-(\\alpha_2+\\alpha_2)T_0}$ is then above one. It is not a
-        small-parameter effect and no tolerance would have absorbed it: it is hundreds of Monte
-        Carlo standard errors wide at half a million paths.
+        THIS IS THE DEFAULT OBJECTIVE, behind `HullWhite2FactorModelParameters`'
+        `Objective: 'Analytic'`; `'Monte_Carlo'` remains supported as the engine's own
+        estimator and is the oracle this price was measured against. It is QUANTO-FREE -
+        everything is read off $J$, the covariance under the RATE currency's own risk-neutral
+        measure - so this is the DOMESTIC swaption whatever the job's base currency, and the
+        calibration seam suppresses the quanto drift in the Monte Carlo objective so both price
+        under the same measure.
 
-        WHAT THE FREEZING COSTS is the annuity's WEIGHTS, not the annuity: $A(T_0)$ is still
-        stochastic and still divides out under its own measure, so the bias is second order in the
-        state. Its SIZE and its direction are not claimed here, in either the tenor or the
-        correlation, because nothing has read them yet - that is the whole point of measuring this
-        against the brute-force Monte Carlo before anything is wired to it.
-
-        THE CLOCK IS THE CURVE'S OWN DAY COUNT. `expiry`, `pay_times` and `accruals` are year
-        fractions under `factor.get_day_count_accrual` - ACT_365 on an ACT_365 curve - because that
-        is the clock `read_cache` builds `time_grid_years` on and therefore the clock $J$ is
-        integrated against. `utils.DAYS_IN_YEAR` is 365.25 and `create_market_swaps` measures its
-        expiries with it, so a caller pairing the two is 7e-4 years out at a 1Y expiry; converting
-        is the caller's job because only the caller knows which of the two its schedule came from.
-
-        $J$ IS READ AT THE EXPIRY, linearly in $t$ between grid nodes and bit-exact at one -
-        `utils.interpolate_tensor`, which is `piecewise_linear`'s own read of a curve on its own
-        grid, so this is a second reading of that rule and not a second rule. Interpolation is the
-        fallback and not the normal case: `TimeGrid` is built out of the benchmark expiries, so a
-        calibration's own $T_0$ is always a node. Off a node the chord costs whatever the LOCAL grid
-        step does - 3.7e-5 on the variance and 0.0014 basis points of normal vol across a ten-day
-        step, measured in `tests/test_hw2f_analytic.py` - and that step is NOT uniform, which is why
-        an expiry off a node WARNS rather than being interpolated quietly.
-
-        THE STEP IS THE WHOLE NUMBER, and past the last benchmark it is not ten days. The grid is
-        ten-daily out to the last benchmark expiry and then jumps to the vol knots, so a
-        two-benchmark world steps 2.0027 -> 4.0027 -> 6.0055 -> 8.0055 -> 10.0055 and an expiry in
-        one of those gaps is read across TWO YEARS. Measured on that world: the chord over-reads the
-        variance by 3.8e-2 to 7.8e-2 and the normal vol by +0.79 to +2.07 basis points, against
-        0.0013 on the ten-day stretch. That is the SIZE OF THE THING THIS PRICE EXISTS TO MEASURE -
-        SP's own approximation error is 2.17bp at the identified fixture's worst corner - so an
-        expiry in the gap would carry an interpolation error as large as the approximation error and
-        nothing downstream could tell the two apart. Put the expiry in the `TimeGrid`; the warning
-        names the step it would otherwise cross.
-
-        THIS IS THE DEFAULT OBJECTIVE NOW, behind a declared field. `HullWhite2FactorModelParameters`
-        takes `Objective: 'Analytic'` and differences these normal vols against the market's - see
-        `bootstrappers.market_swap_class.normal_vol_error` - and that spelling is the one a block
-        omitting the field gets. `'Monte_Carlo'` remains fully supported as the engine's own
-        estimator and is the oracle this price was measured against. It is differentiable in
-        $(\\alpha,\\sigma,\\rho)$ off the same tensors the calibration already carries, which is
-        what made the wiring a residual rather than a build.
-
-        AND IT IS QUANTO-FREE, WHICH IS THE MEASURE BOTH OBJECTIVES NOW CALIBRATE IN. Everything
-        here is read off $J$, the covariance of the scaled martingales under the RATE currency's own
-        risk-neutral measure, so this is the DOMESTIC swaption - the right measure for a domestic
-        payoff, whatever the base currency of the job. The Monte Carlo objective used to simulate
-        through a `precalculate` that installed the quanto drift $K$ into `KtT`, so on a
-        non-base-currency curve the two objectives were not pricing under the same measure.
-
-        WHAT THAT COST, kept because a measurement is history worth keeping. On the identified
-        fixture's ZAR curve made FOREIGN under a USD base - a 15-20% FX vol curve and a 0.4 FX/IR
-        correlation, at the recorded theta*, on one Sobol sample, over the FOUR benchmarks
-        `tests/test_hw2f_analytic.py`'s own gate prices (`CHECKER_BENCHMARKS`, which is the set to
-        re-read it on: the premiums move with the benchmark block's TimeGrid):
-
-            benchmark      MC premium, rho=0.4    rho=0     moves by    SP moves by
-            1Y x 1Y             0.006789635    0.006407690    +5.96%    0 (bitwise)
-            2Y x 5Y             0.039594307    0.036378626    +8.84%    0 (bitwise)
-            3Y x 3Y             0.030439928    0.027227734   +11.80%    0 (bitwise)
-            10Y x 10Y           0.066546269    0.059192866   +12.42%    0 (bitwise)
-
-        which is 10.9 to 24.4 basis points of ATM normal vol, an ATM Bachelier premium being linear
-        in the vol - five to eleven times the worst corner of the 0.13 to 2.17 bp this approximation
-        itself costs. THE DISAGREEMENT WAS THE MONTE CARLO'S and it is closed at the calibration
-        seam, not here: `bootstrappers.RiskNeutralInterestRateModel.implied_process` builds the
-        objective's process on an implied object with the FX inputs suppressed, so $K \\equiv 0$
-        through the loss, the Jacobian and the honesty reprice, and the whole table above is now
-        exactly 0.0 - bitwise, because the FX/IR correlation reaches nothing the objective reads.
-        The model parameters are measure-invariant (Girsanov moves drifts, not quadratic variation),
-        so the SCENARIO run still installs $K$ off the emitted `Quanto_FX_Correlation_1/2`, which is
-        the only place that drift belongs.
-
-        The t=0 curve is read in NUMPY, `get_par_swap_rate`'s own spelling of $P(0,T)$, so this
-        price carries no derivative in the curve - the same severance the calibration already
-        declares, because the curve is the bootstrap's quote and not the swaption's.
+        The t=0 curve is read in NUMPY, so this price carries no derivative in the curve: the
+        curve is the bootstrap's quote, not the swaption's.
         """
         if self.J is None:
             raise Exception(
@@ -1380,15 +1228,12 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         return 'HWImpliedInterestRate', [('F1',), ('F2',)]
 
     def generate(self, shared_mem):
-        """
-        Simulate the implied 2-factor Hull-White curve.
+        """Simulate the implied 2-factor Hull-White curve.
 
-        Dual-mode on the random-number rank: outer (T,B) or inner MC (T,B,B2). Under inner MC the
-        per-tenor coefficients (n_tenors,1) -> (n_tenors,1,1) so they broadcast against the
-        (T,1,B,B2) factor tensors, and drift is rank-aligned inside sim_curve (a per-outer-path
-        curve (T,n_tenors,B) broadcasts across the B2 fan-out). Stochastic-deflation (grid_index)
-        mode returns a dict of curves and is incompatible with nested simulation — the fork stores
-        a single tensor per factor — so it raises there.
+        Dual-mode on the random-number rank: outer (T,B) or inner MC (T,B,B2). Under inner MC
+        the per-tenor coefficients broadcast against the (T,1,B,B2) factor tensors and drift is
+        rank-aligned inside `sim_curve`. Stochastic-deflation (grid_index) mode returns a dict
+        of curves, which nested simulation cannot store, so it raises there.
         """
 
         def sim_curve(drift, Bt0, Bt1, f1, f2, factor_tenor):
@@ -1400,7 +1245,6 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
             rng1, shared_mem.t_random_numbers[self.z_offset:self.z_offset + 2, :self.scenario_horizon])
 
         if rng1.ndim == 3:
-            # Inner MC (T,B,B2): per-tenor coeffs unsqueeze to broadcast; deflation unsupported.
             if self.grid_index is not None:
                 raise NotImplementedError(
                     "HullWhite2FactorImpliedInterestRateModel stochastic-deflation (grid_index) "
@@ -1409,11 +1253,9 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
             return sim_curve(self.drift, self.BtT[0].unsqueeze(-1), self.BtT[1].unsqueeze(-1),
                              factor1, factor2, self.factor_tenor.unsqueeze(-1))
 
-        # check if we need deflators
         if self.grid_index is not None:
-            # if we have a grid index, then we want to simulate a reduced curve (just the first 6 months) over a
-            # finer time grid - this is useful for stochastic deflation - note that at least 4 tenor points need
-            # to be included to correctly handle interpolation
+            # a grid index means a reduced curve (just the first 6 months) over a finer time
+            # grid, for stochastic deflation - at least 4 tenor points to interpolate correctly
             reduced_tenor_index = max(4, self.factor.tenors.searchsorted(0.5) + 1)
 
             full_grid_curve = sim_curve(
@@ -1431,9 +1273,7 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
 
 
 class HullWhite1FactorInterestRateModel(StochasticProcess):
-    """Hull White 1 factor model
-
-    """
+    """Hull White 1 factor model"""
 
     documentation = ('Interest Rates', [
         'The instantaneous spot rate (or short rate) which governs the evolution of the yield curve is modeled as:',
@@ -1484,33 +1324,25 @@ class HullWhite1FactorInterestRateModel(StochasticProcess):
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
         # ensures that tenors used are the same as the price factor
         factor_tenor = self.factor.get_tenor()
-        # the AtT assembly below divides by this and its bracket vanishes with it, which is the
-        # same removable singularity `hw_alpha_floor` holds off zero on the 2 factor side - and
-        # `Alpha` declares default=0, so a price factor that omits it reaches that division at
-        # exactly zero without anyone solving for it
+        # the AtT assembly below divides by this and its bracket vanishes with it - the same
+        # removable singularity `hw_alpha_floor` holds off zero, and `Alpha` declares
+        # default=0, so a price factor that omits it reaches that division at exactly zero
         alpha = hw_alpha_floor(self.param['Alpha'])
 
-        # store randomnumber id's
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
 
-        # store the forward curve
         time_grid_years = np.array([self.factor.get_day_count_accrual(
             ref_date, t) for t in time_grid.scen_time_grid])
         self.fwd_curve = self.forward_curve(tensor, time_grid_years, shared)
 
-        # (N,2) knot pairs, the same layout Sigma is read in below and the zeros fallback
-        # carries - the transposed read this replaces handed integrate_piecewise_linear the
-        # PAIRS as (tenors, values), garbage for any real curve and invisible to every
-        # quanto=0 fixture
+        # (N,2) knot pairs, the same layout Sigma is read in below and the zeros fallback carries
         quantofx = self.param['Quanto_FX_Volatility'].array if self.param['Quanto_FX_Volatility'] else np.zeros(
             (1, 2))
         quantofxcorr = self.param.get('Quanto_FX_Correlation', 0.0)
 
-        # grab the vols
         vols = self.param['Sigma'].array
 
-        # calculate known functions
         H = integrate_piecewise_linear(
             hw_calc_H(alpha, np.exp), shared, time_grid_years, vols[:, 0], vols[:, 1])
         I = integrate_piecewise_linear(
@@ -1523,19 +1355,14 @@ class HullWhite1FactorInterestRateModel(StochasticProcess):
             hw_calc_IJK(alpha, np.exp), shared, time_grid_years,
             vols[:, 0], vols[:, 1], quantofx[:, 0], quantofx[:, 1])
 
-        # Now precalculate the A and B matrices
         BtT = hw_calc_B(alpha, factor_tenor)
         AtT = np.array([(BtT / alpha) * np.exp(-alpha * t) * (
                 2.0 * It - (np.exp(-alpha * t) + np.exp(-alpha * (t + factor_tenor))) * Jt) for (It, Jt, t) in
                         zip(I, J, time_grid_years)])
 
-        # The increments fed to the cumsum must be of the RAW levels K, H - hw_calc_H/hw_calc_IJK
-        # already carry e^{+alpha*s} in their integrands, and the single e^{-alpha*t} decay is
-        # applied once at assembly in generate (exp_minus_alpha_t), exactly as HW2F and the
-        # hazard model spell it. Pre-decaying the levels inside the diff telescopes the cumsum
-        # to e^{-alpha*t}K(t), and the terminal multiply then made these two legs e^{-2alpha*t}:
-        # measured ratio-to-exact of exactly e^{-alpha*t} at every node (12 digits, 10y grid),
-        # invisible to every fixture because Lambda and Quanto_FX_Correlation are 0 everywhere.
+        # the increments fed to the cumsum must be of the RAW levels K, H: hw_calc_H and
+        # hw_calc_IJK already carry e^{+alpha*s} in their integrands, and the single
+        # e^{-alpha*t} decay is applied once at assembly in generate, as HW2F spells it
         self.delta_KtT = shared.one.new_tensor(
             np.hstack((0.0, quantofxcorr * np.diff(K)))).reshape(-1, 1)
 
@@ -1641,14 +1468,12 @@ class HWHazardRateModel(StochasticProcess):
         alpha = self.param['Alpha']
         factor_tenor = self.factor.get_tenor()
 
-        # store randomnumber id's
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
 
         time_grid_years = np.array([self.factor.get_day_count_accrual(
             ref_date, t) for t in time_grid.scen_time_grid])
 
-        # store the forward curve    
         self.fwd_curve = self.forward_curve(tensor, time_grid_years, shared, mul_time=False)
         Bt = ((1.0 - np.exp(-alpha * time_grid_years)) / alpha).reshape(-1, 1)
         B2t = ((1.0 - np.exp(-2.0 * alpha * time_grid_years)) / alpha).reshape(-1, 1)
@@ -1661,7 +1486,6 @@ class HWHazardRateModel(StochasticProcess):
         delta_var = np.diff(np.insert(var, 0, 0, axis=0), axis=0)
         self.delta_vol = shared.one.new_tensor(np.sqrt(delta_var).reshape(-1, 1))
 
-        # convert to tensors
         self.AtT = shared.one.new_tensor(AtT)
         self.BtT = shared.one.new_tensor(BtT)
         # Canonical (mode-agnostic): (T, n_tenors) calibrated / (T, n_tenors, B) per-path.
@@ -1757,22 +1581,20 @@ class CSForwardPriceModel(StochasticProcess):
         return 1
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
-        """
-        Build the per-step vol/drift and the initial curve for the CS forward-price process.
+        """Build the per-step vol/drift and the initial curve for the CS forward-price process.
 
-        `tensor` is (n_tenors,) calibrated or (n_tenors, B) per-path (inner-MC fork or diff-ML t=0
-        burn-in). `initial_curve` is stored in a generate-mode-agnostic canonical form — a leading
-        time-broadcast axis plus n_tenors[, B]; the mode-specific trailing axes are appended in
-        `generate`, which knows outer from inner via Z.ndim. precalc cannot make that call, since a
-        per-path burn-in init and an inner-MC init are both (n_tenors, B). vol/drift are functions
-        of the time grid and the params only, shaped (T, n_tenors, 1).
+        `tensor` is `(n_tenors,)` calibrated or `(n_tenors, B)` per-path (inner-MC fork or
+        diff-ML t=0 burn-in). `initial_curve` is stored in a generate-mode-agnostic canonical
+        form - a leading time-broadcast axis plus n_tenors[, B] - and the mode-specific
+        trailing axes are appended in `generate`, which knows outer from inner via Z.ndim;
+        precalc cannot make that call, since a per-path burn-in init and an inner-MC init are
+        both `(n_tenors, B)`. vol/drift are functions of the time grid and the params only,
+        shaped (T, n_tenors, 1).
         """
-        # canonical initial_curve: leading time-broadcast axis; generate appends the mode axis.
         if tensor.ndim == 1:
             self.initial_curve = tensor.reshape(1, -1)                      # (1, n_tenors)
         else:
             self.initial_curve = tensor.unsqueeze(0)                        # (1, n_tenors, B)
-        # store randomnumber id's
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
         #  rebase the dates
@@ -1791,7 +1613,6 @@ class CSForwardPriceModel(StochasticProcess):
             # need to scale the vol (as the variance is modelled using an OU Process)
             var_adj = (1.0 - np.exp(-2.0 * self.param['Alpha'] * dt.cumsum(axis=0))) / (2.0 * self.param['Alpha'])
             var = np.square(self.param['Sigma']) * np.exp(-2.0 * self.param['Alpha'] * tenors) * var_adj
-            # get the vol
             vol = np.sqrt(np.diff(np.insert(var, 0, 0, axis=0), axis=0))
             self.vol = tensor.new(np.expand_dims(vol, axis=2))
             self.drift = tensor.new(np.expand_dims(self.param['Drift'] * dt.cumsum(axis=0) - 0.5 * var, axis=2))
@@ -1814,7 +1635,6 @@ class CSForwardPriceModel(StochasticProcess):
     def generate(self, shared_mem):
         Z = shared_mem.t_random_numbers[self.z_offset, :self.scenario_horizon]
         if Z.ndim == 2:
-            # Outer mode: Z is (T, B). Bit-exact preserves legacy behavior.
             z_portion = Z.unsqueeze(1) * self.vol                       # (T, n_tenors, B)
             path = torch.exp(self.drift + torch.cumsum(z_portion, dim=0))
         else:
@@ -1823,9 +1643,8 @@ class CSForwardPriceModel(StochasticProcess):
             drift4 = self.drift.unsqueeze(-1)                          # (T, n_tenors, 1, 1)
             z_portion = Z.unsqueeze(1) * vol4                          # (T, n_tenors, B, B2)
             path = torch.exp(drift4 + torch.cumsum(z_portion, dim=0))
-        # Align the canonical initial_curve ((1, n_tenors) calibrated, (1, n_tenors, B)
-        # per-path) to the path rank — broadcasts a calibrated curve across the batch,
-        # an inner/burn-in curve element-wise.
+        # align the canonical initial_curve to the path rank - broadcasts a calibrated curve
+        # across the batch, an inner/burn-in curve element-wise
         return self.align_rank(self.initial_curve, path.ndim) * path
 
 
@@ -1965,7 +1784,6 @@ class PCAInterestRateModel(StochasticProcess):
 
     def __init__(self, factor, param, implied_factor=None):
         super(PCAInterestRateModel, self).__init__(factor, param)
-        # need to precalculate these for a specific set of tenors
         self.evecs = None
         self.vols = None
 
@@ -1973,43 +1791,38 @@ class PCAInterestRateModel(StochasticProcess):
         return len(self.param['Eigenvectors'])
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
-        """
-        Precompute the exact-OU step coefficients, Ito drift and forward curve for the PCA model.
+        """Precompute the exact-OU step coefficients, Ito drift and forward curve for the PCA
+        model.
 
-        Steps are anchored at time_grid_years[0] so the per-step dt and `elapsed` (time since sim
-        start) are correct under both outer mode (anchor = 0) and inner-MC kept-base mode
-        (anchor > 0). Exact OU discretisation:
-            Y_{k+1} = exp(-α Δt_k) Y_k + sqrt((1-exp(-2α Δt_k))/(2α)) Z_{k+1}
+        Steps are anchored at `time_grid_years[0]` so the per-step dt and `elapsed` are correct
+        under both outer mode (anchor = 0) and inner-MC kept-base mode (anchor > 0). The exact
+        OU discretisation is
+            Y_{k+1} = exp(-a dt_k) Y_k + sqrt((1-exp(-2a dt_k))/(2a)) Z_{k+1}
 
-        `fwd_component` is stored in a canonical, generate-mode-agnostic form: (T, n_tenors)
-        calibrated or (T, n_tenors, B) per-path. The mode-specific trailing axis is appended in
-        `generate`, which knows outer from inner via the factor rank; precalc cannot make that
-        call, since a per-path burn-in init and an inner-MC init are both (n_tenors, B).
+        `fwd_component` is stored canonically - (T, n_tenors) calibrated or (T, n_tenors, B)
+        per-path - and `generate` appends the mode-specific trailing axis; precalc cannot make
+        that call, since a per-path burn-in init and an inner-MC init are both (n_tenors, B).
         """
         # ensures that tenors used are the same as the price factor
         factor_tenor = self.factor.get_tenor()
 
-        # store randomnumber id's
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
         time_grid_years = np.array([self.factor.get_day_count_accrual(
             ref_date, t) for t in time_grid.scen_time_grid])
 
-        # rescale and precalculate the eigenvectors
         evecs, evals = np.zeros((factor_tenor.size, self.num_factors())), []
         for index, eigen_data in enumerate(self.param['Eigenvectors']):
             evecs[:, index] = np.interp(factor_tenor, *eigen_data['Eigenvector'].array.T)
             evals.append(eigen_data['Eigenvalue'])
 
-        # note that I don't need to divide by the volatility because I normalize
-        # across tenors below . . .
+        # no need to divide by the volatility - the normalization across tenors below does it
         B = evecs.dot(np.diag(np.sqrt(evals)))
         B /= np.linalg.norm(B, axis=1).reshape(-1, 1)
 
         self.vols = np.interp(factor_tenor, *self.param['Yield_Volatility'].array.T)
         alpha = self.param['Reversion_Speed']
 
-        # Anchored at time_grid_years[0]; exact OU discretisation.
         dt_steps   = np.diff(np.append([time_grid_years[0]], time_grid_years))  # [T]
         elapsed    = dt_steps.cumsum()                                        # [T] — time since sim start
         ou_decay   = np.exp(-alpha * dt_steps)                               # [T]
@@ -2023,7 +1836,6 @@ class PCAInterestRateModel(StochasticProcess):
         self.drift = shared.one.new_tensor(np.expand_dims(
             -0.5 * (self.vols * self.vols).reshape(1, -1) * ou_var_cumul.reshape(-1, 1), axis=2))
 
-        # normalize the eigenvectors
         self.evecs = shared.one.new_tensor(B.T)                         # [n_factors, n_tenors]
 
         # Forward curve at each time-grid point. `tensor` is the current zero curve:
@@ -2045,27 +1857,24 @@ class PCAInterestRateModel(StochasticProcess):
                 omega_b = omega.unsqueeze(-1)                                                   # [1, n_tenors, 1]
                 fwd_curve = decay_b * curve_t0 + (1.0 - decay_b) * omega_b                      # [T, n_tenors, B]
         else:
-            # Batch-aware forward curve (calibrated (n_tenors,) → [T, n_tenors];
-            # per-path (n_tenors, B) → [T, n_tenors, B]) via the base-class seam, then
-            # divide by the tenor with the divisor rank-aligned to the curve.
+            # batch-aware forward curve via the base-class seam, then divide by the tenor with
+            # the divisor rank-aligned to the curve
             fwd = self.forward_curve(tensor, elapsed, shared)
             factor_tenor_t = shared.one.new_tensor(factor_tenor.reshape(1, -1))                 # [1, n_tenors]
             fwd_curve = fwd / self.align_rank(factor_tenor_t, fwd.ndim)
 
-        # Canonical mode-agnostic form; generate appends the mode-specific trailing axis.
         self.fwd_component = fwd_curve
 
     def calc_factors(self, factors):
-        """
-        Project the OU factor innovations onto the (normalised) PCA eigenvectors.
+        """Project the OU factor innovations onto the (normalised) PCA eigenvectors.
 
-        `factors` is [n_factors, T, B] outer or [n_factors, T, B, B2] inner MC; the branch on ndim
-        changes only the broadcasting shapes, the vectorisation is identical.
+        `factors` is [n_factors, T, B] outer or [n_factors, T, B, B2] inner MC; the branch on
+        ndim changes only the broadcasting shapes, the vectorisation is identical.
 
         Closed-form vectorisation of Y_{k+1} = d_k * Y_k + n_k * Z_k  (Y_0 = 0):
             Y_out[k] = D[k] * cumsum( n[i]/D[i] * Z[i] )[k],  D[k] = cumprod(d)[k]
-        Two O(T) CUDA-native ops (cumprod, cumsum) replace the T-step Python loop. Numerically
-        stable for typical PCA α (0.01–0.3); avoid α >> 1 on long grids.
+        Two O(T) CUDA-native ops replace the T-step Python loop. Numerically stable for typical
+        PCA alpha (0.01-0.3); avoid alpha >> 1 on long grids.
         """
         evecs_mat = self.evecs                                         # [n_factors, n_tenors]
         D = torch.cumprod(self.ou_decay, dim=0)                         # [T, 1]
@@ -2091,9 +1900,8 @@ class PCAInterestRateModel(StochasticProcess):
             shared_mem.t_random_numbers[
             self.z_offset:self.z_offset + self.num_factors(), :self.scenario_horizon])
 
-        # Align the canonical fwd_component ((T, n_tenors) calibrated, (T, n_tenors, B)
-        # per-path) to stoch's rank ((T, n_tenors, B) outer, (T, n_tenors, B, B2) inner)
-        # — broadcasts a calibrated curve across the batch, a per-path curve element-wise.
+        # align the canonical fwd_component to stoch's rank - broadcasts a calibrated curve
+        # across the batch, a per-path curve element-wise
         return self.align_rank(self.fwd_component, stoch.ndim) * torch.exp(stoch)
 
     def reveal_state_at(self, t, buffer):
@@ -2220,13 +2028,13 @@ class LogOUSpotModel(StochasticProcess):
         return 1
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
-        """
-        Precompute the exact-OU step coefficients, the initial log-spot and the reversion target.
+        """Precompute the exact-OU step coefficients, the initial log-spot and the reversion
+        target.
 
-        θ is anchored at the current spot rather than at the calibrated long-run mean: production
-        hedging should not bet that today's price reverts to a historical average — the agent
-        hedges variance around the current regime, not directional drift toward a stale θ. Set
-        `Anchor_Theta_At_Spot: false` for backtests that want the absolute calibrated θ.
+        Theta is anchored at the current spot rather than at the calibrated long-run mean: the
+        agent hedges variance around the current regime, not directional drift toward a stale
+        theta. Set `Anchor_Theta_At_Spot: false` for backtests wanting the absolute calibrated
+        theta.
         """
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
@@ -2241,9 +2049,8 @@ class LogOUSpotModel(StochasticProcess):
 
         self.e_kdt   = tensor.new(e_kdt.reshape(-1, 1))
         self.ou_vol  = tensor.new(np.sqrt(var_step).reshape(-1, 1))
-        # Initial log-spot. AAD: keep on graph. `tensor` is the factor's `Spot`: (1,)
-        # calibrated, or (B,) per-path (inner-MC fork / diff-ML t=0 burn-in). reshape(-1)
-        # keeps the batch axis (a calibrated (1,) broadcasts like the old 0-d scalar).
+        # initial log-spot, kept on the AAD graph. `tensor` is the factor's `Spot`: (1,)
+        # calibrated or (B,) per-path; reshape(-1) keeps the batch axis
         self.log_spot0 = torch.log(tensor).reshape(-1)
         # θ anchored at the current spot unless Anchor_Theta_At_Spot is disabled.
         if bool(self.param.get('Anchor_Theta_At_Spot', True)):
@@ -2278,9 +2085,8 @@ class LogOUSpotModel(StochasticProcess):
 
     def privileged_factors(self, simulated):
         spot = simulated.to(dtype=torch.float32)
-        # Use self.theta (post-anchor) so the critic sees the actual θ used during
-        # simulation. theta is (1,) calibrated / (B,) per-path — broadcasts against spot's
-        # batch axis (each path subtracts its own θ); the trailing unsqueeze is the feature dim.
+        # use self.theta (post-anchor) so the critic sees the theta used during simulation; it
+        # is (1,) calibrated / (B,) per-path and the trailing unsqueeze is the feature dim
         theta = self.theta.to(dtype=torch.float32).reshape(-1)
         log_dev = (spot.clamp_min(1.0e-9).log() - theta).unsqueeze(-1)
         kappa_t = torch.full_like(log_dev, float(self.param['Kappa']))
@@ -2400,13 +2206,13 @@ class MarkovHMMSpotModel(StochasticProcess):
         return 1
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
-        """
-        Precompute the per-state emission moments, the CTMC transition ladder and the initial spot.
+        """Precompute the per-state emission moments, the CTMC transition ladder and the
+        initial spot.
 
-        AAD: `spot0` is kept on the autograd graph so payoff sensitivities w.r.t. the initial spot
-        flow through, and is stored unreshaped so inner-MC mode can pass a `(B,)` vector of
-        per-outer-path initial spots; outer mode is the framework's usual `(1,)` scalar, broadcast
-        at generate-time.
+        `spot0` is kept on the autograd graph so payoff sensitivities w.r.t. the initial spot
+        flow through, and stored unreshaped so inner-MC mode can pass a `(B,)` vector of
+        per-outer-path initial spots; outer mode is the framework's usual `(1,)` scalar,
+        broadcast at generate time.
         """
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
@@ -2426,9 +2232,9 @@ class MarkovHMMSpotModel(StochasticProcess):
         self.mu_per_state = _t(np.array([float(s.get('Mu', 0.0)) for s in states], dtype=np.float64))
         self.sigma_per_state = _t(np.array([float(s['Sigma']) for s in states], dtype=np.float64))
         self.dt_per_step = _t(dt_arr)
-        # Optional Student-t degrees of freedom per state. If any state has Nu the model
-        # emits t-distributed innovations (rescaled to unit marginal variance so σ retains
-        # its standard interpretation). Absent or all-None → Gaussian as before.
+        # optional Student-t degrees of freedom per state: any state carrying Nu makes the
+        # model emit t innovations rescaled to unit marginal variance, so sigma keeps its
+        # standard interpretation. Absent or all-None leaves the emissions Gaussian.
         nu_arr = [s.get('Nu') for s in states]
         if any(n is not None for n in nu_arr):
             self.nu_per_state = _t(np.array([float(n) if n is not None else 1.0e6 for n in nu_arr],
@@ -2457,25 +2263,23 @@ class MarkovHMMSpotModel(StochasticProcess):
         return 'MarkovHMMSpotProcess', [()]
 
     def generate(self, shared_mem):
-        """
-        Sample the regime path and simulate the HMM emission path (log returns or price diffs).
+        """Sample the regime path and simulate the HMM emission path (log returns or price
+        diffs).
 
-        Outer mode honours a per-path t=0 regime override published by the diff-ML burn-in under
-        `(factor_key, 'regime0_outer')`, mirroring the inner-mode `regime0_inner` pattern; absent
-        it, the t=0 regime is drawn from the calibrated π_0.
+        Outer mode honours a per-path t=0 regime override published by the diff-ML burn-in
+        under `(factor_key, 'regime0_outer')`, mirroring the inner-mode `regime0_inner`
+        pattern; absent it, the t=0 regime is drawn from the calibrated pi_0.
 
         Outer mode also runs the forward HMM belief filter: the differential-ML build uses
         `P(regime_t | prices_{0..t})` as the regime coordinate of `market_t`, because the
         privileged true regime is unavailable to a decision rule at runtime. Belief is detached
-        from autograd — it is consumed as a state coordinate, not a quantity we differentiate
-        through, and the price-path autograd graph is preserved separately for the deal pricer.
-        It is published to BOTH `privileged_factors()` (B-axis dim=1, so the concat works) AND
-        `t_Scenario_Buffer` with a B-LAST shape (T, n_states, B) so the buffer's dim=-1 concat
-        works, enabling `reveal_state_at` to route belief into the V̂ deep-state market block.
+        from autograd - it is consumed as a state coordinate, not differentiated through - and
+        is published to BOTH `privileged_factors()` and `t_Scenario_Buffer` (B-last, so the
+        buffer's dim=-1 concat works and `reveal_state_at` can route belief into the market
+        block).
         """
-        # Z is (T, B) in outer mode, (T, B, B2) in inner mode. Everything runs at the
-        # calculation's global precision (shared.one): the precalc tensors were built with
-        # shared.one.new_tensor, so they already carry the right dtype/device — no casts.
+        # everything runs at the calculation's global precision: the precalc tensors were built
+        # with shared.one.new_tensor, so they already carry the right dtype/device
         Z = shared_mem.t_random_numbers[self.z_offset, :self.scenario_horizon]
         device = Z.device
 
@@ -2487,13 +2291,9 @@ class MarkovHMMSpotModel(StochasticProcess):
         nu = self.nu_per_state
 
         if Z.ndim == 2:
-            # Outer mode: (T, B). Canonical Sobol orientation: dimension = the per-path
-            # coordinates (T+1 uniforms — one initial draw plus one per transition), samples =
-            # paths, i.e. draw(B) -> (B, T+1) transposed to (T+1, B). The TRANSPOSED form
-            # (dim=B, samples=T+1) is a defect at large B: a B-dimensional Sobol sequence with
-            # only ~T points has badly-distributed cross-dimension (= cross-PATH) projections,
-            # correlating regime transitions across outer paths — measured as the B=512 policy
-            # collapse (worse even in-sample).
+            # outer mode: (T, B). Canonical Sobol orientation - dimension = the per-path
+            # coordinates (T+1 uniforms), samples = paths. The TRANSPOSED form has
+            # badly-distributed cross-PATH projections (the measured B=512 policy collapse).
             T, B = Z.shape
             u_regime = shared_mem.quasi_rng(T + 1, B)[1].transpose(0, 1).contiguous()
             # Per-path t=0 regime override from the diff-ML burn-in; else the π_0 draw.
@@ -2528,9 +2328,8 @@ class MarkovHMMSpotModel(StochasticProcess):
             s0 = self.spot0.expand(B)                                                # (1,) -> (B,)
             if self.log_price:
                 log_path = s0.log().unsqueeze(0) + ds.cumsum(dim=0)                  # (T, B)
-                # Floor the log-path before exp(): a fat-tailed Student-t innovation can
-                # drive it below the float underflow threshold, where exp() returns 0.0
-                # and breaks the strictly-positive price-level invariant downstream.
+                # floor the log-path before exp(): a fat-tailed innovation can drive it below
+                # the underflow threshold, where exp() returns 0.0 and the price invariant breaks
                 spot_path = log_path.clamp_min(-10.0).exp()
             else:
                 spot_path = s0.unsqueeze(0) + ds.cumsum(dim=0)                       # (T, B)
@@ -2612,14 +2411,12 @@ class MarkovHMMSpotModel(StochasticProcess):
         return out
 
     def reveal_state_at(self, t, buffer):
-        """Regime-switching spot: belief-first / price-last (the calc concatenates the segments in
-        this order). The regime stays LATENT — reveal the participant-inferable posterior
-        `P(regime_t | prices_{0..t})` (SUFFICIENT statistic; step 2 keeps it out of diff-PCA) when
-        the buffer carries a filtered belief whose rank matches the current mode (outer belief
-        `(T,n,B)` vs regimes `(T,B)`; inner belief `(T,n,B,B2)` vs regimes `(T,B,B2)` ⇒
-        `belief.dim() == regimes.dim() + 1`), else the degenerate true-regime one-hot fallback.
-        The observable spot level — the deployable LME quote the liability marks to — is the last
-        (CONTINUOUS) coordinate."""
+        """Regime-switching spot: belief-first / price-last (the calc concatenates the segments
+        in this order). The regime stays LATENT - what is revealed is the participant-inferable
+        posterior `P(regime_t | prices_{0..t})` as a SUFFICIENT statistic, whenever the buffer
+        carries a filtered belief whose rank matches the current mode, else the degenerate
+        true-regime one-hot fallback. The observable spot level - the deployable quote the
+        liability marks to - is the last CONTINUOUS coordinate."""
         key = self.factor_key
         price = buffer[key][t].unsqueeze(0)                                   # (1, ...batch)
         regimes = buffer[(key, 'regimes')]
@@ -2696,13 +2493,11 @@ class MarkovHMMSpotModel(StochasticProcess):
         return sigma
 
     def _forward_belief(self, spot_path, device):
-        """Forward HMM belief filter — outer-mode only. Returns belief (T, B, n_states)
-        where `belief[t, b, r] = P(regime_t = r | observed diffs through time t, path b)`,
-        computed in log-space (logsumexp predict + logsumexp normalize) for numerical
-        robustness under fat-tailed Student-t emissions. Per-step emission parameters and
-        transition matrix match the simulator's exactly (same `mu_per_state`,
-        `sigma_per_state`, `nu_per_state`, `dt_per_step`, `P_per_step`) — so on held-out
-        sim data the filter is calibrated against the model that generated it.
+        """Forward HMM belief filter, outer mode only. Returns belief (T, B, n_states) where
+        `belief[t, b, r] = P(regime_t = r | observed diffs through time t, path b)`, computed
+        in log-space for numerical robustness under fat-tailed Student-t emissions. Per-step
+        emission parameters and transition matrix match the simulator's exactly, so on
+        held-out sim data the filter is calibrated against the model that generated it.
         """
         T, B = spot_path.shape
         n_states = self.n_states
@@ -2760,21 +2555,19 @@ class MarkovHMMSpotModel(StochasticProcess):
         return (-0.5 * (float(np.log(2.0 * np.pi)) + 2.0 * std_r.log())) - 0.5 * z.pow(2)
 
     def inner_forward_belief(self, inner_spot, belief0):
-        """One-step (few-step) HMM filter over an INNER-MC price path, seeded with the
-        outer entry posterior `belief0` — so the diff-ML bootstrap's `z_{t+1}` carries the
-        participant's genuine belief, NOT a privileged true-regime one-hot. Differentiable
-        in `inner_spot`: the belief column's pathwise slope falls out of the same AAD pass
-        that yields the wealth/price differentials.
+        """One-step (few-step) HMM filter over an INNER-MC price path, seeded with the outer
+        entry posterior `belief0`, so the diff-ML bootstrap's `z_{t+1}` carries the
+        participant's genuine belief rather than a privileged true-regime one-hot.
+        Differentiable in `inner_spot`: the belief column's pathwise slope falls out of the
+        same AAD pass that yields the wealth/price differentials.
 
-        `inner_spot`: `(T, B, B2)` inner price path (T=2 for the one-step bootstrap —
-        index 0 = outer t, index 1 = outer t+1). `belief0`: `(n_states, B)` outer posterior
-        at the fork step (B-last, as published to the buffer), broadcast across the B2
-        fan-out. Returns belief `(T, n_states, B, B2)` — the buffer's B-last convention, so
-        `reveal_state_at` returns `belief[τ] = (n_states, B, B2)`.
+        `inner_spot` is the `(T, B, B2)` inner price path (T=2 for the one-step bootstrap);
+        `belief0` is the `(n_states, B)` outer posterior at the fork step, B-last as published,
+        broadcast across the B2 fan-out. Returns belief `(T, n_states, B, B2)`.
 
-        Predict uses the transition over the FULL step `P_per_step[τ] = expm(Q·dt[τ])` (the
-        real interval), not the dt=0 anchor `P_per_step[τ-1]=I`: the participant filters
-        under the true regime dynamics regardless of the inner sampler's anchor."""
+        Predict uses the transition over the FULL step `P_per_step[tau]`, not the dt=0 anchor:
+        the participant filters under the true regime dynamics regardless of the sampler's
+        anchor."""
         T, B, B2 = inner_spot.shape
         n = self.n_states
         obs = inner_spot.clamp_min(1.0e-30).log() if self.log_price else inner_spot
@@ -2923,9 +2716,9 @@ class MarkovHMMSpotCalibration(object):
             'Calibration_DT_Years': dt_calib,
         }
 
-        # delta = regime-standardised innovation: (diff - μ_state) / σ_state under the
-        # posterior regime path. Approximately iid N(0,1) so the framework's correlation
-        # consolidation isn't contaminated by regime-induced heteroskedasticity.
+        # delta = regime-standardised innovation (diff - mu_state)/sigma_state under the
+        # posterior regime path - approximately iid N(0,1), so the framework's correlation
+        # consolidation is not contaminated by regime-induced heteroskedasticity
         innov = (diffs.values - means[regimes]) / np.where(sigmas[regimes] > 0, sigmas[regimes], 1.0)
         delta = pd.DataFrame({data_frame.columns[0]: innov}, index=diffs.index)
 
@@ -2933,30 +2726,25 @@ class MarkovHMMSpotCalibration(object):
 
 
 class GARCHSpotModel(StochasticProcess):
-    """Zero-mean GARCH(1,1)-t spot-price model — martingale primary by construction:
-    E[Δlog S | filtration] = μ·dt with `Mu` defaulting to 0. The conditional variance
-    `h_t` is a deterministic recursion on realized returns (no belief filter), exactly
-    observable, and revealed to the value function as `log h_t`. Drop-in for the HMM: same
-    outer/inner generate contract, same buffer conventions, same privileged-state plumbing.
+    """Zero-mean GARCH(1,1)-t spot-price model - a martingale primary by construction:
+    E[Dlog S | filtration] = mu*dt with `Mu` defaulting to 0. The conditional variance `h_t` is
+    a deterministic recursion on realized returns (no belief filter), exactly observable, and
+    revealed to the value function as `log h_t`. Drop-in for the HMM: same outer/inner generate
+    contract, same buffer conventions, same privileged-state plumbing.
 
-        ε_k ~ standardized Student-t(ν) (unit variance);  r_k = √h_k · ε_k
-        Δlog S over step k = μ·dt_c + r_k;  h_{k+1} = ω + α·r_k² + β·h_k;  h_0 = H0
+        eps_k ~ standardized Student-t(nu) (unit variance);  r_k = sqrt(h_k)*eps_k
+        Dlog S over step k = mu*dt_c + r_k;  h_{k+1} = omega + alpha*r_k^2 + beta*h_k;  h_0 = H0
 
-    No-lookahead: `h_t` is the variance of the step t→t+1, a function of returns strictly
+    No-lookahead: `h_t` is the variance of the step t->t+1, a function of returns strictly
     before t, so `log h_t` is known at decision time t.
 
-    JSON config:
-        Omega, H0: per-calibration-step variance of FRACTION log returns (ω>0, H0>0).
-        Alpha, Beta: GARCH weights (α≥0, β≥0, α+β≤0.999).
-        Nu: Student-t degrees of freedom (>2.05).
-        Mu: annualised drift (default 0 — 16y of daily data cannot identify it).
-        Carry_Drift: Yes drifts the log-spot at the front of the declared carry curve.
-        Calibration_DT_Years: step size of the recursion (default 1/252).
-        Convexity_Correction: Yes/No (default No). No = today's log-space-zero-mean (E[Δlog S]=
-            Mu·dt), which leaves a spurious +½·Var Jensen drift in the PRICE (~½·annual-var, e.g.
-            ~3%/yr at LR vol 0.2475). Yes subtracts ½·Var(r_t) from the per-step log-drift so the
-            PRICE is the Mu-martingale: E[S_{t+1}/S_t]=exp(Mu·dt) (Gaussian-exact; the Student-t
-            tail leaves a small positive residual). h recursion / revealed log_h are UNCHANGED."""
+    `Convexity_Correction` (default No) decides which quantity is the martingale. No leaves
+    today's log-space zero mean, E[Dlog S] = Mu*dt, and so a spurious +1/2*Var Jensen drift in
+    the PRICE (~3%/yr at LR vol 0.2475); Yes subtracts 1/2*Var(r_t) from the per-step log-drift
+    so E[S_{t+1}/S_t] = exp(Mu*dt), Gaussian-exact, the Student-t tail leaving a small positive
+    residual. The h recursion and the revealed log_h are unchanged either way. The remaining
+    JSON fields (Omega, Alpha, Beta, Nu, H0, Mu, Carry_Drift, the Drift_States chain and
+    Calibration_DT_Years) are declared with their contracts in `fields` below."""
 
     documentation = (
         'Asset Pricing',
@@ -3029,9 +2817,7 @@ class GARCHSpotModel(StochasticProcess):
                 and param['Alpha'] + param['Beta'] <= 0.999 and param['Nu'] > 2.05
                 and param['H0'] > 0.0), f'GARCHSpotModel invalid params: {param}'
         self.carry_drift = str(param.get('Carry_Drift', 'No')) == 'Yes'
-        # Convexity_Correction=Yes makes the PRICE the martingale (E[S_{t+1}/S_t]=exp(Mu·dt))
-        # by subtracting ½·Var(r_t) from the per-step log-drift; No (default) is today's
-        # log-space-zero-mean (E[Δlog S]=Mu·dt, so the price carries a +½·var Jensen drift).
+        # Yes makes the PRICE the martingale; No, the default, makes the LOG-price one
         cc = param.get('Convexity_Correction', 'No')
         assert cc in ('Yes', 'No'), f'GARCHSpotModel Convexity_Correction must be Yes/No: {cc}'
         self.convexity = cc == 'Yes'
@@ -3045,19 +2831,18 @@ class GARCHSpotModel(StochasticProcess):
         return 'GARCHSpotProcess', [()]
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
-        """
-        Precompute the fractional-trading-clock step schedule and the GARCH recursion parameters.
+        """Precompute the fractional-trading-clock step schedule and the GARCH recursion
+        parameters.
 
         The recursion is calibrated per business day (dt_c) while the sim grid runs in CALENDAR
-        time (Time_Grid "0d 1d(1d)" ⇒ dt=1/365.25, NOT business-day adjusted), so f_t = dt_t/dt_c
-        is the trading-time length of a grid step (≈0.69 on the production grid). `generate` scales
-        the per-step variance by f_t, which makes the annualized vol and the mean-reversion RATE
-        grid-invariant. A step spanning more than one calibration step walks its own sub-steps
-        (utils.garch_correlated_substeps); one sub-step is the exact fractional step.
+        time, so f_t = dt_t/dt_c is the trading-time length of a grid step (~0.69 on the
+        production grid). `generate` scales the per-step variance by f_t, which makes the
+        annualized vol and the mean-reversion RATE grid-invariant. A step spanning more than
+        one calibration step walks its own sub-steps; one sub-step is the exact fractional step.
 
-        AAD: `spot0` is kept on the autograd graph. In log mode h depends only on the generated
-        innovations, never on spot0, so price-AAD w.r.t. spot0 is unaffected by the vol recursion.
-        Outer mode passes a (1,) scalar; inner-MC mode a (B,) per-outer-path vector.
+        `spot0` is kept on the autograd graph. In log mode h depends only on the generated
+        innovations, never on spot0, so price-AAD w.r.t. spot0 is unaffected by the vol
+        recursion. Outer mode passes a (1,) scalar; inner-MC mode a (B,) per-outer-path vector.
         """
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
@@ -3125,17 +2910,15 @@ class GARCHSpotModel(StochasticProcess):
 
     def _carry_drift(self, shared_mem, ndim):
         """The (T, ...) per-step log-drift with the carry term folded in, or the plain (T,) Mu
-        drift when the switch is off. The carry process publishes `(key, 'z0')` in the fork-index
-        convention (row t = what step t->t+1 consumes), (T, 1, ...batch); it simulates BEFORE
-        this spot (Forward_Rate is a dependency of CommodityPrice, so topological order provides
-        it) in the outer loop, the inner fork and the observed-path replay alike.
+        drift when the switch is off. The carry process publishes `(key, 'z0')` in the
+        fork-index convention (row t = what step t->t+1 consumes) and simulates BEFORE this
+        spot in the outer loop, the inner fork and the observed-path replay alike.
 
         Session-print conditioning rides here too, read from STATE: a fixing-bridge child's
-        `print_seed` publishes `(key, 'print_drift')` — the bridge law's unit loading,
-        E[log P(t+1)/P(t) | print] = log(print/P) − premium, per path — and this is the ONE
-        drift site the forward sim, the inner fork and the observed-path replay all consume,
-        so forward ≡ replay is structural. Present in state ⇒ condition; absent ⇒ nothing to
-        condition on."""
+        `print_seed` publishes `(key, 'print_drift')` - the bridge law's unit loading, per path
+        - and this is the ONE drift site the forward sim, the inner fork and the replay all
+        consume, so forward == replay is structural. Present in state means condition, absent
+        means nothing to condition on."""
         shape = (-1,) + (1,) * (ndim - 1)
         if not self.carry_drift:
             drift = self.drift.view(shape)
@@ -3167,15 +2950,12 @@ class GARCHSpotModel(StochasticProcess):
         return drift
 
     def _chain_drift(self, shared_mem, Z):
-        """Per-(step, path) regime drift μ_state·dt from the optional Drift_States Markov chain,
-        sampled on the independent quasi-RNG uniform stream in the canonical Sobol orientation
-        (dimensions = the T+1 per-path coordinates, samples = paths — the transposed form
-        correlates transitions across paths; see MarkovHMMSpotModel.generate). The regime is
-        LATENT: every mode, inner forks included, draws its t=0 state from Drift_Initial_Probs —
-        never from another path's realized state — so a decision rule can learn the regime only
-        from the price evidence its own state carries. Unabsorbed sibling: the HMM model's
-        regime walk (different emission/override semantics); the CTMC ladder is shared
-        (ctmc_per_step)."""
+        """Per-(step, path) regime drift mu_state*dt from the optional Drift_States Markov
+        chain, sampled on the independent quasi-RNG uniform stream in the canonical Sobol
+        orientation (the transposed form correlates transitions across paths - see
+        MarkovHMMSpotModel.generate). The regime is LATENT: every mode, inner forks included,
+        draws its t=0 state from Drift_Initial_Probs and never from another path's realized
+        state, so a decision rule can learn the regime only from its own price evidence."""
         T = Z.shape[0]
         flat_paths = int(np.prod(Z.shape[1:]))
         u = shared_mem.quasi_rng(T + 1, flat_paths)[1].transpose(0, 1).contiguous()
@@ -3208,27 +2988,25 @@ class GARCHSpotModel(StochasticProcess):
     def _simulate_returns(self, eps, z, h, drift=None):
         """Shared GARCH recursion (outer/inner) on the FRACTIONAL TRADING CLOCK. `eps` (T, ...)
         unit-variance standardised-t innovations, `z` (T, ...) the raw framework Gaussians they
-        were scaled from (a coarse interval's sub-steps re-derive their own t-innovations from
-        z[t]), `h` (...) the entry variance h_0 (per business day). Returns (ds, log_h), each
-        (T, ...): ds[t] is Δlog S landing at grid point t (ds[0]=0 — the dt=0 anchor), log_h[t]
-        is the revealed variance of the move t→t+1 (no-lookahead: a function of draws ≤ t only).
+        were scaled from, `h` (...) the entry variance h_0 (per business day). Returns
+        (ds, log_h), each (T, ...): ds[t] is Dlog S landing at grid point t (ds[0]=0, the dt=0
+        anchor), log_h[t] the revealed variance of the move t->t+1 (a function of draws <= t
+        only, so no lookahead).
 
         Per step with trading-time length f_t = dt_t/dt_c:
-            r_t = √(h_t·f_t)·ε_t,   h_{t+1} = h_t + f_t·(ω − (1−β)·h_t) + α·r_t².
-        This is the standard recursion at f=1, has E-fixed-point ω/(1−α−β) for any f, and a
-        per-step mean-reversion factor (1 − f(1−α−β)) so the decay RATE is grid-invariant in
+            r_t = sqrt(h_t*f_t)*eps_t,  h_{t+1} = h_t + f_t*(omega - (1-beta)*h_t) + alpha*r_t^2
+        This is the standard recursion at f=1, has E-fixed-point omega/(1-alpha-beta) for any
+        f, and a per-step mean-reversion factor that keeps the decay RATE grid-invariant in
         real time. A step spanning more than one calibration step walks the sub-steps that span
-        it instead (utils.garch_correlated_substeps — z[t] rides the √E[h·dt]-weighted
-        combination of the sub-step normals); log_h[t] is then the variance entering the NEXT
-        interval, and that interval's own variance Σ h_j·dt_j is realized, not F_t-measurable.
+        it instead (`utils.garch_correlated_substeps`); log_h[t] is then the variance entering
+        the NEXT interval, and that interval's own variance is realized rather than
+        F_t-measurable.
 
-        With Convexity_Correction, the deterministic log-drift also carries −½·Var(r_t) so the
-        PRICE (not the log-price) is the Mu-martingale: E[exp(r_t − ½Var(r_t))] = 1 for Gaussian
-        r_t. The correction touches ONLY ds (the log-price shift); the innovation r_t and the h
-        recursion — hence revealed log_h — are untouched. (Student-t r has E[exp(r)]=∞, so −½Var
-        slightly under-corrects, leaving a small positive residual price drift on the fat tail.)
+        Under `Convexity_Correction` the deterministic log-drift also carries -1/2*Var(r_t),
+        touching ONLY ds: the innovation and the h recursion, hence the revealed log_h, are
+        untouched.
 
-        `drift` overrides the flat Mu·dt schedule with a per-(step, path) tensor — the
+        `drift` overrides the flat Mu*dt schedule with a per-(step, path) tensor - the
         Carry_Drift composite from `_carry_drift`; both index as drift[t]."""
         drift = self.drift if drift is None else drift
         log_h = torch.empty_like(eps)
@@ -3245,28 +3023,26 @@ class GARCHSpotModel(StochasticProcess):
         return ds, log_h
 
     def _advance_variance(self, h, t, innovation):
-        """One fractional-clock GARCH variance step (n_sub ≤ 1; a coarse interval routes to
-        utils.garch_correlated_substeps in `_simulate_returns` instead), shared by the forward sim
-        and the observed-path replay (`reseed_from_path`) so the forward≡replay invariant is
-        STRUCTURAL, not maintained by copying. Computes Var(r_t) for the step, obtains the innovation
-        via `innovation(var_step)` — the ONLY thing that differs between the two paths (√Var·ε in the
-        forward sim; the realized convexity-undone log-return in replay) — and returns
-        (h_{t+1}, var_step, r) off the exact fractional recursion h + f·(ω − (1−β)·h) + α·r²."""
+        """One fractional-clock GARCH variance step (n_sub <= 1; a coarse interval routes to
+        `utils.garch_correlated_substeps` in `_simulate_returns` instead), shared by the
+        forward sim and the observed-path replay so the forward == replay invariant is
+        STRUCTURAL rather than maintained by copying. `innovation(var_step)` is the ONLY thing
+        that differs between the two - sqrt(Var)*eps forward, the realized convexity-undone
+        log-return in replay - and the return is (h_{t+1}, var_step, r) off the exact
+        fractional recursion h + f*(omega - (1-beta)*h) + alpha*r^2."""
         ft = self.f[t]
         var_step = h * ft                                                        # Var(r_t)
         r = innovation(var_step)
         return h + ft * (self.omega - (1.0 - self.beta) * h) + self.alpha * r * r, var_step, r
 
     def generate(self, shared_mem):
-        """
-        Simulate the GARCH spot path; Z is (T, B) outer, (T, B, B2) inner.
+        """Simulate the GARCH spot path; Z is (T, B) outer, (T, B, B2) inner.
 
         One framework Gaussian per step; the standardised-t rescale draws its own Gamma
-        (quasi_rng uniforms are drawn only when the optional Drift_States chain is on). ε is
-        unit-variance and independent of h, so it
-        precomputes fully vectorised — but only the fine steps read it (a coarse interval t-scales
-        its own sub-step normals), so an all-coarse PFE grid skips the draw rather than allocating
-        a dead (T,B) pair.
+        (quasi_rng uniforms are drawn only when the optional Drift_States chain is on). eps is
+        unit-variance and independent of h, so it precomputes fully vectorised - but only the
+        fine steps read it, so an all-coarse PFE grid skips the draw rather than allocating a
+        dead (T,B) pair.
         """
         Z = shared_mem.t_random_numbers[self.z_offset, :self.scenario_horizon]
         nu = self.nu
@@ -3299,9 +3075,9 @@ class GARCHSpotModel(StochasticProcess):
         # the float underflow threshold, where exp() returns 0.0 and breaks the price invariant.
         spot_path = log_path.clamp_min(-10.0).exp()
 
-        # Revealed state, detached (consumed as a state coordinate, not differentiated through —
-        # same rationale as the HMM belief detach). B-LAST shape so the buffer's dim=-1 concat
-        # works: (T, 1, B) outer / (T, 1, B, B2) inner. Stash the (T, B) form for privileged_factors.
+        # revealed state, detached (a state coordinate, not differentiated through - the same
+        # rationale as the HMM belief detach). B-LAST so the buffer's dim=-1 concat works; the
+        # (T, B) form is stashed for privileged_factors
         shared_mem.t_Scenario_Buffer[(self.factor_key, 'garch_log_h')] = log_h.detach().unsqueeze(1)
         self.last_log_h = log_h.detach()
         return spot_path
@@ -3316,11 +3092,10 @@ class GARCHSpotModel(StochasticProcess):
 
     def reveal_state_at(self, t, buffer):
         """GARCH spot: log_h-first / price-last (the calc concatenates the segments in this
-        order — mirrors the HMM's belief-first/price-last packing). `log h_t` is the exactly
-        observable SUFFICIENT statistic; the observable spot level is the last CONTINUOUS
-        coordinate. Rank-check the buffered log-h against the current mode (outer (T,1,B) vs
-        price (T,B); inner (T,1,B,B2) vs (T,B,B2) ⇒ log_h.dim() == price.dim()+1), else the
-        defensive long-run-variance fallback when the buffer key is absent."""
+        order, mirroring the HMM's belief-first/price-last packing). `log h_t` is the exactly
+        observable SUFFICIENT statistic and the spot level the last CONTINUOUS coordinate. The
+        buffered log-h is rank-checked against the current mode, else the defensive
+        long-run-variance fallback when the buffer key is absent."""
         key = self.factor_key
         price = buffer[key][t].unsqueeze(0)                                      # (1, ...batch)
         log_h = buffer.get((key, 'garch_log_h'))
@@ -3342,12 +3117,11 @@ class GARCHSpotModel(StochasticProcess):
 
     def reseed_from_path(self, simulated, shared_mem):
         """Observed-path replay: rerun the GARCH variance recursion (fractional clock) on the
-        REALIZED returns of the supplied price path, publishing `garch_log_h` (so reveal returns
-        the right log h along the replayed path) and `h0_outer` (the terminal h, for a continuing
-        replay).
-        Convexity coupling: the forward sim writes ds = drift − ½Var(r) + r, so the innovation is
-        recovered as r = realized_logret − drift + ½Var(r) with the SAME correction, keeping the
-        h recursion identical between forward sim and replay (Var(r)=h·f on the n_sub≤1 clock)."""
+        REALIZED returns of the supplied price path, publishing `garch_log_h` (so reveal
+        returns the right log h along the replayed path) and `h0_outer` (the terminal h, for a
+        continuing replay). The innovation is recovered as r = realized_logret - drift +
+        1/2*Var(r) with the SAME convexity correction the forward sim applied, which keeps the
+        h recursion identical between forward sim and replay."""
         # Replay is defined only on the daily grid: the intra-interval returns the variance
         # recursion replays are unobservable at coarser nodes.
         if np.any(self.n_sub >= 2):
@@ -3470,33 +3244,29 @@ class GARCHSpotCalibration(object):
 
 
 class HestonNandiImpliedSpotModel(StochasticProcess):
-    """Heston-Nandi GARCH(1,1) spot under the risk-neutral (LRNVR) measure — an IMPLIED process:
-    the bootstrapped `HestonNandiModelParameters` factor that the semi-analytic pricer consumes
-    ALSO drives the outer-scenario evolution of its own underlying, reading its parameters from
-    `implied_tensor` so greeks flow to the single shared AAD leaf (static-leaf dedupe in
-    Calculation._build_factor_state). The model itself is described in the `documentation` attr
-    below; this docstring covers the code-facing seams only.
+    """Heston-Nandi GARCH(1,1) spot under the risk-neutral (LRNVR) measure - an IMPLIED
+    process: the bootstrapped `HestonNandiModelParameters` factor that the semi-analytic pricer
+    consumes ALSO drives the outer-scenario evolution of its own underlying, reading its
+    parameters from `implied_tensor` so greeks flow to the single shared AAD leaf. The model
+    itself is described in the `documentation` attr below; this docstring covers the
+    code-facing seams only.
 
     * Variance recursion: `utils.hn_variance_step` (ONE source of truth, shared with the OSS
       pricers). (r-q) is gathered from the underlying's own rate/dividend curves exactly as
-      GBMAssetPriceTSModelImplied (EquityPrice / FxRate branch on factor_type).
-    * THE CLOCK: calibrated per trading day (dt_c = 1/`Steps_Per_Year`) vs a calendar scenario
-      grid; f = dt/dt_c. n_sub == 1 (f ≤ 1.5): exact fractional step — return variance h·f,
-      variance update BLENDED by f (h ← h + f·(hn_variance_step(h,z) − h)); at f=1 this is
-      exactly hn_variance_step. Coarse PFE/CVA grids: the interval walks the sub-steps that
-      SPAN it — whole trading days then the fractional remainder — through that same
-      recursion (utils.hn_correlated_substeps), so a node marginal is the exact law of its
-      own elapsed trading time and does not jump with grid spacing. What stays approximate
-      is which linear functional carries the cross-factor correlation: the framework draw is
-      the √E[h·dt]-weighted combination of the sub-step normals, an F_t-measurable choice
-      that leaves every marginal exact but matches a correlated sibling only when it shares
-      this variance profile.
-    * Observable state: log h_t (predictable, F_t-measurable — no lookahead) in the `hn_log_h`
-      buffer. The 7-verb protocol (privileged_layout / privileged_factors / reveal_state_at /
-      revealed_annual_vol / inner_fork_seed / outer_reseed / reseed_from_path) mirrors
-      GARCHSpotModel; generate handles outer (T,B) and inner (T,B,B2) with the fork seed on the
-      MIDDLE axis. The framework Gaussian feeds z directly (no Student-t emission, unlike
-      GARCH)."""
+      GBMAssetPriceTSModelImplied does (EquityPrice / FxRate branch on factor_type).
+    * THE CLOCK: calibrated per trading day (dt_c = 1/`Steps_Per_Year`) against a calendar
+      scenario grid, so f = dt/dt_c. At n_sub == 1 the step is exact - return variance h*f and
+      a variance update BLENDED by f, which at f=1 is exactly `hn_variance_step`. On a coarse
+      grid the interval walks the sub-steps that SPAN it, so a node marginal is the exact law
+      of its own elapsed trading time and does not jump with grid spacing. What stays
+      approximate is which linear functional carries the cross-factor correlation: the
+      framework draw is the sqrt(E[h*dt])-weighted combination of the sub-step normals, an
+      F_t-measurable choice that leaves every marginal exact but matches a correlated sibling
+      only when it shares this variance profile.
+    * Observable state: log h_t (predictable, F_t-measurable, no lookahead) in the `hn_log_h`
+      buffer. The 7-verb privileged-state protocol mirrors GARCHSpotModel; generate handles
+      outer (T,B) and inner (T,B,B2) with the fork seed on the MIDDLE axis, and the framework
+      Gaussian feeds z directly (no Student-t emission, unlike GARCH)."""
 
 
     documentation = (
@@ -3541,30 +3311,26 @@ class HestonNandiImpliedSpotModel(StochasticProcess):
         return 'HestonNandiSpotProcess', [()]
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
-        """
-        Precompute the fractional trading clock, the HN recursion parameters and the drift plumbing.
+        """Precompute the fractional trading clock, the HN recursion parameters and the drift
+        plumbing.
 
-        dt is anchored at time_grid_years[0] so the per-step spacing is correct under BOTH outer
-        mode (scen_time_grid[0]=0) and inner-MC kept-base mode (>0), mirroring GARCHSpotModel.
-        dt_c is the calibration (trading-day) step; the option bootstrapper works at
-        Steps_Per_Year (default 252), so the same convention drives the sim.
+        dt is anchored at `time_grid_years[0]` so the per-step spacing is correct under BOTH
+        outer mode and inner-MC kept-base mode, mirroring GARCHSpotModel; dt_c is the
+        calibration (trading-day) step the option bootstrapper works at.
 
-        Parameters are read out of the HestonNandiModelParameters factor block by the canonical
-        `utils.HN_PARAM_NAMES` (single source, mirroring CS's implied_tensor consumption): the
-        implied_tensor branch when greeks are on (0-dim AAD leaves), else the calibrated scalars.
-        The five scalars feed the explicit-arg utils.hn_* functions; H0 is the variance state
-        (it seeds h), the rest are the recursion params.
+        Parameters are read out of the HestonNandiModelParameters block by the canonical
+        `utils.HN_PARAM_NAMES` (single source): the `implied_tensor` branch when greeks are on
+        (0-dim AAD leaves), else the calibrated scalars. H0 is the variance state that seeds h;
+        the rest are the recursion parameters.
 
-        The clock and drift plumbing are in `_precalculate_clock`, which the COMPONENT sibling
+        The clock and drift plumbing live in `_precalculate_clock`, which the COMPONENT sibling
         reuses verbatim - it shares every one of those decisions and differs only in the model.
         """
         self._precalculate_clock(ref_date, time_grid, tensor, shared, process_ofs)
 
-        # Parameters ride the implied tensors when greeks are on (mirrors CS's numpy-vs-implied_tensor
-        # branch); otherwise the calibrated scalars from the implied factor. Either way they are 0-dim
-        # and broadcast against the (…B) variance state.
+        # parameters ride the implied tensors when greeks are on, else the calibrated scalars
+        # off the implied factor; either way they are 0-dim and broadcast against the variance
         p = self.implied.param
-        # Read the factor block by the canonical HN_PARAM_NAMES (single source).
         if implied_tensor is not None:
             vals = [implied_tensor[k].reshape(()) for k in utils.HN_PARAM_NAMES]
         else:
@@ -3673,13 +3439,13 @@ class HestonNandiImpliedSpotModel(StochasticProcess):
         return ds, log_h
 
     def _advance_variance(self, h, t, standard_normal):
-        """One fractional-clock Heston–Nandi variance step (n_sub ≤ 1; a coarse interval routes to
-        utils.hn_correlated_substeps in `_simulate_returns` instead), shared by the forward sim and
-        the observed-path replay (`reseed_from_path`) so the forward≡replay invariant is STRUCTURAL,
-        not maintained by copying. Computes Var(Δlog S) for the step, obtains the standard normal z
-        via `standard_normal(var_step)` — the ONLY thing that differs between the paths (the drawn
-        z[t] forward; the realized z=(Δlog S − carry + ½·Var)/√Var in replay) — and returns
-        (h_{t+1}, var_step, r) with r = √Var·z."""
+        """One fractional-clock Heston-Nandi variance step (n_sub <= 1; a coarse interval routes
+        to `utils.hn_correlated_substeps` in `_simulate_returns` instead), shared by the forward
+        sim and the observed-path replay so the forward == replay invariant is STRUCTURAL
+        rather than maintained by copying. `standard_normal(var_step)` is the ONLY thing that
+        differs between the paths - the drawn z[t] forward, the realized
+        z = (Dlog S - carry + 1/2*Var)/sqrt(Var) in replay - and the return is
+        (h_{t+1}, var_step, r) with r = sqrt(Var)*z."""
         ft = self.f[t]
         var_step = h * ft                                                        # Var(Δlog S) over the step
         sh = h.sqrt()
@@ -3794,32 +3560,26 @@ class HestonNandiImpliedSpotModel(StochasticProcess):
 
 
 class HestonNandiComponentImpliedSpotModel(HestonNandiImpliedSpotModel):
-    """COMPONENT Heston-Nandi spot under the risk-neutral (LRNVR) measure — the sibling of
+    """COMPONENT Heston-Nandi spot under the risk-neutral (LRNVR) measure - the sibling of
     `HestonNandiImpliedSpotModel`, carrying TWO variance states through one recursion.
 
-    Everything the plain process owns is owned here unchanged and inherited rather than copied:
-    the r/q curve gather (`calc_references` / `_carry_per_step`), the fractional trading clock, the
-    7-verb privileged-state protocol, the outer/inner `generate` shapes and the `hn_log_h` buffer.
-    What this class replaces is exactly the model: the state is the PAIR (h_t, q_t), the recursion
-    is `utils.hn_component_variance_step` (ONE source of truth, shared with the OSS pricers and
-    the closed form), and the intercept it consumes is TIME-VARYING.
+    Everything the plain process owns is inherited unchanged rather than copied: the r/q curve
+    gather (`calc_references` / `_carry_per_step`), the fractional trading clock, the 7-verb
+    privileged-state protocol, the outer/inner `generate` shapes and the `hn_log_h` buffer.
+    What this class replaces is exactly the model: the state is the PAIR (h_t, q_t), the
+    recursion is `utils.hn_component_variance_step` (ONE source of truth, shared with the OSS
+    pricers and the closed form), and the intercept it consumes is TIME-VARYING.
 
-    * THE OMEGA STRIP. omega_t = L_{t+1} - rho*L_t comes off the fitted `L_Curve`, sampled on the
-      calibration's own trading-day clock from the BASE DATE, so a scenario node at trading time
-      tau takes omega[floor(tau)]. On a daily grid that is the exact strip the closed form
-      integrates; on a coarser one each sub-step takes the intercept of the day it starts in,
-      which is the same fractional-clock approximation the variance blend already is.
-
-    * REVEALED STATE stays log h_t alone — the SHORT-run variance is what the return loads on and
-      what the value function needs. q_t is carried internally; publishing it would change the
-      privileged layout, and every consumer of `hn_log_h` (the diff-ML burn-in, the inner fork,
-      the replay) reads the same coordinate it always did.
-
+    * THE OMEGA STRIP. omega_t = L_{t+1} - rho*L_t comes off the fitted `L_Curve`, sampled on
+      the calibration's own trading-day clock from the BASE DATE, so a scenario node at trading
+      time tau takes omega[floor(tau)]. On a daily grid that is the exact strip the closed form
+      integrates; on a coarser one each sub-step takes the intercept of the day it starts in.
+    * REVEALED STATE stays log h_t alone - the SHORT-run variance is what the return loads on
+      and what the value function needs. q_t is carried internally, so every consumer of
+      `hn_log_h` reads the same coordinate it always did.
     * THE FORK SEEDS RE-ANCHOR q. `h0_inner` / `h0_outer` carry the short-run state, and the
-      forked long-run state is L(0) — the anchoring, applied at the fork exactly as it is applied
-      at the base date. A fork that inherited the outer path's q would need a second buffer key
-      and a second reveal coordinate; what it would buy is the long-run state's own path
-      dependence, which is a v2 question (roadmap) and not a silent difference.
+      forked long-run state is L(0) - the anchoring, applied at the fork exactly as it is
+      applied at the base date.
     """
 
     documentation = (
@@ -3992,85 +3752,63 @@ class HestonNandiComponentImpliedSpotModel(HestonNandiImpliedSpotModel):
 
 
 class QuadraticCarryCurveModel(StochasticProcess):
-    """Two-factor continuous carry curve on a `ForwardRate` factor. The quadratic log-futures curve
+    """Two-factor continuous carry curve on a `ForwardRate` factor. The model is described in
+    the `documentation` attr below; this docstring covers the code-facing contracts.
 
-        F(t,T) = S(t)·exp(c(t)·τ + a(t)·τ²),    τ = (T − t) / DAYS_IN_YEAR
+    THE CARRIED QUANTITY is the AVERAGE CARRY TO MATURITY, z(t,tau) = c + a*tau, rather than
+    the quadratic log-futures curve F(t,T) = S(t)*exp(c*tau + a*tau^2) itself, because that is
+    what `utils.DerivedForwardCurve` already prices off: it gathers the carry curve at the
+    query DATE with `multiply_by_time=False` and multiplies by tau, so a curve holding z
+    reproduces the quadratic through ZERO new read code. z is AFFINE in tau and the gather
+    interpolates linearly in the query date, so TWO knots reproduce the whole curve exactly
+    BETWEEN them - and NOT beyond them, since `utils.CurveTenor.get_index` CLIPS a query to
+    [first knot, last knot] and the log-carry then continues linearly rather than
+    quadratically (+8.3e-4 relative at tau = 1.5 for knots at 0.5 and 1.0, against 0 ULP
+    inside). The clip is in DATE space, so the rule the market data must honour is: first knot
+    at or before the base date, last at or after the longest fixing. They are the FACTOR's own
+    knots and this process never chooses them.
 
-    is carried as the AVERAGE CARRY TO MATURITY, z(t,τ) = (c·τ + a·τ²)/τ = c + a·τ, because that is
-    the quantity `utils.DerivedForwardCurve` already prices off: it gathers the carry curve at the
-    query DATE with `multiply_by_time=False` and multiplies by τ, so a curve holding z reproduces
-    the quadratic through ZERO new read code. z is AFFINE in τ and the gather interpolates linearly
-    in the query date — affine in τ at a fixed row — so TWO knots reproduce the whole curve exactly
-    between them, and the three listed futures that identified it come back to float precision.
+    STATE. The polynomial coefficients are ill-conditioned (rho(dc, da) ~ -0.96), so the driven
+    pair is the level/shape rotation at the declared `Reference_Tenors` tau_A < tau_B,
+    invertibly with taubar = (tau_A+tau_B)/2 and dtau = tau_B-tau_A:
 
-    NOT beyond them. `utils.CurveTenor.get_index` CLIPS a query to [first knot, last knot], so the
-    read outside the bracket is FLAT in z, i.e. the log-carry continues LINEARLY rather than
-    quadratically. Measured on S=950, c=0.0163, a=−0.0011 with knots at τ = 0.5 and 1.0: exact to
-    0 ULP for τ ∈ [0.5, 1.0], −2.5e−5 relative at τ = 0.05 and +8.3e−4 at τ = 1.5. The knots are
-    DATES and the clip is in date space, so the rule the market data has to honour is: the first
-    knot at or before the base date, the last at or after the longest fixing — then every (row
-    date, query date) pair the book reaches is inside. They are the FACTOR's own knots and this
-    process never chooses them; it publishes z at whatever τ each has aged to, negative τ included,
-    which is a perfectly good value of an affine function and is what keeps the live reads exact.
+        L = (z(tau_A) + z(tau_B))/2      the carry LEVEL
+        D =  z(tau_B) - z(tau_A)         the carry SHAPE
+        z(tau) = L + D*(tau - taubar)/dtau,   a = D/dtau,   c = L - D*taubar/dtau
 
-    STATE. The polynomial coefficients are ill-conditioned (ρ(Δc,Δa) ≈ −0.96 on three nearby
-    maturities: curvature and front slope trade off to hold the same observed futures), so the
-    driven pair is the level/shape rotation at the declared `Reference_Tenors` τ_A < τ_B:
+    NO HIDDEN STATE, which is why the fork verbs are inert here: the published curve IS the
+    state. `precalculate` recovers (L,D) from the initial curve by the same affine map, so the
+    inner-MC fork, the diff-ML burn-in and the observed-path replay all carry the state without
+    a private buffer key, and row 0 is published as `tensor` itself so the t=0 forwards are the
+    market's own.
 
-        L = (z(τ_A) + z(τ_B))/2      the carry LEVEL, mid-tenor average carry
-        D =  z(τ_B) − z(τ_A)         the carry SHAPE, the knot spread
+    ONE Chi2(nu) is drawn per (step, path) and SHARED by both factors, so the innovation pair
+    is an elliptical bivariate t rather than two t marginals under a Gaussian copula. Gamma
+    loads the shape on the SAME step's level change - contemporaneous, not a lookahead.
 
-    invertibly, with τ̄ = (τ_A+τ_B)/2 and Δτ = τ_B−τ_A:
+    GAMMA AND THE DECLARED L/D CORRELATION ARE THE SAME COUPLING, twice: the one-step
+    covariance is Gamma*sigma_L^2 + rho*sigma_L*sigma_D, one equation in two unknowns, and no
+    fit can separate them. The calibration fits Gamma on the conditional mean and hands the
+    framework the RESIDUAL correlation, so the two always sum to the observed covariance and
+    only their split moves - which makes Gamma the one number here a reader must not interpret
+    on its own.
 
-        z(τ) = L + D·(τ − τ̄)/Δτ,     a = D/Δτ,   c = L − D·τ̄/Δτ
+    THE CLOCK. phi and sigma are calibrated per `Calibration_DT_Years` while the sim grid runs
+    in calendar time, so a step of f = dt/dt_c takes phi_f = phi^f and
+    sigma_f = sigma*sqrt((1-phi_f^2)/(1-phi^2)) - the exact stationary AR(1) aggregation, which
+    keeps the reversion RATE and the stationary variance grid-invariant. Gamma is not rescaled.
 
-    At the shipped τ_A, τ_B = 0.5, 1.0 that is L = c + 0.75a and D = 0.5a — the handover's
-    carry-level and carry-shape factors, and the two archive columns' mean and difference.
-
-    NO HIDDEN STATE, and that is the whole reason the fork verbs are inert here. The published
-    curve IS the state: `precalculate` recovers (L,D) from the initial curve `tensor` by the same
-    affine map, so the inner-MC fork (whose init is the outer path's curve at the fork row), the
-    diff-ML burn-in (whose init is the terminal curve) and the observed-path replay all carry the
-    state without a single private buffer key. A declared `L_0`/`D_0` pair would be a SECOND source
-    for a number the factor already holds, and the market curve has to win — row 0 is published as
-    `tensor` itself, so the t=0 forwards are the market's own.
-
-    DYNAMICS per step, on the framework-correlated Z and one internal chi²:
-
-        L_t = μ_L + φ_L(L_{t-1} − μ_L) + σ_L·ε^L_t
-        D_t = μ_D + φ_D(D_{t-1} − μ_D) + Γ·(L_t − L_{t-1}) + σ_D·ε^D_t
-
-    ΔL is the SAME step's level change — known once L_t is drawn, so this is a contemporaneous
-    loading and not a lookahead; reading L_{t+1} − L_t would need the next step's draw. ONE
-    Chi²(ν) is drawn per (step, path) and SHARED by both factors, so (ε^L, ε^D) is an elliptical
-    bivariate t rather than two t marginals under a Gaussian copula — which is what the data shows,
-    the largest ΔL days being the largest ΔD days.
-
-    Γ AND THE DECLARED L/D CORRELATION ARE THE SAME COUPLING, twice: the one-step covariance is
-    Cov(ΔL, ΔD) = Γ·σ_L² + ρ·σ_L·σ_D, one equation in two unknowns, and no fit can separate them.
-    That is not a defect and it is not double counting — the calibration fits Γ on the conditional
-    mean and hands the framework the RESIDUAL correlation, so the two always sum to the observed
-    covariance and only their split moves. It does move: the sample's own Γ swings from −0.019 to
-    −0.45 with the tail weight of the likelihood while ρ walks the other way, −0.22 to −0.06, which
-    makes Γ the one number in this block a reader must not interpret on its own.
-
-    THE CLOCK. φ and σ are calibrated per `Calibration_DT_Years` step while the sim grid runs in
-    calendar time, so a step of length f = dt/dt_c takes φ_f = φ^f and σ_f = σ·√((1−φ_f²)/(1−φ²)):
-    the exact stationary AR(1) aggregation, which makes the reversion RATE and the stationary
-    variance grid-invariant and degrades to the random-walk σ·√f as φ → 1. Γ is not rescaled — it
-    loads on whatever ΔL the step produced, exact at f = 1.
-
-    A MODELLING CAVEAT WITH A NUMBER. φ_L is a NEAR-UNIT ROOT (0.9962 fitted, 2.3 s.e. from 1), so
-    nothing may lean on carry reversion for value: over three months the conditional mean gives up
-    only 1 − φ^63 ≈ 19% of a level deviation, and the level is statistically indistinguishable from
-    a random walk. `tests/test_quadratic_carry_curve.py` holds that as a gate rather than a note.
+    A MODELLING CAVEAT WITH A NUMBER: phi_L is a NEAR-UNIT ROOT (0.9962 fitted, 2.3 s.e. from
+    1), so nothing may lean on carry reversion for value - over three months the conditional
+    mean gives up only ~19% of a level deviation. `tests/test_quadratic_carry_curve.py` gates
+    that rather than leaving it a note.
 
     JSON config:
         Phi_L, Mu_L, Sigma_L: AR(1) coefficient, long-run mean and innovation STD of the level.
         Phi_D, Mu_D, Sigma_D: the same for the shape.
         Gamma: loading of the shape on the same step's level change.
         Nu: Student-t degrees of freedom, shared by both factors (> 2).
-        Reference_Tenors: [τ_A, τ_B] in years — the tenors (L, D) are defined at.
+        Reference_Tenors: [tau_A, tau_B] in years - the tenors (L, D) are defined at.
         Calibration_DT_Years: step size (in years) of the calibrated recursions."""
 
     documentation = (
@@ -4145,21 +3883,18 @@ class QuadraticCarryCurveModel(StochasticProcess):
         return 'QuadraticCarryCurveProcess', [('L',), ('D',)]
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
-        """
-        Age the factor's dated knots onto the sim grid, rescale the recursions to it, and recover
-        the initial (L, D) from the initial curve.
+        """Age the factor's dated knots onto the sim grid, rescale the recursions to it, and
+        recover the initial (L, D) from the initial curve.
 
-        `k[t]` is the knot's shape coordinate (τ − τ̄)/Δτ at row t, so a published row is
-        `L + D·k[t]` — one expression covering the interpolation between the knots and the
-        extrapolation of a knot whose date the simulation has passed (τ < 0, which is a perfectly
-        good value of an affine function and is what keeps the read exact for live query dates).
+        `k[t]` is the knot's shape coordinate (tau - taubar)/dtau at row t, so a published row
+        is `L + D*k[t]` - one expression covering the interpolation between the knots and the
+        extrapolation of a knot whose date the simulation has passed (tau < 0, a perfectly good
+        value of an affine function, and what keeps the read exact for live query dates).
 
-        The per-step AR coefficients are anchored at `time_grid_years[0]`, so the step lengths are
-        right under both outer mode (row 0 at the base date) and an inner-MC fork (row 0 at the
-        fork date, its own `ref_date`).
-
-        AAD: the recovery is a matmul by a CONSTANT 2x2, so ∂(published curve)/∂(market curve)
-        flows without a solve; `tensor` is stored unreshaped so inner MC can pass `(2, B)`.
+        The per-step AR coefficients are anchored at `time_grid_years[0]`, so the step lengths
+        are right under both outer mode and an inner-MC fork. The (L, D) recovery is a matmul
+        by a CONSTANT 2x2, so d(published curve)/d(market curve) flows without a solve;
+        `tensor` is stored unreshaped so inner MC can pass `(2, B)`.
         """
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
@@ -4202,13 +3937,12 @@ class QuadraticCarryCurveModel(StochasticProcess):
             np.linalg.inv(np.column_stack([np.ones(2), k[0]]))) @ tensor
 
     def generate(self, shared_mem):
-        """
-        Simulate the two carry factors and publish the curve they imply; Z is (2, T, B) outer and
-        (2, T, B, B2) inner.
+        """Simulate the two carry factors and publish the curve they imply; Z is (2, T, B)
+        outer and (2, T, B, B2) inner.
 
-        ONE loop covers both modes — every expression broadcasts, and only the initial state needs
-        the mode, a `(2,)` calibrated pair against a `(2, B)` per-outer-path fork vector whose
-        column must land on the MIDDLE axis and spread across the B2 fan-out.
+        ONE loop covers both modes - every expression broadcasts, and only the initial state
+        needs the mode: a `(2,)` calibrated pair against a `(2, B)` per-outer-path fork vector
+        whose column must land on the MIDDLE axis and spread across the B2 fan-out.
         """
         Z = shared_mem.t_random_numbers[self.z_offset:self.z_offset + 2, :self.scenario_horizon]
         inner = Z.ndim == 4
@@ -4236,9 +3970,8 @@ class QuadraticCarryCurveModel(StochasticProcess):
             out[t] = L + D * k[t]
             front[t] = L + self.z0_coeff * D
         # ATTACHED, not detached: a Carry_Drift spot consumes this as DYNAMICS, so the gradient
-        # of its path with respect to the market carry curve flows through here by design -
-        # unlike log_h/basis_mu, which are detached state COORDINATES. Fork-index convention:
-        # front[t] is what the spot's step t->t+1 drifts at.
+        # of its path with respect to the market carry curve flows through here by design.
+        # Fork-index convention: front[t] is what the spot's step t->t+1 drifts at.
         shared_mem.t_Scenario_Buffer[(self.factor_key, 'z0')] = front.unsqueeze(1)
         return out
 
@@ -4257,42 +3990,24 @@ class QuadraticCarryCurveModel(StochasticProcess):
 
 class QuadraticCarryCurveCalibration(object):
     """Calibration of QuadraticCarryCurveModel from two archive columns of the average carry to
-    maturity, `ForwardRate.<name>,<tau>` at the two reference tenors — whose sub-keys ARE the
-    `Reference_Tenors` the fit stamps, so the state definition cannot drift from the data it was
-    identified on.
+    maturity, `ForwardRate.<name>,<tau>` at the two reference tenors - whose sub-keys ARE the
+    `Reference_Tenors` the fit stamps, so the state definition cannot drift from the data it
+    was identified on.
 
-    `L` and `D` are the two columns' mean and difference; the level is fitted as an AR(1)-t and the
-    shape as an ARX(1)-t on the same step's ΔL, jointly and with ONE ν (`arx1_t_mle`), because the
-    model shares one chi² draw between them. `delta` is the pair of standardised residuals, so the
-    framework's correlation consolidation sees innovations that are approximately iid rather than
-    the raw heteroskedastic changes; `correlation` is the 2x2 identity, each column mapping 1-1 to
-    a primitive factor.
+    `L` and `D` are the two columns' mean and difference; the level is fitted as an AR(1)-t and
+    the shape as an ARX(1)-t on the same step's dL, jointly and with ONE nu (`arx1_t_mle`),
+    because the model shares one chi2 draw between them. `delta` is the pair of standardised
+    residuals, so the framework's correlation consolidation sees approximately iid innovations;
+    `correlation` is the 2x2 identity, each column mapping 1-1 to a primitive factor.
 
-    WHAT THE TAIL WEIGHT DECIDES, this estimator's own output on data/plat_archive_sync.csv
-    (3786 rows, 2010-2026). `Nu_Min` is a MODELLING choice and not a guard rail: it decides how
-    much weight the likelihood puts on the tail, and the tail is where the level/shape coupling
-    lives. Γ and the residual correlation ρ move in LOCKSTEP and in opposite directions —
-
-        ν      φ_L      σ_L       φ_D      σ_D        Γ         ρ(δ_L, δ_D)
-        2.05   0.9967   0.004672  0.9521   0.009989   +0.0063   −0.2367
-        3.00   0.9962   0.001480  0.9468   0.003085   −0.0194   −0.2245
-        6.00   0.9948   0.001336  0.9369   0.002678   −0.0710   −0.1996
-        50.0   0.9897   0.001687  0.9077   0.003271   −0.2505   −0.1098
-        200    0.9878   0.001857  0.8937   0.003568   −0.3559   −0.0553
-        OLS    —        —         0.8841   —          −0.4469   (ΔR² 0.0545)
-
-    — and that is the point, not a defect. Γ and ρ are COLLINEAR: they enter the one-step
-    Cov(ΔL, ΔD) as Γ·σ_L² + ρ·σ_L·σ_D, one equation in two unknowns, so the fit slides along a line
-    and only the SUM is identified. Both ends are stamped consistently — Γ off the conditional
-    mean, ρ off the `delta` the framework consolidates — so the simulated coupling is the observed
-    one wherever the fit lands. `tests/test_quadratic_carry_curve.py` generates the same market
-    twice, once as pure Γ and once as pure ρ, and gets the same Γ back from both.
-
-    The default `Nu_Min = 3.0` is the lowest ν whose innovation variance exists, matching
-    `BasisLinkedSpotCalibration`. The unconstrained MLE runs to the floor (these series have excess
-    kurtosis ~50), which is where the completed study's φ_L = 0.9967 and φ_D = 0.9521 come from —
-    it reported the raw t SCALE, smaller than σ by √((ν−2)/ν), hence its 0.00073 against the
-    0.004672 above."""
+    `Nu_Min` is a MODELLING choice and not a guard rail: it decides how much weight the
+    likelihood puts on the tail, and the tail is where the level/shape coupling lives. Gamma
+    and the residual correlation rho are COLLINEAR - they enter the one-step Cov(dL, dD) as
+    Gamma*sigma_L^2 + rho*sigma_L*sigma_D, one equation in two unknowns, so the fit slides
+    along a line and only the SUM is identified. Both ends are stamped consistently - Gamma off
+    the conditional mean, rho off the `delta` the framework consolidates - so the simulated
+    coupling is the observed one wherever the fit lands. The default 3.0 is the lowest nu whose
+    innovation variance exists, matching `BasisLinkedSpotCalibration`."""
     model_type = 'QuadraticCarryCurveModel'
     fields = [
         F('Nu_Min', 'Float', default=3.0,
@@ -4354,43 +4069,42 @@ class QuadraticCarryCurveCalibration(object):
 
 
 class ChainedBasisModel(StochasticProcess):
-    """A basis on a CLOSED chain — that is what 'chained' means: the `Chained_Basis`
+    """A basis on a CLOSED chain - that is what 'chained' means: the `Chained_Basis`
     declarations walk back to their start (the AM/PM session pair is the 2-cycle), and an open
     link riding another factor's finished path is the linked-parent family
     (`BasisLinkedSpotModel`), not this class. This factor draws as a BRIDGE between consecutive
     observations of its declared link's finished path:
 
-        b(t) = P(t) + w·(P(t+1) − P(t)) + premium + σ·Z(t)
+        b(t) = P(t) + w*(P(t+1) - P(t)) + premium + sigma*Z(t)
 
-    The source is the declared `Chained_Basis` and nothing else — no naming convention — and it
+    The source is the declared `Chained_Basis` and nothing else - no naming convention - and it
     must have generated first (the read fails loud naming both when it has not). Because the
     loop's other members generate earlier in the positional order, the bridge is the acyclic
     spelling of the closed chain: it reproduces both declared links and the lag-1 news channel
-    (corr(η_pm(t), η_am(t+1)) > 0) by construction, which same-row correlation alone cannot.
+    by construction, which same-row correlation alone cannot.
 
-    MEMORYLESS given the source path — the law carries no reversal term — so
-    there is no sequential loop, no extra fork seed and no replay recursion: row 0 is the
-    declared `Spot` (observed, like every factor's), a fork's row 0 is the forked value the
-    calc already hands `precalculate`, and the burn-in's terminal carry rides the generic
-    initial-state seam. Rows draw vectorised; the LAST bracketed row is decided by
-    source-bracket availability (`t+1` beyond the source's grid → the forward half alone).
+    MEMORYLESS given the source path - the law carries no reversal term - so there is no
+    sequential loop, no extra fork seed and no replay recursion: row 0 is the declared `Spot`,
+    a fork's row 0 is the forked value the calc already hands `precalculate`, and the burn-in's
+    terminal carry rides the generic initial-state seam. Rows draw vectorised; the LAST
+    bracketed row is decided by source-bracket availability (`t+1` beyond the source's grid
+    leaves the forward half alone).
 
-    The block declares the two LINK residuals and the source's DAILY step std — the three
-    measured objects of the chain — and the bridge derives the exact identities
+    The block declares the two LINK residuals and the source's DAILY step std - the three
+    measured objects of the chain - and the bridge derives the exact identities
 
-        w = 1/2 + (σ_ID² − σ_ON²) / (2·σ_D²),   σ² = σ_ID² − w²·σ_D²,   σ_half = σ_ID
+        w = 1/2 + (sig_ID^2 - sig_ON^2) / (2*sig_D^2),   sigma^2 = sig_ID^2 - w^2*sig_D^2
 
-    which reproduce all three at the source's own scale. The independence recomposition
-    (w = σ_ID²/(σ_ID²+σ_ON²), σ_D² = σ_ID²+σ_ON²) is the ρ(ID,ON) = 0 special case: wherever
-    the half-steps are correlated, that recomposition mis-states the daily step and an
-    independence-derived bridge mis-sizes both links at the true source scale. An infeasible
-    triple (σ² ≤ 0, or w outside (0,1)) raises at precalculate.
+    which reproduce all three at the source's own scale. The independence recomposition is the
+    rho(ID,ON) = 0 special case: wherever the half-steps are correlated it mis-states the daily
+    step and mis-sizes both links. An infeasible triple (sigma^2 <= 0, or w outside (0,1))
+    raises at precalculate.
 
     JSON config:
         Link_ID_Sigma, Link_ON_Sigma: the chain-link residual stds, $/oz
         Link_Daily_Sigma: the source's daily step std on the same window, $/oz
         Next_Print_Loading, Next_Self_Loading, Next_Const: the source's next own-session value
-            as a·print + c·source + k — the calibrated cross-day carry-through `print_seed`
+            as a*print + c*source + k - the calibrated cross-day carry-through `print_seed`
             publishes (defaults degrade to the unit-loading print-less-premium law)
         Bridge_Premium: mean offset net of the bridge, $/oz"""
 
@@ -4535,27 +4249,25 @@ class ChainedBasisModel(StochasticProcess):
 
 
 class FixingBridgeModel(StochasticProcess):
-    """An intraday fixing bridged between consecutive observations of its parent price — the
+    """An intraday fixing bridged between consecutive observations of its parent price - the
     linked-parent family (an OPEN link, so no `Chained_Basis`: the parent's law never reads
-    this factor back). The factor is the level basis (fixing − parent) whose composed name IS
+    this factor back). The factor is the level basis (fixing - parent) whose composed name IS
     the fixing; the law, in the parent's log space:
 
-        log B(t) = log P(t) + W·(log P(t+1) − log P(t)) + premium + σ_t·Z(t)
-        σ_t² = W(1−W)·h_t·f_{t+1}       h_t from the parent's published garch_log_h
+        log B(t) = log P(t) + W*(log P(t+1) - log P(t)) + premium + sigma_t*Z(t)
+        sigma_t^2 = W(1-W)*h_t*f_{t+1}       h_t from the parent's published garch_log_h
 
     The bracket placement is the point, not a nicety: it is what makes
-    Var(P(t+1) | P(t), fixing(t)) = (1−W)·h — the conditional-variance reduction knowing the
-    fixing buys — exist in the simulated world at all. An independent draw of the same
-    marginal (√(W·h)·ε, the Q-Q-equivalent law) scores ZERO on that conditional, and a solver
-    cannot infer structure the world does not contain.
+    Var(P(t+1) | P(t), fixing(t)) = (1-W)*h - the conditional-variance reduction knowing the
+    fixing buys - exist in the simulated world at all. An independent draw of the same marginal
+    scores ZERO on that conditional, and a solver cannot infer structure the world does not
+    contain.
 
-    MEMORYLESS given the parent path (the law carries no reversal term): no
-    loop, no extra fork seed, no replay recursion — row 0 is the declared Spot, a fork's row 0
-    is the value the calc hands `precalculate`, the burn-in rides the generic seam. The last
-    bracketed row is decided by parent-bracket availability; past the parent's grid the
-    forward intraday half draws alone (W·h·f_bd). Exact only where every step is one sub-step
-    — a coarser grid is refused loud, the same bound GARCH replay enforces. The calendar
-    grid's weekend convention is the parent's own accepted one and this law inherits it.
+    MEMORYLESS given the parent path: no loop, no extra fork seed, no replay recursion. The
+    last bracketed row is decided by parent-bracket availability; past the parent's grid the
+    forward intraday half draws alone. Exact only where every step is one sub-step - a coarser
+    grid is refused loud, the same bound GARCH replay enforces. The calendar grid's weekend
+    convention is the parent's own and this law inherits it.
 
     JSON config:
         Bridge_Weight: the fixing's intraday share of the day's variance, in (0, 1)
@@ -4725,18 +4437,17 @@ class FixingBridgeCalibration(object):
 
 
 class ChainedBasisCalibration(object):
-    """Calibration of ChainedBasisModel from the archive panel: own column + the chain source's
-    column. The frame's source column is found structurally (the other ObservedBasis column the
-    prefix pull delivered — for a session pair the chain source IS the positional parent, so
-    the existing pull suffices; a chain whose link is not in the frame raises loud).
+    """Calibration of ChainedBasisModel from the archive panel: own column plus the chain
+    source's, found structurally (the other ObservedBasis column the prefix pull delivered - a
+    chain whose link is not in the frame raises loud).
 
-    Fits the two chain-link OLS residuals and the source's daily step std — the three measured
-    objects from which the model derives the bridge — the premium net of the derived weight,
-    and the cross-day carry-through regression (source_next ~ print + source) whose loadings
-    `print_seed` publishes as Next_Print_Loading / Next_Self_Loading / Next_Const. `delta` is the standardized BRIDGE residual (b − P − w·ΔP) on its own dates:
-    uncorrelated with the source's step by construction, so an estimated correlation matrix
-    cannot double-count the news channel the bridge already carries. `correlation` [[1.0]],
-    `num_factors` 1."""
+    Fits the two chain-link OLS residuals and the source's daily step std - the three measured
+    objects the model derives the bridge from - the premium net of the derived weight, and the
+    cross-day carry-through regression whose loadings `print_seed` publishes as
+    Next_Print_Loading / Next_Self_Loading / Next_Const. `delta` is the standardized BRIDGE
+    residual (b - P - w*dP) on its own dates: uncorrelated with the source's step by
+    construction, so an estimated correlation matrix cannot double-count the news channel the
+    bridge already carries."""
     model_type = 'ChainedBasisModel'
     fields = [
         F('Max_Session_Gap_Days', 'Integer', default=4,
@@ -4778,10 +4489,8 @@ class ChainedBasisCalibration(object):
         w = 0.5 + (sig_id ** 2 - sig_on ** 2) / (2.0 * sig_d ** 2)
         bridge = (b[:-1] - P[:-1] - w * (P[1:] - P[:-1]))[m_br]
         prem = float(bridge.mean())
-        # Cross-day carry-through of THIS print into the source's NEXT own-session value —
-        # the partial loading `print_seed` publishes: src_next = a·print + c·src_today + k.
-        # Measured partial (a<1): the daily fingerprint of a level-walk + leash gap, which a
-        # unit loading over-conditions and a zero loading fades entirely.
+        # cross-day carry-through of THIS print into the source's NEXT own-session value - the
+        # partial loading `print_seed` publishes: src_next = a*print + c*src_today + k
         beta_cd, _ = ols(np.column_stack(
             [np.ones(m_br.sum()), b[:-1][m_br], P[:-1][m_br]]), P[1:][m_br])
         param = {'Link_ID_Sigma': sig_id, 'Link_ON_Sigma': sig_on, 'Link_Daily_Sigma': sig_d,
@@ -4800,51 +4509,42 @@ class ChainedBasisCalibration(object):
 class BasisLinkedSpotModel(StochasticProcess):
     """Lagged-AR(1) basis driven by a sibling commodity-spot path and its HMM regime:
 
-        b(t) = μ_t + a · ΔS(t) + φ · (b(t-1) − μ_t) + η(t)
-        η(t) = σ_t · √((ν-2)/ν) · ε_t,    ε_t ~ t_ν
+        b(t) = mu_t + a*dS(t) + phi*(b(t-1) - mu_t) + eta(t)
+        eta(t) = sigma_t*sqrt((nu-2)/nu)*eps_t,    eps_t ~ t_nu
 
-    ΔS is the linked spot's per-step diff and σ_t the innovation std — regime-keyed σ(s_t) off
-    the linked spot's HMM state, or flat, or its own GARCH (below). Innovation is built from a
-    framework-correlated Gaussian Z plus an internal Chi²(ν) draw; the √((ν-2)/ν) rescaling
-    makes σ_t the realised std of η regardless of ν. The linked spot's path and regime path are
-    read from `shared_mem.t_Scenario_Buffer`; the linked parent is this factor's own name minus
-    its last period, and sim ordering is enforced by the name-prefix chain (parent -> basis).
-    Initial b(0) is taken from the factor's `Spot` value.
+    dS is the linked spot's per-step diff and sigma_t the innovation std - regime-keyed
+    sigma(s_t) off the linked spot's HMM state, or flat, or its own GARCH. The innovation is
+    built from a framework-correlated Gaussian plus an internal Chi2(nu) draw, the rescaling
+    making sigma_t the realised std of eta regardless of nu. The linked parent is this factor's
+    own name minus its last period, and sim ordering is enforced by the name-prefix chain
+    (parent -> basis). b(0) is the factor's `Spot`.
 
-    μ_t and a time-varying σ_t are the two OPTIONAL extensions, both OFF at their 0.0 defaults,
-    both deterministic recursions on the realised path (the `GARCHSpotModel` observable-`h`
-    idiom) — so neither consumes any randomness and the seeded draw order is the same on or off:
+    mu_t and a time-varying sigma_t are the two OPTIONAL extensions, both OFF at their 0.0
+    defaults and both deterministic recursions on the realised path, so neither consumes any
+    randomness and the seeded draw order is the same on or off:
 
-        μ_{t+1} = λ·μ_t + (1−λ)·b(t)                  `Slow_Mean_Lambda` λ, seeded by `Mu_0`
-        σ_t² = ω_b + α_b·η(t−1)² + β_b·σ_{t−1}²       `G_Omega`/`G_Alpha`/`G_Beta`, seed `Sig2_0`
+        mu_{t+1} = lam*mu_t + (1-lam)*b(t)                    `Slow_Mean_Lambda`, seed `Mu_0`
+        sigma_t^2 = w_b + a_b*eta(t-1)^2 + b_b*sigma_{t-1}^2  `G_Omega/Alpha/Beta`, `Sig2_0`
 
-    λ = 0 is NOT the shipped model — it would make μ_t = b(t−1) — so the mean switch is
+    lam = 0 is NOT the shipped model - it would make mu_t = b(t-1) - so the mean switch is
     STRUCTURAL rather than arithmetic: at the default the mean term is absent from the
-    expression and the loop re-executes `b(t) = a·ΔS(t) + φ·b(t-1) + η(t)` in the shipped
-    order, bitwise.
+    expression and the loop re-executes the shipped one bitwise. Innovation precedence is
+    `Sigma_By_State` > GARCH > flat `Sigma`, and `Sigma_By_State` and `Sigma` are mutually
+    exclusive.
 
-    Innovation precedence is `Sigma_By_State` > GARCH > flat `Sigma`. The regime branch is
-    untouched and still wins, so GARCH fields declared beside `Sigma_By_State` are inert; against
-    a flat `Sigma`, ω_b > 0 replaces it (and `Sigma` stays the value the model falls back to when
-    the GARCH fields are deleted). `Sigma_By_State` and `Sigma` remain mutually exclusive.
-
-    Both seeds follow the `H0` pattern — `Mu_0` is the mean the FIRST simulated step reverts to,
-    `Sig2_0` the variance of the FIRST innovation, each stamped by the calibration from the end
-    of the sample. Both recursions are per-path state and fork with the path: `(key,'basis_mu')`
-    and `(key,'basis_sig2')` publish `state[t]` = what the step t→t+1 consumes, which is exactly
-    what `inner_fork_seed` hands an inner run as ITS t=0.
-
+    Both seeds follow the `H0` pattern - `Mu_0` is the mean the FIRST simulated step reverts
+    to, `Sig2_0` the variance of the FIRST innovation - and both recursions are per-path state
+    that forks with the path: `(key,'basis_mu')` and `(key,'basis_sig2')` publish what the step
+    t->t+1 consumes, which IS what `inner_fork_seed` hands an inner run as ITS t=0.
     `Calibration_DT_Years` is declared metadata: the AR is per calibration STEP and nothing
-    rescales it to the sim grid (the walk-forward driver converts Phi with it externally); the
-    dead `Mu` field it used to sit beside is gone. `reseed_from_path` runs both recursions along an
-    observed path — η_t recovered as b_t minus the conditional mean the same `_advance` computes —
-    so an `Observed_Scenario` replay publishes the REPLAYED path's state, not the discarded one's.
+    rescales it to the sim grid. `reseed_from_path` runs both recursions along an observed
+    path, so an `Observed_Scenario` replay publishes the REPLAYED path's state.
 
     JSON config:
-        A: concurrent ΔS loading
+        A: concurrent dS loading
         Phi: AR(1) coefficient on b(t-1)
         Nu: Student-t degrees of freedom (shared across regimes)
-        Sigma_By_State: list of σ_s indexed by linked-spot HMM state
+        Sigma_By_State: list of sigma_s indexed by linked-spot HMM state
         Sigma: flat innovation std (the alternative to Sigma_By_State)
         Slow_Mean_Lambda, Mu_0: the slow observable mean (0.0 = off)
         G_Omega, G_Alpha, G_Beta, Sig2_0: the own-GARCH innovation vol (0.0 = off)
@@ -4964,21 +4664,19 @@ class BasisLinkedSpotModel(StochasticProcess):
         return float(self.param['Phi']), float(self.param.get('Slow_Mean_Lambda', 0.0) or 0.0)
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
-        """
-        Precompute the OU basis parameters and the observed initial basis.
+        """Precompute the OU basis parameters and the observed initial basis.
 
         Two innovation forms, chosen by whichever key the JSON block carries (exactly one):
-            Sigma_By_State — regime-conditional σ_s, indexed by the primary's HMM regime path;
-            Sigma          — flat single-vol OU, no regime read (for a regime-free primary, e.g.
-                             the GARCH martingale primary).
+            Sigma_By_State - regime-conditional sigma_s, indexed by the primary's HMM path;
+            Sigma          - flat single-vol OU, no regime read (for a regime-free primary).
 
-        `self.garch` is the third form and the whole of the documented precedence: it can only be
-        selected against a flat Sigma, so a regime-switching primary keeps today's behaviour even
-        with the GARCH fields declared. `self.slow_mean` is likewise the mean term's structural
-        switch — λ = 0 means "no mean term", not "λ = 0 in the recursion".
+        `self.garch` is the third form and the whole of the documented precedence: it can only
+        be selected against a flat Sigma, so a regime-switching primary keeps today's behaviour
+        even with the GARCH fields declared. `self.slow_mean` is likewise the mean term's
+        structural switch - lambda = 0 means "no mean term", not "lambda = 0 in the recursion".
 
-        AAD: `b0` is kept on the autograd graph so payoff sensitivities w.r.t. the observed initial
-        basis flow through, and is stored unreshaped so inner-MC mode can pass a `(B,)` vector of
+        `b0` is kept on the autograd graph so payoff sensitivities w.r.t. the observed initial
+        basis flow through, and stored unreshaped so inner-MC mode can pass a `(B,)` vector of
         per-outer-path initial bases; outer mode is `(1,)`.
         """
         self.z_offset = process_ofs
@@ -5001,10 +4699,9 @@ class BasisLinkedSpotModel(StochasticProcess):
         self.garch = self.sigma_by_state is None and self.g_omega > 0.0
         self.mu0 = shared.one.new_tensor(float(self.param.get('Mu_0', 0.0)))
         self.sig20 = shared.one.new_tensor(float(self.param.get('Sig2_0', 0.0)))
-        # Band+mixture reversion (the Q-Q-ruled law): a dead zone of width Band_Kappa around the
-        # slow level with pull Band_Beta outside it, and Gaussian innovations whose scale is a
-        # 2-state Markov mixture (quiet/stress) - the mixture supplies the tails, so no t-scale
-        # and no GARCH recursion. Requires the slow mean (the band is a deviation from it).
+        # band+mixture reversion: a dead zone of width Band_Kappa around the slow level with
+        # pull Band_Beta outside it, and Gaussian innovations whose scale is a 2-state Markov
+        # mixture - the mixture supplies the tails, so no t-scale and no GARCH recursion
         self.band = str(self.param.get('Reversion_Model', 'Linear')) == 'Band_Mixture'
         if self.band:
             assert self.slow_mean, 'Band_Mixture reversion needs Slow_Mean_Lambda > 0'
@@ -5027,17 +4724,16 @@ class BasisLinkedSpotModel(StochasticProcess):
 
     def _chain_shift(self, shared_mem):
         """Row-1 partner-print conditioning, from STATE: a `ChainedBasisModel` partner's
-        `print_seed` publishes the COMPOSED target level `a·print + c·b(0) + k` under
-        `(self.factor_key, 'partner_print')` — the calibrated cross-day carry-through, unit
-        loading its default degeneration — and row 1's mean re-anchors there instead of
-        stepping blind off b(0). Present in state ⇒ condition (the calibrated t0, a burn-in
-        restart, an inner fork alike); absent ⇒ off. Stored on `self` so `_ds_linked` — shared
-        by the forward sim and the observed-path replay — folds it identically in both.
+        `print_seed` publishes the COMPOSED target level `a*print + c*b(0) + k` under
+        `(self.factor_key, 'partner_print')` - the calibrated cross-day carry-through - and row
+        1's mean re-anchors there instead of stepping blind off b(0). Present in state means
+        condition, absent means off. Stored on `self` so `_ds_linked`, shared by the forward
+        sim and the observed-path replay, folds it identically in both.
 
-        BAND BRANCH ONLY, refused loud otherwise: the additive `target − b(0)` shift lands the
+        BAND BRANCH ONLY, refused loud otherwise: the additive `target - b(0)` shift lands the
         conditional mean on the target exactly when the un-conditioned row-1 mean carries b(0)
-        at unit loading (`mean = prev + ds − band`); the Linear branch's `Phi·prev` does not,
-        and silently mis-anchoring by `(1−Phi)·b(0)` is the one-model-per-payoff refusal."""
+        at unit loading, which the Linear branch's `Phi*prev` does not - and silently
+        mis-anchoring by `(1-Phi)*b(0)` is the one-model-per-payoff refusal."""
         p = shared_mem.t_Scenario_Buffer.get((self.factor_key, 'partner_print'))
         if p is None or self.scenario_horizon < 2:
             self.chain_t0_shift = None
@@ -5061,23 +4757,19 @@ class BasisLinkedSpotModel(StochasticProcess):
         return ds
 
     def generate(self, shared_mem):
-        """
-        Simulate the OU basis on top of the linked primary spot path.
+        """Simulate the OU basis on top of the linked primary spot path.
 
         The linked spot must have been generated first: the `dependant_fields` declaration on
         ObservedBasis makes CommodityPrice a dependency, so the simulator topo-orders it before
-        us. The linked spot path is read in *price level* (dollars), not log-space — the HMM
-        process exp()s its log-cumsum before publishing — and its path/regime shapes match this
-        process's Z, since both processes ran in the same inner/outer mode.
+        us. Its path is read in PRICE LEVEL, not log space, and its path/regime shapes match
+        this process's Z since both ran in the same inner/outer mode.
 
-        ONE loop covers outer (T, B) and inner (T, B, B2) — every expression in it broadcasts, so
-        only `b_init` (a `(1,)` spot against a `(B,)` per-outer-path fork vector) needs the mode.
-        The two extensions are the two `if`s inside it, and with both off the else arms are the
-        shipped expression in the shipped order: nothing new is evaluated, not even at zero.
-
-        Neither recursion draws: `W` is sampled once, in the shape and order it always was, and
-        the GARCH arm reuses the SAME `Z`/`W` element it would have used flat — it only rescales
-        it, so every seeded number in a world with the extensions off is untouched.
+        ONE loop covers outer (T, B) and inner (T, B, B2) - every expression in it broadcasts,
+        so only `b_init` needs the mode. The two extensions are the two `if`s inside it, and
+        with both off the else arms are the shipped expression in the shipped order: nothing
+        new is evaluated, not even at zero. Neither recursion draws - `W` is sampled once, in
+        the shape and order it always was, and the GARCH arm reuses the SAME `Z`/`W` element it
+        would have used flat.
         """
         self._chain_shift(shared_mem)
         # Z is (T, B) outer / (T, B, B2) inner, correlated.
@@ -5160,17 +4852,17 @@ class BasisLinkedSpotModel(StochasticProcess):
         return out
 
     def _advance(self, mu, sig2, prev, ds, innovation):
-        """ONE step of the coupled (b, μ, σ²) recursion, shared by the forward sim and the
-        observed-path replay so the forward ≡ replay invariant is STRUCTURAL rather than maintained
-        by copying — `GARCHSpotModel._advance_variance`'s construction. The only thing that differs
-        between the two is `innovation(mean, sig2) -> (η_t, b_t)`: the forward sim DRAWS η and
-        derives the level, while replay is handed the level and derives η as its deviation from
-        this same conditional mean. Returning both is what makes the replayed μ exact — a replay
-        that rebuilt `b` as `mean + (b − mean)` would be one rounding off the observed level.
+        """ONE step of the coupled (b, mu, sigma^2) recursion, shared by the forward sim and the
+        observed-path replay so the forward == replay invariant is STRUCTURAL rather than
+        maintained by copying. The only thing that differs is
+        `innovation(mean, sig2) -> (eta_t, b_t)`: the forward sim DRAWS eta and derives the
+        level, while replay is handed the level and derives eta as its deviation from this same
+        conditional mean. Returning both is what makes the replayed mu exact - a replay that
+        rebuilt `b` as `mean + (b - mean)` would be one rounding off the observed level.
 
-        Returns `(b_t, μ_{t+1}, σ²_{t+1})`, both states in the published fork-index convention: what
-        the step t→t+1 consumes. Each extension's OFF arm returns its state untouched, so with both
-        off the two expressions evaluated are the shipped ones, in the shipped order."""
+        Returns `(b_t, mu_{t+1}, sigma^2_{t+1})`, both states in the published fork-index
+        convention: what the step t->t+1 consumes. Each extension's OFF arm returns its state
+        untouched, so with both off the two expressions evaluated are the shipped ones."""
         if self.band:
             d = prev - mu
             mean = prev + ds - self.band_beta * torch.sign(d) * (d.abs() - self.band_kappa).clamp_min(0.0)
@@ -5234,23 +4926,23 @@ class BasisLinkedSpotModel(StochasticProcess):
                 if path is not None}
 
     def reseed_from_path(self, simulated, shared_mem):
-        """Observed-path replay: rerun both observable recursions ALONG the supplied basis path and
-        republish `basis_mu` / `basis_sig2`, so a fork or a reveal at any row reads the REPLAYED
-        path's state instead of the discarded simulated one's.
+        """Observed-path replay: rerun both observable recursions ALONG the supplied basis path
+        and republish `basis_mu` / `basis_sig2`, so a fork or a reveal at any row reads the
+        REPLAYED path's state instead of the discarded simulated one's.
 
-        Both are pure functions of the realised path. μ_t needs only b; σ_t² needs η_t, which IS
-        b_t minus the model's own conditional mean at t — so the replay is `_advance` again with the
-        innovation handed in rather than drawn, and no second copy of the arithmetic exists to drift
-        from. ΔS is read from the buffer, which is the REPLAYED linked path when the world replays
-        the parent too: the calc publishes each factor's path before the next process generates.
+        Both are pure functions of the realised path. mu_t needs only b; sigma_t^2 needs eta_t,
+        which IS b_t minus the model's own conditional mean at t - so the replay is `_advance`
+        again with the innovation handed in rather than drawn, and no second copy of the
+        arithmetic exists to drift from. dS is read from the buffer, which is the REPLAYED
+        linked path when the world replays the parent too.
 
-        Exactness is asymmetric, and MEASURED: replaying a path a seeded run produced reproduces
-        that run's μ BITWISE — μ is a function of the observed level, which replay is handed rather
-        than rebuilding — but its σ² only to 1e-15 relative in float64 and 6e-7 in float32, because
-        σ² is a function of η and `fl(b_t − mean)` differs from the η that was drawn by the rounding
-        error of the forward pass's own final addition. No spelling of this replay recovers η
-        exactly from a rounded sum; what it can do is not compound the error, which is why
-        `_advance` takes the level from the innovation supplier instead of re-deriving it."""
+        Exactness is asymmetric, and MEASURED: mu comes back BITWISE (it is a function of the
+        observed level, which replay is handed rather than rebuilding) while sigma^2 only to
+        1e-15 relative in float64 and 6e-7 in float32, because `fl(b_t - mean)` differs from
+        the eta that was drawn by the rounding error of the forward pass's own final addition.
+        No spelling of this replay recovers eta exactly from a rounded sum; what it can do is
+        not compound the error, which is why `_advance` takes the level from the innovation
+        supplier instead of re-deriving it."""
         self._chain_shift(shared_mem)
         if not (self.slow_mean or self.garch):
             return
@@ -5304,59 +4996,46 @@ class BasisLinkedSpotModel(StochasticProcess):
 
 
 class BasisLinkedSpotCalibration(object):
-    """Calibration of BasisLinkedSpotModel. Self-contained: data_frame carries the basis
+    """Calibration of BasisLinkedSpotModel. Self-contained: `data_frame` carries the basis
     column (`ObservedBasis.<primary>.<basis>`) plus the linked spot column, pulled by the
-    archive-side name-prefix dependency. OLS on `b(t) = a·ΔS + φ·b(t-1) + η(t)`
-    recovers (a, φ); ν from method-of-moments on the η excess kurt; per-regime σ from
-    rolling-vol-tercile partitioning of η — terciles indexed in σ-ascending order to
-    match the linked spot's HMM regime convention.
+    archive-side name-prefix dependency. OLS on `b(t) = a*dS + phi*b(t-1) + eta(t)` recovers
+    (a, phi); nu from method-of-moments on the eta excess kurtosis; per-regime sigma from
+    rolling-vol-tercile partitioning of eta, terciles indexed in sigma-ascending order to match
+    the linked spot's HMM regime convention.
 
-    That default path is FROZEN: it is what every calibrated platinum world in the repo carries,
-    and `tests/test_basis_slow_mean_garch.py` holds it to the estimator above byte-for-byte, on the
-    real archive and on a synthetic one. Declaring either switch below moves the whole system onto
-    ONE likelihood instead.
+    That default path is FROZEN - it is what every calibrated platinum world in the repo
+    carries, and `tests/test_basis_slow_mean_garch.py` holds it byte-for-byte. Declaring either
+    switch below moves the whole system onto ONE likelihood instead.
 
-    `Slow_Mean_Span > 0` regresses the DEVIATION from the slow observable mean, `b(t) − μ_t = a·ΔS
-    + φ·(b(t-1) − μ_t) + η(t)`, with μ_t the span's EWMA of the basis through t−1 — strictly
-    lagged, so the regressor is F_{t-1}-measurable exactly as it is in the simulator. It stamps
-    `Slow_Mean_Lambda = 1 − 2/(span+1)` and `Mu_0`, the mean the NEXT observation would revert to.
+    `Slow_Mean_Span > 0` regresses the DEVIATION from the slow observable mean, with mu_t the
+    span's EWMA of the basis through t-1 - strictly lagged, so the regressor is
+    F_{t-1}-measurable exactly as in the simulator. It stamps
+    `Slow_Mean_Lambda = 1 - 2/(span+1)` and `Mu_0`, the mean the NEXT observation would revert
+    to.
 
     `GARCH_Innovation = 'Yes'` fits the innovation's own GARCH(1,1) and stamps
-    `G_Omega`/`G_Alpha`/`G_Beta`/`Sig2_0`. It stamps a flat `Sigma` INSTEAD of `Sigma_By_State`,
-    because the model's precedence puts the regime form first: stamping both would leave the GARCH
-    inert. `Sigma` is then η's unconditional std — the model's behaviour if the four GARCH fields
-    are deleted.
+    `G_Omega`/`G_Alpha`/`G_Beta`/`Sig2_0`, plus a flat `Sigma` INSTEAD of `Sigma_By_State`,
+    because the model's precedence puts the regime form first and stamping both would leave the
+    GARCH inert. `Sigma` is then eta's unconditional std.
 
-    ONE LIKELIHOOD, and what it cost to find out. Either switch routes the fit to `arx1_t_mle` with
-    the EWMA handed in as `mean` and `garch` on, so (a, φ, ω_b, α_b, β_b, ν) are estimated together
-    against the same Student-t. The path it replaces fitted the conditional mean by OLS — a Gaussian
-    loss — and then a GARCH-t on that fit's residual, which is two halves under two likelihoods:
-    the defect `QuadraticCarryCurveCalibration` names one factor over, and the reason a scratch
-    study and this class reported different numbers from the same archive. Measured on
-    `data/plat_archive_sync.csv` (3786 rows, 2010-2026, span 63):
+    ONE LIKELIHOOD: either switch routes the fit to `arx1_t_mle` with the EWMA handed in as
+    `mean` and `garch` on, so (a, phi, omega_b, alpha_b, beta_b, nu) are estimated together
+    against the same Student-t, rather than a Gaussian-loss conditional mean followed by a
+    GARCH-t on its residual - two halves under two likelihoods.
 
-        estimator                       a         φ       ν      ω_b     α_b     β_b
-        OLS + GARCH-t on the residual   -0.0461   0.7593  5.01   0.1068  0.1183  0.8714
-        joint, this class               -0.0227   0.6505  4.94   0.0793  0.1097  0.8830
-        joint, with a held at 0         0         0.6433  5.06   0.0687  0.1016  0.8925
+    THE IDENTIFIABILITY FINDING, the carry curve's Gamma-versus-rho one factor over: `A` and
+    the spot/basis entry of the framework's R matrix are the same coupling written twice. The
+    one-step Cov(b_t - E_{t-1}[b_t], dS) = A*Var(dS) + Cov(eta, dS) is one equation in two
+    unknowns, and the LOSS decides where on that line the fit lands - OLS is orthogonal to dS
+    by construction and puts all of the coupling in A, while the t likelihood downweights the
+    tail days and halves it. Neither is wrong and the split does not matter; what matters is
+    that BOTH ends come from the same fit, because `delta` is what the framework consolidates
+    into R while `A` is stamped in the block. Take one estimator's A beside another's residual
+    and the simulated coupling is 150% of the observed one.
 
-    THE IDENTIFIABILITY FINDING, and it is the carry curve's Γ-versus-ρ one factor over: `A` and the
-    spot/basis entry of the framework's R matrix are the same coupling written twice. The one-step
-    covariance is Cov(b_t − E_{t-1}[b_t], ΔS) = A·Var(ΔS) + Cov(η, ΔS), one equation in two
-    unknowns, and the LOSS decides where on that line the fit lands: OLS is orthogonal to ΔS by
-    construction, so it puts all −26.51 of the coupling in A and leaves the R channel exactly zero;
-    the t likelihood downweights the tail days where the coupling is largest, halves A, and leaves
-    −13.29 of −26.36 for the innovation. The totals differ by 0.6%. Neither is wrong and the split
-    does not matter — what matters is that BOTH ends come from the same fit, because `delta` is what
-    the framework consolidates into R while `A` is stamped in the block. Take one estimator's A
-    beside another's residual and the simulated coupling is 150% of the observed one.
-
-    `Nu` is the joint fit's, not a moment match: the ν ladder 3.0 (no GARCH) → 4.94 (GARCH) says the
-    extreme tails were mostly unmodelled vol dynamics, the same reading `GARCHSpotCalibration` gets.
-    `Sig2_0` is `garch11_t_mle`'s convention — the conditional variance OF the last observation,
-    one step stale as a "today's state" stamp, shared with `GARCHSpotCalibration`'s `H0` so the two
-    seeds mean the same thing (advancing one more step would read 17.25 against the stamped
-    19.36; moving one without the other is what this file exists to prevent)."""
+    `Sig2_0` is `garch11_t_mle`'s convention - the conditional variance OF the last
+    observation, one step stale as a "today's state" stamp - shared with
+    `GARCHSpotCalibration`'s `H0` so the two seeds mean the same thing."""
     model_type = 'BasisLinkedSpotModel'
     fields = [
         F('Nu_Min', 'Float', default=3.0,
@@ -5448,9 +5127,9 @@ class BasisLinkedSpotCalibration(object):
             g_omega, g_alpha, g_beta = fit.garch
             max_persistence = float(self.param.get('Max_Persistence', 0.999))
             if g_alpha + g_beta > max_persistence:
-                # An escalating-variance window (2026 squeeze on a 3y fit) drives the MLE past
-                # a unit root, and an explosive basis GARCH random-walks the simulated basis to
-                # +/- hundreds of $/oz. Same projection as GARCHSpotCalibration's.
+                # an escalating-variance window drives the MLE past a unit root, and an
+                # explosive basis GARCH random-walks the simulated basis; same projection as
+                # GARCHSpotCalibration's
                 logging.warning('basis GARCH persistence %.5f > %.5f - scaling beta down.',
                                 g_alpha + g_beta, max_persistence)
                 g_beta = max_persistence - g_alpha

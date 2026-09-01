@@ -56,11 +56,13 @@ SERVICE = None
 
 
 class Service:
-    """A `DV_Service` at a URL. `session` is the transport seam - anything with a requests-style
-    `request(method, url, ...)`, which is how the gates drive the tools in process through
-    fastapi's TestClient without a socket. Deliberately a second copy of what `excel_integration`
-    has: the import gate holds this module to `requests` + `mcp`, so it can never import the
-    add-in's client (which is not packaged anyway)."""
+    """A `DV_Service` at a URL, with `call` raising `ToolError` for an unreachable service or a
+    4xx/5xx answer.
+
+    `session` is the transport seam - anything with a requests-style `request(method, url, ...)` -
+    which is how a caller drives the tools in process without a socket. It duplicates
+    `excel_integration`'s client because the import gate holds this module to `requests` + `mcp`.
+    """
 
     def __init__(self, base_url=None, session=None, timeout=120.0):
         self.base_url = (base_url if base_url is not None
@@ -84,8 +86,8 @@ class Service:
 
 
 def configure(base_url=None, session=None):
-    """Bind the service this process talks to. `main` calls it from the environment; a gate calls
-    it with a TestClient."""
+    """Bind the service this process talks to and return it. `main` calls it from the environment;
+    a caller driving the tools in process passes its own `session`."""
     global SERVICE
     SERVICE = Service(base_url, session)
     return SERVICE
@@ -100,9 +102,8 @@ def service():
 MAX_PAGE_ROWS = 200
 MAX_TABLE_COLUMNS = 60
 
-#: How many gradient rows a risk summary carries: the biggest by absolute size, which is what a
-#: trading read of a book is - the exposures worth saying out loud. The whole vector belongs in the
-#: blotter, and `execute_book({"Greeks": "First"})` plus `fetch_table` serves anyone who wants it.
+#: How many gradient rows a risk summary carries - the biggest by absolute size. The whole vector
+#: is reached through `execute_book({"Greeks": "First"})` and `fetch_table`.
 MAX_GREEK_ROWS = 15
 
 
@@ -111,8 +112,8 @@ def _raw_result(result_id):
 
 
 def _summary(raw, result_id):
-    """A run as the model should hold it: identity, stats, and each table's SHAPE as one line -
-    never a column list, never a cell. The cells stay behind `fetch_table`."""
+    """A run trimmed to what the model should hold: identity, stats, and each table's shape as one
+    line. Never a column list and never a cell - those stay behind `fetch_table`."""
     trimmed = {'result_id': result_id, 'status': raw.get('status')}
     for key in ('plan_hash', 'values_hash', 'seed', 'stats', 'error'):
         if key in raw:
@@ -125,9 +126,11 @@ def _summary(raw, result_id):
 
 
 def _await_result(result_id, wait_seconds):
-    """Poll `/results/{id}` until it settles or the wait runs out - one tool call that returns the
-    answer beats a model burning a turn per poll. On timeout the id and the way forward travel in
-    `hint`, so a long simulation stays reachable."""
+    """Poll `/results/{id}` until it settles or `wait_seconds` runs out, so one tool call returns
+    the answer rather than a model burning a turn per poll.
+
+    On timeout the id and the way forward travel in `hint`, so a long simulation stays reachable.
+    """
     deadline = time.monotonic() + wait_seconds
     interval, stepped_up = 0.25, time.monotonic() + 2.0
     while True:
@@ -144,9 +147,8 @@ def _await_result(result_id, wait_seconds):
 
 
 def _booking(outcome):
-    """A booking outcome as the model should hold it: what happened to THIS deal, and a COUNT of
-    anything else outstanding in the book - never the whole verdict, which `validate_book` serves
-    to whoever asks for it."""
+    """A booking outcome trimmed to what happened to this deal, plus a count of anything else
+    outstanding in the book. The whole verdict is `validate_book`'s to serve."""
     verdict = outcome.pop('validate', None) or {}
     issues = {name: count for name, count in
               (('deal_messages', len(verdict.get('deals', {}))),
@@ -246,7 +248,7 @@ def describe_structure(name: str = None) -> dict:
                 'count': len(types)}
     declared = types.get(name)
     if declared is None:
-        # a sales name is how a model spells it - so the vernacular is searched beside the names
+        # A sales name is how a model spells it, so the vernacular is searched beside the names.
         close = [key for key, entry in sorted(types.items())
                  if name.lower() in key.lower() or name.lower() in entry['vernacular'].lower()]
         raise ToolError('{!r} is not a structure. {}'.format(
@@ -312,8 +314,7 @@ def read_book() -> dict:
               'ignored': node.get('Ignore') == 'True',
               'children': len(node.get('Children', []))}
              for deal_path, node in _walk(calc['Deals']['Deals']['Children'])]
-    # summaries and pointers: the calculation's headline plus its field NAMES, and the factor
-    # names capped - the model needs the vocabulary it books against, never a payload
+    # Field names and capped factor names: the vocabulary the model books against, never a payload.
     return {'path': live['path'], 'etag': live['etag'],
             'reference': calc['Deals'].get('Reference'),
             'calculation': {
@@ -489,14 +490,14 @@ async def tick_market_from_bloomberg(pairs: list = None, expiries: list = None,
     result_id = submitted['result_id']
     deadline = time.monotonic() + wait_seconds
     while True:
-        # every HTTP call is blocking, so it goes to a thread - the event loop stays free to put
-        # the progress notifications on the wire
+        # Every HTTP call is blocking, so it goes to a thread and the event loop stays free to put
+        # the progress notifications on the wire.
         raw = await asyncio.to_thread(_raw_result, result_id)
         if raw.get('status') not in ('queued', 'running'):
             return raw
         progress = raw.get('progress')
         if progress and ctx is not None:
-            # a client resets its timeout on progress: this is what buys a five-minute first use
+            # A client resets its timeout on progress, which is what buys a long first use.
             await ctx.report_progress(progress['done'], progress['total'], progress.get('note'))
         if time.monotonic() >= deadline:
             return {'result_id': result_id, 'status': raw['status'],
@@ -647,8 +648,8 @@ The BOOK IS NOT TOUCHED. What is written is the pending trade:
     quote = outcome.get('stats', {}).get('Quote')
     if quote is not None:
         return quote
-    # no quote: the run summary IS the answer - an error naming itself, or the poll pointer, whose
-    # follow-up here is the stats rather than a table
+    # No quote: the run summary is the answer, and its poll pointer follows up on the stats rather
+    # than on a table.
     if 'hint' in outcome:
         outcome['hint'] = ('still {} - call poll_result({!r}) to check again; the quote lands '
                            'under stats.Quote, and the pending trade is filed the moment it '
@@ -684,8 +685,7 @@ def book_quote(quote_id: str) -> dict:
     audit trail of why the book carries what it carries - and the sheet the client saw stands
     beside it.
     """
-    # an approval books through `deal_edit`, so its answer is a booking's - and gets a booking's
-    # trim: what happened to THIS deal, the rest of the book's troubles as counts
+    # An approval books through `deal_edit`, so its answer is a booking's and takes a booking's trim.
     return _booking(service().call('POST', '/book/quote', json={'quote_id': quote_id}))
 
 
@@ -783,9 +783,8 @@ def recalc_xva(netting_sets: list | None = None, wait_seconds: float = 600.0) ->
     queued = submitted['queued']
     if not queued:
         return dict(submitted, hint='the book carries no netting sets - there is no XVA to run')
-    # freshly queued sets drain in order through one worker, so the last settling usually means
-    # every one has - but a set the store already held answers 'done' at once, so the honest
-    # reading of progress is xva_view's per-row status, and the hint says so
+    # Freshly queued sets drain in order through one worker, so the last settling usually means
+    # every one has - but a cached set answers 'done' at once, so xva_view's per-row status rules.
     last = _await_result(queued[-1]['result_id'], wait_seconds)
     return {'queued': queued, 'last': last,
             'hint': 'xva_view reads the rows and each row carries its own status; poll_result '

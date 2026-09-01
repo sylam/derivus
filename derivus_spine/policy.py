@@ -11,32 +11,23 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""The two policy documents increment 3 declares - tolerance and firmness - and the fold that finds
-the one in force.
+"""The tolerance and firmness policy documents, and the fold that finds the one in force.
 
-Policy is DATA, hashed into the blob store and declared through the ordinary writer, exactly as the
-capabilities document is. Nothing here is a constant somebody edits in a release: a deployment that
-wants a tighter PV tolerance or a shorter market window declares one, the declaration is a fact, and
-"what standard was this claim held to in March" is a fold over the log like every other question.
-This module is `capability.py`'s shape applied to two smaller documents, and it deliberately shares
-none of its code: capabilities decide who may write and must fail closed WITHOUT raising, because
-the fold runs inside the writer's own authorization hook. These two are read by VERBS instead, so a
-document that will not read raises where the verb stands and the verb refuses by name - fail closed
-and loud, which is the right posture when the caller is a booking rather than the writer itself.
+Policy is data: hashed into the blob store and declared through the ordinary writer, as the
+capabilities document is. Nothing here is a constant edited in a release - a deployment that wants a
+tighter PV tolerance or a shorter market window declares one, and "what standard was this claim held
+to in March" is a fold over the log. This shares no code with `capability.py`, which must fail
+closed WITHOUT raising because its fold runs inside the writer's authorization hook; these two
+documents are read by verbs instead, so a document that will not read raises where the verb stands.
 
-THE SPINE ADMITS NO TOLERANCE OF ITS OWN, and this is the file that has to say so out loud because
-it is the one place an epsilon appears anywhere in the package. Hashes, folds, chains and plan
-recompilation are bit-exact and always will be; the only floating-point comparison in the spine is
-`compare` below, it runs on numbers that came out of the ENGINE, and every epsilon it uses was
-declared by a deployment in a document the log carries. A result class the policy does not name is
-therefore REFUSED rather than compared at some default this module picked - a default epsilon is an
-undeclared policy, and an undeclared policy is exactly what a hashed policy blob exists to prevent.
+The spine admits no tolerance of its own. `compare` below is the only floating-point comparison in
+the package, it runs on numbers that came out of the engine, and every epsilon it uses was declared
+by a deployment. A result class the policy does not name is refused rather than compared at a
+default this module picked.
 
-The FIRMNESS defaults are the other side of that rule and they are stated rather than hidden,
-because a firmness policy is optional in a way a tolerance policy is not: a home that declares none
-is not making a claim about somebody else's numbers, it is quoting off its own book, and the two
-windows below are the desk conventions the edge already runs on - one tick of the market cadence,
-and the ten minutes `Quote Policy.firm_seconds` defaults to.
+A firmness policy is optional where a tolerance policy is not: a home that declares none is quoting
+off its own book rather than making a claim about somebody else's numbers, so it runs on the stated
+`FIRMNESS_DEFAULTS` below.
 """
 import json
 
@@ -44,34 +35,26 @@ from .canon import canonical_bytes
 from .errors import MalformedEvent, ReplayRefused, SpineRefusal
 from .vocabulary import is_hash, is_number, is_text
 
-#: The policy names this module reads, and the whole of them. They are reserved the way
-#: `capabilities` is: a declaration under one of these names is read by a verb, so its shape is this
-#: module's business rather than the declaring operator's.
+#: The policy names this module reads, and the whole of them. Reserved the way `capabilities` is: a
+#: declaration under one of these names is read by a verb, so this module owns its shape.
 TOLERANCE_POLICY = 'tolerance'
 FIRMNESS_POLICY = 'firmness'
 
-#: The tolerance document's one section: result class -> the absolute epsilon a replay of that class
-#: may differ by. Closed at the field level like an event body, because a key no comparison reads is
-#: a tolerance nobody enforces.
+#: The tolerance document's one section: result class -> the absolute epsilon a replay of that
+#: class may differ by. Closed at the field level, like an event body.
 TOLERANCE_SECTION = 'tolerances'
 
-#: The firmness document's two windows, in seconds, and what a home that declares none runs on.
-#:
-#: `values_seconds` is one beat of `DV_Service --tick`: the market pin a quote was struck on is
-#: refreshed on that cadence, so a pin older than one beat is a pin nobody refreshed and the quote
-#: is priced against a board that has stopped being watched. `plan_seconds` is the ten minutes the
-#: desk's own `Quote Policy.firm_seconds` defaults to - the book moves by BOOKING rather than by
-#: clock, so on this dimension the hash comparison is the real test and the window is the backstop
-#: under it.
+#: The firmness windows, in seconds, that a home declaring no firmness policy runs on.
+#: `values_seconds` is one beat of `DV_Service --tick`, the cadence a market pin is refreshed on;
+#: `plan_seconds` is the ten minutes `Quote Policy.firm_seconds` defaults to.
 FIRMNESS_DEFAULTS = {'values_seconds': 30.0, 'plan_seconds': 600.0}
 
 
 def parse_tolerance(document, where):
-    """A tolerance policy, read and checked to the last key. Answers the parsed document.
+    """Check `document` as a tolerance policy and return it parsed. `where` names it in refusals.
 
-    One section, and every entry an absolute epsilon on one result class: `{"tolerances": {"mtm":
-    1e-9, "cva": 1e-6}}`. Tighter for a PV, looser for a Monte Carlo greek, same-path by recorded
-    seed - the brief's own sentence, spelled by the deployment rather than by this module.
+    One section, every entry an absolute epsilon on one result class: `{"tolerances": {"mtm": 1e-9,
+    "cva": 1e-6}}`. Anything else raises `MalformedEvent`.
     """
     def refuse(sentence):
         raise MalformedEvent('{}: {}'.format(where, sentence))
@@ -100,12 +83,11 @@ def parse_tolerance(document, where):
 
 
 def parse_firmness(document, where):
-    """A firmness policy, read and checked. Answers the parsed document with the defaults filled in.
+    """Check `document` as a firmness policy and return it with `FIRMNESS_DEFAULTS` filled in.
 
-    Two windows and no third: `{"values_seconds": 30, "plan_seconds": 600}`, each optional, each a
-    finite non-negative number of seconds. A window that will not READ refuses here, where the
-    document is declared and the operator still has the file open - never at the approval, where it
-    would refuse a quote for a reason the salesperson cannot act on.
+    Two windows and no third: `{"values_seconds": 30, "plan_seconds": 600}`, each optional and each
+    a finite non-negative number of seconds. An unreadable window raises here, at the declaration,
+    rather than later at an approval that could not act on it.
     """
     def refuse(sentence):
         raise MalformedEvent('{}: {}'.format(where, sentence))
@@ -132,17 +114,16 @@ def parse_firmness(document, where):
     return read
 
 
-#: policy name -> the parser that reads it. The map is what makes `declare` refuse a name this
-#: module does not own, rather than storing a document nobody will ever be able to read back.
+#: policy name -> the parser that reads it. `declare` refuses a name absent from this map rather
+#: than store a document nobody could read back.
 PARSERS = {TOLERANCE_POLICY: parse_tolerance, FIRMNESS_POLICY: parse_firmness}
 
 
 def canonical_policy(policy, document, where=None):
     """`document` checked and canonicalised - the bytes a declaration puts in the store.
 
-    One function so that what a verb accepts and what an operator declares cannot part company,
-    which is `capability.canonical_document`'s reason spelled again: the same policy spelled two
-    ways would be two blobs and two histories of one decision.
+    One function, so what a verb accepts and what an operator declares cannot part company: the same
+    policy spelled two ways would be two blobs and two histories of one decision.
     """
     parse = PARSERS.get(policy)
     if parse is None:
@@ -155,11 +136,10 @@ def canonical_policy(policy, document, where=None):
 
 
 def declare(log, actor, policy, document, effective_time=None):
-    """Put a policy document in the store and declare it. Answers the envelope plus the blob.
+    """Put a policy document in the store and declare it, returning the envelope plus the blob.
 
-    The durability law, obeyed the way every other declaration obeys it: the blob is fsynced first,
-    then the `policy_declared` naming its address appends. `policy_declared` demands `admin`, so a
-    seat that may not govern the deployment cannot move the standard a replay claim is held to.
+    The blob is fsynced before the `policy_declared` naming its address appends. That event demands
+    the `admin` scope, so only a governing seat can move the standard a claim is held to.
     """
     raw = canonical_policy(policy, document)
     blob = log.store.put(raw)
@@ -172,16 +152,13 @@ def in_force(log, policy, lsn=None):
     """`(blob, document)` for the declaration of `policy` standing at or before `lsn`, or
     `(None, None)` where the log carries none.
 
-    Read off the PLATTER over `log.frames`, for `capability.build_state`'s reason: an index of where
-    the fold's inputs were says nothing about where they are once somebody else has appended, and a
-    handle outlives an append routinely because reading never claims the home. Located by ENVELOPE
-    (only `policy_declared` rows are opened) so the fold costs the length of the policy history
-    rather than of the book.
+    Read off the platter over `log.frames` rather than from an index, since reading never claims the
+    home and a handle routinely outlives someone else's append. Rows are located by envelope - only
+    `policy_declared` bodies are opened - so the fold costs the length of the policy history.
 
-    A declaration whose blob no longer answers for it RAISES here rather than folding to a
-    sentinel. That is the opposite of the capabilities fold and deliberately so: this one is called
-    by a verb, not by the writer's authorization hook, so nothing is bricked by a refusal and the
-    honest answer to "what tolerance governs this pin" is that the record no longer says.
+    A declaration whose blob no longer answers for it raises `MalformedEvent` rather than folding to
+    a sentinel: unlike the capabilities fold, this one is called by a verb, so a refusal bricks
+    nothing.
     """
     blob = None
     for frame in log.frames(end_lsn=lsn):
@@ -215,15 +192,10 @@ def in_force(log, policy, lsn=None):
 def compare(claimed, produced, tolerances):
     """Every way `produced` departs from `claimed`, named. An empty list is agreement.
 
-    The comparison is STRUCTURAL first and numeric second, and only the numbers get an epsilon. Two
-    results whose shapes differ - a table one of them does not have, a row count that moved, a
-    column relabelled - are not two readings of one number, they are two different answers, and no
-    tolerance admits that. Numbers inside a class compare against that class's own declared epsilon.
-
-    A class the policy does not name is a departure, not a pass. The spine has no epsilon of its
-    own to fall back on (see this module's header), and quietly admitting an unnamed class would
-    attest a claim against a standard nobody declared - which is the failure this whole mechanism
-    exists to make impossible.
+    Structural first and numeric second: a shape that moved - a missing table, a row count that
+    changed, a column relabelled - is a different answer no tolerance admits, while numbers inside a
+    class compare against that class's declared epsilon. A class `tolerances` does not name is a
+    departure, never a pass.
     """
     departures = []
     for name in sorted(set(claimed) | set(produced)):
@@ -247,9 +219,11 @@ def compare(claimed, produced, tolerances):
 
 
 def _departures(claimed, produced, epsilon, path, out):
-    """Walk one result class in lockstep and append every departure. Numbers get the epsilon;
-    everything else is compared for equality, because a label, a date or a row count is a statement
-    about the shape rather than a measurement inside it."""
+    """Walk one result class in lockstep and append every departure to `out`, under `path`.
+
+    Numbers compare within `epsilon`; everything else compares for equality, a label or a date being
+    a statement about the shape rather than a measurement inside it.
+    """
     if isinstance(claimed, dict) or isinstance(produced, dict):
         if not (isinstance(claimed, dict) and isinstance(produced, dict)):
             out.append('{}: the claim holds {} where the replay holds {}'.format(
@@ -286,12 +260,10 @@ def _departures(claimed, produced, epsilon, path, out):
 
 
 def tolerances_in_force(log, lsn=None):
-    """`(blob, tolerances)` a replay claim is held to here, or `ReplayRefused` naming the remedy.
+    """`(blob, tolerances)` a replay claim is held to here.
 
-    Separate from `in_force` because the ABSENCE means different things to the two documents: a home
-    with no firmness policy runs on the stated defaults, while a home with no tolerance policy has
-    never said what "reproduces" means and so cannot attest anything at all. The brief puts the
-    tolerance policy in the acceptance criteria as a written artifact for exactly that reason.
+    Raises `ReplayRefused` where no tolerance policy is declared: such a home has never said what
+    "reproduces" means and so can attest nothing.
     """
     blob, document = in_force(log, TOLERANCE_POLICY, lsn)
     if blob is None:
@@ -304,11 +276,10 @@ def tolerances_in_force(log, lsn=None):
 
 
 def firmness_in_force(log, lsn=None):
-    """The firmness windows standing here - the declared ones, or `FIRMNESS_DEFAULTS`.
+    """The firmness windows standing at `lsn` - the declared ones, or `FIRMNESS_DEFAULTS`.
 
-    A home that has declared none is not making a claim about anybody else's numbers, so the stated
-    desk conventions are the honest answer rather than a refusal. Which windows were used is
-    reported by the check itself, so a quote refused on a default says which default it met.
+    Absence is not a refusal here: a home declaring no firmness policy runs on the stated defaults,
+    and the firmness check reports which window it measured against.
     """
     blob, document = in_force(log, FIRMNESS_POLICY, lsn)
     return dict(FIRMNESS_DEFAULTS) if blob is None else document
