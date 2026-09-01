@@ -5827,6 +5827,25 @@ def pv_float_leg(shared, time_grid, deal_data):
 
 
 @utils.log_exception
+def pv_fra_leg(shared, time_grid, deal_data):
+    deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
+
+    FX_rep = utils.calc_fx_cross(
+        deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
+
+    # we could have the case where we settle at effective date but pv from maturity_date
+    # so we don't settle inside pv_float_cashflow_list
+    local_pv = pv_float_cashflow_list(
+        shared, time_grid, deal_data, pricer_float_cashflows, settle_cash=False)
+
+    cash_settle(
+        shared, deal_data.Factor_dep['SettleCurrency'],
+        deal_data.Time_dep.deal_time_grid[-1], local_pv[-1])
+
+    return local_pv * FX_rep
+
+
+@utils.log_exception
 def pv_index_leg(shared, time_grid, deal_data):
     """The inflation-linked leg in the reporting currency."""
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]

@@ -3180,7 +3180,7 @@ class SwaptionDeal(Deal):
             Ut_swap = delta * mn_swap * F_swap
 
             if Ut_swap.shape[0]:
-                exercised = Ut_swap[0] >= 0
+                exercised = (delta * mn_option[-1]) >= 0
                 Ut_mask = Ut_swap * exercised
                 mtm = FX_rep * torch.cat([value, buysell * Ut_mask], dim=0)
                 if getattr(shared, 'boundary_aad', False) and time_grid.report_index is not None:
@@ -6369,22 +6369,26 @@ class FRADeal(Deal):
             'Forward': get_interest_factor(
                 field['Interest_Rate'], static_offsets, stochastic_offsets, all_tenors),
             'Daycount': utils.get_day_count(self.field['Day_Count']),
-            'CompoundingMethod': 'None', 'SettleCurrency': self.field['Currency']
+            'CompoundingMethod': 'None',
+            'SettleCurrency': self.field['Currency']
         }
 
         Accrual_fraction = utils.get_day_count_accrual(
             base_date, (self.field['Maturity_Date'] - self.field['Effective_Date']).days, field_index['Daycount'])
 
+        timing = self.field.get('Payment_Timing', 'End')
+        discount_date = self.field['Maturity_Date'] if timing == 'Discounted' else self.field['Effective_Date']
+
         cashflows = {'Items':
             [{
-                'Payment_Date': self.pay_date,
+                'Payment_Date': discount_date,
                 'Accrual_Start_Date': self.field['Effective_Date'],
                 'Accrual_End_Date': self.field['Maturity_Date'],
                 'Accrual_Year_Fraction': Accrual_fraction,
                 'Notional': self.field['Principal'],
                 'Margin': utils.Basis(-100.0 * self.field['FRA_Rate']),
                 'Resets': [
-                    [field['Reset_Date'], field['Reset_Date'],
+                    [field['Reset_Date'], self.field['Effective_Date'],
                      self.field['Maturity_Date'], Accrual_fraction,
                      field['Use_Known_Rate'], field['Known_Rate']]
                 ]
@@ -6399,7 +6403,7 @@ class FRADeal(Deal):
         return field_index
 
     def generate(self, shared, time_grid, deal_data):
-        return pricing.pv_float_leg(shared, time_grid, deal_data)
+        return pricing.pv_fra_leg(shared, time_grid, deal_data)
 
 
 class FloatingEnergyDeal(Deal):
