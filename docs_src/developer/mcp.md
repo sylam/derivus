@@ -41,6 +41,7 @@ repo — and `DV_MCP` takes the path out of the command altogether.
 | `book_quote` | `POST /book/quote` — approve a quote by id and book its mirror, refused exactly as a booking is |
 | `update_market_quotes` / `patch_market_values` | `POST /book/market` — quote blocks in (values-only updates, bootstrap judging the write), spot/vol values patched |
 | `tick_market_from_bloomberg` | `POST /book/bloomberg` — today's surfaces off this workstation's terminal; provisions the desk on first use, reporting progress while it waits |
+| `calibrate_heston_nandi` | `POST /book/hn` — fit one pair's Heston-Nandi parameters off its built surface and land them in the book; the expensive one, on request and never on the tick, and what a TARF or accumulator quote reads |
 | `book_risk_summary` | `GET /book/risk` — the whole book's mark and its biggest gradient rows, counterparty-blind |
 | `xva_view` / `recalc_xva` | `GET`/`POST /book/xva` — the cached XVA projection per netting set, and the only thing that moves it |
 | `validate_book` / `describe_book` | the read verbs over the live document |
@@ -64,7 +65,10 @@ authoring messages, or market data the book did not already lack. A refusal is a
 (`{written: false, refused: [...]}`), not a tool error, because the model's next move is to read
 the messages and fix exactly what they name. Tool errors are reserved for *cannot proceed*: the
 service down (named, with how to start it), an unknown type (with close matches), a parent that
-takes no children.
+takes no children. This is the pre-spine contract: under a configured `DV_SPINE_HOME` the endpoint
+additionally requires `quantity`, `execution_reference` and an enclosing `NettingCollateralSet`
+(`spine_fill`), and the `book_deal` tool signature passes none of them — so a spine-configured desk
+cannot yet book through this tool.
 
 **Deals are addressed positionally.** `deal_path` (`"0/2/1"`) is the identity everywhere —
 the same one the web UI's tree uses — because references are not unique in a book.

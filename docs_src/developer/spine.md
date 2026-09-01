@@ -8,7 +8,8 @@ the tree, per the no-specs-in-the-repo rule; this page documents what is BUILT, 
 enforcement and key custody — and on top of those, the booking verbs, the attestation lanes and the
 two-dimensional firmness check. No projections, no network — a library, a CLI, five delegators on
 `Context`, and 225 gates. Nothing here imports the engine, and exactly one module under `derivus/`
-knows the spine exists.
+imports `derivus_spine` — `derivus/spine.py`; the `Context` delegators and the service's book verbs
+reach the record only through that seam.
 
 ## The package, and the one dependency
 
@@ -107,7 +108,9 @@ both modes: there is no unauthenticated channel into the record.
 
 ## The gates
 
-103, in four files (`tests/test_spine*.py`), all real stores in temp dirs, every fault injected
+103, in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
+`test_spine_store.py` — the glob `tests/test_spine*.py` is the wider nine-file set worth the 225
+above), all real stores in temp dirs, every fault injected
 by doctoring DATA on disk — nothing monkeypatched. The shape worth naming: three tampers on
 three copies, each caught by a different layer (body byte by the chain, envelope field by the
 AAD, record_time by a keyless replica); a re-forged tail caught by the interior binding AND its
@@ -189,7 +192,8 @@ users, workflow or storage. Both hold because the LOGIC is `derivus_spine/verbs.
 functions over plain data — and `Context` gains five one-line delegators
 (`book | amend | apply_lifecycle | declare_market | pin_result`) that canonicalise through the
 engine's own encoder and hand bytes across. `derivus/spine.py` is the whole seam and the only
-module under `derivus/` that mentions the record: it imports `derivus_spine` LAZILY inside the
+module under `derivus/` that imports `derivus_spine` — the delegators above and the service's book
+verbs import the seam, never the package: it imports `derivus_spine` LAZILY inside the
 function (the `service.py`/fastapi precedent), refuses by name where the extra is absent
 (`pip install derivus[enterprise]`) or where `DV_SPINE_HOME` names no home, and re-raises every
 `SpineRefusal` as a `ValueError` carrying the spine's own sentence unedited — so the book verbs'

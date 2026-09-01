@@ -28,8 +28,8 @@ A calibration run consumes three inputs:
   containing the parameters the simulator's process class reads at `precalculate` time.
 - `Correlations` — pairwise innovation correlations across all calibrated factors,
   auto-discovered from the per-factor residual columns (see
-  [Calibration Class Contract](contract.md)). Entries below the configured cutoff
-  (typically 0.10) are dropped.
+  [Calibration Class Contract](contract.md)). Entries at or below the configured cutoff in
+  absolute value are dropped (`correlation_cuttoff`, default `0.2`; the example below passes `0.1`).
 
 A subsequent `Config.write_marketdata_json` call serialises the result to disk. The
 calibrated MarketData is the deliverable consumed by downstream simulations.
@@ -53,10 +53,14 @@ aa.calibrate_factors(start, end, keep, smooth=0.0, correlation_cuttoff=0.1)
 aa.write_marketdata_json('./tests/fixtures/data/MarketDataRF_platinum_calibrated.json')
 ```
 
-The factor list comes from intersecting (a) factors in the static `Price Factors` block,
-(b) factors discovered in the archive, and (c) routes available in `Model Configuration`.
-Factors absent from one of these are simply skipped — calibration is opt-in by data
-availability.
+The factor list is the **union of two halves**, not a three-way intersection. `present` is every
+`Price Factors` entry that `Model Configuration` routes to a model; `absent` is every archive column
+prefix not already covered that `Model Configuration` also routes. Neither half checks the other's
+source — `present` never tests the archive, `absent` never tests `Price Factors`.
+
+A routed factor with no archive column is therefore **not** simply skipped: `calibrate_factors`
+subscripts `self.archive_columns[rate.archive_name]` directly, outside any guard, and raises
+`KeyError` before any calibration runs. Trim the list before calling it.
 
 ## Iteration order
 

@@ -4,14 +4,14 @@ The internal object walk behind a calculation. The public entry points and outpu
 
 ## Dispatch
 
-`Context.run_job` branches on `Calculation['Object']` into its own three methods, which call `run_cmc` / `run_baseval` / `run_hedgemontecarlo` — those set device/seed defaults then call `construct_calculation`. That constructor is `globals().get(calc_type)(config, **kwargs)` — a class-name `globals()` dispatch. The three classes are `Credit_Monte_Carlo`, `Base_Revaluation` and `HedgeMonteCarlo`, all in `calculation.py`.
+`Context.run_job` branches on `Calculation['Object']` into its own three methods, which call `run_cmc` / `run_baseval` / `run_hedgemontecarlo` — those pick the device and inject the runtime-derived keys only (`Run_Date` for base valuation, `Time_grid` + `Run_Date` for the other two), then call `construct_calculation`; the seed default is declared on the calculation class (`F('Random_Seed', 'Integer', default=5120)`) and applied by `torch.manual_seed` in the state constructor. That constructor is `globals().get(calc_type)(config, **kwargs)` — a class-name `globals()` dispatch. The three classes are `Credit_Monte_Carlo`, `Base_Revaluation` and `HedgeMonteCarlo`, all in `calculation.py`.
 
 ## Compile phase 1 — `calculate_dependencies`
 
 Discovers the factor universe, wires the dependency DAG, topologically orders it, and splits stochastic vs static. This is a subsystem in itself — see [Dependency System](dependency_system.md). It returns `dependent_factors` (factor → max date), `stochastic_factors` (process-factor → price-factor), `additional_factors` (implied factors), plus reset/settlement date sets.
 
 !!! note "Invariant — `calculate_dependencies` is idempotent"
-    Both halves read the loaded config and write nothing: a second call returns identical output and `params` stays pristine — an implied model needs no `Price Models` entry (`find_models` classifies it off the implied factor's own block, and the process constructor reads `Price Models` with `.get`, taking `None` where the calibrated parameters live on the implied factor). It used to inject `Price Models[model] = None` dummies, which polluted saved market data and made `plan_hash` a function of whether a run had happened. `discover_factors` remains the half `Context.validate` / `factor_universe` call, because the want-list needs no model resolution.
+    Both halves read the loaded config and write nothing: a second call returns identical output and `params` stays pristine — an implied model needs no `Price Models` entry (`find_models` classifies it off the implied factor's own block, and the process constructor reads `Price Models` with `.get`, taking `None` where the calibrated parameters live on the implied factor). It used to inject `Price Models[model] = None` dummies, which polluted saved market data and made `plan_hash` a function of whether a run had happened. `discover_factors` remains the half `Config.validate` / `Config.factor_universe` call, because the want-list needs no model resolution.
 
 ## Compile phase 2 — `_build_factor_state`
 
@@ -29,7 +29,9 @@ Constructs the factor objects, mints the AAD leaves, and builds the processes. K
 !!! warning "Invariant — precalculate before calc_references"
     `precalculate` sets `value.factor_key`, `z_offset`, `spot0` and caches `_factor_precalc_args`; only then can `calc_references` resolve links that need `all_factors`. Both loops iterate `stoch_factors` in the same topological order, which is also what makes publish-as-you-go safe.
 
-## Compile phase 3 — correlation + cholesky + `process_ofs`
+## Compile phase 2a — correlation + cholesky + `process_ofs`
+
+Not a phase after phase 2 but a step *inside* it: `_build_factor_state` calls `_init_shared_mem`, which calls `get_cholesky_decomp` — the only place `process_ofs` is populated — ahead of the precalculate loop above that reads `self.process_ofs[key]`.
 
 `get_cholesky_decomp` iterates `stoch_factors.items()` (topological order). For each, `value.correlation_name` returns `(corr_type, [sub_factor_tuples])`; `self.process_ofs.setdefault(key, len(correlation_factors))` records the **row offset** of this factor's random substream, and each sub-factor appends a `Factor(corr_type, key.name+sub)` to `correlation_factors`. The symmetric correlation matrix is built from `Correlations`, healed to PSD if needed, and `torch.linalg.cholesky`'d.
 
@@ -96,7 +98,7 @@ Two deals compile outside a `DealStructure` and therefore bind for themselves: `
     `shared_mem.simulation_batch` and `shared_mem.fillvalue` must track the current flat batch during an inner fork (set before `reset_inner` and before the pricing pass) and be restored to `B_outer` afterward — in a `finally`, so a mid-fork raise (CUDA OOM, degenerate pricing) cannot leave the state flat-sized and make the *next* chunk fail on shapes instead of the real cause; `fillvalue` is frozen at construction and used as the empty-cat fallback in energy-leg / cash-settle code. Inner-MC pricing must fail loud rather than let `Deal.calculate`'s guard swallow a failure into a scalar-0 mark — inside a fork that silently corrupts the solver's training labels. Both halves are checked: the liability on its flat shape, and every tradable still live in the fork's dependency list on having produced a `tensor_marks` entry (a missing one is indistinguishable from an expired contract, and the solver's `live` mask retires it).
 
 !!! warning "Invariant — `keep_tensor` gates the hedge tradable series"
-    `keep_tensor` governs whether `pricing.interpolate` stores `Calc_res['tensor']`; the hedge path sets `Keep_Tensor='Yes'` and harvests those via `tensor_marks`. Removing/altering that store breaks the hedge bundle's tradable series with no error — only missing marks.
+    `keep_tensor` governs whether `pricing.interpolate` stores `Calc_res['tensor']`; the hedge path passes `keep_tensor=True` unconditionally in `HedgeMonteCarlo._init_shared_mem` and harvests those via `tensor_marks`, independent of the `Keep_Tensor` JSON field, which is `Credit_Monte_Carlo`'s alone — setting it changes nothing on a hedge run, either way. Removing/altering that store breaks the hedge bundle's tradable series with no error — only missing marks.
 
 ## Inner-MC subsystem
 

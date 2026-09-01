@@ -5,8 +5,8 @@ observed curves and surfaces a historical calibration produces, this section hol
 a risk-neutral model is fitted to, and a *bootstrapper* turns each block into the factor or model
 parameters the simulation reads.
 
-This page is the design. All six families are built; `FXVolPrices` was the last, and the two
-sections below are what each was built to.
+This page is the design. All seven families are built; `HestonNandiComponentModelPrices` was the
+last, and the two sections below are what each was built to.
 
 ## A quote is an instrument, a quote type and a number {#a-quote}
 
@@ -27,7 +27,7 @@ the declared deal types went with the mock-built suite; the structure registry's
 Nothing about a swap has to be described twice for a swap to be quotable.
 
 `Quote_Type` is per family, not global. The Clewlow–Strickland family takes implied vols only;
-Heston-Nandi takes a vol or a premium; an interest-rate quote is a par rate, a rate or a price.
+Heston-Nandi takes a vol or a premium; an interest-rate quote is a par rate.
 Those are three different questions that happen to share a name, which is right — the JSON is per
 family, and only a store keyed by field name across all of them was ambiguous.
 
@@ -46,7 +46,7 @@ A bootstrapper class is one price family. It declares:
 declarations, and `construct_bootstrapper` resolves the class by name from the
 `Bootstrapper Configuration` section.
 
-The six families, and what each fits:
+The seven families, and what each fits:
 
 | Family | Quotes | Writes |
 | --- | --- | --- |
@@ -417,7 +417,8 @@ through `brentq`.
 Unlike plain Heston-Nandi, the CJOW pair has **no positivity guarantee** for `φ > 0`: the worst
 innovation `z = γ₂√h` leaves `q_{t+1} ≥ ω_t + ρq_t − φ − φγ₂²h_t`, whose last term grows with `h`.
 No box on the parameters closes this. The simulator therefore floors both states at
-`utils.HN_COMPONENT_VARIANCE_FLOOR` (1e-12 per step — 1.6 basis points of annualised vol), which is
+`utils.HN_COMPONENT_VARIANCE_FLOOR` (1e-12 per step — 0.16 basis points of annualised vol at the
+family's declared 252 steps per year), which is
 DECLARED rather than applied quietly, and the calibration reports the worst-case certificate
 `worst_case_variance_drift` instead of pretending to enforce one. Measured on the component TARF
 gate: **2 of 8192 inner paths** over 248 daily steps at a fitted `φ` share of 0.56 — exactly the

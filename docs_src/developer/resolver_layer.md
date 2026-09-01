@@ -7,7 +7,7 @@ The generic `get_*` layer in `instruments.py` is the **only** place a factor nam
 `utils.check_rate_name` (dotted string or tuple → uppercase tuple) and `check_tuple_name` (inverse, `type.name0.name1…`) are the sole string↔tuple bridge. `check_tuple_name` also builds every fail-loud error string and every `Price Factors` / `Price Models` lookup key. `BASIS_COMPOSABLE_TYPES = ('FxRate','EquityPrice','CommodityPrice')` marks the 0D spot types whose name may carry a composed `primary + ObservedBasis…` chain.
 
 !!! warning "Transitional — `resolve_factor_key`, one release"
-    The three asset-class vol tags (`FXVol` / `EquityPriceVol` / `CommodityPriceVol`) were merged into an untagged `VolatilityGrid` and are now restored as **alias subclasses over that one implementation**, because `utils.FactorRiskClass` — the CRIF-style risk-class partition — is a pure function of `factor.type`. Market data therefore exists under both spellings, so `utils.resolve_factor_key(factor, price_factors)` replaces `check_tuple_name` at exactly **two** lookups: `riskfactors.construct_factor` and `Config.factor_universe`. A factor whose type is in `utils.TwoDimensionalFactors` reads a block written under any 2D name; every other type reads its own name and nothing else. The **requested** type still selects the class, so the typed name is canonical on write. Retire by deleting the function, dropping `VolatilityGrid` from `TwoDimensionalFactors` and `FactorRiskClass`, and restoring `check_tuple_name` at those two call sites.
+    The three asset-class vol tags (`FXVol` / `EquityPriceVol` / `CommodityPriceVol`) were merged into an untagged `VolatilityGrid` and are now restored as **alias subclasses over that one implementation**, because `utils.FactorRiskClass` — the CRIF-style risk-class partition — is a pure function of `factor.type`. Market data therefore exists under both spellings, so `utils.resolve_factor_key(factor, price_factors)` replaces `check_tuple_name` at exactly **two** lookups: `riskfactors.construct_factor` and `Config.factor_universe`. A factor whose type is in `utils.TwoDimensionalFactors` falls back to the untagged `VolatilityGrid.<name>` block and to nothing else — never to a sibling tag, because a cross-tag fallback would let an FX request price off an equity block; every other type reads its own name. The **requested** type still selects the class, so the typed name is canonical on write. Retire by deleting the function, dropping `VolatilityGrid` from `TwoDimensionalFactors` and `FactorRiskClass`, and restoring `check_tuple_name` at those two call sites.
 
 ## The code tuple
 
@@ -42,7 +42,7 @@ The generic `get_*` layer in `instruments.py` is the **only** place a factor nam
 
 The two trailing args tell you the axis:
 
-- takes `all_tenors` → **curve-shaped**, needs a tenor payload appended (interest / forward-rate / zero / discount / survival / inflation / dividend / all vol getters).
+- takes `all_tenors` → **curve-shaped**, needs a tenor payload appended (interest / forward-rate / zero / survival / inflation / dividend / all vol getters).
 - takes `all_factors` → must inspect a factor **object** to hop to a linked factor (repo, currency, recovery, spot value, model params).
 - takes neither → pure 0D **spot** code, no tenor (`get_fxrate_factor`, `get_commodity_rate_factor`, `get_equity_rate_factor`, `get_price_index_factor`).
 

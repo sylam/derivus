@@ -127,7 +127,9 @@ where a leg becomes a strip:
   `leverage ×` it. `leverage` is the registry's first parameter with a DEFAULT (2.0, the market's
   own gearing) — published as the descriptor's `value` so a front end can show it, and read through
   `declared()` rather than a `.get` inside the runner.
-- **the model.** Both deals declare `spot_models = ('None', 'HestonNandi')`, and the switch is a
+- **the model.** Both deals declare `spot_models = ('None', 'HestonNandi', 'HestonNandiComponent')`,
+  of which the runner pins only `HestonNandi` (`structures.SPOT_MODEL`) — the component model is the
+  autocall ladder's, not the runner's. The switch is a
   `Valuation Configuration` entry per deal TYPE resolved by naming convention off the leg's own
   underlying — `HestonNandiModelParameters.ZAR` for a rand-notional USDZAR TARF, `.USD` for the
   same trade on a dollar notional, because `notional_currency` IS the underlying. `spot_model`
@@ -203,8 +205,10 @@ shifted flat by that half-spread, and a leg prices on the one its own side names
 same shift share it, and every pricing deep-copies again through `alone()`, so no leg can disturb
 another's. Moving the written surface is what a leg prices on because a pricing run does not bootstrap:
 the block is not read again inside `run_job`, which the two-sided gate demonstrates rather than
-assumes. RR and BF rows carry their own two-way and v1 does not consume it — a wing spread has to
-skew the smile rather than shift it.
+assumes. RR and BF rows carry their own two-way and the leg SHIFT does not consume it — `atm_two_way` skips
+every row whose `Quote_Type` is not `ATM`, because a wing spread has to skew the smile rather than
+shift it. `quote_two_way` does read the RR/BF halves: it takes every used pillar's `(ask − bid)/2`,
+which is what charges each risk-impact bucket at its own half.
 
 Two refusals sit in that reading and both are the same rule. A CROSSED print — a stale bid through
 a live offer — reads as ZERO-WIDE rather than as a negative spread, `max(0.0, (ask − bid) / 2)`,
@@ -304,12 +308,13 @@ shape as the two-sided one: a book declaring no policy never reaches the greeks 
 ran and decided nothing", which a consumer auditing a quote has to be able to tell apart. A block
 declaring `participation: 0` runs the WHOLE layer and lands on the identical floats.
 
-**The scale, and the ceiling.** `charge_effective = max(min_ticket, max(0, charge_full −
-participation × saving))`, and `scale = charge_effective / charge_full` clipped into [0, 1]. Two
-rulings sit in that clip. A risk-ADDING trade takes no surcharge — the market's own spread is the
+**The scale, and the ceiling.** `charge_effective = min(charge_full, max(min_ticket, max(0,
+charge_full − participation × saving)))`, and `scale = charge_effective / charge_full`. Two
+rulings sit in that outer `min`. A risk-ADDING trade takes no surcharge — the market's own spread is the
 ceiling in v1 — so a positive residual cost is simply no saving and `scale` is exactly 1. And the
 min ticket is an ops floor UNDER the tightening, not a second ceiling over it: a ticket above the
-full spread leaves the scale at 1 rather than lifting the quote through the two-way.
+full spread leaves the scale at 1 and the REPORTED charge at `charge_full`, rather than lifting the
+quote through the two-way.
 
 **ONE pass, not a fixed point**, and it is stated rather than hidden. The recipe is re-run once with
 every leg's half-spread multiplied by `scale`, threaded through the same two-sided machinery rather
@@ -357,9 +362,10 @@ document the legs actually priced against, so what is reported and what was pric
 pinned to the book's `Base_Date`).
 
 TWO ids name the quoting ACT, and they are not the same hash. The runner's `quote_id` — structure,
-params, the market the document was carrying, and a submission clock — is what both files are
-named by, and it is the one an approval quotes. The service's `result_id` — book etag, structure,
-params, and its own submission clock — names the queued JOB, exactly as `/execute` does. Both
+params, the netting set, the market the document was carrying, and a submission clock — is what both
+files are named by, and it is the one an approval quotes. The service's `result_id` — book etag,
+structure, params, the netting set, and its own submission clock — names the queued JOB, exactly as
+`/execute` does. Both
 carry a clock for the same reason: a quote is an ACT, so two identical asks are two quotes, never
 one coalesced result, and a refusal is never pinned.
 

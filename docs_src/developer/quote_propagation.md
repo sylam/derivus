@@ -401,7 +401,8 @@ in one job is a reval with no re-bootstrap in it.
     exemption, and `tests/test_market_prices_partition.py` states it per family by name.
 
     `config.update_market_quote`'s tick guard, `Config.plan_hash`, `market_patch`/`patch_market`
-    and `CalibrationArtifact.plan_key` all read that one tuple. The projection **drops** the four
+    and `InterestRateCurveParameters.plan_key` — the slot an artifact then carries as `key` — all
+    read that one tuple. The projection **drops** the four
     keys where [`partition_factor`](market_prices.md) shadows a value to `None`, because the guard
     had already ruled that a pillar which starts or stops being quoted two-sided is the same node
     of the same plan — so `Quoted_Bid` key-presence is itself value-plane.
@@ -413,8 +414,10 @@ in one job is a reval with no re-bootstrap in it.
 ## Non-goals {#non-goals}
 
 **No second-order ride.** The operator is linear and its error is measured, not corrected; a
-curvature term would need `create_graph` through `CalibrationSolve`, which
-[is refused](quote_sensitivities.md#non-goals). The tolerance is the answer to a tick too big.
+curvature term would need `create_graph` through `CalibrationSolve`, which does not support it and
+does not detect the attempt — only `LeastSquaresSolve`
+[refuses it by name](quote_sensitivities.md#non-goals). The tolerance is the answer to a tick too
+big.
 
 **No automatic refit.** A refusal names the set and stops — whether the tick was too big or no
 artifact answered at all; scheduling the re-bootstrap is the caller's, because "when to recalibrate"

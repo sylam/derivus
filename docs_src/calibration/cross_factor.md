@@ -3,7 +3,7 @@
 Some factors depend on a sibling factor's data — the calibration of an
 [`InterestRate`](../json/price_models.md) carry curve observed at floating-tenor knots
 needs the day-by-day tenor values; a [`ObservedBasis`](../json/price_factors_overview.md)
-needs the linked commodity's spot series. The framework handles both with a single
+needs the linked commodity's spot series. The framework handles both with the same
 mechanism: **archive column subkeys**.
 
 ## The subkey convention
@@ -20,18 +20,30 @@ Two patterns share this mechanism:
 | `InterestRate.PLATINUM_CARRY,PLATINUM_TAU1` | `PLATINUM_TAU1` | `Tenor.PLATINUM_TAU1` |
 | `ObservedBasis.LME_CME,PLATINUM_LME` | `PLATINUM_LME` | `CommodityPrice.PLATINUM_LME` |
 
-The matching rule is: for a non-numeric sub-key, look up any other archive entry whose
-name ends in `.<sub_key>`. (Numeric sub-keys are interpreted as fixed tenors and need no
-partner — they're the standard tenor-grid convention used by IR curves.)
+The matching rule is: for a non-numeric sub-key, look up any other archive entry whose name, minus
+its leading type period, is **exactly** `<sub_key>` — not merely ends in it, which now diverges as
+multi-period 0D names exist (`ObservedBasis.PLATINUM_CME.LME_CME` ends in `.LME_CME` and does not
+match). (Numeric sub-keys are interpreted as fixed tenors and need no partner — they're the standard
+tenor-grid convention used by IR curves.)
 
-This keeps the dependency declaration in the **archive header**, not in JSON config. A
+This keeps *this* dependency declaration in the **archive header**, not in JSON config. A
 calibration class receives both the primary column(s) and the partner column(s) in its
 `data_frame`, splits them by archive name prefix, and is otherwise self-contained.
 
+It is not the only pull. `_related_archive_cols` has three rules: the comma sub-key above, a
+positional `ObservedBasis` parent-prefix pull, and a **declared** one — a block declaring
+`Chained_Basis` has its link's columns pulled by that declaration, which displaces the positional
+parent pull where that parent is itself a basis. That third rule is a JSON-config declaration, so
+the archive header is where the subkey convention lives, not where every link does.
+
 ## Sim-time wiring
 
-An `ObservedBasis` needs its linked *simulated path* at runtime. That link is carried in the
-factor's NAME, not a field: the parent is the name minus its last period (positional, like the
+An `ObservedBasis` needs its linked *simulated path* at runtime. Two families link, and they link
+differently. An **open** link rides its positional name-prefix parent (`BasisLinkedSpotModel`); a
+**closed** chain declares its source in the `Chained_Basis` field, with `Chained_Lag` naming the day
+boundary (`ChainedBasisModel`, whose `calc_references` reads the declared name and nothing else — no
+naming convention). The rule below is the OPEN case: the link is carried in the factor's NAME, not a
+field, and the parent is the name minus its last period (positional, like the
 InterestRate parent chain — see the composed-spot section below). The name-prefix nesting registers
 the parent and orders it first, so its simulated path (and HMM regime path, if any) is in
 `shared_mem.t_Scenario_Buffer` when the basis's `generate()` runs.
@@ -121,9 +133,10 @@ This rule has a real cost. Some calibrations would, in principle, like to use a 
 fitted state. The canonical example is `BasisLinkedSpotCalibration`: it partitions η by
 regime to fit `Sigma_By_State`, and the *correct* partition is "the LME HMM's posterior
 state on this day." Currently the calibration uses a rolling-vol tercile of `ΔLME` as a
-proxy — correlated with the HMM partition but not identical. The validation tests
-([Test D](contract.md#output-calibrationinfo)) confirm the proxy is empirically close
-(0.6–0.8% recovery error) but it's not the partition the simulator runtime uses.
+proxy — correlated with the HMM partition but not identical. A recorded measurement puts it
+empirically close (0.6–0.8% recovery error), and the gate that holds it today is
+`tests/test_basis_slow_mean_garch.py`, which `BasisLinkedSpotCalibration`'s own docstring cites —
+but it's not the partition the simulator runtime uses.
 
 We considered three ways to fix this:
 

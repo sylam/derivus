@@ -4,9 +4,10 @@ Everything in Derivus is based off a *Context*. All calculations are constructed
 to one.
 
 !!! note "Curve convention"
-    Interest rate curves start one day from now, i.e. $1/365\approx 0.00274$. No interest rate
-    curve carries a knot at time 0 — the rate there is flat-extrapolated from the first
-    timepoint, and its discount factor is 1 by identity.
+    Interest rate curves typically start one day from now, i.e. $1/365\approx 0.00274$. A knot at
+    time 0 is redundant rather than forbidden — the discount factor there is 1 by identity — so a
+    curve may carry one (the job skeleton and the shipped fixtures do), and a curve without one
+    flat-extrapolates its first timepoint back.
 
 ## The Context
 
@@ -26,8 +27,11 @@ cx.load_json('fxfwd.json')
 under — the same pre-rename initials the `RF_SERVICE_URL` wire variable keeps on purpose. The
 README says `dv`; both are `import derivus as`.)
 
-A context can hold *multiple* loaded configurations — each `load_json` call adds another
-`Config` to `cx.config_cache`, and the most recently loaded one is set as `cx.current_cfg`. All
+A context can hold *multiple* loaded configurations — `cx.config_cache` holds one `Config` per
+`MergeMarketData.MarketDataFile` path a job referenced, written only on a miss for that path. A job
+carrying only inline `ExplicitMarketData` builds a fresh `Config` that is never cached, and a job
+with no `MergeMarketData` block reuses `cx.current_cfg` and mutates it in place. The most recently
+loaded config is always `cx.current_cfg`. All
 calculation methods read from `cx.current_cfg`, so to switch which configuration is active you
 re-load (or assign `cx.current_cfg` directly to a previously-cached `Config`).
 
@@ -66,7 +70,8 @@ Use the explicit methods when you want to run a different calculation than the J
 example, running a Credit Monte Carlo against a JSON originally written for Base Valuation).
 
 Each method returns a `(calc, out)` tuple — the calculation object (useful for inspecting state
-post-run) and the output dictionary.
+post-run) and the output. `out` is a dict for `Base_Valuation` and `Credit_Monte_Carlo`; for
+`Hedge_Monte_Carlo` it is a `HedgeRuntimeExecutionResult` attribute object, not a dict (below).
 
 ### Base Valuation
 
@@ -116,18 +121,25 @@ out['Results']['exposure_profile']
 ```
 
 ```
-             EE         PFE
-2024-08-01    0.000000    0.000000
-2024-08-03    1.809047    0.000000
-2024-08-08   25.414378  201.102859
+             EE        ENE      PFE_95
+2024-08-01    0.000000   0.000000    0.000000
+2024-08-03    1.809047  -1.712285    0.000000
+2024-08-08   25.414378 -23.905112  201.102859
 ...
 ```
 
-**EE** is the Expected Exposure, **PFE** is the Peak Exposure (95% by default). The result is a
-pandas DataFrame and so can be plotted via `.plot()`.
+**EE** is the Expected Exposure (the mean of the mark clipped at 0 below), **ENE** the Expected
+Negative Exposure (the mean clipped at 0 above, so never positive). The peak column is named for
+its percentile — one `PFE_<p>` per entry in the calculation's `Percentile` field, default `95`,
+comma-separated for several — so there is no column called plain `PFE`. The result is a pandas
+DataFrame and so can be plotted via `.plot()`.
 
-For multi-GPU machines, `Credit_Monte_Carlo(runparallel=True)` shards the simulation across all
-visible CUDA devices and merges the results.
+!!! danger "`runparallel=True` does not work at HEAD"
+    `Credit_Monte_Carlo(runparallel=True)` is meant to shard the simulation across all visible CUDA
+    devices and merge the results. It cannot: the worker spawn passes **seven** positional arguments
+    to six-parameter `run_cmc`, so every child raises `TypeError` before running and the parent then
+    blocks forever on `results.get()`. The branch also returns a dict rather than the `(calc, out)`
+    tuple. Do not call it until the stray argument is dropped from the call site.
 
 ### Hedge Monte Carlo
 
@@ -137,14 +149,20 @@ solver that hedges a portfolio of liabilities by trading a configured set of fut
 instruments. See [Hedging](hedging/overview.md) for the `Hedging_Problem` configuration contract.
 
 ```python
-calc, out = cx.Hedge_Monte_Carlo(overrides={'Random_Seed': 42})
-out['Results'].keys()
+calc, result = cx.Hedge_Monte_Carlo(overrides={'Random_Seed': 42})
+result.policy_artifact
 ```
 
-When `Execution_Mode` is `solve_hedge`, the solver fits the value function in-process and
-`out['Results']` contains the fitted value-function artifact, the greedy-policy verdict, and the
-benchmark comparison table. When `Execution_Mode` is `simulate_only`, only the scenario bundle is
-computed and the no-trade baseline is run (useful for offline analysis).
+`Hedge_Monte_Carlo` returns `(calc, result)` where `result` is a `HedgeRuntimeExecutionResult`
+(`hedge_bundle.py`) — a plain attribute object with `bundle`, `runtime`, `evaluation_summary`,
+`optimizer_diagnostics`, `policy_artifact` and `metadata`, and **no** `__getitem__`, so
+`result['Results']` raises `TypeError`.
+
+When `Execution_Mode` is `solve_hedge`, the solver fits the value function in-process:
+`result.policy_artifact` is the fitted value function, `result.evaluation_summary` the held-out
+verdict, `result.optimizer_diagnostics` the solver's own numbers. When `Execution_Mode` is
+`simulate_only`, only the scenario bundle is computed and the no-trade baseline is run (useful for
+offline analysis).
 
 ## Checking a job before running it
 
@@ -248,9 +266,10 @@ just before execution. Common overrides:
 - `Time_grid` — re-shape the simulation time grid (Credit Monte Carlo reads it as `Time_grid`,
   Hedge Monte Carlo as `Time_Grid`)
 
-Overrides are merged shallowly into the loaded `Calculation` object, so nested fields (e.g.
-`Hedging_Problem.Solver.Object`) need to be passed as a complete sub-dict if you want to change
-just one entry.
+Overrides merge **deeply** into the loaded `Calculation` object: a nested dict is merged key by key,
+so `{'Hedging_Problem': {'Solver': {'Object': …}}}` changes exactly that entry and leaves the rest
+of the block alone. Only non-mapping values replace — a sub-dict never wholesale-replaces its
+target, so keys you meant to drop by passing a complete sub-dict survive the merge.
 
 ## Inspecting and modifying loaded data
 
@@ -268,19 +287,26 @@ there's no implicit cache that needs to be invalidated.
 
 ## Output structure
 
-The return value of every calculation method is `(calc, out)` where `out` is a dict with three
-top-level keys:
+A base valuation returns `(calc, out)` where `out` is a dict with three top-level keys; a credit
+Monte Carlo returns the same three plus a fourth. (A hedge run returns a
+`HedgeRuntimeExecutionResult` instead of a dict — see [Hedge Monte Carlo](#hedge-monte-carlo).)
 
 - `'Netting'` — the internal `DealStructure` tree. Useful for developers walking the hierarchy.
 - `'Stats'` — a dict of timing and counter statistics from the run.
 - `'Results'` — the user-facing dataframes / arrays. Keys vary by calculation type; see the
   [Output](output.md) page.
+- `'Jacobians'` — credit Monte Carlo only: the harvested Jacobians keyed by variable name, `{}`
+  when the run asked for no gradients.
 
 ## The same verbs over HTTP
 
 One vocabulary, two bindings. Everything above is the in-process binding; `derivus.service` is the
-same verbs over HTTP and owns no logic of its own — every endpoint builds a `Context` from the
-posted job, calls one of the methods above, and serialises what comes back. A browser SPA, an MCP
+same verbs over HTTP. The pass-through reading holds for `/schema`, `/schema/job` and `/validate` —
+build a `Context` from the posted job, call one of the methods above, serialise what comes back —
+but not for the rest: `/describe` adds its own cost estimate, `/execute` its lanes, queue and
+attestation, and the book, projection and queue verbs are a layer of logic and state that exists
+only here (the plan cache, the compute executor's priority queue and result store, the risk cache,
+`DV_HOME/xva.json`, the Bloomberg job, the metronome tick). A browser SPA, an MCP
 binding, a marimo notebook and an Excel add-in are clients of the same endpoints, so nothing
 specific to any one of them belongs on the surface. `fastapi` and `uvicorn` are the `service`
 extra, imported only there, so `import derivus` needs neither:
@@ -297,16 +323,17 @@ DV_Service --port 8000
 | `POST` | `/validate` | `cx.validate()` over the posted job, verbatim |
 | `POST` | `/describe` | `cx.describe()` plus what the queue would make of the job |
 | `POST` | `/prepare` | `{"plan_id": …, "values_hash": …, "engine_version": …}` |
-| `POST` | `/execute` | `{"result_id": …, "status": …}` |
+| `POST` | `/execute` | `{"result_id": …, "status": …}`, plus `attested` where the job's lane attests and the result is already `done` |
 | `GET` | `/results/{result_id}` | `{"status": …}`, and when done the replay tuple, the run's `stats`, and the SHAPE of each table |
 | `GET` | `/results/{result_id}/{table}` | one table, `?offset=&limit=` |
 | `GET` | `/ui` | a built web UI - the wheel's own by default, or the `DV_Service --ui <dir>` build |
-| `GET` | `/book` | the live job document `DV_Service --book <file>` serves, with the etag naming its state |
+| `GET` | `/book` | the live job document the service serves — `DV_HOME/book.json` by default (a missing file starts blank), `DV_Service --book <file>` for another, `--no-book` to serve none and 404 every `/book` verb — with the etag naming its state |
 | `POST` | `/book/deals` | book, amend or delete one deal — validated BEFORE an atomic write; a refusal is `{"written": false, "refused": […]}` and touches nothing |
 | `POST` | `/book/price` | price the book plus an optional candidate deal — a what-if; writes nothing |
 | `POST` | `/book/solve` | solve one field of a candidate deal to a target value — a root find over base valuations; the solved coordinates arrive under the result's `stats.Solved` |
 | `POST` | `/book/market` | tick the book's market: quote blocks installed or value-updated (structure refused), a `patch_market`-shaped values patch, the bootstrap run — one atomic write, refused whole if the bootstrap complains |
 | `POST` | `/book/bloomberg` | provision the security map (first use creates `DV_HOME`, copies the packaged seed, verifies every candidate against the terminal), fetch the desk's FX vol surfaces and tick the book — a queued job whose `/results/{id}` carries `progress` while it runs |
+| `POST` | `/book/hn` | calibrate one pair's Heston-Nandi parameters off the surface the book already carries — five Q-measure parameters against ten vega-weighted vols, a least squares over a Fourier-inverted daily GARCH recursion; queued at the heavy cost class, ON REQUEST and never on the tick, because a tick moves the surface and structurally leaves these parameters where they were. Call it after a re-tick and before quoting the TARFs that read them |
 | `POST` | `/book/structure` | quote a named structure against the book — the declared recipe solved server-side on the live spot where the terminal is up, each leg on the side of any two-way the book carries, the pending trade and its ticket filed under the quote id in `DV_HOME/tmp` |
 | `POST` | `/book/quote` | book a quote already given — the approval half, which books the MIRROR of the pending deal (a quote is client paper; a book holds the bank's position), validated and refused exactly as a booking is; the pending file survives as the audit trail |
 | `GET` | `/book/risk` | the book's CONSOLIDATED risk — one base valuation with `Greeks: 'First'` over the whole book, counterparty-blind, computed on a miss and cached under the `etag` of everything the run reads; `{as_of, etag, currency, mtm, per_deal, greeks}`, an empty book zeros with no run, a book that will not price a 422 naming the cause |
@@ -334,8 +361,9 @@ the vernacular a salesperson says, the parameters, the legs and the recipe — w
 `POST /book/structure` runs and a client renders a quote ticket from.
 
 A posted job is a job *file* — the same document `load_json` reads, parsed by the same decoder, so
-its `.Curve`, `.Timestamp` and `.DateList` tokens travel as themselves. `/execute` takes one extra
-top-level key beside `Calc`:
+its `.Curve`, `.Timestamp` and `.DateList` tokens travel as themselves. Beside `Calc`, `/execute`
+reads three top-level keys — `Patch`, `plan_id` (below) and `lane` (`telemetry | curiosity |
+standing`, default `curiosity`):
 
 ```json
 {"Calc": {"...": "..."}, "Patch": {"FxRate.ZAR": {"Spot": 19.0}}}

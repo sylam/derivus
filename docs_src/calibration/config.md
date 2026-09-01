@@ -64,6 +64,9 @@ configuration that depends on the factor (e.g. linked sibling factor) flows thro
 [archive subkey convention](cross_factor.md), not through this config.
 
 Calibration classes that don't need any tuning can have a minimal entry containing just
-`ID` and `Method`. Classes that need to be discoverable but have no data archive (e.g. for
-specialised use cases) can be omitted entirely — the framework will skip factors whose
-class isn't registered.
+`ID` and `Method`. A class omitted from this block is **not** filtered out up front: the factor
+still enters the map with `calibration=None`, and it is skipped only downstream, when
+`rate_value.calibration.calibrate` raises `AttributeError` into a bare `except` that logs it as
+*"Data errors in factor … resulting in flawed calibration"* — a message naming the wrong cause. And
+it only reaches that far if the factor has archive columns at all; otherwise the unguarded
+`self.archive_columns[…]` subscript in `calibrate_factors` raises `KeyError` first.

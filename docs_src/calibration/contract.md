@@ -3,7 +3,7 @@
 A calibration class implements one method:
 
 ```python
-def calibrate(self, data_frame, vol_shift, num_business_days=252.0, **kwargs):
+def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
     ...
     return utils.CalibrationInfo(param, correlation, delta)
 ```
@@ -19,7 +19,13 @@ are no other framework hooks.
 | `data_frame` | The factor's archive columns, plus any related-factor columns the framework auto-pulled via the [subkey convention](cross_factor.md) |
 | `vol_shift` | Optional volatility floor shift (model-specific; most classes pass through unused) |
 | `num_business_days` | Days-per-year for annualisation. Default `252.0` |
-| `**kwargs` | Reserved for future framework-passed context. Existing classes ignore. |
+
+The framework calls exactly that and passes nothing else —
+`rate_value.calibration.calibrate(data_frame, vol_shift, num_business_days=252.0)`. Declaring
+`**kwargs` is optional future-proofing that **no** shipped class takes, so a framework-passed
+keyword would raise `TypeError` across all thirteen at once rather than being ignored. Two classes
+add tuning positionals of their own with defaults, so the signature is not verbatim across the
+family either.
 
 The class receives `param` at construction time (the
 [calibration_config](config.md) entry for its model class). Tuning knobs come from there, and the
@@ -94,8 +100,9 @@ def construct_calibration_config(calibration_model, param):
 
 To add a new calibration class:
 
-1. Define the class in `derivus/stochasticprocess.py` (or wherever the matching model
-   class lives — `globals()` resolution requires same module).
+1. Define the class in `derivus/stochasticprocess.py` — there is no "or wherever": the `globals()`
+   dispatch above and `schema.emit_calibration(stochasticprocess)` both read that module and no
+   other, so a class defined elsewhere is neither dispatchable nor published.
 2. Give it a `model_type` naming the process it calibrates and a `fields` list declaring its
    tuning keys. The `Calibration` schema is emitted from those, keyed by `model_type`, with
    `Method` stamped from the class name.
