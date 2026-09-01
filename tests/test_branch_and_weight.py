@@ -1857,92 +1857,26 @@ def _autocall_reference(spot, sigma, put_barrier=0.7, rebate=0.0, threshold=1.0,
 
 
 AC_ZERO_DAYS = (180, 270, 365)
-AC_ZERO_BARRIER = 0.7      # the document and its references read ONE barrier, from here
+AC_ZERO_BARRIER = 0.7      # the document reads ONE barrier, from here
 
 
-def _zero_coupon_doc(**kwargs):
-    """The autocall with a ZERO coupon row carrying the deal's only barrier date.
+def _zero_coupon_doc(coupon=0.0, barrier=True, **kwargs):
+    """The autocall with `coupon` on its middle row, and the deal's only barrier date on that row
+    or nowhere at all.
 
-    `calc_dependencies` still calls this the no-averaging arm - `ac_dates` counts the zero row and
-    day 270 IS a coupon date, so neither the one-fixing-per-coupon test nor the barrier-alignment
-    test objects - and the pricer's `if coup > 0` is then FALSE at the barrier's own `j`. Nothing
-    else in this file has a coupon row that is not a coupon.
+    At `coupon=0.0` this is the refused document, either way round: the arm's one-fixing-per-coupon
+    test and its barrier-alignment test both pass - `ac_dates` counts the zero row and day 270 IS a
+    coupon date - so nothing about its SHAPE keeps it off the fast arm, and the pricer's
+    `if coup > 0` would then be FALSE at that `j`. At `coupon=AC_COUPON` the same three dates, the
+    same barrier and the same fixings price on that arm, which is what makes it the control: the
+    only thing that moves between the two is the number on that row.
     """
-    job = _autocall_doc(AC_ZERO_BARRIER, coupon_days=AC_ZERO_DAYS, **kwargs)
+    job = _autocall_doc(AC_ZERO_BARRIER if barrier else 0.0, coupon_days=AC_ZERO_DAYS, **kwargs)
     deal = job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']
     dates = [_stamp(d) for d in AC_ZERO_DAYS]
-    deal['Autocall_Coupons'] = [[dates[0], AC_COUPON], [dates[1], 0.0], [dates[2], AC_COUPON]]
-    deal['Barrier_Dates'] = [dates[1]]
+    deal['Autocall_Coupons'] = [[dates[0], AC_COUPON], [dates[1], coupon], [dates[2], AC_COUPON]]
+    deal['Barrier_Dates'] = [dates[1]] if barrier else []
     return job
-
-
-def _zero_coupon_reference(spot, sigma, at_its_own_date, n_out=1200, n_in=800):
-    """The document above as a region integral, written TWICE: once as the loop reads it and once
-    as the deal is authored. The pair is what turns "stale spot" from a claim into a number.
-
-    `at_its_own_date=False` IS THE CODE AS WRITTEN. The zero row runs no coupon block, so `Sj` is
-    still the day-180 draw when the breach indicator reads it - which makes the breach a region of
-    the OUTER line rather than an inner one - and `coupon_index`, un-advanced, hands the 365-day
-    coupon the price-fixing strip's 180->270 interval of 90 days.
-
-    `at_its_own_date=True` is the deal: the breach is decided on the day-270 spot, drawn off the
-    surviving day-180 one over its own 90-day step and truncated by nothing (there is no autocall
-    decision on a zero coupon), and the last coupon runs the real 185 days. Its coupon leg needs no
-    day-270 split at all - given S(180) the day-365 fixing is one lognormal either way, and an
-    expectation of a sum is the sum of the expectations.
-
-    No `Phi` here, like every other reference in this file: a firing probability is the density
-    integrated over a segment whose end moves with theta.
-    """
-    d1, db, d2 = AC_ZERO_DAYS
-    D1, DB, D2 = (math.exp(-AC_R * d / 365.0) for d in AC_ZERO_DAYS)
-    carry = AC_R - AC_Q
-    K = torch.as_tensor(AC_STRIKE, dtype=DT)
-    B = torch.as_tensor(AC_ZERO_BARRIER * AC_STRIKE, dtype=DT)
-    minus_inf = torch.as_tensor(-Z_INF, dtype=DT)
-
-    def leg(days):
-        dt = days / 365.0
-        return (carry - 0.5 * sigma ** 2) * dt, sigma * math.sqrt(dt)
-
-    m1, s1 = leg(d1)
-    mb, sb = leg(db - d1)
-    # THE TENOR THE LOOP GIVES THE LAST COUPON is the barrier row's, not the coupon's own
-    m2, s2 = leg(d2 - d1 if at_its_own_date else db - d1)
-    z1K = (torch.log(K / spot) - m1) / s1
-
-    def put(S):
-        """The breach payoff. This document declares no rebate, which is the pricer's `.get`
-        default - the rebate term is gated on the put leg's own rows, not here; what is on test
-        below is WHICH spot the indicator reads, and that is rebate-blind."""
-        return S / AC_STRIKE - 1.0
-
-    def coupon_two(S1):
-        """`AC_COUPON * D2 *` the probability the last fixing FIRES, given the day-180 spot."""
-        z = (torch.log(K / S1) - m2) / s2
-        return AC_COUPON * D2 * _seg(z, torch.full_like(z, Z_INF), torch.ones_like, n_in)
-
-    def surviving(z1):
-        S1 = spot * torch.exp(m1 + s1 * z1)
-        value = coupon_two(S1)
-        if at_its_own_date:
-            S1c = S1[..., None]
-            zB = (torch.log(B / S1) - mb) / sb
-            value = value + DB * _seg(
-                torch.full_like(zB, -Z_INF), zB,
-                lambda w: put(S1c * torch.exp(mb + sb * w)), n_in)
-        return value
-
-    top = torch.as_tensor(Z_INF, dtype=DT)
-    total = AC_COUPON * D1 * _seg(z1K, top, torch.ones_like, n_out)
-    total = total + _seg(minus_inf, z1K, surviving, n_out)
-    if not at_its_own_date:
-        # the breach is decided on `S1` ITSELF, so it is a region of the outer line - and it lies
-        # inside the surviving set already, since the barrier is below the autocall threshold
-        z1B = (torch.log(B / spot) - m1) / s1
-        total = total + DB * _seg(
-            minus_inf, z1B, lambda z: put(spot * torch.exp(m1 + s1 * z)), n_out)
-    return AC_UNITS * total
 
 
 def _ac_table(**kwargs):
@@ -2263,8 +2197,8 @@ def test_an_observed_breach_is_data_and_the_switch_does_not_touch_it(tmp_path):
     so the run comes back BIT-IDENTICAL at value and at first order - which is the reading that
     says the indicator was KEPT here rather than quietly integrated against an interval that does
     not exist. Every other barrier date in this file sits on a future coupon with a live interval,
-    measured - with ONE exception, the zero-coupon document in the gate below, which reaches this
-    same branch by the door that is not exact.
+    measured. The third door into this branch - a barrier on a coupon row of ZERO, the one that was
+    NOT exact - no longer exists: the gate below refuses that document at the loader.
     """
     def job(**kw):
         return _barrier_on_the_base_date(
@@ -2286,54 +2220,63 @@ def test_an_observed_breach_is_data_and_the_switch_does_not_touch_it(tmp_path):
         'agreeing: {} against {} with no barrier at all'.format(crisp, without))
 
 
-def test_a_zero_coupon_barrier_date_reads_a_stale_spot(tmp_path):
-    """THE THIRD SUB-CASE, WHICH IS NOT EXACT - a Known-defects row pinned as a reading.
+@pytest.mark.parametrize('barrier', [True, False],
+                         ids=['a barrier on the row', 'nothing on the row'])
+def test_a_zero_coupon_row_refuses_by_name(barrier, tmp_path):
+    """THE THIRD SUB-CASE, RETIRED RATHER THAN REPAIRED - the Known-defects row, closed.
 
-    The branch above keeps a crisp indicator wherever this iteration's coupon block did not advance
-    `Sj`, and two of the three ways that happens are exact on the spot the deal names. The third is
-    not. A coupon row of ZERO carrying a barrier date runs no coupon block at all, so the indicator
-    reads the PREVIOUS fixing's spot, and `coupon_index` - un-advanced with it - hands the coupon
-    after it the barrier row's interval (90 days here) in place of its own 185. Nothing objects on
-    the way in: the zero row is still a coupon date, so `calc_dependencies` passes it on both the
-    one-fixing-per-coupon test and the barrier-alignment test and the deal takes the fast arm.
+    A row quoted ZERO runs no coupon block at all on the fast arm, and there are TWO readings of
+    that un-run block. `coupon_index` never advances, so the coupon AFTER it takes this row's
+    interval in place of its own - 0.466196 against 0.487692, 4.41%, measured against the
+    economically identical deal with the do-nothing row deleted. And where the deal's barrier is
+    dated ON that row, its breach indicator reads the PREVIOUS fixing's spot too: pinned here as a
+    reading until 2026-09-01, the engine's +0.394809 against the +0.317939 a deal-written reference
+    reads taking the barrier at its OWN date - 24.2% away. The second needs a barrier; the first
+    does not, which is why BOTH documents are walked below.
 
-    WHAT IS ASSERTED IS THE READING, WITH ITS MUTANT NAMED. The engine prices +0.394809 against a
-    reference written from the DEAL to reproduce the loop as written, +0.395432 - 0.16%, estimator
-    noise at 524288 paths. The SAME reference reading the barrier at its own date over the real
-    95-day tail says +0.317939, 24.2% away, so the fix the roadmap names - advance `Sj` over the
-    zero row, untruncated, and advance `coupon_index` with it - turns this gate red rather than
-    sliding past it. That is deliberate: the remedy and this gate close that row together.
+    THE RULING IS THAT THERE IS NO SUCH DEAL. A coupon of zero is not a coupon, so
+    `calc_dependencies` refuses the document BY NAME rather than teaching the loop to walk a row
+    that pays nothing and decides nothing, and the refusal is FATAL (`utils.UnpriceableSchedule`,
+    the FRA's precedent) rather than a logged skip: a refusal swallowed into a zero mark on a job
+    that then SUCCEEDS has said nothing at all, which is the failure mode that class exists
+    against. DELETING the row is the remedy either way - dropping the barrier off it no longer
+    buys the document a price, which is the whole content of the widening.
 
-    AND THE SWITCH IS NOT WHAT DOES IT. No interval is built at that `j`, so both estimators take
-    the same indicator and the three runs come back byte-identical - which is what says the defect
-    is the arm's and predates the landing, and is why the branch is left alone rather than
-    integrated against a conditioning step that does not exist.
+    THREE THINGS ARE ASSERTED, and the third is what makes the first two mean anything. The run
+    FAILS - not a KeyError from somewhere downstream, not a skipped deal, not a number. The message
+    names the deal, the row's own date, the coupon it read and the remedy, and it names the stale
+    spot WHERE THERE IS A BARRIER TO READ IT and not otherwise. And the same document with a real
+    coupon on that row still prices, on the same no-averaging arm with the same fixings - so what
+    is refused is the zero, not the shape.
     """
-    absent, _, log = _run_doc(_zero_coupon_doc(sims=1 << 19), tmp_path, 'zc_absent', debug=True)
-    # the engine's own line, so the document is known to REACH the branch rather than assumed to:
-    # the fast arm, and three threshold rows carrying two coupons
+    with pytest.raises(utils.UnpriceableSchedule) as raised:
+        _run_doc(_zero_coupon_doc(barrier=barrier), tmp_path, 'zc_refused')
+    said = str(raised.value)
+    row_date = (BASE_DAY + datetime.timedelta(days=AC_ZERO_DAYS[1])).isoformat()
+    assert 'AC1' in said and row_date in said, (
+        'the refusal does not name the deal and the date the author has to go and fix: '
+        '{}'.format(said))
+    assert 'quoted 0' in said and 'not a coupon' in said, said
+    assert 'takes this row\'s interval in place of its own' in said, (
+        'the mis-tenor is the reading that holds with or without a barrier, so it is the one the '
+        'refusal always states: {}'.format(said))
+    assert 'Author a real coupon' in said and 'delete the row' in said, (
+        'a refusal names its remedy: {}'.format(said))
+    assert ('PREVIOUS fixing' in said) == barrier, (
+        'the stale-spot reading needs a barrier dated on the row to read it, so the message must '
+        'claim it exactly when there is one: {}'.format(said))
+
+    # THE CONTROL. Same three dates, same fixings, same barrier where there is one - only the
+    # number on that row moves, and the engine's own line says what it prices is still the fast arm
+    priced, _, log = _run_doc(_zero_coupon_doc(coupon=AC_COUPON, barrier=barrier),
+                              tmp_path, 'zc_real', debug=True)
     line, = [ln for ln in log.splitlines() if 'AUTOCALL AC1' in ln]
-    assert 'averaging=0' in line and 'coupons=2 thresholds=3' in line, (
-        'this document no longer has a zero coupon row on the no-averaging arm, so it no longer '
-        'reaches the branch it exists to read: {}'.format(line))
-
-    off, _, _ = _run_doc(_smooth(_zero_coupon_doc(sims=1 << 19), on=False), tmp_path, 'zc_no')
-    on, _, _ = _run_doc(_smooth(_zero_coupon_doc(sims=1 << 19)), tmp_path, 'zc_yes')
-    assert absent == off == on, (
-        'the zero-coupon barrier date moved under the switch - it has no conditioning step to '
-        'integrate against, so all three runs must be the same indicator: {} / {} / {}'.format(
-            absent, off, on))
-
-    as_written = float(_zero_coupon_reference(AUTOCALL_SPOT, AC_SIGMA, at_its_own_date=False))
-    authored = float(_zero_coupon_reference(AUTOCALL_SPOT, AC_SIGMA, at_its_own_date=True))
-    assert _rel(on, as_written) < 0.01, (
-        'the loop no longer reads the PREVIOUS fixing at a zero-coupon barrier date: {:.8g} '
-        'against {:.8g} ({:.3%}). If the Known-defects remedy has landed, close that row and '
-        'rewrite this gate onto the authored reading'.format(on, as_written, _rel(on, as_written)))
-    assert _rel(on, authored) > 0.10, (
-        'the two readings no longer differ enough for this gate to say anything - the mutant it '
-        'names (reading the barrier at its OWN date) is {:.8g} against {:.8g}'.format(
-            authored, as_written))
+    assert 'averaging=0' in line and 'coupons=3 thresholds=3' in line, (
+        'the control no longer reaches the arm the refusal guards, so it says nothing about '
+        'what that refusal costs an ordinary document: {}'.format(line))
+    assert np.isfinite(priced) and priced != 0.0, (
+        'the control does not price either, so the refusal above is attributable to the document '
+        'rather than to the zero on its middle row: {}'.format(priced))
 
 
 def test_the_autocall_ledger_conserves_on_a_real_document(tmp_path):

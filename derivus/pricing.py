@@ -3637,14 +3637,15 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     ``min(B, K)``, so what is integrated lies inside the truncated support.
 
     WHAT STAYS AN INDICATOR, there being no conditioning step to integrate it against: a barrier
-    date this iteration's coupon block did not advance ``Sj`` over. Two of the three ways that
-    happens are EXACT - an OBSERVED fixing (``dt <= 0``, where ``Sj`` is the scenario's own spot and
-    the breach is DATA) and a block opening on a fixing that is not aligned (``Sj`` is that coupon's
-    own observed price fixing). DECLARED DEFECT, the third: on a barrier date whose coupon row is
-    ``<= 0`` the indicator is exact on a STALE spot - the previous fixing's - and ``coupon_index``,
-    un-advanced, mis-tenors the next coupon with it. It belongs to this arm rather than to the
-    switch, which leaves the branch byte for byte; roadmap.md carries it with its remedy, and
-    ``test_branch_and_weight.py::test_a_zero_coupon_barrier_date_reads_a_stale_spot`` pins it.
+    date this iteration's coupon block did not advance ``Sj`` over. BOTH ways that happens are
+    EXACT - an OBSERVED fixing (``dt <= 0``, where ``Sj`` is the scenario's own spot and the breach
+    is DATA) and a block opening on a fixing that is not aligned (``Sj`` is that coupon's own
+    observed price fixing). There was a THIRD door and it was not exact: a coupon row of ``<= 0``
+    runs no block at all, so the indicator read a STALE spot and ``coupon_index``, un-advanced,
+    mis-tenored the coupon after it. No such row reaches this loop any more - a coupon of zero is
+    not a coupon, so ``calc_dependencies`` refuses the document by name (owner ruling 2026-09-01,
+    ``test_branch_and_weight.py::test_a_zero_coupon_row_refuses_by_name``). The loop is unchanged
+    by that: the defect was the arm's and the refusal is the loader's.
 
     THE AVERAGING ARM REFUSES BY NAME rather than no-opping: its termination is a smoothed
     per-inner-path weight with no crisp per-scenario decision to replace, and its own ``breached``
@@ -3903,9 +3904,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         P = P + L_prev * D[j] * fx * lognormal_fired_gain(
                             Sj_prev, m, s, z_b, strike * (1.0 - rebate), False) / strike
                     elif barrier > 0:
-                        # no conditioning step this iteration: EXACT on the spot the deal names for
-                        # an OBSERVED fixing and an unaligned block opening, but on a STALE spot
-                        # where the coupon row is <= 0 (roadmap.md's Known-defects)
+                        # no conditioning step this iteration, and EXACT on the spot the deal names
+                        # in both the ways that happens: an OBSERVED fixing, and a block opening on
+                        # an unaligned one. A coupon row of <= 0 was the third way and was not
+                        # exact; calc_dependencies refuses that document, so it cannot arrive here
                         breach = torch.where(Sj <= putBarrier, 1.0, 0.0)
                         P = P + L * D[j] * fx * breach * (rebate - (1.0 - Sj / strike))
                         if P_cf is not None:

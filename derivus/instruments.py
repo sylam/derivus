@@ -3840,7 +3840,13 @@ class QEDI_CustomAutoCallSwap(Deal):
         payoff raises for the same reason, since `calc_vol_adjustment` derives its carry from a
         LOGNORMAL implied ATM vol that no leg of the non-GBM branch reads. Both refusals land in
         the engine's deal-skip path, so a refusal is an attributable value loss rather than a
-        wrong number. The max(all_dates) <= Expiry_Date warning is currently DISABLED."""
+        wrong number.
+
+        THE ZERO-COUPON ROW IS THE THIRD REFUSAL AND IT IS FATAL (`UnpriceableSchedule`, per
+        `utils.is_fatal_pricing_error`), because it says the DOCUMENT is wrong rather than that the
+        engine cannot reach it: a named refusal swallowed into a zero mark on a job that then
+        succeeds has said nothing at all. The max(all_dates) <= Expiry_Date warning is currently
+        DISABLED."""
         field = {
             'Currency': utils.check_rate_name(self.field['Currency']),
             'Payoff_Currency': utils.check_rate_name(self.field['Payoff_Currency']),
@@ -3901,6 +3907,26 @@ class QEDI_CustomAutoCallSwap(Deal):
         }
 
         if no_averaging:
+            # A ZERO-COUPON ROW IS REFUSED, not priced. This arm advances both the spot and the
+            # price-fixing index INSIDE the coupon block (`if coup > 0` in pv_MC_AutoCallSwap), so
+            # a row quoted zero runs no block at all and the coupon after it takes this row's
+            # interval in place of its own - 4.41% with nothing else on the row, and where a
+            # barrier is dated on it that barrier reads a stale spot too, 24.2% together. A coupon
+            # of zero is not a coupon, so the deal is retired rather than repaired around: DELETING
+            # the row is the remedy either way, since a row that pays nothing and decides nothing
+            # is not a row.
+            for coupon_date in ac_dates:
+                if ac[coupon_date] <= 0.0:
+                    stale = 'the barrier dated on it reads the PREVIOUS fixing\'s spot and ' \
+                        if coupon_date in ab else ''
+                    raise utils.UnpriceableSchedule(
+                        '{}: the Autocall_Coupons row dated {:%Y-%m-%d} is quoted {:g}, and a '
+                        'coupon of zero is not a coupon - the row runs no coupon block at all, so '
+                        '{}the coupon after it takes this row\'s interval in place of its own. '
+                        'Author a real coupon on that row, or delete the row'.format(
+                            self.field.get('Reference', 'this QEDI_CustomAutoCallSwap'),
+                            coupon_date, ac[coupon_date], stale))
+
             all_dates = sorted(all_dates)
             # move the threshold dates to the coupon dates
             tl = {c: at[t] for c, t in zip(ac, at)}
