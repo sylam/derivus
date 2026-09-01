@@ -113,9 +113,22 @@ def test_the_spine_imports_nothing_but_the_standard_library_and_cryptography():
 def test_importing_the_spine_lands_neither_the_engine_nor_torch():
     """The source gate's answer proved a second way, because the first one trusts the parser: a
     FRESH interpreter imports the package and reports what arrived with it. Run out of the repo
-    root so the tree under test is this checkout rather than whatever is installed."""
-    code = ('import json, sys; import derivus_spine; '
-            'print(json.dumps(sorted({name.split(".")[0] for name in sys.modules})))')
+    root so the tree under test is this checkout rather than whatever is installed.
+
+    EVERY MODULE BY GLOB, exactly as the source gate reads them, because importing the package
+    alone is not importing the package: `__init__.py` keeps its surface to the truth layer, so the
+    CLI, the custody and identity modules and increment 3's verbs, policies and firmness check are
+    attributes nothing has loaded and a runtime witness that only imported the package would not be
+    witnessing them at all. Named by glob rather than by list so the second witness reaches a module
+    added tomorrow on the day it appears, which is the property the first witness already has.
+    """
+    modules = sorted('derivus_spine.{}'.format(os.path.basename(source)[:-3])
+                     for source in spine_sources()
+                     if os.path.basename(source) != '__init__.py')
+    assert modules, 'derivus_spine holds no modules to import'
+    code = ('import json, sys; import derivus_spine; import {}; '
+            'print(json.dumps(sorted({{name.split(".")[0] for name in sys.modules}})))'.format(
+                ', '.join(modules)))
     done = subprocess.run([sys.executable, '-c', code], cwd=ROOT, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, universal_newlines=True)
 

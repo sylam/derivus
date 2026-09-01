@@ -48,14 +48,16 @@ is an identity whose canonical JSON the booking verb registers (increment 3), an
 re-derivable by recompiling at the recorded LSN, which is the brief's auditor recompiling rather
 than trusting stored bytes. What is declared here is what the event itself puts on the platter.
 
-The closed set has three parts, and they are named apart because they are said by three different
+The closed set has four parts, and they are named apart because they are said by four different
 mouths. `FACT_TYPES` is the TRADING vocabulary - what a desk, an administrator or a deployment
 submits, and what a synthetic book is made of. `CUSTODY_TYPES` is what key custody says about
 seats and wrapped class keys: submitted through the ordinary writer like any other fact, but facts
-about the machinery rather than about the market. `WRITER_TYPES` is the writer's own voice - one
+about the machinery rather than about the market. `PROVENANCE_TYPES` is what the record says about
+WHICH NUMBERS - the three types that pin replay coordinates, said by the thing that produced them
+rather than by the desk that books against them. `WRITER_TYPES` is the writer's own voice - one
 type, `capability_denied`, which no submitter may speak: the public append refuses it by name and
 only the writer's internal denial path emits it. `EVENT_TYPES` is the union and is what `validate`
-consults, so the closure stays total while the three generations stay legible.
+consults, so the closure stays total while the four generations stay legible.
 
 `EVENT_VERB` is the other half of every type's declaration: which of the six capability verbs an
 append of it demands. It is a CLOSED map over the closed vocabulary - a type without a verb would
@@ -69,6 +71,29 @@ itself be denied is a regress rather than a record.
 `classify` is the SEAM the classified log is built on: an event's entitlement class is DERIVED from
 its provenance, never assigned at the call site, so a reclassification is one declaration whose
 inputs changed rather than ten thousand per-object ACLs.
+
+INCREMENT 3 GROWS THE VOCABULARY BY THREE TYPES AND CHANGES NONE. That is what a versioned
+governance act on a closed vocabulary looks like: `run_completed`, `result_pinned` and
+`quote_filed` are new rows in `PROVENANCE_TYPES` - the part of the closed set named above for
+saying WHICH NUMBERS, grown whole rather than mixed into the trading vocabulary, which is why
+`FACT_TYPES` is byte-identical to what it was - new rows in `EVENT_VERB` and new rows in
+`BLOB_FIELDS`, and every validator that existed before them validates exactly what it validated
+before them. A v1 event stays readable under this vocabulary, which is the version-tolerance law
+met from the writing side.
+
+Their three verb scopes are three different authorities and the difference is the point.
+`run_completed` takes `book`, beside `snapshot_registered`, for the same reason that one does: it
+pins an object to the book that the book's own facts will cite, and the executor attesting to what
+it just produced is the desk putting something on the record rather than governing the deployment.
+`quote_filed` takes `book` too - the brief's `draft` and `validate` name work that happens BEFORE
+the log, and a quote that has been GIVEN is past that line; it is an act with a counterparty on the
+other end of it, which is exactly what booking scope is for, and it is also why the brief's "no
+agent `book` scope in this workstream" already forbids an agent from filing one. `result_pinned`
+takes `approve`, and it is the only one of the three that does: it gives standing to a tuple this
+hub never witnessed, which is a second pair of eyes on somebody else's claim - the brief's
+"outputs acquiring standing are gated a third time at declaration" - and the re-execution the verb
+performs is precisely that second look, made mechanical. An attestation and a promotion answering
+to one verb would say the two are the same authority, and they are not.
 """
 import math
 
@@ -103,26 +128,63 @@ def is_integer(value):
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-#: The field vocabulary, spelled once so every refusal names the same thing the same way.
+def is_maybe_integer(value):
+    """A whole number, or null where the job declared none.
+
+    The one nullable kind, and it exists for exactly one field: a replay tuple's `seed`. A base
+    valuation that names no `Random_Seed` is hashed with a null there, so the tuple the executor
+    witnessed genuinely carries one - substituting a zero would record a tuple no result was ever
+    filed under, which is the one thing an attestation may not do. Null IS the fact here (this job
+    declared no seed) and it is tiny, which is the inlining boundary read the usual way.
+    """
+    return value is None or is_integer(value)
+
+
+def is_coordinates(value):
+    """An object of name -> finite number - a solved coordinate set.
+
+    Also one field's kind and deliberately so: a quote's solved strike or barrier IS the fact and
+    it is tiny, so it rides in the body rather than in the store. The values are closed to finite
+    numbers because a coordinate is a number a desk dealt at; anything richer is a document and
+    belongs in the store under its hash.
+    """
+    return (isinstance(value, dict)
+            and all(is_text(name) and is_number(number) for name, number in value.items()))
+
+
+#: The field vocabulary, spelled once so every refusal names the same thing the same way. Appended
+#: to, never reordered: the constants below are indexes into this tuple, and a validator declared in
+#: increment 1 must keep meaning exactly what it meant.
 KINDS = (
     ('a content hash (64 lowercase hex)', is_hash),
     ('a non-empty string', is_text),
     ('a finite number', is_number),
     ('a whole number', is_integer),
+    ('a whole number or null', is_maybe_integer),
+    ('an object of name -> finite number', is_coordinates),
 )
-HASH, TEXT, NUMBER, INTEGER = range(4)
+HASH, TEXT, NUMBER, INTEGER, MAYBE_INTEGER, COORDINATES = range(6)
 
 
-def _validator(event_type, fields, open_body=False):
+def _validator(event_type, fields, open_body=False, optional=()):
     """The validator for one type: every declared field present and of its kind, and - unless the
-    type is open - nothing else."""
+    type is open - nothing else.
+
+    `optional` is the third form, and it is narrower than it looks: a field that may be ABSENT but,
+    when present, is checked exactly as a declared one. One type uses it - `quote_filed`, whose
+    relayed client utterance is there when a salesperson relayed one and is not there when nobody
+    said anything. It is not an extension point: an optional field is still named in this
+    vocabulary, so the surplus rule is as closed as it ever was, and a type that declares none is
+    validated by identical code producing identical wording.
+    """
     declared = tuple(name for name, _ in fields)
+    known = declared + tuple(name for name, _ in optional)
 
     def validate(body):
         if not isinstance(body, dict):
             raise MalformedEvent(
                 '{}: the body is {}, not a JSON object - an event body is an object whose fields '
-                'are {}'.format(event_type, type(body).__name__, ', '.join(declared)))
+                'are {}'.format(event_type, type(body).__name__, ', '.join(known)))
         for name, kind in fields:
             if name not in body:
                 raise MalformedEvent(
@@ -134,17 +196,25 @@ def _validator(event_type, fields, open_body=False):
                 raise MalformedEvent(
                     '{}: {} is {!r}, which is not {} - correct the field at the submitter; the '
                     'record does not coerce'.format(event_type, name, body[name], description))
+        for name, kind in optional:
+            if name not in body:
+                continue
+            description, check = KINDS[kind]
+            if not check(body[name]):
+                raise MalformedEvent(
+                    '{}: {} is {!r}, which is not {} - correct the field at the submitter; the '
+                    'record does not coerce'.format(event_type, name, body[name], description))
         if not open_body:
-            surplus = sorted(set(body) - set(declared))
+            surplus = sorted(set(body) - set(known))
             if surplus:
                 raise MalformedEvent(
                     '{}: the body carries {} beyond {} - the vocabulary is closed at the field '
                     'level too; drop the key, or add it to the type in a versioned amendment of '
                     'this vocabulary'.format(
-                        event_type, ', '.join(surplus), ', '.join(declared)))
+                        event_type, ', '.join(surplus), ', '.join(known)))
 
     validate.__name__ = 'validate_' + event_type
-    validate.__doc__ = 'Validate a {} body: {}.'.format(event_type, ', '.join(declared))
+    validate.__doc__ = 'Validate a {} body: {}.'.format(event_type, ', '.join(known))
     return validate
 
 
@@ -195,6 +265,50 @@ FACT_TYPES = {
 }
 
 
+#: What the record says about WHICH NUMBERS - the three types that pin replay coordinates, and a
+#: fourth mouth beside the trading vocabulary, custody and the writer's own voice. They are named
+#: apart for the reason the other three are: these are said by the thing that PRODUCED the numbers
+#: (or, for a promotion, by the hub that re-produced them), which is a different speaker from the
+#: desk that books a trade and a different question from what the market did. A synthetic book is
+#: made of `FACT_TYPES`; a provenance chain is made of these.
+PROVENANCE_TYPES = {
+    # A run is recorded IFF its output will be cited by a fact - referential closure
+    # read backwards - and these two are the only two ways a number acquires standing in the
+    # record. `run_completed` is the standing lane's attestation AT BIRTH: the executor is the only
+    # first-hand witness of what it produced, so it says so under its own name at the moment it
+    # produced it, carrying the whole replay tuple and the three objects that make the claim
+    # checkable - the job the plan recompiles from, the values vector it ran against, and the
+    # result itself. `lane` is on the row because the rule turns on it and a record that had to be
+    # told which lane it was reading would not be self-describing; the verb refuses anything but
+    # the standing lane, since telemetry and curiosity mint nothing by construction.
+    'run_completed': _validator('run_completed', (
+        ('plan_hash', HASH), ('values_hash', HASH), ('engine_version', TEXT),
+        ('seed', MAYBE_INTEGER), ('lane', TEXT), ('job', HASH), ('result', HASH))),
+    # Promotion across lanes, AFTER the fact: a tuple the hub did not witness, attested only once
+    # it re-executed and the bytes reproduced within a declared tolerance. `tolerance_policy` names
+    # the hashed policy blob the comparison was held to, because the standard a claim was admitted
+    # under is a fact about the pinning and the policy in force will move. What is NOT here is
+    # whether the pin was a cache hit or a re-execution: that is a fold over the `run_completed`
+    # rows at or before this LSN, and a computable consequence does not go in a body.
+    'result_pinned': _validator('result_pinned', (
+        ('plan_hash', HASH), ('values_hash', HASH), ('engine_version', TEXT),
+        ('seed', MAYBE_INTEGER), ('job', HASH), ('result', HASH),
+        ('tolerance_policy', HASH))),
+    # The quoting act, and it pins TWO hashes because a quote is firm in two dimensions: the values
+    # vector it was struck on and the book plan its marginal charge was solved against. The solved
+    # coordinates and the edge ride in the body because each IS the fact and is tiny - what was
+    # dealt, and what the desk took for it, under its own name rather than as arithmetic somebody
+    # re-derives. `request` is the relayed client utterance and is OPTIONAL: it is there when a
+    # salesperson relayed one. It is also the erasure case, and it needs no mechanism of its own -
+    # every body in this log is sealed under its class key, so destroying that key erases what was
+    # asked while the chain over it stays verifiable, which is what crypto-shredding is.
+    'quote_filed': _validator('quote_filed', (
+        ('quote_id', TEXT), ('structure', TEXT), ('plan_hash', HASH), ('values_hash', HASH),
+        ('solved', COORDINATES), ('edge', NUMBER)),
+        optional=(('request', TEXT),)),
+}
+
+
 #: The custody vocabulary - what per-seat keys and class-key wrapping put in the record. Both are
 #: ordinary submitted facts; both speak of BYTES rather than carrying them, because a public key and
 #: a wrap blob are objects the store holds once and the log names by hash forever.
@@ -223,11 +337,12 @@ WRITER_TYPES = {
 #: have to mean "anything the writer can hold".
 EVENT_TYPES = dict(FACT_TYPES)
 EVENT_TYPES.update(CUSTODY_TYPES)
+EVENT_TYPES.update(PROVENANCE_TYPES)
 EVENT_TYPES.update(WRITER_TYPES)
 
 #: What a submitter may name. `capability_denied` is absent on purpose: an unknown-type refusal
 #: that offered it would be advertising a door that is bolted.
-SUBMITTABLE = tuple(sorted(set(FACT_TYPES) | set(CUSTODY_TYPES)))
+SUBMITTABLE = tuple(sorted(set(FACT_TYPES) | set(CUSTODY_TYPES) | set(PROVENANCE_TYPES)))
 
 #: The six capability verbs a policy document grants, spelled once. `draft` and `validate` name work
 #: that happens BEFORE the log - a quote drafted, a ticket validated - so no event type demands
@@ -259,9 +374,12 @@ EVENT_VERB = {
     'election': BOOK,                   # exercising is the holder's act, exercised by the desk
     'status_transition': BOOK,          # an operational acknowledgment about a trade on the book
     'snapshot_registered': BOOK,        # a surface pinned to the book that will cite it
+    'run_completed': BOOK,              # numbers pinned to the book whose facts will cite them
+    'quote_filed': BOOK,                # a quote is an ACT, and filing paper on the record is this
     # approve: the second pair of eyes, and the only verb whose refusal is also a decision.
     'approval': APPROVE,                # a signature over a plan hash
     'rejection': APPROVE,               # refusing to sign is the same authority exercised
+    'result_pinned': APPROVE,           # a tuple the hub did not witness, given standing
     # mark: what the market is said to be - the verb mismark monitoring watches.
     'market_declared': MARK,            # moving a NAME onto a values vector
     'official_close_declared': MARK,    # the close is exactly such a declaration
@@ -310,6 +428,18 @@ BLOB_FIELDS = {
     # enrollment appends before the key it publishes is fsynced.
     'seat_enrolled': ('public_key',),
     'key_wrapped': ('wrap',),
+    # Attestation speaks of three objects and declares two-and-a-half of them. The `job` document
+    # and the `result` are bulk and live in the store; `values_hash` is there because a values
+    # vector is bulk too AND because the engine's own values hash IS the SHA-256 of that vector's
+    # canonical bytes, so the citation and the address are one number rather than two that could
+    # disagree. `plan_hash` is deliberately ABSENT for the reason this file's header gives: a plan
+    # is RE-DERIVABLE, so the auditor recompiles it from the `job` blob at the recorded LSN and
+    # requires the same hash rather than trusting bytes somebody stored under it.
+    'run_completed': ('job', 'result', 'values_hash'),
+    'result_pinned': ('job', 'result', 'values_hash', 'tolerance_policy'),
+    # A quote cites the board it was struck on and nothing else it does not itself carry: the
+    # solved coordinates and the edge are in the body, and the plan is re-derivable as always.
+    'quote_filed': ('values_hash',),
 }
 
 

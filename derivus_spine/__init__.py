@@ -41,6 +41,8 @@ from .errors import (
     IdentityRefused,
     CapabilityDenied,
     CustodyRefusal,
+    ReplayRefused,
+    QuoteNotFirm,
 )
 from .store import BlobStore
 from .log import SpineLog
@@ -74,4 +76,6 @@ __all__ = [
     'IdentityRefused',
     'CapabilityDenied',
     'CustodyRefusal',
+    'ReplayRefused',
+    'QuoteNotFirm',
 ]

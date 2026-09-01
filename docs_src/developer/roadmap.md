@@ -46,6 +46,7 @@ Two rules apply to everything here, from [Conventions](conventions.md):
 | A zero `Market_Volatility` is a silent instruction, not a bad number | `bootstrappers.create_market_swaps` | `if instrument['Market_Volatility'].amount:` falls through to `vol_surface.ATM(tenor, expiry)` — a blank cell emitted as zero calibrates against whatever the book's surface held, under the name of a quote nobody gave. The emitter refuses `zero` from a ladder for exactly this; the engine cannot distinguish "quoted zero" from "not quoted". Remedy: an absent quote should be an absent ROW, and a zero should refuse by name. |
 | Machine-fetched blocks have nowhere DECLARED to state provenance or their two-way | `HullWhite2FactorModelParameters.fields` × `InterestRateCurveParameters.Points` | HW2F declares neither `Quote_Source` nor `Quote_Timestamp` (both Heston–Nandi families do); `Points` declares none of `Quoted_Bid`/`Quoted_Ask`/`Timestamp` although `schema.MARKET_QUOTE_VALUES` treats all three as the value plane the tick guard admits. The emitters write all of them as undeclared keys `bootstrap` reads past — the same shape as the equity chain's undeclared option-row keys. Remedy: declare the fields on both families, or accept the undeclared keys by a recorded ruling. |
 | `.DateOffset` has two incompatible wire spellings | `config.CustomJsonEncoder` × `Config.parse_json` | The encoder writes `{'.DateOffset': '3M'}` and `Config.read_json` parses that string; `Config.parse_json` does `DateOffset(**dct['.DateOffset'])` and needs a kwargs dict — a block written by the encoder cannot be read back through `parse_json`. The emitters write the encoder's spelling (the service path). Remedy: one spelling, or `parse_json` accepting both. |
+| `market_edit` captures the ROOT logger, so a concurrent run's ERROR refuses an innocent tick | `derivus/service.py` (`market_edit`'s `CapturedErrors` around `context.bootstrap()`) | Found by spine increment 3's verifier running the suite under CPU contention. The capture is a plain `logging.Handler(ERROR)` on the root logger for the bootstrap's duration, and it captures records from ANY thread — a queued `/book/price` or CMC whose pricing logs a CRITICAL (a skipped deal, a missing factor) inside a tick's capture window turns a good tick into `written: False, refused: [the foreign run's message]`, and `Metronome.failed` counts a failed beat. Deterministically reproduced (a slow job behind the one worker, then a tick); on a live `--tick` desk with pricing in flight this refuses good market data silently. Remedy: bind the capture to the bootstrap's own logger tree, or filter by `record.thread`. The spine gate that surfaced it now drains the queue per iteration and names this row. |
 | A degenerate reset window dies on a key no Row declares | `utils.make_float_cashflows` (~:4877) | `cashflow['Rate_Tenor']` is read when a reset's start equals its end, is declared by no `Row`, written nowhere, and appears exactly once in the engine — that read. Any authored `CFFloatingInterestListDeal` item with a degenerate window dies `KeyError: 'Rate_Tenor'` instead of a message. The emitters never author one (`fixing < following` always); a composition-harness or hand-authored document can. Remedy: refuse by name, or derive the tenor the schedule already knows. |
 
 ## Designed, not built
@@ -70,16 +71,31 @@ variant), and neither side rolls a business day (a 2Y USD OIS pays on a Saturday
 on both sides, gated; a real settlement calendar is a change on both sides of the boundary at
 once).
 
-**The trading spine — increments 1 and 2 of 7 are BUILT.** Increment 2 adds identity,
-attribution and key custody on the increment-1 log with its wire formats frozen: local OIDC
-verification (RS256/ES256 allowlist, `azp` for multi-audience tokens), capabilities as one
-hashed policy document and one pure evaluator resolved by fold-at-LSN, writer enforcement that
+**The trading spine — increments 1, 2 and 3 of 7 are BUILT.** Increment 3 adds the booking verbs,
+the attestation lanes and the two-dimensional quote firmness, all on the increment-1 wire formats
+untouched. The vocabulary grew by three types and changed none (`run_completed`, `result_pinned`,
+`quote_filed` — a fourth mouth beside the trading, custody and writer vocabularies); the verb
+logic lives in `derivus_spine` over plain data and `Context` gains five thin delegators through
+`derivus/spine.py`, the ONE module under `derivus/` that knows the record exists, imported lazily
+and refusing by name without the `enterprise` extra. `DV_SPINE_HOME` unset is bit-identical to the
+edge as it was, gated first. Lanes carry one rule — a run is recorded iff its output will be cited
+by a fact — so telemetry and curiosity mint nothing and standing attests at birth (including a run
+whose numbers already exist, since content addressing dedupes numbers and the lane is about
+standing). `result_pinned` re-executes through an INJECTED executor at the recorded engine version,
+cache-hits against a prior `run_completed`, and compares within a declared hashed tolerance policy
+— the only epsilon in the package, and a class it does not name is refused rather than passed. A
+quote pins its values vector and its book plan, and `/book/quote` answers on each dimension
+separately with its own remedy, disjoint by measurement through the `Market Prices` partition
+rather than by assumption, beside (never instead of) the desk's own `firm_seconds`. 225 gates
+total, twice-run deterministic (58 new; four are the mutation pass's own killers). Increment 2 before it bought identity, attribution and key custody:
+local OIDC verification (RS256/ES256 allowlist, `azp` for multi-audience tokens), capabilities as
+one hashed policy document and one pure evaluator resolved by fold-at-LSN, writer enforcement that
 activates by declaration and logs every denial as a fact, an UNREADABLE fold sentinel so a
 doctored policy blob cannot brick the break-glass recovery, revocable break-glass, per-seat
 X25519 wrapping with the subject bound into the AAD, escrow recovery gated on a shredded copy,
-and a third DECLARED residual (the hub-minted seat-key bootstrap). 167 gates total, twice-run
-deterministic; 24 review mutants dead by named tests. `DV_Spine` grows
-`enroll | grant | rewrap | name | whoami`. Details continue on [The Spine](spine.md): `derivus_spine/` is the append-only book of
+and a third DECLARED residual (the hub-minted seat-key bootstrap); 24 review mutants dead by named
+tests. `DV_Spine` is `init | verify | checkpoint | status | enroll | grant | rewrap | name |
+whoami`. Details continue on [The Spine](spine.md): `derivus_spine/` is the append-only book of
 record's truth layer: a vendored RFC 8785 canonicaliser gated on the RFC's own vectors, sealed
 chained log segments (AES-GCM bodies, a blinded idempotency tag in the envelope so no plaintext
 hash is a dictionary oracle, `event_hash` chaining from genesis), a content-addressed blob
@@ -89,9 +105,11 @@ retro-invalidates it, an enforced single writer, and a two-mode verifier honest 
 keyless replica cannot assess. Import surface: stdlib + `cryptography`, held by AST and
 subprocess gates; `pip install derivus[enterprise]`; `DV_Spine` is the CLI. 103 gates, every
 fault injected as data on disk, eleven mutants each killed by a named test. See
-[The Spine](spine.md). What remains is increments 3–7 (booking verbs + `result_pinned`, projections + the diary, tier
-policy, the doorbell, the generated binding) — and the `Market Prices` partition their firmness
-rule waited on LANDED (see PREPARE/EXECUTE below), so increment 3 is unblocked.
+[The Spine](spine.md). What remains is increments 4–7 (projections + the diary, tier policy, the
+doorbell, the generated binding). The `Market Prices` partition increment 3's firmness rule waited
+on LANDED (see PREPARE/EXECUTE below) and the disjointness gate now rides it directly; the book
+file's rehoming as an LSN-pinned projection, and the plan compiler as a fold over fixings
+supersession, are increment 4's.
 
 **Sensitivity estimators as first-class objects.** Every Greek should carry the estimator that
 produced it — a `SensitivityProfile` per pricer — so a consumer can tell a pathwise derivative from

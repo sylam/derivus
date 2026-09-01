@@ -87,12 +87,13 @@ from itertools import count
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import Context, content_hash, solve_deal_field
+from . import Context, content_hash, solve_deal_field, spine
 from .bootstrappers import HestonNandiModelParameters
 from .schema import mapping
 from ._version import __version__
-from .config import (CustomJsonEncoder, deal_at, remove_deal, sniff_indent, splice_deal,
+from .config import (as_json, deal_at, remove_deal, sniff_indent, splice_deal, tables_of,
                      update_market_quote, walk_job_deals)
+from .spine import replay
 
 LOG = logging.getLogger(__name__)
 
@@ -156,15 +157,15 @@ JOB_SKELETON = {'Calc': {
                 'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                 'Curve': {'.Curve': {'meta': [], 'data': [[0.0, 0.02], [5.0, 0.02]]}}}}}}}}
 
-#: What the worker needs off the request thread: the id to file under, the Context to run, and the
-#: replay tuple that id was hashed from.
-Job = namedtuple('Job', 'result_id context replay')
-
-
-def as_json(obj):
-    """Plain JSON, through the one encoder the codebase already has for what JSON has no form for —
-    a Curve, a Timestamp, a results table."""
-    return json.loads(json.dumps(obj, cls=CustomJsonEncoder))
+#: What the worker needs off the request thread: the id to file under, the Context to run, the
+#: replay tuple that id was hashed from, and - where a spine home is configured - the ATTESTATION
+#: LANE the caller declared plus the job document the attestation is checkable from.
+#:
+#: `lane` and `evidence` default to None and that default is the whole compatibility story: a job
+#: submitted the way every existing caller submits one carries no lane, nothing is minted, and the
+#: worker's path through it is the path it always took. A run is recorded IFF its output will be
+#: cited by a fact, and a caller who has not said so has not said so.
+Job = namedtuple('Job', 'result_id context replay lane evidence', defaults=(None, None))
 
 
 def load(job):
@@ -172,12 +173,77 @@ def load(job):
     return Context().load_json((json.dumps(job), 'posted'))
 
 
-def replay(context):
-    """The four coordinates a reported number replays from. Hashed, they are also its `result_id`,
-    which is what makes an identical submission one execution: the tuple names the numbers."""
-    return {'plan_hash': context.plan_hash(), 'values_hash': context.values_hash(),
-            'engine_version': __version__,
-            'seed': context.current_cfg.deals['Calculation'].get('Random_Seed')}
+#: What `/execute` does with a lane it was never given. A run is recorded IFF its output will be
+#: cited by a fact, so silence is the safe reading: a bare execute is somebody looking, and a caller
+#: whose numbers a fact is about to name says `standing` out loud. The two verbs that KNOW which
+#: lane they are in - the what-if and the quote - name their own below rather than defaulting here.
+DEFAULT_LANE = spine.CURIOSITY
+
+
+def evidence_for(document, context):
+    """The two objects a standing attestation is checkable from, as the bytes they are stored as:
+    the job document the plan recompiles from, and the values vector the run read.
+
+    Taken on the REQUEST thread, before anything runs. The values vector has to be read here rather
+    than off the finished context, because the claim's `values_hash` was taken here too - and the
+    spine checks the vector it is handed against that claim rather than believing it, so a vector
+    read after a run that touched the market would refuse by name instead of quietly recording a
+    tuple pointing at bytes that never produced it.
+
+    What is stored is the `Calc` ENVELOPE alone. A posted body may also carry `Patch`, `plan_id` or
+    `lane`, and none of those is the job - they are how the submission arrived. The patch is not
+    lost by the trim: the values vector beside it carries the whole market as patched, which is the
+    brief's own model of a result as engine(plan, values) rather than engine(document).
+    """
+    job = {'Calc': document['Calc']} if 'Calc' in document else document
+    return {'job': spine.canonical(job), 'values': spine.values_of(context)}
+
+
+def attests(submitted):
+    """Whether this job's completion owes the record an attestation.
+
+    Named on its own and asked BEFORE the result is canonicalised, because canonicalising one is
+    not free: a credit Monte Carlo's exposure is a cube, and paying to serialise it on every job
+    just to discover that nothing was going to be recorded is a tax on every run the desk makes.
+    """
+    if submitted.lane != spine.STANDING or not spine.configured():
+        return False
+    return submitted.evidence is not None
+
+
+def attest(submitted, result):
+    """Append the standing lane's `run_completed` for a job whose numbers exist. Answers the
+    envelope. `result` is the canonical result bytes, and `attests` has already said yes.
+
+    TELEMETRY AND CURIOSITY MINT NOTHING and that is the rule rather than an optimisation: an event
+    about a number nobody will cite is a row every later fold reads and no later fact refers to. So
+    this is a no-op on every job that carries no standing lane, which is every job any existing
+    caller submits.
+
+    A refusal here FAILS THE RUN. The numbers are already computed, and throwing them away looks
+    harsh until you read the lane rule the other way round: a standing run is one whose output a
+    fact is about to cite, so a run whose attestation was refused - an unscoped actor, no actor at
+    all, a home that is not there - has not acquired standing, and serving it as though it had is
+    exactly the unbacked citation the rule exists to prevent. The refusal travels as the run's own
+    error, in the spine's own wording.
+
+    A STANDING JOB WITH NO EVIDENCE ATTESTS SOMEWHERE ELSE, and there is exactly one of those: the
+    structure quote. Its solve is standing by every reading of the rule - a fact is about to cite
+    it, and that fact is the quote - but the act it produces is recorded as `quote_filed`, which
+    pins the same two hashes AND carries what was solved and what the desk took for it. Minting a
+    `run_completed` beside it would be two records of one act, so the verb that files the richer
+    one carries no evidence and `attests` says no about it.
+    """
+    return spine.complete_run(submitted.replay, submitted.lane, submitted.evidence['job'],
+                              submitted.evidence['values'], result)
+
+
+def attested(envelope):
+    """What a caller is told about an attestation: where it landed and in which lane. Not the
+    whole envelope - the record's own position is what a citation needs, and the rest of it is a
+    fold away."""
+    return {'lsn': envelope['lsn'], 'lane': envelope['lane'],
+            'event_hash': envelope['event_hash']}
 
 
 def cost(calculation):
@@ -193,22 +259,6 @@ def cost(calculation):
             'estimate': calculation.get('Batch_Size', 1) * calculation.get(
                 'Simulation_Batches', 1) * grid,
             'basis': 'Batch_Size x Simulation_Batches x Time_Grid segments - an estimate'}
-
-
-def tables_of(results):
-    """Every table in a `Results` tree, flat, under the path that names it.
-
-    `cashflows` and `scenarios` are dicts of tables rather than tables, so they arrive as
-    `cashflows/ZAR` and `scenarios/FxRate.ZAR`: a client fetches one table, and a tree has no page.
-    """
-    tables = {}
-    for name, value in results.items():
-        if isinstance(value, dict) and '.DataFrame' not in value:
-            tables.update({'{}/{}'.format(name, path): table
-                           for path, table in tables_of(value).items()})
-        else:
-            tables[name] = value
-    return tables
 
 
 def shape(table):
@@ -279,6 +329,14 @@ class ComputeExecutor:
     arriving while the first is still queued or running coalesces onto it rather than enqueueing a
     second copy, because the store is checked and written under the same lock that enqueues.
 
+    COALESCING DEDUPES NUMBERS AND NOT LANES. The submission that coalesces carries a lane of its
+    own, and where that lane is standing the record is owed an attestation whether or not this box
+    had already started computing the numbers for somebody else. So a standing submission landing
+    on a run still in flight is PROMOTED onto it here, and `finish` attests the promoted submission
+    when the numbers land — the same rule `/execute` applies one line either side of it, made
+    exhaustive: an arrival before the result is published promotes, and one after it finds `done`
+    and attests on its own thread.
+
     A stored result holds the run's tables under `tables`, keyed by the path that names each one.
     That is what the two result endpoints project: one serves their shapes, the other serves one of
     them, a page at a time.
@@ -286,6 +344,10 @@ class ComputeExecutor:
 
     def __init__(self):
         self.results = {}
+        # result_id -> the STANDING submission that coalesced onto a run still in flight, held
+        # until `finish` attests it. Empty on every box that records nothing, and empty again the
+        # moment the run it belongs to publishes or fails.
+        self.standing = {}
         self.lock = threading.Lock()
         self.queue = queue.PriorityQueue()
         # arrival order breaks ties within a cost class, and keeps the queue from ever comparing
@@ -296,16 +358,81 @@ class ComputeExecutor:
     def submit(self, job, cost):
         """File and enqueue the job unless its `result_id` is already known, and return the status
         the caller sees immediately — `queued`, or wherever an identical earlier submission got to.
+
+        A STANDING SUBMISSION THAT COALESCES ONTO A RUN STILL IN FLIGHT IS PROMOTED HERE, and it has
+        to be promoted here because this is the only place that sees both submissions. The job the
+        worker dequeued carries the FIRST caller's lane, which for a what-if is a lane that mints
+        nothing — so without this arm a standing caller whose tuple somebody else was already
+        curious about would be served numbers with no `run_completed` behind them and no refusal
+        either, which is exactly the unbacked citation the lane rule exists to prevent. The lane is
+        about STANDING rather than about arithmetic, so the attestation is owed either way, and the
+        decision is taken under the lock the worker publishes under so the two arms cannot both
+        miss.
+
+        An `error` result is not promoted onto: there are no numbers, nothing is served, and a
+        promotion filed against a run that will never be dequeued again would sit here forever.
         """
         with self.lock:
             if job.result_id not in self.results:
                 self.results[job.result_id] = {'status': 'queued'}
                 self.queue.put((cost, next(self.arrival), job))
+            elif attests(job) and self.results[job.result_id]['status'] in ('queued', 'running'):
+                # first standing declaration wins, the way a duplicate tag coalesces onto the LSN
+                # it already has: one run, one attestation, whoever asks for it after the first
+                self.standing.setdefault(job.result_id, job)
             return self.results[job.result_id]['status']
 
     def result(self, result_id):
         with self.lock:
             return self.results.get(result_id)
+
+    def note(self, result_id, **fields):
+        """Add to a stored result from another thread. Answers the result as it now stands.
+
+        The worker is the only thread that WRITES a result, and this does not break that: it adds
+        to one that is already finished, under the same lock, and the one caller is the standing
+        lane's attestation of a run whose numbers this store already held. A result nobody is
+        holding is left alone rather than conjured.
+        """
+        with self.lock:
+            stored = self.results.get(result_id)
+            if stored is not None:
+                stored.update(fields)
+            return stored
+
+    def finish(self, job, result, canonical_result):
+        """Attest a finished run where the record is owed one, and publish it. ONE transition.
+
+        Attesting and publishing are one step under one lock, and that is the lane rule rather than
+        a convenience: a standing run whose attestation was refused has not acquired standing, so
+        its numbers must not become readable before the record holds the fact about them. Taking the
+        two together is also what leaves `submit` no window - a standing submission either gets in
+        before this block and is the one attested here, or it finds a published `done` and attests
+        on its own thread.
+
+        WHICH SUBMISSION IS ATTESTED is the job this thread dequeued wherever that one owes an
+        attestation of its own, and the promoted one only where it does not. They name the same
+        numbers by construction - the result id IS the hash of the replay tuple - but the evidence
+        is a document rather than a hash, and the run's own submitter is the one whose document
+        actually ran. So the promotion answers for a run that was enqueued in a lane minting
+        nothing, which is the case it exists for, and never displaces a standing run's own evidence.
+
+        `canonical_result` is a CALLABLE for the reason `attests` is asked before it: canonicalising
+        a credit Monte Carlo's exposure cube is not free, and a run in a lane that mints nothing
+        must not pay for one. A refusal propagates out of here with `self.results` exactly as it
+        found it, and the worker records the error in its place.
+
+        The lock order is this one then the spine's writer, never the reverse: `/execute` finishes
+        its own append before it touches this store, so the two paths cannot hold each other's.
+        """
+        with self.lock:
+            owed = self.standing.pop(job.result_id, None)
+            if owed is None or attests(job):
+                owed = job
+            if attests(owed):
+                result['attested'] = attested(attest(owed, canonical_result()))
+            self.results[job.result_id] = result
+            return result
 
     def work(self):
         """Run one job at a time, forever. A job that fails is a result like any other, so the
@@ -320,10 +447,16 @@ class ComputeExecutor:
                 # table - through `tables_of` it would flatten into fake table paths
                 result = dict(status='done', tables=tables_of(as_json(out['Results'])),
                               stats=as_json(out.get('Stats', {})), **job.replay)
+                # the executor is the only first-hand witness of what it produced, so a STANDING
+                # run says so here, at birth - for whichever submission of this tuple declared
+                # standing, which is not always the one this thread dequeued. Every other lane
+                # mints nothing and never gets past `attests`
+                self.finish(job, result, lambda: spine.result_of(out))
             except Exception as error:
-                result = {'status': 'error', 'error': str(error)}
-            with self.lock:
-                self.results[job.result_id] = result
+                with self.lock:
+                    # a run that produced nothing attests nothing, and the promotion goes with it
+                    self.standing.pop(job.result_id, None)
+                    self.results[job.result_id] = {'status': 'error', 'error': str(error)}
             self.queue.task_done()
 
 
@@ -464,22 +597,88 @@ def prepare(job: dict):
             'engine_version': __version__}
 
 
+def lane_of(body, default=DEFAULT_LANE):
+    """The attestation lane this submission declared, checked - or None where this box records
+    nothing.
+
+    WITHOUT A SPINE HOME THE LANE IS ACCEPTED AND INERT. That is the compatibility law in one
+    branch: a client that has learned to declare a lane still talks to a desk box that records
+    nothing, and every byte of that box's answer is what it was before lanes existed - including
+    the answer to a lane nobody has ever heard of, because there is nothing here for it to be
+    wrong about.
+
+    Where a home IS configured the lane is a decision the record will act on, so an unknown one
+    refuses by name rather than being read as the default. `derivus_spine.verbs.check_lane` owns
+    that refusal, because the lanes are the record's vocabulary and not the service's.
+    """
+    declared = body.get('lane', default)
+    if not spine.configured():
+        return None
+    return spine.check_lane(declared)
+
+
 @app.post('/execute', summary='Submit a job, and get the id its numbers will be filed under')
 def execute(job: dict):
     """Submit a job — a document or a `plan_id` — optionally over a values `Patch`, a delta exactly
-    as `patch_market` takes it.
+    as `patch_market` takes it, and optionally in a declared `lane`.
 
     The patch is applied BEFORE the hashes are taken, so `values_hash` describes what actually runs
     and two clients patching to the same market get one execution. The answer is always
-    `{result_id, status}`: poll `/results/{result_id}` for the numbers, however cheap the job.
+    `{result_id, status}` — plus an `attested` block naming where the record put the run, on the one
+    path that can answer it here: a standing run whose numbers this box had already computed, which
+    is attested on this thread because the worker will never revisit it. A standing run whose
+    numbers do not exist yet is attested by the worker at completion — at birth if it enqueued one,
+    and off the promotion `ComputeExecutor.submit` files if it coalesced onto a run already in
+    flight — so its block arrives with the numbers rather than with this answer. Poll
+    `/results/{result_id}` for the numbers, however cheap the job; the attestation is there too.
+
+    `lane` is `telemetry | curiosity | standing` and it answers ONE question — will a fact cite
+    these numbers? Telemetry is the blotter's repaint, superseded before anything could cite it;
+    curiosity is a what-if; standing is a run a fact is about to name, and only standing appends
+    anything. The default is curiosity, because a caller who has not said their output will be
+    cited has not said it. Where no spine home is configured the parameter is accepted and inert
+    and every answer here is byte-identical to what it always was.
+
+    A STANDING run must post its DOCUMENT. A `plan_id` names a parse the cache holds, and an
+    attestation has to carry the job the plan recompiles from — `Context.save_json` is explicitly
+    not a complete round trip, so serialising the parse back would store a document that is not the
+    one that ran. The refusal names the remedy rather than recording a job nobody can recompile.
     """
     context = context_for(job)
     context.patch_market(job.get('Patch', {}))
     stamp = replay(context)
-    submitted = Job(content_hash(stamp), context, stamp)
+    try:
+        lane, evidence = lane_of(job), None
+        if lane == spine.STANDING:
+            if 'plan_id' in job:
+                raise HTTPException(422, 'a standing run is attested from the job document the '
+                                         'plan recompiles from, and a plan_id names a parse rather '
+                                         'than a document - post the job itself, or run it in the '
+                                         'curiosity lane, which mints nothing')
+            evidence = evidence_for(job, context)
+    except spine.SpineRefused as refused:
+        raise HTTPException(422, str(refused))
+    submitted = Job(content_hash(stamp), context, stamp, lane, evidence)
     calculation = context.current_cfg.deals['Calculation']
-    return {'result_id': submitted.result_id,
-            'status': EXECUTOR.submit(submitted, cost(calculation)['class'])}
+    answer = {'result_id': submitted.result_id,
+              'status': EXECUTOR.submit(submitted, cost(calculation)['class'])}
+    # A STANDING RUN WHOSE NUMBERS ALREADY EXIST STILL ATTESTS. Content addressing means the same
+    # job in the same market is one execution, so a caller who explored it first and then declared
+    # it standing coalesces onto a result the worker will never revisit - and the lane is about
+    # STANDING rather than about arithmetic, so the attestation is owed either way. The bytes come
+    # back off the store the run was filed in, which is why `result_of` and `result_stored` are the
+    # same shape; a second attestation of the same tuple coalesces on its own idempotency tag.
+    # The other side of this branch is not silence: a standing submission that coalesced onto a run
+    # still QUEUED or RUNNING was promoted onto it inside `submit`, under the same lock, and the
+    # worker attests that submission when the numbers land
+    if attests(submitted) and answer['status'] == 'done':
+        stored = EXECUTOR.result(submitted.result_id)
+        try:
+            answer['attested'] = attested(attest(submitted, spine.result_stored(stored)))
+        except spine.SpineRefused as refused:
+            raise HTTPException(422, str(refused))
+        EXECUTOR.note(submitted.result_id, attested=answer['attested'])
+    return answer
 
 
 @app.get('/results/{result_id}', summary='Status, the replay tuple, and the shape of each table')
@@ -609,6 +808,106 @@ def deal_edit(document, deal, parent_reference=None):
     return deal_verdict(document, deal_references(node), deal_path, already_missing)
 
 
+# ------------------------------------------------------------------------------------------------
+# The book file's writers, under a spine. Every function below answers `{}` where no home is
+# configured, which is what makes the edge bit-identical without one.
+
+def instrument_of(node):
+    """The canonical TERMS of a booked node - the deal block with its legs written back under it.
+    One reading, used by the booking and the amendment alike, so an amended container is an
+    amendment of the instrument that was booked rather than of a different spelling of it."""
+    deal = dict(node['Instrument']['.Deal'])
+    if node.get('Children'):
+        deal['Children'] = node['Children']
+    return deal
+
+
+def enclosing_set(document, deal_path):
+    """The `NettingCollateralSet` a deal sits inside, walking outward from its parent, or None.
+
+    A CLIENT IS A NETTING SET: the counterparty and the CSA live on the set, so this is where a
+    fill's two reference fields come from. Walking outward rather than reading the immediate parent
+    is what lets a trade booked inside a sub-container of a set still name the set it belongs to.
+    """
+    positions = str(deal_path).split('/')
+    for depth in range(len(positions) - 1, 0, -1):
+        deal = deal_at(document, '/'.join(positions[:depth]))['Instrument']['.Deal']
+        if deal.get('Object') == 'NettingCollateralSet':
+            return deal
+    return None
+
+
+def book_name(document):
+    """The book a fill is attributed to: the job document's own `Deals.Reference`, or None.
+
+    The name matters because capability grants are (verb x book), so a desk scoped over one book
+    must not be able to book into another. A document naming none files a firm-level fact, which
+    only a `*` grant reaches - the strictest honest reading of a book that never named itself.
+    """
+    named = (document.get('Calc', {}).get('Deals', {}) or {}).get('Reference')
+    return named if isinstance(named, str) and named else None
+
+
+def spine_fill(document, deal_path, quantity, execution_reference, actor=None):
+    """Append the `fill` for a booking, and answer what the record now says. `{}` with no home.
+
+    THE EVENT GOES FIRST. This is called after the verdict and before `Book.mutate` writes the
+    file, so the two writes are ordered the way the durability law orders a blob and the event that
+    cites it: what is true is on the platter before the projection of it is. If the file write then
+    failed, the record would hold a trade the desk's own cache does not - which is the correct way
+    round, because the file is the interim stand-in and the log is what is true. THE FILE'S FORMAL
+    REHOMING as an LSN-pinned projection, hydrated from the centre rather than written beside it,
+    is increment 4's business; until then this is a dual write with a declared order.
+
+    Three things a fill carries have no default and refuse by name when the book cannot supply
+    them: the netting set and its counterparty, which come from the set the trade sits inside; and
+    the execution reference, which is what makes a retry the same fact by construction.
+    """
+    if not spine.configured():
+        return {}
+    node = enclosing_set(document, deal_path)
+    if node is None:
+        raise spine.SpineRefused(
+            'this booking sits at {} with no NettingCollateralSet above it, and a fill carries a '
+            'counterparty and a netting set on the row: book it under the client\'s set - that is '
+            'where the counterparty and the CSA are declared, and it is the unit the CVA is '
+            'projected over'.format(deal_path))
+    counterparty, _ = set_terms(node)
+    if not counterparty:
+        raise spine.SpineRefused(
+            'the netting set {!r} names no counterparty in its Credit_Support_Amounts, and a fill '
+            'carries one: declare the counterparty on the set, then book'.format(
+                node.get('Reference')))
+    if quantity is None:
+        raise spine.SpineRefused(
+            'this booking declares no quantity, and a fill is a SIGNED quantity of the instrument: '
+            'post `quantity` with the sign the desk takes - position is a fold over these and is '
+            'never written')
+    if not execution_reference:
+        raise spine.SpineRefused(
+            'this booking declares no execution_reference, and a fill body must carry one: it is '
+            'what makes a retry the same fact by construction and two legitimately identical clips '
+            'two facts by construction - post the venue exec id or the ticket id')
+    return {'recorded': spine.book(
+        instrument_of(deal_at(document, deal_path)), quantity, counterparty,
+        node.get('Reference'), execution_reference, actor_name=actor,
+        book_name=book_name(document))}
+
+
+def spine_amendment(document, deal_path, before, actor=None):
+    """Append the `amendment` linking the terms that were to the terms that are. `{}` with no home.
+
+    Economics are never edited, so this is a second row rather than a changed one, and both
+    instruments are registered because both are cited - the old one dedups onto the address it
+    already has.
+    """
+    if not spine.configured():
+        return {}
+    return {'recorded': spine.amend(
+        before, instrument_of(deal_at(document, deal_path)), actor_name=actor,
+        book_name=book_name(document))}
+
+
 @app.post('/book/deals', summary='Book, amend or delete one deal - validated, then written atomically')
 def book_deals(request: dict):
     """`{action: 'add', deal, parent_reference?}`, `{action: 'amend', deal_path, fields}` or
@@ -623,6 +922,20 @@ def book_deals(request: dict):
     already lack. A book already failing elsewhere cannot block a correct change, and the caller
     sees the whole verdict either way. A refusal is `{written: False, ...}` and touches nothing -
     it is an answer, not an error.
+
+    UNDER A SPINE HOME the write is a pair and the EVENT GOES FIRST: an `add` appends the `fill`
+    and an `amend` the `amendment` before the file is rewritten, and the outcome carries the
+    envelope under `recorded`. Two fields become required that were optional before, and they are
+    required because a fill's body is: `quantity`, signed the way the desk takes it, and
+    `execution_reference`, the venue exec id or ticket id that makes a retry the same fact. The
+    deal must also sit under a `NettingCollateralSet` naming a counterparty, since that is where a
+    client's counterparty and CSA are declared. Each of the three refuses BY NAME. A `delete`
+    records nothing at all: removing a row from the desk's cache is not a fact about the world, and
+    the fact that ends a trade is an election, an expiry observation or a status transition -
+    filed through `Context.apply_lifecycle`, never inferred from a deletion.
+
+    With no spine home configured every sentence above is inert and this verb is byte for byte what
+    it was.
     """
     action = request.get('action', 'add')
     if action not in ('add', 'amend', 'delete'):
@@ -635,11 +948,22 @@ def book_deals(request: dict):
                           'deleted': removed['Instrument']['.Deal'].get('Reference')}
         if action == 'amend':
             already_missing = set(load(document).validate()['factors'])
-            deal = deal_at(document, request['deal_path'])['Instrument']['.Deal']
-            deal.update(request['fields'])
-            return deal_verdict(document, [deal.get('Reference')], request['deal_path'],
-                                already_missing)
-        return deal_edit(document, request['deal'], request.get('parent_reference'))
+            node = deal_at(document, request['deal_path'])
+            before = instrument_of(node)
+            node['Instrument']['.Deal'].update(request['fields'])
+            written, outcome = deal_verdict(
+                document, [node['Instrument']['.Deal'].get('Reference')], request['deal_path'],
+                already_missing)
+            if written:
+                outcome = dict(outcome, **spine_amendment(
+                    document, request['deal_path'], before, request.get('actor')))
+            return written, outcome
+        written, outcome = deal_edit(document, request['deal'], request.get('parent_reference'))
+        if written:
+            outcome = dict(outcome, **spine_fill(
+                document, outcome['deal_path'], request.get('quantity'),
+                request.get('execution_reference'), request.get('actor')))
+        return written, outcome
 
     try:
         return live_book().mutate(edit)
@@ -653,7 +977,12 @@ def book_price(request: dict):
     an optional candidate on an in-memory copy - the file never moves. Overrides merge into
     `Calc.Calculation`, so "with Greeks" or "as a CMC" needs no second write surface. Answers
     `{result_id, status}` exactly like `/execute`, and the same content addressing applies: the
-    same what-if twice is one run."""
+    same what-if twice is one run.
+
+    THE LANE IS CURIOSITY AND IT IS NOT A PARAMETER. This verb prices a book with a candidate in
+    it, which is what a what-if IS - nothing here will ever be cited by a fact, so it mints nothing
+    whether or not a spine home is configured. A candidate that becomes a trade is quoted through
+    `/book/structure` and booked through `/book/quote`, and those are the two verbs that record."""
     document, _ = live_book().read()
     try:
         if request.get('deal') is not None:
@@ -663,7 +992,7 @@ def book_price(request: dict):
     document['Calc']['Calculation'].update(request.get('calculation_overrides', {}))
     context = load(document)
     stamp = replay(context)
-    submitted = Job(content_hash(stamp), context, stamp)
+    submitted = Job(content_hash(stamp), context, stamp, spine.CURIOSITY)
     calculation = context.current_cfg.deals['Calculation']
     return {'result_id': submitted.result_id,
             'status': EXECUTOR.submit(submitted, cost(calculation)['class'])}
@@ -1312,7 +1641,10 @@ def submit_bloomberg(scope, routine=False):
     # a fetch is an ACT against the terminal rather than a function of the book, so the submission
     # clock names it: two ticks against an unmoved book are two trips, never one coalesced result
     result_id = content_hash({'book': etag, 'bloomberg': scope, 'at': time.perf_counter()})
-    submitted = Job(result_id, BloombergJob(live, scope, result_id, routine), {})
+    # THE TICK IS TELEMETRY. A repaint of the market is superseded by the next one before anything
+    # could cite it, so it is a reading rather than a record and it mints nothing - the lane is
+    # declared rather than left blank so the absence is a decision somebody can read back
+    submitted = Job(result_id, BloombergJob(live, scope, result_id, routine), {}, spine.TELEMETRY)
     # a tick is a fetch and a bootstrap, seconds of work - light, or the book stops ticking for
     # the length of a whole-book recalc and then drains a burst of stale beats
     return {'result_id': result_id,
@@ -1710,6 +2042,78 @@ def quote_age(stamp):
     return (datetime.datetime.now(datetime.timezone.utc) - given).total_seconds()
 
 
+def check_pins(pending, document, quote_id):
+    """The TWO-DIMENSIONAL firmness check on an approval: the verdict, or None where there is
+    nothing to check.
+
+    A quote pins the book's plan hash and its values hash, and those are two clocks rather than
+    one. The VALUES dimension asks whether the market moved or the pin aged; the PLAN dimension
+    asks whether the book moved under the solve. They are disjoint by MEASUREMENT since the
+    `Market Prices` partition landed - a vol tick moves `values_hash` and leaves `plan_hash`
+    bit-identical - so a ticking market can never be read as a moved book, which is what makes the
+    two remedies different remedies.
+
+    This does NOT supersede `Quote Policy.firm_seconds`, which fired above it and still does. That
+    window is the DESK'S mandate - how long a salesperson may stand behind a price they gave - and
+    it is a promise to a client. These two are the RECORD'S: whether the market and the book the
+    price was computed against are still the ones a booking would land in. Both are checked, both
+    name themselves when they refuse, and a quote has to pass all three.
+
+    Both ages come off `quoted_at` today, because both pins were taken at the same instant - the
+    signature keeps them apart because they are separate clocks, and the day a pillar's own print
+    time is in the record the values clock reads off that instead. That is increment 5's tier
+    policy, not a gap here.
+    """
+    pinned = pending.get('pinned')
+    if not spine.configured() or not pinned:
+        return None
+    context = load(document)
+    age = quote_age(pending.get('quoted_at'))
+    return spine.check_firmness(
+        pinned, {'plan_hash': context.plan_hash(), 'values_hash': context.values_hash()},
+        {'values': age, 'plan': age}, quote_id=quote_id)
+
+
+def solved_coordinates(legs):
+    """What a quote SOLVED, as `leg.field -> number`.
+
+    A quote reports its solve per leg as `{field: value}` - a collar's financing leg solves a
+    `Strike_Price`, a forward extra a `Barrier_Price` - so the record flattens the pair into one
+    name rather than nesting. The name carries both halves because both are needed to read it: the
+    role says which leg was moved and the field says what about it, and a coordinate called
+    `Strike_Price` on a three-leg structure names nothing.
+
+    A leg that solved nothing contributes nothing, so a fully-specified quote files an empty
+    object - which is a quote with no solved coordinate rather than a missing field.
+    """
+    found = {}
+    for leg in legs:
+        for field, value in (leg.get('solved') or {}).items():
+            found['{}.{}'.format(leg.get('role'), field)] = value
+    return found
+
+
+def quote_quantity(pending):
+    """The SIGNED quantity a booked quote lands as: the notional it was struck on, with the DESK's
+    side on it.
+
+    A fill carries a quantity and never a position, and the sign is which way the desk went. The
+    quote is CLIENT paper - its legs carry the client's side - and `/book/quote` books the mirror,
+    so the desk's side is the opposite of the client's: a client who BOUGHT the structure leaves
+    the desk short it, which is a negative quantity. The reading is taken off the first leg that
+    carries a side, because a structure's legs are one trade and its container is what was dealt.
+
+    A quote with no notional and a quote with no sided leg both answer None, which `spine_fill`
+    turns into a named refusal rather than a guess - a quantity nobody stated is not a quantity.
+    """
+    quoted = pending.get('quote') or {}
+    notional = (quoted.get('params') or {}).get('notional')
+    sides = [leg.get('buy_sell') for leg in quoted.get('legs') or [] if leg.get('buy_sell')]
+    if not isinstance(notional, (int, float)) or isinstance(notional, bool) or not sides:
+        return None
+    return float(notional) if sides[0] == 'Sell' else -float(notional)
+
+
 def spot_failure():
     """The remembered live-spot failure while it is still believed, or None.
 
@@ -1852,11 +2256,34 @@ class StructureJob:
     is also stamped: `quoted_at` is written BESIDE the outcome rather than inside it, because when
     a quote was given is a fact about the filing rather than about the price, and the writer is the
     only thing that knows the wall clock the approval's window is measured against.
+
+    A QUOTE PINS TWO HASHES, under a spine home. They are the BOOK's - taken off the document as it
+    was read, before the live spot lands on this job's copy - and that is the load-bearing choice:
+    the approval asks whether the market and the book this trade would LAND against have moved, and
+    what a booking lands against is the book's own market. Which spot the legs were struck on is a
+    different question and is already answered under `spot`. The pair goes into the pending file
+    under `pinned` and into the record as `quote_filed`, which also carries what was solved, the
+    edge the desk took, and - where a salesperson relayed one - what the client asked for, in a
+    sealed body that a destroyed class key erases. With no home configured none of this happens and
+    the pending file is byte for byte the file it always was.
     """
 
-    def __init__(self, document, structure, params, netting_set=None):
+    def __init__(self, document, structure, params, netting_set=None, request=None):
         self.document, self.structure, self.params = document, structure, params
-        self.netting_set = netting_set
+        self.netting_set, self.request = netting_set, request
+
+    def pinned(self):
+        """The book's two hashes and the values vector behind them, or None with no home.
+
+        Read at the TOP of the run, off the document as handed in, because `patch_live_spot` is
+        about to move this copy's spot: pinning after it would pin a market that exists only inside
+        this quote, and the dimension is supposed to answer for the book's.
+        """
+        if not spine.configured():
+            return None
+        context = load(self.document)
+        return {'plan_hash': context.plan_hash(), 'values_hash': context.values_hash(),
+                'values': spine.values_of(context)}
 
     def sheet(self, directory, outcome):
         """The quote sheet beside the quote file, or the note saying why there is none. The import
@@ -1874,6 +2301,8 @@ class StructureJob:
     def run_job(self):
         from . import structures
 
+        # the book's own two hashes, taken before the live spot moves this copy's market
+        pinned = self.pinned()
         # the live spot lands BEFORE anything is priced, so `engine_spot`, every solve bracket and
         # every leg - and the sheet written from this same document - read one market
         spot_source = patch_live_spot(self.document, self.params)
@@ -1887,6 +2316,16 @@ class StructureJob:
         # stamp is the writer's, since only the thing that files a quote knows when it was given
         record = {'quote': {name: value for name, value in outcome.items() if name != 'deal'},
                   'deal': outcome['deal'], 'quoted_at': quote_stamp()}
+        if pinned is not None:
+            # the EVENT first, then the pending file - the same order a booking writes in, and the
+            # same reason: the record is what is true and the file is the desk's copy of it
+            filed = spine.file_quote(
+                outcome['quote_id'], self.structure, pinned['plan_hash'], pinned['values'],
+                solved_coordinates(outcome['legs']), outcome['edge'],
+                request=self.request, book_name=book_name(self.document))
+            record['pinned'] = {'plan_hash': pinned['plan_hash'],
+                                'values_hash': pinned['values_hash'], 'lsn': filed['lsn']}
+            outcome['pinned'] = record['pinned']
         with open(path, 'w', encoding='utf-8', newline='') as handle:
             json.dump(as_json(record), handle, indent=2)
         return None, {'Results': {}, 'Stats': {'Quote': as_json(outcome)}}
@@ -1920,6 +2359,12 @@ def book_structure(request: dict):
     `/results/{result_id}` carries the outcome under `stats.Quote` when it is done, files and all.
     The id names the ACT rather than the numbers - two identical asks are two quotes, never one
     coalesced result, the same reading `/book/bloomberg` takes of a trip to the terminal.
+
+    THE LANE IS STANDING, and it is the one verb here that is. A quote's solve is a run a fact is
+    about to cite, and the fact is the quote itself - so under a spine home this files
+    `quote_filed`, pinning the book's plan and values hashes beside the solved coordinates and the
+    edge. `request` is optional and is what the CLIENT ASKED FOR, relayed: free text, filed inside
+    the sealed body, erasable by destroying the class key and by nothing else.
     """
     from . import structures
 
@@ -1938,7 +2383,8 @@ def book_structure(request: dict):
     # a quote is an ACT, not a function of the book: asking twice is two quotes, both filed
     result_id = content_hash({'book': etag, 'structure': structure, 'params': params,
                               'netting_set': netting_set, 'at': time.perf_counter()})
-    submitted = Job(result_id, StructureJob(document, structure, params, netting_set), {})
+    submitted = Job(result_id, StructureJob(document, structure, params, netting_set,
+                                            request.get('request')), {}, spine.STANDING)
     # a quote is base valuations under the hood - light, so a salesperson's ask jumps every
     # XVA set still waiting rather than draining behind a whole-book recalc
     return {'result_id': result_id,
@@ -1990,6 +2436,17 @@ def book_quote(request: dict):
     ever, exactly as before. A pending file carrying no `quoted_at` - one filed before quotes were
     stamped - is treated as AGED when a window applies and the refusal says which case it is: an
     unknown age is not an age inside the window.
+
+    AND UNDER A SPINE HOME, FIRM IN TWO MORE DIMENSIONS. A quote that pinned the book's plan and
+    values hashes is checked against the hashes standing NOW, on each dimension separately: the
+    market moved or its pin aged (VALUES), the book moved or its pin aged (PLAN). Each refusal
+    names its own dimension and its own remedy, because they are different problems - a ticked
+    market wants a re-quote, a moved book wants the charge re-solved against the portfolio this
+    trade would now join. `firm_seconds` above is not superseded by either: it is the desk's
+    promise to its client, these two are the record's statement about provenance, and an approval
+    passes all three or none. The approval then appends the `fill` for the mirror BEFORE the file
+    is written, under the quote id as its execution reference - a quote is an act and its id names
+    that act. With no home configured every sentence in this paragraph is inert.
     """
     live = live_book()
     quote_id = request.get('quote_id')
@@ -2033,6 +2490,10 @@ def book_quote(request: dict):
 
     quoted = pending.get('quote') or {}
     parent, pinned = quoted.get('netting_set'), quoted.get('valuation_configuration')
+    try:
+        firmness = check_pins(pending, document, quote_id)
+    except spine.SpineRefused as refused:
+        raise HTTPException(422, str(refused))
 
     def approve(book):
         written, outcome = deal_edit(book, structures.mirror(pending['deal']), parent)
@@ -2040,6 +2501,14 @@ def book_quote(request: dict):
         if written and pinned:
             structures.pin_models(book, pending['deal'], pinned)
             outcome = dict(outcome, valuation_configuration=pinned)
+        if written:
+            # the event first, then the file - `spine_fill`'s own law, and the ticket the fill is
+            # made the same fact by is the QUOTE ID: a quote is an act, and its id names that act
+            outcome = dict(outcome, **spine_fill(
+                book, outcome['deal_path'], quote_quantity(pending), quote_id,
+                request.get('actor')))
+            if firmness is not None:
+                outcome = dict(outcome, firmness=firmness)
         return written, outcome
 
     try:

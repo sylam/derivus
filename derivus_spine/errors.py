@@ -99,6 +99,19 @@ class CapabilityDenied(SpineRefusal):
     reading the record's own refusal back."""
 
 
+class ReplayRefused(SpineRefusal):
+    """A replay claim the record will not attest: the re-execution ran at another engine version,
+    or the bytes it produced do not reproduce the ones claimed within the declared tolerance - or
+    no tolerance policy is declared at all, so there is no standard to hold the claim to."""
+
+
+class QuoteNotFirm(SpineRefusal):
+    """A quote whose pins no longer stand: the market moved or aged under it (the VALUES
+    dimension), or the book moved or aged under it (the PLAN dimension). The refusal names which
+    dimension, because the two have different remedies and conflating them is how an aged quote
+    gets approved at a dead market's solve."""
+
+
 class CustodyRefusal(SpineRefusal):
     """Key custody declining - a wrap that does not open under the seat's own private key, an
     enrollment the log does not carry, or an escrow recovery asked of a home that declared no

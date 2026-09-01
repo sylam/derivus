@@ -55,8 +55,8 @@ from derivus_spine.capability import (
     ANY_BOOK, CAPABILITIES_POLICY, UNREADABLE, canonical_document, evaluate, read_subjects,
     state_at, verb_for)
 from derivus_spine.vocabulary import (
-    ADMIN, APPROVE, BOOK, CUSTODY_TYPES, EVENT_TYPES, EVENT_VERB, FACT_TYPES, MARK, RECOVERY,
-    VERBS, WRITER, WRITER_TYPES, BLOB_FIELDS, classify, validate)
+    ADMIN, APPROVE, BOOK, CUSTODY_TYPES, EVENT_TYPES, EVENT_VERB, FACT_TYPES, MARK,
+    PROVENANCE_TYPES, RECOVERY, VERBS, WRITER, WRITER_TYPES, BLOB_FIELDS, classify, validate)
 
 MINT = 'subject-deployment'
 DESK = 'subject-desk-one'
@@ -124,6 +124,11 @@ def attempts(log):
     retention = log.store.put(b'{"tape":"90 days, then the logged reduction"}')
     seat = log.store.put(b'a seat public key, 32 bytes in the real thing')
     wrap = log.store.put(b'{"algorithm":"x25519-hkdf-sha256-aesgcm-v1"}')
+    # increment 3's three, which carry blobs of their own: the job a plan recompiles from, the
+    # result, the values vector, and the tolerance policy a pin was held to
+    job = log.store.put(b'{"Calc":{"Calculation":{"Object":"BaseValuation"}}}')
+    produced = log.store.put(b'{"mtm":1234.5}')
+    tolerance = log.store.put(b'{"tolerances":{"mtm":1e-09}}')
     return (
         ('fill', fill('EXEC-1'), BOOK_ONE),
         ('amendment', {'instrument': HASH_A, 'amended_to': HASH_B}, BOOK_ONE),
@@ -145,6 +150,17 @@ def attempts(log):
         ('checkpoint', {'lsn': 1, 'event_hash': HASH_A, 'signature': 'de' * 32}, None),
         ('seat_enrolled', {'subject': DESK, 'algorithm': 'x25519', 'public_key': seat}, None),
         ('key_wrapped', {'class': 'firm', 'subject': DESK, 'wrap': wrap}, None),
+        # book: an attestation and a quote are things a desk puts on the record
+        ('run_completed', {'plan_hash': HASH_A, 'values_hash': values, 'engine_version': '0.1.0',
+                           'seed': 1, 'lane': 'standing', 'job': job, 'result': produced},
+         BOOK_ONE),
+        ('quote_filed', {'quote_id': 'Q-1', 'structure': 'ZeroCostCollar', 'plan_hash': HASH_A,
+                         'values_hash': values, 'solved': {'floor': 17.25}, 'edge': 4200.0},
+         BOOK_ONE),
+        # approve: a tuple the hub did not witness acquiring standing is a second pair of eyes
+        ('result_pinned', {'plan_hash': HASH_A, 'values_hash': values, 'engine_version': '0.1.0',
+                           'seed': None, 'job': job, 'result': produced,
+                           'tolerance_policy': tolerance}, BOOK_ONE),
     )
 
 
@@ -686,7 +702,8 @@ def test_the_verb_map_is_closed_over_the_closed_vocabulary():
     """Every type has a verb and every verb-map entry has a type. A type without a verb would be a
     write nobody could be scoped for and nobody could be refused for - a hole in enforcement shaped
     exactly like the thing enforcement is for."""
-    assert set(EVENT_TYPES) == set(FACT_TYPES) | set(CUSTODY_TYPES) | set(WRITER_TYPES)
+    assert set(EVENT_TYPES) == (set(FACT_TYPES) | set(CUSTODY_TYPES) | set(PROVENANCE_TYPES)
+                                | set(WRITER_TYPES))
     assert set(EVENT_VERB) == set(EVENT_TYPES)
     assert set(EVENT_VERB.values()) <= set(VERBS) | {RECOVERY, WRITER}
     assert EVENT_VERB['break_glass_used'] == RECOVERY

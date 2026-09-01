@@ -186,6 +186,37 @@ class CustomJsonEncoder(json.JSONEncoder):
         return return_value
 
 
+def as_json(obj):
+    """Plain JSON, through the one encoder the codebase already has for what JSON has no form for -
+    a Curve, a Timestamp, a results table.
+
+    Here rather than in `service.py` because two callers need it and one of them must not import
+    `fastapi`: the HTTP surface serialises every answer through this, and `derivus.spine` addresses
+    a run's RESULT through it - the same bytes on both sides, or a replay claim and the answer it is
+    compared against would be two spellings of one document.
+    """
+    return json.loads(json.dumps(obj, cls=CustomJsonEncoder))
+
+
+def tables_of(results):
+    """Every table in a `Results` tree, flat, under the path that names it.
+
+    `cashflows` and `scenarios` are dicts of tables rather than tables, so they arrive as
+    `cashflows/ZAR` and `scenarios/FxRate.ZAR`: a client fetches one table, and a tree has no page.
+    The flat form is also what a per-RESULT-CLASS tolerance is declared against, which is the other
+    reason this and `as_json` live together down here - the shape a client pages and the shape a
+    replay is compared in are one shape.
+    """
+    tables = {}
+    for name, value in results.items():
+        if isinstance(value, dict) and '.DataFrame' not in value:
+            tables.update({'{}/{}'.format(name, path): table
+                           for path, table in tables_of(value).items()})
+        else:
+            tables[name] = value
+    return tables
+
+
 def job_children(document):
     """The root `Children` list of a job document in wire form, or None where it is not a job."""
     try:

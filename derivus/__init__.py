@@ -669,6 +669,75 @@ class Context:
         """
         return content_hash(self.market_patch())
 
+    # --------------------------------------------------------------------------------------------
+    # The book-of-record verbs. Five delegators and no sixth, each one line of its own logic.
+    #
+    # The brief's build order puts "booking verbs on Context" and the house's first law says no
+    # module under `derivus/` learns about users, workflow or storage. Both hold because everything
+    # below hands PLAIN DATA to `derivus_spine`, which is reached lazily inside `derivus.spine` -
+    # the `service.py` precedent for an extra - and refuses by name where the extra is absent or
+    # `DV_SPINE_HOME` names no home. With no home configured these verbs are the only thing on this
+    # class that mentions a record at all, and nothing else on the engine's path can tell.
+
+    def book(self, deal, quantity, counterparty, netting_set, execution_reference,
+             actor=None, book=None, effective_time=None):
+        """Book a fill: the canonical instrument registered, the SIGNED quantity recorded.
+
+        The instrument id is the content hash of the deal's canonical JSON, so booking the same
+        strike twice finds the same instrument and files two events against it. `execution_reference`
+        has no default anywhere on this path - it is what makes a retry the same fact by
+        construction and two identical clips two facts by construction.
+        """
+        from .spine import book as record
+
+        return record(deal, quantity, counterparty, netting_set, execution_reference,
+                      actor_name=actor, book_name=book, effective_time=effective_time)
+
+    def amend(self, deal, amended_to, actor=None, book=None, effective_time=None):
+        """Record that these terms became those terms - a NEW instrument hash linked to the old one.
+        Economics are never edited; an amendment is a second row, never a changed one."""
+        from .spine import amend as record
+
+        return record(deal, amended_to, actor_name=actor, book_name=book,
+                      effective_time=effective_time)
+
+    def apply_lifecycle(self, event_type, body, actor=None, book=None, effective_time=None):
+        """File an election, a fixing observation or a determination - and nothing else.
+
+        A knock, an expiry or an accrual is a CONSEQUENCE of terms plus one of those three, so it is
+        a projection and this verb refuses it with the closure stated rather than storing a second
+        source of truth about whether the barrier fired.
+        """
+        from .spine import apply_lifecycle as record
+
+        return record(event_type, body, actor_name=actor, book_name=book,
+                      effective_time=effective_time)
+
+    def declare_market(self, name, actor=None, effective_time=None):
+        """Point a market NAME at the values vector THIS context is carrying.
+
+        Officialness is a property of the name rather than of the data: every values vector lives
+        identically in the store, and `official` moves onto one only by declaration from a
+        `mark`-scoped actor - which the writer enforces, so this verb does not check it twice.
+        """
+        from .spine import declare_market as record, values_of
+
+        return record(name, values_of(self), actor_name=actor, effective_time=effective_time)
+
+    def pin_result(self, job, values, result, claim, actor=None, book=None, effective_time=None):
+        """Promote a replay claim this box did not witness: re-execute it, or find it already
+        attested, and only then record it.
+
+        The executor is built from THIS context's own class, so a subclass that prices differently
+        pins through the pricing it actually does. A version mismatch refuses by name - a replay
+        claim is a claim AT the recorded version - and bytes that will not reproduce within the
+        declared tolerance policy are refused rather than attested.
+        """
+        from .spine import executor, pin_result as record
+
+        return record(claim, job, values, result, actor_name=actor, book_name=book,
+                      effective_time=effective_time, execute=executor(type(self)))
+
     def run_job(self, overrides=None, runparallel=False):
         # check what calc we should run
         if self.current_cfg.deals['Calculation']['Object'] == 'CreditMonteCarlo':
