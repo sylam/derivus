@@ -70,6 +70,13 @@ MARKET_QUOTE_VALUES = ('Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask', 'Times
 #: them. A fifth value key has to be classified here rather than becoming null-clearable.
 MARKET_QUOTE_REQUIRED = ('Quoted_Market_Value',)
 
+#: WHICH TABLE ON A BLOCK CARRIES THE VALUE PLANE, derived from the families' own declarations by
+#: `quote_containers` at the bottom of this file - a quote row is a row that DECLARES the four
+#: value keys, whatever the table is called. Empty until then, and read only at call time.
+#: `partition_market_price` is the one reader, which is what keeps the tick guard, `plan_hash`,
+#: `market_patch`/`patch_market` and the artifact slot on one declaration.
+MARKET_QUOTE_CONTAINERS = ()
+
 #: How `mapping` renders each type for Handsontable. Rendering only: derived on the way out and
 #: never declared, so a front end that is not Handsontable ignores all of it.
 WIDGET_FORMAT = {
@@ -448,22 +455,67 @@ def apply_values(type_name, structural, values):
     return block
 
 
+def quote_containers(module):
+    """The instrument keys whose ROWS travel the value plane - `MARKET_QUOTE_CONTAINERS`, read off
+    the market-price families' own declarations.
+
+    A field is a quote container when its row declares EVERY `MARKET_QUOTE_VALUES` key: the mid,
+    the two-way sides and the stamp. That is the whole rule, and it is a DECLARATION rather than a
+    list of table names - a family whose row carries only a mid (an energy option) or quotes under
+    another name entirely (a swaption's `Market_Volatility`) declares no such row and stays wholly
+    plan-side, and a family that grows one joins the plane by declaring it.
+
+    Tables and containers alike, since the two `Points` families declare the same row two ways -
+    one as a `Row` of columns, the other as a container's `sub_fields`.
+    """
+    keys = set(MARKET_QUOTE_VALUES)
+    return tuple(sorted({
+        f.key for cls in vars(module).values()
+        if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)
+        and 'market_factor_type' in cls.__dict__
+        for f in cls.__dict__['fields']
+        if keys <= {c.key for c in (f.row.fields if f.row is not None else f.sub_fields or [])}}))
+
+
+def quote_rows(instrument):
+    """`(container key, rows)` for the one quote table on this block that carries values, or
+    `(None, None)` where the family quotes somewhere the value plane does not reach.
+
+    The block names its own container - no family declares two - so this is a lookup rather than a
+    choice, and it is what lets every reader of the split take a block and nothing else.
+
+    A LIST or nothing: a table's declared default is the string `'null'` (what a blank panel
+    renders), and a block completed from its declarations rather than authored carries that string
+    where a document carries rows. It has no quotes in it, which is the answer here.
+    """
+    for key in MARKET_QUOTE_CONTAINERS:
+        rows = instrument.get(key)
+        if rows and isinstance(rows, list):
+            return key, rows
+    return None, None
+
+
 def partition_market_price(block):
     """Split one `Market Prices` block into `(structural, values)`.
 
     A block is the `{"instrument": {...}}` shape both the wire and `cfg.params['Market Prices']`
-    carry. STRUCTURAL is everything but `MARKET_QUOTE_VALUES` on each `Points` row - the pillars,
-    the expiries, the conventions, the `Deal` a quote is a price for, the solver knobs and the
-    lifecycle switches - because a moved node is a re-authoring and a plan of its own. VALUES is
-    one dict per `Points` row, carrying exactly the value keys that row HAS a number for: row ORDER
-    is structural and is what aligns the two halves, so nothing is padded.
+    carry. STRUCTURAL is everything but `MARKET_QUOTE_VALUES` on each quote row - the pillars, the
+    expiries, the strikes, the conventions, the `Deal` a quote is a price for, the weights, the
+    solver knobs and the lifecycle switches - because a moved node is a re-authoring and a plan of
+    its own. VALUES is one dict per quote row, carrying exactly the value keys that row HAS a
+    number for: row ORDER is structural and is what aligns the two halves, so nothing is padded.
+
+    WHICH TABLE IS THE QUOTE TABLE is `MARKET_QUOTE_CONTAINERS`, derived from the declarations by
+    `quote_containers`: a curve strip and an FX smile quote in `Points`, the Heston-Nandi families
+    in `European_Options`, and the rule is the row's own declared columns rather than the table's
+    name.
 
     A `null` in the document is an ABSENCE rather than a value that happens to be nothing, matching
     how `quote_delta` reads a null in a patch. So the round trip is an identity on every block
     whose value keys hold numbers, and a canonicalisation on one spelling an absence as a null.
 
-    A family whose quotes do not live in `Points` rows has an EMPTY values half and stays wholly
-    plan-side: a tick on such a block is a new plan.
+    A family whose rows declare no value keys has an EMPTY values half and stays wholly plan-side:
+    a tick on such a block is a new plan.
 
     Value keys are DROPPED rather than shadowed to `None` - a deliberate divergence from
     `partition_factor`, because a pillar that starts or stops being quoted two-sided is the same
@@ -472,15 +524,15 @@ def partition_market_price(block):
     `apply_market_values` is the exact inverse: `apply_market_values(*partition_market_price(b))`
     is `b` again, with the value keys landing last in each row rather than where they were.
     """
-    points = block['instrument'].get('Points')
+    container, points = quote_rows(block['instrument'])
     if not points:
         return dict(block), []
     values = [{key: point[key] for key in MARKET_QUOTE_VALUES if point.get(key) is not None}
               for point in points]
-    structural = dict(block, instrument=dict(block['instrument'], Points=[
+    structural = dict(block, instrument=dict(block['instrument'], **{container: [
         {key: content for key, content in point.items() if key not in MARKET_QUOTE_VALUES}
-        for point in points]))
-    # a block no row of which carries a value key contributes nothing, exactly as one with no Points
+        for point in points]}))
+    # a block no row of which carries a value key contributes nothing, exactly as one with no table
     return structural, values if any(values) else []
 
 
@@ -495,13 +547,13 @@ def apply_market_values(structural, values):
     if not values:
         return dict(structural)
     instrument = structural['instrument']
-    points = instrument['Points']
-    if len(values) != len(points):
-        raise ValueError('a values half of {} row(s) against {} Points - row ORDER is what pairs '
-                         'the two halves, so the caller must align them'.format(
-                             len(values), len(points)))
-    return dict(structural, instrument=dict(instrument, Points=[
-        dict(point, **row) for point, row in zip(points, values)]))
+    container, points = quote_rows(instrument)
+    if len(values) != len(points or []):
+        raise ValueError('a values half of {} row(s) against {} quote row(s) - row ORDER is what '
+                         'pairs the two halves, so the caller must align them'.format(
+                             len(values), len(points or [])))
+    return dict(structural, instrument=dict(instrument, **{container: [
+        dict(point, **row) for point, row in zip(points, values)]}))
 
 
 # Shared field blocks - the groups a class lists rather than inherits, so metadata spanning
@@ -573,7 +625,28 @@ OPTION_QUOTE = [F('Expiry_Date', 'Date'), F('Strike', 'Float', description='0 re
                 F('Option_Type', 'Text', values=['Call', 'Put']), F('Units', 'Float'),
                 F('Weight', 'Float', description='Relative weight in the objective'),
                 F('Quoted_Market_Value', 'Float',
-                  description='The quote, read per Quote_Type; 0 reads the vol surface')]
+                  description='The quote, read per Quote_Type; 0 reads the vol surface. The one '
+                              'value key a patch cannot clear (MARKET_QUOTE_REQUIRED): a mid is '
+                              'moved, never removed')]
+
+#: The EVIDENCE beside a mid: the two-way the print was dealt on and the print's own clock. A row
+#: carrying these declares all four `MARKET_QUOTE_VALUES`, which is what `quote_containers` reads
+#: to put that table on the value plane - so a family adding this block admits the value-only
+#: re-tick, and one quoting the mid alone stays plan-side.
+#:
+#: Read by NOTHING in any fit: the mid is what every objective is posed against. They are declared
+#: so a machine-fetched quote has somewhere to put what it saw.
+QUOTE_TWO_WAY = [
+    F('Quoted_Bid', 'Float',
+      description='The bid side of this quote, in the same unit as the mid. QUOTE-LAYER data: the '
+                  'fit reads Quoted_Market_Value alone. Optional, because a contract the source '
+                  'quotes no two-way for stays mid-only rather than borrowing a spread'),
+    F('Quoted_Ask', 'Float',
+      description='The offer side, the pair of Quoted_Bid, and optional on the same terms'),
+    F('Timestamp', 'Date', default='',
+      description='When this quote was seen - the contract\'s own last print, which is what says a '
+                  'listed strike is still a market. Stored and reported, never read by the fit: '
+                  'what counts as too old is the consumer\'s policy')]
 
 
 # The declaring modules import `F` from here, so the edge runs one way and the assembly below has
@@ -582,6 +655,11 @@ from . import bootstrappers, calculation, instruments, riskfactors, stochasticpr
 # structures is last: it names Instrument types in its legs, so the store it publishes is only
 # meaningful beside one already emitted
 from . import structures  # noqa: E402
+
+#: Filled from the declarations now that the families are imported - see `quote_containers`. The
+#: name is bound at module scope rather than passed around, because `partition_market_price` takes
+#: a block and nothing else and every reader of the split goes through it.
+MARKET_QUOTE_CONTAINERS = quote_containers(bootstrappers)
 
 _types, _sections, _containers = emit_instrument(instruments)
 _factor_types = emit_factor(riskfactors)

@@ -37,9 +37,10 @@ transcribes what the terminal quoted, scales it into the family's `Percent` colu
 distribution in `Quote_Source` and on the returned ladder; the referenced `InterestYieldVol`
 surface must declare the matching `Distribution_Type` for the fit to read it.
 
-A RE-TICK IS A RE-AUTHORING, structurally. `schema.partition_market_price` gives every family whose
-quotes do not live in `Points` rows an EMPTY values half, and this family quotes in
-`Instrument_Definitions`. So a moved vol reads as 'structure differs' to
+A RE-TICK IS A RE-AUTHORING, structurally. `schema.partition_market_price` gives a values half only
+to a table whose ROW DECLARES the value keys (`schema.MARKET_QUOTE_CONTAINERS`), and this family
+quotes in `Instrument_Definitions`, whose row declares a `Market_Volatility` and no
+`Quoted_Market_Value` at all. So a moved vol reads as 'structure differs' to
 `config.update_market_quote` and no tick reaches it: `reauthor` drops the block before
 re-installing it.
 
@@ -74,9 +75,13 @@ INSTRUMENT_COLUMNS = ('Start', 'Tenor', 'Floating_Frequency', 'Fixed_Frequency',
 
 #: The value-plane keys a row carries beside its vol. NOT DECLARED by the family's row - the eight
 #: columns above are all of it - so they ride as undeclared keys `create_market_swaps` reads past,
-#: carried anyway because the two-way and the print's own clock are the evidence. As
-#: `equity_chain.QUOTE_VALUE_KEYS`, and with the same consequence: this family's quote column is
-#: `Market_Volatility`, so `schema.MARKET_QUOTE_VALUES` cannot see the mid either.
+#: carried anyway because the two-way and the print's own clock are the evidence.
+#:
+#: THE CONSEQUENCE IS THIS FAMILY'S ALONE now. `schema.quote_containers` puts a table on the value
+#: plane when its row declares all four `schema.MARKET_QUOTE_VALUES`, and this row declares none of
+#: them - its quote column is `Market_Volatility`, so the plane cannot see the mid either.
+#: `equity_chain.QUOTE_VALUE_KEYS` names the same three keys and its family DOES declare them, which
+#: is why a chain re-ticks and a swaption ladder is re-authored.
 QUOTE_VALUE_KEYS = ('Quoted_Bid', 'Quoted_Ask', 'Timestamp')
 
 #: The distributions a seeded grid may declare its quotes in. Bloomberg spells the two families

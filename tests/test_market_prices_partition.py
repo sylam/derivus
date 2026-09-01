@@ -2,17 +2,24 @@
 
 `Market Prices` used to be wholly plan-side, so a vol tick moved `plan_hash` and left `values_hash`
 alone - a recompile coordinate for a number that changed nothing about the program. The split is
-now `schema.MARKET_QUOTE_VALUES`: per `Points` row, the mid, its two-way sides and its `Timestamp`
-are values, and every other key of the row and everything else on the block is structure. That is
-one declaration, stated once and read by four call sites, and these gates are what holds them to it.
+now `schema.MARKET_QUOTE_VALUES`: per quote row, the mid, its two-way sides and its `Timestamp` are
+values, and every other key of the row and everything else on the block is structure. That is one
+declaration, stated once and read by four call sites, and these gates are what holds them to it.
 
-The rule is applied UNIFORMLY, which is the part worth reading twice. Five of the seven declared
-families do not quote in `Points` at all - `HullWhite2FactorModelPrices` in `Instrument_Definitions`,
-the two Heston-Nandi families and `CSForwardPriceModelPrices` in their own option tables,
-`GBMAssetPriceTSModelPrices` with no quote table whatever - so their values half is EMPTY and a tick
-on one of them is still a new plan. That is not an exemption granted per family; it is what the one
-rule says about a block with no `Points`, and it is asserted here by name so a family that later
-grows a `Points` table cannot arrive unpartitioned.
+WHICH TABLE IS THE QUOTE TABLE is the second declaration, and it is DERIVED rather than listed:
+`schema.quote_containers` reads the families' own rows and calls a table a quote table when its row
+declares all four value keys, which `schema.MARKET_QUOTE_CONTAINERS` holds. So an FX smile and a
+curve strip quote in `Points`, the two Heston-Nandi families in `European_Options`, and a family
+joins the value plane by DECLARING the columns rather than by being named somewhere.
+
+The rule is applied UNIFORMLY, which is the part worth reading twice. Three of the seven declared
+families still have an EMPTY values half - `HullWhite2FactorModelPrices` quotes a
+`Market_Volatility` in `Instrument_Definitions`, `CSForwardPriceModelPrices` a mid and no two-way in
+`Energy_Futures_Options`, `GBMAssetPriceTSModelPrices` nothing at all - so a tick on one of them is
+still a new plan. That is not an exemption granted per family; it is what the one rule says about a
+block whose rows declare no value keys, and it is asserted here BY NAME so a family that later
+declares them cannot arrive unpartitioned - and so the two that just did cannot quietly un-declare
+them.
 
 The projection DROPS the four keys where `partition_factor` shadows a value to `None`. The
 divergence is deliberate and it is the tick guard's own ruling read back: a pillar that starts or
@@ -66,9 +73,10 @@ FAMILIES = {cls.__dict__['market_factor_type']: cls
             if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)
             and 'market_factor_type' in cls.__dict__}
 
-#: Where each family's quotes actually live, read off the declarations and confirmed against every
-#: fixture below. TWO families quote in `Points`; the other five have an empty values half and stay
-#: wholly plan-side, which is the one rule and not five exceptions to it.
+#: Where each family's quotes actually live, spelled BY NAME and confirmed against every fixture
+#: below. FOUR of these tables carry the value plane - the two `Points` families and the two
+#: Heston-Nandi option tables - and the other three have an empty values half and stay wholly
+#: plan-side, which is the one rule and not three exceptions to it.
 QUOTE_CONTAINER = {'CSForwardPriceModelPrices': 'Energy_Futures_Options',
                    'FXVolPrices': 'Points',
                    'GBMAssetPriceTSModelPrices': None,
@@ -76,6 +84,11 @@ QUOTE_CONTAINER = {'CSForwardPriceModelPrices': 'Energy_Futures_Options',
                    'HestonNandiModelPrices': 'European_Options',
                    'HullWhite2FactorModelPrices': 'Instrument_Definitions',
                    'InterestRatePrices': 'Points'}
+
+#: Which of those tables the value plane reaches, spelled here rather than read off
+#: `schema.MARKET_QUOTE_CONTAINERS` - the derivation is what these gates are holding, so a gate
+#: that asked it which families it covers would be asking the answer to grade itself.
+VALUE_PLANE = ('European_Options', 'Points')
 
 _BLOCKS = {}
 
@@ -152,22 +165,28 @@ def test_every_family_partitions_by_the_one_rule_and_round_trips_exactly(family)
     canonical encoder - the same encoder `content_hash` takes every plan and every values hash
     through, so a round trip that survives it is one no hash can tell from the original.
 
-    The second half is the uniformity claim. A family quoting in `Points` has a values half with one
-    entry per row; a family quoting anywhere else has an EMPTY one and is asserted as that BY NAME,
-    because "this family has no values half" is a statement about the rule rather than a gap in it.
-    Five of the seven are in that position today and the enumeration is `emit_market_prices`' own,
-    so a family that grows a `Points` table has to come through this gate to do it.
+    The second half is the uniformity claim, and it is stated in each family's own table. A family
+    whose quote row DECLARES the four value keys has a values half with one entry per row - the two
+    `Points` families and, since the option row grew its two-way, the two Heston-Nandi ladders. A
+    family whose row does not declare them has an EMPTY one and is asserted as that BY NAME, because
+    "this family has no values half" is a statement about the rule rather than a gap in it. Three of
+    the seven are in that position and the enumeration is `emit_market_prices`' own, so neither a
+    family that grows a declared quote table nor one that drops one can pass without moving a name
+    here.
     """
     assert set(FAMILIES) == set(QUOTE_CONTAINER), (
         'a family arrived or left without this enumeration moving: {}'.format(
             set(FAMILIES) ^ set(QUOTE_CONTAINER)))
+    container = QUOTE_CONTAINER[family]
     block = family_blocks()[family]
     structural, values = schema.partition_market_price(block)
 
     assert canonical(schema.apply_market_values(structural, values)) == canonical(block), (
         '{}: the partition is not invertible'.format(family))
-    if QUOTE_CONTAINER[family] == 'Points':
-        assert len(values) == len(block['instrument']['Points']), (
+    if container in VALUE_PLANE:
+        assert schema.quote_rows(block['instrument'])[0] == container, (
+            '{}: the partition found its quotes somewhere other than {}'.format(family, container))
+        assert len(values) == len(block['instrument'][container]), (
             '{}: the values half does not line up row for row'.format(family))
         assert all('Quoted_Market_Value' in row for row in values), (
             '{}: a quoted row reached the values half without its mid'.format(family))
@@ -176,15 +195,42 @@ def test_every_family_partitions_by_the_one_rule_and_round_trips_exactly(family)
         # a PARTITION, not two overlapping projections: every key of every row is on exactly one
         # side of the line, which is what makes the round trip above an identity rather than a merge
         assert all(set(row).isdisjoint(kept) and set(row) | set(kept) == set(point)
-                   for row, kept, point in zip(values, structural['instrument']['Points'],
-                                               block['instrument']['Points'])), (
+                   for row, kept, point in zip(values, structural['instrument'][container],
+                                               block['instrument'][container])), (
             '{}: the two halves do not partition the row'.format(family))
     else:
         assert values == [], (
-            '{}: quotes live in {} rather than in Points, so this family has no values half - and '
-            'has one'.format(family, QUOTE_CONTAINER[family]))
+            '{}: quotes live in {}, whose row declares no value keys, so this family has no values '
+            'half - and has one'.format(family, container))
+        assert schema.quote_rows(block['instrument']) == (None, None), (
+            '{}: {} reached the value plane without declaring the value columns'.format(
+                family, container))
         assert canonical(structural) == canonical(block), (
             '{}: a wholly plan-side family lost something to the projection'.format(family))
+
+
+def test_the_fx_authored_ladders_name_no_funding_curve():
+    """THE BIT-IDENTITY BAR ON THE FX ROUTE, as the one thing that could move it.
+
+    The Heston-Nandi families grew a `Funding_Rate` reference so an equity's forward can grow on its
+    own repo curve while the premium discounts on another. An FX pair needs none: `fx_surface_block`
+    already names the pair's OWN two curves - `Discount_Rate` is the domestic and `Yield` the
+    foreign, which is exactly what `utils.calc_fx_forward` builds the forward from - so the emitter
+    writes no funding curve and the fit's basis term is not evaluated at all. Every number an FX
+    ladder has ever produced is the same bits.
+
+    Asserted on the blocks the engine EMITS off a real built surface, both spellings, so an emitter
+    that started declaring one would have to come through here.
+    """
+    for family in ('HestonNandiModelPrices', 'HestonNandiComponentModelPrices'):
+        instrument = family_blocks()[family]['instrument']
+        assert 'Funding_Rate' not in instrument and 'Funding_Rate_Type' not in instrument, (
+            '{} declares a funding curve, so its forward is no longer the one it always built'
+            .format(family))
+        assert instrument['Discount_Rate'] and instrument['Yield'], (
+            '{}: the pair\'s two curves are what the forward is built from'.format(family))
+    assert 'Funding_Rate' in {f.key for f in HestonNandiModelParameters.fields}, (
+        'the reference this gate says the FX route does not use is not declared at all')
 
 
 def test_a_row_that_starts_being_quoted_two_sided_is_the_same_node_of_the_same_plan():
@@ -239,9 +285,10 @@ def test_a_short_values_half_refuses_rather_than_dropping_the_rows_it_cannot_pai
 # ---------------------------------------------------------------------------------------------
 
 def hashed():
-    """One job carrying both sides of the line: the desk's USDZAR smile, which quotes in `Points`,
-    and the `HestonNandiModelPrices` ladder the engine authors off the surface it builds, which
-    quotes in a table of its own and is therefore wholly plan-side.
+    """One job carrying two families and two quote tables: the desk's USDZAR smile, which quotes in
+    `Points`, and the `HestonNandiModelPrices` ladder the engine authors off the surface it builds,
+    which quotes in `European_Options`. Both rows declare the four value keys, so BOTH tables are on
+    the value plane - the same rule reaching two differently shaped blocks in one hash.
 
     The world states its own preconditions, because the gates below it degrade to VACUOUS rather
     than to red when it arrives empty: a row-count refusal over zero `Points` compares 0 against 0
@@ -256,7 +303,7 @@ def hashed():
         smile[FX_BLOCK]['instrument']['Points']) > 1, (
         'the loaded smile is not the smile that was posted - this world is contaminated')
     assert len(prices[HN_BLOCK]['instrument']['European_Options']) > 1, (
-        'the plan-side ladder arrived with no quotes - there is nothing plan-side to move')
+        'the option ladder arrived with no quotes - there is nothing to move either way')
     return context, prices
 
 
@@ -273,33 +320,51 @@ def test_a_quote_tick_moves_the_values_hash_and_leaves_the_plan_bit_identical():
     firmness read them as different questions. A `Quoted_Bid` appearing on a row that had none is on
     the same side, per the guard's own ruling. The plan is bit-identical across all of it, which is
     the assertion that used to run the other way.
+
+    DRIVEN OVER BOTH QUOTE TABLES, because the split is a rule about a declared row and not about a
+    key called `Points`: the same three edits on the Heston-Nandi ladder's `European_Options` row
+    land the same way, and that row's mid is the one that used to be plan-side.
     """
-    for field, value in (('Quoted_Market_Value', 0.16), ('Quoted_Bid', 0.15),
-                         ('Timestamp', pd.Timestamp('2024-06-28 17:45'))):
-        context, prices = hashed()
-        before = (context.plan_hash(), context.values_hash())
-        row = prices[FX_BLOCK]['instrument']['Points'][0]
-        assert (field in row) == (field != 'Quoted_Bid'), (
-            'this fixture does not test what the case name says it does: {}'.format(field))
+    # what each fixture's first row ALREADY carries, so a case is known to be a MOVE or an ARRIVAL
+    # rather than whichever it happened to be: the smile is posted with a stamp and no two-way, the
+    # surface-authored ladder with the mid alone
+    carried = {FX_BLOCK: {'Quoted_Market_Value', 'Timestamp'},
+               HN_BLOCK: {'Quoted_Market_Value'}}
+    for block, container in ((FX_BLOCK, 'Points'), (HN_BLOCK, 'European_Options')):
+        for field, value in (('Quoted_Market_Value', 0.16), ('Quoted_Bid', 0.15),
+                             ('Timestamp', pd.Timestamp('2024-06-28 17:45'))):
+            context, prices = hashed()
+            before = (context.plan_hash(), context.values_hash())
+            row = prices[block]['instrument'][container][0]
+            assert (field in row) == (field in carried[block]), (
+                'this fixture does not test what the case name says it does: {} {}'.format(
+                    block, field))
 
-        def edit():
-            row[field] = value
+            def edit():
+                row[field] = value
 
-        assert moves(context, before, edit) == (False, True), (
-            '{} is not on the values plane alone'.format(field))
+            assert moves(context, before, edit) == (False, True), (
+                '{}: {} is not on the values plane alone'.format(block, field))
 
 
-@pytest.mark.parametrize('case,values_too', [('pillar', False), ('expiry', False), ('use', False),
-                                             ('weight', False), ('plan-side quote', False),
-                                             ('new row', True)])
-def test_re_authoring_a_quote_set_moves_the_plan(case, values_too):
+@pytest.mark.parametrize('case,plan_too,values_too',
+                         [('pillar', True, False), ('expiry', True, False), ('use', True, False),
+                          ('weight', True, False), ('strike', True, False),
+                          ('option quote', False, True), ('new row', True, True)])
+def test_re_authoring_a_quote_set_moves_the_plan(case, plan_too, values_too):
     """The other direction, and it is the same rule read from the other end.
 
-    A moved pillar or expiry, a quote held out with `Use`, a row appended: each re-authors the
-    instrument set the solve is posed over, so each is a plan of its own. `Weight` and the quote
-    NUMBER of a family that does not quote in `Points` are the two worth having in one gate - both
-    are numbers, and neither is a value, because the line is drawn at the `Points` row rather than
+    A moved pillar or expiry, a moved STRIKE on the option ladder, a quote held out with `Use`, a
+    row appended: each re-authors the instrument set the solve is posed over, so each is a plan of
+    its own. `Weight` is the one worth having in one gate beside them - it is a number, and it is
+    not a value, because the line is drawn at the DECLARED value columns of a quote row rather than
     at whether a thing looks like a price.
+
+    `option quote` is the case that FLIPPED. The Heston-Nandi ladder's mid was plan-side while its
+    row declared no two-way, so a re-quoted chain was a recompile; the row declares the four value
+    keys now, so a moved premium is a value on `European_Options` exactly as it is on `Points` -
+    while the strike beside it stays a re-authoring, which is what makes this a line and not an
+    exemption.
 
     Appending a row is the one case that moves BOTH, and honestly so: a new quote is a new node AND
     a number nobody had. Pinned as both rather than waved past, because a gate demanding the values
@@ -313,10 +378,11 @@ def test_re_authoring_a_quote_set_moves_the_plan(case, values_too):
              'expiry': lambda: points[0].__setitem__('Expiry', 0.3),
              'use': lambda: points[0].__setitem__('Use', 'No'),
              'weight': lambda: ladder[0].__setitem__('Weight', 0.5),
+             'strike': lambda: ladder[0].__setitem__('Strike', 19.0),
              'new row': lambda: points.append(dict(points[0])),
-             'plan-side quote': lambda: ladder[0].__setitem__('Quoted_Market_Value', 0.19)}
+             'option quote': lambda: ladder[0].__setitem__('Quoted_Market_Value', 0.19)}
 
-    assert moves(context, before, edits[case]) == (True, values_too), (
+    assert moves(context, before, edits[case]) == (plan_too, values_too), (
         '{} did not land where the plan/values line puts it'.format(case))
 
 

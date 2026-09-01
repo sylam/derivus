@@ -44,9 +44,12 @@ blocks differing only in the header their families declare.
 
 THE FORWARD IS DECLARED, NOT DISCOVERED. The strikes hang off the forward and so does every
 weight, so an emitter forward that disagrees with the pricer's fits the calibration at coordinates
-the pricer never visits. `EquityForward` names the two references the fit resolves AND the numbers
-the emitter placed its strikes with, and both travel into the block. The chain's own parity-implied
-dividend yield is measured beside the declared one and reported rather than averaged in.
+the pricer never visits. `EquityForward` names the references the fit resolves AND the numbers the
+emitter placed its strikes with, and both travel into the block: the curve that GROWS the forward
+(an equity's own repo curve, which `utils.calc_eq_forward` integrates) and the curve the PREMIUM
+discounts on are named separately, so an index carrying a repo spread states both. The chain's own
+parity-implied dividend yield is measured beside the declared one and reported rather than averaged
+in.
 """
 import collections.abc
 import datetime
@@ -84,11 +87,12 @@ CONTRACT_FIELDS = ('OPT_STRIKE_PX', 'OPT_EXPIRE_DT', 'OPT_PUT_CALL', 'OPT_EXER_T
 #: outage partial. A full SPX chain is thousands of names.
 BATCH = 50
 
-#: The four reference fields the Heston-Nandi families declare, and the factor TYPE this emitter
+#: The five reference fields the Heston-Nandi families declare, and the factor TYPE this emitter
 #: names each with for an equity underlying. Spelled here because the package may not import the
 #: engine; held against `HestonNandiModelParameters.factor_types` by a gate.
 HN_REFERENCE_TYPES = {'Underlying': 'EquityPrice', 'Volatility': 'EquityPriceVol',
-                      'Discount_Rate': 'InterestRate', 'Yield': 'DividendRate'}
+                      'Discount_Rate': 'InterestRate', 'Yield': 'DividendRate',
+                      'Funding_Rate': 'InterestRate'}
 
 #: The two spellings of the target family, emitted off ONE selection: the component family for the
 #: multi-year ATM term structure its L curve holds, the plain one for the five-parameter fit.
@@ -107,14 +111,14 @@ QUADRATURE_PANELS = 64
 #: this family.
 COMPONENT_HEADER = {'Rho': 0.99, 'Quote_Sensitivity': 'No'}
 
-#: The value-plane keys an option quote row carries beside its mid. `schema.OPTION_QUOTE` declares
-#: none of the three, so they ride as undeclared keys that `bootstrap` reads past and `as_json`
-#: preserves - carried anyway, because the two-way and the print's own clock are the evidence.
+#: The value-plane keys an option quote row carries beside its mid - the two-way the print was
+#: dealt on and the print's own clock, which are the evidence.
 #:
-#: DECLARED LIMITATION: since they are undeclared on the option row,
-#: `schema.partition_market_price` reads this family's whole block as PLAN with an EMPTY value
-#: half, so a re-quoted chain has to be RE-AUTHORED rather than ticked - moving a premium reads as
-#: 'structure differs' to `config.update_market_quote`.
+#: The Heston-Nandi families DECLARE all three on their option row (`schema.QUOTE_TWO_WAY`), so
+#: `European_Options` is a `schema.MARKET_QUOTE_CONTAINERS` table and these travel the VALUE plane
+#: exactly as an FX smile's `Points` do: a re-quoted chain on the same contracts moves `values_hash`
+#: with `plan_hash` bit-identical and `config.update_market_quote` takes it as 'updated'. A moved
+#: strike or expiry is still 'structure differs' - that is a re-authoring, not a tick.
 QUOTE_VALUE_KEYS = ('Quoted_Bid', 'Quoted_Ask', 'Timestamp')
 
 #: How many two-sided strikes the chain's own parity carry is MEDIANED over, and the band that
@@ -200,14 +204,20 @@ class EquityForward:
     """WHICH CURVE FEEDS THE CARRY, declared.
 
     The strikes hang off the forward and so does every weight, and the FIT rebuilds that forward
-    from the two curves this names: `spot * exp((r - q) t)` with `r` the `Discount_Rate` factor and
-    `q` the `Yield` one. So the NAMES travel into the block for the fit to resolve, and the NUMBERS
-    the emitter actually used travel into `Quote_Source` beside them.
+    from the curves this names: `spot * exp((f - q) t)` with `f` the funding curve and `q` the
+    `Yield` one. So the NAMES travel into the block for the fit to resolve, and the NUMBERS the
+    emitter actually used travel into `Quote_Source` beside them.
 
-    `discount_rate` should name the curve `calc_eq_forward` reads - `EquityPrice.Interest_Rate`,
-    falling back to the equity's `Currency` - or the calibrated forward and the priced one part
-    company. DECLARED LIMITATION: the family has ONE `Discount_Rate` reference funding the forward
-    AND discounting the premium, so an index carrying a repo spread cannot state both.
+    TWO CURVES, TWO JOBS. `funding_rate` names what GROWS the forward - the equity's own repo curve
+    (`EquityPrice.Interest_Rate`, falling back to its `Currency`), which is what
+    `utils.calc_eq_forward` integrates - and `discount_rate` names what the PREMIUM discounts on.
+    Left blank, `funding_rate` is `discount_rate`: one curve, which is the index with no repo
+    spread and what this emitter wrote before the family declared the second reference.
+
+    `rate` is the FORWARD's number - the funding rate the emitter carried the spot at, which places
+    every strike. Where a repo spread is declared the parity read and the vega discount at the same
+    number, which biases a chain-implied carry by the spread; declare `dividend_yield` and the
+    reading is reported rather than fitted.
 
     `dividend_yield` None means TAKE IT FROM THE CHAIN by put-call parity; a declared number is
     used as declared, with the parity-implied one measured beside it and reported.
@@ -218,10 +228,12 @@ class EquityForward:
     dividend_reference: str
     rate: float
     dividend_yield: float | None = None
+    funding_rate: str = ''
     underlying_type: str = HN_REFERENCE_TYPES['Underlying']
     volatility_type: str = HN_REFERENCE_TYPES['Volatility']
     discount_rate_type: str = HN_REFERENCE_TYPES['Discount_Rate']
     dividend_type: str = HN_REFERENCE_TYPES['Yield']
+    funding_rate_type: str = HN_REFERENCE_TYPES['Funding_Rate']
 
     def __post_init__(self):
         for name, value in (('underlying_factor', self.underlying_factor),
@@ -1057,12 +1069,13 @@ def equity_hn_block(chain, forward, ladder=None, family=COMPONENT_FAMILY):
 
     PREMIUMS, NOT VOLS. `Quote_Type` is Premium and `Quoted_Market_Value` is the mid of the
     terminal's two-way, in the underlying's own units. `Quoted_Bid`, `Quoted_Ask` and `Timestamp`
-    ride beside it as undeclared keys that `bootstrap` reads past - see `QUOTE_VALUE_KEYS` for what
-    that costs - because the two-way and the print's own clock are the evidence.
+    ride beside it as DECLARED value columns - see `QUOTE_VALUE_KEYS` - because the two-way and the
+    print's own clock are the evidence, and because that is what lets a re-quoted chain tick.
 
     `Use_Forward` and `Invert_Moneyness` are written at their declared defaults and are INERT here:
     both exist to look a vol surface up AT A STRIKE, and under `Quote_Type` Premium no surface is
-    read at all. The block still has to NAME a `Volatility` factor.
+    read at all - the family requires no `Volatility` reference under this quote type, and the
+    block names one anyway because a chain-sourced fit still marks against a surface downstream.
 
     Refuses by name, with the remedy, on: a chain whose census says exercise style is what killed
     the ladder (`UnsupportedExerciseStyle`), a ladder that collapses below `minimum_contracts`
@@ -1113,6 +1126,10 @@ def equity_hn_block(chain, forward, ladder=None, family=COMPONENT_FAMILY):
         'Discount_Rate': forward.discount_rate,
         'Discount_Rate_Type': forward.discount_rate_type,
         'Yield': forward.dividend_reference, 'Yield_Type': forward.dividend_type,
+        # the funding curve is written only where one was DECLARED: blank, the family funds the
+        # forward off Discount_Rate, and a field spelling that out would state a name nobody chose
+        **({'Funding_Rate': forward.funding_rate,
+            'Funding_Rate_Type': forward.funding_rate_type} if forward.funding_rate else {}),
         'Quote_Type': 'Premium',
         'Use_Forward': 'No', 'Invert_Moneyness': 'No',
         'Steps_Per_Year': ladder.steps_per_year,
@@ -1168,6 +1185,9 @@ def quote_source(chain, forward, ladder, rungs, rows, notes, readings):
     chain's own opinion. A reading outside `parity_band` is NAMED here rather than refused, since
     with a yield declared the band screens nothing.
 
+    THE TWO CURVES ARE NAMED SEPARATELY where they differ: `r` is the FUNDING rate the forward grew
+    at, and the premium's own discount curve is named after it. One curve says so by saying nothing.
+
     THE ROWS ARE COUNTED BESIDE THE RUNGS because they are not always the same number: two rungs
     landing on one listed contract are emitted once at their summed weight.
     """
@@ -1185,7 +1205,7 @@ def quote_source(chain, forward, ladder, rungs, rows, notes, readings):
     source = (
         '{} rungs ({}) on {} distinct contracts off the listed {} chain as at {}, {} contracts '
         'believed of {} asked ({}); premiums are the terminal\'s own two-way mids. Forward: spot '
-        '{:.6g} (last printed {}) carried at r={:.4%} on {} against {} [{}]'.format(
+        '{:.6g} (last printed {}) carried at r={:.4%} on {} against {}{} [{}]'.format(
             len(rungs), '/'.join(sorted({rung.kind for rung in rungs})), len(rows),
             chain.underlying, chain.as_of.isoformat(), len(chain.contracts),
             len(chain.contracts) + len(chain.rejected),
@@ -1193,7 +1213,11 @@ def quote_source(chain, forward, ladder, rungs, rows, notes, readings):
                       for verdict, count in sorted(census.items())) or 'nothing refused',
             chain.spot,
             'undated' if chain.spot_as_of is None else chain.spot_as_of.isoformat(),
-            forward.rate, forward.discount_rate, forward.dividend_reference,
+            forward.rate, forward.funding_rate or forward.discount_rate,
+            forward.dividend_reference,
+            # named only where the two curves differ: one curve is what the line already says
+            ', premiums discounting on {}'.format(forward.discount_rate)
+            if forward.funding_rate and forward.funding_rate != forward.discount_rate else '',
             dividends or 'no pillar priced'))
     if notes:
         source += '; rungs the chain does not list, moved or dropped: {}'.format(', '.join(notes))

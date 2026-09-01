@@ -4,8 +4,8 @@ Nothing here opens a socket except the last gate, which skips by name where this
 terminal. Everything else runs on ONE canned chain - 192 listed contracts over six expiries, mixed
 liquidity, both exercise styles, and a poison table of dead prints authored on purpose - driven
 through the package's real readers (`BloombergSession`'s own event walk, canned rows) and the real
-engine seam (`config.update_market_quote` and the component family's own bootstrap, both imported
-READ-ONLY).
+engine seam (`config.update_market_quote`, both Heston-Nandi bootstraps, `Context`'s two hashes and
+a base valuation over an `EquityForwardDeal`) - the engine is imported and never touched.
 
 WHAT IS HELD:
 
@@ -30,15 +30,22 @@ WHAT IS HELD:
                    refusal names the chain's own expiries
   the block        every key it writes is a field the family DECLARES, the `_Type` values are the
                    family's own candidate lists, and the three value keys the option row carries
-                   beside its mid are exactly `MARKET_QUOTE_VALUES` less the mid - which is the
-                   gap, stated as a complement (finding #3)
-  the round trip   `update_market_quote` installs it and updates it; a MOVED premium refuses,
-                   which is finding #4 recorded as a gate rather than as a paragraph
+                   beside its mid are exactly `MARKET_QUOTE_VALUES` less the mid - now read as an
+                   equality the family's own row satisfies rather than as a gap
+  the round trip   `update_market_quote` installs it, updates it, takes a VALUE-ONLY re-tick, and
+                   refuses a moved strike; the tick moves `values_hash` with `plan_hash`
+                   hex-identical and `market_patch`/`patch_market` round-trip it
   the weights      positive, normalised, and the stated formula - two contracts alike but for
                    their open interest weigh in the ratio of the SQUARE ROOTS
   determinism      the same canned chain emits the same bytes
-  end to end       the component family's own bootstrap, off a real JSON document, on a short
-                   ladder and a low evaluation cap - a READING, whichever way it goes
+  end to end       the component family's own bootstrap, off a real JSON document, in a book with
+                   NO authored surface - the circularity gone, on a short ladder and a low
+                   evaluation cap
+  the refusals     a reference a quote type requires and the block does not name refuses BY NAME,
+                   writes no factor, and lands no 'skipping' line
+  the forward      the fit's own forward, read off the `Strike` column it fills in, against
+                   `calc_eq_forward`'s through an `EquityForwardDeal` in the same job - on an index
+                   with a genuine repo spread, and hex-identical to the old arithmetic without one
 
 NO MONKEYPATCHING. The canned terminal is a `BloombergSession` subclass whose event walk yields
 rows, which is `test_bloomberg_discover.Walked` verbatim; the engine is imported and never touched.
@@ -974,7 +981,8 @@ def test_the_block_writes_only_fields_the_family_declares():
     """The block is THIS family's schema in THIS family's conventions, and the emitter cannot
     import the family to check - so the gate does. Every header key is a declared field, every
     `_Type` value is one of that field's own candidates, `Premium` is a declared `Quote_Type`, and
-    the option row's six declared columns are `OPTION_QUOTE`'s six."""
+    the option row's NINE declared columns are `OPTION_QUOTE`'s six plus the two-way and the stamp -
+    which is the third finding CLOSED, read as an equality where it used to be read as a gap."""
     from derivus import schema
     from derivus.bootstrappers import (HestonNandiComponentModelParameters,
                                        HestonNandiModelParameters)
@@ -995,16 +1003,20 @@ def test_the_block_writes_only_fields_the_family_declares():
         rows = instrument['European_Options']
         columns = {field.name for field in declared['European_Options'].row.fields}
         assert columns == {'Expiry_Date', 'Strike', 'Option_Type', 'Units', 'Weight',
-                           'Quoted_Market_Value'}
+                           'Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask', 'Timestamp'}
         for row in rows:
-            assert columns <= set(row)
-            # FINDING #3, stated as a complement rather than as a paragraph, and as a THREE-way
-            # identity: the keys the row actually carries beside its declared six, the keys the
-            # emitter DECLARES it carries, and the value plane the rest of the house already agrees
-            # on are one set - and `OPTION_QUOTE` declares none of them. A column added on any of
-            # the three sides now has to appear on the other two or this fails.
-            assert set(row) - columns == set(equity_chain.QUOTE_VALUE_KEYS) == \
+            assert columns <= set(row), 'a row is missing a column the family declares'
+            # THE THREE-WAY IDENTITY, unchanged in shape and now read the other way round: the keys
+            # the row carries beside `OPTION_QUOTE`'s six, the keys the emitter DECLARES it carries,
+            # and the value plane the rest of the house agrees on are ONE SET - and the family's own
+            # row declares them, which is what puts `European_Options` in
+            # `schema.MARKET_QUOTE_CONTAINERS`. A column added on any of the three sides now has to
+            # appear on the other two or this fails.
+            assert set(row) - {field.name for field in schema.OPTION_QUOTE} == \
+                set(equity_chain.QUOTE_VALUE_KEYS) == \
                 set(schema.MARKET_QUOTE_VALUES) - {'Quoted_Market_Value'}
+        assert 'European_Options' in schema.MARKET_QUOTE_CONTAINERS, (
+            'the option row declares the value keys and the value plane does not know it')
 
 
 def test_one_selection_writes_both_family_spellings():
@@ -1081,11 +1093,38 @@ def test_the_same_canned_chain_emits_the_same_bytes():
 # 6  the engine seam - read-only
 # =============================================================================================
 
-def job_document(market_prices=None):
+#: The FLAT SURFACE the world carries when it carries one at all. A `Premium` block reads no
+#: surface, so the end-to-end gate builds its world WITHOUT this - but a block that names a surface
+#: the book does carry has to keep resolving, which is the other half of the same statement.
+SURFACE = {'EquityPriceVol.SPX': {
+    'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+    'Surface': {'.Curve': {'meta': [], 'data': [
+        [0.8, 0.1, 0.20], [0.8, 3.5, 0.20], [1.0, 0.1, 0.18], [1.0, 3.5, 0.18],
+        [1.2, 0.1, 0.16], [1.2, 3.5, 0.16]]}}}}
+
+
+def job_document(market_prices=None, factors=None, surface=True, repo=None):
     """A real wire-form job document over the equity world this chain is quoted around: spot 5000,
-    a 4% USD curve, a 1.5% dividend rate and a flat surface for the family to resolve. Authored
-    here rather than borrowed, because the fixture chain is priced off exactly these numbers."""
+    a 4% USD curve, a 1.5% dividend rate, and a flat surface unless `surface` says otherwise.
+    Authored here rather than borrowed, because the fixture chain is priced off exactly these
+    numbers.
+
+    `repo` names a SECOND curve as the equity's own `Interest_Rate` - the repo curve
+    `utils.calc_eq_forward` integrates - so a world with a genuine funding spread is one argument
+    away from the one every other gate runs on. `factors` is merged last, for a world that needs a
+    deal or a curve nothing else does.
+    """
     curve = lambda value: {'.Curve': {'meta': [], 'data': [[0.0, value], [5.0, value]]}}
+    price_factors = {
+        'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Spot': 1.0},
+        'InterestRate.USD': {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+                             'Curve': curve(RATE)},
+        'EquityPrice.SPX': {'Issuer': '', 'Respect_Default': 'No', 'Jump_Level': 0.0,
+                            'Currency': 'USD', 'Interest_Rate': repo or 'USD', 'Spot': SPOT},
+        'DividendRate.SPX': {'Currency': 'USD', 'Curve': curve(DIVIDEND)}}
+    if surface:
+        price_factors.update(SURFACE)
+    price_factors.update(factors or {})
     return {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': {'.Timestamp': AS_OF.isoformat()},
                         'Currency': 'USD', 'MCMC_Simulations': 1, 'Random_Seed': 1},
@@ -1093,20 +1132,25 @@ def job_document(market_prices=None):
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD',
                                   'Base_Date': {'.Timestamp': AS_OF.isoformat()}},
-            'Price Factors': {
-                'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Spot': 1.0},
-                'InterestRate.USD': {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
-                                     'Curve': curve(RATE)},
-                'EquityPrice.SPX': {'Issuer': '', 'Respect_Default': 'No', 'Jump_Level': 0.0,
-                                    'Currency': 'USD', 'Interest_Rate': 'USD', 'Spot': SPOT},
-                'DividendRate.SPX': {'Currency': 'USD', 'Curve': curve(DIVIDEND)},
-                'EquityPriceVol.SPX': {
-                    'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
-                    'Surface': {'.Curve': {'meta': [], 'data': [
-                        [0.8, 0.1, 0.20], [0.8, 3.5, 0.20], [1.0, 0.1, 0.18], [1.0, 3.5, 0.18],
-                        [1.2, 0.1, 0.16], [1.2, 3.5, 0.16]]}}}},
+            'Price Factors': price_factors,
             'Bootstrapper Configuration': {},
             'Market Prices': market_prices or {}}}}}
+
+
+def value_tick(block, moves):
+    """The block a TICK SOURCE posts: the same rows, with `moves` merged onto the row at each index
+    and nothing else touched.
+
+    A RE-EMISSION IS NOT A TICK, and that is the emitter's own arithmetic rather than a gap: every
+    `Weight` is a vega times a liquidity NORMALISED over the ladder, so one moved print re-weighs
+    every row of the block. `Weight` is structure - the fit's objective is posed with it - so an
+    emitted block always re-authors. What the value plane admits is a source that moves quotes and
+    leaves the weights, which is exactly the shape `Context.market_patch` publishes.
+    """
+    rows = [dict(row) for row in block['instrument']['European_Options']]
+    for index, fields in moves.items():
+        rows[index].update(fields)
+    return {'instrument': dict(block['instrument'], European_Options=rows)}
 
 
 def test_the_block_installs_and_updates_through_the_engines_own_guard():
@@ -1114,14 +1158,16 @@ def test_the_block_installs_and_updates_through_the_engines_own_guard():
     block passes it BOTH ways: 'installed' the first time, 'updated' when the same chain is emitted
     again.
 
-    AND THE SECOND HALF IS FINDING #4, gated rather than described. A MOVED premium refuses with
-    'structure differs', because the guard's value plane is `Points` rows and the Heston-Nandi
-    families quote in `European_Options` - `schema.partition_market_price` says so in as many
-    words ("a tick on such a block is a new plan, which is what it has always been"). So a chain
-    that re-ticks cannot be value-updated at all: it has to be re-authored. That is deliberate
-    engine-side today and it is exactly what the follow-up book/service verb has to decide, so it
-    is asserted here in its current shape - the day `OPTION_QUOTE` gains the three value columns
-    finding #3 names, this gate flips and says so."""
+    AND THE SECOND HALF IS THE ROW THAT CLOSED. A moved premium used to refuse with 'structure
+    differs', because the guard's value plane was `Points` rows and the Heston-Nandi families quote
+    in `European_Options`; the option row declares the four value keys now, `European_Options` is a
+    `schema.MARKET_QUOTE_CONTAINERS` table, and a VALUE-ONLY re-tick is 'updated'. A moved STRIKE on
+    the same block still refuses, which is what makes that a line rather than a waiver.
+
+    THE THIRD CLAIM IS THE EMITTER'S OWN, and it is why a re-tick is built by hand here rather than
+    by re-emitting: `Weight` is a normalised vega, so one moved print re-weighs the whole ladder and
+    a re-EMITTED chain is a re-authoring by arithmetic. Both readings are asserted.
+    """
     from derivus.config import update_market_quote
 
     name, block = emitted()
@@ -1134,20 +1180,82 @@ def test_the_block_installs_and_updates_through_the_engines_own_guard():
     assert again == block and again is not block
     assert update_market_quote(document, name, again) == 'updated'
 
-    # a re-tick that moves ONE wing's two-way and NOTHING else - same expiries, same strikes, same
-    # option types, same row order, in the same order the same selection produced them
+    # THE VALUE-ONLY RE-TICK: one wing's mid, its two-way and its stamp move, and nothing else -
+    # same expiries, same strikes, same option types, same weights, same row order
+    row = block['instrument']['European_Options'][-1]
+    ticked = value_tick(block, {len(block['instrument']['European_Options']) - 1: {
+        'Quoted_Market_Value': row['Quoted_Market_Value'] + 4.0,
+        'Quoted_Bid': row['Quoted_Bid'] + 4.0, 'Quoted_Ask': row['Quoted_Ask'] + 4.0,
+        'Timestamp': {'.Timestamp': '2026-09-01'}}})
+    assert ticked != block, 'the tick moved nothing - this gate is vacuous'
+    assert update_market_quote(document, name, ticked) == 'updated'
+
+    # and a MOVED CONTRACT on the same block is still a re-authoring
+    moved = value_tick(block, {0: {'Strike': block['instrument'][
+        'European_Options'][0]['Strike'] + 25.0}})
+    with pytest.raises(ValueError, match='structure differs'):
+        update_market_quote(document, name, moved)
+
+    # the emitter's own re-emission of a moved market: the contracts stand, the WEIGHTS do not
     bumped = dict(POISON)
     bumped[(4, 1.15, 'Call')] = {'PX_BID': 611.0, 'PX_ASK': 619.0, 'PX_LAST': 615.0}
     reticked = equity_hn_block(canned_chain(poison=bumped), FORWARD)[1]
     node = lambda item: [(row['Expiry_Date'], row['Strike'], row['Option_Type'])
                          for row in item['instrument']['European_Options']]
-    assert node(reticked) == node(block), 'the re-tick moved a contract, not a value'
-    assert reticked != block
+    assert node(reticked) == node(block), 'the re-emission moved a contract, not a value'
+    assert [row['Weight'] for row in reticked['instrument']['European_Options']] != \
+        [row['Weight'] for row in block['instrument']['European_Options']], (
+        'a moved print left the normalised ladder alone - the weight claim below is vacuous')
     with pytest.raises(ValueError, match='structure differs'):
         update_market_quote(document, name, reticked)
 
     with pytest.raises(ValueError, match='a Market Prices block is'):
         update_market_quote(document, name, block['instrument'])
+
+
+def test_a_premium_tick_moves_the_values_hash_and_leaves_the_chains_plan_bit_identical():
+    """THE PARTITION, on a chain block loaded through the real decoder - the statement the roadmap
+    row is closed by, in the coordinates the two staleness dimensions are named in.
+
+    A premium, its two-way and its stamp move `values_hash` and leave `plan_hash` HEX-IDENTICAL, so
+    a re-quoted chain is a tick rather than a recompile; a moved strike moves the plan, because the
+    contract itself changed. `market_patch` publishes the ladder's own value rows keyed by its own
+    table name and `patch_market` takes them straight back, which is the values-plane identity this
+    family now has and did not.
+    """
+    import derivus
+    from derivus.config import CustomJsonEncoder
+
+    name, block = emitted()
+    context = derivus.Context().load_json(
+        (json.dumps(job_document({name: block}), cls=CustomJsonEncoder), 'chain-tick'))
+    prices = context.current_cfg.params['Market Prices']
+    rows = prices[name]['instrument']['European_Options']
+    assert len(rows) > 1, 'the ladder arrived with no quotes - nothing below means anything'
+
+    # the values half is keyed by the family's OWN table, and it is one entry per row
+    patch = context.market_patch()[name]
+    assert set(patch) == {'European_Options'} and len(patch['European_Options']) == len(rows)
+    assert all(set(row) == {'Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask', 'Timestamp'}
+               for row in patch['European_Options'])
+
+    before = (context.plan_hash(), context.values_hash())
+    context.patch_market(context.market_patch())
+    assert (context.plan_hash(), context.values_hash()) == before, (
+        'the values-plane identity moved a hash')
+
+    context.patch_market({name: {'European_Options': [
+        {'Quoted_Market_Value': rows[0]['Quoted_Market_Value'] + 1.5}] + [{} for _ in rows[1:]]}})
+    assert context.plan_hash() == before[0], 'a moved premium moved the chain block\'s plan'
+    assert context.values_hash() != before[1], 'a moved premium left the values hash alone'
+
+    # the other direction, on the same block: a moved strike is a re-authoring and says so
+    with pytest.raises(ValueError, match='Strike is structural, not a value'):
+        context.patch_market({name: {'European_Options': [
+            {'Strike': 4000.0}] + [{} for _ in rows[1:]]}})
+    with pytest.raises(ValueError, match='Weight is structural, not a value'):
+        context.patch_market({name: {'European_Options': [
+            {'Weight': 0.5}] + [{} for _ in rows[1:]]}})
 
 
 #: A SHORT ladder and a low evaluation cap - the reading is about the FIT'S ARITHMETIC over a chain
@@ -1159,17 +1267,27 @@ def test_the_block_installs_and_updates_through_the_engines_own_guard():
 E2E_LADDER = EquityLadder(pillars=(0.25, 0.5), wing_pillars=(0.25, 0.5), minimum_contracts=4)
 
 
-def test_the_component_family_reads_the_chain_block_end_to_end():
-    """END TO END, READ-ONLY: the emitted block and a small authored market through the EXISTING
-    component Heston-Nandi bootstrap, off real JSON, through the real entry point. Either outcome
-    is a READING - what is recorded is what the engine did with a premium-quoted equity chain,
-    and an engine gap found here is a finding rather than a fix.
+def test_the_component_family_fits_the_chain_block_with_no_authored_surface(caplog):
+    """END TO END, AND WITH NO SURFACE IN THE BOOK AT ALL - the standing gate the emitter build
+    deferred, and the whole point of the landing.
 
-    What this measures, on this workstation: whether a chain-sourced premium block resolves its
-    four references, whether the L bootstrap brackets its pillars against LISTED premiums (the FX
-    fixtures bracket against premiums synthesised off a surface, which is a smoother target), and
-    what the family writes when it does.
+    THE WORLD CARRIES NO `EquityPriceVol.SPX`. A `Premium` block reads none: the family's
+    `quote_type_references` says `Implied_Volatility` reads the surface and `Premium` does not, so
+    the `Volatility` NAME the block still carries (the surface its marks will be read off) is never
+    resolved. Before this landing the reference was declared REQUIRED and resolved before the
+    branch that never reads it, and a book without a surface got
+    `Unable to bootstrap ... - skipping` - no factor, no exception, and a chain-sourced fit that
+    could not run unless somebody had already fitted the same chain. That is the circularity, and
+    the assertion below is that it is gone.
+
+    What this measures, on this workstation: whether the block resolves the references its quote
+    type actually reads, whether the L bootstrap brackets its pillars against LISTED premiums (the
+    FX fixtures bracket against premiums synthesised off a surface, which is a smoother target),
+    and what the family writes when it does. The ATM residual and the wall clock are RECORDED.
     """
+    import logging as _logging
+    import time
+
     import derivus
     from derivus.config import CustomJsonEncoder
 
@@ -1178,18 +1296,26 @@ def test_the_component_family_reads_the_chain_block_end_to_end():
     assert len({(row['Expiry_Date']['.Timestamp'], row['Strike']) for row in rows}) >= 4
 
     block['instrument']['Max_Iterations'] = 8
-    document = job_document({name: block})
+    document = job_document({name: block}, surface=False)
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    assert not [factor for factor in market['Price Factors'] if factor.startswith('EquityPriceVol')]
+    assert block['instrument']['Volatility'] == 'SPX', (
+        'the block does not name a surface, so nothing is being said about naming one it lacks')
     market['Bootstrapper Configuration'] = {'HestonNandiComponentModelParameters': {}}
 
     config = derivus.Context().load_json(
         (json.dumps(document, cls=CustomJsonEncoder), 'equity_chain')).current_cfg
-    config.bootstrap()
+    started = time.time()
+    with caplog.at_level(_logging.INFO):
+        config.bootstrap()
+    elapsed = time.time() - started
 
     written = config.params['Price Factors'].get('HestonNandiComponentModelParameters.SPX')
     assert written is not None, (
-        'the component family did not write a factor off a premium-quoted chain block - it '
-        'resolved nothing and skipped with a log line, which is the finding')
+        'the component family wrote no factor off a premium-quoted chain block in a surface-free '
+        'book - the circularity is still standing')
+    assert not [record for record in caplog.records if 'skipping' in record.getMessage()], (
+        'a reference was skipped rather than read or refused')
     for key in ('Alpha', 'Beta', 'Gamma_1', 'Rho', 'Phi', 'Gamma_2', 'H0'):
         assert key in written and math.isfinite(float(written[key])), key
     assert written['Rho'] == pytest.approx(equity_chain.COMPONENT_HEADER['Rho'])
@@ -1203,9 +1329,354 @@ def test_the_component_family_reads_the_chain_block_end_to_end():
     curve = written[utils.HN_COMPONENT_CURVE_NAME]
     assert len(curve.array) == 1 + len(E2E_LADDER.pillars) and curve.array[0][0] == 0.0
     assert all(level > 0.0 for _, level in curve.array), curve.array
-    print('\nfitted off the chain block: {}\nL (annualised vol): {}'.format(
-        {key: float(written[key]) for key in utils.HN_COMPONENT_PARAM_NAMES},
-        [(float(knot), round(float(math.sqrt(level * 252.0)), 4)) for knot, level in curve.array]))
+
+    # THE READING, recorded: the bootstrap's own ATM residual off its report, and the wall clock
+    reported = [record.getMessage() for record in caplog.records if 'ATM residual' in
+                record.getMessage()]
+    assert reported, 'the family fitted and reported nothing about it'
+    print('\nfitted off the chain block, no surface in the book: {}\nL (annualised vol): {}\n{}\n'
+          'bootstrap wall clock {:.1f}s'.format(
+              {key: float(written[key]) for key in utils.HN_COMPONENT_PARAM_NAMES},
+              [(float(knot), round(float(math.sqrt(level * 252.0)), 4))
+               for knot, level in curve.array],
+              reported[-1].strip(), elapsed))
+
+
+def test_a_surface_the_book_does_carry_is_still_read_where_the_quote_type_reads_one():
+    """The other half of the same statement, so "optional" does not read as "ignored".
+
+    Under `Quote_Type` Premium the surface is INERT whether the book carries one or not - the fit
+    is posed against the chain's own prints. So the same chain block fits to the SAME parameters in
+    a world with a surface and in one without, which is what says the surface stopped being an
+    input rather than merely stopped being fetched.
+    """
+    import derivus
+    from derivus.config import CustomJsonEncoder
+    from derivus import utils
+
+    def fitted(surface):
+        name, block = equity_hn_block(canned_chain(), FORWARD, E2E_LADDER)
+        block['instrument']['Max_Iterations'] = 8
+        document = job_document({name: block}, surface=surface)
+        document['Calc']['MergeMarketData']['ExplicitMarketData'][
+            'Bootstrapper Configuration'] = {'HestonNandiComponentModelParameters': {}}
+        config = derivus.Context().load_json(
+            (json.dumps(document, cls=CustomJsonEncoder), 'equity_chain')).current_cfg
+        config.bootstrap()
+        written = config.params['Price Factors']['HestonNandiComponentModelParameters.SPX']
+        return [float(written[key]) for key in utils.HN_COMPONENT_PARAM_NAMES]
+
+    with_surface, without = fitted(True), fitted(False)
+    assert with_surface == without, (
+        'a Premium fit read the surface it declares it does not: {} against {}'.format(
+            with_surface, without))
+
+
+# =============================================================================================
+# 7  a missing reference refuses; the skip is dead
+# =============================================================================================
+
+def bootstrapped(block, family='HestonNandiComponentModelPrices', **world):
+    """`(config, refusal or None)` - one block through the REAL bootstrap in a real world, with
+    whatever it raised. The config is returned either way, so a gate can ask what was written."""
+    import derivus
+    from derivus.config import CustomJsonEncoder
+
+    name = '{}.SPX'.format(family)
+    document = job_document({name: block}, **world)
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Bootstrapper Configuration'] = {
+        family.replace('Prices', 'Parameters'): {}}
+    config = derivus.Context().load_json(
+        (json.dumps(document, cls=CustomJsonEncoder), 'refusal')).current_cfg
+    try:
+        config.bootstrap()
+    except Exception as refusal:
+        return config, refusal
+    return config, None
+
+
+def blanked(field, quote_type='Premium'):
+    """The canned chain's own block with one reference BLANKED - the shape a block takes when its
+    author leaves a panel empty, which is the case that used to skip."""
+    _, block = equity_hn_block(canned_chain(), FORWARD, E2E_LADDER)
+    block['instrument'][field] = ''
+    block['instrument']['Quote_Type'] = quote_type
+    block['instrument']['Max_Iterations'] = 2
+    return block
+
+
+@pytest.mark.parametrize('quote_type,field,required', [
+    ('Premium', 'Underlying', 'Underlying/Discount_Rate'),
+    ('Premium', 'Discount_Rate', 'Underlying/Discount_Rate'),
+    ('Implied_Volatility', 'Volatility', 'Underlying/Volatility/Discount_Rate'),
+    ('Implied_Volatility', 'Underlying', 'Underlying/Volatility/Discount_Rate')])
+def test_a_missing_required_reference_refuses_by_name_and_never_skips(
+        quote_type, field, required, caplog):
+    """THE SKIP IS DEAD, and this is the three-part assertion that says so: the exception REACHES
+    THE CALLER, NO factor is written, and no 'skipping' line lands anywhere.
+
+    What stood here caught every resolution failure, logged
+    `Unable to bootstrap ... - skipping`, and moved on - so a job whose block named nothing the book
+    carried completed, wrote no price factor, and told its caller precisely nothing. That is the
+    hollow-container failure mode in bootstrap clothing, and it is the reason a chain-sourced fit
+    could not run: the reference it tripped on was the one its quote type never reads.
+
+    BOTH QUOTE TYPES ENUMERATE WHAT THEY REQUIRE in the message, because the remedy differs between
+    them - a missing `Volatility` under `Implied_Volatility` is fixed by naming a surface OR by
+    quoting premiums, and the refusal says both.
+    """
+    import logging as _logging
+
+    with caplog.at_level(_logging.ERROR):
+        config, refusal = bootstrapped(blanked(field, quote_type), surface=True)
+
+    assert refusal is not None, 'a blank {} under {} still skipped'.format(field, quote_type)
+    message = str(refusal)
+    assert 'HestonNandiComponentModelPrices.SPX' in message, 'the refusal does not name the block'
+    assert field in message and required in message, message
+    assert quote_type in message, 'the refusal does not name the quote type doing the requiring'
+    if field == 'Volatility':
+        assert 'Quote_Type Premium' in message, 'the second remedy is not offered'
+    assert not [factor for factor in config.params['Price Factors']
+                if factor.startswith('HestonNandiComponentModelParameters.')], (
+        'a refused block wrote a price factor anyway')
+    assert not [record for record in caplog.records if 'skipping' in record.getMessage()], (
+        'the refusal still logged a skip')
+
+
+def test_a_reference_the_book_does_not_carry_refuses_naming_the_factor_it_looked_for():
+    """The second half: the field is NAMED and the book has nothing under that name. A caller needs
+    the factor it looked for spelled out, because the name in the block and the key in `Price
+    Factors` differ by a TYPE the block never states - that is what `<field>_Type` is for."""
+    _, block = equity_hn_block(canned_chain(), FORWARD, E2E_LADDER)
+    block['instrument']['Discount_Rate'] = 'ZAR'
+    block['instrument']['Max_Iterations'] = 2
+
+    config, refusal = bootstrapped(block, surface=False)
+    assert refusal is not None, 'a named-but-absent curve still skipped'
+    assert 'InterestRate.ZAR' in str(refusal) and 'Discount_Rate' in str(refusal), str(refusal)
+    assert not [factor for factor in config.params['Price Factors']
+                if factor.startswith('HestonNandiComponentModelParameters.')]
+
+    # and a Quote_Type this family does not fit refuses before anything is resolved at all
+    block['instrument'].update({'Discount_Rate': 'USD', 'Quote_Type': 'Mid'})
+    _, refused = bootstrapped(block, surface=False)
+    assert refused is not None and 'Quote_Type' in str(refused)
+    assert 'Implied_Volatility' in str(refused) and 'Premium' in str(refused)
+
+
+# =============================================================================================
+# 8  the forward the fit builds is the forward the pricer builds
+# =============================================================================================
+
+#: THE REPO CURVE and the spread that makes this gate non-vacuous. 125bp is a hard-to-borrow
+#: basket rather than an index, chosen so a forward built on the wrong curve misses by whole index
+#: points at every pillar - at the 3y rung, 5000 exp(0.0125*3) is 191 points of forward.
+REPO = 'USD-REPO'
+REPO_SPREAD = 0.0125
+#: A curve at ZERO, so the probe deal's discount factor is exactly 1.0 and its MtM IS the forward.
+ZERO_CURVE = 'USD-ZERO'
+#: The pillars the identity is measured at, in whole days off the base date.
+FORWARD_DAYS = (91, 182, 365, 730, 1095)
+
+
+def flat(value):
+    return {'.Curve': {'meta': [], 'data': [[0.0, value], [5.0, value]]}}
+
+
+def repo_world(market_prices=None, deals=()):
+    """The index world with a GENUINE REPO SPREAD: the equity funds on `USD-REPO` at 5.25% while
+    its deals discount on `USD` at 4%, which is the world where one reference doing two jobs parts
+    the calibrated forward from the priced one. Plus a curve at zero, for the probe deal."""
+    document = job_document(market_prices, surface=False, repo=REPO, factors={
+        'InterestRate.{}'.format(REPO): {'Currency': 'USD', 'Day_Count': 'ACT_365',
+                                         'Sub_Type': None, 'Curve': flat(RATE + REPO_SPREAD)},
+        'InterestRate.{}'.format(ZERO_CURVE): {'Currency': 'USD', 'Day_Count': 'ACT_365',
+                                               'Sub_Type': None, 'Curve': flat(0.0)}})
+    document['Calc']['Deals']['Deals']['Children'] = [
+        {'Instrument': {'.Deal': deal}} for deal in deals]
+    return document
+
+
+def probe_block(funding=REPO, days=FORWARD_DAYS):
+    """A `HestonNandiModelPrices.SPX` block whose every quote leaves `Strike` at ZERO.
+
+    THE BLOCK IS A PROBE. `0 reads the forward` is the declared meaning of that column, and the
+    family fills the row in with the forward it built - in place, on the block the config holds. So
+    after a real bootstrap each row's `Strike` IS the fit's own forward at that expiry, read out of
+    the engine rather than recomputed beside it.
+
+    `Steps_Per_Year` is 12 because `n` is the only thing it moves here and a 3y rung at 252 is 756
+    sequential recursions per price. The premiums are plausible ATM prints so the seed inversion has
+    something to invert; the fit's quality is not what is being measured.
+    """
+    expiries = [AS_OF + datetime.timedelta(days=day) for day in days]
+    quotes = []
+    for expiry, day in zip(expiries, days):
+        tau = day / 365.0
+        level = SPOT * math.exp((RATE + REPO_SPREAD - DIVIDEND) * tau)
+        quotes.append({'Expiry_Date': {'.Timestamp': expiry.isoformat()}, 'Strike': 0.0,
+                       'Option_Type': 'Call', 'Units': 1.0, 'Weight': 1.0 / len(days),
+                       'Quoted_Market_Value': black_price(level, level, RATE, 0.20, tau, True)})
+    instrument = {'Underlying': 'SPX', 'Underlying_Type': 'EquityPrice',
+                  'Volatility': 'SPX', 'Volatility_Type': 'EquityPriceVol',
+                  'Discount_Rate': 'USD', 'Discount_Rate_Type': 'InterestRate',
+                  'Yield': 'SPX', 'Yield_Type': 'DividendRate',
+                  'Quote_Type': 'Premium', 'Use_Forward': 'No', 'Invert_Moneyness': 'No',
+                  'Steps_Per_Year': 12.0, 'Quadrature_Panels': 16,
+                  'Quote_Timestamp': '', 'Quote_Source': 'the forward-identity probe',
+                  'European_Options': quotes}
+    if funding:
+        instrument.update({'Funding_Rate': funding, 'Funding_Rate_Type': 'InterestRate'})
+    return expiries, {'instrument': instrument}
+
+
+def fitted_forwards(block, deals=()):
+    """`(the fit's forwards, the five fitted parameters, the full run output)` - one real bootstrap
+    of `block` in the repo world, with `deals` priced against the same market in the same job."""
+    import derivus
+    from derivus import run_baseval, utils
+    from derivus.config import CustomJsonEncoder
+
+    name = 'HestonNandiModelPrices.SPX'
+    document = repo_world({name: block}, deals)
+    document['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Bootstrapper Configuration'] = {'HestonNandiModelParameters': {}}
+    config = derivus.Context().load_json(
+        (json.dumps(document, cls=CustomJsonEncoder), 'forward-identity')).current_cfg
+    config.bootstrap()
+    rows = config.params['Market Prices'][name]['instrument']['European_Options']
+    written = config.params['Price Factors']['HestonNandiModelParameters.SPX']
+    out = run_baseval(config)[1] if deals else None
+    return ([row['Strike'] for row in rows],
+            [float(written[key]) for key in utils.HN_PARAM_NAMES], out)
+
+
+def probe_deals(expiries):
+    """One `EquityForwardDeal` per expiry, struck at ZERO and discounted on the zero curve, so its
+    base-date MtM is `utils.calc_eq_forward` itself: units x (forward - 0) x 1.0 x 1.0.
+
+    THIS IS THE PRICER'S FORWARD AND NOT A REPLICA OF IT. The deal reads `EquityPrice.SPX`'s own
+    `Interest_Rate` (the repo curve) against `DividendRate.SPX` through the compiled factor path -
+    the same call every equity option in the library makes."""
+    return [{'Object': 'EquityForwardDeal', 'Reference': 'FWD{}'.format(index), 'Tags': '',
+             'MtM': '', 'Forward_Price': 0.0, 'Buy_Sell': 'Buy', 'Payoff_Type': 'Standard',
+             'Equity_Volatility': '', 'Maturity_Date': {'.Timestamp': expiry.isoformat()},
+             'Equity': 'SPX', 'Units': 1.0, 'Currency': 'USD',
+             'Discount_Rate': ZERO_CURVE, 'Payoff_Currency': 'USD'}
+            for index, expiry in enumerate(expiries)]
+
+
+def test_the_calibrated_forward_is_the_priced_forward_at_every_pillar():
+    """THE ROW THAT CLOSED, measured: one `Discount_Rate` used to FUND the calibrated forward and
+    DISCOUNT the premium, while `utils.calc_eq_forward` grows the priced forward on the equity's own
+    repo curve. On an index with a borrow spread the two forwards parted, and the fit sat at
+    coordinates the pricer never visits.
+
+    The block declares `Funding_Rate` now - a reference `resolve` reads like any other, `_Type`
+    discipline included - and the fit grows its forward on it while the premium still discounts on
+    `Discount_Rate`. Both forwards are read out of the ENGINE: the fit's off the `Strike` column it
+    filled in, the pricer's off an `EquityForwardDeal`'s own MtM in the same job on the same market.
+
+    NON-VACUOUS BY CONSTRUCTION: the same probe with no `Funding_Rate` is measured too, and it is
+    the old arithmetic - off by exactly the spread's own carry at every pillar.
+    """
+    expiries, block = probe_block()
+    deals = probe_deals(expiries)
+    calibrated, _, out = fitted_forwards(block, deals)
+    frame = out['Results']['mtm']
+    priced = [float(frame[frame['Reference'] == deal['Reference']]['Value'].iloc[0])
+              for deal in deals]
+
+    worst = max(abs(fit / price - 1.0) for fit, price in zip(calibrated, priced))
+    assert worst < 1e-13, (
+        'the calibrated forward is not the priced one: {} against {} (worst {:.3e})'.format(
+            calibrated, priced, worst))
+
+    # and the world is one where it MATTERS: with no funding curve declared the fit falls back to
+    # the discount curve, which is the old arithmetic and misses by the spread's own carry
+    _, unfunded = probe_block(funding=None)
+    fallback = fitted_forwards(unfunded)[0]
+    assert fallback != calibrated
+    for fit, price, day in zip(fallback, priced, FORWARD_DAYS):
+        assert fit == pytest.approx(price * math.exp(-REPO_SPREAD * day / 365.0), rel=1e-13), (
+            'the fallback is not spot exp((r-q)t) on the discount curve')
+    assert max(abs(fit / price - 1.0) for fit, price in zip(fallback, priced)) > 0.003, (
+        'the repo spread moves nothing on this world - the gate above is vacuous')
+    print('\nforward identity at {} pillars, {:g}bp repo spread: worst relative miss {:.3e}; '
+          'undeclared funding misses by up to {:.2%}'.format(
+              len(FORWARD_DAYS), REPO_SPREAD * 10000, worst,
+              max(abs(fit / price - 1.0) for fit, price in zip(fallback, priced))))
+
+
+def test_no_funding_curve_is_the_arithmetic_this_family_always_had():
+    """THE BIT-IDENTITY BAR, stated structurally rather than against a golden file.
+
+    The funding basis rides in as a shift on `q`: `effective_yield` adds `r - f` to the carry, and
+    with no `Funding_Rate` the term is not evaluated at all - so `q` is the float the family always
+    computed and every expression downstream (the forward, the per-step carry, the `exp(-qt)`
+    rescale, the seed inversion) is the same bits. Where a funding curve IS declared and names the
+    discount curve, `r - f` is exactly 0.0 and `q + 0.0` is `q`.
+
+    Both halves are asserted in HEX, not to a tolerance: a fit run twice over one probe world - once
+    with no `Funding_Rate`, once with it naming the discount curve - writes the same five
+    parameters to the bit, and the forwards it filled in match to the bit.
+    """
+    from derivus.bootstrappers import HestonNandiModelParameters as HN
+
+    class Flat:
+        def __init__(self, level):
+            self.level = level
+
+        def current_value(self, t):
+            return self.level * (1.0 + t)
+
+    carry, discount = Flat(0.0173), Flat(0.041)
+    for t in (0.25, 1.0, 3.0):
+        rate = float(discount.current_value(t))
+        assert HN.effective_yield(rate, None, carry, t).hex() == \
+            float(carry.current_value(t)).hex(), 'an undeclared funding curve moved the carry'
+        assert HN.effective_yield(rate, discount, carry, t).hex() == \
+            float(carry.current_value(t)).hex(), 'funding ON the discount curve moved the carry'
+
+    # and the same statement through a REAL fit, over the probe world, both ways
+    _, unfunded = probe_block(funding=None)
+    _, self_funded = probe_block(funding='USD')
+    plain_fwd, plain_fit, _ = fitted_forwards(unfunded)
+    funded_fwd, funded_fit, _ = fitted_forwards(self_funded)
+    hexed = lambda values: [value.hex() for value in values]
+    assert hexed(plain_fwd) == hexed(funded_fwd), (
+        'declaring the discount curve as the funding curve moved the forward')
+    assert hexed(plain_fit) == hexed(funded_fit), (
+        'declaring the discount curve as the funding curve moved the fitted parameters')
+
+
+def test_the_chain_emitter_declares_the_funding_curve_it_placed_its_strikes_with():
+    """The emitter's half: `EquityForward` names the funding curve, the block carries it in the
+    field the family resolves, and `Quote_Source` says which curve did which job. Blank, the block
+    writes no `Funding_Rate` at all - a field spelling out a name nobody chose would be a
+    declaration nobody made."""
+    from derivus.bootstrappers import HestonNandiModelParameters
+
+    spread = EquityForward(
+        underlying_factor='SPX', volatility_factor='SPX', discount_rate='USD',
+        dividend_reference='SPX', rate=RATE + REPO_SPREAD, dividend_yield=DIVIDEND,
+        funding_rate=REPO)
+    instrument = equity_hn_block(canned_chain(), spread, E2E_LADDER)[1]['instrument']
+
+    assert (instrument['Funding_Rate'], instrument['Funding_Rate_Type']) == (REPO, 'InterestRate')
+    assert instrument['Discount_Rate'] == 'USD'
+    assert 'Funding_Rate' in {field.name for field in HestonNandiModelParameters.fields}
+    assert instrument['Funding_Rate_Type'] in \
+        HestonNandiModelParameters.factor_types['Funding_Rate']
+    source = instrument['Quote_Source']
+    assert 'carried at r=5.2500% on {} against SPX'.format(REPO) in source
+    assert 'premiums discounting on USD' in source
+
+    # blank, and the block says nothing rather than something wrong
+    plain = equity_hn_block(canned_chain(), FORWARD, E2E_LADDER)[1]['instrument']
+    assert 'Funding_Rate' not in plain and 'Funding_Rate_Type' not in plain
+    assert 'discounting on' not in plain['Quote_Source']
 
 
 def test_a_live_terminal_answers_or_the_smoke_skips_by_name():

@@ -155,7 +155,10 @@ name, block = equity_hn_block(chain, EquityForward(
 
 - **Premiums, not implied vols.** A listed price is a print; its implied vol is a convention.
   `Quote_Type` is `Premium`, `Quoted_Market_Value` is the terminal's own two-way mid, and
-  `Quoted_Bid`/`Quoted_Ask`/`Timestamp` ride beside it.
+  `Quoted_Bid`/`Quoted_Ask`/`Timestamp` ride beside it as columns the family **declares** — so a
+  re-quoted chain on the same contracts is a value tick (`values_hash` moves, `plan_hash` stands)
+  rather than a re-authoring. Under `Premium` the fit reads **no vol surface at all**: a chain is
+  calibrated to its own prints, never to somebody's fit to them.
 - **Every answer is screened, in an order of distrust**, and every refusal lands on a ledger by
   name: `malformed`, `expired`, `unstated-exercise`, `american`, `unpriced`, `one-sided`,
   `crossed`, `off-market`, `wide`, `no-open-interest`, `undated`, `stale`. Half of any index chain
@@ -177,8 +180,11 @@ name, block = equity_hn_block(chain, EquityForward(
   refuses, naming the chain's own expiries.
 - **The weight is `vega x sqrt(open interest) / (1 + spread/cap)`, normalised** — liquidity joins
   the vega weight, because a dead strike is not evidence.
-- **The forward is declared.** `EquityForward` names the curve that funds the carry and the
-  dividend reference, and carries the numbers the strikes were actually placed with; the chain's
+- **The forward is declared, and so is which curve does which job.** `EquityForward` names the
+  curve that **grows** the forward (`funding_rate` — the equity's own repo curve, which
+  `utils.calc_eq_forward` integrates), the curve the **premium discounts on** (`discount_rate`) and
+  the dividend reference, and carries the numbers the strikes were actually placed with. Leave
+  `funding_rate` blank and the two are one curve, which is an index with no borrow spread; the chain's
   own parity-implied dividend yield is measured beside the declared one and reported in
   `Quote_Source` rather than averaged into it. Declare nothing and the chain's own carry is used —
   and then it is *screened*: a **median** over the strikes nearest the forward, so one fat-fingered

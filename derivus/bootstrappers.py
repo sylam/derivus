@@ -27,7 +27,7 @@ import torch
 
 # Internal modules
 from . import utils, pricing, instruments, riskfactors, stochasticprocess
-from .schema import F, OPTION_QUOTE, REQUIRED, Row, partition_market_price
+from .schema import F, OPTION_QUOTE, QUOTE_TWO_WAY, REQUIRED, Row, partition_market_price
 from ._version import __version__
 
 import scipy.optimize
@@ -43,6 +43,30 @@ def resolve_factor(name, price_factors, candidates):
     rate = utils.check_rate_name(name)
     return utils.Factor(next(x for x in candidates if utils.check_tuple_name(
         utils.Factor(x, rate)) in price_factors), rate)
+
+
+def reference_fields(factor_types, required_by_quote_type, notes):
+    """One `F` per named factor reference, then its optional `_Type` sibling - the block a family
+    declares to say which factors its quotes hang off.
+
+    The `_Type` values ARE the candidate list, so a new candidate cannot miss the schema. A
+    reference is declared REQUIRED only where EVERY quote type requires it: one static default
+    cannot say "required under Implied_Volatility and inert under Premium", so the conditional half
+    is stated on the field itself out of `notes` and enforced where the reference is read.
+
+    A module-level function rather than a comprehension in the class body: a class-scope name is
+    not visible inside a comprehension, so neither the quote-type map nor `notes` could be read
+    where the fields are built. The declarations themselves stay on the class.
+    """
+    always = {field for field in factor_types
+              if all(field in required for required in required_by_quote_type.values())}
+    return [F(field, 'Text', default=REQUIRED if field in always else '',
+              description='The {} factor - one of {}{}'.format(
+                  field.replace('_', ' ').lower(), ', '.join(types), notes.get(field, '')))
+            for field, types in factor_types.items()] + [
+        F(field + '_Type', 'Text', default='', values=[''] + list(types),
+          description='Names the factor type explicitly, where the name exists under more than one')
+        for field, types in factor_types.items()]
 
 
 class swaption_schedule_class(namedtuple('swaption_schedule', 'expiry pay_times accruals')):
@@ -613,6 +637,14 @@ class HestonNandiModelParameters(object):
          'curve) enters as $q$ - the drift is $r-q$ and the value carries the extra $e^{-qt}$ factor - so',
          'equity, FX and commodity underlyings are all handled by the same objective.',
          '',
+         'THE FORWARD IS THE PRICER\'S. $r$ is the *Discount_Rate* curve and is what the premium',
+         'discounts on; the forward GROWS at the optional *Funding_Rate* curve instead where one is',
+         'named, which is the curve `utils.calc_eq_forward` integrates - an equity\'s own repo curve',
+         '(**EquityPrice.Interest_Rate**), not the curve its deals discount on. Left blank the two are',
+         'one curve, which is the one-curve world and what an FX pair always was; named, an index',
+         'carrying a repo/borrow spread calibrates at the forward it is priced at rather than one a',
+         'spread away from it.',
+         '',
          'Writing the persistence as $\\psi=\\beta+\\alpha\\gamma^{*2}$ and the stationary per-step variance as',
          '$m=\\frac{\\omega+\\alpha}{1-\\psi}$, the objective',
          '',
@@ -635,6 +667,12 @@ class HestonNandiModelParameters(object):
          'Target premia are the Black prices at the corresponding vol surface point (as per the Clewlow',
          'Strickland bootstrapper) unless *Quote_Type* is **Premium**, in which case the quoted values are',
          'used directly. A previously bootstrapped price factor (if present) is used to warm start the fit.',
+         '',
+         'WHICH REFERENCES ARE REQUIRED IS THE QUOTE TYPE\'S. **Implied_Volatility** reads *Underlying*,',
+         '*Volatility* and *Discount_Rate*; **Premium** reads *Underlying* and *Discount_Rate* and NO',
+         'surface at all - a listed chain is calibrated to its own prints rather than to somebody\'s fit',
+         'to them. *Yield* and *Funding_Rate* are optional under both. A reference a block does not name',
+         'and its quote type reads REFUSES by name; it does not skip.',
          '',
          'MONEYNESS CONVENTION. Unlike the other bootstrappers this one queries the surface AWAY FROM',
          'THE MONEY, where the five moneyness conventions in this framework no longer coincide, so the',
@@ -660,7 +698,40 @@ class HestonNandiModelParameters(object):
     factor_types = {'Underlying': ['FxRate', 'EquityPrice', 'CommodityPrice', 'FuturesPrice'],
                     'Volatility': utils.TwoDimensionalFactors,
                     'Discount_Rate': ['InterestRate'],
-                    'Yield': ['DividendRate', 'InterestRate']}
+                    'Yield': ['DividendRate', 'InterestRate'],
+                    'Funding_Rate': ['InterestRate']}
+
+    #: WHAT EACH QUOTE TYPE REQUIRES. `Implied_Volatility` synthesises its target premium off the
+    #: surface, so the surface is an input like the spot; `Premium` is handed the number and never
+    #: looks at one, so a `Volatility` NAME on such a block is INERT - it is not resolved and the
+    #: book need not carry it. That is what lets a chain-sourced ladder fit with no surface
+    #: anywhere, which is the circularity the chain-not-surface ruling exists to avoid, while the
+    #: block still records the surface its marks will be read off.
+    #:
+    #: Declared here rather than as a `default=REQUIRED` the branch reads past: a field required
+    #: under one quote type and inert under the other cannot say so with one static default, and
+    #: the one it used to carry made the surface a hard precondition of both.
+    quote_type_references = {'Implied_Volatility': ('Underlying', 'Volatility', 'Discount_Rate'),
+                             'Premium': ('Underlying', 'Discount_Rate')}
+
+    #: The CARRY references, read whenever named and required by no quote type - each with an
+    #: engine fallback stated where it is read: no `Yield` is no carry, no `Funding_Rate` is a
+    #: forward funded by the `Discount_Rate` curve. What a fit reads is these plus whatever its
+    #: quote type requires; a reference in neither list is not looked at.
+    optional_references = ('Yield', 'Funding_Rate')
+
+    #: What an optional reference's ABSENCE means, appended to its declared description - so the
+    #: panel says what leaving the field blank does rather than only what filling it in does.
+    reference_notes = {
+        'Volatility': '. REQUIRED under Quote_Type Implied_Volatility, which prices its target '
+                      'premium off it; INERT under Premium, where the quote IS the premium and no '
+                      'surface is read at all',
+        'Yield': '. Blank is no carry, q = 0',
+        'Funding_Rate': '. The curve the FORWARD grows at - an equity\'s own repo curve '
+                        '(EquityPrice.Interest_Rate), which is what utils.calc_eq_forward '
+                        'integrates, rather than the curve the premium discounts on. Blank funds '
+                        'the forward off Discount_Rate, which is the one-curve world and what an '
+                        'FX pair always was'}
     # Surface_Types whose vol at a strike is a TABLE LOOKUP, hence usable here. SVI/Skew are
     # parametric - their vol needs the ATM_Ref/wing machinery of the pricing path (Factor2D
     # returns the parameters, not a vol), so a synthesised premium would be silently wrong.
@@ -672,16 +743,10 @@ class HestonNandiModelParameters(object):
     #: ladder identifies something else.
     identification_note = ('five parameters: the ATM term structure is what identifies H0, Beta '
                            'and Omega')
-    # the four factor references, each with the optional `_Type` its `resolve` reads, whose valid
-    # values ARE the candidate list - one source, so a new candidate cannot miss the schema.
-    # `Yield` is the one reference the fit runs without; the rest are hard-read.
-    fields = [F(field, 'Text', default='' if field == 'Yield' else REQUIRED,
-                description='The {} factor - one of {}'.format(
-                    field.replace('_', ' ').lower(), ', '.join(types)))
-              for field, types in factor_types.items()] + [
-        F(field + '_Type', 'Text', default='', values=[''] + list(types),
-          description='Names the factor type explicitly, where the name exists under more than one')
-        for field, types in factor_types.items()] + [
+    # the five factor references, each with the optional `_Type` its `resolve` reads, whose valid
+    # values ARE the candidate list - one source, so a new candidate cannot miss the schema. What is
+    # REQUIRED is derived from `quote_type_references`; see `reference_fields`.
+    fields = reference_fields(factor_types, quote_type_references, reference_notes) + [
         F('Quote_Type', 'Text', default='Implied_Volatility',
           values=['Implied_Volatility', 'Premium'],
           description='Whether Quoted_Market_Value is a vol to price at or a premium to fit'),
@@ -703,8 +768,9 @@ class HestonNandiModelParameters(object):
                       '- where the surface does not carry an expiry the ladder asks for - the '
                       'nearest quoted one used instead. Logged beside the fitted parameters, so a '
                       'substituted pillar is in the record rather than interpolated silently'),
-        F('European_Options', 'Table', default='null', row=Row(OPTION_QUOTE),
-          description='The option quotes the five parameters are fitted to')]
+        F('European_Options', 'Table', default='null', row=Row(OPTION_QUOTE + QUOTE_TWO_WAY),
+          description='The option quotes the five parameters are fitted to, each with the two-way '
+                      'it was dealt on and the print\'s own clock where the source printed them')]
 
     def __init__(self, param, device, dtype):
         self.device = device
@@ -718,6 +784,70 @@ class HestonNandiModelParameters(object):
             return None
         return resolve_factor(instrument[field], price_factors, [instrument[field + '_Type']]
                               if instrument.get(field + '_Type') else cls.factor_types[field])
+
+    @classmethod
+    def resolve_references(cls, market_price, instrument, price_factors, factor_interp):
+        """`{field: constructed factor}` for every reference this block names and its quote type
+        reads - and a NAMED REFUSAL for every one it needs and cannot get.
+
+        A MISSING REFERENCE REFUSES; IT DOES NOT SKIP. What stood here logged
+        `Unable to bootstrap ... - skipping` and moved on: no factor written, no exception, and a
+        caller told nothing - the hollow-container failure mode in bootstrap clothing, and one that
+        a chain-sourced block hit on the very reference its quote type never reads. Every refusal
+        below names the block, the field, what the quote type requires and the remedy.
+
+        WHAT IS REQUIRED IS THE QUOTE TYPE'S (`quote_type_references`): `Implied_Volatility`
+        requires the `Volatility` surface to build its target premium, `Premium` is handed the
+        number and never looks at one - so a `Volatility` NAME on a premium block is not resolved
+        at all and the book need not carry the surface. Both require `Underlying` and
+        `Discount_Rate`. `optional_references` - the carry pair - are read whenever named and
+        required by neither: absent, they are no carry and a forward funded by the discount curve.
+
+        The refusal is scoped to THIS block: everything the family needs is resolved here, before
+        an option is looked at, so a book carrying two ladders fails on the one that is wrong.
+        """
+        quote_type = instrument.get('Quote_Type')
+        if quote_type not in cls.quote_type_references:
+            raise ValueError(
+                '{}: Quote_Type {!r} is not one this family fits - it takes {}. Implied_Volatility '
+                'prices each quote at the Volatility surface and fits that premium; Premium fits '
+                'the number in Quoted_Market_Value directly'.format(
+                    market_price, quote_type, ' or '.join(sorted(cls.quote_type_references))))
+        required = cls.quote_type_references[quote_type]
+        resolved = {}
+        for field in tuple(required) + cls.optional_references:
+            if not instrument.get(field):
+                if field in required:
+                    raise ValueError(
+                        '{}: Quote_Type {} requires {}, and {} is blank. Name the factor the fit '
+                        'should read; a reference the block does not name is a calibration that '
+                        'writes no price factor{}'.format(
+                            market_price, quote_type, '/'.join(required), field,
+                            '. Quote the premiums directly (Quote_Type Premium), which requires '
+                            'only {}, if the book carries no surface to price them off'.format(
+                                '/'.join(cls.quote_type_references['Premium']))
+                            if field == 'Volatility' else ''))
+                continue
+            try:
+                factor = cls.resolve(instrument, field, price_factors)
+            except StopIteration:
+                raise ValueError(
+                    '{}: {} names {!r} and the book\'s Price Factors carry no {} block for it. Add '
+                    'the factor, or point the field at one the book carries'.format(
+                        market_price, field, instrument[field],
+                        '/'.join('{}.{}'.format(candidate, instrument[field])
+                                 for candidate in ([instrument[field + '_Type']]
+                                                   if instrument.get(field + '_Type')
+                                                   else cls.factor_types[field]))))
+            try:
+                resolved[field] = riskfactors.construct_factor(
+                    factor, price_factors, factor_interp)
+            except Exception as failure:
+                raise ValueError(
+                    '{}: {} names {!r}, which resolved to {} and would not construct: {}'.format(
+                        market_price, field, instrument[field],
+                        utils.check_tuple_name(factor), failure))
+        return resolved
 
     @staticmethod
     def reparam(x):
@@ -919,6 +1049,12 @@ class HestonNandiModelParameters(object):
         `K = F exp(-sigma^2 T/2)` the surface was built under, and each wing is the strike whose
         premium-adjusted forward delta IS the pillar, found by inverting the same delta the Malz
         solve inverted off the same vols.
+
+        NO FUNDING CURVE IS DECLARED, and an FX pair needs none: `Discount_Rate` is the domestic
+        curve and `Yield` the foreign one, which is exactly the pair `utils.calc_fx_forward` builds
+        the priced forward from - so the curve that funds the calibrated forward already IS the one
+        the pricer grows it on. `Funding_Rate` exists for the third curve an EQUITY has, its own
+        repo, and leaving it blank is what keeps every FX fit the arithmetic it always was.
 
         THE ORIENTATION. An `FXVol.A.B` surface's x-axis is `log(F/K)` for the pair `A` priced in
         `B`; the 0D factor this family fits is an `FxRate`, priced in the DOMESTIC currency. So the
@@ -1152,10 +1288,38 @@ class HestonNandiModelParameters(object):
         error.backward()
         return float(error.detach()), x_t.grad.cpu().numpy()
 
+    @staticmethod
+    def effective_yield(discount_rate, funding, carry, t):
+        """The `q` the objective runs on at accrual `t`: the dividend (or foreign) carry, plus the
+        BASIS between the curve the premium discounts on and the curve the forward grows at.
+
+        THE FORWARD THE FIT BUILDS IS THE FORWARD THE PRICER BUILDS. The family's whole arithmetic
+        hangs off two numbers, `r` and `q`: the forward is `spot exp((r-q)t)`, the per-step carry is
+        `(r-q)t/n` and the value carries `exp(-qt)` so that it discounts at `r`. Put the funding
+        basis `r - f` into `q` and the forward grows at `f - carry`, which is what
+        `utils.calc_eq_forward` integrates (the equity's own repo curve against its dividend rate),
+        while the premium still discounts at the `Discount_Rate` curve's `r`. One reference used to
+        do both jobs, so an index carrying a repo spread calibrated at a forward the pricer never
+        visits.
+
+        NO `Funding_Rate` IS EXACTLY THE OLD ARITHMETIC, to the bit: the basis term is not
+        evaluated at all, so `q` is the number this family has always computed. Where one IS
+        declared and names the discount curve, `r - f` is 0.0 and `q + 0.0` is `q`.
+
+        Every leg is read at the accrual `t` the `Discount_Rate` curve's own day count gives, which
+        is the clock the whole block already runs on.
+        """
+        q = 0.0 if carry is None else float(carry.current_value(t))
+        return q if funding is None else q + (discount_rate - float(funding.current_value(t)))
+
     def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices, calendars, debug=None):
         '''
         Calibrates the risk neutral Heston-Nandi GARCH(1,1) parameters to a set of European options on any
         spot underlying and writes them out as a HestonNandiModelParameters price factor.
+
+        Every reference the block names is resolved by `resolve_references` BEFORE an option is
+        looked at, and a missing one REFUSES by name rather than logging a skip - see that method.
+        Which references are required is the quote type's: a `Premium` block reads no vol surface.
         '''
 
         def tensor(x):
@@ -1168,22 +1332,15 @@ class HestonNandiModelParameters(object):
             if market_factor.type == self.market_factor_type:
                 instrument = implied_params['instrument']
 
-                # resolve the underlying spot, its vol surface, the discount curve and any yield
-                # this shouldn't fail - if it does, need to log it and move on
-                try:
-                    vol_surface = riskfactors.construct_factor(
-                        self.resolve(instrument, 'Volatility', price_factors), price_factors, factor_interp)
+                # the underlying spot, the discount curve, and - where this quote type reads them -
+                # the vol surface, the yield and the forward's own funding curve
+                factors = self.resolve_references(
+                    market_price, instrument, price_factors, factor_interp)
+                underlying, discount = factors['Underlying'], factors['Discount_Rate']
+                carry, funding = factors.get('Yield'), factors.get('Funding_Rate')
+                vol_surface = factors.get('Volatility')
+                if vol_surface is not None:
                     vol_surface.delta = sys_params.get('Volatility_Delta', 0.0)
-                    underlying = riskfactors.construct_factor(
-                        self.resolve(instrument, 'Underlying', price_factors), price_factors, factor_interp)
-                    discount = riskfactors.construct_factor(
-                        self.resolve(instrument, 'Discount_Rate', price_factors), price_factors, factor_interp)
-                    yield_factor = self.resolve(instrument, 'Yield', price_factors)
-                    carry = riskfactors.construct_factor(
-                        yield_factor, price_factors, factor_interp) if yield_factor else None
-                except Exception:
-                    logging.error('Unable to bootstrap {0} - skipping'.format(market_price), exc_info=True)
-                    continue
 
                 spot = float(underlying.current_value()[0])
                 quote_type = instrument['Quote_Type']
@@ -1194,15 +1351,16 @@ class HestonNandiModelParameters(object):
 
                 # a mis-looked-up vol would produce a wrong-but-converged calibration - the worst
                 # outcome - so refuse the surface rather than guess at its convention
-                subtype = vol_surface.get_subtype()
-                if quote_type == 'Implied_Volatility' and subtype[0] not in self.tabular_surfaces:
-                    logging.error(
-                        'Cannot bootstrap {0} - volatility {1} has Surface_Type {2} (Moneyness_Rule {3}); '
-                        'only {4} surfaces can be queried at a strike. Quote premiums directly '
-                        '(Quote_Type Premium) instead'.format(
-                            market_price, instrument['Volatility'], subtype[0], subtype[1],
-                            '/'.join(self.tabular_surfaces)))
-                    continue
+                if quote_type == 'Implied_Volatility':
+                    subtype = vol_surface.get_subtype()
+                    if subtype[0] not in self.tabular_surfaces:
+                        raise ValueError(
+                            '{0}: volatility {1} has Surface_Type {2} (Moneyness_Rule {3}); only '
+                            '{4} surfaces carry a vol AT A STRIKE, which is what Quote_Type '
+                            'Implied_Volatility prices its target premium at. Quote the premiums '
+                            'directly (Quote_Type Premium) instead'.format(
+                                market_price, instrument['Volatility'], subtype[0], subtype[1],
+                                '/'.join(self.tabular_surfaces)))
 
                 # need to loop over this and create some market prices - group by expiry so that all
                 # the strikes of one expiry share a single characteristic function recursion
@@ -1211,7 +1369,7 @@ class HestonNandiModelParameters(object):
                     t = discount.get_day_count_accrual(
                         sys_params['Base_Date'], (option['Expiry_Date'] - sys_params['Base_Date']).days)
                     r = float(discount.current_value(t))
-                    q = float(carry.current_value(t)) if carry is not None else 0.0
+                    q = self.effective_yield(r, funding, carry, t)
                     forward = spot * np.exp((r - q) * t)
                     sign = 1.0 if option['Option_Type'] == 'Call' else -1.0
                     option['Strike'] = forward if not option['Strike'] else option['Strike']
@@ -1230,16 +1388,13 @@ class HestonNandiModelParameters(object):
                         option['Moneyness'] = moneyness
                         option['Premium'] = utils.black_european_option_price(
                             forward, option['Strike'], r, sigma, t, option['Units'], sign)
-                    elif quote_type == 'Premium':
+                    else:
                         option['Premium'] = option['Units'] * option['Quoted_Market_Value']
                         # back out the Black vol of the quote (seeds the fit and the diagnostics)
                         call = option['Quoted_Market_Value'] + (0.0 if sign > 0 else
                                                                 forward - option['Strike']) * np.exp(-r * t)
                         sigma = np.sqrt(utils.bs_implied_total_var(
                             call, spot * np.exp(-q * t), option['Strike'], r * t, 1) / t)
-                    else:
-                        logging.error('quote_type {} not supported yet'.format(quote_type))
-                        continue
                     option['sigma'] = sigma
                     expiries.setdefault(option['n'], []).append(option)
 
@@ -1757,20 +1912,15 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
                     'InterestRatePrices, GBMAssetPriceTSModelPrices, HullWhite2FactorModelPrices), '
                     'which solve through torch rather than through brentq'.format(market_price))
 
-            try:
-                vol_surface = riskfactors.construct_factor(
-                    self.resolve(instrument, 'Volatility', price_factors), price_factors, factor_interp)
+            # the references this quote type reads, resolved before an option is looked at - a
+            # missing one refuses by name (`resolve_references`), inherited from the plain family
+            factors = self.resolve_references(
+                market_price, instrument, price_factors, factor_interp)
+            underlying, discount = factors['Underlying'], factors['Discount_Rate']
+            carry, funding = factors.get('Yield'), factors.get('Funding_Rate')
+            vol_surface = factors.get('Volatility')
+            if vol_surface is not None:
                 vol_surface.delta = sys_params.get('Volatility_Delta', 0.0)
-                underlying = riskfactors.construct_factor(
-                    self.resolve(instrument, 'Underlying', price_factors), price_factors, factor_interp)
-                discount = riskfactors.construct_factor(
-                    self.resolve(instrument, 'Discount_Rate', price_factors), price_factors, factor_interp)
-                yield_factor = self.resolve(instrument, 'Yield', price_factors)
-                carry = riskfactors.construct_factor(
-                    yield_factor, price_factors, factor_interp) if yield_factor else None
-            except Exception:
-                logging.error('Unable to bootstrap {0} - skipping'.format(market_price), exc_info=True)
-                continue
 
             spot = float(underlying.current_value()[0])
             quote_type = instrument['Quote_Type']
@@ -1799,22 +1949,23 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
             tolerance = float(instrument.get('Tolerance', declared['Tolerance']))
             pillar_tol = float(instrument.get('Pillar_Tolerance', declared['Pillar_Tolerance']))
 
-            subtype = vol_surface.get_subtype()
-            if quote_type == 'Implied_Volatility' and subtype[0] not in self.tabular_surfaces:
-                logging.error(
-                    'Cannot bootstrap {0} - volatility {1} has Surface_Type {2} (Moneyness_Rule {3}); '
-                    'only {4} surfaces can be queried at a strike. Quote premiums directly '
-                    '(Quote_Type Premium) instead'.format(
-                        market_price, instrument['Volatility'], subtype[0], subtype[1],
-                        '/'.join(self.tabular_surfaces)))
-                continue
+            if quote_type == 'Implied_Volatility':
+                subtype = vol_surface.get_subtype()
+                if subtype[0] not in self.tabular_surfaces:
+                    raise ValueError(
+                        '{0}: volatility {1} has Surface_Type {2} (Moneyness_Rule {3}); only {4} '
+                        'surfaces carry a vol AT A STRIKE, which is what Quote_Type '
+                        'Implied_Volatility prices its target premium at. Quote the premiums '
+                        'directly (Quote_Type Premium) instead'.format(
+                            market_price, instrument['Volatility'], subtype[0], subtype[1],
+                            '/'.join(self.tabular_surfaces)))
 
             rows = []
             for option in instrument['European_Options']:
                 t = discount.get_day_count_accrual(
                     sys_params['Base_Date'], (option['Expiry_Date'] - sys_params['Base_Date']).days)
                 r = float(discount.current_value(t))
-                q = float(carry.current_value(t)) if carry is not None else 0.0
+                q = self.effective_yield(r, funding, carry, t)
                 forward = spot * np.exp((r - q) * t)
                 sign = 1.0 if option['Option_Type'] == 'Call' else -1.0
                 option['Strike'] = forward if not option['Strike'] else option['Strike']
@@ -1828,15 +1979,12 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
                     sigma += vol_surface.delta
                     option['Premium'] = utils.black_european_option_price(
                         forward, option['Strike'], r, sigma, t, option['Units'], sign)
-                elif quote_type == 'Premium':
+                else:
                     option['Premium'] = option['Units'] * option['Quoted_Market_Value']
                     call = option['Quoted_Market_Value'] + (0.0 if sign > 0 else
                                                             forward - option['Strike']) * np.exp(-r * t)
                     sigma = np.sqrt(utils.bs_implied_total_var(
                         call, spot * np.exp(-q * t), option['Strike'], r * t, 1) / t)
-                else:
-                    logging.error('quote_type {} not supported yet'.format(quote_type))
-                    continue
                 option['sigma'] = sigma
                 # the per-step carry and the yield rescale, exactly as the plain family builds them
                 rows.append((option, (r - q) * t / option['n'], np.exp(-q * t), forward))

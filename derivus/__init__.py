@@ -239,7 +239,8 @@ def run_hedgemontecarlo(context, prec=torch.float32, overrides=None):
     return calc, out
 
 
-def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, res_queue=None):
+def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, res_queue=None,
+            deterministic_batches=False, device=None):
     """
     Runs a credit monte carlo calculation on the provided context
     :param res_queue: If not None, returns the results in this queue
@@ -248,6 +249,16 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
     :param context: a Context object
     :param overrides: a dictionary of overrides merged over the context's calculation parameters
     :param prec: the numerical precision to use (default float32)
+    :param deterministic_batches: seed every batch from its GLOBAL index rather than seeding the
+        worker once, so the job is deterministic in the number of workers - the same document
+        sharded n ways and run on one device produce bit-identical batches. Set by the
+        `runparallel` dispatch and by nothing else: off is the historical stream, bit for bit.
+        See `Credit_Monte_Carlo.execute` for the semantics and the one boundary it refuses at.
+    :param device: the device to run on, overriding the choice below. Lives here rather than in the
+        job document for the same reason `prec` does: which silicon runs a calculation is a
+        property of the box, not of the trade. `None` keeps the historical choice - `cuda` when it
+        is there, `cpu` when it is not - and passing `'cpu'` shards across processes on a CUDA box,
+        which is what makes the deterministic sharding testable without one.
     :return: a tuple containing the calculation object, output dictionary and exposure profile
     """
     from .calculation import construct_calculation, Credit_Monte_Carlo
@@ -257,13 +268,23 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
         {'Base_Date': context.params['System Parameters']['Base_Date'],
          'Currency': context.params['System Parameters']['Base_Currency']})
 
-    if torch.cuda.is_available():
-        # CUBLAS_WORKSPACE_CONFIG is what makes cuBLAS reductions deterministic run to run
-        os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
-        device = torch.device("cuda", job_id)
-        torch.cuda.empty_cache()
+    # CUBLAS_WORKSPACE_CONFIG is what makes cuBLAS reductions deterministic run to run
+    if device is not None:
+        device = torch.device(device)
+    elif torch.cuda.device_count():
+        # the DEVICE COUNT, not `is_available()`: a box with the CUDA runtime but nothing visible
+        # (CUDA_VISIBLE_DEVICES empty) reports available with a count of zero, and cpu is the
+        # honest answer there rather than a modulo by zero.
+        # Workers are NOT capped by that count - a job may ask for more of them than the box has
+        # devices, and the surplus share. job_id still fixes WHICH device, so the assignment stays
+        # a function of the worker index and nothing else.
+        device = torch.device("cuda", job_id % torch.cuda.device_count())
     else:
         device = torch.device("cpu")
+
+    if device.type == 'cuda':
+        os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+        torch.cuda.empty_cache()
 
     rundate = calc_params['Base_Date'].strftime('%Y-%m-%d')
     time_grid = str(declared_defaults(Credit_Monte_Carlo, calc_params)['Time_Grid'])
@@ -321,36 +342,70 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
             ns['Collateral_Assets']['Cash_Collateral'] = [ns['Collateral_Assets']['Cash_Collateral'][0]]
 
     calc = construct_calculation('Credit_Monte_Carlo', context, device=device, prec=prec)
-    out = calc.execute(params_mc, job_id, num_jobs)
+    out = calc.execute(params_mc, job_id, num_jobs, deterministic_batches)
     out['Results']['exposure_profile'] = summarize_data(
         out['Results']['mtm'], params_mc.get('Percentile', '95').replace(' ', ''))
 
+    # what this worker RAN, not what the document asked for: execute() rebinds params through
+    # declared_defaults before applying `//= num_jobs`, so the division never reached this dict and
+    # a consumer sizing paths off Params on a sharded run over-counted them by num_jobs. Identity
+    # when num_jobs is 1, which is every unsharded caller.
+    params_mc['Simulation_Batches'] = out['Stats']['Simulation_Batches']
+
     if res_queue is not None:
-        # parent process must summarize data
-        res_queue.put({'Results': out['Results'], 'Stats': out['Stats'], 'Params':params_mc, 'Reference':context.deals['Attributes']['Reference']})
+        # 'Job' is what lets the parent merge in a FIXED order: the queue hands payloads back in
+        # completion order, and a pooled reduction whose operand order is a race is not
+        # deterministic in n however carefully the batches were seeded.
+        res_queue.put({'Results': out['Results'], 'Stats': out['Stats'], 'Params':params_mc, 'Reference':context.deals['Attributes']['Reference'], 'Job': job_id})
 
     return calc, out
 
 
-def quote_delta(name, points, values):
+def worker_count(runparallel):
+    """How many workers `runparallel` asks for - the knob is that argument, and there is no second.
+
+    `True` keeps the historical meaning, one worker per visible CUDA device, but falls back to a
+    SINGLE worker where there is no CUDA rather than to zero: `torch.cuda.device_count()` returns 0
+    on a CPU box, and zero workers would leave the parent waiting on a queue nothing ever writes to.
+    An int asks for exactly that many and is deliberately NOT capped by the device count - workers
+    share devices through `job_id % device_count`, so a four-way shard runs on a two-device box and
+    an n-way shard runs on a box with no device at all.
+
+    `isinstance(True, int)` is True in Python, so the bool is matched by identity first.
+    """
+    if runparallel is True:
+        return torch.cuda.device_count() or 1
+    count = int(runparallel)
+    if count < 1:
+        raise ValueError(
+            'runparallel is a worker count: True for one per device, or an int >= 1, got '
+            '{!r}'.format(runparallel))
+    return count
+
+
+def quote_delta(name, container, points, values):
     """One `Market Prices` block's patched value rows: the delta merged onto what each row carries.
 
-    `Points` is the one key a quote patch may name - everything else on a block is plan - and the
-    row list is exactly as long as the block's, because dropping or adding a quote re-authors the
-    instrument set rather than moving a number. Per row: a named field replaces, an omitted one
+    `container` is the block's OWN quote table - `schema.quote_rows` names it off the declarations,
+    `Points` for a curve strip or an FX smile and `European_Options` for a Heston-Nandi ladder - and
+    it is the one key a quote patch may name. Everything else on a block is plan, and a family whose
+    rows declare no value keys has no such table, so every key a patch names on one refuses.
+
+    The row list is exactly as long as the block's, because dropping or adding a quote re-authors
+    the instrument set rather than moving a number. Per row: a named field replaces, an omitted one
     keeps, and `null` clears every value key outside `schema.MARKET_QUOTE_REQUIRED`; a null
     `Quoted_Market_Value` refuses, because a mid is moved. WHICH keys may be cleared is a
     declaration, not a name spelled here.
     """
     for field in values:
-        if field != 'Points':
+        if field != container:
             raise ValueError('{}: {} is structural, not a value'.format(name, field))
-    patched = values.get('Points', [])
+    patched = values.get(container, [])
     if len(patched) != len(points):
         raise ValueError(
-            '{}: the patch carries {} Points row(s) against the block\'s {} - a changed row count '
+            '{}: the patch carries {} {} row(s) against the block\'s {} - a changed row count '
             'is a new plan; re-author the block deliberately'.format(
-                name, len(patched), len(points)))
+                name, len(patched), container or 'quote', len(points)))
     rows = []
     for point, row in zip(points, patched):
         # key-presence, not content: a null the patch does not name is the row's own current
@@ -539,13 +594,14 @@ class Context:
 
         Everything a job may change without recompiling - spots, the rate column of every curve,
         the vol column of every surface, the calibrated model parameters, and every quote a
-        `Market Prices` block carries on a `Points` row. What sizes a tenor grid, wires a process or
+        `Market Prices` block carries on a quote row. What sizes a tenor grid, wires a process or
         picks a code path is plan and does not appear, nor does a quote key holding `null`, which is
         a source with no print rather than a number.
 
         The two sections cannot collide in one dict: every family type string ends in `Prices` and
-        no factor type does. A market-price entry is keyed `{'Points': [row, ...]}`, the shape
-        `patch_market` takes it back in.
+        no factor type does. A market-price entry is keyed by the block's OWN quote table -
+        `{'Points': [row, ...]}` for a curve strip or an FX smile, `{'European_Options': [...]}` for
+        a Heston-Nandi ladder - which is the shape `patch_market` takes it back in.
         """
         patch = {}
         for name, block in self.current_cfg.params['Price Factors'].items():
@@ -555,7 +611,7 @@ class Context:
         for name, block in self.current_cfg.params.get('Market Prices', {}).items():
             values = schema.partition_market_price(block)[1]
             if values:
-                patch[name] = {'Points': values}
+                patch[name] = {schema.quote_rows(block['instrument'])[0]: values}
         return patch
 
     def patch_market(self, patch):
@@ -567,9 +623,10 @@ class Context:
         a key set that grows or shrinks is a different plan, not a different value.
 
         A name resolves against `Price Factors` first and `Market Prices` second, and one in neither
-        section says so naming both. A market-price name takes exactly one key, `Points`, carrying a
-        list as long as the block's own and only `schema.MARKET_QUOTE_VALUES` per row; `null` clears
-        a two-way side or a `Timestamp`, and a null mid refuses.
+        section says so naming both. A market-price name takes exactly one key, the block's own
+        quote table (`schema.quote_rows`), carrying a list as long as the block's and only
+        `schema.MARKET_QUOTE_VALUES` per row; `null` clears a two-way side or a `Timestamp`, and a
+        null mid refuses.
 
         A quote patch does NOT re-bootstrap: the price factors the last bootstrap wrote stand as
         they are, and `values_hash` records the board that is actually standing.
@@ -587,9 +644,10 @@ class Context:
                 factors[name] = schema.apply_values(
                     type_name, structural, {**value_fields, **values})
             elif name in prices:
+                container, points = schema.quote_rows(prices[name]['instrument'])
                 prices[name] = schema.apply_market_values(
                     schema.partition_market_price(prices[name])[0],
-                    quote_delta(name, prices[name]['instrument'].get('Points') or [], values))
+                    quote_delta(name, container, points or [], values))
             else:
                 raise KeyError(
                     '{} is neither a price factor nor a market price'.format(name))
@@ -599,7 +657,9 @@ class Context:
 
         A plan is `params` and `deals` less the THREE things that are replay coordinates of their
         own - every `bind='value'` field of a price factor, `schema.MARKET_QUOTE_VALUES` on a
-        `Market Prices` `Points` row, both of which `values_hash` carries, and `Random_Seed`.
+        `Market Prices` row that DECLARES them (`schema.MARKET_QUOTE_CONTAINERS`, derived from the
+        families rather than `Points` by name), both of which `values_hash` carries, and
+        `Random_Seed`.
         Everything else is in, `Batch_Size` and `Simulation_Batches` included: they change the
         realized numbers, so a replay has to pin them. A vol tick therefore moves `values_hash` and
         leaves this bit-identical; a moved pillar, a flipped `Use` or a re-authored benchmark lands
@@ -701,12 +761,28 @@ class Context:
         else:
             raise Exception('Unknown Calculation {}'.format(self.current_cfg.deals['Calculation']['Object']))
 
-    def Credit_Monte_Carlo(self, overrides=None, runparallel=False):
+    def Credit_Monte_Carlo(self, overrides=None, runparallel=False, device=None):
+        """Shard one calculation across worker processes, deterministically in their number.
+
+        `runparallel` is the worker-count knob (see `worker_count`): `True` for one per visible
+        CUDA device, an int for exactly that many. Workers take CONTIGUOUS batch ranges and every
+        batch seeds from its global index, so the same document sharded n ways and run unsharded
+        cover the same batches in the same order - the shard count changes the wall clock and not
+        the answer. `device` overrides where they run and is what lets the whole thing shard across
+        processes on a box with no CUDA at all.
+
+        Returns a dict of LISTS rather than the `(calc, out)` tuple - one entry per worker under
+        each of `Results`, `Stats`, `Params`, `Reference` and `Job`, ordered BY WORKER rather than
+        by which finished first - and the caller pools them. Pool the `mtm` and re-summarize:
+        `EE`/`ENE` are means over paths and pool by averaging equal shards, `PFE_<p>` is a
+        percentile and does not.
+        """
         if runparallel:
-            num_workers = torch.cuda.device_count()
+            num_workers = worker_count(runparallel)
             results = mp.Queue()
             workers = [mp.Process(target=run_cmc, args=(
-                self.current_cfg, torch.float32, overrides, False, i, num_workers, results))
+                self.current_cfg, torch.float32, overrides, i, num_workers, results),
+                kwargs={'deterministic_batches': True, 'device': device})
                             for i in range(num_workers)]
 
             for w in workers:
@@ -723,6 +799,10 @@ class Context:
                 if w.is_alive():
                     w.close()
 
+            # the queue hands them back in completion order, which is a race; the merge is keyed
+            # by worker so a pooled reduction reads its operands in the same order every run
+            post_processing.sort(key=lambda payload: payload['Job'])
+
             post_results = {}
             for output in post_processing:
                 data = dict(output)
@@ -730,7 +810,7 @@ class Context:
                     post_results.setdefault(k, []).append(v)
             return post_results
         else:
-            return run_cmc(self.current_cfg, overrides=overrides)
+            return run_cmc(self.current_cfg, overrides=overrides, device=device)
 
     def Base_Valuation(self, overrides=None):
         return run_baseval(self.current_cfg, overrides=overrides)

@@ -433,6 +433,35 @@ class Calculation(object):
                 self.all_tenors, self.time_grid, self.config.holidays, self.calc_stats, unit)
 
 
+#: The quasi-random stream's fixed identity: the scramble seed of every Sobol engine and the
+#: offset each one starts at. Historical values, and deliberately NOT derived from the job's
+#: `Random_Seed` - which is why sharding raises a question about POSITION in this stream and not
+#: about randomness, and why `batch_seed` below has no counterpart here.
+QUASI_SEED = 1234
+QUASI_ANCHOR = 1024
+
+
+def batch_seed(random_seed, batch_index):
+    """The seed a batch runs under: a 64-bit mix of (seed, global batch), not `seed + batch`.
+
+    Deterministic sharding reseeds ONCE PER BATCH, so a 1024-batch job asks for 1024 seeds and
+    consecutive integers are the one input a generator's initialization is least defensible on.
+    CUDA's Philox is counter-based and key-independent by construction, so it does not care. CPU
+    MT19937 is the gray case: its 624-word state is expanded from the seed by a linear recurrence,
+    and near seeds producing near initial states is exactly the correlation the literature declines
+    to rule out rather than one it endorses. A single SplitMix64 round costs three multiplies and
+    closes it for both, so the question does not have to be answered per backend.
+
+    ONE spelling, here, because a sharded run and an unsharded-but-batch-seeded run deriving the
+    same batch's seed two ways would be a determinism bug that no gate comparing shard counts could
+    see. Masked to 63 bits: `torch.manual_seed` takes a signed 64-bit value.
+    """
+    z = (random_seed + (batch_index + 1) * 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF
+    z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
+    z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
+    return (z ^ (z >> 31)) & 0x7FFFFFFFFFFFFFFF
+
+
 class CMC_State(utils.Calculation_State):
     def __init__(self, cholesky, static_buffer, batch_size, one, mcmc_sims, report_currency,
                  seed, job_id, num_jobs, scale_survival=False, nomodel='Constant', keep_tensor=False):
@@ -458,9 +487,16 @@ class CMC_State(utils.Calculation_State):
         self.t_cholesky = cholesky
         self.t_random_numbers = None
         self.t_Scenario_Buffer = {}
-        self.sobol = {}
         self.t_quasi_rng = {}
         self.t_quasi_rng_batch = {}
+        # Each dimension's Sobol engine and the absolute position it stands at. Tracking the
+        # position is what lets one `quasi_rng` serve both arms: the historical one asks for where
+        # it already is, an anchored one asks for its global batch's own place in the sequence.
+        self.sobol_position = {}
+        # The GLOBAL index of the batch being run, set by `set_quasi_batch` under deterministic
+        # sharding only. None leaves `quasi_rng` indexing by this process's own draw count, which
+        # is every unsharded caller.
+        self.quasi_batch = None
         # seed each job by its offset
         torch.manual_seed(seed + job_id)
         self.job_id = job_id
@@ -468,19 +504,57 @@ class CMC_State(utils.Calculation_State):
         self.scale_survival = scale_survival
 
     def quasi_rng(self, dimension, sample_size):
-        seed = 1234
-        fast_forward = 1024
+        """One quasi-random draw, memoized per `(dimension, sample_size, index)`.
 
-        if dimension not in self.sobol:
-            self.sobol[dimension] = torch.quasirandom.SobolEngine(dimension=dimension, scramble=True, seed=seed)
-            self.sobol[dimension].fast_forward(fast_forward)
+        THE ONLY THING SHARDING CHANGES IS WHERE THE DRAW IS TAKEN FROM. The stream is a fixed
+        scrambled Sobol sequence starting at a fixed offset, neither derived from the job's
+        `Random_Seed`, so it is perfectly reproducible; what is not reproducible is POSITION. The
+        historical arm indexes by THIS PROCESS's own draw count for the shape and reads wherever
+        its engine has reached - a function of everything drawn before it here - so a worker
+        holding only part of a job reads the points an earlier batch should have had. The anchored
+        arm (`set_quasi_batch`, deterministic sharding only) indexes by the GLOBAL batch and reads
+        `QUASI_ANCHOR + index * sample_size`, which depends on nothing local.
 
+        The two agree on an unsharded run of one draw per batch per shape: the engine advances by
+        `sample_size` a batch, landing exactly on the anchored position, which is why anchoring is
+        a repositioning rather than a second model - `tests/test_multi_gpu.py` checks that
+        arithmetic against `SobolEngine` directly. The historical arm nonetheless reads its
+        engine's STANDING position rather than recomputing it from the index, because a dimension
+        drawn at two different sample sizes shares one engine and interleaves: there the index
+        arithmetic and the running engine part company, and the historical interleaving is what
+        must survive byte for byte.
+
+        The draw, the memo, the clamp and the icdf happen once, below, for both arms.
+        """
         batch_key = (dimension, sample_size)
-        batch_num = self.t_quasi_rng_batch.setdefault(batch_key, 0)
-        sample_key = (dimension, sample_size, batch_num)
+        call = self.t_quasi_rng_batch.setdefault(batch_key, 0)
+
+        if self.quasi_batch is None:
+            index = call
+            position = self.sobol_position.get(dimension, (None, QUASI_ANCHOR))[1]
+        else:
+            if call:
+                # a genuine second draw of one shape inside one batch, which has no distinct batch
+                # position to take. The inner-MC replay idiom zeroes this counter through
+                # `reset_qrg` first, so a re-read never lands here and still returns by identity.
+                raise RuntimeError(
+                    'deterministic sharding cannot cover a second draw of one quasi-random stream '
+                    'inside a batch: (dimension={}, sample_size={}) was asked for a {} time while '
+                    'running global batch {}, and anchoring gives a draw the position of its '
+                    'BATCH, so two of them in one batch have no distinct position to take. Two '
+                    'factors sharing a shape, or an inner Monte Carlo pricer drawing beside the '
+                    'outer path, is the usual source - run such a job unsharded, or give the '
+                    'second consumer its own dimension.'.format(
+                        dimension, sample_size, call + 1, self.quasi_batch))
+            index = self.quasi_batch
+            position = QUASI_ANCHOR + index * sample_size
+
+        sample_key = (dimension, sample_size, index)
 
         if sample_key not in self.t_quasi_rng:
-            sample_sobol = self.sobol[dimension].draw(sample_size, dtype=self.one.dtype)
+            engine = self._sobol_at(dimension, position)
+            sample_sobol = engine.draw(sample_size, dtype=self.one.dtype)
+            self.sobol_position[dimension] = (engine, position + sample_size)
             margin = 1.0e-6
             u = sample_sobol.clamp(min=margin, max=1.0 - margin).to(self.one.device)
             self.t_quasi_rng[sample_key] = (utils.norm_icdf(u), u)
@@ -488,9 +562,49 @@ class CMC_State(utils.Calculation_State):
         self.t_quasi_rng_batch[batch_key] += 1
         return self.t_quasi_rng[sample_key]
 
+    def _sobol_at(self, dimension, position):
+        """This dimension's engine, standing at `position`.
+
+        Seeks FORWARD and rebuilds to go backwards. The historical arm only ever asks for the
+        position it already stands at, so it never seeks and never rebuilds - it is the same
+        engine advancing draw after draw that it always was. A sharded worker pays the jump to the
+        start of its own slice once and then advances the same way.
+        """
+        engine, standing = self.sobol_position.get(dimension, (None, QUASI_ANCHOR))
+        if engine is None or position < standing:
+            engine = torch.quasirandom.SobolEngine(
+                dimension=dimension, scramble=True, seed=QUASI_SEED)
+            engine.fast_forward(position)
+        elif position > standing:
+            engine.fast_forward(position - standing)
+        return engine
+
     def reset_qrg(self):
         self.t_quasi_rng_batch = {}
-        
+
+    def set_quasi_batch(self, batch_num):
+        """Anchor the quasi stream to a GLOBAL batch index (deterministic sharding only).
+
+        Resets the per-`(dimension, sample_size)` counter along with it, because under anchoring
+        that counter means "draws so far WITHIN this batch" rather than "draws so far in this
+        process" - which is what makes a repeated draw detectable instead of silently aliasing
+        onto the position belonging to the next batch.
+
+        AND DROPS THE PREVIOUS BATCH'S MEMO, which anchoring is what makes safe. The memo exists so
+        a re-read returns the drawn tensor rather than an equal one, and on the historical arm it
+        has to live for the whole run: that arm's position is wherever its engine has crawled to,
+        so an entry dropped there could never be recovered. Anchored, a draw's position is derived
+        entirely from its key, so re-drawing is bit-identical and the memo is a WITHIN-batch
+        convenience with nothing to say across batches. Run-long it grew without bound - measured
+        at 20,480 bytes a batch on a two-state HMM - holding entries nothing would read again.
+
+        Cleared at the START of a batch, so the within-batch replay idiom is untouched: the entries
+        a batch accumulates stand until that batch is done with them.
+        """
+        self.quasi_batch = batch_num
+        self.t_quasi_rng_batch = {}
+        self.t_quasi_rng = {}
+
     def reset_cashflows(self, time_grid):
         self.t_Cashflows = {k: {t_i: self.one.new_zeros(self.simulation_batch)
                                 for t_i in np.where(v >= 0)[0]} for k, v in time_grid.CurrencyMap.items()}
@@ -1216,10 +1330,42 @@ class Credit_Monte_Carlo(Calculation):
 
         return self.output
 
-    def execute(self, params, job_id=0, num_jobs=1):
+    def execute(self, params, job_id=0, num_jobs=1, deterministic_batches=False):
         """Run the batched exposure simulation plus whichever sub-calculations `params`
         enables (collateral, initial margin, CVA, FVA, scenarios, cashflows) and return the
         netting sets, stats and reports.
+
+        DETERMINISTIC BATCHES (`deterministic_batches`, set only by the `runparallel` dispatch).
+        Off - the default, and every unsharded caller - the stream is seeded ONCE per worker in
+        `CMC_State.__init__` as `manual_seed(seed + job_id)` and the batch loop then consumes it
+        sequentially, so batch b's draws depend on how many batches ran before it in this process.
+        That is fine for one worker and fatal for n of them: the same job sharded two ways covers
+        different paths, and the answer moves with the device count.
+
+        On, each batch seeds its OWN stream from its GLOBAL index b - `batch_seed(Random_Seed, b)`,
+        a SplitMix64 mix rather than `Random_Seed + b`, because reseeding per batch asks for as
+        many seeds as there are batches and consecutive ones are the weakest thing to hand a
+        generator's initialization - where b counts from the start of the WHOLE job rather than
+        from the start of this worker's slice. Workers take contiguous ranges - worker j owns `[j*k, (j+1)*k)` for k batches each -
+        so batch b is the same batch, drawing the same numbers, whichever worker runs it and
+        whichever device that worker sits on. The job is then deterministic in n: sharding it
+        across two devices and running it on one produce the same batches in the same order, and
+        the pooled result is bit-identical rather than merely close.
+
+        BOTH STREAMS ARE ANCHORED, not just the generator. A world whose outer path draws quasi-
+        random numbers (`MarkovHMMSpotModel`, `GARCHSpotModel`, `BasisLinkedSpotModel`) reads a
+        Sobol sequence that is perfectly reproducible but POSITION-dependent: the historical path
+        advances one engine through every draw before it in this process, so a worker starting
+        part-way through the job reads the points an earlier batch should have had.
+        `set_quasi_batch` gives the quasi stream the same global index the generator gets, and the
+        anchored arm of `CMC_State.quasi_rng` then takes batch b's draw from absolute position
+        `1024 + b * sample_size` however many draws the asking worker has already made. On an
+        unsharded run that is the position the historical engine already stands at, which is why
+        the default path is untouched. That position derives from the BATCH INDEX and the historical
+        scramble seed 1234, never from `Random_Seed`, so the consecutive-seed question `batch_seed`
+        answers for the generator does not arise for the quasi stream at all. The one shape anchoring cannot carry - two draws of one
+        `(dimension, sample_size)` inside a single batch, which have no distinct batch position
+        between them - refuses by name there.
 
         The CVA reduction keeps its grouping deliberately: a per-path vector cannot be
         reduced back to `mean over paths of a sum over time` in the same float order, and the
@@ -1249,6 +1395,9 @@ class Credit_Monte_Carlo(Calculation):
         self.input_time_grid = params['Time_grid']
         # divide the batches across the jobs (multi-gpu)
         params['Simulation_Batches'] = params['Simulation_Batches'] // num_jobs
+        # this worker's contiguous slice of the WHOLE job's batches: worker j owns [j*k, (j+1)*k).
+        # Only `deterministic_batches` reads it, and at num_jobs == 1 it is zero.
+        batch_offset = job_id * params['Simulation_Batches']
         self.batch_size = params['Batch_Size']
         self.numscenarios = self.batch_size * params['Simulation_Batches']
 
@@ -1277,6 +1426,14 @@ class Credit_Monte_Carlo(Calculation):
         time_index = self.time_grid.report_index
 
         for run in range(self.params['Simulation_Batches']):
+
+            if deterministic_batches:
+                # batch b owns its streams, keyed by its GLOBAL index - so neither which worker
+                # runs it nor how many batches preceded it in this process can reach the numbers.
+                # BOTH streams: the torch generator is reseeded, and the quasi stream, which is
+                # reproducible but position-dependent, is repositioned onto the same batch.
+                torch.manual_seed(batch_seed(self.params['Random_Seed'], batch_offset + run))
+                shared_mem.set_quasi_batch(batch_offset + run)
 
             shared_mem.reset(
                 self.num_factors, self.time_grid, use_antithetic=params.get('Antithetic', 'No') == 'Yes')

@@ -316,15 +316,15 @@ def sniff_indent(text, default=2):
 def update_market_quote(document, name, block):
     """Install or update one `Market Prices` block in a wire-form job document, in place.
 
-    An update is VALUE-ONLY by construction, for every family at once: everything except each
-    point's `Quoted_Market_Value`, its two-way `Quoted_Bid`/`Quoted_Ask` and its `Timestamp` must
-    stand, because the pillar set, the expiries, the conventions and the tolerances are STRUCTURE
-    - a plan and a pinned grid hang off them, so a moved node is a re-authoring, never a tick. A
-    two-way is on the value side of that line for the reason the mid is: a spread widens between
-    one print and the next, and a pillar that starts or stops being quoted two-sided is the same
-    node of the same plan. That line is `schema.MARKET_QUOTE_VALUES`, which this guard reads rather
-    than keeping a second copy of the split `plan_hash` and `market_patch` take over the section.
-    Returns 'installed' or 'updated'.
+    An update is VALUE-ONLY by construction, for every family at once: everything except each quote
+    row's `Quoted_Market_Value`, its two-way `Quoted_Bid`/`Quoted_Ask` and its `Timestamp` must
+    stand, because the pillar set, the expiries, the strikes, the conventions and the tolerances are
+    STRUCTURE - a plan and a pinned grid hang off them, so a moved node is a re-authoring, never a
+    tick. A two-way is on the value side of that line for the reason the mid is: a spread widens
+    between one print and the next, and a node that starts or stops being quoted two-sided is the
+    same node of the same plan. That line is `schema.MARKET_QUOTE_VALUES`, and WHICH table carries
+    it is `schema.quote_rows` - both read here rather than kept as a second copy of the split
+    `plan_hash` and `market_patch` take over the section. Returns 'installed' or 'updated'.
     """
     if not isinstance(block, dict) or 'instrument' not in block:
         raise ValueError('{}: a Market Prices block is {{"instrument": {{...}}}}'.format(name))
@@ -333,10 +333,12 @@ def update_market_quote(document, name, block):
     if name in prices:
         def structure(b):
             instrument = dict(b['instrument'])
-            instrument['Points'] = [
-                {key: value for key, value in point.items()
-                 if key not in schema.MARKET_QUOTE_VALUES}
-                for point in instrument.get('Points', [])]
+            container, points = schema.quote_rows(instrument)
+            if container is not None:
+                instrument[container] = [
+                    {key: value for key, value in point.items()
+                     if key not in schema.MARKET_QUOTE_VALUES}
+                    for point in points]
             return instrument
         if structure(prices[name]) != structure(block):
             raise ValueError('{}: structure differs from the installed block - a moved node is a '
@@ -400,6 +402,27 @@ class Config(object):
 
         # make sure that there are no default calibration mappings
         self.calibration_process_map = {}
+        self.gridparser, self.periodparser = get_grid_grammar()
+
+    def __getstate__(self):
+        """A Config crosses a process boundary by leaving its parsers behind.
+
+        `get_grid_grammar` returns a pyparsing grammar whose parse actions are
+        `_trim_arity.<locals>.wrapper` closures, and a local closure has no importable qualified
+        name, so pickle refuses the WHOLE Config over two members that are pure derived state -
+        the grammar is built from nothing instance-specific and two Configs never hold different
+        ones. Dropping them here and rebuilding in `__setstate__` is what lets
+        `Credit_Monte_Carlo(runparallel=True)` spawn its workers on a platform that pickles the
+        arguments it hands them (Windows always, macOS by default); under `fork` the child
+        inherits them and neither hook runs.
+        """
+        state = self.__dict__.copy()
+        state.pop('gridparser', None)
+        state.pop('periodparser', None)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
         self.gridparser, self.periodparser = get_grid_grammar()
 
     def deals_from_object_map(self, object_map):

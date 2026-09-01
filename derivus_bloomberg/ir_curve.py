@@ -942,9 +942,10 @@ def reauthor(market_prices, name, block):
     One spelling for both emitters, `swaption_vol` reaching it, because the mechanism is one thing
     and only the reason differs:
 
-      the swaption ladder  `schema.partition_market_price` gives every family whose quotes do not
-                           live in `Points` rows an EMPTY values half, and
-                           `HullWhite2FactorModelPrices` quotes in `Instrument_Definitions`. So a
+      the swaption ladder  `schema.partition_market_price` gives a values half only to a table
+                           whose ROW DECLARES the value keys, and
+                           `HullWhite2FactorModelPrices` quotes in `Instrument_Definitions`, whose
+                           row declares a `Market_Volatility` and no `Quoted_Market_Value`. So a
                            moved vol is not a value AT ALL and every re-quote is a new plan.
       the curve strip      this family DOES have a values half and a same-day re-tick passes as
                            'updated'. What a tick cannot carry is a ROLLED DATE: `Effective_Date`
