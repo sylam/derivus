@@ -265,6 +265,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 import pandas as pd
 import pytest
+import scipy.optimize
 import scipy.stats
 import torch
 
@@ -3630,6 +3631,195 @@ def test_the_two_conventions_are_two_prices_and_the_normal_one_is_the_bachelier_
     for name, swap in normal['swaps'].items():
         assert float(swap.premium(swap.quote).detach()).hex() == float(swap.price).hex(), (
             '{}: the float64 Bachelier twin is not the numpy premium it splices onto'.format(name))
+
+
+#: THE LADDER THE OLD BRACKET COULD NOT REACH: 78bp and 40bp of absolute rate move, alternating so
+#: both levels are read at a short expiry and at a long one. These are ordinary EUR and JPY normal
+#: vols and they sit UNDER the old fixed floor of `0.01`, which is 100bp in these units.
+LOW_NORMAL_VOLS = (0.78, 0.40, 0.78, 0.40)
+
+#: the `Volatility_Delta` these gates bump by - 5bp of ABSOLUTE vol against quotes of 40 and 78, so
+#: the bump is a tenth of the quote rather than a rounding of it
+RESTRIKE_DELTA = 0.0005
+
+#: THE LOGNORMAL ARM'S RE-STRUCK PREMIUM, HEX, MEASURED ON BOTH SIDES OF THE BRACKET LANDING - once
+#: in a pristine worktree at 91c29de and once here. `IMPLIED_VOL_BRACKETS['Lognormal']` is the
+#: historical `(0.01, vol + .5)` expression itself, so the arm is unmoved BY CONSTRUCTION; these are
+#: what turns that claim into a reading. The first ladder is the identified fixture's own 20% quotes,
+#: the second the 1.45%..1.18% one, which is the LOW end of the lognormal scale and the nearest a
+#: lognormal quote gets to the floor without going under it.
+LOGNORMAL_RESTRUCK = {
+    'Swaption_1Y_1Y': '0x1.9c8a2a9a89d73p-8',
+    'Swaption_2Y_5Y': '0x1.3985f82206662p-5',
+    'Swaption_3Y_3Y': '0x1.c5f5901d68404p-6',
+    'Swaption_10Y_10Y': '0x1.f561d6b85874dp-5'}
+LOGNORMAL_LOW_RESTRUCK = {
+    'Swaption_1Y_1Y': '0x1.3a7a23d0de6ccp-11',
+    'Swaption_2Y_5Y': '0x1.c15c418a9e370p-9',
+    'Swaption_3Y_3Y': '0x1.396b61b81fa36p-9',
+    'Swaption_10Y_10Y': '0x1.4e702c39785c4p-8'}
+
+
+def premium_frame(world):
+    """The `Swaption_Premiums` frame carrying THIS world's own priced premiums.
+
+    The premium file is the market's, so the honest fixture is one whose premiums ARE the block's -
+    then a recovered implied vol has a known answer (the row's own quote) and the round trip is an
+    identity rather than a tolerance. `get_premium` divides the `Payer` column by 1e4, and this
+    multiplies by it; on these numbers that round trip is EXACT (measured 0.0 relative), so nothing
+    the gates below read is the file's scaling rather than the solve's.
+    """
+    return pd.DataFrame([
+        {'Currency': ID_CCY, 'Expiry': '{}Y'.format(e), 'UnderlyingTenor': '{}Y'.format(t),
+         'Payer': 1e4 * world['swaps']['Swaption_{}Y_{}Y'.format(e, t)].price,
+         'Shift': '0%', 'StrikeValue': 8.0} for e, t, _, _ in CHECKER_BENCHMARKS])
+
+
+def old_bracket_residual(swap, world, expiry_years, premium):
+    """The implied-vol residual `create_market_swaps` brackets, rebuilt OUT OF LIBRARY CODE.
+
+    This is a reproduction and not a patch: nothing in `derivus` is monkeypatched, replaced or
+    re-imported. It is the same expression the re-solve minimises - the annuity the premium was
+    struck on times the engine's own numpy Bachelier, less the premium - so bracketing it with the
+    OLD bounds says what the OLD code would have done on THIS fixture.
+
+    THE STRIKE IS IRRELEVANT HERE AND THAT IS THE POINT: at `F = X` the Bachelier premium is
+    `A sigma sqrt(T/2pi)`, which does not mention the strike at all. So the fallback re-solve at the
+    premium file's own strike is the SAME function as the first attempt, and a normal ladder under
+    the floor was fatal rather than degraded - the `except` catches the first `ValueError` and the
+    second raises straight through it. 0.08 below is the file's `StrikeValue`, and any other number
+    would give the same residual.
+
+    The expiry is `exp_days / DAYS_IN_YEAR` and not the schedule's, because that is the clock the
+    premium is struck on - see `CLOCK`.
+    """
+    annuity = struck_annuity(swap, world['curve'])
+    expiry = (BASE + pd.DateOffset(years=int(expiry_years)) - BASE).days / utils.DAYS_IN_YEAR
+    return lambda v: annuity * utils.bachelier_european_option_price(
+        0.08, 0.08, 0.0, v, expiry, 1.0, 1.0) - premium
+
+
+def test_the_normal_re_strike_brackets_in_its_own_scale_and_the_lognormal_arm_is_unmoved():
+    """THE RE-STRIKE BRACKET IS THE QUOTE'S SCALE, and under `Normal` that is not a fixed 1%.
+
+    A premium-quoted benchmark carrying a `Volatility_Delta` recovers its implied vol with
+    `scipy.optimize.brentq` and re-strikes the premium off it. The bracket was `(0.01, vol + .5)`
+    whatever the surface declared. Under `Lognormal` that floor is a hundredth of a rate and sits
+    under every quoted surface; under `Normal` a vol IS an absolute rate move, so **0.01 is 100
+    basis points** and an ordinary EUR or JPY quote sits BELOW the floor. Both bracket ends then
+    carry the same sign and `brentq` raises `ValueError`. The arm was unmeasured - no fixture in
+    this repository reached it - which is what this gate is.
+
+    THE TURNOVER IS THE FLOOR ITSELF, measured on this fixture: the premium file carries the block's
+    own premiums, so the implied vol IS the quoted vol and `f(0.01)` changes sign exactly where the
+    quote crosses 100bp. The 145bp..118bp ladder brackets, a flat 100bp ladder brackets, and 78bp
+    and 40bp refuse - which is the row's own reading reproduced.
+
+        quoted        f(0.01) under the OLD bounds        verdict
+        78bp                 +7.697e-04                   refuses
+        40bp                 +1.106e-02                   refuses
+        78bp                 +2.894e-03                   refuses
+        40bp                 +1.991e-02                   refuses
+
+    Those residuals are three to five orders above the noise on an annuity of order one, so the old
+    bracket fails on the SIGN and not on a tolerance.
+
+    WHAT THE FIX ASSERTS. `IMPLIED_VOL_BRACKETS` is co-keyed with `PREMIUM_CONVENTIONS` and read at
+    the same seam off the same declared `Distribution_Type`, so the convention that picks the pricer
+    picks the scale its bracket is in. `'Normal'` brackets MULTIPLICATIVELY around the row's own
+    quote - a hundredth under, a hundred times over - which is scale-free in the units the quote is
+    actually in; at the money the Bachelier premium is exactly linear in the vol, so the implied vol
+    is a division and the bracket has only to contain it.
+
+    THE ROUND TRIP IS AN IDENTITY, not a tolerance. The premium file carries the block's own priced
+    premiums (bit-equal, 0.0 relative), so the recovered vol has to be the row's quote and the
+    re-struck premium has to be the premium a block QUOTING `sigma + delta` prices directly. Both
+    sides are the library's own pricing on the same annuity, strike and clock, so every bit of the
+    difference is the solve's: **0.0 to 3.3e-16 relative**, one ulp, across the four benchmarks.
+
+    THE LOGNORMAL ARM IS BIT-IDENTICAL and is held as hex. `IMPLIED_VOL_BRACKETS['Lognormal']` is
+    the historical expression itself, and the re-struck premiums match a reading taken in a pristine
+    worktree at 91c29de on both a 20% ladder and a 1.45%..1.18% one - eight premiums, hex for hex.
+    """
+    from derivus import bootstrappers
+
+    # the table: one vocabulary, and the lognormal entry is the historical literal
+    assert sorted(bootstrappers.IMPLIED_VOL_BRACKETS) == sorted(
+        bootstrappers.PREMIUM_CONVENTIONS), (
+        'the bracket table and the pricer table have drifted apart - a convention can now arrive '
+        'carrying one and not the other: {} against {}'.format(
+            sorted(bootstrappers.IMPLIED_VOL_BRACKETS),
+            sorted(bootstrappers.PREMIUM_CONVENTIONS)))
+    for vol in (0.20, 0.0145, 0.0078):
+        assert [float(b).hex() for b in bootstrappers.IMPLIED_VOL_BRACKETS['Lognormal'](vol)] == [
+            float(b).hex() for b in (0.01, vol + .5)], (
+            'the Lognormal bracket is no longer the historical (0.01, vol + .5) at vol={}'.format(
+                vol))
+
+    # ------------------------------------------------------------------ the Normal arm, at 40/78bp
+    base = normal_closure(vols=LOW_NORMAL_VOLS, batch_size=512)
+    frame = premium_frame(base)
+    struck = normal_closure(vols=LOW_NORMAL_VOLS, batch_size=512,
+                            premiums=frame, delta=RESTRIKE_DELTA)
+    # the same block QUOTING the bumped vol, which is where the re-strike has to land
+    direct = normal_closure(
+        vols=tuple(v + RESTRIKE_DELTA * 100.0 for v in LOW_NORMAL_VOLS), batch_size=512)
+
+    worst = 0.0
+    for (name, swap), quoted, row in zip(struck['swaps'].items(), LOW_NORMAL_VOLS,
+                                         CHECKER_BENCHMARKS):
+        sigma, priced = utils.Percent(quoted).amount, base['swaps'][name].price
+        assert sigma < 0.01, (
+            '{}: a quote of {:.6g} is NOT under the old 0.01 floor, so this fixture no longer '
+            'reaches the arm it was built for'.format(name, sigma))
+        picked = frame[(frame['Expiry'] == '{}Y'.format(row[0])) &
+                       (frame['UnderlyingTenor'] == '{}Y'.format(row[1]))]
+        premium = float(picked['Payer'].values[0]) / 10000.0
+        assert premium.hex() == float(priced).hex(), (
+            '{}: the premium file is not carrying the premium this block priced, so nothing below '
+            'is a statement about the solve'.format(name))
+
+        # THE ROUND TRIP: the recovered vol re-strikes to where quoting sigma + delta lands
+        landed = swap.price / direct['swaps'][name].price - 1.0
+        assert abs(landed) < 1e-14, (
+            '{}: a premium struck at sigma_N {:.6g} recovered a vol that re-strikes {:.3e} away '
+            'from the premium a block quoting {:.6g} prices outright - the recorded readings are '
+            '0.0 to 3.3e-16, one ulp'.format(name, sigma, landed, sigma + RESTRIKE_DELTA))
+        # and the bump is the whole of the move: ATM Bachelier is linear in the vol
+        ratio = swap.price / priced / ((sigma + RESTRIKE_DELTA) / sigma) - 1.0
+        assert abs(ratio) < 1e-14, (
+            '{}: the re-struck premium moved by {:.6g}x against the (sigma + delta)/sigma the '
+            'linearity requires'.format(name, swap.price / priced))
+        worst = max(worst, abs(landed))
+
+        # THE OLD BOUNDS, REPRODUCED IN PROCESS: they refuse this fixture on the sign
+        residual = old_bracket_residual(swap, struck, row[0], premium)
+        low, high = residual(0.01), residual(sigma + 0.5)
+        assert low > 0.0 and high > 0.0, (
+            '{}: the OLD bracket ends read {:+.4e} and {:+.4e} - if they now straddle, this '
+            'fixture no longer reaches the defect it was built for'.format(name, low, high))
+        assert low > 1e-4, (
+            '{}: f(0.01) is {:+.4e} under the old bounds - the recorded readings are 7.7e-4 to '
+            '2.0e-2, so this is a SIGN failure and not a near miss'.format(name, low))
+        with pytest.raises(ValueError, match='different signs'):
+            scipy.optimize.brentq(residual, 0.01, sigma + 0.5)
+    assert worst < 1e-14, (
+        'the worst Normal re-strike lands {:.3e} from the outright quote against a recorded '
+        '3.3e-16'.format(worst))
+
+    # ------------------------------------------------------- the Lognormal arm, unmoved to the bit
+    for vols, recorded in ((None, LOGNORMAL_RESTRUCK), (NORMAL_VOLS, LOGNORMAL_LOW_RESTRUCK)):
+        extra = {} if vols is None else {
+            'Instrument_Definitions': quoted_definitions(CHECKER_BENCHMARKS, vols)}
+        flat = identified_closure(benchmarks=CHECKER_BENCHMARKS, batch_size=512,
+                                  Objective='Analytic', **extra)
+        bumped = identified_closure(benchmarks=CHECKER_BENCHMARKS, batch_size=512,
+                                    Objective='Analytic', premiums=premium_frame(flat),
+                                    delta=0.005, **extra)
+        assert {n: float(s.price).hex() for n, s in bumped['swaps'].items()} == recorded, (
+            'the LOGNORMAL re-struck premium moved off its 91c29de reading - the bracket landing '
+            'was contracted to leave that arm bit-identical: {}'.format(
+                {n: float(s.price).hex() for n, s in bumped['swaps'].items()}))
 
 
 def test_a_normal_block_carries_the_quote_side_and_its_bachelier_derivative():

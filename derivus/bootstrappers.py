@@ -271,6 +271,33 @@ PREMIUM_CONVENTIONS = {
     'Lognormal': (utils.black_european_option_price, utils.black_european_option),
     'Normal': (utils.bachelier_european_option_price, utils.bachelier_european_option)}
 
+#: THE BRACKET THE `Volatility_Delta` IMPLIED-VOL RE-SOLVE RUNS IN, as a function of the row's own
+#: quoted vol. CO-KEYED WITH `PREMIUM_CONVENTIONS` and read off the SAME declared `Distribution_Type`
+#: at the same seam, so the convention that picks the pricer picks the scale its bracket is in and no
+#: convention can arrive carrying one without the other.
+#:
+#: `'Lognormal'` IS THE HISTORICAL `(0.01, vol + .5)`, UNCHANGED TO THE BIT. A lognormal vol is a
+#: fraction of the rate, quoted surfaces run in tens of percent, and a 1% floor sits under all of
+#: them.
+#:
+#: `'Normal'` CANNOT USE THAT FLOOR AND USED TO. A normal vol is an ABSOLUTE rate move, so `0.01`
+#: IS 100 basis points - above ordinary EUR and JPY levels - and a quote below it left both bracket
+#: ends the same sign and raised `ValueError` out of `brentq`. Nor could the strike fallback below
+#: rescue it: at `F = X` the Bachelier premium does not depend on the strike AT ALL, so the second
+#: solve is the same function as the first, and a normal ladder under the floor was fatal rather
+#: than degraded. The bracket here is MULTIPLICATIVE around the quote instead - a hundredth of it
+#: under, a hundred times it over - which is scale-free in the units the quote is actually in. Two
+#: orders either side is the right width because at the money the Bachelier premium is EXACTLY
+#: linear in the vol (`A sigma sqrt(T/2pi)`), so the implied vol is a division and the bracket has
+#: only to CONTAIN it; a premium implying a vol further than that from its own row's quote is a
+#: broken premiums file, and it still refuses loudly rather than being solved for silently.
+#:
+#: The quote is floored at 1e-6 - a hundredth of a basis point, below any market - so the band can
+#: neither collapse nor invert on a degenerate row.
+IMPLIED_VOL_BRACKETS = {
+    'Lognormal': lambda vol: (0.01, vol + .5),
+    'Normal': lambda vol: (max(vol, 1e-6) * 0.01, max(vol, 1e-6) * 100.0)}
+
 
 def market_premium(pvbp, strike, expiry, delta, option, quote):
     """One ATM swaption's premium as a differentiable function of its VOL quote.
@@ -311,6 +338,12 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
     outranks the undeclared `Property_Aliases` legacy, and a displacement authored beside `'Normal'`
     refuses there. See `riskfactors.InterestYieldVol.displacement` for the precedence.
 
+    THE `Volatility_Delta` RE-SOLVE IS BRACKETED IN THE SAME DECLARED SCALE, off the same read:
+    `IMPLIED_VOL_BRACKETS` is co-keyed with `PREMIUM_CONVENTIONS`, so a premium-quoted block asking
+    for a bumped vol brackets its `brentq` in the units its own surface quotes. A fixed 1% floor is
+    what a lognormal vol wants and is 100 basis points of what a normal one is; the table says which
+    and why.
+
     A ZERO `Market_Volatility` REFUSES, and so does an absent one - a benchmark is a QUOTE, and a
     row carrying none is an absent row rather than one to be filled from the book's own surface.
 
@@ -338,6 +371,9 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
             'Distribution_Type to one of those'.format(
                 distribution, ' and '.join(sorted(PREMIUM_CONVENTIONS))))
     price_option, tensor_option = PREMIUM_CONVENTIONS[distribution]
+    # and the bracket the `Volatility_Delta` re-solve runs in, off that SAME declared read - the
+    # quote's scale is the convention's, so the bracket is too. See `IMPLIED_VOL_BRACKETS`.
+    vol_bracket = IMPLIED_VOL_BRACKETS[distribution]
     # cater for shifted lognormal vols - declared `Shift` first, `Property_Aliases` behind it
     shift_parameter = vol_surface.displacement
     for instrument in instrument_definitions:
@@ -414,9 +450,12 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
         if vol_surface.premiums is not None:
             swaption_price = vol_surface.get_premium(date_fmt(instrument['Start']), date_fmt(instrument['Tenor']))
             if vol_surface.delta:
+                # ONE bracket for both solves, in the scale THIS surface quotes its vols in
+                bracket = vol_bracket(vol)
                 try:
                     implied_vol = scipy.optimize.brentq(lambda v: pvbp * price_option(
-                        shifted_strike, shifted_strike, 0.0, v, expiry, 1.0, 1.0) - swaption_price, 0.01, vol + .5)
+                        shifted_strike, shifted_strike, 0.0, v, expiry, 1.0, 1.0) - swaption_price,
+                        *bracket)
                 except:
                     modified_k = vol_surface.get_strike_from_premiums(date_fmt(instrument['Start']),
                                                                       date_fmt(instrument['Tenor']))
@@ -425,7 +464,8 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
                             K, modified_k))
                     shifted_strike = modified_k + shift_parameter
                     implied_vol = scipy.optimize.brentq(lambda v: pvbp * price_option(
-                        shifted_strike, shifted_strike, 0.0, v, expiry, 1.0, 1.0) - swaption_price, 0.01, vol + .5)
+                        shifted_strike, shifted_strike, 0.0, v, expiry, 1.0, 1.0) - swaption_price,
+                        *bracket)
 
                 swaption_price = pvbp * price_option(
                     shifted_strike, shifted_strike, 0.0, implied_vol + vol_surface.delta, expiry, 1.0, 1.0)
