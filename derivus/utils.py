@@ -2786,7 +2786,7 @@ def hn_component_unmonitored_substeps(Sj, h, q, b_step, omegas, hnc_params, shar
 # same ``cf_european_probabilities`` / ``cf_adaptive_phi_max`` primitives.
 
 def hn_component_abc(phi, omegas, alpha, beta, gamma1, rho, phi_q, gamma2, r,
-                     unwrap=True, phi_dim=-1):
+                     unwrap=True, phi_dim=-1, terminal=None):
     """Backward A/B/C recursion over the ``omegas`` strip.  Returns ``(A, B, C)`` satisfying
 
         E_t[S_{t+n}^phi] = S_t^phi * exp(A + B*h_t + C*q_t)
@@ -2813,10 +2813,23 @@ def hn_component_abc(phi, omegas, alpha, beta, gamma1, rho, phi_q, gamma2, r,
     ``phi`` : real OR complex tensor; if complex it must vary smoothly and ascending along
     ``phi_dim`` for the branch unwrap of ``log(w)`` (the same discrete-Heston-trap guard the plain
     recursion takes).
+
+    ``terminal`` : optional ``(u, v)``, the terminal condition ``(B_0, C_0)`` in place of ``(0, 0)``.
+    It costs one broadcast add before the loop and NOTHING inside it - the recursion body is
+    untouched, so the default path is the same expression it always was - and it turns this into the
+    JOINT transform of the return and the state it lands in:
+
+        E_t[exp(phi*R_n + u*h_{t+n} + v*q_{t+n})] = exp(A + B*h_t + C*q_t)
+
+    which is the one source the stride's carried-state moments are autodiffed out of
+    (:func:`hn_component_stride_strip`).  The default ``(0, 0)`` integrates the state out and
+    returns the log-CF of the return alone, exactly as before.
     """
     A = torch.zeros_like(phi)
     B = torch.zeros_like(phi)
     C = torch.zeros_like(phi)
+    if terminal is not None:
+        B, C = B + terminal[0], C + terminal[1]
     half_phi = 0.5 * phi
     phir = phi * r
     for omega_t in reversed(omegas):
@@ -2948,6 +2961,440 @@ def hn_component_to_plain(alpha, beta, gamma1, level):
     """The inverse of :func:`hn_component_from_plain` - a flat-L, phi=0 component parameter set as
     the plain ``(omega, alpha, beta, gamma_star)`` it is identical to."""
     return level * (1.0 - beta) - alpha, alpha, beta - alpha * gamma1 ** 2, gamma1
+
+
+# ======================================================================================
+# THE STRIDE - the k-step conditional law of ln S given (h, q), cached and exactly differentiable.
+#
+# A simulation that only ever OBSERVES the spot on a monthly fixing schedule still walks every
+# trading day between two fixings, because the daily recursion is the only thing that knows how to
+# move (h, q). The stride is the k-step law written down instead of walked: the SAME backward A/B/C
+# recursion run k steps gives the k-step conditional log-CF exp(A_k + B_k*h + C_k*q) EXACTLY, and
+# A/B/C depend on the parameters, the calendar position and the transform node - NEVER on the state.
+# So they are precomputed ONCE per calibration, per (fixing interval x quadrature node), and every
+# per-path question after that is exponentials and a dot product over the cache, batched across the
+# whole cube and exactly differentiable. `hn_component_cdf_logret` is the existing HALF of this: the
+# stride is that inversion with its coefficients CACHED, its state axis extended by C*q, its draw
+# survival-truncated, and - the one new thing - the state carried across the jump.
+#
+# CALENDAR ANCHORING. The omega strip enters A ALONE (the B and C recursions never read omega_t), so
+# two intervals of the same length differ only in A. B_k and C_k are therefore reusable across a
+# schedule; this build does not exploit that (measured cost did not warrant it - see the report's
+# escalation rungs), but the property is what makes the cache calendar-anchored rather than
+# calendar-shaped.
+#
+# THE CASE SPLIT IS A RULE, not a heuristic: a DAILY-MONITORED contract keeps the daily path and the
+# one-day probability, permanently - the daily advance is the reference implementation and the
+# stride never fires there. The stride is for the date-jumps the simulation does not take.
+# ======================================================================================
+
+#: The mixed partial derivatives of the joint transform at the origin that the carried-state
+#: approximation is pinned by, in the order :data:`HNComponentStride.mom` stores them. ``p`` is
+#: d/dphi (the return), ``u`` is d/du (the short-run variance it lands in), ``v`` is d/dv (the
+#: long-run one); a key is the multiset of derivatives, so ``upp`` is d3/du dphi^2. Every one is a
+#: JOINT CUMULANT of (R_k, h_k, q_k) because the transform is a log-MGF - which is why the normal
+#: equations below are written in central moments and read straight off this block.
+HN_STRIDE_MOMENT_KEYS = ('p', 'pp', 'ppp', 'pppp',
+                         'u', 'up', 'upp', 'uu',
+                         'v', 'vp', 'vpp', 'vv', 'uv')
+
+#: One fixing interval's cached stride. ``nodes``/``wts`` are that interval's own Gauss-Legendre
+#: quadrature (its own ``phi_max`` - a bound is NOT transferable between step counts, see
+#: :func:`hn_component_auto_phi_max`); ``A``, ``B``, ``C`` are the complex coefficient strips on the
+#: ``i*phi`` inversion contour, shape ``(node,)``; ``mom`` is the (13, 3) real block of origin
+#: derivatives - row per :data:`HN_STRIDE_MOMENT_KEYS`, column ``(A-part, B-part, C-part)`` - so a
+#: per-path moment is ``mom[i,0] + mom[i,1]*h + mom[i,2]*q``.
+HNComponentStride = namedtuple(
+    'HNComponentStride', 'n_steps nodes wts phi_max A B C mom r')
+
+#: The quadratic carried-state fit for one cube of paths: ``h_k ~ a_h + b_h*y + c_h*y^2`` in the
+#: CENTERED return ``y = x - mean_x``, plus the residual scale/correlation.
+HNComponentStrideCarry = namedtuple(
+    'HNComponentStrideCarry', 'mean_x a_h b_h c_h a_q b_q c_q sd_h sd_q corr')
+
+#: Floor on a residual standard deviation before it divides into a correlation. Numerically zero.
+HN_STRIDE_TINY = 1.0e-300
+
+#: Complex elements per block inside the inversion loop, which is the ONE place the stride can
+#: bound its own footprint (it runs under ``no_grad``, so a block can be freed before the next).
+#: EVERYTHING ELSE THE STRIDE DOES IS O(paths x nodes) AND THAT, NOT TIME, IS WHAT LIMITS A CUBE:
+#: a differentiable draw holds about six (paths, node) complex128 buffers alive for the backward
+#: pass, 16 bytes each, so a 512-node strip fits ~2^18 paths on a 24 GB device and a 2048-node one
+#: a quarter of that. 2^24 here is 256 MB a block, which no consumer has had to think about yet.
+HN_STRIDE_INVERT_BLOCK = 1 << 24
+
+
+def _hn_stride_moment_block(omegas, hnc_params, r):
+    """The (13, 3) origin-derivative block of the JOINT transform, by autograd on
+    :func:`hn_component_abc` - no hand-written moment recursions anywhere.
+
+    With the terminal condition ``(B_0, C_0) = (u, v)`` that recursion returns the joint transform
+    ``M(phi,u,v) = A + B*h_t + C*q_t = log E_t[exp(phi*R_k + u*h_{t+k} + v*q_{t+k})]``, so every
+    mixed partial at the origin is a joint CUMULANT of ``(R_k, h_k, q_k)``.  ONE autograd chain
+    delivers all three coefficient parts at once: the recursion is ELEMENTWISE in ``phi``, so
+    running it on a 3-vector against the probes ``h = (1,0,0)``, ``q = (0,1,0)`` evaluates
+    ``(A+B, A+C, A)`` in parallel and ``grad(M.sum(), phi)`` returns the three elementwise partials
+    as a vector.  Differentiable w.r.t. every parameter (``create_graph`` throughout), which is what
+    makes the carried state's own gradient real rather than a detached constant.
+
+    IT FORCES ``enable_grad`` AND RESTORES THE AMBIENT MODE ON THE WAY OUT.  These derivatives are
+    the cache's VALUE, not a gradient of the caller's computation, so they cannot be at the mercy of
+    the caller's mode - and a valuation builds its cache inside ``no_grad``, where the recursion
+    records no graph, every partial comes back as a structural zero, and the carry then divides by
+    ``mu2 = 0``. Measured before this line existed: a six-fixing schedule returned NaN on all 8,192
+    paths at the FIRST stride, with a perfectly healthy Phi beside it.
+    """
+    ambient = torch.is_grad_enabled()
+    with torch.enable_grad():
+        block = _hn_stride_origin_derivatives(omegas, hnc_params, r)
+    return block if ambient else block.detach()
+
+
+def _hn_stride_origin_derivatives(omegas, hnc_params, r):
+    """The chain itself - see :func:`_hn_stride_moment_block`, which owns the mode handling."""
+    alpha = hnc_params[0]
+    dt, dev = alpha.dtype, alpha.device
+    z3 = torch.zeros(3, dtype=dt, device=dev)
+    phi, u, v = (z3.clone().requires_grad_(True) for _ in range(3))
+    hp = torch.tensor([1.0, 0.0, 0.0], dtype=dt, device=dev)
+    qp = torch.tensor([0.0, 1.0, 0.0], dtype=dt, device=dev)
+    A, B, C = hn_component_abc(phi, omegas, *hnc_params, r, unwrap=False, terminal=(u, v))
+    M = A + B * hp + C * qp
+
+    def d(y, wrt):
+        # a k=1 stride is EXACTLY Gaussian in the return, so the phi chain legitimately terminates
+        # at the second cumulant and every higher one is identically zero - not an error condition
+        # (the same fact `hn_reference.hn_cumulants` records for the plain family)
+        if not y.requires_grad:
+            return torch.zeros_like(z3)
+        g = torch.autograd.grad(y.sum(), wrt, create_graph=True, allow_unused=True)[0]
+        return torch.zeros_like(z3) if g is None else g
+
+    o = {'p': d(M, phi), 'u': d(M, u), 'v': d(M, v)}
+    o['pp'] = d(o['p'], phi)
+    o['ppp'] = d(o['pp'], phi)
+    o['pppp'] = d(o['ppp'], phi)
+    o['up'] = d(o['u'], phi)
+    o['upp'] = d(o['up'], phi)
+    o['uu'] = d(o['u'], u)
+    o['uv'] = d(o['u'], v)
+    o['vp'] = d(o['v'], phi)
+    o['vpp'] = d(o['vp'], phi)
+    o['vv'] = d(o['v'], v)
+    # probe 2 is A alone; probes 0 and 1 are A+B and A+C, so B and C come out by subtraction
+    return torch.stack([torch.stack([o[k][2], o[k][0] - o[k][2], o[k][1] - o[k][2]])
+                        for k in HN_STRIDE_MOMENT_KEYS])
+
+
+def hn_component_stride_strip(omegas, hnc_params, r, h_box, q_box, phi_max=None, panels=None,
+                              order=8, unwrap=True, moments=True):
+    """Build ONE fixing interval's cached stride over the ``omegas`` strip (its length IS k).
+
+    ``hnc_params`` = ``(alpha, beta, gamma1, rho, phi, gamma2)``, the same block every other
+    component entry point takes.  ``h_box``/``q_box`` are the state RANGES the cube will reach - the
+    adaptive quadrature bound is resolved once, here, off all four corners of that box, and a strip
+    is only valid for states inside it (a bound is not transferable, and a LARGER one is not
+    conservative: past a step-count-dependent point the recursion diverges).
+
+    ``moments=False`` builds the Phi coefficients alone - the branch-and-weight and
+    conditional-probability consumers never carry state, so they never pay for the origin block.
+
+    THE COST OF CARRY IS A SHIFT, NOT A REBUILD, and a consumer needs this: ``r`` enters A only as
+    ``phi*r*k``, which the inversion multiplies against ``exp(-i phi x)``, so a strip built at
+    ``r_0`` answers for ANY other per-step carry ``b`` - INCLUDING A PER-PATH ONE - by moving the
+    moneyness:
+
+        Q_b(R_k <= x | h, q)  ==  hn_component_stride_cdf(strip, x - (b - r_0)*k, h, q)
+
+    and the carried state is untouched but for its mean, which moves by the same ``(b - r_0)*k``.
+    Measured: 2.2e-16 on Phi, and every carry loading BITWISE identical (only the first cumulant
+    moves, and by exactly that amount). So one strip per (anchor, length) serves a whole book of
+    deals whose ``b_step`` differs - which matters, because ``b_step`` reaches the OSS pricers as a
+    per-path tensor and the cache is indexed by calendar position alone.
+
+    THE SHIFT RUNS BOTH WAYS, and a consumer that only moves the moneyness IN has done half of it: a
+    barrier enters as ``x_cap - (b - r_0)*k``, and what comes back is a return in the strip's OWN
+    ``r_0`` measure, so THE RETURN UN-SHIFTS by ``+(b - r_0)*k`` before it may move a spot. Skip
+    that and the survival WEIGHT is still right while the whole survivor law sits ``(b - r_0)*k``
+    too low - +0.005000 at k = 21 and b = 4r, which is 27x the daily walk's own quantile band, and a
+    truncation that stops 50 bp short of the barrier it was given.
+    :func:`hn_component_stride_step` does the un-shift when it is handed ``b_step``.
+    """
+    alpha = hnc_params[0]
+    dt, dev = alpha.dtype, alpha.device
+    omegas = list(omegas)
+    if phi_max is None:
+        phi_max = hn_component_auto_phi_max(omegas, h_box, q_box, *hnc_params, r)
+    if panels is None:
+        panels = 256
+    nodes, wts = gauss_legendre(0.0, float(phi_max), panels, order, dt, dev)
+    A, B, C = hn_component_abc(nodes * 1j, omegas, *hnc_params, r, unwrap=unwrap)
+    mom = _hn_stride_moment_block(omegas, hnc_params, r) if moments else None
+    return HNComponentStride(len(omegas), nodes, wts, float(phi_max), A, B, C, mom, r)
+
+
+def _hn_stride_logcf(strip, h, q):
+    """The cached log-CF ``A + B*h + C*q`` on the node axis - shape ``(*batch, node)``."""
+    return strip.A + strip.B * h.unsqueeze(-1) + strip.C * q.unsqueeze(-1)
+
+
+def _hn_stride_cast(strip, *xs):
+    """Broadcast the per-path arguments onto one shape in the strip's dtype/device."""
+    return torch.broadcast_tensors(
+        *[torch.as_tensor(x, dtype=strip.nodes.dtype, device=strip.nodes.device) for x in xs])
+
+
+def hn_component_stride_cdf(strip, x, h, q):
+    """``Q(R_k <= x | h, q)`` over the cache - the stride's Gil-Pelaez Phi.
+
+    THE SAME QUADRATURE `hn_component_cdf_logret` RUNS, with the A/B/C recursion replaced by the
+    cached strips and nothing else changed: same nodes, same weights, same assembly order, so the
+    two agree bit-for-bit at equal ``phi_max``/``panels``/``order`` (gated).  ``x``, ``h`` and ``q``
+    broadcast together; the whole cube is one batched call.  Differentiable w.r.t. ``x``, the state,
+    and - through the cache - every model parameter.
+    """
+    x, h, q = _hn_stride_cast(strip, x, h, q)
+    shift = torch.exp(-1j * strip.nodes * x.unsqueeze(-1)) / (strip.nodes * 1j)
+    d = (shift * torch.exp(_hn_stride_logcf(strip, h, q))).real
+    return 1.0 - (0.5 + (d * strip.wts).sum(-1) / np.pi)
+
+
+def hn_component_stride_pdf(strip, x, h, q):
+    """The density of the k-step log-return, ``dQ/dx`` - the same inversion without ``1/(i phi)``
+    (differentiating under the integral cancels it).  Used to reattach the exact gradient to the
+    inverted draw, and as the Newton slope inside the inversion."""
+    x, h, q = _hn_stride_cast(strip, x, h, q)
+    d = (torch.exp(-1j * strip.nodes * x.unsqueeze(-1))
+         * torch.exp(_hn_stride_logcf(strip, h, q))).real
+    return (d * strip.wts).sum(-1) / np.pi
+
+
+def hn_component_stride_cumulants(strip, h, q):
+    """The first four cumulants of the k-step log-return given ``(h, q)``, off the cached origin
+    block - ``(mean, variance, skew, excess kurtosis)``.  Free (three multiply-adds per path per
+    cumulant), and the seed the inversion starts from."""
+    h, q = _hn_stride_cast(strip, h, q)
+    m = strip.mom
+    k = [m[i, 0] + m[i, 1] * h + m[i, 2] * q for i in range(4)]
+    return k[0], k[1], k[2] / k[1] ** 1.5, k[3] / k[1] ** 2
+
+
+def hn_component_stride_invert(strip, p, h, q, iters=32, tol=1.0e-14, chunk=None):
+    """Solve ``Q(R_k <= x | h, q) = p`` for x, per path.  VALUE ONLY - no gradient.
+
+    CORNISH-FISHER SEED, then safeguarded Newton.  The seed is free - the cache already holds the
+    exact first four cumulants, so the fourth-order Cornish-Fisher quantile costs three multiplies -
+    and it is what keeps the iteration count down: the inversion is the ONLY part of the stride that
+    is not a single pass over the cache, so its iteration count is what decides whether the stride
+    beats the daily walk it replaces (measured in the gate). Newton then runs on the cached density
+    with a bisection fallback whenever a step leaves the running bracket, which is what makes this
+    safe where Cornish-Fisher is not monotone.
+
+    The state-dependent factor ``exp(A + B h + C q)`` is HOISTED OUT of the loop - it does not
+    depend on x - so an iteration is one complex exponential and one dot product over the node axis.
+    That is a reassociation of :func:`hn_component_stride_cdf`, not a second formula: the root it
+    returns is checked against the canonical Phi by the caller's reattachment.
+
+    The gradient is not lost, it is DEFERRED: :func:`hn_component_stride_draw` reattaches it by one
+    graph-carrying Newton step at this root, which is the implicit function theorem written as
+    arithmetic and is exact.
+
+    ``chunk`` blocks the path axis at :data:`HN_STRIDE_INVERT_BLOCK` complex elements. The iteration
+    is elementwise, so a block solves exactly what it would have solved in company - but the
+    CONVERGENCE BREAK is collective (it reads the worst residual in the batch), so a different
+    blocking stops one iteration earlier or later and the roots agree to ``tol`` rather than
+    bitwise: measured 7.1e-15 in x between a 5,000-path solve and the same paths in blocks of 7.
+    """
+    p, h, q = _hn_stride_cast(strip, p, h, q)
+    n_node = strip.nodes.numel()
+    if chunk is None:
+        chunk = max(1, int(HN_STRIDE_INVERT_BLOCK // n_node))
+    if p.numel() > chunk:
+        shape, pf, hf, qf = p.shape, p.reshape(-1), h.reshape(-1), q.reshape(-1)
+        return torch.cat([hn_component_stride_invert(
+            strip, pf[i:i + chunk], hf[i:i + chunk], qf[i:i + chunk], iters, tol, chunk)
+            for i in range(0, pf.numel(), chunk)]).reshape(shape)
+    with torch.no_grad():
+        mom = strip.mom
+        if mom is None:                                 # no origin block: a plain +/-N sd bracket
+            mean, sd = torch.zeros_like(p), torch.ones_like(p) * float(strip.n_steps) ** 0.5
+            seed = mean
+        else:
+            mean, var, g1, g2 = hn_component_stride_cumulants(strip, h, q)
+            sd = var.clamp_min(HN_STRIDE_TINY).sqrt()
+            z = norm_icdf(p.clamp(1.0e-15, 1.0 - 1.0e-15))
+            w = (z + (z * z - 1.0) * g1 / 6.0 + (z * z * z - 3.0 * z) * g2 / 24.0
+                 - (2.0 * z * z * z - 5.0 * z) * g1 * g1 / 36.0)
+            seed = mean + sd * w.clamp(-9.0, 9.0)
+        nodes, wts = strip.nodes, strip.wts
+        cf = torch.exp(_hn_stride_logcf(strip, h, q))
+        w_cdf, w_pdf = cf * wts / (nodes * 1j), cf * wts
+
+        def phi_of(xx):
+            e = torch.exp(-1j * nodes * xx.unsqueeze(-1))
+            return 1.0 - (0.5 + (e * w_cdf).real.sum(-1) / np.pi)
+
+        def dens(xx):
+            e = torch.exp(-1j * nodes * xx.unsqueeze(-1))
+            return (e * w_pdf).real.sum(-1) / np.pi
+
+        lo, hi = torch.minimum(seed, mean) - 4.0 * sd, torch.maximum(seed, mean) + 4.0 * sd
+        for _ in range(16):                       # widen until the bracket actually brackets
+            below, above = phi_of(lo) > p, phi_of(hi) < p
+            if not bool(below.any() or above.any()):
+                break
+            lo = torch.where(below, mean - 2.0 * (mean - lo), lo)
+            hi = torch.where(above, mean + 2.0 * (hi - mean), hi)
+        x = seed.clamp(min=lo, max=hi)
+        for _ in range(iters):
+            fx = phi_of(x) - p
+            lo = torch.where(fx <= 0.0, x, lo)
+            hi = torch.where(fx > 0.0, x, hi)
+            if float(fx.abs().max()) < tol:
+                break
+            step = x - fx / dens(x).clamp_min(HN_STRIDE_TINY)
+            # NON-STRICT against the bracket. A CONVERGED path has just set an endpoint to its own
+            # x, and its Newton step is that same x: a strict test reads that as "outside" and
+            # bisects a bracket still four standard deviations wide, throwing the root away and
+            # never getting it back (measured: max residual 4e-8 at iteration 2, 5e-2 at iteration 3
+            # and a linear crawl from there, on 4,270 of 16,384 paths).
+            ok = torch.isfinite(step) & (step >= lo) & (step <= hi)
+            nxt = torch.where(ok, step, 0.5 * (lo + hi))
+            done = bool(((nxt - x).abs() <= tol * sd).all())
+            x = nxt
+            if done:
+                break
+        return x
+
+
+def hn_component_stride_draw(strip, u, h, q, x_cap=None, iters=32, tol=1.0e-14):
+    """SURVIVAL-TRUNCATED inverse-CDF draw of the k-step log-return.  Returns ``(x, phi_cap)``.
+
+    ``u`` is uniform on (0,1) and the draw solves ``Q(R_k <= x) = u * Phi_cap`` with
+    ``Phi_cap = Q(R_k <= x_cap)`` - the one-sided survival mass for an UP barrier at
+    ``S_t*exp(x_cap)``, exactly the quantity the OSS truncation carries. ``x_cap=None`` draws from
+    the untruncated law.  The caller multiplies the survival weight into its own running product;
+    nothing here rescales it.
+
+    THE GRADIENT IS EXACT, not a differentiated iteration.  The root is found under ``no_grad`` and
+    then corrected by ONE Newton step whose terms carry the graph:
+
+        x = x* + (u*Phi_cap - Q(x*)) / q(x*)
+
+    The correction is numerically zero (x* IS the root, to ``tol``), so the VALUE is the root; its
+    derivative is ``-(dQ/dtheta - u dPhi_cap/dtheta) / q``, which is the implicit function theorem
+    for this equation. The density divides as a detached constant, correctly: it multiplies a term
+    that vanishes.
+
+    THE CORRECTION IS BOUNDED BY ONE STANDARD DEVIATION of the k-step law, which in normal running
+    never binds (it is bounding something of order 1e-16). It is there because the density is a
+    divisor and a quadrature that has underflowed to zero in a deep tail would otherwise turn a
+    rounding residual into an infinity, moving the drawn spot rather than leaving it alone.
+    """
+    u, h, q = _hn_stride_cast(strip, u, h, q)
+    phi_cap = (torch.ones_like(u) if x_cap is None
+               else hn_component_stride_cdf(strip, x_cap, h, q))
+    target = u * phi_cap
+    root = hn_component_stride_invert(
+        strip, target.detach(), h.detach(), q.detach(), iters, tol)
+    fx = hn_component_stride_cdf(strip, root, h, q)
+    dens = hn_component_stride_pdf(strip, root, h, q).detach()
+    bound = (hn_component_stride_cumulants(strip, h, q)[1].detach().clamp_min(0.0).sqrt()
+             if strip.mom is not None else torch.ones_like(dens))
+    step = ((target - fx) / dens.clamp_min(HN_STRIDE_TINY)).clamp(min=-bound, max=bound)
+    return root + step, phi_cap
+
+
+def hn_component_stride_carry_loadings(strip, h, q):
+    """THE CARRIED-STATE APPROXIMATION, pinned.  Returns a :data:`HNComponentStrideCarry`.
+
+    ``S_k`` is drawn exactly; the state it lands in is not, and cannot be - the conditional law
+    of ``(h_k, q_k)`` given the realised return has no closed form. It is carried by QUADRATIC
+    conditional matching, and quadratic is a statement about KIND, not accuracy: ``E[h_k | x]`` is
+    the news-impact curve, an asymmetric U tilted by gamma_1, so a LINEAR carry gets the vol-of-vol
+    convexity structurally wrong however well it is fitted.
+
+    ``h_k ~ a + b*y + c*y^2`` in the centered return ``y = x - E[x]``, with (a, b, c) the exact L2
+    projection onto ``span{1, y, y^2}``.  In central moments ``mu2, mu3, mu4`` of the return the
+    normal equations are
+
+        [ 1    0    mu2 ] [a]   [ E[h_k]                ]
+        [ 0    mu2  mu3 ] [b] = [ Cov(h_k, y)           ]
+        [ mu2  mu3  mu4 ] [c]   [ E[h_k y^2]            ]
+
+    and EVERY entry is a joint cumulant off :func:`_hn_stride_moment_block`: mu2 = M_pp,
+    mu3 = M_ppp, mu4 = M_pppp + 3 mu2^2, Cov(h_k,y) = M_up, E[h_k y^2] - E[h_k] mu2 = M_upp. So the
+    3x3 collapses to a 2x2 whose determinant is the Gram determinant of (y, y^2) and is positive for
+    any non-degenerate law.  q rides the same algebra with its own (slower) loadings.
+
+    The residual is matched in VARIANCE and in the h-q residual CORRELATION, off the closed-form
+    covariance: because the fit is an orthogonal projection, the residual variance is
+    ``Var(h_k) - (b*M_up + c*M_upp)`` exactly, and the residual covariance is
+    ``Cov(h_k,q_k) - (b_q*M_up + c_q*M_upp)`` - which must equal the same expression with the roles
+    swapped, a free consistency check the gate reads.  What is NOT matched is the residual's
+    heteroskedasticity in x, or any of its shape past the second moment: that is the approximation,
+    and its size is non-monotone in k (see the gate's worst-k table).
+    """
+    h, q = _hn_stride_cast(strip, h, q)
+    mom = strip.mom
+    m = {k: mom[i, 0] + mom[i, 1] * h + mom[i, 2] * q
+         for i, k in enumerate(HN_STRIDE_MOMENT_KEYS)}
+    mu2, mu3 = m['pp'], m['ppp']
+    mu4 = m['pppp'] + 3.0 * mu2 ** 2
+    spread = mu4 - mu2 ** 2                                   # Var(y^2)
+    den = mu2 * spread - mu3 ** 2                             # the (y, y^2) Gram determinant
+    b_h = (m['up'] * spread - m['upp'] * mu3) / den
+    c_h = (mu2 * m['upp'] - mu3 * m['up']) / den
+    b_q = (m['vp'] * spread - m['vpp'] * mu3) / den
+    c_q = (mu2 * m['vpp'] - mu3 * m['vp']) / den
+    sd_h = (m['uu'] - (b_h * m['up'] + c_h * m['upp'])).clamp_min(0.0).sqrt()
+    sd_q = (m['vv'] - (b_q * m['vp'] + c_q * m['vpp'])).clamp_min(0.0).sqrt()
+    cov = m['uv'] - (b_q * m['up'] + c_q * m['upp'])
+    return HNComponentStrideCarry(
+        m['p'], m['u'] - c_h * mu2, b_h, c_h, m['v'] - c_q * mu2, b_q, c_q, sd_h, sd_q,
+        (cov / (sd_h * sd_q).clamp_min(HN_STRIDE_TINY)).clamp(-1.0, 1.0))
+
+
+def hn_component_stride_carry(strip, x, h, q, e1, e2, loadings=None):
+    """Carry ``(h, q)`` across the stride onto the realised return ``x``.  Returns ``(h_k, q_k)``.
+
+    ``e1``/``e2`` are independent standard normals; the pair is correlated by the 2x2 Cholesky of
+    the residual covariance :func:`hn_component_stride_carry_loadings` closed-form. Both states are
+    FLOORED at :data:`HN_COMPONENT_VARIANCE_FLOOR` - the same declared floor the daily recursion
+    carries, for the same reason (the CJOW pair has no positivity guarantee at phi > 0), not a
+    repair of the approximation.  Pass ``loadings`` to reuse a fit across a cube.
+    """
+    x, h, q = _hn_stride_cast(strip, x, h, q)
+    ld = hn_component_stride_carry_loadings(strip, h, q) if loadings is None else loadings
+    y = x - ld.mean_x
+    fit_h = ld.a_h + ld.b_h * y + ld.c_h * y * y
+    fit_q = ld.a_q + ld.b_q * y + ld.c_q * y * y
+    n2 = ld.corr * e1 + (1.0 - ld.corr ** 2).clamp_min(0.0).sqrt() * e2
+    return ((fit_h + ld.sd_h * e1).clamp(min=HN_COMPONENT_VARIANCE_FLOOR),
+            (fit_q + ld.sd_q * n2).clamp(min=HN_COMPONENT_VARIANCE_FLOOR))
+
+
+def hn_component_stride_step(strip, Sj, h, q, u, e1, e2, x_cap=None, loadings=None, b_step=None):
+    """ONE STRIDE: jump the spot k steps on a survival-truncated draw and carry the state with it.
+    Returns ``(Sj, h, q, phi_cap)`` - the verb a wave-2 OSS pricer calls in place of k
+    :func:`hn_component_log_substep` days plus a truncated final :func:`hn_component_daily_advance`.
+
+    ``b_step`` IS THE MEASURE THE SPOT MOVES UNDER, and it need not be the ``r`` the strip was built
+    at - that is the whole point of the cache being keyed on calendar position alone, and ``b_step``
+    reaches the OSS pricers as a per-path tensor (see :func:`hn_component_stride_strip`). The draw
+    and the CARRY both happen in the strip's own ``r`` measure - the loadings centre on that mean, so
+    the state must be carried at the unshifted return - and the RETURN alone is un-shifted by
+    ``(b_step - r)*k`` on the way out. The caller passes ``x_cap`` shifted the other way, into that
+    same strip measure, and gets back a spot the barrier bounds where the barrier actually is.
+
+    ``b_step=None`` leaves the return where the strip put it, which is right exactly when the deal's
+    carry IS the strip's ``r``.
+    """
+    x, phi_cap = hn_component_stride_draw(strip, u, h, q, x_cap)
+    h, q = hn_component_stride_carry(strip, x, h, q, e1, e2, loadings)
+    if b_step is not None:
+        x = x + (b_step - strip.r) * strip.n_steps
+    return Sj * torch.exp(x), h, q, phi_cap
 
 
 # Correlated sub-stepping -- exact within-interval dynamics between coarse scenario nodes. A coarse

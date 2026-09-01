@@ -158,6 +158,27 @@ USD OIS pays on a Saturday — one convention on both sides, gated). The harness
 `InterestYieldVol` factor declaring `Distribution_Type: 'Normal'` for itself, since the emitter
 writes the block and not the surface.
 
+**THE STRIDE, wave 1, is BUILT (2026-09-02)** - the k-step conditional law of ln S given
+(h, q) under component Heston-Nandi, cached and exactly differentiable, `utils.py`-additive with
+the plain-HN path AST-untouched (one function, `hn_component_abc`, gains an optional `terminal`
+argument and nothing else changes). The cached A/B/C strips per (fixing interval x quadrature
+node), the Gil-Pelaez Phi over the cache, the survival-truncated inversion, and THE
+CARRIED-STATE APPROXIMATION as ratified: h and q carried by quadratic conditional matching with
+the mixed moments taken by AUTOGRAD on the cached recursions (sign(b) opposes fitted gamma,
+gated at both signs). The stride step RETURNS the spot un-shifted into the deal's own carry
+(`b_step`), the review's one wave-2-critical catch: without it the survival set capped 0.005
+short of its own barrier and survivor quantiles sat 26.8x outside the walk's band; with it,
+0.44x. 69 oracle gates + the review's promoted probes; the oracle is the exact 2D conditional
+sampler run once on 10k paths, and the error is scanned in k, never spot-checked: the peak is
+at k = 24-25 - monthly fixings (k = 21) sit at 98% of it, 2.2x the 11.2-day short-run half-life
+(the half-life-coincidence prediction is withdrawn). ESCALATION RUNGS recorded with triggers:
+(1) map the carry residual through the exact 1D h-marginal quantiles - the h floor mass from
+k = 21 onward is exactly what it deletes; (2) adaptive striding where fixings sit within 10-15
+days of a barrier; Lugannani-Rice on the cached CGF where a consumer needs Phi past the
+quadrature's 1e-9. WAVE 2 is the three consumers in `pricing.py` - the OSS speed lever, HN
+branch-and-weight, and the conditional-p jump gamma - the HN exotic GAMMAS, written against
+this surface.
+
 **THE HONEST HN CVA — a program of three existing rows, sequenced and ratified (2026-09-01).**
 A CVA on HN-priced TARFs and autocalls wants the OUTER simulation under the same HN family, and
 the reason is sharper than consistency taste: the deal's path STATE — accrued target, the
