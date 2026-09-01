@@ -52,28 +52,137 @@ Two rules apply to everything here, from [Conventions](conventions.md):
 
 ## Designed, not built
 
-**The Bloomberg rates emitters are BUILT (`0de7f12`); the COMPOSITION HARNESS is the named
-follow-up.** `derivus_bloomberg/ir_curve.py` (curve strips → `InterestRatePrices` blocks: USD SOFR
-OIS and ZAR SASW/JIBAR-3M, conventions as DECLARED SEED DATA a refusal guards, the OIS float leg's
-fixing windows partitioning every coupon exactly) and `derivus_bloomberg/swaption_vol.py` (the
-`SASN` ATM normal-vol ladder → `HullWhite2FactorModelPrices` rows held as data to the committed
-schema), 42 gates plus a live census (24/24 USD points, 10/14 ZAR, 54/63 swaption vols believed).
-The harness they exist for is the measure-architecture test designed with the owner: the DOMESTIC
-half (live ZAR curve + `SASN` ladder → Analytic fit → honesty reprice, ρ-invariant since the quanto
-ruling) and the COMPOSITION half (the par forward-starting ZAR swap booked in a USD-base world; the
-expiry row's deflated EPE = spot × the observed premium, at the marked ρ AND at ρ = 0 — both
-ρ-invariances together are the whole calibrate-domestic/simulate-global architecture on live
-prints). **Its two prerequisites — the premium-convention row and the zero-quote row above — are
-CLOSED (2026-09-01), so a live `SASN` fit is the harness's own work now rather than blocked on the
-engine.** What it has to author for itself is the `InterestYieldVol` factor declaring
-`Distribution_Type: 'Normal'`: the emitter writes the block and not the surface, and the surface is
-where the calibration reads its convention. Its two design questions are recorded rather than
-decided: an OIS block is ~14 MB live (one
-authored float item per business-day fixing, ~26,000 items on a 30Y strip, bounded by
-`CurveScreen.maximum_fixings` — accept it through `/book/market` or build a term-authored OIS
-variant), and neither side rolls a business day (a 2Y USD OIS pays on a Saturday — one convention
-on both sides, gated; a real settlement calendar is a change on both sides of the boundary at
-once).
+**The COMPOSITION HARNESS is BUILT and has been RUN on live prints (2026-09-01).**
+`gates/hw2f_composition.py` is the instrument and `tests/test_hw2f_composition.py` its canned twin
+— an authored four-cell world through the same pipeline functions, 14 gates, 3–6 min by load. The snapshot
+is the emitters' own (`derivus_bloomberg/ir_curve.py`, `derivus_bloomberg/swaption_vol.py`): 24/24
+USD SOFR OIS points, 10/14 ZAR SASW/JIBAR-3M, 54/63 `SASN` ATM normal vols at 112.3–134.1 bp, the
+USDZAR delta surface and a 16.1227 spot.
+
+*Half A, the domestic fit.* Both curves reprice their own quotes at the solved nodes to
+**1.07e-12 bp** (USD, 24 quotes) and **1.69e-13 bp** (ZAR, 10). The 54-row ladder fits through the
+declared `Analytic` default in **62–120 min by contention** (3720.6 / 4259.6 / 7229.5 s across
+three runs of the one deterministic fit; the published tables stand on the 7229.5 s solve's
+pickle), to an rms of **1.348 bp of normal vol** — about 1.1%
+of the quoted level — worst `3M×1Y` at **+4.125 bp**; the honesty reprice puts the engine's own
+Monte Carlo **−3.39%** from market at its worst benchmark (`3M×5Y`). **The convention-aware
+premium is confirmed live and exactly**: inverting each quote through the closure's own Bachelier
+and back returns `recovered/quoted` = **0.999657710 on every one of the 54 cells**, which is
+√(365/365.25) to the digit — the whole round trip is the documented 365.25-vs-ACT_365 clock and
+nothing else.
+
+*The fit's ρ-invariance, measured on the RESIDUAL rather than on θ\*.* Differencing the
+54-residual VECTOR at a common θ shows the objective is the same FUNCTION, so no solve from any
+starting point can move θ\* — and it is 0.05 s a side instead of a second 62-minute solve (no
+live re-solve pair was run for exactly that reason; θ\*-bit-identity under a full re-solve is
+gated on the canned world). Across ρ = 0.4, ρ = 0, ρ absent and no-FX-factor-at-
+all, the residual is **BIT-IDENTICAL, max |Δ| exactly 0.000e+00** — both at θ\* (‖r‖ =
+9.907029301907e-04, rms 1.348 bp) and at the family's own seed (rms 22.998 bp), because an
+agreement only at the solution would be a coincidence rather than an invariance. **And the
+EMISSION does move, which is the seam**: ρ̄₁/ρ̄₂ = −0.397290847914 / −0.391938309549 at ρ = +0.4,
+exactly ±0 at ρ = 0, and exactly negated at ρ = −0.4. θ\* bit-identity under a full re-solve is
+gated separately by `test_the_fit_does_not_move_with_the_fx_inputs` on the canned world.
+
+*Half B, the composition.* Three par forward-starting ZAR swaps (1Y×2Y, 2Y×5Y, 5Y×5Y), each
+struck at the solved curve's own ATM rate to **1.3e-15** of the coupon `create_market_swaps`
+wrote, each in its own `NettingCollateralSet`, 131 072 paths, `Random_Seed` 5120, three scenario
+grids. Every reading is the engine's own table: the per-set `Calc_res['Value']` blocks sum back to
+`Results['mtm']` at **max |diff| 0.000e+00** in all twelve runs. **The composition is ρ-INVARIANT:
++0.047% / +0.003% / +0.035%, all ≤ 0.08σ under one seed** (weekly grid) — the correlation moves
+the paths and does not move the price, which is the second half of the architecture. **`K` is live
+and load-bearing**: authoring the emitted `Quanto_FX_Correlation_1/2` to zero while keeping the
+correlated Brownians moves identity 1 by **−4.99 / −6.58 / −9.61 percentage points (13.2σ / 19.2σ
+/ 32.2σ)**, and mis-signing the FX axis moves it by **+25 770 pp (68 002σ)**. Model against market
+on the three cells is **+1.354% / −1.637% / −0.973%**, which is the 1.348 bp fit rms and not a
+composition reading.
+
+*What identity 1 actually carries, and it is a finding.* At a weekly grid the identity reads
+**−0.481% (−1.3σ) / −5.090% / −9.354%**, and the miss is never a MEASURE error — the live
+T-forward martingale reads the drift clean at the two shorter cells (+0.27σ at 2Y×5Y) — but the
+payoff-free NUMERAIRE factor carries a per-cell share of it: **94% at 1Y×2Y, 30% at 2Y×5Y, 51%
+at 5Y×5Y**, the remainder distributional and step-dependent. One unit of ZAR at T is a tradable worth X₀·P(0,T), and that payoff-free identity alone reads
+**−0.455% / −1.531% / −4.735%**; divide it out and the residual is **−0.026% / −3.614% /
+−4.849%** — at the 1Y expiry the composition lands on the model's own domestic price to
+**twenty-six thousandths of a percent**. The FX drift accumulates a discretely-rolled money market
+(`GBMAssetPriceTSModelImplied.generate`, `cumsum(r_base·dt − r_rate·dt)`), so the whole reading is
+a function of the scenario STEP: 5Y×5Y reads −23.9% quarterly, −14.7% monthly, −9.4% weekly
+against an unchanged 0.3% standard error. **Two mechanisms, measured apart.** The simulated leg's
+gap shrinks like √Δt and is the 1Y-first-node lesson at scale — the finer-tenor-grid probe read
+it as the step and not the node, though that scratch reading did not survive to a log. The
+STATIC leg's does the opposite: a non-simulated curve does not roll, so its scenario view is the
+frozen t=0 curve at every step and the drift accumulates T·r(0,Δt) instead of −log D(0,T);
+flattening the USD curve recovers **1.00 / 1.72 / 2.31 pp** at quarterly / monthly / weekly
+(spike11.log, a differently-fitted world of the same shape), i.e. **that error GROWS as the grid refines**, because a
+shorter step reads a shorter and lower rate. The canned twin is authored on a FLAT base curve and
+short expiries for exactly this reason, and closes identity 1 at **+0.26% (0.4σ) and
++1.13% (1.7σ)**.
+
+*Three engine gaps named by the run, none of them fixed here.* (1) `Credit_Monte_Carlo` reports
+the exposure profile UNDEFLATED and applies `Deflation_Interest_Rate` only inside the CVA/FVA
+scalars — there is no deflator series or deflated profile among its output keys, so a deflated
+expiry-row EPE cannot be read from the reported tables; the harness gets it by booking a unit
+base-currency cashflow whose row-zero mark IS D(0,T), and the remedy is to publish `Dt_T` beside
+`mtm`. (2) The two halves of a quanto are authored in two different bases and nothing checks they
+agree: `save_params` emits ρ̄ᵢ = corr(dW, dWᵢ) on the parameter factor while the `Correlations`
+section's rows are the INDEPENDENT normals the process's own cholesky consumes, so the section
+needs `a = ρ̄₁`, `b = (ρ̄₂ − ρ·ρ̄₁)/√(1−ρ²)` (which satisfies a² + b² = C² exactly);
+copying ρ̄₂ in directly gives a world whose drift and covariance disagree, silently.
+(3) `HullWhite2FactorImpliedInterestRateModel.precalculate` reads `self.param['Lambda_1']`
+unguarded off the `Price Models` block that `calc_lifecycle.md`'s own invariant says an implied
+model does not need — omitting it raises `TypeError: 'NoneType' object is not subscriptable` from
+inside a precalculate, naming neither field nor factor. Smaller: `FXVolSurfaceParameters` subscripts
+`point['Timestamp']` directly, so a block without one dies on a `KeyError`; and the emitted
+`Quote_Source` string in the SNAPSHOT still says `create_market_swaps` "reads no
+`Distribution_Type`" — captured before `6c1301d` fixed the engine and the emitter; a fresh fetch
+writes the corrected string, and the 0.999657710 round trip above is the live refutation.
+
+*A standing observation on the fit itself, and it is not a defect claim.* θ\* comes back CORNERED:
+the factor correlation sits **exactly on its declared bound (+0.95)**, **six of the twenty sigma
+knots sit exactly on the 1e-5 floor** (a seventh at 1.44e-5), and α₂ solves **negative**
+(−0.0391, inside the declared [−0.5, 2.4] but an anti-reverting factor). A 54-quote ladder against
+23 parameters is over-determined and the rms is a creditable 1.348 bp, so the objective is doing
+its job — but a corner solution is a different object from an interior one for anything downstream
+that differentiates it, and these parameters should not be used for anything but this test until
+somebody has looked at why the ladder prefers it. The two emitter design questions are
+unchanged and still recorded rather than decided: an OIS block is ~14 MB live (~26 000 authored
+float items on a 30Y strip, bounded by `CurveScreen.maximum_fixings` — accept it through
+`/book/market` or build a term-authored OIS variant), and neither side rolls a business day (a 2Y
+USD OIS pays on a Saturday — one convention on both sides, gated). The harness authors the
+`InterestYieldVol` factor declaring `Distribution_Type: 'Normal'` for itself, since the emitter
+writes the block and not the surface.
+
+**THE HONEST HN CVA — a program of three existing rows, sequenced and ratified (2026-09-01).**
+A CVA on HN-priced TARFs and autocalls wants the OUTER simulation under the same HN family, and
+the reason is sharper than consistency taste: the deal's path STATE — accrued target, the
+knock latch, every fixing between reporting rows — is generated by the outer law, so a
+`GBMAssetPriceTSModelImplied` outer walks the deal into its states at GBM frequencies (no
+clustering, no persistence) and the exposure integrates over the wrong state distribution
+however correctly the pricer values each residual. The intended architecture already exists
+(`HestonNandiComponentImpliedSpotModel` is the outer process; one calibrated parameter set feeds
+both layers), and the engine's own posture at the deal level (the `hit_value` ruling — mixed
+models inside one pricing were worth 15.8%/unit) extends to the outer/inner split as the last
+mixed-law surface. The sequence, each piece its own existing row: (1) the BASE-SIDE KEYING
+defect above — until it closes, a USDZAR TARF cannot find its calibrated parameters in either
+layer; the equity book keys cleanly and goes first. (2) The component COARSE-GRID WALK'S
+ACCURACY GATE (the punchlist's owed item — the plain and GARCH siblings have
+`gates/hn_pfe_stepping.py`, the component walk reimplements exactly the two ingredients that
+gate caught defects in). (3) The F4 ROW-STATE INHERITANCE, now RULED wanted rather than parked:
+the pricing kit consumes the outer path's running `(h, q)` and the `L`-curve day offset through
+the `reveal_state_at`/`inner_fork_seed` pattern the HMC fork already uses — BOTH families at
+once, behind a declared valuation switch, default off and bit-identical, because flipping it
+re-marks every HN exposure profile and CVA and that re-mark is a decision the switch lets a
+book take deliberately. Until (3) lands, an HN outer already buys the right state law on day
+one; the conditioning arrives with the switch. THE MEASURE SPLITS BY METRIC (owner's refinement,
+same date): CVA is a Q-expectation and wants the MARKET-calibrated outer above; PFE is a
+P-quantile and wants a HISTORICALLY-estimated outer (`GARCHSpotModel` is that family, and
+`gates/hn_pfe_stepping.py` already gates its stepping) with the pricing kit STAYING
+market-implied — mixed measures are the design there, not a defect, and the handoff is exact
+because the HN risk-neutralization preserves the variance path (`h_t` is measure-invariant; only
+the law forward of it shifts). The F4 inheritance therefore serves PFE at least as much as CVA —
+a tail quantile lives on the high-`h` paths the re-seed flattens. One run reports EE and PFE off
+ONE outer measure, so a book wanting each metric in its own measure runs twice under two
+`Model Configuration`s — two plans, deliberately — which is desk policy to state, not an engine
+gap to close.
 
 **The trading spine — increments 1, 2 and 3 of 7 are BUILT.** Increment 3 adds the booking verbs,
 the attestation lanes and the two-dimensional quote firmness, all on the increment-1 wire formats
@@ -1052,6 +1161,12 @@ maximum inline, and never more comments than code. The material is right - the r
 the measurement - it just belongs in the function's docstring or the commit message. Worst
 offenders: `pv_discrete_barrier_option`'s hit-mask and rebate blocks, `sim_spot_oss`'s terminal
 digital, `NettingCollateralSet.post_process`'s `net_from_gross`.
+
+**A debug write aimed at the repo root.** `bootstrappers.py` (the HW2F solve's debug block)
+overwrites `debug.deals` and attempts `write_trade_file('ZAR.aap')` in the CWD - currently
+inert (every run logs "Could not write output file"), but a run from a writable CWD drops an
+artifact where the no-artifacts rule forbids one. Delete the block or route it to a declared
+output directory.
 
 **The compounding-leg shape check.** `pv_float_cashflow_list` selects the compounded-in-arrears
 path by comparing reset count to cashflow count — a shape encoding of intent, set up at
