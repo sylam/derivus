@@ -1431,14 +1431,26 @@ class CapturedErrors(logging.Handler):
     """What the bootstrap has to say for itself: `Config.bootstrap` reports a family that could
     not run or wrote nothing at ERROR and carries on, so a market update captures that channel
     and refuses the write when anything landed on it - a book must never carry a market its own
-    bootstrap complained about."""
+    bootstrap complained about.
+
+    IT CAPTURES ITS OWN THREAD AND NOTHING ELSE. The only channel `Config.bootstrap` publishes on
+    is the ROOT logger, so the capture has to go there, and the root logger is every thread's - a
+    queued `/book/price` whose pricing logs a CRITICAL (a skipped deal, a missing factor) inside a
+    tick's window turned a good tick into `written: False` with a foreign run's message as the
+    reason, and `Metronome.failed` counted a beat that had nothing wrong with it. `record.thread`
+    against the constructing thread's ident is the whole filter: single-threaded behaviour is
+    byte-identical, because there is only one thread for a record to have come from."""
 
     def __init__(self):
         super().__init__(level=logging.ERROR)
         self.messages = []
+        #: the tick's own thread. A handler on the root logger hears the whole process; what this
+        #: bootstrap has to say for itself is what THIS thread said.
+        self.thread = threading.get_ident()
 
     def emit(self, record):
-        self.messages.append(record.getMessage())
+        if record.thread == self.thread:
+            self.messages.append(record.getMessage())
 
 
 #: What a tick cannot do without, in the one wording both market verbs refuse in.

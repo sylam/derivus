@@ -429,6 +429,15 @@ class Config(object):
         """Install constructed instrument nodes as the canonical deal-tree children."""
         self.deals['Deals']['Children'] = nodes
 
+    def parse_period(self, period):
+        """`'3M'` -> a `DateOffset`, and the ONE spelling of that parse.
+
+        Both decoders reach it: `CustomJsonEncoder` writes a `.DateOffset` as this string, so both
+        of them have to read the string, and a second copy of `periodparser.parseString(...)[0]` is
+        how the two wire spellings drifted apart in the first place.
+        """
+        return self.periodparser.parseString(period)[0]
+
     def parse_grid(self, run_date, max_date, grid, past_max_date=False):
         """
         Construct a set of dates (NOT adjusted to the next business day) as specified in the grid.
@@ -1251,7 +1260,13 @@ class Config(object):
             elif '.CreditSupportList' in dct:
                 return utils.CreditSupportList(dct['.CreditSupportList'])
             elif '.DateOffset' in dct:
-                return DateOffset(**dct['.DateOffset'])
+                # ONE wire spelling read two ways. `CustomJsonEncoder` writes the STRING ('3M') and
+                # every producer in the tree writes that - the emitters, `write_marketdata_json`,
+                # `as_json` - so a block this file wrote could not be read back here at all. The
+                # kwargs dict is what old bytes on disk carry and it keeps working: reading a
+                # spelling nobody writes any more is free, writing two of them was the defect.
+                period = dct['.DateOffset']
+                return self.parse_period(period) if isinstance(period, str) else DateOffset(**period)
             elif '.Offsets' in dct:
                 return utils.Offsets(dct['.Offsets'])
             elif '.Timestamp' in dct:
@@ -1324,10 +1339,9 @@ class Config(object):
             elif '.CreditSupportList' in dct:
                 return utils.CreditSupportList(dct['.CreditSupportList'])
             elif '.DateOffset' in dct and '.Offset' in dct:
-                return [self.periodparser.parseString(dct['.DateOffset'])[0],
-                        self.periodparser.parseString(dct['.Offset'])[0]]
+                return [self.parse_period(dct['.DateOffset']), self.parse_period(dct['.Offset'])]
             elif '.DateOffset' in dct:
-                return self.periodparser.parseString(dct['.DateOffset'])[0]
+                return self.parse_period(dct['.DateOffset'])
             elif '.Grid' in dct:
                 return utils.Offsets([(x if isinstance(x, list) else [x]) for x in dct['.Grid']])
             elif '.Timestamp' in dct:

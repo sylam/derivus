@@ -255,13 +255,16 @@ fix. What ships:
 - **Size, stated up front.** An OIS block grows with the *sum* of its strip's tenors: the shipped
   USD strip is about 26,000 authored fixings and **~14 MB** of JSON (measured live). `CurveScreen.
   maximum_fixings` bounds it and refuses with the arithmetic rather than with a MemoryError.
-- **The swaption grid quotes NORMAL vols and the engine prices a LOGNORMAL Black.** `SASN` is
-  `ZAR SWPT NVOL` — basis points of Bachelier vol. `create_market_swaps` prices every benchmark
-  with `utils.black_european_option_price` and reads no `Distribution_Type`, although
-  `InterestYieldVol` declares one. The emitter transcribes, scales into the family's `Percent`
-  column, and says so loudly in `Quote_Source`; the gap is the engine's and is gated in its current
-  shape. A **zero** vol is refused from the ladder by name, because a zero `Market_Volatility` is
-  not a bad number to the engine — it is a silent instruction to read the surface's ATM instead.
+- **The swaption grid quotes NORMAL vols, and since 2026-09-01 the engine prices them as such.**
+  `SASN` is `ZAR SWPT NVOL` — basis points of Bachelier vol. `create_market_swaps` used to price
+  every benchmark with `utils.black_european_option_price` whatever the surface declared, an order
+  of magnitude away from the quote (9.7x–11.4x on the four-quote fixture, which is 1/F); it now
+  reads the named `InterestYieldVol`'s `Distribution_Type` through `Factor3D.get_subtype` and
+  strikes a Normal ladder's premium with Bachelier. **The declaration this depends on lives on the
+  SURFACE, which this emitter does not author** — so a desk pointing `Swaption_Volatility` at a
+  lognormally-declared factor still gets a lognormal fit of normal quotes, and `Quote_Source` says
+  so in the block. A **zero** vol is still refused from the ladder by name, and the engine refuses
+  it too now: it used to be a silent instruction to read the surface's ATM instead.
 - **A re-quoted grid is a re-authoring.** `HullWhite2FactorModelPrices` quotes in
   `Instrument_Definitions` rather than `Points`, so `schema.partition_market_price` gives it an
   empty values half and no tick reaches it. `reauthor` drops the block and re-installs it, as

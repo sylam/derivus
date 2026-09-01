@@ -771,9 +771,11 @@ def test_the_quote_is_never_authored_into_the_deal():
 
 def test_the_two_way_and_the_stamp_ride_beside_the_mid():
     """`Quoted_Bid`, `Quoted_Ask` and `Timestamp` are `schema.MARKET_QUOTE_VALUES` - the plane a
-    tick may move - and `InterestRateCurveParameters.Points` declares NONE of the three. They travel
-    as undeclared keys the family reads past, because the two-way and the print's own clock ARE the
-    evidence; that gap is a finding, and this is it stated as a gate."""
+    tick may move - and `InterestRateCurveParameters.Points` now DECLARES all three, on the shape
+    `FXVolPrices` already declared them in: optional columns on the value side, read by nothing in
+    the solve. This gate said the opposite while that was a finding (2026-09-01 closed it); what it
+    holds is unchanged, because the emitter's bytes never depended on the declaration - the two-way
+    and the print's own clock ARE the evidence, whether or not a schema had a column for them."""
     row = points_of(block_of('ZAR')[1])['1Y']
     assert (row['Quoted_Bid'], row['Quoted_Ask']) == (7.61, 7.63)
     assert row['Timestamp'] == {'.Timestamp': YESTERDAY}
@@ -792,7 +794,14 @@ def test_the_block_writes_only_fields_the_family_declares():
     COMMITTED declaration rather than off the working tree - the solve's own knobs (`N_Iter`, `Tol`,
     `Damping_Halvings`) and the three lifecycle switches are deliberately NOT written, because they
     are properties of a job rather than of a market and the engine reads each with its declared
-    default."""
+    default.
+
+    THE POINT KEYS ARE NOW A SUBSET TOO, and that half reads the WORKING TREE (`at=None`): the
+    `Quoted_Bid`/`Quoted_Ask`/`Timestamp` columns are declared by this very change, so HEAD cannot
+    be asked about them. Nothing else in this file reads the tree, and the claim itself is what
+    changed rather than the emitter - this gate used to subtract the three by name, which is the
+    shape of a gate documenting a gap.
+    """
     declared = committed_fields('InterestRateCurveParameters')
     instrument = block_of('ZAR')[1]['instrument']
     assert set(instrument) <= set(declared), sorted(set(instrument) - set(declared))
@@ -806,22 +815,32 @@ def test_the_block_writes_only_fields_the_family_declares():
     assert named[0] == 'InterestRatePrices.ZAR-JIBAR-3M'
     assert {row['Deal'].get('Interest_Rate') for row in named[1]['instrument']['Points']} == {
         'ZAR-JIBAR-3M'}
-    # and the POINT keys are the declared sub-fields plus exactly the value plane, no more
+    # and every POINT key is a declared sub-field - no undeclared extra rides beside the mid
+    points = committed_fields('InterestRateCurveParameters', table='Points', at=None)
+    assert set(points) == {'Use', 'Deal', 'Descriptor', 'DealType', 'Quote_Type',
+                           'Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask', 'Timestamp'}, points
     for row in instrument['Points']:
-        assert set(row) - {'Quoted_Bid', 'Quoted_Ask', 'Timestamp'} == {
-            'Use', 'Deal', 'Descriptor', 'DealType', 'Quote_Type', 'Quoted_Market_Value'}
+        assert set(row) <= set(points), sorted(set(row) - set(points))
+        # the mid and the structure are on every row; the two-way and the stamp only where printed
+        assert {'Use', 'Deal', 'Descriptor', 'DealType', 'Quote_Type',
+                'Quoted_Market_Value'} <= set(row)
 
 
-def committed_fields(class_name, table=None):
+def committed_fields(class_name, table=None, at='HEAD'):
     """The field names one bootstrapper class declares, read off the COMMITTED `bootstrappers.py`
-    via `git show HEAD` and parsed as an AST - never imported, and never off the working tree.
+    via `git show HEAD` and parsed as an AST - never imported, and by default never off the working
+    tree.
 
     Reading the committed state is what lets this file gate an engine declaration while another
     workflow is mid-edit in the same tree; parsing rather than importing is what lets it do so
     without the engine's own import cost. `table`, when given, descends into that field's
-    `row=Row([...])` and returns the ROW's columns instead.
+    `row=Row([...])` or `sub_fields=[...]` and returns the COLUMNS of the row instead.
+
+    `at=None` reads the working tree, and there is exactly one thing it is for: a declaration this
+    repository is LANDING. A gate on a field that does not exist at HEAD yet cannot be asked about
+    HEAD, and a gate that reads the tree says so at its own call site.
     """
-    tree = ast.parse(_committed('derivus/bootstrappers.py'), filename='bootstrappers.py')
+    tree = ast.parse(_committed('derivus/bootstrappers.py', at), filename='bootstrappers.py')
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef) and node.name == class_name:
             for statement in node.body:
@@ -841,21 +860,29 @@ def _field_names(node, table):
         if name != table:
             continue
         for keyword in entry.keywords:
+            # a Table declares its columns as `row=Row([...])`, a Container its children as
+            # `sub_fields=[...]` - two spellings of "the fields inside this one"
             if keyword.arg == 'row':
                 return [row.args[0].value for row in keyword.value.args[0].elts]
+            if keyword.arg == 'sub_fields':
+                return [child.args[0].value for child in keyword.value.elts]
     if table is not None:
         raise AssertionError('no {} table in the committed declaration'.format(table))
     return names
 
 
-def _committed(path):
-    """One file as HEAD has it - the package's single spelling of "read the committed state".
+def _committed(path, at='HEAD'):
+    """One file as `at` has it, or as the WORKING TREE has it when `at` is None.
 
-    Every schema comparison in this file goes through here rather than through the working tree,
-    which is what lets these gates hold an ENGINE declaration while a parallel workflow is mid-edit
-    in the same checkout.
+    Every schema comparison in this file goes through here rather than reading the tree, which is
+    what lets these gates hold an ENGINE declaration while a parallel workflow is mid-edit in the
+    same checkout. The tree read is for the one case that rule cannot cover - a declaration landing
+    in this very change, which HEAD does not have yet.
     """
-    return subprocess.run(['git', 'show', 'HEAD:{}'.format(path)], cwd=ROOT,
+    if at is None:
+        with open(os.path.join(ROOT, path), 'rt', encoding='utf-8') as source:
+            return source.read()
+    return subprocess.run(['git', 'show', '{}:{}'.format(at, path)], cwd=ROOT,
                           stdout=subprocess.PIPE, universal_newlines=True,
                           encoding='utf-8').stdout
 

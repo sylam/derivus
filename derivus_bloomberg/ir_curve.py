@@ -669,10 +669,11 @@ def wire_timestamp(date):
 
 
 def wire_period(label):
-    """A tenor in the wire spelling `Config.read_json` parses - `{'.DateOffset': '3M'}`, the string
-    form `CustomJsonEncoder` writes. `Config.parse_json` reads a DIFFERENT spelling of this key (a
-    kwargs dict), which is an engine-side divergence rather than a choice made here: the encoder's
-    own output is the form taken."""
+    """A tenor in the wire spelling both decoders parse - `{'.DateOffset': '3M'}`, the string form
+    `CustomJsonEncoder` writes. `Config.parse_json` used to read a DIFFERENT spelling of this key (a
+    kwargs dict) and now reads the string through the same period parser `read_json` uses, still
+    accepting the dict for bytes already on disk; the encoder's own output was the form taken here
+    while that divergence stood, and it is the only form written anywhere now."""
     read_tenor(label)
     return {'.DateOffset': label}
 
@@ -887,10 +888,8 @@ def author_point(item, as_of, currency, curve, conventions):
 
     `Quoted_Bid`, `Quoted_Ask` and `Timestamp` ride BESIDE the mid where the terminal answered them.
     They are `schema.MARKET_QUOTE_VALUES` - the value plane `config.update_market_quote` lets a tick
-    move - and `InterestRateCurveParameters.Points` declares none of the three, so they travel as
-    undeclared keys the family reads past. Carried anyway, and named as a finding, because the
-    two-way and the print's own clock ARE the evidence: an emitter that dropped them to fit six
-    declared sub-fields would have thrown away the desk's spread on the way in.
+    move - and `InterestRateCurveParameters.Points` declares all three among its nine sub-fields,
+    optional and value-side, so the two-way and the print's own clock land as declared evidence.
     """
     effective, maturity, tenor = strip_dates(item, as_of, conventions)
     reference = '{}_{}'.format(currency, item.label.replace('/', '_'))
@@ -1024,9 +1023,12 @@ def quote_census(strip):
     """The strip's own account of what the terminal served, for a caller with a screen or a report.
 
     It is NOT written into the block, and that is a finding rather than a choice:
-    `InterestRateCurveParameters` declares no `Quote_Source` and no `Quote_Timestamp` where both
-    Heston-Nandi families do, so the only provenance a curve block can carry is the per-point
-    `Descriptor` - which names the ticker and nothing about the census.
+    `InterestRateCurveParameters` declares no `Quote_Source` and no `Quote_Timestamp` where the two
+    Heston-Nandi families and (since 2026-09-01) `HullWhite2FactorModelParameters` all do, so the
+    only BLOCK-level provenance a curve block can carry is the per-point `Descriptor` - which names
+    the ticker and nothing about the census. What that same ruling did give this family is the
+    per-point evidence: `Quoted_Bid`, `Quoted_Ask` and `Timestamp` are declared columns of `Points`
+    now, so a print's two-way and its own clock are data rather than undeclared keys.
     """
     return {'currency': strip.currency, 'curve': strip.curve, 'as_of': strip.as_of.isoformat(),
             'asked': len(strip.prints) + len(strip.rejected), 'believed': len(strip.prints),

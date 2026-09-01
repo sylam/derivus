@@ -358,11 +358,13 @@ Two details in that line are load-bearing and neither is visible to a price gate
   be freed with the first evaluation and every one after it would raise. Rebuilding costs one scalar
   Black per benchmark against a Monte Carlo over the whole path set.
 
-Three severances stay **open on purpose**, because their upstream is not a quote of this calibration:
-`get_par_swap_rate` prices the strike and the pvbp in numpy off the zero curve, `set_fixed_amount`
-writes that strike into the schedule's numpy half, and the surface's ATM read interpolates with
-`RectBivariateSpline`. The first two are the calibrated curve — increment 1's quote. The third is the
-surface-node-to-ATM map, which is a quote of the *surface* rather than of the swaption.
+Two severances stay **open on purpose**, because their upstream is not a quote of this calibration:
+`get_par_swap_rate` prices the strike and the pvbp in numpy off the zero curve, and
+`set_fixed_amount` writes that strike into the schedule's numpy half. Both are the calibrated curve
+— increment 1's quote. There were **three** while a zero `Market_Volatility` fell through to the
+surface's own ATM read — the surface-node-to-ATM map, a quote of the *surface* rather than of the
+swaption — and since 2026-09-01 that row refuses by name instead, so the severance it named is no
+longer reachable from a benchmark.
 
 !!! warning "A premium re-struck by `Volatility_Delta` declines the quote side — on either objective"
     That path recovers an implied vol with a `brentq` root find and re-strikes the premium off it,
@@ -540,9 +542,25 @@ $$r_j(\theta, q_j) = w_j\Big(\sigma^{SP}_j(\theta) - \sigma^{mkt}_j(q_j)\Big),
 
 and every difference below is a consequence of it.
 
+!!! note "The premium construction is convention-aware, and the inversion is then the quote's own identity"
+    Since **2026-09-01** `create_market_swaps` reads the surface's declared `Distribution_Type`
+    through `Factor3D.get_subtype` and prices the market premium in that convention — Black at
+    `K + shift` under `'Lognormal'` (the declared default, so every existing document is
+    bit-identical), the general-form Bachelier off an absolute normal vol under `'Normal'` — with
+    the float64 tensor twin bound to the *same* pair, so the quote side differentiates the formula
+    the premium was priced with rather than a second one. The two conventions are **9.7x–11.4x**
+    apart on the same numeric ladder, which is 1/F and is what reading the declaration is worth.
+    What it buys this page's residual: under `'Normal'` the closed-form inversion below returns the
+    quoted σ_N **as itself** — to 4.4e-16, times the `√(T_365.25/T_curve)` = 0.99965771 that the
+    premium's 365.25 clock and the inversion's ACT/365 one differ by — so `∂r/∂q` is exactly
+    `−w√(T_365.25/T_curve)` at every benchmark, independent of expiry, curve and θ, where the
+    lognormal diagonal runs −0.10232 … −0.08704. A lognormal vol point is worth about a *tenth* of a
+    normal one, because it is a fraction of the forward rather than a rate.
+
 **One severance, one splice, one leaf.** The severance is where it always was — the market premium,
 built by scipy — so the repair is the twin `create_market_swaps` already built for the Monte Carlo
-path, `utils.black_european_option` under `black_premium`, carried through the closed-form Bachelier
+path, `utils.black_european_option` or `utils.bachelier_european_option` under `market_premium`,
+carried through the closed-form Bachelier
 inversion. `market_swap_class.market_normal_vol` is the whole of it. The splice is worth **exactly
 zero** forward: the residual, the model value, the market normal vol and `‖J'r‖` are bit-identical
 with the quote side on and off, `np.array_equal` and hex comparison rather than a tolerance — and so
@@ -1329,8 +1347,8 @@ stops there. No wrong-way risk. **No recalibration inside the simulation**: quot
 t0 risk, and future-dated dynamics stay on calibrated parameters. No new pricers, and no changes to
 the `instruments.py` pricers beyond what the t0 closure strictly requires — so far, none. **No
 vol-surface parameterisation**: SABR and SSVI are out of scope, and a swaption quote here is the
-number on the `Instrument_Definitions` row, the surface's ATM read, or a premium — never a smile
-parameter.
+number on the `Instrument_Definitions` row or a premium — never a smile parameter. (It was also the
+surface's ATM read until 2026-09-01; a zero row refuses by name now.)
 
 Two more, specific to what landed here. **No reporting format**: `dV/dq` lands on the quote leaves
 in `Config.quote_leaves`, paired with each quote's descriptor, and no `Greeks_First`-style block is

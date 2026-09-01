@@ -30,24 +30,14 @@ vol OF is quarterly/quarterly ACT/365 against 3M JIBAR, and nothing in the ticke
 currency whose `swaption` entry carries no `conventions` block REFUSES BY NAME with the missing
 fields listed, and a wrong convention is then a data fix the owner makes in `seed.json`.
 
-THE QUOTED DISTRIBUTION IS DECLARED AND THE CALIBRATION DOES NOT READ IT - the finding this build
-hands to the composition harness, stated here because it is the one thing about this block that
-could be silently wrong. `SASN` is `ZAR SWPT NVOL`: a NORMAL (Bachelier) vol in basis points.
-`create_market_swaps` prices every benchmark's market premium with
-`utils.black_european_option_price`, which is lognormal, displaced by the surface's
-`BlackScholesDisplacedShiftValue` and by nothing else.
-
-AND THE ASYMMETRY IS THE SHARP PART. `InterestYieldVol` DOES declare a `Distribution_Type` of
-`Lognormal` or `Normal`, and the ordinary PRICING path reads it - `Factor3D.get_subtype` carries
-`(Distribution_Type, Shift)` into every deal's `Volatility` factor dependency. So one surface
-prices a swaption DEAL under its declared distribution and prices this family's CALIBRATION
-BENCHMARK lognormal regardless, and a `Normal` grid is therefore fitted under one convention and
-marked under another.
-
-This emitter transcribes what the terminal quoted, scales it into the family's `Percent` column,
-states the distribution in `Quote_Source` and on the returned ladder, and a gate asserts the gap in
-its current shape - the day `create_market_swaps` reads a distribution, that gate flips and says
-so. It is not this package's to fix from out here.
+THE QUOTED DISTRIBUTION IS DECLARED AND THE CALIBRATION READS IT. `SASN` is `ZAR SWPT NVOL`: a
+NORMAL (Bachelier) vol in basis points. `create_market_swaps` builds each benchmark's market
+premium under the referenced surface's `Distribution_Type` - Bachelier for `Normal`, displaced
+Black for `Lognormal` - the same convention `Factor3D.get_subtype` carries into every deal's
+`Volatility` dependency, so a ladder is fitted and marked under one convention. This emitter
+transcribes what the terminal quoted, scales it into the family's `Percent` column, and states
+the distribution in `Quote_Source` and on the returned ladder; the referenced `InterestYieldVol`
+surface must declare the matching `Distribution_Type` for the fit to read it.
 
 A RE-TICK IS A RE-AUTHORING, and that is structural rather than a preference.
 `schema.partition_market_price` gives every family whose quotes do not live in `Points` rows an
@@ -376,11 +366,14 @@ def screen_ladder(quotes, as_of, screen=None):
     """`(accepted, rejected)` - the trust boundary, in the ORDER OF DISTRUST.
 
       unpriced   no PX_LAST at all
-      zero       a vol of exactly zero, and this one is not a sanity check but a TRAP:
-                 `create_market_swaps`'s own rule is `if instrument['Market_Volatility'].amount:`,
-                 so a zero column silently means "read the swaption surface's ATM instead". A blank
-                 cell emitted as zero would therefore calibrate against whatever the book's surface
-                 happened to hold, under the name of a quote the terminal never gave
+      zero       a vol of exactly zero. This screen was built when it was a TRAP rather than a
+                 sanity check - `create_market_swaps`'s rule was
+                 `if instrument['Market_Volatility'].amount:`, so a zero column silently meant "read
+                 the swaption surface's ATM instead" and a blank cell emitted as zero calibrated
+                 against whatever the book's surface happened to hold, under the name of a quote the
+                 terminal never gave. The engine refuses that row by name since 2026-09-01; this
+                 screen stays where it is, because a ladder is refused HERE where a desk can see
+                 which cell went dark, rather than at the far end of a book
       off-market a vol outside the declared band - the decimal-shifted print no other check sees
       crossed    bid above ask: a stale side standing against a live one
       undated    no readable LAST_UPDATE_DT - a print that cannot evidence its own time
@@ -446,7 +439,9 @@ def instrument_row(quote, conventions):
 
     `Market_Volatility` is a `Percent`, so the wire number is in PERCENT and the decoded `.amount`
     is the fraction the pricer reads. The distribution that number is IN is declared on the ladder
-    and stated in `Quote_Source`; there is no column for it, which is the finding.
+    and stated in the block's `Quote_Source`; there is no ROW column for it and there is not meant
+    to be - the convention is a property of the surface the block names, which is where
+    `create_market_swaps` reads it.
     """
     row = {
         'Start': wire_period(quote.expiry),
@@ -486,19 +481,33 @@ def hw2f_block(ladder, curve=None, screen=None):
     about this emission moved - the bytes are the same bytes - and the change is entirely the
     engine's, which is the behaviour a field left to its default is asking for.
 
-    `Quote_Source` is written and is NOT declared by this family, which is a finding rather than an
-    oversight here: both Heston-Nandi families declare `Quote_Source` and `Quote_Timestamp` and this
-    one declares neither, so a machine-fetched ladder has nowhere inside its own block to say where
-    it came from or what distribution its numbers are in. It rides as an undeclared key that
-    `bootstrap` reads past and `as_json` preserves, because a block that cannot state its own
-    provenance is how a normal vol gets priced as a lognormal one in silence.
+    THE SEED'S `distribution: Normal` NOW HAS AN ENGINE THAT HONOURS IT, and that is the second such
+    change and the one this emitter was waiting for. `SASN` is a normal vol in basis points, the
+    seed has declared it as one since this package shipped, and `create_market_swaps` priced every
+    benchmark with a lognormal Black whatever the surface said - so an emitted ZAR ladder could be
+    fetched, screened and booked honestly and still be fitted under the wrong convention. Since
+    2026-09-01 that calibration reads the named `InterestYieldVol`'s `Distribution_Type` and prices
+    a Normal ladder with Bachelier. NOTHING HERE MOVED FOR IT except the `Quote_Source` note, which
+    said the opposite: what makes the fit honest is the SURFACE's declaration, which this emitter
+    does not author - so a desk pointing `Swaption_Volatility` at a lognormally-declared factor
+    still gets a lognormal fit of normal quotes, and the block's own line is where that is stated.
+
+    `Quote_Source` IS NOW A DECLARED FIELD of this family, and that is the finding this emitter
+    raised, closed on 2026-09-01. It used to ride as an undeclared key that `bootstrap` read past
+    and `as_json` preserved - both Heston-Nandi families declared `Quote_Source` and
+    `Quote_Timestamp` and this one declared neither, so a machine-fetched ladder had nowhere inside
+    its own block to say where it came from. HW2F declares both now, on their shape. NOTHING HERE
+    MOVED FOR IT EITHER: the same key, the same line, the same bytes - what changed is that a
+    schema-driven front end can see it, and a reader of the declarations can find out that this is
+    the only place a block says which convention its numbers are in.
     """
     screen = screen or SwaptionScreen()
     if not ladder.surface:
         raise BloombergConfigurationError(
             'the block names no Swaption_Volatility surface - the family declares it REQUIRED and '
-            'reads a cell\'s ATM off it wherever Market_Volatility is zero, so an unnamed surface '
-            'is a calibration that resolves nothing. Name the InterestYieldVol factor')
+            'the calibration reads that surface\'s Distribution_Type to know which convention to '
+            'price these quotes in, so an unnamed surface is a calibration that resolves nothing. '
+            'Name the InterestYieldVol factor')
     if len(ladder.quotes) < screen.minimum_rows:
         raise IncompleteLadder(
             '{} screened to {} believed cell{} against a floor of {} - the terminal was asked about '
@@ -529,23 +538,26 @@ def quote_source(ladder):
 
     THE DISTRIBUTION IS THE FIRST THING IT SAYS, because it is the one thing about this block a
     reader cannot recover from the numbers: 1.45 in the `Market_Volatility` column is an ordinary
-    lognormal vol read one way and a 145 basis point normal vol read the other, and
-    `create_market_swaps` reads it the first way whatever the surface's `Distribution_Type` says.
+    lognormal vol read one way and a 145 basis point normal vol read the other. Since 2026-09-01
+    `create_market_swaps` reads the surface's own `Distribution_Type` and prices a Normal ladder
+    with Bachelier, so this line and the engine now agree - and it still has to be SAID here,
+    because the block itself declares no field to say it in and the declaration it depends on lives
+    on a factor this emitter does not author.
     """
     census = ', '.join('{} {}'.format(count, verdict)
                        for verdict, count in sorted(ladder.census.items())) or 'nothing refused'
     return (
         '{} ATM cells quoted as {} vols off the {} swaption grid as at {}, {} believed of {} asked '
         '({}); the forward swaps are {}/{} {} vs {}, weighted flat at {:g}. NOTE: '
-        'create_market_swaps prices every benchmark with a LOGNORMAL Black and reads no '
-        'Distribution_Type, so a Normal ladder is quoted here and priced there under the other '
-        'convention'.format(
+        'create_market_swaps prices each benchmark in the convention the named surface DECLARES - '
+        'Normal vols reach a Bachelier premium since 2026-09-01 - so this ladder is priced as it '
+        'is quoted only where that InterestYieldVol declares Distribution_Type {}'.format(
             len(ladder.quotes), ladder.conventions.distribution.upper(), ladder.currency,
             ladder.as_of.isoformat(), len(ladder.quotes),
             len(ladder.quotes) + len(ladder.rejected), census,
             ladder.conventions.fixed_frequency, ladder.conventions.float_frequency,
             ladder.conventions.fixed_day_count, ladder.conventions.float_day_count,
-            ladder.conventions.weight))
+            ladder.conventions.weight, ladder.conventions.distribution))
 
 
 def quote_census(ladder):

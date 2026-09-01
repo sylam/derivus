@@ -61,7 +61,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
+import logging
 import threading
+import time
 import zipfile
 
 import numpy as np
@@ -736,6 +738,170 @@ def test_a_bootstrap_that_complains_writes_nothing(book):
     assert outcome['written'] is False
     assert any('wrote no' in message for message in outcome['refused'])
     assert book.read_bytes() == before
+
+
+#: What a `NettingCollateralSet` authored as a DEAL rather than as a structure does: it compiles
+#: like any other deal, and `Deal.generate` is not implemented for it - so `Deal.calculate` logs
+#: CRITICAL and marks it at nothing. That is the roadmap row's own recipe for a real book whose
+#: PRICING talks on the channel `CapturedErrors` listens to.
+SKIPPED_NETTING = 'generate in class NettingCollateralSet not implemented yet'
+
+#: How many of them the priced book carries. Each is one CRITICAL per priced run, so this is the
+#: density knob: at 40 a run of this book emits 40 lines and the queued jobs emit ~4,000 across the
+#: tick loop below, which is what makes the overlap the gate depends on a fact rather than a hope.
+NOISY_DEALS = 40
+
+
+def skipped_netting_deal(reference):
+    return {'Object': 'NettingCollateralSet', 'Reference': reference, 'Netted': 'True',
+            'Collateralized': 'False', 'Settlement_Currency': ''}
+
+
+class Chatter(logging.Handler):
+    """Counts the PRICED run's own CRITICAL lines, recognised by their message.
+
+    Not by thread: `TestClient` runs a sync endpoint on an anyio worker thread, so the thread a
+    tick executes on is one this gate never sees. What this measures is whether the pricing was
+    talking WHILE a tick was in flight, which is the precondition the gate would be vacuous
+    without - and it is read as a delta across each POST, so each tick answers for its own window
+    rather than for the loop's.
+    """
+
+    def __init__(self):
+        super().__init__(level=logging.ERROR)
+        self.count = 0
+
+    def emit(self, record):
+        if SKIPPED_NETTING in record.getMessage():
+            self.count += 1
+
+
+def test_a_concurrent_runs_critical_does_not_refuse_an_innocent_tick(tmp_path):
+    """THE ROW THIS CLOSES: `market_edit` captured the ROOT logger around `context.bootstrap()`,
+    and the root logger is every thread's. A queued `/book/price` whose pricing logs a CRITICAL
+    inside that window turned a good tick into `written: False` with a FOREIGN run's message as the
+    reason - and on a `--tick` desk `Metronome.failed` then counted a beat that had nothing wrong
+    with it, silently, while the market data it refused was fine.
+
+    THE RECIPE IS THE VERIFIER'S, PROMOTED. A real book: the one-cashflow job, the FX vol
+    bootstrapper, a real USDZAR quote block installed through `/book/market`, and 40
+    `NettingCollateralSet` deals the pricer skips. A background thread keeps `/book/price` queued
+    behind the one worker for the length of the loop; the main thread posts 25 real ticks, each
+    moving the ATM and each re-bootstrapping the surface.
+
+    HOW DETERMINISM IS ACHIEVED, in three parts.
+
+    1. The FIX is not a timing question. `record.thread` against the constructing thread's ident is
+       a comparison, so once the interleaving happens the answer is the same every time - there is
+       no window in which the fixed handler captures a foreign record.
+    2. The OVERLAP is asserted rather than assumed. `Chatter` counts the priced run's CRITICALs
+       across each POST individually, so a run where the worker went quiet fails the gate instead
+       of passing it vacuously. Measured: 22-24 of the 25 ticks carry a foreign CRITICAL inside
+       their own window, over ~4,100 such records in ~0.5 s.
+    3. The MUTANT is measured, not argued. With the thread test removed (`if True or ...`), three
+       runs of this recipe wrote **9, 7 and 8** of 25 ticks - the other 16-18 refused, each one
+       carrying `Deal NCS<n> skipped - generate in class NettingCollateralSet not implemented`,
+       a message about a deal the tick had nothing to do with. With it in place: **25 of 25**,
+       five runs out of five.
+
+    THE NEGATIVE ARM IS `test_a_bootstrap_that_complains_writes_nothing`, one gate up: a bootstrap
+    error on the tick's OWN thread still refuses the whole write with its own messages. This fix
+    narrows what the capture hears and changes nothing about what it does with what it hears.
+    """
+    deals = [CASHFLOW] + [skipped_netting_deal('NCS{}'.format(i)) for i in range(NOISY_DEALS)]
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(job(deals=deals, sections={
+        'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    chatter = Chatter()
+    stop = threading.Event()
+    submitted = []
+
+    def keep_pricing():
+        """One `/book/price` after another, each at its own seed so nothing coalesces onto the
+        last - the queue is what keeps the worker occupied for the whole of the tick loop."""
+        seed = 0
+        while not stop.is_set():
+            seed += 1
+            submitted.append(CLIENT.post('/book/price', content=dump(
+                {'calculation_overrides': {'Random_Seed': seed}}), headers=JSON).json()['status'])
+            time.sleep(0.001)
+
+    pricer = threading.Thread(target=keep_pricing, daemon=True)
+    try:
+        installed = CLIENT.post('/book/market', content=dump({'quotes': fx_vol_quotes()}),
+                                headers=JSON).json()
+        assert installed['installed'] == ['FXVolPrices.USD.ZAR'] and installed['written'] is True
+
+        logging.getLogger().addHandler(chatter)
+        pricer.start()
+        # let the worker get into the book before the first tick, so the loop opens against a busy
+        # queue rather than racing the thread's own startup
+        while chatter.count == 0 and not stop.is_set():
+            time.sleep(0.005)
+
+        ticks = []
+        for n in range(25):
+            moved = json.loads(dump(fx_vol_quotes()))
+            for point in moved['FXVolPrices.USD.ZAR']['instrument']['Points']:
+                if point['Quote_Type'] == 'ATM':
+                    point['Quoted_Market_Value'] += 0.0001 * n
+            before = chatter.count
+            outcome = CLIENT.post('/book/market', content=json.dumps({'quotes': moved}),
+                                  headers=JSON).json()
+            ticks.append((outcome, chatter.count - before))
+    finally:
+        stop.set()
+        pricer.join(timeout=60)
+        service.EXECUTOR.queue.join()
+        logging.getLogger().removeHandler(chatter)
+        service.BOOK = None
+
+    assert len(submitted) > 20 and set(submitted) <= {'queued', 'running', 'done'}, submitted
+    assert chatter.count > 1000, (
+        'the priced runs emitted {} CRITICAL lines - the worker was not talking and this gate is '
+        'measuring nothing'.format(chatter.count))
+    overlapped = [delta for _, delta in ticks if delta > 0]
+    assert len(overlapped) >= 15, (
+        'only {} of {} ticks had a foreign CRITICAL land inside their own window - the interleaving '
+        'this gate exists for did not happen'.format(len(overlapped), len(ticks)))
+
+    refused = [(outcome.get('refused'), delta) for outcome, delta in ticks
+               if outcome.get('written') is not True]
+    assert refused == [], (
+        '{} of {} innocent ticks were refused by another thread\'s run: {}'.format(
+            len(refused), len(ticks), refused[:2]))
+    assert all(outcome['updated'] == ['FXVolPrices.USD.ZAR'] for outcome, _ in ticks), (
+        'a tick wrote without moving the quote it posted')
+
+
+def test_the_capture_hears_its_own_thread_and_no_other():
+    """The mechanism, with no timing in it at all: the foreign record is emitted by a thread this
+    gate JOINS before looking, so there is no window and no flake in either direction.
+
+    Both halves matter. A handler that heard nothing would refuse nothing ever, which is a
+    different defect wearing this fix's clothes - so the same handler, in the same attachment, is
+    required to hear THIS thread. Nothing is patched: `CapturedErrors` is the shipped class and the
+    root logger is the shipped channel, which is the whole point - `Config.bootstrap` publishes
+    nowhere else, so the capture has to be there and the filter has to be on the record.
+    """
+    captured = service.CapturedErrors()
+    foreign = threading.Thread(
+        target=lambda: logging.critical('Deal FOREIGN skipped - a queued run, not this tick'))
+    logging.getLogger().addHandler(captured)
+    try:
+        foreign.start()
+        foreign.join(timeout=30)
+        assert not foreign.is_alive(), 'the foreign thread never finished - nothing was measured'
+        assert captured.messages == [], captured.messages
+        logging.error('FXVolSurfaceParameters wrote no FXVol price factor')
+    finally:
+        logging.getLogger().removeHandler(captured)
+
+    assert captured.messages == ['FXVolSurfaceParameters wrote no FXVol price factor'], (
+        'the capture stopped hearing its own thread - a handler that hears nothing refuses '
+        'nothing, which is the opposite defect')
+    assert captured.thread == threading.get_ident()
 
 
 def built_surface(path, quotes=None):

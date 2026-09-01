@@ -1460,15 +1460,23 @@ class InterestYieldVol(Factor3D):
     """A swaption volatility space, read at (moneyness, expiry, underlying tenor).
 
     `Property_Aliases` - a list of key/value pairs carrying `BlackScholesDisplacedShiftValue` - is
-    read with `.get` but has no descriptor, so no schema-authored block can carry it.
+    read with `.get` but has no descriptor, so no schema-authored block can carry it. It is the
+    LEGACY spelling of the displacement and `displacement` below states what now outranks it.
     """
     fields = [
         F('Surface', 'Space', bind='value',
           description='(moneyness, expiry, tenor, volatility) quads, flat extrapolated and '
                       'linearly interpolated'),
         F('Shift', 'Float', default=0, obj='Percent',
-          description='Displacement of the shifted lognormal quote'),
-        F('Distribution_Type', 'Text', default='Lognormal', values=['Lognormal', 'Normal'])
+          description='Displacement of the shifted lognormal quote. Read by the calibration as '
+                      'well as by the deal path since 2026-09-01: a non-zero value outranks the '
+                      'undeclared Property_Aliases legacy, and one authored beside a Normal '
+                      'distribution refuses by name rather than being ignored'),
+        F('Distribution_Type', 'Text', default='Lognormal', values=['Lognormal', 'Normal'],
+          description='The convention these vols are quoted in. It reaches the HW2F calibration '
+                      'through the benchmark PREMIUM - Lognormal strikes it with Black, Normal '
+                      'with Bachelier off an absolute normal vol - and the deal path through '
+                      'get_subtype')
     ]
 
     def __init__(self, param):
@@ -1493,6 +1501,12 @@ class InterestYieldVol(Factor3D):
 
     @property
     def BlackScholesDisplacedShiftValue(self):
+        """The LEGACY displacement, in percentage points - `Property_Aliases`, then a premiums file.
+
+        This is the undeclared half and it is left exactly as it was, because an existing file
+        carries it and nothing else states what those files mean. What reads it is `displacement`
+        below, which puts the DECLARED `Shift` in front of it.
+        """
         shift_value = 0.0
         Property_Aliases = self.param.get('Property_Aliases')
         if Property_Aliases is not None:
@@ -1502,6 +1516,45 @@ class InterestYieldVol(Factor3D):
         elif self.premiums is not None:
             return self.premiums['Shift'].apply(lambda x: float(x.replace('%', ''))).unique()[0]
         return shift_value
+
+    @property
+    def displacement(self):
+        """This surface's shifted-lognormal displacement, in the STRIKE's own units.
+
+        THE PRECEDENCE, and it is the whole of this property. The DECLARED `Shift` wins;
+        `Property_Aliases` - which has no descriptor, so no schema-authored block can carry it - is
+        the documented legacy behind it; a premiums file's own `Shift` column is the fallback under
+        that. Before this existed the calibration read `BlackScholesDisplacedShiftValue` alone, so a
+        block authoring the field the schema declares calibrated at ZERO displacement in silence
+        while the DEAL path carried the same `Shift` into every swaption's `Volatility` dependency
+        through `get_subtype` - the two paths disagreeing about the same surface.
+
+        A `Shift` OF ZERO IS NOT AN INSTRUCTION. Zero is the field's own declared default, so an
+        authored zero and an unauthored one are the same document and neither can outrank a legacy
+        alias: every existing file - which authors `Property_Aliases`, or neither - reads exactly
+        what it read before, to the bit, because the fallback arm is the same expression it always
+        was.
+
+        THE UNITS ARE THE STRIKE'S, not the percentage points the legacy alias carries, and the
+        conversion is the reason this returns a fraction rather than moving the `/100` to the caller:
+        a `Percent(2.0)` already holds `2.0/100.0` in `amount`, so both routes reach the strike
+        through the SAME division and a displacement authored either way is bit-identical.
+
+        A DISPLACEMENT UNDER `Distribution_Type: 'Normal'` REFUSES. A shift displaces a lognormal
+        quote's strike so the log is taken of something positive; a normal vol has nothing to
+        displace, and the two together are a document that means two things at once.
+        """
+        distribution, shift = self.get_subtype()
+        declared, legacy = float(shift), self.BlackScholesDisplacedShiftValue / 100.0
+        if distribution == 'Normal' and (declared or legacy):
+            raise Exception(
+                "InterestYieldVol: a displacement of {:g}% is authored by {} beside "
+                "Distribution_Type 'Normal', and a normal vol has no strike to displace - a "
+                'shifted-lognormal displacement is a lognormal concept. Either drop that '
+                "displacement or declare Distribution_Type 'Lognormal'".format(
+                    100.0 * (declared or legacy),
+                    'Shift' if declared else "Property_Aliases' BlackScholesDisplacedShiftValue"))
+        return declared or legacy
 
     @property
     def ATM(self):

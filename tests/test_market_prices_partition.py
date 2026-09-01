@@ -19,6 +19,12 @@ divergence is deliberate and it is the tick guard's own ruling read back: a pill
 stops being quoted two-sided is the same node of the same plan, so `Quoted_Bid` key-PRESENCE is
 value-plane, and the mid's key goes with it for one uniform projection equal to the guard's.
 
+ONE WIRE SPELLING PER TOKEN is the other thing a block has to survive, and the last section is
+where `.DateOffset` lands: `CustomJsonEncoder` writes it as a STRING (`{'.DateOffset': '3M'}`) and
+`Config.parse_json` wanted a kwargs DICT, so a `Market Prices` block written by this engine could
+not be read back by one of this engine's own two decoders. Both read the string now, through one
+spelling of the parse.
+
 Every block here is a real one: the ZAR strip `test_interest_rate_prices` authors off a known curve,
 the USDZAR smile `derivus_bloomberg` normalises out of canned terminal observations, and the two
 Heston-Nandi ladders the engine EMITS off the surface that smile builds. The three families with no
@@ -42,7 +48,7 @@ import derivus
 from derivus import bootstrappers, schema, utils
 from derivus.bootstrappers import (FXVolSurfaceParameters, HestonNandiComponentModelParameters,
                                    HestonNandiModelParameters, InterestRateCurveParameters)
-from derivus.config import CustomJsonEncoder, ModelParams, update_market_quote
+from derivus.config import Config, CustomJsonEncoder, ModelParams, update_market_quote
 
 from rates_world import BASE as RATES_BASE
 from test_interest_rate_prices import authored_world
@@ -651,3 +657,116 @@ def test_the_live_book_refuses_a_quote_as_a_values_patch(desk):
     assert FX_BLOCK in refused.json()['detail']
     assert '`quotes`' in refused.json()['detail'], 'the refusal must name the remedy'
     assert desk.read_bytes() == before, 'the refused patch still touched the book'
+
+
+# ---------------------------------------------------------------------------------------------
+# One wire spelling of `.DateOffset`, and both decoders read it
+# ---------------------------------------------------------------------------------------------
+
+def offsets_in(node, path=''):
+    """`[(path, value)]` for every `pd.DateOffset` in a decoded structure, in a stable order.
+
+    Walked rather than named: the ZAR strip carries its tenors inside authored `Deal` blocks
+    several levels down, and a gate that named the paths would be gating the paths it happened to
+    name. A `.DateOffset` the decoder left as a raw string or dict is NOT a `DateOffset` and so is
+    collected as itself, which is what makes the type assertion below able to fail.
+    """
+    if isinstance(node, dict):
+        if set(node) & {'.DateOffset'}:
+            return [(path, node)]
+        return [item for key in sorted(node) for item in offsets_in(node[key], path + '/' + key)]
+    if isinstance(node, list):
+        return [item for i, entry in enumerate(node)
+                for item in offsets_in(entry, '{}[{}]'.format(path, i))]
+    return [(path, node)] if isinstance(node, pd.DateOffset) else []
+
+
+def test_one_dateoffset_wire_spelling_and_both_decoders_read_it(tmp_path):
+    """THE ROW THIS CLOSES: `CustomJsonEncoder` writes `{'.DateOffset': '3M'}` and
+    `Config.parse_json` did `DateOffset(**dct['.DateOffset'])`, which wants a kwargs dict - so a
+    `MarketData.json` this engine WROTE could not be read back through `parse_json` at all, and the
+    emitters (which write the encoder's spelling, because the service path is `read_json`'s) were
+    emitting bytes one of the two decoders would die on.
+
+    ONE SPELLING OF THE PARSE, not a second copy: `parse_json` routes the string through
+    `Config.parse_period`, which is the expression `read_json` already used, so the two cannot drift
+    again. The kwargs dict is still accepted and that is deliberate - reading a spelling nobody
+    writes any more is free, writing two of them was the defect.
+
+    THE BLOCK IS A REAL ONE, the same ZAR strip the partition gates run on, and it carries 38
+    `.DateOffset` sites through authored `Deal` blocks. Whole-block equality is asserted through
+    `canonical` rather than `==` for one reason worth recording: `utils.DateList` defines no
+    `__eq__`, so a `==` over the whole structure compares two decoded schedules by IDENTITY and is
+    False for any two decodes of anything. The offsets themselves ARE compared with `==`, which is
+    the comparison this row is about.
+    """
+    block = family_blocks()['InterestRatePrices']
+    market = {'System Parameters': {'Base_Date': RATES_BASE, 'Base_Currency': 'ZAR'},
+              'Price Factors': {}, 'Correlations': {},
+              'Market Prices': {ZAR_BLOCK: block}}
+    text = json.dumps({'MarketData': market, 'Version': ['JSONVersion', '22.05.30']},
+                      cls=CustomJsonEncoder)
+    assert '"' + '.DateOffset": "' in text, 'the encoder no longer writes the string form'
+    assert '.DateOffset": {' not in text, 'the encoder writes a kwargs dict somewhere'
+
+    path = tmp_path / 'MarketData.json'
+    path.write_text(text, encoding='utf-8')
+    parsed = Config()
+    parsed.parse_json(str(path))
+    read = Config().read_json((text, 'wire'))['MarketData']
+
+    through_parse = offsets_in(parsed.params['Market Prices'])
+    through_read = offsets_in(read['Market Prices'])
+    assert len(through_parse) == text.count('.DateOffset') == 38, through_parse
+    assert [where for where, _ in through_parse] == [where for where, _ in through_read]
+    assert all(isinstance(value, pd.DateOffset) for _, value in through_parse), (
+        'parse_json left a .DateOffset undecoded: {}'.format(
+            [item for item in through_parse if not isinstance(item[1], pd.DateOffset)]))
+    assert [value for _, value in through_parse] == [value for _, value in through_read]
+    assert canonical(parsed.params['Market Prices']) == canonical(read['Market Prices'])
+    assert canonical(parsed.params['Market Prices']) == canonical({ZAR_BLOCK: block}), (
+        'the block did not survive its own encoder')
+
+
+def test_the_kwargs_dict_still_reads_because_old_bytes_are_on_disk(tmp_path):
+    """The legacy spelling `parse_json` was written for keeps working, and it decodes to the SAME
+    object the string does - which is what makes accepting both a compatibility statement rather
+    than a second convention. Nothing in the tree writes it: `CustomJsonEncoder` is the only writer
+    of this key and the emitters copy its output, so this arm is about bytes already on disk.
+
+    A SEPARATE FINDING, named here because this gate is where it surfaced and it is NOT fixed:
+    `CustomJsonEncoder` builds the string by walking `DateOffset.kwds`, whose key order for a
+    MULTI-UNIT period is a set iteration and therefore varies with the interpreter's hash seed -
+    `DateOffset(months=6, days=2)` encodes `'6M2D'` in one process and `'2D6M'` in the next
+    (measured 4:1 over five fresh interpreters). Both parse back to the same offset, so nothing
+    reads wrong; what is not byte-stable across processes is `write_marketdata_json`'s output and
+    any hash taken over such a block. Every offset the emitters write is single-unit, which is why
+    no determinism gate in the repo has seen it. This gate asserts the set of parts rather than
+    their order, so it states what is true rather than pinning a coin flip."""
+    legacy = json.dumps({'MarketData': {
+        'System Parameters': {}, 'Price Factors': {}, 'Correlations': {},
+        'Market Prices': {'legacy': {'instrument': {
+            'Start': {'.DateOffset': {'years': 1}},
+            'Tenor': {'.DateOffset': {'months': 6, 'days': 2}}}}}},
+        'Version': ['JSONVersion', '22.05.30']})
+    path = tmp_path / 'Legacy.json'
+    path.write_text(legacy, encoding='utf-8')
+    old = Config()
+    old.parse_json(str(path))
+    instrument = old.params['Market Prices']['legacy']['instrument']
+
+    assert instrument['Start'] == pd.DateOffset(years=1)
+    assert instrument['Tenor'] == pd.DateOffset(months=6, days=2)
+    # and the string form of the same two offsets, through the same decoder, is the same object
+    written = json.dumps({'MarketData': {
+        'System Parameters': {}, 'Price Factors': {}, 'Correlations': {},
+        'Market Prices': {'legacy': {'instrument': instrument}}},
+        'Version': ['JSONVersion', '22.05.30']}, cls=CustomJsonEncoder)
+    assert '{".DateOffset": "1Y"}' in written, written
+    assert json.loads(written)['MarketData']['Market Prices']['legacy']['instrument'][
+        'Tenor']['.DateOffset'] in ('6M2D', '2D6M'), written
+    again = tmp_path / 'Written.json'
+    again.write_text(written, encoding='utf-8')
+    new = Config()
+    new.parse_json(str(again))
+    assert new.params['Market Prices'] == old.params['Market Prices']

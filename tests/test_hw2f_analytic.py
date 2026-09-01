@@ -215,6 +215,35 @@ local: through `self` it would be block A's paths over block B's count, in a res
 (`test_a_second_block_does_not_rescale_the_first_blocks_residual` has the factor of four and the
 ||J'r|| it moves).
 
+THE PREMIUM CONVENTION, fifth part of this file and the 2026-09-01 ruling. `create_market_swaps`
+priced every market premium with the numpy Black whatever the surface declared, so a NORMAL-vol
+ladder - the seeded ZAR `SASN` grid is one - fitted under a lognormal convention, and a block
+authoring the schema's own `Shift` calibrated at zero displacement while the DEAL path carried that
+same `(Distribution_Type, Shift)` into every swaption's `Volatility` dependency. Both halves are
+read now, off `Factor3D.get_subtype` and `InterestYieldVol.displacement`, and the gates below are:
+
+    the two conventions      one numeric ladder read both ways, 11.374x / 9.843x / 9.683x /
+                             10.926x apart on the four-quote fixture - which is 1/F, and is what
+                             pricing a normal vol as a lognormal one cost on every benchmark
+    a Normal block fits      theta* recorded as `NORMAL_FOUR_THETA`, ||J'r|| 3.97e-7 against ||r||
+                             1.75e-6, three orders inside the declared Stationarity_Tol, 11.5 s
+    the market ROUND-TRIPS   a quoted sigma_N through the Bachelier premium through the closed-form
+                             inversion comes back as ITSELF to 0.0-4.4e-16 - times
+                             0.99965771007041049, which is sqrt(T_365.25/T_curve): the premium's
+                             clock is `utils.DAYS_IN_YEAR` and the inversion's is the curve's own
+                             day count. A STANDING FINDING, not fixed here, because the premium's
+                             clock sits on the far side of every recorded theta* in this file
+    dr/dq is the clock       exactly -sqrt(T_365.25/T_curve) at every benchmark, independent of
+                             expiry, curve and theta, because the Bachelier quote side is LINEAR -
+                             a difference quotient reproduces autograd to 4.0e-15 with no h-squared
+                             ladder, where the lognormal diagonal runs -0.10232 to -0.08704
+    the displacement         declared `Shift` outranks the undeclared `Property_Aliases`, both
+                             routes bit-identical on the premium, a zero Shift is not an
+                             instruction, and either spelling beside `Normal` refuses by name
+    a zero quote refuses     and so does an absent one - the fallthrough to the surface's own ATM
+                             read is retired, which drops the calibration's open severances from
+                             three to two
+
 AND A FINDING FIRST TAKEN, THEN CLOSED BY RULING: the two objectives disagreed on a quanto'd
 currency. Schrager-Pelsser prices the domestic swaption, which is correct; the Monte Carlo
 objective simulated through `precalculate`'s quanto drift while deflating domestically. On a ZAR
@@ -236,6 +265,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 import pandas as pd
 import pytest
+import scipy.stats
 import torch
 
 from derivus import riskfactors, utils
@@ -3383,6 +3413,394 @@ def test_a_truncated_chain_refuses_the_analytic_quote_jacobian_and_names_the_nor
         'basin hopping alone no longer clears the declared tolerance on the analytic residual - '
         'the recorded reading is 5.85e-7 and it is half of why the default is 1e-3')
     repriced_value(world, basin, theta).backward()
+
+
+# =================================================================================================
+# THE PREMIUM CONVENTION - what the surface DECLARES, read by the calibration that prices its quotes
+# =================================================================================================
+
+#: normal vols in the family's `Percent` column, ZAR-shaped: 145 basis points is 1.45 here, falling
+#: with expiry, and `.amount` is then the ABSOLUTE rate move 0.0145 the Bachelier premium wants.
+#: They are the four `CHECKER_BENCHMARKS` rows in order.
+NORMAL_VOLS = (1.45, 1.33, 1.26, 1.18)
+
+#: theta* on the four-quote fixture with the surface declaring `Distribution_Type: 'Normal'`, AS
+#: SOLVED - the third recorded vector in this file and the Normal path's own bit-identity baseline.
+#: `Random_Seed` 5120, CPU float64, 11.5 s over the analytic chain.
+#:
+#: THAT IT IS A SOLVE OUTPUT IS CHECKABLE IN SECONDS: at this point `||J'r||` is 3.97e-7 against
+#: `||r||` 1.75e-6 - a fit that INTERPOLATES, four quotes against 23 parameters, three orders inside
+#: `Stationarity_Tol`'s declared 1e-3 - and no authored vector lands there. It is NOT `AN_FOUR_THETA`
+#: and must not be: the same four numeric quotes read as normal vols are a different market, priced
+#: an order of magnitude higher (the factor is measured one gate down), so a Normal block solving to
+#: the lognormal vector would mean the declaration had not been read at all.
+NORMAL_FOUR_THETA = {
+    'Alpha_1': [0.044911017328440515],
+    'Alpha_2': [0.093980916640448234],
+    'Correlation': [-0.017002007850293693],
+    'Sigma_1': [0.013166555114526492, 0.0066780450745635277, 0.011086739786127967,
+                0.0082130541076930793, 0.01480363569268385, 0.0041758863439371368,
+                0.009362193779360338, 0.0057726715480369934, 0.015846363035801857,
+                0.020276108904876695],
+    'Sigma_2': [0.0065342633417983086, 0.011279126830008741, 0.0099490884628614419,
+                0.0058310523363879563, 0.017921953157256136, 0.0089542405441957081,
+                0.0080942137607090715, 0.016296040834081756, 0.019605175274476038,
+                0.022311053011973128]}
+
+
+def surface_world(**declared):
+    """The identified fixture with `declared` written onto its `InterestYieldVol` block.
+
+    ONE FIXTURE, TWO DECLARATIONS. Everything else - the curve, the benchmarks, the seed - is the
+    identified world's, so a reading taken here against one taken there differs in the surface's own
+    declaration and in nothing else. The `Surface` quads are re-scaled to normal units under
+    `Distribution_Type: 'Normal'`, which no longer reaches the premium at all now that the zero
+    fallthrough is retired, but a fixture whose surface says 20% while its rows quote 145bp would be
+    describing a market that does not exist.
+    """
+    factors = identified_world()
+    block = factors['InterestYieldVol.' + ID_VOL]
+    block.update(declared)
+    if declared.get('Distribution_Type') == 'Normal':
+        block['Surface'] = utils.Curve([], [
+            [m, e, t, 0.0145 + 0.0005 * np.log1p(e) - 0.0002 * np.log1p(t) + 0.05 * m * m]
+            for t in ID_SURFACE_T for e in ID_SURFACE_E for m in ID_MONEY])
+    return factors
+
+
+def normal_closure(vols=NORMAL_VOLS, **extra):
+    """The four-quote closure on a surface declaring `Normal`, its rows quoting normal vols."""
+    return identified_closure(
+        benchmarks=CHECKER_BENCHMARKS, world=surface_world(Distribution_Type='Normal'),
+        Objective='Analytic',
+        Instrument_Definitions=quoted_definitions(CHECKER_BENCHMARKS, vols), **extra)
+
+
+def normal_calibration(vols=NORMAL_VOLS, **extra):
+    """`(SwaptionCalibration, world)` on that block, WITH the optimizer chain."""
+    return identified_calibration(
+        benchmarks=CHECKER_BENCHMARKS, world=surface_world(Distribution_Type='Normal'),
+        Objective='Analytic',
+        Instrument_Definitions=quoted_definitions(CHECKER_BENCHMARKS, vols), **extra)
+
+
+def struck_annuity(swap, curve):
+    """The annuity the market premium was STRUCK on, rebuilt from the schedule and the curve.
+
+    Not a second opinion of `get_par_swap_rate`'s pvbp - the same expression on the same arrays.
+    That function discounts the leg it is handed at `exp(-r(Dt) Dt)` against its own year fractions
+    and sums, and `swaption_schedule_class` carries exactly those two columns of exactly that leg
+    (the FIXED one, which is the float leg where the two frequencies agree and the fixed cashflows
+    where they do not). So this is bit-identical to the pvbp by construction, and the round trip
+    below is an identity rather than a tolerance.
+
+    `market_normal_vol` is handed Schrager-Pelsser's annuity in the residual, which is a DIFFERENT
+    number - it agrees with this one to about 1e-3 relative, which is what
+    `test_the_market_normal_vol_is_a_division_and_it_round_trips` holds it to. The round trip is a
+    statement about the quote and the premium, so it is taken on the annuity the premium was struck
+    on.
+    """
+    t = swap.schedule.pay_times
+    return float((np.exp(-curve.current_value(t) * t) * swap.schedule.accruals).sum())
+
+
+#: the two clocks `create_market_swaps` and `swaption_schedule_class` measure the SAME expiry on:
+#: the premium's Black/Bachelier expiry is in 365.25ths (`utils.DAYS_IN_YEAR`) and the inversion's
+#: is the ACT_365 curve's own day count. A normal vol therefore round-trips as
+#: `sigma * sqrt(T_365.25 / T_curve)` and this is that constant.
+CLOCK = np.sqrt(365.0 / 365.25)
+
+
+def test_a_normal_surface_calibrates_and_the_market_side_round_trips():
+    """A NORMAL-VOL LADDER FITS AS A NORMAL-VOL LADDER, which is what this landing is for.
+
+    `SASN` is quoted in basis points of ABSOLUTE rate move and the family priced every market
+    premium with `utils.black_european_option_price` whatever the surface declared, so the seeded ZAR
+    grid could only ever have been fitted under the wrong convention. `create_market_swaps` reads
+    `Distribution_Type` now - through `Factor3D.get_subtype`, the DEAL path's own read, so there is
+    one spelling of what a surface says rather than one per path - and this block calibrates:
+
+        ||J'r|| at theta*        3.97e-07   against the DECLARED Stationarity_Tol of 1e-3
+        ||r||                    1.75e-06   four quotes against 23 parameters: it interpolates
+        wall clock               11.5 s     against 12.8 s for the same block quoted lognormal
+
+    THE MARKET SIDE ROUND-TRIPS, and that is the half a price gate cannot see. At the money the
+    Bachelier premium is `A sigma_N sqrt(T/2pi)` and `market_normal_vol` inverts exactly that, so
+    the quote goes in through the premium and comes back out of the division AS ITSELF - the
+    inversion stops being an approximation of the market and becomes the market's own identity. It
+    is measured against the annuity the premium was STRUCK on (see `struck_annuity`) and the residual
+    is **0.0 to 4.4e-16** across the four benchmarks, which is float precision and nothing else.
+
+    WHAT IT ROUND-TRIPS THROUGH IS A CLOCK, and the gate states it rather than absorbing it.
+    `create_market_swaps` measures the option's expiry in 365.25ths while `schedule.expiry` is the
+    curve's ACT_365 day count, so what comes back is `sigma_N * sqrt(T_365.25/T_curve)` -
+    **0.99965771007041049**, a 3.4e-4 relative bias, the same 7e-4 years `swaption_schedule_class`
+    names one axis over. It predates this landing, it is the same on the lognormal path where it is
+    invisible, and it is NOT fixed here: the premium's clock is on the far side of `MC_FOUR_THETA`
+    and `AN_FOUR_THETA`, so moving it re-solves every recorded vector in this file. It is a finding
+    with a number, held here so it cannot drift unnoticed.
+    """
+    calibration, world = normal_calibration()
+    theta = calibration.solve()
+    solved = calibration.unflatten(theta)
+    for name, vector in NORMAL_FOUR_THETA.items():
+        assert [float(v).hex() for v in np.atleast_1d(solved[name])] == [
+            float(v).hex() for v in vector], (
+            '{} solved to {} against the recorded {}'.format(name, list(solved[name]), vector))
+    assert [float(v).hex() for v in np.concatenate(
+        [np.atleast_1d(AN_FOUR_THETA[k]) for k in calibration.keys])] != [
+        float(v).hex() for v in theta.detach().numpy()], (
+        'the Normal block solved to the LOGNORMAL four-quote vector - the same four numbers read '
+        'under the other convention are a different market, so this would mean the declaration '
+        'reached nothing')
+    norm, residual = stationarity(calibration, theta.detach())
+    assert norm < declared('Stationarity_Tol'), (
+        "a Normal block reads ||J'r|| {:.4g} at theta* against a recorded 3.97e-7 and the declared "
+        '{:g}'.format(norm, declared('Stationarity_Tol')))
+    assert residual < 1e-4, 'the four-quote Normal fit reads ||r|| {:.3e} against 1.75e-6'.format(
+        residual)
+
+    # the round trip, on the annuity the premium was struck on
+    worst = 0.0
+    for (name, swap), quoted in zip(world['swaps'].items(), NORMAL_VOLS):
+        sigma = utils.Percent(quoted).amount
+        recovered = as_float(swap.market_normal_vol(
+            torch.tensor(struck_annuity(swap, world['curve']), dtype=DTYPE)))
+        assert abs(recovered / (sigma * CLOCK) - 1.0) < 1e-14, (
+            '{}: a quoted sigma_N of {:.6g} came back as {:.17g} - the Bachelier premium and its '
+            'closed-form inversion are not each other'.format(name, sigma, recovered))
+        worst = max(worst, abs(recovered / (sigma * CLOCK) - 1.0))
+        # and the clock is the WHOLE of the gap, not a fitted fudge: it is the two day counts
+        assert abs(recovered / sigma - CLOCK) < 1e-15, name
+    assert worst < 1e-14, 'the worst round-trip residual is {:.3e} against a recorded 4.4e-16'.format(
+        worst)
+    assert abs(CLOCK - 0.99965771007041049) < 1e-15, (
+        'the clock constant moved - DAYS_IN_YEAR or the fixture day count changed')
+
+
+def test_the_two_conventions_are_two_prices_and_the_normal_one_is_the_bachelier_premium():
+    """THE GATE THAT WOULD HAVE CAUGHT THE ORIGINAL DEFECT: the same numbers, two declarations, two
+    prices - and each one is its own closed form.
+
+    One numeric ladder (1.45, 1.33, 1.26, 1.18 in the family's `Percent` column) is read once as a
+    lognormal Black vol and once as an absolute normal vol, on one fixture whose only difference is
+    `Distribution_Type`. The premiums come out apart by
+
+        1Y x 1Y      11.374x        2Y x 5Y       9.843x
+        3Y x 3Y       9.683x       10Y x 10Y     10.926x
+
+    which is 1/F to a part in 1e5 - the ratio of an ATM Bachelier premium to an ATM Black one is
+    `sigma sqrt(T/2pi) / (K (2 Phi(sigma sqrt(T)/2) - 1))`, and the par swap rate here runs 8.8% to
+    10.3%. That is what "prices every market premium LOGNORMAL" cost: an order of magnitude on every
+    benchmark, silently, with `Distribution_Type` sitting declared on the surface all along.
+
+    Each side is then held to ITS OWN closed form rather than to the other one, off the pvbp the
+    premium was struck on: Bachelier `A sigma sqrt(T/2pi)` and Black `A K (2 Phi(sigma sqrt(T)/2) -
+    1)`, both exact at the money, both to 1e-15. And the TENSOR twin the quote side differentiates
+    is held to the numpy premium it is a twin of - **0.0 relative**, bit-identical, which is the same
+    claim the Black pair has always made and now has to be made once per convention.
+    """
+    lognormal = identified_closure(
+        benchmarks=CHECKER_BENCHMARKS, world=surface_world(Distribution_Type='Lognormal'),
+        Objective='Analytic', batch_size=2048,
+        Instrument_Definitions=quoted_definitions(CHECKER_BENCHMARKS, NORMAL_VOLS))
+    normal = normal_closure(batch_size=2048, Quote_Sensitivity='Yes', Stationarity_Tol=ABSENT)
+    factors = []
+    for (name, swap), quoted in zip(normal['swaps'].items(), NORMAL_VOLS):
+        sigma, other = utils.Percent(quoted).amount, lognormal['swaps'][name]
+        annuity, T = struck_annuity(swap, normal['curve']), swap.schedule.expiry * 365.0 / 365.25
+        assert struck_annuity(other, lognormal['curve']) == annuity, name
+        assert abs(swap.price / (annuity * sigma * np.sqrt(T / (2.0 * np.pi))) - 1.0) < 1e-15, (
+            '{}: the Normal premium is not the Bachelier one'.format(name))
+        # the strike is the par swap rate, which is what the two premiums differ BY
+        strike = other.price / (annuity * (2.0 * scipy.stats.norm.cdf(
+            sigma * np.sqrt(T) / 2.0) - 1.0))
+        assert 0.08 < strike < 0.11, '{}: the implied par rate {:.6g} is off this curve'.format(
+            name, strike)
+        factors.append(swap.price / other.price)
+        assert abs(factors[-1] * strike - 1.0) < 1e-4, (
+            '{}: the two conventions differ by {:.6g}x against 1/F of {:.6g}'.format(
+                name, factors[-1], 1.0 / strike))
+    assert min(factors) > 5.0, (
+        'the two conventions price within {:.3g}x of each other - if that is now 1.0 the '
+        'declaration has stopped reaching the premium: {}'.format(
+            min(factors), ['{:.3f}'.format(f) for f in factors]))
+
+    # the tensor twin is the same formula in the other precision, per convention
+    for name, swap in normal['swaps'].items():
+        assert float(swap.premium(swap.quote).detach()).hex() == float(swap.price).hex(), (
+            '{}: the float64 Bachelier twin is not the numpy premium it splices onto'.format(name))
+
+
+def test_a_normal_block_carries_the_quote_side_and_its_bachelier_derivative():
+    """`Quote_Sensitivity` ON A NORMAL BLOCK, held exactly as the lognormal one is - and the
+    derivative it reports is a NUMBER this convention pins rather than a plausible one.
+
+    theta* is BIT-IDENTICAL with the quote side on and off, over two whole optimizer chains: the
+    splice is `base + (carried - detach(carried))` whatever priced `base`, so a second convention
+    cannot make it worth something forward.
+
+    THE DIAGONAL IS THE CLOCK, EXACTLY, and that is the reading only Bachelier can produce.
+    `sigma_mkt = P sqrt(2pi/T_curve) / A` with `P = A q sqrt(T_365.25/2pi)` is LINEAR in the quote,
+    so `dr/dq` is `-w sqrt(T_365.25/T_curve)` - the same **-0.9996577100704105** at every benchmark,
+    independent of expiry, of the curve and of theta. The lognormal path's own diagonal runs -0.10232
+    to -0.08704 on the identified block, which is `F` times this: a lognormal vol point is worth
+    about a tenth of a normal one because it is a fraction of the forward rather than a rate.
+
+    AND IT IS EXACT UNDER A DIFFERENCE QUOTIENT rather than second-order accurate, which is the same
+    linearity read from outside the tape. The rung is taken AROUND the splice - the block is rebuilt
+    from the JSON and the premium re-priced out of scipy - and at h = 0.05 and 0.5 vol points the
+    quotient reproduces autograd to **4.0e-15 relative**, with no h-squared ladder to climb, where
+    the lognormal quote side needs one.
+    """
+    off, _ = normal_calibration()
+    on, world = normal_calibration(Quote_Sensitivity='Yes', Stationarity_Tol=ABSENT)
+    assert len(on.quotes) == len(CHECKER_BENCHMARKS) and all(q.requires_grad for q in on.quotes)
+    assert [float(v).hex() for v in off.solve().numpy()] == [
+        float(v).hex() for v in on.solve().numpy()], (
+        'theta* moved when the quote side was switched on for a Normal block')
+
+    theta = flat_theta(on, NORMAL_FOUR_THETA)
+    residual, jacobian, quote_jac = residual_pieces(on, theta)
+    n = len(CHECKER_BENCHMARKS)
+    assert unconnected_pairs(on, theta) == n * n - n, (
+        'the separable residual has exactly one live quote per row on this convention too')
+    assert np.array_equal(quote_jac.numpy(), np.diag(np.diag(quote_jac.numpy()))), 'dr/dq'
+    for i in range(n):
+        assert abs(float(quote_jac[i, i]) / -CLOCK - 1.0) < 1e-14, (
+            'benchmark {}: dr/dq is {:.17g} against the -sqrt(T_365.25/T_curve) a Bachelier quote '
+            'side owes'.format(i, float(quote_jac[i, i])))
+
+    # one FD rung through a RE-AUTHORED quote, which is linear here rather than h-squared
+    for column, h in ((0, 0.5), (2, 0.05)):
+        vols = list(NORMAL_VOLS)
+        vols[column] = NORMAL_VOLS[column] + h
+        moved, _ = normal_calibration(vols=vols, Quote_Sensitivity='Yes', Stationarity_Tol=ABSENT)
+        quotient = (residual_pieces(moved, theta)[0].numpy() - residual.numpy()) / (h / 100.0)
+        assert abs(quotient[column] / float(quote_jac[column, column]) - 1.0) < 1e-13, (
+            'quote {} at h={:g}: the difference quotient reads {:.17g} against autograd\'s '
+            '{:.17g}'.format(column, h, quotient[column], float(quote_jac[column, column])))
+        assert np.array_equal(quotient[np.arange(n) != column],
+                              np.zeros(n - 1)), 'a re-authored quote moved another benchmark'
+        assert np.array_equal(residual_pieces(moved, theta)[1].numpy(), jacobian.numpy()), (
+            'J moved when quote {} was re-authored - the cross term is not zero here'.format(column))
+
+
+def test_a_declared_shift_reaches_the_premium_and_refuses_beside_a_normal_quote():
+    """THE SECOND DEFECT: the schema declares `Shift` and the calibration read `Property_Aliases`.
+
+    `InterestYieldVol` declares `F('Shift', 'Float', default=0, obj='Percent')` and
+    `create_market_swaps` struck its premium at `K + BlackScholesDisplacedShiftValue/100` - a
+    property that consults ONLY the undeclared `Property_Aliases` and otherwise returns 0.0. So a
+    block authoring the field the schema offers calibrated at ZERO displacement, silently, while the
+    DEAL path carried that same `Shift` into every swaption's `Volatility` dependency through
+    `get_subtype`. Two paths, one surface, two displacements.
+
+    THE PRECEDENCE IS GATED IN ALL FOUR CORNERS, on premiums compared as HEX:
+
+        Property_Aliases 2%, no Shift      the legacy route            <- what a live file carries
+        Shift 2%, no Property_Aliases      the declared route          BIT-IDENTICAL to it
+        Shift 2% AND Property_Aliases 5%   the declared one wins       BIT-IDENTICAL to both above
+        neither                            no displacement             and it MOVES the premium
+
+    The first two agreeing to the bit is the units claim as well as the precedence one: a
+    `Percent(2.0)` holds `2.0/100.0` in `amount` and the alias is divided by the same 100, so both
+    routes reach the strike through one division rather than through a round trip.
+
+    A ZERO SHIFT IS NOT AN INSTRUCTION. Zero is the field's own declared default, so an authored
+    zero cannot outrank a legacy alias - which is exactly what keeps every existing file
+    bit-identical, `test_a_displaced_surface_reaches_the_bachelier_side_through_the_premium_only`
+    included: that gate authors `Shift: Percent(0)` beside a 2% alias and reads the alias.
+
+    AND A DISPLACEMENT BESIDE `Normal` REFUSES BY NAME, from either spelling, because a normal vol
+    has no strike to displace - silently ignoring it is the defect this closes.
+    """
+    premium = {}
+    for label, declared_fields in (
+            ('alias', {'Property_Aliases': [{'BlackScholesDisplacedShiftValue': 2.0}]}),
+            ('declared', {'Shift': utils.Percent(2.0)}),
+            ('both', {'Shift': utils.Percent(2.0),
+                      'Property_Aliases': [{'BlackScholesDisplacedShiftValue': 5.0}]}),
+            ('neither', {})):
+        world = identified_closure(benchmarks=CHECKER_BENCHMARKS, batch_size=2048,
+                                   Objective='Analytic',
+                                   world=surface_world(**declared_fields))
+        assert world['surface'].displacement == (0.02 if declared_fields else 0.0), label
+        premium[label] = {name: swap.price for name, swap in world['swaps'].items()}
+    for name in premium['alias']:
+        assert premium['declared'][name].hex() == premium['alias'][name].hex(), (
+            '{}: a declared Shift and the Property_Aliases legacy reach the strike differently - '
+            '{:.17g} against {:.17g}'.format(
+                name, premium['declared'][name], premium['alias'][name]))
+        assert premium['both'][name].hex() == premium['declared'][name].hex(), (
+            '{}: the undeclared alias outranked the declared Shift'.format(name))
+        assert premium['neither'][name] != premium['declared'][name], (
+            '{}: a 2% displacement moved nothing, so it is reaching no premium at all'.format(name))
+
+    # the legacy stays the legacy: a zero Shift beside an alias reads the alias, which is what
+    # every file in the tree authors and what keeps this landing bit-identical
+    world = identified_closure(
+        benchmarks=CHECKER_BENCHMARKS, batch_size=2048, Objective='Analytic',
+        world=surface_world(Shift=utils.Percent(0),
+                            Property_Aliases=[{'BlackScholesDisplacedShiftValue': 2.0}]))
+    assert world['surface'].displacement == 0.02, 'an authored ZERO Shift shadowed a live alias'
+
+    for spelling, fields in (
+            ('Shift', {'Shift': utils.Percent(3.0)}),
+            ("Property_Aliases' BlackScholesDisplacedShiftValue",
+             {'Property_Aliases': [{'BlackScholesDisplacedShiftValue': 3.0}]})):
+        with pytest.raises(Exception, match='no strike to displace') as refused:
+            identified_closure(
+                benchmarks=CHECKER_BENCHMARKS, batch_size=2048, Objective='Analytic',
+                world=surface_world(Distribution_Type='Normal', **fields),
+                Instrument_Definitions=quoted_definitions(CHECKER_BENCHMARKS, NORMAL_VOLS))
+        assert spelling in str(refused.value), (
+            'the refusal has to name which spelling carried the displacement: {}'.format(
+                refused.value))
+        assert 'Lognormal' in str(refused.value), 'and the remedy: {}'.format(refused.value)
+    # and a Normal surface carrying the field at its own default is not a contradiction
+    assert normal_closure(batch_size=2048)['surface'].displacement == 0.0
+
+
+def test_a_quoted_zero_refuses_and_so_does_an_absent_one():
+    """`if instrument['Market_Volatility'].amount:` FELL THROUGH TO THE SURFACE, and that is what a
+    blank cell emitted as a zero looked like to this engine.
+
+    The fallthrough read `vol_surface.ATM(tenor, expiry)` - so a row quoting zero calibrated against
+    whatever the book's surface happened to hold, under the name of a quote nobody gave, and nothing
+    could tell "quoted zero" from "not quoted" afterwards. The Bloomberg ladder refuses a zero print
+    for exactly this reason one layer up (`tests/test_swaption_vol_emitter.py`), and the engine now
+    refuses it too.
+
+    THE FALLTHROUGH IS RETIRED RATHER THAN RE-PLUMBED, and the enumeration is why: no JSON in this
+    repository carries an `Instrument_Definitions` row at all, no test or gate authors a zero or
+    omits the column, and the only zero in the tree was the JSON reference's own worked example -
+    which is documentation of the convention being retired, and is re-authored with it. An ABSENT
+    column therefore keeps no meaning either: it raised `KeyError` inside the loop before this,
+    which is the hollow failure this house refuses by name instead.
+
+    Both refusals name the BENCHMARK, because a 25-quote block's operator needs the row.
+    """
+    rows = quoted_definitions(CHECKER_BENCHMARKS, [20.0] * len(CHECKER_BENCHMARKS))
+    rows[1]['Market_Volatility'] = utils.Percent(0.0)
+    with pytest.raises(Exception, match='Market_Volatility is quoted ZERO') as refused:
+        identified_closure(benchmarks=CHECKER_BENCHMARKS, Objective='Analytic',
+                           batch_size=2048, Instrument_Definitions=rows)
+    assert 'Swaption_2Y_5Y' in str(refused.value), refused.value
+    assert 'drop the row' in str(refused.value), 'the remedy: {}'.format(refused.value)
+
+    rows = quoted_definitions(CHECKER_BENCHMARKS, [20.0] * len(CHECKER_BENCHMARKS))
+    del rows[2]['Market_Volatility']
+    with pytest.raises(Exception, match='carries no Market_Volatility') as refused:
+        identified_closure(benchmarks=CHECKER_BENCHMARKS, Objective='Analytic',
+                           batch_size=2048, Instrument_Definitions=rows)
+    assert 'Swaption_3Y_3Y' in str(refused.value), refused.value
+
+    # and a distribution this family cannot price refuses where a desk can fix it, naming both
+    with pytest.raises(Exception, match='not a convention this calibration prices') as refused:
+        identified_closure(benchmarks=CHECKER_BENCHMARKS, Objective='Analytic', batch_size=2048,
+                           world=surface_world(Distribution_Type='Bachelier'))
+    assert 'Lognormal and Normal' in str(refused.value), refused.value
 
 
 def quanto_world(correlation, zero=ID_ZERO):

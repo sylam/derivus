@@ -592,6 +592,22 @@ class ScheduleLifecycleError(Exception):
     property of the deal."""
 
 
+class UnpriceableSchedule(Exception):
+    """An authored schedule the engine has no number for, refused BY NAME where it is read.
+
+    The deal is well formed enough to load and its fields are the fields the schema declares - what
+    is missing is a quantity the AUTHOR did not state and no rule recovers, so the honest answer is
+    the name of the thing and the remedy, never a guess. `make_float_cashflows`' zero-length rate
+    window is the first: a reset whose rate start equals its rate end has no forward rate to read,
+    and the tenor that would define one is not a field any `Row` declares.
+
+    FATAL by `is_fatal_pricing_error`, which is the whole point. The compile guard's canonical
+    response to an exception is to log it and increment `Deals Skipped`, and a skipped deal marks
+    at nothing while the job SUCCEEDS - the hollow-container failure mode in loader clothing. A
+    refusal that turns into a zero mark is not a refusal, so this class re-raises out of both
+    guards and the run fails loud with the message still on it."""
+
+
 class SecondOrderRefused(Exception):
     """A second-order block will not be answered on this portfolio, because the answer would be a
     plausible wrong number rather than a failure.
@@ -627,12 +643,21 @@ class CalibrationStale(Exception):
 
 
 def is_fatal_pricing_error(e):
-    """Exceptions a deal-level pricing guard must NOT swallow into a scalar-0 mark: the machine
-    running out of memory, and a schedule the calculation never bound. Each says the FRAMEWORK is
-    wrong rather than the deal, and each produces a silently missing mark if caught — inside an
-    inner-MC fork a missing tradable mark reads as an expired contract and retires the instrument
-    from the hedge set. Everything else keeps the canonical skip."""
-    return isinstance(e, (MemoryError, torch.cuda.OutOfMemoryError, ScheduleLifecycleError)) or (
+    """Exceptions a deal-level guard must NOT swallow into a scalar-0 mark: the machine running out
+    of memory, a schedule the calculation never bound, and a schedule the engine refused BY NAME.
+
+    The first two say the FRAMEWORK is wrong rather than the deal, and each produces a silently
+    missing mark if caught — inside an inner-MC fork a missing tradable mark reads as an expired
+    contract and retires the instrument from the hedge set. `UnpriceableSchedule` says the DOCUMENT
+    is wrong, and is here for the mirror-image reason: it exists to name a thing the author must
+    fix, and a named refusal swallowed into a zero mark on a job that then succeeds has said
+    nothing at all. Everything else keeps the canonical skip.
+
+    Read by all four guards over a deal — `Deal.calculate`, `Deal.build_features` and both compile
+    guards in `DealStructure` — so one predicate decides in every place the answer would otherwise
+    be a quiet zero."""
+    return isinstance(e, (MemoryError, torch.cuda.OutOfMemoryError, ScheduleLifecycleError,
+                          UnpriceableSchedule)) or (
         isinstance(e, RuntimeError) and 'out of memory' in str(e).lower())
 
 
@@ -2192,6 +2217,35 @@ def black_european_option_price(F, X, r, vol, tenor, buyOrSell, callOrPut):
     d2 = d1 - stddev
     return buyOrSell * callOrPut * (F * scipy.stats.norm.cdf(callOrPut * sign * d1) -
                                     X * scipy.stats.norm.cdf(callOrPut * sign * d2)) * np.exp(-r * tenor)
+
+
+def bachelier_european_option_price(F, X, r, vol, tenor, buyOrSell, callOrPut):
+    """The numpy twin of `bachelier_european_option`, and the same signature as the numpy Black.
+
+    A vol quoted NORMAL is an absolute rate move, so the premium is
+
+    $$P = e^{-rT}\\Big[\\mu\\,\\Phi(\\mu/s) + s\\,\\phi(\\mu/s)\\Big],
+    \\qquad \\mu = \\omega(F-X),\\quad s = \\sigma_N\\sqrt{T}$$
+
+    which is the GENERAL form and not the at-the-money one: `create_market_swaps` strikes its
+    benchmarks at par and therefore always calls this with $F = X$, where it collapses to
+    $A\\sigma_N\\sqrt{T/2\\pi}$ - but baking that collapse into the value path would make an
+    off-market strike price as an ATM one in silence, which is the class of defect this pair was
+    added to close.
+
+    $\\mu = \\omega(F-X)$ with $\\omega$ the call/put sign is one expression for both directions,
+    because $\\phi$ is even - and it is the SAME expression `bachelier_european_option` evaluates in
+    tensors, deliberately: the two are one formula in two precisions, exactly as the Black pair is.
+    Measured against each other at the money on the four-quote fixture, the numpy premium and the
+    float64 tensor twin the quote side differentiates are **BIT-IDENTICAL**, and both sit
+    **2.2e-16 relative** from the closed form $A\\sigma_N\\sqrt{T/2\\pi}$ they collapse to there.
+    The gate is `tests/test_hw2f_analytic.py`'s
+    `test_the_two_conventions_are_two_prices_and_the_normal_one_is_the_bachelier_premium`.
+    """
+    stddev = vol * np.sqrt(tenor)
+    mu = callOrPut * (F - X)
+    return buyOrSell * (mu * scipy.stats.norm.cdf(mu / stddev) +
+                        stddev * scipy.stats.norm.pdf(mu / stddev)) * np.exp(-r * tenor)
 
 
 # ======================================================================================
@@ -4846,9 +4900,13 @@ def make_index_cashflows(base_date, time_grid, position, cashflows, price_index,
         return cashflows
 
 
-def make_float_cashflows(reference_date, time_grid, position, cashflows):
+def make_float_cashflows(reference_date, time_grid, position, cashflows, reference=None):
     """
     Generates a vector of floating cashflows from a data source.
+
+    `reference` is the deal's own, and it is here for the refusal below: a reset with a zero-length
+    rate window is refused by name, and a refusal that cannot say which deal it is about is one a
+    desk cannot act on.
     """
     cash = []
     all_resets = []
@@ -4873,13 +4931,26 @@ def make_float_cashflows(reference_date, time_grid, position, cashflows):
 
             r = []
             for reset in cashflow['Resets']:
-                # check if the reset end day is valid
-                Actual_End_Day = reset[1] + cashflow['Rate_Tenor'] if reset[2] == reset[1] else reset[2]
+                # A DEGENERATE RATE WINDOW IS REFUSED, not derived. This read used to be
+                # `reset[1] + cashflow['Rate_Tenor']`, a key no `Row` declares and nothing writes -
+                # so the one document that reaches it died `KeyError: 'Rate_Tenor'` with the deal
+                # unnamed. The tenor is a quantity the author did not state and no rule recovers it
+                # (the accrual window is the period's, not the rate's), so guessing one would be a
+                # number nobody quoted.
+                if reset[2] == reset[1]:
+                    raise UnpriceableSchedule(
+                        '{}: the reset fixing {:%Y-%m-%d} on the cashflow paying {:%Y-%m-%d} has a '
+                        'rate window that starts and ends on {:%Y-%m-%d}. A zero-length window has '
+                        'no forward rate to read and the schedule states no tenor to widen it to. '
+                        'Author the reset\'s rate end date after its rate start (the accrual end '
+                        'is the usual one), or drop the reset.'.format(
+                            reference or 'this CashflowListDeal', reset[0],
+                            cashflow['Payment_Date'], reset[1]))
 
                 # create the reset vector
                 Reset_Day = (reset[0] - reference_date).days
                 Start_Day = (reset[1] - reference_date).days
-                End_Day = (Actual_End_Day - reference_date).days
+                End_Day = (reset[2] - reference_date).days
                 Accrual = reset[3]
                 Weight = 1.0 / len(cashflow['Resets'])
                 Time_Grid, Scenario = time_grid.get_scenario_offset(Reset_Day)

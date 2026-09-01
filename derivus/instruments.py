@@ -12,17 +12,14 @@
 ########################################################################
 
 
-# import standard libraries
 import logging
 from functools import partial, reduce
 
-# utility functions and constants
 from . import utils, pricing
 from .schema import (
     F, REQUIRED, Row, own,
     ADMIN, FX_ADMIN, CASHFLOWLISTDEAL, EQUITYOPTIONBASE, QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
 
-# specific modules
 import numpy as np
 import pandas as pd
 import torch
@@ -62,10 +59,7 @@ def generate_dates_forward(end_date, start_date, date_offset, bus_day=None, clip
 def get_business_day_offsets(calendar_names, calendars, business_days=2):
 
     def calendar_business_day(calendar_name, calendars):
-        """Return the business-day offset object for a named calendar.
-
-        Falls back to a standard Monday-Friday business day when no calendar is found.
-        """
+        """The business-day offset for a named calendar, Monday-Friday when it is unknown."""
         return calendars.get(
             calendar_name,
             {'businessday': pd.offsets.BDay(1)}
@@ -101,16 +95,11 @@ def forward_settlement_date(date_to_roll, calendar_names, calendars, business_da
 
 
 def option_date_info(field, base_date, calendars, business_days=2):
-    """Build expiry, settlement and forward-settlement offsets for option-style deals.
+    """Build the expiry, settlement and forward-settlement day offsets of an option-style deal.
 
-    Expiry:
-        option expiry / vol expiry date.
-
-    Forward_Settlement:
-        expiry date adjusted by settlement lag; used as T in forward calculations.
-
-    Settlement:
-        explicit cash/payment settlement date if supplied, otherwise Expiry_Date.
+    Expiry is the option/vol expiry date; Forward_Settlement is that date plus the settlement lag
+    rolled on the configured calendars, used as T in forward calculations; Settlement is the
+    explicit cash/payment date when one is supplied, otherwise Expiry_Date.
     """
     expiry_date = field['Expiry_Date']
     calendar_names = field.get('Calendars')
@@ -127,7 +116,7 @@ def option_date_info(field, base_date, calendars, business_days=2):
 
 
 def calc_factor_index(field, static_offsets, stochastic_offsets, all_tenors={}):
-    """Utility function to determine if a factor is static or stochastic and returns its offset in the scenario block"""
+    """Return a factor's offset in the scenario block, whether it is static or stochastic."""
     if static_offsets.get(field) is not None:
         return tuple([False, field, static_offsets[field].get_subtype()] + all_tenors.get(field, []))
     elif stochastic_offsets.get(field) is not None:
@@ -145,7 +134,7 @@ def calc_factor_code_chain(head, tail, fieldname, static_offsets, stochastic_off
 
 
 def calc_factor_value(field, static_offsets, stochastic_offsets, all_factors):
-    """Utility function to determine if a factor is static or stochastic and returns its offset in the scenario block"""
+    """Return a factor's current value, whether it is static or stochastic."""
     if static_offsets.get(field) is not None:
         return all_factors[field].current_value()
     elif stochastic_offsets.get(field) is not None:
@@ -190,16 +179,10 @@ def get_fxrate_factor(fieldname, static_offsets, stochastic_offsets):
 def get_fx_barrier_underlying(field, stochastic_offsets):
     """The single factor whose simulated log-variance governs crossings between grid dates, or None.
 
-    An FX barrier is monitored on a CROSS (`utils.calc_fx_cross` of the underlying leg over the
-    quote leg), whose log-variance is v_u + v_c - 2*rho*sqrt(v_u*v_c). `t_Bridge_Variance_Rate` is
-    keyed per factor and the pricer asks for exactly one, so no single entry can express that. It
-    is exact only when the quote leg contributes nothing - a static leg, v_c = 0, leaving the
-    underlying leg's own variance - and when neither leg is a basis chain, since a chain's head
-    factor is not the whole story either.
-
-    Returning None where that does not hold is the point. Naming the underlying leg regardless
-    would hand the bridge an UNDERSTATED variance, which understates crossings - worse than not
-    bridging at all, because it looks like it is working.
+    An FX barrier is monitored on a CROSS, whose log-variance is v_u + v_c - 2*rho*sqrt(v_u*v_c),
+    and `t_Bridge_Variance_Rate` is keyed per factor - so one entry expresses that only when the
+    quote leg is static (v_c = 0) and neither leg is a basis chain. None everywhere else: an
+    understated bridge variance understates crossings, which is worse than observing endpoints.
     """
     if len(field['Currency']) > 1 or len(field['Underlying_Currency']) > 1:
         return None
@@ -211,10 +194,9 @@ def get_fx_barrier_underlying(field, stochastic_offsets):
 def get_equity_barrier_underlying(fieldname):
     """The single factor whose simulated log-variance governs crossings between grid dates, or None.
 
-    The equity leg is monitored directly (no cross), so the only guard is a composed basis chain:
-    the head factor's variance alone understates the composed spot's, and `t_Bridge_Variance_Rate`
-    is keyed per factor, so no single entry can express the sum. None means the pricer observes
-    endpoints, which is the conservative direction - same rule as `get_fx_barrier_underlying`.
+    The equity leg is monitored directly, so the only guard is a composed basis chain: the head
+    factor's variance alone understates the composed spot's, and `t_Bridge_Variance_Rate` is keyed
+    per factor. None means the pricer observes endpoints, the conservative direction.
     """
     return None if len(fieldname) > 1 else utils.Factor('EquityPrice', fieldname)
 
@@ -309,39 +291,16 @@ def get_forward_rate_factor(fieldname, static_offsets, stochastic_offsets, all_t
 
 
 def get_observed_basis_decay(commodity, all_factors):
-    """`(phi, lam, mu code)` - how the tail of a composed spot's code decays away from its current
-    level. `lam` is the slow mean's own EWMA coefficient, `0.0` when the extension is off: the
-    projection needs BOTH, because with the mean recursion on, the simulated `(b, mu)` pair is
-    row-stochastic and a deviation decays at `lam*phi` toward the pair's conserved mixture rather
-    than at `phi` toward the mean - see `pricing.pv_average_price_swap`.
+    """`(phi, lam, mu code)` - how the tail of a composed spot's code decays from its current level.
 
-    A pricer that projects a composed spot forward needs the basis model's OWN dynamics, and the
-    Heston-Nandi rule applies: the process object stays out of `pricing`, so the declared parameter
-    is resolved HERE and rides `Factor_dep` as a plain float. It is not an AAD leaf, unlike the HN
-    scalars - nothing differentiates a mean-reversion speed - so it needs no `ModelParameters`
-    block, and inventing one would be a second source for a number `Price Models` already carries.
-
-    The slow mean is per PATH, so it cannot ride the compile output; what rides is the spot-shaped
-    code that reads the `(key, 'basis_mu')` series the model publishes. The published-state key
-    sits in the code tuple's `FACTOR_INDEX_Offset` slot, which the `x[:2]` cache-key discipline
-    requires only to be hashable. `None` when the recursion is off, and the AR then reverts to zero
-    - which is what the shipped dynamics do.
-
-    A tail nothing simulates has no dynamics to decay, so it is a level that stays where it is:
-    `phi = 1`, which is that statement written in the projection's own arithmetic rather than as a
-    branch in the pricer. That is also the framework's own answer for an unmodelled factor
-    (`NoModel='Constant'`), so a base valuation and a simulated row 0 differ by exactly the decay
-    term - gated, with its size, in `tests/test_average_price_swap.py`.
-
-    SUPPORTED INSIDE AN INNER-MC FORK, and measured. `_run_inner_mc_at_t` publishes every path
-    series the fork produced - a factor's grid and a process's own `(key, kind)` alike - as a
-    `ScenarioSource` spanning the outer past plus the forked rows, so this read lands on the fork's
-    own row through exactly the seam a factor read uses. Before that it was handed the fork's two
-    rows and asked for an outer row index, which is not a wrong number but an unrunnable
-    configuration: the `IndexError` becomes a scalar-0 mark and the fork's shape check stops the
-    run. The fork's row t is the outer path's row t, so an average-price swap - no optionality, so
-    a fork adds it no information - marks IDENTICALLY in both, which is the gate
-    (`tests/test_fork_published_state.py`, $0 bitwise on CUDA).
+    `lam` is the slow mean's own EWMA coefficient, `0.0` when that extension is off; a projection
+    needs both, because with the mean recursion on the simulated `(b, mu)` pair is row-stochastic
+    and a deviation decays at `lam*phi` toward the pair's conserved mixture rather than at `phi`
+    toward the mean. `mu` is the spot-shaped code that reads the `(key, 'basis_mu')` series the
+    process publishes, `None` when the recursion is off. A tail nothing simulates has no dynamics
+    to decay, so `phi = 1` leaves it at its current level. The declared parameters resolve here and
+    ride `Factor_dep` as plain floats, not AAD leaves. Valid inside an inner-MC fork, which
+    republishes every path series so the read lands on the fork's own row.
     """
     if len(commodity) < 2 or not commodity[-1][utils.FACTOR_INDEX_Stoch]:
         return 1.0, 0.0, None
@@ -432,9 +391,10 @@ def get_fx_vol_factor(fieldname, static_offsets, stochastic_offsets, all_tenors)
 
 
 def get_equity_price_vol_factor(fieldname, static_offsets, stochastic_offsets, all_tenors):
-    """Read the index of the Equity Price vol price factor - note we do not support more than 1 vol
-    surface. This getter OWNS the `EquityPriceVol` type string, and the SVI/Skew sub-factors it
-    mints inherit it, so a parametric surface's parameters carry the tag too."""
+    """Read the index of the Equity Price vol factor; only one vol surface is supported.
+
+    This getter OWNS the `EquityPriceVol` type string, and the SVI/Skew sub-factors it mints
+    inherit it, so a parametric surface's parameters carry the tag too."""
     factor_name = utils.Factor('EquityPriceVol', fieldname)
 
     def check_surface_type(subtype, factor, stoch):
@@ -462,20 +422,17 @@ def get_equity_price_vol_factor(fieldname, static_offsets, stochastic_offsets, a
 
 def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, stochastic_offsets):
     """Resolve a non-GBM spot model's parameter factor by NAMING CONVENTION off the underlying the
-    deal already references: <spot_model>ModelParameters.<name>. Model-agnostic - HestonNandi today,
-    Heston/SLV/... add zero code here (only a <Model>ModelParameters factor + a pricer branch).
-    Returns the SVI-shaped index
-    [(stoch, [per-parameter sub-factors], spot_model, {curve parameter: knots})] - subtype tagged
-    with spot_model for the pricer's branch - or None for spot_model=='None' (GBM, byte-identical).
-    The VALUE is already validated against the deal type's `Deal.spot_models` declaration at
-    construction, so what is left here is presence: switch on but the factor absent from the market
-    data -> KeyError, propagated to the engine's dependency loop (deal skipped, ERROR logged),
-    never a silent GBM fallback.
+    deal already references: `<spot_model>ModelParameters.<name>`. Model-agnostic.
 
-    THE FOURTH SLOT IS THE TENOR INDEX, and it is what a model whose parameters include a CURVE
-    needs: the values ride the static buffer as leaves like every other parameter, but their KNOTS
-    are structural, so they are resolved once here rather than carried on the tensor side. A model
-    whose parameters are all scalars publishes an empty dict and no consumer looks."""
+    Returns the SVI-shaped index `[(stoch, [per-parameter sub-factors], spot_model,
+    {curve parameter: knots})]`, subtype tagged with spot_model for the pricer's branch, or None
+    for `spot_model == 'None'` (GBM). The fourth slot carries the knots of any curve-valued
+    parameter: the values ride the static buffer as leaves, but the knots are structural and so
+    resolve once here; a scalar-only model publishes an empty dict.
+
+    The value is validated against the deal type's `Deal.spot_models` at construction, so what is
+    left here is presence: a model switched on but absent from the market data raises KeyError,
+    which the engine's dependency loop turns into a skipped deal, never a silent GBM fallback."""
     if spot_model == 'None':
         return None
     mp = utils.Factor(spot_model + 'ModelParameters', name)
@@ -506,32 +463,27 @@ def get_forward_price_vol_factor(fieldname, static_offsets, stochastic_offsets, 
                               stochastic_offsets, all_tenors)]
 
 def get_commodity_vol_factor(fieldname, static_offsets, stochastic_offsets, all_tenors):
-    """Read the index of the commodity vol price factor - this getter OWNS `CommodityPriceVol`.
-
-    A byte-clone of `get_fx_vol_factor` for as long as the type string was erased and the two had
-    nothing left to differ by. They now differ by exactly the string each owns, which is the whole
-    reason a resolver exists."""
+    """Read the index of the commodity vol price factor - this getter OWNS `CommodityPriceVol`."""
     return [calc_factor_index(utils.Factor('CommodityPriceVol', fieldname), static_offsets, stochastic_offsets,
                               all_tenors)]
 
 
 class Deal(object):
-    """
-    Base class for representing a trade/deal. Needs to be able to aggregate sub-deals
-    (e.g. a netting set can be a "deal") and calculate dynamic dates for resets.
+    """Base class for a trade or deal.
+
+    Aggregates sub-deals - a netting set is itself a "deal" - and calculates the dynamic dates a
+    deal resets on.
     """
     documentation = ''
 
-    #: A deal that breaks down into simpler instruments carries them as JSON `Children`, and its
-    #: `post_process` prices them. A leaf - an option, a cashflow list, a deposit - cannot be
-    #: broken down, and offering it children in a UI builds a tree the pricer will not read.
-    #: The engine itself recurses on `Children` being PRESENT, never on the type.
+    #: A deal that breaks down into simpler instruments carries them as JSON `Children` and prices
+    #: them in `post_process`; a leaf - an option, a cashflow list, a deposit - cannot. The engine
+    #: recurses on `Children` being PRESENT, never on the type.
     accepts_children = False
 
-    #: The `SpotModel` values this deal type HONOURS - the class declares its own capability, the
-    #: same way a process declares `factor_types`. The base declares GBM only, so a deal type that
-    #: never wrote a non-GBM pricer refuses the switch instead of pricing GBM under its name.
-    #: A type that grows one adds its model here and reads `self.spot_models` in calc_dependencies.
+    #: The `SpotModel` values this deal type HONOURS, declared the way a process declares
+    #: `factor_types`. The base declares GBM only, so a type that never wrote a non-GBM pricer
+    #: refuses the switch instead of pricing GBM under its name.
     spot_models = ('None',)
 
     def __init__(self, params, valuation_options):
@@ -540,13 +492,10 @@ class Deal(object):
         if spot_model not in self.spot_models:
             raise ValueError('{0} does not honour SpotModel={1!r}; it accepts {2}'.format(
                 type(self).__name__, spot_model, self.spot_models))
-        # valuation options
         self.options = valuation_options
-        # instrument parameters
         self.field = params
-        # is this instrument path dependent
         self.path_dependent = False
-        # should this deal use the accumulator (evaluate child dependencies?)
+        # evaluate child dependencies through the accumulator
         self.accum_dependencies = False
 
     def reset(self, calendars=None):
@@ -579,7 +528,6 @@ class Deal(object):
             return self.reval_dates
 
     def get_report_dates(self, time_grid, base_date):
-        # sometimes we need to adjust the reval dates for netting sets etc.
         return self.get_reval_dates()
 
     def finalize_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements):
@@ -603,15 +551,12 @@ class Deal(object):
     def calculate(self, shared, time_grid, deal_data):
         """Generate the theo price and interpolate it onto the report grid.
 
-        A failure is logged and swallowed into a scalar-0 mark, but only for "this deal cannot
-        price on this grid". Running out of memory is the FRAMEWORK being wrong, and swallowing
-        it makes the deal VANISH from `DealStructure.tensor_marks` — which an inner-MC fork
-        reads as an expired contract, silently retiring it from the hedge set — so
-        `utils.is_fatal_pricing_error` re-raises that class of error."""
+        A pricing failure is logged and swallowed into a scalar-0 mark. Running out of memory is
+        not a pricing failure: swallowing it drops the deal from `DealStructure.tensor_marks`,
+        which an inner-MC fork reads as an expired contract, so `utils.is_fatal_pricing_error`
+        re-raises that class of error."""
         try:
-            # generate the theo price
             mtm = self.generate(shared, time_grid, deal_data)
-            # interpolate it
             return pricing.interpolate(mtm, shared, time_grid, deal_data)
         except Exception as e:
             logging.critical('Deal {} skipped - {}'.format(
@@ -638,20 +583,17 @@ class Deal(object):
         )
 
     def hedge_features(self, shared, time_grid, deal_data):
-        """Default hedge mark, accumulated by `resolve_hedge_structure` into the liability MTM.
+        """The default hedge mark, accumulated by `resolve_hedge_structure` into the liability MTM.
 
-        It's the SAME price `calculate` produces — post-process-free (no per-batch GPU->CPU
-        save_results copy). The hedge path consumes only this MTM: the diff-ML solver's inner
-        MC marks the liability itself, and the symlog utility-scale reads its two static
-        descriptors straight from the cashflow schedule (`_liability_schedule_scalars`). A deal
-        type may override to expose extra hedge features if a future consumer needs them."""
+        The same price `calculate` produces, without the per-batch GPU->CPU save_results copy. The
+        hedge path consumes only this MTM; a deal type may override to expose extra features."""
         return {'mtm': self.calculate(shared, time_grid, deal_data)}
 
     def check_option_data(self, field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors):
-        '''
-        Check if this is a compo or quanto option. Note - this only works for equity derivatives. Needs to be
-        extended to other asset classes - TODO!
-        '''
+        """Set the FX vol and implied-correlation dependencies of a compo or quanto payoff.
+
+        Equity derivatives only; other asset classes need extending - TODO.
+        """
         if 'Payoff_Type' in self.field and field['Payoff_Currency'] != field['Currency']:
             field_index['Check_Payoff_Type'] = True
             corr_sign, fx_lookup = utils.check_fx_name([field['Currency'][0], field['Payoff_Currency'][0]])
@@ -676,17 +618,14 @@ def scan_collateral_balance(opening, required, recv_band, post_band, call_mask,
     """Walk the collateral balance through the margin calls: hold it until it leaves the band
     [recv_band, post_band], then reset it to the required amount.
 
-    Returns ``(balance_path, gaps)``. ``gaps`` is empty unless ``collect_gaps``, in which case it
-    carries ``(call_index, receive_gap, post_gap, previous, required)`` per call date, with the
-    gaps retaining their autograd graph.
+    Returns ``(balance_path, gaps)``; ``gaps`` is empty unless ``collect_gaps``, when it carries
+    ``(call_index, receive_gap, post_gap, previous, required)`` per call date with the autograd
+    graph intact. ``start`` and ``opening`` restart the same recursion at a margin date from a
+    forced balance, which is the whole of a counterfactual replay.
 
-    ``start`` and ``opening`` let the SAME recursion serve the counterfactual replay: restart at a
-    margin date from a forced balance and walk forward from there.
-
-    The transfer test stays `previous < recv | previous > post` rather than being re-derived from
-    the gaps. `recv - previous > 0` is the same statement in exact arithmetic and NOT the same in
-    floating point, and the forward valuation must not move at all when the boundary machinery is
-    switched on.
+    The transfer test must stay `previous < recv | previous > post` rather than be re-derived from
+    the gaps: the two agree in exact arithmetic and not in floating point, and the forward
+    valuation must not move when the boundary machinery is switched on.
     """
     path = [opening]
     gaps = []
@@ -704,7 +643,6 @@ def scan_collateral_balance(opening, required, recv_band, post_band, call_mask,
 
 
 class NettingCollateralSet(Deal):
-    # dependent price factors for this instrument
     accepts_children = True
     fields = [ADMIN, own('NettingCollateralSet', [
         F('Agreement_Currency', 'Text', default=''),
@@ -929,16 +867,13 @@ class NettingCollateralSet(Deal):
                         'Exclude_Paid_Today': False}
         self.options.update(valuation_options)
 
-        # make sure collateral default parameters are defined
         self.field.setdefault('Settlement_Period', 0)
         self.field.setdefault('Liquidation_Period', 0)
         self.field.setdefault('Opening_Balance', 0.0)
 
     def reset(self, calendars):
         super(NettingCollateralSet, self).reset()
-        # allow the accumulator
         self.accum_dependencies = True
-        # if we allow collateral, this instrument is now path dependent
         if self.field.get('Collateralized', 'False') == 'True':
             self.path_dependent = True
             calendar = calendars.get(self.field.get('Calendars'))
@@ -968,52 +903,39 @@ class NettingCollateralSet(Deal):
         return reval_dates
 
     def finalize_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements):
-        # have to reset the original instrument and let the children nodes determine the outcome
         if self.field.get('Collateralized', 'False') == 'True':
-            # update each child element with extra reval dates
             for child in node_children:
-                # child.add_reval_dates({max(child.get_reval_dates()) + pd.offsets.Day(1)})
                 child.add_reval_date_offset(1)
                 settle_liquid = {self.field['Settlement_Period'],
                                  self.field['Settlement_Period'] + self.field['Liquidation_Period']}
                 child.add_reval_date_offset(settle_liquid, relative_to_settlement=False)
                 node_resets.update(child.get_reval_dates())
-                # add an offset for this instrument
-                # child.add_reval_date_offset(1)
 
-            # Load the time grid
             grid_dates = parser(base_date, max(node_resets), grid)
 
-            # load up all dynamic dates
             for dates in node_settlements.values():
                 valid_fixings = np.clip(list(dates), base_date, max(dates))
                 grid_dates.update(valid_fixings)
 
-            # determine the new dates to add
             node_additions = set()
-            # add a date just after the rundate
             node_additions.add(base_date + pd.DateOffset(days=1))
-            # check if we need to add dates for collateral
             base_call_date = self.field['Base_Collateral_Call_Date'] if self.field.get(
                 'Base_Collateral_Call_Date') else base_date
             call_freq = self.field['Collateral_Call_Frequency'] if self.field.get(
                 'Collateral_Call_Frequency') else pd.DateOffset(days=1)
 
             if call_freq.kwds != {'days': 1}:
-                # self.calendar
                 coll_dates = generate_dates_forward(
                     max(grid_dates), base_call_date, call_freq,
                     bus_day=self.calendar, modified=True)
                 grid_dates.update(coll_dates)
 
-            # the current complete grid
             full_grid = grid_dates.union({x for x in node_resets if x >= base_date})
 
             for t in sorted(full_grid):
                 ts, tl = self.calc_liquidation_settlement_dates(t, base_date)
                 node_additions.update({t, ts, tl})
 
-            # now set the reval dates
             fresh_grid = full_grid.union(node_additions)
             self.reval_dates = set()
 
@@ -1022,10 +944,8 @@ class NettingCollateralSet(Deal):
                 if ts in fresh_grid and tl in fresh_grid:
                     self.reval_dates.add(date)
 
-            # add more valuation nodes
             node_resets.update(node_additions)
 
-            # finally let the children know about the new grid
             final_grid = np.array(sorted(node_resets))
             for child in node_children:
                 if child.path_dependent:
@@ -1044,9 +964,8 @@ class NettingCollateralSet(Deal):
         """A cash collateral row asking for ColVA must fund it.
 
         Collateral_Rate and Funding_Rate are each optional on the row, but post_process enters the
-        ColVA block on Collateral_Rate alone and then reads Funding_Rate unconditionally - correct,
-        because there is no collateral valuation adjustment without a funding curve to value it
-        against. Reads defensively: validation runs BEFORE the contract is known to hold.
+        ColVA block on Collateral_Rate alone and then reads Funding_Rate unconditionally. Reads
+        defensively: validation runs BEFORE the contract is known to hold.
         """
         rows = (self.field.get('Collateral_Assets') or {}).get('Cash_Collateral') or []
         for i, row in enumerate(rows):
@@ -1068,14 +987,12 @@ class NettingCollateralSet(Deal):
                 # if it's missing make the Survival_Prob None (so that later we can set it to 1)
                 field_index['Survival_Prob'] = None
 
-        # only set this up if this is a collateralized deal
         if self.field.get('Collateralized', 'False') == 'True':
             field['Agreement_Currency'] = utils.check_rate_name(self.field['Agreement_Currency'])
             field['Funding_Rate'] = utils.check_rate_name(self.field['Funding_Rate']) if self.field.get(
                 'Funding_Rate') else None
 
-            # apparently this should default to the base currency not the agreement currency,
-            # but I think this is a better default.
+            # defaults to the agreement currency, not the base currency the convention suggests
             field['Balance_Currency'] = utils.check_rate_name(self.field['Balance_Currency']) if self.field.get(
                 'Balance_Currency') else field['Agreement_Currency']
 
@@ -1084,18 +1001,14 @@ class NettingCollateralSet(Deal):
             field_index['Balance_Currency'] = get_fxrate_factor(
                 field['Balance_Currency'], static_offsets, stochastic_offsets)
 
-            # get the settlement currencies loaded
             field_index['Settlement_Currencies'] = {}
             for currency in time_grid.CurrencyMap.keys():
                 field_index['Settlement_Currencies'].setdefault(
                     currency, get_fxrate_factor(utils.check_rate_name(currency), static_offsets, stochastic_offsets))
 
-            # handle equity collateral
             collateral_defined = False
             field_index['Equity_Collateral'] = []
-            # handle bond collateral
             field_index['Bond_Collateral'] = []
-            # get the collateral currency loaded
             field_index['Cash_Collateral'] = []
 
             collateral_assets = self.field.get('Collateral_Assets')
@@ -1175,7 +1088,7 @@ class NettingCollateralSet(Deal):
                     collateral_defined = True
 
             if not collateral_defined:
-                # default the collateral to the be balance currency
+                # default the collateral to the balance currency
                 field_index['Cash_Collateral'] = [
                     utils.Collateral(Haircut=0.0,
                                      Amount=1.0,
@@ -1184,13 +1097,11 @@ class NettingCollateralSet(Deal):
                                      Funding_Rate=None, Collateral_Rate=None,
                                      Collateral=1.0)]
 
-            # check if the independent amount has been mapped
             if self.field['Credit_Support_Amounts'].get('Independent_Amount'):
                 field_index['Independent_Amount'] = self.field['Credit_Support_Amounts']['Independent_Amount'].value()
             else:
                 field_index['Independent_Amount'] = 0.0
 
-            # now get the closeout mechanics right
             t = time_grid.time_grid[:, utils.TIME_GRID_MTM]
             # collateral call dates (interpolated - assuming daily)
             base_call_date = self.field['Base_Collateral_Call_Date'] if self.field.get(
@@ -1215,7 +1126,6 @@ class NettingCollateralSet(Deal):
                 call_mask[np.searchsorted(time_grid.mtm_time_grid, mod_call_dates)] = 2
                 call_mask -= 1
 
-            # store the mask
             field_index['call_mask'] = call_mask
 
             if self.options['Forward_Looking_Closeout']:
@@ -1246,25 +1156,23 @@ class NettingCollateralSet(Deal):
     def post_process(self, accum, shared, time_grid, deal_data, child_dependencies):
         """Collateralise the accumulated child MTM and report the netting set's exposure.
 
-        Under `boundary_aad` it also publishes two counterfactual closures for the
-        boundary-aware sensitivity engine. Both are built from detached captures, so a replay
-        produces a COEFFICIENT (the objective jump), not a differentiated quantity:
+        Under `boundary_aad` it also publishes two counterfactual closures for the boundary-aware
+        sensitivity engine, both built from detached captures so that a replay produces a
+        COEFFICIENT (the objective jump) rather than a differentiated quantity:
 
-        - MTA boundary set - the balance reaches the exposure ONLY through min_Bt, so a
-          counterfactual needs nothing re-priced: `replay_net_mtm` replays the captured
-          (balance-independent) arithmetic on a different balance path, and `rescan` restarts
-          the forward walk at a margin date from a forced opening balance.
-        - `gross_to_net` - a PRICER event moves the gross, not the balance, and the gross
-          reaches the net two ways: through Vte, and through the balance the collateral scan
-          derives from it. So the counterfactual redoes that whole chain (At, the required
-          balance, the bands, the scan) and only then the arithmetic above. Captures are
-          gross-independent; the delta arrives on the MTM grid and is clipped to the local one."""
+        - MTA boundary set - the balance reaches the exposure only through min_Bt, so nothing
+          needs re-pricing: `replay_net_mtm` replays the captured balance-independent arithmetic
+          on a different balance path, and `rescan` restarts the forward walk at a margin date
+          from a forced opening balance.
+        - `gross_to_net` - a PRICER event moves the gross, which reaches the net both through Vte
+          and through the balance the collateral scan derives from it, so the counterfactual
+          redoes that whole chain (At, the required balance, the bands, the scan) before the
+          arithmetic above. The delta arrives on the MTM grid and is clipped to the local one."""
         # calc v^t = v(te) + C(ts,te) - min(B(u); ts<=u<=tl}S(te)
         factor_dep = deal_data.Factor_dep
         deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
         logging.info('Netting set {}'.format(self.field.get('Reference')))
 
-        # check if we need to scale by survival
         surv = None
         if hasattr(shared, 'scale_survival') and shared.scale_survival:
             if factor_dep.get('Survival_Prob'):
@@ -1285,7 +1193,6 @@ class NettingCollateralSet(Deal):
                         Ci.append(Fn.pad(cashflow_at_index, [0, 0, pad, 0]))
 
                 base_Ci = torch.cat(Ci, dim=0)
-                # pad the last bit
                 padded_time_grid = time_grid.time_grid[:-pad] if pad else time_grid.time_grid
                 C_base += Fn.pad(utils.calc_time_grid_spot_rate(
                     fx_factor, padded_time_grid, shared) * base_Ci, [0, 0, 0, pad])
@@ -1301,7 +1208,6 @@ class NettingCollateralSet(Deal):
             # The time_grid is global (across all potential netting sets) - the local grid is just this netting set
             local_time_grid = time_grid.time_grid[
                 time_grid.time_grid[:, utils.TIME_GRID_MTM] <= deal_time[-1][utils.TIME_GRID_MTM]]
-            # calc collateral values
             St = shared.one.new_zeros(len(local_time_grid), shared.simulation_batch)
             local_accum = accum[:len(local_time_grid)]
 
@@ -1320,7 +1226,6 @@ class NettingCollateralSet(Deal):
                     equity_col.Currency, local_time_grid, shared) * utils.calc_time_grid_spot_rate(
                     equity_col.Collateral, local_time_grid, shared)
 
-            # calc the collateral amount
             fx_base = utils.calc_time_grid_spot_rate(shared.Report_Currency, local_time_grid, shared)
             fx_agreement = utils.calc_time_grid_spot_rate(factor_dep['Agreement_Currency'], local_time_grid, shared)
             H = self.field['Credit_Support_Amounts']['Received_Threshold'].value() * fx_agreement
@@ -1334,9 +1239,7 @@ class NettingCollateralSet(Deal):
             fx_base_local = fx_base
 
             if self.options['Exclude_Paid_Today']:
-                # each leg differenced against ITSELF - the paid increment was being taken against
-                # the RECEIVED cumulative, which is not an increment of anything and flips the sign
-                # on every row where a payment lands. The Te-grid twin below has always been right.
+                # each leg is differenced against ITSELF, as the Te-grid twin below does
                 mtm_today_adj = torch.cat([Cf_Rec[0].reshape(1, -1), Cf_Rec[1:] - Cf_Rec[:-1]], dim=0) - \
                                 torch.cat([Cf_Pay[0].reshape(1, -1), Cf_Pay[1:] - Cf_Pay[:-1]], dim=0)
                 Vt -= mtm_today_adj
@@ -1346,14 +1249,12 @@ class NettingCollateralSet(Deal):
             Bt = self.field['Opening_Balance'] * utils.calc_time_grid_spot_rate(
                 factor_dep['Balance_Currency'], np.array([[0, 0, 0]]), shared) / St[0]
 
-            # scan for the correct amount of the collateral portfolio
             fx_St = fx_agreement / St
             Bt_new = At / St
             Mr = Bt_new - min_received * fx_St
             Mp = min_posted * fx_St + Bt_new
 
-            # One recursion for both cases: an all-True call mask IS the daily schedule, so the
-            # two loops this replaces differed only in a test that is always true in one of them.
+            # one recursion for both cases: an all-True call mask IS the daily schedule
             boundary_aad = getattr(shared, 'boundary_aad', False)
             Bt, mta_gaps = scan_collateral_balance(
                 Bt[0], Bt_new, Mr, Mp, factor_dep['call_mask'].astype(bool),
@@ -1372,7 +1273,6 @@ class NettingCollateralSet(Deal):
                                                previous.detach(), required.detach())])
                 boundary_balance = Bt.detach()
 
-            # now calculate the collateral account and Net exposure
             report_time = local_time_grid[factor_dep['Te']]
             fx_base = utils.calc_time_grid_spot_rate(shared.Report_Currency, report_time, shared)
 
@@ -1399,9 +1299,7 @@ class NettingCollateralSet(Deal):
             # note that this should be the minimum Bt from factor_dep['Ts'] to factor_dep['Tl']
             Ste = St[factor_dep['Te']]
             Bte = Bt[factor_dep['Te']]
-            # Go from time Ts one step at a time and keep track of the minimum
             base_i = factor_dep['Ts'][:-1]
-            # work out how many step from time Ts to time Tl
             delta_T = factor_dep['Tl'][:-1] - base_i
             min_Bt = Bt[base_i]
             b_index = np.zeros_like(delta_T)
@@ -1414,7 +1312,6 @@ class NettingCollateralSet(Deal):
             min_Bt = Fn.pad(min_Bt, [0, 0, 0, 1])
             expected_collateral = Bte * Ste / fx_base
 
-            # The net MTM of the netting set
             net_accum = (Vte + C_ts_te - min_Bt * Ste) / fx_base
 
             if len(factor_dep['Cash_Collateral']) == 1 and factor_dep['Cash_Collateral'][0].Collateral_Rate is not None:
@@ -1455,14 +1352,12 @@ class NettingCollateralSet(Deal):
 
                 def replay_net_mtm(balance_path, vte=None, c_delta=None, base_i=base_i,
                                    delta_T=delta_T):
-                    """Balance path (and optionally a different Vte / settled-cash delta) -> the
+                    """Balance path, and optionally a different Vte or settled-cash delta, to the
                     net mtm as reported.
 
-                    `vte` defaults to what was reported, which is the margin-call case: only the
-                    balance varies. A pricer counterfactual moves the GROSS as well, and the gross
-                    reaches the net through exactly this one term; a counterfactual that flips a
-                    PAYMENT also moves the settled cash, which reaches it through `c_delta` beside
-                    the captured `C_ts_te`."""
+                    `vte` defaults to what was reported, the margin-call case where only the
+                    balance varies; a pricer counterfactual moves the gross through that one term,
+                    and one that flips a payment moves the settled cash through `c_delta`."""
                     running = balance_path[base_i]
                     step = np.zeros_like(delta_T)
                     for i in range(delta_T.max() if delta_T.size else 0):
@@ -1526,13 +1421,11 @@ class NettingCollateralSet(Deal):
 
                     The delta arrives on the MTM grid; this set runs on its own local prefix of it.
 
-                    TRAP: Vte is built from the REPORTED b_Vte, never by re-indexing g_Vt. Under
-                    Exclude_Paid_Today the two carry DIFFERENT cashflow adjustments (the
-                    local-grid `mtm_today_adj` above vs its Te-grid twin), so re-deriving it
-                    silently rebases the counterfactual - measured at ~100x the signal it is
-                    meant to carry, with no value gate able to see it because the reported mtm is
-                    unchanged either way. From b_Vte, gross_to_net(0) == the reported net BY
-                    CONSTRUCTION."""
+                    Vte is built from the REPORTED b_Vte, never by re-indexing g_Vt: under
+                    Exclude_Paid_Today the two carry DIFFERENT cashflow adjustments (the local-grid
+                    `mtm_today_adj` above against its Te-grid twin), so re-deriving it silently
+                    rebases the counterfactual by ~100x the signal it carries, invisibly to a value
+                    gate. From b_Vte, gross_to_net(0) == the reported net BY CONSTRUCTION."""
                     delta = delta[:g_Vt.shape[0]]
                     Vt_cf = g_Vt + delta * g_fx_local
                     At_cf = g_IA + (Vt_cf - g_H) * (Vt_cf > g_H) + (Vt_cf - g_G) * (Vt_cf < g_G)
@@ -1556,7 +1449,6 @@ class NettingCollateralSet(Deal):
                 # would reach every other set's deals too.
                 shared.gross_to_net = net_from_gross
 
-            # Store results - with appropriate padding
             padding = time_grid.report_index.size - net_accum.shape[0]
             gross_padding = time_grid.mtm_time_grid.size - local_accum.shape[0]
             final_mtm = Fn.pad(net_accum, [0, 0, 0, padding]) if padding else net_accum
@@ -1576,7 +1468,6 @@ class NettingCollateralSet(Deal):
 
 
 class MtMCrossCurrencySwapDeal(Deal):
-    # dependent price factors for this instrument
     accepts_children = True
     fields = [ADMIN, own('MtMCrossCurrencySwapDeal', [
         F('Pay_Discount_Rate', 'Text', default='', obj='Tuple'),
@@ -1664,20 +1555,17 @@ class MtMCrossCurrencySwapDeal(Deal):
                 # make the child price to the same grid as the parent
                 child.Time_dep.assign(deal_data.Time_dep)
                 cashflows = child.Factor_dep['Cashflows'].reopen()
-                # work out which leg is which
                 if child.Factor_dep['Currency'] == factor_dep[factor_dep['MTM']]['Currency']:
                     daycount = self.field.get(factor_dep['MTM'] + '_Day_Count', 'ACT_365')
                     # add a zero nominal payment at the beginning if forward starting
                     cashflows.add_mtm_payments(
                         factor_dep['base_date'], self.field['Principal_Exchange'],
                         self.field['Effective_Date'], daycount)
-                    # make sure we calculate future fx reset dates correctly
                     cashflows.set_future_fx_resets(
                         deal_time[:, utils.TIME_GRID_MTM].max(), time_grid)
                     self.child_map.setdefault('MTM', child)
                 else:
                     daycount = self.field.get(factor_dep['Other'] + '_Day_Count', 'ACT_365')
-                    # get the last nominal amount
                     capital = cashflows.schedule[-1][utils.CASHFLOW_INDEX_Nominal]
                     cashflows.add_fixed_payments(
                         factor_dep['base_date'], self.field['Principal_Exchange'],
@@ -1703,7 +1591,6 @@ class MtMCrossCurrencySwapDeal(Deal):
 
         mtm = (static_leg * FX_static + mtm_leg * FX_mtm) / FX_rep
 
-        # interpolate the Theo price
         return pricing.interpolate(mtm, shared, time_grid, deal_data)
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
@@ -1744,7 +1631,6 @@ class MtMCrossCurrencySwapDeal(Deal):
 
         # TODO - complete cashflow definitions..
 
-        # Which side is the mtm leg?
         field_index['MTM'] = self.field['MtM_Side']
         field_index['Other'] = {'Pay': 'Receive', 'Receive': 'Pay'}[self.field['MtM_Side']]
         field_index['base_date'] = base_date
@@ -1845,7 +1731,6 @@ class FXNonDeliverableForward(Deal):
         except:
             cash = (buy_forward * float(self.field['Buy_Amount']) - sell_forward * float(self.field['Sell_Amount']))
 
-        # settle the cash
         pricing.cash_settle(
             shared, self.field['Settlement_Currency'], deal_data.Time_dep.deal_time_grid[-1], cash[-1])
 
@@ -1853,7 +1738,6 @@ class FXNonDeliverableForward(Deal):
 
 
 class FXSwapDeal(Deal):
-    # dependent price factors for this instrument
     fields = [ADMIN, own('FXSwapDeal', [
         F('Near_Settlement_Date', 'Date', default=''),
         F('Far_Settlement_Date', 'Date', default=''),
@@ -1972,7 +1856,6 @@ class FXSwapDeal(Deal):
 
 
 class FXForwardDeal(Deal):
-    # dependent price factors for this instrument
     fields = [ADMIN, own('FXForwardDeal', [
         F('Sell_Currency', 'Text', default=''),
         F('Sell_Amount', 'Float', default=0.0),
@@ -2048,7 +1931,6 @@ class FXForwardDeal(Deal):
         buy_discount_rate = torch.squeeze(utils.calc_discount_rate(buy_discount, remaining_tenor, shared), dim=1)
         sell_discount_rate = torch.squeeze(utils.calc_discount_rate(sell_discount, remaining_tenor, shared), dim=1)
 
-        # settle the cash
         pricing.cash_settle(
             shared, self.field['Buy_Currency'], deal_data.Time_dep.deal_time_grid[-1], self.field['Buy_Amount'])
         pricing.cash_settle(
@@ -2059,7 +1941,6 @@ class FXForwardDeal(Deal):
 
 
 class StructuredDeal(Deal):
-    # dependent price factors for this instrument
     accepts_children = True
     fields = [ADMIN, own('StructuredDeal', [
         F('Currency', 'Text', default=''),
@@ -2093,7 +1974,6 @@ class StructuredDeal(Deal):
 
     def finalize_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements):
         if node_children is not None:
-            # have to reset the original instrument and let the child node decide
             for child in node_children:
                 child.add_reval_date_offset(1)
                 node_resets.update(child.get_reval_dates())
@@ -2123,11 +2003,10 @@ class StructuredDeal(Deal):
         for child in child_dependencies:
             net_mtm = net_mtm + child.Instrument.calculate(shared, time_grid, child)
 
-        # can add extra logic here to net off cashflows etc. - TODO!
+        # TODO - net off cashflows across the children
         if deal_data.Instrument.field.get('Net Cashflows', 'No')=='Yes':
             pass
 
-        # return the interpolated value (without interpolating the time_grid)
         return pricing.interpolate(net_mtm, shared, time_grid, deal_data, interpolate_grid=False)
 
     def generate(self, shared, time_grid, deal_data):
@@ -2143,23 +2022,16 @@ class DepositDeal(Deal):
     """A money-market deposit. **Amount** is placed at **Effective_Date** and returned at
     **Maturity_Date**, accruing over **Payment_Frequency** periods on **Accrual_Day_Count**.
 
-    The rate is taken from **Interest_Rate_Schedule** (a date->rate `DateList`, quoted in percent)
-    when that covers every accrual start, and forecast off the **Interest_Rate** curve otherwise.
-    The distinction is not cosmetic: a fully-pinned schedule prices as a pure fixed leg and pulls
-    **no forecast factor at all**, which is what lets a curve bootstrapper price a depo quote
-    without taking a dependency on the very curve it is solving for.
+    The rate comes from **Interest_Rate_Schedule** (a date->rate `DateList` quoted in percent)
+    when that covers every accrual start, and is forecast off the **Interest_Rate** curve
+    otherwise. A fully-pinned schedule prices as a pure fixed leg and pulls NO forecast factor,
+    which is what lets a curve bootstrapper price a depo quote without depending on the curve it
+    is solving for. Coverage is all-or-nothing rather than per-period, because the float path's
+    known-rate override pins only resets BEFORE the reference date, so a partially-covered
+    schedule forecasts throughout - the right reading for a seasoned floating deposit.
 
-    Coverage is deliberately all-or-nothing rather than per-period, because the float path's
-    known-rate override pins only resets BEFORE the reference date (`generate_float_cashflows`
-    zeroes anything later and forecasts it). So a forward-dated schedule either pins the whole
-    deposit or none of it, and a partially-covered one forecasts throughout - which is the right
-    reading for a seasoned floating deposit, where the schedule supplies the historical resets and
-    the curve supplies the rest.
-
-    Principal is exchanged at both ends. The leading outflow drops out automatically once the
-    deposit has started - `add_fixed_payments` guards on `base_date <= effective_date` - so a
-    seasoned deposit values as the remaining interest plus the redemption. Flows discount on
-    **Discount_Rate**, defaulting to the currency's own curve.
+    Principal is exchanged at both ends; the leading outflow drops out once the deposit has
+    started. Flows discount on **Discount_Rate**, defaulting to the currency's own curve.
     """
     fields = [ADMIN, own('DepositDeal', [
         F('Currency', 'Text', default=''),
@@ -2264,7 +2136,6 @@ class DepositDeal(Deal):
 
 
 class SwapInterestDeal(Deal):
-    # dependent price factors for this instrument
     accepts_children = True
     fields = [ADMIN, own('SwapInterestDeal', [
         F('Reset_Type', 'Text', default='Standard', values=['Standard', 'Advance', 'Arrears']),
@@ -2435,9 +2306,8 @@ class CFFixedInterestListDeal(Deal):
         """A settlement amount is paid ON a date.
 
         calc_dependencies leaves Settlement_Date as None when it is not supplied, and
-        pv_fixed_cashflows reaches `factor_dep['Settlement_Date'] - time_block` under `if
-        settlement_amt:` - so a non-zero amount without a date meets None. The guard is right; what
-        was missing is anything saying so at authoring time.
+        pv_fixed_cashflows reaches `factor_dep['Settlement_Date'] - time_block` under
+        `if settlement_amt:` - so a non-zero amount without a date meets None.
         """
         if self.field.get('Settlement_Amount') and not self.field.get('Settlement_Date'):
             yield 'Settlement_Amount is set, so Settlement_Date is required'
@@ -2565,7 +2435,6 @@ class FixedCashflowDeal(Deal):
             'Local_Currency': self.field['Currency']
         }
 
-        # needed for reporting
         return field_index
 
     def generate(self, shared, time_grid, deal_data):
@@ -2582,7 +2451,6 @@ class FixedCashflowDeal(Deal):
 
         mtm = factor_dep['Amount'] * discount_rates * fx_rep
 
-        # settle the cashflow
         pricing.cash_settle(
             shared, self.field['Currency'], deal_data.Time_dep.deal_time_grid[-1], factor_dep['Amount'])
 
@@ -2590,7 +2458,6 @@ class FixedCashflowDeal(Deal):
 
 
 class CFFloatingInterestListDeal(Deal):
-    # dependent price factors for this instrument
     fields = [ADMIN, CASHFLOWLISTDEAL, own('CFFloatingInterestListDeal', [
         F('Discount_Rate_Swaption_Volatility', 'Text', default='', obj='Tuple'),
         F('Rate_Adjustment_Method', 'Text', default='None', values=['None', 'Modified_Following', 'Following', 'Preceding', 'Modified_Preceding']),
@@ -2668,12 +2535,12 @@ class CFFloatingInterestListDeal(Deal):
         }
 
         float_cashflows = utils.make_float_cashflows(
-            base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1, self.field['Cashflows'])
+            base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1,
+            self.field['Cashflows'], self.field.get('Reference'))
 
         field_index['CompoundingMethod'] = self.field['Cashflows'].get('Compounding_Method', 'None')
         field_index['AveragingMethod'] = self.field['Cashflows'].get('Averaging_Method', 'None')
 
-        # check if the CompoundingMethod is null (None)
         if field_index['CompoundingMethod'] is None:
             field_index['CompoundingMethod'] = 'None'
 
@@ -2691,9 +2558,8 @@ class CFFloatingInterestListDeal(Deal):
         field_index['Model'] = pricing.pricer_float_cashflows
         if self.field['Cashflows'].get('Properties'):
             first_prop = self.field['Cashflows']['Properties'][0]
-            # cap vs floor is decided the same way the branch is entered - on a non-zero
-            # multiplier. Deciding it on PRESENCE made an authored floor, which carries
-            # Cap_Multiplier: 0.0, price as a cap struck at Cap_Strike.
+            # cap vs floor is decided on a NON-ZERO multiplier, the test the branch is entered
+            # on: an authored floor carries Cap_Multiplier 0.0, which is not a cap
             is_cap = bool(first_prop.get('Cap_Multiplier', 0.0))
             if is_cap or first_prop.get('Floor_Multiplier', 0.0):
                 if first_prop.get('Digital_Payoff_Rate') is not None:
@@ -2714,7 +2580,6 @@ class CFFloatingInterestListDeal(Deal):
 
 
 class YieldInflationCashflowListDeal(Deal):
-    # dependent price factors for this instrument
     fields = [ADMIN, CASHFLOWLISTDEAL, own('YieldInflationCashflowListDeal', [
         F('Index', 'Text', default=''),
         F('Index_Reference', 'Container', default={'Months_Lag': 1, 'Quarters_Lag': 0, 'Quarter_Reference_Month': 1, 'Index_Reference_Type': 'Interpolated', 'Reference_Day': 1, 'Days_In_Period': 0}, sub_fields=[F('Months_Lag', 'Integer', default=1), F('Quarters_Lag', 'Integer', default=0), F('Quarter_Reference_Month', 'Integer', default=1), F('Index_Reference_Type', 'Text', default='Interpolated', description='Reference Type', values=['Single', 'Interpolated', 'Average'], json_name='Reference_Type'), F('Reference_Day', 'Integer', default=1), F('Days_In_Period', 'Integer', default=0)]),
@@ -2765,9 +2630,8 @@ class YieldInflationCashflowListDeal(Deal):
         """Each cashflow must pin both index references: the known VALUE, or the DATE to read it at.
 
         make_index_cashflows stores the value when there is one and a negative day offset when
-        there is not, and the offset is measured from base_date if no reference date was given -
-        so supplying neither prices against the wrong index level rather than failing. That is a
-        wrong number, not an exception, which is the only reason this is worth stating.
+        there is not, measured from base_date if no reference date was given - so supplying
+        neither prices against the wrong index level rather than failing.
         """
         for i, cashflow in enumerate((self.field.get('Cashflows') or {}).get('Items') or []):
             for ref in ('Base', 'Final'):
@@ -2826,7 +2690,6 @@ class YieldInflationCashflowListDeal(Deal):
 
 
 class CapDeal(Deal):
-    # dependent price factors for this instrument
     accepts_children = True
     fields = [ADMIN, own('CapDeal', [
         F('Reset_Type', 'Text', default='Standard', values=['Standard', 'Advance', 'Arrears']),
@@ -2894,12 +2757,10 @@ class CapDeal(Deal):
         for child in child_dependencies:
             # make the child price to the same grid as the parent
             child.Time_dep.assign(deal_data.Time_dep)
-            # price the child
             mtm_list.append(child.Instrument.calculate(shared, time_grid, child))
 
         mtm = torch.sum(torch.stack(mtm_list), dim=0)
 
-        # return the interpolated value (without interpolating the time_grid)
         return pricing.interpolate(mtm, shared, time_grid, deal_data, interpolate_grid=False)
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
@@ -2940,7 +2801,6 @@ class CapDeal(Deal):
 
 
 class FloorDeal(Deal):
-    # dependent price factors for this instrument
     accepts_children = True
     fields = [ADMIN, own('FloorDeal', [
         F('Reset_Type', 'Text', default='Standard', values=['Standard', 'Advance', 'Arrears']),
@@ -3008,12 +2868,10 @@ class FloorDeal(Deal):
         for child in child_dependencies:
             # make the child price to the same grid as the parent
             child.Time_dep.assign(deal_data.Time_dep)
-            # price the child
             mtm_list.append(child.Instrument.calculate(shared, time_grid, child))
 
         mtm = torch.sum(torch.stack(mtm_list), dim=0)
 
-        # return the interpolated value (without interpolating the time_grid)
         return pricing.interpolate(mtm, shared, time_grid, deal_data, interpolate_grid=False)
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
@@ -3163,7 +3021,6 @@ class SwaptionDeal(Deal):
     def reset(self, calendars):
         super(SwaptionDeal, self).reset()
         self.add_reval_dates({self.field['Option_Expiry_Date']}, self.field['Currency'])
-        # calc the underlying swap dates
         self.paydates = generate_dates_backward(self.field['Swap_Maturity_Date'], self.field['Swap_Effective_Date'],
                                                 self.field['Pay_Frequency'])
         self.recdates = generate_dates_backward(self.field['Swap_Maturity_Date'], self.field['Swap_Effective_Date'],
@@ -3213,7 +3070,6 @@ class SwaptionDeal(Deal):
                            static_offsets, stochastic_offsets, all_tenors),
                        'Expiry': (self.field['Option_Expiry_Date'] - base_date).days}
 
-        # need to check defaults
         Principal = self.field['Principal']
         Pay_Amortisation = self.field.get('Pay_Amortisation')
         Receive_Amortisation = self.field.get('Receive_Amortisation')
@@ -3239,7 +3095,6 @@ class SwaptionDeal(Deal):
                 self.field['Pay_Frequency'], self.field['Index_Tenor'],
                 utils.get_day_count(Pay_Day_Count), Floating_Margin / 10000.0)
 
-        # Cash settled?
         field_index['Cash_Settled'] = self.field['Settlement_Style'] != 'Physical'
 
         if self.field['Settlement_Style'] == 'Physical':
@@ -3250,7 +3105,6 @@ class SwaptionDeal(Deal):
             field_index['FixedStartIndex'] = np.zeros(1, dtype=np.int32)
             field_index['FloatStartIndex'] = np.zeros(1, dtype=np.int32)
 
-        # might want to change this
         field_index['Underlying_Swap_maturity'] = utils.get_day_count_accrual(
             base_date, (self.field['Swap_Maturity_Date'] - self.field['Swap_Effective_Date']).days,
             utils.get_day_count(Index_Day_Count))
@@ -3336,31 +3190,25 @@ class SwaptionDeal(Deal):
             else:
                 mtm = FX_rep * value
 
-        # if there's an amortization schedule, then we have to worry about adjusting the underlying tenor
-        # for now, assume there's no such schedule (i.e. vanilla swaption)
+        # vanilla swaptions only: an amortisation schedule would need the underlying tenor
+        # adjusted, which is not done here
 
-        # interpolate the Theo price
         return pricing.interpolate(mtm, shared, time_grid, deal_data)
 
     @staticmethod
     def register_exercise_boundary(shared, time_grid, deal_data, fx_rep, option, swap, gap, exercised):
         """Record the frozen exercise decision so its derivative can be restored.
 
-        Physical settlement is genuinely path dependent - the holder either owns the swap for the
-        rest of its life or owns nothing - so the jump is real product economics and must not be
-        smoothed. What ordinary AAD drops is the FLUX of scenarios across `Ut_swap[0] = 0`: the
-        indicator broadcast over every later row has zero derivative almost everywhere.
+        Physical settlement is genuinely path dependent, so the jump is real product economics and
+        must not be smoothed; what ordinary AAD drops is the flux of scenarios across
+        `Ut_swap[0] = 0`, where the indicator broadcast over later rows has zero derivative almost
+        everywhere. The gap IS `Ut_swap[0]` and both branches are the two sides of the mask the
+        pricer just evaluated, so nothing is re-simulated, re-priced or re-drawn.
 
-        Cheaper than a barrier, let alone a margin call. The gap IS `Ut_swap[0]` - already
-        differentiable, already carrying every factor that moved the forward swap rate - and both
-        branches are the two sides of the mask the pricer just evaluated, so nothing is
-        re-simulated, re-priced, or (the constraint that rules out most alternatives) re-drawn.
-
-        Registered as a single-decision LatchedBoundarySet, the same shape a discrete barrier uses:
+        Registered as a single-decision LatchedBoundarySet, the shape a discrete barrier uses:
         `triggered` holds the swap, `untriggered` lets the option lapse, and the pre-expiry rows
-        are identical in both, so the counterfactual delta is nonzero only where the decision
-        bites. Both branches go through the deal's own grid map, so `obs_before` needs no row
-        labels - the decision is a property of the SCENARIO, resolved for every row alike.
+        are identical in both. The decision is a property of the SCENARIO, resolved for every row
+        alike, so `obs_before` needs no row labels.
         """
         triggered = torch.cat([option, swap], dim=0).detach()
         shared.boundary_sets.append(utils.LatchedBoundarySet(
@@ -3372,9 +3220,8 @@ class SwaptionDeal(Deal):
             report_index=time_grid.report_index))
 
     def generate(self, shared, time_grid, deal_data):
-        # Should just call the pricing function here - copy the pricing code for post_process,
-        # put it in the pricing module, and call it here - also replace the post_process with
-        # the moved pricing function - TODO
+        # TODO - move the post_process pricing code into the pricing module and call it from
+        # both here and post_process
         raise Exception('generate in {0} - Not implemented yet'.format(self.__class__.__name__))
 
 
@@ -3435,7 +3282,6 @@ class FXDiscreteExplicitAsianOption(Deal):
             'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
         }
 
-        # check if any fixings are missing
         missing_fixings = [x for x in self.field['Sampling_Data'] if x[0] < base_date and not x[1]]
         if missing_fixings:
             logging.error('Past fixings not defined - please specify fixings for {}'.format(
@@ -3447,7 +3293,6 @@ class FXDiscreteExplicitAsianOption(Deal):
         deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
         FX_rep = utils.calc_fx_cross(
             deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
-        # get pricing data
         spot = utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0],
             deal_data.Factor_dep['Currency'][0], deal_time, shared)
@@ -3532,7 +3377,6 @@ class FXDiscreteExplicitDoubleAsianOption(Deal):
         deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
         FX_rep = utils.calc_fx_cross(
             deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
-        # get pricing data
         spot = utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0],
             deal_data.Factor_dep['Currency'][0], deal_time, shared)
@@ -3607,7 +3451,6 @@ class EquityDiscreteExplicitAsianOption(Deal):
             'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0
         }
 
-        # check if any fixings are missing
         missing_fixings = [x for x in self.field['Sampling_Data'] if x[0] < base_date and not x[1]]
         if missing_fixings:
             logging.error('Past fixings not defined - please specify fixings for {}'.format(
@@ -3615,14 +3458,12 @@ class EquityDiscreteExplicitAsianOption(Deal):
 
         self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors)
 
-        # map the past fixings
         return field_index
 
     def generate(self, shared, time_grid, deal_data):
         deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
         FX_rep = utils.calc_fx_cross(
             deal_data.Factor_dep['Payoff_Currency'], shared.Report_Currency, deal_time, shared)
-        # get pricing data
         spot = utils.calc_time_grid_spot_rate(deal_data.Factor_dep['Equity'], deal_time, shared)
         forward = utils.calc_eq_forward(
             deal_data.Factor_dep['Equity'], deal_data.Factor_dep['Equity_Zero'],
@@ -3683,12 +3524,10 @@ class EquityBarrierBinaryOption(Deal):
         field['Discount_Rate'] = utils.check_rate_name(
             self.field['Discount_Rate']) if self.field['Discount_Rate'] else field['Currency']
 
-        # add the expiry to the barrier dates
         all_dates = sorted(
             set(self.field['Barrier_Dates']).union([self.field['Expiry_Date']])
         )
 
-        # create lookups
         ab = set(self.field.get('Barrier_Dates', []))
 
         field_index = {
@@ -3716,9 +3555,8 @@ class EquityBarrierBinaryOption(Deal):
 
         self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors)
 
-        # Non-GBM spot model, resolved by NAMING CONVENTION off the equity underlying (no deal field):
-        # <SpotModel>ModelParameters.<equity>, pulled into the universe by the EquityPrice conditional
-        # in config.py. Switch off/absent -> None (GBM, byte-identical). See get_spot_model_params_factor.
+        # non-GBM spot model, by naming convention off the equity underlying and with no deal
+        # field: <SpotModel>ModelParameters.<equity>; off or absent gives None (GBM)
         hn = get_spot_model_params_factor(
             self.options.get('SpotModel', 'None'), field['Equity'],
             all_factors, static_offsets, stochastic_offsets)
@@ -3798,7 +3636,6 @@ class EquityOptionDeal(Deal):
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
-        # set the payoff_currency if not definied
         Payoff_Currency = utils.payoff_currency(self.field)
 
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
@@ -3983,18 +3820,13 @@ class QEDI_CustomAutoCallSwap(Deal):
                           calendars):
         """Resolve the autocall's factor dependencies, date lookups and pricing-model switches.
 
-        A check that max(all_dates) <= Expiry_Date is currently DISABLED - it only logged a
-        warning naming the max pricing date, the expiry date and the equity.
-
-        The non-GBM spot model is resolved by NAMING CONVENTION off the equity underlying (no
-        deal field): <SpotModel>ModelParameters.<equity>, pulled into the universe by the
-        EquityPrice conditional in config.py. Switch off/absent -> None (GBM, byte-identical).
-        Only the fast no_averaging OSS path carries the non-GBM branch, hence the raise. A
-        Quanto/Compo payoff raises for the same reason: `calc_vol_adjustment` derives its carry
-        from a LOGNORMAL implied ATM vol, and no leg of the non-GBM branch reads the compo vol
-        it returns. Both refusals land in the engine's deal-skip path (ERROR logged, deal
-        dropped) - a refused deal is a loudly attributable value loss rather than a wrong
-        number. See get_spot_model_params_factor."""
+        The non-GBM spot model is resolved by NAMING CONVENTION off the equity underlying, with no
+        deal field: <SpotModel>ModelParameters.<equity>; off or absent gives None (GBM). Only the
+        fast no_averaging OSS path carries the non-GBM branch, hence the raise; a Quanto/Compo
+        payoff raises for the same reason, since `calc_vol_adjustment` derives its carry from a
+        LOGNORMAL implied ATM vol that no leg of the non-GBM branch reads. Both refusals land in
+        the engine's deal-skip path, so a refusal is an attributable value loss rather than a
+        wrong number. The max(all_dates) <= Expiry_Date warning is currently DISABLED."""
         field = {
             'Currency': utils.check_rate_name(self.field['Currency']),
             'Payoff_Currency': utils.check_rate_name(self.field['Payoff_Currency']),
@@ -4017,7 +3849,6 @@ class QEDI_CustomAutoCallSwap(Deal):
             set([x[0] for x in self.field.get('Autocall_Floating', [])])
         ])
 
-        # create lookups
         pf = dict(self.field['Price_Fixing'])
         ac = dict(self.field['Autocall_Coupons'])
         at = dict(self.field['Autocall_Thresholds'])
@@ -4026,11 +3857,9 @@ class QEDI_CustomAutoCallSwap(Deal):
 
         # DISABLED: warn when max(all_dates) > self.field['Expiry_Date'] - see docstring
 
-        # the most common case is that there is no averaging - i.e. just a single fixing on a coupon date
-        # also check that the barrier dates correspond with the coupon dates
-        # we can then get a much faster calc ready
-
-        # HACK - need to property align fixings to coupons - assume fixings are no later than a month prior to a coupon
+        # the common case is no averaging - one fixing per coupon date, barrier dates on coupon
+        # dates - which enables the much faster calc below
+        # HACK - fixings are aligned to coupons by assuming a fixing is at most a month early
         ac_dates = sorted([x for x in ac if x >= base_date])
         pf_dates = sorted([x for x in pf if x > min(ac_dates) - pd.DateOffset(months=1)])
 
@@ -4062,11 +3891,9 @@ class QEDI_CustomAutoCallSwap(Deal):
             # move the threshold dates to the coupon dates
             tl = {c: at[t] for c, t in zip(ac, at)}
 
-            # check that past fixings are defined
             if np.any([k <= base_date and v == 0 for k, v in pf.items() if k in pf_dates]):
                 logging.error('AutoCall has past fixing set to 0 - please map the correct fixing')
 
-            # check that the thresholds are all positive
             if min(tl.values()) <= 0.0:
                 logging.error('AutoCall has some thresholds <=0 - please map the correct thresholds (defaulting to 1.0)')
                 tl = {k:v if v else 1.0 for k,v in tl.items()}
@@ -4171,19 +3998,14 @@ class QEDI_CustomAutoCallSwap_V2(QEDI_CustomAutoCallSwap):
         # barrier is now absolute (not relative to strike)
         field_index['Barrier'] = self.field['Barrier']
 
-        # get the daycount for this forward rate
         daycount = field_index['Forward'][0][utils.FACTOR_INDEX_Daycount]
         if 'Reset_Frequency' not in self.field:
             logging.warning('Reset Frequency not specified - assuming 3M')
             self.field['Reset_Frequency'] = pd.DateOffset(months=3)
 
-        # get the full set of floating dates
         floating_pay_dates = [x[0] for x in self.field['Autocall_Floating']]
         # need to add the previous date to calculate the reset
         prev_floating_date = min(floating_pay_dates) - self.field['Reset_Frequency']
-        # if prev_floating_date == base_date:
-        # there's an issue if the prev_float_date is the same as the base date
-        #    prev_floating_date = prev_floating_date - pd.offsets.Day(1)
         floating_pay_dates = [prev_floating_date] + floating_pay_dates
 
         cashflows = {'Items':
@@ -4204,7 +4026,8 @@ class QEDI_CustomAutoCallSwap_V2(QEDI_CustomAutoCallSwap):
                              floating_pay_dates[:-1], floating_pay_dates[1:], self.field['Autocall_Floating'])]
                      }
 
-        field_index['Cashflows'] = utils.make_float_cashflows(base_date, time_grid, 1.0, cashflows)
+        field_index['Cashflows'] = utils.make_float_cashflows(
+            base_date, time_grid, 1.0, cashflows, self.field.get('Reference'))
 
         return field_index
 
@@ -4460,15 +4283,13 @@ class EquityBarrierOption(Deal):
                           calendars):
         """Resolve the barrier option's factor dependencies and pricing-model switches.
 
-        The non-GBM spot model is resolved by NAMING CONVENTION off the equity underlying (no
-        deal field): <SpotModel>ModelParameters.<equity>, pulled into the universe by the
-        EquityPrice conditional in config.py. Switch off/absent -> None (GBM, byte-identical).
-        Only the DISCRETE (Barrier_Dates) OSS pricer carries the non-GBM branch, hence the
-        raise. A Quanto/Compo payoff raises for the same reason: `calc_vol_adjustment` derives
-        its carry from a LOGNORMAL implied ATM vol, and there is no non-GBM equivalent to feed
-        the diffusion's drift. Both refusals land in the engine's deal-skip path (ERROR logged,
-        deal dropped) - a refused deal is a loudly attributable value loss rather than a wrong
-        number. See get_spot_model_params_factor."""
+        The non-GBM spot model is resolved by NAMING CONVENTION off the equity underlying, with no
+        deal field: <SpotModel>ModelParameters.<equity>; off or absent gives None (GBM). Only the
+        DISCRETE (Barrier_Dates) OSS pricer carries the non-GBM branch, hence the raise; a
+        Quanto/Compo payoff raises for the same reason, since `calc_vol_adjustment` derives its
+        carry from a LOGNORMAL implied ATM vol with no non-GBM equivalent to feed the diffusion's
+        drift. Both refusals land in the engine's deal-skip path, so a refusal is an attributable
+        value loss rather than a wrong number."""
 
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Equity': utils.check_rate_name(self.field['Equity']),
@@ -4504,11 +4325,9 @@ class EquityBarrierOption(Deal):
                        }
 
         if self.field.get('Barrier_Dates', []):
-            # add the expiry to the barrier dates
             all_dates = sorted(
                 set(self.field['Barrier_Dates']).union([self.field['Expiry_Date']])
             )
-            # create lookups
             ab = set(self.field.get('Barrier_Dates', []))
             field_index['Observation_Dates'] = utils.make_fixing_data(
                 base_date, time_grid, [[x, 0] for x in all_dates])
@@ -4665,7 +4484,6 @@ class CommodityForwardDeal(Deal):
 
         cash = nominal * forward
 
-        # store the settled cashflow
         pricing.cash_settle(shared, self.field['Currency'], deal_data.Time_dep.deal_time_grid[-1], cash[-1])
 
         return cash * discount_rates * fx_rep
@@ -4796,8 +4614,7 @@ class CommodityAveragePriceSwapDeal(Deal):
 
         `calc_dependencies` measures the discount tenor from `Settlement_Date` and `reset` makes it
         the deal grid's last row, so a settlement inside the sampling window discounts the later
-        fixings from BEFORE they fix and stops the grid short of them - a wrong number on a deal
-        that prices, which is the only reason this is worth stating.
+        fixings from BEFORE they fix and stops the grid short of them.
         """
         dates = [x[0] for x in self.field.get('Sampling_Data') or []]
         if dates and self.field.get('Settlement_Date') and self.field['Settlement_Date'] < max(dates):
@@ -4818,13 +4635,12 @@ class CommodityAveragePriceSwapDeal(Deal):
         code is one element for a plain spot and primary + basis chain for a composed one. The
         pricer needs the two halves separately - the whole chain for a realised fixing, the primary
         alone under the forward's exponential - so both slices are filed rather than re-derived.
-        The repo curve comes off the primary spot (`get_factor_component`'s ultimate-primary rule)
-        while the carry is declared, matching `CommodityFutureDeal`.
+        The repo curve comes off the primary spot while the carry is declared, as for
+        `CommodityFutureDeal`.
 
-        This deal inherits the carry curve's market-data rule and cannot check it: `CurveTenor`
-        CLIPS a query to the knot bracket, so a `Carry` whose last knot is before the last fixing
-        prices that fixing off a flat log-carry rather than the curve's own continuation, silently.
-        Bracket the fixings - see `QuadraticCarryCurveModel` and its bracket gate.
+        DECLARED LIMITATION: `CurveTenor` CLIPS a query to the knot bracket, so a `Carry` whose
+        last knot falls before the last fixing prices that fixing off a flat log-carry rather than
+        the curve's own continuation, silently. Bracket the fixings.
         """
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Commodity': utils.check_rate_name(self.field['Commodity']),
@@ -4865,13 +4681,11 @@ class CommodityAveragePriceSwapDeal(Deal):
         return field_index
 
     def leg_descriptors(self, deal_data):
-        """`(|Units|, settlement day offset)` — the pair `Bundle`'s utility scale reads, off THIS
+        """`(|Units|, settlement day offset)` - the pair `Bundle`'s utility scale reads, off THIS
         deal's own resolved dependencies rather than a `Cashflows` schedule it does not build.
 
         The base implementation's `(0.0, None)` default is right for a deal with no schedule and
-        wrong for this one: it pays exactly one cashflow, of `Units` ounces, at `Settlement`. As a
-        `Hedge_Monte_Carlo` liability the default made `c` unresolvable and every utility objective
-        RAISED — the campaign's own liability could not be hedged at all."""
+        wrong for this one: it pays exactly one cashflow, of `Units` ounces, at `Settlement`."""
         return abs(self.field['Units']), float(deal_data.Factor_dep['Settlement'])
 
     def generate(self, shared, time_grid, deal_data):
@@ -4942,7 +4756,6 @@ class EquityForwardDeal(Deal):
 
         cash = nominal * (forward - self.field['Forward_Price'])
 
-        # store the settled cashflow
         pricing.cash_settle(shared, self.field['Currency'], deal_data.Time_dep.deal_time_grid[-1], cash[-1])
 
         return cash * discount_rates * fx_rep
@@ -5040,7 +4853,6 @@ class EquityDeal(Deal):
 
 
 class EquitySwapletListDeal(Deal):
-    # dependent price factors for this instrument
     fields = [ADMIN, own('EquitySwapletListDeal', [
         F('Accrual_Calendars', 'Text', default=''),
         F('Settlement_Days', 'Integer', default=0),
@@ -5083,7 +4895,6 @@ class EquitySwapletListDeal(Deal):
 
         field_index = {}
         self.isQuanto = field['Equity_Currency'] != field['Currency']
-        # get the current spot
         current_spot = get_equity_spot(field['Equity'], static_offsets, stochastic_offsets, all_factors)
         field_index['PrincipleNotShares'] = 1 if self.field.get('Amount_Type', 'Principal') == 'Principal' else 0
         field_index['SettleCurrency'] = self.field['Currency']
@@ -5114,7 +4925,6 @@ class EquitySwapletListDeal(Deal):
 
 
 class EquitySwapLeg(Deal):
-    # dependent price factors for this instrument
     fields = [ADMIN, own('EquitySwapLeg', [
         F('Accrual_Calendars', 'Text', default=''),
         F('Adjustment_Method', 'Text', default='None', description='Rate Adjustment Method', values=['None', 'Modified_Following', 'Following', 'Preceding', 'Modified_Preceding'], json_name='Rate_Adjustment_Method'),
@@ -5341,8 +5151,6 @@ class FXOneTouchOption(Deal):
             'Barrier_Monitoring': 0.5826 * np.sqrt(
                 (base_date + self.field['Barrier_Monitoring_Frequency'] - base_date).days / 365.0),
             'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])}
-        # adjustment for discrete barrier monitoring
-        # needed for reporting
 
         return field_index
 
@@ -5616,12 +5424,9 @@ class FXTARFOptionDeal(Deal):
         F('InvertedTarget', 'Text', default=''),
         F('LeverageNotional', 'Float', default=0),
         F('TargetLevel', 'Float', default=0),
-        # NO `tag`, for the reason FXAccumulatorOptionDeal's schedule carries none: a tag names
-        # the container the WIRE form uses, and this table is read by iterating rows
-        # (`for x in self.field['TARF_ExpiryDates']`). Declared `tag='DateEqualList'` the decoder
-        # handed the deal a `utils.DateEqualList`, which is not iterable - so a TARF authored the
-        # way its own declaration described could not be loaded at all, while one authored as
-        # plain rows priced fine. Every test built its config in-process and saw neither.
+        # NO `tag`: a tag names the container the WIRE form uses, and this table is read by
+        # iterating rows (`for x in self.field['TARF_ExpiryDates']`). Tagged `DateEqualList` the
+        # decoder hands over a `utils.DateEqualList`, which is not iterable.
         F('TARF_ExpiryDates', 'Table', default='null', row=Row([F('Fixing Date', 'Date'), F('Settlement Date', 'Date'), F('Value', 'Float')])),
         F('Barrier', 'Float', default=0)
 ])]
@@ -5678,18 +5483,14 @@ class FXTARFOptionDeal(Deal):
                           calendars):
         """Resolve the TARF's factor dependencies and the opt-in spot-model switch.
 
-        The Heston-Nandi switch mirrors FloatingEnergyDeal's ForwardCurve switch: it swaps the
-        (moneyness, vol-surface) lookup for the daily GARCH recursion in the pricer, leaving the
-        GBM field_index['Volatility'] path untouched when off/absent. NO deal field - the params
-        factor is resolved by NAMING CONVENTION off the FX underlying the deal references
-        (<SpotModel>ModelParameters.<Underlying_Currency>), pulled into the universe by the
-        FxRate conditional in config.py, exactly like the equity OSS deals.
-        See get_spot_model_params_factor."""
+        The Heston-Nandi switch swaps the (moneyness, vol-surface) lookup for the daily GARCH
+        recursion in the pricer, leaving the GBM `field_index['Volatility']` path untouched when
+        off or absent. There is no deal field: the params factor is resolved by NAMING CONVENTION
+        off the FX underlying, `<SpotModel>ModelParameters.<Underlying_Currency>`."""
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Underlying_Currency': utils.check_rate_name(self.field['Underlying_Currency']),
                  'FX_Volatility': utils.check_rate_name(self.field['FX_Volatility'])}
 
-        # create lookups
         pf = {x[0]:(x[-1] if (x[-1] is not None) else 0.0) for x in self.field['TARF_ExpiryDates']}
         sd = [x[1] for x in self.field['TARF_ExpiryDates']]
 
@@ -5733,7 +5534,6 @@ class FXTARFOptionDeal(Deal):
             # HN is calibrated on a per-DAY clock; a weekly/monthly fixing spans this many daily sub-steps
             field_index['HN_Steps_Per_Year'] = self.options.get('Steps_Per_Year', 252.0)
 
-        # needed for reporting
         return field_index
 
     def generate(self, shared, time_grid, deal_data):
@@ -5741,7 +5541,6 @@ class FXTARFOptionDeal(Deal):
         FX_rep = utils.calc_fx_cross(
             deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
 
-        # get pricing data
         spot = utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0],
             deal_data.Factor_dep['Currency'][0], deal_time, shared)
@@ -5767,9 +5566,7 @@ class FXAccumulatorOptionDeal(Deal):
         F('Barrier_Price', 'Float', default=REQUIRED),
         F('Barrier_Hit', 'Text', default='No', values=['No', 'Yes']),
         # NO `tag`: a tag names the utils container the wire form uses, and a tagged table
-        # arrives as that object (see EquitySwapletListDeal, which reads its two through `.data`).
-        # This schedule is read by iterating rows, exactly as the autocall's `Price_Fixing` and
-        # `Autocall_Coupons` are, and those carry no tag either.
+        # arrives as that object. This schedule is read by iterating rows.
         F('Accumulator_ExpiryDates', 'Table', default='null', row=Row([
             F('Fixing Date', 'Date'), F('Settlement Date', 'Date'), F('Value', 'Float')]))
 ])]
@@ -5818,12 +5615,9 @@ class FXAccumulatorOptionDeal(Deal):
 
     def __init__(self, params, valuation_options):
         super(FXAccumulatorOptionDeal, self).__init__(params, valuation_options)
-        # `path_dependent` WITHOUT an `add_grid_dates`, unlike the barrier deals: `reset` already
-        # puts every fixing and settlement in `reval_dates`, so there is no observation date the
-        # grid is missing. What the flag buys is the OTHER half of its meaning - inside a netting
+        # `path_dependent` without an `add_grid_dates`: `reset` already puts every fixing and
+        # settlement in `reval_dates`. What the flag buys is its other meaning - inside a netting
         # set a path-dependent child keeps its own dates instead of inheriting every grid row
-        # (instruments.py `NettingCollateralSet.finalize_dates`), which is what keeps the pricer's
-        # blocks aligned to fixings. FXPartialTimeBarrierOption declares it the same way.
         self.path_dependent = True
 
     def reset(self, calendars):
@@ -5840,8 +5634,8 @@ class FXAccumulatorOptionDeal(Deal):
         The knock-out state carried in from before the base date is DATA: the declared
         `Barrier_Hit` flag is OR'd with every settled fixing's own breach test, so the prefix the
         pricer starts from is what the schedule records. Unsettled and future fixings are the
-        pricer's business (exact indicators and OSS truncation respectively). The Heston-Nandi
-        switch is the TARF's, verbatim - see FXTARFOptionDeal.calc_dependencies."""
+        pricer's business - exact indicators and OSS truncation respectively. The Heston-Nandi
+        switch is the TARF's - see FXTARFOptionDeal.calc_dependencies."""
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Underlying_Currency': utils.check_rate_name(self.field['Underlying_Currency']),
                  'FX_Volatility': utils.check_rate_name(self.field['FX_Volatility'])}
@@ -5923,7 +5717,6 @@ class FXAccumulatorOptionDeal(Deal):
         FX_rep = utils.calc_fx_cross(
             deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
 
-        # get pricing data
         spot = utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0],
             deal_data.Factor_dep['Currency'][0], deal_time, shared)
@@ -6066,9 +5859,8 @@ class FXExtendableForwardDeal(Deal):
         if invalid:
             raise ValueError('Extension decisions supplied on non-decision fixing(s): {}'.format(invalid))
         # a decision is a lifecycle FACT: mandatory once its fixing is historical, refused on a
-        # future one - a fact authored ahead of its date would be honoured by the lifecycle but
-        # still priced as an option by every pre-decision row - and, after the first No, never
-        # demanded again: decisions the termination made moot were never taken
+        # future one, and never demanded again after the first No - decisions the termination
+        # made moot were never taken
         seen_no = False
         for i in decision_indices:
             if seen_no and decision_codes[i] == 1:
@@ -6191,8 +5983,6 @@ class FXOptionDeal(Deal):
             'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
             'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
         }
-
-        # needed for reporting
 
         return field_index
 
@@ -6603,7 +6393,8 @@ class FRADeal(Deal):
 
         field_index['VolSurface'] = np.zeros(1, dtype=np.int32)
         field_index['Cashflows'] = utils.make_float_cashflows(
-            base_date, time_grid, 1 if self.field['Borrower_Lender'] == 'Borrower' else -1, cashflows)
+            base_date, time_grid, 1 if self.field['Borrower_Lender'] == 'Borrower' else -1,
+            cashflows, self.field.get('Reference'))
 
         return field_index
 
@@ -6612,7 +6403,6 @@ class FRADeal(Deal):
 
 
 class FloatingEnergyDeal(Deal):
-    # dependent price factors for this instrument
     fields = [ADMIN, own('FloatingEnergyDeal', [
         F('Currency', 'Text', default=''),
         F('Discount_Rate', 'Text', default='', obj='Tuple'),
@@ -6665,11 +6455,10 @@ class FloatingEnergyDeal(Deal):
                           calendars):
         """Resolve the floating energy leg's factor dependencies.
 
-        Under ForwardCurve='Components' the forward curve is constructed from the components
-        already simulated, and Commodity may name a composed spot (primary + ObservedBasis, e.g.
-        PLATINUM_CME.LME_CME): get_commodity_rate_factor is basis-aware and returns the summed
-        code, and get_factor_component resolves repo/carry off the primary. No composition
-        fields or branches on the deal."""
+        Under ForwardCurve='Components' the forward curve is built from the components already
+        simulated, and Commodity may name a composed spot (primary + ObservedBasis):
+        get_commodity_rate_factor is basis-aware and returns the summed code, while
+        get_factor_component resolves repo and carry off the primary."""
         field = {
             'Currency': utils.check_rate_name(self.field['Currency']),
             'Sampling_Type': utils.check_rate_name(self.field['Sampling_Type']),
@@ -6726,7 +6515,6 @@ class FloatingEnergyDeal(Deal):
 
 
 class FixedEnergyDeal(Deal):
-    # dependent price factors for this instrument
     fields = [ADMIN, own('FixedEnergyDeal', [
         F('Currency', 'Text', default=''),
         F('Payoff_Currency', 'Text', default=''),
@@ -6782,7 +6570,6 @@ class FixedEnergyDeal(Deal):
 
 
 class EnergySingleOption(Deal):
-    # dependent price factors for this instrument
     fields = [ADMIN, own('EnergySingleOption', [
         F('Currency', 'Text', default=''),
         F('Discount_Rate', 'Text', default='', obj='Tuple'),
@@ -6874,13 +6661,11 @@ class EnergySingleOption(Deal):
             field_index['ImpliedCorrelation'] = get_implied_correlation(
                 ('FxRate',) + fx_lookup, ('ReferencePrice',) + forward_price_vol, all_factors)
 
-        # make a pricing cashflow
         cashflow = utils.make_energy_cashflows(
             base_date, time_grid, 1, {'Items': [field['cashflow']]},
             reference_factor, forward_sample, fx_sample, calendars)
-        # turn it into a sampling object
         field_index['Cashflow'] = cashflow
-        # store the base date in excel format
+        # measured in days from the reference factor's own start date
         field_index['Basedate'] = (base_date - reference_factor.start_date).days
 
         field_index['ForwardPrice'], field_index['ForwardFX'], field_index['CashFX'] = get_forwardprice_factor(
@@ -6908,10 +6693,9 @@ class EnergySingleOption(Deal):
 def accepts_children(deal_type):
     """Whether a deal of this type breaks down into simpler instruments.
 
-    A container prices its children in `post_process` - a swaption over its two legs, a cap over
-    the floating list it caps. A leaf (an option, a cashflow list, a deposit) cannot be broken
-    down. The engine recurses on `Children` being PRESENT and never on the type, so this is an
-    AUTHORING question: a UI that offers a leaf children builds a tree the pricer will not read.
+    A container prices its children in `post_process`; a leaf cannot be broken down. The engine
+    recurses on `Children` being PRESENT and never on the type, so this is an AUTHORING question:
+    a UI that offers a leaf children builds a tree the pricer will not read.
     """
     return getattr(globals().get(deal_type), 'accepts_children', False)
 

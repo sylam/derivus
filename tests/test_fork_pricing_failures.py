@@ -10,6 +10,12 @@ One class is therefore distinguished and re-raised (`utils.is_fatal_pricing_erro
 of memory — the failure mode the single-pass fork documents as its contract. Everything else keeps
 the skip, which is asserted here too, because base valuation and credit Monte Carlo depend on it.
 
+`utils.UnpriceableSchedule` joins that class from the other direction, and its arm is the last
+section here. The first two members say the FRAMEWORK is wrong; this one says the DOCUMENT is, and
+it is fatal because a named refusal swallowed into a zero mark has said nothing at all. It is read
+by four guards now rather than two — the two in `Deal`, and both compile guards in `DealStructure`,
+which is where an authored schedule is first touched.
+
 The end-to-end gates rebuild the deal shapes a fork's curve reads used to be predicted wrong for.
 Each asserts the ANSWER, not just the absence of a crash: the lazily built run must equal the one
 whose Hermite coefficients cover the whole block.
@@ -18,13 +24,22 @@ import copy
 import json as jsonlib
 import logging
 import os
+import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import pandas as pd
 import pytest
 import torch
 
 import derivus as rf
 from derivus import instruments, utils
 from derivus.calculation import HedgeMonteCarlo
+
+# the one-cashflow job every service gate is built on, reused rather than re-authored: the
+# degenerate leg below needs a real USD/ZAR market and a real `BaseValuation`, and that document
+# already is one
+from test_service import BASE as SERVICE_BASE, dump as service_dump, job as service_job
 
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        'fixtures', 'policy_test_simulate_only.json')
@@ -363,3 +378,107 @@ def test_the_published_source_is_write_once():
                   lambda: source.__setitem__(0, 0.0)):
         with pytest.raises((TypeError, AttributeError)):
             write()
+
+
+# --------------------------------------------------------------------------------------------
+# A schedule the engine will not guess at: refused by name, and the refusal is fatal
+# --------------------------------------------------------------------------------------------
+def _degenerate_float_leg(rate_end_is_start):
+    """A real `CFFloatingInterestListDeal`: one quarterly coupon, one reset.
+
+    `rate_end_is_start` is the whole fixture. The reset's rate window is either the coupon's own
+    three months (healthy) or a single instant (degenerate) - and nothing else about the two deals
+    differs, so what the gate below measures is the window and not the deal.
+    """
+    start = SERVICE_BASE + pd.DateOffset(months=3)
+    end = start + pd.DateOffset(months=3)
+    return {'Object': 'CFFloatingInterestListDeal', 'Reference': 'FLT-DEGENERATE',
+            'Currency': 'USD', 'Discount_Rate': 'USD', 'Forecast_Rate': 'USD', 'Buy_Sell': 'Buy',
+            'Cashflows': {'Compounding_Method': 'None', 'Averaging_Method': 'Average_Rate',
+                          'Properties': [], 'Items': [{
+                              'Payment_Date': end, 'Accrual_Start_Date': start,
+                              'Accrual_End_Date': end, 'Accrual_Year_Fraction': 0.25,
+                              'Notional': 1_000_000.0, 'Margin': utils.Basis(0.0),
+                              'Fixed_Amount': 0.0,
+                              'Resets': [[start, start, start if rate_end_is_start else end, 0.25,
+                                          'ACT_365', 0.0, utils.Percent(0.0)]]}]}}
+
+
+def _priced(deal, name):
+    """The deal's own row out of a real `BaseValuation` run - JSON in, `run_job` out."""
+    context = rf.Context()
+    context.load_json((service_dump(service_job(deals=(deal,))), name))
+    _, result = context.run_job()
+    table = result['Results']['mtm']
+    return result['Stats'], dict(zip(table['Reference'], table['Value']))
+
+
+def test_a_degenerate_reset_window_refuses_by_name_and_the_run_fails_loud():
+    """THE ROW THIS CLOSES. `make_float_cashflows` read `cashflow['Rate_Tenor']` whenever a reset's
+    rate window had zero length - a key no `Row` declares, nothing writes and nothing else in the
+    engine mentions. So the one document that reached it died `KeyError: 'Rate_Tenor'`, which
+    `add_deal_to_structure` caught.
+
+    MEASURED, on this exact pair of documents, with the old read put back:
+
+        ERROR:FLT-DEGENERATE:CFFloatingInterestListDeal ('Rate_Tenor',) - Skipped
+        Stats: {'Deals Skipped': 1}     mtm: root 0.0     job: SUCCEEDED
+
+    - a deal that vanished from the report, a book that netted to nothing, and an exit code that
+    said everything was fine. The healthy twin prices **4948.879641** on the same market data, so
+    that zero is the whole of the deal.
+
+    NOW: `utils.UnpriceableSchedule`, naming the deal, the fixing, the cashflow it pays and the
+    instant the window collapsed to, with the remedy stated - and FATAL, so the message is the
+    run's answer rather than a line in a log nobody reads. The tenor is NOT derived: a rate window
+    is not the accrual window, the schedule states no tenor, and a value the author did not give is
+    not the engine's to invent.
+
+    THE THREE THINGS IT MUST NOT BE are each asserted: not a `KeyError` (the type), not a skipped
+    deal (`Deals Skipped` never appears, because the run does not get that far), and not a zero
+    mark (the run raises instead of returning a table).
+    """
+    healthy_stats, healthy = _priced(_degenerate_float_leg(False), 'healthy_float_leg')
+    assert healthy_stats.get('Deals loaded') == 1 and 'Deals Skipped' not in healthy_stats
+    assert healthy['FLT-DEGENERATE'] == pytest.approx(4948.879641, rel=1e-9), healthy
+    assert healthy['FLT-DEGENERATE'] != 0.0, 'the healthy twin is worth nothing - nothing is gated'
+
+    with pytest.raises(utils.UnpriceableSchedule) as refused:
+        _priced(_degenerate_float_leg(True), 'degenerate_float_leg')
+
+    message = str(refused.value)
+    assert 'FLT-DEGENERATE' in message, 'the refusal does not name the deal'
+    assert 'rate window that starts and ends on' in message
+    assert str((SERVICE_BASE + pd.DateOffset(months=3)).date()) in message, (
+        'the refusal does not carry the degenerate window\'s own date')
+    assert 'Author the reset\'s rate end date after its rate start' in message, (
+        'the refusal states no remedy')
+    assert not isinstance(refused.value, KeyError)
+
+
+def test_the_named_refusal_is_fatal_at_the_compile_guard_too():
+    """`is_fatal_pricing_error` is read by FOUR guards now, and the two new ones are the reason the
+    gate above sees a raise at all: an authored schedule is touched in `calc_dependencies`, which
+    `DealStructure.add_deal_to_structure` wraps in the skip-and-continue that lets a book of
+    thousands survive one deal it cannot bind.
+
+    So the predicate is asserted at both ends. It admits the new class and still admits the two it
+    always did; an ordinary pricing failure is still swallowed, because that skip is what base
+    valuation and credit Monte Carlo run on - and this file's own gates one section up are what
+    hold that half.
+    """
+    assert utils.is_fatal_pricing_error(utils.UnpriceableSchedule('a zero-length rate window'))
+    assert utils.is_fatal_pricing_error(utils.ScheduleLifecycleError('never bound'))
+    assert utils.is_fatal_pricing_error(MemoryError('host allocation failed'))
+    assert not utils.is_fatal_pricing_error(KeyError('Rate_Tenor')), (
+        'the bare KeyError this row replaced must still take the canonical skip - it is what an '
+        'unrelated missing field looks like')
+
+    # and both compile guards read it, off the source rather than off a second fixture: a guard
+    # that stopped consulting the predicate would swallow the refusal again with nothing red
+    import inspect
+
+    from derivus.calculation import DealStructure
+    for guard in (DealStructure.add_deal_to_structure, DealStructure.add_structure_to_structure):
+        body = inspect.getsource(guard)
+        assert 'is_fatal_pricing_error' in body and 'raise' in body, guard.__name__

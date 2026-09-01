@@ -12,8 +12,6 @@
 ########################################################################
 
 
-# import standard libraries
-
 import time
 import logging
 import itertools
@@ -22,17 +20,11 @@ import numpy as np
 import torch
 from functools import reduce
 
-# load up some useful data types
 from collections import namedtuple, defaultdict
-# import the risk factors (also known as price factors)
 from .riskfactors import construct_factor
-# import the stochastic processes
 from .stochasticprocess import REVEAL_CONTINUOUS, construct_process
-# import the currency/curve lookup factors 
 from .instruments import get_fxrate_factor, get_survival_component, get_interest_factor, get_survival_factor
-# import the hessian function
 from .pricing import SensitivitiesEstimator
-# import the documentation and utils modules
 from . import utils, pricing
 from .schema import F, REQUIRED, Row, declared_defaults
 from .hedge_runtime import construct_hedge_runtime
@@ -66,16 +58,13 @@ class DealStructure(object):
     def __init__(self, obj, store_results=False):
         self.obj = utils.DealDataType(
             Instrument=obj, Factor_dep={}, Time_dep=None, Calc_res={} if store_results else None)
-        # gather a list of deal dependencies
         self.dependencies = []
-        # maintain a list of container objects
         self.sub_structures = []
-        # Do we want to store each deal level MTM explicitly?
         self.store_results = store_results
 
     @staticmethod
     def calc_time_dependency(base_date, deal, time_grid):
-        # calculate the additional (dynamic) dates that this instrument needs to be evaluated at
+        """Return the deal's time dependency on `time_grid`, or None if it has expired."""
         deal_time_dep = None
         try:
             reval_dates = deal.get_reval_dates(clip_expiry=True)
@@ -92,13 +81,17 @@ class DealStructure(object):
 
     def add_deal_to_structure(self, base_date, deal, static_offsets, stochastic_offsets,
                               all_factors, all_tenors, time_grid, calendars, stats, unit):
-        """
-        The logic is as follows: a structure contains deals - a set of deals are netted off and then the rules that the
-        structure itself contains is applied.
+        """Compile `deal` into this structure. A structure's deals are netted off before
+        the structure's own rules are applied.
+
+        A compile failure is logged and the deal is SKIPPED, which is what lets a portfolio of
+        thousands survive one deal it cannot bind. `utils.is_fatal_pricing_error` is the exception
+        to that, and it is the same predicate `Deal.calculate` reads one layer down: a framework
+        fault, or a schedule refused by name, must not become a deal that marks at nothing on a job
+        that then reports success.
         """
         deal_time_dep = self.calc_time_dependency(base_date, deal, time_grid)
         if deal_time_dep is not None:
-            # calculate dependencies based on field names
             try:
                 self.dependencies.append(
                     utils.DealDataType(Instrument=deal,
@@ -110,6 +103,8 @@ class DealStructure(object):
                 stats['Deals loaded'] = stats.setdefault('Deals loaded', 0) + 1
             except Exception as e:
                 logging.error('{0} {1} - Skipped'.format(deal.field['Object'], e.args))
+                if utils.is_fatal_pricing_error(e):
+                    raise
                 stats['Deals Skipped'] = stats.setdefault('Deals Skipped', 0) + 1
 
     def finalize_struct(self, base_date, time_grid):
@@ -117,12 +112,10 @@ class DealStructure(object):
             x.obj.Instrument.get_report_dates(time_grid, base_date)) for x in self.sub_structures]
         self.obj.Instrument.set_report_dates(
             reduce(set.union, all_report_dates) if all_report_dates else time_grid.mtm_dates)
-        # copy across the reporting dates to the time_grid
         time_grid.set_report_dates(base_date, self.obj.Instrument.get_report_dates())
 
     def add_structure_to_structure(self, struct, base_date, static_offsets, stochastic_offsets,
                                    all_factors, all_tenors, time_grid, calendars, stats, unit):
-        # get the dependencies
         struct_time_dep = self.calc_time_dependency(base_date, struct.obj.Instrument, time_grid)
         if struct_time_dep is not None:
             try:
@@ -133,29 +126,27 @@ class DealStructure(object):
                         all_factors, all_tenors, time_grid, calendars), unit),
                     Time_dep=struct_time_dep,
                     Calc_res={} if self.store_results or struct.obj.Instrument.accum_dependencies else None)
-                # Structure object representing a netted set of cashflows
                 self.sub_structures.append(struct)
                 stats['Structs loaded'] = stats.setdefault('Structs loaded', 0) + 1
             except Exception as e:
                 logging.error('{0} {1} - Skipped'.format(struct.obj.Instrument.field['Object'], e.args))
+                # same rule as `add_deal_to_structure`: a skipped STRUCTURE takes its whole netting
+                # set's deals out of the report with it
+                if utils.is_fatal_pricing_error(e):
+                    raise
                 stats['Structs Skipped'] = stats.setdefault('Structs Skipped', 0) + 1
 
     def resolve_structure(self, shared, time_grid):
-        """
-        Resolves the Structure
-        """
+        """Price every deal and sub-structure and return the accumulated MTM."""
 
         accum = 0.0 * shared.one
-        # Anything registered from here on is a decision taken BENEATH this structure, so the tail
-        # past this mark is exactly what its post_process gets to speak for. It cannot be found
-        # any later: post_process runs only once the children have been priced.
+        # a boundary set registered past this mark is a decision taken BENEATH this structure
+        # - post_process runs only once the children are priced, so the mark cannot wait
         mark = len(shared.boundary_sets) if getattr(shared, 'boundary_aad', False) else None
 
         if self.sub_structures:
-            # process sub structures
             for structure in self.sub_structures:
                 logging.root.name = structure.obj.Instrument.field.get('Reference', 'root')
-                # reset cashflows if this structure accumulates its dependencies (e.g. netting sets)
                 if structure.obj.Instrument.accum_dependencies and hasattr(shared, 'reset_cashflows'):
                     shared.reset_cashflows(time_grid)
                 struct = structure.resolve_structure(shared, time_grid)
@@ -170,7 +161,6 @@ class DealStructure(object):
                 accum = accum + struct
 
         if self.dependencies and self.obj.Instrument.accum_dependencies:
-            # accumulate the mtm's
             deal_tensors = 0.0
 
             for deal_data in self.dependencies:
@@ -183,9 +173,7 @@ class DealStructure(object):
 
             accum = accum + deal_tensors
 
-        # postprocessing code for working out the mtm of all deals, collateralization etc..
         if hasattr(self.obj.Instrument, 'post_process'):
-            # the actual answer for this netting set
             logging.root.name = self.obj.Instrument.field.get('Reference', 'root')
             try:
                 accum = self.obj.Instrument.post_process(accum, shared, time_grid, self.obj, self.dependencies)
@@ -205,10 +193,10 @@ class DealStructure(object):
 
     def resolve_hedge_structure(self, shared, time_grid):
         """Accumulate the liability MTM across the structure and return `{'mtm': tensor}`.
-        Unlike `resolve_structure` this skips `post_process`/`save_results` — i.e. no per-batch
-        GPU->CPU copy of the mark — which is why the hedge sim loop and the inner MC use it for
-        the liability. (Deal feature tensors were removed; the symlog utility-scale's two static
-        descriptors now come from the cashflow schedule via `_liability_schedule_scalars`.)"""
+
+        Unlike `resolve_structure` this skips `post_process`/`save_results` - and so the
+        per-batch GPU->CPU copy of the mark - which is why the hedge sim loop and the inner
+        MC use it for the liability."""
         def merge_features(cumulative, new_features):
             new_mtm = new_features.get('mtm')
             if new_mtm is not None:
@@ -217,7 +205,6 @@ class DealStructure(object):
         accum = {}
 
         if self.sub_structures:
-            # process sub structures
             for structure in self.sub_structures:
                 logging.root.name = structure.obj.Instrument.field.get('Reference', 'root')
                 features = structure.resolve_hedge_structure(shared, time_grid)
@@ -225,7 +212,6 @@ class DealStructure(object):
 
 
         if self.dependencies and self.obj.Instrument.accum_dependencies:
-            # accumulate the mtm's
             deal_features = {}
 
             for deal_data in self.dependencies:
@@ -238,9 +224,9 @@ class DealStructure(object):
         return accum
 
     def aggregate_leg_descriptors(self):
-        """Reduce the per-deal cashflow descriptors over this structure (recursing
-        sub_structures the way `resolve_hedge_structure` does): summed |notional| across
-        all legs and the latest pay-day. Legs with no schedule contribute (0.0, None)."""
+        """Reduce the per-deal cashflow descriptors over this structure and its
+        sub-structures: summed |notional| across all legs, and the latest pay-day. A leg
+        with no schedule contributes (0.0, None)."""
         total_volume, last_payment_day = 0.0, None
         for vol, pay in ([dd.Instrument.leg_descriptors(dd) for dd in self.dependencies] +
                          [sub.aggregate_leg_descriptors() for sub in self.sub_structures]):
@@ -250,9 +236,9 @@ class DealStructure(object):
         return total_volume, last_payment_day
 
     def tensor_marks(self):
-        """Stored per-deal price series keyed by deal Reference, recursing sub_structures
-        (mirrors `resolve_structure`'s walk). Only deals whose `Calc_res` holds a kept
-        'tensor' (set by `pricing.interpolate` when `shared.keep_tensor`) are included."""
+        """Stored per-deal price series keyed by deal Reference, recursing sub-structures.
+        Only deals whose `Calc_res` holds a kept 'tensor' (set by `pricing.interpolate`
+        under `shared.keep_tensor`) appear."""
         marks = {}
         for sub in self.sub_structures:
             marks.update(sub.tensor_marks())
@@ -264,10 +250,10 @@ class DealStructure(object):
 
     @staticmethod
     def max_settlement_date(deals, calendars):
-        """Latest clipped reval/settlement date across a set of (un-built) deal nodes — the
-        liability-terminal horizon that caps the sim time grid. Resets each instrument from
-        its `field` first (idempotent; `set_deal_structures` resets again downstream), since
-        the structure isn't built yet when the horizon is needed."""
+        """Latest clipped reval/settlement date across a set of (un-built) deal nodes - the
+        liability-terminal horizon that caps the sim time grid. Each instrument is reset from
+        its `field` first (idempotent), since the structure is not built yet when the horizon
+        is needed."""
         dates = set()
         for node in deals:
             node['Instrument'].reset(calendars)
@@ -287,16 +273,13 @@ class ScenarioTimeGrid(object):
 class Calculation(object):
 
     def __init__(self, config, prec=torch.float32, device=torch.device('cpu')):
-        """
-        Construct a new calculation - all calculations must set up their own tensors.
-        """
+        """Construct a new calculation - all calculations set up their own tensors."""
 
         self.config = config
         self.dtype = prec
         self.time_grid = None
         self.device = device
 
-        # the risk factor data
         self.static_factors = {}
         self.static_var = {}
         self.stoch_factors = {}
@@ -308,57 +291,35 @@ class Calculation(object):
         self.tenor_size = None
         self.tenor_offset = None
 
-        # the deal structure
         self.netting_sets = None
 
-        # performance and admin feedback
         self.calc_stats = {}
-        # the calculation parameters (defined by calling execute)
         self.params = {}
-        # Index for the gradients of this calculation (if requested)
         self.gradient_index = None
-        # output of calc stored here
         self.output = {}
 
     def execute(self, params):
         pass
 
     def factor_leaf(self, factor, current_val, requires_grad, offset=0.0):
-        """The AAD leaf for one factor - and the ONE seam a calibration upstream of it can reach.
+        """Return the AAD leaf for `factor`, connected to a calibration where one exists.
 
-        Every leaf the engine mints is `torch.tensor(factor.current_value(...))`, a fresh tensor
-        built out of a numpy array, so anything that produced those numbers is severed by
-        construction: it does not raise, it reports a zero gradient. A curve - or one named
-        parameter of a calibrated model - the library BOOTSTRAPPED and kept the graph of is offered
-        here instead, as
+        Every leaf is minted from a numpy array, which severs whatever produced those
+        numbers: it does not raise, it reports a zero gradient. A curve - or one named
+        parameter of a calibrated model - the library bootstrapped and kept the graph of is
+        offered as `leaf + (theta - theta.detach())` instead: worth zero in the forward pass,
+        derivative one, so the factor greek reported is the number it always was and dV/dq
+        arrives in the same reverse sweep. A non-zero `offset` (Tenor_Offset) declines the
+        attachment - a shifted curve is a different curve, and quote sensitivities are t0
+        risk.
 
-            leaf + (theta - theta.detach())
-
-        which is the boundary correction's shape and is here for exactly its reason: worth zero in
-        the forward pass, derivative one, so what reaches `backward()` changes and what is reported
-        cannot. `leaf` stays a leaf, so the tensor is still the one the pricers read and
-        `retain_grad` keeps `.grad` populated - the factor greek reported for this curve is the
-        same number it always was, and dV/dq arrives in the same pass.
-
-        A non-zero `Tenor_Offset` declines the attachment: the curve the calculation consumes is
-        then a SHIFTED one, and dtheta_shifted/dq is not dtheta/dq. Quote sensitivities are t0
-        risk; a tenor offset is a different curve, so it gets the leaf it always got.
-
-        THE SAME SEAM CARRIES A PROPAGATED CALIBRATION, and that one changes the VALUE. A block
-        asking for `Quote_Propagation` rides its last artifact to the quotes standing now -
-        `theta* + dtheta/dq (q_now - q0)` - so the leaf is minted out of the ridden nodes instead
-        of the ones the last bootstrap wrote. That is the point: a tick reaches a valuation without
-        a re-solve. It is derived here rather than stored, so nothing about it survives the call.
-
-        A `Tenor_Offset` REFUSES the ride rather than declining it. `current_value(offset)`
-        interpolates off coefficients fitted on the numpy rate column at construction, so the
-        shifted curve cannot be ridden without refitting them - and declining would silently price
-        the STALE curve, which is a wrong number rather than a missing derivative.
-
-        Every ride LEAVES ITS ARTIFACT'S ID IN `calc_stats`, so the run reports which calibration
-        produced the curve it priced. Nothing else in the replay tuple can say: a ride and a refit
-        of the same plan at the same quotes agree on `plan_hash`, `values_hash`, the version and
-        the seed, and differ only in which artifact was in the store.
+        Under `Quote_Propagation` the same seam changes the VALUE: the leaf is minted from
+        the last artifact ridden to the quotes standing now, `theta* + dtheta/dq (q_now -
+        q0)`, so a tick reaches a valuation without a re-solve. The ride is derived per call,
+        never stored, and leaves the artifact id in `calc_stats['Calibrations']` - nothing
+        else in the replay tuple distinguishes a ride from a refit. A `Tenor_Offset` REFUSES
+        that ride rather than declining it: the shifted curve interpolates off coefficients
+        fitted before the ride, so declining would silently price the stale curve.
         """
         ridden = self.config.propagated_factor(factor)
         if ridden is not None:
@@ -382,7 +343,6 @@ class Calculation(object):
         return connected
 
     def make_factor_index(self, tensors):
-        # need to match the indices back
         tenors = utils.get_tenors(self.all_factors)
         self.gradient_index = {}
         for name, var in tensors:
@@ -394,7 +354,6 @@ class Calculation(object):
 
     def gradients_as_df(self, grad, header='Gradient', display_val=False):
         if isinstance(grad, dict):
-            # get the factor values from all_factors if necessary
             factor_values = {utils.check_scope_name(k): v.factor if hasattr(v, 'factor') else v
                              for k, v in self.all_factors.items()} if display_val else {}
             hessian_index = ([], [])
@@ -408,7 +367,6 @@ class Calculation(object):
                 values.append(v[non_zero])
                 rate.append([name] * non_zero.size)
                 tenor.append(grad_index[non_zero])
-                # store the actual factor value if required
                 if display_val:
                     if name in factor_values:
                         rate_non_zero = grad_index[non_zero][:, :index_len].astype(np.float64)
@@ -447,7 +405,6 @@ class Calculation(object):
                 multi_index.append(pd.MultiIndex.from_arrays(m_index))
 
             values = grad[grad.any(axis=1)][:, grad.any(axis=0)]
-            # sort both axis
             df = pd.DataFrame(values, index=multi_index[0], columns=multi_index[1]).sort_index(
                 level=[0, 1, 2, 3], axis=0).sort_index(level=[0, 1, 2, 3], axis=1)
 
@@ -457,14 +414,11 @@ class Calculation(object):
         """Compile the deal tree. `unit` is the calculation's dtype/device anchor: a deal's
         schedules are BOUND to it as they compile, so the tensor half's birthday is this walk."""
         for node in deals:
-            # get the instrument
             instrument = node['Instrument']
-            # should we skip it?
             if node.get('Ignore') == 'True':
                 self.calc_stats['Ignored'] = self.calc_stats.setdefault('Ignored', 0) + 1
                 continue
 
-            # logging info
             logging.root.name = instrument.field.get('Reference', '<undefined>')
             if node.get('Children'):
                 struct = DealStructure(instrument, store_results=deal_level_mtm)
@@ -482,59 +436,45 @@ class Calculation(object):
 class CMC_State(utils.Calculation_State):
     def __init__(self, cholesky, static_buffer, batch_size, one, mcmc_sims, report_currency,
                  seed, job_id, num_jobs, scale_survival=False, nomodel='Constant', keep_tensor=False):
-        """Per-calculation Monte Carlo state: correlated random numbers, scenario buffers and the
-        caches a batched exposure run needs on top of `Calculation_State`.
+        """Per-calculation Monte Carlo state: correlated random numbers, scenario buffers and
+        the caches a batched exposure run needs on top of `Calculation_State`.
 
-        The `t_PreCalc` memo is deliberately NOT on `Calculation_State`: `t_Buffer` is the
-        per-batch eval cache that `reset` clears, and this is the per-CALCULATION one — which only
-        earns its keep where a calculation spans many batches. Its presence is therefore the marker
-        for "exposure-based", and pricers read it that way rather than inventing a switch.
-
-        `t_Bridge_Variance_Rate` holds the per-factor annualized log-variance RATE, published once
-        the processes are precalculated. A barrier is monitored continuously while a deal grid only
-        observes its own dates, so a crossing in between is a conditional probability needing the
-        variance of the interval it spans - and it must be the SIMULATION variance, not a pricing
-        implied vol.
+        `t_PreCalc` is the per-CALCULATION memo (`t_Buffer` is the per-batch one `reset`
+        clears), so its presence is the marker pricers read for "exposure-based".
+        `t_Bridge_Variance_Rate` holds each factor's annualized log-variance RATE, published
+        once the processes are precalculated: a continuously monitored barrier crossing
+        between two deal-grid dates is a conditional probability needing the SIMULATION
+        variance of that interval, not a pricing implied vol.
         """
         super(CMC_State, self).__init__(
             static_buffer, one, mcmc_sims, report_currency, nomodel, batch_size, keep_tensor=keep_tensor)
-        # these are tensors
-        # per-CALCULATION memo (vs the per-batch t_Buffer); its presence marks "exposure-based"
         self.t_PreCalc = {}
-        # Discontinuous decisions recorded during the forward pass so their derivative can be
-        # restored before the single reverse sweep. Per BATCH, like t_Buffer — backward() runs
-        # once per batch, so a correction assembled from a previous batch's graph is stale.
+        # decisions taken on simulated state, recorded forward so their derivative can be
+        # restored before the reverse sweep. Per BATCH like t_Buffer - backward() runs once
+        # per batch, so a correction assembled from another batch's graph is stale
         self.boundary_aad = False
         self.boundary_sets = []
-        # per-factor annualized log-variance RATE, published once the processes are precalculated
         self.t_Bridge_Variance_Rate = {}
         self.t_cholesky = cholesky
         self.t_random_numbers = None
         self.t_Scenario_Buffer = {}
-        # these are shared parameter states
         self.sobol = {}
-        # idea is to reuse quasi rng numbers where applicable (but still using enough randomness)
         self.t_quasi_rng = {}
         self.t_quasi_rng_batch = {}
-        # set the random seed - seed each job by its offset
+        # seed each job by its offset
         torch.manual_seed(seed + job_id)
-        # needed if we are running across multiple gpu's
         self.job_id = job_id
         self.num_jobs = num_jobs
-        # do we need to scale the mtm by the survival probability in the final answer?
         self.scale_survival = scale_survival
 
     def quasi_rng(self, dimension, sample_size):
-        # may need to parameterize these
         seed = 1234
         fast_forward = 1024
 
         if dimension not in self.sobol:
             self.sobol[dimension] = torch.quasirandom.SobolEngine(dimension=dimension, scramble=True, seed=seed)
-            # skip this many samples
             self.sobol[dimension].fast_forward(fast_forward)
 
-        # hash the tensor
         batch_key = (dimension, sample_size)
         batch_num = self.t_quasi_rng_batch.setdefault(batch_key, 0)
         sample_key = (dimension, sample_size, batch_num)
@@ -545,16 +485,13 @@ class CMC_State(utils.Calculation_State):
             u = sample_sobol.clamp(min=margin, max=1.0 - margin).to(self.one.device)
             self.t_quasi_rng[sample_key] = (utils.norm_icdf(u), u)
 
-        # update the batch key
         self.t_quasi_rng_batch[batch_key] += 1
-        # return the cached batch of quasi random numbers
         return self.t_quasi_rng[sample_key]
 
     def reset_qrg(self):
         self.t_quasi_rng_batch = {}
         
     def reset_cashflows(self, time_grid):
-        # reset the cashflows
         self.t_Cashflows = {k: {t_i: self.one.new_zeros(self.simulation_batch)
                                 for t_i in np.where(v >= 0)[0]} for k, v in time_grid.CurrencyMap.items()}
 
@@ -572,7 +509,6 @@ class CMC_State(utils.Calculation_State):
             output.setdefault(k, []).append(v.detach().cpu().numpy().astype(np.float64))
 
     def reset(self, num_factors, time_grid: utils.TimeGrid, use_antithetic=False):
-        # update the random numbers
         sample_size = self.simulation_batch // 2 if use_antithetic else self.simulation_batch
         correlated_sample = torch.matmul(
             self.t_cholesky, torch.randn(
@@ -587,21 +523,19 @@ class CMC_State(utils.Calculation_State):
 
         self.reset_cashflows(time_grid)
 
-        # clear the buffers
         self.t_Buffer.clear()
         self.boundary_sets.clear()
 
 
 class CMC_State_Inner(CMC_State):
-    """Inner-MC variant of CMC_State for nested simulation. Each of `simulation_batch`
-    outer-path states fans out into `simulation_sub_batch` (B2) independent forward
-    sample paths. Base `reset()` is inherited unchanged so outer-mode usage of this
-    state object is transparent. `reset_inner()` swaps in the inner-shape random
-    numbers: `(num_factors, T, simulation_batch, simulation_sub_batch)` instead of
-    the base `(num_factors, T, simulation_batch)`. Stochastic processes dispatch on
-    `Z.ndim` to pick between outer and inner code paths. `use_antithetic=True`
-    (`Inner_Antithetic='Yes'`) mirrors the Sobol draws as (z, -z) pairs on the inner
-    axis. quasi_rng is inherited — callers handle any reshape."""
+    """Inner-MC variant of `CMC_State` for nested simulation: each of `simulation_batch`
+    outer-path states fans out into `simulation_sub_batch` (B2) independent forward paths.
+
+    `reset()` is inherited unchanged, so outer-mode use of this state is transparent;
+    `reset_inner()` swaps in random numbers shaped
+    `(num_factors, T, simulation_batch, simulation_sub_batch)` in place of the base
+    `(num_factors, T, simulation_batch)`. Stochastic processes dispatch on `Z.ndim` to pick
+    the outer or the inner path."""
 
     def __init__(self, cholesky, static_buffer, batch_size, one, mcmc_sims, report_currency,
                  seed, job_id, num_jobs, simulation_sub_batch=0,
@@ -615,20 +549,18 @@ class CMC_State_Inner(CMC_State):
     def reset_inner(self, num_factors, time_grid: utils.TimeGrid, use_antithetic=False,
                     use_random=False):
         """Draw the inner-mode correlated Gaussians, shaped
-        `(num_factors, T, simulation_batch, simulation_sub_batch)`, and clear the per-batch caches.
+        `(num_factors, T, simulation_batch, simulation_sub_batch)`, and clear the per-batch
+        caches.
 
-        `use_random` (`Inner_Draws='random'`) swaps the shared Sobol tensor for plain iid
-        Gaussians. One low-discrepancy stream strided across (T,B,B2) loses its uniformity
-        guarantees on the per-(t,b) B2-slices as B grows - the measured B=512 label/argmax
-        degradation. iid draws have no cross-(B,B2) coupling, so per-fork label noise is
-        B-independent.
+        `use_random` (`Inner_Draws='random'`) swaps the shared Sobol tensor for iid
+        Gaussians: one low-discrepancy stream strided across (T,B,B2) loses its uniformity
+        on the per-(t,b) B2-slices as B grows (measured label/argmax degradation at B=512),
+        while iid draws keep per-fork label noise B-independent.
 
-        `use_antithetic` (`Inner_Antithetic='Yes'`) draws B2/2 quasi-normals per (t, outer-path)
-        and mirrors them (z, -z) on the inner axis. This halves the label/argmax variance of the
-        inner-MC E[C] estimate - the diff-ML winner's-curse lever validated in the toy - and stays
-        unbiased because the emissions are symmetric in z. Only the symmetric emissions are folded:
-        auxiliary streams (e.g. a discrete-state transition) draw from a separate quasi_rng stream
-        and stay iid.
+        `use_antithetic` (`Inner_Antithetic='Yes'`) draws B2/2 quasi-normals per (t, outer
+        path) and mirrors them (z, -z), halving the label/argmax variance of the inner-MC
+        E[C] estimate. It stays unbiased because the folded emissions are symmetric in z;
+        auxiliary streams (e.g. a discrete-state transition) draw separately and stay iid.
         """
         if self.simulation_sub_batch <= 1:
             raise ValueError(
@@ -651,7 +583,6 @@ class CMC_State_Inner(CMC_State):
         # Sobol-based correlated Gaussian: draw T*B*B2 quasi-normal vectors of dim num_factors,
         # transpose to (num_factors, T*B*B2), correlate via cholesky, reshape.
         if use_antithetic:
-            # mirror B2/2 Sobol quasi-normals on the inner axis; auxiliary streams stay iid
             Z_normal, _ = self.quasi_rng(num_factors, T * B * (B2 // 2))
             half = torch.matmul(
                 self.t_cholesky, Z_normal.transpose(0, 1)
@@ -917,14 +848,10 @@ class Credit_Monte_Carlo(Calculation):
         super(Credit_Monte_Carlo, self).__init__(config, **kwargs)
         self.reset_dates = None
         self.settlement_currencies = None
-        # used to store any jacobian matrices
         self.jacobians = {}
-        # implied factors
         self.implied_factors = {}
-        # we represent the calc as a combination of static, stochastic and implied parameters
         self.implied_var = {}
 
-        # potentially store the full list of variables
         self.all_var = None
 
     def update_factors(self, params, base_date, job_id, num_jobs):
@@ -939,27 +866,22 @@ class Credit_Monte_Carlo(Calculation):
 
     def _build_factor_state(self, dependent_factors, stochastic_factors, implied_factors,
                             params, base_date, job_id, num_jobs):
-        """Construct factor objects, tensors, shared memory and precalculate processes.
+        """Construct the factor objects, tensors and shared memory, and precalculate the
+        stochastic processes.
 
-        Called by update_factors after the time grid and dependency sets are known.
-        Subclasses that build their own dependency sets (e.g. HedgeMonteCarlo) can
-        call this directly instead of going through calculate_dependencies.
+        Called by `update_factors` once the time grid and dependency sets are known;
+        subclasses that build their own dependency sets can call it directly.
 
-        IMPLIED-LEAF INVARIANT: a factor can be BOTH a static dependent factor (e.g. the OSS
-        pricer's HestonNandiModelParameters, pulled in via the EquityPrice/FxRate conditional
-        field) AND a spot process's implied factor (implied_var, e.g. HestonNandiImpliedSpotModel).
-        With greeks on, minting a fresh static leaf for it would create a SECOND AAD leaf under the
-        exact scope name the implied leaf already owns: the pricer (t_Static_Buffer) and the
-        scenario path (implied_tensor) would then read different tensors, splitting the gradient
-        and desyncing a bump. The single implied leaf is reused so one tensor serves both consumers
-        and `value.backward()` sums both paths' sensitivities into it.
+        IMPLIED-LEAF INVARIANT: a factor can be BOTH a static dependent factor and a spot
+        process's implied factor. Minting a second leaf under the scope name the implied
+        leaf already owns would split the gradient - the pricer (`t_Static_Buffer`) and the
+        scenario path (`implied_tensor`) would read different tensors - so the single implied
+        leaf is reused and `backward()` sums both consumers into it.
 
-        `_factor_precalc_args` caches per-factor (ScenarioTimeGrid, implied_tensor) so consumers
-        that need to re-precalculate with a per-path initial state (e.g. the diff-ML t=0 burn-in in
-        HedgeMonteCarlo.execute) can call precalculate again without re-deriving the
-        dependent_factors / time-grid plumbing.
+        `_factor_precalc_args` caches each factor's `(ScenarioTimeGrid, implied_tensor)` so a
+        consumer needing a per-path initial state can precalculate again without re-deriving
+        the dependency and time-grid plumbing.
         """
-        # now construct the stochastic factors and static factors for the simulation
         self.stoch_factors.clear()
 
         for price_model, price_factor in stochastic_factors.items():
@@ -1002,16 +924,12 @@ class Credit_Monte_Carlo(Calculation):
         self.all_factors.update(self.implied_factors)
         self.num_factors = sum([v.num_factors() for v in self.stoch_factors.values()])
 
-        # get the tenor offset (if any)
         tenor_offset = params.get('Tenor_Offset', 0.0)
-        # check if we need gradients for any sub calc
         greeks = bool(np.any([params[k].get('Gradient', 'No') == 'Yes' for k, v in params.items() if type(v) == dict]))
         sensitivities = params.get('Gradient_Variables', 'All')
 
-        # now get the stochastic risk factors ready - these will be generated from the price models
         for key, value in self.stoch_factors.items():
             if key.type not in utils.DimensionLessFactors:
-                # check if there are any implied factors linked here
                 if hasattr(value, 'implied'):
                     vars = {}
                     calc_grad = greeks and sensitivities in ['All', 'Implied']
@@ -1020,7 +938,6 @@ class Credit_Monte_Carlo(Calculation):
                         vars[factor_name] = self.factor_leaf(factor_name, param_value, calc_grad)
                     self.implied_var[key] = vars
 
-                # check the daycount for the tenor_offset
                 if tenor_offset:
                     factor_tenor_offset = utils.get_day_count_accrual(
                         base_date, tenor_offset, value.factor.get_day_count() if hasattr(
@@ -1028,26 +945,22 @@ class Credit_Monte_Carlo(Calculation):
                 else:
                     factor_tenor_offset = 0.0
 
-                # record the offset of this risk factor
                 current_val = value.factor.current_value(offset=factor_tenor_offset)
                 calc_grad = greeks and sensitivities in ['All', 'Factors']
                 self.stoch_var[key] = self.factor_leaf(
                     key, current_val, calc_grad, factor_tenor_offset)
 
-        # and then get the static risk factors ready - these will just be looked up
         calc_grad = greeks and sensitivities in ['All', 'Factors']
         # reuse the single implied leaf (implied-leaf invariant) - never mint a second one here
         implied_leaves = {fk: t for vars in self.implied_var.values() for fk, t in vars.items()}
         for key, value in self.static_factors.items():
             if key.type not in utils.DimensionLessFactors:
-                # check the daycount for the tenor_offset
                 if tenor_offset:
                     factor_tenor_offset = utils.get_day_count_accrual(
                         base_date, tenor_offset, value.get_day_count() if hasattr(
                             value, 'get_day_count') else utils.DAYCOUNT_ACT365)
                 else:
                     factor_tenor_offset = 0.0
-                # record the offset of this risk factor
                 current_val = value.current_value(offset=factor_tenor_offset)
                 if isinstance(current_val, dict):
                     for k, v in current_val.items():
@@ -1058,16 +971,13 @@ class Credit_Monte_Carlo(Calculation):
                     self.static_var[key] = implied_leaves[key] if key in implied_leaves else \
                         self.factor_leaf(key, current_val, calc_grad, factor_tenor_offset)
 
-        # set up the device and allocate memory
         shared_mem = self._init_shared_mem(
             int(params['Random_Seed']), params['NoModel'],
             params['Currency'], params['MCMC_Simulations'],
             job_id, num_jobs, calc_greeks=sensitivities if greeks else None)
 
-        # calculate a reverse lookup for the tenors and store the daycount code
         self.all_tenors = utils.update_tenors(self.base_date, self.all_factors)
 
-        # now initialize all stochastic factors, caching the per-factor precalculate plumbing
         self._factor_precalc_args = {}
         for key, value in self.stoch_factors.items():
             if key.type not in utils.DimensionLessFactors:
@@ -1092,7 +1002,6 @@ class Credit_Monte_Carlo(Calculation):
                 if variance_rate is not None:
                     shared_mem.t_Bridge_Variance_Rate[key] = variance_rate
 
-        # now check if any of the stochastic processes depend on other processes
         for key, value in self.stoch_factors.items():
             if key.type not in utils.DimensionLessFactors:
                 value.calc_references(key, self.static_factors, self.stoch_factors, self.all_tenors, self.all_factors)
@@ -1100,7 +1009,6 @@ class Credit_Monte_Carlo(Calculation):
         return shared_mem
 
     def update_time_grid(self, base_date, reset_dates, settlement_currencies, dynamic_scenario_dates=False):
-        # work out the scenario and dynamic dates
         dynamic_dates = set([x for x in reset_dates if x > base_date])
 
         # we are repeating a period till the last reset date
@@ -1121,21 +1029,17 @@ class Credit_Monte_Carlo(Calculation):
             scenario_dates = self.config.parse_grid(
                 base_date, max(dynamic_dates), self.input_time_grid, past_max_date=True)
 
-        # set up the scenario and time grids
         self.time_grid = utils.TimeGrid(scenario_dates, mtm_dates, base_mtm_dates)
         self.base_date = base_date
         self.reset_dates = reset_dates
         self.time_grid.set_base_date(base_date)
 
-        # Set the settlement dates
         self.time_grid.set_currency_settlement(settlement_currencies)
         self.settlement_currencies = settlement_currencies
 
     def get_cholesky_decomp(self):
-        # create the correlation matrix
         correlation_matrix = np.eye(self.num_factors, dtype=np.float64)
         logging.root.name = self.config.deals['Attributes'].get('Reference', self.config.file_ref)
-        # prepare the correlation matrix (and the offsets of each stochastic process)
         correlation_factors = []
         self.process_ofs = {}
         for key, value in self.stoch_factors.items():
@@ -1144,7 +1048,6 @@ class Credit_Monte_Carlo(Calculation):
             # too — generate() ignores it, but the precalc plumbing indexes process_ofs)
             self.process_ofs.setdefault(key, len(correlation_factors))
             for sub_factors in proc_corr_factors:
-                # record the name of needed correlation lookup
                 correlation_factors.append(utils.Factor(proc_corr_type, key.name + sub_factors))
 
         for index1 in range(self.num_factors):
@@ -1159,7 +1062,6 @@ class Credit_Monte_Carlo(Calculation):
 
         raw_eigval, raw_eigvec = np.linalg.eig(correlation_matrix)
         eigval, eigvec = np.real(raw_eigval), np.real(raw_eigvec)
-        # need to do cholesky
         while (eigval < 1e-8).any():
             # matrix not positive definite - find a close positive definite matrix
             if self.config.params['System Parameters']['Correlations_Healing_Method'] == 'Eigenvalue_Raising':
@@ -1183,7 +1085,6 @@ class Credit_Monte_Carlo(Calculation):
                     D = nC - P_plus_B
                     B += D
 
-                    # exit early
                     if np.abs(C - nC).max() < 1e-08 * np.abs(nC).max():
                         break
 
@@ -1192,27 +1093,24 @@ class Credit_Monte_Carlo(Calculation):
                 new_correlation_matrix = nC
 
             correlation_matrix = new_correlation_matrix
-            # check again
             raw_eigval, raw_eigvec = np.linalg.eig(correlation_matrix)
             eigval, eigvec = np.real(raw_eigval), np.real(raw_eigvec)
 
         correlation_matrix = torch.tensor(
             correlation_matrix, device=self.device, dtype=self.dtype, requires_grad=False)
-        # return the cholesky decomp
         return torch.linalg.cholesky(correlation_matrix)
 
     def _init_shared_mem(self, seed, nomodel, reporting_currency, mcmc_sim, job_id, num_jobs, calc_greeks=None):
-        """Allocate the CMC_State for this run (correlation cholesky, static buffer, reporting FX)
-        and, when greeks are requested, build the flat AAD variable index over `calc_greeks`.
+        """Allocate the `CMC_State` for this run (correlation cholesky, static buffer,
+        reporting FX) and, when greeks are requested, build the flat AAD variable index over
+        `calc_greeks`.
 
-        `boundary_aad` deliberately has no JSON switch: wanting sensitivities IS the switch. The
+        `boundary_aad` has no JSON switch: wanting sensitivities IS the switch. The
         correction is worth exactly zero in the forward pass, so it can only ever change a
-        derivative - there is nothing a user could sensibly turn off, and recording events nobody
-        differentiates would just be memory held across a batch. Without greeks this runs as it
-        always did.
+        derivative, and recording events nobody differentiates would just hold memory across
+        a batch.
         """
-        # Single-underscore (overridable): HedgeMonteCarlo overrides to construct
-        # CMC_State_Inner with simulation_sub_batch from params.
+        # single-underscore: HedgeMonteCarlo overrides this to build a CMC_State_Inner
         if calc_greeks is not None:
             implied_vars = list(itertools.chain(*[x.items() for x in self.implied_var.values()]))
             if calc_greeks == 'Implied':
@@ -1220,9 +1118,8 @@ class Credit_Monte_Carlo(Calculation):
             elif calc_greeks == 'Factors':
                 self.all_var = list(self.stoch_var.items()) + list(self.static_var.items())
             else:
-                # A factor that is BOTH a static dependent and a spot process's implied factor is
-                # ONE deduped leaf (the implied-leaf invariant), so it is reachable twice here and
-                # the union must not report it twice.
+                # a factor that is both a static dependent and an implied factor is ONE leaf
+                # (the implied-leaf invariant), so the union must not report it twice
                 self.all_var = list(dict(
                     implied_vars + list(self.stoch_var.items()) + list(self.static_var.items())).items())
             self.make_factor_index(self.all_var)
@@ -1236,7 +1133,6 @@ class Credit_Monte_Carlo(Calculation):
                 utils.check_rate_name(reporting_currency), self.static_factors, self.stoch_factors),
             seed, job_id, num_jobs, scale_by_survival, nomodel=self.params.get('NoModel', 'Constant'),
             keep_tensor=self.params.get('Keep_Tensor', 'No') == 'Yes')
-        # wanting sensitivities IS the switch (worth zero forward; only a derivative can move)
         shared_mem.boundary_aad = calc_greeks is not None
         shared_mem.recompute_inner_mc = self.params.get('Recompute_Inner_MC', 'No') == 'Yes'
         return shared_mem
@@ -1247,14 +1143,12 @@ class Credit_Monte_Carlo(Calculation):
                 scen = {}
                 scenario_date_index = pd.DatetimeIndex(sorted(self.time_grid.scenario_dates))
                 if self.params['Calc_Scenarios'] == 'At_Percentile':
-                    # calc pfe
                     dates = np.array(sorted(self.time_grid.mtm_dates))[self.time_grid.report_index]
                     mtms = pd.DataFrame(np.concatenate(output['mtm'], axis=-1).astype(np.float64), index=dates)
                     percentiles = self.params.get('Percentile', '95').replace(' ', '').split(',')
                     profiles = {x: np.percentile(mtms.values, float(x), axis=1) for x in percentiles}
                     index = {x: np.argmin(np.abs(mtms.values - profiles[x][:, np.newaxis]), axis=1) for x in percentiles}
 
-                    # now only extract the scenarios at percentile points
                     for factor_key, factor_values in data.items():
                         factor_name = utils.check_tuple_name(factor_key)
                         values = np.concatenate(factor_values, axis=-1)  # Shape: (num_rows, num_scenarios)
@@ -1323,111 +1217,80 @@ class Credit_Monte_Carlo(Calculation):
         return self.output
 
     def execute(self, params, job_id=0, num_jobs=1):
-        """Run the batched exposure simulation plus whichever sub-calculations `params` enables
-        (collateral, CVA, FVA, scenarios, cashflows) and return netting sets, stats and reports.
+        """Run the batched exposure simulation plus whichever sub-calculations `params`
+        enables (collateral, initial margin, CVA, FVA, scenarios, cashflows) and return the
+        netting sets, stats and reports.
 
-        The CVA reduction is left in its original grouping deliberately: a per-path vector cannot
-        be reduced back to `mean over paths of a sum over time` in the same float order, and the
-        reported number must not move by even an ULP. `pricing.cva_per_scenario` is the same
-        quantity for the COUNTERFACTUALS, where only internal consistency matters.
+        The CVA reduction keeps its grouping deliberately: a per-path vector cannot be
+        reduced back to `mean over paths of a sum over time` in the same float order, and the
+        reported number must not move by an ULP. `pricing.cva_per_scenario` is the same
+        quantity for the counterfactuals, where only internal consistency matters.
 
-        BOUNDARY AAD (CVA gradient): a hard transfer decision contributes a derivative that the
-        frozen-decision graph does not carry. The correction is worth exactly zero in the forward
-        pass, so tensors['cva'] - the REPORTED number - is untouched; only the scalar being
-        differentiated gains a term. `Boundary_AAD_Bandwidth` defaults to 0.01: the estimate
-        converges monotonically as the bandwidth shrinks and is still stable across seeds there,
-        where 0.05 upward is visibly biased. It needs enough paths for the near-boundary band to be
-        populated - measured at 32768 - so a thin run should widen it and expect bias rather than
-        noise.
+        BOUNDARY AAD (CVA gradient): a hard transfer decision contributes a derivative the
+        frozen-decision graph does not carry. The correction is worth exactly zero in the
+        forward pass, so the reported `cva` is untouched and only the differentiated scalar
+        gains a term. `Boundary_AAD_Bandwidth` defaults to 0.01, which needs roughly 32768
+        paths to populate the near-boundary band; a thinner run should widen it and expect
+        bias rather than noise.
 
-        THE CVA HESSIAN (`Hessian: 'Yes'`) is admitted on the same terms, and wanting second order
-        IS its switch - nothing is built when only the gradient is asked for.
-        `pricing.exposure_kink_term` rides the relu's own argument through the identical trapezoid,
-        so tensors['cva'], the profile and grad_cva are untouched by construction. What it restores
-        is the `delta(V) * V_theta V_theta^T` the double backward drops at the exposure relu:
-        without it a LINEAR book reports a spot gamma of exactly zero and a spot-vol entry that is
-        plausible and wrong - measured on `tests/test_cva_gamma_kink.py`'s forward, +4.964e-03
-        against a bump ladder of -1.304e-02, the wrong SIGN at 39% of the size.
-        Two things REFUSE here rather than report a plausible wrong matrix - a book that
-        registered a boundary correction (a first-order estimator differentiated twice loses its
-        flux block silently) and a reporting row whose bandwidth LADDER diverges
-        (`exposure_kink_term`, where f_V(0) climbs as 1/bandwidth because it is a point mass rather
-        than a density) - which is `Base_Revaluation`'s posture, one calculation over. A row merely
-        PINNED at zero is not the second of those and is not refused: its V_theta is zero too, so
-        its contribution is zero whatever the density does, and a grid left open past a book's last
-        maturity keeps its whole second-order block.
+        THE CVA HESSIAN (`Hessian: 'Yes'`) rides the reported trapezoid through
+        `pricing.exposure_kink_term`, so the cva, the profile and grad_cva are untouched by
+        construction. What it restores is the `delta(V) V_theta V_theta^T` term the double
+        backward drops at the exposure relu, without which a LINEAR book reports a spot gamma
+        of exactly zero. Two things refuse rather than report a plausible wrong matrix: a
+        book that registered a boundary correction (a first-order estimator differentiated
+        twice loses its flux block silently) and a reporting row whose bandwidth LADDER
+        diverges. A row merely pinned at zero is neither, and keeps its second-order block.
         """
         # the declaration is the single source of an omitted field's default
         params = declared_defaults(type(self), params)
-        # get the rundate
         base_date = pd.Timestamp(params['Run_Date'])
 
-        # Define the base and scenario grids
         self.input_time_grid = params['Time_grid']
-        # needed if we are using multiprocessing across gpu's
+        # divide the batches across the jobs (multi-gpu)
         params['Simulation_Batches'] = params['Simulation_Batches'] // num_jobs
         self.batch_size = params['Batch_Size']
         self.numscenarios = self.batch_size * params['Simulation_Batches']
 
-        # store the params
         self.params = params
-        # set the name of the root logger to this netting set (makes tracking errors easier)
         logging.root.name = self.config.deals['Attributes'].get('Reference', self.config.file_ref)
 
-        # store the stats for the batches
         self.calc_stats['Batch_Size'] = self.batch_size
         self.calc_stats['Simulation_Batches'] = self.params['Simulation_Batches']
         self.calc_stats['Random_Seed'] = params['Random_Seed']
 
-        # update the factors and obtain shared state
         shared_mem = self.update_factors(params, base_date, job_id, num_jobs)
 
-        # set up the all instruments
         self.netting_sets = DealStructure(Aggregation('root'), store_results=True)
         self.set_deal_structures(
             self.config.deals['Deals']['Children'], self.netting_sets, shared_mem.one,
             deal_level_mtm=params.get('DealLevel', False))
         self.netting_sets.finalize_struct(base_date, self.time_grid)
 
-        # clear the output
         output = defaultdict(list)
-        # reset the tensors - used for storing simulation data
         tensors = {}
-        # record how long it took to run the calc (python + pytorch)
         execution_label = 'Tensor_Execution_Time ({})'.format(self.device.type)
         self.calc_stats[execution_label] = time.monotonic()
-        # record the base currency
         base_ccy = get_fxrate_factor(
             utils.check_rate_name(self.config.params['System Parameters']['Base_Currency']),
             self.static_factors, self.stoch_factors)
-        # record the report_grid index
         time_index = self.time_grid.report_index
 
         for run in range(self.params['Simulation_Batches']):
 
-            # need to refresh random numbers and zero out buffers
             shared_mem.reset(
                 self.num_factors, self.time_grid, use_antithetic=params.get('Antithetic', 'No') == 'Yes')
 
-            # simulate the price factors
             for key, value in self.stoch_factors.items():
                 shared_mem.t_Scenario_Buffer[key] = value.generate(shared_mem)
 
-            # construct the valuations
-
-            # use these lines below to track down any issues that prevent gradients from flowing (debugging only)
-            # with torch.autograd.detect_anomaly():
             tensors['mtm'] = self.netting_sets.resolve_structure(shared_mem, self.time_grid)
-            #    m = tensors['mtm'].mean()
-            #    m.backward()
 
-            # is this the final run?
             final_run = run == self.params['Simulation_Batches'] - 1
             # the mtm is in reporting currency - need to convert back to base currency
             fx_report = utils.calc_fx_cross(
                 shared_mem.Report_Currency, base_ccy, self.time_grid.time_grid[time_index], shared_mem)
 
-            # now calculate all the valuation adjustments (if necessary)
             if params['Collateral_Valuation_Adjustment'].get(
                     'Calculate', 'No') == 'Yes' and shared_mem.simulation_batch > 1:
 
@@ -1435,12 +1298,10 @@ class Credit_Monte_Carlo(Calculation):
                     tensors['collva_t'] = torch.mean(shared_mem.t_Credit['Funding'], dim=1)
                     tensors['collva'] = torch.sum(tensors['collva_t'])
 
-                    # calculate all the derivatives of fva
                     sensitivity = SensitivitiesEstimator(tensors['collva'], self.all_var)
 
                     if final_run:
                         output['grad_collva'] = sensitivity.report_grad()
-                        # store the size of the Gradient
                         self.calc_stats['Gradient_Vector_Size'] = sensitivity.P
 
             if params['Initial_Margin'].get('Calculate', 'No') == 'Yes':
@@ -1490,27 +1351,23 @@ class Credit_Monte_Carlo(Calculation):
                 all_shifts = {}
                 liquidity_deltas = {}
 
-                for d in local_shifts.values():  # you can list as many input dicts as you want here
+                for d in local_shifts.values():
                     for key, value in d.items():
                         all_shifts.setdefault(key, []).append(value)
 
-                # switch off cashflows
                 shared_mem.t_Cashflows = None
 
                 for tenor, shifts in all_shifts.items():
-                    # bump the scenarios
                     deltas = {}
                     for curvename, shift in zip(local_shifts.keys(), shifts):
                         deltas[curvename] = shared_mem.one.new_tensor(shift.reshape(1, -1, 1) * 0.01 * 0.01)
                         scen_buf[curvename] += deltas[curvename]
 
-                    # reset the cache
                     shared_mem.t_Buffer.clear()
                     # calc the liquidity change in base_currency - simple delta
                     liquidity_deltas[tenor] = (self.netting_sets.resolve_structure(
                         shared_mem, self.time_grid) - tensors['mtm']) * fx_report
 
-                    # unbump the scenarios
                     for curvename, shift in zip(local_shifts.keys(), shifts):
                         scen_buf[curvename] -= deltas[curvename]
 
@@ -1528,7 +1385,7 @@ class Credit_Monte_Carlo(Calculation):
                 shared_mem.t_Buffer.clear()
                 for int_rate in [k for k in shared_mem.t_Scenario_Buffer.keys() if
                                  k.type == 'InterestRate' and len(k.name) == 1]:
-                    #calc pv01
+                    # calc pv01
                     shared_mem.t_Scenario_Buffer[int_rate] += 0.01 * 0.01
                 for int_rate in [k for k in shared_mem.t_Static_Buffer if
                                  k.type == 'InterestRate' and len(k.name) == 1]:
@@ -1615,9 +1472,8 @@ class Credit_Monte_Carlo(Calculation):
                 tensors['fva'] = FCA - FBA
 
                 if params['Funding_Valuation_Adjustment'].get('Gradient', 'No') == 'Yes':
-                    # calculate all the derivatives of fva
-                    # The shipped batch job DELETES the CVA section, so the correction assembled
-                    # over there could never fire for FVA - it carries its own objective.
+                    # FVA carries its own objective - the CVA section is deleted by the
+                    # shipped batch job, so the correction assembled there cannot fire here
                     fva_for_aad = tensors['fva']
                     if shared_mem.boundary_sets:
                         fva_objective = lambda mtm: pricing.fva_per_scenario(
@@ -1632,7 +1488,6 @@ class Credit_Monte_Carlo(Calculation):
 
                     if final_run:
                         output['grad_fva'] = sensitivity.report_grad()
-                        # store the size of the Gradient
                         self.calc_stats['Gradient_Vector_Size'] = sensitivity.P
 
             if params['Credit_Valuation_Adjustment'].get('Calculate', 'No') == 'Yes':
@@ -1680,7 +1535,6 @@ class Credit_Monte_Carlo(Calculation):
                         0.5 * (pv_exposure[1:] + pv_exposure[:-1]) * prob).mean(axis=1).sum()
 
                 if params['Credit_Valuation_Adjustment'].get('Gradient', 'No') == 'Yes':
-                    # potentially fetch ir jacobian matrices for base curves
                     base_ir_curves = [x for x in self.stoch_var.keys() if
                                       x.type == 'InterestRate' and len(x.name) == 1]
                     self.jacobians = {}
@@ -1699,7 +1553,6 @@ class Credit_Monte_Carlo(Calculation):
                         except KeyError as e:
                             pass
 
-                    # calculate all the derivatives of cva
                     hessian = params['Credit_Valuation_Adjustment'].get('Hessian', 'No') == 'Yes'
                     if hessian and shared_mem.boundary_sets:
                         raise utils.SecondOrderRefused(
@@ -1716,8 +1569,6 @@ class Credit_Monte_Carlo(Calculation):
                             'that will answer this is the conditional-p mixture on the roadmap '
                             '(Second-order flux at a JUMP), pinned to the stride.'.format(
                                 ', '.join(sorted({str(b.deal) for b in shared_mem.boundary_sets}))))
-                    # boundary correction is zero forward; only the differentiated scalar gains a
-                    # term. Bandwidth 0.01 (see docstring) needs ~32768 paths to be noise, not bias
                     cva_for_aad = tensors['cva']
                     if shared_mem.boundary_sets:
                         objective = lambda mtm: pricing.cva_per_scenario(
@@ -1728,8 +1579,8 @@ class Credit_Monte_Carlo(Calculation):
                         if correction is not None:
                             cva_for_aad = cva_for_aad + correction
                     if hessian:
-                        # the relu's argument above, SIGNED - wanting second order is the whole
-                        # switch, so nothing is built at all when only the gradient is asked for
+                        # the relu's argument above, SIGNED - nothing here is built unless
+                        # second order is asked for
                         kink = pricing.exposure_kink_term(
                             tensors['mtm'] * fx_report * Dt_T / fx_report[0])
                         # mirrors the reported reduction exactly: same trapezoid, same prob, same
@@ -1741,13 +1592,10 @@ class Credit_Monte_Carlo(Calculation):
 
                     if final_run:
                         output['grad_cva'] = sensitivity.report_grad()
-                        # store the size of the Gradient
                         self.calc_stats['Gradient_Vector_Size'] = sensitivity.P
 
-                        # now fetch the CDS tenors and calculate the CDS spreads
                         CDS_tenors = params['Credit_Valuation_Adjustment'].get('CDS_Tenors')
                         if CDS_tenors and recovery < 1.0:
-                            # calculate cds sensitivities
                             CDS_rates, shifted_tenor, shifted_curves = utils.calc_cds_rates(
                                 recovery, survival[0], discount[0], self.params['Base_Date'],
                                 CDS_tenors, self.all_factors)
@@ -1762,11 +1610,9 @@ class Credit_Monte_Carlo(Calculation):
                             # calculate the hessian matrix - warning - make sure you have enough memory
                             output['grad_cva_hessian'] = sensitivity.report_hessian()
 
-            # store all output tensors
             for k, v in tensors.items():
                 output[k].append(v.cpu().detach().numpy())
 
-            # fetch cashflows if necessary
             if self.params['Generate_Cashflows'] == 'Yes':
                 dates = np.array(sorted(self.time_grid.mtm_dates))
                 for currency, values in shared_mem.t_Cashflows.items():
@@ -1775,7 +1621,6 @@ class Credit_Monte_Carlo(Calculation):
                         pd.DataFrame(
                             [v.cpu().detach().numpy() for _, v in sorted(values.items())], index=cash_index))
 
-            # add any scenarios if necessary
             if self.params.get('Calc_Scenarios', 'No') != 'No':
                 for key, value in self.stoch_factors.items():
                     output.setdefault('scenarios', {}).setdefault(key, []).append(
@@ -1783,7 +1628,6 @@ class Credit_Monte_Carlo(Calculation):
 
         self.calc_stats[execution_label] = time.monotonic() - self.calc_stats[execution_label]
 
-        # store the results
         results = {'Netting': self.netting_sets, 'Stats': self.calc_stats, 'Jacobians': self.jacobians}
         results['Results'] = self.report(output)
 
@@ -1794,17 +1638,17 @@ class Base_Reval_State(utils.Calculation_State):
     def __init__(self, static_buffer, one, mcmc_sims, report_currency, calc_greeks, gamma, nomodel='Constant'):
         """Single-date, single-scenario valuation state (base MtM and its greeks).
 
-        `boundary_aad` follows the same contract as CMC_State: a decision taken on simulated state
-        is recorded during the forward pass so its derivative can be restored before the reverse
-        sweep. Base valuation has one date and one scenario, but a Monte Carlo pricer still runs a
-        full INNER simulation underneath it - which is where a TARF's knock-in is decided - so the
-        defect and the estimator are the same ones, only the objective is simpler.
+        `boundary_aad` follows the same contract as `CMC_State`: a decision taken on
+        simulated state is recorded during the forward pass so its derivative can be restored
+        before the reverse sweep. Base valuation has one date and one scenario, but a Monte
+        Carlo pricer still runs a full inner simulation underneath it - which is where a
+        TARF's knock-in is decided - so the defect and the estimator are the same ones and
+        only the objective is simpler.
         """
         super(Base_Reval_State, self).__init__(
             static_buffer, one, mcmc_sims, report_currency, nomodel, 1, False)
         self.calc_greeks = calc_greeks
         self.gamma = gamma
-        # same boundary-AAD contract as CMC_State - the inner MC is where decisions are taken
         self.boundary_aad = calc_greeks is not None
         self.boundary_sets = []
 
@@ -1815,42 +1659,31 @@ class Base_Reval_State(utils.Calculation_State):
 
 
 class Base_Revaluation(Calculation):
-    """Simple deal revaluation - Use this to reconcile with the source system.
+    """Simple deal revaluation - use this to reconcile with the source system.
 
-    SECOND DERIVATIVES LIVE HERE AND NOWHERE ELSE. `Greeks: 'All'` asks the reverse sweep for
-    `create_graph`, and what comes back is reported as `out['Results']['Greeks_Second']` beside
-    the first-order `Greeks_First` - a stable key, always accompanied by the first-order block
-    because the row labels are built off it.
+    SECOND DERIVATIVES LIVE HERE AND NOWHERE ELSE. `Greeks: 'All'` asks the reverse sweep
+    for `create_graph` and reports the result as `Greeks_Second` beside the first-order
+    `Greeks_First`, which always accompanies it because the row labels are built off it.
 
-    THE SHAPE IS THE FULL HESSIAN, not a Hessian-vector product, and the reason is what the
-    number is FOR. `Greeks_Second` is a report - a cross-gamma matrix a risk system reads, whose
-    off-diagonal is the whole point (spot-vol, spot-curve) - so no caller arrives with a
-    direction to contract along, and an HVP interface would only mean forming the same matrix a
-    column at a time outside the engine. The cost is what makes that affordable: one date, one
-    scenario, and P = the number of factor KNOTS the portfolio depends on (5-11 across this
-    repo's fixtures), against which `report_hessian` runs P double-backward passes - measured at
-    0.9x to 10x the first-order pass, 0.002s to 0.07s. An exposure-sized P is what would flip
-    that argument, and exposure does not come here - `Credit_Monte_Carlo` has its own
+    The shape is the FULL Hessian rather than a Hessian-vector product, because the number
+    is a cross-gamma REPORT (spot-vol, spot-curve) that no caller arrives at with a
+    direction to contract along. One date, one scenario and P = the factor knots the
+    portfolio depends on keep that affordable - `report_hessian` runs P double-backward
+    passes, measured at 0.9x to 10x the first-order pass. An exposure-sized P would flip
+    that argument, and exposure does not come here: `Credit_Monte_Carlo` has its own
     CVA-Hessian route.
 
-    The frame is the Hessian's SUPPORT: rows and columns that are identically zero are dropped
-    (a factor the portfolio does not touch at second order), so it is square and symmetric but
-    smaller than P, indexed on both axes by (Rate, Tenor, Tenor2, Tenor3) - the columns carrying
-    the reporting reference as an outer level, the way `Greeks_First` does.
+    The frame is the Hessian's SUPPORT: identically-zero rows and columns are dropped, so
+    the matrix is square and symmetric but smaller than P, indexed on both axes by
+    (Rate, Tenor, Tenor2, Tenor3) with the reporting reference as the columns' outer level.
 
-    TWO THINGS REFUSE RATHER THAN REPORT, both because the failure would otherwise be a plausible
-    number: a deal that registered a `BoundarySet` (`execute` below) and `Recompute_Inner_MC`
-    (`pricing.InnerMCRecompute.backward`).
-
-    `Branch_And_Weight` IS THE ANSWER TO THE FIRST OF THOSE, and it is declared here and nowhere
-    else. The refusal fires because a decision taken on simulated state needs a boundary
-    correction, and that correction is a detached coefficient that cannot be differentiated twice;
-    the smooth estimator removes the decision instead of correcting it, so a deal priced under the
-    switch REGISTERS NOTHING and the full Hessian flows. One estimator per decision - the switch
-    swaps them, it does not add. `Credit_Monte_Carlo` does not declare the field in v1, so its
-    exposure, cashflow and collateral semantics are structurally untouched: the xVA-layer half is
-    the roadmap's own costed later work (a knock between reporting rows branches `max(V_t, 0)` and
-    the collateral scan, so the netting set owes a rescan per branch).
+    Two things refuse rather than report a plausible wrong number: a deal that registered a
+    `BoundarySet` (`execute` below) and `Recompute_Inner_MC`
+    (`pricing.InnerMCRecompute.backward`). `Branch_And_Weight` is the answer to the first
+    and is declared here and nowhere else - the smooth estimator removes the decision
+    instead of correcting it, so a deal priced under the switch registers nothing and the
+    full Hessian flows. `Credit_Monte_Carlo` does not declare the field, so its exposure,
+    cashflow and collateral semantics are structurally untouched.
     """
     documentation = ('Calculations',
                      ['This applies the valuation models mentioned earlier to the portfolio per deal.',
@@ -1874,8 +1707,6 @@ class Base_Revaluation(Calculation):
     fields = [
         F('Base_Date', 'Date', default=''),
         F('Currency', 'Text', default='ZAR'),
-        # 4096 * 8 is what run_baseval always injected while the store said 2048 and nothing read
-        # it; the declaration records the behaviour production has, so no realized number moves
         F('MCMC_Simulations', 'Integer', default=4096 * 8),
         F('Random_Seed', 'Integer', default=5120),
         F('Greeks', 'Text', default='No', values=['All', 'First', 'No'],
@@ -1904,19 +1735,16 @@ class Base_Revaluation(Calculation):
         super(Base_Revaluation, self).__init__(config, **kwargs)
         self.base_date = None
 
-        # Cuda related variables to store the state of the device between calculations
         self.shared_memClass = namedtuple('shared_mem',
                                           't_Buffer t_Static_Buffer t_Feed_dict t_Cashflows calc_greeks \
                                           gpus riskneutral precision simulation_batch Report_Currency')
 
-        # prepare the risk factor output matrix . .
         self.static_var = {}
 
     def update_factors(self, params, base_date):
         dependent_factors, stochastic_factors, implied_factors, reset_dates, settlement_currencies = \
             self.config.calculate_dependencies(params, base_date, '0d', False)
 
-        # update the time grid
         self.update_time_grid(base_date)
 
         self.static_factors = {}
@@ -1933,7 +1761,6 @@ class Base_Revaluation(Calculation):
         self.all_factors = self.static_factors
 
         calc_grad = params.get('Greeks', 'No') != 'No'
-        # and then get the static risk factors ready - these will just be looked up
         for key, value in self.static_factors.items():
             if key.type not in utils.DimensionLessFactors:
                 current_val = value.current_value()
@@ -1944,48 +1771,40 @@ class Base_Revaluation(Calculation):
                 else:
                     self.static_var[key] = self.factor_leaf(key, current_val, calc_grad)
 
-        # set up the device and allocate memory
         shared_mem = self.__init_shared_mem(
             params['Currency'], params['MCMC_Simulations'], calc_grad, params['Random_Seed'])
 
-        # calculate a reverse lookup for the tenors and store the daycount code
         self.all_tenors = utils.update_tenors(self.base_date, self.all_factors)
 
         return shared_mem
 
     def update_time_grid(self, base_date):
-        # set up the scenario and time grids
         self.time_grid = utils.TimeGrid({base_date}, {base_date}, {base_date})
         self.base_date = base_date
         self.time_grid.set_base_date(base_date)
-        # The one date IS the reporting date. Exposure calculations get this from finalize_struct;
-        # here nothing else needs it, but a boundary registration reads report_index to know the
-        # grid its counterfactual has to land on, and treats its absence as "not reportable".
+        # the one date IS the reporting date - a boundary registration reads report_index to
+        # know the grid its counterfactual lands on, and reads its absence as "not reportable"
         self.time_grid.set_report_dates(base_date, {base_date})
 
     def __init_shared_mem(self, reporting_currency, mcmc_sim, calc_greeks, random_seed):
         # fix the seed if we need to price mc instruments
         torch.manual_seed(random_seed)
 
-        # name of the base currency
         base_currency = utils.Factor(
             'FxRate', (self.config.params['System Parameters']['Base_Currency'],))
 
-        # now decide what we want to calculate greeks with respect to
         all_vars_concat = None
         if calc_greeks:
             all_vars_concat = [x for x in self.static_var.items() if x[0] != base_currency]
             self.make_factor_index(list(self.static_var.items()))
 
-        # allocate memory on the device
         shared_mem = Base_Reval_State(
             self.static_var, torch.ones([1, 1], dtype=self.dtype, device=self.device),
             mcmc_sim, get_fxrate_factor(utils.check_rate_name(reporting_currency), self.static_factors, {}),
             all_vars_concat, self.params['Greeks'] == 'All')
         shared_mem.recompute_inner_mc = self.params.get('Recompute_Inner_MC', 'No') == 'Yes'
-        # the SMOOTH estimator (`pricing.branch_and_weight`), which lives on this calculation and
-        # not on `Credit_Monte_Carlo`. `execute` has already completed the block through
-        # `declared_defaults`, so the key is present and the read is direct
+        # the SMOOTH estimator (`pricing.branch_and_weight`), declared on this calculation
+        # alone; `execute` has completed the block, so the key is present and the read direct
         shared_mem.branch_and_weight = self.params['Branch_And_Weight'] == 'Yes'
         return shared_mem
 
@@ -2006,7 +1825,6 @@ class Base_Revaluation(Calculation):
                             self.gradients_as_df(v, header=deal.Instrument.field.get('Reference'), display_val=True))
                     elif k == 'Value':
                         data[k] = v.item()
-                # update any tags
                 if deal.Instrument.field.get('Tags'):
                     data.update(dict(zip(tag_titles, deal.Instrument.field['Tags'][0].split(','))))
 
@@ -2037,25 +1855,20 @@ class Base_Revaluation(Calculation):
 
             return block, greeks
 
-        # clear the output
         self.output = {}
-        # load any tag titles
         tag_titles = self.config.deals['Attributes'].get('Tag_Titles', '').split(',')
         mtm, greeks = check_prices(
             self.netting_sets, [('Parent', self.netting_sets.obj.Instrument.field.get('Reference'))])
 
-        # calculate the grand total
         data = dict(
             [(field, self.netting_sets.obj.Instrument.field.get(field, 'Root')) for field in ['Reference', 'Object']])
         data['Value'] = sum([x.obj.Calc_res['Value'].item() for x in self.netting_sets.sub_structures])
         mtm.insert(0, data)
 
-        # write out the dataframe
         self.output['mtm'] = pd.DataFrame(mtm)
         for greek_name, greek_val in greeks.items():
-            # this guarantees that the multiindex is uniquely defined when we write it out.
-            # groupby(axis=1) was removed in pandas 3; the transposed spelling is pandas' own
-            # migration and runs identically back to 1.x
+            # the transposed spelling is pandas' own migration off groupby(axis=1) (removed
+            # in pandas 3) and runs identically back to 1.x
             if greek_name == 'Greeks_Second':
                 summary = pd.concat(greek_val, axis=1).T.groupby(level=[0, 1, 2, 3, 4]).sum().T
             elif greek_name == 'Greeks_First':
@@ -2069,36 +1882,27 @@ class Base_Revaluation(Calculation):
     def execute(self, params):
         # the declaration is the single source of an omitted field's default
         params = declared_defaults(type(self), params)
-        # get the rundate
         base_date = pd.Timestamp(params['Run_Date'])
-        # store the params
         self.params = params
-        # update the factors
         shared_mem = self.update_factors(params, base_date)
-        # set the logging name
         logging.root.name = self.config.deals['Attributes'].get('Reference', self.config.file_ref)
         self.calc_stats['Deal_Setup_Time'] = time.monotonic()
         self.netting_sets = DealStructure(Aggregation('root'), store_results=True)
         self.set_deal_structures(
             self.config.deals['Deals']['Children'], self.netting_sets, shared_mem.one, deal_level_mtm=True)
 
-        # record the (pure python) dependency setup time
         self.calc_stats['Deal_Setup_Time'] = time.monotonic() - self.calc_stats['Deal_Setup_Time']
         self.calc_stats['Graph_Setup_Time'] = time.monotonic()
 
         # now ask the netting set to construct each deal - no looping required (just 1 timepoint)
         mtm = self.netting_sets.resolve_structure(shared_mem, self.time_grid)
-        # record the graph loading time
         self.calc_stats['Graph_Setup_Time'] = time.monotonic() - self.calc_stats['Graph_Setup_Time']
-        # populate the mtm at the netting set
         ns_obj = self.netting_sets.obj
-        # make sure the netting set object has a reference and a mtm
         if ns_obj.Instrument.field.get('Reference') is None:
             ns_obj.Instrument.field['Reference'] = self.config.deals['Attributes'].get(
                 'Reference', self.config.file_ref)
 
         if shared_mem.calc_greeks is not None:
-            # record the cuda execution stats
             self.calc_stats['Greek_Execution_Time'] = time.monotonic()
             if shared_mem.boundary_sets:
                 if shared_mem.gamma:
@@ -2114,9 +1918,8 @@ class Base_Revaluation(Calculation):
                         "Greeks: 'First' on ONE seed at S+h and S-h and difference the reported "
                         "delta. Ask for 'All' on a portfolio without them.".format(
                             ', '.join(sorted({str(b.deal) for b in shared_mem.boundary_sets}))))
-                # The portfolio value IS the objective, so the per-scenario vector is the value
-                # itself - one scenario, whose mean is the reported number. Worth exactly zero in
-                # the forward pass, so `mtm` here is untouched and only the tape gains a term.
+                # the portfolio value IS the objective - one scenario, whose mean is the
+                # reported number. Worth zero forward, so only the tape gains a term
                 correction = pricing.boundary_correction(
                     shared_mem, lambda value: value.sum(axis=0), mtm,
                     float(params.get('Boundary_AAD_Bandwidth', 0.01)))
@@ -2125,7 +1928,6 @@ class Base_Revaluation(Calculation):
             pricing.greeks(shared_mem, ns_obj, mtm)
             self.calc_stats['Greek_Execution_Time'] = time.monotonic() - self.calc_stats['Greek_Execution_Time']
 
-        # return a dictionary of output
         return {'Netting': self.netting_sets, 'Stats': self.calc_stats, 'Results': self.report()}
 
 
@@ -2483,9 +2285,10 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         return utils.check_tuple_name(factor_key) if hasattr(factor_key, 'type') and hasattr(factor_key, 'name') else factor_key
 
     def _init_shared_mem(self, seed, nomodel, reporting_currency, mcmc_sim, job_id, num_jobs, calc_greeks=None):
-        """Override: HedgeMonteCarlo doesn't compute greeks or FVA, so skip the parent's
-        make_factor_index / scale_survival setup. Build CMC_State_Inner directly so the
-        same shared_mem hosts outer (inherited `reset()`) and inner (`reset_inner()`) modes."""
+        """Build the `CMC_State_Inner` this calculation runs on, so one shared_mem hosts both
+        the outer mode (inherited `reset()`) and the inner one (`reset_inner()`).
+        HedgeMonteCarlo computes neither greeks nor FVA, so the parent's factor-index and
+        survival-scaling setup is skipped."""
         return CMC_State_Inner(
             self.get_cholesky_decomp(), self.static_var, self.batch_size,
             torch.ones([1, 1], dtype=self.dtype, device=self.device), mcmc_sim, get_fxrate_factor(
@@ -2496,12 +2299,12 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
 
     @staticmethod
     def _require_all_compiled(declared, structure, role):
-        """A hedge book must compile WHOLE. The pricing walk's skip-and-continue is the right
-        contract for a reporting book — one broken deal should not lose the run — but here a
-        skipped tradable silently shrinks the solver's menu and a skipped liability halves the
-        target it is hedging, and the solve then reports a confident answer to a different
-        problem. Measured: an APS leg whose basis law failed to compile dropped n* from −44.8
-        to −22.1 with nothing but an ERROR log."""
+        """Raise unless every declared deal compiled into `structure`.
+
+        The pricing walk's skip-and-continue is the right contract for a reporting book -
+        one broken deal should not lose the run - but here a skipped tradable silently
+        shrinks the solver's menu and a skipped liability shrinks the target it is hedging,
+        so the solve reports a confident answer to a different problem."""
         loaded = ({d.Instrument.field.get('Reference') for d in structure.dependencies} |
                   {s.obj.Instrument.field.get('Reference') for s in structure.sub_structures})
         missing = [n['Instrument'].field.get('Reference') for n in declared
@@ -2511,14 +2314,14 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                             f'{missing} — a hedge book prices whole or not at all')
 
     def update_factors(self, params, base_date, job_id, num_jobs, end_date):
-        """Override: deal-driven dependencies plus the calc's explicit Scenario_Factors list —
-        factors no deal reaches directly (e.g. a basis consumed only by a composed spot)
-        are declared in the JSON, not discovered through schema edges.
+        """Build the factor state from the deal-driven dependencies plus the calculation's
+        explicit `Scenario_Factors` - factors no deal reaches through a schema edge (e.g. a
+        basis consumed only by a composed spot).
 
-        The horizon is the max tradable reset date capped at `end_date` (the liability terminal):
-        hedge maturities past liability end are dropped from the simulation horizon; the hedges
-        themselves are priced through liability end and any residual position closes out at fair
-        value there."""
+        The horizon is the latest tradable reset date capped at `end_date` (the liability
+        terminal): hedge maturities past liability end leave the simulation horizon, while
+        the hedges themselves price through liability end and any residual position closes
+        out at fair value there."""
         dependent_factors, stochastic_factors, _, reset_dates, settlement_currencies = self.config.calculate_dependencies(
             params, base_date, self.input_time_grid)
         for name in params.get('Scenario_Factors', []):
@@ -2529,7 +2332,6 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         max_expiry = min(max(reset_dates), end_date)
         reset_dates = self.config.parse_grid(base_date, max_expiry, self.input_time_grid, past_max_date=True)
         reset_dates.update({base_date, max_expiry})
-        # generate scerarios at each grid date
         self.update_time_grid(base_date, reset_dates, settlement_currencies, dynamic_scenario_dates=True)
 
         # Use the last scenario grid date so ScenarioTimeGrid covers the extra step from past_max_date=True
@@ -2542,12 +2344,11 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         return shared_mem
 
     def _liability_schedule_scalars(self):
-        """Static (batch-independent) liability descriptors the symlog utility-scale needs, read
-        straight from the cashflow schedules — no per-batch leg pass. Returns
-        `(total_leg_volume, last_payment_day)`: the summed |notional| across all liability legs
-        and the latest payment day (offset in days from base_date). `Bundle.from_batch` maps the
-        payment day onto the (history-prefixed) bundle time grid to recover
-        `last_settlement_index`."""
+        """Return the static liability descriptors the symlog utility-scale needs, read
+        straight off the cashflow schedules: `(total_leg_volume, last_payment_day)` - the
+        summed |notional| across all liability legs and the latest payment day as an offset
+        in days from base_date. `Bundle.from_batch` maps that day onto the (history-prefixed)
+        bundle time grid to recover `last_settlement_index`."""
         return self.liabilities.aggregate_leg_descriptors()
 
     def _reveal_transform(self, key, block, kind):
@@ -2564,59 +2365,42 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
 
     def execute(self, params, job_id=0, num_jobs=1):
         """Simulate the scenario engine over batches, building the tensor bundle (tradable
-        prices, liability MtM, factor paths). Returns a HedgeRuntimeExecutionResult.
+        prices, liability MtM, factor paths), and return a `HedgeRuntimeExecutionResult`.
 
-        A SOLVE IS A STREAM: `solve_hedge` builds a Bundle PER BATCH inside the batch loop and
-        hands it to a persistent solver as it is built (warmup on batch 1, step on each later
-        batch, finish on a held-out final batch), so the inner-MC forks are only ever `Batch_Size`
-        wide and every fit step sees fresh paths. `simulate_only` instead accumulates every batch
-        into one bundle and exposes it for stepping, for which Simulation_Batches is a path
-        multiplier rather than a stream length.
+        A SOLVE IS A STREAM: `solve_hedge` builds one Bundle per batch inside the batch loop
+        and hands it to a persistent solver as it is built - warmup on batch 1, step on each
+        later batch, finish on a held-out final batch - so the inner-MC forks are only ever
+        `Batch_Size` wide and every fit step sees fresh paths. `simulate_only` instead
+        accumulates every batch into one bundle and exposes it for stepping, for which
+        `Simulation_Batches` is a path multiplier rather than a stream length.
 
-        LIABILITY-DRIVEN TIME-GRID CAP (design choice, not a bug): historically the simulator
-        priced every hedge instrument to its own maturity, which extended the time grid to the
-        latest hedge expiry. For hedge-MC that is wasteful - past the liability terminal there is
-        nothing to hedge, and any residual hedge position is closed out at fair value at that
-        point. The global grid is capped at the liability's last cashflow / reval date so outer and
-        inner sim both stop there (`max_settlement_date` resets each liability from its `field`
-        first, which is idempotent with the reset `set_deal_structures` does).
+        LIABILITY-DRIVEN TIME-GRID CAP: the global grid stops at the liability's last
+        cashflow / reval date, so outer and inner sim both stop there. Past it there is
+        nothing to hedge, and any residual hedge position closes out at fair value.
 
-        INNER-MC SETUP: the process copies are forked only after outer setup precalc has populated
-        `factor_key` / `spot0` / etc., so inner-mode precalc on the copies cannot clobber
-        outer-instance attrs that outer generate reads each batch. `shared_mem` is a
-        CMC_State_Inner: outer batches use the inherited `reset()`, inner uses `reset_inner()`.
+        INNER-MC SETUP: the process copies are forked only after outer setup precalc has
+        populated `factor_key` / `spot0` / etc., so inner-mode precalc on the copies cannot
+        clobber outer attrs that outer generate reads each batch.
 
-        `Randomize_Initial_State='Yes'`: Huge-Savine diff-ML needs variance in z_0 for the
-        differential label at the boundary to be well-posed, obtained here via a per-batch burn-in
-        - run each process once from the calibrated t=0, snapshot the terminal state per path, then
-        re-precalculate with that snapshot as the new t=0. The designer distribution is the
-        process's own T-step pushforward, so there is no separate sampler. Every factor gets the
-        burn-in, in the same iteration order as the main generate loop; each process's
-        `simulated[-1]` is the per-path shape its precalculate accepts as `tensor` (a curve process
-        gets an (n_tenors, B) snapshot, a spot a (B,) one) - the identical contract
-        `_run_inner_mc_at_t` forks on. Paths are published to the buffer as they are generated
-        because linked factors (e.g. BasisLinkedSpotModel) read their underlying's path out of
-        t_Scenario_Buffer during their own generate, and stoch_factors is in topological order.
+        `Randomize_Initial_State='Yes'` gives the diff-ML boundary label the variance in z_0
+        it needs, via a per-batch burn-in: run each process once from the calibrated t=0,
+        snapshot the terminal state per path, re-precalculate from that snapshot. The
+        designer distribution is the process's own T-step pushforward, so there is no
+        separate sampler. Batch k+1 REWINDS to the calibrated t=0 first, or the batch
+        sequence random-walks away from it instead of drawing N independent worlds (measured
+        over 5 streaming batches: the symlog scale drifted +94%, to the point of NaN sweeps
+        on some months). Single-batch runs never rewind, so every `Simulation_Batches=1` job
+        is bit-identical.
 
-        Batch k+1 REWINDS to the calibrated t=0 before its own burn-in: the burn-in leaves each
-        process precalculated from ITS OWN terminal state, so without the rewind the batch sequence
-        becomes a random walk away from the calibrated world instead of N independent draws from
-        it. Measured before the rewind, over 5 streaming batches of one walk-forward month, the
-        symlog scale drifted 592k -> 1.15M (+94%), so later batches trained on a materially
-        different world than the one the frame was locked on, and on some months the drift ran
-        until the sweep went NaN. Single-batch runs never rewind anything (`run == 0`), so every
-        Simulation_Batches=1 job is bit-identical.
+        `Observed_Scenario` (walk-forward backtest) replaces the simulated draw with
+        grid-aligned realized paths from an .npz keyed by factor name; all preparation lives
+        in the driver, and each process reseeds its own state from the replayed path.
 
-        `Observed_Scenario` (walk-forward backtest): a driver prepares grid-aligned realized paths
-        (an .npz keyed by factor name) and the simulated draw is replaced by the observed one - the
-        deal pricers then produce the realized tradable / liability marks the stepper replays. All
-        preparation (archive read, interpolation, state source) lives in the driver; here we only
-        substitute and let each process reseed its own state.
-
-        The declared underlying(s) are leafed so the base-delta / conditional-feature pass can read
-        d(value)/d(spot) via AAD. The diff-ML solver differentiates the continuation inside the
-        inner MC off its own fresh state-at-t leaves (see Bundle.inner_mc_grad), so it needs no
-        outer leaf."""
+        The declared underlying(s) are leafed so the base-delta / conditional-feature pass
+        can read d(value)/d(spot) via AAD. The diff-ML solver differentiates the continuation
+        off its own fresh state-at-t leaves (`Bundle.inner_mc_grad`), so it needs no outer
+        leaf.
+        """
         # the declaration is the single source of an omitted field's default
         params = declared_defaults(type(self), params)
         # `.get` with no fallback on purpose: HedgeMonteCarlo declares no `Greeks` field and has no
@@ -2634,7 +2418,6 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         self.batch_size = params['Batch_Size']
         self.numscenarios = self.batch_size * params['Simulation_Batches']
         self.params = params
-        # keep the mtm
 
         logging.root.name = self.config.deals['Attributes'].get('Reference', self.config.file_ref)
         self.calc_stats['Batch_Size'] = self.batch_size
@@ -2649,7 +2432,6 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
 
         instruments = self.config.deals_from_object_map(hedging_problem.get('Tradable_Instruments', {}))
         liabilities = self.config.deals_from_object_map(hedging_problem.get('Liabilities', {}))
-        # store it away for deal resolution
         self.config.set_calculation_children(instruments + liabilities)
         # cap the grid at the liability terminal - past it there is nothing to hedge
         end_date = DealStructure.max_settlement_date(liabilities, self.config.holidays)
@@ -2675,9 +2457,9 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         normalized_runtime = construct_hedge_runtime(
             params, stoch_factors=self.stoch_factors,
         )
-        # Canonical underlying (commodity-spot) factor-name set, derived once by the runtime
-        # from the live CommodityPrice factors. Read by the spot-leaf pass and `_find_spot_key`
-        # (mapping back to the live key object via stoch_factors) — no divergent re-derivation.
+        # canonical underlying (commodity-spot) factor-name set, derived once by the runtime
+        # from the live CommodityPrice factors; the spot-leaf pass and `_find_spot_key` read
+        # it rather than re-deriving it
         self._underlying_names = set(normalized_runtime['referenced_commodities'])
 
         # Inner-MC setup; the copies below are forked only after outer setup precalc has run
@@ -2689,7 +2471,6 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         solve_hedge_mode = str(execution_mode).lower() == 'solve_hedge'
         if inner_mc_enabled:
             self.stoch_factors_inner = {k: proc.copy() for k, proc in self.stoch_factors.items()}
-        # A SOLVE IS A STREAM: one Bundle per batch, handed to a persistent solver in-loop
         streaming_solve = StreamingSolve(normalized_runtime) if solve_hedge_mode else None
         held_out = None
 
@@ -2705,16 +2486,13 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         # exposes via `privileged_factors()`.
         (factor_tensor_blocks, tradable_blocks, hedge_profile_blocks,
          privileged_factor_blocks) = _new_blocks()
-        # Static liability descriptors (read off the cashflow schedules, batch-independent).
         total_leg_volume, last_payment_day = self._liability_schedule_scalars()
-        # get the calendar for business day
         bus_day = self.config.holidays.get(
             self.params['Calendar'], {'businessday': pd.offsets.BDay(1)})['businessday']
         # per-batch burn-in: variance in z_0 for the diff-ML boundary label
         randomize_t0 = hedging_problem.get('Randomize_Initial_State', 'No') == 'Yes'
-        # Returns-state coordinates: dimensionless market columns (price -> log-return vs the
-        # calibrated t0 spot; basis -> fraction of it), constant divisor per run so outer rows
-        # and fork reveals share one coordinate system across price epochs.
+        # returns-state coordinates: dimensionless market columns off one constant divisor
+        # per run, so outer rows and fork reveals share a coordinate system across epochs
         self._returns_state = (hedging_problem.get('Solver') or {}).get(
             'DiffV2_Returns_State', 'No') == 'Yes'
         self._state_spot0 = None
@@ -2748,11 +2526,9 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 self.num_factors, self.time_grid,
                 use_antithetic=params.get('Antithetic', 'No') == 'Yes')
 
-            # Session-print conditioning from STATE: the calibrated t0 values ARE the state of
-            # this batch's first step (the burn-in's, or the main run's when there is no
-            # burn-in). Any process that informs another off a print in that state publishes
-            # its first-step shift here (see StochasticProcess.print_seed) — present in state
-            # ⇒ condition; absent ⇒ nothing to condition on.
+            # session-print conditioning from STATE: the calibrated t0 values ARE the state of
+            # this batch's first step, so a process that informs another off a print in that
+            # state publishes its first-step shift here (see StochasticProcess.print_seed)
             t0_state = {k: v.reshape(1, 1, -1) for k, v in self.stoch_var.items()}
             print_keys = self._publish_print_seeds(
                 self.stoch_factors.items(), t0_state, 0, shared_mem)
@@ -2778,8 +2554,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                     # Each process owns its t=0 seed for the next run (regime / variance / none);
                     # captured now (detached) so it survives the buffer-clearing reset below.
                     outer_reseeds.update(proc.outer_reseed())
-                # Independent innovation stream for the main run (regenerates
-                # t_random_numbers via torch.randn; quasi-rng auto-advances).
+                # independent innovation stream for the main run
                 shared_mem.reset(
                     self.num_factors, self.time_grid,
                     use_antithetic=params.get('Antithetic', 'No') == 'Yes')
@@ -2834,9 +2609,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
             _ = self.netting_sets.resolve_structure(shared_mem, self.time_grid)
             # clear hedge cashflows so t_Cashflows after the next call holds only liability cashflows
             shared_mem.reset_cashflows(self.time_grid)
-            # grab the liability mark — post-process-free (no per-batch GPU->CPU save_results copy).
-            # The feature tensor is gone; the symlog scale's two static descriptors come from the
-            # cashflow schedule (`_liability_schedule_scalars`), not a per-batch leg pass.
+            # the liability mark, post-process-free (no per-batch GPU->CPU save_results copy)
             mtm = self.liabilities.resolve_hedge_structure(shared_mem, self.time_grid).get('mtm')
             if mtm is not None:
                 hedge_profile_blocks['mtm'].append(mtm.detach().clone())
@@ -2854,7 +2627,6 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                         shared_mem.t_Scenario_Buffer[key].detach().clone()
                     )
 
-            # grab the simulated instruments and collect them into a generic bundle
             trade_tensors = self.netting_sets.tensor_marks()
 
             if tradable_blocks is not None:
@@ -2864,9 +2636,8 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
             shared_mem.t_Buffer.clear()
 
             if solve_hedge_mode:
-                # This batch IS a bundle: build it, attach its own forks, and hand it to the
-                # persistent solver. The last batch is reserved — never fitted — as the held-out
-                # world `finish` measures the verdict and the benchmark tracks on.
+                # this batch IS a bundle: build it, attach its forks, hand it to the solver.
+                # The last batch is never fitted - it is the held-out world `finish` measures
                 bundle = Bundle.from_batch(
                     base_date, bus_day, shared_mem.one.new_tensor(t_days_arr),
                     tradable_blocks, factor_tensor_blocks, hedge_profile_blocks, 1,
@@ -2882,9 +2653,9 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 # policy, which fits nothing — warmup's batch is also that world.
                 if run == params['Simulation_Batches'] - 1:
                     held_out = bundle
-                # Fresh accumulators for the next batch — this one has been consumed. (The forks
-                # the solver just ran borrowed `shared_mem`; `_run_inner_mc_at_t` hands it back as
-                # it found it, so outer generation resumes unaffected.)
+                # fresh accumulators - this batch is consumed. The forks the solver ran
+                # borrowed `shared_mem` and handed it back as found, so outer generation
+                # resumes unaffected
                 (factor_tensor_blocks, tradable_blocks, hedge_profile_blocks,
                  privileged_factor_blocks) = _new_blocks()
 
@@ -2928,10 +2699,9 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
             }
 
         if evaluation_summary is not None and bundle is not None:
-            # The world-before-solver tripwire: each hedge leg's expected drift over the live
-            # window, in the very sim the policy trains on. A conditional-mean seam (a phantom
-            # charge on hedging) prints HERE on every run instead of surfacing months later as
-            # a trained policy that refuses to hedge.
+            # world-before-solver tripwire: each hedge leg's expected drift over the live
+            # window, in the very sim the policy trains on. A conditional-mean seam prints
+            # HERE rather than surfacing months later as a policy that refuses to hedge
             t_live = bundle.last_live_mtm_index
             drift = {h: round(float((bundle.tradables_sim[h][t_live]
                                      - bundle.tradables_sim[h][0]).mean()), 4)
@@ -2956,24 +2726,16 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
             },
         )
 
-    # ------------------------------------------------------------------
-    # Inner-MC subsystem
-    #
-    # Parallel to the outer-loop body inlined in `execute()`. Forks the simulator
-    # from each outer-path state at each outer timestep, runs inner MC to terminal
-    # under `no_grad`, reduces to conditional features per outer path. Outer process
-    # instances are not touched — inner uses shallow copies (`StochasticProcess.copy`)
-    # so per-instance precalc state (spot0, scenario_horizon, z_offset, ...) doesn't
-    # bleed across the outer/inner boundary.
-    # ------------------------------------------------------------------
+    # Inner-MC subsystem: forks the simulator from each outer-path state at an outer
+    # timestep. Outer process instances are never touched - inner runs on shallow copies, so
+    # per-instance precalc state cannot bleed across the outer/inner boundary.
 
     def _find_spot_key(self):
-        """Return the unique underlying (commodity-spot) factor key. Its name comes from the
-        runtime-owned underlying set (`self._underlying_names`); map back to the live key
-        object via stoch_factors. The sufficient statistic (HMM regime/belief, GARCH log-
-        variance) lives on the martingale primary — prefer the spot exposing a revealed
-        sufficient statistic (non-empty `privileged_layout`) when more than one CommodityPrice
-        factor is simulated. Raises unless exactly one."""
+        """Return the unique underlying (commodity-spot) factor key, mapping the
+        runtime-owned underlying name set back to the live key object via `stoch_factors`.
+        Where more than one CommodityPrice is simulated, prefer the martingale primary - the
+        spot exposing a revealed sufficient statistic (non-empty `privileged_layout`). Raises
+        unless exactly one remains."""
         spots = [k for k in self.stoch_factors
                  if utils.check_tuple_name(k) in self._underlying_names]
         primaries = [k for k in spots if self.stoch_factors[k].privileged_layout(self.stoch_factors[k].param)]
@@ -2985,24 +2747,17 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         return spot_keys[0]
 
     def _restricted_struct(self, outer_struct, cutoff_mtm_idx, window_end_idx=None):
-        """Build a fresh DealStructure mirroring outer_struct but with each deal's
-        Time_dep restricted to events at mtm positions >= cutoff_mtm_idx via
-        `DealTimeDependencies.copy_restricted` — or, when `window_end_idx` is given,
-        to the window [cutoff_mtm_idx, window_end_idx] via `copy_window` (the one-step
-        fork prices at exactly {t, t+1}). Factor_dep is shared by reference
-        (static factor lookups, time-grid-independent for the deal types used in
-        inner-MC); Calc_res is fresh so inner pricing doesn't clobber outer storage.
-        Returns a DealStructure with possibly fewer dependencies (deals fully in
-        the past are dropped). Does not recurse into sub_structures — inner-MC use
-        case has a flat dependency list.
+        """Mirror `outer_struct` with each deal's `Time_dep` restricted to events at mtm
+        positions >= `cutoff_mtm_idx` (`DealTimeDependencies.copy_restricted`), or windowed
+        to [`cutoff_mtm_idx`, `window_end_idx`] when that is given (`copy_window` - the
+        one-step fork prices exactly {t, t+1}). `Factor_dep` is shared by reference and
+        `Calc_res` is fresh, so inner pricing cannot clobber outer storage; deals entirely in
+        the past are dropped. Does not recurse into sub_structures - the inner-MC dependency
+        list is flat.
 
-        AGGREGATION STORAGE IS OFF (`store_results=False`) while the per-deal `Calc_res`
-        below stays. The fork harvests on the DEVICE — `tensor_marks()` for the tradables
-        (which needs the per-deal dict, since `pricing.interpolate` stashes 'tensor' there)
-        and `resolve_hedge_structure()` for the liability — and nothing reads the
-        aggregate's stored 'Value'. Storing it cost a pageable D2H copy of the FULL-width
-        mtm grid (127 x B_outer*B_inner fp32 = 16.6 MB on the wf-gate world) per fork, 93%
-        of the fork's host egress, for a number the fork discards."""
+        Aggregation storage is off while the per-deal `Calc_res` stays: the fork harvests on
+        the DEVICE via `tensor_marks()` and `resolve_hedge_structure()`, and nothing reads
+        the aggregate's stored 'Value', whose D2H copy was 93% of the fork's host egress."""
         inner = DealStructure(outer_struct.obj.Instrument, store_results=False)
         for dd in outer_struct.dependencies:
             new_td = (dd.Time_dep.copy_restricted(cutoff_mtm_idx) if window_end_idx is None
@@ -3018,16 +2773,14 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         return inner
 
     def _attach_inner_mc(self, bundle, outer_buffer, shared_mem, base_date, tradable_refs):
-        """Attach the on-demand inner-MC forks to a bundle. The closures let the solver fork
-        without a calc handle — they capture `self` (the inner-MC machinery), the outer scenario
-        snapshot they fork FROM, and shared_mem. Every fork is windowed to {t, t+1}: 2-row
-        generation AND a real 2-row pricing pass, giving exact per-tradable F_t1 and exact
-        L_t/L_t1 — the only fields the diff-ML bootstrap reads. `outer_rows` lets the solver run
-        the GRAD fork in outer-path sub-slices at large B_outer (per-slice tapes; the tape covers
-        2 rows, so the flat cap binds instead of the cells cap and slices get wide).
+        """Attach the on-demand inner-MC forks to `bundle` as closures, so the solver can
+        fork without a calc handle. Every fork is windowed to {t, t+1} - 2-row generation and
+        a real 2-row pricing pass - giving the exact per-tradable F_t1 and L_t / L_t1 the
+        diff-ML bootstrap reads. `outer_rows` lets the solver run the GRAD fork in
+        outer-path sub-slices at large B_outer.
 
-        One bundle per batch under streaming, so the buffer is passed in rather than read off the
-        calc: each bundle forks from ITS OWN batch."""
+        The outer buffer is passed in rather than read off the calc: under streaming there is
+        one bundle per batch, and each forks from ITS OWN batch."""
         bundle.inner_mc = lambda t: self._run_inner_mc_at_t(
             t, outer_buffer, shared_mem, base_date, tradable_refs)
         bundle.inner_mc_grad = lambda t, outer_rows=None: self._run_inner_mc_at_t(
@@ -3035,10 +2788,10 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
             with_grad=True, outer_rows=outer_rows)
 
     def _publish_print_seeds(self, procs, state, t, shared_mem):
-        """Publish every process's `print_seed` off `state` (factor key → row-indexable
-        snapshot) into the buffer; returns the published keys. The keys are CONSUMED state,
-        not path series — the caller drops them once the run has generated (see the base
-        `print_seed` contract), and always publishes every seed before any generate."""
+        """Publish every process's `print_seed` off `state` (factor key -> row-indexable
+        snapshot) into the buffer, and return the published keys. Those keys are CONSUMED
+        state, not path series - the caller drops them once the run has generated - and every
+        seed is published before any generate."""
         keys = set()
         for key, proc in procs:
             for seed_key, seed_val in proc.print_seed(key, state, t).items():
@@ -3049,97 +2802,60 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
     def _run_inner_mc_at_t(self, t, outer_scenario_buffer, shared_mem, base_date,
                            tradable_refs, with_grad=False, outer_rows=None):
         """Run inner MC at a single outer timestep `t`, forking from `outer_scenario_buffer`
-        — a snapshot of the outer `t_Scenario_Buffer` (factor keys plus every per-process aux
-        key, batch dim B_outer).
-
-        `outer_rows=(lo, hi)` forks only that contiguous outer-path range — the row window a
-        caller uses to bound the AAD tape (labels are per-outer-path, so row slices are
-        independent). The solver no longer needs it: its forks are single-pass at Batch_Size.
-
-        The DP/MPC backward sweep calls this on demand outside the outer loop (via the
-        closure `Bundle.inner_mc`), forking inner MC at the requested `t`.
+        - a snapshot of the outer `t_Scenario_Buffer` (factor keys plus every per-process aux
+        key, batch dim B_outer). `outer_rows=(lo, hi)` forks only that contiguous outer-path
+        range; labels are per-outer-path, so row slices are independent. The DP/MPC backward
+        sweep calls this on demand outside the outer loop, via `Bundle.inner_mc`.
 
         Returns the inner samples the solver bootstraps from:
-            F_t1          {ref: (B_outer, B_inner)}      futures price at outer t+1
-            L_t, L_t1     (B_outer, B_inner)             liability MTM at outer t and t+1
+            F_t1          {ref: (B_outer, B_inner)}       futures price at outer t+1
+            L_t, L_t1     (B_outer, B_inner)              liability MTM at outer t and t+1
             market_t1     (B_outer, B_inner, market_dim)  inner market state at outer t+1
             market_t      (B_outer, market_dim)           outer-realised market state at t
             t, cutoff_idx
-        `market_t`/`market_t1` are every simulated factor's revealed segments concatenated —
-        the column block is generic (each process owns its packing via `reveal_state_at`),
-        so the DP/MPC solvers consume it without knowing what the factors are.
+        `market_t` / `market_t1` are every simulated factor's revealed segments concatenated
+        in reveal order; each process owns its own packing via `reveal_state_at`, so the
+        solvers consume the column block without knowing what the factors are.
 
-        SINGLE PASS. The whole fork — generation, stuffing, pricing, extraction — runs at
-        `B_outer x Inner_Sub_Batch` flat in one go, so peak memory is a function of two JSON
-        fields (`Batch_Size`, `Inner_Sub_Batch`) and nothing else. A config too wide for the
-        card raises CUDA OOM naming this fork; that is the contract, not a knob. The old
-        outer-path chunk loop is gone: the stream caps fork width at
-        Batch_Size rather than the whole simulation — see the doc attr for the measured
-        operating point.
+        SINGLE PASS: generation, stuffing, pricing and extraction all run at
+        `B_outer x Inner_Sub_Batch` flat, so peak memory is a function of two JSON fields
+        (`Batch_Size`, `Inner_Sub_Batch`) and nothing else. A config too wide for the card
+        raises CUDA OOM naming this fork; that is the contract, not a knob.
 
-        THE WINDOW. The inner grid is truncated to {t, t+1} and every deal's Time_dep windowed to
-        those two rows (`copy_window` via `window_end_idx`), so the pricing chain runs for real on
-        a 2-row grid - exact per-tradable F_t1 and liability L_t / L_t1, which is every field the
-        diff-ML bootstrap reads, and correct on mixed strips (each future prices its own
-        basis+carry; the old market-only short-circuit broadcast SPOT as every F_t1). Restricting
-        the AAD tape to a single forward step is what keeps its memory bounded - a full t->T_dec
-        horizon multiplies tape and pricing by the remaining rows for no use. The scenario buffer
-        only reaches row t+1, and the windowed Time_dep rebuilds `interp` up to its last kept
-        event, so nothing indexes past it.
+        THE WINDOW: the inner grid and every deal's `Time_dep` are truncated to {t, t+1}, so
+        the pricing chain runs for real on 2 rows - exact per-tradable F_t1 and liability
+        L_t / L_t1, and correct on mixed strips, where a market-only short-circuit would
+        broadcast spot as every F_t1. Restricting the AAD tape to one forward step is what
+        bounds its memory.
 
-        TWO COORDINATE SYSTEMS: processes generate against the shifted-base `inner_time_grid`;
-        pricers run against the full outer `self.time_grid` with each deal's Time_dep restricted
-        via `copy_restricted`. Buffer stuffing prepends the outer-realized past (broadcast across
-        B_inner) so path-dependent payoffs see the realized fixings. That past is a slice of the
-        outer snapshot, already resident at B_outer, and every one of its rows is identical across
-        the B_inner draws - the `cat` that used to join them wrote it out B_inner times (98% of the
-        stuffed buffer at 1280x64, dragging a same-shaped slab of Hermite g,c with it), so it is
-        published as its own `ScenarioBlock` carrying the `past_columns` index instead.
-        `ScenarioSource` is the same sequence-of-row-blocks the outer loop publishes with one
-        block, so the pricer reads both through one mechanism; a fork at t=0 has no past and
-        publishes one block. EVERY path series goes through that publication, not every factor: a
-        process's own `(key, kind)` series is read through the same seam as a factor (a pricer
-        cannot tell them apart), so one the outer snapshot also carries is per-path state that
-        forked with the path and gets the same logical grid. The fork's own seeds are excluded by
-        that rule rather than by a name test - the outer path does not carry them.
+        TWO COORDINATE SYSTEMS: processes generate against the shifted-base
+        `inner_time_grid`, while pricers run against the full outer `self.time_grid` with
+        each deal's `Time_dep` restricted. Buffer stuffing prepends the outer-realized past
+        so path-dependent payoffs see the realized fixings; that past is published as its own
+        `ScenarioBlock` carrying a `past_columns` index rather than materialized B_inner
+        times. Every path series goes through that publication - a factor's grid and a
+        process's own `(key, kind)` series alike, since a pricer cannot tell them apart.
 
-        PER-PROCESS HOOKS, no isinstance branch anywhere - a factor without a revealed sufficient
-        statistic returns an empty dict and the forker's single uniform loop covers every model
-        world. `inner_fork_seed` supplies the per-outer-path t=0 privileged-state seed the inner
-        generate reads (regime for the HMM, conditional variance h0 for GARCH).
-        `reseed_inner_state` restores post-generate coherence: the process publishes whatever
-        path-dependent revealed state its `reveal_state_at` needs at t+1 (e.g. a filtered belief)
-        and returns differentiable leaves for the twin loss; `self._inner_state_opts` is forwarded
-        to it opaquely, and base / GARCH processes are no-ops because their revealed state is
-        already published by generate, or detached by design. `reveal_state_at` then yields each
-        factor's informative segments from the live buffer (factor path plus any aux just
-        published); this method owns the (factor_flat, B, SB) reshape and concatenates in reveal
-        order.
+        PER-PROCESS HOOKS, no isinstance branch anywhere: `inner_fork_seed` supplies the
+        per-outer-path t=0 privileged state (regime for the HMM, conditional variance h0 for
+        GARCH), `reseed_inner_state` republishes whatever path-dependent revealed state
+        `reveal_state_at` needs at t+1 and returns differentiable leaves for the twin loss
+        (`self._inner_state_opts` is forwarded to it opaquely), and `reveal_state_at` yields
+        each factor's informative segments from the live buffer. A factor without a revealed
+        sufficient statistic returns an empty dict, so one uniform loop covers every model
+        world. Under `with_grad`, `state_t_leaf_widths` pairs each leaf with the market_t
+        column width it occupies, so the label projection never re-derives factor widths.
 
-        `L_t` / `L_t1` are the `resolve_hedge_structure` marks themselves, time-indexed exactly as
-        F_t1 (mtm[cutoff_idx:][0] is outer-t, [1] is outer-t+1). They replace the Jacobian
-        linearization of the liability in the diff-ML one-step bootstrap, so the bootstrap value
-        marks the liability EXACTLY at each inner draw.
+        FAIL LOUDLY on both halves: a tradable live in this fork but missing from
+        `tensor_marks()` reads downstream as an expired contract and the solver retires it,
+        and a liability swallowed by the canonical deal guard silently corrupts the solver's
+        LABELS.
 
-        Under `with_grad`, `state_t_leaf_widths` pairs each leaf with the market_t column width it
-        occupies: the differential-label projection in the diff-ML solver needs this to write
-        per-leaf gradients into the right deep-state columns without re-deriving factor widths,
-        which would silently drift if a process's `reveal_state_at` packing changed.
-
-        FAIL LOUDLY, both halves. `_restricted_struct` drops fully-expired deals, so a tradable
-        still in `dependencies` but missing from `tensor_marks()` can only mean its pricing was
-        skipped; that reads downstream as F_t1 = 0, i.e. an expired contract, and the solver's
-        `live` mask retires it from the hedge set - a wrong number, not a crash. The liability half
-        is the same defect arriving through the canonical deal guard, which swallows exceptions
-        (e.g. CUDA OOM) into a scalar-0 mark and so silently corrupts the solver's LABELS.
-
-        The fork BORROWS `shared_mem` (`borrowed_batch` / `borrowed_fill`), so the `finally`
-        restores on ANY exit: without it a mid-fork raise (CUDA OOM, a degenerate-pricing
-        RuntimeError) left the state flat-sized and the NEXT t-step failed on shapes instead of the
-        real cause. The Sobol sample cache is dropped there too - it is keyed by sample_size and
-        would otherwise grow unbounded across t-steps. Each fork re-draws a fresh, independent
-        quasi-MC stream (the engine advances); the pricer's per-pass `reset_qrg` caching is intact
-        within a fork, only cleared between them."""
+        The fork BORROWS `shared_mem` and the `finally` restores it on ANY exit - without
+        that a mid-fork raise leaves the state flat-sized and the next t-step fails on shapes
+        instead of the real cause. The Sobol sample cache is dropped there too: it is keyed
+        by sample_size and would otherwise grow unbounded across t-steps.
+        """
         spot_key = self._find_spot_key()
         if outer_rows is not None:
             lo, hi = outer_rows
@@ -3149,9 +2865,8 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         t_days = int(self.time_grid.scen_time_grid[t])
         inner_time_grid = self.time_grid.truncate_to(base_date, t_days)
 
-        # Terminal / past-end — no inner horizon, so nothing to price. The DP sweep does not call
-        # here at terminal (it uses the closed-form V_T); a caller querying `inner_mc` at or past
-        # terminal does, hence the guard.
+        # terminal / past-end: no inner horizon, so nothing to price. The DP sweep uses the
+        # closed-form V_T there; a caller querying `inner_mc` past terminal reaches this
         if inner_time_grid.scen_time_grid.size < 2:
             return dict(t=t, cutoff_idx=t, L_T=None, market_t=None, market_t1=None, F_t1={})
 
@@ -3160,8 +2875,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         cutoff_idx = t
         inner_base_date = base_date + pd.Timedelta(days=t_days)
 
-        # THE WINDOW: inner grid + every deal's Time_dep truncated to {t, t+1}, so the pricing
-        # chain runs for real on 2 rows and the AAD tape stays bounded
+        # THE WINDOW: inner grid truncated to {t, t+1}, so the AAD tape stays bounded
         window_end_idx = min(cutoff_idx + 1, self.time_grid.mtm_time_grid.size - 1)
         if inner_time_grid.scen_time_grid.size > 2:
             kept = set(sorted(inner_time_grid.scenario_dates)[:2])
@@ -3175,13 +2889,12 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         B_flat = B_outer * B_inner
 
         grad_ctx = (torch.enable_grad() if with_grad else torch.no_grad())
-        # Track per-process initial state leaves when with_grad — exposed via the result
-        # dict so the caller can `.backward()` from any function of the inner outputs and
-        # read `.grad` per process/per outer path.
+        # per-process initial-state leaves, exposed via the result dict so the caller can
+        # `.backward()` from any function of the inner outputs and read `.grad` per path
         state_t_leaves = {} if with_grad else None
-        # What the fork BORROWS, to give back exactly as found (see the finally below): a fork
-        # over an outer-path SLICE would otherwise leave the state slice-sized, which is invisible
-        # while forks only follow forks but corrupts the next outer batch under streaming.
+        # what the fork BORROWS, to give back exactly as found (see the finally below): a
+        # fork over an outer-path SLICE would otherwise leave the state slice-sized, which
+        # corrupts the next outer batch under streaming
         borrowed_batch, borrowed_fill = shared_mem.simulation_batch, shared_mem.fillvalue
         with grad_ctx:
             try:
@@ -3199,9 +2912,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 for key, proc_inner in self.stoch_factors_inner.items():
                     if key.type in utils.DimensionLessFactors:
                         continue
-                    # Raw per-path init state for this factor's inner-MC precalculate fork. Never was
-                    # type-specific: raw CommodityPrice `outer[t,:]`, raw ForwardRate/ForwardPrice/
-                    # InterestRate `outer[t,:,:]` all equal `outer[key][t]`.
+                    # raw per-path init state for this factor's inner-MC precalculate fork
                     init_state = outer_scenario_buffer[key][t]
                     if with_grad:
                         # Leaf with grad: differentiates inner-sim + pricing back to state_t.
@@ -3213,18 +2924,13 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                         shared_mem, self.process_ofs[key],
                         implied_tensor=self._factor_precalc_args[key][1],
                     )
-                    # The fork's day-t state snapshot the print seeds read. Under `with_grad`
-                    # this IS the leaf, so the conditioning a seed derives from a print stays
-                    # on the tape — the differential labels' print columns carry the channel.
+                    # the day-t state snapshot the print seeds read; under `with_grad` this IS
+                    # the leaf, so conditioning derived from a print stays on the tape
                     fork_state[key] = init_state.unsqueeze(0)
                     live_procs.append((key, proc_inner))
-                # EVERY fork seed before ANY generate: a seed reads only the OUTER state (the
-                # protocol's contract), and a process may seed a factor that generates before
-                # it — the fixing bridge conditions its PARENT's first step on the current
-                # session print, and the parent is upstream in topological order. The fork's
-                # state at day t carries that day's prints, so `print_seed` conditions on them
-                # exactly as the calibrated start conditions on its own. `inner_fork_seed`
-                # keeps the detached buffer — its privileged seeds are detached by design.
+                # EVERY fork seed before ANY generate: a seed reads only the OUTER state, and
+                # a process may seed a factor that generates before it in topological order.
+                # `inner_fork_seed` keeps the detached buffer - its seeds are detached by design
                 for key, proc_inner in live_procs:
                     for seed_key, seed_val in proc_inner.inner_fork_seed(
                             key, outer_scenario_buffer, t).items():
@@ -3247,11 +2953,9 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 # columns, handed over as data rather than re-derived downstream
                 past_columns = torch.arange(
                     B_flat, device=shared_mem.one.device) // B_inner
-                # EVERY path series this fork WROTE and the outer path also carries - a factor's
-                # grid and a process's own `(key, kind)` series alike, because a pricer reads both
-                # through one seam and they cannot be on different logical grids. Each half of the
-                # test excludes one thing: an outer entry the fork never rewrote (a dimensionless
-                # factor, a burn-in seed), and this fork's own `<kind>_inner` seed.
+                # every path series this fork WROTE that the outer path also carries - a
+                # factor's grid and a process's own `(key, kind)` series alike. Each half of
+                # the test excludes one thing: an entry the fork never rewrote, and its own seed
                 for key in [k for k, v in shared_mem.t_Scenario_Buffer.items()
                             if v is not outer_entries.get(k) and k in outer_scenario_buffer]:
                     inner_path = shared_mem.t_Scenario_Buffer[key]                  # (T_inner, ..., B, SB)
@@ -3262,16 +2966,13 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                             inner_path.reshape(*inner_path.shape[:-2], B_flat),
                             first_row=cutoff_idx))
 
-                # Single-pass pricing — the chunk is sized so B_flat fits the memory budget.
                 shared_mem.t_Buffer.clear()
                 shared_mem.simulation_batch = B_flat
-                # `fillvalue` is a batch-sized empty tensor frozen at State construction (the
-                # energy-leg reset code uses it as the empty-cat fallback) — it must track the
-                # current simulation_batch or cash_settle size-mismatches.
+                # `fillvalue` is a batch-sized empty tensor frozen at State construction; it
+                # must track the current simulation_batch or cash_settle mismatches on size
                 shared_mem.fillvalue = shared_mem.one.new_zeros((0, 1, B_flat))
-                # Per-chunk restricted DealStructures: same instruments + Factor_dep,
-                # fresh Time_dep slicing off past events (windowed to [t, t+1] on the
-                # one-step path), fresh Calc_res.
+                # restricted DealStructures: same instruments and Factor_dep, fresh Time_dep
+                # windowed to [t, t+1], fresh Calc_res
                 inner_netting_sets = self._restricted_struct(self.netting_sets, cutoff_idx, window_end_idx)
                 inner_liabilities = self._restricted_struct(self.liabilities, cutoff_idx, window_end_idx)
                 inner_netting_sets.resolve_structure(shared_mem, self.time_grid)
@@ -3290,9 +2991,8 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 mtm_flat = inner_liabilities.resolve_hedge_structure(
                     shared_mem, self.time_grid)['mtm']
                 if mtm_flat.dim() < 2 or mtm_flat.shape[-1] != B_outer * B_inner:
-                    # The canonical deal guard swallows exceptions (e.g. CUDA OOM) into a scalar-0
-                    # mark. Inside an inner fork that silently corrupts the solver's LABELS —
-                    # fail loudly instead (the CRITICAL 'Deal skipped' log above names the cause).
+                    # the canonical deal guard swallows exceptions into a scalar-0 mark, which
+                    # inside a fork silently corrupts the solver's LABELS - fail loudly here
                     raise RuntimeError(
                         f'inner-fork liability pricing degenerated (shape '
                         f'{tuple(mtm_flat.shape)}, expected (*, {B_outer * B_inner})) — a deal '
@@ -3300,10 +3000,9 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 inner_mtm = mtm_flat.reshape(*mtm_flat.shape[:-1], B_outer, B_inner)
 
                 def _fan(t):
-                    # A STATIC tradable (a cash account off an unsimulated curve) marks with a
+                    # a STATIC tradable (a cash account off an unsimulated curve) marks with a
                     # 1-wide batch - path-independent is a legitimate mark, not a skip - so
-                    # broadcast it over the fan-out rather than demanding the flat batch of it.
-                    # Any OTHER width is a genuine shape error and expand fails loud.
+                    # broadcast it. Any other width is a shape error and expand fails loud.
                     if t.shape[-1] == B_outer * B_inner:
                         return t.reshape(*t.shape[:-1], B_outer, B_inner)
                     core = t.squeeze(-1) if t.shape[-1] == 1 else t
@@ -3326,9 +3025,8 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                     # td has < 2 time points when the tradable's last deal event is at t
                     # (it expires this step) — no t+1 slice; freeze it (dF == 0).
                     F_t1[ref] = (td[1] if td.shape[0] >= 2 else td[-1]).clone()
-                # Market state — every simulated factor's informative state (sufficient
-                # statistic + price, carry curve, …) concatenated; factor order is the
-                # `stoch_factors_inner` iteration order, identical for market_t/market_t1.
+                # market state - every simulated factor's informative state concatenated;
+                # factor order is the `stoch_factors_inner` order, identical for t and t+1
                 market_t1 = torch.cat(market_t1_parts, dim=0).permute(1, 2, 0).contiguous()
                 market_t_parts = []
                 market_t_widths = []
@@ -3356,7 +3054,6 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                     L_t=L_t_inner, L_t1=L_t1_inner, F_t1=F_t1,
                     market_t=market_t, market_t1=market_t1)
                 if with_grad:
-                    # pair each leaf with the market_t column width it occupies
                     result['state_t_leaves'] = state_t_leaves
                     result['state_t_leaf_widths'] = market_t_widths
             finally:

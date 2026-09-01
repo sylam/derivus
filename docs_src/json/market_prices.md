@@ -24,7 +24,11 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
 - The only risk neutral IR currently available may be simulated via 
   *HullWhite2FactorModelPrices* and requires both a corresponding swaption volatility
    surface and a set of **instrument definitions** that define the forward starting swaps that
-   reference the swaption vol surface. Note that again, only ATM vols are used. They are specified as:
+   reference the swaption vol surface. Note that again, only ATM vols are used. Every row must
+   carry its own `Market_Volatility`: a zero (which used to mean "read the named surface's ATM
+   instead") and an absent column both refuse by name since 2026-09-01, and the vol is read in the
+   convention that surface's `Distribution_Type` declares — a lognormal Black vol by default, an
+   absolute normal one where it says `Normal`. They are specified as:
 
 ```json
 {
@@ -79,7 +83,7 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
             ".DateOffset": "1Y"
           },
           "Market_Volatility": {
-            ".Percent": 0
+            ".Percent": 21.5
           }
         },
         {
@@ -99,7 +103,7 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
             ".DateOffset": "2Y"
           },
           "Market_Volatility": {
-            ".Percent": 0
+            ".Percent": 20.8
           }
         },
         {
@@ -119,7 +123,7 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
             ".DateOffset": "5Y"
           },
           "Market_Volatility": {
-            ".Percent": 0
+            ".Percent": 20.1
           }
         },
         {
@@ -139,7 +143,7 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
             ".DateOffset": "10Y"
           },
           "Market_Volatility": {
-            ".Percent": 0
+            ".Percent": 19.6
           }
         },
         {
@@ -159,7 +163,7 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
             ".DateOffset": "1Y"
           },
           "Market_Volatility": {
-            ".Percent": 0
+            ".Percent": 19.2
           }
         },
         {
@@ -179,7 +183,7 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
             ".DateOffset": "2Y"
           },
           "Market_Volatility": {
-            ".Percent": 0
+            ".Percent": 18.9
           }
         },
         {
@@ -199,7 +203,7 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
             ".DateOffset": "5Y"
           },
           "Market_Volatility": {
-            ".Percent": 0
+            ".Percent": 18.6
           }
         },
         {
@@ -219,7 +223,7 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
             ".DateOffset": "10Y"
           },
           "Market_Volatility": {
-            ".Percent": 0
+            ".Percent": 18.4
           }
         }
       ]

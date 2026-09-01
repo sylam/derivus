@@ -19,13 +19,18 @@ WHAT IS HELD:
   the declaration  the SHIPPED ZAR conventions spelled out as data, and every way a convention can
                    be absent, unread or unauthorable refusing at the seed
   the screen       the order of distrust, one canned cell per verdict - and `zero` is the one that
-                   matters most, because a zero `Market_Volatility` is not a bad number to the
-                   engine, it is a SILENT INSTRUCTION to read the surface's ATM instead
+                   matters most, because a zero `Market_Volatility` USED TO BE a silent instruction
+                   to read the surface's ATM rather than a bad number. The engine refuses that row
+                   by name now; this screen stays, because a ladder is refused here where a desk can
+                   see which cell went dark
   the row          the seed's declared conventions on every row, the vol scaled into the family's
                    `Percent` column, `Weight` flat at v1's declaration, and the two-way and the
                    stamp riding beside them as undeclared keys
-  the distribution declared, carried into `Quote_Source`, and NOT read by the engine - the finding,
-                   gated in its current shape so the day it changes this gate says so
+  the distribution declared, carried into `Quote_Source`, and READ BY THE ENGINE since 2026-09-01 -
+                   the finding this file gated in its open shape, now gated closed: the premium
+                   construction is held to the Bachelier pair as source AND as behaviour, and the
+                   block's own line is held to saying which convention its numbers are in, because
+                   the declaration the engine reads lives on a SURFACE this emitter does not author
   the partition    this family has an EMPTY values half, so `update_market_quote` refuses a re-tick
                    and `reauthor` is the only route a re-quoted grid reaches a book by
   determinism      the same canned grid emits the same bytes
@@ -200,44 +205,82 @@ def test_the_row_is_the_committed_schemas_own_declaration():
     assert tuple(key for key in row if key in declared) == swaption_vol.INSTRUMENT_COLUMNS
     assert set(row) - set(declared) == set(swaption_vol.QUOTE_VALUE_KEYS)
 
-    # the BLOCK-level keys: one declared, one deliberately not - see the finding in the docstring
+    # the BLOCK-level keys, and every one of them is now DECLARED. `Quote_Source` used to be the
+    # one key this family had no column for - the emitter wrote it anyway because provenance is the
+    # evidence, and `bootstrap` read past it - which is the gap this half asserted. HW2F declares
+    # `Quote_Source` and `Quote_Timestamp` since 2026-09-01, on the shape both Heston-Nandi
+    # families already had, so the subtraction is empty. Read off the WORKING TREE, because the
+    # declaration lands in this same change and HEAD cannot be asked about it.
     instrument = block_of()[1]['instrument']
-    block_fields = committed_fields('HullWhite2FactorModelParameters')
-    assert set(instrument) - set(block_fields) == {'Quote_Source'}
-    assert 'Quote_Source' not in block_fields and 'Quote_Timestamp' not in block_fields
-    assert set(instrument) & set(block_fields) == {'Swaption_Volatility', 'Instrument_Definitions'}
+    block_fields = committed_fields('HullWhite2FactorModelParameters', at=None)
+    assert set(instrument) - set(block_fields) == set(), sorted(set(instrument) - set(block_fields))
+    assert 'Quote_Source' in block_fields and 'Quote_Timestamp' in block_fields
+    assert set(instrument) == {'Swaption_Volatility', 'Instrument_Definitions', 'Quote_Source'}
+    # and the row columns are unmoved by it: the block gained two fields, the ladder none
+    assert 'Quote_Source' not in declared and 'Quote_Timestamp' not in declared
 
 
-def test_the_engine_prices_a_lognormal_black_and_reads_no_distribution():
-    """THE FINDING, GATED IN ITS CURRENT SHAPE. `SASN` is a NORMAL vol in basis points; the family
-    prices every benchmark's market premium with `utils.black_european_option_price`, which is
-    lognormal; and `InterestYieldVol` declares a `Distribution_Type` of `Lognormal` or `Normal`
-    that `create_market_swaps` never reads.
+def test_the_engine_reads_the_declared_distribution_and_this_block_says_which():
+    """THE FINDING, CLOSED, AND GATED IN ITS NEW SHAPE. This gate was
+    `test_the_engine_prices_a_lognormal_black_and_reads_no_distribution` and it asserted the GAP:
+    `SASN` is a NORMAL vol in basis points, `create_market_swaps` priced every benchmark's premium
+    with `utils.black_european_option_price` whatever the surface declared, and `InterestYieldVol`'s
+    `Distribution_Type` reached the deal path and nothing else. It said "the day
+    `create_market_swaps` reads a distribution this gate fails and says so", and that day was
+    2026-09-01. It is rewritten rather than deleted, holding the same seam from the other side.
 
-    So this emitter transcribes and scales, states the distribution where it can, and this gate
-    asserts the gap rather than papering over it - the day `create_market_swaps` reads a
-    distribution, or the day the family grows a column for it, this gate fails and says so. Both
-    halves are read off the COMMITTED source, as text, because the point is what the engine does and
-    not what this package would like it to.
+    TWO HALVES, AND THE SECOND ONE IS BEHAVIOURAL. The engine's premium construction is READ, as
+    text, off the working tree rather than off `git show HEAD` - the committed-source trick the
+    column gate uses is right for a DECLARATION, which has to hold while another workflow edits the
+    module, and wrong for a behaviour that only exists once the edit lands. So the source half is a
+    statement about what is running, and the run below is what proves it: the same ladder's own
+    numbers priced under the two declarations come out an ORDER OF MAGNITUDE apart, which is what
+    reading `Distribution_Type` is worth and what ignoring it cost.
+
+    This package may not import the engine anywhere but here, and it does not: the import is inside
+    this gate, which is a test of the engine's seam rather than of the emitter's budget - the budget
+    gates one section up are what hold that line.
     """
-    import subprocess
+    import inspect
 
-    source = subprocess.run(['git', 'show', 'HEAD:derivus/bootstrappers.py'], cwd=ROOT,
-                            stdout=subprocess.PIPE, universal_newlines=True,
-                            encoding='utf-8').stdout
-    body = source[source.index('def create_market_swaps('):]
-    body = body[:body.index('\n    return all_deals, benchmarks')]
-    assert 'black_european_option_price' in body, 'the premium is no longer priced by numpy Black'
-    assert 'Distribution_Type' not in body, \
-        'create_market_swaps now reads a distribution - the emitter can stop apologising'
-    assert 'BlackScholesDisplacedShiftValue' in body, \
-        'the only convention the premium carries is the displacement'
+    from derivus import bootstrappers, riskfactors, utils
 
-    # and the block says so out loud, because a block that cannot state its own units is how a
-    # normal vol gets priced as a lognormal one in silence
+    body = inspect.getsource(bootstrappers.create_market_swaps)
+    assert 'get_subtype' in body, (
+        'create_market_swaps no longer reads the surface\'s declared convention - the roadmap row '
+        'this gate closes is open again')
+    assert 'PREMIUM_CONVENTIONS' in body and 'displacement' in body, body[:400]
+    assert bootstrappers.PREMIUM_CONVENTIONS['Normal'] == (
+        utils.bachelier_european_option_price, utils.bachelier_european_option), (
+        'a Normal surface has to reach the Bachelier pair, numpy premium and tensor twin alike')
+    assert bootstrappers.PREMIUM_CONVENTIONS['Lognormal'] == (
+        utils.black_european_option_price, utils.black_european_option)
+    declared = next(f for f in riskfactors.InterestYieldVol.fields
+                    if f.name == 'Distribution_Type')
+    assert sorted(declared.values) == sorted(bootstrappers.PREMIUM_CONVENTIONS), (
+        'the surface declares {} and the calibration prices {} - a value a block can author and '
+        'the engine cannot price is the same defect one layer over'.format(
+            declared.values, sorted(bootstrappers.PREMIUM_CONVENTIONS)))
+    assert SHIPPED['distribution'] in bootstrappers.PREMIUM_CONVENTIONS, (
+        'the seed declares a distribution this engine cannot price')
+
+    # the behavioural read: this ladder's own quotes, priced under each declaration
+    row = list(rows_of(block_of()[1]).values())[0]
+    quote, expiry = row['Market_Volatility']['.Percent'] / 100.0, 2.0
+    premium = {name: pricer(0.09, 0.09, 0.0, quote, expiry, 1.0, 1.0)
+               for name, (pricer, _) in bootstrappers.PREMIUM_CONVENTIONS.items()}
+    assert premium['Normal'] / premium['Lognormal'] > 5.0, (
+        'the two conventions price {} within {:.3g}x of each other - a normal vol read as a '
+        'lognormal one is the defect this gate exists for'.format(
+            row['Market_Volatility'], premium['Normal'] / premium['Lognormal']))
+
+    # and the block still says which, because the family declares no field for it and the surface
+    # this emitter does not author is what the engine actually reads
     source_line = block_of()[1]['instrument']['Quote_Source']
     assert 'NORMAL vols' in source_line
-    assert 'LOGNORMAL Black' in source_line and 'reads no Distribution_Type' in source_line
+    assert 'the convention the named surface DECLARES' in source_line
+    assert 'Distribution_Type Normal' in source_line
+    assert 'LOGNORMAL Black' not in source_line and 'reads no Distribution_Type' not in source_line
 
 
 # =============================================================================================

@@ -465,9 +465,10 @@ def test_a_synthetic_tick_sequence_mints_nothing_and_the_absence_is_asserted(rec
         assert ticked['written'] is True and ticked['updated'] == ['FXVolPrices.USD.ZAR']
         priced = CLIENT.post('/book/price', json={}).json()
         assert priced['status'] in ('queued', 'running', 'done')
-        # drain before the next tick: market_edit captures the ROOT logger around bootstrap (the
-        # roadmap's own Known-defects row), so a pricing thread's ERROR landing in that window
-        # refuses a tick that was fine - the race is the engine's, not this gate's claim
+        # drain before the next tick. `market_edit`'s capture is bound to its own thread since
+        # 2026-09-01, so a pricing thread's ERROR no longer refuses a tick that was fine (the
+        # roadmap row is CLOSED); the drain stays because what this gate asserts is a head that has
+        # not moved, and a run still in flight at the last tick has not finished minting nothing
         service.EXECUTOR.queue.join()
 
     assert head(recorded) == genesis, 'a repaint reached the book of record'

@@ -123,11 +123,22 @@ class market_swap_class(namedtuple('market_swap', 'deal_data price weight schedu
         $$\\sigma_N = \\frac{P}{A}\\sqrt{\\frac{2\\pi}{T_0}}$$
 
         Every quoting convention this family carries therefore rides in THROUGH THE PREMIUM, exactly
-        as it does on the Monte Carlo path: a `Market_Volatility` on the row, the surface's ATM read
-        where that column is zero, a shifted-lognormal displacement, a premium file, a
-        `Volatility_Delta` bump and its brentq re-strike. `create_market_swaps` has already turned
-        every one of them into `self.price`, so nothing here re-reads a quote and no convention can
-        be inherited by half.
+        as it does on the Monte Carlo path: a `Market_Volatility` on the row, the surface's declared
+        `Distribution_Type`, a shifted-lognormal displacement, a premium file, a `Volatility_Delta`
+        bump and its brentq re-strike. `create_market_swaps` has already turned every one of them
+        into `self.price`, so nothing here re-reads a quote and no convention can be inherited by
+        half.
+
+        THE INVERSION IS THE QUOTE'S OWN IDENTITY WHERE THE SURFACE SAYS `'Normal'`, which is what
+        that sentence buys once the premium construction reads the declaration: a quoted normal vol
+        goes in through the Bachelier premium and comes back out of this division as itself. Not
+        quite to the bit, and the gap is a CLOCK rather than an approximation - `create_market_swaps`
+        measures the option's expiry in 365.25ths while `schedule.expiry` is the curve's own day
+        count, so the round trip carries $\\sqrt{T_{365.25}/T_{curve}}$, 0.99965787 on an ACT_365
+        curve. It is the same 7e-4 years `swaption_schedule_class` names, it predates this reading
+        and it is not fixed here because fixing it moves every lognormal premium in the repository
+        (`test_a_normal_surface_calibrates_and_the_market_side_round_trips` states it with its
+        number).
 
         `annuity` is the ANALYTIC price's own annuity, off the same t=0 curve - one spelling, so the
         residual below is the premium residual divided by a positive constant and the two sides
@@ -139,9 +150,10 @@ class market_swap_class(namedtuple('market_swap', 'deal_data price weight schedu
         detach(carried))`, worth EXACTLY zero in the forward pass with derivative one, so
         `Quote_Sensitivity` cannot move a calibrated parameter by construction. `base` is the numpy
         market premium inverted in the calculation's own precision, which is what every mark comes
-        out of; `carried` is the same inversion off `black_premium`, the float64 tensor twin
-        `create_market_swaps` already built for the Monte Carlo path. ONE spelling of the twin, not
-        a second one for this objective.
+        out of; `carried` is the same inversion off `market_premium`, the float64 tensor twin
+        `create_market_swaps` already built for the Monte Carlo path - in the surface's own
+        convention, because that twin is bound to the same `PREMIUM_CONVENTIONS` pair the numpy
+        premium was priced with. ONE spelling of the twin, not a second one for this objective.
 
         NOTHING IS DETACHED HERE, and that is the difference from `error` rather than an omission.
         There the carried half divides by the MODEL price, so leaving it attached doubles the
@@ -263,16 +275,33 @@ def create_float_cashflows(base_date, cashflow_obj, frequency):
     return cashflows
 
 
-def black_premium(pvbp, strike, expiry, delta, quote):
+#: THE TWO QUOTING CONVENTIONS THIS FAMILY PRICES, each as the matched pair `create_market_swaps`
+#: needs: the numpy pricer that builds the market premium, and the TENSOR twin of that same formula
+#: which the quote side differentiates. Keyed by `InterestYieldVol`'s declared `Distribution_Type`,
+#: whose own declared default is `'Lognormal'` - so a surface that says nothing is priced exactly as
+#: this family always priced it. The two members of a pair are one formula in two precisions and
+#: never two opinions of it; the two PAIRS are two different prices of the same number, which is the
+#: whole point (`test_the_two_conventions_are_two_prices...` measures how far apart).
+PREMIUM_CONVENTIONS = {
+    'Lognormal': (utils.black_european_option_price, utils.black_european_option),
+    'Normal': (utils.bachelier_european_option_price, utils.bachelier_european_option)}
+
+
+def market_premium(pvbp, strike, expiry, delta, option, quote):
     """One ATM swaption's premium as a differentiable function of its VOL quote.
 
-    `utils.black_european_option` is the engine's own tensor Black - what the cap/floor and swaption
-    pricers value an option with - so this is the twin of the numpy `black_european_option_price`
-    that `create_market_swaps` prices the market premium with, not a second opinion of it. At the
-    money, which is the only place this is called, the two came out bit-identical at every point
-    measured and a gate holds them to 1e-12.
+    `option` is the TENSOR half of this surface's `PREMIUM_CONVENTIONS` pair - the engine's own
+    `utils.black_european_option` or `utils.bachelier_european_option`, which is what the cap/floor
+    and swaption pricers value an option with - so this is the twin of the numpy premium
+    `create_market_swaps` builds beside it and never a second opinion of it. The two share a
+    signature, which is why the convention is a bound argument rather than a branch: a branch here
+    would be a second place the quoting convention is decided.
+
+    At the money, which is the only place this is called, each pair came out bit-identical at every
+    point measured - a gate holds the Black pair to 1e-12 and the Bachelier pair to the HEX DIGIT on
+    all four benchmarks of the four-quote fixture.
     """
-    return pvbp * utils.black_european_option(
+    return pvbp * option(
         quote.new_tensor(strike), quote.new_tensor(strike), quote + delta, expiry, 1.0, 1.0, None)
 
 
@@ -283,18 +312,41 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
 
     THE QUOTE SIDE. `unit` is the residual's unit tensor when the block asks for `Quote_Sensitivity`
     and `None` otherwise, so absent by default nothing outside such a solve knows this exists. The
-    market premium here is built by numpy (`utils.black_european_option_price` is scipy end to end),
-    so it crosses into the residual as a scalar and the quote behind it is severed by construction.
+    market premium here is built by numpy (both members of `PREMIUM_CONVENTIONS`' numpy half are
+    scipy end to end), so it crosses into the residual as a scalar and the quote behind it is
+    severed by construction.
     What this hands over to close that is a PAIR per swaption: the quote as a float64 leaf, and the
     map from that leaf back to this swaption's premium. `market_swap_class.error` is where the two
     are spliced onto the residual.
 
     What a quote IS depends on what the block quotes. A vol-quoted swaption - `Market_Volatility` on
-    the row, or the surface's ATM read when that column is zero - carries the VOL, and the map is
-    `black_premium`, the differentiable preamble that turns a vol into a premium. A premium-quoted
-    one carries the PREMIUM itself and the map is the identity. The vol surface's own interpolation
-    is numpy (`RectBivariateSpline`), so the leaf is the ATM vol AT this swaption's expiry and
-    tenor rather than a node of the surface.
+    the row - carries the VOL, and the map is `market_premium`, the differentiable preamble that
+    turns a vol into a premium under this surface's own convention. A premium-quoted one carries the
+    PREMIUM itself and the map is the identity.
+
+    THE PREMIUM IS PRICED IN THE SURFACE'S DECLARED CONVENTION, which is what this function reads
+    `Distribution_Type` for. `PREMIUM_CONVENTIONS` holds the two: `'Lognormal'` - the field's own
+    declared default, so a surface that says nothing prices exactly as this family always priced it -
+    strikes the premium with Black at `K + shift`, and `'Normal'` strikes it with Bachelier off a
+    vol that is an ABSOLUTE rate move. Before this was read, a normal-vol ladder (the seeded ZAR
+    `SASN` grid is one) fitted under a lognormal convention with nothing said against it, while the
+    DEAL path carried the same surface's `(Distribution_Type, Shift)` into every swaption's
+    `Volatility` dependency through `Factor3D.get_subtype` - the calibration and the pricer
+    disagreeing about the same quote. `get_subtype` is the read here too, so there is ONE spelling
+    of what a surface declares rather than one per path.
+
+    THE DISPLACEMENT IS `vol_surface.displacement` AND NOT THE RAW ALIAS, which is the other half of
+    that same divergence: the declared `Shift` outranks the undeclared `Property_Aliases` legacy,
+    and a displacement authored beside `'Normal'` refuses there rather than being dropped. See
+    `riskfactors.InterestYieldVol.displacement` for the precedence.
+
+    A ZERO `Market_Volatility` REFUSES, and so does an absent one. That column used to fall through
+    to `vol_surface.ATM(tenor, expiry)` wherever it was zero, so a blank cell emitted as a zero
+    calibrated against whatever the book's surface happened to hold, under the name of a quote
+    nobody gave - the engine could not tell "quoted zero" from "not quoted". Nothing in the tree
+    quoted either way (the enumeration is in the roadmap row that closes with this), so the
+    fallthrough is retired rather than re-plumbed: a benchmark is a QUOTE, and a row that carries
+    none is an absent row.
 
     THE SCHEDULE THE ANALYTIC OBJECTIVE READS is extracted here and nowhere else. Both leg
     generators have already run by the time the premium is priced, so the fixed leg's pay days and
@@ -312,14 +364,22 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
     benchmarks = []
     # store the benchmark instruments
     all_deals = {}
-    # cater for shifted lognormal vols
-    shift_parameter = vol_surface.BlackScholesDisplacedShiftValue / 100.0
+    # the surface's DECLARED convention, read once - `get_subtype` is the deal path's own read
+    distribution = vol_surface.get_subtype()[0]
+    if distribution not in PREMIUM_CONVENTIONS:
+        raise Exception(
+            "InterestYieldVol declares Distribution_Type '{}', which is not a convention this "
+            'calibration prices a benchmark premium in - they are {}. Correct the surface\'s '
+            'Distribution_Type to one of those'.format(
+                distribution, ' and '.join(sorted(PREMIUM_CONVENTIONS))))
+    price_option, tensor_option = PREMIUM_CONVENTIONS[distribution]
+    # cater for shifted lognormal vols - declared `Shift` first, `Property_Aliases` behind it
+    shift_parameter = vol_surface.displacement
     for instrument in instrument_definitions:
         # set up the instrument
         effective = base_date + instrument['Start']
         maturity = effective + instrument['Tenor']
         exp_days = (effective - base_date).days
-        tenor = (maturity - effective).days / utils.DAYS_IN_YEAR
         expiry = exp_days / utils.DAYS_IN_YEAR
         time_index = np.searchsorted(time_grid.mtm_time_grid, [exp_days], side='right') - 1
         swaption_name = 'Swaption_{}_{}'.format(
@@ -367,11 +427,17 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
                 base_date, fixed_schedule[:, utils.CASHFLOW_INDEX_Pay_Day]),
             accruals=fixed_schedule[:, utils.CASHFLOW_INDEX_Year_Frac].copy())
 
-        # get the atm vol
-        if instrument['Market_Volatility'].amount:
-            vol = instrument['Market_Volatility'].amount
-        else:
-            vol = vol_surface.ATM(tenor, expiry)[0][0]
+        # the quote, which a benchmark has to carry - see the docstring for the retired fallthrough
+        if 'Market_Volatility' not in instrument:
+            raise Exception(
+                '{}: the benchmark carries no Market_Volatility, and a swaption with no quote is '
+                'not a benchmark. Author the vol on the row, or drop the row'.format(swaption_name))
+        vol = instrument['Market_Volatility'].amount
+        if not vol:
+            raise Exception(
+                '{}: Market_Volatility is quoted ZERO, and a zero vol is not a price - it used to '
+                "read the surface's own ATM instead, which calibrates against a quote nobody gave. "
+                'Author the vol on the row, or drop the row'.format(swaption_name))
 
         deal_data = utils.DealDataType(
             Instrument=None, Factor_dep={'Cashflows': float_cash, 'Forward': curve_index,
@@ -384,7 +450,7 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
             swaption_price = vol_surface.get_premium(date_fmt(instrument['Start']), date_fmt(instrument['Tenor']))
             if vol_surface.delta:
                 try:
-                    implied_vol = scipy.optimize.brentq(lambda v: pvbp * utils.black_european_option_price(
+                    implied_vol = scipy.optimize.brentq(lambda v: pvbp * price_option(
                         shifted_strike, shifted_strike, 0.0, v, expiry, 1.0, 1.0) - swaption_price, 0.01, vol + .5)
                 except:
                     modified_k = vol_surface.get_strike_from_premiums(date_fmt(instrument['Start']),
@@ -393,13 +459,13 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
                         'Implied vol calc during delta bump failed - calculated strike is {} - using strike from premium file {}'.format(
                             K, modified_k))
                     shifted_strike = modified_k + shift_parameter
-                    implied_vol = scipy.optimize.brentq(lambda v: pvbp * utils.black_european_option_price(
+                    implied_vol = scipy.optimize.brentq(lambda v: pvbp * price_option(
                         shifted_strike, shifted_strike, 0.0, v, expiry, 1.0, 1.0) - swaption_price, 0.01, vol + .5)
 
-                swaption_price = pvbp * utils.black_european_option_price(
+                swaption_price = pvbp * price_option(
                     shifted_strike, shifted_strike, 0.0, implied_vol + vol_surface.delta, expiry, 1.0, 1.0)
         else:
-            swaption_price = pvbp * utils.black_european_option_price(
+            swaption_price = pvbp * price_option(
                 shifted_strike, shifted_strike, 0.0, vol + vol_surface.delta, expiry, 1.0, 1.0)
 
         # the quote side - a float64 leaf and the map back to this swaption's premium, see docstring
@@ -409,7 +475,7 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
             quote = unit.new_tensor(
                 swaption_price if premium_quoted else vol, dtype=torch.float64).requires_grad_(True)
             premium = (lambda q: q) if premium_quoted else partial(
-                black_premium, pvbp, shifted_strike, expiry, vol_surface.delta)
+                market_premium, pvbp, shifted_strike, expiry, vol_surface.delta, tensor_option)
 
         # store this
         all_deals[swaption_name] = market_swap_class(
@@ -2778,13 +2844,13 @@ class RiskNeutralInterestRateModel(object):
         leaf per benchmark serves both, because the severance and the twin premium that repairs it
         are the same on either side of the switch - what differs is only what the residual then does
         with that premium, and the analytic one does something SEPARABLE with it (see
-        `market_swap_class.normal_vol_error`). Three severances stay open
+        `market_swap_class.normal_vol_error`). Two severances stay open
         deliberately, because their upstream is not a quote of THIS calibration: `get_par_swap_rate`
-        prices the strike and the pvbp in numpy off the zero curve, `set_fixed_amount` writes that
-        strike into the schedule's numpy half, and the ATM read interpolates the vol SURFACE with
-        `RectBivariateSpline`. The first two are the calibrated curve, which is increment 1's quote;
-        the third is the surface-node-to-ATM map, which is a quote of the surface rather than of the
-        swaption.
+        prices the strike and the pvbp in numpy off the zero curve, and `set_fixed_amount` writes
+        that strike into the schedule's numpy half. Both are the calibrated curve, which is
+        increment 1's quote. There were THREE while a zero `Market_Volatility` fell through to the
+        surface's own ATM read - the surface-node-to-ATM map, a quote of the surface rather than of
+        the swaption - and that row now refuses instead, so the severance it named cannot be reached.
         """
         block = implied_params['instrument']
         objective = block.get('Objective', 'Analytic')
@@ -3094,7 +3160,10 @@ scipy.optimize.leastsq.html) are used.',
             F('Fixed_Day_Count', 'Text',
               values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
             F('Market_Volatility', 'Percent',
-              description='The quoted ATM vol; 0 reads the swaption surface'),
+              description='The quoted ATM vol, in the convention the surface declares - a '
+                          'lognormal Black vol, or an absolute normal one where Distribution_Type '
+                          'is Normal. Required: a zero (which used to read the surface\'s own ATM '
+                          'instead) and an absent one both refuse by name'),
             F('Weight', 'Float', description='Relative weight in the objective')]),
           description='The forward starting swaps the swaptions are struck on'),
         F('Objective', 'Text', default='Analytic', values=['Monte_Carlo', 'Analytic'],
@@ -3133,7 +3202,7 @@ scipy.optimize.leastsq.html) are used.',
                       'Carlo paths are a separately frozen Sobol sample and do not move with it'),
         F('Quote_Sensitivity', 'Text', default='No', values=['Yes', 'No'],
           description='Keep each benchmark swaption connected to the quote it was priced off - the '
-                      'row\'s Market_Volatility, the surface\'s ATM read, or the premium - so the '
+                      'row\'s Market_Volatility or the premium - so the '
                       'residual differentiates in the quote as well as in the model parameters. '
                       'The splice is worth exactly zero in the forward pass, so the calibrated '
                       'parameters are identical either way. Built on BOTH objectives, off the same '
@@ -3174,7 +3243,18 @@ scipy.optimize.leastsq.html) are used.',
             F('Day_Count', 'Text', default='ACT_365',
               values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
             F('Index_Offset', 'Integer', default=0)],
-          description='Unbuilt: the grid Generate_Instruments would sweep')
+          description='Unbuilt: the grid Generate_Instruments would sweep'),
+        F('Quote_Timestamp', 'Date', default='',
+          description='When the ladder was seen - the terminal\'s own as-of where this block was '
+                      'authored off a screen (derivus_bloomberg.swaption_vol). Stored and '
+                      'reported; nothing in the fit reads it, because what counts as too old is '
+                      'the consumer\'s policy and not the parameters\''),
+        F('Quote_Source', 'Text', default='',
+          description='How this block was authored, in one line: what the vols were read off, the '
+                      'convention they are quoted in, and the surface whose Distribution_Type the '
+                      'calibration will actually price them under. Declared so a machine-fetched '
+                      'ladder\'s provenance is data on the block rather than an undeclared key '
+                      'bootstrap reads past')
     ]
 
     def __init__(self, param, device, dtype):
@@ -4185,9 +4265,23 @@ class InterestRateCurveParameters(object):
                           'reads: a rate benchmark is quoted in percent, and an FXForwardDeal is '
                           'quoted as a forward OUTRIGHT - units of Buy_Currency per one unit of '
                           'Sell_Currency. The family scales nothing; each type\'s field semantics '
-                          'do - see QUOTE_WRITERS')],
-          description='One market quote: an instrument, what kind of number is quoted, and the '
-                      'number')
+                          'do - see QUOTE_WRITERS. The one value key a patch cannot clear '
+                          '(schema.MARKET_QUOTE_REQUIRED): a mid is moved, never removed'),
+            F('Quoted_Bid', 'Float',
+              description='The bid side of this quote, in the same unit as the mid. QUOTE-LAYER '
+                          'data: nothing below reads it and the curve is solved from '
+                          'Quoted_Market_Value alone - the mid is what the book runs on. Optional '
+                          'because a benchmark the terminal quotes no two-way for stays mid-only '
+                          'rather than borrowing a spread'),
+            F('Quoted_Ask', 'Float',
+              description='The offer side, the pair of Quoted_Bid. Optional on the same terms, and '
+                          'read by nothing in the solve - it is the evidence a desk charges a '
+                          'spread off, not an input to the strip'),
+            F('Timestamp', 'Date', default='',
+              description='When this quote was observed. Stored and reported, never read by the '
+                          'solve - what counts as too old is the consumer\'s policy')],
+          description='One market quote: an instrument, what kind of number is quoted, the number, '
+                      'its two-way sides where the source printed them, and when it was seen')
     ]
 
     def __init__(self, param, device, dtype):
