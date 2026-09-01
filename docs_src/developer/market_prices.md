@@ -77,9 +77,15 @@ single-curve configuration.
 **The quotes.** Each point carries a `Deal` — a deposit, an FRA, a swap, an `FXForwardDeal`, or a
 `StructuredDeal` over two legs, authored exactly as it would be in `Trade Data`, because it is the
 same declaration — plus `DealType`, `Quote_Type`, `Quoted_Market_Value` and a free-text
-`Descriptor`, and a `Use` flag so a quote can be held out without being deleted. `DealType`
-supplies the block's `Object`, and the family stamps `Discount_Rate`: what an instrument *projects* off is its own business and it names
-that curve itself, what the quote set *discounts* on belongs to the curve set and is stated once.
+`Descriptor`, and a `Use` flag so a quote can be held out without being deleted. Three more
+columns are declared and the solve reads none of them: `Quoted_Bid` and `Quoted_Ask`, which a
+Bloomberg-authored point carries where the feed printed a two-way, and a `Timestamp`, which it
+carries unconditionally. They are this family's share of the value plane every `Points` family has
+— `schema.MARKET_QUOTE_VALUES`, the columns a tick may move without touching the plan — and the
+curve is solved from `Quoted_Market_Value` alone, the one of the four a patch cannot clear.
+`DealType` supplies the block's `Object`, and the family stamps `Discount_Rate`: what an
+instrument *projects* off is its own business and it names that curve itself, what the quote set
+*discounts* on belongs to the curve set and is stated once.
 
 `Quoted_Market_Value` is read in the unit its own `DealType` reads, and where it lands is a
 property of the instrument TYPE — a `FRA_Rate`, a `Swap_Rate`, a pinned `Interest_Rate_Schedule`, a

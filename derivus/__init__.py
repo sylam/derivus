@@ -124,23 +124,20 @@ def load_market_data(rundate, path, json_name='MarketData.json', calendar_name='
 
 def solve_deal_field(document, deal_path, field, target=0.0, bounds=None, tolerance=0.01,
                      max_iterations=30):
-    """Solve ONE field of a deal so the deal's own value lands on `target` - the structuring
-    verb: par forwards (target 0), sales margins, a collar's second strike, a strike to a premium.
+    """Solve ONE field of a deal so the deal's own value lands on `target` - par forwards
+    (target 0), sales margins, a collar's second strike, a strike to a premium.
 
-    Not a calculation type: a driver over the ordinary run, the bootstrap's own pattern (a root
-    find around the engine's pricers) applied to a deal field. Each iterate rewrites the field in
-    a copy of the wire document, loads and runs it, and reads the deal's own row off the `mtm`
-    frame - the document's seed is fixed, so a Monte-Carlo-priced objective is DETERMINISTIC and
-    the solved field is conditional on that draw, the same philosophy as the swaption calibration.
-    A deal field is structural today, so every iterate recompiles; the solve is where the case for
-    extending `bind=` to payoff-only deal fields will be measured, not assumed.
+    Each iterate rewrites the field in a copy of the wire document, loads and runs it, and reads
+    the deal's own row off the `mtm` frame. The document's seed is fixed, so a Monte-Carlo-priced
+    objective is DETERMINISTIC and the solved field is conditional on that draw. A deal field is
+    structural, so every iterate recompiles.
 
     With `bounds`, bracketed brentq; without, a secant from the field's current value - exact in
-    two evaluations for anything affine in the field (an amount), and fast on the monotone
-    payoffs a strike lives in. Raises when the residual cannot reach `tolerance`, naming it.
+    two evaluations for anything affine in the field. Raises when the residual cannot reach
+    `tolerance`, naming it.
 
-    Returns `(solved_value, evaluations, residual, out)` - `out` being the full output of the
-    run AT the solved value, so the caller reports a priced answer, never an extrapolated one.
+    Returns `(solved_value, evaluations, residual, out)`, `out` being the full output of the run
+    AT the solved value.
     """
     from scipy import optimize
 
@@ -176,9 +173,9 @@ def solve_deal_field(document, deal_path, field, target=0.0, bounds=None, tolera
 def run_baseval(context, prec=torch.float64, overrides=None):
     """
     Runs a base valuation calculation on the provided context
-    :param prec:
     :param context: a Context object
-    :param overrides: a dictionary of overrides to replace the context's  calculation parameters
+    :param prec: the numerical precision to use (default float64)
+    :param overrides: a dictionary of overrides merged over the context's calculation parameters
     :return: a tuple containing the calculation object and the output dictionary
     """
     from .calculation import construct_calculation
@@ -187,9 +184,8 @@ def run_baseval(context, prec=torch.float64, overrides=None):
         {'Base_Date': context.params['System Parameters']['Base_Date'],
          'Currency': context.params['System Parameters']['Base_Currency']})
 
-    # check if the gpu is available
     if torch.cuda.is_available():
-        # make sure we try to be deterministic as possible
+        # CUBLAS_WORKSPACE_CONFIG is what makes cuBLAS reductions deterministic run to run
         os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
         device = torch.device("cuda:0")
         torch.cuda.empty_cache()
@@ -218,9 +214,8 @@ def run_hedgemontecarlo(context, prec=torch.float32, overrides=None):
         {'Base_Date': context.params['System Parameters']['Base_Date'],
          'Currency': context.params['System Parameters']['Base_Currency']})
 
-    # check if the gpu is available
     if torch.cuda.is_available():
-        # make sure we try to be deterministic as possible
+        # CUBLAS_WORKSPACE_CONFIG is what makes cuBLAS reductions deterministic run to run
         os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
         device = torch.device("cuda:0")
         torch.cuda.empty_cache()
@@ -240,7 +235,6 @@ def run_hedgemontecarlo(context, prec=torch.float32, overrides=None):
 
     calc = construct_calculation('HedgeMonteCarlo', context, device=device, prec=prec)
     out = calc.execute(params_mc)
-    # summarize the results for easy review
 
     return calc, out
 
@@ -252,7 +246,7 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
     :param num_jobs: number of jobs spawned - usually just 1 (i.e. the parent)
     :param job_id: used if multiprocessing is set (index of this process in a group of workers)
     :param context: a Context object
-    :param overrides: a dictionary of overrides to replace the context's  calculation parameters
+    :param overrides: a dictionary of overrides merged over the context's calculation parameters
     :param prec: the numerical precision to use (default float32)
     :return: a tuple containing the calculation object, output dictionary and exposure profile
     """
@@ -263,9 +257,8 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
         {'Base_Date': context.params['System Parameters']['Base_Date'],
          'Currency': context.params['System Parameters']['Base_Currency']})
 
-    # check if the gpu is available
     if torch.cuda.is_available():
-        # make sure we try to be deterministic as possible
+        # CUBLAS_WORKSPACE_CONFIG is what makes cuBLAS reductions deterministic run to run
         os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
         device = torch.device("cuda", job_id)
         torch.cuda.empty_cache()
@@ -297,14 +290,11 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
                 list(zip(new_terms, np.interp(new_terms, *survivalprob['Curve'].array.T))))
 
     if params_mc.get('Collateral_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
-        # setup collva calc
         ns = context.deals['Deals']['Children'][0]['Instrument'].field
         collva_sect = context.deals['Calculation']['Collateral_Valuation_Adjustment']
-        # get the agreement currency        
         calc_currency = ns.get('Balance_Currency', 'ZAR')
 
         if 'Cash_Collateral' not in ns.get('Collateral_Assets', {}):
-            # get the funding and collateral rates
             collateral_curve = collva_sect['Collateral_Curve']
             funding_curve = collva_sect['Funding_Curve']
 
@@ -332,7 +322,6 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
 
     calc = construct_calculation('Credit_Monte_Carlo', context, device=device, prec=prec)
     out = calc.execute(params_mc, job_id, num_jobs)
-    # summarize the results for easy review
     out['Results']['exposure_profile'] = summarize_data(
         out['Results']['mtm'], params_mc.get('Percentile', '95').replace(' ', ''))
 
@@ -346,17 +335,12 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
 def quote_delta(name, points, values):
     """One `Market Prices` block's patched value rows: the delta merged onto what each row carries.
 
-    Separated from `Context.patch_market` only because every refusal here has to NAME the block,
-    and a message is the whole of what this returns when it does not return rows.
-
-    `Points` is the one key a quote patch may name - everything else on a block is a plan of its
-    own - and the row list is exactly as long as the block's, because dropping or adding a quote
-    re-authors the instrument set rather than moving a number. Per row: a named field replaces, an
-    omitted one keeps, and `null` clears every value key but `schema.MARKET_QUOTE_REQUIRED` - the
-    guard's own ruling that a pillar which stops being quoted two-sided is the same node of the
-    same plan, read back the other way. A null `Quoted_Market_Value` refuses: a mid is moved.
-    WHICH keys may be cleared is a declaration and not a name spelled here, so a fifth value key
-    arrives classified rather than null-clearable by whoever adds it.
+    `Points` is the one key a quote patch may name - everything else on a block is plan - and the
+    row list is exactly as long as the block's, because dropping or adding a quote re-authors the
+    instrument set rather than moving a number. Per row: a named field replaces, an omitted one
+    keeps, and `null` clears every value key outside `schema.MARKET_QUOTE_REQUIRED`; a null
+    `Quoted_Market_Value` refuses, because a mid is moved. WHICH keys may be cleared is a
+    declaration, not a name spelled here.
     """
     for field in values:
         if field != 'Points':
@@ -409,7 +393,6 @@ class Context:
             # of one job must hash the same, and Base_Date is a date everywhere it is read
             new_cfg.params['System Parameters']['Base_Date'] = pd.Timestamp.now().normalize()
 
-        # set its version
         new_cfg.version = ['JSONVersion', '22.05.30']
         return new_cfg
 
@@ -459,9 +442,7 @@ class Context:
 
         if data['Calc'].get('CalendDataFile'):
             if data['Calc']['CalendDataFile'] not in self.holiday_cfg_cache:
-                # parse calendar file
                 cfg.parse_calendar_file(self.parse_path(data['Calc']['CalendDataFile']))
-                # store a link
                 self.holiday_cfg_cache[data['Calc']['CalendDataFile']] = cfg.holidays
             cfg.holidays = self.holiday_cfg_cache[data['Calc']['CalendDataFile']]
 
@@ -469,11 +450,9 @@ class Context:
             cfg.deals = {'Attributes': {
                 'Tag_Titles': data['Calc']['Deals'].get('Tag_Titles', ''),
                 'Reference': data['Calc']['Deals'].get('Reference')}}
-            # get the valuation config
             valuation_config = cfg.params.get('Valuation Configuration', {})
-            # try to compress the deal data if possible (after resolving it)
             deals = resolve_deferred_deals ( data['Calc']['Deals']['Deals'], valuation_config )
-            # construct the deals - need to nest this - TODO!
+            # TODO: the compression only reaches one level of nesting
             if compress:
                 for i in deals['Children']:
                     if 'Children' in i:
@@ -486,16 +465,14 @@ class Context:
         cfg.deals.update({'Deals': deals})
         cfg.deals.update({'Calculation': data['Calc']['Calculation']})
 
-        #  set the current context to newly loaded one
         self.current_cfg = cfg
-        # return this object
         return self
 
     def save_json(self, json_filename):
         '''
-        Quick and dirty method to save a JSON back to file - experimental - not fully implemented
-        :param json_filename:
-        :return: None (saves the job to JSON file)
+        Writes the loaded job back out as a job JSON - experimental, not fully implemented
+        :param json_filename: destination path, or None to return the JSON string instead
+        :return: None when a filename is given, otherwise the JSON string
         '''
 
         def write_final_json(out_json, cfg, section):
@@ -561,16 +538,13 @@ class Context:
         """The VALUES half of the market data: `{name: {field: content}}` over both market sections.
 
         Everything a job may change without recompiling - spots, the rate column of every curve,
-        the vol column of every surface, the calibrated model parameters, and every QUOTE a
+        the vol column of every surface, the calibrated model parameters, and every quote a
         `Market Prices` block carries on a `Points` row. What sizes a tenor grid, wires a process or
-        picks a code path is absent, because that is the plan. A factor whose block holds no
-        value-bound field, and a market-price block whose quotes are not `Points` rows, do not
-        appear at all - nor does a quote key holding `null`, which is a source with no print rather
-        than a number, and is what `patch_market` reads it back as.
+        picks a code path is plan and does not appear, nor does a quote key holding `null`, which is
+        a source with no print rather than a number.
 
         The two sections cannot collide in one dict: every family type string ends in `Prices` and
-        no factor type does, so a name resolves to exactly one section. A market-price entry is
-        keyed by the one field a quote patch may name, `{'Points': [row, ...]}`, which is the shape
+        no factor type does. A market-price entry is keyed `{'Points': [row, ...]}`, the shape
         `patch_market` takes it back in.
         """
         patch = {}
@@ -588,23 +562,17 @@ class Context:
         """Apply a values patch in place, and fail loud on anything else.
 
         A patch is a DELTA: a field it names is replaced, a value field it omits keeps its current
-        content - so `{"FxRate.EUR": {"Spot": 1.24}}` is a complete, valid patch and streaming one
-        tick never needs the rest of the block. A key naming no value-bound field of that factor
-        raises - including a field the block does not carry, since a key set that grows or shrinks
-        is a different plan, not a different value.
+        content, so `{"FxRate.EUR": {"Spot": 1.24}}` is a complete patch. A key naming no
+        value-bound field of that factor raises - including a field the block does not carry, since
+        a key set that grows or shrinks is a different plan, not a different value.
 
-        A name is resolved against `Price Factors` first and `Market Prices` second, and one in
-        neither section says so naming both. A market-price name takes exactly one key, `Points`,
-        carrying a list as long as the block's own - a changed row count is a new plan, not a new
-        number - and only `schema.MARKET_QUOTE_VALUES` per row. `null` CLEARS a two-way side or a
-        `Timestamp`, because a pillar that stops being quoted two-sided is still the same node of
-        the same plan; a null MID refuses, because a mid is moved and never removed.
+        A name resolves against `Price Factors` first and `Market Prices` second, and one in neither
+        section says so naming both. A market-price name takes exactly one key, `Points`, carrying a
+        list as long as the block's own and only `schema.MARKET_QUOTE_VALUES` per row; `null` clears
+        a two-way side or a `Timestamp`, and a null mid refuses.
 
-        A quote patch does NOT re-bootstrap. The price factors the last bootstrap wrote stand
-        exactly as they are and `values_hash` records the board that is actually standing, which is
-        the honest statement - the consumer that reads quotes at EXECUTE is the ride
-        (`Quote_Propagation`), deriving theta from `(artifact, q_now)` rather than from anything
-        written here.
+        A quote patch does NOT re-bootstrap: the price factors the last bootstrap wrote stand as
+        they are, and `values_hash` records the board that is actually standing.
         """
         factors = self.current_cfg.params['Price Factors']
         prices = self.current_cfg.params['Market Prices']
@@ -633,16 +601,9 @@ class Context:
         own - every `bind='value'` field of a price factor, `schema.MARKET_QUOTE_VALUES` on a
         `Market Prices` `Points` row, both of which `values_hash` carries, and `Random_Seed`.
         Everything else is in, `Batch_Size` and `Simulation_Batches` included: they change the
-        realized numbers, so a replay has to pin them.
-
-        Two declarations rather than one because the two sections state the line differently and
-        deliberately: a factor field DECLARES `bind='value'`, while a quote row's four value keys
-        are named once for every family at once - a boundary that depended on which block you were
-        looking at would not be a boundary. Either way the rule is the same rule: the NUMBERS are
-        values and everything the solve reads is plan. A vol tick therefore moves `values_hash` and
-        leaves this bit-identical, which is what makes the two staleness dimensions disjoint; a
-        moved pillar, a flipped `Use` or a re-authored benchmark lands here, because that is a
-        different program and not a different number.
+        realized numbers, so a replay has to pin them. A vol tick therefore moves `values_hash` and
+        leaves this bit-identical; a moved pillar, a flipped `Use` or a re-authored benchmark lands
+        here, because that is a different program rather than a different number.
 
         `params['Correlations']` is the SIMULATION matrix feeding the cholesky - a compile input, and
         a different thing entirely from the `Correlation` price factor a quanto reads. It is re-keyed
@@ -669,24 +630,17 @@ class Context:
         """
         return content_hash(self.market_patch())
 
-    # --------------------------------------------------------------------------------------------
-    # The book-of-record verbs. Five delegators and no sixth, each one line of its own logic.
-    #
-    # The brief's build order puts "booking verbs on Context" and the house's first law says no
-    # module under `derivus/` learns about users, workflow or storage. Both hold because everything
-    # below hands PLAIN DATA to `derivus_spine`, which is reached lazily inside `derivus.spine` -
-    # the `service.py` precedent for an extra - and refuses by name where the extra is absent or
-    # `DV_SPINE_HOME` names no home. With no home configured these verbs are the only thing on this
-    # class that mentions a record at all, and nothing else on the engine's path can tell.
+    # The book-of-record verbs. Each hands PLAIN DATA to `derivus_spine`, reached lazily inside
+    # `derivus.spine` so nothing under `derivus/` depends on the extra; a missing extra or an unset
+    # `DV_SPINE_HOME` refuses by name.
 
     def book(self, deal, quantity, counterparty, netting_set, execution_reference,
              actor=None, book=None, effective_time=None):
         """Book a fill: the canonical instrument registered, the SIGNED quantity recorded.
 
         The instrument id is the content hash of the deal's canonical JSON, so booking the same
-        strike twice finds the same instrument and files two events against it. `execution_reference`
-        has no default anywhere on this path - it is what makes a retry the same fact by
-        construction and two identical clips two facts by construction.
+        strike twice files two events against one instrument. `execution_reference` has no default
+        anywhere on this path: it is what makes a retry the same fact and two identical clips two.
         """
         from .spine import book as record
 
@@ -705,8 +659,7 @@ class Context:
         """File an election, a fixing observation or a determination - and nothing else.
 
         A knock, an expiry or an accrual is a CONSEQUENCE of terms plus one of those three, so it is
-        a projection and this verb refuses it with the closure stated rather than storing a second
-        source of truth about whether the barrier fired.
+        a projection and this verb refuses it rather than storing a second source of truth.
         """
         from .spine import apply_lifecycle as record
 
@@ -718,7 +671,7 @@ class Context:
 
         Officialness is a property of the name rather than of the data: every values vector lives
         identically in the store, and `official` moves onto one only by declaration from a
-        `mark`-scoped actor - which the writer enforces, so this verb does not check it twice.
+        `mark`-scoped actor, which the writer enforces.
         """
         from .spine import declare_market as record, values_of
 
@@ -729,9 +682,8 @@ class Context:
         attested, and only then record it.
 
         The executor is built from THIS context's own class, so a subclass that prices differently
-        pins through the pricing it actually does. A version mismatch refuses by name - a replay
-        claim is a claim AT the recorded version - and bytes that will not reproduce within the
-        declared tolerance policy are refused rather than attested.
+        pins through the pricing it actually does. A version mismatch refuses by name, and bytes
+        that will not reproduce within the declared tolerance policy are refused, not attested.
         """
         from .spine import executor, pin_result as record
 
@@ -757,19 +709,15 @@ class Context:
                 self.current_cfg, torch.float32, overrides, False, i, num_workers, results))
                             for i in range(num_workers)]
 
-            # start all children
             for w in workers:
                 w.start()
 
-            # now collate the results
             post_processing = []
             for i in range(num_workers):
                 post_processing.append(results.get())
 
-            # close the queue
             results.close()
 
-            # terminate all worker processes
             for w in workers:
                 w.join()
                 if w.is_alive():
@@ -780,7 +728,6 @@ class Context:
                 data = dict(output)
                 for k, v in data.items():
                     post_results.setdefault(k, []).append(v)
-            # return the results
             return post_results
         else:
             return run_cmc(self.current_cfg, overrides=overrides)
@@ -807,22 +754,19 @@ class StressedContext(Context):
             self.current_cfg.params['Price Factors'].update(self.current_factors)
 
     def stress_config(self, rate_group):
-        # calculate the current factors to stress
         factors_to_override, models_to_override = self.calc_stress_config(rate_group)
-        # back up the old factors and models
         self.current_factors = {k: self.current_cfg.params['Price Factors'][k] for k in factors_to_override.keys()}
         # .get: an implied model may be overridden without carrying an entry of its own
         self.current_models = {k: self.current_cfg.params['Price Models'].get(k) for k in models_to_override.keys()}
-        # override the models
         self.current_cfg.params['Price Factors'].update(factors_to_override)
         self.current_cfg.params['Price Models'].update(models_to_override)
 
     def calc_stress_config(self, rate_group):
         '''
+        Loads the stressed market data file and returns what it has to say about the rate group
         :param rate_group: Rate group (InterestRate, FxRate etc.)
-        :return:
+        :return: a tuple of the price factors and the price models to override
         '''
-        # check if the stressed file is loaded
         if self.stressed_config_file not in self.config_cache:
             self.stressed_cfg = self.load_config(self.parse_path(self.stressed_config_file))
             self.config_cache[self.stressed_config_file] = self.stressed_cfg

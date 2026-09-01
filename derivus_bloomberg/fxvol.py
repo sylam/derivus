@@ -26,9 +26,8 @@ from .types import (FXQuoteSecurity, FXVolDefinition, FXVolPoint, FXVolSnapshot,
 SUPPORTED_CONVENTION = ('Forward', True, 'Delta_Neutral_Straddle')
 BOOTSTRAPPER = 'FXVolSurfaceParameters'
 #: The two-way a vol pillar carries beside its last print. Asked for in the same request as the
-#: value and NEVER required: the mid is what the surface, the bootstrap and every mark are built
-#: from, and a pillar the terminal quotes no two-way for must cost a desk its spread, never its
-#: tick.
+#: value and NEVER required - the mid is what the surface and every mark are built from, so a
+#: pillar the terminal quotes no two-way for costs a desk its spread, never its tick.
 TWO_SIDED_FIELDS = ('PX_BID', 'PX_ASK')
 
 
@@ -134,8 +133,7 @@ def normalize_fx_vol(definition: FXVolDefinition,
 
 def _scaled_side(side, quote_scale: float) -> float | None:
     """One side of a two-way in the surface's own units, or None. Absent, unparseable and
-    non-finite all read as ABSENT: a spread the terminal did not quote is not a spread, and the
-    one thing this must never do is manufacture one out of the mid."""
+    non-finite all read as ABSENT - never as a side derived from the mid."""
     try:
         scaled = float(side) * quote_scale
     except (TypeError, ValueError):
@@ -144,14 +142,13 @@ def _scaled_side(side, quote_scale: float) -> float | None:
 
 
 def _value_of(security: str, field: str, row: Mapping[str, object]):
-    """The strict policy applied CLIENT-SIDE to one security's value, off a tolerant row.
+    """One security's value out of a tolerant row, held to the STRICT reader's policy: an error
+    Bloomberg reported is raised under its own type, a value simply absent raises
+    `IncompleteSurface`.
 
-    The two readers differ only in policy, so the policy can be moved to where it belongs while
-    the REQUEST is made once. `reference_data` refuses the whole batch on any per-security error,
-    which is right for the value - a tick built from a partial answer is a wrong market - and
-    wrong for the two-way, since a pillar the terminal quotes no bid for raises exactly that
-    error and would take the mid down with it. So the value is held to the strict rule in the
-    strict reader's own wording and typing, and the sides beside it are simply read.
+    The policy is applied here rather than by the reader so one request can carry both the value
+    and the optional two-way beside it - a pillar quoted mid-only reports an error for `PX_BID`
+    that must not take the mid down with it.
     """
     values = row.get('fields', {})
     if field in values:
@@ -163,9 +160,8 @@ def _value_of(security: str, field: str, row: Mapping[str, object]):
 
 def fetch_fx_vol(source: ReferenceDataSource, definition: FXVolDefinition) -> FXVolSnapshot:
     validate_definition(definition)
-    # ONE terminal round trip: every security, its value field and both sides of the two-way in
-    # the same request, read through the tolerant reader because a mid-only pillar's PX_BID
-    # exception must not refuse the pillar that answered
+    # ONE terminal round trip: every security, its value field and both sides of the two-way,
+    # through the TOLERANT reader so a mid-only pillar's PX_BID exception refuses nothing
     fields = sorted({quote.value_field for quote in definition.securities.values()})
     response = source.reference_data_report(
         sorted({quote.security for quote in definition.securities.values()}),
@@ -225,8 +221,8 @@ def validate_snapshot(snapshot: FXVolSnapshot) -> None:
                 point.expiry_label, point.quote_type, point.value))
         if pd.Timestamp(point.observed_at) != retrieved_at:
             raise InvalidQuote('every point must carry the snapshot retrieval timestamp')
-        # a side may be ABSENT - that is what optional means here - but a side that is there is a
-        # number a quote gets struck off, so it is held to the same finiteness as the mid
+        # a side may be absent, but a side that is there is struck off, so it is held to the
+        # same finiteness as the mid
         for side in (point.bid, point.ask):
             if side is not None and not math.isfinite(side):
                 raise InvalidQuote('{} {} has an invalid two-way side {!r}'.format(
@@ -245,8 +241,7 @@ def to_market_prices_block(snapshot: FXVolSnapshot) -> dict:
             'Quoted_Market_Value': point.value,
             'Timestamp': point.observed_at,
         }
-        # written ONLY when the terminal quoted one, so a mid-only surface's block is the block it
-        # has always been, key for key - the compatibility contract the quote layer rests on
+        # written ONLY when the terminal quoted one, so a mid-only surface emits a mid-only block
         if point.bid is not None:
             row['Quoted_Bid'] = point.bid
         if point.ask is not None:
@@ -279,9 +274,8 @@ def _market_prices(config) -> dict:
 
 
 def _structure(block: dict) -> tuple:
-    # Quoted_Bid/Quoted_Ask are missing from this tuple deliberately, exactly as the mid is: a
-    # two-way MOVES on a tick, and a point that gains or loses one is still the same node of the
-    # same plan. Only the coordinates and the conventions are structure.
+    # only coordinates and conventions are structure: the mid and the two-way move on a tick, so
+    # a point that gains or loses either is still the same node of the same plan
     instrument = block['instrument']
     points = tuple((point['Use'], point['Expiry'], point['Pillar'], point['Quote_Type'])
                    for point in instrument['Points'])

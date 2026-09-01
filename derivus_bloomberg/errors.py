@@ -60,10 +60,8 @@ class BloombergConfigurationError(BloombergFXError):
     pass
 
 
-# The two refusals the listed EQUITY chain adds. They hang off `BloombergFXError` with everything
-# else: the base is named for the adapter's first market rather than for its scope, and renaming it
-# would reach across into `derivus.service` and `derivus_mcp`, which catch it. One taxonomy, one
-# base, and the name stays historical rather than becoming two.
+# Every adapter's refusals hang off `BloombergFXError`, whose name reads narrower than its scope:
+# `derivus.service` and `derivus_mcp` catch it, so one base and one taxonomy rather than two.
 class IncompleteChain(BloombergFXError):
     """The listed chain does not carry the ladder that was asked of it - too few distinct contracts
     survived snapping, or an expiry the emitter needs has no admissible print."""
@@ -74,8 +72,6 @@ class UnsupportedExerciseStyle(BloombergFXError):
     European premium a Heston-Nandi calibration prices against, so it refuses rather than fits."""
 
 
-# The two the RATES emitters add, on the same terms: one base, one taxonomy, and a name per thing
-# that can go wrong rather than a surface's refusal borrowed for a strip.
 class IncompleteStrip(BloombergFXError):
     """The verified strip does not carry the curve that was asked of it - too few points survived
     screening, or two benchmarks land on one knot, which the bootstrap cannot identify apart."""
@@ -87,13 +83,8 @@ class IncompleteLadder(BloombergFXError):
 
 
 def raise_response_error(text: str) -> None:
-    """Bloomberg's own refusal text, typed and raised - an entitlement problem is a thing to go
-    and fix, anything else is a request that failed.
-
-    It lives here rather than in the reader because two callers now make the same refusal: the
-    session's strict reader, and `fxvol`, which reads the value out of the TOLERANT reader and
-    applies the strict policy to it itself. One wording, one typing, whichever side spots it.
-    """
+    """Raise Bloomberg's own refusal text under the type it warrants: `BloombergEntitlementError`
+    when the message names an authorisation problem, `BloombergRequestError` otherwise."""
     error_type = BloombergEntitlementError if any(
         token in text.upper() for token in ('NOT_AUTHORIZED', 'NOT_ENTITLED', 'NO_AUTH')) \
         else BloombergRequestError

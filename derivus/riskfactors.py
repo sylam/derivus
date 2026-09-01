@@ -22,9 +22,8 @@ from .schema import F
 from scipy.interpolate import RectBivariateSpline
 from scipy.special import ndtr
 
-#: The methods `Factor1D.check_interpolation` implements, which is what a curve factor routed
-#: through `Price Factor Interpolation` may be set to. One object listed by the classes that opt
-#: in, not a row copied onto each of them.
+#: The methods `Factor1D.check_interpolation` implements - what a curve factor routed through
+#: `Price Factor Interpolation` may be set to. Listed by the classes that opt in.
 INTERPOLATION_METHODS = ('HermiteRT', 'Hermite', 'LinearRT', 'Linear')
 
 # map the names of various factor interpolations to something simpler
@@ -63,9 +62,8 @@ class Factor0D(object):
 
     def get_tenor_indices(self):
         '''
-        Method to extract the indices of this factor - for spot rates, it's always 0.0 .
-        In general, whatever this method returns should be passed to the tenors parameter
-        of current_value and be defined.
+        Returns this factor's indices - always 0.0 for a spot rate. Whatever this returns is
+        what the tenors parameter of current_value accepts.
         '''
 
         return np.array([[0.0]])
@@ -87,9 +85,6 @@ class Factor1D(object):
         range, and near_idx_end is its right-side insertion point less one. Each scheme is fitted
         on its own slice of tenors/rates - the near leg on [:near_idx_end+1] (the +1 keeps the
         near tenor itself in the near leg) and the far leg on [near_idx_end:].
-
-        An alternative form, kept on record, fits both schemes on the FULL tenors/rates arrays
-        and lets the (start, end) index pair alone restrict where each applies.
         """
         self.param = param
         self.tenors = self.get_tenor()
@@ -115,7 +110,6 @@ class Factor1D(object):
                     self.param.get('Interpolation'), self.tenors[near_idx_end:],
                     self.param['Curve'].array[near_idx_end:, 1]))
             ]
-            # the unsliced alternative (both schemes fitted on the full arrays) is in the docstring
         else:
             # regular interpolation type
             self.interpolation = [self.check_interpolation(
@@ -135,9 +129,8 @@ class Factor1D(object):
 
     def get_tenor_indices(self):
         '''
-        Method to extract the indices of this factor - for curves, it's always the first tenor index.
-        Whatever this method returns should be passed to the tenors parameter of current_value
-        and be interpolated if necessary.
+        Returns this factor's indices - for a curve, the tenor points themselves. Whatever this
+        returns is what the tenors parameter of current_value accepts.
         '''
         return self.tenors.reshape(-1, 1)
 
@@ -196,16 +189,12 @@ class Factor1D(object):
         tenors = ((np.array(tenor_index) if tenor_index is not None else self.tenors) + offset).clip(
             self.tenors.min(), self.tenors.max())
         values = []
-        # number of segments
         nseg = len(self.interpolation)
         if nseg>1:
             for k, interp in enumerate(self.interpolation):
                 start_index, end_index, interp_params = interp
                 end_mask = (tenors <= self.tenors[end_index]) if k==nseg-1 else (tenors < self.tenors[end_index])
                 subsegment = tenors[(tenors >= self.tenors[start_index]) & end_mask]
-                # need the prior point as well
-                # sub_tenor = self.tenors
-                # sub_values = bumped_val
                 sub_tenor = self.tenors[start_index:end_index+1]
                 sub_values = bumped_val[start_index:end_index+1]
                 values.append(Factor1D.interpolate(subsegment, sub_tenor, sub_values, interp_params))
@@ -241,7 +230,6 @@ class Factor2D(object):
         return utils.DAYCOUNT_ACT365
 
     def get_subtype(self):
-        # the subtype is a tuple of the surface_type and the moneyness lookup rule
         return (self.param.get('Surface_Type', 'Explicit'),
                 self.param.get('Moneyness_Rule', 'Sticky_Moneyness'))
 
@@ -253,9 +241,9 @@ class Factor2D(object):
     def update(self):
         self.expiry = self.get_expiry()
         if self.solves_delta_surface():
-            # a block carrying deltas is UNSOLVED: run the solver here, on a grid refined against
-            # these numbers. A block bootstrapped by `FXVolSurfaceParameters` arrives solved, on
-            # the grid its plan was compiled against, and falls straight through
+            # a block carrying deltas is UNSOLVED: solve here, on a grid refined against these
+            # numbers. One bootstrapped by `FXVolSurfaceParameters` arrives solved on its pinned
+            # grid and falls straight through
             skews = self.malz_skews(self.param['Delta_Surface'].array, self.expiry)
             self.param['Surface'] = utils.Curve([], self.malz_surface(skews, self.malz_grid(skews)))
 
@@ -277,13 +265,12 @@ class Factor2D(object):
     def solves_delta_surface(self):
         """Whether this block still has to run the Malz solver - a Malz surface CARRYING deltas.
 
-        `Surface_Type` says two things, and only one of them is about the solver. It names the
-        MONEYNESS CONVENTION the engine reads the surface at (`calc_moneyness` returns log(F/K)
-        and the term interpolation runs in total variance), and it says a delta smile is the form
-        the block was authored in. A block bootstrapped by `FXVolSurfaceParameters` is the first
-        without the second: it carries the solved log-moneyness `Surface` on the x-grid its plan
-        was compiled against, and re-solving it here would move that grid every time a quote
-        ticked - which is exactly what pinning the grid at bootstrap is for.
+        `Surface_Type` says two things and only one of them is about the solver: it names the
+        MONEYNESS CONVENTION the engine reads the surface at (log(F/K), term-interpolated in total
+        variance), and it says a delta smile is the form the block was authored in. A block
+        bootstrapped by `FXVolSurfaceParameters` is the first without the second - it carries the
+        solved log-moneyness `Surface` on the pinned x-grid its plan was compiled against, and
+        re-solving here would move that grid on every tick.
         """
         deltas = self.param.get('Delta_Surface')
         return self.get_subtype()[0] == 'Malz' and deltas is not None and deltas.array.any()
@@ -302,17 +289,15 @@ class Factor2D(object):
     def malz_skew(delta, vol, T):
         """One expiry's delta smile, split into the two wings `malz_sigma` interpolates over.
 
-        THE DELTA CONVENTION, which is what the +-0.5 label means and what the wings are indexed
-        by: a PREMIUM-ADJUSTED FORWARD delta (a call's is (K/F)N(d2), a put's -(K/F)N(-d2)), and
-        an ATM quote that is the DELTA-NEUTRAL STRADDLE of that convention, K = F exp(-sigma^2 T/2)
-        and hence |delta| = 0.5 exp(-sigma^2 T/2). So +-0.5 is a LABEL rather than a delta, and it
-        is replaced here by the delta the label actually stands for. A wing missing its ATM node
-        gets it mirrored from the other side.
+        THE DELTA CONVENTION the wings are indexed by: a PREMIUM-ADJUSTED FORWARD delta (a call's
+        is (K/F)N(d2), a put's -(K/F)N(-d2)), with an ATM quote that is that convention's
+        DELTA-NEUTRAL STRADDLE, K = F exp(-sigma^2 T/2) and hence |delta| = 0.5 exp(-sigma^2 T/2).
+        So +-0.5 is a LABEL rather than a delta, and is replaced here by the delta it stands for.
+        A wing missing its ATM node gets it mirrored from the other side.
 
-        A smile carrying BOTH labels at different vols is quoting two ATM numbers, and the +0.5
-        one wins: it sets `delta_atm`, and hence where every other node sits. The -0.5 vol is
-        still read - it is that wing's node - so both numbers reach the surface, but only one of
-        them can say what strike the straddle is at.
+        A smile carrying both labels at different vols quotes two ATM numbers and the +0.5 one
+        wins: it sets `delta_atm`, and hence where every other node sits. The -0.5 vol is still
+        read as that wing's node.
         """
         d, v = np.asarray(delta, dtype=float), np.asarray(vol, dtype=float)
         order = np.argsort(d)
@@ -338,26 +323,20 @@ class Factor2D(object):
 
     @staticmethod
     def malz_delta(skew, T, x, iterations=64):
-        """The delta each log-moneyness x = log(F/K) resolves to, and how it got there.
+        """The delta each log-moneyness x = log(F/K) resolves to, as `(delta*, is_call, bracketed)`.
 
-        Returns `(delta*, is_call, bracketed)`. The vol at x is the fixed point of
-        sigma = skew(delta(sigma, x)): the wing is a piecewise linear vol in delta, and the delta
-        of the strike x names depends on the vol being looked up. x <= sigma_atm^2 T / 2 is the
-        call wing (K at or below the delta-neutral straddle strike), and each side is bracketed by
-        its own extreme deltas - where the fixed point falls outside that bracket the wing is
-        CLAMPED to the endpoint that misses by less, which is what flat-extrapolates a smile
-        beyond its widest quoted delta.
+        The vol at x is the fixed point of sigma = skew(delta(sigma, x)): the wing is a piecewise
+        linear vol in delta, and the delta of the strike x names depends on the vol being looked
+        up. x <= sigma_atm^2 T / 2 is the call wing (K at or below the delta-neutral straddle
+        strike), and each side is bracketed by its own extreme deltas - where the fixed point
+        falls outside that bracket the wing is CLAMPED to the endpoint that misses by less, which
+        flat-extrapolates the smile beyond its widest quoted delta. Vectorised bisection over the
+        brackets, converged to their own machine precision.
 
-        Bisection rather than a per-point `brentq`: it is one array of brackets closed 64 times
-        instead of a Python loop over a scalar root find, and it converges to the bracket's own
-        machine precision (tighter than brentq's 2e-12 xtol).
-
-        SPLIT OUT OF `malz_sigma` because these three ARE the structure of the solve - which wing
-        a node reads, whether its fixed point exists inside that wing's bracket, and where it sits.
-        A derivative twin needs exactly them and none of the arithmetic: the iterates of a
-        bisection are dyadic combinations of the two ENDPOINTS, so their derivative is the
-        bracket's rather than the root's, and a tape run through this loop reports a number that
-        does not converge to anything. See `FXVolSurfaceParameters.carried_sigma`.
+        NOT DIFFERENTIABLE: a bisection's iterates are dyadic combinations of the two bracket
+        ENDPOINTS, so a tape run through this loop reports the bracket's derivative rather than
+        the root's. A derivative twin takes the three returns and re-does the arithmetic - see
+        `FXVolSurfaceParameters.carried_sigma`.
         """
         x = np.asarray(x, dtype=float)
         sqrt_t = np.sqrt(T)
@@ -399,9 +378,9 @@ class Factor2D(object):
     def malz_error(cls, skew, T, nodes):
         """The vol error interpolating between `nodes` makes at each interval's midpoint.
 
-        In TOTAL VARIANCE, because that is what the pricing path interpolates a Malz surface in.
-        It is both the criterion `malz_grid` refines against and the measurement of how well a
-        PINNED grid still resolves a smile that has ticked since the grid was built.
+        Measured in TOTAL VARIANCE, which is what the pricing path interpolates a Malz surface in.
+        It is the criterion `malz_grid` refines against, and the measure of how well a PINNED grid
+        still resolves a smile that has ticked since the grid was built.
         """
         middles = 0.5 * (nodes[:-1] + nodes[1:])
         variance = cls.malz_sigma(skew, T, nodes) ** 2 * T
@@ -412,10 +391,10 @@ class Factor2D(object):
     def malz_grid(cls, skews, tol=None):
         """`{T: x nodes}` - the log-moneyness grid the smile is resolved to `tol` vol on.
 
-        Refinement is COMPILE-TIME work and the grid it produces is part of the plan: a midpoint
-        the current nodes cannot interpolate to `tol` becomes a node. Each expiry refines its own
-        grid - a one-week smile needs nodes a ten-year one does not - which the flat surface
-        carries as ragged rows.
+        A midpoint the current nodes cannot interpolate to `tol` becomes a node. Refinement is
+        COMPILE-TIME work and its grid is part of the plan. Each expiry refines its own grid - a
+        one-week smile needs nodes a ten-year one does not - which the flat surface carries as
+        ragged rows.
         """
         grid = {}
         for T, skew in skews.items():
@@ -432,8 +411,8 @@ class Factor2D(object):
     def malz_surface(cls, skews, grid):
         """`[[x, T, vol], ...]` - the smile evaluated on a GIVEN log-moneyness grid.
 
-        Split from `malz_grid` because the two run at different times: the grid is refined once,
-        when the plan is compiled, and this runs again on every tick that moves the quotes.
+        Separate from `malz_grid` because the two run at different times: the grid is refined once
+        when the plan is compiled, this runs again on every tick that moves the quotes.
         """
         return [[x, T, vol] for T, nodes in grid.items()
                 for x, vol in zip(nodes, cls.malz_sigma(skews[T], T, nodes))]
@@ -441,14 +420,12 @@ class Factor2D(object):
     def get_vols(self):
         """Uses flat extrapolation along moneyness and then linear interpolation along expiry"""
         surface = self.param['Surface'].array
-        # Sort by moneyness, then expiry
+        # sorted by moneyness within expiry (lexsort takes its primary key last)
         self.sorted_vol = surface[np.lexsort((surface[:, 0], surface[:, 1]))]
-        # store an index for each expiry
         self.index_map.clear()
         for element in self.sorted_vol:
             self.index_map.setdefault(element[1], []).append(element[0])
         self.flat = self.sorted_vol[:, 2]
-        # interpolate the full surface
         return np.array(
             [np.interp(self.moneyness, surface[surface[:, 1] == x][:, 0], surface[surface[:, 1] == x][:, 2])
              for x in self.expiry])
@@ -458,9 +435,8 @@ class Factor2D(object):
 
     def get_tenor_indices(self):
         '''
-        returns the shortened sorted vol surface indices - Moneyness and Expiry if this is an Explict Vol surface
-        Otherwise return the SVI or Skew params
-        The return value of this method again needs to be defined when called with current_value
+        Returns the sorted (moneyness, expiry) surface indices for an Explicit vol surface, else
+        the SVI or Skew parameter tenors. Symmetric with current_value.
         '''
         if self.get_subtype()[0] == 'SVI':
             tau = self.get_tenor().reshape(-1, 1)
@@ -597,9 +573,8 @@ class Factor3D(object):
 
     def current_value(self, tenors=None, offset=0.0):
         """
-        Returns the value of the Vol space
-        Again, this is symmetric wih get_tenor_indices i.e. self.current_value(self.get_tenor_indices()) should be
-        just the list of corresponding vols.
+        Returns the value of the vol space. Symmetric with get_tenor_indices:
+        current_value(get_tenor_indices()) is the list of corresponding vols.
         """
         if tenors is not None and self.expiry.size > 1 and self.moneyness.size > 1:
             interpolator = [RectBivariateSpline(
@@ -1090,8 +1065,6 @@ class ReferencePrice(Factor1D):
         # the start date for excel's date offset
         self.start_date = utils.excel_offset
 
-    # the offset to the latest index value
-
     def get_forwardprice(self):
         return utils.check_rate_name(self.param['ForwardPrice'])
 
@@ -1181,20 +1154,17 @@ class HestonNandiComponentModelParameters(Factor0D):
     Both bracketed terms are exactly centered, so the short-run deviation $h_t-q_t$ is a pure
     AR(1) at $\\beta$ and $E_t[q_{t+k}]$ is driven by $\\omega$ alone.
 
-    THERE IS NO OMEGA FIELD. $\\omega_t=L_{t+1}-\\rho L_t$ is a function of the **L_Curve**, whose
-    ANCHORING ($q_0=L(0)$) makes $E_0[q_t]=L_t$ exactly - so L is not a reparametrisation, it IS
-    the model's expected long-run variance path and is directly comparable to the market's forward
-    variance strip. L is piecewise-linear in $t$ between its knots and flat outside them.
+    THERE IS NO OMEGA FIELD: $\\omega_t=L_{t+1}-\\rho L_t$ is a function of the **L_Curve**, whose
+    ANCHORING ($q_0=L(0)$) makes $E_0[q_t]=L_t$ exactly - so L IS the model's expected long-run
+    variance path, directly comparable to the market's forward variance strip. L is
+    piecewise-linear in $t$ between its knots and flat outside them.
 
-    AND THERE IS NO Q0 FIELD EITHER: $q_0$ is $L(0)$, read off the curve's own first knot, because
-    the anchoring is what makes L mean what it says. The curve the bootstrapper writes carries an
-    explicit knot at tenor 0 whose value is **H0** - at the base date the two states are held
-    equal, since no option is quoted at zero maturity to separate them - so the anchoring is a
-    property of the stored factor rather than a convention a reader has to remember.
+    AND NO Q0 FIELD: $q_0$ is $L(0)$, read off the curve's own first knot. The curve the
+    bootstrapper writes carries an explicit knot at tenor 0 whose value is **H0** - at the base
+    date the two states are held equal, no option being quoted at zero maturity to separate them.
 
-    The knots are STRUCTURAL (they are the calibration ladder's own pillars); the curve's VALUES
-    are `bind='value'` leaves, so a greek flows to each fitted pillar exactly as it does to the
-    seven scalars.
+    The knots are STRUCTURAL (the calibration ladder's own pillars); the curve's VALUES are
+    `bind='value'` leaves, so a greek flows to each fitted pillar as it does to the seven scalars.
     """
     fields = [
         F('Alpha', 'Float', default=0, bind='value',
@@ -1327,7 +1297,6 @@ class HullWhite2FactorModelParameters(Factor1D):
                 np.diff(self.param['Sigma_2'].array[:, 0]),
                 (vols[1][:-1] + vols[1][1:]) / 2)]) / self.param['Sigma_2'].array[-1, 0] if len(
                 self.param['Sigma_2'].array) > 1 else vols[1][0]
-            # s1, s2, p = vols[0][-1], vols[1][-1], corr[0]
             p = corr[0]
             scale = C / (s1 ** 2 + s2 ** 2 + 2.0 * p * s1 * s2) ** .5
             return [scale * (s1 + p * s2), scale * (p * s1 + s2)]
@@ -1385,17 +1354,14 @@ class HullWhite2FactorModelParameters(Factor1D):
 class VolatilityGrid(Factor2D):
     """A (moneyness, expiry) vol surface - the ONE implementation, shared by every asset class.
 
-    FXVol, EquityPriceVol and CommodityPriceVol were three empty `Factor2D` subclasses differing
-    only in their docstring, and three schema declarations that had drifted apart - FX and commodity
-    could not author the SVI/Skew surfaces the class has always supported. The behaviour that varies
-    is the SUBTYPE, `(Surface_Type, Moneyness_Rule)`, so there is one body and it lives here.
+    All the behaviour that varies is the SUBTYPE, `(Surface_Type, Moneyness_Rule)`, so FX, equity
+    and commodity surfaces share this body and every one of them can author SVI, Skew and Malz.
 
-    The asset-class TAG is a different question and it was wrong to erase it. A sensitivity is
-    reported under the risk class of the factor it is taken with respect to, CRIF names those
-    surfaces `Risk_FXVol`/`Risk_EquityVol`/`Risk_CommodityVol`, and a factor-keyed gradient carries
-    nothing but `Factor(type, name)` - so `utils.FactorRiskClass` has to be a pure function of the
-    type, and one untagged name makes it undecidable. The three aliases below restore the tag over
-    this body: same fields, same code path, three types."""
+    The asset-class TAG is carried by the three aliases below rather than by this class. A
+    sensitivity is reported under the risk class of the factor it is taken with respect to, CRIF
+    names those surfaces `Risk_FXVol`/`Risk_EquityVol`/`Risk_CommodityVol`, and a factor-keyed
+    gradient carries nothing but `Factor(type, name)` - so `utils.FactorRiskClass` must be a pure
+    function of the type, which one untagged name would make undecidable."""
     fields = [
         F('Surface_Type', 'Text', default='Explicit',
           values=['Explicit', 'SVI', 'Skew', 'Malz', 'Relative_Forward']),
@@ -1437,9 +1403,8 @@ class VolatilityGrid(Factor2D):
 
 
 # The asset-class tags: the type a deal's vol surface is authored and keyed under, and what
-# `utils.FactorRiskClass` partitions on. `fields` is re-declared as the SAME list object, which is
-# the whole per-type declaration the emitters need - `emit_factor` is own-attr only, so an alias
-# that merely inherited would not reach the Factor store and could not be authored at all.
+# `utils.FactorRiskClass` partitions on. `fields` is re-declared as the SAME list object because
+# `emit_factor` is own-attr only - an alias that merely inherited could not be authored at all.
 
 class FXVol(VolatilityGrid):
     """The vol surface of an FX pair - CRIF `Risk_FXVol`."""
@@ -1461,7 +1426,7 @@ class InterestYieldVol(Factor3D):
 
     `Property_Aliases` - a list of key/value pairs carrying `BlackScholesDisplacedShiftValue` - is
     read with `.get` but has no descriptor, so no schema-authored block can carry it. It is the
-    LEGACY spelling of the displacement and `displacement` below states what now outranks it.
+    LEGACY spelling of the displacement, and `displacement` below states what outranks it.
     """
     fields = [
         F('Surface', 'Space', bind='value',
@@ -1503,9 +1468,8 @@ class InterestYieldVol(Factor3D):
     def BlackScholesDisplacedShiftValue(self):
         """The LEGACY displacement, in percentage points - `Property_Aliases`, then a premiums file.
 
-        This is the undeclared half and it is left exactly as it was, because an existing file
-        carries it and nothing else states what those files mean. What reads it is `displacement`
-        below, which puts the DECLARED `Shift` in front of it.
+        Undeclared: no schema-authored block can carry it. `displacement` below is what reads it,
+        behind the declared `Shift`.
         """
         shift_value = 0.0
         Property_Aliases = self.param.get('Property_Aliases')
@@ -1521,28 +1485,20 @@ class InterestYieldVol(Factor3D):
     def displacement(self):
         """This surface's shifted-lognormal displacement, in the STRIKE's own units.
 
-        THE PRECEDENCE, and it is the whole of this property. The DECLARED `Shift` wins;
-        `Property_Aliases` - which has no descriptor, so no schema-authored block can carry it - is
-        the documented legacy behind it; a premiums file's own `Shift` column is the fallback under
-        that. Before this existed the calibration read `BlackScholesDisplacedShiftValue` alone, so a
-        block authoring the field the schema declares calibrated at ZERO displacement in silence
-        while the DEAL path carried the same `Shift` into every swaption's `Volatility` dependency
-        through `get_subtype` - the two paths disagreeing about the same surface.
+        THE PRECEDENCE: the DECLARED `Shift` wins; `Property_Aliases` - which has no descriptor, so
+        no schema-authored block can carry it - is the legacy behind it; a premiums file's own
+        `Shift` column is the fallback under that.
 
         A `Shift` OF ZERO IS NOT AN INSTRUCTION. Zero is the field's own declared default, so an
-        authored zero and an unauthored one are the same document and neither can outrank a legacy
-        alias: every existing file - which authors `Property_Aliases`, or neither - reads exactly
-        what it read before, to the bit, because the fallback arm is the same expression it always
-        was.
+        authored zero and an unauthored one are the same document and neither outranks the legacy
+        alias.
 
-        THE UNITS ARE THE STRIKE'S, not the percentage points the legacy alias carries, and the
-        conversion is the reason this returns a fraction rather than moving the `/100` to the caller:
-        a `Percent(2.0)` already holds `2.0/100.0` in `amount`, so both routes reach the strike
-        through the SAME division and a displacement authored either way is bit-identical.
+        THE UNITS ARE THE STRIKE'S, not the percentage points the legacy alias carries: a
+        `Percent(2.0)` already holds `2.0/100.0` in `amount`, so both routes reach the strike
+        through the same division and a displacement authored either way is bit-identical.
 
-        A DISPLACEMENT UNDER `Distribution_Type: 'Normal'` REFUSES. A shift displaces a lognormal
-        quote's strike so the log is taken of something positive; a normal vol has nothing to
-        displace, and the two together are a document that means two things at once.
+        A DISPLACEMENT UNDER `Distribution_Type: 'Normal'` REFUSES - a shift displaces a lognormal
+        quote's strike, and a normal vol has nothing to displace.
         """
         distribution, shift = self.get_subtype()
         declared, legacy = float(shift), self.BlackScholesDisplacedShiftValue / 100.0
@@ -1600,12 +1556,10 @@ class ForwardPriceVol(Factor3D):
     def get_vols(self):
         """Uses flat extrapolation along moneyness and then linear interpolation along expiry"""
         vols = []
-        # get the surface
         surface = self.param['Surface'].array
-        # Sort by moneyness, then expiry
+        # sorted by moneyness within expiry within delivery (lexsort takes its primary key last)
         self.sorted_vol = surface[np.lexsort(
             (surface[:, self.MONEYNESS_INDEX], surface[:, self.EXPIRY_INDEX], surface[:, self.TENOR_INDEX]))]
-        # store an index for each expiry
         self.index_map.clear()
 
         # store the offsets of all the tenor indices
@@ -1640,9 +1594,8 @@ class ForwardPriceVol(Factor3D):
 
     def current_value(self, tenors=None, offset=0.0):
         """
-        Returns the value of the Vol space
-        Again, this is symmetric wih get_tenor_indices i.e. self.current_value(self.get_tenor_indices()) should be
-        just the list of corresponding vols.
+        Returns the value of the vol space. Symmetric with get_tenor_indices:
+        current_value(get_tenor_indices()) is the list of corresponding vols.
         """
         if tenors is not None:
             interp_vols = []

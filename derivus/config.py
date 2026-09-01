@@ -14,7 +14,6 @@
 import os
 import re
 import calendar
-# import standard libraries
 import json
 import logging
 import operator
@@ -22,21 +21,18 @@ import operator
 from collections import Counter
 from functools import reduce
 
-# import parsing libraries
 from xml.etree.ElementTree import ElementTree, SubElement, Element, tostring
 
 import numpy as np
 import pandas as pd
 from pyparsing import Literal, Word, nums, OneOrMore, delimitedList, oneOf, Optional, Group
 
-# import libraries
 from . import utils
 from . import schema
 from .bootstrappers import construct_bootstrapper, InterestRateCurveParameters
 from .instruments import construct_instrument, Deal
 from .stochasticprocess import construct_calibration_config, construct_process
 
-# define datetime routines
 Timestamp = pd.Timestamp
 DateOffset = pd.DateOffset
 
@@ -190,10 +186,8 @@ def as_json(obj):
     """Plain JSON, through the one encoder the codebase already has for what JSON has no form for -
     a Curve, a Timestamp, a results table.
 
-    Here rather than in `service.py` because two callers need it and one of them must not import
-    `fastapi`: the HTTP surface serialises every answer through this, and `derivus.spine` addresses
-    a run's RESULT through it - the same bytes on both sides, or a replay claim and the answer it is
-    compared against would be two spellings of one document.
+    The HTTP surface serialises every answer through this and `derivus.spine` addresses a run's
+    RESULT through it, so a replay claim and the answer it is compared against are the same bytes.
     """
     return json.loads(json.dumps(obj, cls=CustomJsonEncoder))
 
@@ -203,9 +197,7 @@ def tables_of(results):
 
     `cashflows` and `scenarios` are dicts of tables rather than tables, so they arrive as
     `cashflows/ZAR` and `scenarios/FxRate.ZAR`: a client fetches one table, and a tree has no page.
-    The flat form is also what a per-RESULT-CLASS tolerance is declared against, which is the other
-    reason this and `as_json` live together down here - the shape a client pages and the shape a
-    replay is compared in are one shape.
+    The flat form is also what a per-RESULT-CLASS tolerance is declared against.
     """
     tables = {}
     for name, value in results.items():
@@ -242,11 +234,9 @@ def splice_deal(document, deal, parent_reference=None):
     is itself a container (`schema.mapping['Instrument']['containers']`). A COMPOSED deal - one
     arriving with node-shaped legs under its own `Children` key, the way `structures.quote` hands
     a structure back - has them lifted onto the node, because the engine walks `node['Children']`
-    and never inside the deal block: without the lift a spliced structure loads as an empty
-    container and prices 0.0 with nothing said against it, on every verb at once (a what-if, a
-    solve, a booking). The insertion point is the root, or the single node whose Reference is
-    `parent_reference` - an unknown, ambiguous or non-container parent refuses by name, because
-    appending under the wrong node is a mis-booked trade rather than an error message.
+    and never inside the deal block. The insertion point is the root, or the single node whose
+    Reference is `parent_reference`; an unknown, ambiguous or non-container parent refuses by name,
+    because appending under the wrong node is a mis-booked trade rather than an error message.
     """
     children = job_children(document)
     if children is None:
@@ -332,10 +322,9 @@ def update_market_quote(document, name, block):
     - a plan and a pinned grid hang off them, so a moved node is a re-authoring, never a tick. A
     two-way is on the value side of that line for the reason the mid is: a spread widens between
     one print and the next, and a pillar that starts or stops being quoted two-sided is the same
-    node of the same plan. That line is `schema.MARKET_QUOTE_VALUES` and this guard reads it, so
-    the split `plan_hash` and `market_patch` take over the section IS this guard rather than a
-    second copy of it. The same rule `derivus_bloomberg.update_fx_vol_snapshot` enforces
-    snapshot-side, held here for whatever posts a block. Returns 'installed' or 'updated'.
+    node of the same plan. That line is `schema.MARKET_QUOTE_VALUES`, which this guard reads rather
+    than keeping a second copy of the split `plan_hash` and `market_patch` take over the section.
+    Returns 'installed' or 'updated'.
     """
     if not isinstance(block, dict) or 'instrument' not in block:
         raise ValueError('{}: a Market Prices block is {{"instrument": {{...}}}}'.format(name))
@@ -366,7 +355,6 @@ class Config(object):
     given portfolio of deals.
     """
 
-    # class level lookups
     month_lookup = dict((m, i) for i, m in enumerate(calendar.month_abbr) if m)
     offset_lookup = {'M': 'months', 'D': 'days', 'Y': 'years', 'W': 'weeks'}
     reverse_offset = {'months': 'M', 'days': 'D', 'years': 'Y', 'weeks': 'W'}
@@ -377,8 +365,8 @@ class Config(object):
 
         `calibrated_factors` (`{Factor: theta*}`, still connected to its quotes) and `quote_leaves`
         (the quote leaf per market-price block) are what a bootstrap that kept its graph leaves
-        behind - and the only thing a calculation needs to reach it. Both hold TENSORS, so they
-        cannot live in `Price Factors`: that section is data and gets written back out as JSON.
+        behind. Both hold TENSORS, so they cannot live in `Price Factors`, which is data and gets
+        written back out as JSON.
         """
         self.file_ref = 'root'
         self.deals = {'Deals': {'Children': []}, 'Calculation':{}, 'Attributes':{}}
@@ -433,8 +421,7 @@ class Config(object):
         """`'3M'` -> a `DateOffset`, and the ONE spelling of that parse.
 
         Both decoders reach it: `CustomJsonEncoder` writes a `.DateOffset` as this string, so both
-        of them have to read the string, and a second copy of `periodparser.parseString(...)[0]` is
-        how the two wire spellings drifted apart in the first place.
+        of them have to read the string.
         """
         return self.periodparser.parseString(period)[0]
 
@@ -482,7 +469,6 @@ class Config(object):
         calc_type.text = 'Credit Monte Carlo'
         series = SubElement(results, 'Series')
 
-        # Iterate over the data and create SeriesItem elements
         for index, (column, items) in enumerate(data.T.iterrows()):
             if 'PFE' in column:
                 name = 'Bank Exposure ({}%)'.format(column[4:])
@@ -502,7 +488,6 @@ class Config(object):
             y = SubElement(series_item, 'Y')
             y.text = ','.join(y_values)
 
-        # Create the XML tree and return it
         return tostring(results, encoding='utf-8').decode('utf-8')
 
     def parse_calendar_file(self, filename):
@@ -523,9 +508,10 @@ class Config(object):
 
     def fetch_all_calibration_factors(self, override={}):
         """
-        Assumes valid marketdata and calibration config files have been loaded (via parse_json)
-        and returns the list of price factors that have mapped price models.
-        The return value of this method is suitable to pass to the calibrate_factors method.
+        Assumes valid marketdata and calibration config files have been loaded (via parse_json).
+        Returns `{'present': ..., 'absent': ...}` - the Price Factors entries that Model
+        Configuration routes to a model, and the archive columns not already covered that it also
+        routes. Suitable to pass to the calibrate_factors method.
         """
         model_factor = {}
         for factor in self.params.get('Price Factors', {}):
@@ -564,9 +550,10 @@ class Config(object):
         bootstrapping, call the construct_bootstrapper method directly
 
         A bootstrapper that leaves no `<type>.*` price factor behind silently did nothing (misnamed
-        Market Prices block, or class-name mismatch), so every run is checked. Four families write a
-        block named for their own class, so the name is recoverable; a curve bootstrap writes an
-        ordinary `InterestRate` and declares that instead via `price_factor_type`.
+        Market Prices block, or class-name mismatch), so every run is checked. Five families write a
+        block named for their own class, so the name is recoverable; the curve and FX vol
+        bootstraps write ordinary `InterestRate`/`FXVol` blocks and declare that instead via
+        `price_factor_type`.
         """
         # need to implement ordered dicts in the params obj - TODO
         for bootstrapper_name, params in sorted(self.params['Bootstrapper Configuration'].items()):
@@ -578,7 +565,6 @@ class Config(object):
                     bootstrapper_name), exc_info=True)
                 continue
 
-            # run the bootstrapper on the market prices and store them in the price factors/price models
             bootstrapper.bootstrap(self.params['System Parameters'],
                                    self.params['Price Models'],
                                    self.params['Price Factors'],
@@ -587,13 +573,9 @@ class Config(object):
                                    self.holidays,
                                    debug=self)
 
-            # a family that kept its calibration on the tape hands the leaves over here, which is
-            # what lets `_build_factor_state` offer an already-connected tensor instead of minting
-            # a fresh one out of numpy. Its OWN keys are dropped first - the factor type it writes
-            # and the Market Prices type it reads - so a run that stops publishing takes back what
-            # the last one left: `Quote_Sensitivity` flipped to No would otherwise leave a stale
-            # connected tensor standing and a backward would report the previous surface's
-            # Jacobian against quotes that have since moved.
+            # a family that kept its calibration on the tape hands the leaves over here, which lets
+            # `_build_factor_state` offer an already-connected tensor. Its OWN keys are dropped
+            # first, so a run that stops publishing leaves no stale connected tensor standing.
             written = getattr(bootstrapper, 'price_factor_type', bootstrapper_name)
             block = getattr(bootstrapper, 'market_factor_type', bootstrapper_name)
             self.calibrated_factors = {factor: theta for factor, theta
@@ -620,13 +602,8 @@ class Config(object):
 
         Pure: it reads `Market Prices`, the base date, the interpolation scheme and a
         content-addressed artifact, and writes none of them - so two EXECUTEs over one
-        `(artifact, quotes)` mint the same leaf. There is no `theta_current` anywhere for it to
-        consult, which is the property the whole operator is built around.
-
-        One family answers today, because one family has an operator whose fixed point is a unique
-        root. This becomes a dispatch when a second one earns it; it is not one now, because a
-        least-squares calibration's drift has to be scored in value space and that is a different
-        contract, not a second caller of this one.
+        `(artifact, quotes)` mint the same leaf, with no `theta_current` anywhere to consult. One
+        family answers today: the one whose operator has a unique fixed point.
         """
         return InterestRateCurveParameters.propagate(
             factor, self.params['Market Prices'], self.params['Price Factor Interpolation'],
@@ -635,11 +612,10 @@ class Config(object):
     def calibrate_factors(self, from_date, to_date, factors, smooth=0.0, correlation_cuttoff=0.2,
                           overwrite_correlations=True, vol_shift=0.0):
         """
-        Assumes a valid calibration JSON configuration file is loaded first, then proceeds to strip out only data
-        between from_date and to_date. The calibration rules as specified by the calibration configuration file is then
-        applied to the factors given. Note that factors needs to be a list of utils.RateInfo (obtained via a call to
-        fetch_all_calibration_factors). Also note that this method overwrites the Price Model section of the config
-        file in memory. To save the changes, an explicit call to write_marketdata_json must be made.
+        Strips the archive down to the data between from_date and to_date and applies the rules in the
+        loaded calibration configuration to the given factors (utils.RateInfo values, as returned by
+        fetch_all_calibration_factors). Overwrites the Price Models section of the config in memory -
+        an explicit call to write_marketdata_json is what persists it.
         """
         correlation_names = []
         consolidated_df = None
@@ -665,10 +641,8 @@ class Config(object):
                         if len(other_parts) >= 2 and other_parts[1] == sub:
                             extras.extend(self.archive_columns[other_arch])
             # an ObservedBasis is named by its parent chain; pull the parent's columns by that
-            # prefix. A declared Chained_Basis column is ALWAYS pulled, and it REPLACES the
-            # positional pull where that parent is itself a basis - the declaration is the
-            # chained family's parent contract (a primary-parent pull stays: the band law
-            # reads its spot whatever the factor declares).
+            # prefix. A declared Chained_Basis column is ALWAYS pulled and REPLACES the positional
+            # pull where that parent is itself a basis; a primary-parent pull always stays.
             parts = archive_name.split('.')
             if parts[0] == 'ObservedBasis' and len(parts) > 2:
                 declared = self.params['Price Factors'].get(archive_name, {}).get('Chained_Basis')
@@ -697,12 +671,10 @@ class Config(object):
             # now remove spikes
             data_frame = df[np.abs(df - df.median()) <= (smooth * df.std())].interpolate(method='index') \
                 if smooth else df
-            # log it
             logging.info(
                 'Calibrating {0} (archive name {1}) with raw shape {2} and cleaned non-null shape {3}'.format(
                     rate_name, rate_value.archive_name, str(df.shape), str(data_frame.dropna().shape)))
 
-            # calibrate
             try:
                 result = rate_value.calibration.calibrate(data_frame, vol_shift, num_business_days=252.0)
             except:
@@ -710,7 +682,6 @@ class Config(object):
                     rate_value.archive_name))
                 continue
 
-            # check that it makes sense . . .
             if (np.array(result.correlation).max() > 1) or (np.array(result.correlation).min() < -1) or (
                     result.delta.std() == 0).any():
                 logging.error('Data errors in factor {0} resulting in incorrect correlations - skipping'.format(
@@ -720,7 +691,6 @@ class Config(object):
             model_tuple = utils.check_rate_name(rate_value.model_name)
             model_factor = utils.Factor(model_tuple[0], model_tuple[1:])
 
-            # get the correlation name
             process_name, addons = construct_process(model_factor.type, None, result.param).correlation_name
 
             for sub_factors in addons:
@@ -729,10 +699,8 @@ class Config(object):
 
             consolidated_df = result.delta if consolidated_df is None else pd.concat(
                 [consolidated_df, result.delta], axis=1)
-            # store the correlation coefficients
             ak.append(result.correlation)
 
-            # store result back in market data file
             self.params['Price Models'][rate_value.model_name] = result.param
 
             num_indexes += result.delta.shape[1]
@@ -748,10 +716,9 @@ class Config(object):
             row_num += len(coeff)
             offset += len(factor)
 
-        # cheating here
+        # the projection is not guaranteed to land inside [-1, 1] - clipped rather than healed
         factor_correlations = a.dot(rho).dot(a.T).clip(-1.0, 1.0)
 
-        # see if we need to delete the old correlations
         if overwrite_correlations:
             self.params['Correlations'] = {}
 
@@ -782,14 +749,13 @@ class Config(object):
 
         This calls `discover_factors` rather than `calculate_dependencies` because the want-list
         needs no model resolution. Dates are taken the way `Base_Revaluation` takes them
-        (`calc_dates=False`), so no instrument accumulates a reval-date offset either.
+        (`calc_dates=False`), so no instrument accumulates a reval-date offset.
 
-        A factor goes missing in two ways, and the want-list is the union. A type carrying
-        dependants (`FxRate`, `CommodityPrice`, ...) raises `KeyError` on the absent block and
-        discovery logs and SKIPS it, so it never reaches `dependent_factors` at all; every other
-        type is discovered happily and fails later in `construct_factor`, so it is the set
-        difference against `Price Factors`. Both end the same way - the factor is not built, the
-        deal cannot resolve it, and `Deal.calculate`'s guard drops the deal from the portfolio.
+        A factor goes missing in two ways and the want-list is the union: a type carrying
+        dependants (`FxRate`, `CommodityPrice`, ...) raises `KeyError` on the absent block and is
+        logged and SKIPPED before it reaches `dependent_factors`, while every other type is
+        discovered happily and fails later in `construct_factor`, so it is the set difference
+        against `Price Factors`.
         """
         options = self.deals['Calculation']
         factors, skipped, _, _ = self.discover_factors(options, options['Base_Date'], '0d', False)
@@ -849,11 +815,9 @@ class Config(object):
         reset dates and optionally the potential currency settlements.
 
         Idempotent: both halves read the loaded config and write nothing, so calling it twice
-        returns identical output and leaves `params` pristine. Discovery and model resolution
-        stay separate methods because `validate` / `factor_universe` want the universe without
-        resolving models. Iterating the `dependent_factors` dict is iterating the topological
-        order `discover_factors` sorted it into, which is the RNG-substream order every process
-        reads from.
+        returns identical output and leaves `params` pristine. Iterating the `dependent_factors`
+        dict is iterating the topological order `discover_factors` sorted it into, which is the
+        RNG-substream order every process reads from.
         """
         dependent_factors, _, reset_dates, currency_settlement_dates = self.discover_factors(
             options, base_date, base_MTM_dates, calc_dates)
@@ -868,9 +832,9 @@ class Config(object):
         collected.
 
         Also returns the price factors it asked the market data for and did NOT find: a type
-        carrying dependants raises `KeyError` on its own block, and the factor is logged and
-        skipped rather than discovered, so this is the only place that knowledge exists. A type
-        without dependants is discovered happily and fails later, in `construct_factor`.
+        carrying dependants raises `KeyError` on its own block and is logged and skipped rather
+        than discovered, so this is the only place that knowledge exists. A type without
+        dependants is discovered happily and fails later, in `construct_factor`.
 
         Reads the market data and writes nothing.
         """
@@ -886,19 +850,15 @@ class Config(object):
 
         def add_chained_bases(head_type, rates_to_add):
             """A basis block may declare `Chained_Basis`: the next link of a chain that must
-            CLOSE - that is what 'chained' means; an open link riding another factor's finished
-            path is the linked-parent family (BasisLinkedSpotModel) and does not declare this
-            field. The whole loop is a first-class fact of the market data: whenever any member
-            enters the universe, every member follows, under EVERY calculation - a session
-            structure cannot be silently dropped by a book that prices only one side. The
-            declared `Chained_Lag` states where each link binds: a same-row link (lag 0) is a
-            real graph edge - the link simulates first, which insertion order alone cannot
-            guarantee for a late-pulled member - and a lagged link is the chain's day boundary
-            and orders nothing. A closed chain must lag somewhere; all same-row is a
-            same-instant loop, refused here before the sort refuses its cycle namelessly.
-            Links must stay on one primary; a self-reference, a foreign root, an open chain or
-            a lasso (a walk that revisits without returning to its start) is a config error,
-            loud."""
+            CLOSE. An open link riding another factor's finished path is the linked-parent family
+            (BasisLinkedSpotModel) and does not declare this field. Whenever any member enters the
+            universe every member follows, under EVERY calculation. The declared `Chained_Lag`
+            states where each link binds: a same-row link (lag 0) is a real graph edge - the link
+            simulates first, which insertion order alone cannot guarantee - and a lagged link is
+            the chain's day boundary and orders nothing. A closed chain must lag somewhere; all
+            same-row is a same-instant loop. Links must stay on one primary; a self-reference, a
+            foreign root, an open chain or a walk that revisits without returning to its start is
+            a config error, loud."""
             for start in [f for f in rates_to_add if f.type == 'ObservedBasis']:
                 if not self.params['Price Factors'].get(
                         utils.check_tuple_name(start), {}).get('Chained_Basis'):
@@ -961,7 +921,6 @@ class Config(object):
                 for linked_factor in linked_factors:
                     # add it assuming no dependencies
                     rates_to_add.setdefault(linked_factor, [])
-                    # update and dependencies
                     if linked_factor.type in dependant_fields:
                         rates_to_add.update(get_rates(linked_factor, instrument))
                     # link it to the original factor
@@ -1017,7 +976,6 @@ class Config(object):
             settlement_currencies = {}
 
             for node in deals:
-                # get the instrument
                 instrument = node['Instrument']
 
                 # an Object naming no class loaded as {} (construct_instrument logs and returns
@@ -1025,34 +983,28 @@ class Config(object):
                 if node.get('Ignore') == 'True' or not isinstance(instrument, Deal):
                     continue
 
-                # get a list of children ready to pass back to the parent
                 children.append(instrument)
 
                 if node.get('Children'):
                     node_children, node_resets, node_settlements = walk_groups(
                         node['Children'], price_factors, factor_tenors)
 
-                    # sort out dates and calendars
                     instrument.reset(self.holidays)
 
                     if calc_dates:
                         instrument.finalize_dates(
                             self.parse_grid, base_date, base_MTM_dates, node_children, node_resets, node_settlements)
-                    # get its price factors
                     get_price_factors(price_factors, factor_tenors, instrument)
 
-                    # merge dates
                     resets.update(node_resets)
                     for key, value in node_settlements.items():
                         settlement_currencies.setdefault(key, set()).update(value)
                 else:
-                    # sort out dates and calendars
                     instrument.reset(self.holidays)
 
                     if calc_dates:
                         instrument.finalize_dates(
                             self.parse_grid, base_date, base_MTM_dates, None, resets, settlement_currencies)
-                    # get its price factors
                     get_price_factors(price_factors, factor_tenors, instrument)
 
             return children, resets, settlement_currencies
@@ -1129,27 +1081,21 @@ class Config(object):
 
         # only if we have a portfolio of trades can we calculate its dependencies
         if self.deals:
-            # get the reporting currency
             report_currency = options['Currency']
-            # get the base currency factor
             base_factor = utils.Factor(
                 'FxRate', utils.check_rate_name(self.params['System Parameters']['Base_Currency']))
 
-            # add the base Fx rate
             dependent_factors = get_rates(base_factor, {})
 
             # store the max date the factor is needed
             dependent_factor_tenors = {}
 
-            # grab all the factor fields in the portfolio
             dependant_deals, reset_dates, currency_settlement_dates = walk_groups(
                 self.deals['Deals']['Children'], dependent_factors, dependent_factor_tenors)
 
-            # additional factors from the options passed in
             report_factor = utils.Factor('FxRate', utils.check_rate_name(report_currency))
             report_currency_dependencies = get_rates(report_factor, {})
 
-            # add the base dependencies to the reporting currency
             if report_factor != base_factor:
                 report_currency_dependencies[report_factor].append(base_factor)
 
@@ -1159,16 +1105,13 @@ class Config(object):
             for reporting_factor in utils.traverse_dependents(report_factor, dependent_factors):
                 dependent_factor_tenors[reporting_factor] = reset_dates
 
-            # check if we need to fetch survival data for CVA
             if options.get('Credit_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
                 dependent_factors.update(get_rates(
                     utils.Factor('SurvivalProb', utils.check_rate_name(
                         options['Credit_Valuation_Adjustment']['Counterparty'])),
                     {})
                 )
-            # check if we need to fetch curve data for FVA
             if options.get('Funding_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
-                # add curves
                 add_interest_rate(options['Funding_Valuation_Adjustment']['Funding_Cost_Interest_Curve'])
                 add_interest_rate(options['Funding_Valuation_Adjustment']['Risk_Free_Curve'])
 
@@ -1180,11 +1123,9 @@ class Config(object):
                     )
             # legacy FVA calculation (need to remove once done)
             if options.get('LegacyFVA'):
-                # add curves
                 add_interest_rate('{}.FUNDING'.format(options['LegacyFVA']['Funding_Curve']))
                 add_interest_rate('{}.COLLATERAL'.format(options['LegacyFVA']['Collateral_Curve']))
 
-            # Check deflation
             if options.get('Deflation_Interest_Rate'):
                 add_interest_rate(options['Deflation_Interest_Rate'])
 
@@ -1199,13 +1140,10 @@ class Config(object):
                 if k.type == 'FxRate' and k != base_factor and base_factor not in v:
                     v.append(base_factor)
 
-            # now sort the factors taking any factor dependencies into account
             sorted_factors = utils.topological_sort(dependent_factors)
-            # merge missing tenors
             v_max = max(reset_dates)
             for k, v in missing_tenors.items():
                 dependent_factor_tenors.setdefault(k, set()).update(min(x, v_max) for x in v)
-            # now get the last tenor for each factor
             dependent_factors = {k: max(dependent_factor_tenors.get(k, reset_dates)) for k in sorted_factors}
 
         return dependent_factors, skipped_factors, reset_dates, currency_settlement_dates
@@ -1260,11 +1198,9 @@ class Config(object):
             elif '.CreditSupportList' in dct:
                 return utils.CreditSupportList(dct['.CreditSupportList'])
             elif '.DateOffset' in dct:
-                # ONE wire spelling read two ways. `CustomJsonEncoder` writes the STRING ('3M') and
-                # every producer in the tree writes that - the emitters, `write_marketdata_json`,
-                # `as_json` - so a block this file wrote could not be read back here at all. The
-                # kwargs dict is what old bytes on disk carry and it keeps working: reading a
-                # spelling nobody writes any more is free, writing two of them was the defect.
+                # ONE wire spelling read two ways: every producer writes the STRING ('3M'), and the
+                # kwargs dict is what old bytes on disk carry, so both are read and only one is
+                # written.
                 period = dct['.DateOffset']
                 return self.parse_period(period) if isinstance(period, str) else DateOffset(**period)
             elif '.Offsets' in dct:
@@ -1287,7 +1223,6 @@ class Config(object):
                 for rate2, correlation in rate_list.items():
                     correlations.setdefault((rate1, rate2), correlation)
 
-            # update the correlations
             market_data['Correlations'] = correlations
             self.params = market_data
             self.version = data['Version']
@@ -1296,7 +1231,6 @@ class Config(object):
             self.deals = data['Deals']
 
         if 'CalibrationConfig' in data:
-            # store the calibration config
             self.calibrations = data['CalibrationConfig']
 
             # load the archive file - separator defaults to tab for back-compat with legacy
@@ -1308,11 +1242,9 @@ class Config(object):
             # normalise the archive index to Excel-offset ints (filter_data_frame/calibrate_PFE convention)
             if self.archive.index.dtype == object:
                 self.archive.index = (pd.to_datetime(self.archive.index) - utils.excel_offset).days
-            # load the calibration
             self.calibration_process_map = {k: construct_calibration_config(
                 k, v) for k,v in self.calibrations['Calibrations'].items()}
 
-            # store a lookup to all columns
             self.archive_columns = {}
 
             for col in self.archive.columns:
@@ -1363,22 +1295,19 @@ class Config(object):
         return data
 
     def write_marketdata_json(self, json_filename):
-        # backup old data
         old_correlations = self.params['Correlations']
 
-        # need to serialize out new data
         correlations = {}
         for correlation, value in old_correlations.items():
             correlations.setdefault(correlation[0], {}).setdefault(correlation[1], value)
 
-        # create new keys for json serialization
+        # correlations go out nested by name pair (JSON has no tuple key) and are restored after
         self.params['Correlations'] = correlations
 
         with open(json_filename, 'wt', encoding='utf-8') as f:
             f.write(json.dumps({'MarketData': self.params,
                                 'Version': self.version}, separators=(',', ':'), cls=CustomJsonEncoder))
 
-        # restore state
         self.params['Correlations'] = old_correlations
 
 

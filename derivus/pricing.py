@@ -32,73 +32,35 @@ OPTION_CALL = 1.0
 BOUNDARY_MAX_AMPLIFICATION = 25.0
 """Largest ``||weights||_1`` a local-linear boundary solve may return before it is refused.
 
-The weights sum to one by construction, so their L1 norm is EXACTLY the factor by which the fit
-can amplify the jumps it is averaging: 1.0 when no weight is negative, unbounded as the kernel's
-first two moments collapse onto each other. It is scale-free in the gap, in the jump and in the
-sample size, which a threshold on the solve's determinant is not - by Cauchy-Schwarz that
-determinant over ``s0 * s2`` lies in [0, 1] whatever the units, and the pathology and a legitimate
-solve straddle any level fitted to one of them.
-
-Measured over 2685 solves in 82 runs - every boundary registration in the repo (discrete barrier,
-collateralised latch, FVA, multi-batch, swaption exercise, autocall, TARF, MTA), 512 to 4096
-paths, five seeds, bandwidths 0.005 to 0.2. Of the 2424 that carry any density at all, every one
-reads 1.00 to 8.06 but the single decision that broke the Heston-Nandi barrier gradient, which
-reads 99.9: a kernel holding exactly two points, 1.20 widths out and 0.021 apart, weighted +50.4
-and -49.5, contributing 112% of a coefficient it had no business dominating. 25 sits 3.1x above
-the largest legitimate reading and 4.0x below that one. The other six solves above 8 are collateral
-transfer decisions whose kernel mass is 1e-9 or less, which the estimator was already returning
-essentially nothing for."""
+The weights sum to one by construction, so their L1 norm is EXACTLY the factor by which the fit can
+amplify the jumps it is averaging - scale-free in the gap, in the jump and in the sample size, which
+a threshold on the solve's determinant is not. Measured over 2685 solves in 82 runs: of the 2424
+carrying any density, every one reads 1.00 to 8.06 except the single decision that broke the
+Heston-Nandi barrier gradient, at 99.9. 25 sits 3.1x above the largest legitimate reading and 4.0x
+below that one."""
 
 KINK_ATOM_BANDWIDTH_FLOOR = 0.01
 """How far below a reporting row's OWN scale its Silverman bandwidth may fall before the kernel is
-WRITTEN to zero instead of evaluated (``exposure_kink_term``). It decides nothing about atoms.
-
-What the test measures is the row's COEFFICIENT OF VARIATION, not its dispersion outright: Silverman
-at n paths is ``1.06 * std * n**-0.2``, so ``eps <= 0.01 * mean|V|`` is exactly
-``std / mean|V| <= 0.01 / (1.06 * n**-0.2)`` - 0.0867 at 65536 paths, 0.0657 at 16384, 0.0377 at
-1024. Scale-free, and that is all it is; the arithmetic is ``1.06 * 16384**-0.2 = 0.152 * std``, not
-the ``0.20 * std`` this docstring used to claim, and the headroom is not the order of magnitude it
-used to claim either - ``tests/test_cva_gamma_kink.py``'s own first row reads ``std/mean|V| =
-0.1343``, 1.55x above the 65536-path threshold.
-
-That margin is harmless because of WHERE such a row sits, not because it is wide. A row carrying
-mass at the kink cannot land under this floor: a sample straddling zero has ``mean|V| ~ 0.8 * std``
-and a coefficient of variation near 1.25, fourteen times the threshold. What lands under it is a row
-whose whole mass sits at ONE level - a constant row (one scenario, a book whose deals have all
-matured, a deal booked against its exact mirror), where the bandwidth is an exact zero and the
-kernel is 0/0 rather than small - or a row so tightly clustered away from zero that the kernel
-underflows there anyway. Both are the same zero, which is why one branch serves both, and the gate
-fixture's row 0 sits 7.4 bandwidths out where either branch writes it.
-
-A row that is merely NARROW and does carry mass at zero is not written off here: the ladder below
-runs wherever a bandwidth exists at all, under this floor included, so it is refused rather than
-silently zeroed."""
+WRITTEN to zero rather than evaluated (``exposure_kink_term``). It decides nothing about atoms.
+The test is on the row's COEFFICIENT OF VARIATION: ``eps <= 0.01 * mean|V|`` is exactly
+``std/mean|V| <= 0.01/(1.06 * n**-0.2)`` - 0.0867 at 65536 paths, 0.0657 at 16384, 0.0377 at 1024.
+A row carrying mass at the kink cannot land under it (straddling zero gives a CV near 1.25); what
+does is a row whose whole mass sits at ONE level. A merely NARROW row is refused by the ladder."""
 
 KINK_ATOM_LADDER = (2.0, 1.0, 0.5, 0.25)
 """The bandwidth ladder ``exposure_kink_term`` classifies a row on, as multiples of that row's own
-Silverman width - a factor of EIGHT end to end.
-
-The roadmap's criterion for this term is that a row REFUSES when its bandwidth ladder DIVERGES, and
-the ladder is the only instrument that can say so: a kernel estimate of a density holds still as the
-width narrows, while a kernel estimate of a point MASS reads ``p / (h * sqrt(2 pi))`` and climbs as
-``1/h``. Nothing else here separates them - a row's spread, its mass near zero and its bandwidth are
-all one number apiece and a point mass and a narrow density share every one of them."""
+Silverman width - a factor of EIGHT end to end. A row REFUSES when its ladder DIVERGES, and the
+ladder is the only instrument that can say so: a kernel estimate of a density holds still as the
+width narrows, while one of a point MASS reads ``p / (h * sqrt(2 pi))`` and climbs as ``1/h``."""
 
 KINK_ATOM_LADDER_DIVERGENCE = 2.0
 """How far ``f_V(0)`` may CLIMB from the widest rung of ``KINK_ATOM_LADDER`` to the narrowest before
-the row is refused as an ATOM (``exposure_kink_term``).
-
-The two families are 7.7x apart on this reading, which is why one threshold separates them and why
-it need not be argued to a second digit. Measured at 65536 paths on a row with an atom of weight p
-at zero and the rest at 1.0: 54.46 / 108.9 / 217.9 / 435.7 across the four rungs at p = 0.999, a
-factor of 8.000 across a ladder of 8 - and the reading is 8.000 at EVERY p swept from 0.999 down to
-0.0001, because the climb is the mass's ``1/h`` and not its weight. Against the reporting rows of
-``tests/test_cva_gamma_kink.py``'s live document, which do carry crossing mass: 1.003 / 1.031 /
-1.027 / 1.045, the widest being 0.0172896 / 0.0176152 / 0.0178078 / 0.0180594. Two sits 1.9x above
-the density and 4.0x below the mass, and no path count moves either end.
-
-Read the ladder itself off any book at DEBUG - ``exposure_kink_term`` logs one line per reporting
-row, which is how a row that PASSED is told from a row that had nothing to say."""
+the row is refused as an ATOM (``exposure_kink_term``). The two families are 7.7x apart on this
+reading: an atom at zero climbs 54.46 / 108.9 / 217.9 / 435.7 across the four rungs, a factor of
+8.000, at every mass weight swept from 0.999 down to 0.0001, while the crossing rows of
+``tests/test_cva_gamma_kink.py`` read 1.003 / 1.031 / 1.027 / 1.045. Two sits 1.9x above the density
+and 4.0x below the mass, at any path count. ``exposure_kink_term`` logs the ladder per row at
+DEBUG."""
 
 
 # Heston-Nandi OSS spot models, opt-in per deal via the Valuation Configuration switch

@@ -19,14 +19,13 @@ authored in the instrument's own conventions, and the solve holds it at PV zero.
 whole job is to say what the instrument IS, and to say it from DECLARED DATA rather than from a
 guess made in code.
 
-THE CONVENTIONS ARE SEED-DECLARED, WHICH IS THE ROW THIS BUILD IS ABOUT. A par swap rate means
-nothing without the accrual it pays on: `USOSFR10` is annual/annual ACT/360 compounded overnight,
-`SASW10` is quarterly/quarterly ACT/365 against 3M JIBAR, and the same number under the other
-convention is a different curve by basis points. Spelling those in code would put a market
-convention where nobody who owns it can see it, so each seeded currency carries a `conventions`
-block and this module READS it. A currency whose entry lacks one REFUSES BY NAME with the missing
-fields listed, and a WRONG convention is then a data fix the owner makes in `seed.json` - never a
-code fix, and never a silent one.
+THE CONVENTIONS ARE SEED-DECLARED. A par swap rate means nothing without the accrual it pays on:
+`USOSFR10` is annual/annual ACT/360 compounded overnight, `SASW10` is quarterly/quarterly ACT/365
+against 3M JIBAR, and the same number under the other convention is a different curve by basis
+points. Each seeded currency carries a `conventions` block and this module READS it, rather than
+putting a market convention in code where nobody who owns it can see it. A currency whose entry
+lacks one REFUSES BY NAME with the missing fields listed, and a WRONG convention is then a data fix
+the owner makes in `seed.json`.
 
 NO SECOND SPELLING OF THE TICKER GRAMMAR. The securities come from `discover.strip_candidates`
 walked against the workstation's own verified map: the emitter asks the grammar for its candidates
@@ -53,11 +52,11 @@ cross-currency, no projection curve. `Quote_Type` is `Par_Rate`, which is the on
 family builds.
 
 IMPORTS: the standard library, this package's own modules, and no engine. `discover` is reached for
-its grammar, which costs the pandas the package's map layer already carries - so unlike
-`equity_chain` this module makes NO pandas-free claim, and the gate says exactly that. What it does
-claim is that nothing here imports `derivus`: the block is emitted as WIRE JSON (`{'.Timestamp':
-...}`, `{'.DateOffset': '3M'}`, `{'.Percent': 0.0}`), which is what `Config.read_json` and
-`CustomJsonEncoder` spell between them, so no engine type is ever constructed out here.
+its grammar, which costs the pandas the package's map layer already carries, so unlike
+`equity_chain` this module makes NO pandas-free claim. What it does claim is that nothing here
+imports `derivus`: the block is emitted as WIRE JSON (`{'.Timestamp': ...}`, `{'.DateOffset':
+'3M'}`, `{'.Percent': 0.0}`), which is what `Config.read_json` and `CustomJsonEncoder` spell
+between them, so no engine type is ever constructed out here.
 """
 import collections.abc
 import datetime
@@ -68,9 +67,9 @@ from typing import Mapping, Protocol, Sequence
 from . import discover
 from .errors import BloombergConfigurationError, IncompleteStrip, InvalidQuote
 
-#: What every strip candidate is asked. The value, both sides of the two-way, and the EVIDENCE that
-#: any of it still means anything - `discover.FIELDS`' own third question, asked again at fetch
-#: time because a map records when a quote was VERIFIED and a tick needs when it last PRINTED.
+#: What every strip candidate is asked: the value, both sides of the two-way, and the EVIDENCE that
+#: any of it still means anything. The date is asked again at fetch time because a map records when
+#: a quote was VERIFIED and a tick needs when it last PRINTED.
 QUOTE_FIELDS = ('PX_LAST', 'PX_BID', 'PX_ASK', 'LAST_UPDATE_DT')
 
 #: One request per chunk - `discover.BATCH`, for its reason.
@@ -82,19 +81,16 @@ FAMILY = 'InterestRatePrices'
 QUOTE_TYPE = 'Par_Rate'
 
 #: The two authoring shapes a swap strip is written in, and the DealType each one names. `OIS` is a
-#: container over an OIS-compounded floating leg and a fixed leg, which is what
-#: `quote_sensitivities.md` says an OIS benchmark must be: `pv_float_cashflow_list` routes an
-#: accrual period through geometric compounding only when the reset count differs from the cashflow
-#: count, and a `SwapInterestDeal`'s generated legs never pass through that compression. `Swap` is
-#: the vanilla single-reset par swap, one deal.
+#: container over an OIS-compounded floating leg and a fixed leg, which the compounding rule
+#: requires: `pv_float_cashflow_list` compounds geometrically only when the reset count differs
+#: from the cashflow count, and a `SwapInterestDeal`'s generated legs never reach that compression.
+#: `Swap` is the vanilla single-reset par swap, one deal.
 AUTHORING = {'OIS': 'StructuredDeal', 'Swap': 'SwapInterestDeal'}
 
-#: The day counts this emitter computes an accrual in. ACT/365 and ACT/360 and no more, DELIBERATELY:
-#: an authored `Accrual_Year_Fraction` is used verbatim by `make_float_cashflows`, so a day count
-#: spelled wrong out here is a wrong price with nothing to catch it. The engine's own
-#: `get_day_count_accrual` answers ACT_365_ISDA and ACT_ACT_ICMA as days/365 behind a `# TODO`, and
-#: the two 30/360 conventions need date arithmetic this module does not author - so all four refuse
-#: by name rather than being reproduced on trust.
+#: The day counts this emitter computes an accrual in - ACT/365 and ACT/360 and no more, because an
+#: authored `Accrual_Year_Fraction` is used verbatim by `make_float_cashflows`. ACT_365_ISDA and
+#: ACT_ACT_ICMA (which the engine answers as days/365 behind a TODO) and the two 30/360 conventions
+#: refuse by name rather than being reproduced on trust.
 DAY_COUNTS = {'ACT_365': 365.0, 'ACT_360': 360.0}
 
 #: The convention fields a seeded currency must declare before its strip can be authored, and the
@@ -136,10 +132,10 @@ class CurveConventions:
     fixed_day_count: str
     float_day_count: str
     notional: float = OPTIONAL_CONVENTIONS['notional']
-    #: What multiplies the terminal's print to reach PERCENT, which is the unit a rate benchmark is
-    #: quoted in here: `DepositDeal` divides its pinned schedule by 100, `SwapInterestDeal` divides
+    #: What multiplies the terminal's print to reach PERCENT, the unit a rate benchmark is quoted
+    #: in here: `DepositDeal` divides its pinned schedule by 100, `SwapInterestDeal` divides
     #: `Swap_Rate`, and a fixed leg's `Rate` is a `Percent`. Both seeded strips print percent
-    #: already, so both declare 1.0 - and a family that prints decimals is then a seed edit.
+    #: already and declare 1.0; a family printing decimals is then a seed edit.
     quote_scale: float = OPTIONAL_CONVENTIONS['quote_scale']
 
     def __post_init__(self):
@@ -152,21 +148,15 @@ class CurveConventions:
         for name in ('curve_day_count', 'front_day_count', 'fixed_day_count', 'float_day_count'):
             _day_count_factor(getattr(self, name), name)
         for name in ('fixed_frequency', 'float_frequency'):
-            # POSITIVE, not merely readable: a zero-length coupon period is a schedule that never
-            # reaches its own maturity, and `_dates_backward` would walk towards it forever rather
-            # than say so - a hang is the one failure a refusal cannot be read out of
+            # POSITIVE, not merely readable: on a zero-length coupon period `_dates_backward` walks
+            # forever rather than refusing, and a hang carries no message
             if read_tenor(getattr(self, name), name)[0] <= 0:
                 raise BloombergConfigurationError(
                     '{} is {!r} - a leg frequency has to be a positive period, or the coupon '
                     'schedule never advances'.format(name, getattr(self, name)))
-        # V1 AUTHORS BOTH OIS LEGS ON ONE SCHEDULE, and a declaration that says otherwise is
-        # refused rather than read past. `_ois_swap` rolls the coupon dates ONCE, off
-        # `fixed_frequency`, and hangs the fixed items and the compounded fixing windows on those
-        # same boundaries - so a `float_frequency` that differs from it is declared and never read,
-        # and the block a desk gets back is byte-identical to one that never mentioned it. This
-        # module's own refusal text says a convention nobody reads is worse than one that is
-        # missing; this is that rule applied to itself. (The `Swap` path reads BOTH - the engine
-        # generates the legs there - so it is deliberately left alone.)
+        # V1 AUTHORS BOTH OIS LEGS ON ONE SCHEDULE: `_ois_swap` rolls the coupon dates once off
+        # `fixed_frequency`, so a differing `float_frequency` would be declared and never read. The
+        # `Swap` path reads both - the engine generates the legs there - and is left alone.
         if self.authoring == 'OIS' and self.float_frequency != self.fixed_frequency:
             raise BloombergConfigurationError(
                 'float_frequency is {!r} against a fixed_frequency of {!r} on an OIS declaration, '
@@ -190,11 +180,8 @@ class CurveConventions:
 
 
 def curve_conventions(seed: Mapping, currency: str) -> CurveConventions:
-    """The declared conventions of one seeded currency, or the refusal naming what is missing.
-
-    THE REFUSAL LISTS EVERY ABSENT FIELD AT ONCE. A desk extending a seed wants the whole
-    questionnaire, not one field per terminal round trip - and a convention block filled in half way
-    is the state this refusal exists to end.
+    """The declared conventions of one seeded currency, or the refusal naming EVERY absent field at
+    once - a desk extending a seed wants the whole questionnaire, not one field per run.
     """
     spec = seed.get('rates', {}).get(currency)
     if spec is None:
@@ -224,14 +211,9 @@ def curve_conventions(seed: Mapping, currency: str) -> CurveConventions:
             'spell it as one of {}'.format(
                 currency, ', '.join(unknown),
                 ', '.join(sorted(set(REQUIRED_CONVENTIONS) | set(OPTIONAL_CONVENTIONS)))))
-    # `front` IS THE ONE REQUIRED CONVENTION WHOSE WRONG VALUE IS SILENTLY AUTHORABLE, so it is
-    # checked HERE - against the seed - rather than in `__post_init__`, which cannot see one. Every
-    # other field refuses on its own value; this one is a PATH INTO THE SEED, and a path that names
-    # nothing does not fail, it aims somewhere else. `front: 'strip/1Y'` matches the 1Y par swap's
-    # own map path, `_front_label` finds no `fixings` at its second part and manufactures the label
-    # `overnight`, and `strip_dates` then authors a 1Y par swap as a ONE-DAY DepositDeal that the
-    # Descriptor calls overnight. The block is well formed, the strip is short by a knot, and
-    # nothing downstream can tell. Refusing at the seed is the only place that is visible.
+    # `front` is a PATH INTO THE SEED, so it is checked HERE rather than in `__post_init__`, which
+    # cannot see one: a path that names nothing does not fail, it aims elsewhere. `front:
+    # 'strip/1Y'` would author the 1Y par swap as a one-day deposit labelled overnight.
     admissible = _seeded_fronts(seed, currency)
     if declared['front'] not in admissible:
         raise BloombergConfigurationError(
@@ -262,13 +244,10 @@ class CurveScreen:
     minimum_points: int = 2
     #: How many daily fixings the whole block may author, across every OIS benchmark in it.
     #:
-    #: THIS IS A SIZE BOUND AND IT IS NOT THEORETICAL. An OIS floating leg is one authored item per
-    #: business-day fixing - that is what the compounding rule requires, see `_ois_swap` - so a 30Y
-    #: benchmark is about 7,800 items and the shipped USD strip in total is about 25,700, which
-    #: encodes to roughly fourteen megabytes of JSON. That is a real block a real terminal produces,
-    #: so the default admits it; what the bound catches is a seed reaching further (fifty years, a
-    #: second currency in the same document) turning a fetch into a document nothing downstream can
-    #: hold. It refuses with the count and the arithmetic rather than with a MemoryError.
+    #: A SIZE BOUND. An OIS floating leg is one authored item per business-day fixing (see
+    #: `_ois_swap`), so a 30Y benchmark is about 7,800 items and the shipped USD strip about 25,700
+    #: - roughly fourteen megabytes of JSON, which the default admits. What the cap catches is a
+    #: seed reaching further, and it refuses with the count rather than with a MemoryError.
     maximum_fixings: int = 50000
 
     def __post_init__(self):
@@ -300,10 +279,8 @@ class RatePrint:
 class CurveStrip:
     """A screened strip: what survived, what did not and why, and the curve it is quoted for.
 
-    `rejected` is the LEDGER - `{security: verdict}` for every candidate that did not make it,
-    `discover.build_map`'s discipline transferred: a candidate silently dropped is indistinguishable
-    from one never asked about, and on a strip that is the difference between a short curve and a
-    wrong one.
+    `rejected` is the LEDGER - `{security: verdict}` for every candidate that did not make it. On a
+    strip, a point silently dropped is the difference between a short curve and a wrong one.
     """
     currency: str
     curve: str
@@ -326,8 +303,7 @@ class CurveStrip:
 
 def read_number(value):
     """A terminal value as a finite float, or None. Absent, blank, unparseable and non-finite all
-    read as ABSENT - `fxvol._scaled_side`'s rule, and for its reason: the one thing this must never
-    do is manufacture a number out of a blank."""
+    read as ABSENT rather than as a number manufactured out of a blank."""
     if value is None or value == '':
         return None
     try:
@@ -338,9 +314,8 @@ def read_number(value):
 
 
 def read_date(value):
-    """A terminal date as a `datetime.date`, or None - `equity_chain._date`, re-spelled at this
-    boundary for the reason `probe` is: Bloomberg answers dates as `datetime.date` through blpapi
-    and as ISO strings through every canned fixture, so both are read."""
+    """A terminal date as a `datetime.date`, or None. Bloomberg answers dates as `datetime.date`
+    through blpapi and as ISO strings through every canned fixture, so both are read."""
     if isinstance(value, datetime.datetime):
         return value.date()
     if isinstance(value, datetime.date):
@@ -358,8 +333,8 @@ def read_word(value):
 
 
 def probe(source, securities, fields=QUOTE_FIELDS, batch=BATCH, on_batch=None):
-    """Every candidate asked in bounded chunks - `discover.probe`'s contract, re-spelled here so a
-    caller can watch a slow terminal. `on_batch(done, total)` counts names REPLIED ABOUT."""
+    """Every candidate asked in bounded chunks - `discover.probe`'s contract. `on_batch(done,
+    total)` counts names REPLIED ABOUT, so a caller can watch a slow terminal."""
     report = {}
     for start in range(0, len(securities), batch):
         report.update(source.reference_data_report(securities[start:start + batch], list(fields)))
@@ -371,15 +346,14 @@ def probe(source, securities, fields=QUOTE_FIELDS, batch=BATCH, on_batch=None):
 def strip_entries(document, seed, currency):
     """`(wanted, ledger)` - the verified securities of one currency's strip, walked off the GRAMMAR.
 
-    `discover.strip_candidates` is asked for its candidates and each one's `path` is looked up in
-    the workstation's own map, so this module spells no ticker and no map path: a candidate the map
-    did not verify is `unverified` on the ledger by name, and a seeded fixing that is not the
-    declared front point is `not-a-benchmark` - the single-curve V1 quotes the front and the swap
-    strip, and a 6M JIBAR print is an index rather than an instrument this block holds at par.
+    `discover.strip_candidates` supplies the candidates and each one's `path` is looked up in the
+    workstation's own map, so this module spells no ticker and no map path. A candidate the map did
+    not verify is `unverified` on the ledger by name; a seeded fixing that is not the declared
+    front point is `not-a-benchmark`, since a 6M JIBAR print is an index rather than an instrument
+    this block holds at par.
 
     `wanted` is `[(label, kind, security)]` with `kind` one of `front` / `swap`, in the grammar's
-    own order; the emitter sorts by maturity later, because that is a property of the calendar
-    rather than of the seed.
+    own order - the emitter sorts by maturity later, that being a property of the calendar.
     """
     conventions = curve_conventions(seed, currency)
     blocks = document.get('blocks', {})
@@ -433,14 +407,13 @@ def fetch_curve_strip(source, document, seed, currency, as_of, curve=None, scree
 
     ONE ROUND TRIP over the securities the map believed, asking each the value, both sides of its
     two-way and its own last print. The tolerant reader makes the request and the strict policy is
-    applied CLIENT-SIDE, per print, exactly as `fxvol._value_of` applies it to a vol pillar: one
-    dead point in a strip is the FINDING and not the failure, because a strip with a hole in it is
-    still a curve with one fewer knot while a strip refused whole is no curve at all.
+    applied CLIENT-SIDE, per print: one dead point is a curve with one fewer knot, where a strip
+    refused whole is no curve at all.
 
-    `curve` names the `InterestRate` factor this strip builds and defaults to the CURRENCY, which is
-    the single-curve V1's own name and what an `FxRate`'s `Interest_Rate` points at in the simplest
-    book there is. A desk running a multi-curve set names its curves itself (`USD-OIS`,
-    `ZAR-JIBAR-3M`) - the block key is `InterestRatePrices.<curve>` and the deals project off it.
+    `curve` names the `InterestRate` factor this strip builds and defaults to the CURRENCY, the
+    single-curve V1's own name and what an `FxRate`'s `Interest_Rate` points at. A desk running a
+    multi-curve set names its curves itself (`USD-OIS`, `ZAR-JIBAR-3M`); the block key is
+    `InterestRatePrices.<curve>` and the deals project off it.
     """
     screen = screen or CurveScreen()
     conventions = curve_conventions(seed, currency)
@@ -480,11 +453,11 @@ def screen_strip(prints, as_of, screen=None):
       unpriced   no PX_LAST at all - a knot cannot be identified by a blank
       off-market a rate outside the declared band: the feed that answers 8.855 answers 8855 too,
                  and a decimal-shifted print passes every check that is not a band
-      crossed    bid above ask - a stale side left standing against a live one, which says the
-                 page is broken and takes the mid's credibility with it
+      crossed    bid above ask - a stale side left standing against a live one, which takes the
+                 mid's credibility with it
       undated    no readable LAST_UPDATE_DT: a print that cannot evidence its own time, and the
-                 row's `Timestamp` would otherwise carry 'N/A' into the block
-      stale      a last update older than `stale_days` - the SAONIA rule, per point
+                 row's `Timestamp` would otherwise carry it into the block
+      stale      a last update older than `stale_days`
       live       believed
 
     `rejected` is `{security: verdict}` for every one of them, BY NAME.
@@ -521,9 +494,9 @@ def _verdict(item, as_of, screen):
 # ---------------------------------------------------------------------------------------------
 
 def read_tenor(label, what='tenor'):
-    """`(count, unit)` off a strip label - `1W`, `3M`, `10Y`, `2D`. The labels are
-    `discover.strip_candidates`' own (`WEEK_SUFFIX` / `MONTH_SUFFIX` / the plain year), so an
-    unreadable one is a seed nobody can author from rather than something to skip."""
+    """`(count, unit)` off a strip label - `1W`, `3M`, `10Y`, `2D`, the vocabulary
+    `discover.strip_candidates` labels a strip with. An unreadable label REFUSES: it is a seed
+    nobody can author from rather than something to skip."""
     text = read_word(label).upper()
     if len(text) < 2 or text[-1] not in 'DWMY' or not text[:-1].lstrip('+').isdigit():
         raise BloombergConfigurationError(
@@ -561,10 +534,9 @@ def _add_tenor(date, label):
 
 
 def _is_business_day(date):
-    """Monday to Friday, and NO HOLIDAY CALENDAR - stated rather than implied. The authored deals
-    carry `Accrual_Calendars: None` and `Payment_Calendars: None`, so the engine adjusts nothing
-    either: one convention, applied on both sides of the boundary. A desk that needs a real
-    settlement calendar has to give the deals one, and this is where it would be read."""
+    """Monday to Friday, and NO HOLIDAY CALENDAR. The authored deals carry `Accrual_Calendars:
+    None` and `Payment_Calendars: None`, so the engine adjusts nothing either - one convention on
+    both sides of the boundary. A desk needing a real settlement calendar is read here."""
     return date.weekday() < 5
 
 
@@ -586,11 +558,9 @@ def _business_days(start, end):
     """Every business day in `[start, end)` - the days an overnight leg takes a fixing on.
 
     HALF OPEN AT THE END, so the last day found accrues to the coupon's own end rather than past
-    it. It is NOT half open at the start in any useful sense: a `start` that falls on a weekend is
-    simply not a business day and does not appear, so the days between it and the first Monday
-    belong to no window this function returns. TILING THE COUPON IS THEREFORE THE CALLER'S JOB and
-    `_ois_swap` does it by putting the coupon's own start in front of whatever comes back - see
-    the partition note there, which is the whole reason this docstring no longer claims it.
+    it. A `start` on a weekend is not a business day and does not appear, so the days between it
+    and the first Monday belong to no window returned here: TILING THE COUPON IS THE CALLER'S JOB,
+    and `_ois_swap` does it by putting the coupon's own start in front of what comes back.
     """
     days, moved = [], start
     while moved < end:
@@ -604,10 +574,9 @@ def _dates_backward(end, start, frequency):
     """The coupon dates of one leg, rolled BACKWARD from maturity and clipped at the effective date
     - `instruments.generate_dates_backward`, re-spelled.
 
-    BACKWARD RATHER THAN FORWARD, so the stub is at the FRONT. That is the market's own roll and it
-    is also what the engine does when it generates a `SwapInterestDeal`'s legs, so the two authoring
-    shapes this module writes put a stub in the same place: an 18M OIS pays at +6M and +18M under
-    both, rather than at +12M and +18M under one and +6M/+18M under the other.
+    BACKWARD RATHER THAN FORWARD, so the stub is at the FRONT. That is the market's roll and what
+    the engine does generating a `SwapInterestDeal`'s legs, so both authoring shapes put the stub
+    in the same place: an 18M OIS pays at +6M and +18M under either.
     """
     count, unit = read_tenor(frequency, 'frequency')
     if count <= 0:
@@ -644,8 +613,8 @@ def _day_count_factor(day_count, what='day count'):
 
 
 def _accrual(start, end, day_count):
-    """`(end - start).days / N` - `utils.get_day_count_accrual`'s ACT/N branch exactly, which is the
-    only branch this module authors into a cashflow."""
+    """`(end - start).days / N` - `utils.get_day_count_accrual`'s ACT/N branch, the only one this
+    module authors into a cashflow."""
     return (end - start).days / _day_count_factor(day_count)
 
 
@@ -656,10 +625,9 @@ def _accrual(start, end, day_count):
 def wire_timestamp(date):
     """A date in the WIRE spelling the engine's own decoder reads - `{'.Timestamp': 'YYYY-MM-DD'}`.
 
-    The wire form rather than a `pandas.Timestamp` on purpose: a block is posted as JSON, and
-    spelling it here is what keeps this module free of the engine. It is also what
-    `CustomJsonEncoder` writes, so a block emitted here and a block read back off disk are the same
-    bytes.
+    The wire form rather than a `pandas.Timestamp`: a block is posted as JSON, and spelling it here
+    keeps this module free of the engine. It is what `CustomJsonEncoder` writes too, so a block
+    emitted here and a block read back off disk are the same bytes.
     """
     if date is None:
         raise InvalidQuote(
@@ -670,10 +638,8 @@ def wire_timestamp(date):
 
 def wire_period(label):
     """A tenor in the wire spelling both decoders parse - `{'.DateOffset': '3M'}`, the string form
-    `CustomJsonEncoder` writes. `Config.parse_json` used to read a DIFFERENT spelling of this key (a
-    kwargs dict) and now reads the string through the same period parser `read_json` uses, still
-    accepting the dict for bytes already on disk; the encoder's own output was the form taken here
-    while that divergence stood, and it is the only form written anywhere now."""
+    `CustomJsonEncoder` writes. `Config.parse_json` also accepts a kwargs dict under this key, for
+    bytes already on disk; nothing writes that form."""
     read_tenor(label)
     return {'.DateOffset': label}
 
@@ -699,12 +665,11 @@ def wire_date_list(pairs):
 def _deposit(reference, currency, curve, effective, maturity, tenor, day_count, notional):
     """A money-market deposit - the strip's FRONT point, and the one shape both authorings share.
 
-    The rate is pinned through `Interest_Rate_Schedule`, which is what keeps a front quote off the
-    forecast curve entirely: `DepositDeal.reset` drops the `Interest_Rate` dependency when the
-    schedule covers every accrual start, so the point cannot depend on the curve it identifies.
-    The schedule is authored EMPTY because `QUOTE_WRITERS['DepositDeal']` writes it from the quote -
-    an authored one would be a rate in the plan half of the block, and a re-tick would then be a
-    re-authoring.
+    The rate is pinned through `Interest_Rate_Schedule`, which keeps a front quote off the forecast
+    curve entirely: `DepositDeal.reset` drops the `Interest_Rate` dependency when the schedule
+    covers every accrual start, so the point cannot depend on the curve it identifies. The schedule
+    is authored EMPTY because `QUOTE_WRITERS['DepositDeal']` writes it from the quote - an authored
+    one would put a rate in the block's plan half and make every re-tick a re-authoring.
     """
     return {
         'Object': 'DepositDeal', 'Reference': reference, 'Currency': currency,
@@ -722,11 +687,10 @@ def _deposit(reference, currency, curve, effective, maturity, tenor, day_count, 
 def _par_swap(reference, currency, curve, effective, maturity, conventions):
     """A vanilla par interest-rate swap - fixed against a single-reset floating leg.
 
-    `Index_Tenor` of zero months is what makes each coupon carry ONE reset spanning its own accrual
-    period, which for a leg paying at the index's own frequency IS the index: a quarterly leg on 3M
-    JIBAR. A leg whose payment frequency differs from its index tenor (a semi-annual leg on a 3M
-    index) is a different instrument and V1 does not author it - `Swap` authoring is the vanilla
-    shape or nothing.
+    `Index_Tenor` of zero months makes each coupon carry ONE reset spanning its own accrual period,
+    which for a leg paying at the index's own frequency IS the index: a quarterly leg on 3M JIBAR.
+    A leg whose payment frequency differs from its index tenor is a different instrument and V1
+    does not author it.
 
     `Swap_Rate` is authored at ZERO and the print rides in `Quoted_Market_Value`:
     `QUOTE_WRITERS['SwapInterestDeal']` writes it, so a re-tick moves the value plane alone.
@@ -760,33 +724,26 @@ def _par_swap(reference, currency, curve, effective, maturity, conventions):
 def _ois_swap(reference, currency, curve, effective, maturity, conventions):
     """An OIS swap as a CONTAINER over two legs - the shape the compounding rule requires.
 
-    `pv_float_cashflow_list` routes an accrual period through geometric compounding when the reset
-    count differs from the cashflow count, and that reshape is set up by
-    `compress_no_compounding(groupsize=-1)` under `Compounding_Method='OIS'`. So the floating leg is
-    ONE ITEM PER FIXING, all the items of a coupon sharing that coupon's payment date: the
-    compression merges them into one cashflow carrying every reset at `Weight` 1, and only then are
-    they compounded. A leg authored as one item with many resets would arrive weighted `1/n` and
-    compound at a fraction of the rate, which is the AVERAGING legs' arithmetic and must never reach
-    this path. A `SwapInterestDeal`'s generated legs never pass through the compression at all,
-    which is why an OIS cannot be authored as one.
+    `pv_float_cashflow_list` compounds an accrual period geometrically when the reset count differs
+    from the cashflow count, a reshape set up by `compress_no_compounding(groupsize=-1)` under
+    `Compounding_Method='OIS'`. So the floating leg is ONE ITEM PER FIXING, every item of a coupon
+    sharing that coupon's payment date: the compression merges them into one cashflow carrying
+    every reset at `Weight` 1, and only then compounds. A leg authored as one item with many resets
+    arrives weighted `1/n` and compounds at a fraction of the rate - the AVERAGING legs' arithmetic
+    - and a `SwapInterestDeal`'s generated legs never reach the compression at all.
 
     The fixed leg carries the quote on every row of its schedule
     (`QUOTE_WRITERS['CFFixedInterestListDeal']`), so every `Rate` here is authored at ZERO percent
     and the print rides in `Quoted_Market_Value` alone.
 
-    THE FIXING WINDOWS PARTITION THE COUPON, WHICH IS WHAT PUTS THE TWO LEGS ON ONE CONVENTION.
-    Both legs are rolled off the SAME coupon dates, so they can only accrue over the same span if
-    the float leg's windows tile `[coupon_start, coupon_end]` exactly - and the coupon's own start
-    is a boundary whatever weekday it falls on. A fixing accrues THROUGH a weekend, at a coupon
-    boundary exactly as it does inside a coupon: Friday's rate is what a Saturday-to-Monday gap
-    earns, and the accrual is three days either way.
-
-    Starting the leg at the first BUSINESS day instead is where this was wrong, and the size of it
-    is measurable rather than cosmetic: on the USD 5Y OIS effective 2026-09-02 the coupon starting
-    Saturday 2028-09-02 accrued 1.00833333 of a year on the float leg against the fixed leg's
-    1.01388889 - two days of a one-year coupon dropped on one side of a swap the solve holds at PV
-    zero, and 2029-09-02 lost a third. So the coupon start goes in front of whatever
-    `_business_days` returns, and per coupon the two legs now accrue the same span.
+    THE FIXING WINDOWS PARTITION THE COUPON, which is what puts the two legs on one convention.
+    Both are rolled off the SAME coupon dates, so they accrue the same span only if the float leg's
+    windows tile `[coupon_start, coupon_end]` exactly - and the coupon's own start is a boundary
+    whatever weekday it falls on, since a fixing accrues THROUGH a weekend at a coupon boundary
+    exactly as it does inside one. Starting the leg at the first BUSINESS day instead drops days:
+    on the USD 5Y OIS effective 2026-09-02, the coupon starting Saturday 2028-09-02 accrued
+    1.00833333 of a year against the fixed leg's 1.01388889. So the coupon start goes in front of
+    whatever `_business_days` returns.
     """
     coupons = _dates_backward(maturity, effective, conventions.fixed_frequency)
     float_items, fixed_items = [], []
@@ -834,10 +791,9 @@ def _ois_swap(reference, currency, curve, effective, maturity, conventions):
 def _cashflow_leg(object_type, reference, currency, buy_sell, cashflows, **extra):
     """The `CashflowListDeal` block both interest-cashflow legs share, plus the type's own fields.
 
-    `Discount_Rate` is absent on purpose, here and on every other authored deal: `author_quote`
-    stamps it on the node and recurses into `Children`, because what an instrument PROJECTS off is
-    its own business while what the quote set DISCOUNTS on is a property of the curve set. Authoring
-    it would state the same thing twice, and the second statement would be the one that goes stale.
+    `Discount_Rate` is absent here and on every other authored deal: `author_quote` stamps it on
+    the node and recurses into `Children`, because what an instrument PROJECTS off is its own
+    business while what the quote set DISCOUNTS on is a property of the curve set.
     """
     return dict({
         'Object': object_type, 'Reference': reference, 'Currency': currency,
@@ -855,19 +811,18 @@ def _cashflow_leg(object_type, reference, currency, buy_sell, cashflows, **extra
 def market_price_name(curve):
     """`InterestRatePrices.<curve>` - the `Market Prices` key, whose tail is the `InterestRate`
     factor the family writes. Unlike the other four families this one writes an ordinary
-    `InterestRate` rather than a block named for its class, which is what `price_factor_type`
-    declares."""
+    `InterestRate` rather than a factor named for its own class."""
     return '{}.{}'.format(FAMILY, curve)
 
 
 def strip_dates(item, as_of, conventions):
     """`(effective, maturity, tenor label)` for one print - the calendar, applied once.
 
-    The front point starts at t0 and matures at the next business day when it is an OVERNIGHT rate,
+    The front point starts at t0 and matures on the next business day when it is an OVERNIGHT rate,
     and starts at spot like every swap when it is a named fixing: a 3M JIBAR deposit is a spot-start
     three-month instrument, an O/N print is not. The tenor label doubles as the deposit's own
-    payment frequency, so the pinned schedule is one period - `generate_dates_backward` clips at the
-    effective date, and an overnight spanning a weekend is a `3D` period rather than three of them.
+    payment frequency, so the pinned schedule is ONE period - an overnight spanning a weekend is a
+    `3D` period rather than three of them.
     """
     spot = _add_business_days(as_of, conventions.spot_days)
     if item.kind != 'front':
@@ -886,10 +841,10 @@ def author_point(item, as_of, currency, curve, conventions):
     neither is authored twice. `Use` is Yes, `Quote_Type` is `Par_Rate`, and `Descriptor` names the
     ticker the number came off, which is the only place in the block a security lands.
 
-    `Quoted_Bid`, `Quoted_Ask` and `Timestamp` ride BESIDE the mid where the terminal answered them.
-    They are `schema.MARKET_QUOTE_VALUES` - the value plane `config.update_market_quote` lets a tick
-    move - and `InterestRateCurveParameters.Points` declares all three among its nine sub-fields,
-    optional and value-side, so the two-way and the print's own clock land as declared evidence.
+    `Quoted_Bid`, `Quoted_Ask` and `Timestamp` ride BESIDE the mid where the terminal answered
+    them. They are `schema.MARKET_QUOTE_VALUES` - the value plane `config.update_market_quote` lets
+    a tick move - and `InterestRateCurveParameters.Points` declares all three among its nine
+    sub-fields, so the two-way and the print's own clock land as declared evidence.
     """
     effective, maturity, tenor = strip_dates(item, as_of, conventions)
     reference = '{}_{}'.format(currency, item.label.replace('/', '_'))
@@ -924,14 +879,12 @@ def ir_curve_block(strip, screen=None):
     date - comes out ascending without anything having to sort it afterwards.
 
     TWO BENCHMARKS MATURING ON THE SAME DAY REFUSE BY NAME. The knot rule is what makes the
-    bootstrap square: a knot with no instrument maturing at it is unidentified, and two instruments
-    maturing between the same pair of knots leave the curve under-determined between them. A seed
-    quoting 4W beside 1M produces exactly that, and it would otherwise reach the solve as a singular
-    Jacobian rather than as a sentence.
+    bootstrap square: two instruments maturing between the same pair of knots leave the curve
+    under-determined between them, and a seed quoting 4W beside 1M does exactly that. It would
+    otherwise reach the solve as a singular Jacobian rather than as a sentence.
 
-    `Discount_Rate` is blank, which is the self-discounting single-curve configuration and the
-    harder solve - the unknown appears on both sides. A projection curve discounting on an OIS curve
-    is the multi-curve case and V1 does not author it.
+    `Discount_Rate` is blank - the self-discounting single-curve configuration, and the harder
+    solve, since the unknown appears on both sides. V1 authors no multi-curve case.
     """
     screen = screen or CurveScreen()
     if len(strip.prints) < screen.minimum_points:
@@ -986,25 +939,17 @@ def ir_curve_block(strip, screen=None):
 def reauthor(market_prices, name, block):
     """Drop this block and re-install it - the route a block takes when a re-tick is a RE-AUTHORING.
 
-    IT LIVES HERE AND `swaption_vol` REACHES IT, one spelling for both emitters, because the
-    mechanism is one thing and only the reason differs. `config.update_market_quote` compares the
-    PLAN half of a block and refuses by name when it moved; when the plan legitimately moves there
-    is nothing to fix in the guard, and dropping before re-installing is what `POST /book/hn`
-    already does with a Heston-Nandi chain.
-
-    THE TWO REASONS, because they are not the same strength:
+    One spelling for both emitters, `swaption_vol` reaching it, because the mechanism is one thing
+    and only the reason differs:
 
       the swaption ladder  `schema.partition_market_price` gives every family whose quotes do not
                            live in `Points` rows an EMPTY values half, and
                            `HullWhite2FactorModelPrices` quotes in `Instrument_Definitions`. So a
-                           moved vol is not a value AT ALL - there is no tick that could reach the
-                           block, and every re-quote is a new plan.
-      the curve strip      this family DOES have a values half, and a same-day re-tick passes as
-                           'updated' - which is the whole point of authoring the quote outside the
-                           deal. What a tick cannot carry is a ROLLED DATE: `Effective_Date` and
-                           `Maturity_Date` are structure, so tomorrow's strip of the same benchmarks
-                           is a different plan and refuses. It is right to refuse, and this is how
-                           the next day's curve reaches the book anyway.
+                           moved vol is not a value AT ALL and every re-quote is a new plan.
+      the curve strip      this family DOES have a values half and a same-day re-tick passes as
+                           'updated'. What a tick cannot carry is a ROLLED DATE: `Effective_Date`
+                           and `Maturity_Date` are structure, so tomorrow's strip of the same
+                           benchmarks is a different plan and rightly refuses.
 
     `market_prices` is the section itself - `cfg.params['Market Prices']`, or a wire document's
     `Calc/MergeMarketData/ExplicitMarketData/Market Prices`. Returns 'installed' or 'reauthored',
@@ -1022,13 +967,11 @@ def reauthor(market_prices, name, block):
 def quote_census(strip):
     """The strip's own account of what the terminal served, for a caller with a screen or a report.
 
-    It is NOT written into the block, and that is a finding rather than a choice:
-    `InterestRateCurveParameters` declares no `Quote_Source` and no `Quote_Timestamp` where the two
-    Heston-Nandi families and (since 2026-09-01) `HullWhite2FactorModelParameters` all do, so the
-    only BLOCK-level provenance a curve block can carry is the per-point `Descriptor` - which names
-    the ticker and nothing about the census. What that same ruling did give this family is the
-    per-point evidence: `Quoted_Bid`, `Quoted_Ask` and `Timestamp` are declared columns of `Points`
-    now, so a print's two-way and its own clock are data rather than undeclared keys.
+    DECLARED LIMITATION: it is not written into the block. `InterestRateCurveParameters` declares
+    no `Quote_Source` and no `Quote_Timestamp` where the Heston-Nandi and HW2F families do, so the
+    only block-level provenance a curve block carries is the per-point `Descriptor`, which names
+    the ticker and nothing about the census. The per-point EVIDENCE is declared: `Quoted_Bid`,
+    `Quoted_Ask` and `Timestamp` are columns of `Points`.
     """
     return {'currency': strip.currency, 'curve': strip.curve, 'as_of': strip.as_of.isoformat(),
             'asked': len(strip.prints) + len(strip.rejected), 'believed': len(strip.prints),

@@ -12,19 +12,17 @@
 ########################################################################
 """Build and re-verify a workstation's Bloomberg security map - `DV_Bloomberg`.
 
-The package still ships NO ticker vocabulary: which pairs, which curve prefixes, which grids is
-a SEED file the caller owns (the README carries a starting one), and nothing enters a map that
-this workstation's terminal did not answer for. Discovery asks Bloomberg what each candidate IS
-(`NAME`), when it last printed (`LAST_UPDATE_DT`) and whether it prices (`PX_LAST`), and writes
-only the candidates whose answers match - so a map ENTRY is evidence, and `security_map.load`
-refuses one that carries none. The dead trap this exists for is real: a retired benchmark keeps
-returning a plausible `PX_LAST` with no error, and the update date is the only thing that says
-so (SAONIA read 8.855 nineteen years after its last print).
+The package ships NO ticker vocabulary: which pairs, which curve prefixes, which grids is a SEED
+file the caller owns, and nothing enters a map this workstation's terminal did not answer for.
+Discovery asks Bloomberg what each candidate IS (`NAME`), when it last printed
+(`LAST_UPDATE_DT`) and whether it prices (`PX_LAST`), and writes only the candidates whose
+answers match, so a map ENTRY is evidence. The trap it exists for: a retired benchmark keeps
+returning a plausible `PX_LAST` with no error, and only the update date says so - SAONIA read
+8.855 nineteen years after its last print.
 
-What stays in code is only the spelling grammar - how a vol ticker composes from a pair, a
-pillar and a tenor, how an OIS strip suffixes weeks, months and years - because a spelling is
-verified per candidate against `NAME` before it is believed. `verify` and `build_map` are pure,
-so the gates drive them on canned terminal answers, the `normalize_fx_vol` seam.
+What stays in code is the spelling grammar alone - how a vol ticker composes from a pair, a
+pillar and a tenor, how an OIS strip suffixes weeks, months and years - since every spelling is
+checked against `NAME` before it is believed. `verify` and `build_map` are pure, no socket.
 """
 import datetime
 import json
@@ -226,12 +224,11 @@ def discover(seed, session, as_of, stale_days=STALE_DAYS, on_batch=None):
 
 
 def provisioned(home=None):
-    """The map on disk, or None - the question `provision` answers first, asked on its own.
+    """The map's path on disk, or None.
 
-    A ROUTINE fetch (a cadence, a cron) must never provision: verifying a workstation's whole
-    vocabulary is minutes of terminal time and an interactive act. So it asks this before it
-    opens a session at all, and refuses by name on None rather than discovering its way into a
-    map nobody was watching being built.
+    A ROUTINE fetch (a cadence, a cron) must never provision - verifying a whole vocabulary is
+    minutes of terminal time and an interactive act - so it asks this before opening a session
+    and refuses by name on None.
     """
     path = os.path.join(home or security_map.home(), 'security_map.json')
     return path if os.path.isfile(path) else None
@@ -240,15 +237,9 @@ def provisioned(home=None):
 def provision(session, as_of, home=None, stale_days=STALE_DAYS, on_batch=None):
     """First use, once: `(document, created)` for `$DV_HOME/security_map.json`.
 
-    A map that is already there is LOADED and returned with `created` False - no probe, no
-    write - so a desk that has cut its seed down and verified it keeps that map until it asks
-    for another. With no map, the home folder and the seed are laid down FIRST: the packaged
-    questionnaire is copied in byte for byte, so what the user meets is a real file to edit
-    rather than an instruction to go find one. Only then is the terminal asked.
-
-    That order is the point of the ordering: a Bloomberg failure propagates AFTER the folder
-    and seed exist, so a refusal leaves the user with the seed to cut down and NO half-written
-    map - and the retry starts from an edited seed instead of from a map nobody trusts.
+    An existing map is LOADED and returned with `created` False - no probe, no write. With no
+    map, the home folder and a copy of the packaged seed are laid down FIRST and only then is
+    the terminal asked, so a Bloomberg failure leaves an editable seed and no half-written map.
     """
     home = home or security_map.home()
     map_path = provisioned(home)
@@ -317,9 +308,8 @@ def main():
 
     as_of = datetime.date.today()
     if args.verb == 'discover':
-        # the CLI keeps the seed deliberate where `provision` copies it: a hand-run discovery
-        # refuses on a missing seed so the desk cuts its scope FIRST, and the refusal names the
-        # packaged questionnaire to start from
+        # unlike `provision`, the CLI does not copy the seed in: a hand-run discovery refuses so
+        # the desk cuts its scope first, and the refusal names the packaged questionnaire
         if not os.path.isfile(args.seed):
             raise SystemExit(
                 'no seed at {} - copy the packaged questionnaire ({}) there and cut it to the '

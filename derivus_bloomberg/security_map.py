@@ -12,17 +12,15 @@
 ########################################################################
 """Consume a verified security map - the artifact `DV_Bloomberg discover` writes.
 
-The map is the caller's, lives outside any repo (README: never commit workstation-specific
-security maps), and every entry carries its EVIDENCE: the NAME the terminal answered, the
-quote's last print, and when it was verified. `load` refuses an entry without evidence by name,
-so a hand-edited ticker cannot ride into `fetch_fx_vol` on the strength of being in the file -
-which is the README's "verify every security against OVDV" turned from an instruction into a
-property of the artifact.
+The map is the caller's and lives outside any repo. Every entry carries its EVIDENCE: the NAME
+the terminal answered, the quote's last print, and when it was verified; `load` refuses an entry
+missing any of it by name, so a hand-edited ticker cannot ride into `fetch_fx_vol` on the
+strength of being in the file.
 
 This module talks to no service and prices nothing: it turns map blocks into the definitions
-`fxvol` consumes, and answers freshness questions the fetch path deliberately does not ask
-(`fetch_fx_vol` stamps every point with the retrieval clock, so a dead series would arrive
-wearing today's time - check `stale` beside a tick).
+`fxvol` consumes, and answers the freshness questions the fetch path does not ask (`fetch_fx_vol`
+stamps every point with the retrieval clock, so a dead series arrives wearing today's time -
+check `stale` beside a tick).
 """
 import datetime
 import json
@@ -38,17 +36,14 @@ SCHEMA = 'derivus-bloomberg-map/1'
 def home():
     """The user-data directory the DV_* tools share: `$DV_HOME`, defaulting to `~/.derivus` -
     where a desk's own files (`book.json`, `security_map.json`, `seed.json`) live, outside any
-    repo. One env var, the `RF_SERVICE_URL` pattern; deliberately re-spelled per package rather
-    than imported across the engine boundary."""
+    repo."""
     return os.path.expanduser(os.environ.get('DV_HOME', os.path.join('~', '.derivus')))
 
 
 def packaged_seed():
-    """The questionnaire the package ships - the starting vocabulary of pairs, curve prefixes
-    and grids, copied to `$DV_HOME/seed.json` on first use so a desk finds a file to cut down
-    to what it actually quotes rather than a blank prompt. Shipping it asserts nothing about
-    any workstation: the seed only names CANDIDATES, and `load` below - which refuses an entry
-    carrying no terminal evidence - not the seed, is where the trust boundary sits."""
+    """The path to the questionnaire the package ships - the starting vocabulary of pairs, curve
+    prefixes and grids, copied to `$DV_HOME/seed.json` on first use. The seed names CANDIDATES
+    only; the trust boundary is `load`, which refuses an entry carrying no terminal evidence."""
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'seed.json')
 
 
@@ -132,11 +127,9 @@ def fx_spot_route(document, currency, base_currency):
     """`(pair, security)` - the verified market pair whose cross prices one unit of `currency` in
     `base_currency` units, or `(None, None)` where the currency IS the base and prices itself.
 
-    A map entry is a MARKET pair and the market spells each one way round, so exactly the two
-    spellings the map could carry are tried - `USDZAR` for ZAR against a USD base, `EURUSD` for
-    EUR against it. Triangulating through a third currency is a market VIEW rather than a lookup,
-    so a pair this workstation never verified refuses by name and the caller keeps whatever spot
-    it already had.
+    Both spellings a market pair could carry are tried - `USDZAR` for ZAR against a USD base,
+    `EURUSD` for EUR against it. Triangulating through a third currency is a market VIEW rather
+    than a lookup, so an unverified pair refuses by name and the caller keeps the spot it had.
     """
     if currency == base_currency:
         return None, None
@@ -152,10 +145,9 @@ def fx_spot_route(document, currency, base_currency):
 def fetch_fx_spot(source, securities):
     """`{security: last price}` for verified spot tickers - ONE request off a live session.
 
-    The tolerant reader makes the request and the strict policy is applied CLIENT-side, exactly as
-    `fxvol._value_of` applies it to a vol pillar: a name that did not answer, or answered with
-    something that is not a positive number, refuses BY NAME. A spot struck on a blank is worse
-    than one struck on a book's own ticked market, which is what the caller falls back to.
+    The tolerant reader makes the request and the strict policy is applied client-side: a name
+    that did not answer, or answered with something that is not a positive finite number, raises
+    `InvalidQuote` naming it rather than reaching a book.
     """
     wanted = sorted(set(securities))
     report = source.reference_data_report(wanted, ('PX_LAST',))

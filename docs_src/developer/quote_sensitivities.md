@@ -42,7 +42,8 @@ q (leaves)  ->  calibration solve  ->  θ*  ->  factor buffers  ->  scenarios  -
 
 and the only new arithmetic is the middle arrow. Everything downstream of θ* is the engine that
 already exists. The four calibrations put different things in that arrow — a damped Newton on a
-root, a Monte Carlo least squares on a stationarity point,
+root, a least squares on the stationarity point of a swaption residual that is
+[priced in closed form by default](#the-analytic-quote-side) and by Monte Carlo on request,
 [an explicit map with no solve in it at all](#the-closed-form-map), and
 [a bisection per node that the tape refuses to enter](#the-delta-solve) — and the page reads in
 that order.
@@ -846,9 +847,10 @@ find, and it is the whole design decision.
 
 ### The tape boundary, and why it is not where it looks {#the-tape-boundary}
 
-`Factor2D.malz_sigma` closes an array of brackets 64 times. Every operation in that loop is
-`+`, `*`, a comparison and a `torch.where`, so **a tape runs straight through it and reports a
-number** — which is exactly the trap, because the number is wrong.
+`Factor2D.malz_delta` closes an array of brackets 64 times, and `malz_sigma` is the wing lookup
+over the root it returns. Every operation in that loop is `+`, `*`, a comparison and a
+`torch.where`, so **a tape runs straight through it and reports a number** — which is exactly the
+trap, because the number is wrong.
 
 A bisection's iterates are **dyadic combinations of the two bracket endpoints**. `left` and `right`
 are only ever `lo`, `hi`, or a midpoint of two such, so after any number of halvings
@@ -1189,8 +1191,8 @@ the Jacobian handed to the implicit function theorem is only as good as the resi
 Setting that one attribute to float32 broke eight of the nine round-trip gates the increment
 shipped with. What stands today is the single dtype gate,
 `test_the_solve_is_float64_whatever_the_bootstrapper_was_built_with` — `dtype == np.float64` and a
-1e-10 recovery, over the two worlds `tests/test_interest_rate_prices.py` parametrises — rather
-than a count of failures.
+1e-10 recovery on the ZAR world, the two-world parametrisation belonging to the round-trip gates
+beside it in `tests/test_interest_rate_prices.py` — rather than a count of failures.
 
 **θ\* crosses back into the simulation at the `Function` boundary**, and the cast is one `.to()`
 inside `factor_leaf`. Three things follow.
@@ -1214,10 +1216,11 @@ the job's precision** — and forcing it to float64 would multiply the cost of e
 optimizer that makes thousands. The seam is therefore *inside* the backward rather than at the
 `Function` boundary, and it has three parts.
 
-- **The residual and its two Jacobians are float32; the linear algebra is float64.** $J$ and
-  $\partial r/\partial q$ are promoted with `.double()` the moment autograd hands them over, and the
-  pseudo-inverse, the transpose contraction and the stationarity norm all run there. The promotion
-  buys the linear solve's conditioning, not the residual's accuracy.
+- **The residual is float32; the linear algebra is float64.** $J$ is promoted with `.double()` the
+  moment autograd hands it over, and the pseudo-inverse, the transpose contraction and the
+  stationarity norm all run there. $\partial r/\partial q$ is never materialised, so there is
+  nothing to promote on that side: $-(\partial r/\partial q)^\top (Jw)$ is taken as one autograd
+  VJP. The promotion buys the linear solve's conditioning, not the residual's accuracy.
 - **`grad_outputs` casts back.** $-Jw$ has to be the residual's own dtype before it can be a
   cotangent, so what the backward *reports* carries float32 resolution however exactly it was
   computed — 4.4e-8 absolute against columns of norm 4 on the four-quote fixture. That is the floor

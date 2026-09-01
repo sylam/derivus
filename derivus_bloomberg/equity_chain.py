@@ -12,54 +12,41 @@
 ########################################################################
 """The listed equity option CHAIN, read off a terminal and emitted as a Heston-Nandi quote block.
 
-THE SOURCE FLIPS, WHICH IS THE WHOLE ROW. FX calibrates off the desk's own built surface because
-that surface IS the market - the OTC delta quotes are what a desk deals. An equity's market is the
-LISTED CHAIN, and any equity vol surface is already somebody's fit to it, so calibrating to a
-surface would fit a fit. Equities therefore calibrate TO THE CHAIN and quote PREMIUMS, not implied
-vols: a listed price is a PRINT, while its implied vol is a convention (which forward, which
-discounting, which exercise) and two desks disagree about it before either has been wrong. The
-Heston-Nandi families already accept `Quote_Type` **Premium**; this is the emitter that was waiting
-for.
+THE SOURCE FLIPS. An equity's market is the LISTED CHAIN, and any equity vol surface is already
+somebody's fit to it, so calibrating to a surface would fit a fit. Equities therefore calibrate TO
+THE CHAIN and quote PREMIUMS rather than implied vols: a listed price is a PRINT, while its
+implied vol is a convention (which forward, which discounting, which exercise). The Heston-Nandi
+families accept `Quote_Type` Premium, which is what this emitter writes.
 
 WHAT THIS MODULE IS AND IS NOT. It is `fxvol`'s sibling: it reaches a terminal, screens what came
 back, and writes a `{"instrument": {...}}` block. It prices nothing, fits nothing, builds no
-surface, and - like every module in this package - IMPORTS NO ENGINE. It goes further than its
-sibling and imports no pandas either, so `import derivus_bloomberg.equity_chain` costs the standard
-library and this package's own `errors`. That is a claim about the IMPORT and not merely about this
-file, and the file alone cannot hold it: importing a submodule imports its package first, and
-`fxvol` and `types` carry pandas. So the package's `__init__` re-exports those two LAZILY, and two
-gates hold the whole claim - one reads this source, one measures a fresh interpreter's `sys.modules`
-and would have caught the package dragging pandas in behind the module's back.
+surface, and IMPORTS NO ENGINE. It imports no pandas either, so `import
+derivus_bloomberg.equity_chain` costs the standard library and this package's `errors` - a claim
+about the IMPORT, which is why the package's `__init__` re-exports `fxvol` and `types` lazily.
 
-EVERY FOREIGN ANSWER IS UNTRUSTED, and a listed chain is where that stops being a slogan. Half of
-any index chain is dead strikes: contracts that resolve, carry a plausible `PX_LAST` and have not
-traded in a month; contracts quoted one-sided, or crossed, or with an open interest of zero. That
-is the same trap `discover` exists for (a retired benchmark still answers a price - SAONIA read
-8.855 nineteen years after its last print), so the same discipline applies: `screen_chain`
-classifies every contract in an ORDER OF DISTRUST and puts every refusal on a ledger BY NAME,
-because a contract silently dropped is indistinguishable from one never asked about.
+EVERY FOREIGN ANSWER IS UNTRUSTED. Half of any index chain is dead strikes: contracts that
+resolve, carry a plausible `PX_LAST` and have not traded in a month; contracts quoted one-sided,
+or crossed, or with zero open interest. That is `discover`'s trap one asset class over - a retired
+benchmark still answers a price, SAONIA read 8.855 nineteen years after its last print - so
+`screen_chain` classifies every contract in an ORDER OF DISTRUST and ledgers every refusal BY
+NAME.
 
-AMERICAN EXERCISE REFUSES BY NAME. V1 is indices only. An American premium is not the European
-premium the fit assumes - it carries the early-exercise right the closed form does not price - so
-an American contract is refused from candidacy and a chain with no European contract at all raises
-`UnsupportedExerciseStyle` naming the underlying and the remedy. A contract that states NO exercise
-style is refused too, and the asymmetry with `discover._is_stale` ("absence cannot prove
-staleness") is deliberate: absence cannot prove DEATH, but it cannot prove EUROPEAN either, and the
-cost of the two mistakes is not the same.
+AMERICAN EXERCISE REFUSES BY NAME. V1 is indices only. An American premium carries the
+early-exercise right the closed form does not price, so an American contract is refused from
+candidacy and a chain that cannot reach the floor without them raises `UnsupportedExerciseStyle`.
+A contract stating NO exercise style is refused too: absence cannot prove EUROPEAN.
 
 THE LADDER REACHES THE PRODUCT HORIZON. Equity autocalls run three to five years, so the pillars
-default to 3M/6M/1Y/2Y/3Y rather than FX's "nothing past 1Y" - and a multi-year ATM term structure
-is exactly what one omega cannot hold and the component family's L curve can, which is why the
-target family is `HestonNandiComponentModelPrices`. The plain spelling is emitted from the SAME
-selection, so the two blocks differ only in the header their families declare.
+default to 3M/6M/1Y/2Y/3Y where the FX ladder stops at 1Y. One omega cannot hold a multi-year ATM
+term structure and the component family's L curve can, so the target family is
+`HestonNandiComponentModelPrices`; the plain spelling is emitted from the SAME selection, the two
+blocks differing only in the header their families declare.
 
-THE FORWARD IS DECLARED, NOT DISCOVERED. This is the genuinely new work beside FX. The strikes hang
-off the forward and so does every weight, and if the emitter's forward disagrees with the pricer's
-then the calibration is fitted at coordinates the pricer will never visit. So `EquityForward` names
-the two references the fit resolves - the curve that funds the carry and the dividend/borrow
-reference - AND the numbers the emitter placed its strikes with, and both travel into the block.
-The chain's own parity-implied dividend yield is measured beside the declared one and reported, so
-a desk sees a disagreement rather than inheriting it.
+THE FORWARD IS DECLARED, NOT DISCOVERED. The strikes hang off the forward and so does every
+weight, so an emitter forward that disagrees with the pricer's fits the calibration at coordinates
+the pricer never visits. `EquityForward` names the two references the fit resolves AND the numbers
+the emitter placed its strikes with, and both travel into the block. The chain's own parity-implied
+dividend yield is measured beside the declared one and reported rather than averaged in.
 """
 import collections.abc
 import datetime
@@ -74,11 +61,8 @@ from .errors import (BloombergConfigurationError, IncompleteChain, InvalidQuote,
 NORMAL = statistics.NormalDist()
 
 #: What the terminal is asked about the UNDERLYING: what it is, what it is worth, when it last
-#: printed - `discover.FIELDS` exactly, because the same three questions answer the same doubt. All
-#: three are READ: the spot refuses on a blank, and `LAST_UPDATE_DT` is screened against
-#: `stale_days` exactly as every listed contract's is, because the spot is the one number every
-#: strike, forward and weight in the block hangs off and the anchor cannot be the one thing exempt
-#: from the discipline this module invokes by name.
+#: printed - `discover.FIELDS` exactly. All three are READ: the spot refuses on a blank, and its
+#: `LAST_UPDATE_DT` is screened against `stale_days` as every listed contract's is.
 UNDERLYING_FIELDS = ('NAME', 'PX_LAST', 'LAST_UPDATE_DT')
 
 #: The BULK field naming a listed chain's members. Read through
@@ -96,67 +80,51 @@ CHAIN_MEMBER_FIELD = 'Security Description'
 CONTRACT_FIELDS = ('OPT_STRIKE_PX', 'OPT_EXPIRE_DT', 'OPT_PUT_CALL', 'OPT_EXER_TYP',
                    'PX_BID', 'PX_ASK', 'PX_LAST', 'OPEN_INT', 'VOLUME', 'LAST_UPDATE_DT')
 
-#: One request per chunk - `discover.BATCH`, and for its reason: the Desktop API takes large
-#: batches, and a bounded request keeps a partial outage partial. A full SPX chain is thousands of
-#: names, so this one actually gets used.
+#: One request per chunk - `discover.BATCH`, and for its reason: a bounded request keeps a partial
+#: outage partial. A full SPX chain is thousands of names.
 BATCH = 50
 
 #: The four reference fields the Heston-Nandi families declare, and the factor TYPE this emitter
-#: names each of them with for an equity underlying. Spelled here because the package may not
-#: import the engine, and held against `HestonNandiModelParameters.factor_types` by a gate - the
-#: whitelist-against-declaration pattern `fxvol._structure` already rides on.
+#: names each with for an equity underlying. Spelled here because the package may not import the
+#: engine; held against `HestonNandiModelParameters.factor_types` by a gate.
 HN_REFERENCE_TYPES = {'Underlying': 'EquityPrice', 'Volatility': 'EquityPriceVol',
                       'Discount_Rate': 'InterestRate', 'Yield': 'DividendRate'}
 
-#: The two spellings of the target family. ONE SELECTION, TWO NAMES: the component family is the
-#: one the roadmap ratified (a multi-year ATM term structure is what the L curve is for), and the
-#: plain one is emitted off the same rungs for a desk that wants the five-parameter fit.
+#: The two spellings of the target family, emitted off ONE selection: the component family for the
+#: multi-year ATM term structure its L curve holds, the plain one for the five-parameter fit.
 COMPONENT_FAMILY = 'HestonNandiComponentModelPrices'
 PLAIN_FAMILY = 'HestonNandiModelPrices'
 FAMILIES = (COMPONENT_FAMILY, PLAIN_FAMILY)
 
-#: The declared defaults of the two switches the emitter STATES rather than lets fall through -
-#: `fx_surface_block`'s own discipline, and for its reason: the STEP CLOCK is what the fitted
-#: parameters mean, so a deal's `Steps_Per_Year` has to be this number or it simulates a different
-#: model. Gated against the families' own field declarations.
+#: The two switches the emitter STATES rather than lets fall through, at the families' own
+#: declared defaults. The STEP CLOCK is what the fitted parameters mean, so a deal's
+#: `Steps_Per_Year` has to be this number or it simulates a different model.
 STEPS_PER_YEAR = 252.0
 QUADRATURE_PANELS = 64
 
-#: The extra header the COMPONENT family declares and the plain one does not. `Rho` is a PIN and a
-#: pin the block does not state is a pin nobody can see; `Quote_Sensitivity` is REFUSED by that
-#: family, so saying No is honesty rather than decoration. Both are the fields' own declared
-#: defaults, read off the declaration by the same gate that reads the two above.
+#: The extra header the COMPONENT family declares and the plain one does not, at that family's own
+#: declared defaults. `Rho` is a pin the block has to state; `Quote_Sensitivity` Yes is REFUSED by
+#: this family.
 COMPONENT_HEADER = {'Rho': 0.99, 'Quote_Sensitivity': 'No'}
 
-#: The value-plane keys an option quote row carries beside its mid. NOT DECLARED BY `OPTION_QUOTE`
-#: today - the engine's option tables carry six columns and none of these three - so they ride as
-#: undeclared keys that `bootstrap` reads past and `as_json` preserves. Carried anyway, because the
-#: two-way and the print's own clock are the EVIDENCE, and a quote layer that drops them has thrown
-#: away the desk's spread to fit a schema. Named as a finding, gated as a complement.
+#: The value-plane keys an option quote row carries beside its mid. `schema.OPTION_QUOTE` declares
+#: none of the three, so they ride as undeclared keys that `bootstrap` reads past and `as_json`
+#: preserves - carried anyway, because the two-way and the print's own clock are the evidence.
 #:
-#: AND THE CONSEQUENCE, STATED RATHER THAN DISCOVERED: because these three are not declared on the
-#: option row, `schema.partition_market_price` reads this family's whole block as PLAN and gives it
-#: an EMPTY value half - so a chain that merely RE-TICKS cannot be value-updated at all. Moving a
-#: premium is 'structure differs' to `config.update_market_quote`, and a re-quoted chain has to be
-#: RE-AUTHORED rather than ticked. That is engine-side today and it is what the follow-up
-#: book/service verb has to decide; the gate asserts the refusal in its current shape so the day
-#: `OPTION_QUOTE` gains these columns, the gate flips and says so.
+#: DECLARED LIMITATION: since they are undeclared on the option row,
+#: `schema.partition_market_price` reads this family's whole block as PLAN with an EMPTY value
+#: half, so a re-quoted chain has to be RE-AUTHORED rather than ticked - moving a premium reads as
+#: 'structure differs' to `config.update_market_quote`.
 QUOTE_VALUE_KEYS = ('Quoted_Bid', 'Quoted_Ask', 'Timestamp')
 
 #: How many two-sided strikes the chain's own parity carry is MEDIANED over, and the band that
-#: carry is believed inside where the caller declared none. Both are ladder parameters with these
-#: as their defaults; they are spelled here beside the other declared constants.
+#: carry is believed inside where the caller declared none. Ladder parameters, defaulted here.
 #:
-#: FIVE STRIKES AND A MEDIAN, because one pair is one print. A single fat-fingered near-money quote
-#: that passes every per-contract screen - tight, deep, dated today - moves a parity-read carry by
-#: percentage points, and the carry moves the pillar's whole forward: every strike placed on it and
-#: every weight computed there. A median over the strikes nearest the forward is the cheapest
-#: estimator that ignores one bad print entirely.
-#:
-#: THE BAND IS THE SCREEN, because a median cannot save a neighbourhood that is wrong together.
-#: Minus five points to plus fifteen is a listed index's carry with room on both sides - a
-#: hard-to-borrow basket quoting through zero, an emerging index quoting a full year of dividends -
-#: and it is nowhere near a two-figure negative carry, which is a bad chain rather than a market.
+#: FIVE AND A MEDIAN, because one pair is one print: a single fat-fingered near-money quote that
+#: passes every per-contract screen moves a parity-read carry by percentage points, and the carry
+#: moves the pillar's whole forward. -5% to +15% is a listed index's carry with room on both sides
+#: - a hard-to-borrow basket quoting through zero, an emerging index quoting a full year of
+#: dividends - and nowhere near a two-figure negative carry, which is a bad chain, not a market.
 PARITY_STRIKES = 5
 PARITY_BAND = (-0.05, 0.15)
 
@@ -169,9 +137,8 @@ PARITY_BAND = (-0.05, 0.15)
 class ChainContract:
     """One listed option as the terminal answered for it - raw, unjudged, and NOT yet believed.
 
-    `expiry` is a `datetime.date` and `strike` a float because those are what a contract IS; the
-    two-way, the last print, the open interest and the last-update date are all OPTIONAL, because
-    a dead strike answers half of them and the screen's whole job is to say which half.
+    The two-way, the last print, the open interest and the last-update date are all OPTIONAL: a
+    dead strike answers half of them, and saying which half is the screen's job.
     """
     security: str
     strike: float | None
@@ -188,16 +155,16 @@ class ChainContract:
     @property
     def mid(self) -> float | None:
         """The two-way's midpoint, or the last print where the terminal quoted no two-way. The
-        screen refuses a one-sided contract before this ever matters, so the fallback exists for
-        the ledger's sake - `unpriced` and `one-sided` are different findings."""
+        screen refuses a one-sided contract anyway; the fallback is what lets it tell `unpriced`
+        and `one-sided` apart."""
         if self.bid is not None and self.ask is not None:
             return 0.5 * (self.bid + self.ask)
         return self.last
 
     @property
     def spread(self) -> float | None:
-        """The quoted spread as a FRACTION OF MID - the market's own statement of how well it
-        knows this price, and the number both the screen's cap and the weight are read off."""
+        """The quoted spread as a FRACTION OF MID, or None where there is no two-way to read it
+        off. Both the screen's cap and the rung's weight are read off this number."""
         mid = self.mid
         if self.bid is None or self.ask is None or not mid or mid <= 0.0:
             return None
@@ -208,9 +175,8 @@ class ChainContract:
 class EquityChain:
     """A screened chain: what survived, what did not and why, and the underlying it hangs off.
 
-    `rejected` is the LEDGER - `{security: verdict}` for every candidate that did not make it, the
-    `build_map` discipline transferred: a candidate silently dropped is indistinguishable from one
-    never asked about, and on a chain of two thousand names that difference is the whole report.
+    `rejected` is the LEDGER - `{security: verdict}` for every candidate that did not make it,
+    because a candidate silently dropped is indistinguishable from one never asked about.
     """
     underlying: str
     name: str
@@ -218,41 +184,33 @@ class EquityChain:
     as_of: datetime.date
     contracts: tuple[ChainContract, ...]
     rejected: Mapping[str, str]
-    #: WHEN THE SPOT ITSELF LAST PRINTED. `fetch_equity_chain` screens it against `stale_days` on
-    #: the way in and refuses by name, so a fetched chain always carries a date the screen believed;
-    #: it is optional only because the selection is drivable on a hand-built chain. It travels into
-    #: `Quote_Source` beside the spot, because a believed chain should say how old its anchor is.
+    #: WHEN THE SPOT ITSELF LAST PRINTED, and it travels into `Quote_Source` beside the spot.
+    #: `fetch_equity_chain` screens it against `stale_days` and refuses by name, so a fetched chain
+    #: always carries one; optional only because the selection is drivable on a hand-built chain.
     spot_as_of: datetime.date | None = None
 
     @property
     def expiries(self) -> tuple[datetime.date, ...]:
-        """The expiries the SURVIVING contracts carry - what a refusal names, because the chain's
-        own listed dates are what a desk would have to go and look at."""
+        """The expiries the SURVIVING contracts carry, sorted - what a refusal names."""
         return tuple(sorted({contract.expiry for contract in self.contracts}))
 
 
 @dataclass(frozen=True)
 class EquityForward:
-    """WHICH CURVE FEEDS THE CARRY, declared - the row's genuinely new work.
+    """WHICH CURVE FEEDS THE CARRY, declared.
 
     The strikes hang off the forward and so does every weight, and the FIT rebuilds that forward
     from the two curves this names: `spot * exp((r - q) t)` with `r` the `Discount_Rate` factor and
-    `q` the `Yield` one. If the emitter placed its ladder on a different forward than the fit
-    prices on, the calibration is fitted at coordinates the pricer never visits - the
-    `Steps_Per_Year` mismatch one axis over. So the NAMES travel into the block for the fit to
-    resolve, and the NUMBERS the emitter actually used travel into `Quote_Source` beside them.
+    `q` the `Yield` one. So the NAMES travel into the block for the fit to resolve, and the NUMBERS
+    the emitter actually used travel into `Quote_Source` beside them.
 
-    THE PRICER'S EQUITY FORWARD IS REPO MINUS DIVIDEND. `calc_eq_forward` reads the `Equity_Zero`
-    curve - which is `EquityPrice.Interest_Rate`, falling back to the equity's `Currency` - against
-    a `DividendRate`. So `discount_rate` should name THAT curve rather than the payoff's discount
-    curve, or the calibrated forward and the priced one part company. Where an index carries a repo
-    spread the two are not the same curve, and the family has ONE `Discount_Rate` reference doing
-    both jobs (it funds the forward AND discounts the premium) - which is finding #2 of this build,
-    not something an emitter can fix from out here.
+    `discount_rate` should name the curve `calc_eq_forward` reads - `EquityPrice.Interest_Rate`,
+    falling back to the equity's `Currency` - or the calibrated forward and the priced one part
+    company. DECLARED LIMITATION: the family has ONE `Discount_Rate` reference funding the forward
+    AND discounting the premium, so an index carrying a repo spread cannot state both.
 
-    `dividend_yield` None means TAKE IT FROM THE CHAIN by put-call parity, which is the honest
-    default where the book carries no dividend curve yet; a declared number is used as declared,
-    with the parity-implied one measured beside it and reported.
+    `dividend_yield` None means TAKE IT FROM THE CHAIN by put-call parity; a declared number is
+    used as declared, with the parity-implied one measured beside it and reported.
     """
     underlying_factor: str
     volatility_factor: str
@@ -286,16 +244,14 @@ class EquityForward:
 class EquityLadder:
     """The ladder, its screens and its floors - every one of them a parameter with a stated default.
 
-    THE PILLARS REACH THE PRODUCT HORIZON. Equity autocalls run three to five years, so the ATM
-    rungs default to 3M/6M/1Y/2Y/3Y where the FX ladder stops at 1Y. That is not a preference: one
-    omega cannot hold a multi-year ATM term structure, the component family's L curve can, and the
-    pillars are what identify it.
+    THE PILLARS REACH THE PRODUCT HORIZON: 3M/6M/1Y/2Y/3Y, where the FX ladder stops at 1Y,
+    because equity autocalls run three to five years and one omega cannot hold a multi-year ATM
+    term structure. The component family's L curve can, and the pillars are what identify it.
 
-    THE WINGS ARE WIDENED, one pillar short of the ATM ladder. `HestonNandiComponentModelParameters`
-    widened FX's two wing expiries to four for the reason that transfers exactly: the ATM rungs are
-    SPENT on the L pillars, so what identifies the five free globals is what is left, and four wing
-    expiries is what that wants. The 3Y wing is dropped rather than the 3M one because that is
-    where a listed chain thins out first.
+    THE WINGS ARE ONE PILLAR SHORT of the ATM ladder, four expiries as
+    `HestonNandiComponentModelParameters` wants: the ATM rungs are SPENT on the L pillars, so what
+    identifies the five free globals is what is left. The 3Y wing is dropped rather than the 3M
+    one because that is where a listed chain thins out first.
     """
     pillars: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 3.0)
     wing_pillars: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0)
@@ -304,33 +260,30 @@ class EquityLadder:
     #: a target the rung then SNAPS off - it names where to look, never what was quoted.
     wing_delta: float = 0.25
     #: The quoted spread, as a fraction of mid, past which a print is not a market. A quarter of
-    #: mid is wide for an index ATM and ordinary for a far wing, which is why it is one cap over a
-    #: whole chain rather than a per-rung judgement - and why it ALSO enters the weight, so a
-    #: contract that barely survived is worth half of one that is locked.
+    #: mid is wide for an index ATM and ordinary for a far wing, so it is one cap over the whole
+    #: chain; it ALSO enters the weight, halving a contract that barely survived against a locked one.
     spread_cap: float = 0.25
-    #: OI > 0, the roadmap's own wording. Zero open interest is a listed contract nobody holds.
+    #: OI > 0. Zero open interest is a listed contract nobody holds.
     minimum_open_interest: float = 1.0
-    #: `discover.STALE_DAYS`, for its reason. A strike whose last update is three weeks old still
+    #: `discover.STALE_DAYS`, for its reason: a strike whose last update is three weeks old still
     #: answers a plausible price, and the date is the only thing that says otherwise.
     stale_days: int = 5
     #: DISTINCT contracts the ladder must survive snapping with -
-    #: `HestonNandiComponentModelParameters.fx_minimum_contracts`, transferred verbatim: the ATM
-    #: rungs are consumed by the L bootstrap, so what identifies the globals is what is left.
+    #: `HestonNandiComponentModelParameters.fx_minimum_contracts`: the ATM rungs are consumed by
+    #: the L bootstrap, so what identifies the globals is what is left.
     minimum_contracts: int = 8
     #: How far PAST the ladder's longest rung a listed expiry may still be snapped to. A month,
     #: because that is the width of the same quarterly listing rolled once - not a second expiry.
     expiry_tolerance: float = 31.0 / 365.0
-    #: How far a rung may MOVE, in log-expiry, before it is dropped instead of snapped. FX relies
-    #: on the cap plus the distinct-contract floor alone; on a ladder that spans 3M to 3Y an
-    #: unconditional argmin would land the 3Y rung on the 3M listing of a stub chain and call it a
-    #: term structure. Half a log-unit is the 1Y rung reaching 6M or 1.6Y.
+    #: How far a rung may MOVE, in log-expiry, before it is dropped instead of snapped. On a ladder
+    #: spanning 3M to 3Y an unconditional argmin would land the 3Y rung on a stub chain's 3M
+    #: listing. Half a log-unit is the 1Y rung reaching 6M or 1.6Y.
     pillar_band: float = 0.5
     #: The day count the emitter measures its OWN year fractions in, for placing strikes and
-    #: weighting. The FIT recomputes `t` off `Expiry_Date` through the discount curve's day count;
-    #: the two agree exactly under ACT_365 and differ by a day count otherwise - which moves the
-    #: weight and NEVER the contract, because the contract is a listed one and was snapped, not
-    #: computed. That is strictly better than the FX emitter can do, where the strike itself is a
-    #: function of the accrual.
+    #: weighting. The FIT recomputes `t` off `Expiry_Date` through the discount curve's day count:
+    #: the two agree exactly under ACT_365 and differ by a day count otherwise, which moves the
+    #: WEIGHT and never the contract, since the contract was snapped to a listing rather than
+    #: computed.
     days_per_year: float = 365.0
     #: The step clock and the inversion width the block STATES. Read off the field declarations.
     steps_per_year: float = STEPS_PER_YEAR
@@ -339,16 +292,14 @@ class EquityLadder:
     #: admissible Black implied vol. A seed for a coordinate, never a price.
     reference_vol: float = 0.20
     #: How many two-sided strikes the chain's own parity carry is MEDIANED over, and the band it is
-    #: BELIEVED inside where the caller declared no dividend yield. See `PARITY_STRIKES` /
-    #: `PARITY_BAND`: an undeclared carry is read off the chain, and a number read off the chain is
-    #: evidence like any other - one print may not move a pillar's forward, and a neighbourhood that
-    #: implies a two-figure negative carry is a bad chain rather than a market.
+    #: BELIEVED inside where the caller declared no dividend yield - see `PARITY_STRIKES` /
+    #: `PARITY_BAND`. An undeclared carry is evidence like any other and is screened like it.
     parity_strikes: int = PARITY_STRIKES
     parity_band: tuple[float, float] = PARITY_BAND
 
     def __post_init__(self):
-        # coerced to tuples the way `FXVolDefinition` coerces its own, so a caller who hands in a
-        # list gets a frozen ladder rather than a frozen handle on something still mutable
+        # coerced to tuples, so a caller who hands in a list gets a frozen ladder rather than a
+        # frozen handle on something still mutable
         object.__setattr__(self, 'pillars', tuple(self.pillars))
         object.__setattr__(self, 'wing_pillars', tuple(self.wing_pillars))
         if not self.pillars:
@@ -417,12 +368,12 @@ def black_price(forward, strike, rate, vol, tau, is_call):
 
 
 def black_vega(forward, strike, rate, vol, tau):
-    """`exp(-r t) F n(d1) sqrt(t)` - `HestonNandiModelParameters.fx_black_vega`, transferred.
+    """`exp(-r t) F n(d1) sqrt(t)`, shared by puts and calls - `HestonNandiModelParameters
+    .fx_black_vega`.
 
-    THE WEIGHT, before the liquidity factor and before normalisation. Vega is what a desk's risk in
-    a quote actually IS, and it is what makes the objective scale-free across a term structure that
-    now runs to three years: a 3M premium is a fraction of a 3Y one, and an unweighted least
-    squares would fit the back end and leave the front to fend for itself. Puts and calls share it.
+    THE WEIGHT, before the liquidity factor and before normalisation. It is what makes the
+    objective scale-free across a term structure running to three years: a 3M premium is a
+    fraction of a 3Y one, and an unweighted least squares would fit the back end alone.
     """
     if tau <= 0.0 or vol <= 0.0 or forward <= 0.0 or strike <= 0.0:
         return 0.0
@@ -435,11 +386,10 @@ def implied_vol(price, forward, strike, rate, tau, is_call, iterations=100,
                 low=1e-6, high=5.0):
     """The Black vol of a quoted premium, or None where the premium is not one.
 
-    Bisection, because the price is monotone in the vol and a bracket that does not straddle is
-    the ANSWER rather than a starting point: a mid below the forward's own intrinsic is not a
-    premium any vol reaches. The caller falls back to the ladder's flat proxy, which is what a
-    WEIGHT may do and a price may not - the screen's own `off-market` verdict is model-free and
-    has already refused the prints that cannot be prices at all.
+    Bisection over `[low, high]`, the price being monotone in the vol. A bracket that does not
+    straddle the price is the ANSWER rather than a starting point - a mid below intrinsic is not a
+    premium any vol reaches - and the caller falls back to the ladder's flat proxy, which a WEIGHT
+    may do and a price may not.
     """
     if tau <= 0.0 or price is None or price <= 0.0 or forward <= 0.0 or strike <= 0.0:
         return None
@@ -461,10 +411,9 @@ def implied_vol(price, forward, strike, rate, tau, is_call, iterations=100,
 # ---------------------------------------------------------------------------------------------
 
 class ChainDataSource(Protocol):
-    """The two readers a chain needs: the BULK one for the chain's own membership, the tolerant
-    scalar one for everything asked of a member. Both are `BloombergSession`'s, and both are
-    tolerant, because on a chain of two thousand names one refused ticker is the FINDING and not
-    the failure - the strict policy is applied here, per contract, by the screen."""
+    """The two readers a chain needs: the BULK one for the chain's own membership, the scalar one
+    for everything asked of a member. Both are `BloombergSession`'s and both are TOLERANT - on a
+    chain of two thousand names a refused ticker is a finding, and the screen applies the policy."""
 
     def bulk_reference_data_report(self, securities: Sequence[str],
                                    fields: Sequence[str]) -> Mapping[str, Mapping[str, object]]:
@@ -477,8 +426,7 @@ class ChainDataSource(Protocol):
 
 def _number(value):
     """A terminal value as a finite float, or None. Absent, blank, unparseable and non-finite all
-    read as ABSENT - `fxvol._scaled_side`'s rule, and for its reason: the one thing this must never
-    do is manufacture a number out of a blank."""
+    read as ABSENT rather than as a number manufactured out of a blank."""
     if value is None or value == '':
         return None
     try:
@@ -509,8 +457,8 @@ def _word(value):
 
 def _exercise(value):
     """The exercise style, normalised to `European`/`American`/`''`. Bloomberg spells it several
-    ways per asset class ('European', 'EUROPEAN', 'Euro'); anything it does not recognise is the
-    EMPTY string, which the screen refuses - an unrecognised style is not a European one."""
+    ways ('European', 'EUROPEAN', 'Euro'); anything unrecognised is the EMPTY string, which the
+    screen refuses - an unrecognised style is not a European one."""
     word = _word(value).upper()
     if word.startswith('EUR'):
         return 'European'
@@ -530,10 +478,8 @@ def _option_type(value):
 
 def probe(source, securities, fields, batch=BATCH, on_batch=None):
     """Every candidate asked in bounded chunks - `discover.probe`, re-spelled here so this module
-    stays free of `security_map` and therefore of pandas (the `security_map.home()` precedent: one
-    pattern, deliberately re-spelled per boundary rather than imported across one). `on_batch(done,
-    total)` counts names REPLIED ABOUT, never names sent, because a full index chain is thousands
-    of names over a terminal that takes its time."""
+    stays free of `security_map` and therefore of pandas. `on_batch(done, total)` counts names
+    REPLIED ABOUT, never names sent."""
     report = {}
     for start in range(0, len(securities), batch):
         report.update(source.reference_data_report(securities[start:start + batch], fields))
@@ -545,11 +491,10 @@ def probe(source, securities, fields, batch=BATCH, on_batch=None):
 def chain_members(row, chain_field=CHAIN_FIELD):
     """`(members, unreadable)` off one bulk `OPT_CHAIN` answer.
 
-    A bulk row is a dict of Bloomberg's own sub-field names, and `Security Description` is the one
-    that carries the ticker - tried by name first, then the row's only string value, because the
-    sub-field's spelling is Bloomberg's and not a contract this package can pin. A row neither
-    route can read a ticker out of is returned as `unreadable` rather than skipped, so it reaches
-    the ledger like every other refusal.
+    A bulk row is a dict of Bloomberg's own sub-field names: `Security Description` is tried by
+    name first, then the row's only string value, since the sub-field's spelling is Bloomberg's
+    and not a contract this package can pin. A row neither route reads a ticker out of comes back
+    as `unreadable` rather than skipped, so it reaches the ledger like every other refusal.
     """
     members, unreadable = [], []
     for index, member in enumerate(row.get(chain_field) or ()):
@@ -571,8 +516,7 @@ def chain_members(row, chain_field=CHAIN_FIELD):
 
 def read_contract(security, fields):
     """One candidate contract off the terminal's own answer - RAW, unjudged. Nothing here refuses
-    anything: `screen_chain` owns the order of distrust, and keeping the two apart is what lets the
-    gates drive the screen on canned rows with no session in sight."""
+    anything; `screen_chain` owns the order of distrust."""
     return ChainContract(
         security=security,
         strike=_number(fields.get('OPT_STRIKE_PX')),
@@ -591,26 +535,24 @@ def screen_chain(contracts, as_of, ladder=None, spot=None):
     """`(accepted, rejected)` - the trust boundary, and the whole reason a chain can be believed.
 
     THE ORDER IS THE ORDER OF DISTRUST, `discover.verify`'s own shape: what the contract IS before
-    what it is worth, and what it is worth before how well anyone knows it. Reading them in this
-    order is what makes a verdict actionable - `american` and `wide` are different instructions to
-    a desk, and a screen that checked the spread first would report the second where the first is
-    true.
+    what it is worth, and what it is worth before how well anyone knows it. The order is what makes
+    a verdict actionable - a screen that checked the spread first would report `wide` where
+    `american` is true.
 
       malformed          no strike, no expiry, or no put/call - not a contract
       expired            an expiry at or before the as-of - not a quote
       unstated-exercise  no exercise style: absence cannot prove EUROPEAN
-      american           the roadmap's V1 ruling - an American premium is not the European one
+      american           an American premium is not the European one the fit prices
       unpriced           no two-way and no last print
       one-sided          a side missing or non-positive: a spread nobody quoted is not a spread
       crossed            bid above ask - a stale side left standing against a live one
-      off-market         a price that cannot be one, on the two MODEL-FREE bounds a chain can be
-                         held to with no curve in sight: a call is never worth more than the
-                         underlying, a put never more than its strike. Everything sharper than
-                         that needs a forward, and a forward is the EMITTER's declared business
+      off-market         the two MODEL-FREE bounds a chain can be held to with no curve in sight:
+                         a call is never worth more than the underlying, a put never more than its
+                         strike. Anything sharper needs the forward the EMITTER declares
       wide               a spread past the declared cap: quoted, but not a market
       no-open-interest   OI absent or zero - a listed contract nobody holds
       undated            no LAST_UPDATE_DT: a print that cannot evidence its own time
-      stale              a last update older than `stale_days` - the SAONIA rule, per strike
+      stale              a last update older than `stale_days`
       live               believed
 
     `rejected` is `{security: verdict}` for every one of them, BY NAME. `spot` is optional only
@@ -651,9 +593,8 @@ def _verdict(contract, as_of, ladder, spot=None):
         return 'wide'
     if contract.open_interest is None or contract.open_interest < ladder.minimum_open_interest:
         return 'no-open-interest'
-    # PARSED, not merely present: a `LAST_UPDATE_DT` of 'N/A' evidences a print's time exactly as
-    # well as a blank one does, and it would otherwise ride into the block as the row's `Timestamp`
-    # and refuse at the decoder instead of here
+    # PARSED, not merely present: an unparseable `LAST_UPDATE_DT` would otherwise ride into the
+    # block as the row's `Timestamp` and refuse at the decoder instead of here
     stamp = _date(contract.last_update)
     if stamp is None:
         return 'undated'
@@ -670,21 +611,12 @@ def fetch_equity_chain(source, underlying, as_of, ladder=None, batch=BATCH, on_b
     what it is worth and when it last printed, and asks for its chain in the same request; the
     second asks every member the ten questions a quote needs, in `discover.BATCH`-sized chunks. No
     ticker is spelled by this package at any point - a listed chain's membership is the terminal's
-    to state, which is exactly why the bulk route exists and why the SCREEN, not a grammar, is
-    where the trust boundary sits.
+    to state, which is why the bulk route exists and why the SCREEN is the trust boundary.
 
-    The spot refuses BY NAME on anything that is not a positive number, which is
-    `security_map.fetch_fx_spot`'s own policy: every strike, every forward and every weight below
-    hangs off it, and a ladder built on a blank is worse than no ladder.
-
-    AND ON ITS OWN CLOCK, which is the same policy read to the end. A blank spot is the loud
-    failure; the quiet one is a spot that answers a plausible number nineteen years after it last
-    printed - `discover`'s SAONIA, one axis over. Every listed contract in this chain is screened
-    against `stale_days` and refused `undated` if it cannot evidence its own time; the number the
-    whole ladder is placed with is held to exactly that bar, and the date it passed on travels into
-    the block. The asymmetry with `discover._is_stale` ("absence cannot prove staleness") is the
-    same one the contract screen already makes and for the same reason: absence cannot prove death,
-    but this is the one price nothing downstream can cross-check.
+    The spot refuses BY NAME on anything that is not a positive number and on a print date it
+    cannot read or that is older than `stale_days`: every strike, forward and weight below hangs
+    off it, and it is the one price nothing downstream can cross-check. The date it passed on
+    travels into the block.
     """
     ladder = ladder or EquityLadder()
     head = source.bulk_reference_data_report(
@@ -725,14 +657,9 @@ def fetch_equity_chain(source, underlying, as_of, ladder=None, batch=BATCH, on_b
             'chain, or the ticker names something with no options on it. Ask for an index with a '
             'listed chain (SPX Index, SX5E Index)'.format(underlying, chain_field))
 
-    # THE POLICY IS APPLIED CLIENT-SIDE, and this is `fxvol._value_of`'s lesson paid for a second
-    # time. The tolerant reader answers `ok: False` on ANY per-security trouble - a securityError
-    # AND a mere fieldException - and on a chain that is the ordinary case rather than the broken
-    # one: a listed contract that has not traded today carries no VOLUME, which is a field
-    # exception, which would have thrown the whole contract away with it. MEASURED on a live SPX
-    # chain: reading `ok` cost 1,855 of 8,000 contracts, most of them answering every field the
-    # emitter needs. So a row with ANY field in it is read, and what judges it is the SCREEN -
-    # which is where the judging belongs. A row with NOTHING in it is the genuine refusal.
+    # a row with ANY field in it is read and the SCREEN judges it; only an empty row is refused.
+    # `ok: False` covers a mere fieldException too - an untraded contract carries no VOLUME - and
+    # gating on it cost 1,855 of 8,000 contracts on a measured live SPX chain
     report = probe(source, sorted(set(members)), CONTRACT_FIELDS, batch=batch, on_batch=on_batch)
     contracts, rejected = [], {name: 'unreadable-chain-row' for name in unreadable}
     for security in sorted(set(members)):
@@ -757,10 +684,8 @@ def fetch_equity_chain(source, underlying, as_of, ladder=None, batch=BATCH, on_b
 class ParityCarry:
     """The carry a chain implies at one expiry, and the EVIDENCE it was read off.
 
-    The strikes and the per-strike readings travel with the number because this is the one foreign
-    answer in the module that is not a per-contract quote: where the caller declared no dividend
-    yield it becomes the pillar's carry, and a refusal that named only the median would be telling
-    a desk that its chain is wrong without saying where to look.
+    The strikes and the per-strike readings travel with the median because a refusal naming only
+    the number would tell a desk its chain is wrong without saying where to look.
     """
     value: float
     strikes: tuple[float, ...]
@@ -772,26 +697,20 @@ def parity_dividend_yield(contracts, spot, rate, tau, strikes=PARITY_STRIKES):
 
     `C - P = (F - K) exp(-r t)` wherever BOTH legs survived the screen, so `F = K + (C - P) exp(r
     t)` and `q = r - ln(F/S)/t`. Parity holds at every strike, so this is one reading per two-sided
-    pair rather than a fit - and what comes back is their MEDIAN, over the `strikes` pairs nearest
+    pair rather than a fit, and what comes back is their MEDIAN over the `strikes` pairs nearest
     the forward.
 
-    A MEDIAN OVER SEVERAL, NOT ONE PAIR, and that is the difference between a check and a hazard.
-    Where the caller declared no dividend yield this number IS the pillar's carry: it places every
-    strike on that pillar and weighs every one of them. One fat-fingered near-money print - tight,
-    deep, dated today, and therefore BELIEVED by every per-contract screen there is - moves a
-    single-pair read by percentage points and takes the whole pillar's forward with it. A median
-    ignores it entirely; that is the whole reason for the estimator.
+    A MEDIAN, NOT ONE PAIR: where the caller declared no dividend yield this number IS the
+    pillar's carry, and one fat-fingered near-money print - tight, deep, dated today, and so
+    believed by every per-contract screen - moves a single-pair read by percentage points.
 
     NEAREST THE FORWARD, IN TWO PASSES. The strike nearest the SPOT has one deep-ish in-the-money
-    leg, which is the leg a chain quotes worst and the one `_snap_strike` never emits. But the
-    forward is what this function is measuring, so the neighbourhood is chosen from a first pass
-    around the spot and then re-read around the forward that pass implies - two medians and no
-    iteration, because parity is exact at every strike and the second pass is about QUOTE QUALITY
-    rather than convergence.
+    leg, the leg a chain quotes worst, so the neighbourhood is chosen around the spot and then
+    re-read around the forward that pass implies. No iteration: parity is exact at every strike
+    and the second pass is about QUOTE QUALITY rather than convergence.
 
-    It stays a CHECK wherever a dividend yield was declared: the declared number places the ladder
-    and this one is reported beside it, because a book's dividend curve disagreeing with the chain
-    by a point is a fact a desk should be told rather than have quietly averaged away.
+    Where a dividend yield was declared this stays a CHECK - the declared number places the ladder
+    and this one is reported beside it rather than averaged in.
     """
     if tau <= 0.0 or spot <= 0.0:
         return None
@@ -831,36 +750,27 @@ def assign_expiries(expiries, ladder):
 
     THREE RULES, AND THE THIRD IS WHY THIS IS A MATCHING RATHER THAN AN ARGMIN PER PILLAR.
 
-    The CAP is FX's: an argmin has no ceiling, so without it a chain whose only listings are two
-    months long would answer every rung of a three-year ladder and the fit would be a 2M fit
-    wearing a 3Y label. The BAND is this ladder's own: FX's rungs sit inside one year of each other
-    and lean on the distinct-contract floor to catch a collapse, but 3M and 3Y are a log-unit and a
-    half apart, and a 3Y rung landing on the 3M listing would pass a floor counted over strikes.
-    Half a log-unit is the 1Y rung reaching 6M or 1.6Y.
+    The CAP: an argmin has no ceiling, so without it a chain whose only listings are two months
+    long answers every rung of a three-year ladder and the fit is a 2M fit wearing a 3Y label. The
+    BAND: 3M and 3Y are a log-unit and a half apart, so a 3Y rung landing on the 3M listing would
+    pass a floor counted over strikes. Half a log-unit is the 1Y rung reaching 6M or 1.6Y.
 
-    ONE EXPIRY, ONE PILLAR is the third, and a per-pillar argmin cannot state it. Two pillars whose
-    nearest listing is the SAME date is not a hypothetical: an ordinary board lists quarterlies out
-    a year and then jumps to LEAPS, so a 1Y and a 2Y pillar both land on one January listing, and
-    where a 2Y LEAP is simply absent the 2Y and 3Y pillars both reach the 3Y one (0.41 log-units,
-    inside the band). Letting them would emit ONE listed contract as TWO equations at double weight
-    - which the two family spellings then read differently, the component bootstrap dropping a
-    duplicate ATM by strike and discarding its weight while the plain family applies every row it is
-    given - and would write an L strip carrying FEWER knots than the ladder declares pillars, which
-    is the one thing the component family is here for. So the pillars and the listings are MATCHED,
-    and a pillar left with nothing is DROPPED by name, the way a pillar outside the band already is.
+    ONE EXPIRY, ONE PILLAR is the third. An ordinary board lists quarterlies out a year and then
+    jumps to LEAPS, so a 1Y and a 2Y pillar both land on one January listing, and with the 2Y LEAP
+    absent the 2Y and 3Y pillars both reach the 3Y one (0.41 log-units, inside the band). Allowing
+    it would emit ONE listed contract as TWO equations at double weight, which the two family
+    spellings read differently - the component bootstrap drops a duplicate ATM by strike and
+    discards its weight, the plain family applies every row - and would write an L strip with
+    fewer knots than the ladder declares pillars. So a pillar left with nothing is DROPPED by name.
 
-    NEAREST CLAIM WINS, not shortest-first. The pairs are taken in order of log-distance, so the
-    listing goes to the pillar it actually belongs to. Handing it to the shorter pillar instead
-    would put a 3Y listing into the block as the 2Y rung, 0.41 log-units from its label, and drop
-    the 3Y pillar the listing IS - a name the chain contradicts, in place of an honest gap. Ties
-    break on the pillar and then the date, so the assignment is a function of the chain rather than
-    of dictionary order.
+    NEAREST CLAIM WINS, not shortest-first: pairs are taken in order of log-distance, so a 3Y
+    listing does not enter the block as the 2Y rung 0.41 log-units from its label while the 3Y
+    pillar it IS gets dropped. Ties break on the pillar and then the date, so the assignment is a
+    function of the chain rather than of dictionary order.
 
-    ONE METRIC, and it is LOG-EXPIRY throughout. A ladder spanning 3M to 3Y cannot judge nearness
-    in years: a month's error is most of the front rung and a rounding error on the back one.
-    Choosing linearly and banding logarithmically would also let the two disagree - the
-    linear-nearest listing can be the log-farther of two admissible ones - so everything here reads
-    the same distance.
+    ONE METRIC, LOG-EXPIRY throughout. A ladder spanning 3M to 3Y cannot judge nearness in years -
+    a month's error is most of the front rung and a rounding error on the back one - and choosing
+    linearly while banding logarithmically would let the two disagree.
     """
     cap = max(ladder.pillars) + ladder.expiry_tolerance
     pairs = sorted((abs(math.log(tau / pillar)), pillar, expiry)
@@ -889,10 +799,9 @@ def assign_expiries(expiries, ladder):
 def _snap_strike(candidates, forward, target):
     """The listed contract nearest a target strike, taking the OTM leg at whatever strike wins.
 
-    The OTM leg is the one a desk deals, and the fit is blind to the choice either way (both
-    families price puts by parity off the call) - so the type follows the STRIKE rather than the
-    rung's intention. A put wing that snaps above the forward on a coarse chain therefore emits the
-    call at that strike, which is the contract that was actually quoted there.
+    The OTM leg is the one a desk deals and the fit is blind to the choice (both families price
+    puts by parity off the call), so the type follows the STRIKE rather than the rung's intention:
+    a put wing snapping above the forward emits the call quoted at that strike.
     """
     best, distance = None, None
     for contract in candidates:
@@ -932,27 +841,22 @@ def select_rungs(chain, forward, ladder=None):
         taking the OTM leg at that strike
 
     WHY A MONEYNESS BAND AND NOT A DELTA SOLVE. FX inverts the surface's own delta because the
-    surface WAS built by inverting it - the strike found that way is the strike the quote sits at.
-    A listed chain has no delta axis at all: the wing is a place to LOOK, and what enters the block
-    is whichever listed contract was found there. So the band is read off the chain's own ATM
-    implied vol (the flat proxy only where that expiry's ATM yields none), and it names a
-    coordinate rather than asserting a delta.
+    surface WAS built by inverting it. A listed chain has no delta axis at all, so the wing is a
+    place to LOOK and what enters the block is whichever listed contract was found there: the band
+    is read off the chain's own ATM implied vol (the flat proxy only where that expiry's ATM yields
+    none) and names a coordinate rather than asserting a delta.
 
     THE WEIGHT, and it is a WEIGHT rather than a price:
 
         w = vega(F, K, r, sigma_K, t) * sqrt(OI) / (1 + spread / spread_cap)
         Weight = w / sum(w)
 
-      * vega at the contract's OWN implied vol, off the declared forward - `fx_black_vega`,
-        transferred, and for its reason: it is what makes the objective scale-free across a term
-        structure that now runs to three years.
-      * sqrt(OI) because open interest is evidence of ATTENTION and not a precision - a contract
-        with a hundred times the open interest is worth ten times the weight, not a hundred, and a
-        linear read would let one deep-liquid strike own the objective.
+      * vega at the contract's OWN implied vol, off the declared forward - what makes the objective
+        scale-free across a term structure running to three years.
+      * sqrt(OI) because open interest is evidence of ATTENTION and not a precision: a hundred
+        times the open interest is worth ten times the weight, not a hundred.
       * the spread factor runs from 1 at a locked market to 1/2 at the cap, so the tightest print
-        is worth twice the widest one that survived the screen and NOTHING that survived is worth
-        zero. Liquidity joins the vega weight because half a chain is dead strikes - the roadmap's
-        own addition to the FX rule.
+        is worth twice the widest survivor and nothing that survived is worth zero.
     """
     ladder = ladder or EquityLadder()
     if not chain.contracts:
@@ -1026,17 +930,13 @@ def select_rungs(chain, forward, ladder=None):
 
 
 def _believed_carry(implied, pillar, expiry, forward, ladder):
-    """The chain's own parity carry, SCREENED before it becomes a pillar's carry - the order of
-    distrust applied to the one foreign answer here that is not a per-contract quote.
+    """The chain's own parity carry, SCREENED against `parity_band` before it becomes a pillar's
+    carry, refusing with the pillar, the number and the strikes it was read off.
 
-    A DECLARED `EquityForward.dividend_yield` never reaches this function: a declared number is the
-    caller's to own, and the chain's own reading is measured beside it and reported. With nothing
-    declared the parity reading IS the carry - it places every strike on the pillar and weighs every
-    one of them - so it is screened like any other evidence rather than believed for being
-    arithmetic. The median has already thrown out one bad print (see `parity_dividend_yield`); the
-    band is what catches a whole neighbourhood that is wrong together, and it refuses with the
-    pillar, the number and the strikes it was read off, because "the chain is wrong" without a
-    coordinate is not something a desk can act on.
+    A DECLARED `EquityForward.dividend_yield` never reaches this function. With nothing declared
+    the parity reading IS the carry, placing every strike on the pillar and weighing every one, so
+    it is screened like any other evidence: the median has already thrown out one bad print (see
+    `parity_dividend_yield`) and the band catches a neighbourhood that is wrong together.
     """
     if implied is None:
         raise IncompleteChain(
@@ -1065,19 +965,16 @@ def _believed_carry(implied, pillar, expiry, forward, ladder):
 def collapse_rungs(rungs):
     """`(rows, notes)` - ONE ROW PER DISTINCT LISTED CONTRACT, the colliding rungs' weights SUMMED.
 
-    A REPEATED CONTRACT IS A WEIGHT, NOT A SECOND EQUATION - and the collapse happens HERE, before
-    emission, precisely because the two family spellings do not agree about it. The component
-    bootstrap deduplicates a repeated ATM by strike within an expiry and DISCARDS that row's weight;
-    the plain family applies every row it is given. So one duplicated print is dropped by one family
-    and double-counted by the other off the same block - a block that reads two ways is not one
-    selection with two spellings, which is the promise this emitter makes.
+    A REPEATED CONTRACT IS A WEIGHT, NOT A SECOND EQUATION, and the collapse happens HERE because
+    the two family spellings do not agree about a duplicate row: the component bootstrap
+    deduplicates a repeated ATM by strike within an expiry and DISCARDS that row's weight, the
+    plain family applies every row it is given. One block that reads two ways is not one selection
+    with two spellings.
 
-    `assign_expiries` has already made the cross-pillar collision impossible. What survives is the
-    collision WITHIN a pillar: a wing whose moneyness band falls inside the listed grid's own
-    spacing, or a wing whose own strike the screen refused and which snapped back onto the ATM
-    contract. Summing is what the objective would have done with the two rows anyway; the note names
-    which rung was absorbed into which, because a rung that quietly vanished is a rung nobody can
-    audit against the ladder that asked for it.
+    `assign_expiries` has already made the cross-pillar collision impossible; what survives is the
+    collision WITHIN a pillar - a wing whose moneyness band falls inside the listed grid's spacing,
+    or one that snapped back onto the ATM contract. The note names which rung was absorbed into
+    which, because a rung that quietly vanished cannot be audited against the ladder.
     """
     order, merged, notes = [], {}, []
     for rung in rungs:
@@ -1110,10 +1007,9 @@ def _census(chain):
 
 def _rung(kind, pillar, contract, tau, level, rate, ladder):
     """One rung with its RAW weight - `vega * sqrt(OI) / (1 + spread/cap)`, normalised by the
-    caller over the ladder as emitted. The vega is taken at the contract's own implied vol where
-    the mid yields one and at the ladder's flat proxy where it does not, because a contract that
-    survived the screen still has a spread and an open interest and should not silently weigh
-    nothing."""
+    caller over the ladder as emitted. The vega is taken at the contract's own implied vol, or at
+    the ladder's flat proxy where the mid yields none, so a screened contract never weighs zero
+    for want of an inversion."""
     vol = implied_vol(contract.mid, level, contract.strike, rate, tau,
                       contract.option_type == 'Call') or ladder.reference_vol
     vega = black_vega(level, contract.strike, rate, vol, tau)
@@ -1130,11 +1026,9 @@ def _rung(kind, pillar, contract, tau, level, rate, ladder):
 def _timestamp(value):
     """A date in the WIRE spelling the engine's own decoder reads - `{'.Timestamp': 'YYYY-MM-DD'}`.
 
-    The wire form rather than a `pandas.Timestamp` on purpose: a block is posted as JSON (through
-    `/book/market`, through `config.update_market_quote`, through a file), the decoder turns this
-    into the `Timestamp` the fit subtracts a base date from, and spelling it here is what keeps
-    this module free of pandas. Whatever the terminal's own spelling was, what is written is a
-    parsed ISO date - so the block is the same bytes whichever way the field came back.
+    The wire form rather than a `pandas.Timestamp`, since a block is posted as JSON and spelling it
+    here keeps this module free of pandas. Whatever the terminal's own spelling was, what is
+    written is a parsed ISO date, so the block is the same bytes whichever way the field came back.
     """
     stamp = _date(value)
     if stamp is None:
@@ -1156,31 +1050,25 @@ def equity_hn_block(chain, forward, ladder=None, family=COMPONENT_FAMILY):
     """`(Market Prices name, block)` - the chain as ONE Heston-Nandi quote block.
 
     ONE SELECTION, TWO SPELLINGS. `select_rungs` runs the same way for both families and the
-    `European_Options` table it produces is identical between them, byte for byte; what differs is
-    only the header each family DECLARES. `collapse_rungs` is what keeps that true of the two
-    families' READING of the table as well: a contract two rungs landed on is emitted ONCE at their
-    summed weight, because the component family and the plain one do different things with a
-    duplicate row. The component spelling additionally states `Rho` (a pin
-    nobody can see is not a declared pin) and `Quote_Sensitivity` No (that family refuses Yes, and
-    saying so is honesty), because those are its own fields and the plain family declares neither.
+    `European_Options` table is identical between them byte for byte; only the header each family
+    DECLARES differs. `collapse_rungs` keeps that true of the two families' READING of the table as
+    well - a contract two rungs landed on is emitted ONCE at their summed weight. The component
+    spelling additionally states `Rho` and `Quote_Sensitivity` No, its own fields.
 
     PREMIUMS, NOT VOLS. `Quote_Type` is Premium and `Quoted_Market_Value` is the mid of the
-    terminal's two-way - the print, in the underlying's own units. `Quoted_Bid`, `Quoted_Ask` and
-    `Timestamp` ride beside it: they are `schema.MARKET_QUOTE_VALUES` on every other family's quote
-    row and the engine's `OPTION_QUOTE` declares none of the three, so they travel as undeclared
-    keys that `bootstrap` reads past. Carried anyway, and named as a finding, because the two-way
-    and the print's own clock ARE the evidence - an emitter that dropped them to fit a six-column
-    schema would have thrown away the desk's spread on the way in.
+    terminal's two-way, in the underlying's own units. `Quoted_Bid`, `Quoted_Ask` and `Timestamp`
+    ride beside it as undeclared keys that `bootstrap` reads past - see `QUOTE_VALUE_KEYS` for what
+    that costs - because the two-way and the print's own clock are the evidence.
 
     `Use_Forward` and `Invert_Moneyness` are written at their declared defaults and are INERT here:
     both exist to look a vol surface up AT A STRIKE, and under `Quote_Type` Premium no surface is
-    read at all. The block still has to NAME a `Volatility` factor, which is finding #1.
+    read at all. The block still has to NAME a `Volatility` factor.
 
     Refuses by name, with the remedy, on: a chain whose census says exercise style is what killed
-    the ladder (`UnsupportedExerciseStyle`), a ladder that collapses below the component family's
-    floor of eight DISTINCT contracts (`IncompleteChain`, naming the chain's own expiries), an
-    expiry with no admissible dividend evidence or an undeclared carry outside `parity_band`, and a
-    ladder with no weight in it.
+    the ladder (`UnsupportedExerciseStyle`), a ladder that collapses below `minimum_contracts`
+    DISTINCT contracts (`IncompleteChain`, naming the chain's own expiries), an expiry with no
+    admissible dividend evidence or an undeclared carry outside `parity_band`, and a ladder with no
+    weight in it.
     """
     ladder = ladder or EquityLadder()
     if family not in FAMILIES:
@@ -1234,29 +1122,21 @@ def equity_hn_block(chain, forward, ladder=None, family=COMPONENT_FAMILY):
         'European_Options': quotes}
     if family == COMPONENT_FAMILY:
         instrument.update(COMPONENT_HEADER)
-        # the option table stays LAST whichever family this is, so the two spellings read as one
-        # block with a different header rather than as two differently shaped documents
+        # the option table stays LAST whichever family this is, so the two spellings differ only
+        # in their header
         instrument['European_Options'] = instrument.pop('European_Options')
     return market_price_name(family, forward), {'instrument': instrument}
 
 
 def _refuse_american(chain, ladder):
-    """The roadmap's V1 ruling, fired off the CENSUS rather than off an empty chain.
+    """Refuse a chain that exercise style, not thin quoting, took below the contract floor.
 
-    THE PER-CONTRACT SCREEN IS RIGHT AND STAYS. A mixed index board - a flex or weekly American
-    listing beside European ones - drops those contracts individually at `_verdict` and the European
-    ones still calibrate. That is not what this function is for.
+    Fires when the chain cannot reach `minimum_contracts` AT ALL and more candidates were refused
+    on style than survived the whole screen. Below the floor with the refusals elsewhere, the
+    floor's own refusal is the true one and names its own census.
 
-    WHAT THE CENSUS ADDS IS THE NEAR MISS. Gating this on `contracts` being EMPTY meant a chain that
-    was American except for a handful of survivors raised the distinct-contract floor instead: 191
-    American listings and one European survivor produced "the ladder collapses onto 1 distinct
-    contract ... quote the chain at more expiries and strikes" about a chain listing six expiries
-    and sixteen strikes. That names the symptom and prescribes the wrong remedy - the exact thing
-    this refusal exists to avoid - and one survivor was all it took.
-
-    So it fires when the chain cannot reach the floor AT ALL and exercise style is what took it
-    there: more candidates refused on style than survived the whole screen. Below the floor with the
-    refusals elsewhere, the floor's own refusal is the true one and names its own census.
+    The per-contract screen stays either way: a mixed board - a flex or weekly American listing
+    beside European ones - drops those individually at `_verdict` and the European ones calibrate.
     """
     styles = sorted({verdict for verdict in chain.rejected.values()
                      if verdict in ('american', 'unstated-exercise')})
@@ -1280,21 +1160,16 @@ def _refuse_american(chain, ladder):
 
 def quote_source(chain, forward, ladder, rungs, rows, notes, readings):
     """The block's own account of where its quotes came from, in one line beside the parameters
-    they produce - `fx_surface_block`'s `Quote_Source`, carrying what a chain has that a surface
-    does not: the census, the spot's own print date, the declared carry, and the carry the chain
-    itself implies.
+    they produce - `fx_surface_block`'s `Quote_Source` plus what a chain has that a surface does
+    not: the census, the spot's own print date, the declared carry and the carry the chain implies.
 
-    THE DIVIDEND DISAGREEMENT IS REPORTED RATHER THAN RESOLVED. Where the caller declared a yield,
-    that is the one the strikes were placed on and the one the fit will rebuild its forward from;
-    the parity-implied number beside it is the chain's own opinion, and the gap between them is a
-    fact about the book's dividend curve that belongs in the record rather than in an average. A
-    parity reading outside `parity_band` is NAMED here rather than refused: where the yield was
-    declared, the band screens nothing (the declared number placed the ladder) and an out-of-band
-    chain reading is exactly the disagreement a desk is owed.
+    THE DIVIDEND DISAGREEMENT IS REPORTED RATHER THAN RESOLVED. A declared yield placed the strikes
+    and is what the fit rebuilds its forward from; the parity-implied number beside it is the
+    chain's own opinion. A reading outside `parity_band` is NAMED here rather than refused, since
+    with a yield declared the band screens nothing.
 
     THE ROWS ARE COUNTED BESIDE THE RUNGS because they are not always the same number: two rungs
-    landing on one listed contract are emitted once at their summed weight, and a report that said
-    "13 rungs" over an eleven-row table would be describing a block that does not exist.
+    landing on one listed contract are emitted once at their summed weight.
     """
     census = _census(chain)
     low, high = ladder.parity_band

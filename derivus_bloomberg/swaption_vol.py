@@ -18,12 +18,11 @@ a set of ATM swaptions, and each benchmark is a FORWARD STARTING SWAP described 
 its start, its tenor, both leg frequencies, both leg day counts, the quoted vol and the objective
 weight. That is the whole block, and this emitter fills it from a verified grid.
 
-TWO COLUMNS, NOT ONE, AND THE ROADMAP RECORDS WHY. `create_market_swaps` reads
-`Floating_Day_Count` and `Fixed_Day_Count` SEPARATELY - the float leg's generates the par swap rate
-and the fixed leg's only exists on the unequal-frequency branch - and an authored block spelling
-one `Day_Count` for both used to die downstream of that. `INSTRUMENT_COLUMNS` below is held against
-the committed declaration by a gate, as DATA, so the day the family's row changes the gate says so
-instead of a fetch failing in a cashflow generator.
+TWO DAY-COUNT COLUMNS, NOT ONE. `create_market_swaps` reads `Floating_Day_Count` and
+`Fixed_Day_Count` SEPARATELY - the float leg's generates the par swap rate, the fixed leg's exists
+only on the unequal-frequency branch - so a block spelling one `Day_Count` for both dies downstream
+in a cashflow generator. `INSTRUMENT_COLUMNS` below is held against the committed declaration by a
+gate, as DATA, so the day the family's row changes the gate says so.
 
 THE CONVENTIONS ARE SEED-DECLARED, exactly as the curve's are: the forward swap a `SASN` cell is a
 vol OF is quarterly/quarterly ACT/365 against 3M JIBAR, and nothing in the ticker says so. A
@@ -33,19 +32,16 @@ fields listed, and a wrong convention is then a data fix the owner makes in `see
 THE QUOTED DISTRIBUTION IS DECLARED AND THE CALIBRATION READS IT. `SASN` is `ZAR SWPT NVOL`: a
 NORMAL (Bachelier) vol in basis points. `create_market_swaps` builds each benchmark's market
 premium under the referenced surface's `Distribution_Type` - Bachelier for `Normal`, displaced
-Black for `Lognormal` - the same convention `Factor3D.get_subtype` carries into every deal's
-`Volatility` dependency, so a ladder is fitted and marked under one convention. This emitter
-transcribes what the terminal quoted, scales it into the family's `Percent` column, and states
-the distribution in `Quote_Source` and on the returned ladder; the referenced `InterestYieldVol`
+Black for `Lognormal` - so a ladder is fitted and marked under one convention. This emitter
+transcribes what the terminal quoted, scales it into the family's `Percent` column, and states the
+distribution in `Quote_Source` and on the returned ladder; the referenced `InterestYieldVol`
 surface must declare the matching `Distribution_Type` for the fit to read it.
 
-A RE-TICK IS A RE-AUTHORING, and that is structural rather than a preference.
-`schema.partition_market_price` gives every family whose quotes do not live in `Points` rows an
-EMPTY values half, and this family quotes in `Instrument_Definitions`
-(`tests/test_market_prices_partition.py` asserts it by name). So a moved vol is 'structure differs'
-to `config.update_market_quote` and there is no tick that reaches it: `reauthor` drops the block
-before re-installing it, exactly as `POST /book/hn` does with a Heston-Nandi ladder and for the
-same reason.
+A RE-TICK IS A RE-AUTHORING, structurally. `schema.partition_market_price` gives every family whose
+quotes do not live in `Points` rows an EMPTY values half, and this family quotes in
+`Instrument_Definitions`. So a moved vol reads as 'structure differs' to
+`config.update_market_quote` and no tick reaches it: `reauthor` drops the block before
+re-installing it.
 
 IMPORTS: the standard library, this package's own modules, and no engine. The block is emitted as
 WIRE JSON (`{'.DateOffset': '1Y'}`, `{'.Percent': 1.45}`, `{'.Timestamp': ...}`), which is what
@@ -59,39 +55,33 @@ from typing import Mapping, Protocol, Sequence
 
 from . import discover
 from .errors import BloombergConfigurationError, IncompleteLadder
-# the package's ONE spelling of the wire form and of a terminal answer, reached rather than
-# re-spelled: `{'.Percent': 1.45}` has to mean the same thing in both emitters or a desk reading two
-# blocks side by side is reading two conventions
+# the package's ONE spelling of the wire form and of a terminal answer: `{'.Percent': 1.45}` has to
+# mean the same thing in both emitters or two blocks read side by side carry two conventions
 from .ir_curve import (BATCH, QUOTE_FIELDS, probe, read_date, read_number, read_tenor, read_word,
                        wire_percent, wire_period, wire_timestamp)
-# RE-EXPORTED RATHER THAN RE-SPELLED. A drop-and-re-install is one mechanism and both emitters need
-# it - this family because its values half is EMPTY so no tick can reach it, the curve strip because
-# a rolled date is structure. `swaption_vol.reauthor` therefore still resolves and still means what
-# this module's docstring says it does; there is simply one of it. See its own docstring for both
-# reasons stated apart.
+# one drop-and-re-install, re-exported: both emitters need it, for the two reasons its own
+# docstring states apart
 from .ir_curve import reauthor  # noqa: F401
 
 #: The family this emitter writes for.
 FAMILY = 'HullWhite2FactorModelPrices'
 
 #: The `Instrument_Definitions` row, in the committed schema's own order. Spelled here because the
-#: package may not import the engine, and held against `HullWhite2FactorModelParameters.fields` by a
-#: gate that reads the COMMITTED declaration and compares it as data - the
-#: whitelist-against-declaration pattern `equity_chain.HN_REFERENCE_TYPES` already rides on.
+#: package may not import the engine, and held against `HullWhite2FactorModelParameters.fields` by
+#: a gate that reads the committed declaration and compares it as data.
 INSTRUMENT_COLUMNS = ('Start', 'Tenor', 'Floating_Frequency', 'Fixed_Frequency',
                       'Floating_Day_Count', 'Fixed_Day_Count', 'Market_Volatility', 'Weight')
 
 #: The value-plane keys a row carries beside its vol. NOT DECLARED by the family's row - the eight
-#: columns above are all of it - so they ride as undeclared keys `create_market_swaps` reads past.
-#: Carried anyway, because the two-way and the print's own clock are the EVIDENCE, and named as a
-#: finding rather than dropped to fit eight columns. `equity_chain.QUOTE_VALUE_KEYS`, one family
-#: over, and with the same consequence: this family's quote column is `Market_Volatility` rather
-#: than `Quoted_Market_Value`, so `schema.MARKET_QUOTE_VALUES` cannot see the mid either.
+#: columns above are all of it - so they ride as undeclared keys `create_market_swaps` reads past,
+#: carried anyway because the two-way and the print's own clock are the evidence. As
+#: `equity_chain.QUOTE_VALUE_KEYS`, and with the same consequence: this family's quote column is
+#: `Market_Volatility`, so `schema.MARKET_QUOTE_VALUES` cannot see the mid either.
 QUOTE_VALUE_KEYS = ('Quoted_Bid', 'Quoted_Ask', 'Timestamp')
 
 #: The distributions a seeded grid may declare its quotes in. Bloomberg spells the two families
-#: `{CCY}SN` (normal, basis points) and `{CCY}SV` (lognormal, percent) - the README's own note off
-#: the 2026-08-27 terminal session - and which one a prefix is cannot be read off the prefix.
+#: `{CCY}SN` (normal, basis points) and `{CCY}SV` (lognormal, percent), and which one a prefix is
+#: cannot be read off the prefix.
 DISTRIBUTIONS = ('Normal', 'Lognormal')
 
 #: The convention fields a seeded currency's swaption entry must declare, and the ones defaulted.
@@ -100,8 +90,8 @@ REQUIRED_CONVENTIONS = ('fixed_frequency', 'float_frequency', 'fixed_day_count',
 OPTIONAL_CONVENTIONS = {'weight': 1.0}
 
 #: The day counts the family's own row declares. Unlike `ir_curve.DAY_COUNTS` this is a passthrough
-#: rather than an arithmetic: nothing here computes an accrual, `create_market_swaps` does, so the
-#: whole declared list is admissible and a spelling outside it refuses at the seed.
+#: rather than an arithmetic - `create_market_swaps` computes the accruals - so the whole declared
+#: list is admissible and a spelling outside it refuses at the seed.
 DAY_COUNTS = ('ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA')
 
 
@@ -125,18 +115,16 @@ class SwaptionConventions:
     float_frequency: str
     fixed_day_count: str
     float_day_count: str
-    #: `Normal` or `Lognormal` - what the terminal's number MEANS. See the module docstring: the
-    #: family prices lognormal and reads no distribution, so this travels into `Quote_Source` and
-    #: into the ladder rather than into a column the engine consults.
+    #: `Normal` or `Lognormal` - what the terminal's number MEANS. The row has no column for it, so
+    #: it travels into `Quote_Source` and onto the ladder; the calibration reads it off the named
+    #: surface's `Distribution_Type` instead.
     distribution: str
     #: What multiplies the terminal's print to reach the `Percent` column's own number, which is in
     #: PERCENT: a `SASN` normal vol of 145 basis points is 1.45 percent, so ZAR declares 0.01. A
     #: percent-quoted lognormal family (`{CCY}SV`) would declare 1.0.
     quote_scale: float
-    #: The objective weight every row carries. FLAT ONE is V1's declaration and it is a declaration
-    #: rather than a default: a vega weight over a swaption grid needs the annuity, which needs the
-    #: curve, which this emitter deliberately does not have. An unweighted least squares over ATM
-    #: normal vols is at least a stated objective; a weight invented out here would not be.
+    #: The objective weight every row carries, DECLARED flat at one: a vega weight over a swaption
+    #: grid needs the annuity, which needs the curve this emitter does not have.
     weight: float = OPTIONAL_CONVENTIONS['weight']
 
     def __post_init__(self):
@@ -169,9 +157,8 @@ class SwaptionConventions:
 
 
 def swaption_conventions(seed: Mapping, currency: str) -> SwaptionConventions:
-    """The declared swaption conventions of one seeded currency, or the refusal naming what is
-    missing - `ir_curve.curve_conventions`' own shape, and the refusal lists every absent field at
-    once for its reason."""
+    """The declared swaption conventions of one seeded currency, or the refusal naming every
+    missing field at once - `ir_curve.curve_conventions`' own shape."""
     spec = seed.get('swaption', {}).get(currency)
     if spec is None:
         raise BloombergConfigurationError(
@@ -211,17 +198,16 @@ class SwaptionScreen:
     #: `discover.STALE_DAYS`, for its reason - and a swaption grid is where it bites hardest: the
     #: back corners of a ragged grid go days without a print while the front keeps ticking.
     stale_days: int = discover.STALE_DAYS
-    #: The band a vol is believed inside, in the EMITTED percent units - so a 145bp normal vol reads
-    #: as 1.45 and a 20% lognormal as 20.0. One band over both distributions because it is a
-    #: sanity bound and not a market view: a hundred percent admits every swaption anyone has
-    #: quoted and refuses a decimal-shifted print.
+    #: The band a vol is believed inside, in the EMITTED percent units - a 145bp normal vol reads
+    #: as 1.45 and a 20% lognormal as 20.0. One band over both distributions, a sanity bound rather
+    #: than a market view: a hundred percent admits every swaption quoted and refuses a shifted
+    #: decimal.
     vol_band: tuple = (0.0, 100.0)
-    #: Cells the ladder must survive screening with. FIVE is the family's own parameter count -
-    #: sigma_1, sigma_2, alpha_1, alpha_2, rho - so below it the fit is interpolating and reports a
-    #: stationarity it did not earn. It is a FLOOR and not a sufficiency: J has 23 columns (two mean
-    #: reversions, a correlation and two ten-knot sigma term structures), so a grid under 23 cells
-    #: leaves a null space no linear algebra can invent, which `quote_sensitivities.md` says is the
-    #: problem rather than a defect. The emitter reports the count; it refuses only under the floor.
+    #: Cells the ladder must survive screening with. FIVE is the family's own parameter count
+    #: (sigma_1, sigma_2, alpha_1, alpha_2, rho), so below it the fit interpolates and reports a
+    #: stationarity it did not earn. A FLOOR, not a sufficiency: J has 23 columns, so a grid under
+    #: 23 cells leaves a null space no linear algebra can invent. The emitter reports the count and
+    #: refuses only under the floor.
     minimum_rows: int = 5
 
     def __post_init__(self):
@@ -253,9 +239,8 @@ class SwaptionQuote:
 class SwaptionLadder:
     """A screened grid: what survived, what did not and why, and the surface it is quoted for.
 
-    `rejected` is the LEDGER, `{security: verdict}`, `discover.build_map`'s discipline transferred:
-    a ragged grid is the ordinary case here - entitlements differ by cell - so what was refused and
-    why is most of what a desk needs to read.
+    `rejected` is the LEDGER, `{security: verdict}`. A ragged grid is the ordinary case here -
+    entitlements differ by cell - so what was refused and why is most of what a desk reads.
     """
     currency: str
     surface: str
@@ -279,16 +264,14 @@ class SwaptionLadder:
 def swaption_entries(document, seed, currency):
     """`(wanted, ledger)` - the verified cells of one currency's grid, walked off the GRAMMAR.
 
-    `discover.swaption_candidates` is asked for its candidates and each one's `path` is looked up in
+    `discover.swaption_candidates` supplies the candidates and each one's `path` is looked up in
     the workstation's own map, so this module spells no ticker: the two-character expiry code and
     the unpadded tenor (SASN011 is 1Y into 1Y) stay in `discover` where they were verified. A cell
-    the map did not verify is `unverified` on the ledger by name - which on a per-entitlement grid
-    is the normal shape rather than an alarm.
+    the map did not verify is `unverified` on the ledger by name.
 
     `wanted` is `[(expiry label, tenor label, security)]`, both labels being PERIODS the block
-    carries straight into `Start` and `Tenor`: the map path a candidate carries is spelled
-    `'{expiry} x {tenor}Y'` by the grammar, so the two halves are read back off it rather than
-    re-derived from the seed's nested loops.
+    carries straight into `Start` and `Tenor`, read back off the grammar's own
+    `'{expiry} x {tenor}Y'` path rather than re-derived from the seed.
     """
     swaption_conventions(seed, currency)
     blocks = document.get('blocks', {})
@@ -309,8 +292,8 @@ def swaption_entries(document, seed, currency):
 
 def _cell(candidate):
     """`(expiry label, tenor label)` off a candidate's map path - the grammar's own
-    `'{expiry} x {tenor}Y'`. An unreadable one refuses rather than being skipped: a cell dropped for
-    being unparseable is indistinguishable from one the terminal never answered."""
+    `'{expiry} x {tenor}Y'`. An unreadable path REFUSES rather than being skipped: a cell dropped
+    for being unparseable is indistinguishable from one the terminal never answered."""
     parts = str(candidate.path[-1]).split(' x ')
     if len(parts) != 2:
         raise BloombergConfigurationError(
@@ -366,14 +349,8 @@ def screen_ladder(quotes, as_of, screen=None):
     """`(accepted, rejected)` - the trust boundary, in the ORDER OF DISTRUST.
 
       unpriced   no PX_LAST at all
-      zero       a vol of exactly zero. This screen was built when it was a TRAP rather than a
-                 sanity check - `create_market_swaps`'s rule was
-                 `if instrument['Market_Volatility'].amount:`, so a zero column silently meant "read
-                 the swaption surface's ATM instead" and a blank cell emitted as zero calibrated
-                 against whatever the book's surface happened to hold, under the name of a quote the
-                 terminal never gave. The engine refuses that row by name since 2026-09-01; this
-                 screen stays where it is, because a ladder is refused HERE where a desk can see
-                 which cell went dark, rather than at the far end of a book
+      zero       a vol of exactly zero - a blank cell, refused HERE where a desk can see which cell
+                 went dark rather than at the far end of a book
       off-market a vol outside the declared band - the decimal-shifted print no other check sees
       crossed    bid above ask: a stale side standing against a live one
       undated    no readable LAST_UPDATE_DT - a print that cannot evidence its own time
@@ -417,10 +394,9 @@ def _verdict(quote, as_of, screen):
 # ---------------------------------------------------------------------------------------------
 
 def market_price_name(curve):
-    """`HullWhite2FactorModelPrices.<curve>` - the `Market Prices` key. Its tail is the
-    `InterestRate` curve the calibration diffuses, which is what `bootstrap` resolves the process
-    and the benchmark swaps off; the written parameters land at
-    `HullWhite2FactorModelParameters.<curve>`."""
+    """`HullWhite2FactorModelPrices.<curve>` - the `Market Prices` key. The tail names the
+    `InterestRate` curve the calibration diffuses and resolves its benchmark swaps off; the written
+    parameters land at `HullWhite2FactorModelParameters.<curve>`."""
     return '{}.{}'.format(FAMILY, curve)
 
 
@@ -432,16 +408,14 @@ def _period_years(label):
 def instrument_row(quote, conventions):
     """One `Instrument_Definitions` row - the eight declared columns, then the evidence.
 
-    `Start` and `Tenor` are the grid's own coordinates as `Period`s, which is what the family
-    declares them as: `create_market_swaps` does `effective = base_date + instrument['Start']` and
-    `maturity = effective + instrument['Tenor']`, so a 1Y x 10Y cell is a ten-year swap starting in
-    a year and no date is computed out here at all.
+    `Start` and `Tenor` are the grid's own coordinates as `Period`s, as the family declares them:
+    `create_market_swaps` builds `effective = base_date + Start` and `maturity = effective +
+    Tenor`, so a 1Y x 10Y cell is a ten-year swap starting in a year and no date is computed here.
 
     `Market_Volatility` is a `Percent`, so the wire number is in PERCENT and the decoded `.amount`
-    is the fraction the pricer reads. The distribution that number is IN is declared on the ladder
-    and stated in the block's `Quote_Source`; there is no ROW column for it and there is not meant
-    to be - the convention is a property of the surface the block names, which is where
-    `create_market_swaps` reads it.
+    is the fraction the pricer reads. The row has no column for the DISTRIBUTION that number is in
+    and is not meant to: the convention is a property of the surface the block names, which is
+    where `create_market_swaps` reads it.
     """
     row = {
         'Start': wire_period(quote.expiry),
@@ -467,39 +441,19 @@ def hw2f_block(ladder, curve=None, screen=None):
     THE ROWS ARE ORDERED BY THE GRID, expiry then tenor, so the block reads as the ladder a desk
     would look at and two emissions off the same answers are the same bytes.
 
-    WHAT IS WRITTEN AND WHAT IS NOT. `Swaption_Volatility` and `Instrument_Definitions` are the
-    quote; every other declared field on this family - `Objective`, `Simulations`, `Batches`,
-    `Random_Seed`, `Quote_Sensitivity`, `Jacobian_Rcond`, `Stationarity_Tol` - is a property of the
-    SOLVE rather than of the market, and each is read by the engine with its declared default. An
-    emitter that stated them would be deciding a job's optimizer from a market-data fetch. (The
+    WHAT IS WRITTEN AND WHAT IS NOT. `Swaption_Volatility`, `Quote_Source` and
+    `Instrument_Definitions` are the quote; every other declared field on this family -
+    `Objective`, `Simulations`, `Batches`, `Random_Seed`, `Quote_Sensitivity`, `Jacobian_Rcond`,
+    `Stationarity_Tol` - is a property of the SOLVE rather than of the market and is left to the
+    engine's declared default, so an emitted ladder follows that default wherever it moves. (The
     Heston-Nandi emitter states `Steps_Per_Year` for the opposite reason: there the step clock is
     what the fitted parameters MEAN.)
 
-    SO AN EMITTED LADDER FOLLOWS THE FAMILY'S DEFAULT WHEREVER IT GOES, which is the point of not
-    stating it and is worth saying once: `Objective` flipped to `Analytic` on 2026-08-31, so a grid
-    fetched here now solves through Schrager-Pelsser rather than through the simulation. Nothing
-    about this emission moved - the bytes are the same bytes - and the change is entirely the
-    engine's, which is the behaviour a field left to its default is asking for.
-
-    THE SEED'S `distribution: Normal` NOW HAS AN ENGINE THAT HONOURS IT, and that is the second such
-    change and the one this emitter was waiting for. `SASN` is a normal vol in basis points, the
-    seed has declared it as one since this package shipped, and `create_market_swaps` priced every
-    benchmark with a lognormal Black whatever the surface said - so an emitted ZAR ladder could be
-    fetched, screened and booked honestly and still be fitted under the wrong convention. Since
-    2026-09-01 that calibration reads the named `InterestYieldVol`'s `Distribution_Type` and prices
-    a Normal ladder with Bachelier. NOTHING HERE MOVED FOR IT except the `Quote_Source` note, which
-    said the opposite: what makes the fit honest is the SURFACE's declaration, which this emitter
-    does not author - so a desk pointing `Swaption_Volatility` at a lognormally-declared factor
-    still gets a lognormal fit of normal quotes, and the block's own line is where that is stated.
-
-    `Quote_Source` IS NOW A DECLARED FIELD of this family, and that is the finding this emitter
-    raised, closed on 2026-09-01. It used to ride as an undeclared key that `bootstrap` read past
-    and `as_json` preserved - both Heston-Nandi families declared `Quote_Source` and
-    `Quote_Timestamp` and this one declared neither, so a machine-fetched ladder had nowhere inside
-    its own block to say where it came from. HW2F declares both now, on their shape. NOTHING HERE
-    MOVED FOR IT EITHER: the same key, the same line, the same bytes - what changed is that a
-    schema-driven front end can see it, and a reader of the declarations can find out that this is
-    the only place a block says which convention its numbers are in.
+    THE FIT'S CONVENTION IS THE SURFACE'S, NOT THE LADDER'S. `create_market_swaps` prices each
+    benchmark under the named `InterestYieldVol`'s `Distribution_Type`, which this emitter does not
+    author - so a desk pointing `Swaption_Volatility` at a lognormally-declared factor gets a
+    lognormal fit of normal quotes. `Quote_Source` is where the block states which convention its
+    own numbers are in.
     """
     screen = screen or SwaptionScreen()
     if not ladder.surface:
@@ -533,16 +487,13 @@ def hw2f_block(ladder, curve=None, screen=None):
 
 
 def quote_source(ladder):
-    """The block's own account of where its quotes came from, in one line beside the parameters they
-    produce - `equity_chain.quote_source`'s job, on a family that declares no field for it.
+    """The block's own account of where its quotes came from, in one line beside the parameters
+    they produce - `equity_chain.quote_source`'s job on this family.
 
     THE DISTRIBUTION IS THE FIRST THING IT SAYS, because it is the one thing about this block a
     reader cannot recover from the numbers: 1.45 in the `Market_Volatility` column is an ordinary
-    lognormal vol read one way and a 145 basis point normal vol read the other. Since 2026-09-01
-    `create_market_swaps` reads the surface's own `Distribution_Type` and prices a Normal ladder
-    with Bachelier, so this line and the engine now agree - and it still has to be SAID here,
-    because the block itself declares no field to say it in and the declaration it depends on lives
-    on a factor this emitter does not author.
+    lognormal vol read one way and a 145 basis point normal vol read the other. It is said here
+    because the declaration the fit acts on lives on a surface this emitter does not author.
     """
     census = ', '.join('{} {}'.format(count, verdict)
                        for verdict, count in sorted(ladder.census.items())) or 'nothing refused'

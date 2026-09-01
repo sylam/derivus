@@ -155,10 +155,8 @@ Factor = namedtuple('Factor', 'type name')
 RateInfo = namedtuple('RateInfo', 'model_name archive_name calibration')
 CalibrationInfo = namedtuple('CalibrationInfo', 'param correlation delta')
 # One equation's fit from `stochasticprocess.arx1_t_mle`. `sigma` is the innovation STANDARD
-# DEVIATION - a scalar under constant variance, the conditional path sigma_t under `garch=True`,
-# where `garch` is (omega, alpha, beta) and `sigma[-1]**2` is the variance of the NEXT observation
-# (the `H0` stamping convention). `resid` is standardised by `sigma` either way, so it is the column
-# a correlation consolidation reads as is; the raw innovation is `resid * sigma`.
+# DEVIATION - scalar under constant variance, the path sigma_t under `garch=True`, where
+# `sigma[-1]**2` is the NEXT observation's variance. `resid` is standardised by `sigma`.
 ARX1Fit = namedtuple('ARX1Fit', 'phi mu sigma gamma resid garch')
 DealDataType = namedtuple('DealDataType', 'Instrument Factor_dep Time_dep Calc_res')
 Partition = namedtuple('Partition', 'DealMTMs Collateral_Cash Funding_Cost Cashflows')
@@ -167,20 +165,15 @@ Collateral = namedtuple('Collateral', 'Haircut Amount Currency Funding_Rate Coll
 # define 1, 2 and 3d risk factors - add more as development proceeds
 DimensionLessFactors = ['ReferenceVol', 'Correlation']
 OneDimensionalFactors = ['InterestRate', 'InflationRate', 'DividendRate', 'SurvivalProb', 'ForwardPrice', 'ForwardRate']
-#: Every (moneyness, expiry) vol surface. ONE implementation - `riskfactors.VolatilityGrid` - and
+#: Every (moneyness, expiry) vol surface. ONE implementation - `riskfactors.VolatilityGrid` - with
 #: an asset-class TAG per member, because the risk-class partition below is a pure function of the
-#: factor type and a factor-keyed gradient has nothing else to read the asset class off. The
-#: untagged name is transitional: see `resolve_factor_key`.
+#: factor type. The untagged name is transitional: see `resolve_factor_key`.
 TwoDimensionalFactors = ['FXVol', 'EquityPriceVol', 'CommodityPriceVol', 'VolatilityGrid']
 ThreeDimensionalFactors = ['InterestRateVol', 'InterestYieldVol', 'ForwardPriceVol']
 
-#: The CRIF-style risk class of every declared factor type, as data. A sensitivity is reported
-#: under the class of the factor it is taken with respect to, so the partition has to be TOTAL over
-#: the Factor store and a pure function of `factor.type` - which is why the vol surfaces carry an
-#: asset-class tag rather than sharing one untagged name. `CrossClass` is the honest bucket for a
-#: factor whose asset class is a property of what it REFERENCES, not of itself: `Correlation` names
-#: a pair, `ObservedBasis` follows whichever spot it hangs off, and the two spot-model parameter
-#: blocks are fitted against any of FX/equity/commodity.
+#: The CRIF-style risk class of every declared factor type, as data. A sensitivity is reported under
+#: the class of the factor it is differentiated against, so the partition is TOTAL over the Factor
+#: store and a pure function of `factor.type`; `CrossClass` covers a factor whose class is inherited.
 FactorRiskClass = {
     'InterestRate': 'InterestRate', 'InflationRate': 'InterestRate', 'PriceIndex': 'InterestRate',
     'InterestRateVol': 'InterestRate', 'InterestYieldVol': 'InterestRate',
@@ -274,43 +267,33 @@ class BoundarySet:
 
     Subclasses differ in ONE thing: how far a decision reaches - every row from the decision
     onward, or inside a pricer's own inner Monte Carlo. A decision must register as ONE
-    counterfactual carrying its whole reach: an objective with a kink (a collateralised net sits
-    at the relu by construction) scores the sum of two partial counterfactuals differently from
-    the counterfactual of the sum.
+    counterfactual carrying its whole reach, because an objective with a kink (a collateralised net
+    sits at the relu by construction) scores the sum of two partial counterfactuals differently
+    from the counterfactual of the sum.
 
     What they DO share is the estimator's contract: `objective_jumps(score)` yields, per decision,
     the gap (graph retained, signed so gap > 0 means the trigger FIRED) and the objective's
-    response to that decision - each subclass owning the form its reach requires. This base is the
-    plumbing every form consumes: the gross-to-net chain and `portfolio_delta`.
+    response to that decision. This base is the plumbing every form consumes: the gross-to-net
+    chain and `portfolio_delta`.
 
     Branch values are registered on the PRICER's own grid, in the pricer's own currency, and
-    `to_mtm` is the deal's own map onto the MTM grid. A pricer builds its profile over
-    `deal_time_grid`, and the deal then scales it by `fx_rep` and INTERPOLATES - which inserts rows
-    in the middle wherever another deal contributes an mtm date inside this deal's life. Padding
-    the tail instead lands row i of the deal on row i of the MTM grid, which is the same row only
-    while no such date exists. Both halves are invisible in a forward pass worth exactly zero.
+    `to_mtm` is the deal's own map onto the MTM grid - `fx_rep` then INTERPOLATION, never a tail
+    pad, since another deal's mtm date inside this deal's life inserts a row in the middle.
     """
     gaps: list                      # per decision, tensors, graph retained
-    report_index: object            # MTM grid -> report grid, for the additive (uncollateralised)
-                                    # route; the collateral chain wants the MTM grid untouched
-    to_mtm: object                  # callable: pricer-grid profile -> MTM-grid rows, detached
-                                    # (pricing.deal_to_mtm_grid - fx into reporting, then interp)
+    report_index: object            # MTM grid -> report grid, for the additive route only
+    to_mtm: object                  # pricer-grid profile -> MTM-grid rows, detached
 
-    # The netting set this registration sits beneath stamps its own gross-to-net chain here, and
-    # None - the class default, and what an ADDITIVE set leaves alone - means the counterfactual
-    # is the reported MTM plus the delta. It has to ride on the SET: `boundary_sets` accumulates
-    # from every deal in every netting set, so one slot on `shared` pushes an uncollateralised
-    # set's deal through a collateralised set's chain, and lets the last collateralised set of
-    # several speak for all of them.
+    # The netting set this registration sits beneath stamps its own gross-to-net chain here; None
+    # (the class default, and what an ADDITIVE set leaves alone) means the counterfactual is the
+    # reported MTM plus the delta. It rides on the SET because `boundary_sets` accumulates globally.
     net_from_gross = None
     # What the chain returns at a zero delta - this set's own level, the baseline a change is
-    # measured from. Cached on first use rather than precomputed: it costs one balance scan per
-    # registration and needs no assumption about a delta's shape.
+    # measured from. Cached on first use: it costs one balance scan per registration.
     net_at_zero = None
-    # Who registered it, stamped by `stamp_boundary_sets` off the structure walk - the pricers do
-    # not name themselves. A slot rather than a field because the subclasses declare non-default
-    # fields of their own, which cannot follow a defaulted one. Read by the second-derivative
-    # refusal, which owes the caller the deals it is refusing over.
+    # Who registered it, stamped by `stamp_boundary_sets` off the structure walk. A slot rather than
+    # a field because the subclasses declare non-default fields of their own, which cannot follow a
+    # defaulted one. Read by the second-derivative refusal, which names the deals it refuses over.
     deal = None
 
     def portfolio_delta(self, delta, cash=None):
@@ -334,44 +317,35 @@ class BoundarySet:
 class LatchedBoundarySet(BoundarySet):
     """One deal's LATCHING decisions taken on simulated state, and what a counterfactual needs.
 
-    Two pricers register this shape and they are the same defect. A discretely monitored barrier
-    latches "has crossed" at each observation date; a physically settled swaption latches "was
-    exercised" once, at expiry, and carries it over every later row. Either way the decision is
-    OBSERVED, so the value jump is real - a knocked-out deal IS worth nothing, an exercised
-    swaption DOES hold the swap - and the estimate is not what is wrong. What ordinary AAD drops
-    is the FLUX: as a factor moves, scenarios cross the trigger, and the indicator that records
-    the crossing has zero derivative almost everywhere.
+    Two pricers register this shape. A discretely monitored barrier latches "has crossed" at each
+    observation date; a physically settled swaption latches "was exercised" once, at expiry, and
+    carries it over every later row. Either way the decision is OBSERVED, so the value jump is real
+    and the estimate is not what is wrong - what ordinary AAD drops is the FLUX, because the
+    indicator recording the crossing has zero derivative almost everywhere.
 
-    The counterfactual is cheap because flipping the decision does not change the SIMULATION -
-    only the state read off it. "Had it not fired at decision k, what would the deal be worth?" is
-    answered by flags and branch values ALREADY computed, so nothing is re-simulated, re-priced or
-    re-drawn: `untriggered` and `triggered` are the two sides of the selection the pricer already
-    evaluates.
+    The counterfactual is cheap because flipping the decision does not change the SIMULATION, only
+    the state read off it: `untriggered` and `triggered` are the two sides of the selection the
+    pricer already evaluates, so nothing is re-simulated, re-priced or re-drawn.
 
     `gaps` retain their graph - log(spot/barrier) at each barrier observation, the underlying swap
-    value at a swaption's expiry - and carry every factor that moved the scenario there. A gap is
-    signed so that gap > 0 means the trigger FIRED, matching a jump of J(fired) - J(did not).
-    Everything else is DETACHED: it seeds a counterfactual whose result is a coefficient, not a
-    differentiated quantity.
+    value at a swaption's expiry - and are signed so gap > 0 means the trigger FIRED, matching a
+    jump of J(fired) - J(did not). Everything else is DETACHED: it seeds a counterfactual whose
+    result is a coefficient, not a differentiated quantity.
     """
     fired: list                     # per decision, detached bool (B,)
     obs_before: object              # (T,) int: decisions strictly before each row, PRICER grid
     untriggered: object             # (T, B) detached, PRICER grid: value while it has not fired
     triggered: object               # (T, B) detached, PRICER grid: value once it has
-    # A decision whose OWN row also forks (an autocall's observed coupon - a hard indicator
-    # neither whole-profile branch expresses): None, or per-decision
-    # `(pricer_row, value_if_fired, value_if_not)`, detached. Rides THIS set, not a second
+    # A decision whose OWN row also forks (an autocall's observed coupon): None, or per-decision
+    # `(pricer_row, value_if_fired, value_if_not)`, detached. Rides THIS set rather than a second
     # registration - one decision must be ONE counterfactual (see the class docstring).
     own_row: list = None
-    # Settled-cash-in-transit a DEAD row still carries: None, or one entry per PRICER row -
-    # None, or `(first_decision, (m, B) tensor)` whose slice t is the row-present value of
-    # decision `first_decision + t`'s fixed-but-unsettled payoff. A dead path keeps the payoffs
-    # of fixings it SURVIVED, so the dead branch is `triggered[row]` plus the survived-weighted
-    # sum - a function of the latch state, which one shared profile cannot express. Detached.
+    # Settled-cash-in-transit a DEAD row still carries: None, or one entry per PRICER row - None or
+    # `(first_decision, (m, B) tensor)` whose slice t is the row-present value of decision
+    # `first_decision + t`'s fixed-but-unsettled payoff. Detached.
     pending: list = None
-    # Per decision, `(mtm_row, amount, booked)`: the payment the trigger makes IF it fires while
-    # the deal is alive, and the ledger as booked - detached reporting-currency (B,) amounts.
-    # `objective_jumps` derives each counterfactual's whole ledger reach from these facts; the
+    # Per decision, `(mtm_row, amount, booked)`: the payment the trigger makes IF it fires while the
+    # deal is alive, and the ledger as booked - detached reporting-currency (B,) amounts. The
     # collateral chain reads them through C_ts_te and the additive route ignores them.
     cash_events: list = None
 
@@ -384,14 +358,12 @@ class LatchedBoundarySet(BoundarySet):
         reported value already equals their own branch HALVES the conditional expectation.
         Measured: it recovered a third of the gap that way and closes it computing both.
 
-        Forcing one decision either way and re-deriving the value from the two
-        branches the pricer already evaluated re-simulates and re-prices nothing.
+        Forcing one decision either way and re-deriving the value from the two branches the pricer
+        already evaluated re-simulates and re-prices nothing.
 
-        The selection happens on the PRICER grid and `to_mtm` is applied to the whole branch
-        profile afterwards, not to the two branches separately. Both orders agree wherever a deal
-        row is an mtm row; they differ on an INTERPOLATED row, whose reported value blends a row
-        before a decision with a row after it. Selecting first and interpolating the result
-        reproduces that blend exactly, because the deal's map is linear.
+        The selection happens on the PRICER grid and `to_mtm` is applied to the whole branch profile
+        afterwards, not to the two branches separately. The two orders differ on an INTERPOLATED
+        row, and selecting first reproduces that row's blend exactly because the map is linear.
         """
         with torch.no_grad():
             # latched state after each decision, and the value that state reports
@@ -446,17 +418,14 @@ class LatchedBoundarySet(BoundarySet):
         reported value by a FINITE amount, so the objective's response is a difference across
         that amount, and nothing smaller would be the right question.
 
-        Each counterfactual's ledger reach is derived from `cash_events` as it is scored: forced
-        ON the decision makes its own payment (if still alive as booked) and kills every later
-        one; forced OFF each later trigger pays iff no OTHER earlier decision fired. Rows before
-        the decision are identical in both worlds and are not carried - scoring only the
-        decision's own payment leaves the later rows' settled cash in the counterfactual's
-        exposure windows and overstates the flux.
+        Each counterfactual's ledger reach is derived from `cash_events` as it is scored: forced ON
+        the decision makes its own payment (if still alive as booked) and kills every later one;
+        forced OFF each later trigger pays iff no OTHER earlier decision fired. Rows before the
+        decision are identical in both worlds and are not carried.
 
-        The yield is OUTSIDE the no_grad block on purpose. `no_grad` is a thread-local flag, and
-        a generator suspended inside one leaves it set in whoever resumes it - so yielding from
-        in there would hand the caller a gap whose `gap - gap.detach()` carries no graph, and the
-        correction would silently become the zero it is already worth in the forward pass.
+        The yield is OUTSIDE the no_grad block on purpose: `no_grad` is thread-local, and a
+        generator suspended inside one leaves it set in whoever resumes it - which would hand the
+        caller a gap whose `gap - gap.detach()` carries no graph.
         """
         for k, (gap, on, off) in enumerate(self.branch_deltas()):
             with torch.no_grad():
@@ -483,22 +452,16 @@ class InnerBoundarySet(BoundarySet):
     """Triggers taken INSIDE a pricer's own Monte Carlo - one decision per inner path.
 
     A TARF's knock-in is read off `Sj`, a draw of the pricer's inner simulation, so the decision is
-    per (scenario, inner path) and the reported row is the MEAN over those paths. That is what
-    makes this a third shape rather than a variant of the other two, and the reason is worth being
-    precise about, because getting it wrong still converges.
+    per (scenario, inner path) and the reported row is the MEAN over those paths. That makes this a
+    third shape rather than a variant of the other two: they move ONE SCENARIO's reported value by
+    a finite amount, where an inner path moves the reported row by 1/n of itself. The objective's
+    response to a perturbation that small is its DERIVATIVE, and a difference taken over a jump the
+    reported value never takes measures its curvature instead - which CVA's `relu` has plenty of.
 
-    The other two move ONE SCENARIO's reported value by a finite amount - a knocked-out barrier IS
-    worth nothing - and a finite difference of the objective across that amount is exactly right.
-    An inner path moves the reported row by 1/n of itself. The objective's response to a
-    perturbation that small is its DERIVATIVE; a difference taken over a jump the reported value
-    never takes measures the objective's curvature instead, and CVA's `relu` has plenty of it.
-
-    So a set of this shape carries the per-inner-path jump and lets the estimator supply the rest:
-    `objective_jumps` differentiates `score` ONCE at the reported value and multiplies. The jump is
-    the UNDIVIDED change to the row's own accumulator, not the 1/n change to its mean, because the
-    kernel's density already divides by the pooled sample size B*n - which is also why the gaps go
-    in as one (B, n) tensor rather than n separate decisions: they are n draws of ONE decision
-    variable, and pooling them is what makes the local-linear fit resolvable at all.
+    So this shape carries the per-inner-path jump and `objective_jumps` differentiates `score` ONCE
+    at the reported value and multiplies. The jump is the UNDIVIDED change to the row's own
+    accumulator, because the kernel's density already divides by the pooled sample size B*n - which
+    is also why the gaps go in as one (B, n) tensor rather than n separate decisions.
 
     Requires the objective to be SEPARABLE per scenario, which every exposure measure here is: the
     sensitivity is read off a single backward pass over `score(...).sum()`, and that is the
@@ -1247,10 +1210,8 @@ class Calculation_State(object):
         # a pricer that has to avoid a first-order-only kernel reads it without a fallback.
         self.gamma = False
         # The smooth (branch-and-weight) value estimator is wanted (`Branch_And_Weight`, base
-        # valuation only in v1); off is the crisp one-step-survival path bit for bit. Declared here
-        # for the same reason as the two above, and False here is what makes `Credit_Monte_Carlo`
-        # structurally untouched by it - CMC declares no such field, so the exposure, cashflow and
-        # collateral semantics keep the crisp estimator whatever a base valuation asks for.
+        # valuation only); off is the crisp one-step-survival path bit for bit. False here is what
+        # keeps `Credit_Monte_Carlo`, which declares no such field, on the crisp estimator.
         self.branch_and_weight = False
         # where the memoized quasi-random stream stands, per (dimension, sample_size) - only
         # `CMC_State.quasi_rng` advances it, but `rng_position` seeks every state's streams
@@ -2249,18 +2210,12 @@ def bachelier_european_option_price(F, X, r, vol, tenor, buyOrSell, callOrPut):
 
 
 # ======================================================================================
-# Characteristic-function (Fourier) inversion primitive for affine option pricers
+# Characteristic-function (Fourier) inversion primitive for affine option pricers: a MODEL-AGNOSTIC
+# European vanilla / digital pricer for any model whose aggregate log-return R = log(S_T/S_t) has a
+# known characteristic function. A model supplies ONLY its log-CF (see `cf_european_probabilities`
+# for the plug-in contract). Float64 is mandatory: the S*P1 - K*e^{-rn}*P2 assembly is a
+# cancellation of two O(1) probabilities and float32 destroys it.
 # ======================================================================================
-#
-# A MODEL-AGNOSTIC European vanilla / digital pricer for any model whose aggregate
-# log-return R = log(S_T/S_t) has a known characteristic function.  The quadrature
-# machinery lives here once; a model supplies ONLY its log-CF and reuses everything below
-# with zero inversion code.  Heston-Nandi is the first client (the HN section immediately
-# below); Heston, Bates and Variance-Gamma would each just pass their own ``logcf`` closure
-# (see the ``cf_european_probabilities`` documentation for the plug-in contract).
-#
-# Float64 is mandatory: the S*P1 - K*e^{-rn}*P2 assembly is a cancellation of two O(1)
-# probabilities and float32 destroys it.
 
 def gauss_legendre(a, b, panels, order=8, dtype=torch.float64, device='cpu'):
     """Composite Gauss-Legendre nodes/weights on [a, b], ASCENDING, endpoints excluded.
@@ -2349,10 +2304,9 @@ def cf_european_probabilities(logcf, log_moneyness, carry, phi_max, panels=256, 
     closure, so a single strike-vector priced against one variance is one ``batch`` row.
     For an AFFINE model that log-CF is ``A(phi) + B(phi)*V_t`` with ``(A, B)`` from the
     model's own backward recursion (use :func:`complex_log_unwrap` inside that recursion for
-    the branch of any ``log(1 - ...)`` term); a Levy model returns ``A(phi)`` alone.  A
-    future Heston / Bates / VG model therefore adds ZERO inversion code: it supplies its
-    ``logcf`` closure and ``carry``, resolves ``phi_max`` via :func:`cf_adaptive_phi_max`
-    (feeding it the same closure reduced to the worst-case state), and calls this function.
+    the branch of any ``log(1 - ...)`` term); a Levy model returns ``A(phi)`` alone.  A caller
+    also resolves ``phi_max`` via :func:`cf_adaptive_phi_max`, feeding it the same closure
+    reduced to the worst-case state.
 
     Differentiable w.r.t. every leaf reachable through ``logcf`` and ``carry`` (spot, strike
     and the model parameters); float64 is required for the P1-P2 cancellation.
@@ -2373,19 +2327,15 @@ def cf_european_probabilities(logcf, log_moneyness, carry, phi_max, panels=256, 
 
 # ======================================================================================
 # Heston-Nandi GARCH(1,1): params + A/B recursion + daily-step recursion + semi-analytic pricing.
-# House style (mirrors black_european_option_price / Bjerksund_Stensland / hn_variance_step): the
-# math is FREE FUNCTIONS taking the GARCH params as explicit trailing args (omega, alpha, beta,
-# gamma_star, r); each consumer unpacks its name->tensor mapping (the HestonNandiModelParameters
-# factor block / t_Static_Buffer) into those args by the canonical names below - no params class.
-# Plugs into the model-agnostic CF machinery above. Theory/conventions: the harvested
-# HestonNandiImpliedSpotModel.documentation (stochasticprocess) and tests/test_hn_garch.py.
+# The math is FREE FUNCTIONS taking the GARCH params as explicit trailing args (omega, alpha, beta,
+# gamma_star, r); each consumer unpacks its own name->tensor mapping into those args by the
+# canonical names below. Theory/conventions: the harvested HestonNandiImpliedSpotModel.documentation
+# (stochasticprocess) and tests/test_hn_garch.py.
+# ======================================================================================
 
 # The HestonNandiModelParameters price factor's parameters, in canonical order - the SINGLE source
-# of that name set, shared with riskfactors.HestonNandiModelParameters.parameters (that class
-# derives its list from here; the dependency edge only goes DOWN - utils never imports riskfactors).
-# Every HN consumption site unpacks a name->tensor mapping into the explicit function args by these
-# names. NOTE: ``r`` (the per-step cost of carry) and the per-call H0 (the variance STATE seeding
-# h_1) are NOT factor parameters - only these five scalars are.
+# of that name set, shared with riskfactors (the dependency edge only goes DOWN: utils never imports
+# riskfactors). ``r``, the per-step cost of carry, is NOT a factor parameter - only these five are.
 HN_PARAM_NAMES = ('Omega', 'Alpha', 'Beta', 'Gamma_Star', 'H0')
 
 
@@ -2511,16 +2461,9 @@ def hn_cdf_logret(x, n_steps, h1, omega, alpha, beta, gamma_star, r,
     return 1.0 - P2
 
 
-# --------------------------------------------------------------------------------------
-# The daily-step recursion -- ONE SOURCE OF TRUTH for the HN step
-# --------------------------------------------------------------------------------------
-#
 # The predictable-variance recursion h_{t+1} = omega + beta*h_t + alpha*(z_t - gamma*sqrt(h_t))^2
-# lives ONLY in ``hn_variance_step``.  Every consumer routes through it: the one-step-survival
-# (OSS) Monte Carlo pricers in ``derivus/pricing.py`` (which call ``hn_daily_advance`` /
-# ``hn_unmonitored_substeps``), the ``HestonNandiImpliedSpotModel`` diffusion in
-# ``derivus/stochasticprocess.py``, AND the standalone daily simulator in
-# ``tests/hn_reference.py``.  So a single mutation-kill matrix on the step covers every pricer.
+# lives ONLY in ``hn_variance_step``, which every consumer routes through - the OSS pricers in
+# ``pricing.py``, the ``HestonNandiImpliedSpotModel`` diffusion, and ``tests/hn_reference.py``.
 
 def hn_variance_step(h, sh, z, omega, alpha, beta, gamma_star):
     """The HN predictable-variance recursion h_{t+1} = omega + beta*h + alpha*(z - gamma*sqrt(h))^2.
@@ -2562,10 +2505,9 @@ def hn_log_substep(log_S, h, z, b_step, omega, alpha, beta, gamma_star):
             hn_variance_step(h, sh, z, omega, alpha, beta, gamma_star))
 
 
-#: The fused build, and the one every ordinary run takes. It is NOT twice differentiable:
-#: AOTAutograd's compiled backward raises `does not currently support double backward`, so a
-#: `Greeks: 'All'` valuation walks the eager function above instead - same numbers, ~5.9x slower
-#: on the sub-step, and only for the run that asked for a second derivative.
+#: The fused build, and the one every ordinary run takes. It is NOT twice differentiable
+#: (AOTAutograd's compiled backward raises `does not currently support double backward`), so a
+#: `Greeks: 'All'` valuation walks the eager function above - same numbers, ~5.9x slower.
 hn_log_substep_fused = torch.compile(hn_log_substep, dynamic=True)
 
 
@@ -2669,44 +2611,31 @@ def hn_unmonitored_substeps(Sj, h, b_step, n_steps, hn_params, shared, num_sims,
 
 
 # ======================================================================================
-# COMPONENT Heston-Nandi (Christoffersen-Jacobs-Ornthanalai-Wang 2008): the variance splits
-# into a long-run component q_t and a short-run deviation h_t - q_t.
-# ======================================================================================
-#
-# THE Q-MEASURE RECURSIONS, in the CENTERED CJOW form and on this framework's step convention
-# (h_t is the PREDICTABLE variance of the step from t to t+1, and z_t is the innovation that
-# drives BOTH that return and the update - exactly as ``hn_variance_step``):
+# COMPONENT Heston-Nandi (Christoffersen-Jacobs-Ornthanalai-Wang 2008): the variance splits into a
+# long-run component q_t and a short-run deviation h_t - q_t. Q-measure recursions in the CENTERED
+# CJOW form, on this framework's step convention (h_t is the PREDICTABLE variance of the step from
+# t to t+1, z_t the innovation driving both that return and the update):
 #
 #   h_{t+1} = q_{t+1} + beta*(h_t - q_t) + alpha*[(z_t - gamma1*sqrt(h_t))^2 - (1 + gamma1^2 h_t)]
 #   q_{t+1} = omega_t  + rho*q_t         + phi  *[(z_t - gamma2*sqrt(h_t))^2 - (1 + gamma2^2 h_t)]
 #
-# Both bracketed terms are EXACTLY centered: E_t[(z - g sqrt(h))^2] = 1 + g^2 h, so each is a
-# martingale difference. Two consequences carry the whole design:
+# Both bracketed terms are EXACTLY centered, so the short-run deviation d_t = h_t - q_t is a pure
+# AR(1) in beta - beta is the short-run persistence and rho the long-run one - and E_t[q_{t+k}] is
+# driven by omega alone.
 #
-#   * the short-run deviation d_t = h_t - q_t is a PURE AR(1) with coefficient beta, so beta is
-#     the short-run persistence and rho the long-run one - and beta plays the role the plain
-#     model's psi = beta_p + alpha_p*gamma_p^2 does, not the role its beta_p does;
-#   * E_t[q_{t+k}] is driven by omega alone.
+# THE L-CURVE. omega_t = L_{t+1} - rho*L_t makes q_t - L_t homogeneous, so anchoring q_0 = L_0 gives
+# E_0[q_t] = L_t EXACTLY: L IS the model's expected long-run variance path, directly comparable to
+# the market's forward variance strip, and the calibration bootstraps it pillar by pillar.
 #
-# THE L-CURVE. Parametrising omega_t = L_{t+1} - rho*L_t makes d^q_t = q_t - L_t a homogeneous
-# AR(1), so ANCHORING q_0 = L_0 gives E_0[q_t] = L_t EXACTLY. L is therefore not a nuisance
-# reparametrisation - it IS the model's expected long-run variance path, directly comparable to
-# the market's forward variance strip, and the calibration bootstraps it pillar by pillar
-# (``bootstrappers.HestonNandiComponentModelParameters``).
-#
-# THE NESTING, which is the spine of the gates. Set phi = 0 and hold L flat at level L. Then
-# q_t == L for every t and the h-recursion collapses to the PLAIN one with
+# THE NESTING. phi = 0 with L flat at level L gives q_t == L and the PLAIN recursion with
 #
 #   omega_p = L*(1 - beta) - alpha,   beta_p = beta - alpha*gamma1^2,   alpha_p = alpha,
 #   gamma_p = gamma1                     (inverse: beta = psi_p, L = plain stationary variance)
-#
-# so plain HN is this model on a two-dimensional face of its parameter space, and
-# ``tests/test_hn_component.py`` holds the closed forms to each other there.
+# ======================================================================================
 
 #: The `HestonNandiComponentModelParameters` price factor's SCALAR parameters, in canonical order -
-#: the single source of that name set, shared with the riskfactors class (which derives its list
-#: from here) and with every consumption site, exactly as ``HN_PARAM_NAMES``. There is NO Omega:
-#: omega_t is a function of the L curve, and there is no Q0 either - q_0 is L(0) by the anchoring.
+#: the single source of that name set, shared with the riskfactors class and every consumption site.
+#: There is no Omega (a function of the L curve) and no Q0 (q_0 is L(0) by the anchoring).
 HN_COMPONENT_PARAM_NAMES = ('Alpha', 'Beta', 'Gamma_1', 'Rho', 'Phi', 'Gamma_2', 'H0')
 
 #: The CURVE parameter's name. Its VALUES are fitted leaves; its knots are structural.
@@ -2716,16 +2645,11 @@ HN_COMPONENT_CURVE_NAME = 'L_Curve'
 def hn_component_l_path(knots, values, n_steps, steps_per_year=252.0):
     """The long-run variance path ``L_t`` for t = 0..n_steps, on the trading-day clock.
 
-    PIECEWISE-LINEAR IN t BETWEEN PILLAR KNOTS, flat outside them - stated because the choice is
-    the model, not a detail: omega_t = L_{t+1} - rho*L_t differences this curve, so a piecewise
-    CONSTANT L would make omega_t a SPIKE at each pillar and a spline would let it oscillate
-    between pillars that nobody quoted. Linear in t makes omega_t AFFINE within a pillar and
-    kinked only AT one: on a segment of n steps from A to B,
-
-        omega_i = A(1-rho) + (B-A)(1 + i(1-rho))/n
-
-    so it drifts by (B-A)(1-rho)/n per step - the same discipline the framework's forward-variance
-    curves already keep, and the reason the declining-variance floor has a closed form.
+    PIECEWISE-LINEAR IN t BETWEEN PILLAR KNOTS, flat outside them, and the choice is the model:
+    omega_t = L_{t+1} - rho*L_t differences this curve, so a piecewise CONSTANT L would spike
+    omega_t at each pillar and a spline would oscillate between pillars nobody quoted. Linear in t
+    makes omega_t AFFINE within a pillar and kinked only AT one - on a segment of n steps from A
+    to B, omega_i = A(1-rho) + (B-A)(1 + i(1-rho))/n, drifting by (B-A)(1-rho)/n per step.
 
     ``knots`` are tenors in YEARS (structural, a numpy array), ``values`` the per-step variances
     at them (a differentiable tensor - this is the fitted leaf). Returns an (n_steps+1,) tensor
@@ -2754,40 +2678,17 @@ def hn_component_omega_path(l_path, rho):
     return l_path[1:] - rho * l_path[:-1]
 
 
-# --------------------------------------------------------------------------------------
-# The component daily-step recursion -- ONE SOURCE OF TRUTH for the component HN step
-# --------------------------------------------------------------------------------------
-#
-# The pair recursion above lives ONLY in ``hn_component_variance_step``.  Every consumer routes
-# through it: the OSS Monte Carlo pricers in ``derivus/pricing.py`` (via
-# ``hn_component_daily_advance`` / ``hn_component_unmonitored_substeps``), the
-# ``HestonNandiComponentImpliedSpotModel`` diffusion in ``derivus/stochasticprocess.py``, the
-# component log sub-step and its fused build below, AND the reference simulator in
-# ``tests/hn_reference.py`` (``hnc_simulate``).  So a single mutation-kill matrix on this step
-# covers every component pricer, exactly as ``hn_variance_step`` does for the plain model.
+# The component pair recursion lives ONLY in ``hn_component_variance_step``, which every consumer
+# routes through - the OSS pricers, the ``HestonNandiComponentImpliedSpotModel`` diffusion, the log
+# sub-step below, and ``tests/hn_reference.py``'s ``hnc_simulate``.
 
-#: THE VARIANCE FLOOR, and it is a DECLARED PROPERTY OF THIS MODEL rather than a repair applied
-#: quietly. Unlike plain Heston-Nandi - where h_{t+1} = omega + beta_p h + alpha(...)^2 >= omega > 0
-#: by construction, which is why `hn_variance_step` needs no floor and has none - the CJOW pair has
-#: NO positivity guarantee for phi > 0. The worst innovation z = gamma_2 sqrt(h) leaves
-#:
-#:     q_{t+1} >= omega_t + rho q_t - phi - phi gamma_2^2 h_t
-#:
-#: whose last term grows with h, so a large enough short-run variance drags the long-run component
-#: negative and h with it. No box on the parameters closes this: it is a property of the model, not
-#: of a parametrisation, and the calibration REPORTS the worst-case certificate
-#: (`worst_case_variance_drift`) rather than pretending to enforce one.
-#:
-#: 1e-12 per step is 1.6 basis points of annualised vol - numerically zero, but a number `sqrt` can
-#: take. Without it a tail path returns NaN, which propagates into an exposure profile and a CVA as
-#: a silent hole: MEASURED on the component TARF gate, 2 of 8192 inner paths over 248 daily steps
-#: at a fitted phi share of 0.56, which is exactly the frequency that is easy to miss.
-#:
-#: WHAT IT COSTS. The closed form does NOT floor - the Fourier inversion integrates the unfloored
-#: law - so the two agree only where the floor does not bind. That is a real gap and it is gated
-#: rather than assumed: `test_the_closed_form_matches_day_stepped_monte_carlo` asserts the minimum
-#: variance over 2^20 reference paths stays orders of magnitude above this floor, so the law it
-#: compares is the same one on both sides.
+#: THE VARIANCE FLOOR, a DECLARED PROPERTY OF THIS MODEL rather than a quiet repair: unlike plain
+#: Heston-Nandi the CJOW pair has NO positivity guarantee for phi > 0, and no parameter box closes
+#: it - the calibration REPORTS `worst_case_variance_drift` instead. 1e-12 per step is 0.16 basis
+#: points of annualised vol, numerically zero but a number `sqrt` can take; without it a tail path
+#: returns NaN (measured: 2 of 8192 inner paths over 248 daily steps at a phi share of 0.56). The
+#: closed form does NOT floor, so the two agree only where it does not bind - gated by
+#: `test_the_closed_form_matches_day_stepped_monte_carlo`.
 HN_COMPONENT_VARIANCE_FLOOR = 1.0e-12
 
 
@@ -2800,14 +2701,12 @@ def hn_component_variance_step(h, q, sh, z, omega_t, alpha, beta, gamma1, rho, p
     ``L_{t+1} - rho*L_t``; every other argument is a global. All args broadcast on the
     simulation axis.
 
-    q IS COMPUTED FIRST and h reads it, because the CJOW form defines h_{t+1} off q_{t+1} - the
+    q IS COMPUTED FIRST and h reads it, because the CJOW form defines h_{t+1} off q_{t+1}: the
     long-run level moves and the short-run deviation is measured against the level it moved TO.
-    Reading q_t there instead is a different model (it makes the deviation's own persistence
-    beta - rho rather than beta) and is what the nesting gate would kill first.
+    Reading q_t there instead is a different model, with deviation persistence beta - rho.
 
-    The clamp is `torch.clamp(x, min=floor)`, which returns x ITSELF above the floor - so on the
-    nested face (where positivity is guaranteed) this function is bit-identical to the unfloored
-    one and the nesting gate is untouched by it.
+    The clamp returns x ITSELF above the floor, so on the nested face (where positivity is
+    guaranteed) this is bit-identical to the unfloored recursion.
     """
     e1 = z - gamma1 * sh
     e2 = z - gamma2 * sh
@@ -2839,12 +2738,10 @@ def hn_component_log_substep(log_S, h, q, z, b_step, omega_t, alpha, beta, gamma
     n_sub times per fixing, it is bandwidth-bound at their batch shapes, and three of its outputs
     carry state forward where the plain one carries two.
 
-    THE INCREMENT IS BUILT FIRST, from the PREDICTABLE h_t, and only then is the state advanced -
-    the plain sibling gets this for free by returning both in one expression, and a spelling that
-    rebinds `h` before the `-0.5*h` reads it uses NEXT step's variance for THIS step's return. That
-    is a different model (it drifts the log-spot by a quantity that is not F_t-measurable) and it
-    is what `test_the_component_substep_walks_the_plain_path_draw_for_draw` caught: 1.9e-3 relative
-    on the log path over 40 steps, against the 4.9e-16 the centered algebra actually costs.
+    THE INCREMENT IS BUILT FIRST, from the PREDICTABLE h_t, and only then is the state advanced. A
+    spelling that rebinds `h` before the `-0.5*h` reads it uses NEXT step's variance for THIS step's
+    return, which is a different model - 1.9e-3 relative on the log path over 40 steps, against the
+    4.9e-16 the centered algebra costs.
     """
     sh = torch.sqrt(h)
     increment = log_S + (b_step - 0.5 * h) + sh * z
@@ -2852,10 +2749,9 @@ def hn_component_log_substep(log_S, h, q, z, b_step, omega_t, alpha, beta, gamma
     return increment, h, q
 
 
-#: The fused build, and the one every ordinary run takes. SAME RULE AS THE PLAIN SUB-STEP: it is
-#: NOT twice differentiable (AOTAutograd's compiled backward raises `does not currently support
-#: double backward`), so a `Greeks: 'All'` valuation walks the eager function above instead - same
-#: numbers, and only for the run that asked for a second derivative.
+#: The fused build, and the one every ordinary run takes. SAME RULE AS THE PLAIN SUB-STEP: NOT
+#: twice differentiable (AOTAutograd's compiled backward raises `does not currently support double
+#: backward`), so a `Greeks: 'All'` valuation walks the eager function above - same numbers.
 hn_component_log_substep_fused = torch.compile(hn_component_log_substep, dynamic=True)
 
 
@@ -2883,18 +2779,11 @@ def hn_component_unmonitored_substeps(Sj, h, q, b_step, omegas, hnc_params, shar
     return Sj * log_S.exp(), h, q
 
 
-# --------------------------------------------------------------------------------------
-# The component A/B/C recursion + semi-analytic pricing
-# --------------------------------------------------------------------------------------
-# A SIBLING of ``hn_ab`` / ``_p1_p2``, NOT a generalisation they route through, and the choice is
-# deliberate. The plain recursion's loop body is four tensor statements; carrying a second
-# coefficient and a per-step omega through it - even behind a branch - changes the expression the
-# `A = A + phir + B*omega - 0.5*logw` line compiles to, and floating-point reassociation would
-# then move plain HN's own numbers. The plain path is the ORACLE for the nesting gate and for
-# every HN gate already in the suite, so it is left byte for byte alone. What is actually shared
-# is the part worth sharing: both siblings hand their log-CF to the SAME model-agnostic
-# ``cf_european_probabilities`` / ``cf_adaptive_phi_max`` primitives, so the duplication is
-# fifteen lines of this model's own algebra and none of the inversion machinery.
+# The component A/B/C recursion + semi-analytic pricing. A SIBLING of ``hn_ab`` / ``_p1_p2``, NOT a
+# generalisation they route through: carrying a second coefficient and a per-step omega through the
+# plain loop body would change the expression it compiles to, and reassociation would move plain
+# HN's own numbers - it is the ORACLE for the nesting gate. Both siblings hand their log-CF to the
+# same ``cf_european_probabilities`` / ``cf_adaptive_phi_max`` primitives.
 
 def hn_component_abc(phi, omegas, alpha, beta, gamma1, rho, phi_q, gamma2, r,
                      unwrap=True, phi_dim=-1):
@@ -2955,24 +2844,16 @@ def hn_component_auto_phi_max(omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, g
     The component glue for :func:`cf_adaptive_phi_max`: it reduces the batch to the EXTREME states
     so the scan runs on a 4-element phi and checks both inversion contours.
 
-    ALL FOUR CORNERS OF THE (h0, q0) BOX, not the two diagonal ones. The log-MGF is B*h0 + C*q0 and
-    B and C are free to carry OPPOSITE signs, so the slowest-decaying state can be (h.max, q.min) -
-    which pairing h with q by rank never probes. Latent today, because every call site here is
-    scalar (one h0, one q0, so all four corners are the same state); it is the batched caller that
-    would otherwise get a bound derived at a state it does not price.
+    ALL FOUR CORNERS OF THE (h0, q0) BOX, not the two diagonal ones: the log-MGF is B*h0 + C*q0 and
+    B and C are free to carry OPPOSITE signs, so the slowest-decaying state can be (h.max, q.min),
+    which pairing h with q by rank never probes.
 
-    THIS SCAN IS THE CALIBRATION'S WALL CLOCK, measured at 75-82% of a plain HN option price
-    (roadmap: 'the calibration's wall time is the adaptive phi_max scan') and at 35-184 ms against
-    8-94 ms for the price itself here. It is tempting to derive it once and reuse it across a
-    ladder; DO NOT. A LARGER BOUND IS NOT CONSERVATIVE FOR THIS MODEL. Past a parameter- and
-    step-count-dependent point the A/B/C recursion DIVERGES rather than decaying, so integrating
-    beyond a contract's own bound integrates garbage: measured on a converged four-pillar fit, a
-    126-step price is 0.7353321384 at phi_max 128/256/512 (converged - identical at 64, 256 and
-    1024 panels), 0.7323069671 at 1024 and 9.4e+55 at 2048, while the 21-step contract in the SAME
-    strip wants 512. Reusing the front bound at the back solved a bootstrap pillar against a price
-    0.4% wrong, which surfaced only as a 3.5e-3 residual on an ATM ladder that reprices exactly by
-    construction. Every price derives its own; the speed lever is a per-pillar bound VERIFIED at
-    the solved level, and that is a roadmap row rather than a shortcut.
+    EVERY PRICE DERIVES ITS OWN BOUND - never reuse one across a ladder, because A LARGER BOUND IS
+    NOT CONSERVATIVE FOR THIS MODEL: past a parameter- and step-count-dependent point the A/B/C
+    recursion DIVERGES rather than decaying. Measured on a converged four-pillar fit, a 126-step
+    price is 0.7353321384 at phi_max 128/256/512, 0.7323069671 at 1024 and 9.4e+55 at 2048, while
+    the 21-step contract in the SAME strip wants 512. This scan is the calibration's wall clock:
+    75-82% of a plain HN option price, 35-184 ms against 8-94 ms for the price itself.
     """
     h = torch.as_tensor(h0).detach().to(alpha.dtype).reshape(-1)
     q = torch.as_tensor(q0).detach().to(alpha.dtype).reshape(-1)
@@ -3069,18 +2950,13 @@ def hn_component_to_plain(alpha, beta, gamma1, level):
     return level * (1.0 - beta) - alpha, alpha, beta - alpha * gamma1 ** 2, gamma1
 
 
-# --------------------------------------------------------------------------------------
-# Correlated sub-stepping -- exact within-interval dynamics between coarse scenario nodes
-# --------------------------------------------------------------------------------------
-# A coarse exposure grid (PFE/CVA nodes weeks apart) still owes each factor the dynamics it
-# would have had on the calibration clock: forwarding the variance deterministically and
-# drawing one aggregate Gaussian was measured 29%->2000% wrong on tail probabilities at
-# |z|=2-3 (gates/hn_aggregate_bias.csv) -- precisely the quantiles PFE reads.  Instead the
-# interval walks its own sub-steps, and the framework's correlated draw enters as the
-# sqrt(variance)-weighted combination of the sub-step normals, so cross-factor correlation
-# rides the interval's dominant direction while the orthogonal complement supplies the
-# within-interval vol-of-vol the mean bridge lost.  Freeze h and the aggregate return
-# collapses back to sqrt(sum var)*z_fw -- the old bridge -- so this is its strict refinement.
+# Correlated sub-stepping -- exact within-interval dynamics between coarse scenario nodes. A coarse
+# exposure grid still owes each factor the dynamics it would have had on the calibration clock:
+# forwarding the variance deterministically and drawing one aggregate Gaussian is 29%->2000% wrong
+# on tail probabilities at |z|=2-3 (gates/hn_aggregate_bias.csv), precisely the quantiles PFE reads.
+# The interval walks its own sub-steps instead, and the framework's correlated draw enters as the
+# sqrt(variance)-weighted combination of the sub-step normals. Freeze h and the aggregate return
+# collapses back to sqrt(sum var)*z_fw, so this is a strict refinement of the mean bridge.
 
 def substep_schedule(f):
     """Trading-time lengths spanning each interval of `f` calibration steps: whole steps, then
@@ -3200,9 +3076,7 @@ def garch_correlated_substeps(h, z_fw, sub_dt, omega, alpha, beta, nu):
     return h, var_sum, r_sum
 
 
-# --------------------------------------------------------------------------------------
-# Black-Scholes reference + HN implied vol (the HN smile/skew diagnostic and the bootstrapper seed)
-# --------------------------------------------------------------------------------------
+# Black-Scholes reference + HN implied vol (the HN smile/skew diagnostic and the bootstrapper seed).
 # bs_call_np is a thin ADAPTER over the canonical ``black_european_option_price`` (total-variance
 # parameterisation); bs_implied_total_var bisects on it for the smile/skew diagnostics.
 
@@ -3966,8 +3840,8 @@ def make_curve_tensor(tensor, curve_component, time_grid, shared, n_batch_dims=1
 
     Interpolation is built by ONE recursive factory: a bare tensor becomes a leaf (or a
     tenor-segmented composite of leaves), a fork's `ScenarioSource` becomes a scenario-routed
-    composite whose per-block children are built by the same call. Hermite coefficients are
-    DEFERRED inside the leaf - built by the first gather, for the rows that gather names.
+    composite whose per-block children are built by the same call. A Hermite leaf derives its
+    coefficient pair in `Interpolation.build`, so the cached leaf is complete before any gather.
     """
     if n_batch_dims > 1:
         tensor = tensor.reshape(*tensor.shape[:-n_batch_dims], -1)
@@ -4429,13 +4303,11 @@ def resolve_factor_key(factor, price_factors):
     """The `Price Factors` key holding this factor's block, which is its own name unless a vol
     surface was written under a SIBLING 2D name.
 
-    TRANSITIONAL, ONE RELEASE. The three asset-class vol tags were merged into an untagged
-    `VolatilityGrid` and are now restored as aliases over that single implementation, so market
-    data exists under both spellings. A 2D factor therefore reads a block written under any 2D
-    name; the requested type still decides which class is built, so the typed name stays canonical
-    on write. The fallback is to the PRE-TAG spelling ONLY - never to a sibling tag, which would
-    let one asset class price off another's surface - and every other factor type reads its own
-    name and nothing else.
+    TRANSITIONAL, ONE RELEASE, because market data exists under both the tagged and the untagged
+    spellings. A factor in `TwoDimensionalFactors` falls back to the untagged `VolatilityGrid.<name>`
+    block AND TO NOTHING ELSE - never to a sibling tag, which would let one asset class price off
+    another's surface. Every other factor type reads its own name only, and the requested type still
+    decides which class is built, so the typed name stays canonical on write.
 
     RETIREMENT: once no market data carries `VolatilityGrid.*`, delete this function, drop
     `VolatilityGrid` from `TwoDimensionalFactors` and `FactorRiskClass`, and put
@@ -4456,9 +4328,7 @@ def payoff_currency(field):
 
     Optional currency fields are declared with an EMPTY default, so 'not specified' reaches the
     engine as a present empty string from any UI and as an absent key from hand-written JSON. Both
-    mean the same thing, so the test is on the VALUE. Four idioms had been in use for this one
-    rule - two presence tests, a `.get` default, and a value test - and only the value test gives
-    the same answer for both authorings.
+    mean the same thing, so the test is on the VALUE rather than on presence.
     """
     return field.get('Payoff_Currency') or field['Currency']
 
@@ -4931,12 +4801,9 @@ def make_float_cashflows(reference_date, time_grid, position, cashflows, referen
 
             r = []
             for reset in cashflow['Resets']:
-                # A DEGENERATE RATE WINDOW IS REFUSED, not derived. This read used to be
-                # `reset[1] + cashflow['Rate_Tenor']`, a key no `Row` declares and nothing writes -
-                # so the one document that reaches it died `KeyError: 'Rate_Tenor'` with the deal
-                # unnamed. The tenor is a quantity the author did not state and no rule recovers it
-                # (the accrual window is the period's, not the rate's), so guessing one would be a
-                # number nobody quoted.
+                # A DEGENERATE RATE WINDOW IS REFUSED, not derived: the rate tenor is a quantity the
+                # author did not state and no rule recovers it (the accrual window is the period's,
+                # not the rate's), so widening one would be a number nobody quoted.
                 if reset[2] == reset[1]:
                     raise UnpriceableSchedule(
                         '{}: the reset fixing {:%Y-%m-%d} on the cashflow paying {:%Y-%m-%d} has a '

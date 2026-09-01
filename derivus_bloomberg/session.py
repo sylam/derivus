@@ -18,9 +18,8 @@ from .errors import BloombergRequestError, BloombergUnavailable, raise_response_
 
 
 def blpapi_module():
-    """The Bloomberg SDK, or the refusal that names what is missing. Public because a CALLER may
-    need to know before it commits to anything - `DV_Service --tick` refuses at startup rather
-    than beating forever on a workstation that could never answer."""
+    """Return the imported `blpapi` module, raising `BloombergUnavailable` naming what to install
+    when the SDK is absent. Public so a caller can refuse at startup rather than mid-request."""
     try:
         return importlib.import_module('blpapi')
     except ImportError as error:
@@ -34,18 +33,16 @@ def _error_text(element) -> str:
 
 
 def _scalar_value(element):
-    """One field element as the reader has always read it - `getValue()`, element zero."""
+    """One field element read as a scalar."""
     return element.getValue()
 
 
 def _bulk_value(element):
-    """One field element as a BULK field: the list of rows it carries, each row a dict of its own
-    sub-fields, and a plain `getValue()` where the field is not an array after all.
+    """One field element read as a BULK field: the list of rows it carries, each row a dict of its
+    own sub-fields, or a plain `getValue()` where the field is not an array after all.
 
-    `getValue()` ALONE IS A SILENT TRUNCATION HERE, which is the whole reason this exists: on an
-    array element it returns value ZERO, so `OPT_CHAIN` - two thousand listed contracts - arrives
-    as one opaque row with no error anywhere. A reader that cannot see the shape of what it read is
-    the dead-benchmark trap in another costume.
+    `getValue()` on an array element returns value ZERO and raises nothing, so reading a bulk field
+    with the scalar extractor truncates it to one row in silence.
     """
     if not element.isArray():
         return element.getValue()
@@ -70,12 +67,9 @@ class BloombergSession:
         self.host = host
         self.port = port
         self.timeout_ms = timeout_ms
-        #: The whole budget for GETTING connected, which `timeout_ms` does not touch - that one
-        #: bounds `nextEvent`, the request. A terminal that is not there spends its time in the
-        #: socket and in the service handshake instead, and the SDK's defaults there are generous
-        #: on purpose (5s x 3 attempts, then a minute of service checks). A caller that named a
-        #: budget meant the whole of it, so this caps every leg of it at once. None leaves the
-        #: SDK's own defaults, so every existing caller is untouched.
+        #: The whole budget for GETTING connected - the socket, the start attempts and the service
+        #: handshake, capped together. `timeout_ms` does not reach these; it bounds `nextEvent`.
+        #: None leaves the SDK's own defaults (5s x 3 attempts, then a minute of service checks).
         self.connect_timeout_ms = connect_timeout_ms
         self._api = None
         self._session = None
@@ -89,8 +83,8 @@ class BloombergSession:
             options.setServerHost(self.host)
             options.setServerPort(self.port)
             if self.connect_timeout_ms is not None:
-                # one attempt, not the SDK's three: a per-attempt timeout the library then
-                # multiplies (and backs off between) is not a budget, it is a suggestion
+                # one attempt, not the SDK's three - the per-attempt timeout is otherwise
+                # multiplied by the retries and the backoff between them
                 options.setConnectTimeout(self.connect_timeout_ms)
                 options.setNumStartAttempts(1)
                 options.setServiceCheckTimeout(self.connect_timeout_ms)
@@ -139,10 +133,9 @@ class BloombergSession:
 
     def reference_data_report(self, securities: Sequence[str],
                               fields: Sequence[str]) -> dict[str, dict[str, object]]:
-        """Per-security outcomes, for DISCOVERY: `{security: {'ok', 'error', 'fields'}}` with
-        every requested name answered. One bad ticker in a batch of fifty is the finding there,
-        not a failure - `reference_data` above is the production reader. A request-level error
-        (a timeout, a `responseError`) still raises: that is transport, not a fact about a name."""
+        """Per-security outcomes, for DISCOVERY: `{security: {'ok', 'error', 'fields'}}` with every
+        requested name answered, a refused ticker reported rather than raised. A request-level
+        error - a timeout, a `responseError` - still raises: that is transport, not a name."""
         return self._reported(securities, self._walked(securities, fields))
 
     def bulk_reference_data_report(self, securities: Sequence[str],
@@ -150,12 +143,8 @@ class BloombergSession:
         """`reference_data_report`'s contract over BULK fields: same `{security: {'ok', 'error',
         'fields'}}`, same tolerance, but each field answers a LIST OF ROWS rather than one value.
 
-        A SECOND READER RATHER THAN A FLAG ON THE FIRST, because the two differ in what a FIELD IS
-        and not in policy - and because the scalar reader's `getValue()` cannot be made to answer
-        `OPT_CHAIN` without truncating it to one row in silence (see `_bulk_value`). The walk itself
-        is shared: `_walk` and `_walk_bulk` are one `_request` under two extractors, so a change to
-        the event loop cannot land on one reader and miss the other. `discover.probe` batches this
-        one unchanged, since the contract it batches against is the same.
+        Separate from the scalar reader because a field means something different here, not because
+        the policy differs; both walk one `_request` under their own extractor.
         """
         return self._reported(securities, self._walked_bulk(securities, fields))
 
@@ -170,20 +159,16 @@ class BloombergSession:
         return report
 
     def _walked(self, securities, fields):
-        """The one event walk the SCALAR readers share, materialized so the wrapping below covers
-        the whole response: `(security, error, values)` per name, `error` carrying Bloomberg's own
-        text where it refused one. Materializing means the response is DRAINED before either
-        policy raises - deliberately: the strict reader used to abandon the event loop
-        mid-response, leaving the session dirty for its next request. The cost is that a
-        transport failure on a later event outranks a per-security error already walked.
+        """The event walk the SCALAR readers share: `(security, error, values)` per name, `error`
+        carrying Bloomberg's own text where it refused one.
 
-        The bulk reader walks the SAME `_request` under its own extractor, and this signature is
-        left alone on purpose: the gates drive a session by overriding `_walk` with canned rows."""
+        Materialized, so the response is DRAINED before either policy raises and the session is
+        left clean for its next request. The cost is that a transport failure on a later event
+        outranks a per-security error already walked."""
         return self._drained(lambda: self._walk(securities, fields))
 
     def _walked_bulk(self, securities, fields):
-        """`_walked` over the bulk extractor - the same drain, the same wrapping, the same
-        precedence, so the two readers cannot come to differ in how a failure is typed."""
+        """`_walked` over the bulk extractor - the same drain, wrapping and failure precedence."""
         return self._drained(lambda: self._walk_bulk(securities, fields))
 
     def _drained(self, walk):
