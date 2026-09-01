@@ -53,10 +53,13 @@ that document.
 A SPREAD IS QUOTED; A MID IS BOOKED. The book's `FXVol` surface is bootstrapped from
 `Quoted_Market_Value` alone, while the `FXVolPrices` block beside it may carry each pillar's
 `Quoted_Bid`/`Quoted_Ask` as data - and this module is that data's only reader. Each leg prices on
-its own copy of the book whose written surface is shifted flat by the ATM half-spread at that leg's
-expiry, signed by the CLIENT's side, so a solved coordinate comes out where a desk would deal it.
-The finished legs are then priced once more against the unshifted book, and that is `net_mid`. A
-book carrying no two-way shifts every leg by zero and quotes exactly as it always has, to the bit.
+its own copy of the book, whose written surface is moved by BOTH of the spreads that block quotes,
+signed by the CLIENT's side: the ATM half-spread at the leg's expiry shifts it FLAT, and the RR and
+BF halves SKEW it - a wing is composed as `ATM + BF +- RR/2`, so it widens by `BF_half + RR_half/2`
+while the ATM node does not, and the smile changes shape rather than level. A solved coordinate
+therefore comes out where a desk would deal it. The finished legs are then priced once more against
+the unmoved book, and that is `net_mid`. A book carrying no two-way moves every leg by nothing and
+quotes exactly as it always has, to the bit.
 
 THE RISK PRICES THE SPREAD. A trade's charge is the cost of hedging the RESIDUAL it leaves on the
 book, at the market's own two-way. The composed candidate is MIRRORED - the same verb the booking
@@ -676,6 +679,27 @@ def with_live_spots(document, crosses):
     return written
 
 
+def quote_points(document, surface):
+    """The quotes `surface` was built from - `FXVolSurfaceParameters.used`'s filter over the
+    `FXVolPrices` block, and empty where the book carries no such block at all.
+
+    One reader for the pillar-keyed halves and the skew's own rebuild, because a spread charged off
+    a row the surface was not built from is a spread charged on nothing: `Use` holds a quote out of
+    the bootstrap without deleting it, and it has to hold it out of the quote layer by the same
+    token.
+
+    The filter is SPELLED here rather than borrowed, for the default alone: `Use` is an optional
+    field a block states to hold a row OUT, so its absence is 'Yes', and a hand-authored mid-only
+    block that omits it must quote rather than raise. That is `atm_two_way`'s own reading of the
+    same field, and the two are now one rule.
+    """
+    prices = document.get('Calc', {}).get('MergeMarketData', {}).get(
+        'ExplicitMarketData', {}).get('Market Prices', {})
+    block = (prices.get(FX_VOL_PRICES.format(surface)) or {}).get('instrument')
+    return [point for point in block['Points'] if point.get('Use', 'Yes') == 'Yes'] \
+        if block and block.get('Points') else []
+
+
 def atm_two_way(document, surface):
     """The ATM half-spread the book carries for `surface`, as sorted `[(expiry, half), ...]` in the
     surface's own vol units - `(ask - bid) / 2` off the quote block's ATM rows, and empty when the
@@ -688,8 +712,8 @@ def atm_two_way(document, surface):
     rather than as a negative spread - a stale bid through a live offer is a broken print, and a
     desk must not pay a client for it.
 
-    RR and BF rows carry their own two-way and are deliberately NOT read here: the surface is
-    widened FLAT by the ATM spread, and a wing spread would have to skew the smile instead.
+    ATM rows ONLY, because this is the half that moves the surface FLAT. The RR and BF rows carry
+    their own two-way and it skews the smile instead - `wing_two_way` composes that one.
     """
     prices = document.get('Calc', {}).get('MergeMarketData', {}).get(
         'ExplicitMarketData', {}).get('Market Prices', {})
@@ -736,11 +760,8 @@ def quote_two_way(document, surface):
     CROSSED one reads zero-wide, for the reason `atm_two_way` states.
     """
     from .bootstrappers import FXVolSurfaceParameters
-    prices = document.get('Calc', {}).get('MergeMarketData', {}).get(
-        'ExplicitMarketData', {}).get('Market Prices', {})
-    block = (prices.get(FX_VOL_PRICES.format(surface)) or {}).get('instrument')
     halves = {}
-    for point in FXVolSurfaceParameters.used(block) if block and block.get('Points') else []:
+    for point in quote_points(document, surface):
         bid, ask = point.get('Quoted_Bid'), point.get('Quoted_Ask')
         if bid is None or ask is None:
             continue
@@ -749,14 +770,45 @@ def quote_two_way(document, surface):
     return halves
 
 
+def wing_two_way(document, surface):
+    """What a WING costs over the ATM half-spread, as `{(expiry, pillar): half}` in the surface's
+    own vol units - and empty where the block quotes no RR or BF two-way at all.
+
+    Composed through the strangle algebra the surface was built from, which fixes both the number
+    and the fact that there is ONE per pillar rather than one per wing. A wing vol is
+    `ATM + BF +- RR/2`, so its offered side is the offered side of every term it is made of and the
+    SUBTRACTED term takes its bid: `put_ask = ATM_ask + BF_ask - RR_bid/2`. Half the ask-less-bid
+    of a linear combination is each term's own half times the size of its coefficient, summed, so
+    both wings widen by `BF_half + RR_half/2` - the risk reversal's spread reaches both wings, its
+    SIGN does not.
+
+    The ATM half is deliberately not in here: `with_vol_shift` already carries that one FLAT across
+    every node, so what this returns is the part that changes the smile's SHAPE.
+
+    A row missing either side is not a two-way and is skipped, a CROSSED one reads zero-wide for
+    the reason `atm_two_way` states, and a pillar composing to zero is DROPPED rather than carried -
+    a book quoting no wing spread has to price down the path it always did, byte for byte.
+    """
+    weight = {'BF': 1.0, 'RR': 0.5}
+    halves = {}
+    for point in quote_points(document, surface):
+        bid, ask = point.get('Quoted_Bid'), point.get('Quoted_Ask')
+        if point['Quote_Type'] not in weight or bid is None or ask is None:
+            continue
+        pillar = (float(point['Expiry']), float(point['Pillar']))
+        halves[pillar] = halves.get(pillar, 0.0) + weight[point['Quote_Type']] * max(
+            0.0, 0.5 * (float(ask) - float(bid)))
+    return {pillar: half for pillar, half in sorted(halves.items()) if half > 0.0}
+
+
 def leg_expiry(document, deal):
     """A leg's tenor in years, on the quote block's own expiry axis - the coordinate the spread
     curve is read at, never a day count a price comes off.
 
     An accumulator declares no `Expiry_Date`, so a strip's tenor is its LAST SETTLEMENT, the same
-    date the TARF writes into the field it does declare. The surface is shifted flat per leg, so a
-    strip takes the half-spread at its longest fixing - the widest of the ones it spans - rather
-    than being quoted tighter than any of them.
+    date the TARF writes into the field it does declare. The ATM half-spread is read once per leg,
+    so a strip takes the one at its longest fixing - the widest of the ones it spans - rather than
+    being quoted tighter than any of them.
     """
     end = deal['Expiry_Date'] if 'Expiry_Date' in deal \
         else deal[SCHEDULE_FIELD[deal['Object']]][-1][1]
@@ -764,18 +816,88 @@ def leg_expiry(document, deal):
     return max(0.0, days / DAYS_IN_YEAR)
 
 
-def with_vol_shift(document, factor, shift):
-    """The book with `FXVol.<pair>` moved by `shift` vol points, flat across the whole surface -
-    the copy ONE SIDE of the spread prices on, since the two sides of a structure need the book at
-    two different vols at once.
+def wing_skew(factor, rows, quotes, wings):
+    """The vol move each row of a written log-moneyness surface takes when the WINGS widen by
+    `wings` - `{(expiry, pillar): signed half}` - and the ATM row does not.
 
-    A zero shift hands back the document ITSELF, uncopied: a book carrying no two-way prices down
-    the identical path it always did and pays nothing, not even a deep copy.
+    ONE spelling of the delta-to-log-moneyness conversion, and it is the shipped one. The widening
+    goes onto the QUOTES as a butterfly per pillar, and `smile` -> `malz_skews` -> `malz_surface`
+    then runs twice over the surface's OWN x-grid: once on the quotes as they stand, once on the
+    widened ones. What comes back is the DIFFERENCE, so a written surface these quotes did not
+    build keeps whatever else was done to it and only the skew moves.
+
+    A BUTTERFLY is where the widening goes because the strangle algebra puts it there:
+    `vol(call) = ATM + BF + RR/2` and `vol(put) = ATM + BF - RR/2`, so `BF` enters both wings with a
+    coefficient of one and the ATM row with none - a widening that spares the ATM node, which is
+    what leaves that node carrying the flat shift and nothing else. The RISK REVERSAL is not
+    touched: its own spread is already inside `wings`, and moving that quote would tilt one wing up
+    and the other down rather than widening both. A pillar quoting a two-way on the risk reversal
+    ALONE has no butterfly row to widen, so one is authored at the composed half - on the quote
+    copy, which nothing outside this function reads.
+
+    An expiry the written surface carries and the quotes do not REFUSES by name: a skew is composed
+    from the quotes the surface was built from, and there is no smile there to widen.
+    """
+    import numpy as np
+    from .bootstrappers import FXVolSurfaceParameters
+    from .riskfactors import Factor2D
+
+    # the surface's own x-grid, expiry by expiry, and where each of its rows sits in the written
+    # block - `malz_surface` walks this dict in insertion order, so the two travel together
+    grid, index = {}, {}
+    for position, row in enumerate(rows):
+        grid.setdefault(float(row[1]), []).append(float(row[0]))
+        index.setdefault(float(row[1]), []).append(position)
+
+    widened = [dict(point) for point in quotes]
+    butterflies = {(float(point['Expiry']), float(point['Pillar'])): point
+                   for point in widened if point['Quote_Type'] == 'BF'}
+    for pillar, half in sorted(wings.items()):
+        point = butterflies.get(pillar)
+        if point is None:
+            widened.append({'Use': 'Yes', 'Expiry': pillar[0], 'Pillar': pillar[1],
+                            'Quote_Type': 'BF', 'Quoted_Market_Value': half, 'Timestamp': ''})
+        else:
+            point['Quoted_Market_Value'] = float(point['Quoted_Market_Value']) + half
+
+    def evaluate(points):
+        smile = FXVolSurfaceParameters.smile(points)
+        skews = Factor2D.malz_skews(smile, np.unique(smile[:, 1]))
+        missing = [expiry for expiry in grid if expiry not in skews]
+        if missing:
+            raise ValueError(
+                '{} carries expiry {:g}, which its quote block does not - a wing spread is '
+                'composed from the quotes the surface was built from, so re-bootstrap the surface '
+                'or drop the wing two-way'.format(factor, missing[0]))
+        return Factor2D.malz_surface(
+            skews, {expiry: np.array(nodes) for expiry, nodes in grid.items()})
+
+    moves = [0.0] * len(rows)
+    for position, was, now in zip([position for expiry in grid for position in index[expiry]],
+                                  evaluate(quotes), evaluate(widened)):
+        moves[position] = now[2] - was[2]
+    return moves
+
+
+def with_vol_shift(document, factor, shift, quotes=None, wings=None):
+    """The book with `FXVol.<pair>` moved by `shift` vol points flat AND its smile skewed by the
+    signed wing half-spreads `wings` - the copy ONE SIDE of the spread prices on, since the two
+    sides of a structure need the book at two different vols at once.
+
+    TWO moves, because the block quotes two kinds of spread. The ATM half-spread widens the whole
+    surface FLAT, which is its level; the wing halves widen the wings and spare the ATM node, which
+    is its shape - `wing_skew` composes that one off `quotes`, the rows the surface was built from,
+    through the same strangle algebra it was built by. `wings` and `quotes` travel together: there
+    is no skewing a surface without the quotes that made it.
+
+    With NEITHER move to make this hands back the document ITSELF, uncopied: a book carrying no
+    two-way prices down the identical path it always did and pays nothing, not even a deep copy.
+    Where there is no skew each row takes `shift + 0.0`, which is the float `shift` was.
 
     Moving the WRITTEN surface is what a leg then prices on, because `run_job` does not bootstrap -
     the block that built this surface is not read again inside a pricing run.
     """
-    if not shift:
+    if not shift and not wings:
         return document
     moved = copy.deepcopy(document)
     factors = market_data(moved)
@@ -786,8 +908,9 @@ def with_vol_shift(document, factor, shift):
     # the wire form is `{'.Curve': {'data': [[moneyness, expiry, vol], ...]}}`; a hand-authored
     # surface is the bare list. The vol is the last column of either
     rows = surface['.Curve']['data'] if isinstance(surface, dict) else surface
-    for row in rows:
-        row[-1] += shift
+    skew = wing_skew(factor, rows, quotes, wings) if wings else [0.0] * len(rows)
+    for row, move in zip(rows, skew):
+        row[-1] += shift + move
     return moved
 
 
@@ -1235,13 +1358,19 @@ def risk_scale(rows, cost, policy, charge_full, min_ticket):
     return scale, saving, scale * charge_full, note
 
 
-def run_recipe(document, structure, params, reference, two_way, surface, spot, scale):
-    """One whole pass of the recipe at `scale` times the book's half-spread, from fresh legs.
+def run_recipe(document, structure, params, reference, two_way, wings, surface, spot, scale):
+    """One whole pass of the recipe at `scale` times the book's half-spreads, from fresh legs.
 
-    Materializes the legs, signs each one's shift by the CLIENT's side, builds the shifted book
-    each shift needs, runs the steps in order, and marks the finished legs once more at mid.
-    `scale` is the ONE thing that differs between the base pass and a re-quote: it multiplies the
-    half-spread and rides the same two-sided machinery rather than a second shift path.
+    Materializes the legs, signs each one's spread by the CLIENT's side, builds the shifted and
+    skewed book each side needs, runs the steps in order, and marks the finished legs once more at
+    mid. `scale` is the ONE thing that differs between the base pass and a re-quote: it multiplies
+    the ATM half-spread AND the wing halves, and rides the same two-sided machinery rather than a
+    second shift path.
+
+    Both spreads take the client's OWN sign, and it is the same sign: what the client buys is
+    offered at the ask of every quote the vol is composed of, what they sell is taken at the bid of
+    each. So a leg's copy of the book is named by `(shift, sign)` and legs sharing both share one
+    copy - every pricing deep-copies again through `alone`, so nothing here is mutated.
 
     Returns `(legs, spreads, premiums, solved, mid)`. Legs are fresh because `run_solve` writes the
     solved value back onto the leg it moved, so a second pass over the first pass's legs would seed
@@ -1253,23 +1382,28 @@ def run_recipe(document, structure, params, reference, two_way, surface, spot, s
         leg.deal['Structure_Reference'] = reference
     by_role = {leg.role: leg for leg in legs}
 
-    spreads, books, by_shift = {}, {}, {}
+    quotes = quote_points(document, surface) if wings else None
+    spreads, books, by_side = {}, {}, {}
     for leg in legs:
         # a leg's Buy_Sell is the CLIENT's side - what they buy is offered at the ask vol and what
         # they sell is taken at the bid - so the client's side IS the sign of the shift, and a leg
         # stating no side refuses rather than defaulting: either guess charges it the wrong way
         side = leg.deal.get('Buy_Sell')
-        if two_way and side not in ('Buy', 'Sell'):
+        if (two_way or wings) and side not in ('Buy', 'Sell'):
             raise ValueError('{}: leg {} carries no Buy_Sell, so which side of the two-way it '
                              'deals on is not stated'.format(structure.__name__, leg.role))
-        spreads[leg.role] = scale * (1.0 if side == 'Buy' else -1.0) * half_spread(
-            two_way, leg_expiry(document, leg.deal)) if two_way else None
-        # legs taking the SAME shift share one copy - the shift is the whole difference between
-        # them, and every pricing deep-copies again through `alone`, so nothing here is mutated
+        sign = 1.0 if side == 'Buy' else -1.0
+        spreads[leg.role] = scale * sign * half_spread(
+            two_way, leg_expiry(document, leg.deal)) if (two_way or wings) else None
         shift = spreads[leg.role] or 0.0
-        if shift not in by_shift:
-            by_shift[shift] = with_vol_shift(document, FX_VOL_FACTOR.format(surface), shift)
-        books[leg.role] = by_shift[shift]
+        # a scale of zero is a quote AT the mid, so the skew empties rather than widening by zero
+        skewed = {pillar: scale * sign * half for pillar, half in wings.items()
+                  if scale * half} if wings else None
+        side_of = (shift, sign if skewed else 0.0)
+        if side_of not in by_side:
+            by_side[side_of] = with_vol_shift(
+                document, FX_VOL_FACTOR.format(surface), shift, quotes, skewed)
+        books[leg.role] = by_side[side_of]
 
     premiums, solved = {}, {}
     for step in structure.recipe:
@@ -1300,7 +1434,7 @@ def run_recipe(document, structure, params, reference, two_way, surface, spot, s
     return legs, spreads, premiums, solved, mid
 
 
-def risk_impact(document, params, reference, two_way, surface, legs, premiums, mid):
+def risk_impact(document, params, reference, sided, surface, legs, premiums, mid):
     """The whole risk-impact step over a candidate already quoted at the full two-way.
 
     Measures the book with the candidate's MIRROR on it and without, prices the difference at the
@@ -1311,8 +1445,8 @@ def risk_impact(document, params, reference, two_way, surface, legs, premiums, m
     rather than reported as a scale of 1 nobody can distinguish from a decision:
 
       - the book declares no `Quote Policy`, so the feature is off
-      - the book quotes no two-way, so there is no spread to tighten and no half-spread to price a
-        bucket at either
+      - the book quotes no two-way of ANY kind - `sided` - so there is no spread to tighten and no
+        half-spread to price a bucket at either
       - the full charge is not positive - a two-way that captured nothing has nothing to give back
       - the book publishes no vol quote leaves, so there are no coordinates to measure in
     """
@@ -1322,7 +1456,7 @@ def risk_impact(document, params, reference, two_way, surface, legs, premiums, m
     if policy is None:
         return dict(empty, note='the book declares no {} block - the quote is the full two-way '
                                 'spread, exactly as it was before'.format(QUOTE_POLICY))
-    if not two_way:
+    if not sided:
         return dict(empty, note='{} carries no two-way - there is no spread to tighten'.format(
             FX_VOL_PRICES.format(surface)))
     charge_full = sum(premiums.values()) - sum(mid[leg.role] for leg in legs)
@@ -1370,11 +1504,19 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None):
     submission clock: a quote is an ACT, so two identical asks minutes apart are two quotes.
 
     THE TWO-SIDED HALF. Where the book's `FXVolPrices` block carries a two-way, each leg prices on
-    its own copy of it with the written surface shifted flat by the ATM half-spread at that leg's
-    expiry - `+half` where the CLIENT buys, `-half` where they sell. `net` is therefore the
-    two-sided price the client is quoted. Each leg reports its signed shift as `vol_spread` in the
-    surface's own units (0.002 is 0.2 vol points), or None where the book quotes no two-way, in
-    which case every shift is zero and `spread_note` names the absence.
+    its own copy of it, moved by the two spreads that block quotes. The ATM half-spread at the
+    leg's expiry moves the written surface FLAT - `+half` where the CLIENT buys, `-half` where they
+    sell - and the RR/BF halves SKEW it, widening each quoted pillar's wings by `BF_half +
+    RR_half/2` on the same side and sparing the ATM node. `net` is therefore the two-sided price
+    the client is quoted. Each leg reports its signed flat shift as `vol_spread` in the surface's
+    own units (0.002 is 0.2 vol points), the composed wing halves are reported once as
+    `wing_spread`, and BOTH are reported at the scale they were actually charged at - a tightened
+    re-quote describes the quote it made rather than the two-way the book carries.
+
+    `wing_spread` is None where the block quotes no wing two-way. `vol_spread` is None only where
+    the book quotes NO two-way at all, in which case every leg prices on the document itself and
+    `spread_note` names the absence: a WINGS-ONLY book has a real skew and a flat half of zero, so
+    its legs report a signed zero - the shift that was applied - rather than an absence.
 
     `net_mid` is the finished legs priced once more against the UNSHIFTED book - what the trade
     marks once booked - in the same sign convention, so the desk's captured `edge` is
@@ -1430,14 +1572,19 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None):
     probe = materialize(structure, params, document)[0]
     spot = engine_spot(document, probe.deal['Underlying_Currency'], probe.deal['Currency'])
     surface = probe.deal['FX_Volatility']
-    two_way = atm_two_way(document, surface)
+    two_way, wings = atm_two_way(document, surface), wing_two_way(document, surface)
 
     legs, spreads, premiums, solved, mid = run_recipe(
-        document, structure, params, reference, two_way, surface, spot, 1.0)
-    risk = risk_impact(document, params, reference, two_way, surface, legs, premiums, mid)
+        document, structure, params, reference, two_way, wings, surface, spot, 1.0)
+    risk = risk_impact(document, params, reference, bool(two_way or wings), surface,
+                       legs, premiums, mid)
+    # what the halves were CHARGED at, which is what the outcome below has to describe: the base
+    # pass deals at the full two-way, a tightened re-quote at the policy's own scale
+    charged = 1.0
     if risk['scale'] is not None and risk['scale'] < 1.0:
+        charged = risk['scale']
         legs, spreads, premiums, solved, mid = run_recipe(
-            document, structure, params, reference, two_way, surface, spot, risk['scale'])
+            document, structure, params, reference, two_way, wings, surface, spot, charged)
 
     return {
         'quote_id': quote_id, 'structure': structure_name, 'params': dict(params),
@@ -1463,7 +1610,13 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None):
                      value_market=legs[0].to_market(spot)),
         # every number above is CLIENT-frame; the desk's capture is said once under its own name
         'edge': sum(premiums.values()) - sum(mid[leg.role] for leg in legs),
-        'spread_note': None if two_way else
+        # what the WINGS cost over the flat one, per quoted pillar as '<pillar> <expiry>', on the
+        # side each leg's own `buy_sell` names - times the scale they were CHARGED at, the same one
+        # every leg's `vol_spread` already carries, so the two halves of one quote agree. None
+        # where the block quotes no wing two-way
+        'wing_spread': {'{:g} {:g}'.format(pillar, expiry): half * charged
+                        for (expiry, pillar), half in wings.items()} or None,
+        'spread_note': None if two_way or wings else
         '{} carries no Quoted_Bid/Quoted_Ask - every leg is quoted at the mid surface, '
         'unshifted'.format(FX_VOL_PRICES.format(surface)),
         # what the residual this trade leaves on the book costs to hedge, and what the policy did

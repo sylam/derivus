@@ -1504,6 +1504,42 @@ def test_progress_is_readable_while_the_fetch_runs(desk, monkeypatch):
     assert done['stats']['Bloomberg']['provisioned'] is True
 
 
+def test_a_tick_a_bootstrapper_refuses_lands_refused_rather_than_raising(desk, monkeypatch):
+    """A REFUSAL IS AN OUTCOME OF THE JOB, never an exception out of it.
+
+    `Config.bootstrap` wraps only the CONSTRUCTION of a family, so a family that constructs, runs
+    and then refuses by name - a Heston-Nandi ladder whose `Quote_Type` is not one it fits, left
+    standing on the book and refit on every tick because the book declares the family - raises out
+    of the bootstrap and out of `market_edit`. `/book/market` has always caught exactly that into a
+    422; the queued path did not, so one bad book was a refusal on the request thread and an
+    unhandled worker error on the cadence's.
+
+    The cadence is what needs the difference. `Metronome.cause` reads `refused` off
+    `stats.Bloomberg` and logs one warning naming it; an `error` status is a different branch, and
+    a book in this state stays in it beat after beat. So what is pinned is the SHAPE - a `done`
+    job, `written` false, the engine's own wording carried through - and the book's bytes standing
+    still, since a tick that refuses writes nothing by construction.
+    """
+    document = json.loads(desk.read_text())
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Bootstrapper Configuration']['HestonNandiModelParameters'] = {}
+    market.setdefault('Market Prices', {})['HestonNandiModelPrices.USD.ZAR'] = {
+        'instrument': {'Quote_Type': 'Nonsense', 'Underlying': 'ZAR', 'Discount_Rate': 'USD',
+                       'Volatility': 'USD.ZAR', 'European_Options': []}}
+    desk.write_text(json.dumps(document, indent=2), newline='\n')
+    before = desk.read_bytes()
+
+    bloomberg_seams(monkeypatch)
+    result, outcome = ticked()
+
+    assert result['status'] == 'done', result
+    assert 'error' not in result, result
+    assert outcome['written'] is False
+    assert any('Nonsense' in message and 'HestonNandiModelPrices.USD.ZAR' in message
+               for message in outcome['refused']), outcome
+    assert desk.read_bytes() == before, 'a refused tick moved the book'
+
+
 def test_the_bloomberg_verb_needs_a_book_and_a_bootstrapper(book):
     """Both refusals are the ones the market verbs already make, in the same words: no book is a
     404 naming the flag that opens one, and a book that declares no bootstrapper is a 422 saying
@@ -2273,25 +2309,40 @@ VANILLA = {'Object': 'EquityOptionDeal', 'Currency': 'USD', 'Payoff_Currency': '
            'Strike_Price': EQ_SPOT, 'Expiry_Date': BASE + pd.DateOffset(years=1)}
 
 
-def netting_set(reference, counterparty, deals):
+def netting_set(reference, counterparty, deals, funding_rate='USD'):
     """One `NettingCollateralSet` node over its deals, uncollateralised, naming its counterparty
     where the engine reads it: `Credit_Support_Amounts.Counterparty` IS the `SurvivalProb` factor
-    the CVA discounts by, which is why the recalc reads it from there and nowhere else."""
+    the CVA discounts by, which is why the recalc reads it from there and nowhere else.
+
+    `Funding_Rate` is the other declaration the projection reads: it is what the FVA's funding leg
+    is priced off, and a set funding at the risk-free curve (the default here, `'USD'`, which is
+    also the report currency and so the deflation curve) declares no spread and therefore no
+    adjustment."""
     return {'Instrument': {'.Deal': {
         'Object': 'NettingCollateralSet', 'Reference': reference, 'Netted': 'True',
         'Collateralized': 'False', 'Agreement_Currency': 'USD', 'Balance_Currency': 'USD',
-        'Funding_Rate': 'USD', 'Liquidation_Period': 0.0, 'Settlement_Period': 0.0,
+        'Funding_Rate': funding_rate, 'Liquidation_Period': 0.0, 'Settlement_Period': 0.0,
         'Credit_Support_Amounts': {
             'Counterparty': counterparty, 'Received_Threshold': CSA, 'Posted_Threshold': CSA,
             'Independent_Amount': CSA, 'Minimum_Received': CSA, 'Minimum_Posted': CSA}}},
         'Children': [{'Instrument': {'.Deal': deal}} for deal in deals]}
 
 
+#: A funding curve ABOVE the book's USD curve, so a set that funds at it carries a real spread over
+#: risk-free. Without one, FCA and FBA are both zero by construction and the FVA column would be
+#: exactly 0.0 for every set - a column that cannot be told from an unimplemented one.
+FUNDING_RATE = 0.05
+
+
 def xva_book(tmp_path, sets, counterparties=('CPTY_A', 'CPTY_B')):
-    """A live book of netting sets, with a survival curve per counterparty and a GBM for the
-    equity - everything a credit Monte Carlo needs and nothing it does not. The hazard rises with
-    each counterparty, so the two sets' numbers are separable rather than coincidentally equal."""
+    """A live book of netting sets, with a survival curve per counterparty, a GBM for the equity and
+    a funding curve above the risk-free one - everything a credit Monte Carlo needs for both
+    adjustments and nothing it does not. The hazard rises with each counterparty, so the two sets'
+    numbers are separable rather than coincidentally equal."""
     factors = dict(FACTORS, **EQUITY)
+    factors['InterestRate.FUND'] = {
+        'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+        'Curve': utils.Curve([], [[0.0, FUNDING_RATE], [5.0, FUNDING_RATE]])}
     for index, counterparty in enumerate(counterparties):
         factors['SurvivalProb.' + counterparty] = {
             'Recovery_Rate': 0.4,
@@ -2311,10 +2362,14 @@ def xva_book(tmp_path, sets, counterparties=('CPTY_A', 'CPTY_B')):
 def desk_xva(tmp_path, monkeypatch):
     """Two counterparties, one vanilla each - the smallest book with a mosaic to keep. `DV_HOME`
     is the declared surface for where a desk's files live, so the projection lands in the gate's
-    own tmp and the gate may read the file the service wrote."""
+    own tmp and the gate may read the file the service wrote.
+
+    The sets fund DIFFERENTLY on purpose: NS_A at `FUND`, a spread over risk-free, and NS_B at the
+    risk-free curve itself. That is what makes the FVA column readable in one projection - a real
+    number beside an exact zero, each traceable to the set's own `Funding_Rate` declaration."""
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     yield xva_book(tmp_path, [
-        netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')]),
+        netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')], funding_rate='FUND'),
         netting_set('NS_B', 'CPTY_B', [dict(VANILLA, Reference='OPT_B')])])
     service.BOOK = None
 
@@ -2425,10 +2480,133 @@ def test_an_unknown_set_refuses_by_name_and_a_missing_survival_curve_lands_in_th
         rows = xva_rows()
         assert rows['NS_GHOST']['status'] == 'failed'
         assert rows['NS_GHOST']['cva'] is None
+        assert rows['NS_GHOST']['fva'] is None, 'a failed run filed a funding number anyway'
         assert 'GHOST' in rows['NS_GHOST']['error']
         assert rows['NS_A'] == standing, "a failed set took another set's row with it"
     finally:
         service.BOOK = None
+
+
+def test_fva_is_a_column_of_the_same_row_off_the_same_run(desk_xva, tmp_path):
+    """CVA and FVA are two columns of ONE row, produced by ONE credit Monte Carlo.
+
+    The decisive assertion is that they share the row's identity: one `as_of`, one `result_id`, one
+    `plan_hash`. That is what makes them addable - a desk reading `cva + fva` off a row is reading
+    two reductions of the same exposure cube at the same market, not two projections that happen to
+    sit next to each other. Two runs would have given two stamps and no way to tell whether they
+    were the same market.
+
+    The NUMBER is the set's own declaration, not a desk-wide constant. NS_A funds at `FUND`, a
+    spread over the risk-free curve, and carries a real adjustment; NS_B funds at the risk-free
+    curve itself and carries exactly 0.0 - FCA and FBA are each a spread OVER risk-free, so no
+    spread is no adjustment. That exact zero is the reading the floor is FOR: it says this set
+    declares no funding, and it is a computed number rather than a column standing in for one.
+
+    MEASURED on this book, 1024 paths, seed 1: NS_A cva 119.68 / fva 302.82, NS_B cva 290.65 /
+    fva 0.0. The funding leg is the larger of the two here because a bought call is positive
+    exposure the whole way out and a 3% funding spread over a year costs more than a 2% hazard does.
+
+    Then the mosaic, on both columns at once: a deal booked into NS_A and only NS_A recalced moves
+    that row's cva AND its fva together, under one new stamp, and leaves NS_B's row byte for byte.
+    """
+    queued = recalc()['queued']
+    before = xva_rows()
+    for entry in queued:
+        row = before[entry['reference']]
+        assert row['status'] == 'done', row['error']
+        assert row['result_id'] == entry['result_id'], 'the row names a run it did not come from'
+        assert row['cva'] > 0.0 and row['fva'] is not None
+
+    assert before['NS_A']['fva'] > 0.0, 'a set funding above risk-free paid nothing to fund'
+    assert before['NS_B']['fva'] == 0.0, 'a set funding AT risk-free was charged a spread anyway'
+
+    # the two columns are one run: the same stamp, and the same stamp on disk
+    filed = json.loads((tmp_path / 'xva.json').read_text())['sets']
+    for reference, row in before.items():
+        assert filed[reference]['fva'] == row['fva'] and filed[reference]['cva'] == row['cva']
+        assert filed[reference]['as_of'] == row['as_of'] == before[reference]['as_of']
+
+    booked = CLIENT.post('/book/deals', content=dump(
+        {'action': 'add', 'deal': dict(VANILLA, Reference='OPT_A2', Units=5000.0),
+         'parent_reference': 'NS_A'}), headers=JSON).json()
+    assert booked['written'] is True, booked
+
+    recalc(['NS_A'])
+    after = xva_rows()
+    assert after['NS_A']['cva'] > before['NS_A']['cva'], 'a bigger position must cost more credit'
+    assert after['NS_A']['fva'] > before['NS_A']['fva'], 'a bigger position must cost more to fund'
+    assert after['NS_A']['as_of'] > before['NS_A']['as_of']
+    assert after['NS_B'] == before['NS_B'], 'a partial recalc touched a row it was not asked for'
+
+
+def test_a_row_filed_before_the_fva_column_existed_still_reads(desk_xva, tmp_path):
+    """STALENESS IS DATA IN TIME AS WELL AS ACROSS SETS. A row written when CVA was the only
+    adjustment has no `fva` key at all, and the view must read it as what it is - a done run with a
+    real credit number and no funding number - rather than refusing the file or calling the whole
+    row stale.
+
+    The old row is AUTHORED here because there is no other way to reach one on a build that writes
+    the column, exactly as the unstamped pending quote is authored in its own gate. It carries the
+    other mark of a previous build too: a `plan_hash` and `result_id` from a plan with no funding
+    block in it, which is what a genuinely old row has and what makes the recalc below rewrite it
+    rather than recognise it as already filed.
+
+    Then the remedy, and it is the same remedy an old `as_of` takes: recalculate that set. The
+    column fills in, and the OTHER set's old-shape row is still sitting there untouched - a partial
+    recalc does not quietly upgrade rows it was not asked for.
+    """
+    recalc()
+    projection = json.loads((tmp_path / 'xva.json').read_text())
+    standing = {reference: dict(row) for reference, row in projection['sets'].items()}
+    for reference, row in projection['sets'].items():
+        row.pop('fva')
+        row['plan_hash'] = row['result_id'] = 'a-plan-with-no-funding-block'
+    (tmp_path / 'xva.json').write_text(json.dumps(projection, indent=2), newline='\n')
+
+    old = xva_rows()
+    for reference, row in old.items():
+        assert row['status'] == 'done', 'an old-shape row was read as a failure'
+        assert row['cva'] == pytest.approx(standing[reference]['cva'], rel=1e-12)
+        assert row['fva'] is None, 'a column that was never run reported a number'
+
+    fresh = recalc(['NS_A'])['queued']
+    rows = xva_rows()
+    assert rows['NS_A']['result_id'] == fresh[0]['result_id'], 'the old row was left standing'
+    assert rows['NS_A']['fva'] == pytest.approx(standing['NS_A']['fva'], rel=1e-12)
+    assert rows['NS_A']['cva'] == pytest.approx(standing['NS_A']['cva'], rel=1e-12)
+    assert rows['NS_B'] == old['NS_B'], 'a partial recalc upgraded a row it was not asked for'
+
+
+def test_a_missing_funding_table_is_age_on_a_stored_row_and_a_defect_on_a_live_run():
+    """ONE absent column, two readings - and the gate is the DIFFERENCE between them.
+
+    `XvaJob.adjustments` is read from both sides of the result store. A run the store already holds
+    is written UP rather than paid for again, and one filed before this column existed carries no
+    `fva` at all - the staleness the gate above walks end to end - so the STORED reading is lenient
+    and lands a null.
+
+    A live run is not stale by construction: the job composes `Credit_Valuation_Adjustment` and
+    `Funding_Valuation_Adjustment` together and reduces ONE exposure cube with both, so results
+    with no `fva` in them are a defect of that run. Filing a null there would put 'no funding cost'
+    on the blotter under a fresh stamp - a wrong number wearing a current `as_of`, which is worse
+    than an error - so the fresh path raises and `run_job` files the row `failed` with the message.
+
+    Both readings run over the SAME two mappings, so nothing here is a restatement of one branch.
+    """
+    whole, aged = {'cva': 119.68, 'fva': 302.82}, {'cva': 119.68}
+
+    assert service.XvaJob.adjustments(whole) == {'cva': 119.68, 'fva': 302.82}
+    assert service.XvaJob.adjustments(whole, stored=True) == service.XvaJob.adjustments(whole)
+    assert service.XvaJob.adjustments(aged, stored=True) == {'cva': 119.68, 'fva': None}
+    with pytest.raises(KeyError, match='fva'):
+        service.XvaJob.adjustments(aged)
+
+    # and the row each reading lands: the stored one is a DONE row carrying a null, which is what
+    # an old file is entitled to and what a live run must not be able to produce
+    filed = service.XvaJob(None, 'NS_A', ('CP_A', True), 'a-result-id',
+                           {'plan_hash': 'p', 'values_hash': 'v', 'seed': 1}).landed(
+        {'status': 'done', 'tables': aged})
+    assert filed['status'] == 'done' and filed['cva'] == 119.68 and filed['fva'] is None
 
 
 # --------------------------------------------------------------------------------------------

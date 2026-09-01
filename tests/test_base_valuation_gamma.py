@@ -78,8 +78,14 @@ from derivus.instruments import construct_instrument
 from derivus.schema import mapping
 import rates_world as rw
 import test_recompute_equity_pricers as re_
+from conftest import needs_hn_fused
 
 DTYPE = torch.float64
+#: The device `run_baseval` hands a job - `cuda:0` when there is one, `cpu` when there is not - and
+#: therefore the device the seam gate has to walk. It is not a preference: the oracle that gate
+#: reads is the compiled backward's OWN refusal, and inductor has to reach a backend for the device
+#: the tensors are on before it can raise anything at all.
+DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 BASE = pd.Timestamp('2024-06-28')
 SPOT, STRIKE, VOL = 100.0, 100.0, 0.25
 #: One year to the day, and the curves are ACT_365, so T is exactly 1.0 and the closed form below
@@ -191,8 +197,11 @@ def hn_autocall_cfg(spot=None):
 #:
 #: 4096 IS `test_recompute_equity_pricers`' OWN COUNT, deliberately - see the ladder's docstring.
 #: This gate walks the batch shapes that file already walks, so it leaves the compiler nothing new.
+#:
+#: THE LAST RUNG'S TOLERANCE IS AN ULP ENVELOPE, not a truncation bound, and the gbm one is stated
+#: that way after being measured - see the ladder's docstring for both devices' readings.
 MONTE_CARLO_LADDER = {
-    'gbm': (gbm_autocall_cfg, 1 << 12, [(1e-2, 1e-6), (1e-3, 1e-8), (1e-4, 1e-11)]),
+    'gbm': (gbm_autocall_cfg, 1 << 12, [(1e-2, 1e-6), (1e-3, 1e-8), (1e-4, 2e-10)]),
     'heston-nandi': (hn_autocall_cfg, 1 << 12, [(1e-2, 2e-3), (1e-3, 2e-5), (1e-4, 2e-7)])}
 
 
@@ -478,6 +487,7 @@ def test_hedge_monte_carlo_refuses_the_second_order_block():
 
 # ---------------------------------------------------------------- the repair the audit found
 
+@needs_hn_fused
 def test_the_heston_nandi_sub_step_is_twice_differentiable():
     """`utils.hn_log_substep` is `torch.compile`d and AOTAutograd's compiled backward has no double
     backward - it RAISES - so every HN valuation whose fixings are more than a day apart died on
@@ -487,6 +497,26 @@ def test_the_heston_nandi_sub_step_is_twice_differentiable():
     spelling, so this holds for whichever pricer walks the sub-step next. Both directions are
     asserted - the fused build must still be what an ordinary run takes, or the fix is a silent
     5.9x on every Heston-Nandi job.
+
+    IT WALKS THE DEVICE A JOB WALKS, and that is what it was missing. The tensors carried no device
+    at all, so the fused half compiled for the CPU inductor backend whatever the box was - and on a
+    CUDA box with no host C++ compiler (this one: triton, no MSVC) that backend cannot build, so
+    what came back was `InductorError: InvalidCxxCompiler: Compiler: cl is not found` and not the
+    refusal being gated. The gate read a raise and could not tell which one. MEASURED, both
+    spellings at both devices, float64, this box:
+
+        cpu    eager d2/domega2  7,381,689.19    fused  InductorError: cl is not found
+        cuda   eager d2/domega2 58,006,153.76    fused  RuntimeError: ... double backward
+
+    The two eager numbers differ because `torch.manual_seed(1)` seeds a different stream per device
+    and the gate asserts only that the curvature is THERE, which both rows say. `run_baseval` takes
+    `cuda:0` when there is one, so the CUDA row is what a Heston-Nandi job actually walks, and
+    `DEVICE` is that same choice spelled once.
+
+    `needs_hn_fused` is now this gate's OWN precondition rather than a spare one: it asks for triton
+    under CUDA and a host C++ compiler under CPU, which is exactly the backend the tensors below
+    need before the compiled backward exists to refuse. A compiler-less CPU box skips by name
+    instead of failing on an oracle it cannot produce.
 
     `torch._dynamo.reset()` afterwards is not tidiness, and it took two attempts to state why
     honestly. The compiler cache is a process global keyed on traced shapes, and this file feeds
@@ -505,19 +535,21 @@ def test_the_heston_nandi_sub_step_is_twice_differentiable():
     class Shared:
         gamma = True
         simulation_batch = 4
-        one = torch.ones([1, 1], dtype=DTYPE)
+        one = torch.ones([1, 1], dtype=DTYPE, device=DEVICE)
 
     def second_derivative(gamma):
         shared = Shared()
         shared.gamma = gamma
-        omega = torch.tensor(1e-6, dtype=DTYPE, requires_grad=True)
-        params = (omega, torch.tensor(0.1, dtype=DTYPE), torch.tensor(0.8, dtype=DTYPE),
-                  torch.tensor(2.0, dtype=DTYPE))
-        spot = torch.full([4, 2], 100.0, dtype=DTYPE)
-        h = torch.full([4, 2], 4e-5, dtype=DTYPE)
+        omega = torch.tensor(1e-6, dtype=DTYPE, device=DEVICE, requires_grad=True)
+        params = (omega, torch.tensor(0.1, dtype=DTYPE, device=DEVICE),
+                  torch.tensor(0.8, dtype=DTYPE, device=DEVICE),
+                  torch.tensor(2.0, dtype=DTYPE, device=DEVICE))
+        spot = torch.full([4, 2], 100.0, dtype=DTYPE, device=DEVICE)
+        h = torch.full([4, 2], 4e-5, dtype=DTYPE, device=DEVICE)
         torch.manual_seed(1)
         walked, _ = utils.hn_unmonitored_substeps(
-            spot, h, torch.zeros([4, 2], dtype=DTYPE), 3, params, shared, 2, antithetic=False)
+            spot, h, torch.zeros([4, 2], dtype=DTYPE, device=DEVICE), 3, params, shared, 2,
+            antithetic=False)
         grad, = torch.autograd.grad(walked.sum(), omega, create_graph=True)
         return float(torch.autograd.grad(grad, omega)[0])
 
@@ -545,7 +577,11 @@ def test_a_heston_nandi_valuation_reports_a_second_order_block():
         'the spot is not in the reported block: {}'.format(sorted({r[0] for r in second.index})))
 
 
-@pytest.mark.parametrize('fixture', sorted(MONTE_CARLO_LADDER))
+# the Heston-Nandi rung differences a `Greeks: 'First'` delta, and THAT walks the compiled sub-step
+# (only the gamma takes the eager spelling) - so this rung, alone in the file, has the fused
+# precondition and states it rather than dying three layers downstream on a collapsed frame
+@pytest.mark.parametrize('fixture', [pytest.param(f, marks=needs_hn_fused) if f == 'heston-nandi'
+                                     else f for f in sorted(MONTE_CARLO_LADDER)])
 def test_a_monte_carlo_gamma_is_the_derivative_of_its_own_reported_delta(fixture):
     """d2V/dS2 against a CENTRAL DIFFERENCE of the reported AAD delta, on the two Monte Carlo
     fixtures - the correctness statement the block has nowhere a closed form reaches.
@@ -558,24 +594,57 @@ def test_a_monte_carlo_gamma_is_the_derivative_of_its_own_reported_delta(fixture
 
     Common random numbers are what leaves the ladder as pure truncation error: one seed, one
     scenario, and a bumped spot rescales the paths the same draws generate. Measured over three
-    decades of h -
+    decades of h, ON CUDA float64, which is the device `run_baseval` takes when there is one -
 
-        gbm            gamma -2.91303e-05,  2.12e-07 -> 2.11e-09 -> 1.70e-12
+        gbm            gamma -2.91303e-05,  2.12e-07 -> 2.12e-09 -> 7.61e-11
         heston-nandi   gamma  2.69093e-06,  3.62e-04 -> 3.62e-06 -> 3.44e-08
 
-    which is h^2 to two digits and not Monte Carlo noise: the gamma and the deltas come off the
-    SAME paths, so what is being measured is whether the second derivative is the first one's
-    derivative, whatever the paths priced. h = 1e-5 is left off for the reason the swap ladder
-    leaves it off: it turns back UP on the GBM fixture (7.8e-10), which is the difference's own
-    cancellation rather than anything about the estimator. The Heston-Nandi spot curvature is
-    genuinely SMALL at 4096 paths - 2.7e-06, and it changes sign against a longer run - which
-    costs this gate nothing and is why the floor below is a placebo guard rather than a claim.
+    which is h^2 to two digits over the first two rungs and not Monte Carlo noise: the gamma and
+    the deltas come off the SAME paths, so what is being measured is whether the second derivative
+    is the first one's derivative, whatever the paths priced. h = 1e-5 is left off for the reason
+    the swap ladder leaves it off: it turns back UP on the GBM fixture (4.1e-10 here, 6.6e-10 on
+    CPU), which is the difference's own cancellation rather than anything about the estimator. The
+    Heston-Nandi spot curvature is genuinely SMALL at 4096 paths - 2.7e-06, and it changes sign
+    against a longer run - which costs this gate nothing and is why the floor below is a placebo
+    guard rather than a claim.
+
+    THE GBM FIXTURE'S LAST RUNG IS AN ULP ENVELOPE AND ITS OLD 1e-11 WAS BELOW ONE ULP. At
+    h = 1e-4 the two reported deltas are 1.176960350e-03 and 1.176966176e-03 and their difference
+    is 5.826e-09, so ONE ulp of either delta (2.17e-19, both sit in the 2^-10 binade) moves the
+    quotient by 3.7e-11 RELATIVE. That is the arithmetic's own resolution at this rung, and no
+    tolerance below it is measuring the estimator. Readings taken here:
+
+        cuda float64   7.614e-11   =  2.05 ulps      (this box, RTX 3090)
+        cpu  float64   2.238e-11   =  0.60 ulps      (CUDA_VISIBLE_DEVICES=-1, same fixture)
+
+    and the recorded 1.70e-12 that 1e-11 was cut to fit is 0.046 ulps - two roundings cancelling,
+    not a bound. 2e-10 is 5.4 ulps: it clears the CUDA reading by 2.6x and the CPU one by 8.9x, and
+    it is two orders inside the rung above's own 1e-8, so the ladder still has to FALL to pass. A
+    gamma wrong by anything a mutation would produce is caught at h = 1e-3, where the reading is
+    2.12e-09 against a tolerance of 1e-8 and the arithmetic still resolves four decades.
+
+    THE GAMMA ITSELF IS A CUDA READING, and a CPU box does not reproduce it: the draw stream is
+    per-device, so the same fixture prices different paths and reads gamma -2.87533e-05 there, 1.3%
+    away. Both are correct answers to different sample sets - which is why every rung is scored
+    against the gamma from its OWN run and never against the number written here. The Heston-Nandi
+    rungs are already an ulp envelope by the same arithmetic (its h = 1e-4 difference resolves to
+    6.4e-09 per ulp, the reading is 3.44e-08 = 5.3 ulps against a 2e-07 = 31-ulp tolerance) and are
+    left alone.
 
     THE HESTON-NANDI RUNG IS ALSO THE EAGER-AGAINST-FUSED EQUALITY GATE, which is why it is here
     rather than a second GBM fixture. `shared.gamma` walks the eager `hn_log_substep` for the
     second derivative while `Greeks: 'First'` - the delta being differenced - walks the compiled
     one, so a fused kernel that was not the eager function shows up here as a ladder that will
     not converge, and nowhere else in this repo.
+
+    WHICH IS ALSO WHY THAT RUNG CARRIES `needs_hn_fused` AND THE GBM ONE DOES NOT. The delta side
+    needs the compiled sub-step to BUILD, and on a box with no backend for its device it does not:
+    the deal is skipped CRITICAL, the mark collapses to a scalar zero, and what this gate reported
+    was `RuntimeError: element 0 of tensors does not require grad and does not have a grad_fn` out
+    of `run_baseval` - three layers downstream of the thing that was actually missing. Measured on
+    this box with the GPU hidden (`CUDA_VISIBLE_DEVICES=-1`, no MSVC): 1 failed that way, 13 passed,
+    against 15 passed on CUDA. Stating the precondition turns that into a skip by name, which is
+    what `conftest` exists for.
 
     BOTH FIXTURES RUN AT `test_recompute_equity_pricers`' OWN 4096 PATHS, and that is a
     requirement rather than a coincidence. Run this at a count nothing else uses and the compiler

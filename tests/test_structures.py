@@ -119,21 +119,35 @@ def book():
 #: than any solve tolerance, narrow enough to be a spread a desk would actually show.
 ATM_SPREAD = 0.004
 
+#: How wide the RR and the BF rows are quoted, as a fraction of that: each of them half as wide as
+#: the ATM row, which is the shape a terminal actually prints - a wing quote is a tighter number
+#: than the level it hangs off.
+WING_FRACTION = 0.5
 
-def two_way(document, spread=ATM_SPREAD):
+#: What those two rows compose to at a pillar - `BF_half + RR_half/2`, the ONE number per pillar
+#: the strangle algebra makes of them, and what each wing of the smile widens by over and above the
+#: flat ATM half. 0.0015 here, against an ATM half of 0.002.
+WING_HALF = 0.5 * WING_FRACTION * ATM_SPREAD + 0.5 * (0.5 * WING_FRACTION * ATM_SPREAD)
+
+
+def two_way(document, spread=ATM_SPREAD, wings=WING_FRACTION):
     """`document` with a two-way authored around the mid its `FXVolPrices` block already carries -
     the block `derivus_bloomberg.to_market_prices_block` writes when the terminal answers PX_BID
     and PX_ASK. The written surface is not touched: the mid is what built it.
 
-    The wings get a two-way too, half as wide, and no gate below reads them. That is the point:
-    v1 charges the ATM spread and carries the smile's own, so a wing spread that started being
-    consumed would move these numbers and be caught.
+    `spread` is the ATM row's own width; `wings` is the RR and BF rows', as a fraction of it. Three
+    values of `wings` are three books the gates below need: a fraction is a desk's real wing quote,
+    `None` authors no sides on those rows at all - an ATM-only two-way, the book the skew is
+    measured against - and a NEGATIVE fraction crosses those prints, a stale bid through a live
+    offer.
     """
     out = copy.deepcopy(document)
     block = out['Calc']['MergeMarketData']['ExplicitMarketData'][
         'Market Prices']['FXVolPrices.USD.ZAR']
     for point in block['instrument']['Points']:
-        half = 0.5 * (spread if point['Quote_Type'] == 'ATM' else 0.5 * spread)
+        if point['Quote_Type'] != 'ATM' and wings is None:
+            continue
+        half = 0.5 * (spread if point['Quote_Type'] == 'ATM' else wings * spread)
         point['Quoted_Bid'] = point['Quoted_Market_Value'] - half
         point['Quoted_Ask'] = point['Quoted_Market_Value'] + half
     return out
@@ -417,9 +431,13 @@ def test_a_two_sided_quote_charges_the_spread_and_leaves_the_book_at_mid(book, t
     Note the frame - a leg's `Buy_Sell` is the CLIENT's side, so the booked package marks NEGATIVE
     on a two-sided quote and the desk's edge is the difference rather than `net_mid` itself.
 
+    The book carries a wing two-way as well as an ATM one, so what moves the coordinate here is the
+    whole spread: the flat shift and the skew together, each signed by the same side. The two are
+    told apart by the gates below this one, which quote the ATM-only book beside this one.
+
     This gate is also the empirical answer to "does a pricing run rebuild the surface from
-    `Market Prices`?". It does not: the only thing separating these two quotes is a shift applied
-    to the written `FXVol` surface of each leg's own copy, and every number below moves.
+    `Market Prices`?". It does not: the only thing separating these two quotes is what was done to
+    the written `FXVol` surface of each leg's own copy, and every number below moves.
     """
     ask = params(protected_rate=SPOT * 0.97)
     mid, two_sided = (structures.quote(document, 'ForwardExtra', ask)
@@ -446,6 +464,172 @@ def test_a_two_sided_quote_charges_the_spread_and_leaves_the_book_at_mid(book, t
     assert two_sided_collar['net'] - two_sided_collar['net_mid'] > 0, two_sided_collar['net_mid']
 
 
+COLLAR = 'ZeroCostCollar'
+
+
+def cap_of(outcome):
+    return leg(outcome, 'financing')['strike_market']
+
+
+def surface_of(document):
+    """The written `FXVol.USD.ZAR` surface as `{(moneyness, expiry): vol}` - what a leg actually
+    prices on, read off the document it prices against rather than off the quotes."""
+    rows = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
+        'FXVol.USD.ZAR']['Surface']['.Curve']['data']
+    return {(row[0], row[1]): row[2] for row in rows}
+
+
+def test_a_wing_two_way_skews_the_smile_rather_than_shifting_it(two_sided_book):
+    """What the RR and BF rows do to a side's copy of the surface, read off the surface itself.
+
+    THE COMPOSITION FIRST. A wing vol is `ATM + BF +- RR/2`, so its offered side is the offered
+    side of every term it is made of and the SUBTRACTED one takes its bid - half the ask-less-bid
+    of a linear combination is each term's own half times the size of its coefficient, summed. Both
+    wings of a pillar therefore widen by `BF_half + RR_half/2`: the risk reversal's spread reaches
+    both wings and its SIGN does not, which is why a two-way on the skew quote does not tilt the
+    smile. That is `WING_HALF`, and it is asserted as the number rather than as a direction.
+
+    THEN THE SHAPE, which is the whole ruling. A flat shift moves every node of the surface by ONE
+    number; this moves the widest quoted nodes by the composed half and the money by almost
+    nothing, so what comes out is a different smile rather than the same smile at a different
+    level. Measured on this book, the node nearest the money moves 5% of the wing's own widening at
+    three months and 10% at a year, against 100% at either end.
+
+    And EVERY node moves the client's way - the minimum move over the whole surface is positive.
+    That is the same rule the crossed print states: a widening that went negative somewhere on the
+    grid would be paying the client for the desk's own uncertainty about the skew.
+    """
+    wings = structures.wing_two_way(two_sided_book, 'USD.ZAR')
+    assert set(wings) == {(0.25, 0.25), (1.0, 0.25)}, wings
+    assert all(half == pytest.approx(WING_HALF, rel=1e-12) for half in wings.values()), wings
+
+    mid = surface_of(two_sided_book)
+    skewed = surface_of(structures.with_vol_shift(
+        two_sided_book, 'FXVol.USD.ZAR', 0.0,
+        structures.quote_points(two_sided_book, 'USD.ZAR'), wings))
+    shifted = surface_of(structures.with_vol_shift(
+        two_sided_book, 'FXVol.USD.ZAR', 0.5 * ATM_SPREAD))
+    skew = {node: skewed[node] - vol for node, vol in mid.items()}
+    flat = {node: shifted[node] - vol for node, vol in mid.items()}
+
+    assert min(skew.values()) > 0.0, 'the skew pays the client somewhere on the grid'
+    assert max(flat.values()) - min(flat.values()) < 1e-15 < max(skew.values()) - min(skew.values())
+    for expiry in (0.25, 1.0):
+        nodes = sorted(node for node in mid if node[1] == expiry)
+        assert skew[nodes[0]] == pytest.approx(WING_HALF, rel=1e-9), nodes[0]
+        assert skew[nodes[-1]] == pytest.approx(WING_HALF, rel=1e-9), nodes[-1]
+        money = min(nodes, key=lambda node: abs(node[0]))
+        assert skew[money] < 0.2 * WING_HALF, 'the money moved with the wings'
+
+
+def test_a_wing_two_way_moves_the_solved_coordinate_further_in(book, two_sided_book):
+    """The skew, priced - and the sign argument is one argument for every leg of both structures.
+
+    A leg struck away from the money prices off the WINGS, and the wings of that leg's own copy of
+    the surface have moved by `ATM_half + WING_HALF` where the flat shift alone would have moved
+    them by `ATM_half`. The sign is the client's side, the same sign the flat shift takes: what
+    they BUY costs more than the ATM-only book says, what they SELL is worth less. Because the
+    widening is symmetric across a pillar it does not matter which wing a leg lands on - the
+    asymmetry between two legs comes from their SIDES, never from their strikes.
+
+    So every leg of both structures pushes the solved coordinate the same way. The collar's client
+    buys the put (dearer) and sells the call that funds it (cheaper), so the cap has to come IN to
+    balance. The seagull adds a sold put, cheaper again, which finances less - in further still.
+    Three books say it: the mid cap, the ATM-only cap inside it, and the wing cap inside that,
+    with every one of them still above the forward. A skew consumed with the wrong sign, or on the
+    wrong leg, lands outside that ordering rather than passing quietly.
+
+    `wing_spread` is what the outcome says about it: one composed half per quoted pillar, or None
+    on the ATM-only book, which is how a consumer tells a skewed quote from a shifted one.
+    """
+    atm_only = two_way(book, wings=None)
+    floor = params(floor=SPOT * 0.95)
+    winged, flat, mid = (structures.quote(document, COLLAR, floor)
+                         for document in (two_sided_book, atm_only, book))
+
+    assert abs(winged['net']) <= SOLVE_TOLERANCE, winged['net']
+    assert winged['wing_spread'] == {'0.25 0.25': pytest.approx(WING_HALF, rel=1e-12),
+                                     '0.25 1': pytest.approx(WING_HALF, rel=1e-12)}
+    assert flat['wing_spread'] is None and mid['wing_spread'] is None
+    assert leg(winged, 'protection')['vol_spread'] == leg(flat, 'protection')['vol_spread'], (
+        'the flat shift moved when the wings did')
+    assert SPOT < cap_of(winged) < cap_of(flat) < cap_of(mid), (
+        'the skewed cap {} is not inside the ATM-only cap {}'.format(
+            cap_of(winged), cap_of(flat)))
+    assert winged['edge'] > flat['edge'] > 0.0, 'the skew captured nothing'
+
+    bird = params(floor=SPOT * 0.98, lower_floor=SPOT * 0.90)
+    winged, flat, mid = (structures.quote(document, 'Seagull', bird)
+                         for document in (two_sided_book, atm_only, book))
+
+    assert abs(winged['net']) <= SOLVE_TOLERANCE, winged['net']
+    assert SPOT < cap_of(winged) < cap_of(flat) < cap_of(mid), (
+        'the seagull cap {} is not inside the ATM-only cap {}'.format(
+            cap_of(winged), cap_of(flat)))
+    assert winged['edge'] > flat['edge'] > 0.0
+
+
+def test_a_book_with_no_wing_two_way_quotes_exactly_as_it_always_did(book):
+    """The compatibility contract for the skew, in the zero-wide precedent's own shape.
+
+    THREE books that quote no wing spread, and they have to be one quote to the float. One carries
+    no `Quoted_Bid`/`Quoted_Ask` on its RR and BF rows at all, so `wing_two_way` never sees them.
+    One quotes them ZERO-WIDE, which exercises the whole reading - the rows are found, both sides
+    are read, a half is composed per pillar - and must still compose to nothing rather than to a
+    widening of zero, because a widening of zero would rebuild the smile and land on floats that
+    are merely close. And one CROSSES them, a stale bid through a live offer, which reads zero-wide
+    for the reason a crossed ATM print does: the one thing a desk must not do with a broken print
+    is pay a client for it.
+
+    All three still charge the ATM spread - this is the WING layer's absence, not the two-way's -
+    so the gate is that the skew alone did nothing, and the quote that comes out is the one
+    `test_a_two_sided_quote_charges_the_spread_and_leaves_the_book_at_mid` pins.
+    """
+    ask = params(floor=SPOT * 0.95)
+    absent, zero_wide, crossed = (structures.quote(two_way(book, wings=wings), COLLAR, ask)
+                                  for wings in (None, 0.0, -WING_FRACTION))
+
+    assert [outcome['wing_spread'] for outcome in (absent, zero_wide, crossed)] == [None] * 3
+    assert [outcome['spread_note'] for outcome in (absent, zero_wide, crossed)] == [None] * 3
+    for outcome in (zero_wide, crossed):
+        for row, same in zip(absent['legs'], outcome['legs']):
+            assert (row['premium'], row['strike_market'], row['solved'], row['vol_spread']) == (
+                same['premium'], same['strike_market'], same['solved'], same['vol_spread']), row
+        assert (absent['net'], absent['net_mid'], absent['edge']) == (
+            outcome['net'], outcome['net_mid'], outcome['edge'])
+
+
+def test_a_book_that_never_states_use_quotes_rather_than_raising(book):
+    """`Use` is an OPTIONAL field, so its absence is a quote that counts - and the quote layer has
+    to read it the way the rest of the file does.
+
+    `to_market_prices_block` writes the field, so every book above carries it; a hand-authored
+    block, or one from a source that only ever states what it wants held OUT, does not. The wing
+    reader walks the block on EVERY quote - a book whose RR and BF rows carry a mid alone included,
+    since walking it is how the layer learns there is no wing two-way to charge - so a strict
+    `point['Use']` there made a `KeyError` of a book that prices perfectly well, and made it inside
+    `quote()` rather than at any refusal seam a desk could read.
+
+    The gate is the whole quote, not the reader: the same collar off the same surface, charging the
+    same ATM spread, solving the same cap to the float as the book that states the field.
+    `atm_two_way` already read it leniently, so what this pins is that the two readers agree about
+    what an absent `Use` means.
+    """
+    stated = two_way(book, wings=None)
+    useless = copy.deepcopy(stated)
+    points = useless['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Market Prices']['FXVolPrices.USD.ZAR']['instrument']['Points']
+    assert all(point.pop('Use') == 'Yes' for point in points), 'the fixture states no Use to drop'
+
+    ask = params(floor=SPOT * 0.95)
+    quoted = structures.quote(useless, COLLAR, ask)
+
+    assert structures.quote_points(useless, 'USD.ZAR') == points
+    assert quoted['wing_spread'] is None, 'the wing reader found sides this block does not quote'
+    assert cap_of(quoted) == pytest.approx(19.16949442549199, rel=1e-12), cap_of(quoted)
+    assert cap_of(quoted) == cap_of(structures.quote(stated, COLLAR, ask))
+
+
 #: The desk's mandate, as a book declares one. `participation` at a half is the default a declared
 #: block carries; the gates below vary one field at a time off this.
 POLICY = {'participation': 0.5, 'floor': 'mid', 'scope': 'vol',
@@ -467,17 +651,10 @@ def holding(document, deals):
     return out
 
 
-COLLAR = 'ZeroCostCollar'
-
-
 @pytest.fixture(scope='module')
 def standing(two_sided_book):
     """One collar quoted at the full two-way - the trade the books below already carry."""
     return structures.quote(two_sided_book, COLLAR, params(floor=SPOT * 0.95))
-
-
-def cap_of(outcome):
-    return leg(outcome, 'financing')['strike_market']
 
 
 def test_a_book_with_no_quote_policy_quotes_exactly_as_it_always_did(two_sided_book, standing):
@@ -567,6 +744,20 @@ def test_an_offset_quotes_tighter_than_a_repeat(book, two_sided_book, standing):
     assert abs(skew['after']) < 1e-6 * abs(skew['before']), 'the offset left skew standing'
     assert piled['after'] == pytest.approx(2.0 * piled['before'], rel=1e-9)
     assert skew['half_spread'] > 0.0
+
+    # the OUTCOME describes the quote it charged, both halves of it. Every leg's `vol_spread` is
+    # already the scaled one - the re-quote multiplies the ATM half by `scale` - and the composed
+    # wing halves are reported at the same scale, so a consumer reading the skew off the answer
+    # reads what the client dealt on rather than the untightened two-way the book quotes
+    assert reducing['wing_spread'] == {
+        pillar: pytest.approx(WING_HALF * reducing['risk']['scale'], rel=1e-12)
+        for pillar in ('0.25 0.25', '0.25 1')}, reducing['wing_spread']
+    assert all(half < WING_HALF for half in reducing['wing_spread'].values())
+    assert adding['wing_spread'] == {pillar: pytest.approx(WING_HALF, rel=1e-12)
+                                     for pillar in ('0.25 0.25', '0.25 1')}
+    assert abs(leg(reducing, 'protection')['vol_spread']) == pytest.approx(
+        reducing['risk']['scale'] * abs(leg(adding, 'protection')['vol_spread']), rel=1e-12), (
+        'the flat half and the wing halves are not on one scale')
 
     assert cap_of(adding) == cap_of(full_spread), 'the repeat is not the full-spread quote'
     assert cap_of(adding) < cap_of(reducing) < cap_of(structures.quote(book, COLLAR, ask)), (

@@ -52,7 +52,9 @@ run reads, so it refreshes with the book. XVA is PER NETTING SET and a CACHED PR
 Monte Carlo is minutes of device time and must never ride a tick, so `DV_HOME/xva.json` holds the
 last run of each set and a desk asks for a recalc - all the sets, or the ones it names. The
 projection is a MOSAIC: each row carries its own `as_of`, a partial recalc moves only the rows it
-names, and staleness is data rather than a failure.
+names, and staleness is data rather than a failure. Each row's `cva` and `fva` are COLUMNS of that
+one run - both are reductions of the same exposure cube, so one CMC produces both and they share an
+`as_of` and a replay tuple. There is no `kva`: no calculation in the engine computes one.
 
 Every POST body is either a job document or `{"plan_id": ...}` naming one already prepared, and
 nothing downstream can tell the two apart: the plan cache holds a pristine parse and every read of
@@ -1099,6 +1101,14 @@ XVA_CVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '',
                  'Deflate_Stochastically': 'No', 'Stochastic_Hazard_Rates': 'No',
                  'Gradient': 'No'}
 
+#: The FVA block a recalc switches on, beside the CVA one and off the SAME run - the projection's
+#: second column. `Counterparty` is the set's, as it is for CVA; the three curves are decided per
+#: set (see `funding_curves`); the rest is the same desk-projection posture as the CVA block -
+#: deterministic deflation, no stochastic funding, no gradient. A partial block KeyErrors in the run.
+XVA_FVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '', 'Risk_Free_Curve': '',
+                 'Funding_Cost_Interest_Curve': '', 'Funding_Benefit_Interest_Curve': '',
+                 'Deflate_Stochastically': 'No', 'Stochastic_Funding': 'No', 'Gradient': 'No'}
+
 #: The recalc in flight per netting set, as the POST filed it: `{Reference: result_id}`. The row in
 #: `xva.json` names the run that PRODUCED it, never the one still running, so the view reads the
 #: pending id here. Never cleaned: a settled id simply stops reading `queued`/`running`.
@@ -1169,18 +1179,54 @@ def set_terms(deal):
             str(deal.get('Collateralized', 'False')).lower() == 'true')
 
 
+def funding_curves(deal, risk_free):
+    """`(cost, benefit)` funding curve names for a set's FVA, off the set's OWN declaration.
+
+    `Funding_Rate` is the curve a `NettingCollateralSet` already names as what it funds at, so the
+    projection reads the funding leg where the book states it rather than inventing a desk-wide
+    spread nobody authored. A set that names none funds at the risk-free curve, and FVA is then
+    identically zero by construction - FCA and FBA are both a spread OVER risk-free, so equal curves
+    make the adjustment nothing. THAT ZERO IS A READING, not a placeholder: it says this set
+    declares no funding spread, and the remedy is to author `Funding_Rate` on the set.
+
+    Cost and benefit are the same curve because a single `Funding_Rate` is all the set declares -
+    and because `Config.calc_dependencies` registers the COST curve and the risk-free one as factor
+    dependencies but not the benefit curve, so a benefit curve nothing else pulls in would fail the
+    run for a missing factor.
+    """
+    funding = deal.get('Funding_Rate') or risk_free
+    return funding, funding
+
+
 def xva_document(document, node, counterparty):
-    """A `Credit_Monte_Carlo` job over the book carrying ONE netting set's subtree.
+    """A `Credit_Monte_Carlo` job over the book carrying ONE netting set's subtree, priced for BOTH
+    adjustments the projection carries.
 
     The book's market data, calendars, bootstrappers and report currency travel WHOLE - the CVA
-    reads the counterparty's `SurvivalProb` block off them - and exactly three things are decided
-    here: the deal tree becomes that set alone, the calculation becomes a CMC, and the CVA block is
-    switched on against the counterparty the SET names.
+    reads the counterparty's `SurvivalProb` block off them - and exactly four things are decided
+    here: the deal tree becomes that set alone, the calculation becomes a CMC, and the CVA and FVA
+    blocks are both switched on against the counterparty the SET names.
+
+    ONE RUN, TWO NUMBERS. Both adjustments reduce the same exposure cube, so asking for them
+    together costs one CMC rather than two and lands them on one `as_of` and one replay tuple -
+    which is what makes them columns of the same row instead of two projections to reconcile.
+
+    AND THE CUBE IS NOT THE ONE A CVA-ONLY RUN SEES. `Funding_Valuation_Adjustment.Calculate` is
+    what sets `CMC_State.scale_survival`, and a netting set under that flag reports its MTM already
+    multiplied by the counterparty's survival probability - which the CVA integrand then weights by
+    the marginal default probability a second time. So the `cva` column here is a survival-scaled
+    one and reads BELOW a standalone CVA: measured on the gate's own book at 1024 paths, 0.97% low
+    for a counterparty at 2% hazard and 2.38% low for one at 5%, the shift tracking the hazard
+    exactly. That coupling lives in `Calculation` and `NettingCollateralSet.post_process`, not here;
+    it is named here because it is what the column MEANS, and a desk reconciling this projection
+    against a CVA-only run has to know which of the two it is holding.
 
     The synthesized fields are a FLOOR, not a policy: `setdefault` leaves a book that states its
-    own path count, batching or deflation curve entirely alone. `Deflation_Interest_Rate` is
-    synthesized at all because the declaration's default names a ZAR curve, which a book need not
-    carry - the report currency's own curve is the one deflation a book that priced at all has.
+    own path count, batching or deflation curve entirely alone, and a book that authors either
+    adjustment block keeps every field of it that is not the counterparty. `Deflation_Interest_Rate`
+    is synthesized at all because the declaration's default names a ZAR curve, which a book need not
+    carry - the report currency's own curve is the one deflation a book that priced at all has, and
+    it is the risk-free curve the funding spread is measured against for the same reason.
     """
     run = deepcopy(document)
     run['Calc']['Deals']['Deals']['Children'] = [node]
@@ -1191,12 +1237,27 @@ def xva_document(document, node, counterparty):
     block = dict(XVA_CVA_BLOCK, **(calculation.get('Credit_Valuation_Adjustment') or {}))
     block.update(Calculate='Yes', Counterparty=counterparty)
     calculation['Credit_Valuation_Adjustment'] = block
+
+    risk_free = calculation['Deflation_Interest_Rate']
+    cost, benefit = funding_curves(node['Instrument']['.Deal'], risk_free)
+    funding = dict(XVA_FVA_BLOCK, Risk_Free_Curve=risk_free,
+                   Funding_Cost_Interest_Curve=cost, Funding_Benefit_Interest_Curve=benefit,
+                   **(calculation.get('Funding_Valuation_Adjustment') or {}))
+    funding.update(Calculate='Yes', Counterparty=counterparty)
+    calculation['Funding_Valuation_Adjustment'] = funding
     run['Calc']['Calculation'] = calculation
     return run
 
 
 class XvaJob:
-    """One netting set's CVA as ONE unit of queued work, and the projection row it lands as.
+    """One netting set's CVA and FVA as ONE unit of queued work, and the projection row it lands as.
+
+    TWO COLUMNS, ONE RUN. Both adjustments are reductions of the same exposure cube, so one CMC
+    produces both and the row carries them under one `as_of` and one replay tuple. A THIRD is not
+    coming this way: KVA is not built, and it is not a placeholder column here because no
+    calculation in the engine computes one - `Calculation.CreditMonteCarlo` reports `cva` and `fva`
+    and there is no capital charge anywhere behind it. A null column would read as "not run yet"
+    when the truth is "not implemented", and those are different facts.
 
     PER-SET GRANULARITY IS THE POINT. A whole-book recalc queues one of these per set rather than
     one run over the lot, so the queue DRAINS between sets: a quote or a base valuation submitted
@@ -1218,11 +1279,33 @@ class XvaJob:
 
     def row(self, **fields):
         """The set's row: who it is against, what was run, and what came back - the replay tuple
-        included, so a number on the blotter can be reproduced from the row alone."""
+        included, so a number on the blotter can be reproduced from the row alone.
+
+        Both adjustment columns are in the BASE dict as nulls, so a row is never filed missing one:
+        a failure path states its error and nothing else, and every row the file carries has the
+        same keys whatever happened to it."""
         return dict({'counterparty': self.counterparty, 'collateralized': self.collateralized,
+                     'cva': None, 'fva': None,
                      'result_id': self.result_id, 'plan_hash': self.stamp['plan_hash'],
                      'values_hash': self.stamp['values_hash'], 'seed': self.stamp['seed'],
                      'as_of': as_of()}, **fields)
+
+    @staticmethod
+    def adjustments(results, stored=False):
+        """The columns one run's results carry - `{'cva': ..., 'fva': ...}`.
+
+        Takes the run's `Results` or a stored result's `tables`, which are the same mapping either
+        side of the JSON. `stored` is the one difference between the two readings, and it is where
+        the leniency belongs: a result filed BEFORE this column existed carries no `fva` at all and
+        is written UP rather than re-run, so a missing number there is age and reads None.
+
+        A FRESH run is strict. Both adjustments were asked for in the same job, so an `fva` table
+        that is not there is a defect of this run rather than staleness, and filing a null a desk
+        would read as 'no funding cost' is the one thing that must not happen quietly. It raises,
+        and `run_job`'s own handler files the row as failed with the message.
+        """
+        fva = results.get('fva') if stored else results['fva']
+        return {'cva': float(results['cva']), 'fva': None if fva is None else float(fva)}
 
     def landed(self, result):
         """The row a run the store ALREADY holds lands as.
@@ -1233,17 +1316,17 @@ class XvaJob:
         away from being whole again instead of one CMC away.
         """
         if result['status'] != 'done':
-            return self.row(cva=None, status='failed', error=result.get('error'))
-        return self.row(cva=float(result['tables']['cva']), status='done')
+            return self.row(status='failed', error=result.get('error'))
+        return self.row(status='done', **self.adjustments(result['tables'], stored=True))
 
     def run_job(self):
         try:
             _, out = self.context.run_job()
-            cva = float(out['Results']['cva'])
+            landed = self.adjustments(out['Results'])
         except Exception as error:
-            write_row(self.reference, self.row(cva=None, status='failed', error=str(error)))
+            write_row(self.reference, self.row(status='failed', error=str(error)))
             raise
-        write_row(self.reference, self.row(cva=cva, status='done'))
+        write_row(self.reference, self.row(status='done', **landed))
         return None, out
 
 
@@ -1258,9 +1341,11 @@ def book_xva(request: dict):
     jumping the queue while the sets drain.
 
     Each job composes a `Credit_Monte_Carlo` over the book carrying THAT set's subtree, with
-    `Credit_Valuation_Adjustment.Calculate` on and the counterparty read off the set's own
-    `Credit_Support_Amounts`. A reference that names no netting set refuses BY NAME and queues
-    nothing at all, not even the sets that were spelled correctly.
+    `Credit_Valuation_Adjustment.Calculate` AND `Funding_Valuation_Adjustment.Calculate` on and the
+    counterparty read off the set's own `Credit_Support_Amounts` for both. One run, two columns:
+    the adjustments reduce the same exposure cube, so the row's `cva` and `fva` share its `as_of`
+    and its replay tuple. A reference that names no netting set refuses BY NAME and queues nothing
+    at all, not even the sets that were spelled correctly.
 
     Answers `{queued: [{reference, result_id}]}`. Content addressing applies: the same set over an
     unmoved book is one run, and asking twice hands back the id of the first.
@@ -1300,11 +1385,16 @@ def book_xva(request: dict):
 def projection_entry(row, **book):
     """One row of the XVA view: what the BOOK says the set is now, over what the last RUN said
     about it. Every field is always present - a never-run set reads `status: 'never run'` with
-    nulls beside it - so a blotter renders one table rather than branching per row."""
+    nulls beside it - so a blotter renders one table rather than branching per row.
+
+    A ROW FILED BEFORE A COLUMN EXISTED IS STILL A ROW. `fva` is read the same way every other
+    field is, so a row written when CVA was the only adjustment reads `status: 'done'` with a real
+    `cva` and a null `fva` - the projection is a mosaic in TIME as well as across sets, and the
+    remedy for a null column is the same recalc as for an old `as_of`."""
     row = row or {}
     entry = dict({'reference': None, 'deal_path': None, 'counterparty': row.get('counterparty'),
                   'collateralized': row.get('collateralized'), 'note': None}, **book)
-    entry.update(status=row.get('status', 'never run'), cva=row.get('cva'),
+    entry.update(status=row.get('status', 'never run'), cva=row.get('cva'), fva=row.get('fva'),
                  as_of=row.get('as_of'), result_id=row.get('result_id'),
                  plan_hash=row.get('plan_hash'), values_hash=row.get('values_hash'),
                  seed=row.get('seed'), error=row.get('error'), recalc=None)
@@ -1322,13 +1412,23 @@ def book_xva_view():
 
     Netting sets are the instruments. Each entry carries what the book says the set is NOW
     (`reference`, `deal_path`, `counterparty`, `collateralized`) over what the last run said about
-    it (`cva`, `as_of`, `status` and the replay tuple - `result_id`, `plan_hash`, `values_hash`,
-    `seed`). A set the book carries with no row yet reads `status: 'never run'`; a ROW whose set has
-    since left the book is reported with a null `deal_path` and a `note` saying so rather than
-    silently dropped. A recalc still queued or running rides under `recalc`.
+    it (`cva`, `fva`, `as_of`, `status` and the replay tuple - `result_id`, `plan_hash`,
+    `values_hash`, `seed`). A set the book carries with no row yet reads `status: 'never run'`; a
+    ROW whose set has since left the book is reported with a null `deal_path` and a `note` saying so
+    rather than silently dropped. A recalc still queued or running rides under `recalc`.
+
+    THE ADJUSTMENTS ARE COLUMNS OF ONE ROW. `cva` and `fva` come off ONE credit Monte Carlo per set,
+    so they share an `as_of` and a replay tuple and can be added without asking whether they were
+    priced on the same market. `fva` is the funding cost less the funding benefit over the exposure,
+    both measured as a spread over the risk-free curve, so a set that declares no `Funding_Rate`
+    of its own reads exactly 0.0 - no spread, no adjustment. There is NO `kva` column and there is
+    no null one either: nothing in the engine computes a capital charge, and a null would read as
+    "not recalculated yet" when the fact is "not implemented".
 
     STALENESS IS DATA. The rows carry different `as_of` stamps on purpose - that is what a partial
     recalc means - so the view never blocks, never runs a CMC, and never hides how old a number is.
+    A row filed before the `fva` column existed reads `done` with a null `fva` for the same reason
+    and takes the same remedy: recalculate that set.
     """
     document, _ = live_book().read()
     rows = read_projection().get('sets') or {}
@@ -1539,8 +1639,16 @@ class BloombergJob:
                     '{} is stale - {}'.format(name, why) for name, why in sorted(late.items())])
 
             self.note('installing and bootstrapping', len(pairs), len(pairs))
-            written = self.book.mutate(
-                lambda document: market_edit(document, quotes, {}, 'Yes'))
+            try:
+                written = self.book.mutate(
+                    lambda document: market_edit(document, quotes, {}, 'Yes'))
+            except (ValueError, KeyError) as error:
+                # what `/book/market` turns into a 422, turned into the refusal a JOB lands as: a
+                # book carrying something the tick's own bootstrap cannot take (a re-authored
+                # block, a section it needs and lacks) is a refused beat, and the metronome's
+                # failed-beat handling reads `refused` off these Stats. Raising here would reach it
+                # as an unhandled job error instead, and the write is untouched either way
+                return self.outcome(started, written=False, refused=[str(error)])
             return self.outcome(started, provisioned=created, **written)
         finally:
             PROGRESS.pop(self.result_id, None)
@@ -1640,6 +1748,12 @@ def hn_edit(document, pair):
     market['Bootstrapper Configuration'].setdefault(HN_FAMILY, {})
     try:
         written, outcome = market_edit(document, {name: as_json(block)}, {}, 'Yes')
+    except (ValueError, KeyError) as error:
+        # the catch `/book/market` makes a 422 of, made into the refusal a queued job lands as: a
+        # fit the install seam turns away is a refusal with the message under this run's own Stats,
+        # never an exception out of the worker. `written` False leaves the file untouched, which is
+        # what it would have been anyway
+        written, outcome = False, {'written': False, 'refused': [str(error)]}
     finally:
         if borrowed:
             market['Bootstrapper Configuration'].pop(HN_FAMILY, None)
