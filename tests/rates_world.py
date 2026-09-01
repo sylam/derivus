@@ -64,17 +64,24 @@ def deposit(ref, currency, discount, months, quote, day_count='ACT_360'):
         'Interest_Rate_Schedule': utils.DateList({BASE: quote})}
 
 
-def fra(ref, currency, forecast, discount, start_months, end_months, quote, day_count='ACT_360'):
-    """A forward rate agreement on the projection curve, quoted at `quote` percent."""
+def fra(ref, currency, forecast, discount, start_months, end_months, quote, day_count='ACT_360',
+        timing='End', side='Borrower', principal=1e6, fixing_lag=0):
+    """A forward rate agreement on the projection curve, quoted at `quote` percent.
+
+    `timing` is `Payment_Timing`, which moves the PV date and the settlement date independently;
+    `fixing_lag` sets the reset that many days BEFORE the effective date, which is where a real
+    FRA fixes. The defaults are the par-quoted benchmark the curve solve authors.
+    """
+    effective = BASE + pd.DateOffset(months=start_months)
     return {
         'Object': 'FRADeal', 'Reference': ref, 'Currency': currency,
         'Discount_Rate': discount, 'Interest_Rate': forecast,
-        'Effective_Date': BASE + pd.DateOffset(months=start_months),
+        'Effective_Date': effective,
         'Maturity_Date': BASE + pd.DateOffset(months=end_months),
-        'Reset_Date': BASE + pd.DateOffset(months=start_months),
-        'Day_Count': day_count, 'Principal': 1e6, 'FRA_Rate': quote,
-        'Borrower_Lender': 'Borrower', 'Use_Known_Rate': 'No', 'Known_Rate': 0.0,
-        'Payment_Timing': 'End', 'Calendars': None}
+        'Reset_Date': effective - pd.Timedelta(days=fixing_lag),
+        'Day_Count': day_count, 'Principal': principal, 'FRA_Rate': quote,
+        'Borrower_Lender': side, 'Use_Known_Rate': 'No', 'Known_Rate': 0.0,
+        'Payment_Timing': timing, 'Calendars': None}
 
 
 def par_swap(ref, currency, forecast, discount, years, quote,

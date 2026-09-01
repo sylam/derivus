@@ -3180,13 +3180,14 @@ class SwaptionDeal(Deal):
             Ut_swap = delta * mn_swap * F_swap
 
             if Ut_swap.shape[0]:
-                exercised = (delta * mn_option[-1]) >= 0
+                decision = delta * mn_option[-1]
+                exercised = decision >= 0
                 Ut_mask = Ut_swap * exercised
                 mtm = FX_rep * torch.cat([value, buysell * Ut_mask], dim=0)
                 if getattr(shared, 'boundary_aad', False) and time_grid.report_index is not None:
                     self.register_exercise_boundary(
                         shared, time_grid, deal_data, FX_rep, value,
-                        buysell * Ut_swap, Ut_swap[0], exercised)
+                        buysell * Ut_swap, decision, exercised)
             else:
                 mtm = FX_rep * value
 
@@ -3200,16 +3201,29 @@ class SwaptionDeal(Deal):
         """Record the frozen exercise decision so its derivative can be restored.
 
         Physical settlement is genuinely path dependent, so the jump is real product economics and
-        must not be smoothed; what ordinary AAD drops is the flux of scenarios across
-        `Ut_swap[0] = 0`, where the indicator broadcast over later rows has zero derivative almost
-        everywhere. The gap IS `Ut_swap[0]` and both branches are the two sides of the mask the
-        pricer just evaluated, so nothing is re-simulated, re-priced or re-drawn.
+        must not be smoothed; what ordinary AAD drops is the flux of scenarios across the exercise
+        boundary, where the indicator broadcast over later rows has zero derivative almost
+        everywhere. The gap IS the DECISION the pricer took - `delta * mn_option[-1]`, the
+        moneyness on the last pre-expiry row - so `fired` is `gap >= 0` by construction. The first
+        post-expiry row is a different number on any path whose moneyness moved between the two
+        rows, and a gap taken there would put the flux at a boundary nothing was decided on. Both
+        branches are the two sides of the mask the pricer just evaluated, so nothing is
+        re-simulated, re-priced or re-drawn.
 
         Registered as a single-decision LatchedBoundarySet, the shape a discrete barrier uses:
         `triggered` holds the swap, `untriggered` lets the option lapse, and the pre-expiry rows
         are identical in both. The decision is a property of the SCENARIO, resolved for every row
         alike, so `obs_before` needs no row labels.
+
+        `gap_disagrees` on the debug line is the whole contract in one number, and it is the only
+        place a wrongly sourced gap is visible at all: the reported profile is the same either way
+        and only the gradient moves.
         """
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            logging.debug('SWAPTION BOUNDARY %s fired=%d/%d gap_disagrees=%d',
+                          deal_data.Instrument.field.get('Reference', 'unnamed'),
+                          int(exercised.sum()), exercised.numel(),
+                          int(((gap.detach() >= 0) != exercised).sum()))
         triggered = torch.cat([option, swap], dim=0).detach()
         shared.boundary_sets.append(utils.LatchedBoundarySet(
             gaps=[gap], fired=[exercised.detach()],
@@ -6376,8 +6390,11 @@ class FRADeal(Deal):
         Accrual_fraction = utils.get_day_count_accrual(
             base_date, (self.field['Maturity_Date'] - self.field['Effective_Date']).days, field_index['Daycount'])
 
+        # the PV date, which is NOT the settlement date: only Begin values from the start of the
+        # rate period. End and Discounted both PV the full amount from maturity and differ only in
+        # where the cash lands, which `reset`'s pay_date is what states.
         timing = self.field.get('Payment_Timing', 'End')
-        discount_date = self.field['Maturity_Date'] if timing == 'Discounted' else self.field['Effective_Date']
+        discount_date = self.field['Effective_Date'] if timing == 'Begin' else self.field['Maturity_Date']
 
         cashflows = {'Items':
             [{

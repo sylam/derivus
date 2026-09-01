@@ -5828,13 +5828,26 @@ def pv_float_leg(shared, time_grid, deal_data):
 
 @utils.log_exception
 def pv_fra_leg(shared, time_grid, deal_data):
+    """The FRA leg, whose settlement DATE and PV date are two different dates.
+
+    `pv_float_cashflow_list` books at the cashflow's own payment date, which is the date the PV
+    runs from, so an FRA settling early on a discounted amount cannot use it - hence
+    `settle_cash=False` and the settle below.
+
+    The deal's LAST row is its settlement row (`FRADeal.reset` puts `pay_date` there), and
+    `local_pv[-1]` is the value on it. That is the whole of the timing map:
+
+    | Payment_Timing | PV from | last row | booked |
+    | --- | --- | --- | --- |
+    | `End` | Maturity | Maturity | the full realized amount, nothing left to discount |
+    | `Discounted` | Maturity | Effective | the amount discounted back to effective |
+    | `Begin` | Effective | Effective | the full amount, undiscounted, at the start |
+    """
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
 
     FX_rep = utils.calc_fx_cross(
         deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
 
-    # we could have the case where we settle at effective date but pv from maturity_date
-    # so we don't settle inside pv_float_cashflow_list
     local_pv = pv_float_cashflow_list(
         shared, time_grid, deal_data, pricer_float_cashflows, settle_cash=False)
 
