@@ -8,52 +8,35 @@ row, `delta * mn_option[-1]`. The rows after expiry then report the delivered sw
     mtm[t > expiry] = buysell * Ut_swap * exercised
 
 The boundary registration was handed `Ut_swap[0]` - the FIRST POST-EXPIRY row - as its gap. The two
-are the same number only on a path whose moneyness did not move between those two rows, and the
-whole point of registering a boundary is the flux of scenarios ACROSS it, which is a statement
-about the paths sitting closest to zero: exactly the ones a day of rate moves flips. So the
-correction was repairing the derivative of a decision the pricer never took, on scenarios it
-scored on the wrong side.
+agree only where moneyness did not move between those rows, and the flux a boundary registers is
+precisely the paths closest to zero: the ones a day of rate moves flips. So the correction repaired
+the derivative of a decision the pricer never took.
 
-The fix passes the DECISION as the gap, which makes `fired` equal `gap >= 0` by construction.
-That is not a tautology anybody has to take on trust, because both halves are READABLE OFF A
-PRICED DOCUMENT:
+The fix passes the DECISION as the gap, making `fired` equal `gap >= 0` by construction - and both
+halves are READABLE OFF A PRICED DOCUMENT:
 
-  * at the expiry row the option's remaining life is zero, so its reported value is the INTRINSIC
-    `pvbp * max(delta * (s - K), 0)` - strictly positive exactly where `delta * mn_option[-1] > 0`.
-    Measured against the same two legs priced as a standalone swap, the payer's expiry row and
-    that swap's own value there agree to the last bit wherever both are positive
-    (733808.55014745 against 733808.55014746), which is what says the expiry row IS the gap with
-    the positive `pvbp` divided out.
+  * at the expiry row the option has no life left, so its value is the INTRINSIC
+    `pvbp * max(delta * (s - K), 0)`, strictly positive exactly where `delta * mn_option[-1] > 0`.
+    The payer's expiry row and the same two legs priced as a standalone swap agree to the last bit
+    (733808.55014745 against 733808.55014746), which says the expiry row IS the gap with `pvbp`
+    divided out.
   * on the first post-expiry row the swaption reports `buysell * Ut_swap[0]` if it exercised and
-    exactly zero if it did not, so `exercised` is readable there.
+    exactly zero if it did not.
 
-THE FIXTURE. A payer and a receiver swaption on the SAME underlying - a 1Y into 3Y, semi-annual
-fixed against quarterly floating, ZAR 100m - struck at 9.50 against a 9.4932 forward, so the
-decision is genuinely live: about half the paths exercise. The two are complements, and the pair is
-what makes both directions of the flip visible: the payer exercising into a swap that has since
-gone against it, and the receiver doing the same on the paths the payer left.
+THE FIXTURE. A payer and a receiver on the SAME underlying - 1Y into 3Y, semi-annual fixed against
+quarterly floating, ZAR 100m - struck at 9.50 against a 9.4932 forward, so about half the paths
+exercise. The pair makes both directions of the flip visible.
 
-The rows either side of expiry are one day apart, and that is structural rather than a fixture
-choice - `SwaptionDeal.finalize_dates` puts the option expiry into each child's settlement dates
-and then offsets them by a day, so expiry+1 is always an MTM row of a physically settled swaption.
-One day of Hull-White at 1% absolute vol is what has to move a path across the boundary, so the
-fixture pays for its flips in PATHS: at 4096, seeds 1/2/3 give 33/30/31 payer flips and 28/24/30
-receiver flips, against 2099/2063/2078 payer exercises. Thin, robust, and not something a
-tolerance can be traded against - the gate asserts the count is non-zero and would be vacuous if
-it were not.
+The rows either side of expiry are one day apart structurally: `SwaptionDeal.finalize_dates` puts
+the expiry into each child's settlement dates and offsets them by a day. One day of Hull-White at 1%
+absolute vol is what has to move a path across, so the fixture pays for flips in PATHS: at 4096,
+seeds 1/2/3 give 33/30/31 payer flips and 28/24/30 receiver flips against 2099/2063/2078 exercises.
 
-KILL READINGS. There are TWO earlier builds and they fail different gates, which is worth keeping
-apart because only one of them is what this file was written for.
-
-  * Before 636f9a8 the DECISION was `Ut_swap[0] >= 0` as well. The first post-expiry row is then
-    `relu(Ut_swap[0])` for a bought payer, so it cannot be negative at all and the flip count is
-    structurally zero - measured zero at seed 1, against the 33 and 28 above. The consistency gate
-    fails there on 61 of 4096 paths for each swaption, and it is the SAME 61: a payer and a
-    receiver disagree on one boundary.
-  * At 636f9a8 the decision was already right and only the GAP came from `Ut_swap[0]`. Nothing
-    reported moves: the profile, the exposure and the CVA are bit-identical, and the first three
-    gates below all pass. Only `gap_disagrees` sees it - 9 of 512 paths at seed 1, 61 of 4096 -
-    which is why that gate exists and why it is a log line rather than a number off the results.
+KILL READINGS, two earlier builds failing different gates. With the DECISION also at `Ut_swap[0]`,
+the first post-expiry row is `relu(Ut_swap[0])` for a bought payer, so the flip count is
+structurally zero and the consistency gate fails on 61 of 4096 paths for each swaption - the SAME
+61. With the decision right and only the GAP from `Ut_swap[0]`, nothing reported moves - profile,
+exposure and CVA bit-identical - and only `gap_disagrees` sees it: 9 of 512 at seed 1, 61 of 4096.
 """
 import logging
 import os
@@ -301,14 +284,12 @@ def read(seed=1, paths=PATHS, **kwargs):
 def test_the_exercise_matches_the_moneyness_of_the_row_it_was_decided_on(reference):
     """`exercised == (gap >= 0)`, path for path, read off the priced document.
 
-    The gap is `delta * mn_option[-1]`, and the expiry row reports `pvbp` times the RELU of it -
-    an option with no life left is worth its intrinsic - so `profile[expiry] > 0` is the gap's
-    sign with `pvbp > 0` divided out. `exercised` is the first post-expiry row being anything
-    other than the zero the unexercised branch reports.
+    The gap is `delta * mn_option[-1]` and the expiry row reports `pvbp` times its RELU, so
+    `profile[expiry] > 0` is the gap's sign with `pvbp > 0` divided out. `exercised` is the first
+    post-expiry row being anything other than the zero the unexercised branch reports.
 
-    Against a DECISION taken at the post-expiry row - which is what this pricer did before
-    636f9a8 - the two disagree on every path whose moneyness crossed zero between the rows, which
-    is the whole population the correction downstream exists to weight.
+    Against a DECISION taken at the post-expiry row the two disagree on every path whose moneyness
+    crossed zero between the rows - the population the correction exists to weight.
     """
     _, pre, post, profiles, _ = read()
     profile = profiles[reference]
@@ -327,17 +308,13 @@ def test_the_exercise_matches_the_moneyness_of_the_row_it_was_decided_on(referen
 
 
 def test_a_path_whose_moneyness_flips_after_expiry_still_delivers_the_swap():
-    """THE FLIP - the population every gate in this file is really about, counted.
+    """THE FLIP - the population every gate here is about, counted. A path in the money at expiry
+    exercises, and if the rate moves against it overnight it holds a swap worth LESS THAN NOTHING on
+    the next reporting row. With the decision at `Ut_swap[0] >= 0` that row is `relu(Ut_swap[0])`
+    and can never be negative, so the flip count is structurally zero.
 
-    A path in the money at expiry exercises, and if the rate moves against it overnight it holds a
-    swap worth LESS THAN NOTHING on the very next reporting row. Before 636f9a8 the decision was
-    `Ut_swap[0] >= 0`, so that row was `relu(Ut_swap[0])` and could never be negative - the flip
-    count was structurally zero, and no price gate could see it because the reported value was a
-    perfectly plausible number on every path.
-
-    Both directions are read, which is what the receiver is in the book for: the payer flipping
-    down and the receiver flipping down are different paths - a receiver exercises exactly where a
-    payer does not - so a single deal would leave half the boundary unmeasured.
+    Both directions are read, which is what the receiver is in the book for: a receiver exercises
+    exactly where a payer does not, so a single deal leaves half the boundary unmeasured.
     """
     _, pre, post, profiles, _ = read()
     flips = {}
@@ -381,22 +358,15 @@ def test_the_payer_and_the_receiver_partition_the_paths():
 # ------------------------------------------------ the gap the registration was actually handed
 
 def test_the_registered_gap_is_the_decision_it_was_taken_on(caplog):
-    """THE FIX ITSELF, and the only gate that can see it.
+    """THE FIX ITSELF, and the only gate that can see it. The profile is IDENTICAL whichever number
+    the registration was handed - the gap reaches only the backward pass, worth exactly zero forward
+    - so the only honest way to see it without patching the library is to make the pricer SAY it.
 
-    Everything above reads the reported profile, and the profile is IDENTICAL whichever number the
-    registration was handed - the gap reaches only the backward pass, through
-    `stochastic_boundary_correction`, which is worth exactly zero forward. So a gap taken at the
-    wrong row is invisible to every price, every exposure and every ledger in this repo, and the
-    only honest way to see it without patching the library is to make the pricer SAY it.
+    `register_exercise_boundary` logs `gap_disagrees` at DEBUG: scenarios where `gap >= 0` and
+    `fired` differ. Zero is the contract; against a gap taken at the first post-expiry row it reads
+    9 of 512 at seed 1 (61 of 4096, which is the payer's 33 down-flips plus the receiver's 28).
 
-    `register_exercise_boundary` logs `gap_disagrees` at DEBUG: the number of scenarios where
-    `gap >= 0` and `fired` differ. Zero is the contract - the gap IS the decision - and against a
-    gap taken at the first post-expiry row it reads 9 of 512 on this fixture at seed 1 (61 of 4096,
-    and 61 is exactly the payer's 33 down-flips plus the receiver's 28, since the two sides of one
-    boundary partition the disagreement).
-
-    512 paths rather than the file's 4096: this gate runs the whole engine at DEBUG, so the run is
-    kept small, and the count it asserts is zero either way.
+    512 paths rather than 4096 because this gate runs the whole engine at DEBUG.
     """
     with caplog.at_level(logging.DEBUG, logger=''):
         read(paths=512)
@@ -419,24 +389,20 @@ def test_the_registered_gap_is_the_decision_it_was_taken_on(caplog):
 # ------------------------------------------------------------- the registration is load bearing
 
 def test_the_registration_moves_the_cva_gradient_and_not_the_cva():
-    """The correction is worth EXACTLY ZERO in the forward pass and a great deal in the backward.
+    """The correction is worth EXACTLY ZERO forward and a great deal backward.
 
-    `Boundary_AAD_Bandwidth` is the one JSON knob that reaches it: at 1e-12 the kernel underflows
-    on every scenario, `boundary_weights` lands on its empty-kernel branch and the correction
-    contributes an exact zero derivative - the frozen-decision AAD and nothing else. Nothing is
-    patched to get that; the registration still happens and is still scored.
+    `Boundary_AAD_Bandwidth` is the one JSON knob that reaches it: at 1e-12 the kernel underflows on
+    every scenario and `boundary_weights` lands on its empty-kernel branch, contributing an exact
+    zero derivative. Nothing is patched; the registration still happens and is still scored.
 
-    MEASURED on this book at 4096 paths, seed 1: the reported CVA is bit-identical at both
-    bandwidths (151901.98057820834), and the gradient is not - the difference has an L2 norm 1.03x
-    the suppressed gradient's own, the largest single bucket moving by 846334.74, and the
-    projection curve's 1Y point moving by a factor of 5.7. An exercise decision on a hundred
-    million of three-year swap is not a small perturbation of a CVA that is itself only 151902, so
-    the size is the product rather than a red flag.
+    MEASURED at 4096 paths, seed 1: the CVA is bit-identical at both bandwidths
+    (151901.98057820834) and the gradient is not - the difference has an L2 norm 1.03x the
+    suppressed gradient's, the largest bucket moving by 846334.74 and the projection curve's 1Y
+    point by a factor of 5.7.
 
-    A full common-random-numbers ladder against a bumped adjoint is NOT taken here and its absence
-    is deliberate: this gate says the registration is live and correctly sourced, which is what the
-    gap change was about. Whether the corrected number is the right one is `tests/crn_ladder.py`'s
-    question and belongs to whoever next opens the boundary estimator.
+    A full CRN ladder against a bumped adjoint is NOT taken here: this gate says the registration is
+    live and correctly sourced. Whether the corrected number is right is `tests/crn_ladder.py`'s
+    question.
     """
     _, _, _, _, corrected = read(bandwidth=0.01)
     _, _, _, _, suppressed = read(bandwidth=1e-12)

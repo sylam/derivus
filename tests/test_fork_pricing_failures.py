@@ -10,15 +10,14 @@ One class is therefore distinguished and re-raised (`utils.is_fatal_pricing_erro
 of memory — the failure mode the single-pass fork documents as its contract. Everything else keeps
 the skip, which is asserted here too, because base valuation and credit Monte Carlo depend on it.
 
-`utils.UnpriceableSchedule` joins that class from the other direction, and its arm is the last
-section here. The first two members say the FRAMEWORK is wrong; this one says the DOCUMENT is, and
-it is fatal because a named refusal swallowed into a zero mark has said nothing at all. It is read
-by four guards now rather than two — the two in `Deal`, and both compile guards in `DealStructure`,
-which is where an authored schedule is first touched.
+`utils.UnpriceableSchedule` joins that class from the other direction. The first two members say the
+FRAMEWORK is wrong; this one says the DOCUMENT is, and it is fatal because a named refusal swallowed
+into a zero mark has said nothing at all. It is read by four guards - the two in `Deal`, and both
+compile guards in `DealStructure`, where an authored schedule is first touched.
 
-The end-to-end gates rebuild the deal shapes a fork's curve reads used to be predicted wrong for.
-Each asserts the ANSWER, not just the absence of a crash: the lazily built run must equal the one
-whose Hermite coefficients cover the whole block.
+The end-to-end gates rebuild the deal shapes a fork's curve reads used to be predicted wrong for,
+each asserting the ANSWER rather than the absence of a crash: the lazily built run must equal the
+one whose Hermite coefficients cover the whole block.
 """
 import copy
 import json as jsonlib
@@ -163,13 +162,11 @@ def _run(cfg, name, forks=None):
 
 
 def test_a_hedge_book_leg_that_fails_to_compile_kills_the_run():
-    """The COMPILE-level arm of this module's statement. `add_deal_to_structure`'s
-    skip-and-continue is the reporting book's contract — one broken deal must not lose a CVA
-    run — but on a hedge book a skipped tradable shrinks the solver's menu and a skipped
-    liability halves the target, and the solve then reports a confident answer to a different
-    problem. Measured live before the guard: an APS leg whose basis law could not state its
-    projection dropped n* from −44.8 to −22.1 with nothing but an ERROR log. Both roles raise,
-    naming the leg. Killed by removing either `_require_all_compiled` call."""
+    """The COMPILE-level arm. `add_deal_to_structure`'s skip-and-continue is the reporting book's
+    contract, but on a hedge book a skipped tradable shrinks the solver's menu and a skipped
+    liability halves the target, so the solve reports a confident answer to a different problem.
+    Measured before the guard: an APS leg whose basis law could not state its projection dropped n*
+    from -44.8 to -22.1 with nothing but an ERROR log. Both roles raise, naming the leg."""
     for role, block, patch in (
             ('liability', 'Liabilities', {'Currency': 'XXX'}),
             ('tradable', 'Tradable_Instruments', {'Sampling_Type': 'NOPE', 'Currency': 'XXX'})):
@@ -414,29 +411,24 @@ def _priced(deal, name):
 
 
 def test_a_degenerate_reset_window_refuses_by_name_and_the_run_fails_loud():
-    """THE ROW THIS CLOSES. `make_float_cashflows` read `cashflow['Rate_Tenor']` whenever a reset's
-    rate window had zero length - a key no `Row` declares, nothing writes and nothing else in the
-    engine mentions. So the one document that reached it died `KeyError: 'Rate_Tenor'`, which
-    `add_deal_to_structure` caught.
+    """`make_float_cashflows` read `cashflow['Rate_Tenor']` whenever a reset's rate window had zero
+    length - a key no `Row` declares and nothing writes - so the one document that reached it died
+    `KeyError: 'Rate_Tenor'`, which `add_deal_to_structure` caught.
 
-    MEASURED, on this exact pair of documents, with the old read put back:
+    MEASURED on this pair of documents with the old read put back:
 
         ERROR:FLT-DEGENERATE:CFFloatingInterestListDeal ('Rate_Tenor',) - Skipped
         Stats: {'Deals Skipped': 1}     mtm: root 0.0     job: SUCCEEDED
 
-    - a deal that vanished from the report, a book that netted to nothing, and an exit code that
-    said everything was fine. The healthy twin prices **4948.879641** on the same market data, so
-    that zero is the whole of the deal.
+    - a deal gone from the report, a book netting to nothing, and an exit code saying everything was
+    fine. The healthy twin prices 4948.879641 on the same market data.
 
-    NOW: `utils.UnpriceableSchedule`, naming the deal, the fixing, the cashflow it pays and the
-    instant the window collapsed to, with the remedy stated - and FATAL, so the message is the
-    run's answer rather than a line in a log nobody reads. The tenor is NOT derived: a rate window
-    is not the accrual window, the schedule states no tenor, and a value the author did not give is
-    not the engine's to invent.
+    NOW: `utils.UnpriceableSchedule`, naming the deal, the fixing, the cashflow and the instant the
+    window collapsed to, with the remedy, and FATAL. The tenor is NOT derived: a rate window is not
+    the accrual window and the schedule states no tenor.
 
-    THE THREE THINGS IT MUST NOT BE are each asserted: not a `KeyError` (the type), not a skipped
-    deal (`Deals Skipped` never appears, because the run does not get that far), and not a zero
-    mark (the run raises instead of returning a table).
+    THREE THINGS IT MUST NOT BE, each asserted: not a `KeyError`, not a skipped deal, not a zero
+    mark.
     """
     healthy_stats, healthy = _priced(_degenerate_float_leg(False), 'healthy_float_leg')
     assert healthy_stats.get('Deals loaded') == 1 and 'Deals Skipped' not in healthy_stats
@@ -457,15 +449,12 @@ def test_a_degenerate_reset_window_refuses_by_name_and_the_run_fails_loud():
 
 
 def test_the_named_refusal_is_fatal_at_the_compile_guard_too():
-    """`is_fatal_pricing_error` is read by FOUR guards now, and the two new ones are the reason the
-    gate above sees a raise at all: an authored schedule is touched in `calc_dependencies`, which
-    `DealStructure.add_deal_to_structure` wraps in the skip-and-continue that lets a book of
-    thousands survive one deal it cannot bind.
+    """`is_fatal_pricing_error` is read by FOUR guards, and the two compile ones are why the gate
+    above sees a raise at all: an authored schedule is touched in `calc_dependencies`, which
+    `add_deal_to_structure` wraps in the skip-and-continue.
 
-    So the predicate is asserted at both ends. It admits the new class and still admits the two it
-    always did; an ordinary pricing failure is still swallowed, because that skip is what base
-    valuation and credit Monte Carlo run on - and this file's own gates one section up are what
-    hold that half.
+    So the predicate is asserted at both ends: it admits the new class and still admits the two it
+    always did, and an ordinary pricing failure is still swallowed.
     """
     assert utils.is_fatal_pricing_error(utils.UnpriceableSchedule('a zero-length rate window'))
     assert utils.is_fatal_pricing_error(utils.ScheduleLifecycleError('never bound'))

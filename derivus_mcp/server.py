@@ -56,8 +56,7 @@ SERVICE = None
 
 
 class Service:
-    """A `DV_Service` at a URL, with `call` raising `ToolError` for an unreachable service or a
-    4xx/5xx answer.
+    """A `DV_Service` at a URL, `call` raising `ToolError` for an unreachable service or a 4xx/5xx.
 
     `session` is the transport seam - anything with a requests-style `request(method, url, ...)` -
     which is how a caller drives the tools in process without a socket. It duplicates

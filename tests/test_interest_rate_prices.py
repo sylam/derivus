@@ -1,28 +1,23 @@
 """Does the curve family recover the curve its quotes were priced off?
 
-A bootstrap has exactly one honest gate, and it is a round trip: construct a zero curve, PRICE the
-benchmark set off it to GENERATE the quotes, then require the solve to recover the curve it started
-from. Nothing here is copied from a vendor file and nothing needs to be - the levels only have to be
-plausibly shaped, because the quotes are derived from them rather than asserted against them.
+A bootstrap has one honest gate, a round trip: construct a zero curve, PRICE the benchmark set off
+it to GENERATE the quotes, then require the solve to recover the curve it started from. The levels
+only have to be plausibly shaped, because the quotes are derived from them.
 
-Two rate worlds, because the two configurations fail differently. A USD SOFR-style world is
-genuinely multi-curve: an OIS discount curve solved from compounded-in-arrears OIS quotes, then a
-projection curve solved from a FRA strip and par swaps that discount on it, which only works if the
-two solves run in dependency order. A ZAR JIBAR-style world is the degenerate single-curve one,
-where discount and projection coincide - the harder solve, because the unknown appears on both
-sides of every benchmark.
+Two rate worlds, because the configurations fail differently. USD SOFR-style is genuinely
+multi-curve: an OIS discount curve, then a projection curve solved from a FRA strip and par swaps
+that discount on it, which only works in dependency order. ZAR JIBAR-style is the degenerate
+single-curve one - the harder solve, because the unknown appears on both sides of every benchmark.
 
-Generating the quotes needs no second pricer and no root find. A benchmark's PV is AFFINE in its
-quote - a deposit's coupons, an FRA's strike and a swap's fixed leg are each linear in it - so two
-priced sets locate the par rate exactly.
+Generating the quotes needs no root find: a benchmark's PV is AFFINE in its quote, so two priced
+sets locate the par rate exactly.
 
-A third world is CROSS-CURRENCY and is gated differently, because its quotes are FX forward
-outrights rather than rates and there is no true curve behind them to recover: a USD curve solved
-from its own quotes, and a ZAR curve solved from USDZAR outrights against it. What stands in for
-the round trip there is the identity covered interest parity IS - reprice a fresh par forward off
-the solved pair and the outright comes back - and the subtleties it brings with it: a residual that
-reads another currency's curve and spot as constants, an ordering dependency no `Discount_Rate`
-declares, and a quote that cannot reach the `Quote_Sensitivity` overlay and says so.
+A third world is CROSS-CURRENCY, gated differently because its quotes are FX forward outrights and
+there is no true curve to recover: a USD curve from its own quotes, a ZAR curve from USDZAR
+outrights against it. What stands in for the round trip is the identity covered interest parity IS -
+reprice a fresh par forward off the solved pair and the outright comes back - plus its subtleties: a
+residual reading another currency's curve and spot as constants, an ordering dependency no
+`Discount_Rate` declares, and a quote that cannot reach the `Quote_Sensitivity` overlay and says so.
 """
 import copy
 import logging
@@ -211,13 +206,10 @@ def test_the_bootstrap_recovers_the_curve_its_quotes_came_from(world):
 
 @pytest.mark.parametrize('world', sorted(WORLDS))
 def test_a_perturbed_knot_fails_the_round_trip(world):
-    """MUTATE the answer. One knot moved by a basis point has to break the comparison, or the gate
-    above is comparing something to itself.
-
-    The second half is what says the gate is not a placebo in the other direction: the SEED is the
-    quotes themselves, and a solver that returned its seed unchanged would have to fail too. It
-    does, by three or four basis points - a par rate is a good starting guess and nowhere near the
-    zero rate at 1e-10.
+    """MUTATE the answer: one knot moved by a basis point has to break the comparison, or the gate
+    above compares something to itself. The second half is the other direction - the SEED is the
+    quotes themselves, and a solver returning its seed unchanged fails too, by three or four basis
+    points.
     """
     _, _, currency, spot_curve = WORLDS[world]
     market_prices, true_factors, knots = authored_world(world)
@@ -306,14 +298,10 @@ def test_config_bootstrap_drives_the_family_and_finds_the_curve_it_wrote(caplog)
 
 @pytest.mark.parametrize('knob,value', [('N_Iter', 1), ('Damping_Halvings', -1)])
 def test_the_solver_knobs_are_read_off_the_block(knob, value):
-    """The knobs are JSON, so a job tightens or loosens the solve with no code edit - and a declared
-    field nothing honours is the defect this whole store exists to make unreachable.
-
-    Each value is chosen to be unsatisfiable: one Newton iteration cannot converge a seven-knot
-    curve, and `-1` halvings forbids the line search from trying even the full step. `-1` rather
-    than `0` because the full step is what these worlds always take - see the damping finding below
-    - so no non-negative value fails here, and pretending otherwise would be a gate that passes for
-    the wrong reason.
+    """The knobs are JSON, so a job tightens or loosens the solve with no code edit. Each value here
+    is unsatisfiable: one Newton iteration cannot converge a seven-knot curve, and `-1` halvings
+    forbids even the full step - `-1` rather than `0` because the full step is what these worlds
+    always take, so no non-negative value fails here.
     """
     market_prices, _, _ = authored_world('zar')
     market_prices['InterestRatePrices.ZAR-JIBAR-3M']['instrument'][knob] = value
@@ -337,13 +325,10 @@ def test_a_tighter_tolerance_still_converges_to_the_same_curve():
 
 
 def test_the_damping_never_engages_on_these_worlds():
-    """Honest negative result, recorded rather than dressed up as a gate.
-
-    Newton from a par-rate seed takes the FULL step at every iteration on both worlds - the
-    backtracking line search never halves once - so removing the damping entirely would not fail
-    anything here. It is insurance against a first iterate these fixtures do not produce, and the
-    fixture is too well-posed to exercise it. What IS gated is that the search runs and agrees with
-    the undamped step, so a line search that silently rejected good steps would show up.
+    """Honest negative result. Newton from a par-rate seed takes the FULL step at every iteration on
+    both worlds, so removing the damping entirely would fail nothing here: it is insurance against a
+    first iterate these fixtures do not produce. What IS gated is that the search runs and agrees
+    with the undamped step, so a line search rejecting good steps would show up.
     """
     market_prices, _, _ = authored_world('zar')
     block = market_prices['InterestRatePrices.ZAR-JIBAR-3M']['instrument']
@@ -399,10 +384,9 @@ def fx_forward(ref, months, outright, sell_amount=1e6):
     """One benchmark FX forward: `sell_amount` of USD sold against ZAR at `months`, bought at
     `outright` ZAR per USD.
 
-    `Sell_Amount` and BOTH discount-rate names are fixed by the authoring, which leaves the quote
-    exactly one place to land - `Buy_Amount` - and lets the deal name its own two curves. The
-    block's `Discount_Rate` is inert for this type: an FX forward discounts each leg on the curve
-    IT names, which is the whole reason the ordering read cannot stop at the block's field.
+    `Sell_Amount` and BOTH discount-rate names are fixed by the authoring, leaving the quote exactly
+    one place to land - `Buy_Amount` - and letting the deal name its own two curves. The block's
+    `Discount_Rate` is inert for this type, which is why the ordering read cannot stop at it.
     """
     return {'Object': 'FXForwardDeal', 'Reference': ref,
             'Sell_Currency': 'USD', 'Sell_Amount': sell_amount,
@@ -476,14 +460,10 @@ def fx_par_outrights(market_prices, price_factors):
 
 
 def test_the_outright_reaches_the_deal_unscaled():
-    """The convention, stated once and gated: the quote is the forward outright in units of
-    `Buy_Currency` per one unit of `Sell_Currency`, and it lands as `Buy_Amount = quote *
-    Sell_Amount` with no conversion anywhere.
-
-    That is what says the family scales nothing centrally. A percent-quoted benchmark is scaled by
-    its own field semantics - a `Percent`, a `Basis`, a schedule the deal divides by 100 - so an
-    amount-valued quote riding the same `author_quote` path arrives untouched, which a hundredfold
-    error here would make unmissable.
+    """The quote is the forward outright in `Buy_Currency` per unit of `Sell_Currency`, landing as
+    `Buy_Amount = quote * Sell_Amount` with no conversion - which says the family scales nothing
+    centrally: a percent-quoted benchmark is scaled by its own field semantics, so an amount-valued
+    quote on the same `author_quote` path arrives untouched.
     """
     deal = fx_forward('FWD_6M', 6, 0.0)
     author_quote(deal, 18.70, ZAR_CURVE)
@@ -492,13 +472,12 @@ def test_the_outright_reaches_the_deal_unscaled():
 
 
 def test_a_forward_curve_reprices_the_outrights_it_was_solved_from():
-    """THE IDENTITY. Solve a ZAR curve from USDZAR outrights, then price a fresh par forward off
-    the solved pair: the par outright is the quote back, to 1e-9 relative.
+    """THE IDENTITY. Solve a ZAR curve from USDZAR outrights, then price a fresh par forward off the
+    solved pair: the par outright is the quote back, to 1e-9 relative.
 
-    This is covered interest parity CLOSING THROUGH THE ENGINE'S OWN PRICERS. No formula for the
-    forward is written here or in the family - the residual is `FXForwardDeal.generate` held at
-    zero, its ZAR leg discounted on the curve being solved and its USD leg on the solved USD curve
-    converted at the spot, so whatever parity that pricer means is the parity the curve carries.
+    Covered interest parity CLOSING THROUGH THE ENGINE'S OWN PRICERS - no formula for the forward is
+    written here or in the family. The residual is `FXForwardDeal.generate` held at zero, so
+    whatever parity that pricer means is the parity the curve carries.
     """
     market_prices = fx_world()
     solved = fx_bootstrapped(market_prices)
@@ -524,24 +503,19 @@ def test_the_forward_knots_land_on_the_settlement_dates():
 
 
 def test_a_forwards_pv_is_affine_in_its_outright_to_the_last_bit():
-    """The property the par solve and the drift metric both rest on, MEASURED rather than argued.
+    """The property the par solve and the drift metric both rest on, MEASURED rather than argued:
+    the PV is affine in the outright at fixed curves, so the second difference across three levels
+    carries NO curvature - what `CalibrationArtifact.mispricing` needs to be an exact quote-space
+    residual.
 
-    `FXForwardDeal.generate` is linear in `Buy_Amount` and the writer makes `Buy_Amount` linear in
-    the quote, so the PV is affine in the outright at fixed curves and the second difference across
-    three levels carries NO curvature - which is what `CalibrationArtifact.mispricing` needs to be
-    an exact quote-space residual rather than an estimate.
+    NOT the flat zero `_carry_quotes` reports for a rate quote: it is 3.7252903e-09 identically on
+    all four benchmarks, which is one ULP of the BOUGHT LEG rather than curvature. A swap is
+    bracketed where its own PV is near zero and cancels bit for bit; a forward's PV is the
+    difference of two legs each worth about 2e7, so `np.spacing(20.0 * 1e6)` is its arithmetic
+    floor - the machine's own resolution at the scale the sum is formed.
 
-    Recorded honestly, because the number is NOT the flat zero `_carry_quotes` reports for a rate
-    quote. It is 3.7252903e-09, identically, on all four benchmarks - and that is one ULP of the
-    BOUGHT LEG rather than curvature. The difference from a par swap is where the cancellation
-    happens: a swap is bracketed at quotes where its own PV is near zero and its second difference
-    cancels bit for bit, while a forward's PV is the difference of two legs each worth about 2e7,
-    so the last bit of THOSE is its arithmetic floor. `np.spacing(20.0 * 1e6)` is 3.7252903e-09
-    exactly, which is what the gate compares against - the machine's own resolution at the scale
-    the sum is formed, not a tolerance anybody chose.
-
-    The resolution is not in doubt: the FIRST difference is about 9.5e5, so a quadratic term would
-    have to hide fourteen orders of magnitude under the linear one to pass here.
+    The FIRST difference is about 9.5e5, so a quadratic term would have to hide fourteen orders of
+    magnitude under the linear one to pass here.
     """
     market_prices = fx_world()
     solved = fx_bootstrapped(market_prices)
@@ -578,13 +552,11 @@ def test_a_held_out_forward_drops_its_knot():
 
 
 def test_a_forward_block_authored_before_the_curve_its_other_leg_needs_still_solves():
-    """THE ORDERING SUBTLETY. This block's `Discount_Rate` is BLANK - it discounts on the curve it
-    builds - and yet its residual reads the USD curve, because each forward names `USD-OIS` in its
-    own `Sell_Discount_Rate`. A dependency read that stopped at the block's field would order the
-    ZAR solve first and price it against a curve that does not exist.
-
-    `benchmark_curves` is the extension that fixes it: the deals declare the coupling, so the read
-    includes the curves they name. Authoring the ZAR block FIRST then has to change nothing.
+    """THE ORDERING SUBTLETY. This block's `Discount_Rate` is BLANK, yet its residual reads the USD
+    curve because each forward names `USD-OIS` in its own `Sell_Discount_Rate` - so a dependency
+    read stopping at the block's field orders the ZAR solve first, against a curve that does not
+    exist. `benchmark_curves` includes the curves the deals name, so authoring ZAR FIRST changes
+    nothing.
     """
     market_prices = fx_world()
     zar_name, usd_name = 'InterestRatePrices.' + ZAR_CURVE, 'InterestRatePrices.' + USD_CURVE
@@ -618,14 +590,11 @@ def test_the_ordering_read_does_not_reorder_the_rate_worlds():
 
 
 def test_a_forward_block_refuses_quote_sensitivity():
-    """THE REFUSAL, and the reason it is not a zero. `Quote_Sensitivity` reports dV/dq by putting
-    an increment-1 overlay on the CASHFLOW SCHEDULE COLUMNS a quote writes. An outright writes into
-    `Buy_Amount`, which the pricer reads as a float off the deal, so no column moves and the
-    overlay carries nothing - and a zero delta on the instrument a desk actually trades is the
-    precise failure this switch exists to prevent, the same call `create_market_swaps` makes when a
-    premium reaches the residual through a root find.
-
-    So the block refuses, by name, and says which benchmark and which type could not be carried.
+    """THE REFUSAL, and the reason it is not a zero. `Quote_Sensitivity` reports dV/dq by overlaying
+    the CASHFLOW SCHEDULE COLUMNS a quote writes; an outright writes into `Buy_Amount`, read as a
+    float off the deal, so no column moves and the overlay carries nothing. A zero delta on the
+    instrument a desk actually trades is the failure this switch exists to prevent, so the block
+    refuses by name and says which benchmark and which type could not be carried.
     """
     market_prices = fx_world()
     market_prices['InterestRatePrices.' + ZAR_CURVE]['instrument']['Quote_Sensitivity'] = 'Yes'
@@ -656,18 +625,15 @@ def test_the_refusal_is_measured_and_leaves_the_rate_quotes_carrying():
 
 def test_a_forward_block_cannot_publish_a_ride_operator():
     """`Quote_Propagation` wants the same quote side `Quote_Sensitivity` does, and a forward block
-    cannot give it either - but which refusal fires depends on what else is in the run, and both
-    are already named.
+    cannot give it either - but which refusal fires depends on what else is in the run.
 
-    Solved TOGETHER, the two blocks are one coupled set, and they are measured as one rather than
-    declared: `BenchmarkInstruments.reads` differentiates the ZAR residual and finds it reaching
-    `InterestRate.USD-OIS` through the sell leg's constant. That is the cross-currency residual
-    working exactly as intended - and a set spanning two reporting currencies cannot be compiled as
-    one system, which the family already refuses by name.
+    Solved TOGETHER the two blocks are one coupled set, MEASURED rather than declared:
+    `BenchmarkInstruments.reads` finds the ZAR residual reaching `InterestRate.USD-OIS` through the
+    sell leg's constant. A set spanning two reporting currencies cannot be compiled as one system,
+    which the family refuses by name.
 
-    Solved ALONE against a USD curve nobody is bootstrapping, the set is one currency and that
-    refusal has nothing to say. The overlay's does: no schedule column moves, so it refuses rather
-    than publishing an operator whose `dF/dq` row is a zero.
+    Solved ALONE the set is one currency and that refusal has nothing to say; the overlay's does -
+    no schedule column moves, so it refuses rather than publishing a `dF/dq` row of zeros.
     """
     market_prices = fx_world()
     for entry in market_prices.values():

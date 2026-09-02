@@ -38,9 +38,7 @@ DateOffset = pd.DateOffset
 
 
 def get_grid_grammar():
-    """
-    Contains the grammar definition rules for parsing the grid data
-    """
+    """`(grid, period)` parsers for the date-grid grammar."""
 
     def push_int(strg, loc, toks):
         return int(toks[0])
@@ -113,11 +111,10 @@ class ModelParams(object):
         return utils.Factor(add_factor, factor.name) if add_factor else None
 
     def search(self, factor, actual_factor, ignore_subtype=False):
-        """
-        :param ignore_subtype:
-        :param factor: Riskfactor of type utils.Factor
-        :param actual_factor: corresponding dictionary of parameters for the factor loaded from a marketdata config
-        :return: the model associated with the factor (taking any overrides into account)
+        """The model for `factor` (a `utils.Factor`), filter rules first, then the default.
+
+        `actual_factor` is that factor's loaded `Price Factors` block; filter rules key off its
+        fields, plus a synthetic `id` holding the dotted factor name.
         """
         price_factor_type = factor.type + ('' if ignore_subtype else self.valid_subtype.get(
             actual_factor.get('Sub_Type'), ''))
@@ -164,15 +161,13 @@ class CustomJsonEncoder(json.JSONEncoder):
             return_value = {'.DateOffset': ''.join(
                 ['{}{}'.format(v, Config.reverse_offset[k]) for k, v in obj.kwds.items()])}
         elif isinstance(obj, Timestamp):
-            # a date stays a date - old files re-encode byte-stable - and a non-midnight stamp
-            # keeps its time: an intraday quote Timestamp must survive the round trip or
-            # values_hash cannot tell the 09:15 snapshot from the 16:30 one
+            # a date stays a date (old files re-encode byte-stable); a non-midnight stamp keeps its
+            # time, or values_hash cannot tell the 09:15 snapshot from the 16:30 one
             return_value = {'.Timestamp': obj.strftime('%Y-%m-%d')
                             if obj == obj.normalize() else obj.isoformat()}
         elif isinstance(obj, pd.DataFrame):
-            # the two shapes a run's `Results` holds. `split` reconstructs through
-            # `pd.DataFrame(**data)` and its labels encode as themselves one level down; the object
-            # cast is what makes a missing cell `null`, since a NaN in a float column is not JSON
+            # `split` reconstructs through `pd.DataFrame(**data)`; the object cast is what makes a
+            # missing cell `null`, since a NaN in a float column is not JSON
             return_value = {'.DataFrame': obj.astype(object).where(
                 obj.notna(), None).to_dict(orient='split')}
         elif isinstance(obj, np.ndarray):
@@ -183,11 +178,9 @@ class CustomJsonEncoder(json.JSONEncoder):
 
 
 def as_json(obj):
-    """Plain JSON, through the one encoder the codebase already has for what JSON has no form for -
-    a Curve, a Timestamp, a results table.
-
-    The HTTP surface serialises every answer through this and `derivus.spine` addresses a run's
-    RESULT through it, so a replay claim and the answer it is compared against are the same bytes.
+    """Plain JSON, through the one encoder for what JSON has no form for - a Curve, a Timestamp, a
+    results table. The HTTP surface and `derivus.spine`'s run RESULT both go through it, so a replay
+    claim and the answer it is compared against are the same bytes.
     """
     return json.loads(json.dumps(obj, cls=CustomJsonEncoder))
 
@@ -195,9 +188,8 @@ def as_json(obj):
 def tables_of(results):
     """Every table in a `Results` tree, flat, under the path that names it.
 
-    `cashflows` and `scenarios` are dicts of tables rather than tables, so they arrive as
-    `cashflows/ZAR` and `scenarios/FxRate.ZAR`: a client fetches one table, and a tree has no page.
-    The flat form is also what a per-RESULT-CLASS tolerance is declared against.
+    `cashflows` and `scenarios` are dicts of tables, so they arrive as `cashflows/ZAR` and
+    `scenarios/FxRate.ZAR`. The flat form is what a per-RESULT-CLASS tolerance is declared against.
     """
     tables = {}
     for name, value in results.items():
@@ -231,12 +223,11 @@ def splice_deal(document, deal, parent_reference=None):
     """Append `deal` to a wire-form job document IN PLACE and return the new node's `deal_path`.
 
     The node is `{'Instrument': {'.Deal': deal}}`, gaining an empty `Children` when the booked type
-    is itself a container (`schema.mapping['Instrument']['containers']`). A COMPOSED deal - one
-    arriving with node-shaped legs under its own `Children` key, the way `structures.quote` hands
-    a structure back - has them lifted onto the node, because the engine walks `node['Children']`
-    and never inside the deal block. The insertion point is the root, or the single node whose
-    Reference is `parent_reference`; an unknown, ambiguous or non-container parent refuses by name,
-    because appending under the wrong node is a mis-booked trade rather than an error message.
+    is itself a container. A COMPOSED deal - one arriving with node-shaped legs under its own
+    `Children`, the way `structures.quote` hands a structure back - has them lifted onto the node,
+    because the engine walks `node['Children']` and never inside the deal block. The insertion point
+    is the root, or the single node whose Reference is `parent_reference`; an unknown, ambiguous or
+    non-container parent refuses by name.
     """
     children = job_children(document)
     if children is None:
@@ -316,15 +307,13 @@ def sniff_indent(text, default=2):
 def update_market_quote(document, name, block):
     """Install or update one `Market Prices` block in a wire-form job document, in place.
 
-    An update is VALUE-ONLY by construction, for every family at once: everything except each quote
-    row's `Quoted_Market_Value`, its two-way `Quoted_Bid`/`Quoted_Ask` and its `Timestamp` must
-    stand, because the pillar set, the expiries, the strikes, the conventions and the tolerances are
-    STRUCTURE - a plan and a pinned grid hang off them, so a moved node is a re-authoring, never a
-    tick. A two-way is on the value side of that line for the reason the mid is: a spread widens
-    between one print and the next, and a node that starts or stops being quoted two-sided is the
-    same node of the same plan. That line is `schema.MARKET_QUOTE_VALUES`, and WHICH table carries
-    it is `schema.quote_rows` - both read here rather than kept as a second copy of the split
-    `plan_hash` and `market_patch` take over the section. Returns 'installed' or 'updated'.
+    An update is VALUE-ONLY, for every family at once: everything except each quote row's
+    `Quoted_Market_Value`, `Quoted_Bid`/`Quoted_Ask` and `Timestamp` must stand, because the pillar
+    set, the expiries, the strikes, the conventions and the tolerances are STRUCTURE - a plan and a
+    pinned grid hang off them, so a moved node is a re-authoring, never a tick. A two-way is
+    value-side for the reason the mid is. That line is `schema.MARKET_QUOTE_VALUES` and which table
+    carries it is `schema.quote_rows`, both read here rather than kept as a second copy of the split
+    `plan_hash` and `market_patch` take. Returns 'installed' or 'updated'.
     """
     if not isinstance(block, dict) or 'instrument' not in block:
         raise ValueError('{}: a Market Prices block is {{"instrument": {{...}}}}'.format(name))
@@ -350,11 +339,8 @@ def update_market_quote(document, name, block):
 
 
 class Config(object):
-    """
-    Reads (parses) a JSON market data and deals file.
-    Also writes out these files once the data has been modified.
-    Provides support for parsing grids of dates and working out dynamic dates for the
-    given portfolio of deals.
+    """Reads and writes the JSON market data and deals file, and parses the date grids a portfolio's
+    dynamic dates come from.
     """
 
     month_lookup = dict((m, i) for i, m in enumerate(calendar.month_abbr) if m)
@@ -362,13 +348,12 @@ class Config(object):
     reverse_offset = {'months': 'M', 'days': 'D', 'years': 'Y', 'weeks': 'W'}
 
     def __init__(self, base_currency='USD'):
-        """
-        Sets up the default state of the system.
+        """The default state of the system.
 
         `calibrated_factors` (`{Factor: theta*}`, still connected to its quotes) and `quote_leaves`
         (the quote leaf per market-price block) are what a bootstrap that kept its graph leaves
-        behind. Both hold TENSORS, so they cannot live in `Price Factors`, which is data and gets
-        written back out as JSON.
+        behind. Both hold TENSORS, so they cannot live in `Price Factors`, which is written back
+        out as JSON.
         """
         self.file_ref = 'root'
         self.deals = {'Deals': {'Children': []}, 'Calculation':{}, 'Attributes':{}}
@@ -407,14 +392,11 @@ class Config(object):
     def __getstate__(self):
         """A Config crosses a process boundary by leaving its parsers behind.
 
-        `get_grid_grammar` returns a pyparsing grammar whose parse actions are
-        `_trim_arity.<locals>.wrapper` closures, and a local closure has no importable qualified
-        name, so pickle refuses the WHOLE Config over two members that are pure derived state -
-        the grammar is built from nothing instance-specific and two Configs never hold different
-        ones. Dropping them here and rebuilding in `__setstate__` is what lets
-        `Credit_Monte_Carlo(runparallel=True)` spawn its workers on a platform that pickles the
-        arguments it hands them (Windows always, macOS by default); under `fork` the child
-        inherits them and neither hook runs.
+        A pyparsing grammar's parse actions are `_trim_arity.<locals>.wrapper` closures with no
+        importable qualified name, so pickle refuses the WHOLE Config over two members of pure
+        derived state. Dropped here and rebuilt in `__setstate__`, which is what lets
+        `Credit_Monte_Carlo(runparallel=True)` spawn workers where the arguments are pickled
+        (Windows always, macOS by default); under `fork` neither hook runs.
         """
         state = self.__dict__.copy()
         state.pop('gridparser', None)
@@ -426,10 +408,9 @@ class Config(object):
         self.gridparser, self.periodparser = get_grid_grammar()
 
     def deals_from_object_map(self, object_map):
-        """Convert a {Object: {Reference: field}} map (e.g. a Hedging_Problem's
-        Tradable_Instruments / Liabilities block) into constructed instrument nodes
-        [{'Instrument': Deal}, ...] using the Valuation Configuration — the same adapter
-        `parse_json` uses for `.Deal` nodes."""
+        """A `{Object: {Reference: field}}` map (a Hedging_Problem's Tradable_Instruments or
+        Liabilities block) as `[{'Instrument': Deal}, ...]` - the same adapter `parse_json` uses
+        for `.Deal` nodes."""
         return [{'Instrument': construct_instrument(
             {'Object': obj_type, 'Reference': ref, **obj_field},
             self.params['Valuation Configuration'])}
@@ -441,17 +422,13 @@ class Config(object):
         self.deals['Deals']['Children'] = nodes
 
     def parse_period(self, period):
-        """`'3M'` -> a `DateOffset`, and the ONE spelling of that parse.
-
-        Both decoders reach it: `CustomJsonEncoder` writes a `.DateOffset` as this string, so both
-        of them have to read the string.
-        """
+        """`'3M'` -> a `DateOffset`, and the ONE spelling of that parse. `CustomJsonEncoder` writes
+        a `.DateOffset` as this string, so both decoders read it here."""
         return self.periodparser.parseString(period)[0]
 
     def parse_grid(self, run_date, max_date, grid, past_max_date=False):
-        """
-        Construct a set of dates (NOT adjusted to the next business day) as specified in the grid.
-        Dates are capped at max_date (but may include the next date after if past_max_date is True)
+        """The dates a grid spells, NOT adjusted to the next business day, capped at max_date (plus
+        the first date past it when `past_max_date`).
         """
 
         parsed_grid = self.gridparser.parseString(grid)[0]
@@ -514,9 +491,7 @@ class Config(object):
         return tostring(results, encoding='utf-8').decode('utf-8')
 
     def parse_calendar_file(self, filename):
-        """
-        Parses the xml calendar file in filename
-        """
+        """Parses the xml calendar file in filename."""
         self.holidays = {}
         self.calendars = ElementTree(file=filename)
         for elem in self.calendars.iter():
@@ -530,11 +505,9 @@ class Config(object):
                     'holidays': holidays}
 
     def fetch_all_calibration_factors(self, override={}):
-        """
-        Assumes valid marketdata and calibration config files have been loaded (via parse_json).
-        Returns `{'present': ..., 'absent': ...}` - the Price Factors entries that Model
-        Configuration routes to a model, and the archive columns not already covered that it also
-        routes. Suitable to pass to the calibrate_factors method.
+        """`{'present': ..., 'absent': ...}` for `calibrate_factors` - the Price Factors entries
+        `Model Configuration` routes to a model, and the archive columns not already covered that
+        it also routes. Assumes `parse_json` loaded valid market data and calibration config.
         """
         model_factor = {}
         for factor in self.params.get('Price Factors', {}):
@@ -568,15 +541,13 @@ class Config(object):
         return {'present': model_factor, 'absent': remaining_factor}
 
     def bootstrap(self):
-        """
-        Runs all the bootstrappers - this happens in one process with debugging on by default. For multiprocessing
-        bootstrapping, call the construct_bootstrapper method directly
+        """Runs all the bootstrappers in one process with debugging on. For multiprocessing
+        bootstrapping, call `construct_bootstrapper` directly.
 
         A bootstrapper that leaves no `<type>.*` price factor behind silently did nothing (misnamed
-        Market Prices block, or class-name mismatch), so every run is checked. Five families write a
-        block named for their own class, so the name is recoverable; the curve and FX vol
-        bootstraps write ordinary `InterestRate`/`FXVol` blocks and declare that instead via
-        `price_factor_type`.
+        Market Prices block, or class-name mismatch), so every run is checked. The curve and FX vol
+        bootstraps write ordinary `InterestRate`/`FXVol` blocks and declare that as
+        `price_factor_type`; the other five are named for their own class.
         """
         # need to implement ordered dicts in the params obj - TODO
         for bootstrapper_name, params in sorted(self.params['Bootstrapper Configuration'].items()):
@@ -596,9 +567,9 @@ class Config(object):
                                    self.holidays,
                                    debug=self)
 
-            # a family that kept its calibration on the tape hands the leaves over here, which lets
-            # `_build_factor_state` offer an already-connected tensor. Its OWN keys are dropped
-            # first, so a run that stops publishing leaves no stale connected tensor standing.
+            # a family that kept its calibration on the tape hands the leaves over here, for
+            # `_build_factor_state`. Its OWN keys are dropped first, so a run that stops publishing
+            # leaves no stale connected tensor standing.
             written = getattr(bootstrapper, 'price_factor_type', bootstrapper_name)
             block = getattr(bootstrapper, 'market_factor_type', bootstrapper_name)
             self.calibrated_factors = {factor: theta for factor, theta
@@ -618,15 +589,12 @@ class Config(object):
         the one in `Price Factors`, or `None` where nothing asks - a calibration RIDDEN to the
         quotes standing right now, and the identity of the calibration it rode.
 
-        The id travels with the numbers because a ride is the one thing in a run that the replay
-        tuple cannot name: `plan_hash`, `values_hash`, the engine version and the seed are all
-        blind to WHICH artifact was in the store. Reporting it is what makes a propagated valuation
-        reproducible; refusing on a miss is what makes the absence of one unambiguous.
-
-        Pure: it reads `Market Prices`, the base date, the interpolation scheme and a
-        content-addressed artifact, and writes none of them - so two EXECUTEs over one
-        `(artifact, quotes)` mint the same leaf, with no `theta_current` anywhere to consult. One
-        family answers today: the one whose operator has a unique fixed point.
+        The id travels with the numbers because a ride is the one thing the replay tuple cannot
+        name: `plan_hash`, `values_hash`, the engine version and the seed are all blind to WHICH
+        artifact was in the store. Pure: reads `Market Prices`, the base date, the interpolation
+        scheme and a content-addressed artifact, and writes none of them, so two EXECUTEs over one
+        `(artifact, quotes)` mint the same leaf. One family answers today: the one whose operator
+        has a unique fixed point.
         """
         return InterestRateCurveParameters.propagate(
             factor, self.params['Market Prices'], self.params['Price Factor Interpolation'],
@@ -634,11 +602,9 @@ class Config(object):
 
     def calibrate_factors(self, from_date, to_date, factors, smooth=0.0, correlation_cuttoff=0.2,
                           overwrite_correlations=True, vol_shift=0.0):
-        """
-        Strips the archive down to the data between from_date and to_date and applies the rules in the
-        loaded calibration configuration to the given factors (utils.RateInfo values, as returned by
-        fetch_all_calibration_factors). Overwrites the Price Models section of the config in memory -
-        an explicit call to write_marketdata_json is what persists it.
+        """Calibrates `factors` (`utils.RateInfo` values from `fetch_all_calibration_factors`) on
+        the archive between from_date and to_date. Overwrites the in-memory Price Models section;
+        an explicit `write_marketdata_json` is what persists it.
         """
         correlation_names = []
         consolidated_df = None
@@ -752,11 +718,8 @@ class Config(object):
                         factor_correlations[index1, index2]
 
     def walk_deals(self):
-        """Every instrument in the book, depth first.
-
-        `walk_groups` semantics: an `Ignore` node is skipped whole, and recursion is on `Children`
-        being PRESENT, never on the type.
-        """
+        """Every instrument in the book, depth first. `walk_groups` semantics: an `Ignore` node is
+        skipped whole, and recursion is on `Children` being PRESENT, never on the type."""
         def walk(nodes):
             for node in nodes:
                 if node.get('Ignore') == 'True':
@@ -770,15 +733,13 @@ class Config(object):
         """Every price factor the deal walk reaches, split by whether the market data has a block
         for it: `resolved` is what a run would build, `missing` is the want-list.
 
-        This calls `discover_factors` rather than `calculate_dependencies` because the want-list
-        needs no model resolution. Dates are taken the way `Base_Revaluation` takes them
-        (`calc_dates=False`), so no instrument accumulates a reval-date offset.
+        Calls `discover_factors` rather than `calculate_dependencies` because the want-list needs no
+        model resolution; dates are taken as `Base_Revaluation` takes them (`calc_dates=False`).
 
-        A factor goes missing in two ways and the want-list is the union: a type carrying
-        dependants (`FxRate`, `CommodityPrice`, ...) raises `KeyError` on the absent block and is
-        logged and SKIPPED before it reaches `dependent_factors`, while every other type is
-        discovered happily and fails later in `construct_factor`, so it is the set difference
-        against `Price Factors`.
+        A factor goes missing in two ways and the want-list is their union: a type carrying
+        dependants raises `KeyError` on the absent block and is SKIPPED before `dependent_factors`,
+        while every other type is discovered happily and fails later in `construct_factor` - so it
+        is the set difference against `Price Factors`.
         """
         options = self.deals['Calculation']
         factors, skipped, _, _ = self.discover_factors(options, options['Base_Date'], '0d', False)
@@ -795,9 +756,8 @@ class Config(object):
         """What stops this job running, as data: the authoring messages of every deal in the book,
         and the price factors the book names that the market data has no block for.
 
-        Messages are keyed by the deal's `Reference`, with the walk position appended where that
-        is blank or repeated. Nothing here raises on bad deal data and a message never stops a
-        deal pricing: the engine still fails exactly where it always failed.
+        Keyed by the deal's `Reference`, with the walk position appended where that is blank or
+        repeated. Nothing here raises, and a message never stops a deal pricing.
         """
         deals = {}
         for position, instrument in enumerate(self.walk_deals()):
@@ -814,13 +774,12 @@ class Config(object):
         return {'deals': deals, 'factors': self.factor_universe()['missing']}
 
     def describe(self):
-        """What the engine made of this job, without running any of it: the book counted by deal
-        type, the price factors it reaches on both sides of the want-list, and the `Calculation`
-        block as loaded.
+        """What the engine made of this job without running it: the book counted by the `Object` a
+        deal was constructed from, the price factors it reaches on both sides of the want-list, and
+        the `Calculation` block as loaded.
 
-        Counts are by the `Object` a deal was constructed from. A node whose `Object` names no deal
-        type is absent from them, because `construct_instrument` logged it and returned `{}`, taking
-        the name with it - `validate` is where that node is reported.
+        A node whose `Object` names no deal type is absent from the counts - `construct_instrument`
+        logged it and returned `{}`, taking the name with it; `validate` is where it is reported.
         """
         return {'deals': dict(Counter(
                     instrument.field['Object'] for instrument in self.walk_deals()
@@ -829,18 +788,12 @@ class Config(object):
                 'calculation': self.deals['Calculation']}
 
     def calculate_dependencies(self, options, base_date, base_MTM_dates, calc_dates=True):
-        """
-        Works out the risk factors (and risk models) in the given set of deals.
-        These factors are cross-referenced in the marketdata file and matched by
-        name. This can be extended as needed.
+        """The dependent factors, the stochastic and additional models, the full list of reset
+        dates and optionally the potential currency settlements, for the given set of deals.
 
-        Returns the dependant factors, the stochastic models, the full list of
-        reset dates and optionally the potential currency settlements.
-
-        Idempotent: both halves read the loaded config and write nothing, so calling it twice
-        returns identical output and leaves `params` pristine. Iterating the `dependent_factors`
-        dict is iterating the topological order `discover_factors` sorted it into, which is the
-        RNG-substream order every process reads from.
+        Idempotent: both halves read the loaded config and write nothing, so `params` stays
+        pristine. Iterating the `dependent_factors` dict is iterating the topological order
+        `discover_factors` sorted it into, which is the RNG-substream order every process reads.
         """
         dependent_factors, _, reset_dates, currency_settlement_dates = self.discover_factors(
             options, base_date, base_MTM_dates, calc_dates)
@@ -849,17 +802,14 @@ class Config(object):
         return dependent_factors, stochastic_factors, additional_factors, reset_dates, currency_settlement_dates
 
     def discover_factors(self, options, base_date, base_MTM_dates, calc_dates=True):
-        """
-        Walks the deal tree and returns every price factor it reaches, ordered so that a factor
-        follows the factors it depends on, along with the reset and settlement dates the walk
-        collected.
+        """Every price factor the deal walk reaches, ordered so a factor follows the factors it
+        depends on, with the reset and settlement dates the walk collected.
 
         Also returns the price factors it asked the market data for and did NOT find: a type
-        carrying dependants raises `KeyError` on its own block and is logged and skipped rather
-        than discovered, so this is the only place that knowledge exists. A type without
-        dependants is discovered happily and fails later, in `construct_factor`.
-
-        Reads the market data and writes nothing.
+        carrying dependants raises `KeyError` on its own block and is logged and skipped rather than
+        discovered, so this is the only place that knowledge exists. A type without dependants is
+        discovered happily and fails later, in `construct_factor`. Reads the market data, writes
+        nothing.
         """
         def update_nested_rates(factor, rates_to_add):
             # tail periods take the mapped nested type, linked to their parent prefix; a type switch
@@ -872,16 +822,16 @@ class Config(object):
                 rates_to_add.pop(factor, None)
 
         def add_chained_bases(head_type, rates_to_add):
-            """A basis block may declare `Chained_Basis`: the next link of a chain that must
-            CLOSE. An open link riding another factor's finished path is the linked-parent family
-            (BasisLinkedSpotModel) and does not declare this field. Whenever any member enters the
-            universe every member follows, under EVERY calculation. The declared `Chained_Lag`
-            states where each link binds: a same-row link (lag 0) is a real graph edge - the link
-            simulates first, which insertion order alone cannot guarantee - and a lagged link is
-            the chain's day boundary and orders nothing. A closed chain must lag somewhere; all
-            same-row is a same-instant loop. Links must stay on one primary; a self-reference, a
-            foreign root, an open chain or a walk that revisits without returning to its start is
-            a config error, loud."""
+            """A basis block may declare `Chained_Basis`: the next link of a chain that must CLOSE.
+            Whenever any member enters the universe every member follows, under EVERY calculation.
+            An open link riding another factor's finished path is the linked-parent family
+            (BasisLinkedSpotModel) and declares no such field.
+
+            `Chained_Lag` says where each link binds: lag 0 is a real graph edge - the link
+            simulates first, which insertion order cannot guarantee - and a lagged link is the
+            chain's day boundary and orders nothing. A closed chain must lag somewhere, or it is a
+            same-instant loop. Links stay on one primary; a self-reference, foreign root, open chain
+            or non-returning walk is a config error, loud."""
             for start in [f for f in rates_to_add if f.type == 'ObservedBasis']:
                 if not self.params['Price Factors'].get(
                         utils.check_tuple_name(start), {}).get('Chained_Basis'):
@@ -1069,9 +1019,9 @@ class Config(object):
             'ForwardPrice': lambda instrument, factor_fields, params: [utils.Factor('FXVol', tuple(
                 sorted([instrument.field['Currency'], factor_fields['Currency']])))] if
             instrument.field['Currency'] != factor_fields['Currency'] else [],
-            # SpotModel params, plus the quanto pair's vol and correlation. Keyed on the
-            # UNDERLYING like ForwardPrice above - and the surface these two name is the CURRENCY
-            # PAIR's, so it is an FXVol whatever asset class the underlying belongs to.
+            # SpotModel params, plus the quanto pair's vol and correlation. Keyed on the UNDERLYING
+            # like ForwardPrice above; the surface these two name is the CURRENCY PAIR's, so it is
+            # an FXVol whatever asset class the underlying belongs to.
             'EquityPrice': lambda instrument, factor_fields, params:
             ([utils.Factor(instrument.options['SpotModel'] + 'ModelParameters',
                            utils.check_rate_name(instrument.field['Equity']))]
@@ -1085,10 +1035,9 @@ class Config(object):
                   sorted([instrument.field['Currency'], utils.payoff_currency(instrument.field)])))]
              if instrument.field.get('Equity_Volatility') is not None
              and instrument.field['Currency'] != utils.payoff_currency(instrument.field) else []),
-            # FX analogue, keyed on the pair's NON-BASE token - the leg the engine simulates, and
-            # the same `utils.spot_model_currency` rule the deal's own lookup takes, or discovery
-            # loads a block the compile will not ask for. getattr-guarded (FxRate is also visited
-            # with a bare {} sentinel)
+            # FX analogue, keyed on the pair's NON-BASE token - the leg the engine simulates, by the
+            # same `utils.spot_model_currency` rule the deal's own lookup takes, or discovery loads
+            # a block the compile will not ask for. getattr-guarded: FxRate is also visited with {}
             'FxRate': lambda instrument, factor_fields, params:
             [utils.Factor(instrument.options['SpotModel'] + 'ModelParameters',
                           utils.spot_model_currency(
@@ -1180,12 +1129,10 @@ class Config(object):
         return dependent_factors, skipped_factors, reset_dates, currency_settlement_dates
 
     def find_models(self, sorted_factors):
-        """Splits the ordered factor universe into stochastic and (by set difference) static.
-        A factor is stochastic iff `Model Configuration` resolves it to a process, it is not
-        the base currency, and the model's parameters are available - a `Price Models` block,
-        or for an implied model the `Price Factors` block of the factor it implies off (the
-        process constructor reads `Price Models` with `.get`, so an implied model needs no
-        entry). Reads the loaded config and writes nothing, so it can be called repeatedly."""
+        """Splits the ordered factor universe into stochastic and (by set difference) static. A
+        factor is stochastic iff `Model Configuration` resolves it to a process, it is not the base
+        currency, and its parameters are available - a `Price Models` block, or for an implied model
+        the `Price Factors` block of the factor it implies off. Reads the config, writes nothing."""
         stochastic_factors = {}
         additional_factors = {}
         for factor in sorted_factors:
@@ -1229,9 +1176,8 @@ class Config(object):
             elif '.CreditSupportList' in dct:
                 return utils.CreditSupportList(dct['.CreditSupportList'])
             elif '.DateOffset' in dct:
-                # ONE wire spelling read two ways: every producer writes the STRING ('3M'), and the
-                # kwargs dict is what old bytes on disk carry, so both are read and only one is
-                # written.
+                # ONE wire spelling read two ways: every producer writes the STRING ('3M'), the
+                # kwargs dict is what old bytes on disk carry - both read, only one written
                 period = dct['.DateOffset']
                 return self.parse_period(period) if isinstance(period, str) else DateOffset(**period)
             elif '.Offsets' in dct:

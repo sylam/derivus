@@ -1,16 +1,14 @@
 """Model interchangeability: ONE calc config, TWO spot-model worlds.
 
-The property under test — "switch a model in or out and the rest of the calc works as expected."
 The base config (deal + tradables + calc + solver knobs) is IDENTICAL across both runs; the ONLY
-difference is the `MergeMarketData.MarketDataFile` pointing at a different `Price Models` block:
+difference is `MergeMarketData.MarketDataFile` pointing at a different `Price Models` block:
 
   * HMM world   — tests/fixtures/data/MarketDataRF_platinum_calibrated_cme.json (MarkovHMMSpotModel primary)
   * GARCH world — tests/fixtures/data/MarketDataRF_platinum_garch.json           (GARCHSpotModel primary)
 
-Zero calc/config code changes are needed to swap: the calc speaks only the model-agnostic
-StochasticProcess protocol (privileged_layout / reveal_state_at / inner_fork_seed / outer_reseed /
-reseed_from_path / reseed_inner_state / diff_state_leaves), and every model-specific buffer key and
-recursion lives inside the process class.
+No calc or config change is needed to swap: the calc speaks only the model-agnostic
+StochasticProcess protocol, and every model-specific buffer key and recursion lives inside the
+process class.
 
 Covers:
   1. simulate_only + a full stepper replay to done, both worlds (exercises generate + the observed

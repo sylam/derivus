@@ -37,8 +37,7 @@ import scipy.stats
 def resolve_factor(name, price_factors, candidates):
     """The factor `name` refers to, typed by the first candidate the price factors hold a block for.
 
-    A market-price block names its inputs by NAME - the type is the market data's business, not the
-    quote author's - so a bootstrapper declares the candidate types and this picks between them
+    A block names its inputs by name only, so the bootstrapper declares the candidate types
     (`utils.TwoDimensionalFactors` is the candidate list for a vol surface)."""
     rate = utils.check_rate_name(name)
     return utils.Factor(next(x for x in candidates if utils.check_tuple_name(
@@ -46,17 +45,14 @@ def resolve_factor(name, price_factors, candidates):
 
 
 def reference_fields(factor_types, required_by_quote_type, notes):
-    """One `F` per named factor reference, then its optional `_Type` sibling - the block a family
-    declares to say which factors its quotes hang off.
+    """One `F` per named factor reference, then its optional `_Type` sibling.
 
-    The `_Type` values ARE the candidate list, so a new candidate cannot miss the schema. A
-    reference is declared REQUIRED only where EVERY quote type requires it: one static default
-    cannot say "required under Implied_Volatility and inert under Premium", so the conditional half
-    is stated on the field itself out of `notes` and enforced where the reference is read.
+    The `_Type` values are the candidate list, so a new candidate cannot miss the schema. REQUIRED
+    only where every quote type requires it; a reference required under one and inert under another
+    states that half through `notes` and is enforced where it is read.
 
-    A module-level function rather than a comprehension in the class body: a class-scope name is
-    not visible inside a comprehension, so neither the quote-type map nor `notes` could be read
-    where the fields are built. The declarations themselves stay on the class.
+    A module-level function because a class-scope name is not visible inside a class-body
+    comprehension, so neither the quote-type map nor `notes` could be read there.
     """
     always = {field for field in factor_types
               if all(field in required for required in required_by_quote_type.values())}
@@ -70,22 +66,16 @@ def reference_fields(factor_types, required_by_quote_type, notes):
 
 
 class swaption_schedule_class(namedtuple('swaption_schedule', 'expiry pay_times accruals')):
-    """One benchmark swaption's FIXED leg, in the CURVE's own year fractions.
+    """One benchmark swaption's FIXED leg, in the curve's own year fractions.
 
-    THE CLOCK IS THE DAY COUNT AND NOT `utils.DAYS_IN_YEAR`: `read_cache` builds `time_grid_years`,
-    and therefore the grid every `J` integral is taken on, with the interest rate factor's own
-    `get_day_count_accrual`. The two clocks are 7e-4 years apart at a 1Y expiry - enough to miss
-    the grid node the benchmark put there - so the conversion happens once here, where schedule
-    and curve are both in hand.
+    The clock is the interest rate factor's `get_day_count_accrual` and not `utils.DAYS_IN_YEAR`:
+    that is what `read_cache` builds `time_grid_years` with, hence the grid every `J` integral is
+    taken on. The two are 7e-4 years apart at a 1Y expiry, enough to miss a grid node.
 
-    `expiry` IS THE SAME FLOAT THE PREMIUM WAS STRUCK ON. `create_market_swaps` measured its
-    option expiry in 365.25ths until 2026-09-02, so a premium and its own inversion read the same
-    instant on two clocks and a normal vol round-tripped as `sigma sqrt(T_365.25/T_curve)`. There
-    is now ONE year fraction, built here and handed to the pricer, the tensor twin and this field.
+    `expiry` is the same float the premium was struck on, so a normal vol round-trips exactly.
 
-    `accruals` and `pay_times` are the FIXED leg's, because the annuity is. Where both legs share a
-    frequency there is no separate fixed schedule - `set_fixed_amount` writes the coupon into the
-    float leg's own `FixedAmt` column - so this reads the leg the coupon was struck on either way.
+    `accruals` and `pay_times` are the fixed leg's, because the annuity is. Where both legs share a
+    frequency `set_fixed_amount` writes the coupon into the float leg, which is then the leg read.
     """
 
 
@@ -95,34 +85,27 @@ class market_swap_class(namedtuple('market_swap', 'deal_data price weight schedu
     premium the model has to reproduce, the weight it carries in the objective, and the fixed leg
     the analytic objective reads.
 
-    `quote` and `premium` are the QUOTE SIDE and are ABSENT by default - the float64 leaf the market
-    number arrived on, and the MAP from that leaf to this swaption's premium (see
-    `create_market_swaps`). Both objectives splice the same pair onto their own residual, one line
-    each: `error` divides the twin premium by the model premium, `market_normal_vol` inverts it to
-    a normal vol - so `quote_leaves` is one shape rather than two.
+    `quote` and `premium` are the quote side and absent by default - the float64 leaf the market
+    number arrived on, and the map from that leaf to this swaption's premium (`create_market_swaps`).
+    Both objectives splice the same pair onto their own residual, so `quote_leaves` is one shape.
 
-    `premium` is a CALLABLE, so the twin is rebuilt inside every evaluation rather than compiled
-    once with the benchmark set: `make_basin_hopping_loss` calls `total_loss.backward()` with no
-    `retain_graph`, and a compile-time subgraph hanging off the residual would be freed with the
-    first evaluation. Rebuilding costs one scalar Black per benchmark per evaluation.
+    `premium` is a CALLABLE so the twin is rebuilt inside every evaluation: `make_basin_hopping_loss`
+    calls `backward()` with no `retain_graph`, and a compile-time subgraph hanging off the residual
+    would be freed with the first evaluation. It costs one scalar Black per benchmark per call.
     """
 
     def error(self, model, resid):
         """This swaption's weighted relative pricing error against its `model` price.
 
-        The quote rides in as a SPLICE, `base + (carried - detach(carried))`: worth EXACTLY zero in
-        the forward pass, with derivative one. `base` is the residual evaluated off the numpy market
-        premium in the calculation's own precision, so enabling the quote side cannot move a mark;
-        `carried` is that same expression off the float64 twin, and only its derivative survives.
+        The quote rides in as the splice `base + (carried - detach(carried))`: exactly zero in the
+        forward pass, derivative one, so enabling the quote side cannot move a mark.
 
-        `model` is DETACHED in the carried half and only there. Left attached, `carried` would reach
-        the model parameters as well as the quote and DOUBLE the calibration Jacobian while leaving
-        the residual bit-identical. The quote derivative of the error does not involve the model's
-        own sensitivity, so detaching is what the chain rule says.
+        `model` is detached in the carried half and only there. Left attached it would reach the
+        model parameters as well as the quote and double the calibration Jacobian.
 
-        The splice sits at the error rather than at the price because `price` is a numpy scalar and
-        torch divides a tensor by a scalar at the SCALAR's precision - replacing it with a float64
-        tensor rounds twice where the engine rounds once, moving the residual by an ulp.
+        The splice sits at the error and not at the price because `price` is a numpy scalar and
+        torch divides a tensor by a scalar at the scalar's precision - a float64 tensor there rounds
+        twice where the engine rounds once, moving the residual by an ulp.
         """
         base = self.weight * resid(100.0 * (self.price / model - 1.0))
         if self.premium is None:
@@ -131,40 +114,23 @@ class market_swap_class(namedtuple('market_swap', 'deal_data price weight schedu
         return base + (carried - carried.detach()).to(base.dtype)
 
     def market_normal_vol(self, annuity):
-        """This swaption's market premium as an ATM NORMAL (Bachelier) vol, in closed form.
+        """This swaption's market premium as an ATM normal (Bachelier) vol, in closed form.
 
-        At the money the Bachelier premium is $A\\sigma_N\\sqrt{T_0/2\\pi}$ - the normal density is
-        evaluated only at zero and the cumulative only at a half - so the inversion is a DIVISION
-        and not a root find:
+        At the money the Bachelier premium is $A\\sigma_N\\sqrt{T_0/2\\pi}$, so the inversion is a
+        division and not a root find:
 
         $$\\sigma_N = \\frac{P}{A}\\sqrt{\\frac{2\\pi}{T_0}}$$
 
-        Every quoting convention this family carries rides in THROUGH THE PREMIUM, as it does on the
-        Monte Carlo path: `create_market_swaps` has already turned a `Market_Volatility`, the
-        surface's declared `Distribution_Type`, a displacement, a premium file and a
-        `Volatility_Delta` re-strike into `self.price`, so nothing here re-reads a quote.
+        Every quoting convention rides in through the premium `create_market_swaps` already built,
+        struck on `schedule.expiry` itself - so under `'Normal'` the round trip is exact.
 
-        Where the surface says `'Normal'` the inversion is the quote's own identity, EXACTLY:
-        `create_market_swaps` strikes the premium on `schedule.expiry` itself, so the $T_0$ that
-        goes in and the $T_0$ that comes back out are one float and the round trip is machine
-        precision. It carried $\\sqrt{T_{365.25}/T_{curve}}$ - 0.99965771 on an ACT_365 curve -
-        until the premium's own clock was unified with the curve's on 2026-09-02.
+        `annuity` is the analytic price's own annuity off the t=0 curve, built in numpy, so it
+        carries no derivative in theta and the residual is the premium residual over a constant.
 
-        `annuity` is the ANALYTIC price's own annuity off the same t=0 curve, so the residual below
-        is the premium residual divided by a positive constant. It is built in numpy on that price
-        (`schrager_pelsser_swaption` reads $P(0,T)$ with `current_value`), so it carries no
-        derivative in theta and the model half of the residual is the only half that does.
-
-        THE QUOTE SIDE IS THE SPLICE `base + (carried - detach(carried))` - worth exactly zero in
-        the forward pass with derivative one. `base` inverts the numpy market premium in the
-        calculation's own precision; `carried` is the same inversion off `market_premium`, the
-        float64 twin bound to the same `PREMIUM_CONVENTIONS` pair the numpy premium was priced with.
-
-        NOTHING IS DETACHED HERE, unlike `error`: the carried half divides by the ANNUITY, which is
-        severed at source, so the market side is a function of the quote ALONE and the model side of
-        theta alone. $\\partial^2 r/\\partial\\theta\\partial q$ is structurally ZERO, so the cross
-        term Gauss-Newton drops is absent rather than small and `LeastSquaresSolve.backward` reports
-        the exact leading-order derivative.
+        The quote side is the splice `base + (carried - detach(carried))`. Nothing is detached here,
+        unlike `error`: the carried half divides by that severed annuity, so the market side is a
+        function of the quote alone and $\\partial^2 r/\\partial\\theta\\partial q$ is structurally
+        zero - the cross term Gauss-Newton drops is absent rather than small.
         """
         base = self.price * np.sqrt(2.0 * np.pi / self.schedule.expiry) / annuity
         if self.premium is None:
@@ -174,26 +140,19 @@ class market_swap_class(namedtuple('market_swap', 'deal_data price weight schedu
         return base + (carried - carried.detach()).to(base.dtype)
 
     def normal_vol_error(self, swaption):
-        """This swaption's weighted normal-vol residual against the market, PLAIN.
+        """This swaption's weighted normal-vol residual against the market, plain.
 
-        VOLS AGAINST VOLS AND NOT SQUARED, which is what the analytic objective buys. `error` above
-        returns a residual that is ALREADY a square, so `least_squares` minimises a QUARTIC in the
-        pricing error and $J = \\partial r/\\partial\\theta$ carries a factor of that error in every
-        row - at an exact fit $J$ is zero, and near one the relative-improvement test fires eight
-        orders short of stationarity
-        ([Quote Sensitivities](quote_sensitivities.md#the-stationarity-contract) has the reading).
-        Here the residual is the difference itself and `least_squares` does the squaring.
+        Vols against vols and not squared. `error` returns a residual that is already a square, so
+        `least_squares` minimises a quartic and $J = \\partial r/\\partial\\theta$ carries a factor
+        of the pricing error in every row
+        ([Quote Sensitivities](quote_sensitivities.md#the-stationarity-contract)). Here the residual
+        is the difference itself, in absolute normal vol, and `least_squares` does the squaring.
 
-        The units are absolute normal vol, so `Weight` is a relative weight between benchmarks as it
-        is on the other path. This chain reaches $\\|J^Tr\\|$ 8.63e-7 on the repository's identified
-        block, inside `Stationarity_Tol`'s declared 1e-3 default, where the squared residual stops
-        at 3.16e2 and needs a block-declared 1e5 to be differentiated at all. Both fell with the
-        2026-09-02 seed-and-clock re-mark, from 3.85e-6 and 8.24e3; what did not move is the SIDE of
-        the declared default each lands on, which is the finding.
+        This chain reaches $\\|J^Tr\\|$ 8.63e-7 on the identified block against the squared
+        residual's 3.16e2 - either side of `Stationarity_Tol`'s 1e-3 default.
 
-        THE RESIDUAL IS SEPARABLE: a difference of a theta-function and a q-function, so
-        $\\partial r/\\partial q$ is DIAGONAL - each benchmark's vol enters its own residual and no
-        other - and the mixed second derivative is exactly zero. `market_normal_vol` carries the
+        The residual is separable, a theta-function minus a q-function, so $\\partial r/\\partial q$
+        is diagonal and the mixed second derivative is exactly zero. `market_normal_vol` carries the
         splice that puts the market half on the tape.
         """
         return self.weight * (swaption.normal_vol - self.market_normal_vol(swaption.annuity))
@@ -222,10 +181,10 @@ class RiskNeutralInterestRate_State(utils.Calculation_State):
     def clear(self):
         """Empties the memo buffers, which every evaluation must do before it starts.
 
-        `t_Buffer` is keyed by factor and time and `t_PreCalc` by factor and integrand - neither by
-        the tensor's identity - so a state carried across two parameter sets would answer the second
-        call with the first call's curves. Only the Monte Carlo objective goes on to need a sample,
-        which is why `reset` and this are two calls rather than one.
+        `t_Buffer` is keyed by factor and time and `t_PreCalc` by factor and integrand, neither by
+        the tensor's identity, so a state carried across two parameter sets would answer the second
+        call with the first's curves. Only the Monte Carlo objective goes on to need a sample, which
+        is why `reset` is a second call.
         """
         self.t_Buffer.clear()
         self.t_PreCalc.clear()
@@ -270,83 +229,49 @@ def create_float_cashflows(base_date, cashflow_obj, frequency):
     return cashflows
 
 
-#: THE TWO QUOTING CONVENTIONS THIS FAMILY PRICES, each as the matched pair `create_market_swaps`
-#: needs: the numpy pricer that builds the market premium, and the TENSOR twin of that same formula
+#: The two quoting conventions this family prices, each as the matched pair `create_market_swaps`
+#: needs: the numpy pricer that builds the market premium, and the tensor twin of that same formula
 #: which the quote side differentiates. Keyed by `InterestYieldVol`'s declared `Distribution_Type`,
-#: whose declared default is `'Lognormal'`. The two members of a pair are one formula in two
-#: precisions; the two PAIRS are two different prices of the same number.
+#: whose declared default is `'Lognormal'`.
 PREMIUM_CONVENTIONS = {
     'Lognormal': (utils.black_european_option_price, utils.black_european_option),
     'Normal': (utils.bachelier_european_option_price, utils.bachelier_european_option)}
 
-#: THE HW2F REVERSION-SPEED SEED, DELIBERATELY ASYMMETRIC. The family seeded `Alpha_1 = Alpha_2 =
-#: 0.1` beside two identical sigma curves until 2026-09-02, which hands the search TWO COPIES OF ONE
-#: FACTOR: the objective is exactly exchange-symmetric in `(alpha_i, sigma_i)` there, so every
-#: gradient step out of that point moves both coordinates alike and the whole first local
-#: minimisation is confined to the symmetric hyperplane. MEASURED on the repository's identified
-#: 25-quote block: basin hopping's iteration-0 L-BFGS-B runs from the old seed to
-#: `alpha_1 = alpha_2 = 0.011840` at a loss of 8.95e-6, and from this seed to (0.5002, 0.00267) at
-#: 5.33e-6 - **1.68x lower** for the same one call. Only `take_step` breaks the tie afterwards, and
-#: it breaks it by luck rather than by design: the step draws one multiplier PER coordinate, so the
-#: pair does separate from iteration 1 on, which is why the defect degrades a fit rather than
-#: freezing one.
+#: The HW2F reversion-speed seed, deliberately asymmetric. Equal alphas beside equal sigma curves
+#: make the objective exactly exchange-symmetric in `(alpha_i, sigma_i)`, so the first local
+#: minimisation is confined to the symmetric hyperplane: on the identified 25-quote block basin
+#: hopping's iteration-0 L-BFGS-B reaches 8.95e-6 from `0.1, 0.1` and 5.33e-6 from this seed.
 #:
-#: WHY THESE TWO NUMBERS. The ratio is 10x, so the seed is a FAST factor and a SLOW one rather than
-#: two of the same - the two-factor idiom itself - and their half-lives, `ln2/alpha` = 1.39y and
-#: 13.9y, bracket the expiry ladders this family is quoted on (the identified grid's 1Y-10Y, the
-#: emitter's shipped 3M-10Y). Both sit ABOVE every threshold the small-alpha series declares
-#: (`hw_alpha_series_B` 1e-3, `_H` 1e-2, `_IJK` 3e-2), so the seed itself never opens a
-#: removable-singularity branch; both are strictly interior to `alpha_bounds`, which `bounds_check`
-#: tests with strict inequalities; their SUM is 0.55, nowhere near the `alpha_1 + alpha_2 -> 0`
-#: hyperplane that is the family's other singular locus; and both are POSITIVE, so the
-#: sign-preserving basin step carries the separation through the whole random search and the
-#: crossing into a negative reversion speed is left to `least_squares` and the inner L-BFGS-B.
+#: The ratio is 10x - a fast factor and a slow one, half-lives `ln2/alpha` of 1.39y and 13.9y,
+#: bracketing the expiry ladders this family is quoted on. Both sit above every small-alpha series
+#: threshold (`hw_alpha_series_B` 1e-3, `_H` 1e-2, `_IJK` 3e-2), strictly inside `alpha_bounds`,
+#: and positive; their sum 0.55 is far from the singular `alpha_1 + alpha_2 -> 0` hyperplane.
 #:
-#: The SIGMA seeds are unchanged and stay identical: separating the reversion speeds already makes
-#: the two factors two different factors, so no gradient step preserves the exchange any more and
-#: nothing is left for a second asymmetry to break.
-#:
-#: STANDING CONSEQUENCE: every HW2F theta* solved before this re-solves to a different vector.
+#: The sigma seeds stay identical: separating the reversion speeds already breaks the exchange.
 ALPHA_SEED = (0.5, 0.05)
 
-#: THE BRACKET THE `Volatility_Delta` IMPLIED-VOL RE-SOLVE RUNS IN, as a function of the row's own
-#: quoted vol. CO-KEYED WITH `PREMIUM_CONVENTIONS` and read off the SAME declared `Distribution_Type`
-#: at the same seam, so the convention that picks the pricer picks the scale its bracket is in and no
-#: convention can arrive carrying one without the other.
+#: The bracket the `Volatility_Delta` implied-vol re-solve runs in, as a function of the row's own
+#: quoted vol. Co-keyed with `PREMIUM_CONVENTIONS` off the same declared `Distribution_Type`, so the
+#: convention that picks the pricer picks the scale its bracket is in.
 #:
-#: `'Lognormal'` IS THE HISTORICAL `(0.01, vol + .5)`, UNCHANGED TO THE BIT. A lognormal vol is a
-#: fraction of the rate, quoted surfaces run in tens of percent, and a 1% floor sits under all of
-#: them.
-#:
-#: `'Normal'` CANNOT USE THAT FLOOR AND USED TO. A normal vol is an ABSOLUTE rate move, so `0.01`
-#: IS 100 basis points - above ordinary EUR and JPY levels - and a quote below it left both bracket
-#: ends the same sign and raised `ValueError` out of `brentq`. Nor could the strike fallback below
-#: rescue it: at `F = X` the Bachelier premium does not depend on the strike AT ALL, so the second
-#: solve is the same function as the first, and a normal ladder under the floor was fatal rather
-#: than degraded. The bracket here is MULTIPLICATIVE around the quote instead - a hundredth of it
-#: under, a hundred times it over - which is scale-free in the units the quote is actually in. Two
-#: orders either side is the right width because at the money the Bachelier premium is EXACTLY
-#: linear in the vol (`A sigma sqrt(T/2pi)`), so the implied vol is a division and the bracket has
-#: only to CONTAIN it; a premium implying a vol further than that from its own row's quote is a
-#: broken premiums file, and it still refuses loudly rather than being solved for silently.
-#:
-#: The quote is floored at 1e-6 - a hundredth of a basis point, below any market - so the band can
-#: neither collapse nor invert on a degenerate row.
+#: A lognormal vol is a fraction of the rate and a 1% floor sits under every quoted surface. A normal
+#: vol is an absolute rate move, where 0.01 is 100 basis points - above ordinary EUR and JPY levels,
+#: and a quote below it left both bracket ends the same sign - so that bracket is multiplicative
+#: around the quote instead. Two orders either side suffices because the ATM Bachelier premium is
+#: exactly linear in the vol, so the bracket has only to contain a division; further out is a broken
+#: premiums file and still refuses. The quote is floored at 1e-6 so the band cannot collapse.
 IMPLIED_VOL_BRACKETS = {
     'Lognormal': lambda vol: (0.01, vol + .5),
     'Normal': lambda vol: (max(vol, 1e-6) * 0.01, max(vol, 1e-6) * 100.0)}
 
 
 def market_premium(pvbp, strike, expiry, delta, option, quote):
-    """One ATM swaption's premium as a differentiable function of its VOL quote.
+    """One ATM swaption's premium as a differentiable function of its vol quote.
 
-    `option` is the TENSOR half of this surface's `PREMIUM_CONVENTIONS` pair - the engine's own
-    `utils.black_european_option` or `utils.bachelier_european_option` - so this is the twin of the
-    numpy premium `create_market_swaps` builds beside it. The two share a signature, so the
-    convention arrives as a bound argument rather than a branch here.
-
-    At the money, which is the only place this is called, the pairs agree to 1e-12 (Black) and to
-    the hex digit (Bachelier).
+    `option` is the tensor half of this surface's `PREMIUM_CONVENTIONS` pair, so this is the twin of
+    the numpy premium `create_market_swaps` builds beside it; the two share a signature, so the
+    convention arrives bound rather than branched on. At the money, the only place this is called,
+    the pairs agree to 1e-12 (Black) and to the hex digit (Bachelier).
     """
     return pvbp * option(
         quote.new_tensor(strike), quote.new_tensor(strike), quote + delta, expiry, 1.0, 1.0, None)
@@ -358,50 +283,26 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
     premium the model has to reproduce, and the objective weight.
 
     THE QUOTE SIDE. `unit` is the residual's unit tensor when the block asks for `Quote_Sensitivity`
-    and `None` otherwise. The market premium is built by numpy, so it crosses into the residual as a
-    scalar with the quote behind it severed; what closes that is a PAIR per swaption - the quote as
-    a float64 leaf, and the map from that leaf back to this swaption's premium.
-    `market_swap_class.error` splices the two onto the residual.
+    and `None` otherwise. The market premium is numpy, so each swaption carries a pair - the quote as
+    a float64 leaf and the map back to its premium - which `market_swap_class.error` splices on. A
+    vol-quoted row carries the vol and maps through `market_premium`; a premium-quoted one carries
+    the premium and the map is the identity.
 
-    What a quote IS depends on what the block quotes. A vol-quoted swaption - `Market_Volatility` on
-    the row - carries the VOL, and the map is `market_premium`. A premium-quoted one carries the
-    PREMIUM itself and the map is the identity.
+    The premium is priced in the surface's declared convention, read through `get_subtype` as the
+    deal path reads it: see `PREMIUM_CONVENTIONS`. The `Volatility_Delta` re-solve brackets in that
+    same declared scale, `IMPLIED_VOL_BRACKETS` being co-keyed with it. The displacement is
+    `vol_surface.displacement`, where the declared `Shift` outranks the `Property_Aliases` legacy
+    (see `riskfactors.InterestYieldVol.displacement`). An absent or zero `Market_Volatility` refuses.
 
-    THE PREMIUM IS PRICED IN THE SURFACE'S DECLARED CONVENTION, read here through `get_subtype`, the
-    same read the deal path makes. `PREMIUM_CONVENTIONS` holds the two: `'Lognormal'` (the field's
-    declared default) strikes the premium with Black at `K + shift`, `'Normal'` strikes it with
-    Bachelier off a vol that is an ABSOLUTE rate move.
+    THE SCHEDULE the analytic objective reads is extracted here for every benchmark whatever the
+    block's `Objective` - see `swaption_schedule_class` for why the curve's own clock.
 
-    THE DISPLACEMENT IS `vol_surface.displacement` AND NOT THE RAW ALIAS: the declared `Shift`
-    outranks the undeclared `Property_Aliases` legacy, and a displacement authored beside `'Normal'`
-    refuses there. See `riskfactors.InterestYieldVol.displacement` for the precedence.
-
-    THE `Volatility_Delta` RE-SOLVE IS BRACKETED IN THE SAME DECLARED SCALE, off the same read:
-    `IMPLIED_VOL_BRACKETS` is co-keyed with `PREMIUM_CONVENTIONS`, so a premium-quoted block asking
-    for a bumped vol brackets its `brentq` in the units its own surface quotes. A fixed 1% floor is
-    what a lognormal vol wants and is 100 basis points of what a normal one is; the table says which
-    and why.
-
-    A ZERO `Market_Volatility` REFUSES, and so does an absent one - a benchmark is a QUOTE, and a
-    row carrying none is an absent row rather than one to be filled from the book's own surface.
-
-    THE SCHEDULE THE ANALYTIC OBJECTIVE READS is extracted here and nowhere else, for EVERY
-    benchmark whatever the block's `Objective`. Both leg generators have already run by the time the
-    premium is priced, so converting the fixed leg's pay days and accruals to the curve's own year
-    fractions costs two numpy reads - see `swaption_schedule_class` for why that clock.
-
-    THERE IS ONE EXPIRY YEAR FRACTION AND IT IS THE CURVE'S. `expiry` is
-    `curve_factor.get_day_count_accrual`, read once per benchmark, and it is what the numpy
-    premium is priced on, what `market_premium` strikes the float64 twin on, what the
-    `Volatility_Delta` brentq re-solve brackets, and what `swaption_schedule_class` carries into
-    the inversion. It was `exp_days / utils.DAYS_IN_YEAR` until 2026-09-02, which made the market
-    premium and its own Bachelier inversion two clocks apart - visible on the Normal round trip as
-    `sigma sqrt(T_365.25/T_curve)` and invisible but present on the lognormal one. The DATES are
-    untouched: `exp_days`, the `mtm_time_grid` search and both leg generators read days and the
-    instrument's own declared day counts, and 365.25 still converts the vol tenors to grid days.
+    ONE EXPIRY YEAR FRACTION, and it is `curve_factor.get_day_count_accrual`: it prices the numpy
+    premium, strikes the float64 twin, brackets the brentq re-solve and is `schedule.expiry`. The
+    DATES are untouched - `exp_days`, the `mtm_time_grid` search and both leg generators read days
+    and the instrument's own day counts, and 365.25 still converts vol tenors to grid days.
     """
-    # a premium bumped by `Volatility_Delta` reaches the residual through a brentq implied-vol
-    # solve, and a numerical root find carries no derivative - so the quote side declines it
+    # a brentq implied-vol solve carries no derivative, so the quote side declines that combination
     if unit is not None and vol_surface.premiums is not None and vol_surface.delta:
         raise Exception('Quote_Sensitivity: a premium re-struck at Volatility_Delta reaches the '
                         'residual through a brentq implied-vol solve, which carries no derivative')
@@ -409,7 +310,7 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
     benchmarks = []
     # store the benchmark instruments
     all_deals = {}
-    # the surface's DECLARED convention, read once - `get_subtype` is the deal path's own read
+    # the surface's declared convention, read once - `get_subtype` is the deal path's own read
     distribution = vol_surface.get_subtype()[0]
     if distribution not in PREMIUM_CONVENTIONS:
         raise Exception(
@@ -418,8 +319,7 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
             'Distribution_Type to one of those'.format(
                 distribution, ' and '.join(sorted(PREMIUM_CONVENTIONS))))
     price_option, tensor_option = PREMIUM_CONVENTIONS[distribution]
-    # and the bracket the `Volatility_Delta` re-solve runs in, off that SAME declared read - the
-    # quote's scale is the convention's, so the bracket is too. See `IMPLIED_VOL_BRACKETS`.
+    # the re-solve's bracket off that same read - the quote's scale is the convention's
     vol_bracket = IMPLIED_VOL_BRACKETS[distribution]
     # cater for shifted lognormal vols - declared `Shift` first, `Property_Aliases` behind it
     shift_parameter = vol_surface.displacement
@@ -428,9 +328,8 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
         effective = base_date + instrument['Start']
         maturity = effective + instrument['Tenor']
         exp_days = (effective - base_date).days
-        # ONE CLOCK, and it is the CURVE'S: this expiry prices the premium, strikes the tensor
-        # twin, brackets the re-solve and is `schedule.expiry` below, so the Bachelier inversion
-        # reads back the year fraction the premium was struck on - see `swaption_schedule_class`
+        # one clock, the curve's: this prices the premium, strikes the twin, brackets the re-solve
+        # and is `schedule.expiry` below, so the Bachelier inversion reads back what it struck on
         expiry = float(curve_factor.get_day_count_accrual(base_date, exp_days))
         time_index = np.searchsorted(time_grid.mtm_time_grid, [exp_days], side='right') - 1
         swaption_name = 'Swaption_{}_{}'.format(
@@ -500,7 +399,7 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
         if vol_surface.premiums is not None:
             swaption_price = vol_surface.get_premium(date_fmt(instrument['Start']), date_fmt(instrument['Tenor']))
             if vol_surface.delta:
-                # ONE bracket for both solves, in the scale THIS surface quotes its vols in
+                # one bracket for both solves, in the scale this surface quotes its vols in
                 bracket = vol_bracket(vol)
                 try:
                     implied_vol = scipy.optimize.brentq(lambda v: pvbp * price_option(
@@ -782,36 +681,27 @@ class HestonNandiModelParameters(object):
     # x = (log Omega, psi, SIGNED leverage share, |Gamma_Star|/1000, log H0) - see reparam
     bounds = [(np.log(1e-12), np.log(1e-3)), (0.0, 1.0 - 1e-6), (-1.0, 1.0),
               (1e-3, 5.0), (np.log(1e-10), np.log(1e-2))]
-    # candidate price factor types for each instrument input - the underlying is any spot (0D)
-    # factor and the volatility any (moneyness, expiry) surface, so one instrument definition
-    # serves FX, equity and commodity underlyings
+    # candidate types per input: any spot (0D) factor, any (moneyness, expiry) surface - so one
+    # instrument definition serves FX, equity and commodity underlyings
     factor_types = {'Underlying': ['FxRate', 'EquityPrice', 'CommodityPrice', 'FuturesPrice'],
                     'Volatility': utils.TwoDimensionalFactors,
                     'Discount_Rate': ['InterestRate'],
                     'Yield': ['DividendRate', 'InterestRate'],
                     'Funding_Rate': ['InterestRate']}
 
-    #: WHAT EACH QUOTE TYPE REQUIRES. `Implied_Volatility` synthesises its target premium off the
-    #: surface, so the surface is an input like the spot; `Premium` is handed the number and never
-    #: looks at one, so a `Volatility` NAME on such a block is INERT - it is not resolved and the
-    #: book need not carry it. That is what lets a chain-sourced ladder fit with no surface
-    #: anywhere, which is the circularity the chain-not-surface ruling exists to avoid, while the
-    #: block still records the surface its marks will be read off.
-    #:
-    #: Declared here rather than as a `default=REQUIRED` the branch reads past: a field required
-    #: under one quote type and inert under the other cannot say so with one static default, and
-    #: the one it used to carry made the surface a hard precondition of both.
+    #: What each quote type requires. `Implied_Volatility` prices its target premium off the
+    #: surface; `Premium` is handed the number, so a `Volatility` name on such a block is inert and
+    #: a chain-sourced ladder fits with no surface in the book at all. Declared here rather than as
+    #: a `default=REQUIRED`, which one static default cannot express.
     quote_type_references = {'Implied_Volatility': ('Underlying', 'Volatility', 'Discount_Rate'),
                              'Premium': ('Underlying', 'Discount_Rate')}
 
-    #: The CARRY references, read whenever named and required by no quote type - each with an
-    #: engine fallback stated where it is read: no `Yield` is no carry, no `Funding_Rate` is a
-    #: forward funded by the `Discount_Rate` curve. What a fit reads is these plus whatever its
-    #: quote type requires; a reference in neither list is not looked at.
+    #: The carry references, read whenever named and required by no quote type: no `Yield` is no
+    #: carry, no `Funding_Rate` is a forward funded by `Discount_Rate`. A fit reads these plus what
+    #: its quote type requires; a reference in neither list is not looked at.
     optional_references = ('Yield', 'Funding_Rate')
 
-    #: What an optional reference's ABSENCE means, appended to its declared description - so the
-    #: panel says what leaving the field blank does rather than only what filling it in does.
+    #: What an optional reference's absence means, appended to its declared description.
     reference_notes = {
         'Volatility': '. REQUIRED under Quote_Type Implied_Volatility, which prices its target '
                       'premium off it; INERT under Premium, where the quote IS the premium and no '
@@ -822,20 +712,18 @@ class HestonNandiModelParameters(object):
                         'integrates, rather than the curve the premium discounts on. Blank funds '
                         'the forward off Discount_Rate, which is the one-curve world and what an '
                         'FX pair always was'}
-    # Surface_Types whose vol at a strike is a TABLE LOOKUP, hence usable here. SVI/Skew are
-    # parametric - their vol needs the ATM_Ref/wing machinery of the pricing path (Factor2D
-    # returns the parameters, not a vol), so a synthesised premium would be silently wrong.
+    # Surface_Types whose vol at a strike is a table lookup, hence usable here. SVI/Skew are
+    # parametric - Factor2D returns the parameters, not a vol - so a synthesised premium would be
+    # silently wrong.
     tabular_surfaces = ('Explicit', 'Relative_Forward', 'Malz')
 
     market_factor_type = 'HestonNandiModelPrices'
-    #: WHAT A COLLAPSED LADDER COSTS, in this family's own terms. Interpolated into the refusal
-    #: rather than spelled inside it, because the component family inherits the emitter and its
-    #: ladder identifies something else.
+    #: What a collapsed ladder costs, interpolated into the refusal: the component family inherits
+    #: the emitter and its ladder identifies something else.
     identification_note = ('five parameters: the ATM term structure is what identifies H0, Beta '
                            'and Omega')
-    # the five factor references, each with the optional `_Type` its `resolve` reads, whose valid
-    # values ARE the candidate list - one source, so a new candidate cannot miss the schema. What is
-    # REQUIRED is derived from `quote_type_references`; see `reference_fields`.
+    # the five factor references, each with the optional `_Type` `resolve` reads; what is REQUIRED
+    # is derived from `quote_type_references` - see `reference_fields`
     fields = reference_fields(factor_types, quote_type_references, reference_notes) + [
         F('Quote_Type', 'Text', default='Implied_Volatility',
           values=['Implied_Volatility', 'Premium'],
@@ -878,23 +766,12 @@ class HestonNandiModelParameters(object):
     @classmethod
     def resolve_references(cls, market_price, instrument, price_factors, factor_interp):
         """`{field: constructed factor}` for every reference this block names and its quote type
-        reads - and a NAMED REFUSAL for every one it needs and cannot get.
+        reads - and a named refusal for every one it needs and cannot get.
 
-        A MISSING REFERENCE REFUSES; IT DOES NOT SKIP. What stood here logged
-        `Unable to bootstrap ... - skipping` and moved on: no factor written, no exception, and a
-        caller told nothing - the hollow-container failure mode in bootstrap clothing, and one that
-        a chain-sourced block hit on the very reference its quote type never reads. Every refusal
-        below names the block, the field, what the quote type requires and the remedy.
-
-        WHAT IS REQUIRED IS THE QUOTE TYPE'S (`quote_type_references`): `Implied_Volatility`
-        requires the `Volatility` surface to build its target premium, `Premium` is handed the
-        number and never looks at one - so a `Volatility` NAME on a premium block is not resolved
-        at all and the book need not carry the surface. Both require `Underlying` and
-        `Discount_Rate`. `optional_references` - the carry pair - are read whenever named and
-        required by neither: absent, they are no carry and a forward funded by the discount curve.
-
-        The refusal is scoped to THIS block: everything the family needs is resolved here, before
-        an option is looked at, so a book carrying two ladders fails on the one that is wrong.
+        A missing reference refuses; it does not skip. What is required is the quote type's
+        (`quote_type_references`), so a `Volatility` name on a `Premium` block is not resolved at
+        all; `optional_references` are read whenever named. Everything is resolved before an option
+        is looked at, so a book carrying two ladders fails on the one that is wrong.
         """
         quote_type = instrument.get('Quote_Type')
         if quote_type not in cls.quote_type_references:
@@ -943,24 +820,17 @@ class HestonNandiModelParameters(object):
     def reparam(x):
         """Maps the fitted vector x to (Omega, Alpha, Beta, Gamma_Star, H0).
 
-        STATIONARITY IS ENFORCED BY CONSTRUCTION, not by a penalty: the optimizer fits the
-        persistence psi = Beta + Alpha*Gamma_Star^2 itself (a plain box bound psi <= 1-1e-6) and
-        splits it between the two channels with a leverage share l. Omega and H0 are fitted in logs
-        so they stay positive and so their scale (~1e-6) doesn't wreck the line search against
-        Gamma_Star (~1e3, hence the /1000).
+        Stationarity is enforced by construction: the optimizer fits the persistence
+        psi = Beta + Alpha*Gamma_Star^2 under a box bound psi <= 1-1e-6 and splits it between the
+        two channels with a leverage share l. Omega and H0 are fitted in logs so they stay positive
+        and their ~1e-6 scale does not wreck the line search against Gamma_Star (~1e3, hence /1000).
 
-        THE LEVERAGE SHARE CARRIES THE SIGN, so BOTH skew directions live in one box. Gamma_Star's
-        sign is the direction of the smile - positive is the equity leverage shape, vol FALLING
-        with strike in the underlying's own units, and an FX pair read on its `FxRate` axis
-        routinely wants the other one.
-
-        Gamma_Star itself cannot simply be widened across zero: Alpha = l*psi/Gamma_Star^2 is
-        singular there, and the singularity is real - holding the skew channel fixed while
-        Gamma_Star -> 0 sends the wings' width to infinity. So x[3] is the MAGNITUDE, bounded away
-        from zero, and x[2] is a SIGNED share in [-1, 1] carrying Gamma_Star's sign:
-        Alpha = |l|*psi/Gamma_Star^2, Beta = psi*(1-|l|). The price is continuous across l = 0,
-        where Alpha is zero and Gamma_Star has no effect - which is why a flat surface leaves it
-        unidentified - and every point of the box is stationary and feasible.
+        The share carries Gamma_Star's SIGN, so both skew directions live in one box - positive is
+        the equity leverage shape, and an FX pair read on its `FxRate` axis wants the other. Widening
+        Gamma_Star across zero instead is not available: Alpha = l*psi/Gamma_Star^2 is singular
+        there. So x[3] is the magnitude, bounded away from zero, and x[2] a signed share in [-1, 1]:
+        Alpha = |l|*psi/Gamma_Star^2, Beta = psi*(1-|l|). The price is continuous across l = 0, where
+        Alpha is zero and Gamma_Star has no effect - which is what a flat surface reports.
         """
         psi, share, magnitude = x[1], x[2], x[3] * 1000.0
         gamma = torch.where(share < 0.0, -magnitude, magnitude)
@@ -979,10 +849,9 @@ class HestonNandiModelParameters(object):
     def moneyness(cls, strike, spot, forward, vol_surface, use_forward, invert_moneyness):
         """The moneyness coordinate to look the vol surface up at.
 
-        There are FIVE conventions in this framework and they are dispatched off the surface's
-        SubType, so this DELEGATES to pricing.calc_moneyness - the same function every option deal
-        uses - rather than reimplementing the dispatch. calc_moneyness only reads the SubType out
-        of deal_data, so a minimal Deal_data carrying this surface's SubType is all it needs.
+        Five conventions, dispatched off the surface's SubType, so this delegates to
+        `pricing.calc_moneyness` - the same function every option deal uses. That reads only the
+        SubType out of deal_data, so a minimal `DealDataType` carrying it is all it needs.
         """
         deal_data = utils.DealDataType(
             Instrument=None, Time_dep=None, Calc_res=None,
@@ -991,39 +860,33 @@ class HestonNandiModelParameters(object):
             *[torch.tensor(float(x), dtype=cls.prec) for x in (strike, spot, forward)],
             deal_data, use_forward, invert_moneyness))
 
-    #: THE FX LADDER, ratified by the desk and encoded here rather than described: the ATM term
-    #: structure identifies H0/Beta/Omega, and the 25 delta wings identify Gamma_Star (the skew)
-    #: and Alpha (the wings' width). NOTHING PAST 1Y - TARFs and accumulators are sub-year
-    #: products, and a parameter fitted to the 2Y smile is borrowed against products nobody quotes.
+    #: The FX ladder the desk deals: the ATM term structure identifies H0/Beta/Omega, the 25
+    #: delta wings identify Gamma_Star (the skew) and Alpha (the wings' width). Nothing past 1Y -
+    #: TARFs and accumulators are sub-year products.
     fx_atm_expiries = (1.0 / 12.0, 2.0 / 12.0, 0.25, 0.5, 0.75, 1.0)
     fx_wing_expiries = (0.25, 0.5)
     fx_wing_pillar = 0.25
-    #: Days a surface expiry in YEARS is emitted as. A quote block carries DATES, so `Expiry_Date`
-    #: is the nearest whole day to the pillar and the fit reads its own accrual back off that date.
-    #: The residual is the rounding alone - a 1M pillar is 30.4 days and is emitted as 30.
+    #: Days a surface expiry in years is emitted as: a quote block carries DATES, so `Expiry_Date`
+    #: is the nearest whole day and the residual is the rounding alone (a 1M pillar emits as 30).
     fx_days_per_year = 365.0
-    #: How far PAST the ladder's own longest rung a surface pillar may still be snapped to. Snapping
-    #: is an argmin and an argmin has no ceiling, so without this a surface whose only pillars are
-    #: 2Y and 5Y would answer every rung with 2Y - a 2Y fit wearing a 1M label. A week is the width
-    #: of the same pillar quoted from a different date (a 1Y pillar at 366 or 368 days).
+    #: How far past the ladder's longest rung a surface pillar may still be snapped to. Snapping is
+    #: an argmin and has no ceiling, so without this a 2Y/5Y-only surface answers every rung with
+    #: 2Y. A week is the width of the same pillar quoted from a different date.
     fx_expiry_tolerance = 7.0 / 365.0
-    #: DISTINCT (expiry, strike) contracts the ladder must survive snapping with. Ten rungs are not
-    #: ten quotes: a surface carrying two pillars collapses them onto FOUR contracts and one
-    #: carrying a single expiry onto three, and four do not identify five parameters. Six is a floor
-    #: rather than a guarantee - the fit still reports which parameters sat on a bound.
+    #: Distinct (expiry, strike) contracts the ladder must survive snapping with. Ten rungs are not
+    #: ten quotes: a two-pillar surface collapses them onto four, and four do not identify five
+    #: parameters. A floor rather than a guarantee - the fit still reports parameters on a bound.
     fx_minimum_contracts = 6
 
     @classmethod
     def fx_surface_expiry(cls, surface, expiry, cap):
-        """The surface's OWN expiry nearest `expiry` at or under `cap`, and whether it had to
+        """The surface's own expiry nearest `expiry` at or under `cap`, and whether it had to
         substitute. `(None, True)` where the surface carries no admissible pillar at all.
 
-        A surface that does not carry 2M is not asked to invent one: the quote moves to the nearest
-        pillar the surface was BUILT from and the block records it in `Quote_Source`. Interpolating
-        between two pillars would put a number nobody quoted into the objective.
-
-        `cap` is the ladder's own longest rung, widened by `fx_expiry_tolerance`. A rung with
-        nothing admissible under it is DROPPED, and the block records that too.
+        The quote moves to the nearest pillar the surface was BUILT from and the block records it in
+        `Quote_Source`; interpolating between two would put a number nobody quoted into the
+        objective. `cap` is the ladder's longest rung widened by `fx_expiry_tolerance`, and a rung
+        with nothing admissible under it is dropped and recorded.
         """
         admissible = surface.expiry[surface.expiry <= cap + cls.fx_expiry_tolerance]
         if not admissible.size:
@@ -1033,14 +896,12 @@ class HestonNandiModelParameters(object):
 
     @staticmethod
     def fx_atm_coordinate(vol_at, T, iterations=64):
-        """`(x, vol)` of the DELTA-NEUTRAL STRADDLE on a Malz surface at expiry `T`.
+        """`(x, vol)` of the delta-neutral straddle on a Malz surface at expiry `T`.
 
-        That is the ATM convention `FXVolSurfaceParameters` writes and `Factor2D.malz_skew` places
-        the +-0.5 label's vol at: `K = F exp(-sigma^2 T/2)`, i.e. `x = log(F/K) = sigma^2 T / 2`
-        with `sigma` the surface's own vol AT that x. Reading the surface at `x = 0` instead would
-        be the ATMF vol, which is a different number on a skewed smile - so this is the fixed
-        point `sigma = surface(sigma^2 T / 2)`, iterated to machine precision (a contraction: the
-        map's slope is the smile's slope times `sigma T`, order 1e-2 here).
+        The ATM convention `FXVolSurfaceParameters` writes and `Factor2D.malz_skew` places the +-0.5
+        label's vol at: `K = F exp(-sigma^2 T/2)`, so `x = sigma^2 T / 2` with `sigma` the surface's
+        own vol at that x. Reading at `x = 0` would be the ATMF vol, a different number on a skewed
+        smile. Iterated as a fixed point - a contraction, slope of order 1e-2 here.
         """
         vol = vol_at(0.0)
         for _ in range(iterations):
@@ -1053,12 +914,12 @@ class HestonNandiModelParameters(object):
 
     @staticmethod
     def fx_pillar_delta(vol_at, T, x, side):
-        """The PREMIUM-ADJUSTED FORWARD delta magnitude at log-moneyness `x = log(F/K)`, on the
-        call wing (`side` +1) or the put wing (-1) - `(K/F)N(d2)` and `(K/F)N(-d2)`.
+        """The premium-adjusted forward delta magnitude at log-moneyness `x = log(F/K)`, on the call
+        wing (`side` +1) or the put wing (-1) - `(K/F)N(d2)` and `(K/F)N(-d2)`.
 
-        The one delta convention the Malz solve inverts, so a strike found by inverting THIS is
-        the strike that solve placed the pillar's vol at. `d2` is built off the surface's own vol
-        at `x`, which is what makes it a smile delta rather than a flat-vol one.
+        The one delta convention the Malz solve inverts, so inverting this finds the strike that
+        solve placed the pillar's vol at. `d2` is built off the surface's own vol at `x`, which
+        makes it a smile delta rather than a flat-vol one.
         """
         vol = vol_at(x)
         d2 = (x - 0.5 * vol * vol * T) / (vol * np.sqrt(T))
@@ -1066,13 +927,11 @@ class HestonNandiModelParameters(object):
 
     @classmethod
     def fx_pillar_coordinate(cls, vol_at, T, pillar, side, x_atm, iterations=100):
-        """The log-moneyness whose premium-adjusted forward delta IS `pillar` on one wing.
+        """The log-moneyness whose premium-adjusted forward delta is `pillar` on one wing.
 
-        Bisection between the delta-neutral straddle and a far wing: the delta is monotone in `x`
-        along each wing (a call's rises as the strike falls), so the bracket is the ATM coordinate
-        on one end and a strike three log-units out on the other. An unbracketed pillar REFUSES by
-        name rather than clamping - a 25 delta quote that the surface cannot reach is a surface
-        question, and a silently clamped strike would enter the objective as if it were the wing.
+        Bisection between the delta-neutral straddle and a strike three log-units out: the delta is
+        monotone in `x` along each wing. An unbracketed pillar refuses by name rather than clamping,
+        a clamped strike being one that enters the objective as if it were the wing.
         """
         far = 3.0
         low, high = (-far, x_atm) if side > 0 else (x_atm, far)
@@ -1097,10 +956,8 @@ class HestonNandiModelParameters(object):
     def fx_black_vega(forward, strike, rate, vol, T):
         """Black vega of one unit of the option - `exp(-rT) F n(d1) sqrt(T)`.
 
-        THE WEIGHT, before normalisation. Vega is what makes the objective scale-free across a term
-        structure: a one-month premium is a fraction of a one-year one, and an unweighted least
-        squares would fit the back end alone. Puts and calls share it, so the wing's type does not
-        enter.
+        The objective weight before normalisation: vega makes it scale-free across a term structure,
+        where an unweighted least squares would fit the back end alone. Puts and calls share it.
         """
         stddev = vol * np.sqrt(T)
         d1 = (np.log(forward / strike) + 0.5 * stddev * stddev) / stddev
@@ -1108,56 +965,43 @@ class HestonNandiModelParameters(object):
 
     @classmethod
     def fx_surface_block(cls, pair, price_factors, sys_params, factor_interp):
-        """`(Market Prices name, block)` - this family's quote block, authored off a pair's BUILT
+        """`(Market Prices name, block)` - this family's quote block, authored off a pair's built
         `FXVol` surface.
 
-        THE LADDER: TEN VEGA-WEIGHTED IMPLIED VOLS read off the surface - ATM at 1M, 2M, 3M, 6M, 9M
-        and 1Y (the term structure identifies H0, Beta and Omega) plus 25 delta wings at 3M and 6M
-        (the skew identifies Gamma_Star, the wings' width Alpha). The weight is the Black vega off
-        the same surface, normalised. NOTHING PAST 1Y - TARFs and accumulators are sub-year
-        products. An expiry the surface does not carry moves to the NEAREST QUOTED one at or under
-        1Y and the block records it in `Quote_Source` rather than interpolating; a rung with no
-        admissible pillar under it is dropped, and the block records that too.
+        THE LADDER: ten vega-weighted implied vols read off the surface - ATM at 1M, 2M, 3M, 6M, 9M
+        and 1Y, plus 25 delta wings at 3M and 6M - normalised by Black vega off the same surface.
+        An expiry the surface does not carry moves to the nearest quoted one at or under 1Y, or is
+        dropped where it carries none; `Quote_Source` records either.
 
-        TEN RUNGS ARE NOT TEN QUOTES. Every substituted rung lands on a contract another rung
-        already named - a two-pillar surface hands the fit FOUR distinct contracts and a one-expiry
-        surface three, and a repeated contract is a weight rather than an observation. So the
-        DISTINCT `(expiry, strike)` contracts are counted after snapping, and a ladder below
-        `fx_minimum_contracts` refuses by name with the surface's own pillars in the message.
+        Ten rungs are not ten quotes: a substituted rung lands on a contract another rung already
+        named, and a repeat is a weight rather than an observation. So DISTINCT `(expiry, strike)`
+        contracts are counted after snapping and a ladder below `fx_minimum_contracts` refuses.
 
-        THE VOLS ARE THE SURFACE'S, UNSHIFTED. `Volatility_Delta` is a scenario shift the FIT
-        applies to every quoted vol it prices a premium off; adding it here as well would move the
-        fitted world twice for one bump.
+        The vols are the surface's, UNSHIFTED - `Volatility_Delta` is a shift the fit applies to
+        every quoted vol it prices a premium off, and applying it here too would bump twice.
 
-        THE VOL IS READ AT THE PILLAR'S OWN COORDINATE. `T` is the surface's expiry axis; the
-        emitted `Expiry_Date` resolves through the discount curve's own day count to an accrual `t`
-        that equals it only under ACT_365. `t` is what the FORWARD hangs off, `T` is what the
-        surface is read at - reading the surface at `t` under ACT_360 walks every rung off its
-        pillar and puts the 1Y rung past the last expiry the surface carries.
+        TWO CLOCKS, deliberately. `T` is the surface's own expiry axis and is what the surface is
+        read at; `t` is what the emitted `Expiry_Date` resolves to through the discount curve's day
+        count and is what the FORWARD hangs off. They agree only under ACT_365 - reading the surface
+        at `t` under ACT_360 puts the 1Y rung past the last expiry the surface carries.
 
-        THE STRIKES ARE THE SURFACE'S OWN COORDINATES. The ATM strike is the delta-neutral straddle
-        `K = F exp(-sigma^2 T/2)` the surface was built under, and each wing is the strike whose
-        premium-adjusted forward delta IS the pillar, found by inverting the same delta the Malz
-        solve inverted off the same vols.
+        The strikes are the surface's own coordinates: the ATM one is the delta-neutral straddle
+        `K = F exp(-sigma^2 T/2)`, each wing the strike whose premium-adjusted forward delta is the
+        pillar, found by inverting the delta the Malz solve inverted off the same vols.
 
-        NO FUNDING CURVE IS DECLARED, and an FX pair needs none: `Discount_Rate` is the domestic
-        curve and `Yield` the foreign one, which is exactly the pair `utils.calc_fx_forward` builds
-        the priced forward from - so the curve that funds the calibrated forward already IS the one
-        the pricer grows it on. `Funding_Rate` exists for the third curve an EQUITY has, its own
-        repo, and leaving it blank is what keeps every FX fit the arithmetic it always was.
+        No `Funding_Rate` is declared, and an FX pair needs none: `Discount_Rate` and `Yield` are
+        exactly the pair `utils.calc_fx_forward` builds the priced forward from, so the calibrated
+        forward already grows at the curve the pricer grows it on.
 
-        THE ORIENTATION. An `FXVol.A.B` surface's x-axis is `log(F/K)` for the pair `A` priced in
-        `B`; the 0D factor this family fits is an `FxRate`, priced in the DOMESTIC currency. So the
-        underlying is the token that is not domestic, the strikes are in that factor's own units,
-        and the block declares `Use_Forward` Yes with `Invert_Moneyness` set as the deal sets it
-        (`domestic == A`). Inverting the rate flips the sign of the skew Gamma_Star carries, so the
-        `HestonNandiModelParameters.<underlying>` this writes describes the rate the pricer
-        simulates, orientation included.
+        ORIENTATION. An `FXVol.A.B` x-axis is `log(F/K)` for `A` priced in `B`, while the `FxRate`
+        fitted is priced in the DOMESTIC currency - so the underlying is whichever token is not
+        domestic, and the block declares `Use_Forward` Yes with `Invert_Moneyness` as the deal sets
+        it. Inverting flips the sign of Gamma_Star's skew, so what is written describes the rate the
+        pricer simulates, orientation included.
 
-        Refuses by name, with the remedy, on: no built surface for the pair, a surface whose type
-        is not one a strike can be looked up on, a ladder that collapses below
-        `fx_minimum_contracts` distinct contracts, a pair neither of whose tokens is the domestic
-        currency (a cross - author the block by hand), and a missing spot or discount curve.
+        Refuses by name, with the remedy, on: no built surface, a surface type no strike can be
+        looked up on, a ladder below `fx_minimum_contracts`, a cross against the reporting currency,
+        and a missing spot or discount curve.
         """
         name = utils.check_rate_name(pair)
         vol_name = utils.check_tuple_name(utils.Factor('FXVol', name))
@@ -1176,9 +1020,8 @@ class HestonNandiModelParameters(object):
                 'a quote is. Author the quotes as premiums (Quote_Type Premium) instead'.format(
                     vol_name, subtype[0], '/'.join(cls.tabular_surfaces)))
 
-        # `Factor2D.current_value` only INTERPOLATES a grid with two of each coordinate - handed a
-        # degenerate one it answers the whole flat vol vector, and reading element zero of that
-        # would be a plausible number at the wrong point on every rung of the ladder
+        # `Factor2D.current_value` only interpolates a grid with two of each coordinate; handed a
+        # degenerate one it answers the whole flat vol vector
         if surface.expiry.size < 2 or surface.moneyness.size < 2:
             raise ValueError(
                 '{} carries {} expiries x {} moneyness nodes - a surface has to be a grid before a '
@@ -1187,9 +1030,8 @@ class HestonNandiModelParameters(object):
 
         base_date = sys_params['Base_Date']
         domestic = sys_params.get('Base_Currency', 'USD')
-        # the pair is A.B = A priced in B; the FxRate this family fits is priced in the DOMESTIC
-        # currency, so the underlying is whichever token is not it - and the moneyness inverts
-        # exactly where FXOptionDeal inverts it, on the surface's FIRST token being the domestic
+        # the underlying is whichever token is not domestic; the moneyness inverts exactly where
+        # FXOptionDeal inverts it, on the surface's first token being the domestic
         if domestic not in name:
             raise ValueError(
                 '{} is a cross against the reporting currency {} - neither leg is an FxRate this '
@@ -1206,8 +1048,8 @@ class HestonNandiModelParameters(object):
                              'dynamics. Add the FxRate block for {}'.format(
                                  spot_name, underlying))
         spot_block = price_factors[spot_name]
-        # the carry legs: an FxRate names its own foreign curve, and its domestic is the one it is
-        # priced in - the same pair of curves the FX forward is built from
+        # the carry legs: the FxRate's own foreign curve and the one it is priced in - the pair the
+        # FX forward is built from
         carry_name = spot_block.get('Interest_Rate') or underlying
         discount_name = spot_block.get('Domestic_Currency') or domestic
         for curve in (discount_name, carry_name):
@@ -1231,14 +1073,8 @@ class HestonNandiModelParameters(object):
 
         def pillar(expiry):
             """One admissible expiry's `(T, moved, days, t, F, r, vol_at)`, or `None` where the
-            surface carries no pillar the ladder may snap to.
-
-            `T` is the SURFACE's own coordinate and the vol is read there exactly. `t` is the
-            accrual the emitted date resolves to through the discount curve's own day count, and it
-            is what the FORWARD hangs off, being what the fit recomputes off `Expiry_Date`. The two
-            agree only under ACT_365 - under ACT_360 a 1Y pillar resolves to 1.0139, past the last
-            pillar the surface carries.
-            """
+            surface carries no pillar the ladder may snap to. `T` is the surface's coordinate and
+            `t` the emitted date's accrual - see the two-clock note in `fx_surface_block`."""
             T, moved = cls.fx_surface_expiry(surface, expiry, cap)
             if T is None:
                 return None
@@ -1246,23 +1082,21 @@ class HestonNandiModelParameters(object):
             t = discount.get_day_count_accrual(base_date, days)
             rate = float(discount.current_value(t))
             forward = spot * np.exp((rate - float(carry.current_value(t))) * t)
-            # the surface UNSHIFTED: this block is a QUOTE, and `Volatility_Delta` is a scenario
-            # shift the fit applies to every quoted vol it reads. Folding it in here as well would
-            # move the fitted world twice on one bump
+            # the surface unshifted - the fit applies `Volatility_Delta` to every vol it reads
             return T, moved, days, t, forward, rate, (
                 lambda x: float(surface.current_value([[x, T]])[0]))
 
         quotes, substituted = [], []
 
         def quote(days, forward, rate, t, x, vol):
-            """One `OPTION_QUOTE` row: the strike this coordinate names in the UNDERLYING's own
-            units (inverting `calc_moneyness`, which is what `Invert_Moneyness` declares), the
-            surface's vol there, and the Black vega that will become its weight."""
+            """One `OPTION_QUOTE` row: the strike this coordinate names in the underlying's own
+            units (inverting `calc_moneyness`, as `Invert_Moneyness` declares), the surface's vol
+            there, and the Black vega that becomes its weight."""
             strike = forward * np.exp(x if invert else -x)
             quotes.append({
                 'Expiry_Date': base_date + pd.DateOffset(days=days), 'Strike': strike,
-                # the OTM leg of the pair, which is the one a desk deals - and the fit is blind to
-                # the choice either way, since the family prices puts by parity off the call
+                # the OTM leg, which is the one a desk deals; the fit is blind to the choice, puts
+                # being priced by parity off the call
                 'Option_Type': 'Call' if strike >= forward else 'Put', 'Units': 1.0,
                 'Weight': cls.fx_black_vega(forward, strike, rate, vol, t),
                 'Quoted_Market_Value': vol})
@@ -1293,9 +1127,8 @@ class HestonNandiModelParameters(object):
             if moved:
                 substituted.append('{:g}d {:g} -> {:g}'.format(cls.fx_wing_pillar, expiry, T))
 
-        # a rung the surface does not carry snaps onto one it does, and a repeated contract is a
-        # weight rather than an observation - so what is counted, and what refuses, is the number
-        # of DISTINCT (expiry, strike) contracts
+        # a repeated contract is a weight rather than an observation, so what is counted is the
+        # number of DISTINCT (expiry, strike) contracts
         contracts = {(point['Expiry_Date'], point['Strike']) for point in quotes}
         if len(contracts) < cls.fx_minimum_contracts:
             raise ValueError(
@@ -1312,8 +1145,7 @@ class HestonNandiModelParameters(object):
                     cls.market_factor_type,
                     ', '.join(substituted) or 'every rung landed on a pillar it was asked for'))
 
-        # NORMALISED, over the rungs as emitted: the weights are relative in the objective, and a
-        # ladder the surface collapsed onto fewer pillars is honestly a heavier weight on those
+        # normalised over the rungs as emitted - the weights are relative in the objective
         total = sum(point['Weight'] for point in quotes)
         if not total > 0.0:
             raise ValueError('{} priced every quote at zero vega, so there is no weight to '
@@ -1339,12 +1171,11 @@ class HestonNandiModelParameters(object):
                 'Discount_Rate': discount_name, 'Discount_Rate_Type': 'InterestRate',
                 'Yield': carry_name, 'Yield_Type': 'InterestRate',
                 'Quote_Type': 'Implied_Volatility',
-                # the surface's x-axis is log(F/K) on the PAIR, so the lookup is against the
-                # forward and inverts exactly where the pair's own deals invert it
+                # the surface's x-axis is log(F/K) on the pair, so the lookup is against the
+                # forward and inverts where the pair's own deals invert it
                 'Use_Forward': 'Yes', 'Invert_Moneyness': 'Yes' if invert else 'No',
-                # the STEP CLOCK is what the fitted parameters mean - a deal's `Steps_Per_Year`
-                # valuation option has to be this number - so it is stated rather than left to fall
-                # through, and read off the declaration so the two cannot hold different defaults
+                # the step clock is what the fitted parameters mean - a deal's `Steps_Per_Year`
+                # must be this number - so it is stated, and read off the field's own declaration
                 'Steps_Per_Year': declared['Steps_Per_Year'],
                 'Quadrature_Panels': declared['Quadrature_Panels'],
                 'Quote_Timestamp': price_factors[vol_name].get('Quote_Timestamp') or '',
@@ -1355,10 +1186,9 @@ class HestonNandiModelParameters(object):
     def price(spot, strike, is_call, units, omega, alpha, beta, gamma, r, n, h0, panels, yield_discount=1.0):
         """Heston-Nandi European option value - puts by put-call parity off the call.
 
-        ``r`` is the per step COST OF CARRY r-q (so the simulated spot has the right forward) and
-        ``yield_discount`` = exp(-q*t) converts the resulting value back to a discounting at r:
-        the internal price is exp(-(r-q)t)[F P1 - K P2], the value is exp(-rt)[F P1 - K P2]. Parity
-        survives the rescale, so puts are still call - S + K exp(-(r-q)n) times the same factor."""
+        ``r`` is the per-step cost of carry r-q and ``yield_discount`` = exp(-q*t) converts the
+        internal price exp(-(r-q)t)[F P1 - K P2] back to a value discounting at r. Parity survives
+        the rescale, so puts are still call - S + K exp(-(r-q)n) times the same factor."""
         call = utils.hn_call(spot, strike, n, h0, omega, alpha, beta, gamma, r, panels=panels)
         return units * yield_discount * (call - (1.0 - is_call) * (spot - strike * torch.exp(-r * n)))
 
@@ -1381,35 +1211,26 @@ class HestonNandiModelParameters(object):
     @staticmethod
     def effective_yield(discount_rate, funding, carry, t):
         """The `q` the objective runs on at accrual `t`: the dividend (or foreign) carry, plus the
-        BASIS between the curve the premium discounts on and the curve the forward grows at.
+        basis between the curve the premium discounts on and the curve the forward grows at.
 
-        THE FORWARD THE FIT BUILDS IS THE FORWARD THE PRICER BUILDS. The family's whole arithmetic
-        hangs off two numbers, `r` and `q`: the forward is `spot exp((r-q)t)`, the per-step carry is
-        `(r-q)t/n` and the value carries `exp(-qt)` so that it discounts at `r`. Put the funding
-        basis `r - f` into `q` and the forward grows at `f - carry`, which is what
-        `utils.calc_eq_forward` integrates (the equity's own repo curve against its dividend rate),
-        while the premium still discounts at the `Discount_Rate` curve's `r`. One reference used to
-        do both jobs, so an index carrying a repo spread calibrated at a forward the pricer never
-        visits.
+        The whole arithmetic hangs off `r` and `q`: the forward is `spot exp((r-q)t)`, the per-step
+        carry `(r-q)t/n`, and the value carries `exp(-qt)` so it discounts at `r`. Folding the
+        funding basis `r - f` into `q` grows the forward at `f - carry` - what
+        `utils.calc_eq_forward` integrates - while the premium still discounts at `r`.
 
-        NO `Funding_Rate` IS EXACTLY THE OLD ARITHMETIC, to the bit: the basis term is not
-        evaluated at all, so `q` is the number this family has always computed. Where one IS
-        declared and names the discount curve, `r - f` is 0.0 and `q + 0.0` is `q`.
-
-        Every leg is read at the accrual `t` the `Discount_Rate` curve's own day count gives, which
-        is the clock the whole block already runs on.
+        With no `Funding_Rate` the basis term is not evaluated, so `q` is the plain carry. Every leg
+        is read at the accrual the `Discount_Rate` curve's own day count gives.
         """
         q = 0.0 if carry is None else float(carry.current_value(t))
         return q if funding is None else q + (discount_rate - float(funding.current_value(t)))
 
     def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices, calendars, debug=None):
         '''
-        Calibrates the risk neutral Heston-Nandi GARCH(1,1) parameters to a set of European options on any
-        spot underlying and writes them out as a HestonNandiModelParameters price factor.
+        Calibrates the risk neutral Heston-Nandi GARCH(1,1) parameters to a set of European options
+        on any spot underlying and writes a HestonNandiModelParameters price factor.
 
-        Every reference the block names is resolved by `resolve_references` BEFORE an option is
-        looked at, and a missing one REFUSES by name rather than logging a skip - see that method.
-        Which references are required is the quote type's: a `Premium` block reads no vol surface.
+        `resolve_references` resolves every reference this quote type reads before an option is
+        looked at, and a missing one refuses by name.
         '''
 
         def tensor(x):
@@ -1422,8 +1243,7 @@ class HestonNandiModelParameters(object):
             if market_factor.type == self.market_factor_type:
                 instrument = implied_params['instrument']
 
-                # the underlying spot, the discount curve, and - where this quote type reads them -
-                # the vol surface, the yield and the forward's own funding curve
+                # the spot and discount curve, plus whatever else this quote type reads
                 factors = self.resolve_references(
                     market_price, instrument, price_factors, factor_interp)
                 underlying, discount = factors['Underlying'], factors['Discount_Rate']
@@ -1439,8 +1259,7 @@ class HestonNandiModelParameters(object):
                 use_forward = instrument.get('Use_Forward') == 'Yes'
                 invert_moneyness = instrument.get('Invert_Moneyness') == 'Yes'
 
-                # a mis-looked-up vol would produce a wrong-but-converged calibration - the worst
-                # outcome - so refuse the surface rather than guess at its convention
+                # a mis-looked-up vol converges to the wrong answer, so refuse rather than guess
                 if quote_type == 'Implied_Volatility':
                     subtype = vol_surface.get_subtype()
                     if subtype[0] not in self.tabular_surfaces:
@@ -1452,8 +1271,7 @@ class HestonNandiModelParameters(object):
                                 market_price, instrument['Volatility'], subtype[0], subtype[1],
                                 '/'.join(self.tabular_surfaces)))
 
-                # need to loop over this and create some market prices - group by expiry so that all
-                # the strikes of one expiry share a single characteristic function recursion
+                # grouped by expiry, so one expiry's strikes share a characteristic function
                 expiries = {}
                 for option in instrument['European_Options']:
                     t = discount.get_day_count_accrual(
@@ -1466,8 +1284,7 @@ class HestonNandiModelParameters(object):
                     option['r'] = r
                     option['q'] = q
                     option['T'] = t
-                    # the number of GARCH steps to expiry - the carry is spread over them so that
-                    # exp(-b_step*n) is exactly exp(-(r-q)*t)
+                    # GARCH steps to expiry; the carry is spread so exp(-b_step*n) is exp(-(r-q)*t)
                     option['n'] = max(int(round(t * steps_per_year)), 1)
                     if quote_type == 'Implied_Volatility':
                         moneyness = self.moneyness(
@@ -1506,9 +1323,8 @@ class HestonNandiModelParameters(object):
                 else:
                     var = np.mean([x['sigma'] for opts in expiries.values()
                                    for x in opts]) ** 2 / steps_per_year
-                    # THE SIGN IS SEEDED OFF THE QUOTES: the objective has a kink at zero leverage,
-                    # so a local optimizer started on the wrong side would have to cross it. A smile
-                    # whose vol RISES with strike in the underlying's units is a negative Gamma_Star
+                    # the sign is seeded off the quotes: the objective kinks at zero leverage, and a
+                    # smile rising with strike in the underlying's units is a negative Gamma_Star
                     rise = sum(max(opts, key=lambda o: o['Strike'])['sigma'] -
                                min(opts, key=lambda o: o['Strike'])['sigma']
                                for opts in expiries.values() if len(opts) > 1)
@@ -1519,8 +1335,8 @@ class HestonNandiModelParameters(object):
                 result = scipy.optimize.minimize(
                     self.calc_error, x0, args=(groups, spot, panels, scale), jac=True,
                     method='L-BFGS-B', bounds=self.bounds,
-                    # the default ftol/gtol are calibrated for an O(1e2) objective - the normalised
-                    # one starts at O(1) and a good fit is O(1e-12), so let it run to that
+                    # the defaults suit an O(1e2) objective; the normalised one starts at O(1) and
+                    # a good fit is O(1e-12)
                     options={'ftol': 1e-15, 'gtol': 1e-12})
 
                 omega, alpha, beta, gamma, h0 = [
@@ -1548,15 +1364,13 @@ class HestonNandiModelParameters(object):
                         utils.hn_persistence(alpha, beta, gamma),
                         utils.hn_ann_vol(omega, alpha, beta, gamma, steps_per_year),
                         result.fun, result.message))
-                # the block's own account of where its quotes came from, in the record beside the
-                # parameters they produced - a substituted expiry is a fact about this fit
+                # where the quotes came from, in the record beside the parameters they produced
                 if instrument.get('Quote_Source') or instrument.get('Quote_Timestamp'):
                     logging.info('  quotes: {} (as at {})'.format(
                         instrument.get('Quote_Source') or 'authored by hand',
                         instrument.get('Quote_Timestamp') or 'no stated time'))
 
-                # emit in the canonical HN_PARAM_NAMES order (single source), paired with reparam's
-                # documented (Omega, Alpha, Beta, Gamma_Star, H0) output tuple
+                # canonical HN_PARAM_NAMES order, paired with reparam's output tuple
                 price_factors[param_name] = {
                     'Property_Aliases': None,
                     **dict(zip(utils.HN_PARAM_NAMES, (omega, alpha, beta, gamma, h0)))}
@@ -1635,40 +1449,36 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
 
     market_factor_type = 'HestonNandiComponentModelPrices'
 
-    #: THE FIT RUNS ON THE CPU, whatever device the job was constructed with. The A/B/C recursion is
-    #: `n` SEQUENTIAL steps of about ten elementwise operations over a 512-element complex vector -
-    #: 252 of them for a one-year expiry - so it is kernel-launch bound rather than bandwidth bound.
-    #: Measured on an RTX 3090, one 126-step price: 47 ms CPU against 186 ms CUDA, and the adaptive
-    #: phi_max scan 172 ms against 775 ms, with no narrowing from 16 to 128 panels.
+    #: The fit runs on the CPU whatever device the job was constructed with. The A/B/C recursion is
+    #: `n` sequential steps of about ten elementwise operations over a 512-element complex vector,
+    #: so it is kernel-launch bound. On an RTX 3090, one 126-step price: 47 ms CPU against 186 ms
+    #: CUDA, and the adaptive phi_max scan 172 ms against 775 ms.
     device = torch.device('cpu')
 
     def __init__(self, param, device, dtype):
-        # the constructed device is deliberately ignored, exactly as the constructed dtype is (the
-        # inversion needs float64) - see the `device` note above
+        # the constructed device is ignored, as the constructed dtype is - see the `device` note
         self.param = param
 
-    #: THE WINGS WIDEN. Five free globals are judged on the SMILE alone (the ATM rungs are spent on
-    #: the L pillars), so the wing ladder carries four expiries rather than two - eight quotes for
-    #: five parameters. The ATM rungs, the cap and the snapping rule are the plain family's.
+    #: Four wing expiries rather than the plain family's two: five free globals are judged on the
+    #: smile alone, the ATM rungs being spent on the L pillars. The ATM rungs, the cap and the
+    #: snapping rule are inherited unchanged.
     fx_wing_expiries = (1.0 / 12.0, 0.25, 0.5, 1.0)
-    #: THE ATM LADDER IS A CONSTRAINT, NOT A TERM: concentrating L out presumes the term structure
-    #: is hit EXACTLY, so no improvement in the smile may pay for a pillar that hit the
-    #: declining-variance floor. The floor's relative miss enters the outer objective at this
-    #: weight, on the same relative scale as the normalised wing residual - at 1e4 a ONE BASIS POINT
-    #: ATM miss costs as much as a good fit's whole smile residual. Measured on the four-pillar
-    #: USDZAR fixture: at weight 1 the simplex settled 0.63% inside the infeasible region.
+    #: The ATM ladder is a CONSTRAINT, not a term: concentrating L out presumes the term structure
+    #: is hit exactly, so no smile improvement may pay for a pillar on the declining-variance floor.
+    #: The floor's relative miss enters at this weight, on the same scale as the normalised wing
+    #: residual - at 1e4 a one basis point ATM miss costs a good fit's whole smile residual. At
+    #: weight 1 the simplex settled 0.63% inside the infeasible region on the USDZAR fixture.
     atm_constraint_weight = 1.0e4
 
-    #: More contracts than the plain family's six, for the same reason: the ATM rungs are consumed
-    #: by the bootstrap, so what identifies the globals is what is LEFT, and a ladder that collapses
-    #: its wings onto one expiry has no smile term structure in it at all.
+    #: More contracts than the plain family's six, the ATM rungs being consumed by the bootstrap: a
+    #: ladder whose wings collapse onto one expiry has no smile term structure in it.
     fx_minimum_contracts = 8
     identification_note = ('five free globals off the smile: the ATM term structure is spent on '
                            'the L pillars, which are bootstrapped rather than fitted')
 
-    #: x = (beta, SIGNED leverage share, ARCH share of the level's own room, phi share of alpha,
-    #: log H0) - see reparam. beta is the SHORT-RUN persistence and is bounded below 1 for the same
-    #: reason the plain family's psi is: it is that model's psi under the exact nesting map.
+    #: x = (beta, signed leverage share, ARCH share of the level's own room, phi share of alpha,
+    #: log H0) - see `reparam`. beta is the short-run persistence, bounded below 1 because it is the
+    #: plain family's psi under the exact nesting map.
     bounds = [(1e-4, 1.0 - 1e-6), (-1.0, 1.0), (1e-3, 1.0 - 1e-6), (0.0, 1.0),
               (np.log(1e-10), np.log(1e-2))]
 
@@ -1714,39 +1524,32 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
         """Maps the fitted vector ``x = (beta, signed leverage share, ARCH share, phi share,
         log H0)`` to (Alpha, Beta, Gamma_1, Phi, H0).
 
-        TWO SHARES, EACH MAKING A DIFFERENT POSITIVITY CONSTRAINT AUTOMATIC. The box buys FEASIBLE
-        ALGEBRA at every point - alpha, H0 and the nested-face intercept are positive by
-        construction, so no iterate needs a penalty. It does NOT buy a finite PRICE: away from the
-        nested face the moment generating function can still diverge, and there the phi_max scan
-        caps and the objective reads the candidate as infeasible (+inf) rather than scoring it.
+        Two shares, each making a different positivity constraint automatic, so no iterate needs a
+        penalty. The box buys feasible ALGEBRA and not a finite PRICE: away from the nested face the
+        moment generating function can still diverge, and there the phi_max scan caps and the
+        objective reads the candidate as infeasible (+inf).
 
-        * THE LEVERAGE SHARE l in [-1, 1] holds Alpha*Gamma_1^2 = |l|*Beta, so the plain-equivalent
-          GARCH coefficient Beta - Alpha*Gamma_1^2 = Beta(1-|l|) is non-negative. It CARRIES THE
-          SIGN of Gamma_1: a smile rising with strike in the underlying's own units is a negative
-          leverage, an FX pair read on its `FxRate` axis routinely wants it, and a one-signed box
-          answers such a surface with a flat smile it calls converged.
+        * The leverage share l in [-1, 1] holds Alpha*Gamma_1^2 = |l|*Beta, so the plain-equivalent
+          GARCH coefficient Beta(1-|l|) is non-negative. It carries Gamma_1's SIGN, so both skew
+          directions live in one box - an FX pair read on its `FxRate` axis routinely wants the
+          negative one, and a one-signed box answers such a surface with a flat converged smile.
 
-        * THE ARCH SHARE a in (0, 1) holds Alpha = a*H0*(1-Beta), so the plain-equivalent intercept
-          on the nested face, omega_p = L(1-Beta) - Alpha at L = H0, is H0(1-Beta)(1-a) > 0. The
-          plain family gets this for free by fitting omega in logs; here the intercept is DERIVED
-          from the L curve, so an Alpha larger than the level's own room makes the variance
-          recursion - and the MGF the pricer inverts - diverge.
+        * The ARCH share a in (0, 1) holds Alpha = a*H0*(1-Beta), so the nested-face intercept
+          H0(1-Beta)(1-a) is positive. The plain family gets this by fitting omega in logs; here the
+          intercept is derived from the L curve, so an Alpha larger than the level's own room makes
+          the variance recursion - and the MGF the pricer inverts - diverge.
 
-        GAMMA_1 IS THEREFORE DERIVED, not fitted: Gamma_1 = sgn(l) sqrt(|l| Beta / Alpha). Its scale
-        is set by the shares alone - the dimensionless leverage Gamma_1*sqrt(H0) =
-        sqrt(|l| Beta / (a(1-Beta))) does not depend on H0 - and over the box it runs from 0 at
-        l = 0, symmetric ARCH with no leverage channel, to 31,623 at the (Beta 1-1e-6, |l| 1,
-        a 1e-3) corner, which still prices finite. The fits this family has landed read 0.56 to 7.4.
+        Gamma_1 is therefore DERIVED: sgn(l) sqrt(|l| Beta / Alpha). Its scale is set by the shares
+        alone, and over the box it runs from 0 at l = 0 to 31,623 at the (Beta 1-1e-6, |l| 1,
+        a 1e-3) corner, which still prices finite. Landed fits read 0.56 to 7.4.
 
-        PHI IS A SHARE OF ALPHA. The two multiply the same squared normal and so share units; a
-        share is scale-free, cannot go negative, and phi_share = 0 is exactly the nested face where
-        the long-run component stops responding to shocks and this model IS the plain one.
+        Phi is a share of Alpha - the two multiply the same squared normal - and phi_share = 0 is
+        exactly the nested face where this model is the plain one.
 
-        WHAT NO BOX CAN GIVE: positivity of the FULL component recursion away from the nested face.
-        h_{t+1} >= omega_t + (rho-beta) q_t + [beta(1-|l|) - phi gamma_2^2] h_t - alpha - phi has no
-        sign for free once rho != beta and phi > 0 - a property of the CJOW model rather than of
-        this parametrisation. It fails loudly: a divergent MGF caps the phi_max scan and the fit
-        reads the candidate as infeasible, and a negative h in the simulator is a NaN out of sqrt.
+        No box gives positivity of the FULL recursion away from the nested face: h_{t+1} >= omega_t
+        + (rho-beta) q_t + [beta(1-|l|) - phi gamma_2^2] h_t - alpha - phi has no sign for free once
+        rho != beta and phi > 0. It fails loudly - a divergent MGF caps the phi_max scan and reads
+        as infeasible, and a negative h in the simulator is a NaN out of sqrt.
         """
         beta, share, arch = x[0], x[1], x[2]
         h0 = torch.exp(x[4])
@@ -1771,20 +1574,16 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
 
             h_{t+1} >= intercept + q_loading * q_t + h_slope * h_t
 
-        DROPPING BOTH QUADRATICS. Substituting the q step into the h step leaves
-        `alpha(z - gamma_1 sqrt h)^2 + phi(z - gamma_2 sqrt h)^2` on top of an affine part, and both
-        are set to zero here. NO SINGLE INNOVATION DOES THAT unless gamma_1 = gamma_2, so this is
-        the LOOSER of the two bounds - still a bound. The centering terms cancel the quadratics' own
-        h coefficients, leaving `omega_min - alpha - phi` as the constant, `rho - beta` on q, and
-        `beta - alpha*gamma_1^2 - phi*gamma_2^2` on h. `omega_min` is the SMALLEST intercept over
-        the whole horizon, strip and flat tail alike (see `omega_floor`).
+        Both quadratics are dropped. Substituting the q step into the h step leaves
+        `alpha(z - gamma_1 sqrt h)^2 + phi(z - gamma_2 sqrt h)^2` on top of an affine part, and no
+        single innovation zeroes both unless gamma_1 = gamma_2 - so this is the looser of the two
+        bounds, still a bound. The centering terms cancel the quadratics' own h coefficients.
+        `omega_min` is the smallest intercept over the whole horizon, strip and tail (`omega_floor`).
 
-        THREE NON-NEGATIVE NUMBERS CERTIFIES h GIVEN q >= 0, AND NOTHING MORE. q has no certificate
-        of its own whenever phi*gamma_2^2 > 0 - `q_{t+1} >= omega_t + rho*q_t - phi -
-        phi*gamma_2^2*h_t` has a term growing with h and no bound on h to set against it - so a fit
-        with a live long-run ARCH channel cannot be certified positive at all. That is the CJOW
-        model's own property; the simulator's declared floor
-        (`utils.HN_COMPONENT_VARIANCE_FLOOR`) is what keeps a tail path finite.
+        Three non-negative numbers certifies h GIVEN q >= 0, and nothing more. q has no certificate
+        of its own whenever phi*gamma_2^2 > 0, so a fit with a live long-run ARCH channel cannot be
+        certified positive at all - a CJOW property, not this parametrisation's. The simulator's
+        `utils.HN_COMPONENT_VARIANCE_FLOOR` is what keeps a tail path finite.
         """
         return (float(omega_min) - float(alpha) - float(phi),
                 float(rho) - float(beta),
@@ -1801,14 +1600,12 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
 
             B_min = A * (1 - (1-rho)*n / (1 + (n-1)(1-rho)))
 
-        a closed form rather than a search, so the refusal can name the number it wanted. A RISING
+        a closed form rather than a search, so the refusal can name the number it wanted. A rising
         segment has its minimum at i = 0 and is admissible whenever A(1-rho) >= 0, which it is.
 
-        THE MARGIN IS ONE PART IN 1e9 ABOVE the exact crossing. The level is written to a Curve and
-        the omega strip is REBUILT from it - interpolated, differenced, in a different order - so
-        the exact crossing comes back an ulp either side of zero, measured at -2.7e-20 on the humped
-        fixture, which still reads as a negative variance. 1e-9 of a level is orders below any
-        calibration precision.
+        The margin is one part in 1e9 above the exact crossing: the level is written to a Curve and
+        the omega strip is rebuilt from it in a different order, so the exact crossing comes back an
+        ulp either side of zero (-2.7e-20 on the humped fixture), which still reads as negative.
         """
         gap = 1.0 - rho
         exact = float(previous) * (1.0 - gap * days / (1.0 + (days - 1) * gap))
@@ -1824,9 +1621,8 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
         """Component European option value - puts by put-call parity off the call, exactly as the
         plain family's `price` does, and with the same `yield_discount` rescale (the internal price
         discounts at the carry r-q; the value discounts at r, and parity survives the rescale)."""
-        # NO phi_max KNOB: every price derives its own quadrature bound, because for this model a
-        # reused one is not conservative - see `bootstrap_l` and `utils.hn_component_auto_phi_max`.
-        # A parameter nothing may pass is a parameter that should not exist.
+        # no phi_max knob: every price derives its own quadrature bound, a reused one not being
+        # conservative for this model - see `bootstrap_l` and `utils.hn_component_auto_phi_max`
         call = utils.hn_component_call(spot, strike, omegas, h0, q0, *params, r, panels=panels)
         n = len(omegas)
         return units * yield_discount * (
@@ -1840,14 +1636,12 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
 
     @classmethod
     def omega_floor(cls, knots, levels, rho, spy):
-        """The SMALLEST omega_t over the whole horizon - the strip between the knots AND the flat
-        tail past the last one, where omega = L_last(1-rho). This is the certificate's `omega_min`.
+        """The smallest omega_t over the whole horizon - the strip between the knots and the flat
+        tail past the last one, where omega = L_last(1-rho). The certificate's `omega_min`.
 
-        THE TAIL IS ROUTINELY THE MINIMUM. On a RISING segment of n steps from A to B the least
-        intercept is A(1-rho) + (B-A)/n at i = 0, which is below the tail's B(1-rho) only while
-        n > 1/(1-rho) - 100 steps at the pinned rho - so a curve whose every segment rises and whose
-        last segment is shorter than that has its global minimum past the last knot. On
-        L = [9e-5, 9.9e-5, 1e-4] at knots 0/0.25/0.5y, a strip-only read gives 1.006e-6 against
+        The tail is routinely the minimum: on a rising segment of n steps the least intercept is
+        below the tail's only while n > 1/(1-rho), 100 steps at the pinned rho. On
+        L = [9e-5, 9.9e-5, 1e-4] at knots 0/0.25/0.5y a strip-only read gives 1.006e-6 against
         1.000e-6 true.
         """
         strip = cls.l_strip(knots, levels, max(int(round(float(knots[-1]) * spy)), 1), rho, spy)
@@ -1855,45 +1649,31 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
 
     def bootstrap_l(self, atm, params, h0, rho, spy, panels, knots, declining, tolerance,
                     refuse=True):
-        """THE INNER TRIANGULAR BOOTSTRAP: the L pillars, solved one at a time against their own
-        ATM premium. Returns `(levels, notes, shortfall)` - the level at each knot (levels[0] is
-        L(0) = h0 by the anchoring), any floors applied by name, and the summed squared RELATIVE
+        """The inner triangular bootstrap: the L pillars, solved one at a time against their own ATM
+        premium. Returns `(levels, notes, shortfall)` - the level at each knot (levels[0] is
+        L(0) = h0 by the anchoring), any floors applied by name, and the summed squared relative
         premium miss on the floored pillars (zero when every pillar solved).
 
-        TRIANGULAR BECAUSE THE MODEL IS. An option to T reads L only on [0, T] - the backward
-        recursion consumes exactly `n` intercepts - so pillar k's premium is a function of pillars
-        0..k and of nothing later. Each is therefore a ONE-dimensional root find rather than a
-        coordinate of a six-dimensional one, and the whole strip costs one bracketed solve apiece.
+        Triangular because the model is: an option to T reads L only on [0, T], so pillar k's
+        premium is a function of pillars 0..k and nothing later, and each is a one-dimensional root
+        find. Monotone in the pillar's level, so brentq is the tool; the bracket starts around the
+        previous pillar and doubles out, and one that runs out refuses by name with what it searched.
 
-        MONOTONE, WHICH IS WHAT MAKES BRENTQ THE RIGHT TOOL. Raising pillar k raises omega_t over
-        its own segment, hence E[h_t] over it, hence the option's total expected variance, hence an
-        ATM premium. The bracket is EXPANDED rather than guessed: it starts around the previous
-        pillar and doubles out until the premium straddles the target, and a bracket that runs out
-        REFUSES BY NAME with what it searched - a silently clamped pillar would put a level nobody
-        solved for into a curve the process then simulates.
+        `refuse` separates the search from the answer. Inside the outer optimizer the floor is taken
+        and the miss returned as a shortfall the objective adds - a simplex walks into a box corner
+        routinely, and a shortfall is a slope out of the infeasible region where `inf` is a wall. On
+        the FINAL strip `Declining_Variance` decides for real.
 
-        `refuse` IS WHAT SEPARATES THE SEARCH FROM THE ANSWER. Inside the outer optimizer the
-        floor is taken and the miss is RETURNED as a shortfall the objective adds to its residual,
-        because a simplex walks into the corner of a box routinely and an exception there kills a
-        fit that would have recovered - and because the shortfall is a slope out of the infeasible
-        region where `inf` is a wall. On the FINAL strip, at the parameters actually reported,
-        `Declining_Variance` decides for real: **Refuse** raises with the pillar named, **Floor**
-        takes the level and the note travels into the log beside the fitted parameters.
+        Every price derives its own phi_max, at about 4x the cost of one reused scan, because a
+        reused bound is not conservative: past a parameter-dependent point the A/B/C recursion
+        diverges and an over-large bound integrates garbage. At one converged optimum the 21-step
+        contract's bound is 512 and the 126-step contract's 256, and that 126-step price reads
+        0.7353321384 at phi_max 512, 0.7323069671 at 1024 and 9.4e+55 at 2048.
 
-        EVERY PRICE DERIVES ITS OWN PHI_MAX, at about 4x the cost of one reused scan. A REUSED BOUND
-        IS NOT CONSERVATIVE FOR THIS MODEL: past a parameter-dependent point the A/B/C recursion
-        diverges, so an over-large bound integrates garbage. Measured at a converged optimum (Alpha
-        3.297e-06, Beta 0.8326, Gamma_1 -55.94, Phi 2.077e-06) the 21-step contract's own bound is
-        512 while the 126-step contract's is 256, and the 126-step price is 0.7353321384 at phi_max
-        128/256/512, 0.7323069671 at 1024 and 9.4e+55 at 2048 - carrying the front pillar's 512 back
-        solves that pillar's L against a price 0.4% wrong, a 3.5e-3 ATM residual.
-
-        THE FLOOR BINDS EVEN ON A RISING TERM STRUCTURE. A piecewise-LINEAR L matched to SEGMENT
-        INTEGRALS is the recurrence L_k = 2*A_k - L_(k-1) (A_k the segment's average forward
-        variance), whose multiplier is -1: marginally stable, so an error in L(0) alternates in sign
-        and never decays. H0 therefore sets the PHASE of the whole strip and a mis-seeded H0 makes L
-        oscillate about the forward variance curve until the guard stops it - which is what
-        IDENTIFIES H0 here, the outer fit's smile residual being the other half.
+        The floor binds even on a rising term structure. A piecewise-linear L matched to segment
+        integrals is the recurrence L_k = 2*A_k - L_(k-1), whose multiplier is -1: marginally stable,
+        so an error in L(0) alternates in sign and never decays. H0 sets the PHASE of the strip,
+        which is what identifies it here - the outer fit's smile residual being the other half.
         """
         levels, notes, shortfall = [h0], [], 0.0
         for k, (n, quote) in enumerate(atm):
@@ -1901,9 +1681,7 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
             floor = self.admissible_level(levels[-1], days, float(rho))
             spot, strike, is_call, units, target, b, q = quote
             if not target:
-                # every reading of this pillar is RELATIVE to its own premium (the bracket's miss,
-                # the floored note, the shortfall the objective adds), so a zero is a
-                # ZeroDivisionError three lines down rather than a wide bracket
+                # every reading of this pillar is relative to its own premium, so a zero divides
                 raise ValueError(
                     'HestonNandiComponent: the {:g}y ATM pillar quotes a premium of {:g}, and a '
                     'pillar with no premium cannot anchor an L level - the bootstrap solves each '
@@ -1922,8 +1700,7 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
             error = lambda x: premium(self.tensor(x)) - target
             lo_err = error(low)
             if lo_err > 0.0:
-                # the pillar wants LESS variance than the floor admits - the declining-variance
-                # case, named on every path out of here (never a silent negative omega)
+                # the pillar wants less variance than the floor admits - named on every path out
                 message = (
                     'HestonNandiComponent: the {:g}y ATM pillar demands a long-run variance BELOW '
                     '{:.6g}, the least level whose segment keeps omega_t = L_(t+1) - rho*L_t '
@@ -1969,19 +1746,16 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
         """Calibrates the component Heston-Nandi parameters and writes them out as a
         `HestonNandiComponentModelParameters` price factor.
 
-        The quote preparation is the plain family's, quote for quote: the same day-count accrual off
-        `Expiry_Date`, the same forward, the same Black target premium at the surface's own vol (or
-        the quoted premium), the same `Volatility_Delta` applied ONCE. The quotes then SPLIT into an
+        The quote preparation is the plain family's, quote for quote. The quotes then SPLIT into an
         ATM ladder the L bootstrap consumes exactly and a wing ladder the outer fit is judged on.
 
-        THE ATM QUOTE AT AN EXPIRY IS THE ONE NEAREST ITS OWN FORWARD, so a hand-authored block
-        reads the same way as an emitted one and the emitter's ordering carries no meaning.
+        The ATM quote at an expiry is the one nearest its own forward, so a hand-authored block
+        reads the same way as an emitted one.
 
-        ONE ATM EQUATION PER EXPIRY, and repeated wings stay as WEIGHT. A thin surface snaps several
-        rungs onto one pillar: on the ATM side that would solve the same pillar twice against
-        itself, so the group answers a single equation, while on the wing side a repeat is the
-        heavier weight the emitter's own normalisation intends and the weighted least squares takes
-        it as declared.
+        One ATM equation per expiry, and repeated wings stay as WEIGHT. A thin surface snaps several
+        rungs onto one pillar: on the ATM side that would solve the same pillar against itself, so
+        the group answers one equation; on the wing side a repeat is the heavier weight the
+        emitter's normalisation intends.
         """
         for market_price, implied_params in market_prices.items():
             rate = utils.check_rate_name(market_price)
@@ -2002,8 +1776,7 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
                     'InterestRatePrices, GBMAssetPriceTSModelPrices, HullWhite2FactorModelPrices), '
                     'which solve through torch rather than through brentq'.format(market_price))
 
-            # the references this quote type reads, resolved before an option is looked at - a
-            # missing one refuses by name (`resolve_references`), inherited from the plain family
+            # resolved before an option is looked at; a missing one refuses by name
             factors = self.resolve_references(
                 market_price, instrument, price_factors, factor_interp)
             underlying, discount = factors['Underlying'], factors['Discount_Rate']
@@ -2014,8 +1787,7 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
 
             spot = float(underlying.current_value()[0])
             quote_type = instrument['Quote_Type']
-            # EVERY default read off the field's own declaration - the discipline the emitter
-            # states at `fx_surface_block`: a block and a field cannot hold two different defaults
+            # every default read off the field's own declaration, so the two cannot disagree
             declared = {field.name: field.default for field in self.fields}
             spy = float(instrument.get('Steps_Per_Year', declared['Steps_Per_Year']))
             panels = instrument.get('Quadrature_Panels', declared['Quadrature_Panels'])
@@ -2076,11 +1848,10 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
                     sigma = np.sqrt(utils.bs_implied_total_var(
                         call, spot * np.exp(-q * t), option['Strike'], r * t, 1) / t)
                 option['sigma'] = sigma
-                # the per-step carry and the yield rescale, exactly as the plain family builds them
+                # the per-step carry and the yield rescale, as the plain family builds them
                 rows.append((option, (r - q) * t / option['n'], np.exp(-q * t), forward))
 
-            # THE SPLIT. One ATM per distinct expiry (nearest its own forward), deduplicated; the
-            # rest are wings. A repeated contract is a weight, not a second equation.
+            # the split: one ATM per distinct expiry (nearest its own forward), the rest wings
             by_expiry = {}
             for option, b, yq, forward in rows:
                 by_expiry.setdefault(option['n'], []).append((option, b, yq, forward))
@@ -2095,8 +1866,8 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
                 logging.error('{} carries no quotes - nothing to bootstrap'.format(market_price))
                 continue
 
-            # knots land ON the step count each pillar is priced at, so the L path's own day index
-            # and the option's step count are the same clock (see hn_component_l_path)
+            # knots land on the step count each pillar is priced at, so the L path's day index and
+            # the option's step count are one clock (see `utils.hn_component_l_path`)
             knots = np.array([0.0] + [row[0]['n'] / spy for row in atm_rows])
             atm = [(row[0]['n'],
                     (spot, self.tensor(row[0]['Strike']),
@@ -2122,20 +1893,19 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
             state = {}
 
             def objective(x):
-                """One outer iterate: re-bootstrap L, then score the WINGS.
+                """One outer iterate: re-bootstrap L, then score the wings.
 
                 L is concentrated out, so the ATM ladder is repriced exactly at every candidate the
-                bootstrap could solve and this returns a pure smile residual. A candidate whose
-                pillars hit the declining-variance floor carries that miss too, at
-                `atm_constraint_weight` - a SLOPE the simplex can walk down, steep enough that no
-                smile gain pays for an ATM miss. A candidate whose MGF diverges scores +inf.
+                bootstrap could solve and this is a pure smile residual. A candidate whose pillars
+                hit the declining-variance floor carries that miss at `atm_constraint_weight`, a
+                slope the simplex can walk down; one whose MGF diverges scores +inf.
                 """
                 calls['n'] += 1
                 params = self.unpack(x, tie, rho)
                 h0 = float(params[-1])
                 try:
-                    # the notes are dropped here on purpose: what gets reported is the FINAL
-                    # strip's, bootstrapped at the parameters actually written
+                    # notes are dropped here: what is reported is the FINAL strip's, bootstrapped
+                    # at the parameters actually written
                     levels, _, shortfall = self.bootstrap_l(
                         atm, params[:-1], self.tensor(h0), rho, spy, panels, knots, declining,
                         pillar_tol, refuse=False)
@@ -2163,9 +1933,8 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
             params = self.unpack(result.x, tie, rho)
             alpha, beta, gamma1, phi, gamma2, h0 = [float(x) for x in (
                 params[0], params[1], params[2], params[4], params[5], params[6])]
-            # the FINAL strip is bootstrapped at the reported parameters, so what is written is
-            # what was scored - never the last iterate the simplex happened to try - and THIS is
-            # the call `Declining_Variance` decides for real (see bootstrap_l's `refuse`)
+            # the final strip is bootstrapped at the reported parameters, not the last iterate the
+            # simplex tried, and this is the call `Declining_Variance` decides for real
             levels, notes, _ = self.bootstrap_l(
                 atm, params[:-1], self.tensor(h0), rho, spy, panels, knots, declining, pillar_tol)
             curve = utils.Curve([], [[float(k), float(v)] for k, v in zip(knots, levels)])
@@ -2183,14 +1952,13 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
         """The fitted vector as `(alpha, beta, gamma1, rho, phi, gamma2, h0)` - the six-parameter
         positional block every `utils.hn_component_*` function takes, plus h0.
 
-        The PIN and the TIE live here rather than at each call site: rho arrives already pinned and
-        Gamma_2 is Gamma_1 unless the block asked for it separately, so nothing downstream has to
+        The pin and the tie live here rather than at each call site, so nothing downstream has to
         remember which two of the seven the fit did not move.
 
-        UNTIED, the vector grows a SIXTH coordinate: Gamma_2 as a RATIO to Gamma_1, in [0, 5]. The
-        magnitude is free - that is the long-run smile's own width - but the DIRECTION is not: a
-        smile rising with strike at one horizon and falling at another is a second kink no sub-year
-        wing ladder identifies. Ratio 1 is the tie, and where the untied fit starts."""
+        Untied, the vector grows a sixth coordinate: Gamma_2 as a RATIO to Gamma_1, in [0, 5]. The
+        magnitude is free - the long-run smile's own width - but the direction is not, a smile
+        rising at one horizon and falling at another being a kink no sub-year ladder identifies.
+        Ratio 1 is the tie, and where the untied fit starts."""
         x = torch.tensor(np.asarray(x, dtype=float), device=self.device, dtype=self.prec)
         alpha, beta, gamma1, phi, h0 = self.reparam(x)
         return alpha, beta, gamma1, rho, phi, gamma1 if tie else gamma1 * x[5], h0
@@ -2201,10 +1969,9 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
         return cls.bounds if tie else cls.bounds + [(0.0, 5.0)]
 
     def seed(self, previous, atm_rows, by_expiry, spy, tie):
-        """The cold/warm start. THE SIGN IS SEEDED OFF THE QUOTES, exactly as the plain family
-        seeds it and for the same reason: the objective has a kink at zero leverage, where Gamma_1
-        stops mattering at all, so a local search started on the wrong side would have to cross it.
-        A smile whose vol RISES with strike in the underlying's own units is a negative Gamma_1.
+        """The cold/warm start. The sign is seeded off the quotes, as the plain family seeds it: the
+        objective kinks at zero leverage, and a smile rising with strike in the underlying's own
+        units is a negative Gamma_1.
         """
         box = np.array(self.box(tie)).T
         if previous:
@@ -2213,13 +1980,11 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
             if not tie:
                 start.append(abs(previous['Gamma_2'] / previous['Gamma_1']))
             return np.clip(np.array(start), *box)
-        # H0 SEEDS OFF THE FRONT PILLAR, not the ladder's mean: it sets L(0), whose phase the strip
-        # alternates about (see bootstrap_l), so the mean of a rising term structure starts half a
-        # cycle out and walks a pillar into the declining-variance floor
+        # H0 seeds off the FRONT pillar and not the ladder's mean: it sets L(0), whose phase the
+        # strip alternates about (`bootstrap_l`), so a mean starts half a cycle out
         var = atm_rows[0][0]['sigma'] ** 2 / spy
-        # the sign off the quotes: at every expiry carrying more than one strike, the highest
-        # strike's vol against the lowest - the plain family's own cold-start rule, read over the
-        # SMILE (`by_expiry`) rather than over the ATM ladder, which has one strike per expiry
+        # the sign off the quotes, read over the SMILE (`by_expiry`) rather than over the ATM
+        # ladder, which carries one strike per expiry
         rise = sum(max(group, key=lambda r: r[0]['Strike'])[0]['sigma'] -
                    min(group, key=lambda r: r[0]['Strike'])[0]['sigma']
                    for group in by_expiry.values() if len(group) > 1)
@@ -2228,13 +1993,11 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
 
     @staticmethod
     def quote_vol(fitted, premium, spot, strike, is_call, units, b, n, yield_discount):
-        """The fitted-minus-quoted difference IN BLACK VOL POINTS, per step-count `n`.
+        """The fitted-minus-quoted difference in Black vol, per step-count `n`.
 
-        Both premia are put back through the same total-variance bisection - the family's own
-        `bs_implied_total_var`, off the FORWARD, with the units and the yield rescale stripped so
-        the two sides are the same contract. A premium residual is what the objective minimises; a
-        vol residual is what the quote was, and a desk reads the second one. Returned in ABSOLUTE
-        vol; the caller scales to vol points."""
+        Both premia go back through `bs_implied_total_var` off the forward, with the units and the
+        yield rescale stripped so the two sides are the same contract. The objective minimises a
+        premium residual; a desk reads a vol one. Returned absolute - the caller scales to points."""
         forward = float(spot) * np.exp(float(b) * int(n))
         scale = float(units) * float(yield_discount)
         both = []
@@ -2261,8 +2024,7 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
             fitted = float(self.price(spot, strike, is_call, units, omegas, params[-1], levels[0],
                                       params[:-1], b, panels, yq))
             worst = max(worst, abs(fitted / premium - 1.0))
-            # x100 for VOL POINTS, which is what a desk reads: a 5% miss on a 25 delta wing premium
-            # is a few tenths of a vol, and the two readings are not interchangeable
+            # x100 for vol points: a 5% miss on a 25 delta wing premium is a few tenths of a vol
             worst_vol = max(worst_vol, 100.0 * abs(self.quote_vol(
                 fitted, premium, spot, strike, is_call, units, b, n, yq)))
             total += weight * (premium - fitted) ** 2
@@ -2274,9 +2036,7 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
         logging.info('  L curve (annualised vol): {}'.format(', '.join(
             '{:g}y {:.2%}'.format(k, float(np.sqrt(float(v) * spy)))
             for k, v in zip(knots, levels))))
-        # THE POSITIVITY CERTIFICATE, reported rather than enforced - there is no box that
-        # guarantees it (see the class documentation), so what the family owes is the number, said
-        # once, beside the parameters it applies to
+        # the positivity certificate, reported rather than enforced - no box guarantees it
         certificate = self.worst_case_variance_drift(
             *[float(x) for x in (params[0], params[1], params[2], rho, params[4], params[5])],
             self.omega_floor(knots, torch.stack(levels), rho, spy))
@@ -2334,8 +2094,7 @@ class GBMAssetPriceTSModelParameters(object):
     market_factor_type = 'GBMAssetPriceTSModelPrices'
     factor_types = {'Asset_Price_Volatility': utils.TwoDimensionalFactors}
     #: The precision the TAPE runs in - the value path is numpy and has no dtype to pick. Float64 on
-    #: the CPU whatever the job asked for: `construct_bootstrapper`'s dtype does not reach it, and a
-    #: handful of scalar operations gains nothing from a device with its own rounding.
+    #: the CPU whatever the job asked for; `construct_bootstrapper`'s dtype does not reach it.
     dtype = torch.float64
     fields = [
         F('Asset_Price_Volatility', 'Text', default=REQUIRED,
@@ -2350,10 +2109,9 @@ class GBMAssetPriceTSModelParameters(object):
         self.device = device
         self.prec = dtype
         self.param = param
-        #: What a block asking for `Quote_Sensitivity` leaves behind: the integrated vol curve STILL
-        #: CONNECTED to its ATM quotes, keyed as `_build_factor_state` mints its `Vol` leaf, plus
-        #: the quote leaf per block. `Config.bootstrap` harvests both - they are tensors, so they
-        #: cannot live in `Price Factors`, which is written back out as JSON.
+        #: What `Quote_Sensitivity` leaves behind: the integrated vol curve still connected to its
+        #: ATM quotes, keyed as `_build_factor_state` mints its `Vol` leaf, plus the quote leaf per
+        #: block. `Config.bootstrap` harvests both - tensors cannot live in `Price Factors`.
         self.calibrated = {}
         self.quote_leaves = {}
 
@@ -2361,26 +2119,20 @@ class GBMAssetPriceTSModelParameters(object):
     def atm_column(vol_factor, vol_surface, market_prices, price_factors):
         """The ATM vol per surface expiry, and where each number came from.
 
-        TWO SOURCES, chosen by the surface's PROVENANCE rather than by a switch. Where this same
-        market data carries an `FXVolPrices` block for the surface being integrated AND that surface
-        is the one the block WROTE, its ATM rows ARE its ATM vols - `Factor2D.malz_skew` puts the
-        +-0.5 label's vol at the delta-neutral straddle strike - so the quotes are taken straight
-        off it. Reading them back off the refined log-moneyness grid would recover the same numbers
-        to the grid's own tolerance and put the Malz delta solve on the tape to say so.
+        Two sources, chosen by the surface's PROVENANCE. Where this market data carries an
+        `FXVolPrices` block for the surface being integrated and that surface is the one the block
+        wrote, its ATM rows ARE its ATM vols (`Factor2D.malz_skew` puts the +-0.5 label's vol at the
+        delta-neutral straddle strike), so they are taken straight off it.
 
-        PROVENANCE IS EVIDENCE, NOT A NAME. A hand-authored surface can sit under a name a quote
-        block also uses, and then the two are different market data - the pricers read the authored
-        surface. What is checked is the fingerprint `FXVolSurfaceParameters` leaves on what it
-        writes and `pinned_grid` reads back: the `Malz` subtype beside the `Grid_Tolerance` the grid
-        was built at.
+        Provenance is evidence, not a name: a hand-authored surface can sit under a name a quote
+        block also uses. What is checked is the fingerprint `FXVolSurfaceParameters` leaves and
+        `pinned_grid` reads back - the `Malz` subtype beside its `Grid_Tolerance`.
 
-        Anything else is authored data, and the ATM column is what `np.interp` reads off it at
-        moneyness 1; the entries returned ARE the quotes. Where the surface carries a node AT
-        moneyness 1 that read is the node itself, so dV/d(ATM column) is dV/d(surface node) there.
+        Anything else is authored data, and the ATM column is `np.interp` at moneyness 1. Where the
+        surface carries a node there, that read is the node itself.
 
-        KNOWN LIMITATION: moneyness 1 is the ATM coordinate of a RATIO surface (F/K), while a `Malz`
-        surface's axis is log(F/K), whose ATM is at 0 - so a HAND-AUTHORED Malz surface reads its
-        last log-moneyness node, a wing. Bootstrapped Malz surfaces take the preferred path above.
+        KNOWN LIMITATION: moneyness 1 is the ATM coordinate of a RATIO surface, while a `Malz`
+        axis is log(F/K), whose ATM is at 0 - so a hand-authored Malz surface reads a wing.
         """
         family = FXVolSurfaceParameters
         quoted = market_prices.get(utils.check_tuple_name(utils.Factor(
@@ -2404,7 +2156,7 @@ class GBMAssetPriceTSModelParameters(object):
 
     @staticmethod
     def integrated_vol(atm_vol, expiry):
-        """The ATM column as the integrated vol curve the process reads - THE VALUE PATH.
+        """The ATM column as the integrated vol curve the process reads - the value path.
 
         `V(t_i) = sigma_bar(t_i)^2 t_i` is the total variance the column implies, and the walk is
         Simpson's rule inverted for the instantaneous vol over each step,
@@ -2412,18 +2164,15 @@ class GBMAssetPriceTSModelParameters(object):
             V(t_i) - V(t_{i-1}) = (dt/3)(sigma_{i-1}^2 + sigma_{i-1} sigma_i + sigma_i^2)
 
         a quadratic in `sigma_i` whose positive root is taken. Returns the curve and the expiries
-        the repair fired at. This is the numpy walk, and the only thing a mark is ever built from -
-        `carried_vol` is the derivative twin.
+        the repair fired at. The numpy walk is the only thing a mark is built from; `carried_vol`
+        is the derivative twin.
 
-        THE MAP IS PIECEWISE, and the switch is a KINK. A column implying a DECLINING forward
-        variance has no root, so `V(t_i)` is floored at the least variance the step can reach - the
-        one `sigma_i = 0` leaves - and the written vol is that floor rather than the quote. On the
-        smooth side the written vol is the quote and `d/dq` is 1; on the floored side the floor does
-        not involve that quote at all and `d/dq` is 0, in that column AND in every later one.
+        The map is piecewise and the switch is a KINK. A column implying a declining forward
+        variance has no root, so `V(t_i)` is floored at what `sigma_i = 0` leaves and the written
+        vol is that floor rather than the quote - `d/dq` is 1 on the smooth side and 0 on the
+        floored one, in that column and every later one.
 
-        ONLY `sigma_bar` IS WRITTEN. `sigma` is the walk's own state, sizing the next step's floor,
-        so where no repair fires the curve is `sqrt(q^2 t / t)` - `q` up to the rounding of a square
-        and its root, and exactly `q` on most columns.
+        Only `sigma_bar` is written; `sigma` is the walk's own state, sizing the next step's floor.
         """
         if expiry.size == 1:
             return list(atm_vol), []
@@ -2447,22 +2196,19 @@ class GBMAssetPriceTSModelParameters(object):
 
     @staticmethod
     def carried_vol(atm_vol, expiry):
-        """The same walk on a tape - A DERIVATIVE CARRIER, and never a value.
+        """The same walk on a tape - a derivative carrier, never a value.
 
-        It rides in as the splice `integrated_vol + (carried - carried.detach())`: worth exactly zero
-        in the forward pass, derivative one. So the curve a job ships is the numpy walk's, bit for
-        bit, whatever this returns.
+        It rides in as the splice `integrated_vol + (carried - carried.detach())`: exactly zero in
+        the forward pass, derivative one, so the shipped curve is the numpy walk's bit for bit.
 
-        THE TWO WALKS STAY SEPARATE because they do not agree to the bit: `torch.sqrt` is one ulp
-        below `np.sqrt` on better than one float64 in a hundred here, and a torch walk re-associates
-        the expression tree besides - letting it write the curve moved the shipped vols on 24% of
-        4000 random ATM columns.
+        The two walks stay separate because they do not agree to the bit: `torch.sqrt` is one ulp
+        below `np.sqrt` on better than one float64 in a hundred here and re-associates the
+        expression tree, which moved the shipped vols on 24% of 4000 random ATM columns.
 
-        THE DISCRIMINANT IS GUARDED, and only here. One repair leaves `sigma` exactly zero, so a
-        second reaches `b = 0` beside a `c` that cancels to zero and the discriminant IS zero.
-        `sqrt` has an INFINITE derivative there: the forward value is fine, but the backward pass
-        multiplies that infinity by the zero `d(b^2)/db` and reports a NaN that eats the whole
-        Jacobian. The root there is zero, so it is written as zero and `sqrt` never sees the point.
+        The discriminant is guarded, and only here. One repair leaves `sigma` exactly zero, so a
+        second reaches a discriminant of exactly zero, where `sqrt` has an infinite derivative: the
+        backward pass multiplies it by the zero `d(b^2)/db` and NaNs the whole Jacobian. The root
+        there is zero, so it is written as zero and `sqrt` never sees the point.
         """
         third = np.diff(np.append(0.0, expiry)) / 3.0
         variance = atm_vol * atm_vol * atm_vol.new_tensor(expiry)
@@ -2486,14 +2232,10 @@ class GBMAssetPriceTSModelParameters(object):
         Turns the ATM column of the named vol surface into the integrated vol curve the risk neutral
         process reads, repairing any declining variance on the way - see `integrated_vol`.
 
-        A block asking for `Quote_Sensitivity` leaves that curve behind still connected to the ATM
-        vols it was built from, so `Calculation.factor_leaf` can offer the connected tensor where it
-        would otherwise mint a `Vol` leaf out of numpy. The map is explicit, so there is no solve
-        and no implicit function theorem: the curve IS a differentiable function of the quotes.
-
-        The tape is a SPLICE over the shipped walk (see `carried_vol`), so what that block changes
-        is what `backward()` can reach and nothing else - every number written below comes out of
-        `integrated_vol` either way.
+        `Quote_Sensitivity` leaves that curve behind still connected to its ATM vols, so
+        `Calculation.factor_leaf` can offer the connected tensor rather than minting a `Vol` leaf out
+        of numpy. The map is explicit - no solve, no implicit function theorem - and the tape is a
+        SPLICE over the shipped walk, so every number written comes out of `integrated_vol`.
         '''
         for market_price, implied_params in market_prices.items():
             rate = utils.check_rate_name(market_price)
@@ -2504,8 +2246,8 @@ class GBMAssetPriceTSModelParameters(object):
                 vol_factor = resolve_factor(implied_params['instrument']['Asset_Price_Volatility'],
                                             price_factors, self.factor_types['Asset_Price_Volatility'])
                 implied_param = vol_factor.name
-                # this asks whether the thing being MODELLED is an fx rate - the surface's own tag
-                # says which asset class it belongs to, but the model is named after the underlying
+                # whether the thing being MODELLED is an fx rate - the model is named after the
+                # underlying, while the surface's tag names its own asset class
                 is_fx = utils.check_tuple_name(utils.Factor('FxRate', rate[1:])) in price_factors
 
                 # this shouldn't fail - if it does, need to log it and move on
@@ -2557,32 +2299,26 @@ class GBMAssetPriceTSModelParameters(object):
 
 
 class swaption_objective_class(namedtuple('swaption_objective', 'loss reduce reprice')):
-    """What a risk-neutral swaption calibration MINIMISES, as one record: the residual closure, the
-    scalar the optimizer chain compares two candidates with, and the estimator that audits the
-    answer.
+    """What a risk-neutral swaption calibration minimises, as one record: the residual closure, the
+    scalar the optimizer chain compares two candidates with, and the estimator that audits it.
 
     `loss(implied_var)` is `(model value per benchmark, residual per benchmark)`. The model value is
-    a PREMIUM under either objective, which is what keeps `SwaptionCalibration.solve`'s log one
-    thing rather than two; the residual is the objective's own and the two are not the same shape.
+    a PREMIUM under either objective, so `SwaptionCalibration.solve`'s log is one thing; the residual
+    is the objective's own and the two are not the same shape.
 
-    `reduce(residuals)` is the scalar, and it exists because THE TWO STAGES OF THE CHAIN DO NOT
-    MINIMISE THE SAME FUNCTION ON THE MONTE CARLO PATH: `market_swap_class.error` returns a residual
-    that is already a square, so basin hopping's `sum(r)` is the sum of squared pricing errors while
-    `least_squares` minimises `sum(r^2)` and looks at a quartic. On the analytic path the residual
-    is PLAIN and `sum(r^2)` is both stages' objective. Written once here and read by the basin
-    adapter and by `solve`'s acceptance test; it takes a numpy array or a torch tensor.
+    `reduce(residuals)` exists because the two stages do not minimise the same function on the Monte
+    Carlo path: `market_swap_class.error` returns a residual that is already a square, so basin
+    hopping's `sum(r)` is the sum of squared pricing errors while `least_squares` sees a quartic. On
+    the analytic path the residual is plain and `sum(r^2)` is both stages' objective. It takes a
+    numpy array or a torch tensor.
 
-    `reprice` is the Monte Carlo closure on a block that solved ANALYTICALLY, and `None` otherwise -
-    see `SwaptionCalibration.honesty_reprice`.
+    `reprice` is the Monte Carlo closure on a block that solved ANALYTICALLY, `None` otherwise - see
+    `SwaptionCalibration.honesty_reprice`.
 
-    BOTH OBJECTIVES CARRY A QUOTE SIDE - the same leaf spliced onto two different residuals.
-    `market_swap_class.error` divides the twin premium by the model premium, so its carried half has
-    to DETACH that price or the calibration Jacobian doubles; its residual is already squared, which
-    is why the dropped Gauss-Newton terms are each HALF what they correct and cancel - see
-    [Quote Sensitivities](quote_sensitivities.md#the-dropped-term).
-    `market_swap_class.market_normal_vol` inverts the same twin premium against an annuity nothing
-    differentiates, so the analytic residual is a theta-function minus a q-function: the cross term
-    is structurally ZERO and the theta-side term is genuinely $O(\\|r\\|)$.
+    Both objectives carry a quote side, the same leaf spliced onto two different residuals: the
+    Monte Carlo one is already squared, so the dropped Gauss-Newton terms are each half what they
+    correct and cancel ([Quote Sensitivities](quote_sensitivities.md#the-dropped-term)); the
+    analytic one is separable, so its cross term is structurally zero.
     """
 
 
@@ -2590,17 +2326,14 @@ class SwaptionCalibration(object):
     """One risk-neutral swaption calibration as an operand: the residual, and the solve over it.
 
     The residual is what `calc_loss_on_ir_curve` builds - one weighted error per
-    `Instrument_Definitions` row, from benchmarks priced by brute-force Monte Carlo under a FROZEN
-    Sobol sample or by the Schrager-Pelsser closed form, per the block's `Objective` - and the solve
-    is the optimizer chain `calc_loss` hands over. Holding both beside the parameter dict they share
-    lets `LeastSquaresSolve` run the ordinary solve in its forward pass and differentiate the same
-    residual in its backward.
+    `Instrument_Definitions` row, per the block's `Objective` - and the solve is the optimizer chain
+    `calc_loss` hands over. Holding both beside the parameter dict they share lets
+    `LeastSquaresSolve` run the ordinary solve forward and differentiate the same residual backward.
 
     The parameter vector is FLAT here and a dict everywhere else: scipy takes a vector, the process
-    takes `{name: tensor}`, and the two scipy adapters own that boundary with `tn_var.data =
-    torch.from_numpy(x)`. `__call__` is the third crossing and the only differentiable one - it
-    builds VIEWS of a flat tensor rather than writing `.data`, which would sever the edge from the
-    residual back to the parameters that the implicit function theorem needs.
+    takes `{name: tensor}`, and the two scipy adapters own that boundary with `tn_var.data = ...`.
+    `__call__` is the third crossing and the only differentiable one - it builds VIEWS of a flat
+    tensor rather than writing `.data`, which would sever the edge the theorem needs.
     """
 
     def __init__(self, name, objective, implied_var, optimizers, process, market_swaps):
@@ -2615,8 +2348,8 @@ class SwaptionCalibration(object):
 
     @property
     def quotes(self):
-        """The quote leaf per benchmark, or `()` when the block did not ask for `Quote_Sensitivity`
-        - which is what makes the wrapper a pass-through with no edge recorded."""
+        """The quote leaf per benchmark, or `()` where the block asked for no `Quote_Sensitivity` -
+        which is what makes the wrapper a pass-through with no edge recorded."""
         return tuple(swap.quote for swap in self.market_swaps.values() if swap.quote is not None)
 
     @property
@@ -2625,11 +2358,10 @@ class SwaptionCalibration(object):
         return [name for name, swap in self.market_swaps.items() if swap.quote is not None]
 
     def split(self, theta):
-        """`{name: tensor}` in the closure's own parameter order, SHARING theta's graph.
+        """`{name: tensor}` in the closure's own parameter order, sharing theta's graph.
 
-        The one place the flat vector is taken apart: `__call__` builds the residual's parameter
-        views with it and the attachment publishes theta* per named parameter with it, so a factor
-        leaf cannot be handed the wrong slice of the vector the Jacobian was read off.
+        The one place the flat vector is taken apart, so a factor leaf cannot be handed the wrong
+        slice of the vector the Jacobian was read off.
         """
         return dict(zip(self.keys, theta.split(self.sizes)))
 
@@ -2638,33 +2370,27 @@ class SwaptionCalibration(object):
         return {name: value.detach().cpu().numpy() for name, value in self.split(theta).items()}
 
     def __call__(self, x):
-        """The residual vector at flat parameters `x`, differentiable in `x` AND in the quotes.
+        """The residual vector at flat parameters `x`, differentiable in `x` and in the quotes.
 
-        A FRESH dict of views is handed to the closure rather than the standing `implied_var`,
-        because those are leaves whose `.data` the scipy adapters overwrite: `split` keeps the
-        graph the Jacobian is read off. `x` carries the closure's own precision, so the residual is
-        the same number the solve stopped on - the float64 promotion belongs to the linear algebra
-        downstream, not to the pricing.
+        A fresh dict of views rather than the standing `implied_var`, whose `.data` the scipy
+        adapters overwrite. `x` carries the closure's own precision, so the residual is the number
+        the solve stopped on - the float64 promotion belongs to the linear algebra downstream.
         """
         return torch.stack(list(self.objective.loss(self.split(x))[1].values()))
 
     def honesty_reprice(self, theta):
-        """What the ENGINE'S OWN estimator makes of an analytically-solved theta*, or `None`.
+        """What the engine's own estimator makes of an analytically-solved theta*, or `None`.
 
-        An analytic objective fits the Schrager-Pelsser normal vols, which freeze the annuity's
-        weights, so a block that solved that way has never been asked what the Monte Carlo the rest
-        of the library prices with makes of the answer. One pass of that estimator at theta*, at the
-        block's own path count, reports the worst benchmark's relative premium residual BY NAME. It
-        carries no tolerance and does not move theta*.
-
-        The residual is on the PREMIUM and not the vol: the premium gap is what a mark moves by, and
-        it carries the simulation's own numeraire error, which on a curve with no short tenors is
-        the larger of the two.
+        The analytic objective fits Schrager-Pelsser normal vols, which freeze the annuity's
+        weights, so such a block has never been asked what the Monte Carlo the rest of the library
+        prices with makes of the answer. One pass at theta*, at the block's own path count, reports
+        the worst benchmark's relative PREMIUM residual by name - the premium gap being what a mark
+        moves by, and what carries the simulation's own numeraire error. No tolerance, no move.
         """
         if self.objective.reprice is None:
             return None
-        # `.data` on a CLONE, not on the view: the scipy adapters own that seam and a leaf left
-        # aliasing theta's storage would move with anything that later wrote through theta
+        # `.data` on a CLONE, not on the view: a leaf aliasing theta's storage would move with
+        # anything that later wrote through theta
         for name, value in self.split(theta).items():
             self.implied_var[name].data = value.detach().clone()
         prices, _ = self.objective.reprice(self.implied_var)
@@ -2677,13 +2403,11 @@ class SwaptionCalibration(object):
         """theta* as a flat tensor: the optimizer chain, run exactly as a bootstrap runs it.
 
         Basin hopping then least squares, `x0` chained from one to the next, and a candidate is
-        ACCEPTED only if it beats the running best AND the process it implies is well posed - so
-        the answer can be the seed, which is what `LeastSquaresSolve` checks stationarity for.
+        accepted only if it beats the running best and the process it implies is well posed - so the
+        answer can be the seed, which is what `LeastSquaresSolve` checks stationarity for.
 
-        THE ACCEPTANCE TEST COMPARES ONE SCALAR ACROSS THREE PLACES - the seed, basin hopping's own
-        minimum and the least-squares one - so that scalar is `objective.reduce` rather than a `sum`
-        spelled three times. On the Monte Carlo path it IS that sum, to the bit; on the analytic
-        path it is the sum of squares.
+        The acceptance test compares one scalar across the seed and both stages, so that scalar is
+        `objective.reduce` rather than a `sum` spelled three times.
         """
         calibrated_swaptions, errors = self.objective.loss(self.implied_var)
         batch_loss = self.objective.reduce(
@@ -2739,50 +2463,37 @@ class SwaptionCalibration(object):
 class LeastSquaresSolve(torch.autograd.Function):
     """The swaption calibration as one differentiable node: quotes in, calibrated parameters out.
 
-    FORWARD IS THE ORDINARY SOLVE. It calls `SwaptionCalibration.solve` and nothing else - the same
-    optimizer chain, the same acceptance rule, the same frozen Sobol sample - so enabling quote
-    gradients cannot move theta* by construction rather than by a claim anyone has to re-check.
-    Autograd runs `forward` with grad mode off and both optimizers need it on (basin hopping calls
-    `backward()` on its loss, least squares reads its Jacobian off `autograd.grad`), so it is
-    re-enabled here and the graph each evaluation builds is discarded with the evaluation.
+    FORWARD IS THE ORDINARY SOLVE - `SwaptionCalibration.solve` and nothing else - so enabling quote
+    gradients cannot move theta*. Autograd runs `forward` with grad mode off and both optimizers
+    need it on, so it is re-enabled here and each evaluation's graph is discarded with it.
 
-    BACKWARD IS THE IMPLICIT FUNCTION THEOREM AT THE STATIONARITY FIXED POINT. This is a
-    least-squares minimum, not a root: `r(theta*, q)` is not zero and never will be, so what is
-    held fixed is the GRADIENT of half the sum of squares, `g = J^T r = 0`. Differentiating that
-    and dropping the term in `d(J^T)/dtheta . r` - the Gauss-Newton approximation, exact in the
-    limit of a zero residual - gives
+    BACKWARD IS THE IMPLICIT FUNCTION THEOREM at the stationarity fixed point. This is a
+    least-squares minimum, not a root: `r(theta*, q)` is never zero, so what is held fixed is
+    `g = J^T r = 0`. Differentiating that and dropping the term in `d(J^T)/dtheta . r` - the
+    Gauss-Newton approximation - gives
 
         (J^T J) dtheta/dq = -J^T dr/dq
 
     so a cotangent `v = dL/dtheta*` contracts as `w = (J^T J)^+ v` then `dL/dq = -(dr/dq)^T (J w)`.
 
-    ONE CONTRACTION, TWO RESIDUALS, TWO DIFFERENT REASONS IT IS EXACT TO LEADING ORDER. The Monte
-    Carlo residual is already a square, so both dropped terms are HALF what they correct and cancel.
-    The analytic residual is SEPARABLE - a theta-function minus a q-function - so `d^2r/dtheta dq`
-    is exactly zero and the cross term is absent rather than cancelled, while the theta-side term is
-    the textbook `O(||r||)`: 1.50e-4 of `J^T J` in Frobenius norm on the identified block beside a
-    `||r||` of 1.48e-3, against the Monte Carlo path's 0.500064. That ratio SHRANK WITH THE FIT
-    across the 2026-09-02 re-mark - 8.75e-4 beside a `||r||` of 2.26e-3 before it - which is the
-    `O(||r||)` claim coming true rather than a re-based constant. Nothing here switches on the
-    objective - the wrapper differentiates whatever residual the block declared.
+    One contraction, two residuals, exact to leading order for two different reasons. The Monte
+    Carlo residual is already a square, so both dropped terms are half what they correct and cancel.
+    The analytic residual is separable, so the cross term is absent rather than cancelled and the
+    theta-side term is the textbook `O(||r||)`: 1.50e-4 of `J^T J` in Frobenius norm beside a
+    `||r||` of 1.48e-3 on the identified block, against the Monte Carlo path's 0.500064.
 
-    Both derivatives come from autograd on ONE fresh evaluation of the residual at `(theta*, q)`,
-    functionally through `autograd.grad` rather than off `.grad`: the scipy adapters clear `.grad`
-    per evaluation and the quote leaves accumulate across them, so a harvested `.grad` is the sum
-    over an optimizer's whole path rather than the derivative at its answer.
+    Both derivatives come from autograd on ONE fresh evaluation at `(theta*, q)`, through
+    `autograd.grad` rather than off `.grad`: the quote leaves accumulate across the optimizer's
+    evaluations, so a harvested `.grad` is a path sum rather than the derivative at the answer.
 
-    J^T J IS RANK DEFICIENT, which is a property of the problem: J has one row per benchmark and 23
-    columns, so on any block quoting fewer than 23 swaptions the null space is what the quote set
-    does not identify. The solve is therefore a PSEUDO-inverse at a declared relative cutoff, and
-    `dtheta/dq` in a null direction is the MINIMUM-NORM representative. No ridge is added - a
-    Tikhonov term would return a unique-looking derivative of a different problem.
+    `J^T J` is rank deficient - J has one row per benchmark and 23 columns - so the inverse is a
+    PSEUDO-inverse at a declared relative cutoff and `dtheta/dq` in a null direction is the
+    minimum-norm representative. No ridge: a Tikhonov term answers a different problem.
 
-    STATIONARITY IS CHECKED, NOT ASSUMED. `solve` accepts whatever the chain returned, which may be
-    the seed if nothing beat it, and the contraction above is worthless off the fixed point - so
-    `||J^T r||` above the declared tolerance RAISES, naming the norm.
+    Stationarity is CHECKED. `solve` accepts whatever the chain returned, possibly the seed, and the
+    contraction is worthless off the fixed point - so `||J^T r||` above tolerance raises.
 
-    Every `grad` here retains the graph, for the reason `CalibrationSolve` documents: the residual's
-    subgraph is shared with the evaluation the Jacobian was read off.
+    Every `grad` retains the graph, for the reason `CalibrationSolve` gives.
     """
 
     @staticmethod
@@ -2795,8 +2506,7 @@ class LeastSquaresSolve(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, cotangent):
-        # the engine runs a backward node with grad mode set to `create_graph`, so this is the
-        # second differentiation asking to be recorded - and Gauss-Newton has no second derivative
+        # grad mode here means `create_graph` - a second differentiation Gauss-Newton cannot give
         if torch.is_grad_enabled():
             raise Exception('Swaption calibration: create_graph is not supported - the backward is '
                             'a Gauss-Newton contraction and carries no second derivative')
@@ -2824,17 +2534,14 @@ class RiskNeutralInterestRateModel(object):
         self.param = param
         self.device = device
         self.prec = dtype
-        #: The Monte Carlo objective's sample shape, DECLARED (`Simulations` / `Batches`) and read
-        #: off the block by `calc_loss_on_ir_curve`. A REPORT of the last block built: nothing reads
-        #: them to price, because the residual closure captures its own shape as LOCALS - one
-        #: bootstrapper runs every curve in `market_prices`, and a closure reaching through `self`
-        #: would divide by the NEXT block's sample count. They are not defaults either.
+        #: The Monte Carlo sample shape of the last block built - a REPORT. Nothing prices off
+        #: these: the residual closure captures its own shape as locals, because one bootstrapper
+        #: runs every curve and a closure reaching through `self` would take the next block's count.
         self.batch_size = None
         self.num_batches = None
-        #: What a block asking for `Quote_Sensitivity` leaves behind: theta* STILL CONNECTED to its
-        #: quotes, one entry per named model parameter, plus the quote leaf per block.
-        #: `Config.bootstrap` harvests both - they are tensors, so they cannot live in
-        #: `Price Factors`, which is written back out as JSON.
+        #: What `Quote_Sensitivity` leaves behind: theta* still connected to its quotes, one entry
+        #: per named model parameter, plus the quote leaf per block. `Config.bootstrap` harvests
+        #: both - tensors cannot live in `Price Factors`.
         self.calibrated = {}
         self.quote_leaves = {}
 
@@ -2843,57 +2550,41 @@ class RiskNeutralInterestRateModel(object):
         """The swaption calibration's residual closure: implied parameters in, one weighted error
         per benchmark out.
 
-        TWO OBJECTIVES, ONE DECLARED SWITCH, AND `Analytic` IS THE DEFAULT. It prices each benchmark
-        with `stochasticprocess.HullWhite2FactorImpliedInterestRateModel.schrager_pelsser_swaption`
-        and differences NORMAL VOLS, plain - see `market_swap_class.normal_vol_error` for why the
-        squaring is the thing that path exists to retire. `Monte_Carlo` is the path this family
-        always had, unchanged to the bit: each benchmark priced by brute-force Monte Carlo through
-        the engine's own `pv_float_cashflow_list`, and the residual the weighted relative pricing
-        error, ALREADY SQUARED.
+        TWO OBJECTIVES, ONE DECLARED SWITCH, `Analytic` the default. It prices each benchmark with
+        `stochasticprocess.HullWhite2FactorImpliedInterestRateModel.schrager_pelsser_swaption` and
+        differences NORMAL VOLS, plain (`market_swap_class.normal_vol_error`). `Monte_Carlo` prices
+        each through the engine's own `pv_float_cashflow_list` and differences the weighted relative
+        pricing error, ALREADY SQUARED.
 
-        WHY THE DEFAULT IS THE CLOSED FORM, in measurements. SP sits inside one Monte Carlo
-        evaluation's own noise at 22 of 25 benchmarks, because the simulation's numeraire bias
-        (-0.35% to -1.61%) exceeds SP's freezing bias (-0.13 to +2.17bp) almost everywhere. Its
-        residual is a QUADRATIC rather than a quartic, so `||J'r||` at theta* is 8.63e-7 against
-        3.16e2 - inside `Stationarity_Tol`'s 1e-3 default rather than five orders outside it, which
-        is what lets a quote-side backward run on the declared field. It is deterministic in the
-        sample, so two solves at one seed agree to the bit, and it is 4.6x faster on the four-quote
-        block - 13x per evaluation against 3x the evaluations, and 5.6x before the 2026-09-02
-        re-mark lengthened the analytic chain's own path. What `Monte_Carlo` keeps is being the
-        engine's OWN estimator.
+        Why the closed form is the default: it sits inside one Monte Carlo evaluation's own noise at
+        22 of 25 benchmarks (the simulation's numeraire bias -0.35% to -1.61% exceeds the freezing
+        bias -0.13 to +2.17bp), its residual is quadratic rather than quartic so `||J'r||` at theta*
+        is 8.63e-7 against 3.16e2, it is deterministic in the sample, and it is 4.6x faster on the
+        four-quote block. `Monte_Carlo` keeps being the engine's OWN estimator.
 
-        The Monte Carlo closure is built EITHER WAY: on an analytic block it is not the objective
-        but the auditor, and `SwaptionCalibration.honesty_reprice` runs it once at theta*.
+        The Monte Carlo closure is built either way: on an analytic block it is the auditor, and
+        `SwaptionCalibration.honesty_reprice` runs it once at theta*.
 
-        BOTH OBJECTIVES PRICE UNDER THE DOMESTIC MEASURE, and neither of them arranges it here:
-        `process` arrives already built on a quanto-suppressed implied object, so `precalculate`
-        assembles `K = 0` for every evaluation. See `implied_process` for the Girsanov argument and
-        for what carries the quanto drift instead.
+        Both objectives price under the DOMESTIC measure, arranged upstream: `process` arrives built
+        on a quanto-suppressed implied object, so `precalculate` assembles `K = 0`. See
+        `implied_process` for the Girsanov argument.
 
-        COMMON RANDOM NUMBERS ARE FROZEN PER SOLVE. The Sobol engine is built once, on the state
-        this call creates - `reset` re-seeds nothing once `t_random_batch` exists - so every
-        evaluation sees the same paths and the optimizer differences the parameters rather than the
-        sample. What `reset` DOES clear is the `t_Buffer`/`t_PreCalc` memo trap; `clear` is that
-        half alone, which is all the analytic path needs. THE SAMPLE SHAPE IS FROZEN AS LOCALS: this
-        residual outlives its own block, since `LeastSquaresSolve` holds it to differentiate in a
-        backward that runs after the whole loop, so a closure dividing by `self.batch_size` would be
-        rescaled by the NEXT block's declaration.
+        COMMON RANDOM NUMBERS ARE FROZEN PER SOLVE - the Sobol engine is built once and `reset`
+        re-seeds nothing once `t_random_batch` exists, so the optimizer differences the parameters
+        rather than the sample. `clear` is the memo half alone, all the analytic path needs. The
+        sample shape is frozen as LOCALS: this residual outlives its block, `LeastSquaresSolve`
+        holding it for a backward that runs after the loop.
 
-        THE BATCH LOOP CLEARS `t_Buffer` AND NOT `t_PreCalc`. `calc_time_grid_curve_rate` keys its
-        cache on the curve code and the time grid rather than on the batch, so clearing only outside
-        the loop makes every batch after the first re-read batch zero's simulated curve - `Batches`
-        buying nothing, bit-identically. `t_PreCalc` holds `precalculate`'s integrals, a function of
-        theta rather than of the sample, so clearing it per batch would re-integrate the same
-        numbers N times.
+        The batch loop clears `t_Buffer` and not `t_PreCalc`. `calc_time_grid_curve_rate` keys on
+        the curve code and time grid rather than the batch, so clearing only outside the loop makes
+        every later batch re-read batch zero's curve. `t_PreCalc` holds integrals in theta rather
+        than in the sample, so clearing it per batch would re-integrate the same numbers.
 
-        THE QUOTE SIDE severs at the market price and nowhere else, ON EITHER OBJECTIVE.
-        `swap.price` is a numpy scalar, so the swaption vol behind it reaches the residual as a
-        constant; the splice that closes it goes on `market_swap_class.error` for the Monte Carlo
-        path and on `market_swap_class.market_normal_vol` for the analytic one, both absent unless
-        the block asked for `Quote_Sensitivity`. ONE quote leaf per benchmark serves both. Two
+        THE QUOTE SIDE severs at the market price and nowhere else, on either objective: `swap.price`
+        is a numpy scalar, and the splice that closes it sits on `market_swap_class.error` or on
+        `market_swap_class.market_normal_vol`. One quote leaf per benchmark serves both. Two
         severances stay open deliberately, their upstream being the calibrated curve rather than a
-        quote of THIS calibration: `get_par_swap_rate` prices the strike and the pvbp in numpy off
-        the zero curve, and `set_fixed_amount` writes that strike into the schedule's numpy half.
+        quote of THIS calibration: `get_par_swap_rate` and `set_fixed_amount`.
         """
         block = implied_params['instrument']
         objective = block.get('Objective', 'Analytic')
@@ -2904,8 +2595,7 @@ class RiskNeutralInterestRateModel(object):
                 "'Analytic' (the default: the Schrager-Pelsser normal vols) or 'Monte_Carlo' "
                 "(every benchmark through the engine's own Monte Carlo). Correct the block's "
                 "Objective to one of those two".format(objective))
-        # the sample shape is DECLARED - see `__init__` for why it is not defaulted twice, and why
-        # the closures below capture THESE rather than the attributes they are mirrored onto
+        # the closures below capture THESE locals, not the attributes they are mirrored onto
         batch_size = int(block.get('Simulations', 8192))
         num_batches = int(block.get('Batches', 1))
         self.batch_size, self.num_batches = batch_size, num_batches
@@ -2920,8 +2610,7 @@ class RiskNeutralInterestRateModel(object):
             delta_scen_t = np.diff(time_grid.scen_time_grid).reshape(-1, 1)
 
             for batch_index in range(num_batches):
-                # the curve memo is keyed by curve and time and NOT by batch, so without this every
-                # batch after the first re-reads batch zero - see the docstring. `t_PreCalc` stays.
+                # the curve memo is keyed by curve and time and not by batch; `t_PreCalc` stays
                 shared_mem.t_Buffer.clear()
                 # load up the batch
                 shared_mem.batch_index = batch_index
@@ -2953,16 +2642,13 @@ class RiskNeutralInterestRateModel(object):
             return calibrated_swaptions, errors
 
         def analytic_loss(implied_var):
-            """The same benchmarks, priced by Schrager-Pelsser, differenced as NORMAL VOLS.
+            """The same benchmarks, priced by Schrager-Pelsser, differenced as normal vols.
 
-            `precalculate` is the differentiable path that builds H, I and J and it is the ONLY
-            thing this closure runs - no sample is drawn, no curve is simulated, and the price is
-            assembled from the arrays that pass already left behind. So the two objectives share
-            their whole front half: the same reversion-speed floors, the same series branches, the
-            same `params_ok`, and the same `Correlation` off the same leaves.
+            `precalculate` builds H, I and J and is the only thing this runs - no sample, no
+            simulated curve - so the two objectives share their whole front half: the same
+            reversion-speed floors, series branches, `params_ok` and `Correlation` leaves.
 
-            `clear` and not `reset`: the memo tables have to go per evaluation for the reason the
-            docstring gives, but the Sobol draw would be paid for nothing.
+            `clear` and not `reset`: the memo tables go per evaluation, the Sobol draw is not paid.
             """
             shared_mem.clear()
             process.precalculate(
@@ -2989,15 +2675,14 @@ class RiskNeutralInterestRateModel(object):
         curve_index_reduced = [(c_index[utils.FACTOR_INDEX_Stoch], index_keys['reduced']) + c_index[2:]]
         # set up a common context - we leave out the random numbers and pass it in explicitly below
         shared_mem = RiskNeutralInterestRate_State(index_keys, batch_size, self.device, self.prec)
-        # calc the market swap rates and instrument_definitions - the unit tensor is what switches
-        # the quote side on, and puts its leaves on the calculation's own device
+        # the unit tensor switches the quote side on and puts its leaves on the right device
         market_swaps, benchmarks = create_market_swaps(
             base_date, time_grid, curve_index, vol_surface, process.factor,
             block['Instrument_Definitions'], ir_factor.name,
             shared_mem.one if quote_sensitivity == 'Yes' else None)
         # number of random factors to use
         numfactors = process.num_factors()
-        # the calibration swaps are compiled here rather than by a DealStructure, so they bind here
+        # compiled here rather than by a DealStructure, so they bind here
         for market_data in market_swaps.values():
             utils.bind_schedules(market_data.deal_data.Factor_dep, shared_mem.one)
         # set up the variables
@@ -3009,9 +2694,8 @@ class RiskNeutralInterestRateModel(object):
             implied_var[param_name] = torch.tensor(
                 param_value, dtype=self.prec, device=self.device, requires_grad=True)
 
-        # `reduce` squares on the analytic path because the residual does not, and `reprice` is the
-        # Monte Carlo standing by as the auditor rather than as the objective - see
-        # `swaption_objective_class` for both. The switch is read ONCE, here.
+        # `reduce` squares on the analytic path because the residual does not; `reprice` is the
+        # Monte Carlo standing by as auditor. The switch is read once, here.
         chosen = swaption_objective_class(
             loss=analytic_loss, reduce=lambda r: (r * r).sum(), reprice=loss
         ) if objective == 'Analytic' else swaption_objective_class(
@@ -3089,17 +2773,15 @@ class RiskNeutralInterestRateModel(object):
                 calibration = SwaptionCalibration(
                     market_factor.name[0], objective, implied_var, optimizers, process,
                     market_swaptions)
-                # the chain goes through the implicit-function wrapper either way: with no quotes
-                # on the tape no edge is recorded and the wrapper is a pass-through, which is what
-                # makes "gradients cannot move theta*" structural rather than a claim
+                # through the implicit-function wrapper either way: with no quotes on the tape no
+                # edge is recorded and the wrapper is a pass-through
                 theta = LeastSquaresSolve.apply(
                     calibration,
                     float(implied_params['instrument'].get('Jacobian_Rcond', 1e-8)),
                     float(implied_params['instrument'].get('Stationarity_Tol', 1e-3)),
                     *calibration.quotes)
 
-                # what the engine's OWN estimator makes of an analytically-solved theta*, reported
-                # by name rather than checked against a tolerance - see `honesty_reprice`
+                # reported by name rather than checked against a tolerance - see `honesty_reprice`
                 reprice = calibration.honesty_reprice(theta)
                 if reprice is not None:
                     logging.info(
@@ -3110,16 +2792,15 @@ class RiskNeutralInterestRateModel(object):
                 # save this - `unflatten` detaches, so `Price Factors` gets plain numpy
                 self.save_params(calibration.unflatten(theta), price_factors, implied_obj, rate)
 
-                # the connected half, for the calculation that consumes these parameters: one entry
-                # per named parameter under the key `_build_factor_state` mints its leaf with
+                # the connected half: one entry per named parameter, under the key
+                # `_build_factor_state` mints its leaf with
                 if calibration.quotes:
                     params_factor = utils.Factor(self.__class__.__name__, rate[1:])
                     self.calibrated.update({
                         utils.Factor(params_factor.type, params_factor.name + (name,)): value
                         for name, value in calibration.split(theta).items()})
-                    # the optimizer chain called backward() on every evaluation, so a `.grad`
-                    # standing here is the sum over its whole path - six orders out under Monte
-                    # Carlo, 0.31%-2.33% under the analytic objective. The leaf is handed over clean
+                    # the chain called backward() per evaluation, so a `.grad` standing here is the
+                    # sum over its whole path - the leaf is handed over clean
                     for quote in calibration.quotes:
                         quote.grad = None
                     self.quote_leaves[market_price] = (calibration.descriptors, calibration.quotes)
@@ -3315,10 +2996,9 @@ scipy.optimize.leastsq.html) are used.',
 
         def make_basin_callbacks(step, sigma_min_max, alpha_min_max, corr_min_max, rng):
             """The two callbacks basin hopping needs, drawing from `rng` and never from the process
-            global. A step taken off `np.random` makes the whole calibration a function of whatever
-            ran before it in the same interpreter - measured on the gate fixture, theta* moves 0.93
-            absolute between ambient seeds - and nothing raises, so the block declares the seed and
-            the same generator serves the Metropolis test in `SwaptionCalibration.solve`."""
+            global - off `np.random` the calibration is a function of whatever ran before it in the
+            same interpreter (theta* moves 0.93 absolute between ambient seeds on the gate fixture).
+            The same generator serves the Metropolis test in `SwaptionCalibration.solve`."""
 
             def bounds_check(**kwargs):
                 x = kwargs["x_new"]
@@ -3343,9 +3023,7 @@ scipy.optimize.leastsq.html) are used.',
             """The scipy basinhopper's scalar-and-gradient adapter over the residual closure.
 
             The scalar is `objective.reduce` and not a `sum` written here, because `solve`'s
-            acceptance test compares this number against the one it reads off the least-squares
-            stage - see `swaption_objective_class` for what the two objectives put in it, and why
-            only the analytic one has both stages minimising the same function.
+            acceptance test compares it against the least-squares stage's own number.
             """
             loss_fn = objective.loss
 
@@ -3410,15 +3088,13 @@ scipy.optimize.leastsq.html) are used.',
                 bounds.append([self.sigma_bounds] * len(v))
 
         var_to_bounds = np.vstack(bounds)
-        # ONE generator for the whole random search - the step taker draws from it here and basin
-        # hopping's own Metropolis test draws from it in `solve`, so the search is a function of
-        # `Random_Seed` alone
+        # one generator for the whole random search - the step taker here, the Metropolis test in
+        # `solve` - so the search is a function of `Random_Seed` alone
         rng = np.random.RandomState(int(implied_params['instrument'].get('Random_Seed', 5120)))
         bounds_ok, make_step = make_basin_callbacks(
             0.125, self.sigma_bounds, self.alpha_bounds, self.corr_bounds, rng)
 
-        # the two adapters are the objective's, whichever objective the block declared: the analytic
-        # residual reaches scipy through the same two seams and the same `.data` boundary
+        # both adapters are the objective's, whichever the block declared - one `.data` boundary
         basin_hopper_fn_grad = make_basin_hopping_loss(objective, implied_var_dict, self.device, True)
         x0 = torch.cat(list(implied_var_dict.values())).cpu().detach().numpy()
         lsq_fn, jacobian = make_least_squares_loss(objective.loss, implied_var_dict, self.device)
@@ -3429,31 +3105,24 @@ scipy.optimize.leastsq.html) are used.',
         return objective, optimizers, implied_var_dict, market_swaptions, benchmarks
 
     def implied_process(self, base_currency, price_factors, price_models, ir_curve, rate):
-        """The seed parameters and the process the objective prices through - which are TWO implied
-        objects on a quanto'd curve, carrying the same numbers.
+        """The seed parameters and the process the objective prices through - two implied objects on
+        a quanto'd curve, carrying the same numbers.
 
-        CALIBRATE DOMESTICALLY, SIMULATE GLOBALLY. The market premium this objective reprices is
-        $E^{Q_{dom}}[D_{dom}\\cdot(\\text{payoff})]$ - struck, deflated and quoted in the RATE
-        currency - so the paths it is priced on are domestic-measure paths whatever the base
-        currency of the job. Girsanov moves DRIFTS and leaves quadratic variation alone, so the
-        parameters being fitted - $\\sigma_1,\\sigma_2,\\alpha_1,\\alpha_2,\\rho$ - are the same
-        numbers under either measure: fit them where the premium lives, and let the scenario run
-        put its own base-measure quanto drift on the invariants it is handed.
+        CALIBRATE DOMESTICALLY, SIMULATE GLOBALLY. The market premium being repriced is
+        $E^{Q_{dom}}[D_{dom}\\cdot(\\text{payoff})]$, struck and quoted in the RATE currency, so it
+        is priced on domestic-measure paths whatever the job's base currency. Girsanov moves drifts
+        and leaves quadratic variation alone, so $\\sigma_1,\\sigma_2,\\alpha_1,\\alpha_2,\\rho$ are
+        the same numbers under either measure.
 
-        So the two FX inputs `precalculate` builds $K$ out of - the quanto FX vol and the
-        instantaneous FX/short-rate correlation - are SUPPRESSED on the implied object the process
-        is built on, taking that assembly down its base-currency branch ($\\tilde\\rho_i = 0$,
-        $K_i \\equiv 0$) to the bit, and are left standing on the object this returns, which is what
-        `save_params` emits `Quanto_FX_Volatility` and `Quanto_FX_Correlation_1/2` off. One seam
-        covers all three consumers of the objective - the Monte Carlo loss, its Jacobian, and
-        `SwaptionCalibration.honesty_reprice` - since all three go through this one process.
+        So the two FX inputs `precalculate` builds $K$ out of are SUPPRESSED on the implied object
+        the process is built on, taking that assembly down its base-currency branch to the bit, and
+        left standing on the object returned, which is what `save_params` emits
+        `Quanto_FX_Volatility` and `Quanto_FX_Correlation_1/2` off. All three consumers of the
+        objective go through this one process. The simulator is untouched - `precalculate` still
+        installs $K$ in a scenario run, being handed the emitted factor rather than this twin.
 
-        THE SIMULATOR IS NOT TOUCHED: `precalculate` still installs $K$ for a foreign curve in a
-        scenario run, being handed the emitted factor rather than this twin.
-
-        THE SEED IS ASYMMETRIC BY RULING and lives in `ALPHA_SEED`, which says what the symmetric
-        one cost. A block whose parameter factor already exists warm-starts off it instead and is
-        the author's own point, clipped to the declared bounds.
+        The seed is asymmetric by ruling; `ALPHA_SEED` says why. A block whose parameter factor
+        already exists warm-starts off it instead, clipped to the declared bounds.
         """
         vol_tenors = np.array([0, 1, 3, 6, 12, 24, 48, 72, 96, 120]) / 12.0
         # construct an initial guess - need to read from params
@@ -3501,9 +3170,8 @@ scipy.optimize.leastsq.html) are used.',
                  'Sigma_1': utils.Curve([], list(zip(vol_tenors, [0.01] * vol_tenors.size))),
                  'Sigma_2': utils.Curve([], list(zip(vol_tenors, [0.01] * vol_tenors.size)))})
 
-        # the objective's own measure - see the docstring. The twin shares every invariant and drops
-        # the two FX inputs, so `precalculate` assembles K = 0. The None survives `read_cache` only
-        # because Factor1D.__init__'s get_tenor() normalizes it to a zero Curve at construction
+        # the domestic twin: every invariant, minus the two FX inputs, so `precalculate` assembles
+        # K = 0. The None survives `read_cache` because Factor1D.get_tenor normalizes it to a Curve
         domestic_obj = riskfactors.HullWhite2FactorModelParameters(
             dict(implied_obj.param, Quanto_FX_Volatility=None, short_rate_fx_correlation=None))
 
@@ -3552,10 +3220,9 @@ def leaf_deals(node):
 class Benchmark_State(utils.Calculation_State):
     """The pricing state a t0 benchmark valuation needs: one date, one path, float64.
 
-    `t_Static_Buffer` is the point of it: that dict is where every pricer reads a static curve from,
-    so a `requires_grad` tensor placed in it is what puts the curve's nodes on the tape - no other
-    seam reaches the pricers without a numpy round trip. It is built fresh per evaluation because
-    `t_Buffer` is a memo table keyed by `(stoch, Factor)` rather than by the tensor's identity.
+    `t_Static_Buffer` is the point of it - every pricer reads a static curve from that dict, so a
+    `requires_grad` tensor placed there is what puts the curve's nodes on the tape. It is built
+    fresh per evaluation because `t_Buffer` is memoized by `(stoch, Factor)`, not by identity.
 
     Boundary registration is off: a deposit, an FRA and a swap leg take no decision on simulated
     state, so there is nothing for the correction to carry.
@@ -3572,49 +3239,43 @@ class BenchmarkInstruments(object):
     """The benchmark instruments of one curve solve, compiled once and priced at t0 off curve node
     TENSORS - so `torch.autograd.grad(pv, theta)` is the calibration Jacobian's row.
 
-    A benchmark is a deal-tree NODE, `{'Instrument': deal, 'Children': [...]}`, exactly as
-    `Trade Data` authors it: a deposit or an FRA is one deal, a par swap is one `SwapInterestDeal`,
-    and an OIS swap is a container over an OIS-compounded floating leg and a fixed leg. Its PV is
-    the sum of its leaves' PVs, each already converted to the reporting currency by its own
-    `pv_*_leg`; there is no netting or collateral rule on top, which is what lets this stay out of
-    `DealStructure`.
+    A benchmark is a deal-tree NODE, `{'Instrument': deal, 'Children': [...]}`, as `Trade Data`
+    authors it: a deposit or FRA is one deal, a par swap one `SwapInterestDeal`, an OIS swap a
+    container over a compounded floating leg and a fixed one. Its PV is the sum of its leaves' PVs,
+    each already in the reporting currency; no netting or collateral rule on top, which is what lets
+    this stay out of `DealStructure`.
 
-    **The graph audit.** The factor-construction path severs autograd in four places, every one of
-    them on the way IN to `t_Static_Buffer` rather than on the way out:
+    **The graph audit.** The factor-construction path severs autograd in four places, every one on
+    the way IN to `t_Static_Buffer`:
 
-    - `Calculation._build_factor_state` and `Base_Revaluation.update_factors` mint every leaf as
-      `torch.tensor(factor.current_value(), requires_grad=...)`, a fresh leaf off a numpy array. This
-      class writes theta straight into the buffer and never calls `current_value` for a curve it is
-      solving.
+    - `Calculation._build_factor_state` and `Base_Revaluation.update_factors` mint every leaf off a
+      numpy array. This class writes theta straight into the buffer and never calls `current_value`
+      for a curve it is solving.
     - `riskfactors.Factor1D.current_value` is numpy end to end, and `Factor1D.get_tenor` REWRITES
-      `param['Curve'].array` (dedupe plus `np.interp`) as a side effect of construction - so the
-      node order theta is indexed by is the rewritten one, read back off the constructed factor.
+      `param['Curve'].array` as a side effect of construction - so the node order theta is indexed
+      by is the rewritten one, read back off the constructed factor.
     - `Factor1D.check_interpolation` precomputes the Hermite `(g, c)` pair from the numpy rate
-      column. Those coefficients are constants in theta and the pricing path does not use them:
-      `utils.Interpolation.build` re-derives the pair from the buffer TENSOR, and `all_tenors`
-      carries only the interpolation KIND and the tenor grid. A Hermite curve differentiates.
-    - `utils.TensorSchedule.bind` mints the cashflow schedule's tensor half with `new_tensor`, which
-      is where the QUOTE - a fixed rate, a margin - stops being differentiable. `_carry_quotes`
-      builds the `TensorSchedule.carry` overlay that closes it.
+      column. The pricing path does not use it: `utils.Interpolation.build` re-derives the pair from
+      the buffer TENSOR, so a Hermite curve differentiates.
+    - `utils.TensorSchedule.bind` mints the schedule's tensor half with `new_tensor`, which is where
+      the QUOTE stops being differentiable. `_carry_quotes` builds the overlay that closes it.
 
     One trap that is not a severance: `utils.CurveTenor` caches its tenor grid as a tensor built
     from the first tensor that queries it. `all_tenors` is rebuilt per instance here, so a float64
-    solve cannot inherit a float32 grid from whatever ran before it.
+    solve cannot inherit a float32 grid.
 
-    `quotes` and `bumped_nodes` are the quote side, as a pair: the quotes the set was authored at,
-    in percent, and the SAME set authored one percent higher - the second says which schedule
-    columns the quote writes (see `_carry_quotes`).
+    `quotes` and `bumped_nodes` are the quote side: the quotes the set was authored at, in percent,
+    and the same set authored one percent higher - the second says which schedule columns the quote
+    writes (see `_carry_quotes`).
     """
 
-    #: The solve is float64 whatever the simulation runs in - a bootstrap that converges to 1e-10
-    #: cannot be done in float32, and the Jacobian it hands the implicit-function theorem is only
-    #: as good as the residual it came from.
+    #: The solve is float64 whatever the simulation runs in: a bootstrap converging to 1e-10 cannot
+    #: be done in float32, and the Jacobian is only as good as the residual it came from.
     dtype = torch.float64
 
     def __init__(self, nodes, price_factors, factor_interp, base_date, currency, calendars,
                  solve_for, device, quotes=None, bumped_nodes=None):
-        # `config` imports `construct_bootstrapper` from this module, so the module-level edge runs
-        # one way only and discovery is reached from inside the call
+        # `config` imports from this module, so the package edge runs one way only
         from .config import Config
 
         cfg = Config(base_currency=currency)
@@ -3623,9 +3284,8 @@ class BenchmarkInstruments(object):
         cfg.params['System Parameters']['Base_Date'] = base_date
         cfg.holidays = calendars
         cfg.set_calculation_children(nodes)
-        # the engine's own discovery, so the benchmark set pulls exactly the factors a valuation
-        # would. Single currency by construction: reporting IS the curve's currency, which makes
-        # every `calc_fx_cross` the identity
+        # the engine's own discovery, so the set pulls exactly the factors a valuation would.
+        # Single currency by construction, so every `calc_fx_cross` is the identity
         dependent_factors, _, _, _ = cfg.discover_factors(
             {'Currency': currency}, base_date, '0d', False)
 
@@ -3653,8 +3313,8 @@ class BenchmarkInstruments(object):
             quotes, dtype=self.dtype, device=device, requires_grad=True)
         if self.quotes is not None:
             self._carry_quotes(bumped_nodes, base_date, calendars)
-        # the benchmark set is compiled OUTSIDE a calculation, so it binds its own schedules - and
-        # it binds them last, because the quote overlay is spliced into the copy `bind` makes
+        # compiled outside a calculation, so it binds its own schedules - and binds them LAST,
+        # because the quote overlay is spliced into the copy `bind` makes
         for legs in self.benchmarks:
             for leg in legs:
                 utils.bind_schedules(leg.Factor_dep, self.one)
@@ -3672,28 +3332,23 @@ class BenchmarkInstruments(object):
     def _carry_quotes(self, bumped_nodes, base_date, calendars):
         """Put the quote leaf on every schedule column the quote WRITES.
 
-        Which columns those are is MEASURED, not declared: the same benchmark set authored one
-        percent higher is compiled, and the columns that moved are the value columns with the
-        difference as their slope. The authoring map is affine in the quote, so one bumped compile
-        IS the derivative rather than a difference quotient of one - which keeps `QUOTE_WRITERS` the
-        only place a quotable instrument is declared.
+        Which columns those are is MEASURED: the same set authored one percent higher is compiled,
+        and the columns that moved are the value columns with the difference as their slope. The
+        authoring map is affine in the quote, so one bumped compile IS the derivative - which keeps
+        `QUOTE_WRITERS` the only place a quotable instrument is declared.
 
-        The splice is `base + (q - q.detach()) * slope`, worth exactly zero in the forward pass with
-        derivative one, so the tensor half is bit-identical to the copy `new_tensor` would have made
-        and enabling quote gradients cannot move the solve. It is a derivative carrier and NOT a
-        reparameterisation: the value does not follow a moved quote, because the pricers memoize
-        payment tensors off the schedule, so a different quote needs a fresh closure.
+        The splice is `base + (q - q.detach()) * slope`, exactly zero forward with derivative one,
+        so enabling quote gradients cannot move the solve. It is a derivative carrier and NOT a
+        reparameterisation - the pricers memoize payment tensors off the schedule, so a different
+        quote needs a fresh closure.
 
-        Resets carry no overlay - no increment-1 quote reaches one, and a reset value also leaves
-        through `known_resets`, which reads numpy. A moved reset column raises here.
+        Resets carry no overlay - a reset value also leaves through `known_resets`, which reads
+        numpy - and a moved reset column raises here.
 
-        A quote that moves NO column raises too. Not every quotable instrument carries its number in
-        a cashflow schedule: an `FXForwardDeal` writes the outright into `Buy_Amount`, which
-        `generate` reads as a float off the deal itself, so no schedule of its compiled form moves.
-        The overlay would carry nothing, `residual_jacobians` would report a zero `dF/dq` row, and a
-        block asking for `Quote_Sensitivity` would be handed a silent zero delta on the instrument a
-        desk trades. Being measured, the refusal stops firing on its own the day such a type grows a
-        schedule.
+        A quote that moves NO column raises too: an `FXForwardDeal` writes its outright into
+        `Buy_Amount`, which `generate` reads as a float off the deal, so nothing of its compiled
+        form moves and `dF/dq` would be a silent zero row. Being measured, the refusal stops firing
+        on its own the day such a type grows a schedule.
         """
         for index, (legs, node) in enumerate(zip(self.benchmarks, bumped_nodes)):
             delta = self.quotes[index] - self.quotes[index].detach()
@@ -3735,17 +3390,15 @@ class BenchmarkInstruments(object):
         return torch.tensor(values, dtype=self.dtype, device=self.one.device)
 
     def reads(self, theta):
-        """The factors OUTSIDE `solve_for` this residual ACTUALLY reads, measured rather than
+        """The factors outside `solve_for` this residual actually reads, measured rather than
         declared - the coupling detector a multi-curve set is grouped by.
 
-        `_carry_quotes`'s idiom on the other side of the residual: rather than asking a block what it
-        says it discounts on, make every constant a leaf, evaluate the residual once and see which
-        ones a backward pass reaches. One residual and one backward, a fraction of a Newton
-        iteration - and it catches the coupling a `Discount_Rate` field cannot state, since what a
-        benchmark PROJECTS off is authored inside its own deal block.
+        Every constant is made a leaf and the residual differentiated once; what a backward pass
+        reaches is what it reads. One residual and one backward, a fraction of a Newton iteration,
+        and it catches the coupling a `Discount_Rate` field cannot state - what a benchmark PROJECTS
+        off is authored inside its own deal block.
 
-        A residual with no graph at all reads nothing, which is the self-discounting single-curve
-        case: its only curve is the one being solved for and every constant is unreachable.
+        A residual with no graph reads nothing, which is the self-discounting single-curve case.
         """
         constants = list(self.constants)
         with torch.enable_grad():
@@ -3773,17 +3426,14 @@ def damped_newton(residual, theta, n_iter, tol, halvings):
     """Solve `residual(theta) = 0` for a `{Factor: tensor}` of curve nodes, in float64.
 
     The curves are flattened into ONE system, so a projection curve solved against a discount curve
-    in the same call is a single Jacobian rather than two coupled ones. That Jacobian comes from
-    autograd on the residual - one backward pass per benchmark gives a row - which is the same
-    derivative the implicit function theorem needs, so the residual is written once and
-    differentiated twice.
+    in the same call is a single Jacobian. That Jacobian comes from autograd on the residual - one
+    backward pass per benchmark gives a row - which is the same derivative the implicit function
+    theorem needs, so the residual is written once and differentiated twice.
 
-    Damping is a backtracking line search on the max-norm of the residual: full step first, halved
-    until it decreases. Near the root Newton takes the full step, so the damping is insurance
-    against a bad first iterate.
+    Damping is a backtracking line search on the residual's max-norm: full step first, halved until
+    it decreases. Near the root Newton takes the full step.
 
-    `n_iter`, `tol` and `halvings` are declared fields of the block being solved, so a job tightens
-    or loosens the solve without a code edit.
+    `n_iter`, `tol` and `halvings` are declared fields of the block being solved.
     """
     keys = list(theta)
     sizes = [theta[key].numel() for key in keys]
@@ -3799,9 +3449,8 @@ def damped_newton(residual, theta, n_iter, tol, halvings):
                                 for i in range(f.numel())])
         step = torch.linalg.solve(jacobian, f.detach())
 
-        # convergence is tested on the step BEFORE the line search, not after it: a step this small
-        # is inside the linear solve's own rounding, and asking a residual already at noise level
-        # to decrease again is a test nothing passes
+        # convergence is tested on the step BEFORE the line search: a step this small is inside the
+        # linear solve's own rounding, and a residual at noise level cannot decrease again
         if step.abs().max() <= tol:
             return unflatten((x - step).detach())
 
@@ -3830,16 +3479,13 @@ def split_theta(benchmarks, theta):
 def residual_jacobians(benchmarks, theta):
     """The residual at `theta` and both its Jacobians: `dF/dtheta` (n x n) and `dF/dq` (n x m).
 
-    ONE backward pass per benchmark gives both, off a forward pass the residual itself comes out of.
-    The quote side is another output of the pass the theta side already needs, so materialising the
-    whole `dF/dq` costs nothing over contracting one cotangent through it - which is why
-    `CalibrationSolve.backward`, the artifact's calibration Jacobian and its drift metric all read
-    this one function.
+    One backward pass per benchmark gives both. Materialising the whole `dF/dq` costs nothing over
+    contracting one cotangent through it, which is why `CalibrationSolve.backward`, the artifact's
+    calibration Jacobian and its drift metric all read this one function.
 
-    Every `grad` retains the graph: the residual's subgraph is shared with the forward pass -
-    `pv_fixed_cashflows` memoizes its payment tensor in `Factor_dep` - so freeing it would take the
-    forward pass's graph with it. A quote that writes into no schedule column raises here rather
-    than reporting a zero row.
+    Every `grad` retains the graph: the residual's subgraph is shared with the forward pass
+    (`pv_fixed_cashflows` memoizes its payment tensor in `Factor_dep`), so freeing it would take the
+    forward pass's graph with it.
     """
     x = torch.cat([theta[factor] for factor in benchmarks.solve_for]).detach().requires_grad_(True)
     residual = benchmarks(split_theta(benchmarks, x))
@@ -3852,17 +3498,14 @@ def residual_jacobians(benchmarks, theta):
 def calibration_jacobian(benchmarks, theta):
     """`dtheta/dq` at the fixed point.
 
-    The implicit function theorem in its MATRIX form - `dtheta/dq = -(dF/dtheta)^-1 (dF/dq)` -
-    which is `CalibrationSolve.backward`'s arithmetic with every cotangent solved at once. There is
-    NO SECOND SOLVE: the fixed point is where the forward pass left it and only the residual is
-    differentiated, so this costs one Newton iteration's work whatever m is.
+    The implicit function theorem in matrix form, `dtheta/dq = -(dF/dtheta)^-1 (dF/dq)` - which is
+    `CalibrationSolve.backward`'s arithmetic with every cotangent solved at once. No second solve:
+    the fixed point is where the forward pass left it, so this costs one Newton iteration.
 
-    `dF/dtheta` has to be invertible, which is a ROOT FIND's property - a least-squares fixed point
-    would contract a pseudo-inverse here instead. `J` is n x m and nothing assumes the two are
-    equal, even though the knot rule makes them so.
+    `dF/dtheta` has to be invertible, which is a ROOT FIND's property; a least-squares fixed point
+    would contract a pseudo-inverse instead. `J` is n x m and nothing assumes the two are equal.
 
-    Over a COUPLED SET this is the whole block matrix: `solve_for` holds every curve of the set, so
-    `dF/dtheta` carries the cross terms the residual reads and `dtheta_2/dq_1` falls out of the one
+    Over a COUPLED SET this is the whole block matrix, so `dtheta_2/dq_1` falls out of the one
     inverse - see `coupled_sets`.
     """
     with torch.enable_grad():
@@ -3873,10 +3516,9 @@ def calibration_jacobian(benchmarks, theta):
 class CalibrationSolve(torch.autograd.Function):
     """The bootstrap as one differentiable node: quotes in, calibrated nodes out.
 
-    FORWARD IS THE ORDINARY SOLVE. It calls `damped_newton` and nothing else - same iterations, same
-    tolerances, same float64 - so enabling quote gradients cannot move a mark. Autograd runs
-    `forward` with grad mode off, which the solve needs on for its own Jacobian, so it is re-enabled
-    here and the graph the iteration builds is discarded with the iteration.
+    FORWARD IS THE ORDINARY SOLVE - `damped_newton` and nothing else - so enabling quote gradients
+    cannot move a mark. Autograd runs `forward` with grad mode off, which the solve needs on for its
+    own Jacobian, so it is re-enabled here and the iteration's graph discarded with it.
 
     BACKWARD IS THE IMPLICIT FUNCTION THEOREM, never an unrolled solver. At the fixed point
     `F(theta*, q) = 0`, so `dtheta/dq = -(dF/dtheta)^-1 (dF/dq)` and a cotangent `v = dL/dtheta*`
@@ -3884,13 +3526,10 @@ class CalibrationSolve(torch.autograd.Function):
 
         w = (dF/dtheta)^-T v      then      dL/dq = -(dF/dq)^T w
 
-    Both come from `residual_jacobians`, autograd on the residual closure evaluated once at
-    `(theta*, q)` - one backward pass per benchmark, giving a row of each. The residual is WRITTEN
-    ONCE AND DIFFERENTIATED TWICE, so the quote derivative cannot drift from the one the solve
-    converged on, nor from the `dtheta/dq` a calibration artifact publishes.
-
-    The Jacobian is recomputed at theta* rather than reused from the last Newton step, which was
-    taken at the iterate BEFORE it. Cost is one iteration's worth.
+    Both come from `residual_jacobians` at `(theta*, q)`. The residual is written once and
+    differentiated twice, so the quote derivative cannot drift from the solve's own, nor from the
+    `dtheta/dq` an artifact publishes. The Jacobian is recomputed at theta* rather than reused from
+    the last Newton step, which was taken at the iterate before it.
     """
 
     @staticmethod
@@ -3909,43 +3548,35 @@ class CalibrationSolve(torch.autograd.Function):
 
 
 class CalibrationArtifact(object):
-    """ONE CALIBRATION OF ONE COUPLED SET, FROZEN AS AN OPERATOR - `(theta*, J, q0, timestamp)` and
+    """One calibration of one coupled set, frozen as an operator - `(theta*, J, q0, timestamp)` and
     the compiled benchmark set the first two were read off.
 
-    THE CONTRACT. `theta*` is the solved node vector in `solve_for` order, `J` is `dtheta/dq` at
-    that fixed point from `calibration_jacobian` (exact by the implicit function theorem), and `q0`
-    is the quote vector it was fitted at, in percent. Between two fits a small tick propagates
-    LINEARLY: `theta ~ theta* + J (q_now - q0)`, one matvec.
+    `theta*` is the solved node vector in `solve_for` order, `J` is `dtheta/dq` at that fixed point
+    (exact by the implicit function theorem), `q0` the quote vector it was fitted at, in percent.
+    Between two fits a small tick propagates linearly: `theta ~ theta* + J (q_now - q0)`, one matvec.
 
-    IT COVERS THE SET, NOT THE BLOCK. `members` are the `Market Prices` blocks that solve as ONE
+    IT COVERS THE SET, NOT THE BLOCK. `members` are the `Market Prices` blocks that solve as one
     system, in the order their quotes and nodes are concatenated in, and `J` is the whole block
-    matrix - so `dtheta_2/dq_1` is a column of it. A partial ride is unrepresentable: there is one
-    theta, one q0 and one drift number for the set, and `coupled_sets` refuses to publish an
-    operator over part of one.
+    matrix. A partial ride is unrepresentable - one theta, one q0, one drift number for the set.
 
-    `timestamp` is when the fit happened, REPORTED rather than read: every ride, refusal and refit
-    names the artifact it rode and when that artifact was fitted. It reaches no number and no hash,
-    so a wall clock cannot make two runs disagree.
+    `timestamp` is REPORTED rather than read: it reaches no number and no hash, so a wall clock
+    cannot make two runs disagree.
 
-    IT IS PLAN-SIDE AND CONTENT-ADDRESSED. `key` is the SLOT - every member block's declarations,
-    the base date, the interpolation scheme and the engine version, with the quote NUMBERS shadowed
-    out (`plan_key`) - so every tick of one strip lands on the same slot and a re-authored strip
-    addresses a different one. `artifact_id` is the artifact's OWN identity, the slot plus the
-    quotes it was fitted at, so it MOVES with every refit and is a replay coordinate.
+    Plan-side and content-addressed. `key` is the SLOT (`plan_key`), so every tick of one strip
+    lands on the same slot and a re-authored strip addresses a different one. `artifact_id` is the
+    slot plus the quotes fitted at, so it MOVES with every refit and is a replay coordinate.
 
-    NOTHING HERE MUTATES. There is no `theta_current`: `ride` is a pure function of this artifact
-    and the quotes it is handed, evaluated per EXECUTE and stored nowhere, so two EXECUTEs off one
-    `(artifact, q_now)` are bit-identical. The artifact is replaced, never edited - a refit
-    publishes a new one into the same slot under a new `artifact_id`.
+    Nothing here mutates. `ride` is a pure function of this artifact and the quotes it is handed,
+    stored nowhere, so two EXECUTEs off one `(artifact, q_now)` are bit-identical; a refit publishes
+    a NEW artifact into the same slot.
 
-    It holds TENSORS and a compiled deal tree, so it cannot live in `Price Factors` and cannot be
-    serialised: it lives in `ARTIFACTS`, in process, beside the plan cache. A cold start has no
-    artifact and the first tick REFUSES rather than pricing something else.
+    It holds tensors and a compiled deal tree, so it cannot live in `Price Factors` and cannot be
+    serialised: it lives in `ARTIFACTS`, in process. A cold start has none and the first tick
+    REFUSES rather than pricing something else.
     """
 
     def __init__(self, key, members, theta, jacobian, quotes, benchmarks, drift=None):
-        # `config` imports from this module, so the package edge runs one way only and the hash is
-        # reached from inside the call
+        # `config` imports from this module, so the package edge runs one way only
         from . import content_hash
 
         self.key = key
@@ -3965,8 +3596,8 @@ class CalibrationArtifact(object):
 
     @property
     def jacobian_norm(self):
-        """`||J||inf`, the induced max-row-sum norm - the CONVERSION between the quote-space units
-        `Drift_Tolerance` is declared in and the curve units a desk reads a staleness in, since
+        """`||J||inf`, the induced max-row-sum norm - the conversion between the quote-space units
+        `Drift_Tolerance` is declared in and the curve units a desk reads staleness in, since
         `||theta_ridden - theta_refit||inf <= ||J||inf ||r||inf` to first order."""
         return float(self.jacobian.abs().sum(dim=1).max())
 
@@ -3979,29 +3610,24 @@ class CalibrationArtifact(object):
         return split_theta(self.benchmarks, theta)[factor].detach().cpu().numpy()
 
     def mispricing(self, theta, quotes):
-        """Every benchmark's residual at `(theta, quotes)`, IN QUOTE SPACE: the move in that
-        benchmark's own quote, in percent, that would close it. EXACT, at any theta and any quote.
+        """Every benchmark's residual at `(theta, quotes)`, in QUOTE SPACE: the move in that
+        benchmark's own quote, in percent, that would close it. Exact at any theta and any quote.
 
-        The set was compiled at `q0`, and pricing it at a moved quote would cost a re-authoring and
-        a re-compile. It does not need one: a benchmark's PV is AFFINE in its own quote at fixed
-        theta (measured in `_carry_quotes`, second difference exactly zero), so
+        The set was compiled at `q0`, and needs no re-compile to be scored elsewhere: a benchmark's
+        PV is affine in its own quote at fixed theta (measured in `_carry_quotes`, second difference
+        exactly zero), so
 
             F(theta, q) = F(theta, q0) + (dF/dq)(q - q0)
 
-        holds with no remainder - PROVIDED `dF/dq` is taken at the theta being scored.
-        `residual_jacobians` re-differentiates the residual HERE, at the ridden theta: 71.7ms
-        against a 594ms refit on the ZAR strip.
-
-        Reusing the `dF/dq` stored at `theta*` would be cheaper by one backward and WRONG in the
-        direction that matters - its miss is `(d2F/dtheta dq) dtheta dq`, the same order as the
-        residual it estimates, and it reads LOW on tick shapes exciting the Jacobian's small
-        singular values (0.886 of the truth at worst over a scan of sign patterns), admitting rides
-        the tolerance was written to refuse.
+        holds with no remainder - provided `dF/dq` is taken at the theta being scored.
+        `residual_jacobians` re-differentiates HERE, at the ridden theta: 71.7ms against a 594ms
+        refit on the ZAR strip. Reusing the `dF/dq` stored at `theta*` is cheaper by one backward
+        and misses by `(d2F/dtheta dq) dtheta dq` - the same order as the residual it estimates -
+        reading low (0.886 of the truth at worst) on the tick shapes the tolerance exists to refuse.
 
         Dividing each row by its own quote sensitivity is what makes `Drift_Tolerance` a number a
-        desk can set: a PV depends on the benchmark's notional and a quote does not. It is a row max
-        rather than a diagonal, so a family whose benchmarks are not one-quote-each stays
-        expressible.
+        desk can set. It is a row max rather than a diagonal, so a family whose benchmarks are not
+        one-quote-each stays expressible.
         """
         with torch.enable_grad():
             residual, _, d_quote = residual_jacobians(
@@ -4015,22 +3641,19 @@ class ArtifactStore(object):
     """Calibration artifacts under their plan keys - the PlanCache's discipline for the other half
     of a prepared job.
 
-    Bounded and least-recently-used for the reason the plan cache is: an artifact is a refit, never
-    the record of anything - the replay tuple is. Locked because a slot is written by whatever
-    thread ran the bootstrap and read by whatever thread runs the EXECUTE.
+    Bounded and least-recently-used, because an artifact is a refit and never the record of
+    anything - the replay tuple is that. Locked because a slot is written by whatever thread ran the
+    bootstrap and read by whatever runs the EXECUTE.
 
-    Content-addressed, so an entry is IMMUTABLE under its key: a refit REPLACES the artifact in a
+    Content-addressed, so an entry is immutable under its key: a refit REPLACES the artifact in a
     slot. A moved quote NUMBER keeps the slot, which is what makes a ride possible, while a
     re-authored quote SET addresses a different one and finds it empty.
 
-    `covering` is the lookup a valuation needs, since a valuation holds a FACTOR and not a set. It
-    returns CANDIDATES - every artifact holding that curve, most-recently-used first - and never
-    picks one: the caller recomputes each candidate's slot off the market data standing now and
-    takes the one that still addresses it. Two artifacts can cover one curve at once (a Hermite job
-    and a linear one), and a lookup returning the first would hide the second.
+    `covering` returns CANDIDATES - every artifact holding that curve, most-recently-used first -
+    and never picks one: the caller recomputes each candidate's slot off the market data standing
+    now. Two artifacts can cover one curve at once (a Hermite job and a linear one).
 
-    The store is scanned rather than indexed by factor: an index can disagree with the store it
-    indexes, and this holds 32 entries.
+    Scanned rather than indexed by factor: an index can disagree with the store, and this holds 32.
     """
 
     def __init__(self, size=32):
@@ -4059,17 +3682,15 @@ class ArtifactStore(object):
                     if factor in self.artifacts[key].factors]
 
 
-#: Where a published calibration artifact lives - in process, beside the service's plan cache and
-#: for the same reasons. It holds tensors and a compiled benchmark set, so `Price Factors` (which
-#: is data, and gets written back out as JSON) is not an option and neither is a file.
+#: Where a published calibration artifact lives - in process, beside the service's plan cache. It
+#: holds tensors and a compiled benchmark set, so neither `Price Factors` nor a file is an option.
 ARTIFACTS = ArtifactStore()
 
 
 def quote_nodes(points, discount_rate, shift=0.0):
     """The used quotes as deal-tree nodes, each authored at its own quote plus `shift` percent.
 
-    Deep-copied because authoring WRITES the quote and the discount curve into the block, and the
-    market data it came out of is data.
+    Deep-copied because authoring WRITES the quote and the discount curve into the block.
     """
     nodes = []
     for point in points:
@@ -4098,24 +3719,20 @@ def _fx_forward_outright(deal, quote):
     """An FX forward's quote is the FORWARD OUTRIGHT - units of `Buy_Currency` per one unit of
     `Sell_Currency` - and the amount it buys is where that number lands.
 
-    The authored benchmark fixes `Sell_Amount` and both discount-rate names, so `Buy_Amount =
-    quote * Sell_Amount` is the only thing the quote moves and `FXForwardDeal.generate` is LINEAR in
-    it: the PV is `Buy_Amount * X_buy * D_buy - Sell_Amount * X_sell * D_sell`, exactly affine in
-    the quote at fixed curves - which is what the par solve is a root find on and what
-    `CalibrationArtifact.mispricing` reads as an exact quote-space residual.
+    The authored benchmark fixes `Sell_Amount` and both discount-rate names, so the quote moves
+    `Buy_Amount` alone and `FXForwardDeal.generate` is exactly affine in it at fixed curves - which
+    is what `CalibrationArtifact.mispricing` reads as an exact quote-space residual.
 
-    THE OUTRIGHT IS NOT A PERCENT, and nothing here converts it, because no writer converts
-    anything: a percent-quoted type carries its scaling in its OWN field semantics - `DepositDeal`
-    divides `Interest_Rate_Schedule` by 100, `FRADeal` wraps `FRA_Rate` in a `Basis`,
-    `_fixed_cashflow_rate` writes a `utils.Percent`. `author_quote` hands the number over untouched,
-    so an amount-valued quote rides the same path as a rate-valued one.
+    The outright is not a percent and nothing here converts it, because no writer converts anything:
+    a percent-quoted type carries its scaling in its own field semantics (`DepositDeal` divides by
+    100, `FRADeal` wraps in a `Basis`, `_fixed_cashflow_rate` writes a `utils.Percent`).
     """
     deal['Buy_Amount'] = quote * deal['Sell_Amount']
 
 
-#: Where a quote's number goes, per instrument type, keyed by the `Object` string - the ONE thing
-#: the family knows about a type beyond that type's own declarations. A registry rather than a
-#: branch, so a new quotable instrument is a row. A container carries no rate; its fixed leg does.
+#: Where a quote's number goes, per instrument type, keyed by the `Object` string - the one thing
+#: the family knows about a type beyond that type's own declarations. A registry, so a new quotable
+#: instrument is a row. A container carries no rate; its fixed leg does.
 QUOTE_WRITERS = {
     'DepositDeal': _pin_deposit_schedule,
     'FRADeal': lambda deal, quote: deal.update({'FRA_Rate': quote}),
@@ -4128,10 +3745,9 @@ QUOTE_WRITERS = {
 def author_quote(deal, quote, discount_rate):
     """Author an instrument block AT its quote, discounting on `discount_rate`.
 
-    The split is the one the family is for: what an instrument PROJECTS off is its own business and
-    it names that curve itself, while what the quote set DISCOUNTS on is a property of the curve
-    set and is stated once on the block. Recurses into `Children`, so a two-leg benchmark gets the
-    quote on the leg that holds a rate and the discount curve on both.
+    What an instrument PROJECTS off it names itself; what the quote set DISCOUNTS on is a property
+    of the curve set, stated once on the block. Recurses into `Children`, so a two-leg benchmark
+    gets the quote on the leg that holds a rate and the discount curve on both.
     """
     for child in deal.get('Children', ()):
         author_quote(child, quote, discount_rate)
@@ -4153,13 +3769,13 @@ def quote_node(deal, valuation_options):
 
 
 def quote_knots(nodes, base_date, day_count, calendars):
-    """The curve's knot grid: ONE knot per benchmark, at that benchmark's last cashflow date.
+    """The curve's knot grid: one knot per benchmark, at that benchmark's last cashflow date.
 
-    That is the only placement that makes the system square: a knot with no instrument maturing at
-    it is unidentified, and two instruments maturing between the same pair of knots leave the curve
-    under-determined between them. Below the shortest knot the curve is flat, which `CurveTenor`
-    gives by clipping, so the front stub costs no extra unknown. The output grid IS this grid -
-    interpolating a solved curve onto a second one would stop it repricing its quotes.
+    The only placement that makes the system square - a knot with no instrument maturing at it is
+    unidentified, and two instruments between one pair of knots leave the curve under-determined.
+    Below the shortest knot the curve is flat by `CurveTenor`'s clipping, so the front stub costs no
+    unknown. The output grid IS this grid: interpolating onto a second would stop the curve
+    repricing its quotes.
 
     Returned in NODE order and in the curve's own day count, so a caller can pair each knot with the
     quote that identifies it; the curve itself is sorted.
@@ -4182,36 +3798,29 @@ class InterestRateCurveParameters(object):
     A quote is an instrument, a `Quote_Type` and a number - see the developer note on
     [Market Prices](../developer/market_prices.md). Each `Points` entry names an instrument type in
     `DealType` and carries a block of it in `Deal`, so the `Instrument` store's declarations ARE
-    this family's quote schema. The family authors that block at its `Quoted_Market_Value`, and the
-    residual is what the instrument is then worth at t0: a fair benchmark prices to zero, so the
-    solve is a root find on the PV vector.
+    this family's quote schema. The family authors that block at its `Quoted_Market_Value`, and a
+    fair benchmark prices to zero, so the solve is a root find on the t0 PV vector.
 
-    Two blocks make a multi-curve set - an OIS discount curve solved from OIS quotes, then a
-    projection curve solved from FRAs and par swaps discounting on it - and the second must be
-    solved after the first, which is what `Discount_Rate` orders. A block whose `Discount_Rate` is
-    blank discounts on the curve it is building, the degenerate single-curve configuration and the
-    harder solve, since the unknown appears on both sides.
+    Two blocks make a multi-curve set - an OIS discount curve, then a projection curve discounting
+    on it - and `Discount_Rate` is what orders them. A blank `Discount_Rate` discounts on the curve
+    being built, the single-curve configuration and the harder solve.
 
     Unlike the other families this writes an `InterestRate` price factor rather than a
     `<ClassName>` parameter block, which is what `price_factor_type` declares.
     """
     market_factor_type = 'InterestRatePrices'
-    #: The `Price Factors` type this family writes. The other families write a block named for their
-    #: own class, so the emitter can recover it; a bootstrapped curve is an ordinary `InterestRate`
-    #: and no rule recovers that from `InterestRateCurveParameters`.
+    #: The `Price Factors` type this family writes. The others write a block named for their own
+    #: class, so the emitter recovers it; no rule recovers `InterestRate` from this class name.
     price_factor_type = 'InterestRate'
-    #: The instrument types a quote in this family may be. Each is a declared `Instrument` type, so
-    #: the quote's schema IS that type's declarations. `StructuredDeal` is how a two-leg benchmark is
-    #: authored - an OIS swap is its compounded floating leg and its fixed leg, composed by
-    #: `Children`. `FXForwardDeal` is the one that crosses currencies: its quote is a forward
-    #: OUTRIGHT, and holding it at par is covered interest parity solved through the engine's pricers.
+    #: The instrument types a quote may be, each a declared `Instrument` type - so the quote's
+    #: schema IS that type's declarations. `StructuredDeal` is how a two-leg benchmark is authored;
+    #: `FXForwardDeal` crosses currencies, its quote being a forward OUTRIGHT held at par.
     quote_instruments = ('DepositDeal', 'FRADeal', 'SwapInterestDeal', 'StructuredDeal',
                          'FXForwardDeal')
-    #: Block fields a calibration artifact is NOT a function of - the LIFECYCLE switches, read when
-    #: one is published or ridden rather than when it is fitted. `plan_key` shadows them out so that
-    #: a knob governing the ride cannot also hide the artifact it governs (loosening
-    #: `Drift_Tolerance` would otherwise mean "refit" rather than "allow more"). `Quote_Sensitivity`
-    #: joins them because it provably moves neither theta* nor J.
+    #: Block fields an artifact is NOT a function of - the lifecycle switches, read when one is
+    #: published or ridden rather than when it is fitted. `plan_key` shadows them out so a knob
+    #: governing the ride cannot also hide the artifact it governs. `Quote_Sensitivity` joins them
+    #: because it provably moves neither theta* nor J.
     lifecycle_fields = ('Quote_Sensitivity', 'Quote_Propagation', 'Drift_Tolerance')
     fields = [
         F('Currency', 'Text', default=REQUIRED, description='The currency of the curve to build'),
@@ -4299,9 +3908,9 @@ class InterestRateCurveParameters(object):
         self.device = device
         self.prec = dtype
         self.param = param
-        #: What a block asking for `Quote_Sensitivity` leaves behind: the solved nodes STILL
-        #: CONNECTED to their quotes, per curve, and the quote leaf per block. `Config.bootstrap`
-        #: harvests both - they are tensors, so they cannot live in `Price Factors`, which is data.
+        #: What `Quote_Sensitivity` leaves behind: the solved nodes still connected to their quotes,
+        #: per curve, plus the quote leaf per block. `Config.bootstrap` harvests both - tensors
+        #: cannot live in `Price Factors`.
         self.calibrated = {}
         self.quote_leaves = {}
 
@@ -4310,16 +3919,13 @@ class InterestRateCurveParameters(object):
         """Every `InterestRate` curve this block's used benchmark deals NAME, read off each deal
         type's own `factor_fields` and recursing into `Children`.
 
-        `Discount_Rate` is what the SET discounts on, and it orders the ordinary multi-curve case.
-        It cannot order a CROSS-CURRENCY benchmark: an `FXForwardDeal` names the other leg's curve
-        in `Sell_Discount_Rate`, INSIDE the deal, so a block with a blank `Discount_Rate` can still
-        read a curve another block has not built yet. The deals declare that coupling themselves.
+        `Discount_Rate` orders the ordinary multi-curve case but cannot order a CROSS-CURRENCY
+        benchmark: an `FXForwardDeal` names the other leg's curve in `Sell_Discount_Rate`, inside
+        the deal, so a block with a blank `Discount_Rate` can still read a curve nobody has built.
 
-        Read off the deal CLASS and not off a constructed deal, because this runs before anything is
-        seeded - and a benchmark naming a curve nobody has built yet is exactly the case that cannot
-        be compiled. Being a declaration read it is strictly weaker than
-        `BenchmarkInstruments.reads`, which MEASURES the same coupling but needs every curve to
-        exist first.
+        Read off the deal CLASS, because this runs before anything is seeded. Being a declaration
+        read it is strictly weaker than `BenchmarkInstruments.reads`, which measures the same
+        coupling but needs every curve to exist first.
         """
         def walk(deal, object_type):
             declared = getattr(instruments, object_type, None)
@@ -4335,14 +3941,10 @@ class InterestRateCurveParameters(object):
     def in_dependency_order(self, market_prices):
         """This family's blocks, one that READS a curve another block BUILDS coming after it.
 
-        Dict order is the JSON author's, and a projection curve solved before its discount curve is
-        solved against a curve that does not exist yet.
-
-        A block reads a curve two ways and both order it: it says what it DISCOUNTS on in
-        `Discount_Rate`, and its benchmark deals NAME what they project and settle off (see
-        `benchmark_curves`). A block naming its own curve is the self-discounting configuration and
-        orders nothing, so those edges are dropped. A cycle - a set naming each other's curves - is
-        refused BY NAME here rather than as the bare `RuntimeError` the sort would raise.
+        A block reads a curve two ways and both order it: `Discount_Rate`, and what its benchmark
+        deals NAME (`benchmark_curves`). A block naming its own curve is the self-discounting
+        configuration and orders nothing. A cycle is refused by name here rather than as the bare
+        `RuntimeError` the sort would raise.
         """
         blocks = {}
         for name, implied_params in market_prices.items():
@@ -4350,8 +3952,7 @@ class InterestRateCurveParameters(object):
             market_factor = utils.Factor(rate[0], rate[1:])
             if market_factor.type == self.market_factor_type:
                 blocks[name] = implied_params
-        # keyed by the curve NAME a `Discount_Rate` field carries, which is the block's name without
-        # its `Market Prices` type
+        # keyed by the curve name a `Discount_Rate` carries - the block's name without its type
         builds = {'.'.join(utils.check_rate_name(name)[1:]): name for name in blocks}
         graph = {}
         for name, implied_params in blocks.items():
@@ -4359,8 +3960,7 @@ class InterestRateCurveParameters(object):
             reads = {block['Discount_Rate']} | self.benchmark_curves(block)
             graph[name] = sorted({builds[curve] for curve in reads
                                   if curve in builds and builds[curve] != name})
-        # `topological_sort` DELETES what it resolves, so what is left of the copy after it gives up
-        # is exactly the cycle - which is how the refusal can name the blocks in it
+        # `topological_sort` deletes what it resolves, so what is left is exactly the cycle
         unresolved = dict(graph)
         try:
             order = utils.topological_sort(unresolved)
@@ -4380,11 +3980,10 @@ class InterestRateCurveParameters(object):
         """Solve every block for the zero curve that reprices its used quotes to par, one COUPLED
         SET at a time.
 
-        A set is the group of blocks whose residuals read each other's curves, MEASURED rather than
-        declared - see `coupled_sets`. Forming one costs a compile and a backward pass per block and
-        buys one thing: an operator whose Jacobian carries the coupling. So it is only formed where
-        an operator was asked for - with `Quote_Propagation` nowhere in the section every block is
-        its own group, and this is a dependency-ordered loop.
+        A set is the group of blocks whose residuals read each other's curves, measured rather than
+        declared (`coupled_sets`). Forming one costs a compile and a backward pass per block and
+        buys an operator whose Jacobian carries the coupling, so it is formed only where one was
+        asked for; with no `Quote_Propagation` this is a dependency-ordered loop.
         """
         base_date = sys_params['Base_Date']
         blocks = self.in_dependency_order(market_prices)
@@ -4400,17 +3999,13 @@ class InterestRateCurveParameters(object):
         reads off it: `(curve factor, used quotes, deal nodes, discount rate)`.
 
         Seeding comes first because the benchmark closure constructs the curve factor OUT of
-        `Price Factors` - and a par rate is within a few basis points of the zero rate at the same
-        maturity, so it is also the seed the solve starts from. `Curve` sorts the pairs, so each
-        knot keeps the quote that identifies it.
+        `Price Factors`; a par rate is within a few basis points of the zero rate at the same
+        maturity, so it is also the seed. `Curve` sorts the pairs, so each knot keeps its quote.
 
-        THE `/100` IS THE SEED'S AND NOT THE QUOTE'S. It is the one place the family reads a quote as
-        a percent rate, and it is a STARTING ITERATE rather than a value anything is priced at -
-        `author_quote` puts the quote into the deal and scales nothing. So an amount-valued quote
-        seeds nonsense and converges anyway: an 18.32 outright seeds an 18.32% zero rate against a
-        true 8.99%, and the damped Newton walks it to a residual of exactly zero, an FX forward's PV
-        being very nearly linear in the discount factor it identifies. Branching on the deal type
-        here would put knowledge of a type somewhere other than `QUOTE_WRITERS`.
+        The `/100` is the SEED's and not the quote's - `author_quote` scales nothing. So an
+        amount-valued quote seeds nonsense and converges anyway: an 18.32 outright seeds an 18.32%
+        zero rate against a true 8.99% and damped Newton walks it to zero residual. Branching on the
+        deal type here would put knowledge of a type somewhere other than `QUOTE_WRITERS`.
         """
         curve = utils.Factor('InterestRate', utils.check_rate_name(market_price)[1:])
         discount_rate = block['Discount_Rate'] or '.'.join(curve.name)
@@ -4424,21 +4019,20 @@ class InterestRateCurveParameters(object):
         return curve, points, nodes, discount_rate
 
     def coupled_sets(self, blocks, price_factors, factor_interp, base_date, calendars):
-        """This family's blocks grouped into the SETS that have to solve as one system - MEASURED.
+        """This family's blocks grouped into the SETS that have to solve as one system - measured.
 
         Two blocks are coupled when one's residual READS the curve the other builds, which is not
         the question `Discount_Rate` answers: what a benchmark projects off is authored inside its
         own deal block, so a strip declaring a blank `Discount_Rate` can still forecast off a
-        neighbour's curve. On such a world a 10bp tick moved the "independent" curve by 568 basis
-        points while every declaration said it stood alone. `BenchmarkInstruments.reads` answers by
-        differentiation instead - one compile and one backward pass per block.
+        neighbour's curve - on such a world a 10bp tick moved the "independent" curve 568bp.
+        `BenchmarkInstruments.reads` answers by differentiation instead.
 
         The groups are the connected components of that relation, in dependency order, and a group
-        is solved and ridden WHOLE. That is what puts `dtheta_2/dq_1` inside `J`: an ordering
-        carries a coupling through a bootstrap and carries nothing through a ride.
+        is solved and ridden WHOLE - which is what puts `dtheta_2/dq_1` inside `J`, an ordering
+        carrying a coupling through a bootstrap but nothing through a ride.
 
-        Every block is seeded before anything is measured, because a block that forecasts off a
-        curve nobody has built yet cannot be compiled.
+        Every block is seeded before anything is measured, a block forecasting off an unbuilt curve
+        being uncompilable.
         """
         seeded, builds, ordered = {}, {}, dict(blocks)
         for market_price, entry in blocks:
@@ -4470,21 +4064,18 @@ class InterestRateCurveParameters(object):
         return groups
 
     def solve_set(self, group, price_factors, factor_interp, base_date, calendars):
-        """Solve one coupled set: ONE Newton system over every curve in it, one Jacobian, one
+        """Solve one coupled set: one Newton system over every curve in it, one Jacobian, one
         artifact.
 
-        A set of one is the single-curve solve; a set of more is the multi-curve one, and flattening
-        it is `damped_newton`'s own shape rather than a new solver - `solve_for` is a list, the
-        residual takes a `{Factor: nodes}` over it, and the block Jacobian that falls out is what
-        `calibration_jacobian` inverts in one go.
+        Flattening a multi-curve set is `damped_newton`'s own shape rather than a new solver -
+        `solve_for` is a list, the residual takes a `{Factor: nodes}` over it, and the block
+        Jacobian that falls out is what `calibration_jacobian` inverts in one go.
 
-        The seed theta is read off the CONSTRUCTED factor rather than off the authored block, so it
-        is aligned with the tenor grid the pricers gather against whatever `get_tenor` made of the
-        block. The solve goes through the implicit-function wrapper either way: with no quotes on
-        the tape its forward IS `damped_newton` and no edge is recorded.
+        The seed theta is read off the CONSTRUCTED factor, so it is aligned with the tenor grid the
+        pricers gather against whatever `get_tenor` made of the block. The solve goes through the
+        implicit-function wrapper either way; with no quotes on the tape no edge is recorded.
 
-        Solver knobs are declared PER BLOCK, and a set takes the STRICTEST of them: a system is only
-        as converged as its tightest member asked to be.
+        Solver knobs are declared per block and a set takes the STRICTEST of them.
         """
         members = [(market_price, entry['instrument']) for market_price, entry in group]
         propagate = [block.get('Quote_Propagation', 'No') == 'Linear' for _, block in members]
@@ -4512,8 +4103,7 @@ class InterestRateCurveParameters(object):
 
         seeded = [self.seed(market_price, block, price_factors, base_date, calendars)
                   for market_price, block in members]
-        # both switches want the quote side of the residual - one to report through it, one to
-        # publish it as an operator - and it is one extra compile either way
+        # both switches want the quote side of the residual, one extra compile either way
         carry = any(connect) or any(propagate)
         points = [point for _, block_points, _, _ in seeded for point in block_points]
         curves = [curve for curve, _, _, _ in seeded]
@@ -4526,7 +4116,7 @@ class InterestRateCurveParameters(object):
             bumped_nodes=[node for _, block_points, _, discount_rate in seeded
                           for node in quote_nodes(block_points, discount_rate, 1.0)]
             if carry else None)
-        # seed theta off the CONSTRUCTED factor - see the docstring on grid alignment
+        # seed theta off the constructed factor - see the docstring on grid alignment
         theta = CalibrationSolve.apply(
             benchmarks,
             {curve: torch.tensor(benchmarks.factors[curve].current_value(),
@@ -4538,8 +4128,8 @@ class InterestRateCurveParameters(object):
             benchmarks.quotes)
 
         solved = split_theta(benchmarks, theta)
-        # a set-wide quote leaf reports dV/dq across the whole system, so its descriptors have to
-        # name the block each quote came off; a set of one is the block's own list unchanged
+        # a set-wide quote leaf reports dV/dq across the system, so its descriptors name the block
+        # each quote came off; a set of one is the block's own list unchanged
         descriptors = [point['Descriptor'] if len(members) == 1 else
                        '{}: {}'.format(market_price, point['Descriptor'])
                        for (market_price, _), (_, block_points, _, _) in zip(members, seeded)
@@ -4563,11 +4153,9 @@ class InterestRateCurveParameters(object):
 
     @classmethod
     def takes(cls, point, market_price):
-        """Whether this family prices the quote, the way Clewlow-Strickland says so of a vol type.
-
-        `Par_Rate` is the only convention built: every increment-1 benchmark is held at PV zero.
-        A futures price and a money-market rate on a different basis are conventions this would
-        have to author differently, and they are declared when they are read.
+        """Whether this family prices the quote. `Par_Rate` is the only convention built - every
+        benchmark is held at PV zero. A futures price and a money-market rate on a different basis
+        would have to be authored differently.
         """
         if point['Quote_Type'] == 'Par_Rate':
             return True
@@ -4579,9 +4167,9 @@ class InterestRateCurveParameters(object):
     def used_quotes(cls, block, market_price):
         """The quotes that enter the solve, in the order theta, `J` and `q0` are all indexed by.
 
-        A classmethod because the RIDE needs the same list off a block nobody is bootstrapping, and
-        a second filter written beside this one is how a ridden theta ends up indexed by a
-        different quote vector than the artifact was fitted with.
+        A classmethod because the RIDE needs the same list off a block nobody is bootstrapping; a
+        second filter beside this one is how a ridden theta ends up indexed differently from the
+        artifact it rode.
         """
         return [point for point in block['Points']
                 if point['Use'] == 'Yes' and cls.takes(point, market_price)]
@@ -4592,23 +4180,20 @@ class InterestRateCurveParameters(object):
         interpolation scheme and the engine version - with the `lifecycle_fields` shadowed out and
         the quote VALUES projected away.
 
-        Plan-side coordinates, and literally the split `Config.plan_hash` takes over the same
-        section - `schema.partition_market_price`'s structural half, which is why the two cannot
-        drift. Every tick of one strip therefore lands on the SAME slot, which is what makes a ride
-        possible, while a re-authored instrument, a flipped `Use`, a different `Day_Count`, a
-        different solver knob or a new engine build lands on a different one. A row that gains a
-        `Quoted_Bid` keeps its slot for the same reason a moved mid does: the solve reads neither.
+        Literally `schema.partition_market_price`'s structural half, the split `Config.plan_hash`
+        takes over the same section, so the two cannot drift. Every tick of one strip lands on the
+        same slot, which is what makes a ride possible, while a re-authored instrument, a flipped
+        `Use`, a different `Day_Count`, a different solver knob or a new engine build lands
+        elsewhere. A row that gains a `Quoted_Bid` keeps its slot: the solve reads neither side.
 
         The key names the SET rather than the block, so re-authoring a discount strip moves the slot
-        of every curve solved against it - a projection curve riding a `J` fitted against quotes
-        that no longer exist is exactly the artifact that must not be findable.
+        of every curve solved against it.
 
         `base_date` and `Price Factor Interpolation` are in it because the SOLVE reads them and the
         block does not carry them. Without them two jobs 45 days apart share a slot, and a Linear
         job rides a Hermite solve 0.53bp away from its own.
         """
-        # `config` imports from this module, so the package edge runs one way only and the hash is
-        # reached from inside the call
+        # `config` imports from this module, so the package edge runs one way only
         from . import content_hash
 
         return content_hash({
@@ -4632,16 +4217,14 @@ class InterestRateCurveParameters(object):
 
     @classmethod
     def publish(cls, members, factor_interp, base_date, benchmarks, theta):
-        """Freeze this solve as an artifact, and MEASURE what the last one would have been worth.
+        """Freeze this solve as an artifact, and measure what the last one would have been worth.
 
         With the previous artifact still in the slot, `theta_refit - theta_ridden` says how far the
-        linear operator had drifted by the time it was replaced, and the ridden theta's benchmark
-        residual says the same in the space the tolerance is declared in. Both are logged against
-        the set's own solver `Tol` and published ON the new artifact, so the record of how stale the
-        last calibration got travels with the one replacing it.
+        operator had drifted by the time it was replaced, and the ridden theta's benchmark residual
+        says the same in the space the tolerance is declared in. Both are published ON the new
+        artifact, so the record of how stale the last calibration got travels with its replacement.
 
-        The refreshed artifact takes the old one's SLOT and carries a new `artifact_id`, the id
-        being the slot plus the quotes it was fitted at.
+        The refreshed artifact takes the old one's SLOT under a new `artifact_id`.
         """
         key = cls.plan_key(members, factor_interp, base_date)
         artifact = CalibrationArtifact(
@@ -4678,17 +4261,14 @@ class InterestRateCurveParameters(object):
         Two ways to get `None`: a factor this family does not write, and a block that did not ask
         for `Quote_Propagation`.
 
-        A BLOCK THAT DID ASK AND FINDS NO ARTIFACT REFUSES - the house rule for a plan the cache
-        cannot answer, a miss being a 404 rather than a different number. It is what closes the
-        replay hole: a silent fall back to `theta*` reprices the book (13.4% on the eviction probe)
-        while `plan_hash`, `values_hash`, the engine version and the seed all stay identical. A cold
-        process therefore rides nothing and says so, an artifact holding tensors and a compiled deal
-        tree being unserialisable.
+        A block that DID ask and finds no artifact REFUSES - a miss is a 404 rather than a different
+        number. That closes the replay hole: falling back to `theta*` reprices the book (13.4% on
+        the eviction probe) while `plan_hash`, `values_hash`, the engine version and the seed all
+        stay identical. A cold process rides nothing and says so, an artifact being unserialisable.
 
-        A ride that would leave the benchmarks further out of par than `Drift_Tolerance` refuses for
-        the same reason. The tolerance is the SET's strictest, so a coupled set rides or refuses
-        whole, and the artifact it is scored against is the one whose plan is still standing, which
-        `slot` rechecks rather than trusts.
+        A ride leaving the benchmarks further out of par than `Drift_Tolerance` refuses too. The
+        tolerance is the SET's strictest, so a coupled set rides or refuses whole, and `slot`
+        rechecks that the artifact's plan is the one still standing.
         """
         if factor.type != cls.price_factor_type:
             return None
@@ -4710,8 +4290,7 @@ class InterestRateCurveParameters(object):
                     market_price, 'the store holds none for this curve' if not covering else
                     '{} cover it, each fitted against a different plan ({})'.format(
                         len(covering), '; '.join(' + '.join(found.members) for found in covering))))
-        # a ride is a USE: the slot a tick stream keeps riding must not age out under one that is
-        # merely published beside it
+        # a ride is a USE: a ridden slot must not age out under one merely published beside it
         ARTIFACTS.get(artifact.key)
 
         tolerance = min(float(market_prices[name]['instrument'].get('Drift_Tolerance', 1e-3))
@@ -4723,8 +4302,7 @@ class InterestRateCurveParameters(object):
         theta = artifact.ride(quotes)
         drift = float(artifact.mispricing(theta, quotes).abs().max())
         tick = float((quotes - artifact.quotes).abs().max())
-        # the tolerance is declared in percent of quote; ||J||inf converts it into the curve units
-        # the staleness is actually felt in, which is what a desk sets the number against
+        # the tolerance is in percent of quote; ||J||inf converts it to the curve units it is felt in
         curve_units = tolerance * artifact.jacobian_norm * 1e4
         if drift > tolerance:
             raise utils.CalibrationStale(
@@ -4746,59 +4324,50 @@ class InterestRateCurveParameters(object):
 class FXVolSurfaceParameters(object):
     """An `FXVol` surface bootstrapped from the ATM / risk-reversal / butterfly quotes it ticks in as.
 
-    An FX smile is quoted in DELTA - one ATM vol per expiry and, per delta pillar, the risk
-    reversal and butterfly that say how the two wings sit around it - so the quote set is three
-    numbers per (expiry, pillar) and the surface the engine prices off is a log-moneyness one. The
-    algebra between them is the strangle pair, `vol(call) = ATM + BF + RR/2` and
-    `vol(put) = ATM + BF - RR/2`, followed by the delta-to-log-moneyness solve `Factor2D` has
-    always carried for a `Malz` surface. What this family fixes is WHERE they run.
+    An FX smile is quoted in DELTA - one ATM vol per expiry and, per delta pillar, the risk reversal
+    and butterfly that say how the two wings sit around it - while the surface the engine prices off
+    is a log-moneyness one. The algebra between them is the strangle pair,
+    `vol(call) = ATM + BF + RR/2` and `vol(put) = ATM + BF - RR/2`, followed by the
+    delta-to-log-moneyness solve `Factor2D` carries for a `Malz` surface. What this family fixes is
+    WHERE they run.
 
-    **The x-grid is pinned.** The solve does not evaluate a smile at prescribed strikes - it refines
-    a log-moneyness grid until interpolating between its nodes resolves the smile, so the grid is a
-    function of the quotes. Run at factor-construction time that would make every vol tick
-    STRUCTURAL: a moved node is a moved tenor grid, a new plan and a recompile per tick. So the
-    refinement runs HERE, once, and the grid it produced is part of the written factor. A
-    re-bootstrap finding a surface already written for the same expiries at the same tolerance
-    reuses that grid and moves only the vols on it, which is what makes a tick a `bind='value'`
-    patch. `Grid_Tolerance` SIZES the grid, so it is written beside the grid it built and is
-    structural - asking for a different one breaks the pin. The log says what the pinned grid
-    resolves the CURRENT quotes to, beside the tolerance it was built at.
+    **The x-grid is pinned.** The solve refines a log-moneyness grid until interpolating between its
+    nodes resolves the smile, so the grid is a function of the quotes. Run at factor-construction
+    time that would make every vol tick STRUCTURAL - a moved node is a moved tenor grid, a new plan
+    and a recompile. So the refinement runs here, once, and the grid is part of the written factor;
+    a re-bootstrap finding a surface already written for the same expiries at the same tolerance
+    reuses it and moves only the vols, which is what makes a tick a `bind='value'` patch.
+    `Grid_Tolerance` SIZES the grid, so it is structural and asking for a different one breaks the
+    pin. The log says what the pinned grid resolves the CURRENT quotes to.
 
     **The conventions are declared because the solve implements exactly one of each.** The delta a
-    pillar names is a PREMIUM-ADJUSTED FORWARD delta ((K/F)N(d2) for a call), and the ATM quote is
-    that convention's DELTA-NEUTRAL STRADDLE, K = F exp(-sigma^2 T / 2) - the two conventions
-    `Factor2D.malz_skew` implements, so the only values these fields offer.
+    pillar names is a premium-adjusted FORWARD delta ((K/F)N(d2) for a call), and the ATM quote is
+    that convention's delta-neutral straddle, K = F exp(-sigma^2 T / 2).
 
-    A quote `Timestamp` survives a save at the resolution it was authored: a plain date stays a date
-    and an intraday stamp keeps its time.
+    A quote `Timestamp` survives a save at the resolution it was authored.
 
     **A point may carry a two-way, and nothing here reads it.** `Quoted_Bid`/`Quoted_Ask` ride the
-    row beside the mid where the terminal quoted them, for `derivus.structures` to charge a spread
-    on. Every line below - `used`, `atm_quotes`, `smile`, `carried_smile` and the grid refinement -
-    addresses `Quoted_Market_Value` BY NAME, so what this writes is the mid surface whether or not
-    the sides are there.
+    row beside the mid for `derivus.structures` to charge a spread on. Every line below addresses
+    `Quoted_Market_Value` by name, so what this writes is the mid surface either way.
 
     Like `InterestRatePrices` this writes a typed price factor rather than a `<ClassName>`
     parameter block, which is what `price_factor_type` declares.
     """
     market_factor_type = 'FXVolPrices'
-    #: The `Price Factors` type this family writes - a `Malz` `FXVol`, the same block a delta
-    #: surface authored by hand builds, minus the delta surface: it arrives SOLVED, so
-    #: `Factor2D.solves_delta_surface` is false and the pinned grid survives construction.
+    #: The `Price Factors` type this family writes - a `Malz` `FXVol`, minus the delta surface: it
+    #: arrives SOLVED, so `Factor2D.solves_delta_surface` is false and the pinned grid survives.
     price_factor_type = 'FXVol'
-    #: What the written block says beyond its surface. `Surface_Type` names the moneyness
-    #: convention the engine reads it at (log(F/K), interpolated in total variance);
-    #: `Moneyness_Rule` is the factor's own declared default and no Malz code path reads it.
+    #: `Surface_Type` names the moneyness convention the engine reads the block at (log(F/K),
+    #: interpolated in total variance); `Moneyness_Rule` is the factor's own declared default and no
+    #: Malz code path reads it.
     surface_type, moneyness_rule = 'Malz', 'Sticky_Moneyness'
-    #: The tolerances a grid can actually be BUILT at, declared on the field below and enforced by
-    #: `bootstrap` - outside them there is no grid to write. Refinement halves an interval until the
-    #: midpoint's vol error falls under the tolerance, so at 0.0 no midpoint ever qualifies (7.6M
-    #: nodes on one expiry after 21 passes, still doubling), while 1e-8 is 4599 nodes for a
-    #: four-expiry smile. At 1 the seed grid already passes and refining is a no-op.
+    #: The tolerances a grid can be BUILT at, enforced by `bootstrap`. Refinement halves an interval
+    #: until the midpoint's vol error falls under the tolerance, so at 0.0 no midpoint qualifies
+    #: (7.6M nodes on one expiry after 21 passes, still doubling) while 1e-8 is 4599 nodes for a
+    #: four-expiry smile. At 1 the seed grid already passes.
     grid_tolerance_bounds = (1e-8, 1.0)
-    #: The precision the TAPE runs in - the value path is numpy and has no dtype to pick. The twin
-    #: divides by the residual's own slope at the root, so it is float64 on the CPU whatever the job
-    #: asked for: `construct_bootstrapper`'s dtype does not reach it.
+    #: The precision the TAPE runs in - the value path is numpy and has no dtype to pick. Float64 on
+    #: the CPU whatever the job asked for, the twin dividing by the residual's slope at the root.
     dtype = torch.float64
     fields = [
         F('Currency', 'Text', default='',
@@ -4864,10 +4433,9 @@ class FXVolSurfaceParameters(object):
         self.device = device
         self.prec = dtype
         self.param = param
-        #: What a block asking for `Quote_Sensitivity` leaves behind: the log-moneyness surface
-        #: STILL CONNECTED to the quotes it was built from, keyed as `_build_factor_state` mints the
-        #: `FXVol` leaf, plus the quote leaf per block. `Config.bootstrap` harvests both - they are
-        #: tensors, so they cannot live in `Price Factors`, which is written back out as JSON.
+        #: What `Quote_Sensitivity` leaves behind: the log-moneyness surface still connected to its
+        #: quotes, keyed as `_build_factor_state` mints the `FXVol` leaf, plus the quote leaf per
+        #: block. `Config.bootstrap` harvests both - tensors cannot live in `Price Factors`.
         self.calibrated = {}
         self.quote_leaves = {}
 
@@ -4887,9 +4455,8 @@ class FXVolSurfaceParameters(object):
         """`{expiry: ATM vol}` - the ATM row per expiry, the number that expiry's wings sit around.
 
         The surface's ATM vol at an expiry IS this number: `Factor2D.malz_skew` places it at the
-        delta-neutral straddle strike and every other node is quoted relative to it. So it is what
-        `smile` builds the wings off, and it is what `GBMAssetPriceTSModelParameters` takes as the
-        ATM column when a surface this family built is the one being integrated.
+        delta-neutral straddle strike. So it is what `smile` builds the wings off, and what
+        `GBMAssetPriceTSModelParameters` takes as the ATM column of a surface this family built.
         """
         return {point['Expiry']: point['Quoted_Market_Value']
                 for point in quotes if point['Quote_Type'] == 'ATM'}
@@ -4898,15 +4465,13 @@ class FXVolSurfaceParameters(object):
     def smile(cls, quotes):
         """The quotes as a `(delta, expiry, vol)` surface - the strangle pair, per expiry pillar.
 
-        `vol(call) = ATM + BF + RR/2` and `vol(put) = ATM + BF - RR/2`, with the ATM vol itself
-        carried at the +-0.5 LABEL the delta solve reads it off (0.5 is not a delta there - the
-        solve replaces the label with the delta-neutral straddle's own delta). A pillar quoted with
-        only one of the two is read with the other at zero, which is how a symmetric smile is
-        authored; an expiry with wings but no ATM quote raises `KeyError`.
+        `vol(call) = ATM + BF + RR/2` and `vol(put) = ATM + BF - RR/2`, with the ATM vol carried at
+        the +-0.5 LABEL the delta solve reads it off (0.5 is not a delta there - the solve replaces
+        the label with the delta-neutral straddle's own delta). A pillar quoted with only one of the
+        two is read with the other at zero; an expiry with wings but no ATM quote raises `KeyError`.
 
-        A `Pillar` of 0.5 is refused: it is the ATM label rather than a delta, so a wing quoted at
-        it would land a second vol on the ATM row's own coordinate and the surface would carry
-        whichever survived the sort. A 50 delta pair is quoted as the ATM row.
+        A `Pillar` of 0.5 is refused: a wing quoted at the ATM label would land a second vol on the
+        ATM row's coordinate. A 50 delta pair is quoted as the ATM row.
         """
         atm = cls.atm_quotes(quotes)
         wings = {(point['Expiry'], point['Pillar'], point['Quote_Type']):
@@ -4930,10 +4495,9 @@ class FXVolSurfaceParameters(object):
     def carried_smile(quotes, values):
         """`smile`'s vol column on a tape - the strangle algebra, mirrored, and nothing else.
 
-        Row for row and in `smile`'s own order, so the frozen structure the solve reads off the
-        value path addresses this vector. The algebra is `+`, `*` and a sort, all of which torch
-        and numpy agree on to the last bit in float64 - there is no `sqrt` here to disagree over -
-        so the mirror is bit-identical rather than close, and gated as such.
+        Row for row and in `smile`'s own order, so the frozen structure the value path leaves
+        addresses this vector. The algebra is `+`, `*` and a sort, on which torch and numpy agree to
+        the last bit in float64, so the mirror is bit-identical and gated as such.
         """
         atm = {point['Expiry']: value for point, value in zip(quotes, values)
                if point['Quote_Type'] == 'ATM'}
@@ -4960,12 +4524,10 @@ class FXVolSurfaceParameters(object):
     def carried_skew(delta, vols, T):
         """`Factor2D.malz_skew` on a tape - the same wing pair, node for node, still connected.
 
-        WHAT IS TAPED AND WHAT IS FROZEN. The wing vols are taped, and so is `delta_atm`: the ATM
-        quote says where the delta-neutral straddle sits, so it MOVES the two ATM nodes of the delta
-        grid the wings are indexed by. What is read off the numbers rather than differentiated is
-        the LAYOUT - the ordering, which node carries the +-0.5 label, and which side had its ATM
-        node mirrored in - because a permutation has no derivative, and because the layout is what
-        the value path's frozen indices address.
+        The wing vols are taped and so is `delta_atm`, the ATM quote saying where the delta-neutral
+        straddle sits and so MOVING the two ATM nodes of the delta grid. What is read off the
+        numbers rather than differentiated is the LAYOUT - the ordering, which node carries the
+        +-0.5 label, which side had its ATM node mirrored in - a permutation having no derivative.
         """
         d = np.asarray(delta, dtype=float)
         order = np.argsort(d)
@@ -4994,33 +4556,28 @@ class FXVolSurfaceParameters(object):
 
     @classmethod
     def carried_sigma(cls, skew, carried, T, x):
-        """`Factor2D.malz_sigma` on a tape - AND THE BISECTION IS NOT ON IT.
+        """`Factor2D.malz_sigma` on a tape - and the bisection is NOT on it.
 
-        The 64 halvings are a fixed-length loop of correctly-rounded arithmetic and every operation
-        in them tapes, which is the trap. A bisection's iterates are DYADIC combinations of the two
-        bracket endpoints, so a tape through the loop differentiates where the BRACKET is rather
-        than where the root is: on the call wing `lo` is a quoted pillar delta and `hi` is
-        `delta_atm`, so that derivative carries the ATM quote and no risk reversal or butterfly at
-        all, while the true root moves with the wing vols.
+        A bisection's iterates are dyadic combinations of the bracket endpoints, so a tape through
+        the 64 halvings differentiates where the BRACKET is rather than where the root is: on the
+        call wing that derivative carries the ATM quote and no risk reversal or butterfly at all,
+        while the true root moves with the wing vols.
 
         So the tape starts at the CONVERGED root. `delta*` is a constant here and the differentiable
         one is one Newton step off it, `delta - R(delta, q) / (dR/ddelta)` - the implicit function
-        theorem written as an expression: worth the solve's own residual forward (nothing) and
-        exactly `-R_q / R_delta` backward. WHAT MAKES IT THE THEOREM IS THAT `delta*` IS THE ROOT,
-        not that the slope is detached.
+        theorem as an expression, worth the solve's own residual forward and exactly `-R_q/R_delta`
+        backward. What makes it the theorem is that `delta*` is the ROOT, not that the slope is
+        detached.
 
-        The CLAMPED nodes take the other branch, and it is not a repair. Where the fixed point falls
-        outside the wing's bracket there is no root to differentiate: the vol IS the endpoint knot's,
-        which is what flat-extrapolating a smile beyond its widest quoted delta means, so the taped
-        delta is that knot and the derivative is the knot vol's own - `1` in that wing's ATM quote,
-        `1` in its butterfly, `+-1/2` in its risk reversal, zero elsewhere. The two branches meet
-        where the root arrives AT the endpoint, so the switch is a kink and autograd reports the
-        one-sided derivative of the branch the node is in.
+        The CLAMPED nodes take the other branch, and it is not a repair: outside the wing's bracket
+        there is no root to differentiate, the vol IS the endpoint knot's, and the derivative is
+        that knot vol's own. The two branches meet where the root arrives at the endpoint, so the
+        switch is a kink and autograd reports the branch's one-sided derivative.
 
-        THE WING SPAN IS GUARDED, and an ordinary config reaches it: an ATM-only smile has
-        `malz_skew` mirror its ONE node onto both sides, so each wing is a single knot of zero span.
-        Dividing before selecting would put a NaN on every entry of the Jacobian while the value
-        path writes a perfectly good flat surface.
+        The wing span is guarded, and an ordinary config reaches it: an ATM-only smile has
+        `malz_skew` mirror its one node onto both sides, so each wing is a single knot of zero span.
+        Dividing before selecting would NaN the whole Jacobian while the value path writes a
+        perfectly good flat surface.
         """
         delta_star, is_call, bracketed = riskfactors.Factor2D.malz_delta(skew, T, x)
         sigma = carried['sigma_atm'].new_zeros(np.shape(x))
@@ -5031,8 +4588,8 @@ class FXVolSurfaceParameters(object):
                 continue
             knots, values, grid = carried['d_' + wing], carried['v_' + wing], skew['d_' + wing]
             xs, root, live = x[on_wing], delta_star[on_wing], bracketed[on_wing]
-            # the SEGMENT the root sits in and, for a clamped node, the endpoint knot it sits ON -
-            # both frozen, because an interval index is not a differentiable quantity
+            # the segment the root sits in and, for a clamped node, the endpoint knot it sits on -
+            # both frozen, an interval index not being a differentiable quantity
             seg = np.clip(np.searchsorted(grid, root, side='right') - 1,
                           0, max(grid.size - 2, 0))
             top = np.minimum(seg + 1, grid.size - 1)
@@ -5053,9 +4610,9 @@ class FXVolSurfaceParameters(object):
                 d2 = (log_mny - 0.5 * vol * vol * T) / (vol * np.sqrt(T))
                 return k_over_f * side * utils.norm_cdf(side * d2) - delta
 
-            # `base` is minted from numpy and carries no graph, so its `.detach()` and the slope's
-            # missing `create_graph` are both no-ops - the theorem holds off the ROOT. The `on_tape`
-            # guard is idiom too: a 375-point sweep drives |dR/ddelta| no lower than 0.948
+            # `base` carries no graph, so its `.detach()` and the slope's missing `create_graph`
+            # are no-ops - the theorem holds off the ROOT. |dR/ddelta| stays above 0.948 in a
+            # 375-point sweep, so the `on_tape` guard is idiom
             base = values.new_tensor(root)
             probe = base.detach().requires_grad_(True)
             d_delta = torch.autograd.grad(residual(probe).sum(), probe)[0]
@@ -5076,10 +4633,9 @@ class FXVolSurfaceParameters(object):
         """The log-moneyness grid a previously written surface already carries, or None.
 
         `written` is the PRICE FACTOR block this family wrote last, not a quote block. Four ways to
-        get None, each a grid that is not the one the quotes ask for: nothing to pin to; a surface
-        on a different SUBTYPE, whose moneyness axis is S/K rather than log(F/K); a surface over a
-        different set of EXPIRIES, which a rebuild answers and stretching a grid does not; and a
-        surface refined to a different TOLERANCE, the knob that sizes the grid.
+        get None, each a grid the quotes are not asking for: nothing to pin to; a different SUBTYPE,
+        whose moneyness axis is S/K rather than log(F/K); a different set of EXPIRIES, which a
+        rebuild answers and stretching does not; and a different TOLERANCE.
         """
         surface = written.get('Surface') if written else None
         if surface is None or not surface.array.any():
@@ -5096,19 +4652,16 @@ class FXVolSurfaceParameters(object):
                   calendars, debug=None):
         """Turn each block's quotes into the log-moneyness `FXVol` surface the pricers read.
 
-        The x-grid is taken from the factor this wrote last if it is still describing the same
-        expiries at the same tolerance - see the class docstring on pinning - and refined from
-        scratch otherwise.
+        The x-grid is taken from the factor this wrote last if it still describes the same expiries
+        at the same tolerance - see the class docstring on pinning - and refined otherwise.
 
-        A block asking for `Quote_Sensitivity` leaves that surface behind still connected to the
-        ATM / RR / BF quotes it was built from, so `Calculation.factor_leaf` can offer the connected
-        tensor where it would otherwise mint an `FXVol` leaf out of numpy. The tape is a SPLICE over
-        the shipped conversion (see `carried_sigma`), so what the switch changes is what
-        `backward()` can reach - every number written below comes out of `Factor2D.malz_surface`.
+        `Quote_Sensitivity` leaves that surface behind still connected to its ATM / RR / BF quotes,
+        so `Calculation.factor_leaf` can offer the connected tensor rather than minting an `FXVol`
+        leaf out of numpy. The tape is a SPLICE over the shipped conversion (`carried_sigma`), so
+        every number written comes out of `Factor2D.malz_surface`.
 
-        THE GRID IS NOT DIFFERENTIATED. It is refined against the quotes when it is BUILT and pinned
-        from then on, which is what makes a tick a values patch; the twin moves the VOLS on frozen
-        nodes. A rebuild is a new plan, and a derivative across two plans is not a derivative.
+        The grid is NOT differentiated. It is refined against the quotes when built and pinned from
+        then on, which is what makes a tick a values patch; the twin moves the vols on frozen nodes.
         """
         for market_price, implied_params in market_prices.items():
             rate = utils.check_rate_name(market_price)
@@ -5152,9 +4705,8 @@ class FXVolSurfaceParameters(object):
                                           dtype=self.dtype, requires_grad=True)
                     carried = self.carried_surface(skews, self.carried_skews(
                         delta_surface, expiries, self.carried_smile(quotes, leaves)), grid)
-                    # `Factor2D` sorts what it is handed by (expiry, moneyness) and mints a leaf
-                    # out of THAT column, so the twin is put in the same order rather than assumed
-                    # to be in it
+                    # `Factor2D` sorts by (expiry, moneyness) and mints a leaf out of THAT column,
+                    # so the twin is put in the same order rather than assumed to be in it
                     rows = np.array(surface)
                     order = np.lexsort((rows[:, 0], rows[:, 1]))
                     self.calibrated[utils.Factor(self.price_factor_type, market_factor.name)] = \

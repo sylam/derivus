@@ -13,43 +13,23 @@
 
 """What the log is allowed to say, and what each saying of it demands of the sayer.
 
-The vocabulary is closed, which is the facts-only law with teeth. A knock is a consequence of terms
-plus a recorded observation, so `knocked_out` is not a type the writer declines to validate - it is
-a type that does not exist. Expiries, accruals, positions and lifecycle state are the same: each is
-a fold over what is here. What is here is observations of the world (a fill, a fixing under its
-(index, date, source) key, an election, a status transition) and acts of judgment or governance (a
-`determination`, an `approval` over a plan hash, a `market_declared`, a `retention_declared`).
+The vocabulary is CLOSED, which is the facts-only law with teeth: `knocked_out` is not a type the
+writer declines to validate, it is a type that does not exist. Knocks, expiries, accruals, positions
+and lifecycle state are folds over what is here - observations of the world and acts of judgment or
+governance.
 
-Three validation rules. Bulk never inlines: a field naming a surface, a plan, a values vector or a
-policy document is 64 lowercase hex and the object lives once in the blob store, so the log inlines
-a value only where the value is itself the fact and tiny. Surplus keys are refused everywhere except
-`policy_declared`, whose shape is versioned by the policy itself. Every declared string must be
-non-empty, since the empty string names nothing.
+Three validation rules. BULK NEVER INLINES: a field naming a surface, a plan, a values vector or a
+policy document is 64 lowercase hex and the object lives once in the blob store. Surplus keys are
+refused everywhere except `policy_declared`, whose shape is versioned by the policy itself. Every
+declared string must be non-empty.
 
 `BLOB_FIELDS` declares which of a body's hashes name bytes in the store, so referential closure is
-asked the same way by the writer and by a verifier over a log it did not write. Not every 64-hex
-field is a blob: a checkpoint's `event_hash` is a position in this log, an `instrument` is an
-identity, and a `plan_hash` is re-derivable by recompiling at the recorded LSN.
-
-The closed set has four parts, named apart because four different mouths speak them. `FACT_TYPES`
-is the trading vocabulary and what a synthetic book is made of. `CUSTODY_TYPES` is what key custody
-says about seats and wrapped class keys. `PROVENANCE_TYPES` is what the record says about which
-numbers - the types that pin replay coordinates, said by the thing that produced them.
-`WRITER_TYPES` is the writer's own voice: `capability_denied`, which no submitter may speak.
-`EVENT_TYPES` is the union `validate` consults.
-
-`EVENT_VERB` declares which of the six capability verbs an append of each type demands, closed over
-the closed vocabulary. Two of its entries are not verbs but the authorizations that live outside a
-policy document: `break_glass_used` answers to the genesis break-glass seat alone, and
-`capability_denied` is the writer speaking and is never gated.
-
-`classify` is the seam the classified log is built on: an entitlement class is derived from an
-event's provenance, never assigned at the call site, so a reclassification is one declaration rather
-than per-object ACLs.
-
-Growing the vocabulary adds types and changes none - a new row in `PROVENANCE_TYPES`, `EVENT_VERB`
-and `BLOB_FIELDS`, with every existing validator validating exactly what it did before, so a v1
-event stays readable under a later vocabulary.
+asked the same way by the writer and by a verifier over a log it did not write - not every 64-hex
+field is a blob. The closed set is in four parts because four different mouths speak it
+(`FACT_TYPES`, `CUSTODY_TYPES`, `PROVENANCE_TYPES`, `WRITER_TYPES`), `EVENT_TYPES` is the union
+`validate` consults, and `EVENT_VERB` names the capability verb each type demands - with
+`break_glass_used` answering to the genesis seat alone and `capability_denied` never gated.
+`classify` derives the entitlement class from provenance, so a reclassification is one declaration.
 """
 import math
 

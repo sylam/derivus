@@ -1,44 +1,33 @@
 """`Recompute_Inner_MC` on the two equity MC pricers, against the shape `pv_MC_Tarf` proved.
 
-`tests/test_recompute_inner_mc.py` is the template and states the contract; this file is the same
-statements about `pv_MC_AutoCallSwap` and `pv_discrete_barrier_option`, which now reach the node
-through `pricing.InnerMCRecompute.run` - the one line and the whole switch. One file rather than
-two because the two pricers share a world, a market and every bit-identity statement; where they
-genuinely DIFFER they get their own gate, and that difference is the finding below.
+`tests/test_recompute_inner_mc.py` is the template and states the contract; this file makes the same
+statements about `pv_MC_AutoCallSwap` and `pv_discrete_barrier_option`, which reach the node through
+`pricing.InnerMCRecompute.run`. One file because the two share a world, a market and every
+bit-identity statement; where they genuinely DIFFER they get their own gate.
 
-THE GAP IS A NODE OUTPUT WHEN THE SIMULATION IS WHAT DECIDED IT, which is the rule the three ports
-settle - not symmetry.
+THE GAP IS A NODE OUTPUT WHEN THE SIMULATION IS WHAT DECIDED IT - the rule the ports settle, not
+symmetry.
 
-  AUTOCALL   the coupon trigger is read off `Sj` inside the fixing loop, selected by loop state, so
-             the untaped forward has no graph to give it: the gap is an OUTPUT and the correction's
-             coefficient arrives as its cotangent. Measured below - dropping that cotangent is
-             BIT-IDENTICAL to suppressing the correction outright.
-  BARRIER    the latch is decided on `spot_block[-1]`, an OUTER scenario spot at an observation
-             date. Its graph is the scenario generation's, which this node does not untape, so the
-             whole registration stays outside and needs nothing from the replay. Measured - the
-             injection mutant is a NO-OP here, and suppressing the correction still moves the
-             gradient, so the correction is live and simply does not ride the node.
+  AUTOCALL   the coupon trigger is read off `Sj` inside the fixing loop, so the untaped forward has
+             no graph to give it: the gap is an OUTPUT and the correction's coefficient arrives as
+             its cotangent. Dropping that cotangent is BIT-IDENTICAL to suppressing the correction.
+  BARRIER    the latch is decided on `spot_block[-1]`, an OUTER scenario spot, whose graph is the
+             scenario generation's - so the registration stays outside and needs nothing from the
+             replay. The injection mutant is a NO-OP here and suppressing the correction still moves
+             the gradient, so the correction is live and simply does not ride the node.
 
-A CASHFLOW GATE ON THE REPORTED CASHFLOWS IS A PLACEBO, which was measured rather than reasoned
-about. The autocall SETTLED inside its simulation before this change, so a replay would have
-settled twice - but the replay runs in `backward()` and `save_cashflows` runs inside
-`resolve_structure`, in the forward pass, so the second settlement lands after the snapshot and
-every reported cashflow is bit-identical with the defect in place. What IS observable is the
-cashflow's GRAPH: settled inside, it is booked under the node's `no_grad` forward and reaches
-`t_Cashflows` carrying nothing, so a COLLATERALISED exposure reading that ledger through `C_ts_te`
-loses the channel - 8.7% of the CVA gradient on this fixture. That is the gate, and it is the one
-the TARF's own suite does not have.
+A CASHFLOW GATE ON THE REPORTED CASHFLOWS IS A PLACEBO, measured rather than reasoned about: the
+replay runs in `backward()` while `save_cashflows` runs in the forward pass, so a double settlement
+lands after the snapshot and every reported cashflow is bit-identical with the defect in place. What
+IS observable is the cashflow's GRAPH - settled inside, it reaches `t_Cashflows` carrying nothing,
+so a COLLATERALISED exposure reading that ledger through `C_ts_te` loses 8.7% of the CVA gradient.
 
-`pv_MC_AutoCallSwap`'s SECOND BRANCH - the AVERAGING full-path sim, with its own
-`torch.randn`/`quasi_rng` draw - is gated in section (f), on a fixture authored around three
-defects the branch has at HEAD rather than in spite of them (see `_averaging_autocall`), which is
-why no earlier attempt in this repo reached the code at all.
+The AVERAGING branch is gated in section (f), on a fixture authored around three defects the branch
+has at HEAD (see `_averaging_autocall`).
 
-HONEST LIMITS, so nobody reads more coverage into this than there is. What stays UNGATED is
-`past_fixings` - the averaging branch is handed an empty one - and the floating leg, reached only
-by `QEDI_CustomAutoCallSwap_V2`, which does not price at HEAD (a floating-leg tensor-shape
-mismatch, identically before this change). Both are hoisted into theta on the same rule as
-everything else and carried on trust.
+UNGATED: `past_fixings` (the averaging branch is handed an empty one) and the floating leg, reached
+only by `QEDI_CustomAutoCallSwap_V2`, which does not price at HEAD. Both are hoisted into theta on
+the same rule as everything else and carried on trust.
 """
 import os
 import sys
@@ -67,28 +56,20 @@ PRICERS = list(DEALS)
 
 
 def _averaging_autocall():
-    """`bp.AUTOCALL` with TWO `Price_Fixing` dates per `Autocall_Coupon` date, which is the whole of
-    what selects `pv_MC_AutoCallSwap`'s other branch: `no_averaging` (instruments.py:3889) is
-    `len(pf_dates) == len(ac_dates)` over the fixings inside the window, so 9 against 4 is False.
+    """`bp.AUTOCALL` with TWO `Price_Fixing` dates per `Autocall_Coupon` date, which is what selects
+    `pv_MC_AutoCallSwap`'s other branch: `no_averaging` is `len(pf_dates) == len(ac_dates)` over the
+    fixings inside the window, so 9 against 4 is False.
 
-    THREE OF THESE DATES ARE LOAD-BEARING, each around a defect the branch has at HEAD - which is
-    why every autocall fixture in this repo is a one-fixing-per-coupon one.
+    THREE DATES ARE LOAD-BEARING, each around a defect the branch has at HEAD:
 
-      A FIXING ON THE COUPON DATE. `sim_autocall` divides its running sum by `averageCounter` and
-      zeroes the counter at each coupon, so a block whose window OPENS on a coupon with no fixing
-      before it inside that window divides by zero. The coupon's own fixing is inside every window
-      that starts there, which makes the branch reachable wherever the reporting grid opens a block.
-      A TRAILING FIXING, a week after the LAST coupon. `sample_ts` stays NUMPY on a block whose
-      every remaining fixing is observed today (pricing.py:2587) and this branch calls
-      `times.unsqueeze` - so the last reporting row, whose only remaining sample is itself, dies on
-      "'numpy.ndarray' object has no attribute 'unsqueeze'". A fixing is not a reval date, so one
-      after the last coupon adds no reporting row; it just keeps that block's window two samples
-      long.
-      COUPONS TWO DAYS OFF THE 3m REPORTING GRID. Rows sharing a start index are one block and a
-      settlement is `tau == 0` - the row that IS the sample - so coupons ON the grid make every
-      block one row long, and there `settle_rows.append(i)` and `.append(0)` are the same function.
-      Two days late puts a reporting row immediately before each coupon, in its block, and the
-      settlement on block-local row 1. Measured: 5 blocks, four of them `(2, [1])`.
+      A FIXING ON THE COUPON DATE. `sim_autocall` divides by `averageCounter` and zeroes it at each
+      coupon, so a block whose window OPENS on a coupon with no earlier fixing divides by zero.
+      A TRAILING FIXING a week after the LAST coupon. `sample_ts` stays NUMPY where every remaining
+      fixing is observed today and this branch calls `times.unsqueeze`, so the last reporting row
+      dies on "'numpy.ndarray' object has no attribute 'unsqueeze'".
+      COUPONS TWO DAYS OFF THE 3m REPORTING GRID. Coupons ON the grid make every block one row long,
+      where `settle_rows.append(i)` and `.append(0)` are the same function. Two days late puts a row
+      immediately before each coupon and the settlement on block-local row 1: 5 blocks, four `(2, [1])`.
 
     Returns `(the coupon dates, the deal)`; the dates are what the settlement gate reads.
     """
@@ -253,29 +234,19 @@ def test_a_collateralised_gradient_is_what_the_settle_outside_rule_is_gated_on(p
     that a simulation returns its settlements rather than performing them.
 
     A `cash_settle` called inside the callable runs under the node's `no_grad` forward, so the
-    cashflow reaches `t_Cashflows` carrying NOTHING. Uncollateralised, nobody differentiates that
-    ledger and the defect is invisible in every number the run reports. Collateralised, the
-    exposure reads it through `C_ts_te` and the CVA gradient moves - measured on this fixture with
-    the autocall's settlement put back inside its loop: max |delta| 7.585440e-05 on a gradient of
-    8.678265e-04, 8.7%.
+    cashflow reaches `t_Cashflows` carrying NOTHING. Uncollateralised the defect is invisible;
+    collateralised the exposure reads it through `C_ts_te` and the CVA gradient moves - max |delta|
+    7.585440e-05 on a gradient of 8.678265e-04, 8.7%.
 
-    TWO STEPS, NOT ZERO, and only for the autocall - re-measured on the grid this gate now runs
-    on, 12 paired repeats per pricer at a fixed seed, because the averaging gate below turned out
-    to have been reading too few draws to see its own distribution.
+    TWO STEPS, NOT ZERO, and only for the autocall - 12 paired repeats per pricer at a fixed seed:
 
       autocall  off vs off  0 steps on 11 of 11 - the TAPED path reproduces itself exactly.
                 on  vs on   2 steps on 10 of 11, on entries 7 and 8 (`EquityPriceVol.EQ` 1.2).
                 off vs on   0 on 7 readings, 2 on 5. Never 1, never above 2.
       barrier   0 steps on every one of the 35 readings, all three comparisons.
 
-    So here the step IS the node's replayed backward disagreeing with itself, which is the opposite
-    of what the averaging branch does (there the taped side moves too - see that gate). The earlier
-    prose attributed this step to the refactored OFF path against a HEAD run that cannot be
-    reproduced from this tree; what is measurable is above, and it says OFF is reproducible. The
-    barrier returns marks and nothing else and is exactly bit-identical.
-
-    A defect at 8.7% and a reduction at 2 ulps are not confusable, which is what makes this a gate
-    rather than a widened tolerance."""
+    So the step IS the node's replayed backward disagreeing with itself, the opposite of what the
+    averaging branch does. A defect at 8.7% and a reduction at 2 ulps are not confusable."""
     cva_off, mtm_off, grad_off, cash_off = cmc(pricer, gradient=True, collateralised=True)
     cva_on, mtm_on, grad_on, cash_on = cmc(pricer, gradient=True, recompute='Yes',
                                            collateralised=True)
@@ -285,9 +256,7 @@ def test_a_collateralised_gradient_is_what_the_settle_outside_rule_is_gated_on(p
     assert np.abs(grad_off).max() > 0.0, f'{pricer}: no gradient was reported'
     steps = _ulps(grad_off, grad_on)
     # <= 2 is the measured quantum, not a tolerance: the autocall's two states are exactly two
-    # steps apart and nothing reads between them, standalone or in a full-file run. The available
-    # sharpening, deliberately not taken while this gate is green, is the averaging gate's shape
-    # clause - at most 2 entries may move, holding 12 of the 14 at zero
+    # steps apart and nothing reads between them
     assert steps.max() <= 2, (
         '{}: the collateralised gradient moved by {} float64 steps (max |d| {:.6g} on {:.6g}) - '
         'that is not summation order, it is a channel the node lost:\n{}\n{}'.format(
@@ -514,25 +483,19 @@ def averaging_run(monkeypatch, **kwargs):
 
 
 def test_the_averaging_branch_is_reached_and_settles_off_its_returned_rows(monkeypatch):
-    """THE GATE ON THE GATES. Every statement below is a bit-identity, and a bit-identity holds
-    trivially over code neither side runs - so this says the fixture reaches the branch, that the
-    branch's settlement is PLACED by the `settle_rows` the simulation returns, and that the
-    placement is observable at all.
+    """THE GATE ON THE GATES. A bit-identity holds trivially over code neither side runs, so this
+    says the fixture reaches the branch, that the settlement is PLACED by the `settle_rows` the
+    simulation returns, and that the placement is observable at all.
 
-    The third is the one a fixture silently loses. `t_Cashflows` is pre-allocated per DECLARED
-    payment date (`reset_cashflows` over the currency map) and `cash_settle` drops anything booked
-    elsewhere, so mis-placing a settlement does not move a number - it deletes one. And the
-    placement is only observable where a settling row is not its block's first, which is what the
-    coupons two days off the reporting grid buy: measured 5 blocks, four of them `(2, [1])`.
+    The third is what a fixture silently loses. `t_Cashflows` is pre-allocated per DECLARED payment
+    date and `cash_settle` drops anything booked elsewhere, so mis-placing a settlement deletes a
+    number rather than moving one - and placement is only observable where a settling row is not its
+    block's first, which the coupons two days off the grid buy: 5 blocks, four of them `(2, [1])`.
 
-    Mutation-verified against `settle_rows.append(i) -> .append(0)`, the edit's own by-product
-    index: blocks read `(2, [0])`, the days become the reporting grid's 92/183/273/365 instead of
-    the coupons' 94/185/275/367, and every reported cashflow collapses to zero - `cash_settle` was
-    handed an index `reset_cashflows` never allocated. Each statement here is false under it (the
-    first is what pytest stops on) and so is the non-zero clause of the exposure gate below: 3 of
-    this file's 37 turn red. Every bit-identity COMPARISON stays green, because a mutation in the
-    source moves both switch settings alike - which is why this gate is written as an absolute
-    statement about the fixture and not as a comparison."""
+    Mutation-verified against `settle_rows.append(i) -> .append(0)`: blocks read `(2, [0])`, the
+    days become the grid's 92/183/273/365 instead of the coupons' 94/185/275/367, and every reported
+    cashflow collapses to zero. Every bit-identity COMPARISON stays green under it, because a source
+    mutation moves both switch settings alike - which is why this is an absolute statement."""
     (_, _, _, cash), flags, blocks, days = averaging_run(monkeypatch)
     assert flags and not any(flags), (
         'the averaging fixture priced through the no_averaging branch, so section (f) is a slower '
@@ -574,20 +537,16 @@ def test_the_averaging_exposure_and_cashflows_are_bit_identical_with_the_node_on
 
 @pytest.mark.parametrize('run,stream', [(base_gradient, 'torch.rand'), (cva_gradient, 'Sobol')])
 def test_the_averaging_gradient_is_bit_identical_with_the_node_on(run, stream):
-    """The WHOLE vector, on both streams. This branch has no boundary registration of its own - the
-    trigger is smoothed by `smooth_heaviside_up` inside `sim_autocall`, so there is nothing to
-    register and `event_rows` comes back empty - which makes the ordinary AAD path the entire
-    statement here.
+    """The WHOLE vector, on both streams. This branch has no boundary registration - the trigger is
+    smoothed by `smooth_heaviside_up` inside `sim_autocall` and `event_rows` comes back empty - so
+    the ordinary AAD path is the entire statement.
 
-    Mutation-verified against the branch's OWN edited line, the row loop reading the closure's
-    `spot_block` instead of the `spot_prices` theta: a no-op with the switch off (the same object is
-    passed in) and a stale read under it. Off `torch.rand` it is exactly the defect the hoist exists
-    to stop, and it is SILENT - the `EquityPrice.EQ` entry, 1.245414e-03, simply vanishes from the
-    reported vector, 7 entries down to 6, because autograd has no gradient to give for a theta the
-    replay never read. Off Sobol it is loud instead: the closure holds the LAST block's strip, so
-    the replay's output stops matching the forward's shape and autograd raises. Every graph-carrying
-    theta in this branch is block-shaped, which is what makes a stale closure read here hard to keep
-    quiet - and the base stream is where it manages it."""
+    Mutation-verified against the row loop reading the closure's `spot_block` instead of the
+    `spot_prices` theta: a no-op with the switch off and a stale read under it. Off `torch.rand` it
+    is SILENT - the `EquityPrice.EQ` entry, 1.245414e-03, vanishes from the reported vector, 7
+    entries down to 6, because autograd has no gradient for a theta the replay never read. Off Sobol
+    it is loud: the closure holds the LAST block's strip, the replay's output stops matching the
+    forward's shape, and autograd raises."""
     value_off, grad_off = run('averaging', 'No')
     value_on, grad_on = run('averaging', 'Yes')
     assert np.abs(grad_off).max() > 0.0, f'{stream}: no gradient was reported'
@@ -598,61 +557,35 @@ def test_the_averaging_gradient_is_bit_identical_with_the_node_on(run, stream):
 
 
 def test_the_collateralised_averaging_gradient_is_the_taped_one_to_the_last_bit():
-    """TWO ENTRIES, SIXTY-FOUR STEPS, AND THE TAPED SIDE SPENDS THEM TOO - which is why this gate
-    is a statement about the SHAPE of the disagreement rather than a tolerance on its size.
+    """TWO ENTRIES, SIXTY-FOUR STEPS, AND THE TAPED SIDE SPENDS THEM TOO - which is why this gate is
+    a statement about the SHAPE of the disagreement rather than a tolerance on its size.
 
-    RE-MEASURED when the vol strip became per-fixing. The simulation now reads the surface once per
-    fixing instead of once at expiry, so the vol factor's cotangent arrives as a sum over the whole
-    strip rather than a single term, and the collateral chain's nondeterministic reduction has more
-    to be nondeterministic about: it moved from ONE unstable entry at four steps to TWO at sixty
-    four, on the SAME `('EquityPriceVol.EQ', 1.2, .)` moneyness column, and the strip is why there
-    are now two of them (0.02 and 2.0, the two tenor nodes a per-fixing read touches; only the 2.0
-    node was reachable when every interval was read at expiry).
-
-    THE MEASURED DISTRIBUTION, `Random_Seed` fixed at 1 throughout so every input to every reading
-    is identical - 10 off and 10 on in one process, giving 45 + 45 self-paired and 100 crossed:
+    THE MEASURED DISTRIBUTION, `Random_Seed` fixed at 1 - 10 off and 10 on in one process, giving
+    45 + 45 self-paired and 100 crossed:
 
       off vs off     36 readings at 0 steps, 9 at (2 entries, 64).  <- the TAPED path, no node
       on  vs on       9 at 0, 12 at (1, 16), 12 at (1, 64), 12 at (2, 64)
       off vs on      38 at 0, 20 at (1, 16), 20 at (1, 64), 22 at (2, 64)
       moved entries  always inside {7, 8}, in all three comparisons. Never a third.
 
-    Entry 8 moves by 16 steps and entry 7 by 64; no reading has ever landed between the quanta.
-    UNCOLLATERALISED, the taped path reads one value 6 times out of 6 and no entry is unstable at
-    all - the instability is the collateral chain's, as it was before, and it is present with the
-    node OFF, which is what says the node did not lose a channel.
+    Entry 8 moves by 16 steps and entry 7 by 64; no reading has landed between the quanta.
+    UNCOLLATERALISED the taped path reads one value 6 times of 6 - so the instability is the
+    COLLATERAL chain's backward, present with the node OFF, and no node-against-taped comparison can
+    be tighter than it. (The two unstable entries are the two tenor nodes a per-fixing vol read
+    touches; before the strip became per-fixing there was one, at four steps.)
 
-    AT HEAD (0d965d2, one implied vol per row) the same measurement read: off-vs-off 15 of 15 at
-    zero, off-vs-on 6 of 36 at (1 entry, 4 steps). The bound below moved because the graph did, and
-    the number that justifies it is the off-vs-off row above and nothing else.
+    HENCE THE TWO CLAUSES: at most TWO entries may move (12 of the 14 held at ZERO, which a blanket
+    `steps.max() <= 64` would not do), and those by at most the observed quantum.
 
-    THE ATTRIBUTION. The taped backward disagrees with ITSELF on the same entries by the same
-    quanta, so this is a nondeterministic reduction in the COLLATERAL chain's backward, present
-    with `Recompute_Inner_MC` off, and no node-against-taped comparison can be tighter than it. It
-    is not this file's defect and this file cannot fix it - what this file can do is refuse to let
-    it buy any slack anywhere else. (Six repeats is too few to see a state that shows up on 9 of
-    45, which is how an earlier version of this prose came to attribute it to the node.)
+    Mutation-verified against the settle-inside-the-loop form - `cash_settle` booking
+    `value.detach()` exactly when `shared.recompute_inner_mc` is set. It moves 11 of the 14 entries
+    by up to 6.81e+15 float64 steps, max |d| 4.28e-05 on a gradient of 6.26e-04 = 6.85%, while
+    `mtm`, `cva` and every reported cashflow stay bit-identical - so the entry-count clause fails on
+    its own. Sixty-four steps against 7.75e+15 is 14.1 orders of margin.
 
-    HENCE THE TWO CLAUSES. At most TWO entries may move (12 of the 14 are held at ZERO, which a
-    blanket `steps.max() <= 64` would not do), and those by at most the observed quantum. The bound
-    is a measurement, not a choice: no reading has ever landed between 0, 16 and 64.
-
-    Mutation-verified against the settle-inside-the-loop form, RE-RUN at the new bound. Settled
-    inside `sim_autocall` the
-    booked value carries a graph with the switch OFF (`simulate` is called and taped) and none with
-    it ON (the node's forward is `no_grad`), so the mutation is `cash_settle` booking
-    `value.detach()` EXACTLY WHEN `shared.recompute_inner_mc` is set. It moves 11 of the 14 entries,
-    indices 0-8/10/11, by up to 6.81e+15 float64 steps - max |d| 4.28e-05 on a gradient of
-    6.26e-04 = 6.85%, this branch's analogue of the autocall's 8.7% above. `mtm`, `cva` and every
-    reported cashflow stay bit-identical under it, so the kill lands on the clause below and not on
-    an earlier assertion, and the entry-count clause fails on its own (11 <= 2). Sixty-four steps
-    against 7.75e+15 is 14.1 orders of margin - the bound grew by 1.2 orders and the margin by
-    none that matters.
-
-    THE CONTROL, which is the limit of the form and not a hole in this gate: detaching on BOTH runs
-    survives, green. A source edit moves both switch settings alike and a bit-identity gate is a
-    COMPARISON, so what places the settlement is gated absolutely rather than comparatively, by
-    `test_the_averaging_branch_is_reached_and_settles_off_its_returned_rows` above."""
+    THE CONTROL, the limit of the form: detaching on BOTH runs survives green, because a source edit
+    moves both switch settings alike. What places the settlement is therefore gated absolutely by
+    `test_the_averaging_branch_is_reached_and_settles_off_its_returned_rows`."""
     cva_off, mtm_off, grad_off, cash_off = cmc('averaging', gradient=True, collateralised=True)
     cva_on, mtm_on, grad_on, cash_on = cmc('averaging', gradient=True, recompute='Yes',
                                            collateralised=True)

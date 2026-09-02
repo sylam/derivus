@@ -15,12 +15,10 @@ at all, and only the CREDIT MONTE CARLO gates below can: `cash_settle` is a no-o
 valuation (`shared.t_Cashflows is None`), so the ledger does not exist there, and the reval end is
 only visible as the rows a profile occupies.
 
-THE CURVE SUITE IS BLIND TO ALL OF THIS, and the reason is what makes these fixtures the shape they
-are. `tests/test_interest_rate_prices.py` prices its FRAs at PAR - the bootstrap generates the
-quote that makes each benchmark worth exactly zero - and a zero flow is zero whatever date it is
-discounted from. Every fixture here is OFF PAR on a genuinely SLOPED, genuinely MULTI-curve world,
-with a fixing lag (`Reset_Date` two days before `Effective_Date`) so the reset row spans the true
-FRA period rather than starting at its own fixing.
+THE CURVE SUITE IS BLIND TO ALL OF THIS, which is what makes these fixtures their shape:
+`test_interest_rate_prices.py` prices its FRAs at PAR, and a zero flow is zero whatever date it is
+discounted from. Every fixture here is OFF PAR on a genuinely sloped, genuinely multi-curve world,
+with a fixing lag so the reset row spans the true FRA period rather than its own fixing.
 
 THE REFERENCE IS HAND-DERIVED, not the engine asked twice:
 
@@ -30,34 +28,23 @@ THE REFERENCE IS HAND-DERIVED, not the engine asked twice:
     payoff = position * N * (F - K) * tau                position = +1 Borrower, -1 Lender
     PV     = payoff * D_disc(T_pay)                      T_pay = T_e, except Begin's T_s
 
-The zero curves are LINEAR IN TENOR on purpose, and it buys the Monte Carlo gates their oracle. A
-Hull-White curve at time t is the arbitrage-free forward curve `[r(t+s)(t+s) - r(t)t] / s`, which
-for a linear `r` is `a + b(2t+s)` - linear in `s`, so the engine's own linear interpolation
-reproduces it exactly at every tenor, and the forward over `[T_s, T_e]` seen at ANY row comes back
-as `r(T_e)T_e - r(T_s)T_s`, the number above. At zero vol that makes the whole simulated profile
-and every booked amount hand-derivable to the last bit. A curved zero curve does not: reconstructed
-on a knot grid and interpolated back, its forward is a different number at every row, and on a
-plausible six-knot curve that gap measures 2.7% - which would stand between the engine and the
-reference and force a tolerance loose enough to admit the defect these gates exist to catch.
+The zero curves are LINEAR IN TENOR on purpose, and it buys the Monte Carlo gates their oracle: a
+Hull-White curve at time t is `[r(t+s)(t+s) - r(t)t] / s`, which for a linear `r` is `a + b(2t+s)`,
+linear in `s` - so the engine's own interpolation reproduces it exactly and the forward over
+[T_s, T_e] at ANY row is `r(T_e)T_e - r(T_s)T_s`. At zero vol the whole simulated profile is
+hand-derivable to the last bit. A curved zero curve is not: reconstructed on a knot grid and
+interpolated back its forward differs at every row, measured at 2.7% on a plausible six-knot curve,
+which would force a tolerance loose enough to admit the defect these gates exist to catch.
 
-KILL READINGS, taken on these fixtures against the pre-fix build (`discount_date = Maturity_Date if
-timing == 'Discounted' else Effective_Date`, which handed `End` the effective date):
+KILL READINGS against the pre-fix build, which handed `End` the effective date:
 
-  * `End` base valuation discounted from `T_s` instead of `T_e`: **21777.712514** against the
-    hand-derived **21500.597058**, 1.2889% high, on every one of the four moneyness/direction
-    combinations - against a gate that holds to 1e-12. `Discounted` and `Begin` are untouched, so
-    the default timing was the one that was wrong.
+  * `End` base valuation discounted from `T_s` rather than `T_e` prices 1.2889% high on all four
+    moneyness/direction combinations, against a gate holding to 1e-12.
   * `End` under credit Monte Carlo did not misprice - it did not PRICE. The payment day was the
     effective date while `reset`'s `pay_date` kept the deal alive to maturity, so
-    `get_cashflow_start_index` returned index 1 on every row past effective and
     `pv_float_cashflow_list` indexed a one-cashflow schedule out of bounds. The deal is caught and
-    SKIPPED (`CRITICAL FRA1 Deal FRA1 skipped - index 1 is out of bounds for axis 0 with size 1`),
-    the profile comes back as a scalar zero, and the run reports success with the trade missing
-    from it - which is precisely the failure mode a price gate cannot see, and why the exposure
-    and ledger gates are owed rather than optional.
-
-Seven of the eleven gates below are red against that build; the four that stay green are the
-`Discounted` and `Begin` readings, which the pre-fix branch already had right.
+    SKIPPED, the profile comes back a scalar zero, and the run reports success with the trade
+    missing - which a price gate cannot see, and why the exposure and ledger gates are owed.
 """
 import os
 import sys
@@ -80,14 +67,12 @@ import rates_world as rw
 DTYPE = torch.float64
 BASE = rw.BASE
 
-#: Six and nine months out, so the trade is a 6x9 - forward starting, and both of its dates land on
-#: rows of the monthly reporting grid rather than between them.
+#: A 6x9: forward starting, with both dates landing ON rows of the monthly reporting grid.
 START_MONTHS, END_MONTHS = 6, 9
 EFFECTIVE = BASE + pd.DateOffset(months=START_MONTHS)
 MATURITY = BASE + pd.DateOffset(months=END_MONTHS)
-#: The fixing lag. `Reset_Date != Effective_Date` is what exercises the reset row's rate window: the
-#: reset FIXES here and the rate it fixes spans [Effective, Maturity], which is the pairing the row
-#: has to carry.
+#: `Reset_Date != Effective_Date` exercises the reset row's rate window: the reset FIXES here and
+#: the rate it fixes spans [Effective, Maturity], which is the pairing the row has to carry.
 FIXING_LAG = 2
 
 #: The FRA's dates in the curves' own ACT/365 years.
@@ -97,25 +82,22 @@ T_E = (MATURITY - BASE).days / 365.0
 #: year fraction read off the wrong axis could not cancel.
 TAU = (MATURITY - EFFECTIVE).days / 360.0
 
-#: `(intercept, slope)` of each zero curve. Both slope steeply upward and the projection curve
-#: carries a basis over the discount curve, so this is a real multi-curve world: a flat curve would
-#: leave `D(T_s)` and `D(T_e)` differing only by the period, and a single curve would let a
-#: discounting error hide inside the forward.
+#: `(intercept, slope)` of each zero curve: both slope steeply and the projection curve carries a
+#: basis, so this is a real multi-curve world. A flat curve would leave `D(T_s)` and `D(T_e)`
+#: differing only by the period, and a single curve would let a discounting error hide in the
+#: forward.
 DISCOUNT = (0.0400, 0.0100)
 PROJECTION = (0.0450, 0.0115)
-#: The knot grid. The front knot is a day rather than zero: `HullWhite1FactorInterestRateModel`
-#: divides its assembled curve by the factor's own tenors, so a zero knot is a division by zero and
-#: every simulated row comes back NaN.
+#: The front knot is a DAY rather than zero: `HullWhite1FactorInterestRateModel` divides its
+#: assembled curve by the factor's own tenors, so a zero knot makes every simulated row NaN.
 KNOTS = [1.0 / 365.0, 0.25, T_S, T_E, 2.0, 5.0]
 
 CURRENCY, DISCOUNT_CURVE, PROJECTION_CURVE = 'ZAR', 'ZAR-DISC', 'ZAR-PROJ'
 PRINCIPAL = 1e7
 
-#: Off par on both sides. The projected forward is 5.901126% on this world, so a Borrower is 90bp
-#: in the money at 5.00 and 110bp out of it at 7.00: realized amounts of +22277.85 and -27166.60 on
-#: a notional of ten million, signed and large. A par-held FRA carries zero instead, and a zero
-#: flow is zero whatever date it is discounted from - which is the degeneracy this file exists to
-#: stay out of.
+#: Off par on both sides: the projected forward is 5.901126%, so a Borrower is 90bp in the money at
+#: 5.00 and 110bp out of it at 7.00 - signed, large realized amounts on ten million, where a
+#: par-held FRA carries zero and a zero flow is zero whatever date it is discounted from.
 LOW_STRIKE, HIGH_STRIKE = 5.00, 7.00
 
 #: (side, strike) per timing for the Monte Carlo gates. Across the three, both directions and both
@@ -130,8 +112,8 @@ COMPANION = 'SWAP3Y'
 
 
 def zero_rate(curve, tenor):
-    """`a + b * T`, the authored zero curve. The `Price Factors` block below is written FROM this,
-    so the curve the engine reads and the curve the reference derives from are one statement."""
+    """`a + b * T`, the authored zero curve. The `Price Factors` block is written FROM this, so the
+    curve the engine reads and the curve the reference derives from are one statement."""
     return curve[0] + curve[1] * tenor
 
 
@@ -179,13 +161,11 @@ def fra(reference, timing, side, strike, fixing_lag=FIXING_LAG):
 
 
 def config(deals, sigma=None):
-    """A `Config` holding the authored world and `deals`, each directly under the root.
-
-    `sigma` gives both curves a Hull-White factor. Zero is not "no model": the simulation runs, the
-    resets fix off it and the ledger is booked from it - every path is just the arbitrage-free
-    evolution of the authored curve, which is what makes the readings exact. A credit Monte Carlo
-    needs at least one stochastic factor to run at all (`reset` reshapes a zero-factor draw and
-    raises), so a static world is not the alternative.
+    """A `Config` holding the authored world and `deals`, each directly under the root. `sigma`
+    gives both curves a Hull-White factor, and zero is not "no model": the simulation runs, the
+    resets fix off it, and every path is the arbitrage-free evolution of the authored curve, which
+    is what makes the readings exact. A credit Monte Carlo needs at least one stochastic factor to
+    run at all, so a static world is not the alternative.
     """
     c = Config(base_currency=CURRENCY)
     c.params['System Parameters']['Base_Date'] = BASE
@@ -216,12 +196,10 @@ def priced(deals):
 
 
 def cmc(deals, sigma=0.0, batch=64):
-    """One credit Monte Carlo over `deals`, ledger on, monthly reporting rows.
-
-    `0d 1m(1m)` off a base date on the 3rd puts the effective and maturity dates ON rows rather
-    than between them, and fills the six months in front of them so the profile is a profile. How
-    far the grid runs is the BOOK's horizon rather than this string's: with the FRA alone it stops
-    on the deal's own settlement date, which is the reval end being read.
+    """One credit Monte Carlo over `deals`, ledger on, monthly reporting rows. `0d 1m(1m)` off a
+    base date on the 3rd puts the effective and maturity dates ON rows. How far the grid runs is
+    the BOOK's horizon rather than this string's: with the FRA alone it stops on the deal's own
+    settlement date, which is the reval end being read.
     """
     return derivus.run_cmc(config(deals, sigma=sigma), prec=DTYPE, overrides={
         'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 1m(1m)', 'Batch_Size': batch,
@@ -232,10 +210,9 @@ def cmc(deals, sigma=0.0, batch=64):
 
 def deal_profile(calc, reference):
     """One deal's OWN (rows, paths) profile, off the structure the run left behind.
-
-    `pricing.interpolate` stashes it on the deal's `Calc_res` before the tail pad, so its row count
-    IS the number of MTM rows the deal is alive on - which is the reval end the timing decides,
-    read without netting it against anything else in the book.
+    `pricing.interpolate` stashes it on `Calc_res` before the tail pad, so its row count IS the
+    number of MTM rows the deal is alive on - the reval end the timing decides, read without
+    netting it against anything else in the book.
     """
     for dependency in calc.netting_sets.dependencies:
         if dependency.Instrument.field.get('Reference') == reference:
@@ -254,15 +231,13 @@ def settled_rows(out):
 
 @pytest.mark.parametrize('timing', ['End', 'Discounted', 'Begin'])
 def test_the_pv_discounts_from_the_date_the_timing_names(timing):
-    """One base valuation per timing, against the hand-derived discount off the authored curve.
+    """One base valuation per timing against the hand-derived discount, to 1e-12. Four FRAs a run -
+    Borrower and Lender, in and out of the money - so a sign convention cannot pass by cancelling
+    and a discounting error cannot pass by being small on one side.
 
-    Four FRAs in each run - Borrower and Lender, in and out of the money - so a sign convention
-    cannot pass by cancelling and a discounting error cannot pass by being small on one side.
-
-    `End` and `Discounted` COINCIDE here, and that is the ruling rather than an accident: both book
-    the realized amount at maturity and discount it from there, so the only things separating them
-    are where the cash settles and how long the deal stays alive, neither of which a base valuation
-    can see. `Begin` is the one that moves, by `D(T_e)/D(T_s)`.
+    `End` and `Discounted` COINCIDE here by ruling rather than accident: both book at maturity and
+    discount from there, so what separates them is where the cash settles and how long the deal
+    stays alive, neither of which a base valuation sees. `Begin` moves by `D(T_e)/D(T_s)`.
     """
     cases = [('BORROW_LOW', 'Borrower', LOW_STRIKE), ('BORROW_HIGH', 'Borrower', HIGH_STRIKE),
              ('LEND_LOW', 'Lender', LOW_STRIKE), ('LEND_HIGH', 'Lender', HIGH_STRIKE)]
@@ -279,12 +254,10 @@ def test_the_pv_discounts_from_the_date_the_timing_names(timing):
 
 
 def test_end_and_discounted_price_alike_and_begin_is_the_one_that_moves():
-    """The identity the table above states, gated so it cannot drift silently.
-
-    It is also the placebo check on the gate above: three timings agreeing to 1e-12 against a
-    reference that never looked at the timing would prove nothing, so the ratio that SEPARATES
-    `Begin` is asserted against the discount factors it is made of, and that ratio is required to
-    be a real number rather than a rounding one.
+    """The identity the table states, and the placebo check on the gate above: three timings
+    agreeing to 1e-12 against a reference that never looked at the timing would prove nothing, so
+    the ratio SEPARATING `Begin` is asserted against the discount factors it is made of - and
+    required to be a real number rather than a rounding one.
     """
     values = {timing: float(priced([fra('F1', timing, 'Borrower', LOW_STRIKE)])['F1'])
               for timing in ('End', 'Discounted', 'Begin')}
@@ -300,19 +273,15 @@ def test_end_and_discounted_price_alike_and_begin_is_the_one_that_moves():
 
 
 def test_the_reset_reads_the_fra_period_and_not_its_own_fixing_window():
-    """The fixing lag, which is what the reset row's own start and end dates are for.
+    """A reset fixing before the effective date reads the rate over [Effective, Maturity] - the
+    period the FRA accrues - not [Reset, Maturity]. Gated by pricing one trade at two very
+    different lags and requiring the PV to be IDENTICAL: nothing else moves with the lag, so a
+    reset row carrying its own fixing date as the rate START makes the two differ.
 
-    A reset fixing before the effective date reads the rate over [Effective, Maturity] - the period
-    the FRA accrues - not [Reset, Maturity]. Gated by pricing the same trade at two very different
-    lags and requiring the PV to be IDENTICAL: nothing else about the deal moves with the lag, so a
-    reset row carrying its own fixing date as the rate START would make these two numbers differ.
-
-    The pre-636f9a8 row was `[Reset, Reset, Maturity]`, which is exactly that. It widens the rate
-    window without touching the accrual, so the projected forward is read over 134 days and divided
-    by a 89-day year fraction: on this curve 8.7024% against 5.9011%, and the trade prices at
-    88338.21 against 21500.60 - four times its value. The second assertion below is that
-    counterfactual, derived from the same formula the reference is, so the gate states how far
-    wrong the alternative is rather than only that the two lags agree.
+    The historical row was `[Reset, Reset, Maturity]`, which widens the rate window without
+    touching the accrual: the forward is read over 134 days and divided by an 89-day year fraction,
+    8.7024% against 5.9011%, four times the trade's value. The second assertion derives that
+    counterfactual from the same formula, so the gate says how far wrong the alternative is.
     """
     values = priced([fra('LAG_0', 'End', 'Borrower', LOW_STRIKE, fixing_lag=0),
                      fra('LAG_45', 'End', 'Borrower', LOW_STRIKE, fixing_lag=45)])
@@ -336,17 +305,11 @@ def test_the_reset_reads_the_fra_period_and_not_its_own_fixing_window():
 
 @pytest.mark.parametrize('timing', ['End', 'Discounted', 'Begin'])
 def test_the_exposure_ends_and_the_cash_books_where_the_timing_says(timing):
-    """One credit Monte Carlo per timing: the REVAL END and the LEDGER together.
-
-    Neither half is enough on its own. The profile says where the deal stops being a position -
-    `End` runs to maturity, `Discounted` and `Begin` stop at effective - and the ledger says what
-    was paid and when. `End` and `Discounted` agree at every row they share and at the base date,
-    so nothing but these two readings separates them.
-
-    Both are compared against the hand derivation to float precision, which the zero-vol Hull-White
-    world is what buys (see the module docstring). The three expected amounts are three different
-    numbers: `End` and `Begin` book the full realized amount, `Discounted` books it multiplied by
-    the period discount, and `End` books three months later than the other two.
+    """One credit Monte Carlo per timing: the REVAL END and the LEDGER together, neither half
+    enough alone. The profile says where the deal stops being a position, the ledger what was paid
+    and when - and `End` and `Discounted` agree at every row they share and at the base date, so
+    nothing but these two readings separates them. Both against the hand derivation to 1e-12, which
+    the zero-vol Hull-White world is what buys.
     """
     side, strike = CMC_CASES[timing]
     calc, out = cmc([fra('FRA1', timing, side, strike)])
@@ -381,13 +344,11 @@ def test_the_exposure_ends_and_the_cash_books_where_the_timing_says(timing):
 
 
 def test_the_deal_contributes_nothing_after_its_own_date_on_a_grid_that_outlives_it():
-    """The other half of the reval end: a book-mate that outlives the FRA, so the grid does too.
-
-    The gate above reads the deal's last live row off a grid that ENDS there, which is true and is
-    half the statement - the horizon is the book's own last settlement. Put a three-year swap
-    beside it and the grid runs two years past every timing. The FRA still stops on its own date -
-    `End` at maturity, the other two at effective - and every reported row beyond it is the swap's
-    value and nothing else, which is what "dead" means where a portfolio keeps reporting.
+    """The other half of the reval end: a book-mate that outlives the FRA, so the grid does too. The
+    gate above reads the last live row off a grid that ENDS there, which is half the statement -
+    the horizon is the book's own last settlement. With a three-year swap beside it the grid runs
+    two years past every timing, and every row past the FRA's own date is the swap's value and
+    nothing else, which is what "dead" means where a portfolio keeps reporting.
     """
     dead = {}
     for timing in ('End', 'Discounted', 'Begin'):
@@ -415,12 +376,10 @@ def test_the_deal_contributes_nothing_after_its_own_date_on_a_grid_that_outlives
 
 
 def test_the_three_timings_book_three_different_things_on_the_same_trade():
-    """The separation, on ONE trade priced three ways - the reading a single timing cannot give.
-
-    `End` and `Discounted` agree on the base-date PV and disagree on the ledger; `Begin` and
-    `Discounted` agree on the ledger DATE and disagree on the amount; `End` and `Begin` agree on
-    the amount and disagree on the date. Asserting all three pairs together is what says these are
-    three branches rather than two spellings of one.
+    """The separation on ONE trade priced three ways. `End` and `Discounted` agree on the PV and
+    disagree on the ledger; `Begin` and `Discounted` agree on the ledger DATE and disagree on the
+    amount; `End` and `Begin` agree on the amount and disagree on the date. All three pairs
+    together is what says these are three branches rather than two spellings of one.
     """
     booked = {}
     for timing in ('End', 'Discounted', 'Begin'):
@@ -438,20 +397,16 @@ def test_the_three_timings_book_three_different_things_on_the_same_trade():
 
 
 def test_the_ledger_survives_a_live_simulation():
-    """The same three statements under a real Hull-White vol, where the profile is a distribution.
+    """The same three statements under a real Hull-White vol, where the profile is a distribution -
+    which is what says the zero-vol gates are exact for the right reason rather than because the
+    pricer went down a degenerate branch. The date, the reval end and `booked == the deal's own
+    last row` stay EXACT path for path; the AMOUNT cannot, and is compared against its own STANDARD
+    ERROR rather than a hand-chosen tolerance, the payoff's spread being a fifth of its level.
 
-    The zero-vol gates above are exact because every path is the same; this one is what says they
-    are not exact because the pricer went down a degenerate branch. The date, the reval end and the
-    identity `booked == the deal's own last row` are all still EXACT path for path. The AMOUNT is
-    the one thing that cannot be, and it is compared against its own STANDARD ERROR rather than a
-    tolerance chosen by hand - the payoff's spread is about a fifth of its level here, so a fixed
-    percentage would be either vacuous or a reseed away from failing.
-
-    The residual is NOISE and not bias, which is what makes a standard-error bound the right shape.
-    Across seeds 1/2/3 the three timings sit at 1.15/2.32/2.32, 1.59/0.55/0.55 and 0.99/0.28/0.28
-    standard errors, and raising seed 1's count to 16384 moves it to 1.38/0.96/0.96 while the
-    relative gap falls from 0.41%/0.83%/0.68% to 0.25%/0.17%/0.14% - sqrt(n), as it should. A
-    systematic term would have held its relative size and grown in sigmas instead.
+    The residual is NOISE and not bias, which is what makes that the right shape: across three
+    seeds the timings sit at 0.28 to 2.32 standard errors, and raising the count to 16384 takes the
+    relative gap from 0.41-0.83% to 0.14-0.25% - sqrt(n), where a systematic term would have held
+    its relative size and grown in sigmas.
     """
     for timing in ('End', 'Discounted', 'Begin'):
         side, strike = CMC_CASES[timing]

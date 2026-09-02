@@ -1,17 +1,15 @@
 """`DiffV2_Load_Value_Fn` means EVALUATION, and a solve is a stream, so it has to mean that here.
 
-A solve runs `warmup / step / finish` across simulation batches, and `step` once swept
-unconditionally — so batches 2..N-1 fine-tuned the "frozen" nets on the evaluation world. `finish`
-then gated the artifact on `loaded is None`, so the retrained weights were reported (V_0, verdict)
-and never written anywhere: unreproducible by construction.
+A solve runs `warmup / step / finish` across simulation batches, and an unconditional sweep in
+`step` fine-tunes the "frozen" nets on the evaluation world, reporting weights (V_0, verdict) that
+are never written anywhere.
 
-Two things now stop that, and both are gated here. Structurally, a frozen policy fits nothing, so
-its run is a stream of length ONE — the contract refuses anything else, and there are no step
-batches to sweep. Defensively, `step` still refuses to sweep a loaded net.
+Two things stop that, both gated here. Structurally, a frozen policy fits nothing, so its run is a
+stream of length ONE and there are no step batches to sweep. Defensively, `step` still refuses to
+sweep a loaded net.
 
-The gate is exact rather than statistical: a frozen eval reports the CHECKPOINT's V_0 to full
-precision and fits zero rows. The runs are deliberately tiny — the point is which code paths
-execute, not the numbers.
+Exact rather than statistical: a frozen eval reports the CHECKPOINT's V_0 to full precision and
+fits zero rows. The runs are tiny - what is under test is which paths execute.
 """
 import json as jsonlib
 import os
@@ -61,9 +59,9 @@ def checkpoint(tmp_path_factory):
 
 
 def test_a_loaded_checkpoint_is_not_retrained(checkpoint):
-    """The defect, exactly: the intermediate batches ran a full backward sweep with `opt.step()`
-    over the loaded nets. A frozen run reports the checkpoint's own V_0 and fits nothing. Its
-    single batch is both the warmup bundle and the held-out world."""
+    """A frozen run reports the checkpoint's own V_0 and fits nothing - the defect was a full
+    backward sweep with `opt.step()` over the loaded nets. Its single batch is both the warmup
+    bundle and the held-out world."""
     path, ck = checkpoint
     diag, result = _run(_cfg(batches=1, load=path), 'eval_frozen')
     assert diag['per_t'] == [], 'a fit step ran on a loaded checkpoint — it is not frozen'
@@ -73,9 +71,8 @@ def test_a_loaded_checkpoint_is_not_retrained(checkpoint):
 
 
 def test_an_eval_may_not_ask_for_fit_batches(checkpoint):
-    """The structural half of the guarantee: a frozen policy fits nothing, so a multi-batch stream
-    is not an evaluation — it is a request to keep training, and the contract refuses it at the
-    JSON boundary rather than silently consuming the extra batches."""
+    """The structural half: a frozen policy fits nothing, so a multi-batch stream is a request to
+    keep training - refused at the JSON boundary rather than silently consumed."""
     path, _ck = checkpoint
     with pytest.raises(ValueError, match='requires Simulation_Batches == 1'):
         _run(_cfg(batches=3, load=path), 'eval_too_many_batches')
@@ -89,8 +86,7 @@ def test_a_solve_needs_a_held_out_batch():
 
 
 def test_the_checkpoint_file_is_untouched_by_an_eval(checkpoint):
-    """The retrained nets used to be discarded silently — reported, then thrown away. Nothing
-    should write to the file either."""
+    """An eval writes nothing to the checkpoint."""
     path, ck = checkpoint
     before = open(path, 'rb').read()
     _run(_cfg(batches=1, load=path), 'eval_no_write')
@@ -98,8 +94,8 @@ def test_the_checkpoint_file_is_untouched_by_an_eval(checkpoint):
 
 
 def test_saving_while_loading_is_a_contradiction(checkpoint):
-    """Train (save) and evaluate (load) are separate runs. Setting both used to silently drop the
-    save, which is how the retrained-and-discarded nets stayed invisible."""
+    """Train (save) and evaluate (load) are separate runs; setting both silently dropped the
+    save."""
     path, _ck = checkpoint
     with pytest.raises(ValueError, match='DiffV2_Save_Value_Fn is set alongside'):
         _run(_cfg(batches=1, save=path + '.2', load=path), 'save_and_load')

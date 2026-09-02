@@ -34,40 +34,30 @@ the BASE currency the two axes agree and nothing is converted. No structure know
 
 An ACCRUAL leg asks the axis question once more, and one answer is that a TARGET does not cross:
 it is a sum of DIFFERENCES, and `1/S - 1/K` is not the reciprocal of `S - K`, so a TARF is quoted
-on the pair's BASE currency and refuses the other side by name. A LEVEL - an accumulator's
-knock-out - crosses exactly as a barrier does, and a leverage is a ratio that never converts. See
-`furnish_accrual`.
+on the pair's BASE currency and refuses the other side by name. A LEVEL crosses exactly as a
+barrier does, and a leverage is a ratio that never converts. See `furnish_accrual`.
 
-PARAMETERS vs A DEAL. The runner fills the shared block from the parameters - the two currencies
-off the pair, the vol surface named for it, the discounting currency, the notional, and
-`Expiry_Date` as the book's `Base_Date` plus the quoted tenor - then the leg's pinned block, then
-its slots. `expiry` is `<n><D|W|M|Y>` read through `Config.offset_lookup`, or an ISO date for a
-broken one; anything else refuses by name rather than landing on today.
-
-Every step prices ONE leg against a deep copy of the whole book document with the deal tree
-emptied, since a deal's base valuation does not depend on its siblings and a lone deal compiles
-faster per iterate. `Price` is a plain base valuation; `Solve` is `derivus.solve_deal_field`,
-bracketed. The runner takes the WHOLE document rather than a market patch, and hands each step
-that document.
+PARAMETERS vs A DEAL. The runner fills the shared block from the parameters, then the leg's pinned
+block, then its slots. `expiry` is `<n><D|W|M|Y>` read through `Config.offset_lookup`, or an ISO
+date for a broken one; anything else refuses by name rather than landing on today. Every step
+prices ONE leg against a deep copy of the whole book document with the deal tree emptied. `Price`
+is a plain base valuation; `Solve` is `derivus.solve_deal_field`, bracketed.
 
 A SPREAD IS QUOTED; A MID IS BOOKED. The book's `FXVol` surface is bootstrapped from
 `Quoted_Market_Value` alone, while the `FXVolPrices` block beside it may carry each pillar's
-`Quoted_Bid`/`Quoted_Ask` as data - and this module is that data's only reader. Each leg prices on
-its own copy of the book, whose written surface is moved by BOTH of the spreads that block quotes,
-signed by the CLIENT's side: the ATM half-spread at the leg's expiry shifts it FLAT, and the RR and
-BF halves SKEW it - a wing is composed as `ATM + BF +- RR/2`, so it widens by `BF_half + RR_half/2`
-while the ATM node does not, and the smile changes shape rather than level. A solved coordinate
-therefore comes out where a desk would deal it. The finished legs are then priced once more against
-the unmoved book, and that is `net_mid`. A book carrying no two-way moves every leg by nothing and
-quotes exactly as it always has, to the bit.
+`Quoted_Bid`/`Quoted_Ask` as data, and this module is that data's only reader. Each leg prices on
+its own copy of the book, whose surface is moved by BOTH spreads, signed by the CLIENT's side: the
+ATM half-spread at the leg's expiry shifts it FLAT, and the RR and BF halves SKEW it - a wing being
+`ATM + BF +- RR/2`, it widens by `BF_half + RR_half/2` while the ATM node does not. The finished
+legs are then priced once more against the unmoved book, and that is `net_mid`. A book carrying no
+two-way quotes exactly as it always has, to the bit.
 
 THE RISK PRICES THE SPREAD. A trade's charge is the cost of hedging the RESIDUAL it leaves on the
-book, at the market's own two-way. The composed candidate is MIRRORED - the same verb the booking
-uses, so the risk measured and the trade booked are one object - and the book's vol risk is read
-with it and without it in QUOTE space, off `Quote_Sensitivity` on the risk run's own copy of the
-`FXVolPrices` block. Each bucket's move in ABSOLUTE risk is charged that bucket's own half-spread,
-and `participation` of any saving comes off the spread. The `Quote Policy` block declares the
-mandate and its ABSENCE is the feature's off switch.
+book, at the market's own two-way. The composed candidate is MIRRORED - the verb the booking uses -
+and the book's vol risk is read with it and without it in QUOTE space, off `Quote_Sensitivity`.
+Each bucket's move in ABSOLUTE risk is charged that bucket's own half-spread, and `participation`
+of any saving comes off the spread. The `Quote Policy` block declares the mandate and its ABSENCE
+is the feature's off switch.
 
 THE SPOT IS LIVE, THE SURFACE IS TICKED. `with_live_spots` is the inverse of `engine_spot` and the
 one seam a caller writes a terminal's number through: a spot is `bind='value'` data that moves
@@ -478,16 +468,15 @@ def fixing_grid(base_date, expiry, frequency):
     struck today. Fixings run from the book's `Base_Date` at `frequency` up to and including the
     tenor; each settles `FIXING_LAG` days later.
 
-    Each fixing is `base + n x frequency` rather than a step off the previous one, because an
-    offset applied repeatedly from a month end walks (31 Jan + 1M + 1M is 28 Mar, not 31 Mar).
+    Each fixing is `base + n x frequency` rather than a step off the previous one, an offset
+    applied repeatedly from a month end walking (31 Jan + 1M + 1M is 28 Mar, not 31 Mar).
 
     A tenor holding no whole fixing period refuses rather than returning an empty strip, and so
-    does a frequency that does not DIVIDE the tenor: the loop would stop at the last fixing that
-    fits, leaving the strip short of the tenor that was quoted while the ticket still said 1Y.
+    does a frequency that does not DIVIDE the tenor - the strip would end short of the tenor that
+    was quoted while the ticket still said 1Y.
 
     The base is normalized to MIDNIGHT first, as `expiry_date` normalizes its answer: a `Base_Date`
-    carrying a time would put the final fixing one comparison past a midnight last date, and a
-    twelve-fixing year would quietly be eleven.
+    carrying a time would put the final fixing one comparison past a midnight last date.
     """
     import pandas as pd
     from .config import Config
@@ -534,20 +523,18 @@ def spot_model(document, deal_type, underlying, settlement):
     """Pin `HestonNandi` on `deal_type` where THIS book carries a calibration for the leg's pair.
     Returns the leg's note, or `None` when the model was pinned.
 
-    The switch is a `Valuation Configuration` entry per deal TYPE rather than a deal field, and the
-    parameters resolve by naming convention off the pair's NON-BASE token - the same
-    `utils.spot_model_currency` rule the engine's own lookup takes - so the presence check here and
-    that lookup are one key. It has to be made here: the switch on with the factor absent raises
-    inside the engine's dependency loop, which SKIPS the deal and logs an ERROR, so the quote would
-    return with its only leg priced at nothing.
+    The switch is a `Valuation Configuration` entry per deal TYPE, and the parameters resolve by
+    naming convention off the pair's NON-BASE token - `utils.spot_model_currency`, the rule the
+    engine's own lookup takes - so the check here and that lookup are one key. It has to be made
+    here: the switch on with the factor absent raises inside the engine's dependency loop, which
+    SKIPS the deal and logs an ERROR, so the quote would return its only leg priced at nothing.
 
-    A CROSS - neither leg the book's base - keeps the underlying's name and is out of the ruling's
-    scope, both legs being simulated factors whose composed law nothing fits. A book that declares
-    no `Base_Currency` at all REFUSES here rather than guessing a token: pinning the wrong one is a
-    switch the engine then looks up under the other name, which is that same leg priced at nothing.
+    A CROSS keeps the underlying's name and is out of the ruling's scope, both legs being simulated
+    factors whose composed law nothing fits. A book declaring no `Base_Currency` REFUSES rather
+    than guessing a token, since the engine would then look the switch up under the other name.
 
-    Writes IN PLACE on the document the runner holds. Every pricing deep-copies that document
-    through `alone`, so one write reaches every iterate of the solve.
+    Writes IN PLACE on the document the runner holds; every pricing deep-copies it through `alone`,
+    so one write reaches every iterate of the solve.
     """
     factors = market_data(document)
     token = utils.spot_model_currency(underlying, settlement, base_currency(document))
@@ -641,11 +628,10 @@ def base_currency(document):
     """The reporting currency every `FxRate.<ccy>.Spot` in this document is quoted in, or `None`
     where the document does not declare one.
 
-    Read off the EXPLICIT block alone, which is the same half of the book `market_data` reads and
-    the only half a quote can write; the engine reads the SAME declaration off its merged params,
-    so a `MarketDataFile` that is not repeated here answers `None` rather than the engine's number.
-    None is never resolved into a token - `utils.spot_model_currency` refuses it - so the two reads
-    can differ only into a refusal, never into a different token.
+    Read off the EXPLICIT block alone, the half `market_data` reads and the only half a quote can
+    write, so a `MarketDataFile` not repeated here answers `None` rather than the engine's number.
+    None never resolves into a token (`utils.spot_model_currency` refuses it), so the two reads can
+    differ only into a refusal.
     """
     return document.get('Calc', {}).get('MergeMarketData', {}).get(
         'ExplicitMarketData', {}).get('System Parameters', {}).get('Base_Currency')
@@ -689,15 +675,12 @@ def quote_points(document, surface):
     """The quotes `surface` was built from - `FXVolSurfaceParameters.used`'s filter over the
     `FXVolPrices` block, and empty where the book carries no such block at all.
 
-    One reader for the pillar-keyed halves and the skew's own rebuild, because a spread charged off
-    a row the surface was not built from is a spread charged on nothing: `Use` holds a quote out of
-    the bootstrap without deleting it, and it has to hold it out of the quote layer by the same
-    token.
+    One reader for the pillar-keyed halves and the skew's own rebuild: a spread charged off a row
+    the surface was not built from is a spread charged on nothing, and `Use` holds a quote out of
+    the quote layer for the same reason it holds one out of the bootstrap.
 
-    The filter is SPELLED here rather than borrowed, for the default alone: `Use` is an optional
-    field a block states to hold a row OUT, so its absence is 'Yes', and a hand-authored mid-only
-    block that omits it must quote rather than raise. That is `atm_two_way`'s own reading of the
-    same field, and the two are now one rule.
+    The filter is spelled here for the DEFAULT alone: `Use` is stated to hold a row out, so its
+    absence is 'Yes' and a hand-authored mid-only block must quote rather than raise.
     """
     prices = document.get('Calc', {}).get('MergeMarketData', {}).get(
         'ExplicitMarketData', {}).get('Market Prices', {})
@@ -711,15 +694,14 @@ def atm_two_way(document, surface):
     surface's own vol units - `(ask - bid) / 2` off the quote block's ATM rows, and empty when the
     block carries no two-way at all.
 
-    The block is `Market Prices` DATA: the bootstrap reads `Quoted_Market_Value` by name and
-    nothing else, so the written surface is the mid one whether or not these sides are there.
+    The block is `Market Prices` DATA: the bootstrap reads `Quoted_Market_Value` and nothing else,
+    so the written surface is the mid one whether or not these sides are there.
 
-    A row missing either side is not a two-way and is skipped. A CROSSED one reads as zero-wide
-    rather than as a negative spread - a stale bid through a live offer is a broken print, and a
-    desk must not pay a client for it.
+    A row missing either side is not a two-way and is skipped; a CROSSED one reads zero-wide rather
+    than negative, a stale bid through a live offer being a broken print.
 
-    ATM rows ONLY, because this is the half that moves the surface FLAT. The RR and BF rows carry
-    their own two-way and it skews the smile instead - `wing_two_way` composes that one.
+    ATM rows ONLY, this being the half that moves the surface FLAT - the RR and BF two-way skews
+    the smile instead, and `wing_two_way` composes it.
     """
     prices = document.get('Calc', {}).get('MergeMarketData', {}).get(
         'ExplicitMarketData', {}).get('Market Prices', {})
@@ -757,13 +739,12 @@ def quote_two_way(document, surface):
     that quote under - `{'ATM 1': 0.002, 'RR 0.25 1': 0.001, ...}`, in the surface's own vol units.
 
     `atm_two_way`'s reading widened to the whole block, and the two are not redundant: that one is
-    an ATM curve read BETWEEN pillars, for what a vanilla deals on at a tenor, while this is a
-    lookup per quote and never interpolated - a bucket IS a quoted pillar or it is not a bucket.
+    an ATM curve read BETWEEN pillars, for what a vanilla deals on at a tenor, while this is never
+    interpolated - a bucket IS a quoted pillar or it is not a bucket.
 
     The descriptor and the used-quote filter both come from `FXVolSurfaceParameters`, so these keys
-    are the ones the bootstrap's own leaves are published under; a second copy of the naming rule
-    would drift into silently pricing no bucket at all. A row missing either side is skipped and a
-    CROSSED one reads zero-wide, for the reason `atm_two_way` states.
+    are the ones the bootstrap's leaves are published under; a second copy of the naming rule would
+    drift into silently pricing no bucket at all.
     """
     from .bootstrappers import FXVolSurfaceParameters
     halves = {}
@@ -782,18 +763,16 @@ def wing_two_way(document, surface):
 
     Composed through the strangle algebra the surface was built from, which fixes both the number
     and the fact that there is ONE per pillar rather than one per wing. A wing vol is
-    `ATM + BF +- RR/2`, so its offered side is the offered side of every term it is made of and the
-    SUBTRACTED term takes its bid: `put_ask = ATM_ask + BF_ask - RR_bid/2`. Half the ask-less-bid
-    of a linear combination is each term's own half times the size of its coefficient, summed, so
-    both wings widen by `BF_half + RR_half/2` - the risk reversal's spread reaches both wings, its
-    SIGN does not.
+    `ATM + BF +- RR/2`, so its offered side takes the offered side of every term and the SUBTRACTED
+    term's bid: `put_ask = ATM_ask + BF_ask - RR_bid/2`. Half the ask-less-bid of a linear
+    combination is each term's own half times its coefficient's size, summed, so both wings widen
+    by `BF_half + RR_half/2` - the risk reversal's spread reaches both wings, its SIGN does not.
 
-    The ATM half is deliberately not in here: `with_vol_shift` already carries that one FLAT across
-    every node, so what this returns is the part that changes the smile's SHAPE.
+    The ATM half is not in here: `with_vol_shift` carries that one FLAT across every node, so what
+    this returns is the part that changes the smile's SHAPE.
 
-    A row missing either side is not a two-way and is skipped, a CROSSED one reads zero-wide for
-    the reason `atm_two_way` states, and a pillar composing to zero is DROPPED rather than carried -
-    a book quoting no wing spread has to price down the path it always did, byte for byte.
+    A row missing either side is skipped, a CROSSED one reads zero-wide, and a pillar composing to
+    zero is DROPPED so a book quoting no wing spread prices down the path it always did.
     """
     weight = {'BF': 1.0, 'RR': 0.5}
     halves = {}
@@ -811,10 +790,9 @@ def leg_expiry(document, deal):
     """A leg's tenor in years, on the quote block's own expiry axis - the coordinate the spread
     curve is read at, never a day count a price comes off.
 
-    An accumulator declares no `Expiry_Date`, so a strip's tenor is its LAST SETTLEMENT, the same
-    date the TARF writes into the field it does declare. The ATM half-spread is read once per leg,
-    so a strip takes the one at its longest fixing - the widest of the ones it spans - rather than
-    being quoted tighter than any of them.
+    An accumulator declares no `Expiry_Date`, so a strip's tenor is its LAST SETTLEMENT, the date
+    the TARF writes into the field it does declare. The ATM half-spread is read once per leg, so a
+    strip takes the widest of the ones it spans rather than being quoted tighter than any.
     """
     end = deal['Expiry_Date'] if 'Expiry_Date' in deal \
         else deal[SCHEDULE_FIELD[deal['Object']]][-1][1]
@@ -828,28 +806,26 @@ def wing_skew(factor, rows, quotes, wings):
 
     ONE spelling of the delta-to-log-moneyness conversion, and it is the shipped one. The widening
     goes onto the QUOTES as a butterfly per pillar, and `smile` -> `malz_skews` -> `malz_surface`
-    then runs twice over the surface's OWN x-grid: once on the quotes as they stand, once on the
+    runs twice over the surface's OWN x-grid, once on the quotes as they stand and once on the
     widened ones. What comes back is the DIFFERENCE, so a written surface these quotes did not
-    build keeps whatever else was done to it and only the skew moves.
+    build keeps whatever else was done to it.
 
-    A BUTTERFLY is where the widening goes because the strangle algebra puts it there:
-    `vol(call) = ATM + BF + RR/2` and `vol(put) = ATM + BF - RR/2`, so `BF` enters both wings with a
-    coefficient of one and the ATM row with none - a widening that spares the ATM node, which is
-    what leaves that node carrying the flat shift and nothing else. The RISK REVERSAL is not
-    touched: its own spread is already inside `wings`, and moving that quote would tilt one wing up
-    and the other down rather than widening both. A pillar quoting a two-way on the risk reversal
-    ALONE has no butterfly row to widen, so one is authored at the composed half - on the quote
-    copy, which nothing outside this function reads.
+    A BUTTERFLY is where the widening goes because the strangle algebra puts it there: `BF` enters
+    both wings with a coefficient of one and the ATM row with none, which is what leaves that node
+    carrying the flat shift alone. The RISK REVERSAL is not touched - its own spread is already
+    inside `wings`, and moving that quote would tilt one wing up and the other down. A pillar
+    quoting a two-way on the risk reversal alone has no butterfly row, so one is authored at the
+    composed half, on the quote copy nothing outside this function reads.
 
-    An expiry the written surface carries and the quotes do not REFUSES by name: a skew is composed
-    from the quotes the surface was built from, and there is no smile there to widen.
+    An expiry the written surface carries and the quotes do not REFUSES by name: there is no smile
+    there to widen.
     """
     import numpy as np
     from .bootstrappers import FXVolSurfaceParameters
     from .riskfactors import Factor2D
 
-    # the surface's own x-grid, expiry by expiry, and where each of its rows sits in the written
-    # block - `malz_surface` walks this dict in insertion order, so the two travel together
+    # the surface's own x-grid and where each row sits in the written block - `malz_surface` walks
+    # this dict in insertion order, so the two travel together
     grid, index = {}, {}
     for position, row in enumerate(rows):
         grid.setdefault(float(row[1]), []).append(float(row[0]))
@@ -892,16 +868,14 @@ def with_vol_shift(document, factor, shift, quotes=None, wings=None):
 
     TWO moves, because the block quotes two kinds of spread. The ATM half-spread widens the whole
     surface FLAT, which is its level; the wing halves widen the wings and spare the ATM node, which
-    is its shape - `wing_skew` composes that one off `quotes`, the rows the surface was built from,
-    through the same strangle algebra it was built by. `wings` and `quotes` travel together: there
-    is no skewing a surface without the quotes that made it.
+    is its shape - `wing_skew` composes that one off `quotes`, the rows the surface was built from.
+    `wings` and `quotes` travel together: there is no skewing a surface without them.
 
-    With NEITHER move to make this hands back the document ITSELF, uncopied: a book carrying no
-    two-way prices down the identical path it always did and pays nothing, not even a deep copy.
-    Where there is no skew each row takes `shift + 0.0`, which is the float `shift` was.
+    With NEITHER move to make this hands back the document ITSELF, uncopied, so a book carrying no
+    two-way pays nothing at all.
 
-    Moving the WRITTEN surface is what a leg then prices on, because `run_job` does not bootstrap -
-    the block that built this surface is not read again inside a pricing run.
+    Moving the WRITTEN surface is what a leg then prices on, `run_job` not bootstrapping: the block
+    that built this surface is not read again inside a pricing run.
     """
     if not shift and not wings:
         return document
@@ -1015,9 +989,8 @@ def furnish_accrual(deal, params, document, base_date, underlying, inverted):
 
     THE SCHEDULE. `fixing_grid` grows it from the tenor and `fixing_frequency`, filed under the
     deal's own field name. `FXTARFOptionDeal` also declares an `Expiry_Date`, set to the LAST
-    SETTLEMENT rather than to the tenor, since a strip is not over until its final cashflow lands.
-    `FXAccumulatorOptionDeal` declares no such field, so the shared block's is REMOVED - a deal
-    block is the field dict the pricer reads.
+    SETTLEMENT rather than to the tenor; `FXAccumulatorOptionDeal` declares no such field, so the
+    shared block's is REMOVED - a deal block is the field dict the pricer reads.
 
     THE NOTIONALS. `Underlying_Amount` is the notional per fixing, already in `notional_currency`;
     `LeverageNotional` is `leverage` times it. Neither has an axis: `notional_currency` IS the
@@ -1025,18 +998,14 @@ def furnish_accrual(deal, params, document, base_date, underlying, inverted):
 
     THE TARGET does not cross. It is a sum of DIFFERENCES, and `1/S - 1/K` is not the reciprocal of
     `S - K`, so no number in reciprocal units means the same accrual cap. `InvertedTarget` is not
-    the answer either - it moves the whole fixing onto the reciprocal of the deal axis, so the deal
-    would pay `Underlying_Amount` per unit of MOVE in the pair, which is a different product (0.77%
-    apart in the solved strike on the gate's book). So `InvertedTarget` is False on every leg the
-    runner builds and a TARF quoted on the pair's QUOTE currency REFUSES by name. An accumulator
-    has no target and crosses both axes freely.
+    the answer either - it moves the whole fixing onto the reciprocal of the deal axis, a different
+    product (0.77% apart in the solved strike on the gate's book) - so it is False on every leg the
+    runner builds and a TARF quoted on the pair's QUOTE currency REFUSES by name, in this function's
+    FIRST statement, since a refusal firing later has already written the block the caller holds. An
+    accumulator has no target and crosses freely.
 
     THE MODEL. `spot_model` pins Heston-Nandi where the book carries a calibration for this leg's
-    PAIR - keyed off its non-base token, whichever side the leg is written from - and hands back the
-    note where it does not.
-
-    The axis refusal is this function's FIRST statement, before the schedule and the notionals: a
-    refusal firing later has already written the block the caller holds.
+    PAIR, and hands back the note where it does not.
     """
     if inverted and deal['Object'] == 'FXTARFOptionDeal':
         raise ValueError(
@@ -1205,13 +1174,12 @@ def read_policy(document):
 
       - `participation` - how much of a measured hedge-cost SAVING is passed to the client
       - `floor` - 'mid': the scale never goes below zero, so a quote never crosses the mid
-      - `scope` - 'vol', which is all v1 measures; anything else refuses rather than silently
-        pricing a scope nobody implemented
+      - `scope` - 'vol', all v1 measures; anything else refuses
       - `bucket_limit` - a per-bucket cap on `|risk after|` in the bucket's own vega units, past
-        which NO tightening applies however good the saving looks
+        which no tightening applies however good the saving looks
       - `min_ticket_bp` - flat bp of notional, the ops floor under the edge
       - `firm_seconds` - how long a quote stays approvable; the approval verb reads it, and this
-        module only carries it through so a desk states its mandate in ONE block
+        module carries it through so a desk states its mandate in ONE block
 
     A field that will not read refuses HERE rather than at the later verb that compares against it.
     """
@@ -1241,14 +1209,12 @@ def read_policy(document):
 def risk_document(document, nodes, surface):
     """The book as a GREEKS run, with `nodes` added to its deal tree and the vol quotes connected.
 
-    Three edits and no others. The calculation becomes a `BaseValuation` asking for
-    `Greeks: 'First'` - one backward off the ROOT netting set, so a leaf's `.grad` is the whole
-    portfolio's. The candidate's nodes are appended. And `Quote_Sensitivity` goes to Yes on the
-    `FXVolPrices` block, which is what makes `Config.bootstrap` leave the surface behind still
-    connected to the ATM/RR/BF quotes it was built from.
+    Three edits and no others: the calculation becomes a `BaseValuation` with `Greeks: 'First'` -
+    one backward off the ROOT netting set, so a leaf's `.grad` is the whole portfolio's - the
+    candidate's nodes are appended, and `Quote_Sensitivity` goes to Yes on the `FXVolPrices` block,
+    which is what leaves the surface connected to the quotes it was built from.
 
-    That switch is worth exactly ZERO in the forward pass - `leaf + (theta - theta.detach())` - so
-    turning it on cannot move a price.
+    That switch is worth exactly zero in the forward pass, so turning it on cannot move a price.
     """
     run = copy.deepcopy(document)
     run['Calc']['Calculation'] = dict(run['Calc']['Calculation'],
@@ -1271,11 +1237,11 @@ def vol_risk(document, nodes, surface):
     and prices it in the SAME `Context`: the leaves `Config.quote_leaves` publishes are the tensors
     `Calculation.factor_leaf` was offered, and one backward off the root leaves `.grad` on them.
 
-    Descriptors are SUMMED across every published block, which is the collision rule - one JSON
-    number can feed two chains, and each family's partial is correct while neither is the answer.
+    Descriptors are SUMMED across every published block - one JSON number can feed two chains, and
+    each family's partial is correct while neither is the answer.
 
-    An EMPTY deal tree has no value to differentiate - `backward()` on a constant refuses - and its
-    risk is a zero vector, so it never reaches a run.
+    An EMPTY deal tree has no value to differentiate and its risk is a zero vector, so it never
+    reaches a run.
     """
     from . import Context
     from .config import CustomJsonEncoder
@@ -1299,9 +1265,8 @@ def book_risk(document, surface):
 
     The book alone is the half of the measurement that does not depend on what is being quoted, so
     a desk quoting repeatedly against a standing book pays for one greeks run rather than two per
-    quote. The etag is over everything the greeks run reads - the deal tree, the WHOLE market
-    section and the Calculation block - because a rolled `Base_Date` or a changed report currency
-    over an unmoved book is a different risk vector.
+    quote. The etag is over everything the run reads - a rolled `Base_Date` over an unmoved book is
+    a different risk vector.
     """
     from . import content_hash
     etag = content_hash({'deals': document['Calc']['Deals']['Deals'],
@@ -1371,15 +1336,13 @@ def run_recipe(document, structure, params, reference, two_way, wings, surface, 
     Materializes the legs, signs each one's spread by the CLIENT's side, builds the shifted and
     skewed book each side needs, runs the steps in order, and marks the finished legs once more at
     mid. `scale` is the ONE thing that differs between the base pass and a re-quote: it multiplies
-    the ATM half-spread AND the wing halves, and rides the same two-sided machinery rather than a
-    second shift path.
+    the ATM half-spread and the wing halves alike.
 
-    Both spreads take the client's OWN sign, and it is the same sign: what the client buys is
-    offered at the ask of every quote the vol is composed of, what they sell is taken at the bid of
-    each. So a leg's copy of the book is named by `(shift, sign)` and legs sharing both share one
-    copy - every pricing deep-copies again through `alone`, so nothing here is mutated.
+    Both spreads take the client's OWN sign: what the client buys is offered at the ask of every
+    quote the vol is composed of, what they sell is taken at each bid. So a leg's copy of the book
+    is named by `(shift, sign)` and legs sharing both share one copy.
 
-    Returns `(legs, spreads, premiums, solved, mid)`. Legs are fresh because `run_solve` writes the
+    Returns `(legs, spreads, premiums, solved, mid)`. Legs are FRESH because `run_solve` writes the
     solved value back onto the leg it moved, so a second pass over the first pass's legs would seed
     itself from the answer it is meant to find.
     """
@@ -1448,14 +1411,11 @@ def risk_impact(document, params, reference, sided, surface, legs, premiums, mid
     market's own two-way, applies the policy, and hands back the `risk` block the outcome carries -
     `scale` included, which is what the re-quote multiplies every half-spread by.
 
-    Four ways out, each leaving `scale` at None - nothing to re-quote - with the reason NAMED
-    rather than reported as a scale of 1 nobody can distinguish from a decision:
-
-      - the book declares no `Quote Policy`, so the feature is off
-      - the book quotes no two-way of ANY kind - `sided` - so there is no spread to tighten and no
-        half-spread to price a bucket at either
-      - the full charge is not positive - a two-way that captured nothing has nothing to give back
-      - the book publishes no vol quote leaves, so there are no coordinates to measure in
+    Four ways out, each leaving `scale` at None with the reason NAMED rather than reported as a
+    scale of 1 nobody can distinguish from a decision: the book declares no `Quote Policy`; it
+    quotes no two-way of any kind, so there is no spread to tighten and no half-spread to price a
+    bucket at; the full charge is not positive; or no vol quote leaves are published, so there are
+    no coordinates to measure in.
     """
     policy = read_policy(document)
     empty = {'coordinates': 'quote-space', 'buckets': [], 'saving': None, 'charge_full': None,
@@ -1505,57 +1465,44 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None):
     row per leg (reference, role, deal type, side, market-terms strike and barrier, premium,
     whatever was solved, the vol spread it took and any `note`), `net`, `net_mid`, `edge`, `spot`,
     `risk`, `valuation_configuration`, and `deal` - the composed `StructuredDeal` in wire form,
-    ready for the booking verb.
-
-    `quote_id` hashes the structure, the parameters, the market the book was carrying AND a
-    submission clock: a quote is an ACT, so two identical asks minutes apart are two quotes.
+    ready for the booking verb. `quote_id` hashes the structure, the parameters, the market the book
+    was carrying AND a submission clock: a quote is an ACT, so two identical asks minutes apart are
+    two quotes.
 
     THE TWO-SIDED HALF. Where the book's `FXVolPrices` block carries a two-way, each leg prices on
-    its own copy of it, moved by the two spreads that block quotes. The ATM half-spread at the
-    leg's expiry moves the written surface FLAT - `+half` where the CLIENT buys, `-half` where they
-    sell - and the RR/BF halves SKEW it, widening each quoted pillar's wings by `BF_half +
-    RR_half/2` on the same side and sparing the ATM node. `net` is therefore the two-sided price
-    the client is quoted. Each leg reports its signed flat shift as `vol_spread` in the surface's
-    own units (0.002 is 0.2 vol points), the composed wing halves are reported once as
-    `wing_spread`, and BOTH are reported at the scale they were actually charged at - a tightened
-    re-quote describes the quote it made rather than the two-way the book carries.
+    its own copy of it, moved by the two spreads that block quotes: the ATM half-spread at the
+    leg's expiry moves the written surface FLAT (`+half` where the CLIENT buys), and the RR/BF
+    halves SKEW it, widening each quoted pillar's wings by `BF_half + RR_half/2` on the same side
+    and sparing the ATM node. `net` is therefore the two-sided price the client is quoted, each leg
+    reporting its signed flat shift as `vol_spread` and the composed wing halves reported once as
+    `wing_spread`. `wing_spread` is None where the block quotes no wing two-way; `vol_spread` is
+    None only where the book quotes NO two-way at all, and `spread_note` names the absence, since a
+    wings-only book has a real skew and a flat half of zero. `net_mid` is the finished legs priced
+    once more against the UNSHIFTED book, so the desk's captured `edge` is `net - net_mid`.
 
-    `wing_spread` is None where the block quotes no wing two-way. `vol_spread` is None only where
-    the book quotes NO two-way at all, in which case every leg prices on the document itself and
-    `spread_note` names the absence: a WINGS-ONLY book has a real skew and a flat half of zero, so
-    its legs report a signed zero - the shift that was applied - rather than an absence.
-
-    `net_mid` is the finished legs priced once more against the UNSHIFTED book - what the trade
-    marks once booked - in the same sign convention, so the desk's captured `edge` is
-    `net - net_mid`, positive when a spread was charged.
-
-    WHICH SPOT. `spot` names the market this quote was struck on: `value_market` is the pair as the
-    client quotes it, READ off the document the legs priced against rather than taken from the
-    caller, beside the caller's `source` ('terminal' or 'book') and its `note`.
+    `spot` names the market this quote was struck on: `value_market` is the pair as the client
+    quotes it, READ off the document the legs priced against rather than taken from the caller,
+    beside the caller's `source` ('terminal' or 'book') and its `note`.
 
     THE RISK-IMPACT HALF, off unless the book declares a `Calc['Quote Policy']` block. Where it
-    does, the base pass is quoted at the full two-way, its composed candidate is MIRRORED into the
-    desk's side, and the book's vol risk is measured with it and without it in quote coordinates.
-    Each bucket's move in ABSOLUTE risk times that bucket's own half-spread is what hedging the
-    residual costs; a negative total is a SAVING, and `participation` of it comes off the charge.
-    The re-quote then runs the whole recipe again with every leg's half-spread multiplied by
-    `scale = charge_effective / charge_full`.
+    does, the base pass is quoted at the full two-way, its candidate is MIRRORED into the desk's
+    side, and the book's vol risk is measured with it and without it in quote coordinates. Each
+    bucket's move in ABSOLUTE risk times that bucket's own half-spread is what hedging the residual
+    costs; a negative total is a SAVING, and `participation` of it comes off the charge. The
+    re-quote runs the whole recipe again at `scale = charge_effective / charge_full`.
 
     ONE PASS, NOT A FIXED POINT - a stated approximation. The risk was measured on the FULL-SPREAD
     candidate while the re-solve moves the solved coordinate, so the tightened structure's residual
-    is not exactly the one priced. The move is second order, and the `risk` block's buckets are the
-    full-spread candidate's. A risk-ADDING trade quotes at the full spread: the market's own spread
-    is the ceiling and the mid is the floor, so `scale` stays in [0, 1].
+    is not exactly the one priced; the move is second order and the reported buckets are the
+    full-spread candidate's. A risk-ADDING trade quotes at the full spread, so `scale` stays in
+    [0, 1].
 
-    WHAT MODEL IT WAS PRICED UNDER. `valuation_configuration` is what THIS quote's passes pinned -
-    never what the book already declared - or `None`. The pin lives on the quote's copy of the
-    document and dies with it, so `/book/quote` merges it into the book as part of the booking act
-    and a leg dealt under a GARCH does not re-mark as a lognormal.
-
-    WHO IT IS FOR. `netting_set` names an existing `NettingCollateralSet` - the CLIENT, since that
-    is where the counterparty and the CSA are declared - and the approval books the mirror UNDER
-    that node, which is what puts the trade inside the subtree the CVA projection prices. It is
-    checked against THIS document before anything is priced. `None` is the root booking.
+    `valuation_configuration` is what THIS quote's passes pinned, never what the book already
+    declared; the pin lives on the quote's copy and dies with it, so `/book/quote` merges it into
+    the book as part of the booking act. `netting_set` names an existing `NettingCollateralSet` -
+    the CLIENT, that being where the counterparty and the CSA are declared - and the approval books
+    the mirror UNDER that node, inside the subtree the CVA projection prices. It is checked against
+    THIS document before anything is priced; `None` is the root booking.
     """
     from . import content_hash
     from .config import CustomJsonEncoder

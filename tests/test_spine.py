@@ -18,10 +18,9 @@ nine-field AAD, the event hash over (ciphertext_hash, idempotency_tag, prev_hash
 the exact spelling of a frame line are all rebuilt from `hashlib`, `hmac` and the canonicaliser, so
 an implementation that agreed with itself but not with the wire format turns this file red.
 
-Faults are injected the only way the house allows: by DOCTORING BYTES ON DISK. Not one line here
-patches library code, and the three tamper detections run on three separate copies of one home,
-because a tamper that a previous tamper already broke proves nothing. The three are chosen to
-separate the mechanisms rather than to repeat one:
+Faults are injected the only way the house allows: by DOCTORING BYTES ON DISK. No line here patches
+library code, and the three tamper detections run on three separate copies of one home, because a
+tamper a previous tamper already broke proves nothing. The three separate the mechanisms:
 
   * a body byte says the ciphertext is inside the chain hash;
   * an actor field says the plaintext ENVELOPE is inside the seal - the chain alone cannot see it,
@@ -29,23 +28,18 @@ separate the mechanisms rather than to repeat one:
   * a record time says the chain hash covers the envelope's timestamps, and is caught by a replica
     holding no key at all.
 
-Two tampers are the insider's, and they are the sharpest ones here, because each disables the
-other's detector. A tail frame re-sealed with this home's own key and its chain hash recomputed
-checks out as a chain; what catches it is the interior binding - and, on a copy with no blind key,
-ONLY the interior binding, which is what makes that check load-bearing rather than shadowed. The
-dual keeps the binding honest and leaves the idempotency tag stale, and only the blinded
-recomputation notices. Without both, half the entitled check could be decoration and every other
-gate would still be green.
+Two more are the insider's, each disabling the other's detector. A tail frame re-sealed with this
+home's own key and its chain hash recomputed checks out as a chain; only the interior binding
+catches it, and on a copy with no blind key ONLY that. The dual keeps the binding honest and leaves
+the idempotency tag stale, which only the blinded recomputation notices.
 
-The rest of the file is the brief's law, one bullet at a time: a retry that is the same fact by
-construction with nothing said about when it is true, collision that refuses, blinding that leaves
-an unentitled holder no computable check, a crypto-shred that empties the bodies and leaves the
-chain standing, referential closure asked of the writer AND of the whole history against the
-manifest, a closed vocabulary and a closed frame, break-glass declared at genesis, a synthetic book
-whose late booking makes as-of and as-at disagree across a restated close and a republished fixing,
-checkpoint authenticity under the key in force at each checkpoint's own LSN, one writer and a named
-refusal for the second, the one torn line the writer is allowed to remove and the terminated one it
-must not, and a replica that holds the log and the blobs and no key at all.
+The rest is the brief's law one bullet at a time: a retry that is the same fact by construction,
+collision that refuses, blinding that leaves an unentitled holder no computable check, a
+crypto-shred that empties the bodies and leaves the chain standing, referential closure at the
+writer AND over the whole history, a closed vocabulary and a closed frame, break-glass declared at
+genesis, a synthetic book whose late booking makes as-of and as-at disagree across a restated close,
+checkpoint authenticity under the key in force at each checkpoint's own LSN, one writer, the one
+torn line the writer may remove and the terminated one it must not, and a keyless replica.
 """
 import base64
 import hashlib
@@ -325,23 +319,18 @@ def test_a_doctored_record_time_is_caught_by_a_replica_holding_no_key(tmp_path):
 
 
 def test_a_re_forged_tail_frame_is_caught_by_the_interior_binding(tmp_path):
-    """The fourth tamper, and the only one an INSIDER could mount: someone holding the class key
-    reseals the last event around a different payload and recomputes its chain hash, so the chain
-    checks out - an unentitled replica sees nothing wrong, and the gate asserts that out loud. What
-    catches it is the interior binding, re-derived from the envelope plus the decrypted payload,
-    which is the reason the plaintext content hash lives INSIDE the sealed body rather than
-    decoratively beside it.
+    """The INSIDER's tamper: someone holding the class key reseals the last event around a different
+    payload and recomputes its chain hash, so the chain checks out and an unentitled replica sees
+    nothing wrong. What catches it is the interior binding, re-derived from the envelope plus the
+    decrypted payload - which is why the plaintext content hash lives INSIDE the sealed body.
 
-    (Only a tail frame: re-forging a middle one means re-sealing every event after it too, because
-    `prev_hash` is one of the nine fields their bodies are bound to - the seal chains the envelope
-    into the ciphertext, which is worth stating as a fact about the design.)
+    Only a tail frame: re-forging a middle one means re-sealing every event after it, because
+    `prev_hash` is one of the nine fields their bodies are bound to.
 
-    The second copy is where the binding is proven LOAD-BEARING rather than merely present. On the
-    home that holds the blind key the tag check would catch this too, since a re-forged payload
-    moves the semantic tuple; strip that key - the entitled replica's posture, the blind key never
-    leaves the hub - and the interior binding is the only check left. Which kills the mutant that
-    disables the `rebuilt != interior['content_hash']` comparison: without this copy that mutant
-    survives everything except a substring assertion.
+    The second copy proves the binding LOAD-BEARING. On the home holding the blind key the tag check
+    would catch this too; strip that key - the entitled replica's posture - and the interior binding
+    is the only check left. Kills the mutant that disables the
+    `rebuilt != interior['content_hash']` comparison.
     """
     home = seeded(tmp_path, 'binding')
     frame = [f for f in read_frames(home) if f['lsn'] == 7][0]
@@ -380,17 +369,13 @@ def test_a_re_forged_tail_frame_is_caught_by_the_interior_binding(tmp_path):
 
 
 def test_a_stale_idempotency_tag_over_an_honest_binding_is_caught(tmp_path):
-    """The dual of the forgery above, and the other half of what an entitled verification owes.
+    """The dual of the forgery above. The payload is substituted, the interior content hash is
+    recomputed HONESTLY over it, and the idempotency tag is left as it was - so the AAD never moves,
+    the seal stays valid, the binding agrees with itself, and the chain hash is recomputed to match.
+    Every check but one passes: the tag needs the blind key that never leaves the hub.
 
-    Here the insider is careful: the payload is substituted, the interior content hash is recomputed
-    HONESTLY over it, and the idempotency tag is left exactly as it was - so the nine-field AAD
-    never moves, the seal stays valid, the binding agrees with itself, and the chain hash is
-    recomputed to match. Every check but one passes. The tag is the field this attacker cannot
-    forge, because forging it needs the blind key that never leaves the hub, and the recomputation
-    is where that is cashed: on the hub, or on anyone verifying a restored backup.
-
-    Kills the mutant that turns the blinded recomputation off (`if blinded:` -> `if False:`), under
-    which this home verifies fully green and the fill reads -42.
+    Kills the mutant that turns the blinded recomputation off, under which this home verifies fully
+    green and the fill reads -42.
     """
     home = seeded(tmp_path, 'stale')
     frame = [f for f in read_frames(home) if f['lsn'] == 7][0]
@@ -453,14 +438,12 @@ def test_a_retried_append_coalesces_and_two_clips_are_two_facts(tmp_path):
 
 
 def test_a_retry_that_says_nothing_about_when_is_still_the_same_fact(tmp_path):
-    """The brief's sentence itself rather than a proxy for it: client retries of `book` are safe BY
-    CONSTRUCTION, so the same fill submitted twice - with nothing said about when it is true, which
-    is how a submitter that is merely retrying submits - meets its own tag and coalesces.
+    """Client retries of `book` are safe BY CONSTRUCTION: the same fill submitted twice, with
+    nothing said about when it is true, meets its own tag and coalesces.
 
     That holds only because the writer refuses to stamp `effective_time` itself. Kills the mutant
-    that defaults it to `record_time` before the semantic tuple is built: under it this gate finds
-    two events on disk and two different tags, because the writer's clock moved between the calls
-    and the moment of arrival ended up inside the meaning of the fact.
+    defaulting it to `record_time` before the semantic tuple is built, under which the writer's
+    clock moves between the calls and the moment of arrival lands inside the fact's meaning.
     """
     home = seeded(tmp_path, clips=())
     log = SpineLog(home)
@@ -597,15 +580,13 @@ def test_an_event_citing_an_absent_blob_does_not_append(tmp_path):
 
 
 def test_a_cited_blob_that_went_quietly_is_caught_by_the_manifest(tmp_path):
-    """Referential closure over the whole history, not only over the moment of the append. The
-    manifest is a walk of the blob store - a projection, rebuilt rather than kept - and every hash
-    an event says lives there must be in it.
+    """Referential closure over the whole history, not only at the append. The manifest is a walk of
+    the blob store - a projection, rebuilt rather than kept - and every hash an event cites must be
+    in it.
 
-    This is where the retention law is cashed: any blob class reduces through an explicit logged
-    retention event and NEVER silently, so a citation the manifest cannot resolve is exactly the
-    silent expiry the law forbids, and it is named by the LSN that cites it and the hash it cites.
-    Kills the mutant that drops the walk, under which a log speaking of a blob that has vanished
-    verifies fully green.
+    Where the retention law is cashed: a blob class reduces through an explicit logged retention
+    event and NEVER silently, so an unresolvable citation is the silent expiry the law forbids, and
+    it is named by the LSN and hash. Kills the mutant that drops the walk.
     """
     home = seeded(tmp_path)
     log = SpineLog(home)
@@ -709,14 +690,11 @@ def test_events_sharing_an_effective_time_replay_in_lsn_order(tmp_path):
 # The synthetic book - the fixture every later increment's reconstruction gate folds.
 
 def synthetic_book(tmp_path):
-    """The brief's fixture, appended through the ordinary writer and nothing else.
-
-    A late booking (Monday's fill, recorded after Wednesday's), a backdated amendment behind it, an
-    exercise election, an approval and the rejection that answers it from a second seat, a
-    determination and a status transition, an administrator's republished fixing under the same
-    (index, date, source) key, and a backdated observation arriving after an official close - which
-    is answered by a NEW close, never an edit. Every fact in the closed vocabulary reaches the
-    writer here.
+    """The brief's fixture, appended through the ordinary writer: a late booking (Monday's fill
+    recorded after Wednesday's), a backdated amendment behind it, an exercise election, an approval
+    and a second seat's rejection, a determination and a status transition, an administrator's
+    republished fixing under the same key, and a backdated observation after an official close -
+    answered by a NEW close, never an edit. Every fact in the closed vocabulary reaches the writer.
 
     Answers `(home, log, marks)`.
     """
@@ -768,17 +746,14 @@ def synthetic_book(tmp_path):
 
 
 def test_the_synthetic_book_reads_as_of_and_as_at_across_a_restatement(tmp_path):
-    """Bitemporality on a book where the two orders actually DISAGREE.
+    """Bitemporality on a book where the two orders actually DISAGREE. As-at is LSN order; as-of is
+    (effective_time, LSN). A Monday booking recorded after a Wednesday one sorts before it as of and
+    after it as at, and a backdated amendment does the same.
 
-    As-at is LSN order - what the record knew, and when it knew it. As-of is (effective_time, LSN) -
-    what was true, and when it was true. A gate whose events all share one effective time exercises
-    only the degenerate half of that distinction; here a Monday booking recorded after a Wednesday
-    one sorts before it as of and after it as at, and a backdated amendment does the same.
-
-    The restatement is the other half. A backdated observation arriving after an official close
-    supersedes the close with a NEW close, so the book reads the first values hash as of everything
-    up to that point and the restated one afterwards - both correct, neither an edit - and the
-    republished fixing supersedes under its own key by exactly the same rule.
+    The restatement is the other half: a backdated observation after an official close supersedes it
+    with a NEW close, so the book reads the first values hash up to that point and the restated one
+    afterwards - both correct, neither an edit - and the republished fixing supersedes by the same
+    rule under its own key.
     """
     home, log, marks = synthetic_book(tmp_path)
     assert verify_home(home) == {'mode': 'entitled', 'events': 21, 'checkpoints_verified': 1,
@@ -854,16 +829,12 @@ def test_a_checkpoint_verifies_and_a_forged_signature_is_named(tmp_path):
 
 
 def test_the_verifying_key_comes_out_of_the_log_and_not_out_of_the_keys_directory(tmp_path):
-    """Where the key is READ from is the whole replica claim, so it is asserted from both sides.
-
-    Delete the published blob and authenticity can no longer be asserted at all - the refusal names
-    the blob rather than reporting a count. Delete `keys/checkpoint_verify.key` instead and nothing
-    changes, because that file was never what verification read: a replica has the log and does not
-    have `keys/`.
+    """Where the key is READ from is the whole replica claim, asserted from both sides. Delete the
+    published blob and authenticity cannot be asserted at all - the refusal names the blob. Delete
+    `keys/checkpoint_verify.key` and nothing changes, because a replica has the log and no `keys/`.
 
     Between them these kill two mutations of the key's provenance - reading `keys/` instead of the
-    blob, and letting a checkpoint body nominate its own - which otherwise survive every other gate
-    in this file.
+    blob, and letting a checkpoint body nominate its own.
     """
     home = seeded(tmp_path, 'published')
     log = SpineLog(home)
@@ -888,12 +859,10 @@ def test_a_checkpoint_may_not_nominate_the_key_it_is_checked_against(tmp_path):
     """An insider holding the class key, re-sealing a checkpoint around a foreign verifying key and
     a signature under it, over a position this log genuinely reached.
 
-    Everything an entitled replica checks about the frame passes: the seal opens under the frame's
-    own unchanged envelope, the interior binding is recomputed honestly over the substituted body,
-    the chain hash is recomputed to match, and the blind key is absent - the posture the design
-    declares, since the blind key never leaves the hub - so the tag check does not run either. The
-    only thing standing between that forgery and a green report is that the verifier resolves the
-    key from the LOG's published blob and never from the body in front of it.
+    Everything an entitled replica checks passes: the seal opens under the unchanged envelope, the
+    interior binding is recomputed honestly, the chain hash matches, and the blind key is absent so
+    the tag check does not run. The only thing between that forgery and a green report is that the
+    verifier resolves the key from the LOG's published blob, never from the body in front of it.
     """
     home = seeded(tmp_path, 'nominated')
     log = SpineLog(home)
@@ -986,17 +955,14 @@ def test_a_torn_final_line_is_truncated_and_the_next_append_chains_onto_the_head
 
 
 def test_a_terminated_line_that_will_not_parse_is_a_broken_chain_not_a_torn_tail(tmp_path):
-    """The negative case of the one repair, and the reason it is drawn where it is.
+    """The negative case of the one repair. A write puts the terminating newline down LAST, so a
+    line carrying its newline is one the writer finished and fsynced: garbage inside it is a DURABLE
+    line that was altered, and truncating would delete the evidence, roll the head back past
+    checkpoints, and report green - during a read-only verification, at that.
 
-    A write puts the terminating newline down LAST, so a partial one always loses that byte first: a
-    line carrying its newline is a line the writer finished and fsynced. Garbage inside one is
-    therefore a DURABLE line that was altered, and truncating it would delete the evidence of the
-    tampering, roll the head backwards past checkpoints, and report green - during a read-only
-    verification, at that, since opening the log is what would do the deleting.
-
-    So it is `ChainBroken` naming the position, and the bytes are exactly where they were
-    afterwards. Kills the mutant that truncates on `end >= len(data)` rather than on the missing
-    terminator, under which this home silently loses LSN 7 and verifies clean.
+    So it is `ChainBroken` naming the position, and the bytes stay put. Kills the mutant that
+    truncates on `end >= len(data)` rather than on the missing terminator, under which this home
+    silently loses LSN 7 and verifies clean.
     """
     home = seeded(tmp_path, 'terminated')
     segment = segments(home)[-1]
@@ -1016,14 +982,12 @@ def test_a_terminated_line_that_will_not_parse_is_a_broken_chain_not_a_torn_tail
 
 
 def test_a_surplus_frame_field_is_refused_in_both_modes(tmp_path):
-    """The envelope is closed the way a body is. The nine-field AAD, the event hash and the interior
-    binding cover exactly the twelve fields a frame has, so a thirteenth would ride into the record
-    covered by no hash, no seal and no signature - and be read by every projector downstream. The
-    field planted here is `display_name`, which is precisely the erasable attribute the design
-    confines to a side table outside the log.
+    """The envelope is closed the way a body is: the nine-field AAD, the event hash and the interior
+    binding cover exactly the twelve fields a frame has, so a thirteenth rides in covered by no
+    hash, seal or signature and is read by every projector. The field planted here is
+    `display_name`, the erasable attribute the design confines to a side table outside the log.
 
-    Kills the mutant that checks only that the twelve fields are PRESENT: under it a frame carrying
-    three extra fields verifies green in both modes.
+    Kills the mutant that checks only that the twelve fields are PRESENT.
     """
     home = seeded(tmp_path, 'surplus')
     doctor(home, 6, lambda frame: frame.__setitem__('display_name', 'Mallory'))
@@ -1038,14 +1002,10 @@ def test_a_surplus_frame_field_is_refused_in_both_modes(tmp_path):
 
 
 def test_a_second_writer_is_refused_rather_than_left_to_corrupt_the_home(tmp_path):
-    """One deployment, one log, one writer - claimed, not merely declared.
-
-    Two handles on one home both believe the head is where they last read it, so both assign the
-    same next LSN, and the result is a home holding two lines at one position - unverifiable
-    forever, because nothing in this package may edit or remove either of them. The claim is taken
-    at the first append (reading and verifying never take it, or a replica would be locked out of
-    its own log) and the head is re-read under it, so the second writer is a named refusal and the
-    book is exactly as it was.
+    """One deployment, one log, one writer - claimed, not merely declared. Two handles both believe
+    the head is where they last read it, so both assign the same next LSN and the home holds two
+    lines at one position, unverifiable forever. The claim is taken at the first append (never at a
+    read, or a replica would be locked out of its own log) and the head re-read under it.
     """
     home = seeded(tmp_path, 'writers', clips=())
     first, second = SpineLog(home), SpineLog(home)
@@ -1135,14 +1095,13 @@ def test_a_copied_home_verifies_extends_and_still_catches_a_tamper(tmp_path):
 
 
 def test_a_replica_holding_only_the_log_and_the_blobs_verifies_its_chain(tmp_path):
-    """The brief's replica, in the two directories the brief names: the full log and the blob
-    store, ciphertext where unentitled, no key of any kind.
+    """The brief's replica, in the two directories it names: the full log and the blob store,
+    ciphertext where unentitled, no key of any kind.
 
-    That posture is the whole reason the chain is taken over the CIPHERTEXT, and it has to be
-    reachable to be true - a log that demanded a `keys/` directory before it would open would make
-    the replica unrepresentable, and the remedy the refusal offered (`init`) would fork the record
-    rather than fix it. So the keys' absence surfaces where a key is USED, by the file's own name,
-    and everything a keyless holder can check it still checks.
+    That posture is why the chain is taken over the CIPHERTEXT, and it has to be reachable to be
+    true - a log demanding a `keys/` directory before opening would make the replica
+    unrepresentable, and the refusal's remedy (`init`) would fork the record. So the keys' absence
+    surfaces where a key is USED, by the file's own name.
     """
     home = seeded(tmp_path, 'hub')
     replica = tmp_path / 'replica'

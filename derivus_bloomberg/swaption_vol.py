@@ -12,41 +12,31 @@
 ########################################################################
 """A workstation's verified ATM swaption grid as one `HullWhite2FactorModelPrices` block.
 
-`ir_curve` writes the curve the model diffuses; this writes what identifies its diffusion. The
-family fits five parameters - two sigma term structures, two mean reversions and a correlation - to
-a set of ATM swaptions, and each benchmark is a FORWARD STARTING SWAP described by eight columns:
-its start, its tenor, both leg frequencies, both leg day counts, the quoted vol and the objective
-weight. That is the whole block, and this emitter fills it from a verified grid.
+`ir_curve` writes the curve the model diffuses; this writes what identifies its diffusion. Five
+parameters - two sigma term structures, two mean reversions and a correlation - fit to ATM
+swaptions, each benchmark a forward-starting swap described by eight columns: start, tenor, both
+leg frequencies, both leg day counts, the quoted vol and the objective weight.
 
 TWO DAY-COUNT COLUMNS, NOT ONE. `create_market_swaps` reads `Floating_Day_Count` and
-`Fixed_Day_Count` SEPARATELY - the float leg's generates the par swap rate, the fixed leg's exists
+`Fixed_Day_Count` separately - the float leg's generates the par swap rate, the fixed leg's exists
 only on the unequal-frequency branch - so a block spelling one `Day_Count` for both dies downstream
-in a cashflow generator. `INSTRUMENT_COLUMNS` below is held against the committed declaration by a
-gate, as DATA, so the day the family's row changes the gate says so.
+in a cashflow generator. `INSTRUMENT_COLUMNS` is held against the committed declaration by a gate.
 
-THE CONVENTIONS ARE SEED-DECLARED, exactly as the curve's are: the forward swap a `SASN` cell is a
-vol OF is quarterly/quarterly ACT/365 against 3M JIBAR, and nothing in the ticker says so. A
-currency whose `swaption` entry carries no `conventions` block REFUSES BY NAME with the missing
-fields listed, and a wrong convention is then a data fix the owner makes in `seed.json`.
+Conventions are seed-declared, as the curve's are: the forward swap a `SASN` cell is a vol OF is
+quarterly/quarterly ACT/365 against 3M JIBAR and nothing in the ticker says so, and a currency
+whose `swaption` entry carries no `conventions` block refuses by name with the missing fields
+listed. The quoted distribution is declared and the calibration reads it - `create_market_swaps`
+builds each market premium under the referenced surface's `Distribution_Type` - so this emitter
+transcribes what the terminal quoted, scales it into the family's `Percent` column and states the
+distribution in `Quote_Source`; the referenced `InterestYieldVol` surface must declare the matching
+type.
 
-THE QUOTED DISTRIBUTION IS DECLARED AND THE CALIBRATION READS IT. `SASN` is `ZAR SWPT NVOL`: a
-NORMAL (Bachelier) vol in basis points. `create_market_swaps` builds each benchmark's market
-premium under the referenced surface's `Distribution_Type` - Bachelier for `Normal`, displaced
-Black for `Lognormal` - so a ladder is fitted and marked under one convention. This emitter
-transcribes what the terminal quoted, scales it into the family's `Percent` column, and states the
-distribution in `Quote_Source` and on the returned ladder; the referenced `InterestYieldVol`
-surface must declare the matching `Distribution_Type` for the fit to read it.
+A RE-TICK IS A RE-AUTHORING, structurally: `schema.partition_market_price` gives a values half only
+to a table whose ROW declares the value keys, and this family's row declares `Market_Volatility`
+and no `Quoted_Market_Value`, so a moved vol reads as 'structure differs' and `reauthor` drops the
+block before re-installing it.
 
-A RE-TICK IS A RE-AUTHORING, structurally. `schema.partition_market_price` gives a values half only
-to a table whose ROW DECLARES the value keys (`schema.MARKET_QUOTE_CONTAINERS`), and this family
-quotes in `Instrument_Definitions`, whose row declares a `Market_Volatility` and no
-`Quoted_Market_Value` at all. So a moved vol reads as 'structure differs' to
-`config.update_market_quote` and no tick reaches it: `reauthor` drops the block before
-re-installing it.
-
-IMPORTS: the standard library, this package's own modules, and no engine. The block is emitted as
-WIRE JSON (`{'.DateOffset': '1Y'}`, `{'.Percent': 1.45}`, `{'.Timestamp': ...}`), which is what
-`Config.read_json` reads and `CustomJsonEncoder` writes.
+IMPORTS: the standard library, this package's own modules, and no engine.
 """
 import collections.abc
 import datetime
@@ -77,9 +67,9 @@ INSTRUMENT_COLUMNS = ('Start', 'Tenor', 'Floating_Frequency', 'Fixed_Frequency',
 #: columns above are all of it - so they ride as undeclared keys `create_market_swaps` reads past,
 #: carried anyway because the two-way and the print's own clock are the evidence.
 #:
-#: THE CONSEQUENCE IS THIS FAMILY'S ALONE now. `schema.quote_containers` puts a table on the value
-#: plane when its row declares all four `schema.MARKET_QUOTE_VALUES`, and this row declares none of
-#: them - its quote column is `Market_Volatility`, so the plane cannot see the mid either.
+#: The consequence is this family's alone: `schema.quote_containers` puts a table on the value plane
+#: when its row declares all four `schema.MARKET_QUOTE_VALUES`, and this row declares none - its
+#: quote column is `Market_Volatility`, so the plane cannot see the mid either.
 #: `equity_chain.QUOTE_VALUE_KEYS` names the same three keys and its family DOES declare them, which
 #: is why a chain re-ticks and a swaption ladder is re-authored.
 QUOTE_VALUE_KEYS = ('Quoted_Bid', 'Quoted_Ask', 'Timestamp')
@@ -447,18 +437,14 @@ def hw2f_block(ladder, curve=None, screen=None):
     would look at and two emissions off the same answers are the same bytes.
 
     WHAT IS WRITTEN AND WHAT IS NOT. `Swaption_Volatility`, `Quote_Source` and
-    `Instrument_Definitions` are the quote; every other declared field on this family -
-    `Objective`, `Simulations`, `Batches`, `Random_Seed`, `Quote_Sensitivity`, `Jacobian_Rcond`,
-    `Stationarity_Tol` - is a property of the SOLVE rather than of the market and is left to the
-    engine's declared default, so an emitted ladder follows that default wherever it moves. (The
-    Heston-Nandi emitter states `Steps_Per_Year` for the opposite reason: there the step clock is
-    what the fitted parameters MEAN.)
+    `Instrument_Definitions` are the quote; every other declared field on this family is a property
+    of the SOLVE rather than of the market and is left to the engine's declared default, so an
+    emitted ladder follows that default wherever it moves. (The Heston-Nandi emitter states
+    `Steps_Per_Year` for the opposite reason: there the step clock is what the parameters MEAN.)
 
-    THE FIT'S CONVENTION IS THE SURFACE'S, NOT THE LADDER'S. `create_market_swaps` prices each
+    THE FIT'S CONVENTION IS THE SURFACE'S, NOT THE LADDER'S: `create_market_swaps` prices each
     benchmark under the named `InterestYieldVol`'s `Distribution_Type`, which this emitter does not
-    author - so a desk pointing `Swaption_Volatility` at a lognormally-declared factor gets a
-    lognormal fit of normal quotes. `Quote_Source` is where the block states which convention its
-    own numbers are in.
+    author. `Quote_Source` is where the block states which convention its own numbers are in.
     """
     screen = screen or SwaptionScreen()
     if not ladder.surface:

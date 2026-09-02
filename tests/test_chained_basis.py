@@ -6,25 +6,20 @@ the chain's day boundary and orders nothing, which is what keeps the loop out of
 
 Gates and their killing mutations:
 
-1. EITHER SIDE PULLS THE OTHER — a book referencing only the composed AM name discovers the PM
-   partner (and the reverse), positioned after its positional parent. Killed by the field read
+1. EITHER SIDE PULLS THE OTHER, positioned after its positional parent. Killed by the field read
    dropped, or the pull wired one-directional.
-2. THE OMITTED FIELD CHANGES NOTHING — a world without Chained_Basis discovers the identical
-   universe, key for key. Killed by an unconditional partner add or a truthiness slip.
-3. THE DECLARATION IS VALIDATED LOUD — a partner on a foreign primary, or a self-reference,
-   raises naming both factors. Killed by the check softened to a skip.
-4. THE MUTUAL POINTERS TERMINATE — the pair's blocks point at each other; discovery must not
-   recurse forever (gates 1-2 hang rather than fail if this breaks, so the guard IS the gate).
-5. THE PARTNER INHERITS A HORIZON — the pulled factor carries a max date (its parent's), so
-   construction does not die on a dateless factor.
-6. THE SAME-ROW ENTRY ORDERS ITS LINK FIRST — the production book enters from the same-row
-   side only, and its pulled link is inserted last; positional depth cannot order it because
-   the sort emits whole chains within a pass in insertion order. Killed by the lag-0 edge
-   dropped — the pre-fix engine emitted the link last and every walk-forward trade died at
-   generate — or by the lag declared on the wrong member.
-7. A CHAIN THAT LAGS NOWHERE REFUSES — every link same-row is a same-instant loop with no
-   member generating a path of its own. Killed by the refusal softened to a skip (the edges
-   then hand the sort a nameless cycle).
+2. THE OMITTED FIELD CHANGES NOTHING — an identical universe, key for key. Killed by an
+   unconditional partner add or a truthiness slip.
+3. THE DECLARATION IS VALIDATED LOUD — a foreign primary or a self-reference raises naming both
+   factors. Killed by the check softened to a skip.
+4. THE MUTUAL POINTERS TERMINATE — gates 1-2 hang rather than fail if this breaks, so the guard
+   IS the gate.
+5. THE PARTNER INHERITS A HORIZON, so construction does not die on a dateless factor.
+6. THE SAME-ROW ENTRY ORDERS ITS LINK FIRST. Killed by the lag-0 edge dropped (the pre-fix engine
+   emitted the link last and every walk-forward trade died at generate) or the lag declared on the
+   wrong member.
+7. A CHAIN THAT LAGS NOWHERE REFUSES. Killed by the refusal softened to a skip - the edges then
+   hand the sort a nameless cycle.
 """
 import json
 
@@ -39,13 +34,11 @@ BASE = pd.Timestamp('2026-01-15')
 
 def _world(entry_name, chained=True, partner_of_cme='LBMA_AM.PM.CME', cross_chain=False,
            open_chain=False, no_lag=False):
-    """One future on `entry_name`. `chained` pairs the two CME bases; `cross_chain` instead
-    pairs LBMA_AM.PM with LBMA_AM.CME.PM — two different BRANCHES of the name tree, so neither
-    is the other's positional prefix and only the declaration can pull one from the other;
-    `open_chain` leaves the back-pointer off, which must refuse (a chain closes). The lags
-    mirror production: the AM basis lags its link (the day boundary), so the PM side's
-    same-row link is the one generation edge; `no_lag` omits the day boundary, which must
-    refuse (a same-instant loop)."""
+    """One future on `entry_name`. `chained` pairs the two CME bases; `cross_chain` instead pairs
+    LBMA_AM.PM with LBMA_AM.CME.PM - different BRANCHES of the name tree, so only the declaration
+    can pull one from the other; `open_chain` leaves the back-pointer off (must refuse). The lags
+    mirror production - the AM basis lags its link, so the PM side's same-row link is the one
+    generation edge; `no_lag` omits the day boundary (must refuse)."""
     cme = {'Spot': -7.35}
     cme_pm = {'Spot': -10.65}
     pm_diff = {'Spot': -12.4}
@@ -113,10 +106,8 @@ def test_the_declaration_pulls_the_partner():
 
 
 def test_the_pull_crosses_branches_both_ways():
-    """LBMA_AM.PM ↔ LBMA_AM.CME sit on different branches of the name tree — neither is the
-    other's prefix, so only the declaration can pull one from the other, in BOTH directions.
-    (The production pair CME ↔ PM.CME is itself cross-branch under the ruled naming, so the
-    declaration is load-bearing both ways there too — gate 1 covers it.)"""
+    """LBMA_AM.PM and LBMA_AM.CME sit on different branches - neither is the other's prefix, so
+    only the declaration can pull one from the other, in BOTH directions."""
     pm_diff = utils.Factor('ObservedBasis', ('LBMA_AM', 'PM'))
     fwd = _discover(_world('LBMA_AM.PM', cross_chain=True))
     assert CME in fwd                                    # declared pull, no prefix relation
@@ -155,20 +146,17 @@ def test_the_partner_inherits_a_horizon():
 
 
 def test_the_same_row_entry_orders_its_link_first():
-    """The production book enters from the same-row side only (PM-session tradables), so its
-    link is pulled by the declaration and inserted last. Positional depth cannot order it —
-    the sort emits whole chains within a pass in insertion order — so the same-row (lag-0)
-    link must be a graph edge. Killed by the edge dropped, or by the day-boundary lag declared
-    on the wrong member: the pre-fix engine emitted the link LAST and every walk-forward trade
-    died in ChainedBasisModel.generate."""
+    """The production book enters from the same-row side only, so its link is pulled last and
+    positional depth cannot order it - the sort emits whole chains within a pass in insertion
+    order. The lag-0 link must therefore be a graph edge: without it the engine emits the link
+    LAST and every walk-forward trade dies in ChainedBasisModel.generate."""
     order = list(_discover(_world('LBMA_AM.PM.CME')))
     assert CME in order                                # the pull itself, from the same-row side
     assert order.index(CME) < order.index(PM_CME)
 
 
 def test_a_chain_that_lags_nowhere_refuses():
-    """Every link same-row is a same-instant loop — no member generates a path of its own for
-    the others to ride. Refuse loud, naming the chain, before the sort refuses its cycle
-    namelessly."""
+    """Every link same-row is a same-instant loop - no member generates a path of its own. Refuse
+    naming the chain, before the sort refuses its cycle namelessly."""
     with pytest.raises(Exception, match='lags nowhere'):
         _discover(_world('LBMA_AM.PM.CME', no_lag=True))

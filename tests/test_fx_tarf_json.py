@@ -194,15 +194,12 @@ def test_a_reachable_target_is_worth_less_than_an_unreachable_one(tmp_path):
 # --------------------------------------------------------------------------------------------
 # THE REMAINING TARGET IS CLAMPED AT ZERO - and the branch where that clamp is load-bearing
 #
-# `intr` clamps at the BLOCK's remaining target, so what makes that the PATH's own is the
-# one-step survival truncation, which caps the drawn spot at `B_pnl = K + (R/N)*cp`. Two branches
-# have no such cap: an OBSERVED fixing (`dt <= 0`) is data and is never truncated, and under
-# Heston-Nandi a cap many daily sigmas away saturates the truncated draw. Both walk R below zero
-# and B_pnl below the strike, which is a knocked-out weight paying a NEGATIVE remaining target.
-#
-# The observed-fixing shape is reachable under plain GBM, which is why it is gated here rather
-# than beside the model: fixings already fixed but not yet settled are walked in-loop, so a
-# settlement lag spanning two fixing periods puts two of them in one block.
+# `intr` clamps at the BLOCK's remaining target, and what makes that the PATH's own is the one-step
+# survival truncation capping the drawn spot at `B_pnl = K + (R/N)*cp`. Two branches have no such
+# cap: an OBSERVED fixing is data and is never truncated, and under Heston-Nandi a cap many daily
+# sigmas away saturates the draw. Both walk R below zero, which is a knocked-out weight paying a
+# NEGATIVE remaining target. The observed-fixing shape is reachable under plain GBM, which is why it
+# is gated here: a settlement lag spanning two fixing periods puts two of them in one block.
 # --------------------------------------------------------------------------------------------
 #: Two fixings behind the base date settling ahead of it, plus the live one. Both sit inside the
 #: one-month window `calc_dependencies` keeps a pre-base fixing by, or the compile drops them.
@@ -228,30 +225,27 @@ def _lagged_job(smooth=False, **overrides):
 def test_two_observed_fixings_in_one_settlement_lag_cannot_drive_the_target_negative(tmp_path):
     """The clamp on the remaining target, on the one branch that has no truncation to do it.
 
-    Two fixings are already FIXED and not yet SETTLED, so both are walked in-loop with `p = 1` and
-    no survival cap. `intr` clamps at the BLOCK's remaining target (0.1 after the declared prefix),
-    so each of them accrues the whole of it: the second takes `R` from 0 to -100 unless the
-    decrement is clamped, and a negative `R` is a `B_pnl` BELOW the strike and a knocked-out weight
-    `(1 - p) * L * R * Dj` that PAYS a negative number.
+    Two fixings are already FIXED and not yet SETTLED, so both walk in-loop with `p = 1` and no
+    survival cap. `intr` clamps at the BLOCK's remaining target (0.1 after the declared prefix), so
+    each accrues the whole of it: the second takes `R` from 0 to -100 unless the decrement is
+    clamped, and a negative `R` is a `B_pnl` BELOW the strike and a knocked-out weight that PAYS a
+    negative number.
 
-    THE ORACLE. Clamped, `R` is zero when the live fixing is reached, so `B_pnl` is the strike
-    itself and the survivors are the paths that fell from 1.3 to below 1.10 in three months -
-    `Phi(z_max)`, 1.5e-4 here. What is left is the two banked accruals at their own settlements,
-    and everything else is bounded by that survival probability (0.32 against a 200 value).
+    THE ORACLE. Clamped, `R` is zero at the live fixing, so `B_pnl` is the strike and the survivors
+    are the paths that fell from 1.3 to below 1.10 in three months - `Phi(z_max)`, 1.5e-4 here. What
+    is left is the two banked accruals at their own settlements.
 
-    MEASURED on this document: 199.9566 clamped against 102.0116 unclamped, the 97.9 between them
-    being `(1 - p) * R * D` at `R = -100`. The invariant is GBM's, with no Heston-Nandi anywhere.
+    MEASURED: 199.9566 clamped against 102.0116 unclamped, the 97.9 between them being
+    `(1 - p) * R * D` at `R = -100`. GBM, with no Heston-Nandi anywhere.
 
-    BOTH ESTIMATORS, because both reach it. The smooth arm decrements without the mask and without
-    the clamp - deliberately, since both would sever the kink term's curvature from the trigger it
-    has to reach - but an OBSERVED fixing builds no kink term, so there the clamp costs nothing and
-    the two arms agree to the bit. Unclamped, the smooth arm returned the crisp arm's unclamped
-    number exactly (102.0116), which is what says this branch is one defect and not two.
+    BOTH ESTIMATORS, because both reach it. The smooth arm decrements without the mask and the clamp
+    - deliberately, since both would sever the kink term's curvature from its trigger - but an
+    OBSERVED fixing builds no kink term, so there the clamp costs nothing and the two arms agree to
+    the bit. Unclamped, the smooth arm returned the crisp arm's unclamped number exactly.
 
-    WHAT THIS DOES NOT BLESS, said out loud: that each of two observed fixings accrues the whole
-    block remaining target is a SEPARATE, pre-existing question about the clamp's own bound, as is
-    the redemption that does not fire on an observed fixing (`L` is never zeroed there). This gate
-    pins the decrement, not the bound.
+    WHAT THIS DOES NOT BLESS: that each of two observed fixings accrues the whole block remaining
+    target is a separate, pre-existing question about the clamp's own bound, as is the redemption
+    that does not fire on an observed fixing. This gate pins the decrement, not the bound.
     """
     accrued = LAGGED_TARGET - 2.0 * (LAGGED_SCHEDULE[0][2] - STRIKE)   # 0.1 left of the target
     banked = sum(math.exp(-_r_usd(_offset(row[1]['.Timestamp']) / DAYS) *

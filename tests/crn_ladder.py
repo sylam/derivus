@@ -1,16 +1,13 @@
 """Is a reported gradient the derivative of the value actually reported?
 
-Under common random numbers - same seed, so the same normals, the draws depending on seed and
-factor ordering rather than on the value being bumped - a central difference estimates the same
-derivative AAD reports, arrived at without touching the tape.
+Under common random numbers a central difference estimates the same derivative AAD reports, arrived
+at without touching the tape.
 
-Agreement at ONE bump size proves little. Too small and the difference drowns in what CRN does not
-cancel; too large and it measures curvature. The reading is only trustworthy where the ladder is
-FLAT, and flatness is the discriminating signal in its own right: differencing across a genuine
-discontinuity produces readings that scatter with h and do not converge, because shrinking h
-changes how many paths sit on the wrong side of the jump rather than refining a limit. Every gap
-this measured in derivus showed exactly that signature - a scattering ladder beside a stable AAD
-number that looked perfectly well-behaved on its own.
+Agreement at ONE bump size proves little: too small and the difference drowns in what CRN does not
+cancel, too large and it measures curvature. The reading is trustworthy only where the ladder is
+FLAT, and flatness is a signal in its own right - differencing across a genuine discontinuity
+scatters with h rather than converging, because shrinking h changes how many paths sit on the wrong
+side of the jump.
 
 So this reports three things and refuses to collapse them into one:
     agreement  - |crn - aad| / |aad| at each rung

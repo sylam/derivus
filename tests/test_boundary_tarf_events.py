@@ -11,23 +11,22 @@ things inside it are decided on simulated state and carry a real value jump:
              float equality fires on a POSITIVE-MEASURE set - measured below at 27.7%-61.3% of
              outer paths - and it is a redemption, not a rounding artifact.
 
-TWO REACHABILITY TRAPS, both of which make a fixture measure nothing if you miss them.
+TWO REACHABILITY TRAPS, each of which makes a fixture measure nothing.
 
   `Barrier` was NOT in `FXTARFOptionDeal.Fields`, so no schema-authored deal could emit it and the
-  knock-in was reachable only because `instruments.py:440` keeps the params dict unfiltered. Added,
-  on the `Barrier_Price`/EquityBarrierBinaryOption precedent, and gated below.
+  knock-in was reachable only because `instruments.py` keeps the params dict unfiltered.
 
-  `LeverageNotional` (N_otm) defaults to 0, and BOTH sites are dead at that default.
-  `cf_otm = relu(-intr) * N_otm * barrier_hit` multiplies the knock-in by zero. And the target pin
-  becomes CONTINUOUS: as `remaining_target -> 0` the KO term `(1-p)*L*R`, the clamped intrinsic and
-  every surviving cashflow all go to zero with it, so zeroing the weight costs nothing. Measured -
-  same fixture, same 61.3% firing rate, `LeverageNotional=0`: the uncorrected AAD agrees with
-  bump-and-reprice to 0.00%-1.14% out to 3e-4. The pin is a boundary only when the OTM leg pays.
+  `LeverageNotional` (N_otm) defaults to 0, and BOTH sites are dead there.
+  `cf_otm = relu(-intr) * N_otm * barrier_hit` multiplies the knock-in by zero, and the target pin
+  becomes CONTINUOUS: as `remaining_target -> 0` the KO term, the clamped intrinsic and every
+  surviving cashflow go to zero with it, so zeroing the weight costs nothing. Measured at the same
+  61.3% firing rate with `LeverageNotional=0`: the uncorrected AAD agrees with bump-and-reprice to
+  0.00%-1.14%.
 
 WHY THE LADDERS START AT 3e-4. Differencing across a jump does not converge as h shrinks - it
 changes how many paths sit on the wrong side. Below ~1e-4 the CRN readings scatter over 1/h
-(measured: -69k, -1.59e6, -525k, -222k, -152k as h goes 1e-6 -> 1e-4), which is the signature of a
-discontinuity and not something to average. The rungs kept are the ones where the oracle plateaus.
+(-69k, -1.59e6, -525k, -222k, -152k as h goes 1e-6 -> 1e-4). The rungs kept are where the oracle
+plateaus.
 """
 import os
 import sys
@@ -185,18 +184,15 @@ def test_the_knock_in_barrier_is_reachable_from_the_schema():
 
 
 def test_a_single_scenario_gap_does_not_poison_the_scalar_being_differentiated():
-    """Base valuation runs ONE scenario, so a decision taken per scenario registers a gap with a
-    single element - and `torch.std` returns NaN on one sample rather than raising. That NaN
-    reaches the kernel width, the density, and then the scalar handed to backward().
+    """Base valuation runs ONE scenario, so a per-scenario decision registers a single-element gap
+    and `torch.std` returns NaN on one sample. That NaN reaches the kernel width, the density, and
+    the scalar handed to backward().
 
-    It hid because `0 * NaN` is NaN in the forward pass but reaches nothing in the backward one
-    while the degenerate gap happens to carry no graph, which is the case for the historic-accrual
-    decision that produced it. A gap in the same shape that DID carry one would have turned every
-    reported greek into NaN, and the reported price - read from the stored result, not from this
-    scalar - would still have looked perfect.
+    It hid because `0 * NaN` is NaN forward but reaches nothing backward while the degenerate gap
+    carries no graph. A gap in the same shape that DID carry one would turn every reported greek
+    into NaN while the reported price still looked perfect.
 
-    Exactly zero, not merely finite: one sample supports no local-linear fit, so the honest answer
-    is that this decision contributes nothing."""
+    Exactly zero, not merely finite: one sample supports no local-linear fit."""
     import derivus.pricing as pricing
     gap = torch.tensor([0.3], dtype=DTYPE, requires_grad=True)
     jump = torch.tensor([5.0], dtype=DTYPE)
@@ -317,17 +313,16 @@ def _pin_registration(deal, batch=512):
 
 
 def test_the_pin_fires_on_a_material_share_of_paths_and_its_branches_are_the_reported_value():
-    """Two statements, and the first is what stops the second from being vacuous.
+    """Two statements, the first stopping the second from being vacuous.
 
-    The pin must actually FIRE. `q = remaining_target == 0.0` is an exact float equality, and the
-    only reason it is a boundary rather than a curiosity is that `calc_accum_value` clamps AT the
-    target, so it fires on a positive-measure set. Measured on this fixture, per block:
-    0% / 27.7% / 43.2% / 51.8% / 57.4% / 61.3% of outer paths. A TargetLevel that no path reaches
-    would make every assertion below true and measure nothing.
+    The pin must FIRE. `q = remaining_target == 0.0` is an exact float equality, and it is a
+    boundary rather than a curiosity only because `calc_accum_value` clamps AT the target, so it
+    fires on a positive-measure set: 0% / 27.7% / 43.2% / 51.8% / 57.4% / 61.3% of outer paths, per
+    block.
 
-    Then the branches, selected by the recorded flags, must reconstruct the deal's reported profile
-    EXACTLY - which pins the grid, the currency, the latch bookkeeping and which branch is which,
-    all of which are invisible in a forward pass worth zero. torch.equal, not allclose."""
+    Then the branches, selected by the recorded flags, must reconstruct the reported profile
+    EXACTLY - pinning the grid, the currency, the latch bookkeeping and which branch is which, all
+    invisible in a forward pass worth zero. torch.equal, not allclose."""
     seen = _pin_registration(PIN_CMC)
     latched = [x for x in seen['sets'] if isinstance(x, utils.LatchedBoundarySet)]
     assert len(latched) == 1, f'expected one target-pin registration, got {seen["sets"]}'
@@ -382,19 +377,17 @@ def test_the_pin_correction_vanishes_where_the_target_cannot_fill():
 
 @pytest.mark.parametrize('deal,leverage', [(PIN_NO_LEVERAGE_CMC, 0.0), (PIN_CMC, N2)])
 def test_the_pin_is_a_boundary_only_when_the_leveraged_leg_pays(deal, leverage):
-    """A design finding, gated so it cannot be forgotten, and read exactly where it lives: the
-    value a PINNED path would still have been worth had the target not quite filled.
+    """A design finding, read where it lives: the value a PINNED path would still have been worth
+    had the target not quite filled.
 
-    With LeverageNotional = 0 that value is identically zero. As remaining_target -> 0 the KO term
-    (1-p)*L*R goes to zero with R, the intrinsic is clamped at a vanishing remaining target so
-    cf_itm -> 0, and cf_otm = relu(-intr) * N_otm is zero because N_otm is. Nothing is lost by
-    redeeming, so there is no jump and the pin is CONTINUOUS - measured, the uncorrected gradient
-    already agreed with bump-and-reprice to 0.00%-1.14% on the identical fixture at a 61.3% firing
-    rate. Turn the leg on and the same pinned path was worth tens of thousands: that is the
-    obligation the redemption cancels, and it is the whole jump.
+    With LeverageNotional = 0 that value is identically zero - the KO term goes to zero with R, the
+    intrinsic is clamped at a vanishing remaining target, and cf_otm is zero because N_otm is. So
+    there is no jump and the pin is CONTINUOUS: the uncorrected gradient already agreed with
+    bump-and-reprice to 0.00%-1.14% at a 61.3% firing rate. Turn the leg on and the same pinned path
+    was worth tens of thousands, which is the whole jump.
 
-    So any future fixture for this site that drops the leverage leg measures nothing, whatever it
-    asserts. Both directions are gated, because only the pair says which way round it is."""
+    So any fixture for this site that drops the leverage leg measures nothing. Both directions are
+    gated, because only the pair says which way round it is."""
     seen = _pin_registration(deal)
     bset, = [x for x in seen['sets'] if isinstance(x, utils.LatchedBoundarySet)]
     fired = [float(f.to(DTYPE).mean()) for f in bset.fired]

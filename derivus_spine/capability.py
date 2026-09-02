@@ -13,36 +13,18 @@
 
 """Who may say what - a fold over declarations, and one pure function that answers the question.
 
-Authorization is a document, hashed into the blob store and declared through the ordinary writer, so
-every question about it is a fold over the log at an LSN and "could X book on that desk in March" is
-replayed rather than remembered. Nothing here holds state that outlives the call.
-
-The document is a complete replacement, never a patch:
+The document is a hashed blob declared through the ordinary writer and is a complete replacement
+rather than a patch, so the state at a position is the last declaration at or before it:
 
     {"grants": [{"subject": s, "verb": v, "book": b}], "read": [{"subject": s, "class": c}]}
 
-so the state at a position is the last declaration at or before it, which is a one-line fold.
-
-Three authorizations live outside the document. Genesis grants are read once and do not survive a
-document - once a capabilities declaration is in force it is the whole truth about the six verbs, so
-a declaration can strand the last admin, deliberately, since an admin who cannot be revoked is not
-governed. Break-glass is the recovery, declared at genesis rather than invented after the accident:
-the genesis break-glass seat's use is authorized whatever a document says, and the fold credits it
-with an admin grant. Anybody else reaching for it is refused by the ordinary path and the reach is
-recorded as a `capability_denied` naming the `break_glass` verb.
-
-A capabilities blob doctored under its own address, or gone from the store, folds to `UNREADABLE` -
-a document in force that grants nothing - rather than raising, since a fold that raised inside the
-writer's authorization hook would take every append with it, break-glass included. Every verb is
-then refused by name while the two authorizations above still answer, so the home is fail-closed and
-still recoverable.
-
-A recovered admin is cleared by the next capabilities declaration to land. Authorization is
-evaluated before the event is folded, so the recovered seat's own restoring document still lands.
-The writer's own denial verb is never gated: a refusal that could itself be refused is a regress.
-
-Enforcement activates by declaration. With no capabilities document in the log, `evaluate` is not
-consulted and the home runs as the single-user instrument it is.
+Nothing here holds state that outlives the call. Three authorizations live outside the document -
+genesis grants (read once and not surviving a document, so a declaration can strand the last admin,
+deliberately), break-glass (the genesis seat alone, anyone else refused by name and the reach
+recorded as a `capability_denied`), and the writer's own denial verb, never gated. A capabilities
+blob doctored under its own address, or gone from the store, folds to `UNREADABLE` - in force and
+granting nothing - rather than raising, which inside the writer's hook would take every append with
+it. Enforcement activates BY DECLARATION: with no document in the log, `evaluate` is not consulted.
 """
 import json
 
@@ -261,19 +243,14 @@ def evaluate(doc, genesis, subject, verb, book):
     """Whether `subject` may exercise `verb` over `book`. The one authorization function.
 
     Pure: no log, store, clock or home, so the same inputs answer the same way on the hub, on a
-    replica and in a gate. `doc` and `genesis` come from `state_at`.
+    replica and in a gate; `doc` and `genesis` come from `state_at`. Precedence, highest first: the
+    writer's own verb, the genesis recovery seat, a recovered admin (until the next declaration
+    lands, the only grant not held in a document), then the document - or, with no document in the
+    log, yes. An unreadable document grants nothing, and the first two rules are what rescue the
+    home.
 
-      * The writer's own verb is always yes - a denial that could itself be denied is a regress.
-      * The recovery verb is yes for the seat genesis named and no for everybody else, whatever any
-        document says, so a stranding declaration cannot brick the recovery path.
-      * No document means enforcement is off and the answer is yes.
-      * A document is the whole truth about the six verbs: genesis admin does not survive it, so a
-        declaration can strand the last admin.
-      * A recovered admin outranks the document, from the break-glass use until the next declaration
-        lands. It is the only grant not held in a document.
-      * An unreadable document grants nothing; the two rules above it are what rescues the home.
-      * Book matching: `*` matches every book and the firm-level facts that carry no book at all; a
-        named grant matches only its own book and never a book-less event.
+    Book matching: `*` matches every book and the firm-level facts that carry no book at all; a
+    named grant matches only its own book and never a book-less event.
     """
     seats = genesis or {}
     if verb == WRITER:

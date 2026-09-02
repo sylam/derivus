@@ -13,34 +13,25 @@
 
 """Increment 3's verb layer, its two policies and its firmness check - the spine half, engine-free.
 
-Nothing in this file imports `derivus`. That is the point of the seam it gates: the booking verbs,
-the attestation lanes, the tolerance comparison and the two-dimensional firmness check are all
-plain functions over plain data, so they are exercised here on real homes in temp directories with
-no pricer anywhere near them. `pin_result` takes its executor as an ARGUMENT, and the executors
-below are ordinary functions written in this file - which is the seam's own design rather than a
-patch of library code, and the reason the whole re-execution path can be driven without a GPU.
+Nothing here imports `derivus`, which is the seam: the booking verbs, the attestation lanes, the
+tolerance comparison and the firmness check are plain functions over plain data, exercised on real
+homes in temp directories. `pin_result` takes its executor as an ARGUMENT and the executors below
+are ordinary functions in this file, which is what lets the re-execution path run without a GPU.
 
-What is asserted, and why each one is here rather than assumed:
-
-  * CONSEQUENCE PURITY reaches the verb. The writer refuses `knocked_out` because it is not in the
-    vocabulary; it would happily accept a `fill` through the lifecycle arm, so the arm refuses that
-    one itself with the closure stated - the hole the closed vocabulary cannot see.
-  * IDEMPOTENCY through `book`, in both directions at once: one clip retried coalesces onto the LSN
-    it already has, and two identical clips differing ONLY by execution reference are two facts.
-  * MARKET DECLARATION: `official` without `mark` scope is refused and the refusal is itself a
-    chained fact, read back off the platter.
-  * THE THREE NEW VERBS each meet an unscoped actor, and each denial lands as a fact - the brief's
-    capability-denial gate extended to what this increment added.
+  * CONSEQUENCE PURITY reaches the verb. The writer refuses `knocked_out` as out of vocabulary but
+    would accept a `fill` through the lifecycle arm, so the arm refuses that itself.
+  * IDEMPOTENCY through `book`, both ways: one clip retried coalesces, two identical clips differing
+    ONLY by execution reference are two facts.
+  * MARKET DECLARATION: `official` without `mark` scope is refused and the refusal is a chained fact.
+  * THE THREE NEW VERBS each meet an unscoped actor, and each denial lands as a fact.
   * THE LANES mint exactly once: an unknown lane refuses by name, and telemetry and curiosity are
-    refused by `complete_run` rather than dropped quietly.
-  * PIN_RESULT on all four of its paths: a cache hit against a prior attestation, a re-execution
-    that reproduces bit for bit, one that reproduces within a declared tolerance, and the three
-    refusals - a version that is not the recorded one, bytes that will not reproduce, and a claim
-    that contradicts an attestation this hub made itself.
-  * THE TOLERANCE POLICY is the only epsilon in the package, so a class it does not name is refused
-    rather than passed, and a home that has declared no policy at all pins nothing.
-  * FIRMNESS in two dimensions, four refusals, each naming itself - the disjointness half is gated
-    on the engine side, where the real `Market Prices` partition is.
+    refused by `complete_run` rather than dropped.
+  * PIN_RESULT on all four paths: a cache hit, a bit-identical re-execution, one inside a declared
+    tolerance, and the three refusals - wrong version, bytes that will not reproduce, and a claim
+    contradicting an attestation this hub made itself.
+  * THE TOLERANCE POLICY is the only epsilon in the package, so an unnamed class is refused and a
+    home with no policy pins nothing.
+  * FIRMNESS in two dimensions, four refusals, each naming itself.
 """
 import hashlib
 import json
@@ -142,13 +133,10 @@ def with_tolerance(log, actor=MINT, tolerances=TOLERANCE):
 # Consequence purity, through the verb rather than only through the vocabulary.
 
 def test_the_lifecycle_verb_refuses_anything_consequence_shaped_with_the_closure_stated(tmp_path):
-    """The facts law met on the verb's own arm, which is where it has to be met.
-
-    A knock is refused by the WRITER, because `knocked_out` is not a type the vocabulary has - that
-    is increment 1's gate and it still holds. What the writer would NOT refuse is a `fill`
-    submitted through the lifecycle arm: it is a perfectly good type, and a lifecycle verb that
-    quietly booked a trade is a hole the closed vocabulary cannot see from where it stands. So the
-    arm names the three facts it files and states the closure, and the refusal names the VERB.
+    """The facts law met on the verb's own arm. A knock is refused by the WRITER (`knocked_out` is
+    not in the vocabulary); a `fill` through the lifecycle arm is not - it is a perfectly good type,
+    and a lifecycle verb that quietly booked a trade is a hole the closed vocabulary cannot see. So
+    the arm names the three facts it files, states the closure, and its refusal names the VERB.
     """
     home, log = minted(tmp_path)
     head = log.head()
@@ -188,14 +176,10 @@ def test_the_lifecycle_verb_refuses_anything_consequence_shaped_with_the_closure
 # Booking: idempotency in both directions, and what a fill will not do without.
 
 def test_a_retried_booking_coalesces_and_two_identical_clips_both_land(tmp_path):
-    """The brief's idempotency gate through `book`, in both directions at once.
-
-    ONE CLIP RETRIED is one fact: the same canonical semantic tuple meets its own idempotency tag
-    and coalesces onto the LSN it already has, so a client that resends a booking after a timeout
-    does not book twice. TWO IDENTICAL CLIPS are two facts: the same instrument, the same size, the
-    same counterparty, differing only in the execution reference the venue gave them - and that is
-    why the reference is required rather than defaulted, because without it these two would be
-    indistinguishable from the retry above.
+    """Idempotency through `book`, both directions at once. ONE CLIP RETRIED is one fact: the same
+    semantic tuple meets its own tag and coalesces. TWO IDENTICAL CLIPS are two facts, differing
+    only in the execution reference the venue gave them - which is why that reference is required
+    rather than defaulted.
     """
     home, log = minted(tmp_path)
 
@@ -262,14 +246,10 @@ def test_an_amendment_is_a_new_instrument_hash_and_never_a_changed_one(tmp_path)
 # Market declaration, and the scope that moves a name.
 
 def test_declaring_official_without_mark_scope_is_refused_and_the_refusal_is_logged(tmp_path):
-    """The brief's market-designation gate, on the verb.
-
-    Officialness is a property of the NAME rather than of the data, and the name moves only by a
-    declaration from a `mark`-scoped actor. The refusal is the writer's - the verb carries no
-    second check - and it lands as a `capability_denied` fact, so "who tried to move the official
-    close in March" is a fold like every other authorization question. A private scratch market is
-    the same call under a different name and needs the same scope, which is the honest reading: a
-    trader's own marks are still a mark.
+    """Officialness is a property of the NAME rather than of the data, and the name moves only by a
+    declaration from a `mark`-scoped actor. The refusal is the writer's and lands as a
+    `capability_denied` fact, so "who tried to move the official close in March" is a fold. A
+    private scratch market is the same call under a different name and needs the same scope.
     """
     home, log = minted(tmp_path)
     declare(log, MINT, document(grants=((DESK, 'mark', BOOK), (MINT, 'mark', '*'),
@@ -300,13 +280,10 @@ def test_declaring_official_without_mark_scope_is_refused_and_the_refusal_is_log
 # Capability denial, per verb this increment added.
 
 def test_every_new_verb_refuses_an_unscoped_actor_and_records_the_refusal(tmp_path):
-    """The brief's capability-denial gate applied to increment 3's own arms.
-
-    The type-level sweep lives in `test_spine_capability.py` and covers the closed vocabulary; this
-    covers the VERBS, which is a different claim - a verb could reach the writer under an actor the
-    verb chose rather than the one the caller named, and no type-level sweep would see it. One
-    document granting nothing turns every one of them off at once, which is the design working:
-    authorization is a document and a pure function, never a check bolted onto each arm.
+    """The capability-denial gate on the VERBS - a different claim from the type-level sweep in
+    `test_spine_capability.py`, since a verb could reach the writer under an actor the verb chose
+    rather than the one the caller named. One document granting nothing turns every arm off at once,
+    which is the design: authorization is a document and a pure function.
     """
     home, log = minted(tmp_path)
     tolerance = with_tolerance(log)
@@ -414,18 +391,13 @@ def test_an_attestation_checks_the_values_vector_it_is_handed_rather_than_believ
 # Promotion: re-execute, cache-hit, or refuse by name.
 
 def test_a_result_pinned_that_fails_re_execution_is_refused_by_name(tmp_path):
-    """The brief's own sentence: *a `result_pinned` that fails re-execution within tolerance is
-    refused by name.*
+    """A `result_pinned` that fails re-execution within tolerance is refused by name. Three ways to
+    fail, each its own refusal because the remedies differ: bytes that are a different answer name
+    the departure and the policy; a version that is not the recorded one names both, since a replay
+    claim is a claim AT a version; and a result class the policy does not name refuses too, because
+    the spine admits no tolerance of its own.
 
-    Three ways to fail and each is its own refusal, because the remedies differ. Bytes that are a
-    different answer refuse naming the departure and the policy they were held to. A version that
-    is not the recorded one refuses naming both, because a replay claim is a claim AT a version and
-    agreement at another one is a statement about different software. And a result class the policy
-    does not name refuses too - the spine admits no tolerance of its own, so an unnamed class is
-    not quietly compared at some default this package chose.
-
-    Nothing is appended on any of them: a claim that will not reproduce leaves the head where it
-    found it.
+    Nothing is appended on any of them.
     """
     home, log = minted(tmp_path)
     with_tolerance(log)
@@ -456,18 +428,14 @@ def test_a_result_pinned_that_fails_re_execution_is_refused_by_name(tmp_path):
 
 
 def test_a_result_pinned_matching_a_known_tuple_resolves_as_a_cache_hit(tmp_path):
-    """The brief's other sentence: *a `result_pinned` matching a known tuple resolves as a cache
-    hit against the original attestation.*
+    """A `result_pinned` matching a known tuple resolves as a cache hit against the original
+    attestation. This hub witnessed the run and said so as `run_completed`, so NOTHING IS EXECUTED -
+    asserted by counting the executor's calls rather than trusting the report. The pin still lands
+    (a promotion is a fact about a claim being accepted) and still names the tolerance policy in
+    force.
 
-    Content addressing already knows the answer - this hub witnessed the run itself and said so as
-    `run_completed` - so there is nothing to reproduce and NOTHING IS EXECUTED, which the gate
-    asserts by counting the executor's calls rather than by trusting the report. The pin still
-    lands, because the promotion is a fact about a claim being accepted rather than about a
-    computation, and it still names the tolerance policy in force: a pin made under no declared
-    standard is not a pin this record carries.
-
-    A claim naming a DIFFERENT result under the same four coordinates is refused, because one
-    replay tuple cannot have two results - that is the whole property the tuple exists to hold.
+    A claim naming a DIFFERENT result under the same four coordinates is refused: one replay tuple
+    cannot have two results.
     """
     home, log = minted(tmp_path)
     tolerance = with_tolerance(log)
@@ -504,15 +472,10 @@ def test_a_result_pinned_matching_a_known_tuple_resolves_as_a_cache_hit(tmp_path
 
 
 def test_a_pin_re_executes_bit_identically_or_inside_the_declared_epsilon(tmp_path):
-    """The two accepting paths, kept apart on purpose.
-
-    BIT-EQUALITY IS THE FAST PATH and it is where an honest replay of a deterministic run lands -
-    no JSON is parsed, no epsilon is consulted, the bytes are the bytes. The tolerance path is what
-    remains, and it exists because the engine's float boundary is where drift actually lives: a
-    result inside the declared epsilon is the same answer, and one outside it is not.
-
-    A tuple this hub never attested is not a cache hit, so both of these DO execute - which is the
-    difference between this gate and the one above it, and the reason both count.
+    """The two accepting paths, kept apart. BIT-EQUALITY IS THE FAST PATH - no JSON parsed, no
+    epsilon consulted. The tolerance path exists because the engine's float boundary is where drift
+    lives. A tuple this hub never attested is not a cache hit, so both of these DO execute, which is
+    the difference between this gate and the one above.
     """
     home, log = minted(tmp_path)
     with_tolerance(log)
@@ -885,14 +848,12 @@ def test_the_injected_executor_is_checked_rather_than_trusted(tmp_path):
 
 
 def test_the_vocabulary_grew_three_types_and_changed_none():
-    """The versioned governance act, asserted as an act: three new types with three validators,
-    three verb scopes and three `BLOB_FIELDS` rows - and every type that existed before them
-    validating exactly what it validated before.
+    """The versioned governance act: three new types with three validators, three verb scopes and
+    three `BLOB_FIELDS` rows, and every earlier type validating exactly what it validated before.
 
-    The verb scopes are the interesting half. An attestation and a quote are BOOK, beside the
-    snapshot a book will cite; a promotion is APPROVE, because giving standing to a tuple this hub
-    never witnessed is a second pair of eyes on somebody else's claim rather than a desk putting
-    its own paper on the record.
+    The verb scopes are the interesting half. An attestation and a quote are BOOK; a promotion is
+    APPROVE, because giving standing to a tuple this hub never witnessed is a second pair of eyes on
+    somebody else's claim.
     """
     from derivus_spine.vocabulary import (
         BLOB_FIELDS, EVENT_TYPES, EVENT_VERB, FACT_TYPES, PROVENANCE_TYPES, SUBMITTABLE, validate)
@@ -922,19 +883,14 @@ def test_the_vocabulary_grew_three_types_and_changed_none():
 
 
 def test_the_optional_field_is_not_an_extension_point():
-    """The one piece of new VALIDATOR machinery this increment added, held to the claim its own
-    docstring makes for it.
+    """`quote_filed` is the only type declaring an optional field, and `_validator` grew an
+    `optional` arm for it. The arm's defence is that an optional field is still NAMED, so the body
+    stays as closed as it ever was. A validator that stopped checking surplus the moment a type
+    gained an optional field would open the hole on precisely the type that carries a client's own
+    words, and an undeclared field sits outside every hash, seal and signature here.
 
-    `quote_filed` is the only type that declares an optional field, and `_validator` grew an
-    `optional` arm to carry it. The arm's whole defence is that an optional field is still NAMED in
-    this vocabulary - so the body stays as closed as it ever was, and the mechanism is not a door.
-    Nothing else asserts that, and the failure it guards against is the quiet kind: a validator that
-    stopped checking surplus the moment a type gained an optional field would open the hole on
-    precisely the type that carries a client's own words, and an undeclared field sits outside every
-    hash, seal and signature in this record while every projector downstream reads it.
-
-    Three claims, because the arm makes three: the field may be ABSENT, it is CHECKED when present
-    exactly as a declared field is, and its presence buys no other field a way in.
+    Three claims: the field may be ABSENT, it is CHECKED when present exactly as a declared field
+    is, and its presence buys no other field a way in.
     """
     from derivus_spine.vocabulary import validate
 

@@ -11,43 +11,17 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""The single writer - one chained, fsynced, append-only sequence of facts, and no way to edit one.
+"""The single writer - one chained, fsynced, append-only sequence of facts, none of them editable.
 
-A line is a frame: a firm-visible envelope and a sealed body. Three hashes divide the work.
+A line is a frame: a firm-visible envelope over a sealed body, carrying exactly the twelve
+`FRAME_FIELDS` (`check_frame` refuses a thirteenth) and bound to the body as GCM additional data
+over `AAD_FIELDS`, so no envelope field moves without the body refusing to open. Uniqueness is
+enforced on `idempotency_tag`, never on a plaintext hash: a retry coalesces onto the event already
+written, and a tag hit whose decrypted bytes differ refuses rather than dedups. One writer, claimed
+rather than declared on `WRITER_LOCK`; reading and verifying never claim.
 
-`content_hash` is SHA-256 over the canonical semantic tuple (type, version, effective_time, actor,
-book, body) - what the event means, independent of when it was written or what it chained onto. It
-lives inside the sealed body, since in the envelope it would be a dictionary oracle.
-
-`idempotency_tag` is that same canonical plaintext under HMAC, carried by the envelope, and is what
-uniqueness is enforced on. A retry meets its own tag and coalesces onto the event already written; a
-tag hit whose stored bytes differ is a refusal, never a dedup. The writer proves identity by
-decrypting the stored body and byte-comparing, and refuses a duplicate it cannot prove identical.
-
-`event_hash` is SHA-256 over (ciphertext_hash, idempotency_tag, prev_hash, record_time) - the chain,
-computed over the ciphertext so an unentitled replica verifies the whole history holding no
-plaintext. LSN is positional and sits outside both hashes.
-
-The envelope is bound to the body by GCM's additional data: the nine pre-LSN fields, canonicalised,
-so editing an actor makes the body stop opening. That holds only while a frame carries the twelve
-fields and no thirteenth - a surplus field would sit outside every hash, seal and signature while
-projectors downstream read it - so `check_frame` refuses one.
-
-The writer also enforces, by declaration. Until a capabilities document is in the log there is
-nothing to consult; once one is in force, an append whose actor lacks the event's verb is refused
-and the refusal is appended as an ordinary fact. Two authorizations sit outside that: the writer's
-own denial is never gated, and the break-glass handle is gated from event one rather than by
-declaration, since no document grants it and so no document's absence can open it. The evaluation
-lives in `capability.evaluate`; this file holds the hook.
-
-One writer, claimed rather than declared. A second `SpineLog` appending to the same home would
-assign an LSN the first has taken, so the first append takes an exclusive claim, re-reads the head
-under it, and a second writer raises `WriterBusy`. Reading and verifying never claim.
-
-Nothing is edited in place, with one exception that is not a repair: a final line with no
-terminating newline was interrupted mid-write and was never durable, so it is truncated at open.
-Only unterminated trailing bytes, only in the last segment - garbage inside a terminated line is a
-durable line that was altered, which is `ChainBroken` like every other defect.
+The three hashes, the append order and the capability activation rule are in
+docs_src/developer/spine.md. `_authorize` and `_scan` carry the two rules local to this file.
 """
 import base64
 import binascii
@@ -476,17 +450,14 @@ class SpineLog:
     def _authorize(self, event_type, body, actor, book):
         """The enforcement hook: may this actor say this, and is what they are saying evaluable?
 
-        Enforcement activates by declaration for the six document verbs, so until a capabilities
-        document is in the log `evaluate` is not consulted about them. The break-glass handle is
-        gated from event one instead, because no declaration grants it and so no declaration's
-        absence can open it.
+        Enforcement activates by declaration for the six document verbs; break-glass is gated from
+        event one instead, no declaration granting it and so no declaration's absence opening it. A
+        refusal is itself a fact - `capability_denied` under the writer's own name, appended before
+        the raise.
 
-        A refusal is itself a fact: the writer appends `capability_denied` under its own name and
-        then raises, so the decision is in the record rather than in a log file nobody replays.
-
-        Three checks, in order. The reserved type first, since it must be refused whether or not a
-        document exists. Then scope. Then the document itself, so a malformed policy is met at the
-        moment it is declared rather than at the next append by a home that can no longer write.
+        Three checks, in order: the reserved type, which must be refused whether or not a document
+        exists, then scope, then the document itself, so a malformed policy is met at the moment it
+        is declared.
         """
         if event_type in WRITER_TYPES and not self._reserved:
             raise CapabilityDenied(

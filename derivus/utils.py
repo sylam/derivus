@@ -154,7 +154,7 @@ FACTOR_SIZE_RATE = 2
 Factor = namedtuple('Factor', 'type name')
 RateInfo = namedtuple('RateInfo', 'model_name archive_name calibration')
 CalibrationInfo = namedtuple('CalibrationInfo', 'param correlation delta')
-# One equation's fit from `stochasticprocess.arx1_t_mle`. `sigma` is the innovation STANDARD
+# One equation's fit from `stochasticprocess.arx1_t_mle`. `sigma` is the innovation standard
 # DEVIATION - scalar under constant variance, the path sigma_t under `garch=True`, where
 # `sigma[-1]**2` is the NEXT observation's variance. `resid` is standardised by `sigma`.
 ARX1Fit = namedtuple('ARX1Fit', 'phi mu sigma gamma resid garch')
@@ -166,14 +166,14 @@ Collateral = namedtuple('Collateral', 'Haircut Amount Currency Funding_Rate Coll
 DimensionLessFactors = ['ReferenceVol', 'Correlation']
 OneDimensionalFactors = ['InterestRate', 'InflationRate', 'DividendRate', 'SurvivalProb', 'ForwardPrice', 'ForwardRate']
 #: Every (moneyness, expiry) vol surface. ONE implementation - `riskfactors.VolatilityGrid` - with
-#: an asset-class TAG per member, because the risk-class partition below is a pure function of the
-#: factor type. The untagged name is transitional: see `resolve_factor_key`.
+#: an asset-class TAG per member, the risk-class partition below being a pure function of the factor
+#: type. The untagged name is transitional: see `resolve_factor_key`.
 TwoDimensionalFactors = ['FXVol', 'EquityPriceVol', 'CommodityPriceVol', 'VolatilityGrid']
 ThreeDimensionalFactors = ['InterestRateVol', 'InterestYieldVol', 'ForwardPriceVol']
 
 #: The CRIF-style risk class of every declared factor type, as data. A sensitivity is reported under
 #: the class of the factor it is differentiated against, so the partition is TOTAL over the Factor
-#: store and a pure function of `factor.type`; `CrossClass` covers a factor whose class is inherited.
+#: store and a pure function of `factor.type`; `CrossClass` is a factor whose class is inherited.
 FactorRiskClass = {
     'InterestRate': 'InterestRate', 'InflationRate': 'InterestRate', 'PriceIndex': 'InterestRate',
     'InterestRateVol': 'InterestRate', 'InterestYieldVol': 'InterestRate',
@@ -187,9 +187,8 @@ FactorRiskClass = {
     'SurvivalProb': 'Credit',
     'Correlation': 'CrossClass', 'ObservedBasis': 'CrossClass',
     'GBMAssetPriceTSModelParameters': 'CrossClass', 'HestonNandiModelParameters': 'CrossClass',
-    # TRANSITIONAL, and the reason the tags came back: an untagged surface cannot decide its own
-    # class. It is here only because the store still declares the name `resolve_factor_key` reads,
-    # and it retires with that shim.
+    # TRANSITIONAL: an untagged surface cannot decide its own class. Here only because the store
+    # still declares the name `resolve_factor_key` reads, and it retires with that shim.
     'VolatilityGrid': 'CrossClass'
 }
 
@@ -210,10 +209,9 @@ class DeferredDeal:
 class MTABoundarySet:
     """One netting set's transfer decisions, plus what is needed to price their counterfactuals.
 
-    `replay` maps an alternative balance path to the netting-set MTM exactly as reported, and
-    `rescan` restarts the forward walk's OWN recursion at a margin date from a forced opening
-    balance. Both are built inside post_process, so the formulae stay in one place and capture only
-    the pieces that do not depend on the balance.
+    `replay` maps an alternative balance path to the netting-set MTM exactly as reported; `rescan`
+    restarts the forward walk's own recursion at a margin date from a forced opening balance. Both
+    are built inside post_process, so they capture only what does not depend on the balance.
     """
     events: list
     replay: object                  # callable: balance path -> netting-set MTM
@@ -221,23 +219,21 @@ class MTABoundarySet:
     rescan: object                  # callable: (opening, start) -> the balance path from there on
 
     # Who registered it - `BoundarySet.deal`'s slot, carried here too because this is not one of
-    # those (it shares only `objective_jumps`) and `boundary_sets` holds both. A netting set is
-    # what stamps itself here: the decision is the SET's, not any one deal's.
+    # those (it shares only `objective_jumps`) and `boundary_sets` holds both. A netting SET stamps
+    # itself here: the decision is the set's, not any one deal's.
     deal = None
 
     def objective_jumps(self, score):
         """Per margin call, the gap and the change in the OBJECTIVE its transfer decision produces.
 
         The counterfactual is the SAME collateral recursion restarted from a forced opening balance
-        - transfer, then hold - so nothing is re-simulated, re-priced or bumped: the expensive
-        gross-MTM cube is already there and only the cheap balance scan is replayed.
+        - transfer, then hold - so nothing is re-simulated, re-priced or bumped: only the cheap
+        balance scan is replayed. A replay yields this SET's net while `score` consumes a change to
+        the PORTFOLIO, so the realised balance's own replay is the baseline - one extra scan per
+        set, not per event.
 
-        What a replay yields is this SET's net and `score` consumes a change to the PORTFOLIO, so
-        the realised balance's own replay is the baseline - one extra scan per set, not per event.
-
-        The receive and post sides of one call share a jump. D = 1 means "a transfer happened" for
-        both, so J(D=1) - J(D=0) is the same quantity; only the gap differs. Computing it once
-        halves the replays.
+        The receive and post sides of one call share a jump: D = 1 means "a transfer happened" for
+        both, so only the gap differs. Computing it once halves the replays.
         """
         with torch.no_grad():
             reported = self.replay(self.balance)
@@ -260,25 +256,23 @@ class MTABoundarySet:
 class BoundarySet:
     """One deal's decisions taken on SIMULATED state, and what a counterfactual needs of them.
 
-    The value jump at such a decision is real - a knocked-out deal IS worth nothing, an exercised
-    swaption DOES hold the swap - so the estimate is not what is wrong. What ordinary AAD drops is
-    the FLUX: as a factor moves, scenarios cross the trigger, and the indicator recording it has
-    zero derivative almost everywhere.
+    The value jump at such a decision is real - a knocked-out deal IS worth nothing - so the
+    estimate is not what is wrong. What ordinary AAD drops is the FLUX: as a factor moves, scenarios
+    cross the trigger, and the indicator recording it has zero derivative almost everywhere.
 
-    Subclasses differ in ONE thing: how far a decision reaches - every row from the decision
-    onward, or inside a pricer's own inner Monte Carlo. A decision must register as ONE
-    counterfactual carrying its whole reach, because an objective with a kink (a collateralised net
-    sits at the relu by construction) scores the sum of two partial counterfactuals differently
-    from the counterfactual of the sum.
+    Subclasses differ in ONE thing: how far a decision reaches - every row from the decision onward,
+    or inside a pricer's own inner Monte Carlo. A decision must register as ONE counterfactual
+    carrying its whole reach, because an objective with a kink (a collateralised net sits at the relu
+    by construction) scores the sum of two partial counterfactuals differently from the
+    counterfactual of the sum.
 
-    What they DO share is the estimator's contract: `objective_jumps(score)` yields, per decision,
-    the gap (graph retained, signed so gap > 0 means the trigger FIRED) and the objective's
-    response to that decision. This base is the plumbing every form consumes: the gross-to-net
-    chain and `portfolio_delta`.
+    They share the estimator's contract: `objective_jumps(score)` yields, per decision, the gap
+    (graph retained, signed so gap > 0 means the trigger FIRED) and the objective's response. This
+    base is the plumbing every form consumes: the gross-to-net chain and `portfolio_delta`.
 
-    Branch values are registered on the PRICER's own grid, in the pricer's own currency, and
-    `to_mtm` is the deal's own map onto the MTM grid - `fx_rep` then INTERPOLATION, never a tail
-    pad, since another deal's mtm date inside this deal's life inserts a row in the middle.
+    Branch values are registered on the PRICER's own grid and currency, and `to_mtm` is the deal's
+    own map onto the MTM grid - `fx_rep` then INTERPOLATION, never a tail pad, since another deal's
+    mtm date inside this deal's life inserts a row in the middle.
     """
     gaps: list                      # per decision, tensors, graph retained
     report_index: object            # MTM grid -> report grid, for the additive route only
@@ -301,10 +295,10 @@ class BoundarySet:
 
         The chain returns this SET's net LEVEL while the objective consumes the root sum over every
         netting set, so what the portfolio gains is the chain at this delta LESS the chain at zero -
-        true whatever the set's own arithmetic is, rather than depending on identifying which
-        tensor is its baseline. An additive set publishes no chain and only has to reach the report
-        grid - and reads no ledger, so `cash` (a list of `(time_index, branch, booked)` ledger
-        rows for the branch being scored) reaches only the collateral chain.
+        true whatever the set's own arithmetic is. An additive set publishes no chain and only has
+        to reach the report grid, and reads no ledger, so `cash` (a list of
+        `(time_index, branch, booked)` rows for the branch being scored) reaches only the collateral
+        chain.
         """
         if self.net_from_gross is None:
             return delta[self.report_index]
@@ -317,11 +311,9 @@ class BoundarySet:
 class LatchedBoundarySet(BoundarySet):
     """One deal's LATCHING decisions taken on simulated state, and what a counterfactual needs.
 
-    Two pricers register this shape. A discretely monitored barrier latches "has crossed" at each
+    Two pricers register this shape: a discretely monitored barrier latches "has crossed" at each
     observation date; a physically settled swaption latches "was exercised" once, at expiry, and
-    carries it over every later row. Either way the decision is OBSERVED, so the value jump is real
-    and the estimate is not what is wrong - what ordinary AAD drops is the FLUX, because the
-    indicator recording the crossing has zero derivative almost everywhere.
+    carries it over every later row.
 
     The counterfactual is cheap because flipping the decision does not change the SIMULATION, only
     the state read off it: `untriggered` and `triggered` are the two sides of the selection the
@@ -352,14 +344,11 @@ class LatchedBoundarySet(BoundarySet):
     def branch_deltas(self):
         """Per decision, the deal-mtm delta with that decision forced ON and forced OFF.
 
-        BOTH branches for EVERY scenario, not "what happened" against one alternative. The
-        estimator wants E[jump | gap = 0], and near the boundary the scenarios that did not fire
-        are exactly as numerous as those that did - scoring the former as a zero jump because their
-        reported value already equals their own branch HALVES the conditional expectation.
-        Measured: it recovered a third of the gap that way and closes it computing both.
-
-        Forcing one decision either way and re-deriving the value from the two branches the pricer
-        already evaluated re-simulates and re-prices nothing.
+        BOTH branches for EVERY scenario, not "what happened" against one alternative: the estimator
+        wants E[jump | gap = 0], and near the boundary the scenarios that did not fire are as
+        numerous as those that did, so scoring the former as a zero jump HALVES the conditional
+        expectation. Re-deriving the value from the two branches the pricer already evaluated
+        re-simulates and re-prices nothing.
 
         The selection happens on the PRICER grid and `to_mtm` is applied to the whole branch profile
         afterwards, not to the two branches separately. The two orders differ on an INTERPOLATED
@@ -414,9 +403,8 @@ class LatchedBoundarySet(BoundarySet):
         """Per decision, the gap and the change in the OBJECTIVE that decision produces.
 
         `score` maps a change to the reported portfolio to the per-scenario objective of the
-        counterfactual - the CVA or FVA reduction. A latched decision moves one scenario's
-        reported value by a FINITE amount, so the objective's response is a difference across
-        that amount, and nothing smaller would be the right question.
+        counterfactual. A latched decision moves one scenario's reported value by a FINITE amount,
+        so the objective's response is a difference across that amount.
 
         Each counterfactual's ledger reach is derived from `cash_events` as it is scored: forced ON
         the decision makes its own payment (if still alive as booked) and kills every later one;
@@ -451,21 +439,21 @@ class LatchedBoundarySet(BoundarySet):
 class InnerBoundarySet(BoundarySet):
     """Triggers taken INSIDE a pricer's own Monte Carlo - one decision per inner path.
 
-    A TARF's knock-in is read off `Sj`, a draw of the pricer's inner simulation, so the decision is
-    per (scenario, inner path) and the reported row is the MEAN over those paths. That makes this a
-    third shape rather than a variant of the other two: they move ONE SCENARIO's reported value by
-    a finite amount, where an inner path moves the reported row by 1/n of itself. The objective's
-    response to a perturbation that small is its DERIVATIVE, and a difference taken over a jump the
-    reported value never takes measures its curvature instead - which CVA's `relu` has plenty of.
+    A TARF's knock-in is read off `Sj`, so the decision is per (scenario, inner path) and the
+    reported row is the MEAN over those paths. That makes this a third shape rather than a variant:
+    the other two move ONE SCENARIO's reported value by a finite amount, where an inner path moves
+    the reported row by 1/n of itself. The objective's response to a perturbation that small is its
+    DERIVATIVE, and a difference taken over a jump the reported value never takes measures its
+    curvature instead - which CVA's `relu` has plenty of.
 
     So this shape carries the per-inner-path jump and `objective_jumps` differentiates `score` ONCE
     at the reported value and multiplies. The jump is the UNDIVIDED change to the row's own
-    accumulator, because the kernel's density already divides by the pooled sample size B*n - which
-    is also why the gaps go in as one (B, n) tensor rather than n separate decisions.
+    accumulator, the kernel's density already dividing by the pooled sample size B*n - which is also
+    why the gaps go in as one (B, n) tensor rather than n separate decisions.
 
     Requires the objective to be SEPARABLE per scenario, which every exposure measure here is: the
-    sensitivity is read off a single backward pass over `score(...).sum()`, and that is the
-    per-scenario derivative only because scenario b's objective depends on column b alone.
+    sensitivity is read off one backward pass over `score(...).sum()`, and that is the per-scenario
+    derivative only because scenario b's objective depends on column b alone.
     """
     rows: list                      # per event, int: the PRICER-grid row the jump lands on
     jumps: list                     # per event, (B, n_inner) detached: the change in that row's
@@ -476,10 +464,9 @@ class InnerBoundarySet(BoundarySet):
     def objective_jumps(self, score):
         """Per decision, the gap and the objective's response to that inner path's jump.
 
-        The multiplier is d(objective)/d(this pricer row), assembled by the chain rule through the
-        deal's own map. That map is LINEAR, so the image of a unit row IS its column of the
-        Jacobian, and one backward pass through `score` supplies the other half - no bump, nothing
-        re-priced, and no random number drawn.
+        The multiplier is d(objective)/d(this pricer row) by the chain rule through the deal's own
+        map. That map is LINEAR, so the image of a unit row IS its column of the Jacobian, and one
+        backward pass through `score` supplies the other half - nothing re-priced, nothing drawn.
         """
         for gap, row, jump in zip(self.gaps, self.rows, self.jumps):
             with torch.enable_grad():
@@ -496,14 +483,14 @@ class InnerBoundarySet(BoundarySet):
 def claim_boundary_sets(shared, mark):
     """Hand a netting set's gross-to-net chain to the registrations made beneath it.
 
-    `post_process` runs only after its children are priced, so everything the netting set is
-    answerable for is the TAIL of `boundary_sets` added since its structure was entered - which is
-    why the mark is taken there rather than here.
+    `post_process` runs only after its children are priced, so everything the set is answerable for
+    is the TAIL of `boundary_sets` added since its structure was entered - hence the mark is taken
+    there rather than here.
 
-    Only a set that PUBLISHES a chain claims. An uncollateralised netting set passes a deal's
-    value through additively and has nothing to say about it; a swaption's post_process is not a
-    netting set at all; both must leave the registration for whatever sits above them. Where an
-    inner collateralised set already stamped one, it is the closer of the two and keeps it.
+    Only a set that PUBLISHES a chain claims: an uncollateralised netting set passes a deal's value
+    through additively, and a swaption's post_process is not a netting set at all, so both leave the
+    registration for whatever sits above. An inner collateralised set that already stamped one is
+    the closer of the two and keeps it.
     """
     chain = shared.__dict__.pop('gross_to_net', None)
     if chain is not None:
@@ -515,10 +502,9 @@ def claim_boundary_sets(shared, mark):
 def stamp_boundary_sets(shared, mark, name):
     """Name the registrations made since `mark`, the same tail-since-a-mark idiom as the claim.
 
-    A pricer knows nothing about the tree it is in and the registration carries no reference, so
-    the WALK names it: the deal loop stamps each deal as it prices, and the structure stamps
-    whatever its own `post_process` went on to add (a margin call's transfer decision). Innermost
-    wins - already-named sets are left alone - so a name is the closest thing that made it.
+    A pricer knows nothing about the tree it is in, so the WALK names it: the deal loop stamps each
+    deal as it prices, and the structure stamps whatever its own `post_process` added. Innermost
+    wins - already-named sets are left alone.
     """
     for bset in shared.boundary_sets[mark:]:
         if bset.deal is None:
@@ -530,11 +516,10 @@ class MTABoundaryEvent:
     """One margin call's transfer decision, recorded so its derivative can be recovered.
 
     A minimum transfer amount makes the collateral balance jump discontinuously, so ordinary AAD
-    differentiates the netting set with the decision FROZEN and loses the term that flows through
-    the decision itself. `gap` is the margin by which the decision was made and RETAINS its
-    autograd graph - it is built from the whole netting-set MTM, so its derivative already carries
-    every shared-factor and cross-deal effect. The balances are DETACHED: they seed a
-    counterfactual replay whose result is a coefficient, not a differentiated quantity.
+    differentiates the netting set with the decision FROZEN. `gap` is the margin the decision was
+    made by and RETAINS its graph - built from the whole netting-set MTM, so its derivative already
+    carries every shared-factor and cross-deal effect. The balances are DETACHED: they seed a replay
+    whose result is a coefficient, not a differentiated quantity.
     """
     call_index: int
     side: str                       # 'receive' | 'post'
@@ -558,33 +543,29 @@ class ScheduleLifecycleError(Exception):
 class UnpriceableSchedule(Exception):
     """An authored schedule the engine has no number for, refused BY NAME where it is read.
 
-    The deal is well formed enough to load and its fields are the fields the schema declares - what
-    is missing is a quantity the AUTHOR did not state and no rule recovers, so the honest answer is
-    the name of the thing and the remedy, never a guess. `make_float_cashflows`' zero-length rate
-    window is the first: a reset whose rate start equals its rate end has no forward rate to read,
-    and the tenor that would define one is not a field any `Row` declares.
+    The deal loads and its fields are the fields the schema declares; what is missing is a quantity
+    the AUTHOR did not state and no rule recovers, so the answer is the name of the thing and the
+    remedy, never a guess. `make_float_cashflows`' zero-length rate window is the first: a reset
+    whose rate start equals its rate end has no forward rate to read, and no `Row` declares the
+    tenor that would define one.
 
-    FATAL by `is_fatal_pricing_error`, which is the whole point. The compile guard's canonical
-    response to an exception is to log it and increment `Deals Skipped`, and a skipped deal marks
-    at nothing while the job SUCCEEDS - the hollow-container failure mode in loader clothing. A
-    refusal that turns into a zero mark is not a refusal, so this class re-raises out of both
-    guards and the run fails loud with the message still on it."""
+    FATAL by `is_fatal_pricing_error`, which is the whole point: a compile guard's canonical
+    response is to log and increment `Deals Skipped`, and a skipped deal marks at nothing while the
+    job SUCCEEDS. A refusal that turns into a zero mark is not a refusal, so this re-raises out of
+    both guards."""
 
 
 class SecondOrderRefused(Exception):
     """A second-order block will not be answered on this portfolio, because the answer would be a
     plausible wrong number rather than a failure.
 
-    Three sites raise it, one posture. `Base_Revaluation.execute` refuses `Greeks: 'All'` on a
-    registered `BoundarySet`; the CVA-Hessian route refuses `Hessian: 'Yes'` on the same thing
-    (`Credit_Monte_Carlo.execute`) and again on a reporting row whose bandwidth ladder DIVERGES,
-    where the density the exposure-gamma term estimates climbs as 1/bandwidth because it is a point
-    mass rather than a density (`pricing.exposure_kink_term`).
+    Three sites raise it: `Base_Revaluation.execute` refuses `Greeks: 'All'` on a registered
+    `BoundarySet`; `Credit_Monte_Carlo.execute` refuses `Hessian: 'Yes'` on the same thing, and
+    `pricing.exposure_kink_term` on a reporting row whose bandwidth ladder DIVERGES.
 
     Named so a caller can FALL BACK rather than lose the run: the value and the first-order block
-    are unaffected, so re-running the same job at `Greeks: 'First'` / `Hessian: 'No'` keeps
-    everything except the thing that was refused. That is a different response from the one any
-    other exception out of a valuation deserves, and a blanket `except` cannot tell them apart."""
+    are unaffected, so re-running at `Greeks: 'First'` / `Hessian: 'No'` keeps everything except the
+    thing refused. A blanket `except` cannot tell that from any other valuation exception."""
 
 
 class CalibrationStale(Exception):
@@ -593,16 +574,13 @@ class CalibrationStale(Exception):
     reprices the set's own benchmarks inside its `Drift_Tolerance`, or NO ARTIFACT answers to the
     plan at all - a cold process, an evicted slot, a re-authored strip.
 
-    Both refuse rather than falling back, because the fallback is a plausible wrong curve and the
-    replay tuple cannot tell it from the right one: two runs agreeing on `plan_hash`,
-    `values_hash`, the version and the seed disagreed by 13.4% on a mark once one of them lost its
-    artifact. A refusal is not a number, so it cannot be mistaken for one.
+    Both refuse rather than falling back: the fallback is a plausible wrong curve and the replay
+    tuple cannot tell it from the right one (two runs agreeing on `plan_hash`, `values_hash`, the
+    version and the seed disagreed by 13.4% on a mark once one lost its artifact).
 
-    Named so a caller can REFIT rather than lose the run: nothing about the job is wrong and no
-    number has been reported, the artifact is simply missing or older than the move it was asked to
-    carry. `Config.bootstrap()` publishes a fresh one under the same slot and the same EXECUTE then
-    runs. That is a different response from the one any other exception out of a valuation
-    deserves, and a blanket `except` cannot tell them apart."""
+    Named so a caller can REFIT rather than lose the run: no number has been reported and the
+    artifact is simply missing or older than the move it was asked to carry, so
+    `Config.bootstrap()` publishes a fresh one under the same slot and the same EXECUTE runs."""
 
 
 def is_fatal_pricing_error(e):
@@ -612,13 +590,12 @@ def is_fatal_pricing_error(e):
     The first two say the FRAMEWORK is wrong rather than the deal, and each produces a silently
     missing mark if caught — inside an inner-MC fork a missing tradable mark reads as an expired
     contract and retires the instrument from the hedge set. `UnpriceableSchedule` says the DOCUMENT
-    is wrong, and is here for the mirror-image reason: it exists to name a thing the author must
-    fix, and a named refusal swallowed into a zero mark on a job that then succeeds has said
+    is wrong, and a named refusal swallowed into a zero mark on a job that then succeeds has said
     nothing at all. Everything else keeps the canonical skip.
 
     Read by all four guards over a deal — `Deal.calculate`, `Deal.build_features` and both compile
-    guards in `DealStructure` — so one predicate decides in every place the answer would otherwise
-    be a quiet zero."""
+    guards in `DealStructure` — so one predicate decides everywhere the answer would otherwise be a
+    quiet zero."""
     return isinstance(e, (MemoryError, torch.cuda.OutOfMemoryError, ScheduleLifecycleError,
                           UnpriceableSchedule)) or (
         isinstance(e, RuntimeError) and 'out of memory' in str(e).lower())
@@ -657,9 +634,8 @@ class Descriptor:
 class Scaled(object):
     """A number authored in one unit and stored in another; `divisor` is the whole difference.
 
-    Percent and Basis were the same class twice - identical but for the divisor, the suffix and
-    one missing `__add__`. They stay distinct NAMES because the JSON encoder picks its tag by
-    isinstance, and siblings rather than parent/child so neither is an instance of the other.
+    Percent and Basis stay distinct NAMES because the JSON encoder picks its tag by isinstance, and
+    are siblings rather than parent/child so neither is an instance of the other.
     """
     divisor = 1.0
     suffix = ''
@@ -805,8 +781,8 @@ class ScenarioBlock(object):
     `first_row` is the block's first logical scenario row. `batch_index` maps each logical batch
     column to the column of THIS block that supplies it — `None` when the block is already at the
     logical width. An inner-MC fork's realized past holds one outer column per `Inner_Sub_Batch`
-    flat columns, so its map is the flattening the fork itself performed: passing it as data is
-    what stops the two ends having to agree by arithmetic.
+    flat columns, so its map is the flattening the fork performed: passing it as data is what stops
+    the two ends having to agree by arithmetic.
     """
 
     def __init__(self, tensor, first_row=0, batch_index=None):
@@ -819,9 +795,8 @@ class ScenarioBlock(object):
         """A read at this block's width, taken up to the logical grid's.
 
         Applied to the RESULT of a read, never to the stored tensor: projecting the tensor would
-        materialize the block at the logical width and hand back exactly the memory the block
-        split exists to save. It is a batch-axis gather, so it commutes with the time blend and
-        with `combine` — which is what lets the caller project first and blend after."""
+        materialize the block at the logical width and hand back the memory the block split exists
+        to save. A batch-axis gather, so it commutes with the time blend and with `combine`."""
         return val if self.batch_index is None else val.index_select(-1, self.batch_index)
 
     def __mul__(self, other):
@@ -832,13 +807,11 @@ class ScenarioSource(object):
     """A factor's scenario grid as the pricer sees it: a SEQUENCE of `ScenarioBlock`s under one
     logical shape, each at its own batch width.
 
-    Ordinary generation publishes a bare tensor and never builds one of these, so base valuation,
-    credit Monte Carlo and the outer hedge loop never meet this class. An inner-MC fork publishes
-    TWO blocks: the outer-realized past at `Batch_Size`, then the forked rows at
+    Ordinary generation publishes a bare tensor and never builds one of these. An inner-MC fork
+    publishes TWO blocks: the outer-realized past at `Batch_Size`, then the forked rows at
     `Batch_Size x Inner_Sub_Batch`. Every past row is identical across the inner draws, so joining
     them into one tensor writes the realized past out `Inner_Sub_Batch` times — 98% of the stuffed
-    buffer at the production operating point, dragging a same-shaped slab of Hermite coefficients
-    with it.
+    buffer at the production operating point.
 
     Write-once and read-only: built after every process's `generate` has published, and carrying
     only the operations `make_curve_tensor` performs on a raw buffer value, so anything else fails
@@ -862,10 +835,9 @@ class Interpolation(object):
     """Tenor and time interpolation over ONE physical scenario tensor.
 
     A leaf, and the only class base valuation / credit Monte Carlo / the outer hedge loop ever
-    build. `build` prepares what a given interpolation kind stores — an RT kind folds the tenor
-    into the values, Hermite derives its coefficient pair — and `eval` looks at the kind and
-    returns just what it needs. Dividend curves are plain here; what makes them different lives
-    in `CurveTenor`.
+    build. `build` prepares what a given interpolation kind stores — an RT kind folds the tenor into
+    the values, Hermite derives its coefficient pair. Dividend curves are plain here; what makes
+    them different lives in `CurveTenor`.
 
     It knows nothing about inner MC, block boundaries, logical rows or batch fan-out: the rows
     reaching it are already in its own frame, and it flattens them against its OWN tenor stride,
@@ -901,9 +873,9 @@ class Interpolation(object):
         after any time blend.
 
         Scenario rows are flattened into this tensor's (row, tenor) frame HERE, against its OWN
-        stride: a tenor segment's stride is its own, which is the whole reason `CurveTensor` hands
-        out rows rather than a flat offset. `rows is None` means every row is row 0 — a static
-        curve, or a stochastic one gathered only at the base date — and skips the add entirely."""
+        stride, which is why `CurveTensor` hands out rows rather than a flat offset. `rows is None`
+        means every row is row 0 — a static curve, or a stochastic one gathered only at the base
+        date — and skips the add entirely."""
         base = None if rows is None else rows.reshape(-1, 1) * self.shape[1]
         i0, i1x = (i1, i2) if base is None else (base + i1, base + i2)
         if tenor_data[0].startswith('Hermite'):
@@ -922,9 +894,9 @@ class Interpolation(object):
         return block.project(raw)
 
     def combine(self, raw, tenor_data, i2, tnr, time_factor):
-        """Raw read -> curve value: the rate*time scaling this kind asks for. Elementwise in
-        `raw`, so it commutes with the time blend and with a block projection — which is why it
-        runs ONCE, after both, rather than inside either."""
+        """Raw read -> curve value: the rate*time scaling this kind asks for. Elementwise in `raw`,
+        so it commutes with the time blend and with a block projection — which is why it runs ONCE,
+        after both, rather than inside either."""
         kind, tnr_min, tnr_max = tenor_data
         tenors = tnr.unsqueeze(-1)
         mult = tenors if time_factor else 1.0
@@ -949,12 +921,11 @@ class Interpolation(object):
 class SegmentedInterpolation(object):
     """A curve whose tenor axis is split at a near index, each side interpolated its own way
     (`Near_Interpolation`). A SIBLING of `Interpolation`, not a subclass: it composes leaves over
-    TENOR, exactly as `RoutedInterpolation` composes strategies over SCENARIO ROWS, and the two
-    compositions are orthogonal.
+    TENOR as `RoutedInterpolation` composes strategies over SCENARIO ROWS, and the two compositions
+    are orthogonal.
 
-    Segments are middle-dim slices with their own tenor divisors, so each owns its own flat
-    stride — which is the reason `CurveTensor` hands out scenario ROWS and lets the strategy
-    flatten them.
+    Segments are middle-dim slices with their own tenor divisors, so each owns its own flat stride —
+    the reason `CurveTensor` hands out scenario ROWS and lets the strategy flatten them.
     """
 
     def __init__(self, tensor, spec, tenor):
@@ -980,7 +951,7 @@ class SegmentedInterpolation(object):
 
     def read_at(self, tenor_data, rows, i1, i2, w2):
         """One raw read PER SEGMENT — evaluated on the full tenor set and selected in `combine`.
-        More work than we need, but it keeps every segment a plain leaf."""
+        More work than needed, but it keeps every segment a plain leaf."""
         return [seg.read_at((seg_spec[2], tnr_min, tnr_max), rows,
                             *self.seg_tenors(k, i1, i2), w2)
                 for k, (seg, (seg_spec, tnr_min, tnr_max))
@@ -1015,14 +986,14 @@ class SegmentedInterpolation(object):
 
 
 class RoutedInterpolation(object):
-    """One logical scenario grid over several physical blocks — an inner-MC fork's realized past
-    and its forked rows — each carrying its OWN interpolation, built recursively from the same
-    curve tenor. A segmented curve inside a fork is therefore a `RoutedInterpolation` of
-    `SegmentedInterpolation`s and needs no special case here.
+    """One logical scenario grid over several physical blocks — an inner-MC fork's realized past and
+    its forked rows — each carrying its OWN interpolation, built recursively from the same curve
+    tenor. A segmented curve inside a fork is a `RoutedInterpolation` of `SegmentedInterpolation`s
+    and needs no special case here.
 
     It owns exactly the composite concerns: which block holds a row, rebasing a logical row into
     that block's frame, projecting a narrow block's read up to the logical batch width, and
-    reassembling the groups in the caller's row order. The interpolations stay unaware of all of it.
+    reassembling the groups in the caller's row order. The interpolations stay unaware of it.
     """
 
     def __init__(self, source, curve_tenor):
@@ -1036,11 +1007,10 @@ class RoutedInterpolation(object):
 
     def route(self, index, has_alpha):
         """Group a gather's rows by the block that owns each of its two reads: `(row positions,
-        block for the t read, block for the t+1 read)`, positions `None` when ONE group covers
-        every row. A time-interpolated read reaches `index + 1`, so a row just below a cut reads
-        ACROSS it and names two blocks — classify on where a read ENDS, not where it starts.
-        Decided from the numpy indices a `CurveTensor` already holds, so it costs no device sync,
-        and once per `CurveTensor` rather than once per gather."""
+        block for the t read, block for the t+1 read)`, positions `None` when ONE group covers every
+        row. A time-interpolated read reaches `index + 1`, so a row just below a cut reads ACROSS it
+        and names two blocks — classify on where a read ENDS, not where it starts. Decided from the
+        numpy indices a `CurveTensor` already holds, so it costs no device sync."""
         hi = np.minimum(index + 1, self.shape[0] - 1) if has_alpha else index
         at_t = np.searchsorted(self.cuts, index, side='right')
         at_t1 = np.searchsorted(self.cuts, hi, side='right')
@@ -1078,8 +1048,8 @@ class RoutedInterpolation(object):
             # the read is per block, but the SPEC is the curve's
             raw = s0.project(b0, s0.read_at(tenor_data, rows, t1, t2, weight))
             if alpha is not None:
-                # projection and the time blend are both linear, and `combine` runs after both,
-                # so the routed path is the same arithmetic in the same order as an unrouted one
+                # projection and the time blend are both linear and `combine` runs after both, so
+                # the routed path is the same arithmetic in the same order as an unrouted one
                 raw = s0.blend(raw, s1.project(b1, s1.read_at(tenor_data, nxt, t1, t2, weight)),
                                select_rows(alpha, pos))
             return s0.combine(raw, tenor_data, t2, select_rows(tnr, pos), time_factor)
@@ -1112,8 +1082,7 @@ def build_interpolation(value, curve_tenor):
         ScenarioSource + either         -> RoutedInterpolation, whose per-block children are built
                                            by this function again
 
-    So a segmented curve inside an inner-MC fork composes rather than special-cases, and the
-    ordinary path builds exactly the leaf it always did."""
+    So a segmented curve inside an inner-MC fork composes rather than special-cases."""
     if isinstance(value, ScenarioSource):
         return RoutedInterpolation(value, curve_tenor)
     if isinstance(curve_tenor.type, str):
@@ -1202,25 +1171,21 @@ class Calculation_State(object):
         # keep individual calculation results per dependency?
         self.keep_tensor = keep_tensor
         # Recompute a Monte Carlo pricer's inner simulation in backward() rather than taping it
-        # (`Recompute_Inner_MC`); off is the taped path, bit for bit. Declared here rather than by
-        # the calculations that set it so every pricer can read it without a fallback.
+        # (`Recompute_Inner_MC`); off is the taped path bit for bit. Declared here rather than by
+        # the calculations that set it, so every pricer reads it without a fallback.
         self.recompute_inner_mc = False
         # Second derivatives are wanted (`Greeks: 'All'`, base valuation only), so the reverse
-        # sweep runs with `create_graph`. Declared here for the same reason as the switch above -
-        # a pricer that has to avoid a first-order-only kernel reads it without a fallback.
+        # sweep runs with `create_graph`. Declared here for the same reason as the switch above.
         self.gamma = False
         # The smooth (branch-and-weight) value estimator is wanted (`Branch_And_Weight`, base
         # valuation only); off is the crisp one-step-survival path bit for bit. False here is what
         # keeps `Credit_Monte_Carlo`, which declares no such field, on the crisp estimator.
         self.branch_and_weight = False
         # THE STRIDE is wanted (`HN_Stride`, base valuation only): the component Heston-Nandi
-        # k-step conditional law in place of the daily walk between fixings. One field governs every
-        # consumer - the smooth estimator's HN arm, the conditional-p jump gamma and the
-        # unmonitored-interval sampler (`pv_discrete_barrier_option` is the one pricer that is ONLY
-        # that) - because all of them consent to the SAME declared approximation, the carried state
-        # across the jump. The third was bought as a SPEED lever and is not one: measured 111x to
-        # 147x slower, the ratio widening with the cube (`pricing.ComponentHestonNandiKit.substeps`
-        # carries the table and the diagnosis). Off is the daily walk bit for bit.
+        # k-step conditional law in place of the daily walk between fixings. ONE field governs every
+        # consumer, because all consent to the SAME declared approximation - the carried state
+        # across the jump. Not a speed lever (`pricing.ComponentHestonNandiKit.substeps`); off is
+        # the daily walk bit for bit.
         self.hn_stride = False
         # where the memoized quasi-random stream stands, per (dimension, sample_size) - only
         # `CMC_State.quasi_rng` advances it, but `rng_position` seeks every state's streams
@@ -1230,20 +1195,19 @@ class Calculation_State(object):
 def rng_position(shared, position=None):
     """Where every random stream a calculation draws from STANDS, and optionally a seek.
 
-    Returns the position it was at, and seeks to `position` FIRST if one is given - so a single
-    call both rewinds and records where to rewind back to, which is the whole idiom a recompute
-    needs (`pricing.InnerMCRecompute`). A free function rather than a method because
-    `Calculation_State` is `torch.jit.script`ed and none of this compiles.
+    Returns the position it was at, and seeks to `position` FIRST if one is given - so one call both
+    rewinds and records where to rewind back to, the whole idiom a recompute needs
+    (`pricing.InnerMCRecompute`). A free function because `Calculation_State` is
+    `torch.jit.script`ed and none of this compiles.
 
-    Two streams reach a pricer and both are here because both are read inside one inner Monte
-    Carlo. The Sobol draws are MEMOIZED, so their position is a counter per (dimension,
-    sample_size) and seeking it makes the next draw return the very same tensor rather than an
-    equal one - the replay is exact by identity. The regular generator has no memo, so its position
-    is its own state; `torch.rand` (small batches, where `quasi_rng` is not worth its cache) and the
-    Heston-Nandi unmonitored sub-steps both draw from it.
+    Two streams reach a pricer, both read inside one inner Monte Carlo. Sobol draws are MEMOIZED, so
+    their position is a counter per (dimension, sample_size) and seeking it makes the next draw
+    return the very same tensor - the replay is exact by identity. The regular generator has no
+    memo, so its position is its own state; `torch.rand` and the Heston-Nandi unmonitored sub-steps
+    both draw from it.
 
-    The device generator is only asked for its state when the calculation is on a device. That is a
-    copy back to the host and it synchronises, which is why this is taken once per pricing block.
+    The device generator is only asked for its state on a device, which copies back to the host and
+    synchronises - hence once per pricing block.
     """
     was = (dict(shared.t_quasi_rng_batch), torch.get_rng_state(),
            torch.cuda.get_rng_state(shared.one.device) if shared.one.is_cuda else None)
@@ -1269,10 +1233,9 @@ class DualArray:
 def bind_schedules(compiled, unit):
     """Bind every `TensorSchedule` reachable in a deal's compiled `Factor_dep`, and return it.
 
-    A deal files its schedules under whatever key it likes and nests them - a swap's two legs, a
-    collateral bond's coupons - so this reads the compiled output rather than a list of key names.
-    It WRAPS `calc_dependencies` on the walk that already builds the deal tree: binding is part of
-    compiling, not a second pass over it.
+    A deal files its schedules under whatever key it likes and nests them, so this reads the
+    compiled output rather than a list of key names. It WRAPS `calc_dependencies` on the walk that
+    already builds the deal tree: binding is part of compiling, not a second pass over it.
     """
     if isinstance(compiled, TensorSchedule):
         compiled.bind(unit)
@@ -1287,16 +1250,14 @@ def bind_schedules(compiled, unit):
 class TensorSchedule(object):
     """A cashflow or reset schedule: numpy while it compiles, a device tensor once it is BOUND.
 
-    The DUAL representation is the point: the index columns - payment days, accrual days, reset
-    counts - are checked in fast numpy (`np.unique`, `searchsorted`, masks) and only the copy the
-    arithmetic runs on goes to the device. `carry` is the one seam where the tensor half can differ
-    from that copy, and nothing on the numpy side ever sees it.
+    The DUAL representation is the point: index columns are checked in fast numpy (`np.unique`,
+    `searchsorted`, masks) and only the copy the arithmetic runs on goes to the device. `carry` is
+    the one seam where the tensor half can differ from that copy.
 
-    `bind` is what separates the two halves in TIME, and it is the whole lifecycle. Before it the
-    numpy half is authoritative and the compile-time edits - `overwrite_rate`, `carry`, an inserted
-    principal exchange - are the only writes; after it the device copy is authoritative, every
-    accessor serves that ONE copy, and an edit raises rather than silently failing to reach it.
-    `derived` is the run-scoped home for anything a pricer builds off the copy.
+    `bind` separates the two halves in TIME, and is the whole lifecycle. Before it the numpy half is
+    authoritative and the compile-time edits are the only writes; after it the device copy is
+    authoritative, every accessor serves that ONE copy, and an edit raises rather than silently
+    failing to reach it. `derived` is the run-scoped home for anything a pricer builds off the copy.
     """
 
     def __init__(self, schedule, offsets):
@@ -1314,9 +1275,8 @@ class TensorSchedule(object):
     def bind(self, unit):
         """Copy the numpy half to the device and make that copy authoritative - the lifecycle event.
 
-        Whatever overlay `carry` attached is spliced in HERE rather than at whichever call happened
-        to be first, and re-binding is how a second run starts clean: a fresh copy for the new unit,
-        and every tensor derived from the old one dropped with it.
+        Whatever overlay `carry` attached is spliced in HERE, and re-binding is how a second run
+        starts clean: a fresh copy for the new unit, every tensor derived from the old one dropped.
         """
         array = self._bound_array()
         self.unit = unit
@@ -1338,7 +1298,7 @@ class TensorSchedule(object):
     def reopen(self):
         """Drop the binding so a compile can CONTINUE - re-bind when it has. The one caller is
         `MtMCrossCurrencySwapDeal.post_process`, which cannot know which child carries the MtM leg
-        until the children exist; anything else reaching for this is compiling in the wrong place."""
+        until the children exist."""
         self.bound = None
         return self
 
@@ -1348,9 +1308,8 @@ class TensorSchedule(object):
         A schedule's value columns - a fixed rate, a margin - are where a market QUOTE lands, and
         `new_tensor` copies them across as data, which is where a quote stops being differentiable.
         An overlay column is spliced into that copy instead, so a quote reaches a pricer with its
-        graph intact. Index columns are never overlaid: they are read off `.np`, which stays plain
-        numpy, so every existing consumer is untouched and absent-by-default means the ordinary
-        path does not know this exists.
+        graph intact. Index columns are never overlaid, being read off `.np`, so every existing
+        consumer is untouched.
         """
         self._compiling()
         self.overlay = overlay
@@ -1379,10 +1338,7 @@ class TensorSchedule(object):
     def known_resets(self, num_scenarios, index=RESET_INDEX_Value,
                      filter_index=RESET_INDEX_Reset_Day, include_today=False):
         """The already-fixed rows' VALUE column, one `(1, num_scenarios)` tensor each.
-
-        `include_today` keeps a row resetting today, which only an equity reset wants. A cashflow's
-        known FX reset is this same read on its own two columns.
-        """
+        `include_today` keeps a row resetting today, which only an equity reset wants."""
         key = ('known_resets', num_scenarios, index, include_today)
         if self.derived.get(key) is None:
             self.derived[key] = [
@@ -1413,11 +1369,10 @@ class DealTimeDependencies(object):
         self.update_indices()
 
     def copy_restricted(self, cutoff_mtm_index):
-        """Fresh DealTimeDependencies covering only deal events at mtm positions
-        >= cutoff_mtm_index. delta/interp/indices/alpha are recomputed via __init__
-        for the sliced view, so the post-pricing interpolate path produces output
-        aligned with mtm_time_grid (terminal lands at the deal's expiry position).
-        Returns None if all events are past the cutoff."""
+        """Fresh DealTimeDependencies covering only deal events at mtm positions >=
+        cutoff_mtm_index; delta/interp/indices/alpha are recomputed for the sliced view, so the
+        interpolate path stays aligned with mtm_time_grid. None if every event is past the
+        cutoff."""
         keep = self.deal_time_grid >= cutoff_mtm_index
         if not keep.any():
             return None
@@ -1425,11 +1380,9 @@ class DealTimeDependencies(object):
 
     def copy_window(self, from_mtm_index, to_mtm_index):
         """Fresh DealTimeDependencies covering only deal events at mtm positions in
-        [from_mtm_index, to_mtm_index] — the one-step inner-MC fork prices at exactly
-        {t, t+1}, so the AAD tape and the scenario buffer stop at t+1 (interp is rebuilt
-        up to the last kept event; nothing downstream indexes past it). Assumes
-        hedge-mode deals reval on every mtm date (dense event grids). Returns None if
-        no event falls inside the window (deal expired before the fork)."""
+        [from_mtm_index, to_mtm_index] — the one-step inner-MC fork prices at exactly {t, t+1}, so
+        the AAD tape and the scenario buffer stop at t+1. Assumes hedge-mode deals reval on every
+        mtm date. None if no event falls inside the window."""
         keep = (self.deal_time_grid >= from_mtm_index) & (self.deal_time_grid <= to_mtm_index)
         if not keep.any():
             return None
@@ -1469,8 +1422,8 @@ class TimeGrid(object):
         return np.dstack([alpha, time_in_days, index])[0]
 
     def set_base_date(self, base_date, delta=None):
-        # leave the grids in terms of the number of days - note that it's possible to have the scenario_dates
-        # the same as the mtm_dates (for more accurate margin period of risk on collateralized netting sets)
+        # grids in days. The scenario_dates may equal the mtm_dates - a finer margin period of risk
+        # on collateralized netting sets
         self.mtm_time_grid = np.array([(x - base_date).days for x in sorted(self.mtm_dates)])
         self.scen_time_grid = np.array([(x - base_date).days for x in sorted(self.scenario_dates)])
 
@@ -1482,9 +1435,8 @@ class TimeGrid(object):
         self.scenario_grid[:, TIME_GRID_MTM] = self.scen_time_grid
         self.scenario_grid[:, TIME_GRID_ScenarioPriorIndex] = np.arange(self.scen_time_grid.size)
 
-        # deal with the case that we need a very fine time_grid - note we do this after calculating the
-        # scenario_grid as setting a non-null delta is a way to generate scenarios without calculating the
-        # whole risk factor
+        # a very fine time_grid, done AFTER the scenario_grid: a non-null delta generates scenarios
+        # without calculating the whole risk factor
         if delta is not None:
             delta_days, delta_tenors = delta
             delta_grid = np.union1d(np.arange(0, self.scen_time_grid.max(), delta_days), delta_tenors.round())
@@ -1509,11 +1461,9 @@ class TimeGrid(object):
                 self.CurrencyMap.setdefault(currency, currency_lookup)
 
     def truncate_to(self, original_base_date, t_days):
-        """Return a new TimeGrid covering [t_days, T] of the original, with base shifted
-        forward by t_days. Used by nested-simulation drivers (inner MC) to construct a
-        truncated horizon starting at an outer timestep. `original_base_date` is the
-        base date this grid was originally set against (caller's responsibility — TimeGrid
-        does not store its base date)."""
+        """A new TimeGrid covering [t_days, T] of the original, base shifted forward by t_days -
+        the truncated horizon a nested simulation starts from at an outer timestep.
+        `original_base_date` is the caller's responsibility: TimeGrid does not store its own."""
         new_base_date = original_base_date + pd.Timedelta(days=int(t_days))
         new_scenario_dates = [d for d in sorted(self.scenario_dates) if d >= new_base_date]
         new_mtm_dates = [d for d in sorted(self.mtm_dates) if d >= new_base_date]
@@ -1726,8 +1676,8 @@ def split_tensor(tensor, counts):
 
 
 def split_array(array, counts):
-    """`split_tensor` on the numpy side — keeps a CurveTensor's CPU scenario indices in step with
-    its device ones, so a per-deal slice re-derives its row routing without a device sync."""
+    """`split_tensor` on the numpy side — keeps a CurveTensor's CPU scenario indices in step with its
+    device ones, so a per-deal slice re-derives its row routing without a device sync."""
     return np.split(array, counts.cumsum()[:-1]) if array.shape[0] == counts.sum() \
         else [array] * counts.size
 
@@ -1739,12 +1689,9 @@ def calc_hermite_curve(t_a, g, c, curve_t0, curve_t1):
 
 
 class CurveTensor(object):
-    '''
-    This is a container for a curve tensor - a curve typically has tenor points per timepoint per scenario.
-    The original simulation grid that gets computed at the start of each MC run is large enough as it is so
-    we need a way to index into this original grid while keeping track of indices.
-    Also contains information about any interpolation method other than linear.
-    Note that the curve tensor is used directly by the tensorblock object
+    '''A view into the simulation grid: a curve carries tenor points per timepoint per scenario, and
+    this indexes that grid while keeping track of the indices and any non-linear interpolation.
+    Used directly by TensorBlock.
     '''
 
     def __init__(self, interp_obj, index, alpha, np_index=None):
@@ -1752,21 +1699,19 @@ class CurveTensor(object):
         self.np_index = index if isinstance(index, np.ndarray) else np_index
         self.index = torch.tensor(
             index, dtype=torch.int64, device=interp_obj.tensor.device) if isinstance(index, np.ndarray) else index
-        # SCENARIO ROWS, not a flattened (row, tenor) offset: the strategy owns that flattening
-        # because a tenor SEGMENT has its own stride, and a segment inside an inner-MC fork would
-        # otherwise need a different flat index from the one its sibling block uses.
+        # SCENARIO ROWS, not a flattened (row, tenor) offset: the strategy owns that flattening,
+        # a tenor SEGMENT having its own stride
         if alpha is not None:
             self.alpha = self.interp_obj.tensor.new(alpha) if isinstance(alpha, np.ndarray) else alpha
             self.index_next = (self.index + 1).clamp(0, self.interp_obj.shape[0] - 1)
         else:
             self.alpha = self.index_next = None
         # A curve every one of whose rows is row 0 (a static factor, or a stochastic one gathered
-        # only at the base date) skips the flattening add entirely. Decided off the NUMPY indices,
-        # so asking costs no device sync.
+        # only at the base date) skips the flattening add. Decided off the NUMPY indices, so asking
+        # costs no device sync.
         self.rows = None if not self.np_index.any() and self.alpha is None else self.index
-        # Which of the source's row blocks owns each row this gather reads — also decided off the
-        # CPU-side indices, once per CurveTensor rather than per gather. A leaf answers with its
-        # whole-grid group.
+        # Which of the source's row blocks owns each row this gather reads — also off the CPU-side
+        # indices, once per CurveTensor rather than per gather. A leaf answers with its whole grid.
         self.route = self.interp_obj.route(self.np_index, self.alpha is not None)
 
     def interp_value(self):
@@ -1877,13 +1822,11 @@ class TensorBlock(object):
 
 
 class DerivedForwardCurve(object):
-    '''
-    A forward curve reconstructed from simulated components - F(t,T) = S(t) exp(c(T)(T-t) + r(t,T)(T-t))
-    where S is a spot price tensor (time, batch), c is a carry TensorBlock quoted at absolute (excel date)
-    tenors and r is a repo/funding TensorBlock quoted at relative year tenors. t_excel maps each time row
-    to its excel date offset so gathers take the same absolute-date end_points as a ForwardPrice factor.
-    Duck-types the TensorBlock surface used by curve pricing (gather_weighted_curve, split_counts, time_grid).
-    Note that F(t,t) = S(t) exactly.
+    '''A forward curve rebuilt from simulated components, F(t,T) = S(t) exp(c(T)(T-t) + r(t,T)(T-t)):
+    S a spot tensor (time, batch), c a carry TensorBlock at absolute (excel date) tenors, r a
+    repo/funding TensorBlock at relative year tenors. `t_excel` maps each time row to its excel date
+    offset, so gathers take the same absolute-date end_points a ForwardPrice factor does. Duck-types
+    the TensorBlock surface curve pricing uses. F(t,t) = S(t) exactly.
     '''
 
     def __init__(self, spot, carry, repo, t_excel, time_grid):
@@ -2128,11 +2071,9 @@ def BivN(P, Q, rho):
 
 
 def ApproxBivN(P, Q, rho):
-    """Bivariate normal integral, approximated to around 4 decimal places.
-
-    Follows Tsay and Ke, "A Simple Approximation for Bivariate Normal Integral Based on Error
-    Function and its Application on Probit Model with Binary Endogenous Regressor". Accuracy could
-    be improved, but this form is fast and fully vectorized, which is why it is the one used.
+    """Bivariate normal integral, accurate to about 4 decimal places - Tsay and Ke, "A Simple
+    Approximation for Bivariate Normal Integral Based on Error Function". Chosen for being fully
+    vectorized rather than for accuracy.
     """
     # work out the cases
     denom = torch.sqrt(1.0 - rho * rho)
@@ -2193,23 +2134,16 @@ def bachelier_european_option_price(F, X, r, vol, tenor, buyOrSell, callOrPut):
     """The numpy twin of `bachelier_european_option`, and the same signature as the numpy Black.
 
     A vol quoted NORMAL is an absolute rate move, so the premium is
+    ``P = e^{-rT}[mu*Phi(mu/s) + s*phi(mu/s)]`` with ``mu = omega(F-X)`` and ``s = sigma_N sqrt(T)``.
 
-    $$P = e^{-rT}\\Big[\\mu\\,\\Phi(\\mu/s) + s\\,\\phi(\\mu/s)\\Big],
-    \\qquad \\mu = \\omega(F-X),\\quad s = \\sigma_N\\sqrt{T}$$
+    THE GENERAL FORM, not the at-the-money one: `create_market_swaps` strikes its benchmarks at par
+    and so always calls this at ``F = X``, where it collapses to ``A sigma_N sqrt(T/2 pi)`` - but
+    baking that collapse in would price an off-market strike as an ATM one in silence.
 
-    which is the GENERAL form and not the at-the-money one: `create_market_swaps` strikes its
-    benchmarks at par and therefore always calls this with $F = X$, where it collapses to
-    $A\\sigma_N\\sqrt{T/2\\pi}$ - but baking that collapse into the value path would make an
-    off-market strike price as an ATM one in silence, which is the class of defect this pair was
-    added to close.
-
-    $\\mu = \\omega(F-X)$ with $\\omega$ the call/put sign is one expression for both directions,
-    because $\\phi$ is even - and it is the SAME expression `bachelier_european_option` evaluates in
-    tensors, deliberately: the two are one formula in two precisions, exactly as the Black pair is.
-    Measured against each other at the money on the four-quote fixture, the numpy premium and the
-    float64 tensor twin the quote side differentiates are **BIT-IDENTICAL**, and both sit
-    **2.2e-16 relative** from the closed form $A\\sigma_N\\sqrt{T/2\\pi}$ they collapse to there.
-    The gate is `tests/test_hw2f_analytic.py`'s
+    ``mu = omega(F-X)`` carries both directions in one expression because ``phi`` is even, and it is
+    the SAME expression `bachelier_european_option` evaluates in tensors - one formula in two
+    precisions, as the Black pair is. Measured at the money, the two are BIT-IDENTICAL and both sit
+    2.2e-16 relative from the closed form. Gate: `tests/test_hw2f_analytic.py`'s
     `test_the_two_conventions_are_two_prices_and_the_normal_one_is_the_bachelier_premium`.
     """
     stddev = vol * np.sqrt(tenor)
@@ -2229,10 +2163,9 @@ def bachelier_european_option_price(F, X, r, vol, tenor, buyOrSell, callOrPut):
 def gauss_legendre(a, b, panels, order=8, dtype=torch.float64, device='cpu'):
     """Composite Gauss-Legendre nodes/weights on [a, b], ASCENDING, endpoints excluded.
 
-    ``panels`` sub-intervals each carry an ``order``-point rule; because the panel edges
-    (hence the interval endpoints ``a`` and ``b``) are never sampled, an integrand with a
-    removable singularity at an endpoint - e.g. the ``1/(i*phi)`` of a Fourier inversion at
-    ``phi = 0`` - can be integrated on ``[0, phi_max]`` directly without a hole.
+    ``panels`` sub-intervals each carry an ``order``-point rule. The panel edges - hence ``a`` and
+    ``b`` - are never sampled, so an integrand with a removable singularity at an endpoint (the
+    ``1/(i*phi)`` of a Fourier inversion at ``phi = 0``) integrates on ``[0, phi_max]`` with no hole.
     """
     x, w = np.polynomial.legendre.leggauss(order)
     edges = np.linspace(a, b, panels + 1)
@@ -2248,13 +2181,12 @@ def gauss_legendre(a, b, panels, order=8, dtype=torch.float64, device='cpu'):
 def complex_log_unwrap(w, dim=-1):
     """Complex log with the branch fixed by continuity ALONG ``dim`` (the phi grid).
 
-    ``dim`` must be an axis along which phi varies smoothly and monotonically, anchored at
-    its first entry (smallest phi, where ``w`` is near ``1+0j``).  This is the general guard
-    against the discrete "Heston trap": taking the principal branch of ``log(1 - 2*alpha*B)``
-    independently at each backward step of an affine A/B recursion is wrong whenever that
-    argument winds around the origin.  ``torch.round`` carries zero gradient, which is
-    correct because the winding correction is a locally-constant integer.  Reduces to the
-    principal branch when the size along ``dim`` is 1.
+    ``dim`` must be an axis along which phi varies smoothly and monotonically, anchored at its first
+    entry (smallest phi, where ``w`` is near ``1+0j``). The general guard against the discrete
+    "Heston trap": the principal branch of ``log(1 - 2*alpha*B)`` taken independently at each
+    backward step is wrong whenever that argument winds around the origin. ``torch.round`` carries
+    zero gradient, correctly - the winding correction is a locally-constant integer. Reduces to the
+    principal branch at size 1 along ``dim``.
     """
     two_pi = 2.0 * np.pi
     ang = torch.angle(w)
@@ -2270,14 +2202,11 @@ def cf_adaptive_phi_max(logcf, carry, dtype=torch.float64, device='cpu',
                         log_tol=-40.0, start=8.0, cap=2.0 ** 24):
     """Smallest power-of-two ``phi_max`` at which the inversion integrand has decayed.
 
-    Doubles ``phi`` until ``Re(logcf) - ln(phi)`` drops below ``log_tol`` on BOTH inversion
-    contours (``i*phi`` and ``i*phi + 1``), the +1 (share-measure) contour being normalised
-    by the log forward-growth ``carry`` = log E[S_T/S_t].  ``logcf`` must already be reduced
-    to the SLOWEST-DECAYING state in the batch (for a stochastic-variance model that is the
-    smallest instantaneous variance, whose integrand envelope decays slowest by Jensen), so
-    the scan stays cheap - one recursion per doubling on a 2-element phi.  A closed-form
-    cutoff is wrong here because the envelope decays slower than the pure-Gaussian
-    ``exp(-phi^2 V/2)``.  Runs under ``no_grad`` (the result is a scalar quadrature bound).
+    Doubles ``phi`` until ``Re(logcf) - ln(phi)`` drops below ``log_tol`` on BOTH inversion contours
+    (``i*phi`` and ``i*phi + 1``), the +1 share-measure contour normalised by the log forward-growth
+    ``carry``. ``logcf`` must already be reduced to the SLOWEST-DECAYING state in the batch, so the
+    scan runs on a 2-element phi. A closed-form cutoff is wrong here: the envelope decays slower
+    than the pure-Gaussian ``exp(-phi^2 V/2)``. Runs under ``no_grad``.
     """
     with torch.no_grad():
         phi = float(start)
@@ -2301,24 +2230,19 @@ def cf_european_probabilities(logcf, log_moneyness, carry, phi_max, panels=256, 
         P2 = 1/2 + (1/pi) Int_0^inf Re[ e^{-i phi m} exp(logcf(i phi))            / (i phi) ] d phi
         P1 = 1/2 + (1/pi) Int_0^inf Re[ e^{-i phi m} exp(logcf(i phi + 1) - carry)/ (i phi) ] d phi
 
-    with ``m = log_moneyness = ln(K/S)`` and ``carry = ln E_t[S_T/S_t]`` (= r*n under the
-    risk-neutral measure, r the per-step rate).  Then a vanilla is priced by the caller as
-    ``S*P1 - K*e^{-carry}*P2`` (call), and a digital / CDF by ``Q(R <= b) = 1 - P2`` evaluated
-    at ``m = b`` (spot-free by construction).  ``want`` is a bit mask: 1 = P1, 2 = P2, 3 =
-    both; a CDF (``want = 2``) is exactly half the cost of a price.
+    with ``m = ln(K/S)`` and ``carry = ln E_t[S_T/S_t]``.  A vanilla is then priced by the caller as
+    ``S*P1 - K*e^{-carry}*P2`` and a digital/CDF by ``Q(R <= b) = 1 - P2`` at ``m = b``, spot-free by
+    construction.  ``want`` is a bit mask: 1 = P1, 2 = P2, 3 = both, so a CDF is half the cost.
 
-    THE PLUG-IN CONTRACT.  ``logcf(phi)`` receives a complex tensor whose trailing axis is
-    the quadrature grid and must return ``log E_t[(S_T/S_t)^phi]`` broadcasting to
-    ``(batch, node)`` - the state (e.g. the instantaneous variance) is captured by the
-    closure, so a single strike-vector priced against one variance is one ``batch`` row.
-    For an AFFINE model that log-CF is ``A(phi) + B(phi)*V_t`` with ``(A, B)`` from the
-    model's own backward recursion (use :func:`complex_log_unwrap` inside that recursion for
-    the branch of any ``log(1 - ...)`` term); a Levy model returns ``A(phi)`` alone.  A caller
-    also resolves ``phi_max`` via :func:`cf_adaptive_phi_max`, feeding it the same closure
-    reduced to the worst-case state.
+    THE PLUG-IN CONTRACT.  ``logcf(phi)`` receives a complex tensor whose trailing axis is the
+    quadrature grid and must return ``log E_t[(S_T/S_t)^phi]`` broadcasting to ``(batch, node)`` -
+    the state is captured by the closure.  For an AFFINE model that log-CF is ``A(phi) + B(phi)*V_t``
+    from the model's own backward recursion (use :func:`complex_log_unwrap` there for the branch of
+    any ``log(1 - ...)`` term); a Levy model returns ``A(phi)`` alone.  The caller also resolves
+    ``phi_max`` via :func:`cf_adaptive_phi_max` on the same closure at the worst-case state.
 
-    Differentiable w.r.t. every leaf reachable through ``logcf`` and ``carry`` (spot, strike
-    and the model parameters); float64 is required for the P1-P2 cancellation.
+    Differentiable w.r.t. every leaf reachable through ``logcf`` and ``carry``; float64 is required
+    for the P1-P2 cancellation.
     """
     lm = log_moneyness.unsqueeze(-1)
     nodes, wts = gauss_legendre(0.0, phi_max, panels, order, dtype, device)
@@ -2338,8 +2262,7 @@ def cf_european_probabilities(logcf, log_moneyness, carry, phi_max, panels=256, 
 # Heston-Nandi GARCH(1,1): params + A/B recursion + daily-step recursion + semi-analytic pricing.
 # The math is FREE FUNCTIONS taking the GARCH params as explicit trailing args (omega, alpha, beta,
 # gamma_star, r); each consumer unpacks its own name->tensor mapping into those args by the
-# canonical names below. Theory/conventions: the harvested HestonNandiImpliedSpotModel.documentation
-# (stochasticprocess) and tests/test_hn_garch.py.
+# canonical names below. Theory: HestonNandiImpliedSpotModel.documentation (stochasticprocess).
 # ======================================================================================
 
 # The HestonNandiModelParameters price factor's parameters, in canonical order - the SINGLE source
@@ -2396,10 +2319,8 @@ def auto_phi_max(n_steps, h1, omega, alpha, beta, gamma_star, r,
                  log_tol=-40.0, start=8.0, cap=2.0 ** 24):
     """Smallest power-of-two phi_max with Re(A + B*h1) - ln(phi) < log_tol.
 
-    The HN glue for the model-agnostic scan :func:`cf_adaptive_phi_max`: it reduces the batch to
-    the extreme h1 (the smallest, whose integrand decays slowest) so the scan runs on a 2-element
-    phi and checks BOTH inversion contours (i*phi and i*phi+1, the latter normalised by the log
-    forward-growth r*n).
+    The HN glue for :func:`cf_adaptive_phi_max`: it reduces the batch to the extreme h1 (the
+    smallest, whose integrand decays slowest) so the scan runs on a 2-element phi.
     """
     h1t = torch.as_tensor(h1).detach()
     hs = torch.stack([h1t.min(), h1t.max()]).to(omega.dtype).reshape(-1, 1)
@@ -2413,10 +2334,8 @@ def _p1_p2(logm, n_steps, h1, omega, alpha, beta, gamma_star, r,
            phi_max, panels, order, unwrap, want=3):
     """P1, P2 for log-moneyness ``logm`` = ln(K/S).  ``logm``/``h1`` broadcast together.
 
-    Thin HN glue over the model-agnostic Fourier-inversion primitive
-    :func:`cf_european_probabilities`: it hands over the HN affine log-CF ``A + B*h1`` (from
-    :func:`hn_ab`) as the ``logcf`` closure and the log forward-growth ``r*n`` as the P1-contour
-    normalisation.  ``want`` is a bit mask: 1 = P1, 2 = P2, 3 = both.
+    Thin HN glue over :func:`cf_european_probabilities`: the HN affine log-CF ``A + B*h1`` as the
+    ``logcf`` closure and ``r*n`` as the P1-contour normalisation.  ``want``: 1 = P1, 2 = P2.
     """
     logm = torch.as_tensor(logm, dtype=omega.dtype, device=omega.device)
     h1 = torch.as_tensor(h1, dtype=omega.dtype, device=omega.device)
@@ -2460,10 +2379,9 @@ def hn_put(S, K, n_steps, h1, omega, alpha, beta, gamma_star, r, **kw):
 
 def hn_cdf_logret(x, n_steps, h1, omega, alpha, beta, gamma_star, r,
                   phi_max=None, panels=None, order=8, unwrap=True):
-    """EXACT  Q( R_n <= x )  where R_n = log(S_{t+n}/S_t), by Fourier inversion.
-
-    This is the quantity the one-step-survival loop needs for an UP barrier at S*exp(x)
-    (survival = stay below).  Spot-free by construction.  ``x`` and ``h1`` broadcast together.
+    """EXACT  Q( R_n <= x )  where R_n = log(S_{t+n}/S_t), by Fourier inversion - what the
+    one-step-survival loop needs for an UP barrier at S*exp(x). Spot-free by construction; ``x``
+    and ``h1`` broadcast together.
     """
     _, P2 = _p1_p2(x, n_steps, h1, omega, alpha, beta, gamma_star, r,
                    phi_max, panels, order, unwrap, want=2)
@@ -2486,12 +2404,11 @@ def hn_variance_step(h, sh, z, omega, alpha, beta, gamma_star):
 def hn_daily_advance(Sj, h, b_step, z, omega, alpha, beta, gamma_star):
     """One daily Heston-Nandi step under the risk-neutral (LRNVR) measure. Returns (Sj, h).
 
-    Advances the log-spot by ``(b_step - 0.5*h) + sqrt(h)*z`` and recurses the predictable
-    variance (via :func:`hn_variance_step`). ``z`` is either a fresh unconditional normal (an
-    unmonitored sub-step) or the survival-truncated final draw of a monitored interval; in BOTH
-    cases the recursion is fed the REALISED z (the survival-conditioned law - leverage-asymmetric
-    under truncation, DO NOT 'fix' back to an unconditional draw, see the pv_MC_Tarf note).
-    ``b_step`` is the per-step cost-of-carry (r-q). All args broadcast on the trailing sim axis.
+    Advances the log-spot by ``(b_step - 0.5*h) + sqrt(h)*z`` and recurses the predictable variance.
+    ``z`` is either a fresh unconditional normal or the survival-truncated final draw of a monitored
+    interval; in BOTH cases the recursion is fed the REALISED z - the survival-conditioned law is
+    leverage-asymmetric under truncation, so DO NOT 'fix' it back to an unconditional draw.
+    ``b_step`` is the per-step cost-of-carry (r-q); all args broadcast on the trailing sim axis.
     """
     sh = torch.sqrt(h)
     Sj = Sj * torch.exp((b_step - 0.5 * h) + sh * z)
@@ -2504,10 +2421,8 @@ def hn_log_substep(log_S, h, z, b_step, omega, alpha, beta, gamma_star):
     :func:`hn_daily_advance` with the exponential left to the caller.
 
     Kept separate because it is the chain the OSS pricers repeat n_sub times per fixing, and at
-    their batch shapes it is bandwidth-bound - ~13 elementwise kernels over a multi-million
-    element tensor, of which only the last two carry any state forward. Fused it is one kernel
-    and 5.9x faster, bit-identical forward and gradient (the compile is lazy, ~0.4s once, and
-    dynamic so a new batch shape does not retrace).
+    their batch shapes it is bandwidth-bound - ~13 elementwise kernels over a multi-million element
+    tensor. Fused it is one kernel and 5.9x faster, bit-identical forward and gradient.
     """
     sh = torch.sqrt(h)
     return (log_S + (b_step - 0.5 * h) + sh * z,
@@ -2523,10 +2438,9 @@ hn_log_substep_fused = torch.compile(hn_log_substep, dynamic=True)
 def declared_spot(code, name):
     """Pass a resolved spot code through, saying ONCE whether it is simulated.
 
-    A static spot is held flat across the whole time grid at pricing - legitimate, but it makes
-    the exposure profile a deterministic forward, which is worth knowing before reading the
-    numbers. Said here, in calc_dependencies, because it is a compile-time fact: the code tuple
-    already carries the flag, and the alternative is a warning that repeats every batch.
+    A static spot is held flat across the time grid at pricing - legitimate, but it makes the
+    exposure profile a deterministic forward. Said in calc_dependencies because it is a compile-time
+    fact; the alternative is a warning that repeats every batch.
     """
     if not code[0][FACTOR_INDEX_Stoch]:
         logging.warning('%s is not simulated - spot is held flat across the time grid',
@@ -2537,12 +2451,9 @@ def declared_spot(code, name):
 def spot_on_deal_grid(spot, deal_time, shared):
     """Give ``spot`` the shape every pricer assumes: (len(deal_time), n_scenarios).
 
-    A SIMULATED spot already has it. A static one arrives as a single row and is tiled up.
-    The test is therefore on ROWS - the axis actually being corrected. Testing columns instead
-    (`spot.shape[1] != b.shape[1]`) reads a legitimate broadcast pair - a simulated spot with B
-    columns against a static curve with 1 - as a defect, and then tiles the ROWS by
-    len(deal_time), squaring the grid: 37 dates became 1369 and every barrier deal was silently
-    skipped under credit Monte Carlo.
+    A SIMULATED spot already has it; a static one arrives as a single row and is tiled up. The test
+    is on ROWS - the axis being corrected. Testing columns instead reads a legitimate broadcast pair
+    as a defect and tiles the ROWS by len(deal_time), squaring the grid.
     """
     return spot if spot.shape[0] == len(deal_time) else spot.tile(
         len(deal_time), shared.simulation_batch)
@@ -2553,7 +2464,7 @@ def bridge_interval_variance(shared, factor_dep, deal_time):
 
     Elapsed time comes off the DEAL's axis: its dates need not be adjacent, or even start, on the
     scenario grid the rate was published against. The leading zero leaves the first date observing
-    endpoints, as it must, and a factor with no published rate leaves every date so.
+    endpoints, and a factor with no published rate leaves every date so.
     """
     rate = getattr(shared, 't_Bridge_Variance_Rate', {}).get(factor_dep.get('Barrier_Underlying'))
     days = deal_time[:, TIME_GRID_MTM]
@@ -2564,17 +2475,15 @@ def barrier_touched(prev_touched, prev_spot, s_t, barrier, variance, up):
     """Running PROBABILITY that the path has touched ``barrier`` at or before now.
 
     An endpoint test only asks whether the spot sits beyond the barrier ON a grid date, so a path
-    that crossed and came back in between is recorded as never having touched - while the closed
-    forms being applied to that state assume CONTINUOUS monitoring. An endpoint already beyond the
-    barrier is a certain touch, and with both endpoints inside the Brownian-bridge crossing
-    probability is exact for a lognormal step.
+    that crossed and came back is recorded as never having touched - while the closed forms applied
+    to that state assume CONTINUOUS monitoring. An endpoint already beyond the barrier is a certain
+    touch, and with both endpoints inside, the Brownian-bridge crossing probability is exact for a
+    lognormal step.
 
-    ``variance`` is the SIMULATION log-variance spanning the interval - the rate published by
-    `StochasticProcess.bridge_variance_rate` times the elapsed years. Falsy observes endpoints
-    only, which covers all three cases that must: the first date on any grid, a process with no
-    lognormal interval law, and two coincident dates (whose zero would otherwise put a 0/0 in the
-    discarded branch of the `where`, and that branch's gradient is nan even when its value is
-    thrown away).
+    ``variance`` is the SIMULATION log-variance spanning the interval. Falsy observes endpoints
+    only, covering the three cases that must: the first date on any grid, a process with no
+    lognormal interval law, and two coincident dates - whose zero would otherwise put a 0/0 in the
+    discarded branch of the `where`, whose gradient is nan even when its value is thrown away.
     """
     beyond = ((s_t > barrier) if up else (s_t < barrier)).to(s_t.dtype)
     if not variance:
@@ -2591,24 +2500,21 @@ def barrier_touched(prev_touched, prev_spot, s_t, barrier, variance, up):
 
 
 def hn_unmonitored_substeps(Sj, h, b_step, n_steps, hn_params, shared, num_sims, antithetic):
-    """Advance (Sj, h) through ``n_steps`` UNCONDITIONAL (unmonitored) daily HN steps. These carry
-    no barrier - the OSS truncation applies only on the monitored final step (done by the caller).
-    A monitored interval of n_sub days passes ``n_steps = n_sub - 1`` here; a non-monitored interval
-    (e.g. the run from the last barrier date to expiry) passes the full ``n_steps = n_sub``. Fresh
-    regular-stream normals per step (Sobol/antithetic variance reduction is reserved for the
-    truncated final draw); with ``antithetic`` the normal is negated on the paired half (z, -z) to
-    align with the u<->1-u halves of the final draw (TARF/barrier), otherwise a plain num_sims-wide
-    normal (autocall, whose final draw is not antithetic). ``hn_params`` = (omega, alpha, beta,
-    gamma_star).
+    """Advance (Sj, h) through ``n_steps`` UNCONDITIONAL (unmonitored) daily HN steps.
 
-    Nothing observes the spot between these steps - only the fixing does - so the walk runs in log
-    space and exponentiates ONCE. The per-step exp/multiply round-trip was pure cost and the less
-    accurate spelling of the same number.
+    These carry no barrier - the OSS truncation applies only on the monitored final step, done by
+    the caller - so a monitored interval of n_sub days passes ``n_steps = n_sub - 1`` and a
+    non-monitored one the full ``n_sub``. Fresh regular-stream normals per step; with ``antithetic``
+    the normal is negated on the paired half to align with the u<->1-u halves of the truncated final
+    draw. ``hn_params`` = (omega, alpha, beta, gamma_star).
+
+    Nothing observes the spot between these steps, so the walk runs in log space and exponentiates
+    ONCE.
     """
     if not n_steps:                                              # a daily fixing walks nothing
         return Sj, h
-    # picked once per interval, not per step: the fused kernel has no double backward (see
-    # `hn_log_substep_fused`), so a second-derivative run walks the eager spelling of it
+    # picked once per interval: the fused kernel has no double backward, so a second-derivative
+    # run walks the eager spelling of it
     substep = hn_log_substep if shared.gamma else hn_log_substep_fused
     log_S = torch.zeros_like(b_step)
     for _ in range(n_steps):
@@ -2621,25 +2527,11 @@ def hn_unmonitored_substeps(Sj, h, b_step, n_steps, hn_params, shared, num_sims,
 
 # ======================================================================================
 # COMPONENT Heston-Nandi (Christoffersen-Jacobs-Ornthanalai-Wang 2008): the variance splits into a
-# long-run component q_t and a short-run deviation h_t - q_t. Q-measure recursions in the CENTERED
-# CJOW form, on this framework's step convention (h_t is the PREDICTABLE variance of the step from
-# t to t+1, z_t the innovation driving both that return and the update):
-#
-#   h_{t+1} = q_{t+1} + beta*(h_t - q_t) + alpha*[(z_t - gamma1*sqrt(h_t))^2 - (1 + gamma1^2 h_t)]
-#   q_{t+1} = omega_t  + rho*q_t         + phi  *[(z_t - gamma2*sqrt(h_t))^2 - (1 + gamma2^2 h_t)]
-#
-# Both bracketed terms are EXACTLY centered, so the short-run deviation d_t = h_t - q_t is a pure
-# AR(1) in beta - beta is the short-run persistence and rho the long-run one - and E_t[q_{t+k}] is
-# driven by omega alone.
-#
-# THE L-CURVE. omega_t = L_{t+1} - rho*L_t makes q_t - L_t homogeneous, so anchoring q_0 = L_0 gives
-# E_0[q_t] = L_t EXACTLY: L IS the model's expected long-run variance path, directly comparable to
-# the market's forward variance strip, and the calibration bootstraps it pillar by pillar.
-#
-# THE NESTING. phi = 0 with L flat at level L gives q_t == L and the PLAIN recursion with
-#
-#   omega_p = L*(1 - beta) - alpha,   beta_p = beta - alpha*gamma1^2,   alpha_p = alpha,
-#   gamma_p = gamma1                     (inverse: beta = psi_p, L = plain stationary variance)
+# long-run component q_t and a short-run deviation that is a pure AR(1) in beta. The centered
+# Q-measure recursions, the L-curve identity and the plain-family nesting map are in
+# docs_src/developer/market_prices.md#hestonnandi-component; `hn_component_to_plain` is the map.
+# On this framework's step convention h_t is the PREDICTABLE variance of the step from t to t+1 and
+# z_t the innovation driving both that return and the update.
 # ======================================================================================
 
 #: The `HestonNandiComponentModelParameters` price factor's SCALAR parameters, in canonical order -
@@ -2657,12 +2549,11 @@ def hn_component_l_path(knots, values, n_steps, steps_per_year=252.0):
     PIECEWISE-LINEAR IN t BETWEEN PILLAR KNOTS, flat outside them, and the choice is the model:
     omega_t = L_{t+1} - rho*L_t differences this curve, so a piecewise CONSTANT L would spike
     omega_t at each pillar and a spline would oscillate between pillars nobody quoted. Linear in t
-    makes omega_t AFFINE within a pillar and kinked only AT one - on a segment of n steps from A
-    to B, omega_i = A(1-rho) + (B-A)(1 + i(1-rho))/n, drifting by (B-A)(1-rho)/n per step.
+    makes omega_t affine within a pillar and kinked only AT one.
 
-    ``knots`` are tenors in YEARS (structural, a numpy array), ``values`` the per-step variances
-    at them (a differentiable tensor - this is the fitted leaf). Returns an (n_steps+1,) tensor
-    including L_0, which IS q_0 by the anchoring.
+    ``knots`` are tenors in YEARS (structural, numpy), ``values`` the per-step variances at them (a
+    differentiable tensor - the fitted leaf). Returns an (n_steps+1,) tensor including L_0, which
+    IS q_0 by the anchoring.
     """
     t = torch.arange(int(n_steps) + 1, dtype=values.dtype, device=values.device) / steps_per_year
     k = torch.as_tensor(np.ascontiguousarray(knots, dtype=float),
@@ -2677,12 +2568,12 @@ def hn_component_l_path(knots, values, n_steps, steps_per_year=252.0):
 
 
 def hn_component_omega_path(l_path, rho):
-    """``omega_t = L_{t+1} - rho*L_t`` for t = 0..n-1, from an (n+1,) L path.
+    """``omega_t = L_{t+1} - rho*L_t`` for t = 0..n-1, from an (n+1,) L path - the whole content of
+    the L parametrisation.
 
-    This is the whole content of the L parametrisation. A NEGATIVE entry is a long-run variance
-    demanded to fall FASTER than rho decays it, which drives q (and hence h) negative - the
-    calibration refuses or floors it BY NAME rather than simulating a negative variance; see
-    ``HestonNandiComponentModelParameters.negative_omega``.
+    A NEGATIVE entry is a long-run variance demanded to fall FASTER than rho decays it, which drives
+    q (and hence h) negative; the calibration refuses or floors it by name
+    (``HestonNandiComponentModelParameters.negative_omega``).
     """
     return l_path[1:] - rho * l_path[:-1]
 
@@ -2695,27 +2586,25 @@ def hn_component_omega_path(l_path, rho):
 #: Heston-Nandi the CJOW pair has NO positivity guarantee for phi > 0, and no parameter box closes
 #: it - the calibration REPORTS `worst_case_variance_drift` instead. 1e-12 per step is 0.16 basis
 #: points of annualised vol, numerically zero but a number `sqrt` can take; without it a tail path
-#: returns NaN (measured: 2 of 8192 inner paths over 248 daily steps at a phi share of 0.56). The
-#: closed form does NOT floor, so the two agree only where it does not bind - gated by
+#: returns NaN (measured 2 of 8192 inner paths over 248 daily steps). The closed form does NOT
+#: floor, so the two agree only where it does not bind - gated by
 #: `test_the_closed_form_matches_day_stepped_monte_carlo`.
 HN_COMPONENT_VARIANCE_FLOOR = 1.0e-12
 
 
 def hn_component_variance_step(h, q, sh, z, omega_t, alpha, beta, gamma1, rho, phi, gamma2):
     """The component recursion, returning ``(h_{t+1}, q_{t+1})``, both floored at
-    :data:`HN_COMPONENT_VARIANCE_FLOOR` (see that note - the floor is the model's, not a patch).
+    :data:`HN_COMPONENT_VARIANCE_FLOOR` (the floor is the model's, not a patch).
 
-    ``sh`` = sqrt(h) is passed in (the caller already needs it for the log-spot step), so the
-    square root is computed exactly once. ``omega_t`` is THIS step's long-run intercept,
-    ``L_{t+1} - rho*L_t``; every other argument is a global. All args broadcast on the
-    simulation axis.
+    ``sh`` = sqrt(h) is passed in, so the square root is computed once. ``omega_t`` is THIS step's
+    long-run intercept, ``L_{t+1} - rho*L_t``; every other argument is a global.
 
     q IS COMPUTED FIRST and h reads it, because the CJOW form defines h_{t+1} off q_{t+1}: the
     long-run level moves and the short-run deviation is measured against the level it moved TO.
     Reading q_t there instead is a different model, with deviation persistence beta - rho.
 
-    The clamp returns x ITSELF above the floor, so on the nested face (where positivity is
-    guaranteed) this is bit-identical to the unfloored recursion.
+    The clamp returns x ITSELF above the floor, so on the nested face this is bit-identical to the
+    unfloored recursion.
     """
     e1 = z - gamma1 * sh
     e2 = z - gamma2 * sh
@@ -2729,9 +2618,7 @@ def hn_component_daily_advance(Sj, h, q, b_step, z, omega_t, alpha, beta, gamma1
     """One daily component step under the risk-neutral (LRNVR) measure. Returns ``(Sj, h, q)``.
 
     The log-spot advance is IDENTICAL to :func:`hn_daily_advance` - the component structure lives
-    entirely in the variance recursion - so the same note applies: ``z`` is either a fresh
-    unconditional normal or the survival-truncated final draw of a monitored interval, and in
-    BOTH cases the recursion is fed the REALISED z.
+    entirely in the variance recursion - so the same note on the REALISED ``z`` applies.
     """
     sh = torch.sqrt(h)
     Sj = Sj * torch.exp((b_step - 0.5 * h) + sh * z)
@@ -2741,16 +2628,12 @@ def hn_component_daily_advance(Sj, h, q, b_step, z, omega_t, alpha, beta, gamma1
 
 def hn_component_log_substep(log_S, h, q, z, b_step, omega_t, alpha, beta, gamma1, rho, phi, gamma2):
     """One unmonitored component day, accumulating the LOG increment - the same step as
-    :func:`hn_component_daily_advance` with the exponential left to the caller.
-
-    Kept separate for the same reason its plain sibling is: it is the chain the OSS pricers repeat
-    n_sub times per fixing, it is bandwidth-bound at their batch shapes, and three of its outputs
-    carry state forward where the plain one carries two.
+    :func:`hn_component_daily_advance` with the exponential left to the caller. Kept separate for
+    the reason its plain sibling is: the chain the OSS pricers repeat n_sub times per fixing.
 
     THE INCREMENT IS BUILT FIRST, from the PREDICTABLE h_t, and only then is the state advanced. A
     spelling that rebinds `h` before the `-0.5*h` reads it uses NEXT step's variance for THIS step's
-    return, which is a different model - 1.9e-3 relative on the log path over 40 steps, against the
-    4.9e-16 the centered algebra costs.
+    return, a different model - 1.9e-3 relative on the log path over 40 steps.
     """
     sh = torch.sqrt(h)
     increment = log_S + (b_step - 0.5 * h) + sh * z
@@ -2768,12 +2651,9 @@ def hn_component_unmonitored_substeps(Sj, h, q, b_step, omegas, hnc_params, shar
                                       num_sims, antithetic):
     """Advance ``(Sj, h, q)`` through ``len(omegas)`` UNCONDITIONAL daily component steps.
 
-    The sibling of :func:`hn_unmonitored_substeps`, and every note there holds: these carry no
-    barrier (the OSS truncation applies only to the monitored final step, done by the caller),
-    fresh regular-stream normals per step, the antithetic pairing aligning with the u<->1-u halves
-    of the truncated final draw, and the walk running in log space so the exponential is taken
-    ONCE. ``omegas`` is the per-step intercept strip (its LENGTH is the step count, so a daily
-    fixing passes an empty one); ``hnc_params`` = (alpha, beta, gamma1, rho, phi, gamma2).
+    The sibling of :func:`hn_unmonitored_substeps`, and every note there holds. ``omegas`` is the
+    per-step intercept strip (its LENGTH is the step count, so a daily fixing passes an empty one);
+    ``hnc_params`` = (alpha, beta, gamma1, rho, phi, gamma2).
     """
     if not len(omegas):                                          # a daily fixing walks nothing
         return Sj, h, q
@@ -2790,9 +2670,8 @@ def hn_component_unmonitored_substeps(Sj, h, q, b_step, omegas, hnc_params, shar
 
 # The component A/B/C recursion + semi-analytic pricing. A SIBLING of ``hn_ab`` / ``_p1_p2``, NOT a
 # generalisation they route through: carrying a second coefficient and a per-step omega through the
-# plain loop body would change the expression it compiles to, and reassociation would move plain
-# HN's own numbers - it is the ORACLE for the nesting gate. Both siblings hand their log-CF to the
-# same ``cf_european_probabilities`` / ``cf_adaptive_phi_max`` primitives.
+# plain loop body would reassociate plain HN's own numbers, and plain HN is the ORACLE for the
+# nesting gate. Both hand their log-CF to the same ``cf_european_probabilities`` primitive.
 
 def hn_component_abc(phi, omegas, alpha, beta, gamma1, rho, phi_q, gamma2, r,
                      unwrap=True, phi_dim=-1, terminal=None):
@@ -2813,26 +2692,22 @@ def hn_component_abc(phi, omegas, alpha, beta, gamma1, rho, phi_q, gamma2, r,
 
     The ``-b`` is what the two CENTERING subtractions leave once the (1 + gamma^2 h) terms have
     cancelled the quadratics' own h-coefficients; drop it and the price is wrong by a factor that
-    grows with the step count, which the nesting gate reads immediately.
+    grows with the step count.
 
-    ``omegas`` is consumed in REVERSE (the backward induction reaches step t last), so
-    ``omegas[0]`` is the intercept of the FIRST step - the same orientation
-    :func:`hn_component_omega_path` emits.
+    ``omegas`` is consumed in REVERSE (the backward induction reaches step t last), so ``omegas[0]``
+    is the intercept of the FIRST step - the orientation :func:`hn_component_omega_path` emits.
 
     ``phi`` : real OR complex tensor; if complex it must vary smoothly and ascending along
-    ``phi_dim`` for the branch unwrap of ``log(w)`` (the same discrete-Heston-trap guard the plain
-    recursion takes).
+    ``phi_dim`` for the branch unwrap of ``log(w)``.
 
     ``terminal`` : optional ``(u, v)``, the terminal condition ``(B_0, C_0)`` in place of ``(0, 0)``.
-    It costs one broadcast add before the loop and NOTHING inside it - the recursion body is
-    untouched, so the default path is the same expression it always was - and it turns this into the
-    JOINT transform of the return and the state it lands in:
+    It costs one broadcast add before the loop and NOTHING inside it, and turns this into the JOINT
+    transform of the return and the state it lands in:
 
         E_t[exp(phi*R_n + u*h_{t+n} + v*q_{t+n})] = exp(A + B*h_t + C*q_t)
 
-    which is the one source the stride's carried-state moments are autodiffed out of
-    (:func:`hn_component_stride_strip`).  The default ``(0, 0)`` integrates the state out and
-    returns the log-CF of the return alone, exactly as before.
+    the one source the stride's carried-state moments are autodiffed out of
+    (:func:`hn_component_stride_strip`).  The default ``(0, 0)`` integrates the state out.
     """
     A = torch.zeros_like(phi)
     B = torch.zeros_like(phi)
@@ -2863,19 +2738,18 @@ def hn_component_auto_phi_max(omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, g
                               log_tol=-40.0, start=8.0, cap=2.0 ** 24):
     """Smallest power-of-two phi_max with Re(A + B*h0 + C*q0) - ln(phi) < log_tol.
 
-    The component glue for :func:`cf_adaptive_phi_max`: it reduces the batch to the EXTREME states
-    so the scan runs on a 4-element phi and checks both inversion contours.
+    The component glue for :func:`cf_adaptive_phi_max`, reducing the batch to the EXTREME states so
+    the scan runs on a 4-element phi.
 
-    ALL FOUR CORNERS OF THE (h0, q0) BOX, not the two diagonal ones: the log-MGF is B*h0 + C*q0 and
-    B and C are free to carry OPPOSITE signs, so the slowest-decaying state can be (h.max, q.min),
-    which pairing h with q by rank never probes.
+    ALL FOUR CORNERS OF THE (h0, q0) BOX, not the two diagonal ones: B and C are free to carry
+    OPPOSITE signs, so the slowest-decaying state can be (h.max, q.min), which pairing h with q by
+    rank never probes.
 
     EVERY PRICE DERIVES ITS OWN BOUND - never reuse one across a ladder, because A LARGER BOUND IS
     NOT CONSERVATIVE FOR THIS MODEL: past a parameter- and step-count-dependent point the A/B/C
     recursion DIVERGES rather than decaying. Measured on a converged four-pillar fit, a 126-step
-    price is 0.7353321384 at phi_max 128/256/512, 0.7323069671 at 1024 and 9.4e+55 at 2048, while
-    the 21-step contract in the SAME strip wants 512. This scan is the calibration's wall clock:
-    75-82% of a plain HN option price, 35-184 ms against 8-94 ms for the price itself.
+    price is 0.7353 at phi_max 128/256/512, 0.7323 at 1024 and 9.4e+55 at 2048, while the 21-step
+    contract in the SAME strip wants 512. This scan is 75-82% of a plain HN option price.
     """
     h = torch.as_tensor(h0).detach().to(alpha.dtype).reshape(-1)
     q = torch.as_tensor(q0).detach().to(alpha.dtype).reshape(-1)
@@ -2892,9 +2766,8 @@ def _component_p1_p2(logm, omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, gamm
                      phi_max, panels, order, unwrap, want=3):
     """P1, P2 for log-moneyness ``logm`` = ln(K/S).  ``logm``/``h0``/``q0`` broadcast together.
 
-    The component sibling of :func:`_p1_p2`, and the SAME thin glue over
-    :func:`cf_european_probabilities`: the affine log-CF ``A + B*h0 + C*q0`` as the ``logcf``
-    closure, ``r*n`` as the P1-contour normalisation. ``want`` is a bit mask: 1 = P1, 2 = P2.
+    The component sibling of :func:`_p1_p2`: the affine log-CF ``A + B*h0 + C*q0`` as the ``logcf``
+    closure, ``r*n`` as the P1-contour normalisation. ``want``: 1 = P1, 2 = P2.
     """
     logm = torch.as_tensor(logm, dtype=alpha.dtype, device=alpha.device)
     h0 = torch.as_tensor(h0, dtype=alpha.dtype, device=alpha.device)
@@ -2920,9 +2793,9 @@ def hn_component_call(S, K, omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, gam
                       phi_max=None, panels=None, order=8, unwrap=True):
     """European CALL under the component model, ``len(omegas)`` steps to expiry.
 
-    ``h0``/``q0`` are the (predictable) short- and long-run variances of the FIRST step - q0 is
-    L(0) by the anchoring - and ``r`` the PER-STEP cost of carry. Differentiable w.r.t. every
-    parameter, the omega strip (hence the L curve behind it), h0, q0, S and K.
+    ``h0``/``q0`` are the (predictable) short- and long-run variances of the FIRST step - q0 is L(0)
+    by the anchoring - and ``r`` the PER-STEP cost of carry. Differentiable w.r.t. every parameter,
+    the omega strip (hence the L curve behind it), h0, q0, S and K.
     """
     S = torch.as_tensor(S, dtype=alpha.dtype, device=alpha.device)
     K = torch.as_tensor(K, dtype=alpha.dtype, device=alpha.device)
@@ -2942,11 +2815,9 @@ def hn_component_put(S, K, omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, gamm
 
 def hn_component_cdf_logret(x, omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, gamma2, r,
                             phi_max=None, panels=None, order=8, unwrap=True):
-    """EXACT  Q( R_n <= x )  where R_n = log(S_{t+n}/S_t), by Fourier inversion.
-
-    The one-step-survival analogue the OSS loop needs for an UP barrier at S*exp(x) (survival =
-    stay below); spot-free by construction, and the component sibling of
-    :func:`hn_cdf_logret`. ``x``, ``h0`` and ``q0`` broadcast together.
+    """EXACT  Q( R_n <= x )  where R_n = log(S_{t+n}/S_t), by Fourier inversion - the component
+    sibling of :func:`hn_cdf_logret`. Spot-free by construction; ``x``, ``h0`` and ``q0`` broadcast
+    together.
     """
     _, P2 = _component_p1_p2(x, omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, gamma2, r,
                              phi_max, panels, order, unwrap, want=2)
@@ -2957,10 +2828,9 @@ def hn_component_from_plain(omega, alpha, beta, gamma_star):
     """The plain HN parameters as a point of the COMPONENT parameter space - the exact map the
     nesting rests on.  Returns ``(alpha, beta_c, gamma1, L)`` with phi = 0 and L FLAT.
 
-    beta_c is the plain PERSISTENCE psi = beta + alpha*gamma*^2 (the component's beta is the
-    short-run deviation's own AR(1) coefficient, and under the plain recursion that deviation
-    decays at psi, not at beta), and L is the plain STATIONARY variance (omega + alpha)/(1 - psi),
-    which is what a flat long-run component must sit at for the two to agree.
+    beta_c is the plain PERSISTENCE psi = beta + alpha*gamma*^2, because the component's beta is the
+    short-run deviation's own AR(1) coefficient and under the plain recursion that deviation decays
+    at psi. L is the plain STATIONARY variance, where a flat long-run component must sit.
     """
     psi = hn_persistence(alpha, beta, gamma_star)
     return alpha, psi, gamma_star, (omega + alpha) / (1.0 - psi)
@@ -2975,46 +2845,25 @@ def hn_component_to_plain(alpha, beta, gamma1, level):
 # ======================================================================================
 # THE STRIDE - the k-step conditional law of ln S given (h, q), cached and exactly differentiable.
 #
-# A simulation that only ever OBSERVES the spot on a monthly fixing schedule still walks every
-# trading day between two fixings, because the daily recursion is the only thing that knows how to
-# move (h, q). The stride is the k-step law written down instead of walked: the SAME backward A/B/C
-# recursion run k steps gives the k-step conditional log-CF exp(A_k + B_k*h + C_k*q) EXACTLY, and
-# A/B/C depend on the parameters, the calendar position and the transform node - NEVER on the state.
-# So they are precomputed ONCE per calibration, per (fixing interval x quadrature node), and every
-# per-path question after that is exponentials and a dot product over the cache, batched across the
-# whole cube and exactly differentiable. `hn_component_cdf_logret` is the existing HALF of this: the
-# stride is that inversion with its coefficients CACHED, its state axis extended by C*q, its draw
-# survival-truncated, and - the one new thing - the state carried across the jump.
+# The backward A/B/C recursion run k steps gives the k-step conditional log-CF
+# exp(A_k + B_k*h + C_k*q) EXACTLY, and A/B/C depend on the parameters, the calendar position and
+# the transform node - never on the state - so they are cached once per (fixing interval x
+# quadrature node) and every per-path question after that is a dot product over the cache. The
+# omega strip enters A alone, so B_k/C_k are reusable across intervals of equal length.
 #
-# CALENDAR ANCHORING. The omega strip enters A ALONE (the B and C recursions never read omega_t), so
-# two intervals of the same length differ only in A. B_k and C_k are therefore reusable across a
-# schedule; this build does not exploit that (measured cost did not warrant it - see the report's
-# escalation rungs), but the property is what makes the cache calendar-anchored rather than
-# calendar-shaped.
-#
-# THE CASE SPLIT IS A RULE, not a heuristic: a DAILY-MONITORED contract keeps the daily path and the
-# one-day probability, permanently - the daily advance is the reference implementation. The stride is
-# for the date-jumps the simulation does not take.
-#
-# WHAT THAT RULE DOES NOT SAY IS "the stride never fires there", which was the wording and was wrong.
-# Where the case split hands a consumer ZERO unmonitored days it strides nothing at all and off/on is
-# bit-identical (`pricing.pv_discrete_barrier_option`, whose daily-monitored shape reaches
-# `ComponentHestonNandiKit.substeps` with n_steps == 0). Where a pricer strides the WHOLE fixing
-# interval (`pv_MC_Tarf`, `pv_MC_Accumulator`), a daily-monitored contract's interval is ONE DAY and
-# the stride OPENS at k = 1. It is INERT there rather than absent, and that is the rule's real
-# content: the one-step law IS the daily law exactly (h_1 is quadratic in z and the one-step return
-# affine in it, so the quadratic carry has a zero residual - gated), and the same uniform draws the
-# same quantile of it. Measured on a daily-monitored TARF: 1.8e-11 relative on/off, which is the
-# Gil-Pelaez inversion's own resolution against `norm_icdf` and not a bit comparison, against 2.9e-2
-# on the monthly schedule the stride is actually for.
+# THE CASE SPLIT IS A RULE: a daily-monitored contract keeps the daily path and the one-day
+# probability permanently, the daily advance being the reference implementation. Where a pricer
+# strides the WHOLE fixing interval (`pv_MC_Tarf`, `pv_MC_Accumulator`) such a contract's interval
+# is one day and the stride is INERT rather than absent - the one-step law IS the daily law exactly,
+# 1.8e-11 relative on/off, against 2.9e-2 on the monthly schedule the stride is for.
 # ======================================================================================
 
 #: The mixed partial derivatives of the joint transform at the origin that the carried-state
 #: approximation is pinned by, in the order :data:`HNComponentStride.mom` stores them. ``p`` is
-#: d/dphi (the return), ``u`` is d/du (the short-run variance it lands in), ``v`` is d/dv (the
-#: long-run one); a key is the multiset of derivatives, so ``upp`` is d3/du dphi^2. Every one is a
-#: JOINT CUMULANT of (R_k, h_k, q_k) because the transform is a log-MGF - which is why the normal
-#: equations below are written in central moments and read straight off this block.
+#: d/dphi (the return), ``u`` d/du (the short-run variance it lands in), ``v`` d/dv (the long-run
+#: one); a key is the multiset of derivatives, so ``upp`` is d3/du dphi^2. Every one is a JOINT
+#: CUMULANT of (R_k, h_k, q_k), the transform being a log-MGF - which is why the normal equations
+#: below are written in central moments and read straight off this block.
 HN_STRIDE_MOMENT_KEYS = ('p', 'pp', 'ppp', 'pppp',
                          'u', 'up', 'upp', 'uu',
                          'v', 'vp', 'vpp', 'vv', 'uv')
@@ -3036,12 +2885,11 @@ HNComponentStrideCarry = namedtuple(
 #: Floor on a residual standard deviation before it divides into a correlation. Numerically zero.
 HN_STRIDE_TINY = 1.0e-300
 
-#: Complex elements per block inside the inversion loop, which is the ONE place the stride can
-#: bound its own footprint (it runs under ``no_grad``, so a block can be freed before the next).
-#: EVERYTHING ELSE THE STRIDE DOES IS O(paths x nodes) AND THAT, NOT TIME, IS WHAT LIMITS A CUBE:
-#: a differentiable draw holds about six (paths, node) complex128 buffers alive for the backward
-#: pass, 16 bytes each, so a 512-node strip fits ~2^18 paths on a 24 GB device and a 2048-node one
-#: a quarter of that. 2^24 here is 256 MB a block, which no consumer has had to think about yet.
+#: Complex elements per block inside the inversion loop, the ONE place the stride can bound its own
+#: footprint (it runs under ``no_grad``, so a block frees before the next). EVERYTHING ELSE IS
+#: O(paths x nodes) AND THAT, NOT TIME, IS WHAT LIMITS A CUBE: a differentiable draw holds about six
+#: (paths, node) complex128 buffers alive for the backward pass, so a 512-node strip fits ~2^18
+#: paths on a 24 GB device. 2^24 here is 256 MB a block.
 HN_STRIDE_INVERT_BLOCK = 1 << 24
 
 
@@ -3049,21 +2897,19 @@ def _hn_stride_moment_block(omegas, hnc_params, r):
     """The (13, 3) origin-derivative block of the JOINT transform, by autograd on
     :func:`hn_component_abc` - no hand-written moment recursions anywhere.
 
-    With the terminal condition ``(B_0, C_0) = (u, v)`` that recursion returns the joint transform
-    ``M(phi,u,v) = A + B*h_t + C*q_t = log E_t[exp(phi*R_k + u*h_{t+k} + v*q_{t+k})]``, so every
-    mixed partial at the origin is a joint CUMULANT of ``(R_k, h_k, q_k)``.  ONE autograd chain
-    delivers all three coefficient parts at once: the recursion is ELEMENTWISE in ``phi``, so
-    running it on a 3-vector against the probes ``h = (1,0,0)``, ``q = (0,1,0)`` evaluates
-    ``(A+B, A+C, A)`` in parallel and ``grad(M.sum(), phi)`` returns the three elementwise partials
-    as a vector.  Differentiable w.r.t. every parameter (``create_graph`` throughout), which is what
-    makes the carried state's own gradient real rather than a detached constant.
+    With the terminal condition ``(B_0, C_0) = (u, v)`` that recursion returns
+    ``M(phi,u,v) = log E_t[exp(phi*R_k + u*h_{t+k} + v*q_{t+k})]``, so every mixed partial at the
+    origin is a joint CUMULANT of ``(R_k, h_k, q_k)``. ONE autograd chain delivers all three
+    coefficient parts: the recursion is ELEMENTWISE in ``phi``, so running it on a 3-vector against
+    the probes ``h = (1,0,0)``, ``q = (0,1,0)`` evaluates ``(A+B, A+C, A)`` in parallel.
+    ``create_graph`` throughout, which is what makes the carried state's gradient real rather than a
+    detached constant.
 
-    IT FORCES ``enable_grad`` AND RESTORES THE AMBIENT MODE ON THE WAY OUT.  These derivatives are
-    the cache's VALUE, not a gradient of the caller's computation, so they cannot be at the mercy of
-    the caller's mode - and a valuation builds its cache inside ``no_grad``, where the recursion
-    records no graph, every partial comes back as a structural zero, and the carry then divides by
-    ``mu2 = 0``. Measured before this line existed: a six-fixing schedule returned NaN on all 8,192
-    paths at the FIRST stride, with a perfectly healthy Phi beside it.
+    IT FORCES ``enable_grad`` AND RESTORES THE AMBIENT MODE ON THE WAY OUT: these derivatives are
+    the cache's VALUE, not a gradient of the caller's computation. A valuation builds its cache
+    inside ``no_grad``, where the recursion records no graph, every partial is a structural zero and
+    the carry divides by ``mu2 = 0`` - measured, a NaN on all 8,192 paths at the first stride with a
+    healthy Phi beside it.
     """
     ambient = torch.is_grad_enabled()
     with torch.enable_grad():
@@ -3085,7 +2931,6 @@ def _hn_stride_origin_derivatives(omegas, hnc_params, r):
     def d(y, wrt):
         # a k=1 stride is EXACTLY Gaussian in the return, so the phi chain legitimately terminates
         # at the second cumulant and every higher one is identically zero - not an error condition
-        # (the same fact `hn_reference.hn_cumulants` records for the plain family)
         if not y.requires_grad:
             return torch.zeros_like(z3)
         g = torch.autograd.grad(y.sum(), wrt, create_graph=True, allow_unused=True)[0]
@@ -3120,25 +2965,22 @@ def hn_component_stride_strip(omegas, hnc_params, r, h_box, q_box, phi_max=None,
     ``moments=False`` builds the Phi coefficients alone - the branch-and-weight and
     conditional-probability consumers never carry state, so they never pay for the origin block.
 
-    THE COST OF CARRY IS A SHIFT, NOT A REBUILD, and a consumer needs this: ``r`` enters A only as
-    ``phi*r*k``, which the inversion multiplies against ``exp(-i phi x)``, so a strip built at
-    ``r_0`` answers for ANY other per-step carry ``b`` - INCLUDING A PER-PATH ONE - by moving the
-    moneyness:
+    THE COST OF CARRY IS A SHIFT, NOT A REBUILD: ``r`` enters A only as ``phi*r*k``, which the
+    inversion multiplies against ``exp(-i phi x)``, so a strip built at ``r_0`` answers for ANY
+    other per-step carry ``b`` - including a per-path one - by moving the moneyness:
 
         Q_b(R_k <= x | h, q)  ==  hn_component_stride_cdf(strip, x - (b - r_0)*k, h, q)
 
-    and the carried state is untouched but for its mean, which moves by the same ``(b - r_0)*k``.
-    Measured: 2.2e-16 on Phi, and every carry loading BITWISE identical (only the first cumulant
-    moves, and by exactly that amount). So one strip per (anchor, length) serves a whole book of
-    deals whose ``b_step`` differs - which matters, because ``b_step`` reaches the OSS pricers as a
-    per-path tensor and the cache is indexed by calendar position alone.
+    and the carried state is untouched but for its mean, which moves by the same ``(b - r_0)*k``
+    (measured 2.2e-16 on Phi, every carry loading bitwise identical). So one strip per (anchor,
+    length) serves a whole book of deals whose ``b_step`` differs, which matters because ``b_step``
+    reaches the OSS pricers as a per-path tensor.
 
     THE SHIFT RUNS BOTH WAYS, and a consumer that only moves the moneyness IN has done half of it: a
-    barrier enters as ``x_cap - (b - r_0)*k``, and what comes back is a return in the strip's OWN
+    barrier enters as ``x_cap - (b - r_0)*k`` and what comes back is a return in the strip's OWN
     ``r_0`` measure, so THE RETURN UN-SHIFTS by ``+(b - r_0)*k`` before it may move a spot. Skip
-    that and the survival WEIGHT is still right while the whole survivor law sits ``(b - r_0)*k``
-    too low - +0.005000 at k = 21 and b = 4r, which is 27x the daily walk's own quantile band, and a
-    truncation that stops 50 bp short of the barrier it was given.
+    that and the survival WEIGHT is still right while the whole survivor law sits a carry too low -
+    27x the daily walk's own quantile band at k = 21, b = 4r.
     :func:`hn_component_stride_step` does the un-shift when it is handed ``b_step``.
     """
     alpha = hnc_params[0]
@@ -3169,10 +3011,9 @@ def hn_component_stride_cdf(strip, x, h, q):
     """``Q(R_k <= x | h, q)`` over the cache - the stride's Gil-Pelaez Phi.
 
     THE SAME QUADRATURE `hn_component_cdf_logret` RUNS, with the A/B/C recursion replaced by the
-    cached strips and nothing else changed: same nodes, same weights, same assembly order, so the
-    two agree bit-for-bit at equal ``phi_max``/``panels``/``order`` (gated).  ``x``, ``h`` and ``q``
-    broadcast together; the whole cube is one batched call.  Differentiable w.r.t. ``x``, the state,
-    and - through the cache - every model parameter.
+    cached strips and nothing else changed - same nodes, weights and assembly order, so the two
+    agree bit-for-bit at equal ``phi_max``/``panels``/``order`` (gated). ``x``, ``h`` and ``q``
+    broadcast together. Differentiable w.r.t. ``x``, the state, and every model parameter.
     """
     x, h, q = _hn_stride_cast(strip, x, h, q)
     shift = torch.exp(-1j * strip.nodes * x.unsqueeze(-1)) / (strip.nodes * 1j)
@@ -3192,8 +3033,8 @@ def hn_component_stride_pdf(strip, x, h, q):
 
 def hn_component_stride_cumulants(strip, h, q):
     """The first four cumulants of the k-step log-return given ``(h, q)``, off the cached origin
-    block - ``(mean, variance, skew, excess kurtosis)``.  Free (three multiply-adds per path per
-    cumulant), and the seed the inversion starts from."""
+    block - ``(mean, variance, skew, excess kurtosis)``. Three multiply-adds per path per cumulant,
+    and the seed the inversion starts from."""
     h, q = _hn_stride_cast(strip, h, q)
     m = strip.mom
     k = [m[i, 0] + m[i, 1] * h + m[i, 2] * q for i in range(4)]
@@ -3203,28 +3044,23 @@ def hn_component_stride_cumulants(strip, h, q):
 def hn_component_stride_invert(strip, p, h, q, iters=32, tol=1.0e-14, chunk=None):
     """Solve ``Q(R_k <= x | h, q) = p`` for x, per path.  VALUE ONLY - no gradient.
 
-    CORNISH-FISHER SEED, then safeguarded Newton.  The seed is free - the cache already holds the
-    exact first four cumulants, so the fourth-order Cornish-Fisher quantile costs three multiplies -
-    and it is what keeps the iteration count down: the inversion is the ONLY part of the stride that
-    is not a single pass over the cache, so its iteration count is what decides whether the stride
-    beats the daily walk it replaces (measured in the gate). Newton then runs on the cached density
-    with a bisection fallback whenever a step leaves the running bracket, which is what makes this
-    safe where Cornish-Fisher is not monotone.
+    CORNISH-FISHER SEED, then safeguarded Newton. The seed is free - the cache already holds the
+    exact first four cumulants - and it is what keeps the iteration count down, the inversion being
+    the ONLY part of the stride that is not a single pass over the cache. Newton then runs on the
+    cached density with a bisection fallback whenever a step leaves the running bracket, which is
+    what makes this safe where Cornish-Fisher is not monotone.
 
-    The state-dependent factor ``exp(A + B h + C q)`` is HOISTED OUT of the loop - it does not
-    depend on x - so an iteration is one complex exponential and one dot product over the node axis.
-    That is a reassociation of :func:`hn_component_stride_cdf`, not a second formula: the root it
-    returns is checked against the canonical Phi by the caller's reattachment.
+    The state-dependent factor ``exp(A + B h + C q)`` is HOISTED OUT of the loop, so an iteration is
+    one complex exponential and one dot product over the node axis - a reassociation of
+    :func:`hn_component_stride_cdf`, not a second formula.
 
     The gradient is not lost, it is DEFERRED: :func:`hn_component_stride_draw` reattaches it by one
-    graph-carrying Newton step at this root, which is the implicit function theorem written as
-    arithmetic and is exact.
+    graph-carrying Newton step at this root, exactly.
 
     ``chunk`` blocks the path axis at :data:`HN_STRIDE_INVERT_BLOCK` complex elements. The iteration
-    is elementwise, so a block solves exactly what it would have solved in company - but the
-    CONVERGENCE BREAK is collective (it reads the worst residual in the batch), so a different
-    blocking stops one iteration earlier or later and the roots agree to ``tol`` rather than
-    bitwise: measured 7.1e-15 in x between a 5,000-path solve and the same paths in blocks of 7.
+    is elementwise, but the CONVERGENCE BREAK is collective, so a different blocking stops one
+    iteration earlier or later and the roots agree to ``tol`` rather than bitwise (measured 7.1e-15
+    in x between a 5,000-path solve and the same paths in blocks of 7).
     """
     p, h, q = _hn_stride_cast(strip, p, h, q)
     n_node = strip.nodes.numel()
@@ -3274,11 +3110,9 @@ def hn_component_stride_invert(strip, p, h, q, iters=32, tol=1.0e-14, chunk=None
             if float(fx.abs().max()) < tol:
                 break
             step = x - fx / dens(x).clamp_min(HN_STRIDE_TINY)
-            # NON-STRICT against the bracket. A CONVERGED path has just set an endpoint to its own
-            # x, and its Newton step is that same x: a strict test reads that as "outside" and
-            # bisects a bracket still four standard deviations wide, throwing the root away and
-            # never getting it back (measured: max residual 4e-8 at iteration 2, 5e-2 at iteration 3
-            # and a linear crawl from there, on 4,270 of 16,384 paths).
+            # NON-STRICT against the bracket: a CONVERGED path has just set an endpoint to its own
+            # x, and a strict test reads its Newton step as "outside" and bisects a bracket still
+            # four standard deviations wide, throwing the root away
             ok = torch.isfinite(step) & (step >= lo) & (step <= hi)
             nxt = torch.where(ok, step, 0.5 * (lo + hi))
             done = bool(((nxt - x).abs() <= tol * sd).all())
@@ -3292,40 +3126,31 @@ def hn_component_stride_draw(strip, u, h, q, x_cap=None, iters=32, tol=1.0e-14):
     """SURVIVAL-TRUNCATED inverse-CDF draw of the k-step log-return.  Returns ``(x, phi_cap)``.
 
     ``u`` is uniform on (0,1) and the draw solves ``Q(R_k <= x) = u * Phi_cap`` with
-    ``Phi_cap = Q(R_k <= x_cap)`` - the one-sided survival mass for an UP barrier at
-    ``S_t*exp(x_cap)``, exactly the quantity the OSS truncation carries. ``x_cap=None`` draws from
-    the untruncated law.  The caller multiplies the survival weight into its own running product;
-    nothing here rescales it.
+    ``Phi_cap = Q(R_k <= x_cap)``, the one-sided survival mass the OSS truncation carries.
+    ``x_cap=None`` draws from the untruncated law; the caller multiplies the survival weight into
+    its own running product.
 
-    THE GRADIENT IS EXACT, not a differentiated iteration.  The root is found under ``no_grad`` and
-    then corrected by Newton steps whose terms carry the graph:
+    THE GRADIENT IS EXACT, not a differentiated iteration. The root is found under ``no_grad``, then
+    corrected by Newton steps whose terms carry the graph:
 
         x <- x + (u*Phi_cap - Q(x)) / q(x*)
 
-    Each correction is numerically zero (x* IS the root, to ``tol``), so the VALUE is the root; the
-    first step's derivative is ``-(dQ/dtheta - u dPhi_cap/dtheta) / q``, which is the implicit
-    function theorem for this equation. The density divides as a detached constant, correctly: it
-    multiplies a term that vanishes.
+    Each correction is numerically zero, so the VALUE is the root, while the first step's derivative
+    is the implicit function theorem for this equation. The density divides as a detached constant,
+    correctly - it multiplies a term that vanishes.
 
-    TWO STEPS, AND THE SECOND IS WHAT MAKES THE SECOND DERIVATIVE EXIST.  Writing
+    TWO STEPS, AND THE SECOND IS WHAT MAKES THE SECOND DERIVATIVE EXIST. Writing
     ``g(x, theta) = Q(x, theta) - target(theta)``, one step off a DETACHED root has ``dx = 0`` going
-    in, so it returns ``-g_theta / q`` - the right first derivative from any starting point, which
-    is why one step sufficed for wave 1 - but ``-g_thetatheta / q`` at second order, missing the
-    ``g_xx dx^2 + 2 g_xtheta dx`` that only a starting point CARRYING ``dx`` supplies. A second step
-    starts from an ``x`` whose first derivative is already exact and closes it. That is Newton's own
-    quadratic convergence written on the tape, and it costs one more inversion pass.
+    in, so it returns the right FIRST derivative but ``-g_thetatheta / q`` at second order, missing
+    the ``g_xx dx^2 + 2 g_xtheta dx`` only a starting point CARRYING ``dx`` supplies. A second step
+    starts from an ``x`` whose first derivative is already exact and closes it, at one more
+    inversion pass. Measured at k = 21: one step reads ``d2x`` 3.1% out, two steps 0.002%, and the
+    VALUE is the inverter's root to the last bit either way. Downstream it is worth 36% of an
+    autocall's gamma.
 
-    MEASURED, k = 21 on a live component fit, differentiating the drawn return against its own
-    truncation level: one step reads ``d2x = -3.8318`` against a bumped-root truth of ``-3.9498``
-    (3.1% out, on a ladder flat to 0.2%) and two steps read ``-3.94967`` (0.002%). The VALUE is the
-    inverter's root to the last bit either way. Downstream it is worth 36% of an autocall's gamma:
-    the wave-2 consumers put the drawn spot through a coupon trigger and a put barrier, and a
-    second derivative that is 3% wrong per fixing is not 3% wrong per deal.
-
-    EACH CORRECTION IS BOUNDED BY ONE STANDARD DEVIATION of the k-step law, which in normal running
-    never binds (it is bounding something of order 1e-16). It is there because the density is a
-    divisor and a quadrature that has underflowed to zero in a deep tail would otherwise turn a
-    rounding residual into an infinity, moving the drawn spot rather than leaving it alone.
+    EACH CORRECTION IS BOUNDED BY ONE STANDARD DEVIATION of the k-step law, which never binds in
+    normal running. It is there because the density is a divisor, and a quadrature underflowed to
+    zero in a deep tail would turn a rounding residual into an infinity.
     """
     u, h, q = _hn_stride_cast(strip, u, h, q)
     phi_cap = (torch.ones_like(u) if x_cap is None
@@ -3346,11 +3171,11 @@ def hn_component_stride_draw(strip, u, h, q, x_cap=None, iters=32, tol=1.0e-14):
 def hn_component_stride_carry_loadings(strip, h, q):
     """THE CARRIED-STATE APPROXIMATION, pinned.  Returns a :data:`HNComponentStrideCarry`.
 
-    ``S_k`` is drawn exactly; the state it lands in is not, and cannot be - the conditional law
-    of ``(h_k, q_k)`` given the realised return has no closed form. It is carried by QUADRATIC
-    conditional matching, and quadratic is a statement about KIND, not accuracy: ``E[h_k | x]`` is
-    the news-impact curve, an asymmetric U tilted by gamma_1, so a LINEAR carry gets the vol-of-vol
-    convexity structurally wrong however well it is fitted.
+    ``S_k`` is drawn exactly; the state it lands in is not, and cannot be - the conditional law of
+    ``(h_k, q_k)`` given the realised return has no closed form. It is carried by QUADRATIC
+    conditional matching, and quadratic is a statement about KIND: ``E[h_k | x]`` is the news-impact
+    curve, an asymmetric U tilted by gamma_1, so a LINEAR carry gets the vol-of-vol convexity
+    structurally wrong however well it is fitted.
 
     ``h_k ~ a + b*y + c*y^2`` in the centered return ``y = x - E[x]``, with (a, b, c) the exact L2
     projection onto ``span{1, y, y^2}``.  In central moments ``mu2, mu3, mu4`` of the return the
@@ -3362,16 +3187,15 @@ def hn_component_stride_carry_loadings(strip, h, q):
 
     and EVERY entry is a joint cumulant off :func:`_hn_stride_moment_block`: mu2 = M_pp,
     mu3 = M_ppp, mu4 = M_pppp + 3 mu2^2, Cov(h_k,y) = M_up, E[h_k y^2] - E[h_k] mu2 = M_upp. So the
-    3x3 collapses to a 2x2 whose determinant is the Gram determinant of (y, y^2) and is positive for
-    any non-degenerate law.  q rides the same algebra with its own (slower) loadings.
+    3x3 collapses to a 2x2 whose determinant is the Gram determinant of (y, y^2), positive for any
+    non-degenerate law.  q rides the same algebra with its own slower loadings.
 
-    The residual is matched in VARIANCE and in the h-q residual CORRELATION, off the closed-form
-    covariance: because the fit is an orthogonal projection, the residual variance is
-    ``Var(h_k) - (b*M_up + c*M_upp)`` exactly, and the residual covariance is
-    ``Cov(h_k,q_k) - (b_q*M_up + c_q*M_upp)`` - which must equal the same expression with the roles
-    swapped, a free consistency check the gate reads.  What is NOT matched is the residual's
-    heteroskedasticity in x, or any of its shape past the second moment: that is the approximation,
-    and its size is non-monotone in k (see the gate's worst-k table).
+    The residual is matched in VARIANCE and in the h-q residual CORRELATION off the closed-form
+    covariance: the fit being an orthogonal projection, the residual variance is
+    ``Var(h_k) - (b*M_up + c*M_upp)`` exactly, and the residual covariance must equal the same
+    expression with the roles swapped - a free consistency check the gate reads. NOT matched: the
+    residual's heteroskedasticity in x, or any shape past the second moment. That is the
+    approximation, and its size is non-monotone in k.
     """
     h, q = _hn_stride_cast(strip, h, q)
     mom = strip.mom
@@ -3396,10 +3220,9 @@ def hn_component_stride_carry_loadings(strip, h, q):
 def hn_component_stride_carry(strip, x, h, q, e1, e2, loadings=None):
     """Carry ``(h, q)`` across the stride onto the realised return ``x``.  Returns ``(h_k, q_k)``.
 
-    ``e1``/``e2`` are independent standard normals; the pair is correlated by the 2x2 Cholesky of
-    the residual covariance :func:`hn_component_stride_carry_loadings` closed-form. Both states are
-    FLOORED at :data:`HN_COMPONENT_VARIANCE_FLOOR` - the same declared floor the daily recursion
-    carries, for the same reason (the CJOW pair has no positivity guarantee at phi > 0), not a
+    ``e1``/``e2`` are independent standard normals, correlated by the 2x2 Cholesky of the residual
+    covariance :func:`hn_component_stride_carry_loadings` closed-form. Both states are FLOORED at
+    :data:`HN_COMPONENT_VARIANCE_FLOOR` - the same declared floor the daily recursion carries, not a
     repair of the approximation.  Pass ``loadings`` to reuse a fit across a cube.
     """
     x, h, q = _hn_stride_cast(strip, x, h, q)
@@ -3414,19 +3237,17 @@ def hn_component_stride_carry(strip, x, h, q, e1, e2, loadings=None):
 
 def hn_component_stride_step(strip, Sj, h, q, u, e1, e2, x_cap=None, loadings=None, b_step=None):
     """ONE STRIDE: jump the spot k steps on a survival-truncated draw and carry the state with it.
-    Returns ``(Sj, h, q, phi_cap)`` - the verb a wave-2 OSS pricer calls in place of k
+    Returns ``(Sj, h, q, phi_cap)`` - the verb an OSS pricer calls in place of k
     :func:`hn_component_log_substep` days plus a truncated final :func:`hn_component_daily_advance`.
 
-    ``b_step`` IS THE MEASURE THE SPOT MOVES UNDER, and it need not be the ``r`` the strip was built
-    at - that is the whole point of the cache being keyed on calendar position alone, and ``b_step``
-    reaches the OSS pricers as a per-path tensor (see :func:`hn_component_stride_strip`). The draw
-    and the CARRY both happen in the strip's own ``r`` measure - the loadings centre on that mean, so
-    the state must be carried at the unshifted return - and the RETURN alone is un-shifted by
-    ``(b_step - r)*k`` on the way out. The caller passes ``x_cap`` shifted the other way, into that
-    same strip measure, and gets back a spot the barrier bounds where the barrier actually is.
+    ``b_step`` IS THE MEASURE THE SPOT MOVES UNDER and need not be the ``r`` the strip was built at,
+    which is the point of keying the cache on calendar position alone. The draw and the CARRY both
+    happen in the strip's own ``r`` measure - the loadings centre on that mean - and the RETURN
+    alone is un-shifted by ``(b_step - r)*k`` on the way out. The caller passes ``x_cap`` shifted
+    the other way, into that same measure.
 
-    ``b_step=None`` leaves the return where the strip put it, which is right exactly when the deal's
-    carry IS the strip's ``r``.
+    ``b_step=None`` leaves the return where the strip put it, right exactly when the deal's carry IS
+    the strip's ``r``.
     """
     x, phi_cap = hn_component_stride_draw(strip, u, h, q, x_cap)
     h, q = hn_component_stride_carry(strip, x, h, q, e1, e2, loadings)
@@ -3437,18 +3258,17 @@ def hn_component_stride_step(strip, Sj, h, q, u, e1, e2, x_cap=None, loadings=No
 
 # Correlated sub-stepping -- exact within-interval dynamics between coarse scenario nodes. A coarse
 # exposure grid still owes each factor the dynamics it would have had on the calibration clock:
-# forwarding the variance deterministically and drawing one aggregate Gaussian is 29%->2000% wrong
-# on tail probabilities at |z|=2-3 (gates/hn_aggregate_bias.csv), precisely the quantiles PFE reads.
-# The interval walks its own sub-steps instead, and the framework's correlated draw enters as the
-# sqrt(variance)-weighted combination of the sub-step normals. Freeze h and the aggregate return
-# collapses back to sqrt(sum var)*z_fw, so this is a strict refinement of the mean bridge.
+# forwarding the variance deterministically and drawing one aggregate Gaussian is 29%-2000% wrong on
+# tail probabilities at |z|=2-3, precisely the quantiles PFE reads. The interval walks its own
+# sub-steps instead, and the framework's correlated draw enters as the sqrt(variance)-weighted
+# combination of the sub-step normals. Freeze h and the aggregate return collapses back to
+# sqrt(sum var)*z_fw, so this is a strict refinement of the mean bridge.
 
 def substep_schedule(f):
-    """Trading-time lengths spanning each interval of `f` calibration steps: whole steps, then
-    the fractional remainder.  A scenario grid is a CALENDAR object and the recursion is
-    calibrated per trading day, so f is essentially never an integer (f = 252k/365.25 on a
-    k-calendar-day step) -- rounding it to whole days makes node variance a step function of
-    grid spacing, -13% on the framework's own default CVA grid.  len == 1 is the exact
+    """Trading-time lengths spanning each interval of `f` calibration steps: whole steps, then the
+    fractional remainder.  A scenario grid is a CALENDAR object and the recursion is calibrated per
+    trading day, so f is essentially never an integer -- rounding it to whole days makes node
+    variance a step function of grid spacing, -13% on the default CVA grid.  len == 1 is the exact
     fractional step every fine grid already took; longer is a coarse-grid walk.
     """
     schedule = []
@@ -3465,16 +3285,14 @@ def substep_normals(sqrt_var, z_fw):
     w'Z = z_fw exactly, w = ``sqrt_var`` normalized along the leading (sub-step) axis.
 
     Z = e + w*(z_fw - w'e) with e fresh iid normals: Cov(Z) = (I - ww') + ww' = I given
-    z_fw ~ N(0,1) independent of e (framework draws are marginally standard; e is drawn here),
-    and w is F_t-measurable so this holds conditionally, per interval.  ``sqrt_var`` is
-    (n, ...batch), ``z_fw`` (...batch).
+    z_fw ~ N(0,1) independent of e, and w is F_t-measurable so this holds conditionally, per
+    interval.  ``sqrt_var`` is (n, ...batch), ``z_fw`` (...batch).
 
-    The weights decide only WHICH linear functional of the walk carries the cross-factor
-    correlation -- every marginal is invariant to them.  sqrt of the mean-forwarded variance
-    contribution E[h_j]*dt_j is the interval's own return loading, matching a correlated
-    sibling that shares its variance profile (the second GARCH-family factor); a sibling with
-    flat per-day variance would want uniform weights instead.  Neither dominates, so this is
-    a modelling choice, not an exactness claim -- see test_weights_match_the_return_loading.
+    The weights decide only WHICH linear functional of the walk carries the cross-factor correlation
+    -- every marginal is invariant to them.  sqrt of the mean-forwarded variance contribution is the
+    interval's own return loading, matching a correlated sibling that shares its variance profile; a
+    sibling with flat per-day variance would want uniform weights.  A MODELLING CHOICE, not an
+    exactness claim -- see test_weights_match_the_return_loading.
     """
     w = sqrt_var / (sqrt_var ** 2).sum(0, keepdim=True).sqrt()
     e = torch.randn_like(w)
@@ -3482,12 +3300,11 @@ def substep_normals(sqrt_var, z_fw):
 
 
 def hn_correlated_substeps(h, z_fw, sub_dt, omega, alpha, beta, gamma_star):
-    """Walk one coarse scenario interval as the `sub_dt` fractional Heston-Nandi steps that
-    span it.  Returns (h_end, var_sum, r_sum): terminal variance, realized integrated variance
-    sum(h_j*dt_j) (the caller's -1/2 convexity drift), and the innovation sum(sqrt(h_j*dt_j)*z_j)
-    -- so the interval return carry - var_sum/2 + r_sum is a price-martingale by iterated
-    expectations, exact at every sub-step.  Each step is the same fractional recursion the fine
-    grid takes (exactly `hn_variance_step` at dt=1), so the two branches agree in the limit.
+    """Walk one coarse scenario interval as the `sub_dt` fractional Heston-Nandi steps that span it.
+    Returns (h_end, var_sum, r_sum): terminal variance, realized integrated variance (the caller's
+    -1/2 convexity drift), and the innovation -- so the interval return carry - var_sum/2 + r_sum is
+    a price-martingale by iterated expectations, exact at every sub-step. Each step is the same
+    fractional recursion the fine grid takes, so the two branches agree in the limit.
     """
     psi = hn_persistence(alpha, beta, gamma_star)
     var_bar, mean = [], h
@@ -3509,14 +3326,11 @@ def hn_component_correlated_substeps(h, q, z_fw, sub_dt, omegas, alpha, beta, ga
                                      rho, phi, gamma2):
     """Walk one coarse scenario interval as the `sub_dt` fractional COMPONENT steps that span it.
     Returns (h_end, q_end, var_sum, r_sum) - the sibling of :func:`hn_correlated_substeps`, and
-    every note there holds (the interval return carry - var_sum/2 + r_sum is a price-martingale by
-    iterated expectations, exact at every sub-step; each step is the same fractional recursion the
-    fine grid takes, exactly `hn_component_variance_step` at dt=1).
+    every note there holds.
 
-    `omegas` is this interval's own intercept strip, one entry per sub-step, sliced off the whole
-    horizon's omega path by the process. The FORWARDED MEAN that sets the correlation weights is
-    the component one: E[q_{j+1}] = omega_j + rho*q_j and E[h_{j+1}] = E[q_{j+1}] + beta*(h_j-q_j),
-    both centering terms having conditional mean zero.
+    `omegas` is this interval's own intercept strip, one entry per sub-step. The FORWARDED MEAN that
+    sets the correlation weights is the component one: E[q_{j+1}] = omega_j + rho*q_j and
+    E[h_{j+1}] = E[q_{j+1}] + beta*(h_j-q_j), both centering terms having conditional mean zero.
     """
     var_bar, mean_h, mean_q = [], h, q
     for dt, omega_t in zip(sub_dt, omegas):
@@ -3538,11 +3352,11 @@ def hn_component_correlated_substeps(h, q, z_fw, sub_dt, omegas, alpha, beta, ga
 
 
 def garch_correlated_substeps(h, z_fw, sub_dt, omega, alpha, beta, nu):
-    """Walk one coarse scenario interval as the `sub_dt` fractional GARCH(1,1)-t steps that span
-    it.  Returns (h_end, var_sum, r_sum) with r_j = sqrt(h_j*dt_j)*eps_j: each eps_j is EXACTLY
-    standardized Student-t, built by t-scaling the conditioned sub-step normals with fresh
-    Gammas -- the same scale mixture GARCHSpotModel.generate uses per step, so the correlated
-    draw rides the Gaussian kernel of the interval.  Same fractional recursion as the fine grid.
+    """Walk one coarse scenario interval as the `sub_dt` fractional GARCH(1,1)-t steps that span it.
+    Returns (h_end, var_sum, r_sum) with r_j = sqrt(h_j*dt_j)*eps_j: each eps_j is EXACTLY
+    standardized Student-t, built by t-scaling the conditioned sub-step normals with fresh Gammas --
+    the same scale mixture GARCHSpotModel.generate uses per step, so the correlated draw rides the
+    interval's Gaussian kernel.  Same fractional recursion as the fine grid.
     """
     var_bar, mean = [], h
     for dt in sub_dt:                                        # E[h_{j+1}] adds alpha*E[r^2] = alpha*h*dt
@@ -3562,11 +3376,9 @@ def garch_correlated_substeps(h, z_fw, sub_dt, omega, alpha, beta, nu):
 
 
 # Black-Scholes reference + HN implied vol (the HN smile/skew diagnostic and the bootstrapper seed).
-# bs_call_np is a thin ADAPTER over the canonical ``black_european_option_price`` (total-variance
-# parameterisation); bs_implied_total_var bisects on it for the smile/skew diagnostics.
 
 def bs_call_np(S, K, r, n, total_var):
-    """BS call from TOTAL variance (r, n in per-step units) -- a thin adapter over the canonical
+    """BS call from TOTAL variance (r, n in per-step units) -- a thin adapter over
     ``black_european_option_price`` (F = S*e^{r*n}; vol=sqrt(tv), tenor=1 so stddev^2 = tv)."""
     return float(black_european_option_price(
         S * np.exp(r * n), K, r * n, np.sqrt(total_var), 1.0, 1.0, 1.0))
@@ -4308,25 +4120,20 @@ def hermite_interpolation_tensor(t, rate_tensor):
 
 
 def make_curve_tensor(tensor, curve_component, time_grid, shared, n_batch_dims=1):
-    """Build (and cache) the interpolation for a curve, then gather it onto `time_grid`.
+    """Build (and cache) the interpolation for a curve, then gather it onto `time_grid`. A None
+    `time_grid` skips the gather and hands back the bare CurveTensor.
 
-    A None `time_grid` skips the gather and hands back the bare (unscattered) CurveTensor.
+    `n_batch_dims` > 1 means the curve carries multiple trailing batch axes - a nested inner-MC
+    curve shaped (scen, n_tenors, B, B2). They are collapsed into ONE batch axis up front so the
+    rest of the curve stack stays rank-agnostic; the caller reshapes the gathered result's trailing
+    axis back. The default of 1 preserves the single-batch path exactly.
 
-    `n_batch_dims` > 1 means the curve carries multiple trailing batch axes - e.g. a nested
-    inner-MC curve shaped (scen, n_tenors, B, B2). They are collapsed into ONE batch axis up front
-    so the rest of the curve stack (hermite params, the Interpolation's (scen*n_tenors, batch)
-    indexing, gather_scenario_interp's rank-adaptive alpha) stays rank-agnostic and unchanged; the
-    caller reshapes the gathered result's trailing batch axis back to (B, B2). The default of 1
-    preserves the legacy (scen, n_tenors, B) single-batch path exactly.
-
-    Those (B, B2) curve gathers all happen inside a process's `generate`, i.e. BEFORE a fork
-    publishes its block sequence, so a multi-block source never reaches here - it carries no
-    `reshape` and would say so.
+    Those (B, B2) gathers all happen inside a process's `generate`, BEFORE a fork publishes its
+    block sequence, so a multi-block source never reaches here and would say so.
 
     Interpolation is built by ONE recursive factory: a bare tensor becomes a leaf (or a
-    tenor-segmented composite of leaves), a fork's `ScenarioSource` becomes a scenario-routed
-    composite whose per-block children are built by the same call. A Hermite leaf derives its
-    coefficient pair in `Interpolation.build`, so the cached leaf is complete before any gather.
+    tenor-segmented composite of leaves), a fork's `ScenarioSource` a scenario-routed composite
+    whose per-block children are built by the same call.
     """
     if n_batch_dims > 1:
         tensor = tensor.reshape(*tensor.shape[:-n_batch_dims], -1)
@@ -4346,9 +4153,8 @@ def calc_time_grid_curve_rate(code, time_grid, shared, n_batch_dims=1):
     """Gather every curve factor named by `code` onto `time_grid`, as one cached TensorBlock.
 
     `n_batch_dims` > 1 gathers a curve whose simulated state carries extra trailing batch axes
-    (nested inner-MC: (scen, n_tenors, B, B2)). It is threaded straight to make_curve_tensor, which
-    collapses them to one batch axis, so the gathered result's trailing axis is B*B2 and the caller
-    reshapes it back. Default 1 is the legacy single-batch behaviour, untouched.
+    (nested inner-MC). It is threaded to make_curve_tensor, which collapses them to one batch axis,
+    so the gathered result's trailing axis is B*B2 and the caller reshapes it back.
     """
     time_hash = time_grid[:, TIME_GRID_MTM].tobytes()
     code_hash = tuple(x[:2] for x in code)
@@ -4386,10 +4192,9 @@ def calc_time_grid_spot_rate(rate, time_grid, shared):
     """Gather the composed spot rate onto `time_grid`.
 
     `rate` is a CODE (a list of resolved factor indices), mirroring calc_time_grid_curve_rate:
-    element 0 is the primary spot and any tail elements are ObservedBasis components. The spot is
-    the SUM of the gathered components (composed spot = primary + basis), the get_* layer having
-    already turned the explicit deal fields into indices. A single-element code is the plain spot -
-    the same ops in the same order as before, hence bit-identical.
+    element 0 is the primary spot and any tail elements are ObservedBasis components, so the spot is
+    the SUM of the gathered components. A single-element code is the plain spot - the same ops in
+    the same order, hence bit-identical.
     """
     key_code = ('spot', tuple(tuple(r[:2]) for r in rate), time_grid[:, TIME_GRID_MTM].tobytes())
 
@@ -4415,10 +4220,9 @@ def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True):
     """Forward rates off a curve, for one calibrated curve or a batch of per-path curves.
 
     `tensor` is the curve: (n_tenors,) calibrated, or (n_tenors, B) for a BATCH. Every op below is
-    elementwise or a tenor-axis gather, so the batch axis just rides along as a trailing broadcast
-    dim - no reduction reassociates, and the batched result is bitwise equal to looping the
-    columns. `nb == 0` makes every `_bcast` a no-op reshape, so the 1-D path executes exactly the
-    arithmetic it always did.
+    elementwise or a tenor-axis gather, so the batch axis rides along as a trailing broadcast dim -
+    no reduction reassociates, and the batched result is bitwise equal to looping the columns.
+    `nb == 0` makes every `_bcast` a no-op reshape.
     """
     nb = tensor.dim() - 1
 
@@ -4480,8 +4284,8 @@ def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True):
         t = tnr.view(1, -1, 1)
         if full_tnr is None:
             full_tnr = tnr
-        # (1, n_tenors, 1) calibrated / (1, n_tenors, B) batched. Squeeze the leading axis only
-        # when batched — a plain squeeze() would also eat the batch axis at B == 1.
+        # (1, n_tenors, 1) calibrated / (1, n_tenors, B) batched. Squeeze the leading axis only when
+        # batched — a plain squeeze() would also eat the batch axis at B == 1
         gc = hermite_interpolation_tensor(t, tensor.reshape(1, tensor.shape[0], -1))
         g, c = [x.squeeze(0) for x in gc] if nb else [torch.squeeze(x) for x in gc]
 
@@ -4499,7 +4303,7 @@ def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True):
             val = alpha * tensor[ten_t_next] + (1 - alpha) * tensor[ten_t]
 
             # `> 1 + nb` is the tenor axis test: it selects the (time x tenor) call and skips the
-            # time-only one. Reduces to the original `len(val.shape) > 1` when nb == 0.
+            # time-only one
             if extrapolate and val.dim() > 1 + nb:
                 val = val[:, :-1]
             return val * norm
@@ -4661,15 +4465,8 @@ def traverse_dependents(x, adj):
 
 
 def topological_sort(graph_unsorted):
-    """
-    Repeatedly go through all the nodes in the graph, moving each of
-    the nodes that has all its edges resolved, onto a sequence that
-    forms our sorted graph. A node has all of its edges resolved and
-    can be moved once all the nodes its edges point to, have been moved
-    from the unsorted graph onto the sorted one.
-
-    NB - this destroys the graph_unsorted dictionary that was passed in
-    and just returns the keys of the sorted graph
+    """Move each node whose edges are all resolved onto the sorted sequence, repeatedly. DESTROYS
+    `graph_unsorted` and returns the sorted keys.
     """
 
     graph_sorted = []
@@ -4775,7 +4572,7 @@ def get_fieldname(field, obj):
 
 
 def check_rate_name(name):
-    """Needed to ensure that name is a tuple - Rate names need to be in upper case"""
+    """Name as a tuple; rate names are upper case."""
     return tuple([x.upper() for x in name]) if type(name) == tuple else tuple(name.split('.'))
 
 
@@ -4788,16 +4585,15 @@ def resolve_factor_key(factor, price_factors):
     """The `Price Factors` key holding this factor's block, which is its own name unless a vol
     surface was written under a SIBLING 2D name.
 
-    TRANSITIONAL, ONE RELEASE, because market data exists under both the tagged and the untagged
-    spellings. A factor in `TwoDimensionalFactors` falls back to the untagged `VolatilityGrid.<name>`
-    block AND TO NOTHING ELSE - never to a sibling tag, which would let one asset class price off
-    another's surface. Every other factor type reads its own name only, and the requested type still
-    decides which class is built, so the typed name stays canonical on write.
+    TRANSITIONAL, ONE RELEASE: market data exists under both the tagged and untagged spellings. A
+    factor in `TwoDimensionalFactors` falls back to the untagged `VolatilityGrid.<name>` block AND
+    TO NOTHING ELSE - never to a sibling tag, which would let one asset class price off another's
+    surface. The requested type still decides which class is built, so the typed name stays
+    canonical on write.
 
     RETIREMENT: once no market data carries `VolatilityGrid.*`, delete this function, drop
-    `VolatilityGrid` from `TwoDimensionalFactors` and `FactorRiskClass`, and put
-    `check_tuple_name` back in its two callers - `riskfactors.construct_factor` and
-    `Config.factor_universe`.
+    `VolatilityGrid` from `TwoDimensionalFactors` and `FactorRiskClass`, and put `check_tuple_name`
+    back in `riskfactors.construct_factor` and `Config.factor_universe`.
     """
     name = check_tuple_name(factor)
     if name in price_factors or factor.type not in TwoDimensionalFactors:
@@ -4812,7 +4608,7 @@ def payoff_currency(field):
     """A deal's payoff currency, which is its own currency unless it says otherwise.
 
     Optional currency fields are declared with an EMPTY default, so 'not specified' reaches the
-    engine as a present empty string from any UI and as an absent key from hand-written JSON. Both
+    engine as a present empty string from a UI and as an absent key from hand-written JSON. Both
     mean the same thing, so the test is on the VALUE rather than on presence.
     """
     return field.get('Payoff_Currency') or field['Currency']
@@ -4831,8 +4627,8 @@ def check_scope_name(factor):
 
 
 def check_fx_name(fx_correlation):
-    """FX rates must be sorted alphabetically - however, often we need correlations with non-alphabetical fx rates.
-    In this case, we need to know we're actually using the reverse pair (i.e. -1*rho) as opposed to the sorted name"""
+    """The sorted pair name and the sign to read a correlation with: FX rates are named
+    alphabetically, so a pair the other way round reads -rho off the sorted factor."""
     ccy1, ccy2 = fx_correlation
     return (1.0, (ccy1, ccy2)) if ccy1 < ccy2 else (-1.0, (ccy2, ccy1))
 
@@ -4842,10 +4638,10 @@ def hn_reciprocal_gamma(gamma_star):
     own numeraire.
 
     ONE law, two currencies: `FxRate.<ccy>` IS the density that changes numeraire, so the change
-    shifts the innovation by exactly one standard deviation and the fit's `(omega, alpha, beta,
-    gamma*)` for `s` describes `1/s` as `(omega, alpha, beta, 1 - gamma*)` at that deal's own
-    carry. A derivation, never a second fit. The COMPONENT family does not transport this way -
-    its long-run intercept picks up a state-dependent term and leaves the family.
+    shifts the innovation by exactly one standard deviation and a fit for `s` describes `1/s` as
+    `(omega, alpha, beta, 1 - gamma*)` at that deal's own carry. A derivation, never a second fit.
+    The COMPONENT family does not transport this way - its long-run intercept picks up a
+    state-dependent term and leaves the family.
     """
     return 1.0 - gamma_star
 
@@ -4853,14 +4649,14 @@ def hn_reciprocal_gamma(gamma_star):
 def spot_model_currency(underlying, currency, base):
     """The leg of an FX pair a spot model's parameters are named for: the NON-BASE one.
 
-    An `FxRate` is that currency priced in the base, so the base leg is the numeraire and has no
-    law of its own; a CROSS - neither leg the base - keeps the underlying. The answer comes back in
-    the caller's own spelling, but the comparison is made on `check_rate_name` tuples, so a flat
-    name and a checked one cannot disagree here and quietly hand back the pre-rule token.
+    An `FxRate` is that currency priced in the base, so the base leg is the numeraire and has no law
+    of its own; a CROSS - neither leg the base - keeps the underlying. The answer comes back in the
+    caller's own spelling, but the comparison is on `check_rate_name` tuples, so a flat name and a
+    checked one cannot disagree.
 
-    An UNKNOWN base refuses: the token is not resolvable without it, and the one thing this must
-    never do is answer the underlying anyway - that IS the defect (a runner would pin a model the
-    engine then looks up under the other name, and the deal marks at nothing).
+    An UNKNOWN base REFUSES: the token is not resolvable without it, and answering the underlying
+    anyway is the defect - a runner would pin a model the engine looks up under the other name, and
+    the deal marks at nothing.
     """
     if base is None:
         raise ValueError(
@@ -4873,8 +4669,8 @@ def spot_model_currency(underlying, currency, base):
 
 
 def implied_correlation(factor, sign=1.0):
-    """The market implied correlation between a rate pair, read at eval off the `Correlation` price
-    factor `Factor_dep` carries. An unauthored pair is uncorrelated, which is what `None` means.
+    """The market implied correlation between a rate pair, read off the `Correlation` price factor
+    `Factor_dep` carries. `None` is an unauthored pair, which is uncorrelated.
 
     `sign` is the reverse-pair flip `check_fx_name` resolved at compile: a correlation is named on
     the sorted currency pair, so a deal running the other way reads -rho off the same factor."""
@@ -4882,10 +4678,7 @@ def implied_correlation(factor, sign=1.0):
 
 
 def make_cashflow(reference_date, start_date, end_date, pay_date, nominal, daycount_code, fixed_amount, spread_or_rate):
-    """
-    Constructs a single cashflow vector with the provided parameters - can be used to manually construct nominal
-    or fixed payments.
-    """
+    """One cashflow vector - for manually constructing a nominal or fixed payment."""
     cashflow_days = [(x - reference_date).days for x in [start_date, end_date, pay_date]]
     return np.array(
         cashflow_days + [get_day_count_accrual(reference_date, cashflow_days[1] - cashflow_days[0], daycount_code),
@@ -4893,14 +4686,10 @@ def make_cashflow(reference_date, start_date, end_date, pay_date, nominal, dayco
 
 
 def get_cashflows(reference_date, reset_dates, nominal, amort, daycount_code, spread_or_rate):
-    """
-    Generates a vector of Start_day, End_day, Pay_day, Year_Frac, Nominal, FixedAmount (=0)
-    and rate/spread from the parameters provided. Note that the length of the nominal array must
-    be 1 less than the reset_dates (Since there is no nominal on the first reset date i.e.
-    Effective date).
-    The nominal could also be just a single number representing a vanilla (constant) profile
-
-    Returns a vector of days (and nominals) relative to the reference date
+    """Start_day, End_day, Pay_day, Year_Frac, Nominal, FixedAmount (=0) and rate/spread, as days
+    and nominals relative to the reference date. The nominal array must be one shorter than
+    `reset_dates` (there is no nominal on the effective date), or a single number for a constant
+    profile.
     """
 
     amort_offsets = np.array([((k - reference_date).days, v) for k, v in amort.data.items()] if amort else [])
@@ -4936,15 +4725,8 @@ def get_cashflows(reference_date, reset_dates, nominal, amort, daycount_code, sp
 
 def generate_float_cashflows(reference_date, time_grid, reset_dates, nominal, amort, known_rate_list, reset_tenor,
                              reset_frequency, daycount_code, spread):
-    """
-    Generates a vector of Start_day, End_day, Pay_day, Year_Frac, Nominal, FixedAmount (=0)
-    and spread from the parameters provided. Note that the length of the nominal array must
-    be 1 less than the reset_dates (Since there is no nominal on the first reset date i.e.
-    Effective date).
-    The nominal could also be just a single number representing a vanilla (constant) profile
-
-    Returns a vector of days (and nominals) relative to the reference date, as well as as
-    the structure of resets
+    """`get_cashflows`' schedule plus the reset structure. The nominal array must be one shorter
+    than `reset_dates`, or a single number for a constant profile.
     """
 
     cashflow_schedule = list(get_cashflows(reference_date, reset_dates, nominal, amort, daycount_code, spread))
@@ -5001,14 +4783,8 @@ def generate_float_cashflows(reference_date, time_grid, reset_dates, nominal, am
 
 
 def generate_fixed_cashflows(reference_date, reset_dates, nominal, amort, daycount_code, fixed_rate):
-    """
-    Generates a vector of Start_day, End_day, Pay_day, Year_Frac, Nominal, FixedAmount (=0)
-    and the fixed rate from the parameters provided. Note that the length of the nominal array must
-    be 1 less than the reset_dates (Since there is no nominal on the first reset date i.e.
-    Effective date).
-    The nominal could also be just a single number representing a vanilla (constant) profile
-
-    Returns a vector of days (and nominals) relative to the reference date
+    """`get_cashflows`' schedule with null resets. The nominal array must be one shorter than
+    `reset_dates`, or a single number for a constant profile.
     """
     cashflow_schedule = list(get_cashflows(reference_date, reset_dates, nominal, amort, daycount_code, fixed_rate))
     # Add the null resets to the end
@@ -5018,9 +4794,7 @@ def generate_fixed_cashflows(reference_date, reset_dates, nominal, amort, daycou
 
 
 def make_fixed_cashflows(reference_date, position, cashflows, settlement_date):
-    """
-    Generates a vector of fixed cashflows from a data source taking nominal amounts into account.
-    """
+    """Fixed cashflows from a data source, taking nominal amounts into account."""
     cash = []
     reset_offsets = []
 
@@ -5085,9 +4859,7 @@ def make_fixing_data(reference_date, time_grid, fixings):
 
 
 def make_simple_fixed_cashflows(reference_date, position, cashflows):
-    """
-    Generates a vector of fixed cashflows from a data source only looking at the actual fixed value.
-    """
+    """Fixed cashflows from a data source, reading the fixed value alone."""
     cash = {}
     for cashflow in sorted(cashflows['Items'], key=lambda x: x['Payment_Date']):
         if cashflow['Payment_Date'] >= reference_date:
@@ -5105,9 +4877,7 @@ def make_simple_fixed_cashflows(reference_date, position, cashflows):
 
 
 def make_energy_fixed_cashflows(reference_date, position, cashflows):
-    """
-    Generates a vector of fixed cashflows from a data source only looking at the actual fixed value.
-    """
+    """Energy fixed cashflows from a data source, reading the fixed value alone."""
     cash = []
     for cashflow in sorted(cashflows['Items'], key=lambda x: x['Payment_Date']):
         if cashflow['Payment_Date'] >= reference_date:
@@ -5123,9 +4893,7 @@ def make_energy_fixed_cashflows(reference_date, position, cashflows):
 
 
 def make_equity_swaplet_cashflows(base_date, time_grid, position, cashflows, current_spot, busday):
-    """
-    Generates a vector of equity cashflows from a data source.
-    """
+    """Equity cashflows from a data source."""
     cash = []
     all_resets = []
     cashflow_reset_offsets = []
@@ -5182,11 +4950,9 @@ def make_equity_swaplet_cashflows(base_date, time_grid, position, cashflows, cur
 def index_reference_samples(pricing_date, months_lag, interpolated):
     """The (date, weight) index observations an inflation reference reads.
 
-    A non-interpolated reference reads one month-start, `months_lag` months back. An interpolated
-    one straddles two, weighted by how far into its own month the pricing date sits - so the four
-    hand-written IndexReference{2M,3M,Interpolated3M,Interpolated4M} variants were these two shapes
-    at lag 2, 3, 3 and 4. Keeping the rule and the lag separate admits any lag, which is what the
-    schema always declared and only the lookup refused.
+    A non-interpolated reference reads one month-start, `months_lag` months back; an interpolated
+    one straddles two, weighted by how far into its own month the pricing date sits. Keeping the
+    rule and the lag separate admits any lag, which is what the schema always declared.
     """
     if not interpolated:
         return [((pricing_date - pd.DateOffset(months=months_lag)).to_period('M').to_timestamp('D'), 1.0)]
@@ -5200,9 +4966,7 @@ def index_reference_samples(pricing_date, months_lag, interpolated):
 
 def make_index_cashflows(base_date, time_grid, position, cashflows, price_index, index_rate,
                          settlement_date, months_lag, interpolated, isBond=True):
-    """
-    Generates a vector of index-linked cashflows from a data source given the price_index and index_rate price factors.
-    """
+    """Index-linked cashflows from a data source, against the price_index and index_rate factors."""
 
     def index_reference(pricing_date, lagged_date, resets, offsets):
         for Day, Weight in index_reference_samples(pricing_date, months_lag, interpolated):
@@ -5291,12 +5055,11 @@ def make_index_cashflows(base_date, time_grid, position, cashflows, price_index,
 
 
 def make_float_cashflows(reference_date, time_grid, position, cashflows, reference=None):
-    """
-    Generates a vector of floating cashflows from a data source.
+    """Floating cashflows from a data source.
 
-    `reference` is the deal's own, and it is here for the refusal below: a reset with a zero-length
-    rate window is refused by name, and a refusal that cannot say which deal it is about is one a
-    desk cannot act on.
+    `reference` is the deal's own, here for the refusal below: a reset with a zero-length rate
+    window is refused BY NAME, and a refusal that cannot say which deal it is about is one a desk
+    cannot act on.
     """
     cash = []
     all_resets = []
@@ -5322,8 +5085,8 @@ def make_float_cashflows(reference_date, time_grid, position, cashflows, referen
             r = []
             for reset in cashflow['Resets']:
                 # A DEGENERATE RATE WINDOW IS REFUSED, not derived: the rate tenor is a quantity the
-                # author did not state and no rule recovers it (the accrual window is the period's,
-                # not the rate's), so widening one would be a number nobody quoted.
+                # author did not state and no rule recovers - the accrual window is the period's,
+                # not the rate's - so widening one would be a number nobody quoted
                 if reset[2] == reset[1]:
                     raise UnpriceableSchedule(
                         '{}: the reset fixing {:%Y-%m-%d} on the cashflow paying {:%Y-%m-%d} has a '
@@ -5359,9 +5122,8 @@ def make_float_cashflows(reference_date, time_grid, position, cashflows, referen
 
 def make_energy_cashflows(reference_date, time_grid, position, cashflows, reference, forwardsample, fxsample,
                           calendars):
-    """
-    Generates a vector of floating/fixed cashflows from a data source
-    using the energy model. NOTE - Need to allow for fxSample different from the forwardsample - TODO!
+    """Floating/fixed cashflows from a data source under the energy model.
+    TODO: allow an fxSample different from the forwardsample.
     """
     cash = []
     all_resets = []
@@ -5557,15 +5319,11 @@ def compress_deal_data(deals):
 
 
 def compress_no_compounding(cashflows, groupsize, check_resets=True):
-    '''
+    '''Approximate many resets by fewer groups, or return the cashflows unchanged.
 
-    :param cashflows: cashflows to compress
-    :param groupsize: -1 to keep all resets (and just regroup them), otherwise, sample this many groups per cashflow
-    :param check_resets: make sure all resets are in the future
-    :return: the compressed cashflows if we can approximate many resets by fewer groups otherwise, return the
-            original cashflows
-
-    Needs more Testing - !TODO!
+    :param groupsize: -1 keeps every reset and only regroups them; otherwise sample this many
+        groups per cashflow
+    :param check_resets: require every reset to be in the future
     '''
     cash_pmts, cash_index, cash_counts = np.unique(
         cashflows.schedule[:, CASHFLOW_INDEX_Pay_Day], return_index=True, return_counts=True)

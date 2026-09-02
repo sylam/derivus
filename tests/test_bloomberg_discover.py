@@ -1,15 +1,13 @@
-"""Discovery turns the README's 'verify every security' from an instruction into a property.
+"""Discovery: 'verify every security' as a property rather than an instruction.
 
-Nothing here opens a socket: `verify` and `build_map` are pure over canned terminal answers -
-the `normalize_fx_vol` seam - and the two session readers are driven through a stubbed event
-walk. What is gated is the trust chain a map rides on: a candidate is believed only when the
-terminal's own NAME says it is what it claims, a dead benchmark is refused on its update date
-however sane its price reads (the SAONIA trap: 8.855 nineteen years after its last print), an
-entry stripped of its evidence refuses to load by name, and the strict and tolerant readers are
-one walk with two policies rather than two walks that drift. First use is gated as its own
-claim: the shipped questionnaire lands where the desk can cut it down BEFORE the terminal is
-asked at all, so a refused probe leaves a seed and no half-map, and a map already on disk is
-loaded rather than quietly rebuilt.
+Nothing here opens a socket - `verify` and `build_map` are pure over canned terminal answers, and
+the two session readers run off a stubbed event walk. Gated: a candidate is believed only when the
+terminal's own NAME says it is what it claims; a dead benchmark is refused on its update date
+however sane its price reads (the SAONIA trap - 8.855, nineteen years after its last print); an
+entry stripped of its evidence refuses to load by name; and the strict and tolerant readers are
+one walk with two policies. First use is its own claim: the shipped questionnaire lands where the
+desk can cut it down BEFORE the terminal is asked, so a refused probe leaves a seed and no
+half-map, and a map already on disk is loaded rather than rebuilt.
 """
 import datetime
 import json
@@ -162,9 +160,8 @@ def test_the_user_data_home_is_one_env_var(tmp_path, monkeypatch):
 
 
 def test_a_missing_seed_is_an_instruction_not_a_traceback(tmp_path, monkeypatch):
-    """The seed is the one file no tool writes - the vocabulary is the caller's - so running
-    discovery without one must say where the seed goes and where the starting one is, before
-    any Bloomberg session is even attempted."""
+    """The seed is the one file no tool writes, so discovery without one says where the seed goes
+    and where the starting one is, before any session is attempted."""
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     monkeypatch.setattr(sys, 'argv', ['DV_Bloomberg', 'discover'])
     with pytest.raises(SystemExit, match='questionnaire'):
@@ -172,9 +169,8 @@ def test_a_missing_seed_is_an_instruction_not_a_traceback(tmp_path, monkeypatch)
 
 
 def test_a_map_entry_without_evidence_is_refused_by_name(tmp_path):
-    """The map is trusted BECAUSE each entry records what the terminal answered - so a
-    hand-edited entry with the evidence stripped refuses to load, naming the entry, rather than
-    riding into a fetch on the strength of being in the file."""
+    """The map is trusted BECAUSE each entry records what the terminal answered - so a hand-edited
+    entry with the evidence stripped refuses to load, naming the entry."""
     document, _ = discover_with(full_report())
     path = tmp_path / 'map.json'
     path.write_text(json.dumps(document, indent=1), encoding='utf-8', newline='\n')
@@ -294,11 +290,9 @@ def provisioning_home(tmp_path, monkeypatch):
 
 
 def test_first_use_provisions_once_and_the_second_run_probes_nothing(tmp_path, monkeypatch):
-    """A desk's first run finds no DV_HOME at all: provisioning creates it, copies the shipped
-    questionnaire in byte for byte so there is a real file to cut down, and writes the map its
-    probe evidenced. The second run is the claim that matters - the existing map is LOADED, not
-    rebuilt - so a session that raises the moment it is walked passes it, and `created` says the
-    map is not new rather than leaving the caller to guess."""
+    """First run, no DV_HOME: provisioning creates it, copies the shipped questionnaire byte for
+    byte, and writes the map its probe evidenced. The second run LOADS rather than rebuilds - a
+    session that raises the moment it is walked passes it, and `created` says so."""
     home, packaged = provisioning_home(tmp_path, monkeypatch)
     document, created = discover.provision(Answering(), AS_OF)
     assert created is True
@@ -312,9 +306,8 @@ def test_first_use_provisions_once_and_the_second_run_probes_nothing(tmp_path, m
 
 
 def test_a_refused_probe_leaves_the_seed_behind_and_no_half_map(tmp_path, monkeypatch):
-    """The folder and the seed are laid down BEFORE the terminal is asked, so a refusal leaves
-    the user holding the questionnaire to cut down and NO partial map to distrust - which is the
-    state the retry wants to start from."""
+    """The folder and the seed are laid down BEFORE the terminal is asked, so a refusal leaves the
+    questionnaire to cut down and NO partial map to distrust."""
     home, packaged = provisioning_home(tmp_path, monkeypatch)
     with pytest.raises(BloombergRequestError):
         discover.provision(Refusing(), AS_OF)
@@ -323,10 +316,9 @@ def test_a_refused_probe_leaves_the_seed_behind_and_no_half_map(tmp_path, monkey
 
 
 def test_progress_counts_answered_names_and_lands_exactly_on_the_total(tmp_path, monkeypatch):
-    """A first-use probe is hundreds of names over a slow terminal, so `on_batch(done, total)`
-    fires per chunk: the counts only ever rise, and the last chunk clamps to the total instead
-    of overshooting it by the batch remainder. Provisioning threads the same callback through,
-    which is the only reason it exists."""
+    """`on_batch(done, total)` fires per chunk: the counts only rise, and the last chunk clamps to
+    the total instead of overshooting by the batch remainder. Provisioning threads the same
+    callback through."""
     securities = [candidate.security for candidate in discover.candidates_from_seed(SEED)]
     total = len(securities)
     progress = []

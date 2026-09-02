@@ -13,34 +13,18 @@
 
 """Re-deriving a home from its own bytes - the replica's posture, run locally.
 
-Nothing here reads an index, a manifest or a cached head: every hash is recomputed from the line on
-the platter, and the head reported is the one the recomputation arrived at. There are two modes,
-and the report states which one ran.
+No index, no manifest, no cached head: every hash is recomputed from the line on the platter, and
+the report names which of the two modes ran. CHAIN-ONLY leaves bodies sealed and reports checkpoint
+authenticity as `not assessed` in words, never as a zero a caller would read as a count. ENTITLED
+adds the plaintext half, and checks every checkpoint against the verifying key read out of a policy
+blob in the log rather than out of `keys/`.
 
-CHAIN-ONLY is the unentitled replica: bodies stay sealed. It recomputes the ciphertext hash off the
-base64, the event hash over (ciphertext_hash, idempotency_tag, prev_hash, record_time), the prev
-linkage and the dense LSN sequence from genesis. It cannot check a checkpoint, whose signature
-lives in a body it cannot open, so that field reports `not assessed` in words rather than a zero a
-caller would read as a count.
-
-ENTITLED adds the plaintext half: every body opened under the AAD rebuilt from its own envelope
-(which catches an edited actor or effective_time, since the seal authenticates the envelope it does
-not encrypt), the interior `content_hash` recomputed, every idempotency tag recomputed where the
-blind key is present, and every checkpoint signature checked against the verifying key read out of
-a policy blob in the log rather than out of `keys/`.
-
-The verifying key is a ladder, not a single value. Rotation is a logged event, so each
-`checkpoint_verifying_key` declaration is recorded with the LSN it landed at and each checkpoint is
-checked under the key in force at or before its own position - reading the newest declaration
-instead would let one appended row retro-invalidate every checkpoint before it. A declaration
-naming no blob is not a rung and does not empty the ladder.
-
-Referential closure is asked of the whole history: the manifest is a walk of the blob store, and
-any blob a body cites must be in it. A blob class reduces only through a logged retention event, so
-a citation that no longer resolves is a blob that went silently.
-
-A home whose class key was destroyed raises `SealedBodyUnreadable` under `entitled=True` and still
-verifies its chain under `entitled=False`. That is crypto-shredding, not tampering.
+That key is a LADDER: each checkpoint verifies under the key in force at or before its own LSN, so
+one appended row cannot retro-invalidate the checkpoints before it, and a declaration naming no blob
+is not a rung. Referential closure is asked of the whole history: any blob a body cites must be in
+the store's own walk, a blob class reducing only through a logged retention event. A home whose
+class key was destroyed raises `SealedBodyUnreadable` under `entitled=True` and still verifies its chain under
+`entitled=False` - crypto-shredding, not tampering. What each mode covers: docs_src/developer/spine.md.
 """
 import base64
 import binascii

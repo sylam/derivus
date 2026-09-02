@@ -1,110 +1,62 @@
 """Sharding one Credit Monte Carlo across workers, deterministically in their number.
 
-THE ORIGINAL DEFECT. `Context.Credit_Monte_Carlo(runparallel=True)` spawns workers and shards the
-simulation across them. It could not: the spawn passed SEVEN positional arguments to six-parameter
-`run_cmc`, so every child raised TypeError before running and the parent then blocked forever on
-`results.get()`. The stray was a `False` sitting in the `job_id` slot, which pushed `i`,
-`num_workers` and `results` each one position right and left `results` unbindable. `ef5ac31` is the
-repo's ROOT commit, and there `run_cmc` already carried exactly six parameters while the call site
-already passed seven, both byte-identical at every commit since - the two were never consistent in
-this repository's history, and the path had never run once. Dropping the `False` is the fix; the
-signature had lost nothing.
+THE ORIGINAL DEFECT. `Credit_Monte_Carlo(runparallel=True)` passed SEVEN positional arguments to
+six-parameter `run_cmc`, so every child raised TypeError before running and the parent blocked
+forever on `results.get()`. The stray was a `False` in the `job_id` slot. Both spellings are
+byte-identical at every commit back to the root: the path had never run once.
 
-DETERMINISM IN n IS THE POINT. Sharding that changes the answer is not parallelism, it is a second
-model. The old scheme seeded once per WORKER - `CMC_State.__init__` calls
-`manual_seed(seed + job_id)` and the batch loop then consumes that stream sequentially - so a batch
-drew whatever was left after the batches before it in ITS process, and running the same job over
-one worker or two covered different paths. Under `runparallel` the seeding is now PER BATCH: batch
-b seeds from its GLOBAL index, workers take CONTIGUOUS ranges (worker j owns `[j*k, (j+1)*k)`), and
-the parent merges by worker rather than by completion. Batch b is therefore the same batch drawing
-the same numbers whichever worker runs it and wherever that worker sits, and the pooled result is
-BIT-IDENTICAL across worker counts - asserted here by SHA-256 over the pooled `mtm`, not by a
-tolerance.
+DETERMINISM IN n IS THE POINT - sharding that changes the answer is a second model. The old scheme
+seeded once per WORKER and consumed that stream sequentially, so a batch drew whatever was left
+after the batches before it IN ITS PROCESS. Under `runparallel` the seeding is PER BATCH: batch b
+seeds from its GLOBAL index, workers take CONTIGUOUS ranges, and the parent merges by worker. The
+pooled result is BIT-IDENTICAL across worker counts, asserted by SHA-256 over the pooled `mtm`.
 
 THE PER-BATCH SEED IS MIXED, NOT ADDED. `calculation.batch_seed` is a SplitMix64 round over
-`(Random_Seed, b)` rather than `Random_Seed + b`, because reseeding per batch asks for as many
-seeds as the job has batches - a 1024-batch job wants 1024 of them - and consecutive integers are
-the weakest input a generator's initialization takes. CUDA's Philox is counter-based and
-key-independent by construction and does not care; CPU MT19937 expands its state from the seed by a
-linear recurrence, which is the case the literature declines to bless rather than one it endorses.
-One mix closes it for both without answering the question per backend, and there is exactly one
-spelling of it so a sharded run and an unsharded-but-batch-seeded one cannot derive a batch's seed
-two different ways.
+`(Random_Seed, b)`: reseeding per batch asks for as many seeds as the job has batches, and
+consecutive integers are the weakest input a generator's initialization takes. CUDA's Philox is
+counter-based and does not care; CPU MT19937 expands its state by a linear recurrence, which is the
+case the literature declines to bless. One mix closes it for both, spelled once.
 
-The measured readings on this box: pooled `mtm` over 4 batches x 512 paths is byte-for-byte equal
-at n = 1, 2 and 4 workers, on CUDA and on CPU independently, for BOTH a world that draws only from
-the generator (two vanilla options on a GBM equity) and one that also draws quasi-random numbers
-(a commodity future on a `MarkovHMMSpotModel`).
+THE UNSHARDED DEFAULT IS UNTOUCHED: `deterministic_batches` is off everywhere but the `runparallel`
+dispatch, verified against a hash taken before this landed. So a sharded run and an unsharded one
+do NOT agree bitwise - two valid path sets over one document - and are compared statistically.
 
-THE UNSHARDED DEFAULT IS UNTOUCHED. `deterministic_batches` is off everywhere except the
-`runparallel` dispatch, so every ordinary caller keeps the historical stream bit for bit - verified
-against a hash taken before any of this landed, and `tests/test_hn_barrier_cmc.py` is the standing
-regression gate. A sharded run and an unsharded one therefore do NOT agree bitwise: they are two
-different valid path sets over the same document, and `test_the_sharded_estimate_agrees_with_the_
-unsharded_one` compares them statistically, in the band measured below.
+WORKER COUNT IS DECOUPLED FROM DEVICE COUNT. `runparallel` is the only knob: `True` is one worker
+per visible CUDA device, an int is exactly that many, and worker j lands on
+`cuda:(j % device_count)` with the surplus sharing a device. Where there is no CUDA every worker
+runs on `cpu` and the same determinism holds, which is why the CPU arm carries no skip marker.
 
-WORKER COUNT IS DECOUPLED FROM DEVICE COUNT. `runparallel` is the knob and there is no second one:
-`True` keeps the historical meaning, one worker per visible CUDA device, and an int asks for
-exactly that many. Workers are NOT capped by the device count - worker j lands on
-`cuda:(j % device_count)` and the surplus share a device - so a four-way shard runs on this
-two-device box, and where there is no CUDA at all every worker runs on `cpu` and the same per-batch
-determinism holds. That is why the CPU arm below carries NO skip marker: the deterministic sharding
-is gated on every box, and only the tests that read a SECOND device are conditional.
+Bit-identity is per device TYPE, not across types: `manual_seed` drives different generators, so a
+CPU shard and a CUDA shard are different path sets. Within a type the two RTX 3090s in this box
+were measured byte-for-byte equal, which `test_the_two_devices_agree_bitwise` pins.
 
-Bit-identity is per device TYPE, not across types. `manual_seed` drives different generators on CPU
-and CUDA, so a CPU shard and a CUDA shard of the same document are different path sets - a real
-difference in the paths, not a rounding gap, and nothing here claims otherwise. Within a type the
-two RTX 3090s in this box were measured byte-for-byte equal on this path, which
-`test_the_two_devices_agree_bitwise` pins by hash.
+BOTH STREAMS ARE ANCHORED. A world whose outer path draws quasi-random numbers reads a Sobol
+sequence that is reproducible but POSITION-dependent, and position is what sharding moves.
+`set_quasi_batch` hands the quasi stream the same global index the generator gets, and the anchored
+arm takes batch b's draw from absolute position `1024 + b * sample_size` - which is where the
+historical engine already stands on an unsharded run, pinned directly against `SobolEngine`.
 
-BOTH STREAMS ARE ANCHORED. A world whose outer path draws quasi-random numbers
-(`MarkovHMMSpotModel`, `GARCHSpotModel`, `BasisLinkedSpotModel`) reads a Sobol sequence that is
-perfectly reproducible but POSITION-dependent, and position is precisely what sharding moves: the
-historical path advances one engine through every draw before it IN THIS PROCESS, so a worker whose
-slice starts at global batch 6 reads the points batch 0 should have had. `set_quasi_batch` hands the
-quasi stream the same global index the generator gets, and the anchored arm of `quasi_rng` then
-takes batch b's draw from absolute position `1024 + b * sample_size` however many draws the asking
-worker has already made. On an unsharded run that IS where the historical engine already stands -
-one draw per batch advances it by exactly `sample_size` - which is why the default path is
-untouched, and `test_the_anchored_position_is_the_unsharded_one` pins that arithmetic directly
-against `SobolEngine` rather than taking it on trust.
+THERE IS ONE `quasi_rng`, NOT TWO: the draw, the memo, the clamp and the inverse-CDF happen once
+and the arms differ only in the index and position they supply. The historical arm reads its
+engine's STANDING position rather than recomputing it, because a dimension drawn at two sample
+sizes shares one engine and interleaves. The narrowed refusal covers one shape: two draws of the
+same `(dimension, sample_size)` INSIDE a batch, which have no distinct position between them.
+Inner-MC Sobol is out of scope for n-invariance, and this is where that is said.
 
-THERE IS ONE `quasi_rng`, NOT TWO. The draw, the memo, the clamp and the inverse-CDF happen once;
-the arms differ only in what they supply as the index and the position - the historical one its
-own process-local draw count and wherever its engine has reached, the sharded one the global batch
-and that batch's own place in the sequence. The historical arm deliberately reads its engine's
-STANDING position rather than recomputing it from the index, because a dimension drawn at two
-different sample sizes shares one engine and interleaves, and there the two would part company;
-byte-identity of the default path is a property of the code, not only of the two worlds gated here.
+THE BAND, MEASURED, for the unsharded-vs-sharded comparison only. Over 20 seeds the two estimates
+have seed relative sds of 1.10% and 0.99%, so their difference carries sd ~1.56%; the observed max
+gap was 2.89%, 1.85 sd, and `BAND` is 8%. Paired with a noise-FREE check: the t=0 row is
+deterministic and the two agreed there to 0.0 across all 20 seeds.
 
-The narrowed refusal that remains covers one shape only: two draws of the same
-`(dimension, sample_size)` INSIDE a single batch, which have no distinct batch position between
-them. Two factors sharing a shape, or an inner Monte Carlo pricer drawing beside the outer path,
-are the sources; a memoized re-read after `reset_qrg` is the inner-MC replay idiom, is not a second
-draw, and returns the same tensor by identity. Inner-MC Sobol is out of scope for n-invariance and
-this is where that is said.
+Only the LINEAR columns pool by averaging, so everything here pools the `mtm` and re-summarizes -
+which is also what makes the equality exact, one reduction over the same columns in the same order.
 
-THE BAND, MEASURED, for the unsharded-vs-sharded comparison only. Over 20 seeds the unsharded
-mean-EE estimate has a seed relative sd of 1.10% and the sharded one 0.99%, so the difference of
-two such estimates carries sd ~= sqrt(2) * 1.10% = 1.56%. The observed max
-|sharded - unsharded| / unsharded over those seeds was 2.89%, i.e. 1.85 sd. `BAND` is 8%, ~5 sd.
-Paired with it is a noise-FREE check: the t=0 report row is deterministic (every path still sits at
-spot) and the two agreed there to 0.000e+00 across all 20 seeds.
+THIS BOX: two RTX 3090s, GPU 1 driving the display and so behind the 2s TDR watchdog. The document
+is sized so no kernel goes near it - 512 paths x 4 batches over an 8-row grid, 0.03-0.04s a run.
 
-Only the LINEAR columns pool by averaging - `EE` and `ENE` are means over paths, `PFE_<p>` is a
-percentile and is not - so everything here pools the `mtm` and re-summarizes rather than averaging
-profiles, which is also what makes the equality exact: one reduction over the same columns in the
-same order, rather than a mean of means.
-
-THIS BOX. Two RTX 3090s, and GPU 1 drives the display, so it sits behind the Windows TDR watchdog
-at its 2s default. The document is sized so no kernel goes near that: 512 paths x 4 batches over an
-8-row grid, which measures at 0.03-0.04s per run. Do not raise these without re-checking that.
-
-A SECOND BLOCKER, ALSO CLOSED. `Config` held a pyparsing grammar whose parse actions are
-`_trim_arity.<locals>.wrapper` closures, so it could not be pickled into a spawned child and
-`w.start()` raised `AttributeError: Can't get local object` on every spawn platform. The grammar is
-pure derived state, so `Config.__getstate__` drops it and `__setstate__` rebuilds it from
-`get_grid_grammar()`; under `fork` neither hook runs.
+A SECOND BLOCKER, ALSO CLOSED. `Config` held a pyparsing grammar whose parse actions are local
+closures, so it could not be pickled into a spawned child. The grammar is derived state, so
+`__getstate__` drops it and `__setstate__` rebuilds it; under `fork` neither hook runs.
 """
 import ast
 import hashlib
@@ -148,8 +100,8 @@ SPOT, VOL, RATE = 100.0, 0.20, 0.02
 BATCH_SIZE, SIMULATION_BATCHES = 512, 4
 GRID = '0d 6m(3m)'
 SEED = 1
-#: ~5 sd of the measured 1.56% difference sd; see the module docstring. Unsharded-vs-sharded ONLY -
-#: the sharded-vs-sharded comparisons assert equality and carry no tolerance at all.
+#: ~5 sd of the measured 1.56% difference sd. Unsharded-vs-sharded ONLY: the sharded-vs-sharded
+#: comparisons assert equality and carry no tolerance at all.
 BAND = 0.08
 
 CALL = {
@@ -164,12 +116,10 @@ PUT = dict(CALL, Reference='EQPUT', Option_Type='Put', Strike_Price=95.0, Units=
 
 
 def job_document():
-    """Two vanilla European options on one GBM equity in a flat-rate USD world.
-
-    Bought options, so the exposure is one-sided and EE carries the whole profile - it keeps the
-    statistic the band is measured on away from a near-zero denominator. GBM draws from the torch
-    generator rather than the Sobol stream and a vanilla prices in closed form rather than through
-    an inner Monte Carlo, which is what puts this document inside the determinism boundary.
+    """Two vanilla European options on one GBM equity in a flat-rate USD world. BOUGHT, so the
+    exposure is one-sided and the band's statistic keeps away from a near-zero denominator. GBM
+    draws from the torch generator rather than Sobol and a vanilla prices in closed form, which is
+    what puts this document inside the determinism boundary.
     """
     c = Config()
     c.params['System Parameters']['Base_Currency'] = 'USD'
@@ -221,13 +171,10 @@ def shard(job_id, num_jobs, device=None, seed=SEED, deterministic=True):
 
 
 def pooled(n, device=None, seed=SEED):
-    """All n shards in this process, pooled in WORKER order - the column order one worker produces.
-
-    In-process because what these gates measure is the NUMBERS, and the sharding arithmetic is the
-    same whether the shards run here or in n children; the spawned path is exercised separately by
-    `sharded` and by the end-to-end tests. Pooling concatenates the `mtm` and re-summarizes rather
-    than averaging profiles, so the reduction reads the same columns in the same order an unsharded
-    run does - which is what makes the equality exact rather than close.
+    """All n shards in this process, pooled in WORKER order. In-process because what these gates
+    measure is the NUMBERS and the arithmetic is the same either way; the spawned path is exercised
+    by `sharded` and the end-to-end tests. Pooling concatenates the `mtm` and re-summarizes, so the
+    reduction reads the same columns in the same order an unsharded run does.
     """
     devices, frames = [], []
     for job_id in range(n):
@@ -242,12 +189,10 @@ def pooled(n, device=None, seed=SEED):
 # ------------------------------------------------------------------ the call shape is repaired
 
 def test_the_worker_spawn_binds_the_signature():
-    """The old seven-argument shape is gone, and what the dispatch passes now binds.
-
-    Read off the AST rather than the source text so the assertion is about the CALL, not its
-    layout. The six POSITIONAL arguments are still six - the determinism work added its two
-    arguments by KEYWORD precisely so the fragile positional tuple did not grow again - and
-    `signature.bind` is the same check the interpreter makes.
+    """The old seven-argument shape is gone and what the dispatch passes now BINDS. Read off the
+    AST so the assertion is about the CALL and not its layout: the six positional arguments are
+    still six - the determinism work added its two by KEYWORD so the fragile tuple did not grow
+    again - and `signature.bind` is the check the interpreter makes.
     """
     source = textwrap.dedent(inspect.getsource(derivus.Context.Credit_Monte_Carlo))
     spawns = [node for node in ast.walk(ast.parse(source))
@@ -272,17 +217,15 @@ def test_the_worker_spawn_binds_the_signature():
     assert bound.arguments['deterministic_batches'] == 'True', (
         'the dispatch no longer asks for per-batch seeding, so it is no longer deterministic in n')
 
-    # and the shape that was there before genuinely does not bind, which is why it never ran
+    # the shape that was there before genuinely does not bind, which is why it never ran
     with pytest.raises(TypeError):
         signature.bind('cfg', 'prec', 'ov', False, 'i', 'n', 'q', 'extra', 'extra2')
 
 
 def test_a_config_survives_the_pickle_a_spawn_puts_it_through():
-    """The `__getstate__`/`__setstate__` pair, on its own and without needing any device.
-
-    The grammar is dropped rather than pickled and rebuilt on the far side, so what matters is that
-    the REBUILT parsers work - a Config that arrives without them raises `AttributeError` on the
-    first `parse_grid`, one frame deep inside a child where nobody is watching.
+    """The `__getstate__`/`__setstate__` pair, needing no device. The grammar is dropped and rebuilt
+    on the far side, so what matters is that the REBUILT parsers work: a Config arriving without
+    them raises `AttributeError` on the first `parse_grid`, deep inside a child.
     """
     import pickle
 
@@ -296,10 +239,9 @@ def test_a_config_survives_the_pickle_a_spawn_puts_it_through():
 
 
 def test_the_worker_count_knob_is_runparallel_itself():
-    """`True` means one per device and an int means that many. No second knob, and no cap.
-
-    The CPU fallback is the load-bearing case: `torch.cuda.device_count()` is 0 without CUDA, and a
-    zero-worker run would leave the parent blocked on a queue nothing ever writes to.
+    """`True` means one per device and an int means that many - no second knob and no cap. The CPU
+    fallback is load-bearing: `device_count()` is 0 without CUDA, and a zero-worker run would leave
+    the parent blocked on a queue nothing writes to.
     """
     assert derivus.worker_count(True) == (DEVICE_COUNT or 1)
     assert derivus.worker_count(True) >= 1, 'True must never resolve to zero workers'
@@ -314,8 +256,8 @@ def test_the_worker_count_knob_is_runparallel_itself():
 # No skip marker on this arm: the determinism is device-agnostic, so it is gated on every box.
 
 def test_cpu_sharding_is_bit_identical_in_the_worker_count():
-    """THE RULING, on the device every box has: shard the same job 1, 2 and 4 ways on CPU and the
-    pooled `mtm` is byte-for-byte the same matrix. Equality, not a tolerance."""
+    """Shard the same job 1, 2 and 4 ways on CPU and the pooled `mtm` is byte-for-byte the same
+    matrix. Equality, not a tolerance."""
     one = pooled(1, device='cpu')
     assert one['devices'] == ['cpu']
     reference = sha(one['mtm'])
@@ -341,21 +283,16 @@ def test_cpu_shards_carry_their_own_contiguous_batch_range():
     # different global batch indices means different seeds means different paths
     assert not np.array_equal(frames[0].values, frames[1].values), (
         'the two shards priced the same paths - the batch ranges overlap')
-    # ... except at t=0, which is deterministic on every path
+    # except at t=0, which is deterministic on every path
     assert np.array_equal(frames[0].values[0], frames[1].values[0])
 
 
 def hmm_document():
     """A commodity future on a `MarkovHMMSpotModel` - the cheapest world whose OUTER path draws
-    quasi-random numbers, which is the whole point of it being here.
-
-    `MarkovHMMSpotModel.generate` calls `quasi_rng(T + 1, Batch_Size)` unconditionally and exactly
-    once per batch - the regime IS the model, so there is no switch that turns the draw off and no
-    companion factor to stand up. `GARCHSpotModel` reaches the same stream only once an optional
-    `Drift_States` chain is configured, and `BasisLinkedSpotModel` needs a parent commodity and a
-    `Band_Mixture` reversion, so both cost more document for the same coverage. The carry factor
-    carries no model entry deliberately: it stays deterministic, leaving exactly ONE stochastic
-    process drawing from the Sobol stream.
+    quasi-random numbers. `generate` calls `quasi_rng` unconditionally once per batch, the regime
+    being the model, where `GARCHSpotModel` needs an optional `Drift_States` chain and
+    `BasisLinkedSpotModel` a parent commodity. The carry factor carries no model entry, so exactly
+    ONE stochastic process draws from the Sobol stream.
     """
     c = Config()
     c.params['System Parameters']['Base_Currency'] = 'USD'
@@ -399,8 +336,8 @@ def hmm_pooled(n, device=None, deterministic=True):
 
 
 def test_the_hmm_world_really_does_draw_from_the_quasi_stream():
-    """The premise the coverage gate rests on. A world that quietly stopped drawing would make the
-    gate below pass for the wrong reason - it would be testing the generator path twice."""
+    """The premise the coverage gate rests on: a world that quietly stopped drawing would make it
+    pass for the wrong reason, testing the generator path twice."""
     from derivus.stochasticprocess import MarkovHMMSpotModel
 
     body = inspect.getsource(MarkovHMMSpotModel.generate)
@@ -413,12 +350,10 @@ def test_the_hmm_world_really_does_draw_from_the_quasi_stream():
 
 
 def test_a_sobol_consuming_world_is_bit_identical_in_the_worker_count():
-    """THE COVERAGE GATE. The quasi stream is anchored, not refused: a world that draws from it
-    shards byte-for-byte, on the device every box has.
-
-    This is what the anchoring buys. Unanchored, worker 1 of a two-way shard would start its
-    engine at position zero and read global batch 2 out of the points batch 0 should have had, and
-    the pooled matrix would move with n while every worker still agreed with itself.
+    """THE COVERAGE GATE: the quasi stream is anchored rather than refused, so a world that draws
+    from it shards byte-for-byte. Unanchored, worker 1 of a two-way shard would start its engine at
+    position zero and read global batch 2 out of the points batch 0 should have had - and the
+    pooled matrix would move with n while every worker still agreed with itself.
     """
     reference = sha(hmm_pooled(1, device='cpu'))
     assert reference == 'bd4f479854a56fcc', 'the sharded HMM CPU stream moved: %s' % reference
@@ -440,15 +375,14 @@ def test_a_sobol_consuming_world_is_bit_identical_across_devices():
 
 def test_the_unsharded_hmm_path_is_untouched():
     """The quasi anchoring is reachable ONLY through `set_quasi_batch`, so an ordinary caller keeps
-    the free-running engine. Pinned by hash on both devices, alongside the GBM pin below - that one
-    was taken before any of this work and is the real before/after evidence; this one pins the
-    Sobol world going forward.
+    the free-running engine. Pinned by hash; the GBM pin below was taken before this work and is
+    the real before/after evidence, where this one pins the Sobol world going forward.
     """
     _, cpu = derivus.run_cmc(hmm_document(), torch.float32, overrides(), 0, 1, None,
                              deterministic_batches=False, device='cpu')
     assert sha(cpu['Results']['mtm'].values) == '571f7d2265552420', (
         'the unsharded HMM path moved on cpu: %s' % sha(cpu['Results']['mtm'].values))
-    # and it is NOT the sharded answer - anchoring moves which points a batch reads, and the
+    # and it is NOT the sharded answer: anchoring moves which points a batch reads and the
     # per-batch reseed moves the generator, so the two are different valid path sets
     assert sha(cpu['Results']['mtm'].values) != sha(hmm_pooled(1, device='cpu'))
 
@@ -463,13 +397,10 @@ def test_the_unsharded_hmm_path_is_untouched_on_cuda():
 
 
 def test_the_anchored_position_is_the_unsharded_one():
-    """The arithmetic the quasi anchoring rests on, checked against `SobolEngine` itself.
-
-    The anchored arm claims batch b's draw sits at absolute position
-    `1024 + b * sample_size`, and that this is exactly where the historical free-running engine
-    stands after b batches of one draw each. If that were off by anything the sharded numbers
-    would still be self-consistent - every worker would agree with every other - and only a
-    comparison against the UNSHARDED stream would catch it, which is what this is.
+    """The arithmetic the anchoring rests on, against `SobolEngine` itself: batch b's draw sits at
+    `1024 + b * sample_size`, which is where the historical free-running engine stands after b
+    batches of one draw each. Off by anything the sharded numbers would still be self-consistent,
+    so only a comparison against the UNSHARDED stream catches it.
     """
     from torch.quasirandom import SobolEngine
 
@@ -485,7 +416,7 @@ def test_the_anchored_position_is_the_unsharded_one():
         assert torch.equal(fresh.draw(size, dtype=torch.float64), expected), (
             'anchored batch %d does not land on the position the unsharded run reads' % b)
 
-    # and a worker that skips to its own slice, then advances forward only, stays on the rails
+    # a worker that skips to its own slice, then advances forward only, stays on the rails
     skipped = SobolEngine(dimension=dimension, scramble=True, seed=seed)
     skipped.fast_forward(anchor + 3 * size)
     assert torch.equal(skipped.draw(size, dtype=torch.float64), historical[3])
@@ -493,14 +424,11 @@ def test_the_anchored_position_is_the_unsharded_one():
 
 
 def test_the_historical_arm_is_still_one_free_running_engine():
-    """Deduping the two arms into one `quasi_rng` must not have moved the default path.
-
-    The historical arm reads its engine's STANDING position, so it is the same engine advancing
-    draw after draw it always was - including the case the anchored index arithmetic cannot
-    express, where ONE dimension is drawn at two different sample sizes and the two draws
-    interleave on a single engine. That case is why the arms supply position differently rather
-    than both computing `anchor + index * size`, and the unsharded hash gates would not have caught
-    it, because neither gated world does it.
+    """Deduping the two arms into one `quasi_rng` must not move the default path. The historical arm
+    reads its engine's STANDING position, so it is the same engine advancing draw after draw -
+    including the case the anchored index arithmetic cannot express, where ONE dimension drawn at
+    two sample sizes interleaves on a single engine. Neither hash-gated world does that, so the
+    unsharded pins would not have caught it.
     """
     from derivus.calculation import QUASI_ANCHOR, QUASI_SEED, CMC_State
     from torch.quasirandom import SobolEngine
@@ -525,15 +453,11 @@ def test_the_historical_arm_is_still_one_free_running_engine():
 
 
 def test_the_anchored_memo_does_not_grow_with_the_batch_count():
-    """The memo is a WITHIN-batch convenience on the anchored arm, and is dropped between batches.
-
-    It cannot be on the historical arm: there a draw's position is wherever the engine has crawled
-    to, so a dropped entry is unrecoverable and the memo has to live for the whole run. Anchored,
-    position comes entirely from the key, so a re-draw is bit-identical and keeping the previous
-    batch's entries only grows a dict nothing will read - 20,480 bytes a batch, measured, on a
-    two-state HMM.
-
-    Both halves are asserted: that it stays bounded, AND that bounding it moved no number.
+    """The memo is a WITHIN-batch convenience on the anchored arm, dropped between batches. It
+    cannot be dropped on the historical arm, where a draw's position is wherever the engine crawled
+    to; anchored, position comes entirely from the key, so a re-draw is bit-identical and keeping
+    the previous batch's entries grows a dict nothing reads (20,480 bytes a batch). Both halves:
+    it stays bounded, and bounding it moved no number.
     """
     from derivus.calculation import CMC_State
 
@@ -568,12 +492,10 @@ def test_the_anchored_memo_does_not_grow_with_the_batch_count():
 
 
 def test_a_second_draw_in_one_batch_is_refused_by_name():
-    """The narrowed refusal: inner-MC Sobol is out of scope for n-invariance, and says so.
-
-    Anchoring gives a draw the position of its BATCH, so two draws of one
-    `(dimension, sample_size)` within a batch have no distinct position between them. The refusal
-    fires on the second DRAW, not on a memoized re-read - `reset_qrg` followed by the same request
-    is the inner-MC replay idiom and must still return the identical tensor.
+    """The narrowed refusal: anchoring gives a draw the position of its BATCH, so two draws of one
+    `(dimension, sample_size)` within a batch have no distinct position between them. It fires on
+    the second DRAW and not on a memoized re-read - `reset_qrg` then the same request is the
+    inner-MC replay idiom and must return the identical tensor.
     """
     from derivus.calculation import CMC_State
 
@@ -650,13 +572,10 @@ def test_cuda_sharding_is_bit_identical_in_the_worker_count():
 
 @needs_two_devices
 def test_the_two_devices_agree_bitwise():
-    """The claim the equality above rests on, isolated and hex-compared.
-
-    Same global batch, same seed, one device each. `manual_seed(Random_Seed + b)` fixes the stream
-    from the batch index alone, so running batch 0 as worker 0 of a 1-way shard and then forcing
-    the same batch onto cuda:1 must produce the identical matrix if the two 3090s are bitwise
-    equal on this path. They are, on this box - and if a future box's pair are not, this is the
-    gate that says so by name rather than the equality gates failing obscurely.
+    """The claim the equality above rests on, isolated. Same global batch, same seed, one device
+    each: the per-batch seeding fixes the stream from the batch index alone, so the two must
+    produce the identical matrix if the devices are bitwise equal on this path. They are on this
+    box, and if a future box's pair are not, this says so by name.
     """
     _, zero = shard(0, 1, device='cuda:0')
     _, one = shard(0, 1, device='cuda:1')
@@ -677,14 +596,10 @@ def test_the_two_devices_agree_bitwise():
 # ------------------------------------------------------------------ the spawned path, both devices
 
 def _shard_worker(job_id, num_jobs, seed, device, lib_queue, probe_queue):
-    """THE CHILD. Spawned as the dispatch spawns it, handing `run_cmc` the same six positional
-    arguments and the same two keyword ones - `lib_queue` lands on `res_queue`, so the library's
-    own merge payload is produced by the library's own code path.
-
-    The Config is built HERE rather than passed in: it pickles fine now, but a worker that builds
-    its own document is one fewer thing between the seed and the numbers. The probe payload is what
-    the parent cannot otherwise learn - a parent process cannot see a child's CUDA allocation, so
-    the device each worker ran on has to be reported by the worker itself.
+    """THE CHILD, spawned as the dispatch spawns it: `lib_queue` lands on `res_queue`, so the
+    library's own merge payload is produced by its own code path. The Config is built HERE - one
+    fewer thing between the seed and the numbers - and the probe payload is what the parent cannot
+    otherwise learn, a parent being unable to see a child's CUDA allocation.
     """
     calc, out = derivus.run_cmc(job_document(), torch.float32, overrides(seed),
                                job_id, num_jobs, lib_queue,
@@ -707,8 +622,8 @@ def _shard_worker(job_id, num_jobs, seed, device, lib_queue, probe_queue):
 
 @pytest.fixture(scope='module')
 def sharded():
-    """One spawn round on CUDA. Both queues are drained BEFORE any join, which is the ordering the
-    dispatch itself uses and the only one that cannot deadlock on a full pipe."""
+    """One spawn round on CUDA. Both queues are drained BEFORE any join - the dispatch's own
+    ordering, and the only one that cannot deadlock on a full pipe."""
     n = DEVICE_COUNT
     lib_queue, probe_queue = mp.Queue(), mp.Queue()
     workers = [mp.Process(target=_shard_worker, args=(i, n, SEED, None, lib_queue, probe_queue))
@@ -747,8 +662,8 @@ def test_both_devices_ran_their_own_shard(sharded):
 
 @needs_two_devices
 def test_the_spawned_shards_match_the_in_process_ones(sharded):
-    """The spawn changes nothing about the numbers - which is what lets every equality gate above
-    run in-process and still describe the real dispatch."""
+    """The spawn changes nothing about the numbers, which is what lets every equality gate above run
+    in-process and still describe the real dispatch."""
     here = pooled(DEVICE_COUNT)
     assert [p['sha'] for p in sharded['probes']] == [sha(f.values) for f in here['frames']], (
         'the spawned shards and the in-process shards disagree')
@@ -756,7 +671,7 @@ def test_the_spawned_shards_match_the_in_process_ones(sharded):
 
 @needs_two_devices
 def test_the_results_are_finite_and_correctly_shaped(sharded):
-    """Shape, finiteness, and the dispersion guard - a deal whose pricer raised is swallowed and
+    """Shape, finiteness and the DISPERSION guard: a deal whose pricer raised is swallowed and
     contributes zeros, which reads as a valid deep-OTM profile unless dispersion is checked."""
     per_worker = SIMULATION_BATCHES // DEVICE_COUNT
     rows = len(sharded['probes'][0]['index'])
@@ -774,13 +689,11 @@ def test_the_results_are_finite_and_correctly_shaped(sharded):
 
 @needs_two_devices
 def test_the_library_merge_payload_comes_back_keyed_by_worker(sharded):
-    """`run_cmc`'s own `res_queue` branch, carrying the five keys the parent's merge reads - `Job`
-    among them, which is what lets the parent order a race-ordered queue.
-
-    BOTH batch counts report what this worker RAN. They did not agree until `run_cmc` copied the
-    post-division figure back onto `params_mc`: `Calculation.execute` rebinds `params` through
-    `declared_defaults` before applying `//= num_jobs`, so `Params` carried the document's request
-    and a consumer pooling off it over-counted the paths behind each worker by `num_jobs`.
+    """`run_cmc`'s `res_queue` branch, carrying the five keys the parent's merge reads - `Job` among
+    them, which is what lets the parent order a race-ordered queue. BOTH batch counts report what
+    this worker RAN: `Calculation.execute` rebinds `params` through `declared_defaults` before
+    `//= num_jobs`, so `Params` carried the document's request and a consumer pooling off it
+    over-counted the paths behind each worker by `num_jobs`.
     """
     per_worker = SIMULATION_BATCHES // DEVICE_COUNT
     assert [p['Job'] for p in sharded['library']] == list(range(DEVICE_COUNT))
@@ -816,12 +729,11 @@ def _check_merged(merged, n, reference):
 
 
 def test_the_cpu_context_path_shards_end_to_end():
-    """`Context.Credit_Monte_Carlo(runparallel=2, device='cpu')` - the real spawned dispatch, on a
-    device every box has, pooled bit-identically against the in-process n=1 CPU reference.
-
-    This is the gate that needed all of it: the arity, or the child raises TypeError and the parent
-    blocks forever; `Config.__getstate__`, or `w.start()` raises before a child exists; per-batch
-    seeding, or two workers do not reproduce one; and the `Job` key, or the merge is a race.
+    """`Credit_Monte_Carlo(runparallel=2, device='cpu')` - the real spawned dispatch, pooled
+    bit-identically against the in-process n=1 CPU reference. The gate that needed all of it: the
+    arity, or the child raises TypeError and the parent blocks forever; `Config.__getstate__`, or
+    `start()` raises before a child exists; per-batch seeding, or two workers do not reproduce one;
+    the `Job` key, or the merge is a race.
     """
     merged = _end_to_end(2, 'cpu')
     _check_merged(merged, 2, pooled(1, device='cpu')['mtm'])
@@ -846,13 +758,10 @@ def test_the_cuda_context_path_shards_end_to_end():
 
 @needs_two_devices
 def test_the_sharded_estimate_agrees_with_the_unsharded_one():
-    """The distribution comparison, and the only tolerance in this file.
-
-    A sharded run and an unsharded one are two DIFFERENT valid path sets over one document - the
-    unsharded default still seeds once and consumes that stream sequentially, which is exactly what
-    was left untouched - so they agree in distribution and not bitwise. The band is measured, not
-    guessed; see the module docstring. Pooling concatenates the `mtm` and re-summarizes, because
-    `EE` pools by averaging equal shards but `PFE_<p>` does not.
+    """The distribution comparison, and the only tolerance in this file. A sharded run and an
+    unsharded one are two DIFFERENT valid path sets over one document, so they agree in
+    distribution and not bitwise; the band is measured. Pooling concatenates the `mtm` and
+    re-summarizes, because `EE` pools by averaging equal shards and `PFE_<p>` does not.
     """
     _, unsharded = shard(0, 1, deterministic=False)
     reference = np.asarray(
@@ -874,10 +783,9 @@ def test_the_sharded_estimate_agrees_with_the_unsharded_one():
 
 @needs_two_devices
 def test_the_unsharded_default_did_not_move():
-    """The historical stream, pinned by hash. `deterministic_batches` defaults off, so an ordinary
-    caller draws exactly what it drew before any of the determinism work landed - this hash was
-    taken from the tree before those changes and `tests/test_hn_barrier_cmc.py` is the standing
-    regression gate for the same property.
+    """The historical stream, pinned by hash: `deterministic_batches` defaults off, so an ordinary
+    caller draws what it drew before the determinism work landed. This hash was taken from the tree
+    before those changes; `tests/test_hn_barrier_cmc.py` is the standing regression gate.
     """
     _, out = shard(0, 1, deterministic=False)
     assert sha(out['Results']['mtm'].values) == '2df61471b2970c5e', (

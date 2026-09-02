@@ -12,51 +12,29 @@
 ########################################################################
 """A workstation's verified swap strip as one `InterestRatePrices` block.
 
-`fxvol` writes a surface and `equity_chain` writes a premium ladder; this writes the third thing a
-terminal answers for - a CURVE, quoted as the instruments a desk actually deals. The family it
-writes for quotes an instrument rather than a number: each `Points` row carries a `Deal` block
-authored in the instrument's own conventions, and the solve holds it at PV zero. So the emitter's
-whole job is to say what the instrument IS, and to say it from DECLARED DATA rather than from a
-guess made in code.
+The family quotes an instrument rather than a number: each `Points` row carries a `Deal` block in
+the instrument's own conventions and the solve holds it at PV zero, so the emitter's job is to say
+what the instrument IS, from declared data.
 
-THE CONVENTIONS ARE SEED-DECLARED. A par swap rate means nothing without the accrual it pays on:
-`USOSFR10` is annual/annual ACT/360 compounded overnight, `SASW10` is quarterly/quarterly ACT/365
-against 3M JIBAR, and the same number under the other convention is a different curve by basis
-points. Each seeded currency carries a `conventions` block and this module READS it, rather than
-putting a market convention in code where nobody who owns it can see it. A currency whose entry
-lacks one REFUSES BY NAME with the missing fields listed, and a WRONG convention is then a data fix
-the owner makes in `seed.json`.
+Conventions are seed-declared - `USOSFR10` is annual/annual ACT/360 compounded overnight, `SASW10`
+quarterly/quarterly ACT/365 against 3M JIBAR, and the same number under the other convention is a
+different curve by basis points. A currency whose seed entry carries no `conventions` block refuses
+by name with the missing fields listed. `front` names which verified entry seeds the short end (a
+SOFR OIS curve's is the overnight print, a JIBAR-3M curve's the 3M JIBAR fixing) and the remaining
+seeded fixings are ledgered `not-a-benchmark`. Securities come from `discover.strip_candidates`
+walked against the workstation's own verified map, so the ticker grammar is spelled once in this
+package and a strip the terminal never verified cannot enter a block on a seed's say-so.
 
-NO SECOND SPELLING OF THE TICKER GRAMMAR. The securities come from `discover.strip_candidates`
-walked against the workstation's own verified map: the emitter asks the grammar for its candidates
-and keeps the ones the map believed, so a ticker exists in exactly one place in this package and a
-strip the terminal never verified cannot enter a block on the strength of being in a seed.
+The quote is not authored into the deal: `QUOTE_WRITERS` is where a number lands, off
+`Quoted_Market_Value`, and every rate-carrying field is authored at a neutral zero, so a value-only
+re-tick passes `config.update_market_quote` as 'updated' rather than refusing as a moved plan.
 
-THE FRONT POINT IS DECLARED TOO, and it is where a basis error would otherwise be free. A SOFR OIS
-curve's front is the overnight print; a JIBAR-3M curve's front is the 3M JIBAR fixing, and putting
-ZARONIA there instead would seed a JIBAR curve with an overnight rate that is not on it. So
-`front` names which verified entry seeds the short end, per currency, and the rest of the seeded
-fixings are ledgered `not-a-benchmark` rather than silently dropped.
+V1 SCOPE: a self-discounting single curve, the declared front point, the swap strip as seeded, and
+`Quote_Type` `Par_Rate`. No FRAs, no FX-forward outrights, no cross-currency, no projection curve.
 
-THE QUOTE IS NOT AUTHORED INTO THE DEAL, and that is what makes a re-tick a tick. `QUOTE_WRITERS`
-is where a number lands in an instrument - the family stamps `Swap_Rate`, the fixed leg's `Rate`
-column and the deposit's pinned schedule itself, off `Quoted_Market_Value`. So every rate-carrying
-field here is authored at a NEUTRAL zero and the print rides in `Quoted_Market_Value` alone: the
-`Deal` half of a row is a function of the calendar and the conventions and of nothing that moves
-between prints, so a value-only re-tick passes `config.update_market_quote` as 'updated' instead of
-refusing as a moved plan.
-
-V1 SCOPE, stated rather than discovered: a self-discounting single curve (blank `Discount_Rate`),
-the declared front point and the swap strip as seeded. No FRAs, no FX-forward outrights, no
-cross-currency, no projection curve. `Quote_Type` is `Par_Rate`, which is the one convention the
-family builds.
-
-IMPORTS: the standard library, this package's own modules, and no engine. `discover` is reached for
-its grammar, which costs the pandas the package's map layer already carries, so unlike
-`equity_chain` this module makes NO pandas-free claim. What it does claim is that nothing here
-imports `derivus`: the block is emitted as WIRE JSON (`{'.Timestamp': ...}`, `{'.DateOffset':
-'3M'}`, `{'.Percent': 0.0}`), which is what `Config.read_json` and `CustomJsonEncoder` spell
-between them, so no engine type is ever constructed out here.
+IMPORTS: the standard library and this package's own modules. `discover` is reached for its grammar
+and carries pandas, so unlike `equity_chain` this module makes no pandas-free claim; nothing here
+imports `derivus`, the block being emitted as wire JSON.
 """
 import collections.abc
 import datetime
@@ -725,25 +703,22 @@ def _ois_swap(reference, currency, curve, effective, maturity, conventions):
     """An OIS swap as a CONTAINER over two legs - the shape the compounding rule requires.
 
     `pv_float_cashflow_list` compounds an accrual period geometrically when the reset count differs
-    from the cashflow count, a reshape set up by `compress_no_compounding(groupsize=-1)` under
+    from the cashflow count, a reshape `compress_no_compounding(groupsize=-1)` sets up under
     `Compounding_Method='OIS'`. So the floating leg is ONE ITEM PER FIXING, every item of a coupon
     sharing that coupon's payment date: the compression merges them into one cashflow carrying
-    every reset at `Weight` 1, and only then compounds. A leg authored as one item with many resets
-    arrives weighted `1/n` and compounds at a fraction of the rate - the AVERAGING legs' arithmetic
-    - and a `SwapInterestDeal`'s generated legs never reach the compression at all.
+    every reset at `Weight` 1 and only then compounds. A leg authored as one item with many resets
+    arrives weighted `1/n` and compounds at a fraction of the rate.
 
-    The fixed leg carries the quote on every row of its schedule
-    (`QUOTE_WRITERS['CFFixedInterestListDeal']`), so every `Rate` here is authored at ZERO percent
-    and the print rides in `Quoted_Market_Value` alone.
+    The fixed leg carries the quote on every row of its schedule, so every `Rate` here is authored
+    at ZERO percent and the print rides in `Quoted_Market_Value` alone.
 
     THE FIXING WINDOWS PARTITION THE COUPON, which is what puts the two legs on one convention.
-    Both are rolled off the SAME coupon dates, so they accrue the same span only if the float leg's
+    Both roll off the SAME coupon dates, so they accrue the same span only if the float leg's
     windows tile `[coupon_start, coupon_end]` exactly - and the coupon's own start is a boundary
-    whatever weekday it falls on, since a fixing accrues THROUGH a weekend at a coupon boundary
-    exactly as it does inside one. Starting the leg at the first BUSINESS day instead drops days:
-    on the USD 5Y OIS effective 2026-09-02, the coupon starting Saturday 2028-09-02 accrued
-    1.00833333 of a year against the fixed leg's 1.01388889. So the coupon start goes in front of
-    whatever `_business_days` returns.
+    whatever weekday it falls on, a fixing accruing through a weekend at a coupon boundary as it
+    does inside one. Starting at the first BUSINESS day instead drops days: on the USD 5Y OIS
+    effective 2026-09-02, the coupon starting Saturday 2028-09-02 accrued 1.00833333 of a year
+    against the fixed leg's 1.01388889.
     """
     coupons = _dates_backward(maturity, effective, conventions.fixed_frequency)
     float_items, fixed_items = [], []
@@ -939,22 +914,20 @@ def ir_curve_block(strip, screen=None):
 def reauthor(market_prices, name, block):
     """Drop this block and re-install it - the route a block takes when a re-tick is a RE-AUTHORING.
 
-    One spelling for both emitters, `swaption_vol` reaching it, because the mechanism is one thing
-    and only the reason differs:
+    One spelling for both emitters, `swaption_vol` reaching it too, the mechanism being one thing
+    and only the reason differing:
 
       the swaption ladder  `schema.partition_market_price` gives a values half only to a table
-                           whose ROW DECLARES the value keys, and
+                           whose ROW declares the value keys, and
                            `HullWhite2FactorModelPrices` quotes in `Instrument_Definitions`, whose
-                           row declares a `Market_Volatility` and no `Quoted_Market_Value`. So a
-                           moved vol is not a value AT ALL and every re-quote is a new plan.
+                           row declares a `Market_Volatility` and no `Quoted_Market_Value`. A moved
+                           vol is therefore not a value at all and every re-quote is a new plan.
       the curve strip      this family DOES have a values half and a same-day re-tick passes as
                            'updated'. What a tick cannot carry is a ROLLED DATE: `Effective_Date`
-                           and `Maturity_Date` are structure, so tomorrow's strip of the same
-                           benchmarks is a different plan and rightly refuses.
+                           and `Maturity_Date` are structure.
 
-    `market_prices` is the section itself - `cfg.params['Market Prices']`, or a wire document's
-    `Calc/MergeMarketData/ExplicitMarketData/Market Prices`. Returns 'installed' or 'reauthored',
-    so a caller can tell a first fetch from a re-quote in a log.
+    `market_prices` is the section itself. Returns 'installed' or 'reauthored', so a caller can
+    tell a first fetch from a re-quote in a log.
     """
     if not isinstance(block, collections.abc.Mapping) or 'instrument' not in block:
         raise BloombergConfigurationError(

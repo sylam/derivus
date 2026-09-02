@@ -1,15 +1,15 @@
 """DiffSolverV2 (clean-room framework-native diff-ML hedger) — bounded value + OUT-OF-SAMPLE
 hedging gate on the platinum deal.
 
-Locks the two things the build hinged on:
+Two claims:
   • the value stays BOUNDED at depth — `max|Y_boot|` small, V_0 finite/small;
   • the greedy policy HEDGES out-of-sample — on held-out paths it does not underperform
     no-hedge (greedy ≫ textbook OOS at full depth).
-The verdict rolls on the held-out BATCH, which no fit step saw, so a policy
-that merely overfits the fitted paths fails this.
+The verdict rolls on the held-out BATCH, which no fit step saw, so a policy that merely overfits
+the fitted paths fails this.
 
-JSON-is-the-contract: every test here goes through load_json + run_job only. The inner-MC fork
-is single-pass at `Batch_Size x Inner_Sub_Batch`, so there is no partition to cover.
+JSON-is-the-contract: load_json + run_job only. The inner-MC fork is single-pass at
+`Batch_Size x Inner_Sub_Batch`, so there is no partition to cover.
 """
 import json as jsonlib
 import math
@@ -41,10 +41,9 @@ def _cfg(inner_antithetic='No'):
         'Training_Action_Chunk_Size': 64,
         'T_Min': 100,                       # ~17-step bounded sweep (fast); full depth in build notes
         'DiffV2_Fit_Iters': 30,
-        # defaults apply implicitly: DiffV2_Weight_Decay=0 (the twin-loss gradient match is
-        # the regularizer, not weight decay), DiffV2_Lambda_Grad=1, DiffV2_Hidden=32. This
-        # tiny-batch smoke gates "bounded + hedges OOS"; full multi-seed wd=0 robustness is
-        # validated at B_outer=4095 (see project_differential_ml_build_state).
+        # defaults apply: DiffV2_Weight_Decay=0 (the twin-loss gradient match is the regularizer),
+        # DiffV2_Lambda_Grad=1, DiffV2_Hidden=32. Tiny-batch smoke; multi-seed robustness is
+        # validated at B_outer=4095.
     }
     return cfg
 
@@ -92,11 +91,9 @@ def _corridor_at(sched, t):
 
 
 def test_corridor_train_smoke_sign_crossing():
-    """BOOK-STYLE generalization end-to-end: train DiffSolverV2 INSIDE a SIGN-CROSSING
-    Total_Position_Schedule (short early, long late) on symmetric [-50, 50] limits, and assert
-    (a) the backward sweep stays bounded and (b) the greedy verdict rolls INSIDE the fence at
-    every step — the corridor flips the mandated total's sign mid-window and the argmax obeys it.
-    Exercises grid_at long rows + the bank/textbook corridor projection on a superposable book."""
+    """Train inside a SIGN-CROSSING Total_Position_Schedule (short early, long late) on symmetric
+    [-50, 50] limits: (a) the backward sweep stays bounded and (b) the greedy verdict rolls INSIDE
+    the fence at every step, the corridor flipping the mandated total's sign mid-window."""
     cfg = jsonlib.load(open(FIXTURE))
     calc = cfg['Calc']['Calculation']
     calc['Execution_Mode'] = 'solve_hedge'

@@ -1,45 +1,36 @@
 """All eight closed-form payoff arms of `getbarrierpayoff`, through the JSON contract and nothing
 else.
 
-The selector inside `getbarrierpayoff.barrier_option` is `(direction, eta, phi, strike vs H)`, four
-arms under knock-IN and four under knock-OUT, and each arm is reached by TWO spellings of the same
-geometry (a Call with an Up barrier and a Put with a Down one, mirrored). Every non-structure
-fixture in this repo took ONE of the eight - Down-and-Out, Call, K > H, the last `elif` of the OUT
-block - and the knock-IN block was reached at all only once `ForwardExtra` started declaring an
-`Up_And_In` leg. This file prices all sixteen spellings on purpose, at rebate 0 and at a live
-rebate, and pins them as MUST_COVER in the census.
+The selector inside `getbarrierpayoff.barrier_option` is `(direction, eta, phi, strike vs H)` -
+four arms under knock-IN, four under knock-OUT, each reached by TWO spellings of the same geometry
+(a Call with an Up barrier, a Put with a Down one). Every non-structure fixture in this repo took
+ONE of the eight. This file prices all sixteen spellings at rebate 0 and at a live rebate, and
+pins them as MUST_COVER in the census.
 
-THE ORACLE IS THE TEXTBOOK, written out longhand: `_reiner_rubinstein` below builds the six terms
-A-F from `math.erfc` and selects the arm from the same (direction, eta, phi, K vs H) enumeration
-the pricer states in its own docstring. It shares nothing with the engine, whose arms are a
-sympy-flattened `erfc` algebra in which a sign slip is invisible by inspection - which is exactly
-how the partial barrier's `eta == 0` arm carried an inverted strike selection for years.
+THE ORACLE IS THE TEXTBOOK, longhand: `_reiner_rubinstein` builds the six terms A-F from
+`math.erfc` and selects the arm from the same enumeration the pricer states. It shares nothing
+with the engine, whose arms are a sympy-flattened `erfc` algebra in which a sign slip is invisible
+by inspection.
 
 A SECOND, MODEL-FREE ORACLE carries the convention: a bridge-corrected daily Monte Carlo,
-continuous up to the flat-parameter discretisation, matching the document's `0M` monitoring. Two
-closed forms agreeing is not evidence that either is the deal.
+continuous up to the flat-parameter discretisation, matching the document's `0M` monitoring.
 
-MEASURED. Against the textbook spelling, all sixteen spellings at both rebates: worst **1.4e-14**
-relative, i.e. the two algebras are the same function to float64 round-off. Against the bridge
-Monte Carlo at rebate 0: worst **1.3e-2** relative (the Down-and-In Call, the smallest mark in the
-table), which is the MC's own daily-bridge and sampling error - the draw is seeded, so that reading
-is reproducible rather than a distribution. IN + OUT = the vanilla (rebate 0) to **7.2e-15**
-relative, arm by arm.
+MEASURED. Against the textbook, all sixteen at both rebates: worst 1.4e-14 relative. Against the
+bridge MC at rebate 0: worst 1.3e-2 (the Down-and-In Call, the smallest mark in the table), which
+is the MC's own daily-bridge and sampling error at a seeded draw. IN + OUT = the vanilla to
+7.2e-15, arm by arm.
 
-MIS-SELECTION MAGNITUDES, computed in the oracle by pricing each fixture through the three arms it
-must NOT take: the nearest wrong arm on any of the sixteen is **0.209** and the farthest is
-**181.0**, on a notional of 1000, and eleven of the forty-eight wrong readings are NEGATIVE prices.
-The gate's tolerance is 1e-11 relative, so an arm slip dies by eight orders of magnitude at worst.
+MIS-SELECTION MAGNITUDES, each fixture priced through the three arms it must NOT take: nearest
+wrong arm 0.209, farthest 181.0, on a notional of 1000, and eleven of the forty-eight wrong
+readings are NEGATIVE. The gate's tolerance is 1e-11 relative.
 
-THE REBATE IS LIVE HERE, and it is where two of the arms have anything to say at all: an
-Up-and-Out Call struck ABOVE its barrier is worthless on survival, so its rebate-only `F` payoff is
-the whole deal - **0.000000** with no rebate and **18.470170** with one, on a notional of 1000 and
-a rebate of 40. That is also the fixture that reaches the knock-out's `cash_settle` of the rebate,
-which every existing barrier gate skipped by setting `Cash_Rebate` to zero.
+THE REBATE IS LIVE, and two arms have nothing else to say: an Up-and-Out Call struck ABOVE its
+barrier is worthless on survival, so its rebate-only `F` payoff is the whole deal - 0.000000 with
+no rebate and 18.470170 with one, notional 1000, rebate 40. That is also the only fixture reaching
+the knock-out's `cash_settle` of the rebate.
 
-DEGENERACY CHECKLIST: `r = 4%` USD against `q = 2%` EUR, so the carry is 2% and neither rate is
-zero; both option types and both barrier directions on EVERY arm (that is what the two spellings
-per arm are); both knock directions; and both rebates.
+DEGENERACY CHECKLIST: r = 4% against q = 2%, so the carry is 2% and neither rate is zero; both
+option types and both barrier directions on EVERY arm; both knock directions; both rebates.
 """
 import json
 import math
@@ -226,9 +217,8 @@ def test_a_knock_in_plus_its_knock_out_is_the_vanilla(arm, ud, barrier, strike, 
                          ids=['arm%d-%s-%s' % (a, u, o) for a, u, _, _, o in ARMS])
 def test_the_closed_forms_price_to_the_independent_monte_carlo(
         arm, ud, barrier, strike, option_type):
-    """Two closed forms agreeing says the algebra is the same, not that it is the deal. Both knock
-    directions of every arm against a bridge-corrected daily Monte Carlo, whose own error the 2%
-    gate carries - worst measured 1.1e-2."""
+    """Both knock directions of every arm against a bridge-corrected daily Monte Carlo, whose own
+    error the 2% gate carries - worst measured 1.1e-2."""
     for io in ('Out', 'In'):
         barrier_type = f'{ud}_And_{io}'
         got = _run(_deal(barrier_type, barrier, strike, option_type, 0.0))
@@ -242,10 +232,9 @@ def test_the_closed_forms_price_to_the_independent_monte_carlo(
     ids=['up-call', 'down-put'])
 def test_the_rebate_only_arm_is_worth_nothing_without_its_rebate(
         barrier_type, barrier, strike, option_type):
-    """Arm 1 of the OUT block is the whole reason a rebate has to be gated: the option cannot pay
-    on any surviving path, so with no rebate the deal is EXACTLY zero and with one it is the
-    discounted touch payment and nothing else. A mutant that routed this geometry to any other arm
-    would price a live option here."""
+    """Arm 1 of the OUT block cannot pay on any surviving path: with no rebate the deal is EXACTLY
+    zero, with one it is the discounted touch payment and nothing else. Any other arm routed here
+    would price a live option."""
     assert _run(_deal(barrier_type, barrier, strike, option_type, 0.0)) == 0.0
     with_rebate = _run(_deal(barrier_type, barrier, strike, option_type, REBATE))
     ref = _reiner_rubinstein(barrier_type, barrier, strike, option_type, REBATE)

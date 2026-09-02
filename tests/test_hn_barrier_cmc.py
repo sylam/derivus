@@ -1,13 +1,12 @@
 """A barrier deal priced through Credit_Monte_Carlo — the path that had no test at all.
 
-Every barrier gate in this suite priced under BASE VALUATION, which has one deal-time row. That
-single fact hid a bug for as long as the deal has existed: four equity deals corrected spot's
-shape by testing its COLUMNS and then repeating its ROWS, which is inert at one row and squares
-the grid at 37 (1369 vs 37). `Deal.calculate` swallowed the resulting RuntimeError into a
-skipped deal, so a barrier in an exposure calculation silently produced nothing.
+Every other barrier gate prices under BASE VALUATION, which has one deal-time row - so a shape
+correction that tests spot's COLUMNS and repeats its ROWS is inert there and squares the grid at
+37 (1369 vs 37). `Deal.calculate` swallowed the RuntimeError into a skipped deal, so a barrier in
+an exposure calculation silently produced nothing.
 
-Kept deliberately small — it exists to prove a barrier still prices across an exposure grid,
-which is the one thing base valuation structurally cannot check.
+Kept small: it proves a barrier still prices across an exposure grid, the one thing base valuation
+structurally cannot check.
 """
 import os
 import sys
@@ -39,19 +38,13 @@ HN = {'Omega': float(_SP['omega']), 'Alpha': float(_SP['alpha']), 'Beta': float(
 
 def _cfg_knocked_in(sig=0.25, r=0.05, q=0.01):
     """An up-and-IN call whose barrier sits at HALF the spot: it knocks in at its one barrier
-    date, so every LATER row is `all_hit` and its mtm IS the already-hit leg, alone.
+    date, so every LATER row is `all_hit` and its mtm IS the already-hit leg, alone. Base
+    valuation cannot reach that leg - at deal time the hit mask is all-False at row 0.
 
-    That leg is the one thing base valuation structurally cannot reach - at deal time there is no
-    strictly-earlier observation, so the hit mask is all-False at row 0 and the leg is never
-    evaluated. Every HN barrier gate in the suite prices under base valuation, which is why a leg
-    pricing Black under a declared Heston-Nandi went unseen.
-
-    The equity rides a zero-vol zero-drift GBM so the spot is 100 on every path and every row,
-    which is what makes the expected value a NUMBER rather than a distribution - the model under
-    test is the HN law of the REMAINING horizon, not the scenario diffusion. The single remaining
-    observation after the knock-in is expiry, so the leg's step count is one interval's worth.
-    `r != q` deliberately: a zero carry would hide the forward-growth factor (see the docstring on
-    ``sim_spot_oss``), and every other HN fixture in this repo sets r = q = 0."""
+    The equity rides a zero-vol zero-drift GBM, so spot is 100 on every path and row and the
+    expected value is a NUMBER: what is under test is the HN law of the REMAINING horizon, not the
+    scenario diffusion. `r != q` deliberately - a zero carry would hide the forward-growth
+    factor."""
     field = {
         'Object': 'EquityBarrierOption', 'Reference': 'BARR1', 'Currency': 'USD',
         'Payoff_Currency': 'USD', 'Equity': 'EQ', 'Dividends': 'EQ', 'Discount_Rate': 'USD',
@@ -90,9 +83,9 @@ def _cfg_knocked_in(sig=0.25, r=0.05, q=0.01):
 def _brute_force_vanilla(T, r, q, paths=1 << 20, seed=7):
     """UNITS * E[(S_T - K)^+] * D(0,T) by the daily HN recursion in tests/hn_reference.py.
 
-    Independent of the pricer's closed form: this steps h and the log-spot path by path, which is
-    the only reference that can tell an HN price from a normal at the same aggregate variance.
-    Returns (value, standard_error)."""
+    Independent of the pricer's closed form: it steps h and the log-spot path by path, the only
+    reference that can tell an HN price from a normal at the same aggregate variance. Returns
+    (value, standard_error)."""
     n_total = max(round(T * 252.0), 1)
     p = hnref.as_tensors({'omega': _SP['omega'], 'alpha': _SP['alpha'], 'beta': _SP['beta'],
                           'gamma_star': _SP['gamma_star'], 'r': (r - q) * T / n_total})
@@ -102,9 +95,8 @@ def _brute_force_vanilla(T, r, q, paths=1 << 20, seed=7):
 
 
 def _cfg(hn):
-    """Monthly-monitored down-and-out barrier. The rate and dividend curves are STATIC while the
-    equity is simulated — the exact combination that triggered the shape bug, because a simulated
-    spot's B columns against a static curve's 1 is an ordinary broadcast pair, not a defect."""
+    """Monthly-monitored down-and-out barrier. Static rate and dividend curves against a simulated
+    equity - the combination that triggered the shape bug."""
     bdates = [BASE + pd.Timedelta(days=d) for d in range(30, 366, 30)]
     field = {
         'Object': 'EquityBarrierOption', 'Reference': 'BARR1', 'Currency': 'USD',
@@ -153,9 +145,8 @@ def _profile(hn, seed=1, batch=64, sims=1024):
 @pytest.mark.parametrize('hn', [pytest.param(True, marks=needs_hn_fused, id='heston_nandi'),
                                 pytest.param(False, id='gbm')])
 def test_barrier_prices_across_the_exposure_grid(hn):
-    """The regression gate for the shape bug: one row per report date, one column per path. The
-    bug produced len(deal_time)**2 rows and the deal was skipped, which surfaced only as a
-    reporting error further downstream. It fired for GBM too, hence both ids."""
+    """One row per report date, one column per path. The shape bug produced len(deal_time)**2 rows
+    and the deal was skipped. It fired for GBM too, hence both ids."""
     mtm = _profile(hn)
     assert mtm.shape[0] > 1, 'exposure profile collapsed to a single row — deal skipped?'
     assert mtm.shape[1] == 64, f'expected one column per path, got {mtm.shape[1]}'
@@ -170,15 +161,15 @@ def test_barrier_prices_across_the_exposure_grid(hn):
 def test_already_hit_leg_prices_under_the_declared_model(row_index):
     """The already-hit KI leg is HESTON-NANDI, not Black at the implied surface.
 
-    Both vanillas in this pricer value the SAME state - a knocked-in barrier is a European - so a
-    Black one beside the in-out-parity leg's HN one is two models inside one payoff, and the
-    ``torch.where(row_barrier_hit, hit_value, oss_result)`` selection puts them element by element
-    in one tensor. Measured on this fixture the leg was 19% off before the mix was removed.
+    Both vanillas here value the SAME state - a knocked-in barrier is a European - so a Black one
+    beside the parity leg's HN one is two models in one payoff, selected element by element by
+    ``torch.where(row_barrier_hit, hit_value, oss_result)``. The leg was 19% off before the mix
+    was removed.
 
     The reference is the brute-force daily recursion in ``tests/hn_reference.py``, never the
-    pricer's own closed form. Tolerance 5e-3 against a 1.4e-3 standard error; the Black value at
-    the identical state is asserted to sit OUTSIDE it (it reads 15.1% and 16.5% low on the two
-    rows), so the fixture cannot pass on either model and the gate is not a placebo.
+    pricer's own closed form. Tolerance 5e-3 against a 1.4e-3 standard error, with Black at the
+    identical state asserted OUTSIDE it (15.1% and 16.5% low on the two rows), so the gate is not
+    a placebo.
 
     MUTATION KILL MATRIX, measured on row_index=2 (reference 1245.639, se 1.696):
 
@@ -191,10 +182,9 @@ def test_already_hit_leg_prices_under_the_declared_model(row_index):
         (e) n_total + 5 daily steps                1255.534   +7.94e-03   KILLED
         (f) vol strip rebuilt under HN             1244.281   -1.09e-03   pass, BY DESIGN
 
-    (f) is the enumeration, not a miss: nothing correct consumes the implied surface under HN, so
-    building it changes no number. What the withholding buys is (a) - reverting ONLY the leg, with
-    the strip still withheld, does not misprice at all, it dies with
-    ``The size of tensor a (8) must match the size of tensor b (0)`` and the deal is skipped."""
+    (f) is the enumeration, not a miss: nothing correct consumes the implied surface under HN. The
+    withholding buys (a) - reverting ONLY the leg dies with ``The size of tensor a (8) must match
+    the size of tensor b (0)`` and the deal is skipped, rather than mispricing."""
     r, q, sig = 0.05, 0.01, 0.25
     params = {'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 2m(2m)',
               'Batch_Size': 8, 'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD',

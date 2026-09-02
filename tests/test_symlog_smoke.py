@@ -42,10 +42,9 @@ def test_bundle_resolves_utility_scale():
 
 
 def test_identity_objective_runs():
-    """A non-utility Objective.Object takes the identity path and evaluates without crashing.
-    Position limits are now reward-side (Per_Instrument_Bounds_Penalty), not hard-masked,
-    so an untrained 1-epoch policy may briefly explore past [Min, Max] before the penalty
-    teaches it; we just verify the run produces a finite headline summary."""
+    """A non-utility Objective.Object takes the identity path and produces a finite headline.
+    Position limits are reward-side (Per_Instrument_Bounds_Penalty), not hard-masked, so an
+    untrained policy may explore past [Min, Max] - only finiteness is asserted."""
     data = _load(Object='TerminalValue', Unused_Key=10.0)
     result = _run(data)
     metrics = result.evaluation_summary['metrics']

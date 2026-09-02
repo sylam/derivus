@@ -1,26 +1,21 @@
 """Does the calibration Jacobian carry a tick, and does it say when it stopped being able to?
 
-The operator is one line - `theta ~ theta* + (dtheta/dq)(q_now - q0)` - and it is the same object
-increment 1 already built and gate-pinned: `CalibrationSolve`'s implicit-function backward, read as
-a matrix instead of one cotangent at a time. What is new is the LIFECYCLE around it, and that is
-what these gates are about. There are three tiers and one of them is not a number at all:
+The operator is `theta ~ theta* + (dtheta/dq)(q_now - q0)` - `CalibrationSolve`'s implicit-function
+backward read as a matrix. What is new is the LIFECYCLE, in three tiers:
 
     monitor   `dV/dq . dq` against the full reval of the ridden theta - a first-order agreement,
-              so it is scored on an h-ladder rather than at one bump size
-    ride      theta_ridden against theta_refit on increment 1's own round-trip world, where the
-              solve is a unique root and the IFT is exact - so the drift is SECOND order and the
-              gate pins the constant, not just the smallness
-    correct   a refit publishes what the ride it replaced was worth, and takes the slot under a
-              NEW artifact id
+              scored on an h-ladder rather than at one bump size
+    ride      theta_ridden against theta_refit where the solve is a unique root and the IFT is
+              exact, so the drift is SECOND order and the gate pins the constant
+    correct   a refit publishes what the ride it replaced was worth, under a NEW artifact id
 
-plus the three properties the design is built on rather than the arithmetic: a ride REFUSES a tick
-too big for it instead of pricing a plausible wrong curve, an artifact MISS refuses for the same
-reason rather than falling back to a number nothing in the replay tuple could distinguish, and the
-operator is published over a COUPLED SET so that a multi-curve tick cannot be carried half way.
+plus three properties: a ride REFUSES a tick too big for it rather than pricing a plausible wrong
+curve, an artifact MISS refuses rather than falling back to a number the replay tuple cannot
+distinguish, and the operator is published over a COUPLED SET so a multi-curve tick cannot be
+carried half way.
 
-Most worlds here are `test_interest_rate_prices.authored_world('zar')`, which is the world the
-predicted step was already validated on; the coupling gates use the `usd` world and one authored
-here whose coupling no field declares.
+Most worlds are `test_interest_rate_prices.authored_world('zar')`; the coupling gates use `usd` and
+one authored here whose coupling no field declares.
 """
 import os
 import sys
@@ -249,13 +244,10 @@ def test_the_artifact_key_is_plan_side_and_its_id_is_not():
 
 def test_the_slot_names_everything_the_solve_reads_and_the_block_does_not_carry():
     """A key that does not name an input of the SOLVE is a key two different curves share, and the
-    second one silently rides the first one's operator.
-
-    Two of those are not on the block at all - the base date and the interpolation scheme - and both
-    were measured doing exactly that before they were named in `plan_key`: two jobs 45 days apart
+    second silently rides the first one's operator. Two are not on the block at all - the base date
+    and the interpolation scheme - and both were measured doing exactly that: two jobs 45 days apart
     shared a slot, and a linearly-interpolated job rode a Hermite solve 0.53bp away from its own.
-    The mutation is the pairing: the same job at the same date under the same scheme has to KEEP the
-    slot, or the fix would just be "never find anything".
+    The mutation is the pairing: the same job at the same date under the same scheme KEEPS the slot.
     """
     def key(interpolation=None, base_date=BASE):
         return InterestRateCurveParameters.plan_key(
@@ -345,22 +337,18 @@ SHAPES = {'alternating': SIGNS,
 def test_the_drift_metric_is_exact_and_bounds_the_theta_drift(shape, tick):
     """What the refusal is scored on, and what that score is WORTH.
 
-    Two claims, and the second is the one `Drift_Tolerance` rests on.
-
     EXACT. `mispricing` re-differentiates `dF/dq` at the theta being scored rather than reusing the
     one stored at `theta*`, so `F(theta, q) = F(theta, q0) + (dF/dq)(q - q0)` holds with no
-    remainder - a benchmark's PV is affine in its own quote. The reference is a REFIT at the moved
-    quotes, where the freshly compiled set prices at the quotes it was authored at and no correction
-    term survives; the two agree to solver tolerance rather than to a ratio.
+    remainder. The reference is a REFIT at the moved quotes, where no correction term survives; the
+    two agree to solver tolerance rather than to a ratio.
 
-    BOUNDING. What a desk actually cares about is the curve, and the quote-space residual bounds it:
-    `||theta_ridden - theta_refit||inf <= ||J||inf ||r||inf` to first order. That is the conversion
-    the refusal message publishes, and it is asserted here on every shape and size.
+    BOUNDING - what `Drift_Tolerance` rests on. The quote-space residual bounds the curve:
+    `||theta_ridden - theta_refit||inf <= ||J||inf ||r||inf` to first order, which is the conversion
+    the refusal message publishes.
 
-    The shapes are the point. The metric this replaced was a proxy that reused `dF/dq` at `theta*`,
-    and it was pinned as "always HIGH" on ONE sign pattern on ONE world - which was true there and
-    false generally: scanned across shapes it ran from 0.886x the truth to 21.9x, and an end-to-end
-    case at 0.886 priced 5.8% over tolerance without refusing.
+    The shapes are the point. The proxy this replaced reused `dF/dq` at `theta*` and was pinned as
+    "always HIGH" on ONE sign pattern on ONE world; scanned across shapes it ran from 0.886x the
+    truth to 21.9x, and an end-to-end case at 0.886 priced 5.8% over tolerance without refusing.
     """
     prepared = bootstrapped(market(True))
     artifact = artifact_of(prepared)
@@ -499,17 +487,15 @@ def test_a_coupled_set_solves_as_one_system_and_rides_whole():
     """THE MULTI-CURVE RIDE. `USD-3M` is solved discounting on `USD-OIS`, so `theta_2` depends on
     `q_1` through `theta_1` - and a PER-BLOCK Jacobian has no column for it.
 
-    That was not an approximation, it was a first-order term dropped behind a drift metric that read
-    machine zero, because `mispricing` priced a benchmark set whose discount curve was frozen at the
-    fit. Measured before the fix, at a 10bp OIS tick: the true book move was **-23.36** and the
-    partly-ridden set reported **+185.01** - wrong sign, 8.9x the size, drift 4.5e-4 and admitted
-    healthy.
+    A first-order term dropped behind a drift metric that read machine zero, because `mispricing`
+    priced a benchmark set whose discount curve was frozen at the fit. Measured before the fix at a
+    10bp OIS tick: the true book move was -23.36 and the partly-ridden set reported +185.01 - wrong
+    sign, 8.9x the size, drift 4.5e-4 and admitted healthy.
 
-    The fix is that the SET is the unit. `coupled_sets` measures which blocks read each other's
-    curves, `solve_set` flattens them into ONE Newton system, and `calibration_jacobian` inverts one
-    block matrix - so `dtheta_2/dq_1` is a column of the published `J` rather than a term nobody
-    carried. The gate is the one the failure was measured with: from a base of 9644.61, the refit
-    lands at 9621.25 and the ride has to land there too.
+    The SET is the unit: `coupled_sets` measures which blocks read each other's curves, `solve_set`
+    flattens them into ONE Newton system, and `calibration_jacobian` inverts one block matrix, so
+    `dtheta_2/dq_1` is a column of the published `J`. From a base of 9644.61 the refit lands at
+    9621.25 and the ride has to land there too.
     """
     tick = 0.10
     prepared = usd_book(usd_config(usd_market({USD_OIS: 'Linear', USD_PROJ: 'Linear'})))
@@ -614,15 +600,11 @@ def x_world():
 
 
 def test_the_coupling_is_measured_not_declared():
-    """The set is formed by DIFFERENTIATION, not by reading `Discount_Rate`.
-
-    On this world every declaration says the two curves are independent and self-discounting, and a
-    10bp tick on the projection strip moves the other curve by **568 basis points**. A guard reading
-    the declaration passes it straight through: before the fix both blocks published per-block
-    operators, the ride moved `X-DISC` by exactly ZERO and its drift metric read 7.7e-16.
-
-    `BenchmarkInstruments.reads` puts every constant on the tape and asks the backward pass, so the
-    dependency is found where it actually lives.
+    """The set is formed by DIFFERENTIATION, not by reading `Discount_Rate`. On this world every
+    declaration says the two curves are independent and self-discounting, and a 10bp tick on the
+    projection strip moves the other curve by 568 basis points - before the fix both blocks
+    published per-block operators, the ride moved `X-DISC` by exactly ZERO and its drift metric read
+    7.7e-16. `BenchmarkInstruments.reads` puts every constant on the tape and asks the backward pass.
     """
     prepared = bootstrapped(x_world(), currency='XXX', spot_curve='X-3M')
     artifact, = ARTIFACTS.covering(utils.Factor('InterestRate', ('X-DISC',)))
@@ -689,13 +671,10 @@ def test_the_set_is_only_measured_where_an_operator_is_asked_for():
 
 
 def test_there_is_no_theta_current():
-    """The grep the statelessness claim rests on, as a gate rather than a sentence.
-
-    Every mutable-calibration design this one is NOT has one name: a `theta_current` that each tick
-    updates in place. The whole operator is built on there being no such thing - theta is derived
-    per EXECUTE from `(artifact, q_now)` and stored nowhere - so the day somebody adds one, this
-    fails. The word itself appears in three docstrings SAYING there is none; an assignment is what
-    would make it real.
+    """The grep the statelessness claim rests on, as a gate rather than a sentence. Every mutable-
+    calibration design this one is NOT has a `theta_current` each tick updates in place; theta is
+    derived per EXECUTE from `(artifact, q_now)` and stored nowhere. The word appears in docstrings
+    SAYING there is none; an ASSIGNMENT is what would make it real.
     """
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     assigned = {}
@@ -804,35 +783,24 @@ def test_the_refit_publishes_the_drift_of_the_ride_it_replaced(caplog):
 # ---------------------------------------------------------------------------------------------
 
 def test_one_values_patch_carrying_a_spot_and_a_quote_composes_with_the_ride():
-    """THE CLOSED CONTRACT. A quote is a patchable VALUE now, so the tick and the reval it reaches
-    are one `patch_market` call and one EXECUTE, with no bootstrap anywhere between them.
+    """THE CLOSED CONTRACT. A quote is a patchable VALUE, so the tick and the reval it reaches are
+    one `patch_market` call and one EXECUTE with no bootstrap between them.
 
-    Three claims, and the third is what makes the first two worth having. The plan is UNTOUCHED by
-    a moved quote and `values_hash` carries it, which is the split this whole lifecycle needed -
-    the two staleness dimensions are disjoint, so a vol tick is a values event and a re-authored
-    strip is a plan event. And the ridden reval off the PATCH is bit-for-bit the ridden reval off
-    the same tick applied by EDITING the document: that is what says the patch is a real tick and
-    not a bookkeeping entry against a number the engine reads somewhere else.
+    Three claims. The plan is UNTOUCHED by a moved quote and `values_hash` carries it, so the two
+    staleness dimensions are disjoint. And the ridden reval off the PATCH is bit-for-bit the ridden
+    reval off the same tick applied by EDITING the document, which says the patch is a real tick.
 
-    BOTH halves of the patch have to MOVE something, or a composition gate is one section wearing
-    the other's name. The spot moves OFF the 1.0 this world bootstraps at and where it landed is
-    asserted, as are the quote rows: patching a field to the content it already holds would leave
-    every claim below resting on the other half alone. What the spot half cannot do here is reach a
-    mark - `FxRate.ZAR` is the reporting currency's own rate on this world, so it moves
-    `values_hash` and prices identically - so the EDITED reference carries the same spot, which
-    makes the bit-equality a statement about the whole patch rather than about its priced half.
+    BOTH halves have to MOVE something, or a composition gate is one section wearing the other's
+    name: the spot moves off the 1.0 this world bootstraps at and the quote rows move, both
+    asserted. The spot cannot reach a mark here - `FxRate.ZAR` is the reporting currency's own rate
+    - so the EDITED reference carries the same spot, which makes the bit-equality a statement about
+    the whole patch.
 
-    AND THE HASH CLAIM IS TAKEN TWICE, because on the composed patch it is not attributable: the
-    spot is `bind='value'`, so `values_hash` moves on the spot alone and a quote reaching neither
-    hash would read as a pass. So a second `Context` over the same world takes the QUOTE half by
-    itself first. MUTANT: delete the `Market Prices` loop from `Context.market_patch` and every
-    other assertion in this file stays green - measured, 49 of 49 passing with quotes off the
-    values plane entirely. The quote-only reading is what dies, and it is the assertion that pins
-    the closed contract.
-
-    This gate used to pin the gap - `market_patch` covered `Price Factors` only, so a moved quote
-    moved the plan id at the service boundary for a number the engine already carried without
-    recompiling anything. The partition closed it for every family at once.
+    THE HASH CLAIM IS TAKEN TWICE, because on the composed patch it is not attributable: the spot is
+    `bind='value'`, so `values_hash` moves on the spot alone and a quote reaching neither hash would
+    read as a pass. A second `Context` takes the QUOTE half alone first. MUTANT: delete the
+    `Market Prices` loop from `Context.market_patch` and 49 of 49 assertions stay green with quotes
+    off the values plane entirely - the quote-only reading is what dies.
     """
     tick, spot, rate = 0.02, 1.25, 'FxRate.{}'.format(CCY)
     edited = with_deals(bootstrapped(market(True)))
@@ -932,14 +900,10 @@ def test_the_ride_is_a_pure_function_of_the_artifact_and_the_quotes():
 
 
 def test_a_cold_process_refuses_rather_than_pricing_something_else():
-    """The honest half of statelessness, and the house's own discipline: a plan the cache cannot
-    answer is a MISS, never a different number.
-
-    An artifact holds tensors and a compiled benchmark set, so it cannot be serialised and a fresh
-    process has none. Falling back to `Price Factors` was the shipped behaviour and it is the one
-    thing the replay tuple cannot describe - `plan_hash`, `values_hash`, the version and the seed
-    are all blind to which artifact was in the store, so a fallback reprices the book with nothing
-    anywhere saying it did. A refusal is not a number, so it cannot be mistaken for one.
+    """A plan the cache cannot answer is a MISS, never a different number. An artifact holds tensors
+    and a compiled benchmark set, so a fresh process has none; falling back to `Price Factors` was
+    the shipped behaviour and is the one thing the replay tuple cannot describe - `plan_hash`,
+    `values_hash`, the version and the seed are all blind to which artifact was in the store.
     """
     prepared = with_deals(bootstrapped(market(True)))
     ticked(prepared, 0.02)
@@ -1002,13 +966,10 @@ class Slot(object):
 
 
 def test_the_store_evicts_the_least_recently_used_and_not_the_oldest():
-    """The store is bounded, so something has to go - and WHICH thing is a correctness property,
-    not a preference. A tick stream rides one slot over and over while unrelated jobs publish
-    around it; FIFO throws that slot out on schedule and every eviction is a refusal the caller
-    then has to refit through.
-
-    Gated because the mutation survived everything else: flipping `move_to_end` off - making the
-    store FIFO - passed the entire suite.
+    """The store is bounded, so WHICH thing goes is a correctness property. A tick stream rides one
+    slot over and over while unrelated jobs publish around it; FIFO throws that slot out on schedule
+    and every eviction is a refusal the caller has to refit through. Gated because the mutation
+    survived everything else: flipping `move_to_end` off passed the entire suite.
     """
     for index in range(ARTIFACTS.size):
         ARTIFACTS.put(Slot('slot-{}'.format(index)))
@@ -1022,13 +983,9 @@ def test_the_store_evicts_the_least_recently_used_and_not_the_oldest():
 
 
 def test_a_ride_counts_as_use_of_the_slot_it_rode():
-    """The end-to-end half, and the one that matters: `covering` is a SCAN and touches nothing -
-    content addressing picks the artifact, and only the pick is a use. So the discipline has to be
-    gated where the pick happens, which is the ride.
-
-    A tick stream riding one slot while unrelated jobs publish around it is exactly the traffic a
-    bounded store sees, and under FIFO that slot ages out on schedule - every eviction then costing
-    the caller a refit through a refusal.
+    """The end-to-end half: `covering` is a SCAN and touches nothing - content addressing picks the
+    artifact, and only the pick is a use - so the discipline is gated where the pick happens, which
+    is the ride.
     """
     prepared = with_deals(bootstrapped(market(True)))
     ticked(prepared, 0.02)

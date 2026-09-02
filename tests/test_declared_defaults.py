@@ -6,42 +6,33 @@ schema-only: a pricer reading an unauthored field BY NAME raised `KeyError` insi
 nothing. The seam is `schema.DealFields`, which `Deal.__init__` wraps the authored block in: a read
 by name falls through to `schema.deal_defaults`, and nothing else does.
 
-COMPLETION IS AN ALLOWLIST, `schema.COMPLETABLE`, and that is the design and not a shortcut. A
-declared default is what a blank panel SHOWS, not what the engine means: `FXBarrierOption` marks
-none of its economic fields `REQUIRED` - `Strike_Price` declares 0.0, `Barrier_Type`
-'Down_And_In', `Buy_Sell` 'Buy', `Option_Type` 'Call', `Expiry_Date` '' - so answering every read
-by name would replace a LOUD failure (a nan, a missing row, a KeyError naming the field) with a
-schema-invalid block pricing at a plausible wrong number. MEASURED on one dropped field at a time:
-741.53 for the strike and **the Down_And_In value 6.37 for a Down_And_Out**, against 78.93 for the
-deal the author meant. Only fields whose declared value IS the engine's own fallback are on the
-list, and every one of them is gated below.
+COMPLETION IS AN ALLOWLIST, `schema.COMPLETABLE`, by design. A declared default is what a blank
+panel SHOWS, not what the engine means: `FXBarrierOption` marks none of its economic fields
+REQUIRED, so answering every read by name would replace a LOUD failure with a schema-invalid block
+pricing at a plausible wrong number - measured one dropped field at a time, 741.53 for the strike
+and the Down_And_In value 6.37 for a Down_And_Out, against 78.93 for the deal the author meant.
+Only fields whose declared value IS the engine's own fallback are on the list, and each is gated.
 
-THE SHAPE THE ROADMAP ROW NAMES, MEASURED both ways on one document. An `FXBarrierOption` block
-omitting `Barrier_Monitoring_Frequency` and `Cash_Rebate` used to log
-`FXBarrierOption ('Barrier_Monitoring_Frequency',) - Skipped`, leave NO row of its own in
-`Results['mtm']`, and value the whole book at 0. It now prices, on the four spellings below,
-**78.9325214257 / 6.3673278714 / 77.8327278324 / 8.6240679272** - each BIT-IDENTICAL to the same
-block furnishing `0M` and a zero rebate explicitly, which is the acceptance: a default is what the
-author would have written, not a second pricer. Suppressing the completion takes all four back to
-no row at all, so the gate dies by the whole mark.
+THE ROADMAP ROW'S OWN SHAPE, measured both ways on one document: a block omitting
+`Barrier_Monitoring_Frequency` and `Cash_Rebate` used to leave NO row in `Results['mtm']` and value
+the book at 0. It prices now, on all four spellings, BIT-IDENTICAL to the same block furnishing
+`0M` and a zero rebate explicitly - which is the acceptance: a default is what the author would
+have written, not a second pricer. Suppressing the completion takes all four back to no row at all.
 
 WHAT A DEFAULT DOES NOT DO IS ENTER THE PROGRAM. `get`, `in`, iteration, `len` and the JSON round
-trip see exactly the authored keys, so `plan_hash`, the factor universe `get_fieldname` discovers
-and a saved book are byte-identical - measured across every job document in the tree, hashes
-pinned below. That split is the whole design: `field[key]` is the read that used to raise and the
-declaration answers it; `get(key, fallback)` is the READER's own statement of what an omitted field
-means and keeps saying it, which is what keeps `config.py`'s `field.get('Equity') is not None`
-discovery guards and `calculation.py`'s `field.get('Reference', 'root')` labels where they were.
+trip see exactly the authored keys, so `plan_hash`, the factor universe and a saved book are
+byte-identical across every job document in the tree, hashes pinned below. That split is the
+design: `field[key]` is the read that used to raise and the declaration answers it, while
+`get(key, fallback)` is the READER's own statement of what an omitted field means.
 
 A DEFAULT IS CONVERTED, not copied. A declaration is authoring metadata - a blank Table is the
-string `'null'`, a Period is `'3M'`, a rate is a whole number of percent - so `schema.engine_default`
+string `'null'`, a Period `'3M'`, a rate a whole number of percent - so `schema.engine_default`
 converts each the way the loader converts that field's wire form. Uncoerced, `'0M'` reaches
-`base_date + self.field['Barrier_Monitoring_Frequency']` as a str and the repair swaps one skip for
-another.
+`base_date + self.field[...]` as a str and the repair swaps one skip for another.
 
-DEGENERACY CHECKLIST for the barrier gate: `r = 4%` USD against `q = 2%` EUR (non-zero, r != q),
-both knock directions and both option types through the four spellings, and the repaired reading is
-compared against the furnished one rather than against zero.
+DEGENERACY CHECKLIST for the barrier gate: r = 4% against q = 2% (non-zero, r != q), both knock
+directions and both option types, and the repaired reading compared against the furnished one
+rather than against zero.
 """
 import copy
 import glob
@@ -189,11 +180,9 @@ def test_the_repaired_deal_reads_the_engine_form_of_both_defaults():
 def test_a_default_answers_a_read_and_never_enters_the_program(name, cls):
     """The seam itself, over every deal type: a COMPLETABLE default answers `field[key]` and every
     other declared default still raises, while the dict holds only what was authored - which is
-    what `plan_hash`, `get_fieldname` and the JSON round trip read.
-
-    Read off `DealFields` rather than a constructed deal because a class whose `__init__` reads a
-    declared field by name cannot be built from `Object` alone - that KeyError is the one this
-    allowlist deliberately leaves in place, and skipping those classes here would drop 21 of them.
+    what `plan_hash`, `get_fieldname` and the JSON round trip read. Read off `DealFields` rather
+    than a constructed deal: 21 classes cannot be built from `Object` alone, by the same KeyError
+    this allowlist deliberately leaves in place.
     """
     block = {'Object': name}
     field = schema.DealFields(dict(block), cls)
@@ -369,14 +358,10 @@ NOT_COMPLETABLE = [('Strike_Price', 741.5344181072), ('Barrier_Type', 6.36732787
 
 @pytest.mark.parametrize('key,silent', NOT_COMPLETABLE, ids=[k for k, _ in NOT_COMPLETABLE])
 def test_an_economic_field_is_not_completed_and_does_not_price(key, silent):
-    """The seam's own hazard, gated: a declared default is what a blank panel SHOWS, so answering
-    every read by name turns a schema-invalid block into a plausible wrong number.
-
-    `FXBarrierOption` marks none of its economic fields `REQUIRED` - `Strike_Price` declares 0.0,
-    `Barrier_Type` 'Down_And_In', `Buy_Sell` 'Buy', `Option_Type` 'Call' - so a blanket completion
-    prices a strikeless deal at **741.53** and silently flips a Down_And_**Out** to its In at
-    **6.37**, against **78.93** for the deal the author meant. A `nan` or a missing row is visible
-    and 741.53 is not, which is why `COMPLETABLE` is an allowlist rather than a guard.
+    """The seam's own hazard, gated. `FXBarrierOption` marks none of its economic fields REQUIRED,
+    so a blanket completion prices a strikeless deal at 741.53 and flips a Down_And_Out to its In
+    at 6.37, against 78.93 for the deal the author meant - which is why COMPLETABLE is an allowlist
+    rather than a guard.
     """
     block = barrier_deal('Down_And_Out', 1.12, 1.25, 'Call', **FURNISHED)
     del block[key]

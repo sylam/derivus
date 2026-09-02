@@ -1,12 +1,11 @@
 """The MCP binding owns no logic, and these gates are what says so.
 
 Every tool is a plain function the decorator registers, so the gates drive the FUNCTIONS against
-the service in process (`configure(session=TestClient(...))` - the transport seam the Excel client
-established) - no stdio, no subprocess, and the one async touch is reading the registry. What is
-gated is the contract a model relies on: the import discipline (a thin client stays thin), the
-registry carrying real docstrings, the schema tools being the declarations, a booking that prices,
-a refusal that writes nothing and carries the engine's own messages, and the formatting round trip
-that keeps the book diffable.
+the service in process (`configure(session=TestClient(...))`) - no stdio, no subprocess, and the
+one async touch is reading the registry. Gated: the import discipline (a thin client stays thin),
+the registry carrying real docstrings, the schema tools being the declarations, a booking that
+prices, a refusal that writes nothing and carries the engine's own messages, and the formatting
+round trip that keeps the book diffable.
 """
 import ast
 import asyncio
@@ -50,10 +49,9 @@ def book(tmp_path):
 
 
 def test_the_mcp_server_imports_neither_the_engine_nor_the_add_in():
-    """A thin client stays thin by construction: the whole point of the package is that an MCP
-    host can launch it without paying for (or depending on) torch and the engine. An import that
-    never executes is still a dependency, so this reads the SOURCE, not the loaded module - and
-    the package `__init__` too, since importing the server runs it."""
+    """An MCP host launches this package without paying for torch and the engine. An import that
+    never executes is still a dependency, so read the SOURCE, not the loaded module - and the
+    package `__init__` too, since importing the server runs it."""
     imported = set()
     for source in (SERVER_FILE, os.path.join(os.path.dirname(SERVER_FILE), '__init__.py')):
         for node in ast.walk(ast.parse(open(source).read())):
@@ -120,11 +118,9 @@ def test_the_schema_tools_are_the_declarations():
 
 
 def test_the_structure_store_is_the_quoting_menu():
-    """A structure is a DECLARATION and this is the tool that serves it, so the whole menu comes
-    off `/schema` with nothing composed here: every structure with the sales names a desk
-    actually says, then one of them opened up - its parameters, its legs, its recipe. A name that
-    is not a structure refuses with the close match rather than guessing, and it matches on the
-    vernacular too, because 'collar' is how a model spells it."""
+    """The whole menu comes off `/schema` with nothing composed here: every structure with its
+    sales names, then one opened up - parameters, legs, recipe. A name that is not a structure
+    refuses with the close match, matching on the vernacular too."""
     listed = mcp_server.describe_structure()
     vernaculars = {entry['name']: entry['vernacular'] for entry in listed['structures']}
 
@@ -172,10 +168,8 @@ def test_a_what_if_prices_without_writing(book):
 
 
 def test_solving_then_booking_a_structured_deal(book):
-    """The structuring flow in one breath: solve the amount that marks the deal at the margin,
-    get the deal back ready to book, book it, and the book marks it at the margin - the "3m par
-    fx forward with a 200k sales margin" pattern, with the loop server-side and nothing large in
-    the answer."""
+    """The structuring flow: solve the amount that marks the deal at the margin, get the deal back
+    ready to book, book it, and the book marks it there - the loop server-side."""
     outcome = mcp_server.solve_deal(
         json.loads(dump(dict(BOOKED, Reference='SLV1'))), 'Amount', target=200_000.0)
 
@@ -190,10 +184,9 @@ def test_solving_then_booking_a_structured_deal(book):
 
 
 def test_the_practical_loop_quotes_to_a_booked_structure(tmp_path):
-    """The library's whole working day in four tool calls: a Bloomberg-normalized quote block
-    ticks the market, the bootstrap writes the surface, `solve_deal` finds the strike that marks
-    the option at the target premium, and the solved deal books - every step through the same
-    tools a model drives, nothing large entering the conversation."""
+    """Four tool calls: a Bloomberg-normalized quote block ticks the market, the bootstrap writes
+    the surface, `solve_deal` finds the strike marking the option at the target premium, and the
+    solved deal books."""
     from test_service import FX_OPTION, fx_vol_quotes
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(job(
@@ -224,15 +217,12 @@ def test_the_practical_loop_quotes_to_a_booked_structure(tmp_path):
 
 
 def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path, monkeypatch):
-    """The desk's whole day, and the one gate that says the structures layer is real. The market
-    ticks off a quote block; `solve_structure` quotes a zero-cost collar against the live book -
-    both legs priced, the cap solved until the net is zero, all of it the structure's own
-    declaration rather than anything composed in this conversation; the quote and its sheet land
-    in `DV_HOME/tmp` as one pending trade; `book_quote` approves it; and the book then marks the
-    collar, legs and all, at what was quoted.
+    """The structures layer end to end: the market ticks off a quote block; `solve_structure`
+    quotes a zero-cost collar against the live book, both legs priced and the cap solved to a zero
+    net, off the structure's own declaration; the quote and its sheet land in `DV_HOME/tmp` as one
+    pending trade; `book_quote` approves it; the book marks the collar, legs and all.
 
-    `DV_HOME` is set for real because it IS the surface under test - where a pending trade waits
-    is a contract a desk depends on, and the gate reads the file it names."""
+    `DV_HOME` is set for real - where a pending trade waits is the contract under test."""
     from test_service import fx_vol_quotes
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
     path = tmp_path / 'book.json'
@@ -501,9 +491,8 @@ def test_a_bloomberg_tick_that_will_not_wait_hands_back_the_id():
 
 
 def test_provisioning_reports_its_progress_while_it_runs(monkeypatch):
-    """The five-minute first use only survives because of these notifications: a client resets
-    its timeout on each one, and the user watching sees which candidate the terminal is on. So
-    every poll that carries a progress dict must reach the context, `note` included."""
+    """A client resets its timeout on each notification, which is what carries the five-minute
+    first use - so every poll carrying a progress dict must reach the context, `note` included."""
     delays = []
 
     async def instant(seconds, *rest):  # the gate is about the loop, not its patience

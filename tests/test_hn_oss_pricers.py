@@ -1,28 +1,23 @@
-"""Heston-Nandi spot model wired into the two remaining one-step-survival (OSS) Monte Carlo
-pricers - the DISCRETE BARRIER option (derivus/pricing.py pv_discrete_barrier_option) and the
-AUTOCALL (pv_MC_AutoCallSwap) - extending the TARF OSS pattern.
+"""The Heston-Nandi spot model in the two remaining one-step-survival (OSS) Monte Carlo pricers -
+`pv_discrete_barrier_option` and `pv_MC_AutoCallSwap` - extending the TARF OSS pattern.
 
-Opt-in per deal TYPE via the Valuation Configuration switch
-``SpotModel`` (default 'None' = GBM/surface). There is NO deal field: the params factor is found
-by NAMING CONVENTION off the equity underlying the deal already references -
-``<SpotModel>ModelParameters.<equity>`` - and pulled in as a dependent STATIC factor by the
-EquityPrice conditional in config.py when the switch is on. So the HN path is activated by
-(a) the switch AND (b) the HestonNandiModelParameters.<equity> factor in the market data.
-  * switch off / absent          -> GBM, byte-identical, regardless of what factors exist
+Opt-in per deal TYPE through the `SpotModel` valuation switch (default 'None' = GBM/surface).
+There is NO deal field: the params factor is found by NAMING CONVENTION off the equity the deal
+already references, `<SpotModel>ModelParameters.<equity>`, and pulled in as a dependent STATIC
+factor by `config.py`'s EquityPrice conditional. So the HN path needs the switch AND the factor:
+
+  * switch off / absent          -> GBM, byte-identical, whatever factors exist
   * switch on + factor present   -> HN
-  * switch on + factor MISSING   -> loud failure (deal skipped with ERROR naming the factor)
-  * unknown SpotModel value       -> ValueError naming the value + accepted set (deal skipped)
-  * switch on + CROSS-CURRENCY payoff -> ValueError naming the payoff type + the model (deal
-    skipped): the quanto/compo carry is a lognormal implied-ATM-vol adjustment, so riding it on a
-    non-GBM diffusion mixes two models inside one payoff. EITHER/OR, never a silent mix.
+  * switch on + factor MISSING   -> loud failure, the deal skipped with the factor named
+  * unknown SpotModel value      -> ValueError naming the value and the accepted set
+  * switch on + CROSS-CURRENCY payoff -> ValueError naming the payoff type and the model: the
+    quanto/compo carry is a lognormal implied-ATM-vol adjustment, so riding it on a non-GBM
+    diffusion mixes two models inside one payoff. EITHER/OR, never a silent mix.
 
-SHARED PER-STEP HELPER + MUTATION KILL MATRIX. All three pricers route every daily HN step -
-the unmonitored sub-steps AND the survival-truncated final step of each interval - through the
-single ``utils.hn_daily_advance`` (which routes the h-recursion through
-``utils.hn_variance_step``, the one copy). Four one-line mutants of it were
-applied to the shared helper (source edit, run, revert BY HAND) and each is killed by BOTH
-recursion closed-form gates below (measured reldiff vs the HN closed form; correct code
-passes at <=2.2e-3, gate tol 5e-3):
+ONE PER-STEP HELPER, AND THE KILL MATRIX. All three pricers route every daily HN step - the
+unmonitored sub-steps AND the survival-truncated final step - through `utils.hn_daily_advance`.
+Four one-line mutants of it are killed by BOTH closed-form gates below (reldiff against the HN
+closed form; correct code passes at <=2.2e-3 against a 5e-3 tolerance):
 
     mutant                         barrier_ko_never   autocall_single_coupon
     (correct)                          2.1e-3              1.3e-3
@@ -31,9 +26,9 @@ passes at <=2.2e-3, gate tol 5e-3):
     (c) 10x alpha                      1.0 (var explodes)  1.0
     (d) dropped beta   -beta*h         5.0e-1              4.9e-1
 
-The autocall single-coupon gate prices a 5%-OTM tail probability Q(S_T>K), which is acutely
-skew-sensitive, so it kills the leverage-sign flip at 2.2e-1 (no brute-force reference needed -
-the aggregate-variance-normal rejection is the TARF's; here the closed form IS the HN price).
+The autocall single-coupon gate prices a 5%-OTM tail probability, which is acutely skew-sensitive,
+so it kills the leverage-sign flip at 2.2e-1 with no brute-force reference needed - here the closed
+form IS the HN price.
 """
 import io
 import logging
@@ -116,13 +111,13 @@ def _price_factors(sig, hn_params, r, q, payoff_ccy=None, rho=RHO):
 
 def _cfg(field, ref, sig=SIGMA, hn_params=None, r=0.0, q=0.0, spot_model='auto',
          payoff=None, rho=RHO):
-    """spot_model='auto' turns the switch on iff hn_params is supplied; pass an explicit string
-    (incl. 'None') to decouple the switch from factor presence for the resolution-semantics tests.
+    """`spot_model='auto'` turns the switch on iff `hn_params` is supplied; an explicit string
+    decouples the switch from factor presence for the resolution-semantics gates.
 
-    payoff=(currency, Payoff_Type) settles the deal in a SECOND currency, which is the only way
-    `Check_Payoff_Type` (the quanto/compo carry) turns on - it reads the currency PAIR, not the
-    payoff type alone. `rho` is that carry's only free parameter, so it is the knob the refusal
-    gate varies to prove its fixture is not zeroing the quantity under test."""
+    `payoff=(currency, Payoff_Type)` settles in a SECOND currency, which is the only way the
+    quanto/compo carry turns on - `Check_Payoff_Type` reads the currency PAIR and not the payoff
+    type alone. `rho` is that carry's only free parameter, so it is the knob the refusal gate
+    varies to prove its fixture is not zeroing the quantity under test."""
     if payoff is not None:
         field = dict(field, Payoff_Currency=payoff[0], Payoff_Type=payoff[1])
         if payoff[1] == 'Compo' and payoff[0] != field['Currency']:
@@ -329,9 +324,8 @@ QUANTO_IDS = ['barrier', 'autocall']
 def test_cross_currency_payoff_under_non_gbm_is_refused(build, ref, ptype):
     """`calc_vol_adjustment` builds the quanto/compo carry from a LOGNORMAL implied ATM vol and
     hands it to the drift unconditionally, so under HN a GBM quantity would set the GARCH
-    diffusion's drift (and the compo vol it returns is read by no HN leg at all). Both deals must
-    refuse at COMPILE, naming the payoff type and the model - the message is the one the engine's
-    deal-skip path logs at ERROR, which is what makes the loss attributable."""
+    diffusion's drift. Both refuse at COMPILE, naming the payoff type and the model, through the
+    engine's own deal-skip ERROR - which is what makes the loss attributable."""
     cfg = build(hn_params=STRONG, payoff=('ZAR', ptype))[0]
     txt = _capture_errors(lambda: run_baseval(
         cfg, overrides={'MCMC_Simulations': 64, 'Random_Seed': 1}))
@@ -343,17 +337,13 @@ def test_cross_currency_payoff_under_non_gbm_is_refused(build, ref, ptype):
 @pytest.mark.parametrize('build,ref', QUANTO_BUILDS, ids=QUANTO_IDS)
 @pytest.mark.parametrize('ptype', ['Quanto', 'Compo'])
 def test_cross_currency_payoff_under_gbm_still_prices(build, ref, ptype):
-    """The refusal is the MODEL's, not the payoff type's: the same deal under GBM prices. And the
-    quantity it refuses is live in this fixture - rho is the carry's only free parameter, so a
-    price that ignored rho would make the gate above a placebo over a zeroed adjustment.
+    """The refusal is the MODEL's and not the payoff type's: the same deal under GBM prices. And the
+    quantity it refuses is LIVE in this fixture - rho is the carry's only free parameter, so a
+    price ignoring rho would make the gate above a placebo over a zeroed adjustment.
 
-    The Compo leg was xfail-STRICT for a release: `calc_vol_adjustment` returned the python float
-    0.0 as its Compo b_adj and both OSS call sites handed it to `torch.unsqueeze` (TypeError ->
-    deal skipped), and its s_adj was mis-tenored besides - no compo OSS deal had ever priced.
-    Compo now simulates the PRODUCT S*X: spot scaled by the cross, the fx carry added per fixing,
-    the interval strip composed with the fx expiry vol, so rho reaches the simulation through the
-    variance. The value oracle is the JSON contract gate
-    (`test_autocall_json.py::test_a_compo_autocall_is_a_digital_on_the_converted_spot`)."""
+    Compo simulates the PRODUCT S*X - spot scaled by the cross, the fx carry added per fixing, the
+    interval strip composed with the fx expiry vol - so rho reaches the simulation through the
+    variance. Its value oracle is `test_autocall_json.py`'s JSON contract gate."""
     price = _mtm(build(payoff=('ZAR', ptype)), sims=1 << 12)
     assert price is not None and np.isfinite(price) and price != 0.0
     assert abs(price - _mtm(build(payoff=('ZAR', ptype), rho=-RHO), sims=1 << 12)) > 1e-8
@@ -375,10 +365,10 @@ def test_non_gbm_prices_when_the_payoff_settles_in_its_own_currency(build, ref):
     ('Down_And_Out', 90.0), ('Up_And_In', 110.0), ('Down_And_In', 90.0), ('Up_And_Out', 110.0)])
 @pytest.mark.parametrize('seed', [1, 7])
 def test_barrier_bit_identity_degenerate_hn_reproduces_gbm(btype, bprice, seed):
-    """Alpha=Gamma_Star=Beta=0, Omega=H0=sigma^2*(1 day) and daily (n_sub=1) observation dates make
-    the HN branch and the GBM branch the SAME computation; they agree to float64 machine epsilon
-    (frequently exactly). At n_sub=1 there are zero unconditional sub-steps, so the branches consume
-    identical RNG - which is what makes the bit-identity gate meaningful."""
+    """Alpha=Gamma_Star=Beta=0, Omega=H0=sigma^2*(1 day) and daily observation dates make the HN and
+    GBM branches the SAME computation, agreeing to float64 epsilon. At n_sub=1 there are zero
+    unconditional sub-steps, so the branches consume identical RNG - which is what makes the
+    bit-identity claim meaningful."""
     bdays = list(range(1, 21))
     gbm = _mtm(_barrier_cfg(btype, bprice, bdays, 20), seed=seed, sims=1 << 13)
     hn = _mtm(_barrier_cfg(btype, bprice, bdays, 20, hn_params=DEGEN), seed=seed, sims=1 << 13)

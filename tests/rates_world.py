@@ -1,19 +1,17 @@
 """Hand-authored linear-rates worlds for the curve-bootstrap gates.
 
-Every level here is invented. Nothing is copied from a vendor file, and nothing has to be: a
-round-trip fixture constructs a curve, prices the benchmark set off it to GENERATE the quotes, and
-then requires the bootstrap to recover the curve - so the numbers only have to be plausibly shaped,
-not real.
+Every level here is invented: a round-trip fixture constructs a curve, prices the benchmark set off
+it to GENERATE the quotes, then requires the bootstrap to recover the curve - so the numbers only
+have to be plausibly shaped.
 
-The builders return authored deal BLOCKS - raw JSON as `Trade Data` carries it, a container
-holding its legs under `Children`. `bootstrappers.quote_node` turns one into the deal-tree node
-`BenchmarkInstruments` takes, and a quote carries the same block under `Deal`.
+The builders return authored deal BLOCKS - raw JSON as `Trade Data` carries it, a container holding
+its legs under `Children`. `bootstrappers.quote_node` turns one into a deal-tree node, and a quote
+carries the same block under `Deal`.
 
-Quotes are quoted in PERCENT throughout, because that is what the engine reads: `DepositDeal`
-divides its `Interest_Rate_Schedule` by 100, `SwapInterestDeal` divides `Swap_Rate` by 100, and
-`FRADeal` wraps `FRA_Rate` in a `Basis(-100 * rate)` - which is the same scaling by a different
-route. A `CFFixedInterestListDeal` row carries a `utils.Percent` instead, and that is the one place
-the type says so.
+Quotes are in PERCENT throughout, because that is what the engine reads: `DepositDeal` divides its
+`Interest_Rate_Schedule` by 100, `SwapInterestDeal` divides `Swap_Rate` by 100, and `FRADeal` wraps
+`FRA_Rate` in a `Basis(-100 * rate)`. A `CFFixedInterestListDeal` row carries a `utils.Percent`
+instead, which is the one place the type says so.
 """
 import os
 import sys
@@ -116,15 +114,13 @@ def ois_swap(ref, currency, curve, months, quote, day_count='ACT_360'):
     """An OIS swap quoted at `quote` percent, as a container over two legs.
 
     The floating leg is a `CFFloatingInterestListDeal` with `Compounding_Method='OIS'` and ONE
-    cashflow item per fixing, all sharing their coupon's payment date. That shape is the whole
-    point: `compress_no_compounding(groupsize=-1)` merges the items of a payment date into one
-    cashflow carrying all their resets, each still at `Weight` 1, and only then does
-    `pv_float_cashflow_list` compound them geometrically. A leg whose resets arrive already
-    weighted `1/n` compounds at `1/n` of the rate.
+    cashflow item per fixing, all sharing their coupon's payment date:
+    `compress_no_compounding(groupsize=-1)` merges a payment date's items into one cashflow carrying
+    all their resets at `Weight` 1, and only then does `pv_float_cashflow_list` compound them
+    geometrically. A leg whose resets arrive weighted `1/n` compounds at `1/n` of the rate.
 
-    Fixings are on business days, which is what an RFR actually publishes on, and each accrues to
-    the next fixing so the daily windows tile the coupon exactly. Coupons are annual with a final
-    stub, so a sub-annual OIS is one compounded period - which is how the short end is quoted.
+    Fixings are on business days, each accruing to the next so the daily windows tile the coupon
+    exactly. Coupons are annual with a final stub, so a sub-annual OIS is one compounded period.
     """
     coupons = [BASE + pd.DateOffset(months=m) for m in range(0, months, 12)] + [
         BASE + pd.DateOffset(months=months)]

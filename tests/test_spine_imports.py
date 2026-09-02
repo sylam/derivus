@@ -12,22 +12,17 @@
 ########################################################################
 """The spine's import surface, its packaging, and the four verbs `DV_Spine` answers to.
 
-Increment 1's whole claim is that the book of record depends on almost nothing: stdlib plus
-`cryptography`, no engine, no torch, no network. That claim is a PROPERTY OF THE SOURCE, so the
-first gate reads it rather than the loaded modules - an import that never executes is still a
-dependency (the `test_mcp` precedent one package over), and the second gate proves it a second way
-by watching what actually lands in a fresh interpreter's `sys.modules`. Both cover every
-`derivus_spine/*.py` present when they RUN, by glob rather than by list, so a module added
-tomorrow is gated the day it appears instead of the day someone remembers this file.
+The book of record depends on stdlib plus `cryptography` - no engine, no torch, no network. That
+is a PROPERTY OF THE SOURCE, so the first gate reads it rather than the loaded modules; the second
+proves it again by watching what lands in a fresh interpreter's `sys.modules`. Both cover every
+`derivus_spine/*.py` by glob, so a module added tomorrow is gated the day it appears.
 
-The packaging gate reads `setup.py` as text and AST and installs nothing: what is under test is
-that the spine ships as a sibling package, that `cryptography` is an EXTRA rather than a base
-dependency (an engine install must not grow a crypto dependency for a spine it does not run), and
-that the console script exists.
+The packaging gate reads `setup.py` as text and AST and installs nothing: the spine ships as a
+sibling package, `cryptography` is an EXTRA rather than a base dependency, the console script
+exists.
 
-The CLI smoke gates state their precondition instead of dying downstream of it (`conftest`'s
-`needs_hn_fused` precedent): the CLI is a mouth over the core modules, so until those land it has
-nothing to drive, and the skip heals itself the moment `derivus_spine/log.py` exists.
+The CLI smoke gates state their precondition rather than dying downstream of it - the CLI is a
+mouth over the core modules, and the skip heals the moment `derivus_spine/log.py` exists.
 """
 import ast
 import glob
@@ -92,10 +87,9 @@ def imported_names(source):
 
 
 def test_the_spine_imports_nothing_but_the_standard_library_and_cryptography():
-    """The truth layer's dependency budget, read off the source of every module the package has.
-    `cryptography` is in because bodies are sealed and checkpoints are signed from genesis;
-    everything else the desk runs - the engine, torch, the HTTP client - is out, because a book of
-    record that cannot be verified without the thing it records is not a book of record."""
+    """The dependency budget, read off the source of every module the package has. `cryptography`
+    is in - bodies are sealed and checkpoints signed from genesis; the engine, torch and the HTTP
+    client are out."""
     sources = spine_sources()
     assert sources, 'derivus_spine holds no modules at all'
     assert os.path.join(SPINE, 'cli.py') in sources
@@ -111,16 +105,12 @@ def test_the_spine_imports_nothing_but_the_standard_library_and_cryptography():
 
 @needs_spine_package
 def test_importing_the_spine_lands_neither_the_engine_nor_torch():
-    """The source gate's answer proved a second way, because the first one trusts the parser: a
-    FRESH interpreter imports the package and reports what arrived with it. Run out of the repo
-    root so the tree under test is this checkout rather than whatever is installed.
+    """The source gate's answer proved a second way, because the first trusts the parser: a FRESH
+    interpreter imports the package and reports what arrived. Run out of the repo root so the tree
+    under test is this checkout.
 
-    EVERY MODULE BY GLOB, exactly as the source gate reads them, because importing the package
-    alone is not importing the package: `__init__.py` keeps its surface to the truth layer, so the
-    CLI, the custody and identity modules and increment 3's verbs, policies and firmness check are
-    attributes nothing has loaded and a runtime witness that only imported the package would not be
-    witnessing them at all. Named by glob rather than by list so the second witness reaches a module
-    added tomorrow on the day it appears, which is the property the first witness already has.
+    EVERY MODULE BY GLOB: `__init__.py` keeps its surface to the truth layer, so importing the
+    package alone would leave the CLI, custody, identity and the verbs unloaded and unwitnessed.
     """
     modules = sorted('derivus_spine.{}'.format(os.path.basename(source)[:-3])
                      for source in spine_sources()
@@ -168,11 +158,9 @@ def literal(node, env):
 
 
 def test_the_spine_ships_as_a_sibling_package_with_cryptography_as_an_extra():
-    """Three declarations, one posture. The spine is in the wheel beside the other two siblings;
-    `cryptography` is an EXTRA, so installing the engine never grows a dependency for a truth
-    layer that box does not run, and `desk` stays exactly the edge it was - the two compose as
-    `derivus[desk,enterprise]` rather than one swallowing the other; and the console script is how
-    a home gets minted on a machine that only ever pip-installed."""
+    """Three declarations: the spine is in the wheel beside its siblings; `cryptography` is an
+    EXTRA, so an engine install grows no crypto dependency and `desk` keeps its edge (they compose
+    as `derivus[desk,enterprise]`); and the console script exists."""
     kwargs, env = setup_call()
 
     packages = kwargs['packages']
@@ -191,9 +179,8 @@ def test_the_spine_ships_as_a_sibling_package_with_cryptography_as_an_extra():
 
 
 def test_the_cli_declares_four_verbs_and_the_home_flag():
-    """The command line is a contract a runbook types, so it is gated off the source before the
-    core exists to drive it. Four verbs and no fifth: anything the spine grows later arrives as an
-    event or a fold, not as a new mouth on this one."""
+    """Gated off the source, before the core exists to drive it. Four verbs and no fifth - what
+    the spine grows later arrives as an event or a fold, not a new mouth."""
     with open(os.path.join(SPINE, 'cli.py'), encoding='utf-8') as handle:
         tree = ast.parse(handle.read(), filename='cli.py')
 
@@ -219,10 +206,9 @@ def spine(*argv, **kwargs):
 
 @needs_spine_core
 def test_the_cli_mints_verifies_checkpoints_and_reports(tmp_path):
-    """The runbook end to end on a real home in a temp directory: mint it, verify it entitled,
-    verify it as an unentitled replica would, sign the head, and read where it stands. Every
-    answer is JSON on stdout because a script is the caller; the head moving across the
-    checkpoint is what says the verb did something rather than reported something."""
+    """The runbook end to end on a real home: mint, verify entitled, verify as an unentitled
+    replica, sign the head, read where it stands. Every answer is JSON on stdout; the head moving
+    across the checkpoint is what says the verb did something."""
     home = str(tmp_path / 'spine')
 
     minted = spine('init', '--home', home)
@@ -255,10 +241,9 @@ def test_the_cli_mints_verifies_checkpoints_and_reports(tmp_path):
 
 @needs_spine_core
 def test_verifying_a_home_that_is_not_there_refuses_by_name(tmp_path):
-    """A refusal reaches the terminal as the library's own SENTENCE and exit 1 - naming the thing
-    and the remedy - never as a traceback, which tells an operator to read source they do not
-    have. Nothing is minted on the way out: a verify that provisioned would be the second source
-    of truth this whole design forbids."""
+    """A refusal reaches the terminal as a SENTENCE and exit 1 - naming the thing and the remedy -
+    never as a traceback. Nothing is minted on the way out: a verify that provisioned would be a
+    second source of truth."""
     missing = str(tmp_path / 'nothing-here')
 
     refused = spine('verify', '--home', missing)

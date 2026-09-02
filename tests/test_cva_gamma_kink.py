@@ -18,59 +18,44 @@ and `cva` 0.2474386841 with `grad_cva`'s spot entry 0.017783891 on BOTH runs, to
 prints - the admission equality, taken independently of the gate that asserts it.
 
 The vanna reading is why a diagonal-only gate is not enough: the pathwise cross entry is a
-plausible-looking number of the WRONG SIGN at 39% of the magnitude, and nothing about it looks like
-a failure. (The owner's external table - JAX prototype, ATM forward-style exposure under GBM,
-θ = (S₀, σ), 400k paths - reads the same shape at its own geometry: pathwise gamma 0.0000 and vanna
-0.3966, double the truth, becoming 2.6415 and 0.1992 against Black 2.6521 / 0.1989. The RATIO is
-the fixture's, not the term's; what reproduces is that the diagonal dies and the cross survives
-looking healthy.)
+plausible-looking number of the WRONG SIGN at 39% of the magnitude. (An independent JAX prototype
+under GBM reads the same shape at its own geometry - the diagonal dies, the cross survives looking
+healthy.)
 
-SEED STABILITY, measured over five seeds at this document's 65536 paths: gamma 4.2419 / 4.2354 /
-4.2262 / 4.2351 / 4.2246 e-04, a 0.41% spread; vanna -1.28435 / -1.28475 / -1.27759 / -1.28310 /
--1.27591 e-02, 0.69%. At 16384 the same spreads are 2.60% and 6.00%, which is what sizes the path
-count here. The two-seed gate below carries a 2% tolerance, ~5x the measured spread.
+SEED STABILITY over five seeds at 65536 paths: gamma spread 0.41%, vanna 0.69%; at 16384 they are
+2.60% and 6.00%, which is what sizes the path count. The two-seed gate carries 2%, ~5x the spread.
 
 THE FIXTURE-DEGENERACY CHECKLIST, per axis:
 
-  r, q          varied - r = 4%, q = 1%, different and both non-zero. Equal rates would kill the
-                forward's carry and put the crossing point at the strike.
-  time rows     varied - five reporting rows, four of them after the first, and the exposure CROSSES
-                ZERO on rows 1-4 (23.3% / 32.7% / 37.7% / 41.4% of paths negative). A book whose V
-                never crosses has no kink at all, which is the deep-ITM control below.
-  vol surface   varied - the vol the exposure actually reads is `GBMAssetPriceTSModelParameters.EQ`'s
-                term structure, 0.20 / 0.28 / 0.32 piecewise linear, so the diffusion sees a real
-                forward-variance strip and the vanna entry is a sum over knots that a flat curve
-                would collapse. (The pricing surface `VolatilityGrid.EQ` is degenerate BECAUSE a
-                linear forward never reads it - it has no optionality to imply.)
+  r, q          varied - r = 4%, q = 1%. Equal rates would kill the forward's carry and put the
+                crossing point at the strike.
+  time rows     varied - five reporting rows, and the exposure CROSSES ZERO on rows 1-4 (23.3% /
+                32.7% / 37.7% / 41.4% of paths negative). A book whose V never crosses has no kink,
+                which is the deep-ITM control below.
+  vol surface   varied - the exposure reads `GBMAssetPriceTSModelParameters.EQ`'s term structure,
+                0.20 / 0.28 / 0.32 piecewise linear, so the vanna entry is a sum over knots a flat
+                curve would collapse. (`VolatilityGrid.EQ` is degenerate because a linear forward
+                never reads it.)
   side          varied - Buy on the live document, Sell on its mirror in the atom gate.
-  netting sets  one, and stated: the CVA objective is the ROOT sum, so a second uncollateralised set
-                adds rows to the same tensor and reaches nothing this one does not. The set is there
-                at all because a bare deal reports only its own reval dates and this fixture needs a
-                grid of them.
-  direction /   degenerate BECAUSE a forward has no barrier and no option type. The decision-product
-  option type   gate adds an autocall for exactly that reason, and it REFUSES rather than reporting.
-  the conjunction   the ladder gates need a linear payoff AND crossing mass AND a differentiable
-                vol AND second order in one run; that conjunction is the live document below.
+  netting sets  one: the CVA objective is the ROOT sum, so a second uncollateralised set adds rows
+                to the same tensor and reaches nothing. The set is there because a bare deal reports
+                only its own reval dates.
+  direction /   degenerate because a forward has no barrier and no option type - which is why the
+  option type   decision-product gate adds an autocall, and it REFUSES rather than reporting.
 
-TWO GRID CHOICES ARE LOAD-BEARING AND NEITHER IS COSMETIC.
+TWO GRID CHOICES ARE LOAD-BEARING.
 
-  The grid STARTS AT 1d, not 0d. `GBMAssetPriceTSModelImplied` builds its per-step vol as
-  `sqrt(V(t_k) - V(t_{k-1}))`, and a t0 row makes the first step zero-length: `sqrt` at exactly zero
-  has an infinite derivative, and while the value and the first-order gradient come back finite the
-  DOUBLE backward returns NaN on every `GBMAssetPriceTSModelParameters.EQ.Vol` entry - measured, the
-  whole vol row and its cross with spot. That is a property of the diffusion, not of this term, and
-  it is why no reporting row here has a collapsed spread.
+  The grid STARTS AT 1d. `GBMAssetPriceTSModelImplied` builds its per-step vol as
+  `sqrt(V(t_k) - V(t_{k-1}))`, so a t0 row makes the first step zero-length and `sqrt` at exactly
+  zero has an infinite derivative: value and first order come back finite, the DOUBLE backward
+  returns NaN on every `GBMAssetPriceTSModelParameters.EQ.Vol` entry. A property of the diffusion,
+  not of this term.
 
-  The grid CLIPS at 12m (`'1d 3m(3m) 12m'` does not end in a bracket, so `update_time_grid` takes the
-  clipping branch), which pins the document to the readings above rather than rescuing it. Left open
-  the grid runs one row PAST the deal's maturity, where every deal has matured and the exposure is
-  identically zero across paths - and the run comes back whole: `cva` 0.2478635758, gamma
-  +4.2465373e-04, vanna -1.2853217e-02, ZERO NaN entries, 0.11% and 0.08% off the clipped readings
-  for the extra trapezoid pair, which is real. `exposure_kink_term` writes that row's kernel to zero
-  and that is the mathematically right answer, not a rescue: the row's `V_θ` is zero as well, so
-  `K·V_θV_θᵀ` is zero whatever `K` is. An earlier build REFUSED that row as an atom - a false
-  positive on a row whose Hessian contribution is identically zero, blocking the whole second-order
-  block over a reporting grid left open. The ladder that replaced that test does not fire there.
+  The grid CLIPS at 12m, which pins the document to the readings above. Left open it runs one row
+  PAST maturity, where the exposure is identically zero across paths - and the run comes back whole
+  (0.11% and 0.08% off the clipped readings, for the extra trapezoid pair). `exposure_kink_term`
+  writes that row's kernel to zero, which is right rather than a rescue: the row's `V_θ` is zero
+  too, so `K·V_θV_θᵀ` is zero whatever `K` is. An earlier build REFUSED that row as an atom.
 """
 import datetime
 import json
@@ -279,16 +264,13 @@ def test_the_gamma_entry_lands_on_a_crn_ladder_of_the_reported_delta(tmp_path):
 def test_the_vanna_entry_lands_on_its_own_ladder_and_pins_the_doubling(tmp_path):
     """THE CROSS ENTRY, which a diagonal-only gate cannot see.
 
-    The pathwise spot-vol entry is not zero - it is +4.9641660e-03, a plausible-looking number that
-    is wrong in SIGN and at 39% of the size against a ladder of -1.3044104e-02 (readings -1.29268 /
-    -1.30441 / -1.30530 / -1.34338 / -1.36028 e-02, flat to 5.18%). That is the failure mode the
-    owner's external table records as "double the truth" and it is the reason this file gates the
-    off-diagonal at all.
+    The pathwise spot-vol entry is +4.9641660e-03 - wrong in SIGN and at 39% of the size against a
+    ladder of -1.3044104e-02 (readings -1.29268 / -1.30441 / -1.30530 / -1.34338 / -1.36028 e-02,
+    flat to 5.18%).
 
-    The doubling is pinned WITHOUT a second engine run: one run cannot report both the corrected and
-    the uncorrected entry, so the statement is made against the ladder from both sides - the
-    corrected entry lands inside it, and TWICE the corrected entry does not land anywhere near it.
-    Measured: 1.56% and 96.9%, a 62x separation.
+    The doubling is pinned WITHOUT a second engine run: one run cannot report both entries, so the
+    statement is made against the ladder from both sides - the corrected entry lands inside it and
+    TWICE the corrected entry does not. Measured 1.56% and 96.9%, a 62x separation.
     """
     results = _run(_job(hessian='Yes'), tmp_path, 'vanna_aad')
     _, vanna = _second_order(results)
@@ -304,17 +286,13 @@ def test_the_vanna_entry_lands_on_its_own_ladder_and_pins_the_doubling(tmp_path)
 
 
 def test_a_book_that_never_crosses_zero_has_no_kink_to_correct(tmp_path):
-    """The control, and the other half of the fixture-degeneracy statement: the term must be INERT
-    where there is no boundary.
+    """The control: the term must be INERT where there is no boundary, or the ladder gate above
+    could pass on a term that manufactures curvature wherever it is switched on.
 
     Struck at 10 against a spot of 100 the forward is in the money on every path of every row
-    (measured minimum exposure 27.32), so `relu` is the identity, the CVA is LINEAR in spot and its
-    true gamma is exactly zero. The kernel underflows and the entry reads 4.12e-29 - 1e-26 of the
-    live document's 4.24e-04 - against a CRN ladder of the delta whose every rung is exactly 0.0,
-    the delta being constant.
-
-    Without this the ladder gate above could be passing on a term that manufactures curvature
-    wherever it is switched on.
+    (minimum exposure 27.32), so `relu` is the identity, the CVA is LINEAR in spot and its true
+    gamma is exactly zero. The kernel underflows and the entry reads 4.12e-29 - 1e-26 of the live
+    document's 4.24e-04 - against a CRN ladder whose every rung is exactly 0.0.
     """
     itm = [_forward('FWD1', DEEP_ITM_PRICE)]
     results = _run(_job(children=itm, hessian='Yes'), tmp_path, 'itm_aad')
@@ -336,20 +314,16 @@ def test_a_book_that_never_crosses_zero_has_no_kink_to_correct(tmp_path):
 # ---------------------------------------------------------------- the two-sided atom logic
 
 def test_a_netted_mirror_contributes_nothing_rather_than_refusing(tmp_path):
-    """A deal against its exact mirror in one netting set nets to an identical zero on every path of
-    every row - and that row is NOT a case for refusing, which is the correction this gate carries.
+    """A deal against its exact mirror nets to an identical zero on every path of every row - and
+    that is NOT a case for refusing.
 
-    The term is self-limiting there. `K·V_θV_θᵀ` needs a `V_θ`, and an exposure that is functionally
-    zero in every factor has none: the mirror's two deltas cancel exactly, so the contribution is
-    zero whatever `K` is and whatever the density at the kink does. The build that refused this
-    document was refusing over a row it would have got right, and the same test blocked the whole
-    second-order block on any reporting grid left open past a book's last maturity.
+    The term is self-limiting there: `K·V_θV_θᵀ` needs a `V_θ`, and the mirror's two deltas cancel
+    exactly, so the contribution is zero whatever `K` is. The build that refused this document was
+    refusing over a row it would have got right.
 
-    So the assertion is the opposite one, and it is the mutant-killer for re-introducing a
-    spread-and-mass classifier: the mirror ADMITS. `cva` 0.0 on an identically zero book (which is
-    itself the check that the mirror really is a mirror), an empty `grad_cva`, and a (0, 0) Hessian
-    - empty because the objective is identically zero as a function of every factor, not because
-    anything failed. No NaN, no refusal.
+    So the assertion is that the mirror ADMITS - the mutant-killer for re-introducing a
+    spread-and-mass classifier: `cva` 0.0 on an identically zero book (itself the check that the
+    mirror is a mirror), an empty `grad_cva`, and a (0, 0) Hessian. No NaN, no refusal.
     """
     mirror = [_forward('FWD1', FORWARD_PRICE), _forward('FWD2', FORWARD_PRICE, buy_sell='Sell')]
     results = _run(_job(children=mirror, hessian='Yes'), tmp_path, 'atom')
@@ -365,25 +339,20 @@ def test_a_netted_mirror_contributes_nothing_rather_than_refusing(tmp_path):
 
 
 def test_a_row_whose_density_climbs_as_its_bandwidth_narrows_refuses_by_name():
-    """THE ATOM, diagnosed the way the roadmap says to diagnose one: on the bandwidth LADDER.
+    """THE ATOM, diagnosed on the bandwidth LADDER.
 
-    A point mass at the kink and a narrow density at the kink have the same spread, the same
-    near-zero mass and the same Silverman width - every scalar a single-width estimator can read.
-    What separates them is what `f_V(0)` DOES as the width is varied: a density plateaus, a mass of
-    weight p reads `p/(h·√2π)` and climbs as `1/h`. Measured here at 65536 paths, p of the paths at
-    exactly zero and the rest at 1.0: the climb across the ladder's factor of 8 is 8.000 at EVERY p
-    from 0.999 down to 0.0001, against 1.003 / 1.031 / 1.027 / 1.045 on the live document's own
-    reporting rows above. A 7.7x separation, and the threshold sits at 2.0.
+    A point mass and a narrow density at the kink share every scalar a single-width estimator can
+    read. What separates them is what `f_V(0)` DOES as the width varies: a density plateaus, a mass
+    of weight p reads `p/(h·√2π)` and climbs as `1/h`. Measured at 65536 paths, the climb across the
+    ladder's factor of 8 is 8.000 at EVERY p from 0.999 down to 0.0001, against 1.003 / 1.031 /
+    1.027 / 1.045 on the live document's own rows - a 7.7x separation, threshold at 2.0.
 
-    Taken on the function because no CMC document in this build reaches it. The case the refusal is
-    FOR - a collateralised net pinned inside its threshold, at the kink with a real `V_θ` - is
-    refused one step earlier by the decision-product refusal, which the collateral gate below
-    measures; and the remedy this message names is therefore not "go and build one".
+    Taken on the function because no CMC document here reaches it: the case the refusal is FOR is
+    refused one step earlier by the decision-product refusal.
 
-    The previous classifier is what this kills. It fired on `collapsed AND mass-at-zero`, a
-    conjunction no p in (0, 1) could satisfy: `collapsed` holds only for `√(p/(1−p)) ≤ 0.0867`, i.e.
-    p ≤ 0.0075, while the mass test wanted p ≥ 0.01. Every row below rode straight through it while
-    reporting a density that grows without bound as the path count rises.
+    The previous classifier fired on `collapsed AND mass-at-zero`, a conjunction no p in (0, 1)
+    satisfies - `collapsed` needs `√(p/(1−p)) ≤ 0.0867` (p ≤ 0.0075) while the mass test wanted
+    p ≥ 0.01 - so every row rode through it reporting a density that grows without bound.
     """
     n = PATHS
     row = torch.full((1, n), 1.0, dtype=torch.float64)
@@ -422,17 +391,15 @@ def test_a_row_whose_density_climbs_as_its_bandwidth_narrows_refuses_by_name():
 
 
 def test_a_collapsed_row_away_from_the_kink_is_ignored_rather_than_refused():
-    """The OTHER side of the same test, taken directly on the function because no reporting row of a
-    live CMC document can reach it (see this file's header: a t0 row is what has no spread, and this
-    diffusion's double backward is NaN there).
+    """The OTHER side of the same test, taken on the function because no live CMC reporting row
+    reaches it (a t0 row has no spread, and this diffusion's double backward is NaN there).
 
     A row with no spread is not an atom unless its mass is AT zero. A book marked at a constant 7.7
-    across paths - one scenario, or a portfolio of pure cash - has a bandwidth of exactly zero and
-    nothing within it of the kink: the kernel is ZERO there, not 0/0, and the row must contribute an
-    exact 0.0 to the Hessian rather than a NaN or a refusal.
+    across paths has a bandwidth of exactly zero and nothing within it of the kink: the kernel is
+    ZERO there, not 0/0, and the row contributes an exact 0.0 rather than a NaN or a refusal.
 
-    Both readings are taken as second derivatives of the term itself, because the term's VALUE is an
-    exact zero on every row and says nothing about which branch was taken.
+    Both readings are second derivatives of the term itself, because its VALUE is an exact zero on
+    every row and says nothing about which branch was taken.
     """
     def curvature(rows):
         theta = torch.tensor(1.0, dtype=torch.float64, requires_grad=True)
@@ -463,17 +430,16 @@ def test_a_collapsed_row_away_from_the_kink_is_ignored_rather_than_refused():
 
 
 def test_the_kernel_argument_is_detached_so_K_prime_never_reaches_the_tape():
-    """The confinement claim, and the one claim here no engine gate can reach: with K's argument
-    attached the second derivative is BIT-IDENTICAL (31.752557989663714 on this probe either way),
-    so the ladders, the admission and the seed gate all pass on a term whose kernel is on the tape.
+    """The confinement claim, and the one no engine gate can reach: with K's argument attached the
+    second derivative is BIT-IDENTICAL (31.752557989663714 either way), so the ladders, the
+    admission and the seed gate all pass on a term whose kernel is on the tape.
 
     What changes is the ORDER the graph stops at. `0.5*K(Vbar)*u**2` differentiated twice is
     `K(Vbar)*V_theta**2` - a detached coefficient times a constant, so the second derivative is a
-    LEAF and autograd refuses a third. Attach the argument and it carries a graph whose third
-    derivative is `3*K'(Vbar)` - the density DERIVATIVE, the noisier estimator a JUMP needs, built
-    and retained on every reporting row. The reason the mutant is invisible at second order is
-    structural rather than lucky: with `u = V - V.detach()` an exact zero, every `K'` term in the
-    double backward carries a factor of u or u squared.
+    LEAF and autograd refuses a third. Attached, it carries a graph whose third derivative is
+    `3*K'(Vbar)` - the density DERIVATIVE, built and retained on every reporting row. The mutant is
+    invisible at second order structurally: with `u = V - V.detach()` an exact zero, every `K'` term
+    in the double backward carries a factor of u.
     """
     rows = torch.linspace(-4.0, 4.0, 512, dtype=torch.float64).reshape(1, -1)
     theta = torch.tensor(1.0, dtype=torch.float64, requires_grad=True)
@@ -489,16 +455,14 @@ def test_the_kernel_argument_is_detached_so_K_prime_never_reaches_the_tape():
 # ---------------------------------------------------------------- decision products
 
 def test_a_decision_product_refuses_the_hessian_and_keeps_its_gradient(tmp_path):
-    """`Base_Revaluation`'s posture, adopted one calculation over.
+    """`Base_Revaluation`'s posture, adopted one calculation over. An autocall registers a
+    `BoundarySet`, which is what makes its FIRST derivative right: `(gap - gap.detach())` times a
+    DETACHED coefficient. Differentiate twice and the coefficient cannot move, so what comes back is
+    the smooth part with the density-derivative flux block silently absent - a cross-gamma that
+    looks like a cross-gamma. Refused by name, naming the deal.
 
-    An autocall added to the book registers a `BoundarySet`, and that registration is what makes its
-    FIRST derivative right: `(gap - gap.detach())` times a DETACHED coefficient. Differentiate it a
-    second time and the coefficient cannot move, so what comes back is the smooth part of the second
-    derivative with the density-derivative flux block silently absent - a cross-gamma that looks
-    like a cross-gamma. Refused by name, naming the deal.
-
-    First-order behaviour is UNCHANGED, which is the half that makes the refusal a fall-back rather
-    than a loss: the same book at `Hessian: 'No'` prices, reports a CVA and reports `grad_cva`.
+    First order is UNCHANGED, which makes the refusal a fall-back rather than a loss: the same book
+    at `Hessian: 'No'` prices, reports a CVA and reports `grad_cva`.
     """
     book = [_forward('FWD1', FORWARD_PRICE), _autocall()]
     with pytest.raises(utils.SecondOrderRefused) as refusal:
@@ -516,18 +480,16 @@ def test_a_decision_product_refuses_the_hessian_and_keeps_its_gradient(tmp_path)
 def test_a_collateralised_set_is_refused_one_step_before_the_kink_term_sees_it(tmp_path):
     """WHY THE ATOM REFUSAL'S REMEDY DOES NOT NAME A MARGIN PERIOD, measured rather than asserted.
 
-    The collateralised net matched inside its threshold - pinned at the kink with a real `V_θ` - is
-    the case the atom refusal exists for, and it is the one case `exposure_kink_term` never sees. A
-    `NettingCollateralSet` with `Collateralized: 'True'` registers an `MTABoundarySet` whatever it
-    holds: the set below holds ONLY the linear forward, no barrier, no autocall, nothing that is a
-    decision product in the deal sense, and `Hessian: 'Yes'` is still refused by the decision-product
-    refusal naming NS1, upstream of the CVA objective's kink hook.
+    The collateralised net matched inside its threshold is the case the atom refusal exists for, and
+    the one case `exposure_kink_term` never sees: a `NettingCollateralSet` with
+    `Collateralized: 'True'` registers an `MTABoundarySet` whatever it holds, so the set below - only
+    the linear forward, no decision product - is still refused by the decision-product refusal
+    naming NS1, upstream of the CVA objective's kink hook.
 
-    So a refusal telling a caller to "price the set with a margin period or a threshold" would be an
-    instruction to build a book this build refuses for a different reason, which is what the message
-    used to say. The gate that keeps it honest is this one, plus the wording assertion above.
+    So a refusal telling a caller to price the set with a margin period would instruct them to build
+    a book this build refuses for a different reason.
 
-    First order is unaffected, as everywhere else in this posture: `cva` 0.0631180 at 1024 paths.
+    First order is unaffected: `cva` 0.0631180 at 1024 paths.
     """
     job = _job(hessian='Yes', paths=1024)
     job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal'].update({

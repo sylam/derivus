@@ -11,41 +11,31 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""The seam between the engine and the book of record, driven through both of them at once.
+"""The seam between the engine and the book of record, driven through both at once.
 
-`test_spine_verbs.py` gates the spine half with no engine anywhere near it. This file is the other
-half and it is deliberately the expensive one: real homes in temp directories, a real book file, a
-real `BaseValuation` through actual `derivus`, and the real `Market Prices` partition. Nothing is
-monkeypatched - the injected executor is an ordinary function, which is the seam's own design, and
-every fault is data on disk.
+`test_spine_verbs.py` gates the spine half with no engine near it; this is the expensive other
+half - real homes in temp directories, a real book file, a real `BaseValuation`, the real
+`Market Prices` partition. Nothing is monkeypatched: the injected executor is an ordinary
+function, which is the seam's own design, and every fault is data on disk.
 
-THE SWITCH IS `DV_SPINE_HOME` AND THE FIRST GATE IS THAT IT IS OFF. With it unset the edge behaves
-to the byte as it did before this increment existed: a lane is accepted and inert, no pending file
-grows a field, no verb writes anything, and the Context verbs refuse by name rather than reaching
-for a default home. That claim is the regression bar for the whole increment, so it is asserted
-first and asserted on the same book the recording gates use.
+THE SWITCH IS `DV_SPINE_HOME` AND THE FIRST GATE IS THAT IT IS OFF: with it unset the edge behaves
+to the byte as it did before this increment, and the Context verbs refuse BY NAME rather than
+reaching for a default home. That is the regression bar, asserted first.
 
-What the rest of the file holds, in the brief's own words:
-
-  * ATTESTATION LANES, all four. A synthetic tick sequence mints nothing, ABSENCE asserted against
-    a head that does not move. A curiosity run mints nothing. A `result_pinned` that fails
-    re-execution is refused by name - re-executed through the real engine, against the real
-    document the record stored. One matching a known tuple resolves as a cache hit against the
-    original attestation, and the executor is never called, which is counted rather than believed.
-  * PROVENANCE, in the minimal honest form the increment can carry: the plan hash is RE-DERIVED by
-    recompiling the blob-stored job document at the recorded LSN and required to equal the recorded
-    tuple - the auditor's own move, made mechanical. The compiler-as-a-fold over fixings
-    supersession is increment 4's; what is gated here is that the object the fold will read is
-    stored, addressed and recompiles.
-  * FIRMNESS, all three. A book that moved refuses on the plan dimension; a market pin past its
-    window refuses on the values dimension; and the two are DISJOINT - a pure vol tick through the
-    real partition moves `values_hash`, leaves `plan_hash` bit-identical, and does not trip the
-    plan dimension. That last one is the gate the `Market Prices` partition prerequisite existed
-    for, asserted on a fixture that ticks a vol with no booking in sight.
+  * ATTESTATION LANES, all four. Telemetry and curiosity mint nothing, asserted as ABSENCE against
+    a head that does not move; a `result_pinned` that fails re-execution is refused by name,
+    re-executed through the real engine; one matching a known tuple resolves as a cache hit with
+    the executor counted rather than believed.
+  * PROVENANCE: the plan hash is RE-DERIVED by recompiling the blob-stored job document at the
+    recorded LSN and required to equal the recorded tuple. The compiler-as-a-fold over fixings is
+    increment 4's; what is gated here is that the object it will read is stored and recompiles.
+  * FIRMNESS, all three: a moved book refuses on the plan dimension, an aged market pin on the
+    values dimension, and the two are DISJOINT - a vol tick through the real partition moves
+    `values_hash`, leaves `plan_hash` bit-identical, and does not trip the plan dimension.
   * ATOMICITY: a priced ticket references exactly one values hash and one book plan, and both
     staleness policies fire on a deliberately aged fixture.
-  * THE DUAL WRITE'S ORDER: under a spine home the event goes first and the book file follows, and
-    a booking the record refuses leaves the file byte-identical.
+  * THE DUAL WRITE'S ORDER: the event goes first and the book file follows, and a booking the
+    record refuses leaves the file byte-identical.
 """
 import hashlib
 import itertools
@@ -90,8 +80,7 @@ COLLAR = {'pair': 'USDZAR', 'expiry': '1Y', 'notional': AMOUNT,
 
 
 def job(deals=(CASHFLOW,), factors=FACTORS, sections={}, **calculation):
-    """A job document as the objects a market data file holds - the same shape `test_service`
-    authors, so what reaches the endpoint here is what reaches it there."""
+    """A job document as the objects a market data file holds - `test_service`'s own shape."""
     return {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
                              'MCMC_Simulations': 1, 'Random_Seed': 1}, **calculation),
@@ -103,8 +92,8 @@ def job(deals=(CASHFLOW,), factors=FACTORS, sections={}, **calculation):
 
 
 def netting_set(reference, counterparty, deals=()):
-    """One `NettingCollateralSet` naming its counterparty where the engine reads it - which is also
-    where a fill's counterparty comes from, so the two cannot name different clients."""
+    """One `NettingCollateralSet` naming its counterparty where the engine reads it, which is also
+    where a fill's counterparty comes from - so the two cannot name different clients."""
     return {'Instrument': {'.Deal': {
         'Object': 'NettingCollateralSet', 'Reference': reference, 'Netted': 'True',
         'Collateralized': 'False', 'Agreement_Currency': 'USD', 'Balance_Currency': 'USD',
@@ -121,8 +110,7 @@ def dump(document):
 
 def fx_vol_snapshot(atm_3m=14.0):
     """A USDZAR snapshot through the Bloomberg package's own normalization - canned observations
-    standing in for the terminal, everything downstream of them the real pipeline. `atm_3m` is what
-    a TICK moves, and it is the whole of what moves."""
+    standing in for the terminal, the real pipeline downstream. `atm_3m` is all a TICK moves."""
     from derivus_bloomberg import (FXQuoteSecurity, FXVolDefinition, RawBloombergObservation,
                                    normalize_fx_vol)
     raw = {('3M', 'ATM', None): atm_3m, ('3M', 'RR', 0.25): -1.2, ('3M', 'BF', 0.25): 0.35,
@@ -150,8 +138,8 @@ def fx_vol_quotes(atm_3m=14.0):
 
 @pytest.fixture
 def unrecorded(tmp_path, monkeypatch):
-    """A desk with NO spine home - the posture every existing gate in this suite runs under, made
-    explicit so that a developer box carrying the variable cannot make this file lie."""
+    """A desk with NO spine home, made explicit so a developer box carrying the variable cannot make
+    this file lie."""
     monkeypatch.delenv('DV_SPINE_HOME', raising=False)
     monkeypatch.delenv('DV_SPINE_ACTOR', raising=False)
     monkeypatch.setenv('DV_HOME', str(tmp_path))
@@ -160,8 +148,8 @@ def unrecorded(tmp_path, monkeypatch):
 
 @pytest.fixture
 def recorded(tmp_path, monkeypatch):
-    """A minted spine home, configured, with an actor for the appends. Genesis is four events, so
-    every head assertion below counts from there."""
+    """A minted spine home with an actor for the appends. Genesis is four events, so every head
+    assertion below counts from there."""
     home = tmp_path / 'spine'
     init_home(home, ACTOR)
     monkeypatch.setenv('DV_SPINE_HOME', str(home))
@@ -211,9 +199,8 @@ def head(home):
 
 
 def facts(home, event_type=None):
-    """`(lsn, type, body)` for every event on the record, or every one of a type. Read off the
-    platter and decrypted, because that is the assertion everywhere here: what is claimed is what
-    the log actually holds."""
+    """`(lsn, type, body)` for every event on the record, or every one of a type - read off the
+    platter and decrypted, because the assertion everywhere here is what the log actually holds."""
     log = opened(home)
     try:
         return [(frame['lsn'], frame['event_type'], log.open_body(frame))
@@ -245,12 +232,10 @@ def submit(document, **body):
 
 
 def own_job(marker, **calculation):
-    """A job whose replay tuple belongs to ONE gate.
-
-    The result store is content-addressed and lives for the length of the process, so two gates
-    posting the same job would be one execution and the second would read the first's answer. That
-    is the feature working, and it is also a way to write a gate that passes for the wrong reason -
-    so every gate here moves one number nobody asserts on, and owns its own tuple.
+    """A job whose replay tuple belongs to ONE gate. The result store is content-addressed and lives
+    for the length of the process, so two gates posting the same job would be one execution and the
+    second would read the first's answer - the feature working, and a way to pass for the wrong
+    reason. Every gate moves one number nobody asserts on.
     """
     offset = int(hashlib.sha256(marker.encode('utf-8')).hexdigest()[:4], 16)
     return job(deals=(dict(CASHFLOW, Reference=marker, Amount=AMOUNT + offset),), **calculation)
@@ -267,14 +252,10 @@ WORKER_SECONDS = 30.0
 
 
 class Barrier:
-    """A job that HOLDS the single worker until the gate lets it go.
-
-    Nothing is patched to get this: the executor runs whatever object it is handed that answers
-    `run_job`, which is how `XvaJob`, `SolveJob` and `BloombergJob` already ride it, and this is one
-    more of those - submitted through the public `submit`, dequeued by the real worker, released by
-    the gate. It is what turns "a submission observed while the same tuple is still queued" from a
-    timing window into a fact, and it is why the in-flight gate below is deterministic rather than
-    flaky.
+    """A job that HOLDS the single worker until the gate lets it go. Nothing patched: the executor
+    runs whatever object answers `run_job`, which is how `XvaJob`, `SolveJob` and `BloombergJob`
+    already ride it. It turns "a submission observed while the same tuple is still queued" from a
+    timing window into a fact.
     """
 
     def __init__(self):
@@ -288,12 +269,10 @@ class Barrier:
 
 
 def holding(counter=itertools.count()):
-    """Back the one worker up behind a barrier, and answer it. The queue is drained first, so what
-    is waiting behind the barrier afterwards is only what the gate puts there.
-
-    Each barrier is filed under a name of its own, because the result store is content-addressed
-    and lives for the length of the process: a second barrier under one name would coalesce onto
-    the first, never be dequeued, and hang the gate that waited for it instead of failing it.
+    """Back the one worker up behind a barrier and answer it. The queue is drained first, so what
+    waits behind the barrier is only what the gate puts there. Each barrier is filed under its own
+    name: the result store is content-addressed, so a second under one name would coalesce onto the
+    first, never be dequeued, and hang the gate instead of failing it.
     """
     service.EXECUTOR.queue.join()
     barrier = Barrier()
@@ -315,12 +294,8 @@ def quote_of(structure, params, **extra):
 # The switch, off.
 
 def test_the_lane_names_the_engine_spells_are_the_lanes_the_record_knows():
-    """Two spellings of one vocabulary, pinned together.
-
-    The engine names the lanes at call sites that must not pay for the spine import to do it, so
-    `derivus.spine` carries its own three strings - `capability.py`'s reason for spelling the
-    genesis policy names itself, met from the other side. A pin is what keeps two spellings from
-    drifting into two vocabularies, and this is it.
+    """Two spellings of one vocabulary, pinned together: the engine names the lanes at call sites
+    that must not pay for the spine import, so `derivus.spine` carries its own three strings.
     """
     assert (spine.TELEMETRY, spine.CURIOSITY, spine.STANDING) == (
         verbs.TELEMETRY, verbs.CURIOSITY, verbs.STANDING)
@@ -329,12 +304,10 @@ def test_the_lane_names_the_engine_spells_are_the_lanes_the_record_knows():
 
 
 def test_importing_the_engine_lands_neither_the_spine_nor_its_one_dependency():
-    """The extra is an EXTRA, proved the way the spine's own import gate proves its budget: a fresh
-    interpreter imports the engine, the seam and the HTTP surface, and reports what arrived.
-
-    `pip install derivus` must not grow a `cryptography` dependency for a book of record that box
-    does not run - the `fastapi` precedent one module over, and the reason every import in
-    `derivus/spine.py` is inside the function that needs it rather than at the top of the file.
+    """The extra is an EXTRA: a fresh interpreter imports the engine, the seam and the HTTP surface
+    and reports what arrived. `pip install derivus` must not grow a `cryptography` dependency for a
+    book of record that box does not run, which is why every import in `derivus/spine.py` is inside
+    the function that needs it.
     """
     import subprocess
 
@@ -352,16 +325,12 @@ def test_importing_the_engine_lands_neither_the_spine_nor_its_one_dependency():
 
 
 def test_with_no_spine_home_the_edge_is_the_edge_it_always_was(unrecorded, desk):
-    """THE REGRESSION BAR, asserted rather than assumed.
-
-    Enforcement by declaration was increment 2's precedent and this is its shape here: no home
-    configured means the record does not exist as far as the engine is concerned. A lane is
-    accepted and INERT - including one nobody has ever heard of, because there is nothing here for
-    it to be wrong about - a booking books, a quote files the pending trade with no `pinned` field,
-    and the Context verbs refuse by NAME rather than reaching for a default home. That last one is
-    the sharpest: `DV_Spine` falls back to `~/.derivus_spine` because a person typing a verb means
-    that home, and an engine that fell back would start recording on any box where somebody once
-    ran `init`.
+    """THE REGRESSION BAR. No home configured means the record does not exist as far as the engine
+    is concerned: a lane is accepted and INERT - including one nobody has heard of - a booking
+    books, a quote files with no `pinned` field, and the Context verbs refuse BY NAME rather than
+    reaching for a default. That last is the sharpest: `DV_Spine` falls back to `~/.derivus_spine`
+    because a person typing a verb means that home, and an engine that fell back would start
+    recording on any box where somebody once ran `init`.
     """
     assert spine.home() is None and spine.configured() is False
 
@@ -386,10 +355,9 @@ def test_with_no_spine_home_the_edge_is_the_edge_it_always_was(unrecorded, desk)
 
 
 def test_a_configured_home_that_is_not_a_home_refuses_by_name(tmp_path, monkeypatch, desk):
-    """Set but not minted is a NAMED refusal, never a quiet fall-back: "the deployment configured a
-    home that is not there" and "the deployment configured none" are different facts, and reading
-    the first as the second would silently un-record a box somebody meant to record. The refusal is
-    the spine's own sentence about what a home is made of, carried through unedited."""
+    """Set but not minted is a NAMED refusal and never a quiet fall-back: "configured a home that is
+    not there" and "configured none" are different facts, and reading the first as the second would
+    silently un-record a box somebody meant to record."""
     monkeypatch.setenv('DV_SPINE_HOME', str(tmp_path / 'never-minted'))
     monkeypatch.setenv('DV_SPINE_ACTOR', ACTOR)
     refused = CLIENT.post('/execute', content=dump(dict(own_job('NO-HOME'),
@@ -401,9 +369,9 @@ def test_a_configured_home_that_is_not_a_home_refuses_by_name(tmp_path, monkeypa
 
 
 def test_a_configured_home_still_refuses_an_append_nobody_signed(recorded):
-    """A home is configured and an actor is not: every event carries the pseudonymous subject
-    reference that submitted it, so there is nothing to stamp and the verb refuses by name.
-    Inventing one would put a name in the record that nobody chose."""
+    """A home configured and an actor not: every event carries the pseudonymous subject reference
+    that submitted it, so there is nothing to stamp and the verb refuses by name rather than
+    putting a name in the record that nobody chose."""
     os.environ.pop('DV_SPINE_ACTOR')
     context = derivus.Context().load_json((dump(job()), 'posted'))
     with pytest.raises(spine.SpineRefused) as refusal:
@@ -416,12 +384,10 @@ def test_a_configured_home_still_refuses_an_append_nobody_signed(recorded):
 # The lanes.
 
 def test_a_standing_run_attests_at_birth_and_the_other_lanes_mint_nothing(recorded, desk):
-    """The brief's rule in one gate: *a run is recorded IFF its output will be cited by a fact.*
-
-    Telemetry and curiosity mint NOTHING and the assertion is ABSENCE - the head does not move
-    across either, which is the only honest way to say "nothing was recorded". A standing run
-    appends `run_completed` with the whole replay tuple at birth, and the result reports the LSN it
-    landed at so a caller can cite it without folding for it.
+    """A run is recorded IFF its output will be cited by a fact. Telemetry and curiosity mint
+    NOTHING and the assertion is ABSENCE - the head does not move - which is the only honest way to
+    say so. A standing run appends `run_completed` with the whole replay tuple at birth and reports
+    the LSN it landed at, so a caller can cite it without folding for it.
     """
     genesis = head(recorded)
     for silent in (spine.TELEMETRY, spine.CURIOSITY):
@@ -449,14 +415,11 @@ def test_a_standing_run_attests_at_birth_and_the_other_lanes_mint_nothing(record
 
 
 def test_a_synthetic_tick_sequence_mints_nothing_and_the_absence_is_asserted(recorded, quoting):
-    """The brief's telemetry gate: *a telemetry repaint mints no event, asserted by absence over a
-    synthetic tick sequence.*
-
-    The sequence is real work on a real book - four market ticks moving the ATM vol, each one
-    installing quotes, re-bootstrapping the surface and rewriting the file, with a what-if priced
-    between them. Every one of those is a READING: superseded by the next before anything could
-    cite it. So the head does not move once, and the assertion is the head, not a filtered count -
-    a count would pass on a log full of the wrong events.
+    """A telemetry repaint mints no event, asserted by absence over a synthetic tick sequence: four
+    market ticks moving the ATM vol, each installing quotes, re-bootstrapping the surface and
+    rewriting the file, with a what-if priced between them. Every one is a READING, superseded
+    before anything could cite it. The assertion is the HEAD and not a filtered count, which would
+    pass on a log full of the wrong events.
     """
     genesis = head(recorded)
     for atm in (14.1, 14.2, 14.3, 14.4):
@@ -465,10 +428,8 @@ def test_a_synthetic_tick_sequence_mints_nothing_and_the_absence_is_asserted(rec
         assert ticked['written'] is True and ticked['updated'] == ['FXVolPrices.USD.ZAR']
         priced = CLIENT.post('/book/price', json={}).json()
         assert priced['status'] in ('queued', 'running', 'done')
-        # drain before the next tick. `market_edit`'s capture is bound to its own thread since
-        # 2026-09-01, so a pricing thread's ERROR no longer refuses a tick that was fine (the
-        # roadmap row is CLOSED); the drain stays because what this gate asserts is a head that has
-        # not moved, and a run still in flight at the last tick has not finished minting nothing
+        # drain before the next tick: what this gate asserts is a head that has NOT moved, and a
+        # run still in flight at the last tick has not finished minting nothing
         service.EXECUTOR.queue.join()
 
     assert head(recorded) == genesis, 'a repaint reached the book of record'
@@ -477,15 +438,12 @@ def test_a_synthetic_tick_sequence_mints_nothing_and_the_absence_is_asserted(rec
 
 
 def test_a_standing_run_whose_numbers_already_exist_still_attests(recorded, desk):
-    """Content addressing dedupes NUMBERS; the lane is about STANDING. The two must not be
-    conflated, and this gate is where they would be.
-
-    The same job priced first as a what-if and then declared standing coalesces onto a result the
-    worker will never revisit - so an attestation made only at completion would never be made at
-    all, and a fact would go on to cite numbers the record does not hold. So the standing
-    submission attests from the store the run was filed in, the result gains its `attested` block
-    where `/results` will serve it, and a third submission coalesces on the attestation's own
-    idempotency tag rather than writing a second row about one run.
+    """Content addressing dedupes NUMBERS; the lane is about STANDING, and this is where the two
+    would be conflated. A job priced first as a what-if and then declared standing coalesces onto a
+    result the worker will never revisit, so an attestation made only at completion would never be
+    made and a fact would cite numbers the record does not hold. The standing submission attests
+    from the store instead, and a third submission coalesces on the attestation's own idempotency
+    tag rather than writing a second row about one run.
     """
     document = own_job('COALESCED')
     genesis = head(recorded)
@@ -502,8 +460,8 @@ def test_a_standing_run_whose_numbers_already_exist_still_attests(recorded, desk
     again = submit(document, lane=spine.STANDING)
     assert again['attested'] == standing['attested'] and head(recorded) == genesis + 1
 
-    # the bytes the record holds ARE the ones the store was serving, which is the property that
-    # makes attesting off a finished result honest rather than convenient
+    # the bytes the record holds ARE the ones the store was serving, which is what makes attesting
+    # off a finished result honest rather than convenient
     _, _, body = facts(recorded, 'run_completed')[0]
     assert blob(recorded, body['result']) == spine.result_stored(
         service.EXECUTOR.result(standing['result_id']))
@@ -511,22 +469,16 @@ def test_a_standing_run_whose_numbers_already_exist_still_attests(recorded, desk
 
 
 def test_a_standing_run_that_coalesces_onto_one_in_flight_is_attested_when_it_lands(recorded, desk):
-    """The other half of the gate above, and the half a `done` status cannot reach.
+    """The other half, which a `done` status cannot reach. The same tuple explored first and
+    declared standing a moment later coalesces while the numbers do NOT exist yet, so the standing
+    caller is handed `queued` and the job the worker dequeues is the WHAT-IF's, carrying a lane
+    that mints nothing - so an attestation read off the dequeued submission would never be made and
+    the standing caller would be served numbers with no `run_completed` behind them.
 
-    The same tuple explored first and declared standing a moment later coalesces exactly as it does
-    when the numbers already exist - except that here the numbers do NOT exist yet, so the status
-    the standing caller is handed is `queued` and there is nothing on this thread to attest. The
-    job the worker will dequeue is the WHAT-IF's, carrying a lane that mints nothing, so an
-    attestation read off the dequeued submission alone would never be made: the standing caller
-    would be served numbers with no `run_completed` behind them and no refusal either, which is the
-    unbacked citation the lane rule exists to prevent, arriving silently.
-
-    So the standing submission is promoted onto the run inside `submit`, under the lock that
-    publishes results, and the worker attests THAT submission when the numbers land. The gate
-    asserts the head twice: unmoved while the run is in flight, and moved by exactly one
-    `run_completed` in the standing lane once it publishes. `running` is the same arm of the same
-    branch as `queued` - one dict lookup apart - and the barrier is what makes `queued` observable
-    without a race.
+    The standing submission is promoted onto the run inside `submit`, under the lock that publishes
+    results, and the worker attests THAT submission. The head is asserted twice: unmoved while the
+    run is in flight, moved by exactly one `run_completed` once it publishes. The barrier is what
+    makes `queued` observable without a race.
     """
     genesis = head(recorded)
     barrier = holding()
@@ -560,10 +512,9 @@ def test_a_standing_run_that_coalesces_onto_one_in_flight_is_attested_when_it_la
 
 
 def test_an_attestation_the_record_refuses_fails_the_run_it_was_for(recorded, desk):
-    """A standing run whose attestation is refused has NOT acquired standing, so serving its
-    numbers as though it had would be exactly the unbacked citation the lane rule exists to
-    prevent. The refusal travels as the run's own error, in the spine's own wording, and the record
-    holds the denial and nothing else."""
+    """A standing run whose attestation is refused has NOT acquired standing, so serving its numbers
+    would be the unbacked citation the lane rule prevents. The refusal travels as the run's own
+    error and the record holds the denial and nothing else."""
     log = opened(recorded)
     try:
         blob_id = log.store.put(json.dumps(
@@ -582,11 +533,10 @@ def test_an_attestation_the_record_refuses_fails_the_run_it_was_for(recorded, de
 
 
 def test_a_standing_run_off_a_plan_id_refuses_by_name(recorded, desk):
-    """A `plan_id` names a PARSE the cache holds, and an attestation carries the job document the
-    plan recompiles from. `Context.save_json` is explicitly not a complete round trip, so
-    serialising the parse back would store a document that is not the one that ran - and a
-    provenance chain whose first link is a document nobody can recompile is worse than none. The
-    refusal names the remedy; the curiosity lane over the same plan still runs."""
+    """A `plan_id` names a PARSE the cache holds, where an attestation carries the job document the
+    plan recompiles from. `Context.save_json` is not a complete round trip, so serialising the
+    parse back would store a document that is not the one that ran. The refusal names the remedy;
+    the curiosity lane over the same plan still runs."""
     prepared = CLIENT.post('/prepare', content=dump(own_job('PLAN-ID')), headers=JSON).json()
     refused = CLIENT.post('/execute', json={'plan_id': prepared['plan_id'],
                                             'lane': spine.STANDING})
@@ -600,17 +550,13 @@ def test_a_standing_run_off_a_plan_id_refuses_by_name(recorded, desk):
 
 
 def test_only_a_standing_job_owes_an_attestation_whatever_evidence_it_carries(recorded, desk):
-    """`attests` is the ONE place that decides whether a finished run owes the record anything, and
-    it asks two questions: is this the standing lane, and is there evidence to attest from.
+    """`attests` asks two questions - is this the standing lane, and is there evidence to attest
+    from - and both are pinned because only one is load-bearing at today's call sites: every lane
+    but standing is handed evidence of None, so the lane test could stop working and every gate
+    here would pass, right up to the day another lane wants the job document too.
 
-    Both halves are pinned here because only one of them is load-bearing at today's call sites.
-    Every lane but standing is handed evidence of None, so the lane test could stop working
-    tomorrow and every gate in this file would go on passing - right up to the day some other lane
-    wants the job document too, which is increment 4's hydrating projection asking for exactly this
-    blob for a run nobody will cite. The failure that day is the silent kind: telemetry minting.
-
-    So the function is asked on its own terms, over plain tuples, with evidence present in every
-    lane - which is the only arrangement in which the lane test is the thing being tested.
+    So the function is asked over plain tuples with evidence present in EVERY lane, which is the
+    only arrangement in which the lane test is the thing being tested.
     """
     evidence = {'job': b'{"Calc":{}}', 'values': b'{}'}
     assert spine.configured() is True, 'this gate is about the recording posture'
@@ -619,27 +565,20 @@ def test_only_a_standing_job_owes_an_attestation_whatever_evidence_it_carries(re
         assert service.attests(service.Job('r', None, {}, silent, evidence)) is False, silent
     assert service.attests(service.Job('r', None, {}, spine.STANDING, evidence)) is True
 
-    # the other half, and it is the QUOTE's case: a standing run with nothing to attest from files
-    # the richer `quote_filed` instead, and a `run_completed` beside it would be two records of one
-    # act. A job carrying no lane at all is every submission any existing caller makes
+    # the other half is the QUOTE's case: a standing run with nothing to attest from files the
+    # richer `quote_filed`, and a `run_completed` beside it would be two records of one act
     assert service.attests(service.Job('r', None, {}, spine.STANDING, None)) is False
     assert service.attests(service.Job('r', None, {})) is False
 
 
 def test_the_stored_job_is_the_job_and_not_the_submission_that_carried_it(recorded, desk):
-    """What a standing attestation stores is the `Calc` ENVELOPE and nothing beside it.
+    """What a standing attestation stores is the `Calc` ENVELOPE and nothing beside it: a posted
+    body may also carry `Patch`, `lane` or `plan_id`, none of which is the job. This blob is the
+    FIRST LINK of the provenance chain, and the gate above would pass on either because the
+    engine's loader tolerates a surplus top-level key.
 
-    A posted body may also carry `Patch`, `lane` or `plan_id`, and not one of those is the job -
-    they are how the submission ARRIVED. The trim matters because this blob is the FIRST LINK of
-    the provenance chain: increment 4's auditor recompiles from exactly these bytes, and a link
-    that carried the request rather than the document would be a fold over something that never
-    ran. The gate above it recompiles the plan and would pass on either, because the engine's
-    loader tolerates a surplus top-level key - so the trim needs saying on its own.
-
-    The patch is NOT lost by it, which is the half that makes the trim safe: the values vector
-    filed beside the job carries the whole market as patched, which is the brief's own model of a
-    result as engine(plan, values) rather than engine(document). So this asserts both - the job is
-    the job, and the market the run actually read is recoverable from the record beside it.
+    The patch is not lost by it: the values vector filed beside the job carries the whole market as
+    patched, which is the model of a result as engine(plan, values). Both are asserted.
     """
     document = own_job('SUBMISSION-TRIM')
     moved = SPOT + 1.25
@@ -651,8 +590,8 @@ def test_the_stored_job_is_the_job_and_not_the_submission_that_carried_it(record
     assert sorted(stored) == ['Calc'], 'the submission rode into the record as the job'
     assert stored['Calc'] == json.loads(dump(document))['Calc']
 
-    # and the patch is in the VALUES vector, where the model says it lives - so the tuple the
-    # record holds is reproducible from the two blobs it cites and from nothing else
+    # the patch is in the VALUES vector, so the tuple the record holds is reproducible from the two
+    # blobs it cites and from nothing else
     context = derivus.Context().load_json((json.dumps(stored), 'recompiled'))
     context.patch_market(spine.read_values(blob(recorded, body['values_hash'])))
     assert context.values_hash() == body['values_hash']
@@ -663,8 +602,8 @@ def test_the_stored_job_is_the_job_and_not_the_submission_that_carried_it(record
 
 def test_an_unknown_lane_refuses_where_the_record_will_act_on_it(recorded, desk):
     """With a home configured a lane is a decision the record acts on, so an unknown one is refused
-    by name rather than read as the default. The refusal is `derivus_spine.verbs.check_lane`'s own -
-    the lanes are the record's vocabulary, not the service's."""
+    by name rather than read as the default - and the refusal is `verbs.check_lane`'s own, the
+    lanes being the record's vocabulary and not the service's."""
     refused = CLIENT.post('/execute',
                           content=dump(dict(own_job('UNKNOWN-LANE'), lane='exploration')),
                           headers=JSON)
@@ -677,20 +616,14 @@ def test_an_unknown_lane_refuses_where_the_record_will_act_on_it(recorded, desk)
 # Provenance: the plan recompiles, and the result reproduces.
 
 def test_the_plan_hash_recompiles_from_the_stored_job_at_the_recorded_lsn(recorded, desk):
-    """The brief's plan-recompilation gate, in the minimal honest form this increment can carry:
-    *recompile the synthetic book's plan at its recorded LSN and require the identical plan hash.*
+    """Recompile the book's plan at its recorded LSN and require the identical plan hash - the
+    auditor's move, made mechanical. The record stores the JOB DOCUMENT rather than the plan,
+    because a plan is re-derivable and the record never trusts what it can re-derive: the gate
+    pulls the cited blob, loads it through the engine's decoder, applies the cited values vector
+    and requires BOTH hashes back, then re-executes and requires the result bytes to the byte.
 
-    The auditor's move, made mechanical. The record stores the JOB DOCUMENT rather than the plan,
-    because a plan is re-derivable and the record never trusts what it can re-derive: so the gate
-    pulls the blob the attestation cites, loads it through the engine's own decoder, applies the
-    values vector the same attestation cites, and requires BOTH hashes to come back the ones the
-    tuple recorded. It then re-executes and requires the result bytes to reproduce to the byte -
-    which is the tolerance policy's fast path, exercised where it should land.
-
-    THE BOUNDARY, stated: this recompiles the document the run was submitted with. The compiler as
-    a FOLD - terms plus the fixings each schedule declares, queried from the log with supersession
-    resolved - is increment 4's, and until it exists the object the fold will read is what is being
-    gated here: stored, addressed, and recompiling to its own hash.
+    THE BOUNDARY: this recompiles the document the run was submitted with. The compiler as a FOLD
+    over fixings is increment 4's; until it exists, the object it will read is what is gated here.
     """
     standing = drained(submit(own_job('PROVENANCE'), lane=spine.STANDING))
     lsn, _, body = facts(recorded, 'run_completed')[0]
@@ -699,7 +632,7 @@ def test_the_plan_hash_recompiles_from_the_stored_job_at_the_recorded_lsn(record
     stored_job = blob(recorded, body['job'])
     stored_values = blob(recorded, body['values_hash'])
     stored_result = blob(recorded, body['result'])
-    # the values citation and the store address are ONE number, which is what lets the engine's own
+    # the values citation and the store address are ONE number, which is what lets the engine's
     # hash be a blob id at all
     assert hashlib.sha256(stored_values).hexdigest() == body['values_hash']
 
@@ -716,10 +649,10 @@ def test_the_plan_hash_recompiles_from_the_stored_job_at_the_recorded_lsn(record
 # Promotion, through the real engine.
 
 def test_a_result_pinned_matching_a_known_tuple_cache_hits_without_re_executing(recorded, desk):
-    """A tuple this hub attested itself needs no re-execution, and the gate counts rather than
-    believes: the executor handed in is a real function that records its calls, and it is never
-    called. The pin still lands and still names the tolerance policy in force, because a promotion
-    made under no declared standard is not one this record carries."""
+    """A tuple this hub attested itself needs no re-execution, and the gate COUNTS rather than
+    believes: the executor handed in records its calls and is never called. The pin still lands and
+    names the tolerance policy in force - a promotion under no declared standard is not one this
+    record carries."""
     declare(recorded, policy.TOLERANCE_POLICY, {'tolerances': {'mtm': 1e-9}})
     standing = drained(submit(own_job('CACHE-HIT'), lane=spine.STANDING))
     _, _, body = facts(recorded, 'run_completed')[0]
@@ -739,12 +672,10 @@ def test_a_result_pinned_matching_a_known_tuple_cache_hits_without_re_executing(
 
 
 def test_a_result_pinned_that_will_not_reproduce_is_refused_by_name(recorded, desk):
-    """The brief's own sentence, through the real engine on a tuple this hub never witnessed.
-
-    The claim is a genuine one - the plan and values hashes of a job the record has never seen -
+    """Through the real engine on a tuple this hub never witnessed: a genuine plan and values hash
     carrying a DOCTORED result. `Context.pin_result` injects the engine as the executor, the job
-    runs for real, and what comes back is not what was claimed: the refusal names the class, both
-    numbers and the tolerance policy the comparison was held to, and NOTHING is appended.
+    runs, and the refusal names the class, both numbers and the tolerance policy - and NOTHING is
+    appended. The honest claim over the same job then lands, reproducing to the byte.
     """
     declare(recorded, policy.TOLERANCE_POLICY, {'tolerances': {'mtm': 1e-9}})
     unseen = own_job('UNSEEN')
@@ -759,7 +690,6 @@ def test_a_result_pinned_that_will_not_reproduce_is_refused_by_name(recorded, de
     assert 'mtm' in said and 'Nothing is pinned' in said, said
     assert head(recorded) == standing, 'a refused pin wrote something'
 
-    # and the honest claim over the same job lands, re-executed and reproducing to the byte
     _, out = derivus.Context().load_json((dump(unseen), 'unseen')).run_job()
     pinned = derivus.Context().pin_result(
         spine.canonical(unseen), spine.values_of(context), spine.result_of(out),
@@ -772,13 +702,11 @@ def test_a_result_pinned_that_will_not_reproduce_is_refused_by_name(recorded, de
 # The Context verbs.
 
 def test_the_context_verbs_book_amend_and_file_the_three_lifecycle_facts(recorded):
-    """The five delegators on a real home. Each one canonicalises through the ENGINE's own encoder,
-    so an instrument's id is the content hash a job document would give it, and hands plain data to
-    the spine - which is what keeps storage out of every module under `derivus/` but this one.
-
-    `declare_market` is the one that uses its context: the values vector it points a name at is
-    THIS context's own, which is why officialness can be a property of the name while every vector
-    lives identically in the store.
+    """The five delegators on a real home. Each canonicalises through the ENGINE's own encoder, so
+    an instrument's id is the content hash a job document would give it, and hands plain data to
+    the spine - which keeps storage out of every module under `derivus/` but this one.
+    `declare_market` is the one that uses its context: the values vector it names is THIS
+    context's, which is why officialness is a property of the name.
     """
     context = derivus.Context().load_json((dump(job()), 'posted'))
     amended = dict(CASHFLOW, Amount=750_000.0)
@@ -815,14 +743,11 @@ def test_the_context_verbs_book_amend_and_file_the_three_lifecycle_facts(recorde
 
 
 def test_a_booking_through_the_book_verb_writes_the_event_before_the_file(recorded, desk):
-    """The dual write's ORDER, and the two fields a fill will not do without.
-
-    Under a spine home `/book/deals` appends the `fill` and then rewrites the book file, which is
-    the durability law applied to the pair: what is TRUE is on the platter before the desk's copy
-    of it is. So a booking the record refuses leaves the file byte-identical - asserted on the
-    bytes, not on the parse - and the three refusals name what they need: a quantity, an execution
-    reference, and a netting set with a counterparty on it, because a fill's body carries all
-    three and none of them has a defensible default.
+    """The dual write's ORDER: `/book/deals` appends the `fill` and then rewrites the book file, so
+    what is TRUE is on the platter before the desk's copy of it. A booking the record refuses
+    leaves the file byte-identical - asserted on the BYTES, not the parse - and the three refusals
+    name a quantity, an execution reference and a netting set with a counterparty, none of which
+    has a defensible default.
     """
     document = json.loads(desk.read_text())
     document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A'))
@@ -872,16 +797,13 @@ def test_a_booking_through_the_book_verb_writes_the_event_before_the_file(record
 
 def test_a_quote_pins_the_books_two_hashes_and_files_them_as_one_ticket(recorded, quoting,
                                                                         tmp_path):
-    """THE ATOMICITY GATE: *a priced ticket references exactly one values hash and one book plan.*
+    """THE ATOMICITY GATE: a priced ticket references exactly one values hash and one book plan.
+    One quote, one `quote_filed`, one of each in its body beside the solved coordinate and the
+    edge. The pending file carries the same pair, so the approval reads the pins off the desk's
+    copy while the record holds the authoritative one.
 
-    One quote, one `quote_filed`, and in its body exactly one of each - beside the coordinate that
-    was solved and the edge the desk took. The pending file carries the same pair, so the approval
-    reads the pins off the desk's own copy and the record holds the authoritative one.
-
-    The hashes are the BOOK's, taken before the live spot lands on the quote's copy: what an
-    approval asks is whether the market and the book this trade would LAND against have moved, and
-    a booking lands against the book's market. Which spot the legs were struck on is a different
-    question and `spot` already answers it.
+    The hashes are the BOOK's, taken before the live spot lands on the quote's copy: an approval
+    asks whether the market and the book this trade would LAND against have moved.
     """
     document, _ = service.BOOK.read()
     context = service.load(document)
@@ -905,14 +827,12 @@ def test_a_quote_pins_the_books_two_hashes_and_files_them_as_one_ticket(recorded
 
 
 class SpotMovingParams(dict):
-    """The quote's own parameters, which move the document's spot the instant `patch_live_spot`
-    reads the pair off them - which is the instant a terminal's crosses would land in production.
+    """The quote's own parameters, moving the document's spot the instant `patch_live_spot` reads
+    the pair off them - the instant a terminal's crosses would land in production.
 
-    THE GATE'S OWN DATA, not a patch of anything: `params` is a caller-supplied dict that
-    `StructureJob` only ever reads, and `patch_live_spot`'s first act is `params['pair']`. So a dict
-    that moves the spot on that read reproduces, deterministically and with no terminal in the room,
-    the one thing this box cannot otherwise produce - a live spot landing on the quote's copy of the
-    market. Every line of library code runs exactly as written.
+    THE GATE'S OWN DATA, not a patch: `params` is caller-supplied and `StructureJob` only reads it,
+    so a dict that moves the spot on `params['pair']` reproduces deterministically, with no
+    terminal in the room, the one thing this box cannot otherwise produce.
     """
 
     def __init__(self, params, document, spot):
@@ -929,21 +849,14 @@ class SpotMovingParams(dict):
 
 def test_a_quote_pins_the_book_before_the_live_spot_lands_on_its_copy(recorded, quoting):
     """The pins are the BOOK's, and the ordering that makes them so is gated rather than trusted.
-
     `StructureJob.run_job` takes its two hashes at the TOP, before `patch_live_spot` moves this
-    copy's spot, and the reason is the approval: what `/book/quote` asks is whether the market and
-    the book this trade would LAND against have moved, and a booking lands against the book's own
-    market. Pin after the spot patch and `values_hash` describes a market that exists only inside
-    one quote - so every approval on a box with a live terminal would refuse on the values
-    dimension, for a market that never moved, with a refusal naming a remedy that cannot work.
+    copy's spot: pin after and `values_hash` describes a market existing only inside one quote, so
+    every approval on a box with a live terminal would refuse on the values dimension for a market
+    that never moved, naming a remedy that cannot work.
 
-    NOTHING ELSE IN THIS FILE CAN SEE THAT. A desk box with no terminal never patches the spot, so
-    the two orderings answer identically and the claim rides on a comment. This gate supplies the
-    missing half as data - a params object that moves the spot exactly where the terminal's crosses
-    would - and then asserts the pin is the book's regardless.
-
-    The disjointness half comes free and is worth having twice: a SPOT is values-plane data like a
-    vol, so moving it moves `values_hash` and leaves `plan_hash` bit-identical.
+    Nothing else here can see that - a desk box with no terminal never patches the spot - so the
+    missing half is supplied as data. The disjointness half comes free: a SPOT is values-plane data
+    like a vol, so moving it moves `values_hash` and leaves `plan_hash` bit-identical.
     """
     document, _ = service.BOOK.read()
     book_context = service.load(document)
@@ -966,7 +879,7 @@ def test_a_quote_pins_the_book_before_the_live_spot_lands_on_its_copy(recorded, 
     assert body['plan_hash'] == book_context.plan_hash()
     assert blob(recorded, body['values_hash']) == spine.values_of(book_context)
 
-    # and the approval reads the same pair off the desk's copy, so it stands against the book
+    # the approval reads the same pair off the desk's copy, so it stands against the book
     verdict = spine.package().firmness.assess(
         {'plan_hash': body['plan_hash'], 'values_hash': body['values_hash']},
         {'plan_hash': book_context.plan_hash(), 'values_hash': book_context.values_hash()},
@@ -977,9 +890,8 @@ def test_a_quote_pins_the_book_before_the_live_spot_lands_on_its_copy(recorded, 
 
 def test_a_moved_book_refuses_the_approval_on_the_plan_dimension(recorded, quoting):
     """The book moved since the solve, so the marginal charge was priced against a portfolio this
-    trade would no longer join. Only the PLAN dimension refuses - the market has not been touched -
-    and the refusal names the dimension and its own remedy, which is what makes it actionable: a
-    desk told "stale" learns nothing; a desk told "the book moved" re-solves."""
+    trade would no longer join. Only the PLAN dimension refuses - the market was not touched - and
+    it names the dimension and the remedy: a desk told "stale" learns nothing."""
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
 
     document = json.loads(quoting.read_text())
@@ -999,12 +911,9 @@ def test_a_moved_book_refuses_the_approval_on_the_plan_dimension(recorded, quoti
 
 
 def test_an_aged_market_refuses_the_approval_on_the_values_dimension(recorded, quoting):
-    """The market pin is past its window, on a market that has not moved at all - a different
-    failure from a moved one, with a different remedy.
-
-    The fixture is aged DELIBERATELY and by declaration: a firmness policy with a zero-second
-    values window, put in the record as a hashed policy blob through the ordinary writer. That is
-    how the brief says staleness windows travel - policy is data - and it is what makes an aged
+    """The market pin is past its window on a market that has NOT moved - a different failure from
+    a moved one, with a different remedy. Aged by DECLARATION: a firmness policy with a zero-second
+    values window, put in the record as a hashed blob through the ordinary writer, which makes the
     fixture deterministic rather than a sleep.
     """
     declare(recorded, policy.FIRMNESS_POLICY, {'values_seconds': 0, 'plan_seconds': 600})
@@ -1020,10 +929,9 @@ def test_an_aged_market_refuses_the_approval_on_the_values_dimension(recorded, q
 
 
 def test_both_staleness_dimensions_fire_on_a_deliberately_aged_fixture(recorded, quoting):
-    """The other half of the brief's atomicity gate: *both staleness policies fire on deliberately
-    aged fixtures.* Two zero-second windows, one quote, and both dimensions named in one refusal -
-    because a quote stale on both has two remedies and reporting one sends a salesperson back into
-    the other."""
+    """Both staleness policies fire on a deliberately aged fixture: two zero-second windows, one
+    quote, both dimensions named in one refusal - a quote stale on both has two remedies, and
+    reporting one sends a salesperson back into the other."""
     declare(recorded, policy.FIRMNESS_POLICY, {'values_seconds': 0, 'plan_seconds': 0})
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
 
@@ -1035,17 +943,12 @@ def test_both_staleness_dimensions_fire_on_a_deliberately_aged_fixture(recorded,
 
 
 def test_a_vol_tick_moves_the_values_hash_and_never_trips_the_plan_dimension(recorded, quoting):
-    """THE DISJOINTNESS GATE, and the whole reason the `Market Prices` partition was a prerequisite.
-
-    A pure market tick with NO booking in sight: the ATM vol moves, the block value-updates, the
-    surface re-bootstraps and the book file is rewritten. Through the real partition that moves
-    `values_hash` and leaves `plan_hash` BIT-IDENTICAL - quote values are the values plane, and
-    pillars, expiries, conventions and everything a solve reads are the plan.
-
-    So the approval refuses on the values dimension and the plan dimension stands, and the gate
-    asserts the plan hash's bit-identity directly as well as through the verdict. Conflating them
-    would produce exactly the failure the brief names - an aged quote approvable at a dead market's
-    solve - wearing a single "staleness" number nobody could act on.
+    """THE DISJOINTNESS GATE, and the reason the `Market Prices` partition was a prerequisite. A
+    pure market tick with NO booking in sight - the ATM vol moves, the block value-updates, the
+    surface re-bootstraps, the file is rewritten - moves `values_hash` and leaves `plan_hash`
+    BIT-IDENTICAL: quote values are the values plane, and pillars, expiries and conventions the
+    plan. So the approval refuses on values while the plan dimension stands, asserted directly as
+    well as through the verdict.
     """
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
     _, _, pinned = facts(recorded, 'quote_filed')[0]
@@ -1073,12 +976,9 @@ def test_a_vol_tick_moves_the_values_hash_and_never_trips_the_plan_dimension(rec
 
 def test_a_firm_quote_books_the_mirror_and_the_fill_lands_before_the_file(recorded, quoting):
     """The whole approval under a spine home: three windows passed - the desk's `firm_seconds` and
-    the record's two dimensions - the `fill` appended, and then the file written.
-
-    The execution reference is the QUOTE ID, because a quote is an act and its id names that act,
-    which is the ticket id the brief's fill rule asks for. The quantity carries the DESK's side:
-    the quote is client paper and the approval books the mirror, so a client who bought leaves the
-    desk short and the quantity is negative.
+    the record's two dimensions - the `fill` appended, then the file written. The execution
+    reference is the QUOTE ID, a quote being an act its id names, and the quantity carries the
+    DESK's side: the quote is client paper and the approval books the mirror.
     """
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
     before = quoting.read_bytes()
@@ -1103,12 +1003,10 @@ def test_a_firm_quote_books_the_mirror_and_the_fill_lands_before_the_file(record
 
 def test_the_record_and_the_desk_file_disagree_only_in_the_order_they_were_written(recorded,
                                                                                    quoting):
-    """The whole increment's posture in one assertion: everything the record holds verifies from
-    genesis, and the desk file is a copy of part of it written afterwards.
-
-    A quote, an approval, a market tick and a standing run in one session, then the chain
-    re-derived from its own bytes by the replica-shaped verifier - entitled and chain-only both -
-    because a book of record that only its writer can check is not one.
+    """Everything the record holds verifies from genesis, and the desk file is a copy of part of it
+    written afterwards. A quote, an approval, a market tick and a standing run in one session, then
+    the chain re-derived from its own bytes by the replica-shaped verifier - entitled and
+    chain-only both, a book of record only its writer can check not being one.
     """
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
     assert CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']}).json()['written']

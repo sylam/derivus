@@ -1,48 +1,40 @@
 """The verified swap strip as an `InterestRatePrices` block - `derivus_bloomberg.ir_curve`.
 
-Nothing here opens a socket except the last gate, which skips by name where this workstation has no
-terminal. Everything else runs on ONE canned world - a seeded USD OIS strip and a seeded ZAR JIBAR
-strip, both walked through the package's real discovery grammar into a real verified map, with a
-poison table of dead prints authored on purpose - driven through the package's own reader
-(`BloombergSession`'s event walk, canned rows) and the real engine seams
-(`config.update_market_quote` and `bootstrappers.quote_nodes` / `quote_knots`, all imported
-READ-ONLY).
+Only the last gate opens a socket, and it skips by name where this workstation has no terminal.
+Everything else runs on ONE canned world - a seeded USD OIS strip and a seeded ZAR JIBAR strip,
+walked through the package's real discovery grammar into a real verified map with a poison table of
+dead prints - driven through the package's own reader and the real engine seams
+(`config.update_market_quote`, `bootstrappers.quote_nodes` / `quote_knots`), all imported READ-ONLY.
 
 WHAT IS HELD:
 
-  the budget       `ir_curve` imports the standard library, this package's own modules and a LAZY
-                   blpapi - read off the source and proved again in a fresh interpreter, which also
-                   shows the chain emitter's own no-pandas claim survives the two new modules
-  the declaration  the SHIPPED conventions, spelled out as data so the owner checks a gate rather
-                   than a paragraph; a currency with no `conventions` block refuses naming every
-                   missing field at once; a convention nobody reads refuses too
-  the selection    the documented prints and the documented rejects BY NAME - unverified, invalid,
-                   unpriced, off-market, crossed, undated, stale - one canned print per verdict
-  the conventions  land on the authored `Deal` blocks exactly as the seed declares them: the USD
-                   strip is an OIS-compounded `StructuredDeal` with one float item per fixing
-                   window, the ZAR strip a quarterly `SwapInterestDeal`, and the front point is the
-                   one the seed named rather than whichever overnight print was in the map
+  the budget       `ir_curve` imports the standard library, this package and a LAZY blpapi
+  the declaration  the SHIPPED conventions as data; a currency with no `conventions` block refuses
+                   naming every missing field at once; a convention nobody reads refuses too
+  the selection    the documented prints and rejects BY NAME - unverified, invalid, unpriced,
+                   off-market, crossed, undated, stale - one canned print per verdict
+  the conventions  land on the authored `Deal` blocks as the seed declares: USD an OIS-compounded
+                   `StructuredDeal` with one float item per fixing window, ZAR a quarterly
+                   `SwapInterestDeal`, and the front point the one the seed named
   the partition    the OIS fixing windows tile EVERY coupon exactly, so the two legs accrue the same
-                   span per coupon - including at a coupon boundary that lands on a weekend, which
-                   is where the float leg used to lose two days of a one-year accrual
-  the quote       is NOT authored into the deal - every rate-carrying field is a neutral zero and
-                   the print rides in `Quoted_Market_Value`, which is WHY a re-tick is a tick
+                   span - including at a coupon boundary on a weekend, where the float leg used to
+                   lose two days of a one-year accrual
+  the quote        is NOT authored into the deal - every rate-carrying field is a neutral zero and
+                   the print rides in `Quoted_Market_Value`, which is why a re-tick is a tick
   the knot rule    one knot per used quote at its last cashflow date; two benchmarks maturing on one
                    day refuse by name rather than reaching the solve as a singular Jacobian
-  the round trip   `update_market_quote` installs the block and UPDATES a value-only re-tick; a
-                   moved convention refuses as a new plan, and a ROLLED DATE reaches the book
-                   through `reauthor`
-  the fields       every authored deal key is a field the COMMITTED instrument schema declares, and
-                   every declared key it omits is one the engine stamps or an admin key - which is
-                   what `construct_instrument` does NOT check, so nothing else would say so
-  the compile      the engine's own `quote_nodes` / `quote_knots` construct the authored deals and
-                   read their last cashflow dates - no solve, and no schema check either
+  the round trip   `update_market_quote` installs and UPDATES a value-only re-tick; a moved
+                   convention refuses as a new plan, and a ROLLED DATE goes through `reauthor`
+  the fields       every authored deal key is a field the COMMITTED instrument schema declares -
+                   which `construct_instrument` does NOT check, so nothing else would say so
+  the compile      `quote_nodes` / `quote_knots` construct the deals and read their last cashflow
+                   dates - no solve, no schema check
   determinism      the same canned answers emit the same bytes
   the taxonomy     a broken seed is a CONFIGURATION refusal and never a no-terminal skip
   live smoke       one real strip off this workstation's terminal, or a skip by name
 
-NO MONKEYPATCHING. The canned terminal is a `BloombergSession` subclass whose event walk yields
-rows, which is `test_bloomberg_discover.Walked` verbatim; the engine is imported and never touched.
+NO MONKEYPATCHING: the canned terminal is a `BloombergSession` subclass whose event walk yields
+rows, and the engine is imported and never touched.
 """
 import ast
 import copy
@@ -69,46 +61,30 @@ AS_OF = datetime.date(2026, 8, 31)        # a Monday
 YESTERDAY = '2026-08-28'                  # the Friday before it - a live print
 LONG_AGO = '2026-07-15'                   # past any sane stale bound
 
-#: WHAT "NO TERMINAL ON THIS WORKSTATION" ACTUALLY LOOKS LIKE - and the reason the live smokes catch
-#: this tuple rather than `BloombergFXError`.
-#:
-#: `BloombergConfigurationError` hangs off that base with everything else (one taxonomy, one base -
-#: `errors.py` says why, and `derivus.service` and `derivus_mcp` catch it), so a smoke gate catching
-#: the BASE reads a BROKEN SEED as an absent terminal and skips green. A workstation whose
-#: `seed.json` had lost its `conventions` block would report "no Bloomberg terminal answering" while
-#: the terminal answered perfectly well - the one failure a smoke gate exists to surface, reported as
-#: the one thing it is allowed to skip for. The hierarchy is left alone and the CATCH SITES are
-#: narrowed instead: these two are the transport, and nothing else is.
+#: The transport failures, and nothing else - why the live smokes catch this tuple rather than
+#: `BloombergFXError`. `BloombergConfigurationError` hangs off that base with everything else, so a
+#: smoke catching the BASE reads a BROKEN SEED as an absent terminal and skips green. The hierarchy
+#: is left alone; the CATCH SITES are narrowed.
 NO_TERMINAL = (BloombergUnavailable, BloombergRequestError)
 
 
 def no_terminal_reason(error):
     """Why a live smoke is skipping, NAMED FOR WHAT ACTUALLY HAPPENED.
 
-    The two members of `NO_TERMINAL` are not the same event and a desk does different things about
-    them. `BloombergUnavailable` is the absent terminal - no SDK, no session, nothing listening, and
-    the gate is simply not runnable here. `BloombergRequestError` is a terminal that ANSWERED AND
-    REFUSED: a timeout, or the one this workstation meets most often -
-
-        responseError = { code = -4001  category = "LIMIT"
-                          message = "Daily capacity reached."
-                          subcategory = "DAILY_CAPACITY_REACHED" }
-
-    - the daily data quota, spent, which is a thing to wait out or go and raise rather than a
-    workstation without a terminal. Reporting that as "no Bloomberg terminal answering" is the same
-    mistake as reporting a broken seed that way, one step milder: a skip has to name the thing
-    somebody would go and fix, or the census it lands in says the wrong thing about the desk.
+    `BloombergUnavailable` is the absent terminal - no SDK, no session, nothing listening.
+    `BloombergRequestError` is a terminal that ANSWERED AND REFUSED: a timeout, or this
+    workstation's usual `DAILY_CAPACITY_REACHED`, which is a thing to wait out rather than a
+    workstation without a terminal. A skip has to name the thing somebody would go and fix.
     """
     if isinstance(error, BloombergUnavailable):
         return 'no Bloomberg terminal answering on this workstation: {}'.format(error)
     return 'this workstation\'s terminal answered and refused the request ({}): {}'.format(
         type(error).__name__, error)
 
-#: The SHIPPED declarations, restated here as data. This is the gate the owner checks: a convention
-#: is market fact rather than code, so the seed is where it lives and this is where a change to it
-#: has to be agreed. USD SOFR OIS settles T+2 and pays annual/annual on ACT/360 with an overnight
-#: compounded float leg; ZAR SASW settles same day and pays quarterly/quarterly on ACT/365 against
-#: 3M JIBAR, whose own fixing - not ZARONIA - is the front of a JIBAR curve.
+#: The SHIPPED declarations as data - the gate the owner checks, since a convention is market fact.
+#: USD SOFR OIS settles T+2, annual/annual on ACT/360 with an overnight compounded float leg; ZAR
+#: SASW settles same day, quarterly/quarterly on ACT/365 against 3M JIBAR, whose own fixing - not
+#: ZARONIA - is the front of a JIBAR curve.
 SHIPPED = {
     'USD': {'curve_day_count': 'ACT_365', 'spot_days': 2, 'front': 'overnight',
             'front_day_count': 'ACT_360', 'authoring': 'OIS',
@@ -127,9 +103,8 @@ def packaged_seed():
     return json.load(open(os.path.join(ROOT, 'derivus_bloomberg', 'seed.json'), encoding='utf-8'))
 
 
-#: The canned world's own seed - the shipped vocabulary cut down to two currencies and a handful of
-#: tenors, with the SHIPPED conventions carried across unchanged so what the gates author is what a
-#: desk would get.
+#: The canned world's seed - the shipped vocabulary cut to two currencies and a handful of tenors,
+#: with the SHIPPED conventions carried across unchanged.
 SEED = {
     'fx_vol': {}, 'fx_spot': {},
     'rates': {
@@ -159,8 +134,7 @@ POISON = {
     'SASW5 BGN Curncy': {},                                               # invalid: nothing at all
 }
 
-#: What a clean point answers. Levels are invented and only have to be plausibly shaped: nothing
-#: below prices anything off them.
+#: What a clean point answers. Levels are invented and only have to be plausibly shaped.
 CLEAN = {'SOFRRATE Index': 4.33, 'USOSFR1Z BGN Curncy': 4.31, 'USOSFR2Z BGN Curncy': 4.30,
          'USOSFR3Z BGN Curncy': 4.29, 'USOSFR1 BGN Curncy': 4.02, 'USOSFR2 BGN Curncy': 3.88,
          'USOSFR5 BGN Curncy': 3.79, 'ZARONIA Index': 7.02, 'JIBA1M Index': 7.28,
@@ -174,8 +148,8 @@ CLEAN = {'SOFRRATE Index': 4.33, 'USOSFR1Z BGN Curncy': 4.31, 'USOSFR2Z BGN Curn
 # =============================================================================================
 
 class Walked(BloombergSession):
-    """A session whose event walk is canned rows - `test_bloomberg_discover.Walked` verbatim, so
-    the emitters are driven through the package's REAL readers with no socket and no patching."""
+    """A session whose event walk is canned rows, so the emitters are driven through the package's
+    REAL readers with no socket and no patching."""
 
     def __init__(self, rows):
         super().__init__()
@@ -194,9 +168,8 @@ def candidates(seed=None):
 
 
 def verified_map(seed=None, poison=None):
-    """A real security map, built by the package's own discovery off canned NAME answers - so what
-    the emitters read is the artifact a workstation would actually hold rather than a hand-built
-    dict. A poisoned entry of `None` never verifies, which is how a dead ticker reaches the strip
+    """A real security map, built by the package's own discovery off canned NAME answers rather than
+    hand-built. A poisoned entry of `None` never verifies, which is how a dead ticker reaches the
     emitter as `unverified` rather than as a hole."""
     seed = seed or SEED
     poison = POISON if poison is None else poison
@@ -238,8 +211,7 @@ def canned_session(seed=None, poison=None):
 
 def strip_of(currency, seed=None, poison=None, screen=None, as_of=AS_OF, curve=None):
     # the poison table is resolved HERE and passed on explicitly, so the map and the session are
-    # always built from the SAME one - a cell that is dead in one half and live in the other is a
-    # fixture that gates nothing
+    # built from the SAME one - a cell dead in one half and live in the other gates nothing
     seed, poison = seed or SEED, POISON if poison is None else poison
     return fetch_curve_strip(canned_session(seed, poison), verified_map(seed, poison), seed,
                              currency, as_of, curve=curve, screen=screen)
@@ -254,9 +226,8 @@ def block_of(currency, **kwargs):
 # =============================================================================================
 
 def imported_names(source):
-    """The top-level names a file imports, however deep in it the import sits - relative imports are
-    skipped, since they resolve inside the package by construction. `test_equity_chain`'s own
-    helper, which is `test_spine_imports`' before it."""
+    """The top-level names a file imports, however deep the import sits. Relative imports are
+    skipped - they resolve inside the package by construction."""
     names = set()
     with open(source, encoding='utf-8') as handle:
         tree = ast.parse(handle.read(), filename=source)
@@ -269,12 +240,10 @@ def imported_names(source):
 
 
 def test_the_curve_emitter_imports_the_standard_library_and_nothing_else():
-    """The package's own budget, extended to a new module: the standard library, this package's own
-    modules, and NO ENGINE. The chain emitter's stricter no-pandas budget is deliberately NOT
-    claimed here - `ir_curve` reaches `discover` for its ticker grammar rather than spelling a
-    second one, `discover` reaches `security_map`, and that carries pandas. Reusing the grammar is
-    worth a dependency the package's map layer already pays for; inventing a second spelling of a
-    Bloomberg ticker would not be."""
+    """The standard library, this package's own modules, and NO ENGINE. The chain emitter's stricter
+    no-pandas budget is deliberately NOT claimed: `ir_curve` reaches `discover` for its ticker
+    grammar, `discover` reaches `security_map`, and that carries pandas. Reusing the grammar is
+    worth a dependency the map layer already pays for."""
     imported = imported_names(os.path.join(ROOT, 'derivus_bloomberg', 'ir_curve.py'))
     assert imported <= {'collections', 'datetime', 'math', 'dataclasses', 'typing',
                         'derivus_bloomberg'}, sorted(imported)
@@ -294,18 +263,16 @@ def in_a_fresh_interpreter(statements):
 
 
 def test_importing_the_curve_emitter_lands_no_engine_and_no_blpapi():
-    """The source gate's answer proved a second way, because the first trusts the parser and reads
-    ONE FILE while an import runs a package.
+    """The source gate's answer proved a second way - the first trusts the parser and reads ONE
+    FILE, while an import runs a package.
 
-    The two claims are asymmetric ON PURPOSE. `derivus` and `blpapi` must not land: the package has
-    to import on a workstation that has never seen a terminal, and it must never reach across into
-    the engine. `pandas` DOES land, through the map layer, and is asserted POSITIVELY - a gate that
-    quietly allowed it would not be stating a budget, it would be omitting one.
+    Asymmetric on purpose: `derivus` and `blpapi` must not land, since the package has to import on
+    a workstation that has never seen a terminal. `pandas` DOES land through the map layer and is
+    asserted POSITIVELY - allowing it quietly would omit a budget rather than state one.
 
-    And the last two lines are the reason these emitters are re-exported LAZILY: an eager
-    `from .ir_curve import ...` in the package's `__init__` would land pandas on
-    `import derivus_bloomberg.equity_chain` behind that module's back, falsifying its own gate from
-    outside it.
+    The last two lines are why these emitters are re-exported LAZILY: an eager
+    `from .ir_curve import ...` would land pandas on `import derivus_bloomberg.equity_chain` behind
+    that module's back.
     """
     landed = in_a_fresh_interpreter('import derivus_bloomberg.ir_curve')
     assert 'derivus_bloomberg' in landed, 'the module did not import'
@@ -326,13 +293,12 @@ def test_importing_the_curve_emitter_lands_no_engine_and_no_blpapi():
 
 def test_the_shipped_conventions_are_the_declared_ones():
     """THE OWNER'S GATE. Every convention this package will author a USD or ZAR benchmark in, as
-    data, read off the seed the wheel ships - so a change to a market convention is a diff here and
-    a conversation, rather than a number that moved inside a cashflow.
+    data off the shipped seed, so a change to a market convention is a diff here rather than a
+    number that moved inside a cashflow.
 
-    The two that matter most are the ones a ticker cannot tell you: USD OIS accrues ACT/360 on both
-    legs where the curve's own tenors are ACT/365, and the ZAR front point is the 3M JIBAR fixing
-    rather than the ZARONIA print sitting beside it in the same map - a JIBAR curve seeded with an
-    overnight rate is a basis error nothing downstream would report.
+    The two a ticker cannot tell you: USD OIS accrues ACT/360 on both legs where the curve's tenors
+    are ACT/365, and the ZAR front is the 3M JIBAR fixing rather than the ZARONIA print beside it -
+    a JIBAR curve seeded with an overnight rate is a basis error nothing downstream reports.
     """
     shipped = packaged_seed()['rates']
     for currency, declared in SHIPPED.items():
@@ -343,17 +309,16 @@ def test_the_shipped_conventions_are_the_declared_ones():
                                          'Swap': 'SwapInterestDeal'}[declared['authoring']]
     assert curve_conventions(packaged_seed(), 'USD').front == 'overnight'
     assert curve_conventions(packaged_seed(), 'ZAR').front == 'fixings/3M'
-    # and the currencies the shipped seed maps but does NOT declare conventions for are the ones a
-    # desk has to fill in - they must refuse rather than inherit a neighbour's
+    # currencies the seed maps but does NOT declare conventions for must refuse rather than inherit
+    # a neighbour's
     for currency in ('EUR', 'GBP', 'JPY', 'CHF', 'CAD', 'AUD'):
         with pytest.raises(BloombergConfigurationError, match='carries no `conventions` block'):
             curve_conventions(packaged_seed(), currency)
 
 
 def test_a_currency_without_its_conventions_refuses_naming_every_missing_field():
-    """A convention block filled in half way authors an instrument nobody stated, so the refusal
-    lists the WHOLE questionnaire at once - a desk extending a seed should not learn it one terminal
-    round trip at a time."""
+    """A half-filled convention block authors an instrument nobody stated, so the refusal lists the
+    WHOLE questionnaire at once rather than one terminal round trip at a time."""
     seed = copy.deepcopy(SEED)
     del seed['rates']['USD']['conventions']['fixed_day_count']
     del seed['rates']['USD']['conventions']['spot_days']
@@ -367,8 +332,8 @@ def test_a_currency_without_its_conventions_refuses_naming_every_missing_field()
     with pytest.raises(BloombergConfigurationError, match='the seed names no rates entry for GBP'):
         curve_conventions(seed, 'GBP')
 
-    # a convention nobody reads is a convention that is not APPLIED, which is worse than a missing
-    # one: it reads as a declaration and does nothing
+    # a convention nobody reads is not APPLIED, which is worse than a missing one: it reads as a
+    # declaration and does nothing
     seed = copy.deepcopy(SEED)
     seed['rates']['ZAR']['conventions']['payment_lag'] = 2
     with pytest.raises(BloombergConfigurationError, match='payment_lag'):
@@ -376,13 +341,12 @@ def test_a_currency_without_its_conventions_refuses_naming_every_missing_field()
 
 
 def test_a_declaration_this_emitter_cannot_author_refuses_at_the_seed():
-    """The three ways a declaration can be wrong rather than absent - and each refuses where a desk
-    can fix it, not inside a cashflow generator.
+    """The ways a declaration can be wrong rather than absent, each refusing where a desk can fix it
+    rather than inside a cashflow generator.
 
-    The day-count refusal is the sharpest one: an authored `Accrual_Year_Fraction` is used VERBATIM
-    by `make_float_cashflows`, so a day count this module cannot compute must never be quietly
-    approximated. `ACT_365_ISDA` and `ACT_ACT_ICMA` are days/365 in the engine behind a `# TODO`,
-    and reproducing that on trust is how a known-wrong number gets a second home.
+    The day-count refusal is the sharpest: an authored `Accrual_Year_Fraction` is used VERBATIM by
+    `make_float_cashflows`, so a day count this module cannot compute must never be approximated.
+    `ACT_365_ISDA` and `ACT_ACT_ICMA` are days/365 in the engine behind a `# TODO`.
     """
     for field, value, expected in (
             ('authoring', 'Bootstrap', 'is not a shape this emitter writes'),
@@ -390,8 +354,7 @@ def test_a_declaration_this_emitter_cannot_author_refuses_at_the_seed():
             ('fixed_day_count', '_30_360', 'is not a fixed_day_count this emitter'),
             ('spot_days', -1, 'spot_days must be a whole number'),
             ('fixed_frequency', '1', 'is not a tenor this emitter can read'),
-            # a zero-length coupon period is the one bad declaration a refusal cannot be read out
-            # of: the roll would walk towards a maturity it never reaches
+            # a zero-length coupon period would roll towards a maturity it never reaches
             ('float_frequency', '0M', 'has to be a positive period')):
         seed = copy.deepcopy(SEED)
         seed['rates']['USD']['conventions'][field] = value
@@ -403,16 +366,14 @@ def test_a_front_the_seed_could_not_name_refuses_before_it_mis_authors_the_short
     """`front` IS THE ONE REQUIRED CONVENTION WHOSE WRONG VALUE IS SILENTLY AUTHORABLE, which is why
     it is validated against the seed rather than against itself.
 
-    Every other convention refuses on its own value - a day count this module cannot compute, an
-    authoring shape it does not write. This one is a PATH INTO THE SEED, and a path that names
-    nothing does not fail, it aims somewhere else: `front: 'strip/1Y'` matches the 1Y par swap's own
-    map path, `_front_label` finds no `fixings` at the path's second part and manufactures the label
-    `overnight`, and `strip_dates` then authors that 1Y par swap as a ONE-DAY DepositDeal which the
-    Descriptor calls overnight. The block comes out well formed, the strip is short by a knot, the
-    short end is seeded with an instrument nobody quoted, and nothing downstream can tell.
+    Every other convention refuses on its own value. This one is a PATH INTO THE SEED, and a path
+    that names nothing aims somewhere else: `front: 'strip/1Y'` matches the 1Y par swap's map path,
+    `_front_label` finds no `fixings` and manufactures the label `overnight`, and `strip_dates`
+    authors that 1Y par swap as a ONE-DAY DepositDeal. The block is well formed, the strip is short
+    by a knot, and nothing downstream can tell.
 
-    So the refusal names the field, the value declared and the whole admissible set - which is what
-    a desk needs to fix it, and it is `_seeded_fronts`' own list rather than a second spelling of it.
+    So the refusal names the field, the declared value and the whole admissible set - `_seeded_
+    fronts`' own list rather than a second spelling of it.
     """
     seed = copy.deepcopy(SEED)
     seed['rates']['ZAR']['conventions']['front'] = 'strip/1Y'
@@ -435,17 +396,16 @@ def test_a_front_the_seed_could_not_name_refuses_before_it_mis_authors_the_short
         curve_conventions(seed, 'USD')
     assert 'the admissible spellings are overnight.' in str(refused.value)
 
-    # and both SHIPPED declarations pass the check that catches those - a validation nothing real
-    # survives is a validation nobody can use
+    # both SHIPPED declarations pass - a validation nothing real survives is one nobody can use
     assert curve_conventions(packaged_seed(), 'USD').front == 'overnight'
     assert curve_conventions(packaged_seed(), 'ZAR').front == 'fixings/3M'
 
 
 def test_an_unverified_front_point_refuses_and_offers_the_ones_the_seed_names():
-    """The SECOND of the two front refusals, and they are different failures. Above, the seed could
-    never have named that front; here it names one the seed CAN spell and the map has no verified
-    entry for - a seeded fixing that went dead. The front is what seeds the short end, so that
-    cannot be skipped into a shorter curve: it has to say so, and say which fronts the seed offers.
+    """The SECOND front refusal, a different failure. Above the seed could never have named that
+    front; here it names one the seed CAN spell and the map has no verified entry for - a seeded
+    fixing that went dead. The front seeds the short end, so it cannot be skipped into a shorter
+    curve: it says so, and says which fronts the seed offers.
     """
     seed = copy.deepcopy(SEED)
     seed['rates']['ZAR']['fixings']['12M'] = {'security': 'JIBA12M Index',
@@ -460,15 +420,11 @@ def test_an_unverified_front_point_refuses_and_offers_the_ones_the_seed_names():
 
 
 def test_an_ois_declaration_whose_float_frequency_nobody_reads_refuses():
-    """A CONVENTION NOBODY READS IS A CONVENTION THAT IS NOT APPLIED, and this module says so in its
-    own refusal text - so it is held to it.
-
-    `_ois_swap` rolls the coupon dates ONCE, off `fixed_frequency`, and hangs both the fixed items
-    and the compounded fixing windows on those same boundaries. `float_frequency` is required and
-    validated and then read by nothing on that path: declaring USD at `6M` used to emit a
-    BYTE-IDENTICAL block, so the seed said one thing and the instrument was another and no gate
-    anywhere could see the difference. V1 authors both OIS legs on one schedule, so the declaration
-    that says otherwise refuses rather than being quietly ignored.
+    """A CONVENTION NOBODY READS IS NOT APPLIED. `_ois_swap` rolls the coupon dates ONCE off
+    `fixed_frequency` and hangs both the fixed items and the compounded fixing windows on those
+    boundaries, so `float_frequency` is required, validated, then read by nothing - declaring USD at
+    `6M` emitted a BYTE-IDENTICAL block. V1 authors both OIS legs on one schedule, so a declaration
+    saying otherwise refuses rather than being ignored.
     """
     seed = copy.deepcopy(SEED)
     seed['rates']['USD']['conventions']['float_frequency'] = '6M'
@@ -484,9 +440,8 @@ def test_an_ois_declaration_whose_float_frequency_nobody_reads_refuses():
     assert curve_conventions(SEED, 'USD').float_frequency == '1Y'
     assert len(block_of('USD')[1]['instrument']['Points']) == 3
 
-    # and the `Swap` path READS BOTH - the engine generates each leg on its own frequency there - so
-    # an unequal declaration is authored rather than refused. The refusal is about what v1 writes,
-    # not about what a swap may be
+    # the `Swap` path READS BOTH - the engine generates each leg on its own frequency - so an
+    # unequal declaration is authored rather than refused
     swapped = copy.deepcopy(SEED)
     swapped['rates']['ZAR']['conventions']['float_frequency'] = '6M'
     deal = points_of(block_of('ZAR', seed=swapped)[1])['1Y']['Deal']
@@ -499,9 +454,9 @@ def test_an_ois_declaration_whose_float_frequency_nobody_reads_refuses():
 # =============================================================================================
 
 def test_the_screen_classifies_off_the_terminals_own_answers():
-    """The order of distrust, one canned print per verdict. Reading them in this order is what makes
-    a verdict actionable: `crossed` and `stale` are different instructions to a desk, and a screen
-    that checked the date first would report the second where the first is true."""
+    """The order of distrust, one canned print per verdict. `crossed` and `stale` are different
+    instructions to a desk, and a screen checking the date first reports the second where the first
+    is true."""
     def rate(**extra):
         return ir_curve.RatePrint(**dict(
             {'label': '5Y', 'kind': 'swap', 'security': 'x', 'value': 4.0, 'bid': 3.99,
@@ -521,15 +476,14 @@ def test_the_screen_classifies_off_the_terminals_own_answers():
     assert [item.security for item in accepted] == ['live']
     assert rejected == {verdict: verdict for verdict in cases if verdict != 'live'}
 
-    # a mid-only print is BELIEVED - a two-way the terminal never quoted is not a spread, and the
-    # mid is what a curve is built off. `fxvol._scaled_side`'s rule, one family over
+    # a mid-only print is BELIEVED: a two-way the terminal never quoted is not a spread, and the mid
+    # is what a curve is built off
     assert screen_strip([rate(security='mid-only', bid=None, ask=None)], AS_OF)[1] == {}
 
 
 def test_the_canned_strip_is_believed_by_census():
-    """Every candidate accounted for, one way or the other - the ledger discipline, and the whole
-    reason a short strip is legible rather than alarming. A candidate silently dropped is
-    indistinguishable from one never asked about."""
+    """Every candidate accounted for either way - which is what makes a short strip legible. A
+    candidate silently dropped is indistinguishable from one never asked about."""
     usd, zar = strip_of('USD'), strip_of('ZAR')
     assert [item.label for item in usd.prints] == ['overnight', '1W', '2Y']
     assert usd.rejected == {
@@ -541,12 +495,12 @@ def test_the_canned_strip_is_believed_by_census():
         'ZARONIA Index': 'not-a-benchmark', 'JIBA1M Index': 'not-a-benchmark',
         'JIBA6M Index': 'not-a-benchmark', 'SASW2 BGN Curncy': 'undated',
         'SASW5 BGN Curncy': 'invalid', 'SASW10 BGN Curncy': 'off-market'}
-    # the ZARONIA print IS verified and IS live - it is refused for being the wrong INSTRUMENT on a
-    # JIBAR curve, which is the declaration doing its job rather than the screen
+    # the ZARONIA print IS verified and live - refused for being the wrong INSTRUMENT on a JIBAR
+    # curve, which is the declaration doing its job rather than the screen
     assert zar.census == {'not-a-benchmark': 3, 'undated': 1, 'invalid': 1, 'off-market': 1}
 
-    # and the census a report reads is the same numbers as data, so a caller with a screen and a
-    # caller with a log see one account of the fetch rather than two
+    # the census a report reads is the same numbers as data, so a caller with a screen and one with
+    # a log see one account of the fetch
     counted = ir_curve.quote_census(usd)
     assert (counted['asked'], counted['believed']) == (7, 3)
     assert counted['securities'] == [item.security for item in usd.prints]
@@ -554,8 +508,8 @@ def test_the_canned_strip_is_believed_by_census():
 
 
 def test_a_strip_below_its_floor_refuses_naming_what_the_terminal_served():
-    """One knot is a flat curve quoted once, so a strip that screened away has to say what it was
-    asked and what came back - "no curve" with no census is not something a desk can act on."""
+    """One knot is a flat curve quoted once, so a strip that screened away says what it was asked and
+    what came back - "no curve" with no census is not something a desk can act on."""
     poison = dict(POISON, **{security: {'PX_LAST': None} for security in
                              ('SASW1 BGN Curncy', 'SASW3 BGN Curncy')})
     with pytest.raises(IncompleteStrip) as refused:
@@ -577,12 +531,11 @@ def test_the_ois_strip_is_authored_as_the_compounding_rule_requires():
     """A USD OIS benchmark is a CONTAINER over an OIS-compounded floating leg and a fixed leg, with
     ONE FLOAT ITEM PER FIXING WINDOW sharing its coupon's payment date.
 
-    That shape is the whole point and it is not decoration: `pv_float_cashflow_list` compounds
-    geometrically only when the reset count differs from the cashflow count, and the reshape that
-    makes it so is `compress_no_compounding(groupsize=-1)` under `Compounding_Method='OIS'` - which
-    merges a payment date's items into ONE cashflow carrying all their resets, each still at
-    `Weight` 1. A leg authored as one item with many resets arrives weighted `1/n` and compounds at
-    a fraction of the rate, which is the AVERAGING legs' arithmetic.
+    `pv_float_cashflow_list` compounds geometrically only when the reset count differs from the
+    cashflow count, and `compress_no_compounding(groupsize=-1)` under `Compounding_Method='OIS'`
+    merges a payment date's items into ONE cashflow carrying all their resets at `Weight` 1. A leg
+    authored as one item with many resets arrives weighted `1/n` and compounds at a fraction of the
+    rate - the AVERAGING legs' arithmetic.
     """
     row = points_of(block_of('USD')[1])['2Y']
     assert row['DealType'] == 'StructuredDeal'
@@ -594,15 +547,12 @@ def test_the_ois_strip_is_authored_as_the_compounding_rule_requires():
     assert floating['Forecast_Rate'] == 'USD'
     assert fixed['Object'] == 'CFFixedInterestListDeal'
 
-    # ANNUAL coupons rolled BACKWARD from maturity, which is where the market puts a stub and what
-    # `generate_dates_backward` does when the engine generates a swap's own legs.
+    # ANNUAL coupons rolled BACKWARD from maturity, where the market puts a stub.
     #
-    # AND UNADJUSTED, which is the stated limitation rather than an oversight: the second payment
-    # falls on a Saturday and stays there. The authored deals carry `Accrual_Calendars: None` and
-    # `Payment_Calendars: None`, so the engine rolls nothing either - one convention applied on both
-    # sides of the boundary. A desk that needs a settlement calendar has to give the deals one, and
-    # a weekend roll invented out here would then disagree with the legs the engine generates itself
-    # for the `Swap` authoring, where only Effective and Maturity come from this module.
+    # AND UNADJUSTED - a stated limitation: the second payment falls on a Saturday and stays there.
+    # The deals carry `Accrual_Calendars: None` and `Payment_Calendars: None`, so the engine rolls
+    # nothing either. A weekend roll invented here would disagree with the legs the engine generates
+    # itself for the `Swap` authoring, where only Effective and Maturity come from this module.
     payments = sorted({item['Payment_Date']['.Timestamp'] for item in fixed['Cashflows']['Items']})
     assert payments == ['2027-09-02', '2028-09-02']
     assert datetime.date.fromisoformat(payments[1]).weekday() == 5
@@ -619,9 +569,7 @@ def test_the_ois_strip_is_authored_as_the_compounding_rule_requires():
     assert all(left[1] == right[0] for left, right in zip(windows, windows[1:]))
     # INSIDE a coupon a window starts on a business day; the coupon's OWN start is a boundary
     # whatever weekday it falls on, which is what makes the two legs accrue the same span. This
-    # coupon starts on a Wednesday so the two rules agree here and nothing distinguishes them -
-    # the weekend boundary is `test_the_ois_fixing_windows_partition_every_coupon`, below, which is
-    # where the asymmetry lived and why this gate could not see it
+    # coupon starts on a Wednesday, so the weekend case is the next gate's
     assert all(datetime.date.fromisoformat(start).weekday() < 5 for start, _ in windows[1:])
 
     # the DECLARED day count, on the item the engine reads verbatim
@@ -638,24 +586,20 @@ def _wire_date(value):
 
 
 def test_the_ois_fixing_windows_partition_every_coupon():
-    """THE TWO LEGS ACCRUE THE SAME SPAN, PER COUPON - which is the whole content of "one
-    convention on both legs" on a swap the solve holds at PV zero.
+    """THE TWO LEGS ACCRUE THE SAME SPAN, PER COUPON, on a swap the solve holds at PV zero.
 
-    Both legs roll off the SAME coupon dates, so they can only accrue over the same span if the
-    float leg's fixing windows tile `[coupon_start, coupon_end]` exactly. A FIXING ACCRUES THROUGH A
-    WEEKEND - Friday's rate is what a Saturday-to-Monday gap earns - and it does so at a coupon
-    boundary exactly as it does inside a coupon, so the coupon's own start is a window boundary
+    Both legs roll off the SAME coupon dates, so they accrue the same span only if the float leg's
+    fixing windows tile `[coupon_start, coupon_end]` exactly. A FIXING ACCRUES THROUGH A WEEKEND, at
+    a coupon boundary exactly as inside a coupon, so the coupon's own start is a window boundary
     whatever weekday it falls on.
 
-    STARTING THE LEG AT THE FIRST BUSINESS DAY INSTEAD IS WHERE THIS WAS WRONG, and the size of it
-    is measurable. On this canned USD 5Y (effective 2026-09-02) the coupon starting Saturday
-    2028-09-02 accrued 1.00833333 of a year on the float leg against the fixed leg's 1.01388889 -
-    two days of a one-year coupon dropped on one side - and the coupon starting Sunday 2029-09-02
-    accrued 1.01111111 against the same 1.01388889, losing one. Both now read 1.01388889.
+    STARTING THE LEG AT THE FIRST BUSINESS DAY IS WHERE THIS WAS WRONG. On this canned USD 5Y the
+    coupon starting Saturday 2028-09-02 accrued 1.00833333 on the float leg against the fixed leg's
+    1.01388889 - two days of a one-year coupon - and Sunday 2029-09-02 accrued 1.01111111, losing
+    one. Both now read 1.01388889.
 
-    The 5Y is what carries the weekend boundaries, so the poison table lets it through here: the
-    2Y's coupons start on a Wednesday and a Thursday, which is why the gate beside this one could
-    run green against a leg that was losing accrual.
+    The 5Y carries the weekend boundaries, so the poison table lets it through here; the 2Y's
+    coupons start on a Wednesday and a Thursday, which is why the gate beside this ran green.
     """
     poison = {security: value for security, value in POISON.items()
               if security != 'USOSFR5 BGN Curncy'}
@@ -676,13 +620,12 @@ def test_the_ois_fixing_windows_partition_every_coupon():
             start, end = _wire_date(coupon['Accrual_Start_Date']), \
                 _wire_date(coupon['Accrual_End_Date'])
             spans = sorted(windows[coupon['Payment_Date']['.Timestamp']])
-            # THE PARTITION: the windows start where the coupon starts, end where it ends, and each
-            # one begins exactly where the last one finished - no gap, no overlap
+            # THE PARTITION: no gap, no overlap, and the ends are the coupon's own
             assert spans[0][0] == start, (label, start)
             assert spans[-1][1] == end, (label, end)
             assert all(left[1] == right[0] for left, right in zip(spans, spans[1:])), label
-            # so on the same day count the two legs accrue the same span, exactly - stated in DAYS
-            # first, because that equality is an integer one and cannot be a rounding
+            # the same span on the same day count - stated in DAYS first, an integer equality that
+            # cannot be a rounding
             assert sum((stop - begin).days for begin, stop, _, _ in spans) == (end - start).days
             assert {day_count for _, _, _, day_count in spans} == {coupon['Accrual_Day_Count']} \
                 == {'ACT_360'}, 'USD declares ACT/360 on both legs'
@@ -691,12 +634,12 @@ def test_the_ois_fixing_windows_partition_every_coupon():
             if start.weekday() >= 5:
                 weekend.append((label, start.isoformat(), round(float_accrual, 8)))
 
-    # THE MEASURED CASE, named rather than merely covered - so a strip that stopped carrying a
-    # weekend boundary would fail here rather than pass this gate vacuously
+    # THE MEASURED CASE, named - so a strip that stopped carrying a weekend boundary fails here
+    # rather than passing vacuously
     assert weekend == [('5Y', '2028-09-02', 1.01388889), ('5Y', '2029-09-02', 1.01388889)]
 
-    # and the first window of such a coupon starts ON the weekend day, which is the change: it is
-    # the coupon boundary that is unadjusted, not the fixing calendar
+    # the first window of such a coupon starts ON the weekend day: it is the coupon boundary that is
+    # unadjusted, not the fixing calendar
     five = points['5Y']['Deal']['Children'][0]['Cashflows']['Items']
     boundary = sorted(_wire_date(item['Accrual_Start_Date']) for item in five
                       if _wire_date(item['Accrual_Start_Date']).weekday() >= 5)
@@ -723,9 +666,9 @@ def test_the_jibar_strip_is_a_vanilla_swap_on_its_declared_conventions():
 
 
 def test_the_front_point_is_the_one_the_seed_declared():
-    """A basis error that would otherwise be free. The ZAR map carries a live, verified ZARONIA
-    print AND a live 3M JIBAR fixing; the seed says which of the two is a JIBAR curve's front, and
-    the emitter reads that rather than taking the overnight one because it is shorter."""
+    """A basis error that would otherwise be free. The ZAR map carries a live ZARONIA print AND a
+    live 3M JIBAR fixing; the seed says which is a JIBAR curve's front, and the emitter reads that
+    rather than taking the overnight one because it is shorter."""
     zar = points_of(block_of('ZAR')[1])
     assert 'JIBA3M Index' in zar['3M']['Descriptor']
     assert zar['3M']['DealType'] == 'DepositDeal'
@@ -733,8 +676,8 @@ def test_the_front_point_is_the_one_the_seed_declared():
     assert zar['3M']['Deal']['Payment_Frequency'] == {'.DateOffset': '3M'}
     assert all('ZARONIA' not in row['Descriptor'] for row in zar.values())
 
-    # USD declares the overnight one, and an O/N deposit is T+0 to the NEXT BUSINESS DAY - its own
-    # payment frequency is that span, so the pinned schedule is one period rather than three
+    # USD declares the overnight one: an O/N deposit is T+0 to the NEXT BUSINESS DAY, so its payment
+    # frequency is that span and the pinned schedule is one period
     usd = points_of(block_of('USD')[1])
     assert 'SOFRRATE Index' in usd['overnight']['Descriptor']
     assert usd['overnight']['Deal']['Effective_Date'] == {'.Timestamp': '2026-08-31'}
@@ -744,13 +687,11 @@ def test_the_front_point_is_the_one_the_seed_declared():
 
 
 def test_the_quote_is_never_authored_into_the_deal():
-    """THE CAUSE OF THE TICK, gated as the property it is. `QUOTE_WRITERS` is where a number lands
-    in an instrument, so every rate-carrying field the emitter writes is a NEUTRAL zero and the
-    print rides in `Quoted_Market_Value` alone: the `Deal` half of a row is a function of the
-    calendar and the conventions and of nothing that moves between prints.
-
-    Author the quote in and the row would be structurally different at every tick, which
-    `config.update_market_quote` would refuse by name and be right to.
+    """THE CAUSE OF THE TICK. `QUOTE_WRITERS` is where a number lands in an instrument, so every
+    rate-carrying field the emitter writes is a NEUTRAL zero and the print rides in
+    `Quoted_Market_Value` alone: a row's `Deal` half is a function of the calendar and the
+    conventions and of nothing that moves between prints. Author the quote in and every tick is
+    structurally different, which `update_market_quote` refuses by name and is right to.
     """
     usd, zar = points_of(block_of('USD')[1]), points_of(block_of('ZAR')[1])
     assert zar['1Y']['Deal']['Swap_Rate'] == 0.0
@@ -761,7 +702,7 @@ def test_the_quote_is_never_authored_into_the_deal():
     assert {item['Rate']['.Percent'] for item in fixed['Cashflows']['Items']} == {0.0}
     assert usd['2Y']['Quoted_Market_Value'] == 3.88
 
-    # and neither `Object` nor `Discount_Rate` is authored twice: the point NAMES the type and the
+    # neither `Object` nor `Discount_Rate` is authored twice: the point NAMES the type and the
     # family stamps the discount curve from the block it belongs to
     for row in list(usd.values()) + list(zar.values()):
         assert 'Object' not in row['Deal'] and 'Discount_Rate' not in row['Deal']
@@ -771,11 +712,8 @@ def test_the_quote_is_never_authored_into_the_deal():
 
 def test_the_two_way_and_the_stamp_ride_beside_the_mid():
     """`Quoted_Bid`, `Quoted_Ask` and `Timestamp` are `schema.MARKET_QUOTE_VALUES` - the plane a
-    tick may move - and `InterestRateCurveParameters.Points` now DECLARES all three, on the shape
-    `FXVolPrices` already declared them in: optional columns on the value side, read by nothing in
-    the solve. This gate said the opposite while that was a finding (2026-09-01 closed it); what it
-    holds is unchanged, because the emitter's bytes never depended on the declaration - the two-way
-    and the print's own clock ARE the evidence, whether or not a schema had a column for them."""
+    tick may move - and `InterestRateCurveParameters.Points` declares all three as optional columns
+    on the value side, read by nothing in the solve."""
     row = points_of(block_of('ZAR')[1])['1Y']
     assert (row['Quoted_Bid'], row['Quoted_Ask']) == (7.61, 7.63)
     assert row['Timestamp'] == {'.Timestamp': YESTERDAY}
@@ -791,16 +729,13 @@ def test_the_two_way_and_the_stamp_ride_beside_the_mid():
 
 def test_the_block_writes_only_fields_the_family_declares():
     """Every BLOCK-level key is a declared field of `InterestRateCurveParameters`, read off the
-    COMMITTED declaration rather than off the working tree - the solve's own knobs (`N_Iter`, `Tol`,
-    `Damping_Halvings`) and the three lifecycle switches are deliberately NOT written, because they
-    are properties of a job rather than of a market and the engine reads each with its declared
-    default.
+    COMMITTED declaration. The solve's knobs (`N_Iter`, `Tol`, `Damping_Halvings`) and the three
+    lifecycle switches are deliberately NOT written - properties of a job rather than of a market,
+    each read by the engine with its declared default.
 
-    THE POINT KEYS ARE NOW A SUBSET TOO, and that half reads the WORKING TREE (`at=None`): the
-    `Quoted_Bid`/`Quoted_Ask`/`Timestamp` columns are declared by this very change, so HEAD cannot
-    be asked about them. Nothing else in this file reads the tree, and the claim itself is what
-    changed rather than the emitter - this gate used to subtract the three by name, which is the
-    shape of a gate documenting a gap.
+    THE POINT KEYS ARE A SUBSET TOO, and that half reads the WORKING TREE (`at=None`): the
+    `Quoted_Bid`/`Quoted_Ask`/`Timestamp` columns are declared by this change, so HEAD cannot be
+    asked about them. Nothing else in this file reads the tree.
     """
     declared = committed_fields('InterestRateCurveParameters')
     instrument = block_of('ZAR')[1]['instrument']
@@ -808,8 +743,8 @@ def test_the_block_writes_only_fields_the_family_declares():
     assert set(instrument) == {'Currency', 'Day_Count', 'Discount_Rate', 'Points'}
     assert instrument['Discount_Rate'] == '', 'V1 builds a self-discounting single curve'
     assert instrument['Day_Count'] == 'ACT_365'
-    # the block key names the curve the strip BUILDS, which defaults to the currency and which a
-    # multi-curve desk names itself - the deals project off exactly that name
+    # the block key names the curve the strip BUILDS - defaulting to the currency, named by a
+    # multi-curve desk - and the deals project off exactly that name
     assert block_of('ZAR')[0] == 'InterestRatePrices.ZAR'
     named = ir_curve_block(strip_of('ZAR', curve='ZAR-JIBAR-3M'))
     assert named[0] == 'InterestRatePrices.ZAR-JIBAR-3M'
@@ -828,17 +763,13 @@ def test_the_block_writes_only_fields_the_family_declares():
 
 def committed_fields(class_name, table=None, at='HEAD'):
     """The field names one bootstrapper class declares, read off the COMMITTED `bootstrappers.py`
-    via `git show HEAD` and parsed as an AST - never imported, and by default never off the working
-    tree.
+    via `git show HEAD` and parsed as an AST - never imported.
 
-    Reading the committed state is what lets this file gate an engine declaration while another
-    workflow is mid-edit in the same tree; parsing rather than importing is what lets it do so
-    without the engine's own import cost. `table`, when given, descends into that field's
-    `row=Row([...])` or `sub_fields=[...]` and returns the COLUMNS of the row instead.
-
-    `at=None` reads the working tree, and there is exactly one thing it is for: a declaration this
-    repository is LANDING. A gate on a field that does not exist at HEAD yet cannot be asked about
-    HEAD, and a gate that reads the tree says so at its own call site.
+    Reading the committed state lets this file gate an engine declaration while another workflow is
+    mid-edit in the same tree; parsing rather than importing avoids the engine's import cost.
+    `table` descends into that field's `row=Row([...])` or `sub_fields=[...]` and returns its
+    COLUMNS. `at=None` reads the working tree, for the one case HEAD cannot answer: a declaration
+    not yet committed.
     """
     tree = ast.parse(_committed('derivus/bootstrappers.py', at), filename='bootstrappers.py')
     for node in ast.walk(tree):
@@ -860,8 +791,7 @@ def _field_names(node, table):
         if name != table:
             continue
         for keyword in entry.keywords:
-            # a Table declares its columns as `row=Row([...])`, a Container its children as
-            # `sub_fields=[...]` - two spellings of "the fields inside this one"
+            # a Table declares columns as `row=Row([...])`, a Container children as `sub_fields=`
             if keyword.arg == 'row':
                 return [row.args[0].value for row in keyword.value.args[0].elts]
             if keyword.arg == 'sub_fields':
@@ -872,12 +802,8 @@ def _field_names(node, table):
 
 
 def _committed(path, at='HEAD'):
-    """One file as `at` has it, or as the WORKING TREE has it when `at` is None.
-
-    Every schema comparison in this file goes through here rather than reading the tree, which is
-    what lets these gates hold an ENGINE declaration while a parallel workflow is mid-edit in the
-    same checkout. The tree read is for the one case that rule cannot cover - a declaration landing
-    in this very change, which HEAD does not have yet.
+    """One file as `at` has it, or as the WORKING TREE has it when `at` is None - which is for the
+    one case the committed read cannot cover, a declaration not yet committed.
     """
     if at is None:
         with open(os.path.join(ROOT, path), 'rt', encoding='utf-8') as source:
@@ -893,14 +819,12 @@ _DEAL_FIELDS = {}
 
 def committed_deal_fields(deal_type):
     """The JSON keys one INSTRUMENT type declares, off the committed `instruments.py` and
-    `schema.py`, parsed as an AST - never imported, and never read off the working tree.
+    `schema.py`, parsed as an AST - never imported.
 
-    `json_name` IS HONOURED WHERE A FIELD DECLARES ONE, and that is the whole subtlety of reading
-    this declaration as data: both cashflow legs declare their container as `Fixed_Cashflows` /
-    `Float_Cashflows` and write it to JSON as `Cashflows`, so a comparison made on declared names
-    alone would report the emitter's own correct key as an undeclared extra. Group references
-    (`ADMIN`, `CASHFLOWLISTDEAL`) are resolved by name out of `schema.py`, which is where the shared
-    halves of a declaration live.
+    `json_name` IS HONOURED where a field declares one: both cashflow legs declare their container
+    as `Fixed_Cashflows` / `Float_Cashflows` and write it as `Cashflows`, so a comparison on
+    declared names alone would report the emitter's correct key as an undeclared extra. Group
+    references (`ADMIN`, `CASHFLOWLISTDEAL`) are resolved by name out of `schema.py`.
     """
     if not _DEAL_FIELDS:
         groups = {}
@@ -944,27 +868,20 @@ def _json_names(node):
 
 def test_every_authored_deal_key_is_one_the_committed_schema_declares():
     """`construct_instrument` VALIDATES NOTHING, which is why this gate exists rather than the
-    compile gate below covering it.
+    compile gate below covering it: an unknown field is read past and the instrument is built from
+    the rest, so a key spelled `Accrual_Daycount` would construct, reset, generate cashflows and
+    produce a knot under a default nobody chose. Only a comparison against the DECLARATION catches
+    that.
 
-    An unknown field on an authored deal is not an error to the engine - it is read past, and the
-    instrument is built from the fields it did recognise. So a key spelled `Accrual_Daycount` would
-    construct, reset, generate cashflows and produce a knot, and the whole seam gate would run green
-    on a deal accruing under a default nobody chose. The only thing that can catch that is a
-    comparison against the DECLARATION, so here it is, parsed as data off the committed schema.
-
-    WHAT IS MISSING IS AS DECLARED AS WHAT IS EXTRA, and each absence has one reason:
+    WHAT IS MISSING IS AS DECLARED AS WHAT IS EXTRA:
 
       Object              named in `DealType` instead, on the top-level deal - the child legs DO
-                          carry it, because they are deal-tree nodes rather than Points rows
-      Tags, MtM           the ADMIN group: a position's own bookkeeping, not a benchmark's
-      Discount_Rate       stamped by `author_quote`, which recurses into `Children`. What an
-                          instrument PROJECTS off is its own business; what the quote set DISCOUNTS
-                          on is a property of the curve set, and authoring it would state the same
-                          thing twice with the second one going stale
+                          carry it, being deal-tree nodes rather than Points rows
+      Tags, MtM           the ADMIN group: a position's bookkeeping, not a benchmark's
+      Discount_Rate       stamped by `author_quote`. What an instrument PROJECTS off is its own
+                          business; what the quote set DISCOUNTS on is the curve set's
 
-    `Children` is the only authored key that is not a declared field, and it is not one: it is the
-    deal TREE's own key. `StructuredDeal` declares `Currency` and `Net_Cashflows` and nothing else,
-    and its legs hang off the tree rather than off its field list.
+    `Children` is the only authored key that is not a declared field: it is the deal TREE's own key.
     """
     seen = set()
     for currency in ('USD', 'ZAR'):
@@ -991,10 +908,9 @@ def test_every_authored_deal_key_is_one_the_committed_schema_declares():
 # =============================================================================================
 
 def test_two_benchmarks_on_one_maturity_refuse_by_name():
-    """The knot rule is what makes the bootstrap SQUARE: one knot per used quote at that
-    benchmark's last cashflow date. A seed quoting 4W beside 1M puts two instruments between the
-    same pair of knots and leaves the curve under-determined between them - which reaches the solve
-    as a singular Jacobian rather than as a sentence, so the emitter says it first."""
+    """The knot rule makes the bootstrap SQUARE: one knot per used quote at that benchmark's last
+    cashflow date. Two instruments between one pair of knots leave the curve under-determined, which
+    reaches the solve as a singular Jacobian rather than a sentence - so the emitter says it first."""
     seed = copy.deepcopy(SEED)
     # two spellings of the same three weeks: the seeded 3W point and a 21-day 'strip' entry
     seed['rates']['USD']['years'] = [1, 2]
@@ -1015,24 +931,22 @@ def test_two_benchmarks_on_one_maturity_refuse_by_name():
 
 
 def test_the_fixing_cap_names_the_arithmetic_rather_than_dying_on_it():
-    """An OIS block grows with the SUM of its strip's tenors rather than with its point count - one
-    authored item per business-day fixing - so the shipped USD strip is tens of thousands of items
-    and tens of megabytes. The default admits that, because it is a block a real terminal produces;
-    what the bound catches is a seed reaching further, and it refuses with the count."""
+    """An OIS block grows with the SUM of its strip's tenors, one item per business-day fixing, so
+    the shipped USD strip is tens of thousands of items and tens of megabytes. The default admits
+    that; the bound catches a seed reaching further, and refuses with the count."""
     with pytest.raises(IncompleteStrip) as refused:
         ir_curve_block(strip_of('USD'), CurveScreen(maximum_fixings=10))
     message = str(refused.value)
     assert 'daily fixings across its 2 OIS benchmarks, past the declared cap of 10' in message
     assert 'ONE ITEM PER BUSINESS-DAY FIXING' in message
-    # the seeded strip itself is inside the shipped default, which is what makes the cap a bound
-    # rather than a blockage
+    # the seeded strip is inside the shipped default, which makes the cap a bound not a blockage
     assert ir_curve_block(strip_of('USD'))[1]['instrument']['Points']
 
 
 def test_the_same_canned_strip_emits_the_same_bytes():
-    """DETERMINISM, and the only clock in sight is the as-of, which is a parameter. Two emissions
-    off the same canned answers are byte-identical - including the timestamps, which come off the
-    prints rather than off a wall clock - so a block that changed is a market that moved."""
+    """DETERMINISM: the only clock is the as-of, which is a parameter. Two emissions off the same
+    canned answers are byte-identical, timestamps included (they come off the prints), so a block
+    that changed is a market that moved."""
     first = json.dumps(block_of('ZAR')[1], sort_keys=True)
     assert first == json.dumps(block_of('ZAR')[1], sort_keys=True)
 
@@ -1048,8 +962,8 @@ def test_the_same_canned_strip_emits_the_same_bytes():
 # =============================================================================================
 
 def job_document(market_prices=None):
-    """A wire-form job document with a `Market Prices` section - the shape
-    `config.update_market_quote` writes into and `Config.read_json` reads."""
+    """A wire-form job document with a `Market Prices` section - what `update_market_quote` writes
+    into and `Config.read_json` reads."""
     return {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': {'.Timestamp': AS_OF.isoformat()},
                         'Currency': 'ZAR'},
@@ -1062,13 +976,12 @@ def job_document(market_prices=None):
 
 
 def test_the_block_installs_and_a_value_only_retick_updates():
-    """`config.update_market_quote` is the contract every quote source posts against, and unlike the
-    Heston-Nandi chain this block passes it BOTH WAYS - because `InterestRatePrices` quotes in
-    `Points` rows, which is exactly what `schema.partition_market_price` gives a values half to.
+    """`update_market_quote` is the contract every quote source posts against, and this block passes
+    it BOTH WAYS because `InterestRatePrices` quotes in `Points` rows, which is what
+    `schema.partition_market_price` gives a values half to.
 
-    A moved RATE is a tick: the mid, the two sides and the stamp all live on the value plane and the
-    `Deal` beside them does not move, which is what authoring the quote OUTSIDE the deal buys. A
-    moved CONVENTION is a new plan and refuses by name, which is what it should be.
+    A moved RATE is a tick - mid, both sides and stamp on the value plane, `Deal` unmoved, which is
+    what authoring the quote OUTSIDE the deal buys. A moved CONVENTION is a new plan and refuses.
     """
     from derivus.config import update_market_quote
 
@@ -1092,7 +1005,7 @@ def test_the_block_installs_and_a_value_only_retick_updates():
     assert deals(reticked) == deals(block), 'a re-tick moved a deal, not a value'
     assert update_market_quote(document, name, reticked) == 'updated'
 
-    # a moved CONVENTION is a re-authoring and refuses - the guard reading the plan half
+    # a moved CONVENTION is a re-authoring and refuses: the guard reading the plan half
     seed = copy.deepcopy(SEED)
     seed['rates']['ZAR']['conventions']['fixed_frequency'] = '6M'
     with pytest.raises(ValueError, match='structure differs'):
@@ -1103,18 +1016,14 @@ def test_the_block_installs_and_a_value_only_retick_updates():
 
 
 def test_a_rolled_date_strip_reaches_a_book_through_reauthor():
-    """THE OTHER HALF OF THE ROUND TRIP, and the reason `ir_curve` has a `reauthor` of its own.
+    """THE OTHER HALF OF THE ROUND TRIP: TOMORROW'S STRIP, which could never be a tick.
+    `Effective_Date` and `Maturity_Date` are structure, so the same benchmarks fetched a day later
+    are a different plan and `update_market_quote` refuses - rightly, since the guard cannot tell a
+    rolled date from a mis-authored one.
 
-    The gate above is the tick: a moved RATE is a value and passes as 'updated'. This is the case
-    that is not a tick and could never be one - TOMORROW'S STRIP. `Effective_Date` and
-    `Maturity_Date` are structure, so the same benchmarks fetched a day later are a different plan
-    and `update_market_quote` refuses by name. It is RIGHT to refuse: the guard cannot tell a rolled
-    date from a mis-authored one, and that is exactly what it is for.
-
-    So a next-day curve reaches the book the way a re-quoted swaption ladder does - dropped and
-    re-installed. One function does both (`ir_curve.reauthor`, reached by `swaption_vol`), because
-    the mechanism is one thing and only the reason differs: there the values half is EMPTY and no
-    tick exists at all, here the values half works fine and the date is simply not in it.
+    So a next-day curve reaches the book dropped and re-installed, through the one function that
+    also serves a re-quoted swaption ladder: there the values half is EMPTY and no tick exists at
+    all, here the values half works fine and the date is simply not in it.
     """
     from derivus.config import update_market_quote
 
@@ -1141,8 +1050,7 @@ def test_a_rolled_date_strip_reaches_a_book_through_reauthor():
     with pytest.raises(BloombergConfigurationError, match='a Market Prices block is'):
         reauthor(prices, name, block['instrument'])
 
-    # and it is REACHABLE off the package, which is what the swaption emitter's docstring always
-    # claimed of it and the lazy re-export did not carry
+    # and it is REACHABLE off the package, which the lazy re-export did not carry
     assert 'derivus_bloomberg' in in_a_fresh_interpreter(
         'from derivus_bloomberg import reauthor; assert callable(reauthor)')
     import derivus_bloomberg
@@ -1152,18 +1060,14 @@ def test_a_rolled_date_strip_reaches_a_book_through_reauthor():
 
 
 def test_a_broken_seed_is_a_configuration_refusal_and_never_a_no_terminal_skip():
-    """A BROKEN WORKSTATION MUST NOT READ AS AN ABSENT ONE, which is a property of the CATCH SITES
-    rather than of the taxonomy.
+    """A BROKEN WORKSTATION MUST NOT READ AS AN ABSENT ONE - a property of the CATCH SITES rather
+    than of the taxonomy.
 
-    `BloombergConfigurationError` hangs off `BloombergFXError` with everything else - one base, one
-    taxonomy, and `errors.py` says why the name stays historical. The live smokes used to catch that
-    BASE and skip 'no Bloomberg terminal answering', so a workstation whose `seed.json` had lost its
-    `conventions` block would have reported an absent terminal while the terminal answered fine: the
-    one failure a smoke gate exists to surface, disguised as the one thing it may skip for.
-
-    The hierarchy is untouched (`derivus.service` and `derivus_mcp` catch the base and must keep
-    working) and the smokes now catch `NO_TERMINAL`. This gate is what holds them to it: widen that
-    tuple back and the last assertion goes red.
+    `BloombergConfigurationError` hangs off `BloombergFXError` with everything else, and the live
+    smokes used to catch that BASE: a workstation whose `seed.json` had lost its `conventions` block
+    reported an absent terminal while the terminal answered fine. The hierarchy is untouched
+    (`derivus.service` and `derivus_mcp` catch the base) and the smokes catch `NO_TERMINAL`; widen
+    that tuple back and the last assertion goes red.
     """
     doctored = copy.deepcopy(SEED)
     del doctored['rates']['USD']['conventions']
@@ -1186,10 +1090,8 @@ def test_a_broken_seed_is_a_configuration_refusal_and_never_a_no_terminal_skip()
     assert BloombergConfigurationError not in NO_TERMINAL
     assert not any(issubclass(BloombergConfigurationError, error) for error in NO_TERMINAL)
 
-    # and the two skips a smoke MAY make are named apart, because they are different events and a
-    # desk does different things about them. This workstation meets the second one for real: its
-    # terminal answers and refuses with `DAILY_CAPACITY_REACHED` once the daily data quota is spent,
-    # which is a thing to wait out - not a workstation without a terminal
+    # the two skips a smoke MAY make are named apart: this workstation meets the second for real,
+    # its terminal refusing with `DAILY_CAPACITY_REACHED` once the daily quota is spent
     absent = no_terminal_reason(BloombergUnavailable('no blpapi'))
     refused_request = no_terminal_reason(BloombergRequestError('DAILY_CAPACITY_REACHED'))
     assert absent.startswith('no Bloomberg terminal answering')
@@ -1198,23 +1100,18 @@ def test_a_broken_seed_is_a_configuration_refusal_and_never_a_no_terminal_skip()
 
 
 def test_the_engine_builds_the_authored_deals_and_reads_their_knots():
-    """READ-ONLY, AND NO SOLVE. The block is decoded by the engine's own JSON reader and every point
-    is turned into a benchmark deal node by `bootstrappers.quote_nodes` - which authors the quote
-    through `QUOTE_WRITERS`, constructs each instrument and recurses into `Children` - and then
-    `quote_knots` resets each leaf and reads its last cashflow date.
+    """READ-ONLY, AND NO SOLVE. The block is decoded by the engine's JSON reader, every point turned
+    into a benchmark deal node by `quote_nodes`, and `quote_knots` resets each leaf and reads its
+    last cashflow date.
 
-    WHAT THIS PROVES, STATED NARROWLY. The authored blocks CONSTRUCT: every point becomes an
-    instrument, every leg resets, every benchmark produces a last cashflow date, and the knot grid
-    comes out ASCENDING and strictly positive - which is the curve contract
-    (`Factor1D.interpolate` divides by the tenor, so a zero knot is NaN). The quote reaches the
-    field the family's own writer puts it in.
+    WHAT THIS PROVES: the authored blocks CONSTRUCT, every leg resets, every benchmark produces a
+    last cashflow date, and the knot grid is ASCENDING and strictly positive (`Factor1D.interpolate`
+    divides by the tenor, so a zero knot is NaN). The quote reaches the field the family's writer
+    puts it in.
 
-    WHAT IT DOES NOT PROVE is that the authored field NAMES are declared ones. `construct_instrument`
-    validates nothing: an unknown key is read past and the instrument is built from the rest, so a
-    misspelled day count would reach this gate and pass it. That claim belongs to
-    `test_every_authored_deal_key_is_one_the_committed_schema_declares`, which compares against the
-    declaration instead. The fit-through belongs to the composition harness; this is the seam
-    under it.
+    WHAT IT DOES NOT PROVE is that the authored field NAMES are declared ones - a misspelled day
+    count reaches this gate and passes it. That belongs to
+    `test_every_authored_deal_key_is_one_the_committed_schema_declares`.
     """
     import pandas as pd
     from derivus.bootstrappers import quote_knots, quote_nodes
@@ -1241,7 +1138,7 @@ def test_the_engine_builds_the_authored_deals_and_reads_their_knots():
         assert list(knots) == sorted(knots), knots
         assert all(knot > 0.0 for knot in knots), knots
 
-    # the quote reached the instrument through the family's own writer, on the type that carries it
+    # the quote reached the instrument through the family's own writer
     zar = prices[name]['instrument']
     swap = [point for point in zar['Points'] if point['DealType'] == 'SwapInterestDeal'][0]
     node = quote_nodes([swap], 'ZAR')[0]
@@ -1254,19 +1151,16 @@ def test_the_engine_builds_the_authored_deals_and_reads_their_knots():
 # =============================================================================================
 
 def test_a_live_terminal_answers_the_strip_or_the_smoke_skips_by_name():
-    """LIVE SMOKE, and a workstation with no terminal is a SKIP rather than a failure.
+    """LIVE SMOKE; no terminal is a SKIP rather than a failure.
 
-    WHAT IS ASSERTED IS THE ROUTE, not the market: that this workstation's own map and seed reach a
-    strip, that every candidate comes back as a print or a NAMED refusal, and that whatever
-    survives authors a block. The census is PRINTED and never asserted - a strip read out of hours
-    screens differently from one read at noon, and a gate that failed on that would be measuring the
-    clock.
+    WHAT IS ASSERTED IS THE ROUTE, not the market: this workstation's map and seed reach a strip,
+    every candidate comes back as a print or a NAMED refusal, and whatever survives authors a block.
+    The census is PRINTED and never asserted - a strip read out of hours screens differently from
+    one read at noon.
 
-    THE WORKSTATION SEED IS READ FOR ITS VOCABULARY AND NOT NECESSARILY FOR ITS CONVENTIONS. A desk
-    whose `DV_HOME/seed.json` predates this build has the tickers but not the declarations, and this
-    gate does not edit a desk's own file: it takes the conventions from the PACKAGED seed where the
-    workstation's carries none, says so in the census, and leaves the file alone. Which currencies
-    exist is still the workstation's map, so nothing is smuggled in.
+    THE WORKSTATION SEED IS READ FOR ITS VOCABULARY, not necessarily its conventions: where
+    `DV_HOME/seed.json` predates this build the conventions come from the PACKAGED seed, said in the
+    census, with the desk's file left alone. Which currencies exist is still the workstation's map.
     """
     import time
 
@@ -1299,9 +1193,8 @@ def test_a_live_terminal_answers_the_strip_or_the_smoke_skips_by_name():
     print('\nconventions borrowed from the packaged seed for {}'.format(
         ', '.join(borrowed) or 'nothing - the workstation seed declares its own'))
 
-    # NO_TERMINAL AND NOT `BloombergFXError`: a configuration or seed refusal is this gate's whole
-    # point and must FAIL here, not skip green as an absent terminal - see
-    # `test_a_broken_seed_is_a_configuration_refusal_and_never_a_no_terminal_skip`
+    # NO_TERMINAL AND NOT `BloombergFXError`: a configuration or seed refusal must FAIL here rather
+    # than skip green as an absent terminal
     started = time.time()
     try:
         with BloombergSession(timeout_ms=60000, connect_timeout_ms=5000) as session:

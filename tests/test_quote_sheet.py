@@ -1,31 +1,24 @@
-"""The quote sheet is a RECORD, and these gates are what stops it quietly becoming a spreadsheet.
+"""`derivus.quote_sheet` end to end: an outcome and a book in, one workbook out.
 
-`derivus.quote_sheet` is pure: an outcome and a book in, one workbook out. So the gates give it
-exactly that - a hand-authored outcome for a zero-cost collar on USDZAR, and a book document in
-the wire form a job file carries, asserted loadable by the engine's own `load_json` so the fixture
-is a BOOK and not a shape invented to suit the writer. Nothing is stubbed and nothing is patched;
-the workbook is read back with `zipfile` and `ElementTree`, because a reader dependency added to
-gate a writer dependency would only move the question.
+The fixture is a hand-authored zero-cost collar on USDZAR plus a book in the wire form a job file
+carries, asserted loadable by the engine's own `load_json`. Nothing is stubbed; the workbook is
+read back with `zipfile` and `ElementTree`.
 
-Four claims, and each of them is a way a sheet can lie.
+Four claims, each a way a sheet can lie.
 
-The strike axis. A collar is negotiated at USDZAR 15.50 and priced on a deal holding 1/15.50, and
-both numbers are true - so the gate pins WHICH sheet says which. The ticket carries 15.50 and
-never 0.0645; the Legs sheet, which is the deal about to be booked, carries the reciprocal. A
-sheet that showed a client 0.0645 would be arithmetically correct and commercially useless.
+THE STRIKE AXIS. The trade is negotiated at USDZAR 15.50 and priced on a deal holding 1/15.50.
+The ticket carries 15.50 and never 0.0645; the Legs sheet, the deal about to be booked, carries
+the reciprocal.
 
-Frozen values. A reference of `=SUM(A1:A2)` is text a counterparty typed, and the gate reads the
-cell XML to demand it landed as a string with no `<f>` element anywhere near it. `strings_to_*`
-being off is the mechanism; a formula element in the archive is the falsification.
+FROZEN VALUES. `strings_to_*` off is the mechanism; an `<f>` element in the cell XML beside a
+reference like `=SUM(A1:A2)` is the falsification.
 
-Determinism. Two writes of one quote must differ in nothing but zip metadata, which is why
-`created` is stamped with the book's `Base_Date` rather than the clock. Bytes cannot say that -
-the zip records a mod time per member - so the gate compares the SHEET XML and `docProps/core.xml`
-across two archives.
+DETERMINISM. `created` is stamped with the book's `Base_Date`, not the clock. Bytes cannot say
+this - the zip records a mod time per member - so the gate compares the SHEET XML and
+`docProps/core.xml` across two archives.
 
-The silent skip. `Worksheet.write` truncates a string past 32767 characters, stores the truncated
-cell and says so only in a return code. Under an unchecked writer that is a quote sheet missing
-the end of a field with nobody told. Here it is a named refusal that leaves no file behind.
+THE SILENT SKIP. `Worksheet.write` truncates past 32767 characters and reports only in a return
+code. Here it is a named refusal that leaves no file behind.
 """
 import json
 import os
@@ -101,13 +94,11 @@ def option(reference, buy_sell, option_type, strike_market):
 
 
 def outcome(financing='COLLAR_FINANCING', **extra):
-    """A zero-cost collar's outcome, hand authored to the shape `structures.quote` returns: the
-    floor given, the cap solved to the protection's premium, every leg strike on the engine axis
-    with the market number beside it, and the composed `StructuredDeal` riding along ready to book.
-
-    `financing` names the second leg, which is where the frozen-values and cell-limit gates put
-    their awkward text; `extra` adds keys the runner does not send today, so the sheet's tolerance
-    for a richer outcome is gated rather than assumed.
+    """A zero-cost collar's outcome in the shape `structures.quote` returns: floor given, cap
+    solved to the protection's premium, every leg strike on the engine axis with the market number
+    beside it, and the composed `StructuredDeal`. `financing` names the second leg - where the
+    frozen-values and cell-limit gates put their awkward text; `extra` adds keys the runner does
+    not send today.
     """
     protection = option('COLLAR_PROTECTION', 'Buy', 'Put', FLOOR)
     sold = option(financing, 'Sell', 'Call', CAP)
@@ -217,11 +208,8 @@ def loaded(document):
 
 
 def test_the_fixture_book_is_a_book_the_engine_loads():
-    """The gates are only worth anything if the document under them is a real one. This is the
-    decoder a job file is read with and the verb that says what would stop it running, so a
-    fixture that drifted from the wire form - a token misspelt, a section moved, a factor the
-    deals need and the book does not carry - fails HERE, rather than passing a sheet writer that
-    never looked at what it was rendering."""
+    """The fixture read with the decoder a job file is read with, and validated: a drift from the
+    wire form - a token misspelt, a section moved, a factor the deals need - fails HERE."""
     context = derivus.Context().load_json((json.dumps(BOOK), 'fixture'))
     factors = context.current_cfg.params['Price Factors']
 
@@ -264,10 +252,8 @@ def test_the_ticket_carries_the_structure_every_leg_and_the_net(tmp_path):
 
 
 def test_the_sales_names_ride_the_ticket_when_the_outcome_carries_them(tmp_path):
-    """The runner sends no vernacular today - a client asked for a cylinder and the schema is
-    where the sales names live. So the row is written when the outcome carries one and left out
-    when it does not: a ticket never shows an empty label, and the sheet never has to be reissued
-    for the day the runner starts sending it."""
+    """The row is written when the outcome carries a vernacular and left out when it does not - a
+    ticket never shows an empty label. The runner sends none today."""
     plain, named = written(tmp_path, 'plain.xlsx'), written(
         tmp_path, 'named.xlsx', vernacular='zero-cost collar, range forward, cylinder')
 
@@ -277,10 +263,8 @@ def test_the_sales_names_ride_the_ticket_when_the_outcome_carries_them(tmp_path)
 
 
 def test_the_ticket_quotes_the_strike_the_trade_was_negotiated_in(tmp_path):
-    """A collar struck at USDZAR 15.50 is quoted at 15.50. The engine prices it on 1/15.50 and
-    that number is true too - but it belongs to the deal, not to the conversation, so it is on the
-    Legs sheet and nowhere on the ticket. This is the one inversion a quote sheet can get wrong in
-    a way that reads as plausible."""
+    """A collar struck at USDZAR 15.50 is quoted at 15.50. The engine's 1/15.50 belongs to the
+    deal, so it is on the Legs sheet and nowhere on the ticket."""
     path = written(tmp_path)
     ticket, legs = numbers(path, 'Quote'), numbers(path, 'Legs')
 
@@ -290,9 +274,8 @@ def test_the_ticket_quotes_the_strike_the_trade_was_negotiated_in(tmp_path):
 
 
 def test_a_reference_that_looks_like_a_formula_stays_text(tmp_path):
-    """`strings_to_formulas` off is the mechanism; this is the falsification. A counterparty's own
-    reference is text the desk was given, and a sheet that evaluated it would be reporting a
-    number nobody quoted."""
+    """`strings_to_formulas` off is the mechanism; this is the falsification - a counterparty's
+    reference lands as a string cell with no `<f>` element on the sheet at all."""
     typed = '=SUM(A1:A2)'
     path = written(tmp_path, financing=typed)
 
@@ -307,8 +290,8 @@ def test_a_reference_that_looks_like_a_formula_stays_text(tmp_path):
 
 def test_two_writes_of_one_quote_hold_the_same_cells(tmp_path):
     """Same inputs, same workbook - down to the created stamp, which is the book's base date and
-    not the clock. Bytes cannot say this because the zip records a mod time per member, so the
-    claim is made where it is meant: the sheet XML, the string table, and the core properties."""
+    not the clock. Read on the sheet XML, the string table and the core properties, because the
+    zip records a mod time per member."""
     first, second = written(tmp_path, 'first.xlsx'), written(tmp_path, 'second.xlsx')
 
     for sheet in ('Quote', 'Legs', 'Market'):
@@ -321,9 +304,8 @@ def test_two_writes_of_one_quote_hold_the_same_cells(tmp_path):
 
 
 def test_a_cell_excel_cannot_hold_is_named_not_skipped(tmp_path):
-    """`Worksheet.write` truncates a string past 32767 characters, keeps the stump and reports the
-    refusal in a return code. Unchecked, that is a quote sheet missing the end of a field with
-    nobody told - so the helper raises, names the sheet and the cell, and leaves no file."""
+    """`Worksheet.write` truncates past 32767 characters and reports it in a return code. The
+    helper raises instead, names the sheet and the cell, and leaves no file."""
     path = tmp_path / 'refused.xlsx'
 
     with pytest.raises(QuoteSheetError) as refusal:
@@ -354,10 +336,9 @@ def test_the_legs_sheet_carries_the_deal_that_will_be_booked(tmp_path):
 
 
 def test_the_tree_is_said_as_sections_not_as_json_in_one_cell(tmp_path):
-    """A container's `Children` ARE the leg sections above it, so writing the subtree into one
-    cell as json would say it twice - at a length that on a three-legged structure walks a
-    perfectly good quote into the 32767-character refusal. The tree is structure; the rows are
-    fields; the sheet keeps them apart."""
+    """A container's `Children` ARE the leg sections above it, so the subtree as json in one cell
+    would say it twice - and on a three-legged structure walk a good quote into the 32767-character
+    refusal."""
     text = said(written(tmp_path), 'Legs')
 
     assert 'Children' not in text and 'Instrument' not in text
@@ -368,8 +349,8 @@ def test_the_tree_is_said_as_sections_not_as_json_in_one_cell(tmp_path):
 
 
 def test_the_market_sheet_carries_the_book_it_was_priced_off(tmp_path):
-    """A quote without its market data is a number with no date on it. The spots, the rate they
-    imply in market terms, the vol surface's own rows and every rate curve's tenors."""
+    """The spots, the rate they imply in market terms, the vol surface's own rows and every rate
+    curve's tenors."""
     path = written(tmp_path)
     text, value = said(path, 'Market'), numbers(path, 'Market')
 
@@ -391,8 +372,7 @@ def test_the_market_sheet_carries_the_book_it_was_priced_off(tmp_path):
 
 def test_a_book_loaded_in_process_renders_the_same_sheet(tmp_path):
     """The wire form and the loaded form are the same book, so they are the same sheet. The writer
-    reads a curve by its shape rather than by importing the engine to recognise one - which is
-    what keeps an optional spreadsheet dependency from dragging the library in behind it."""
+    reads a curve by its shape rather than by importing the engine to recognise one."""
     wire, live = written(tmp_path, 'wire.xlsx'), tmp_path / 'live.xlsx'
     write_sheet(live, outcome(), loaded(BOOK))
 

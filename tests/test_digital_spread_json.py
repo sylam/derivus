@@ -1,22 +1,17 @@
 """Relative_Digital_Spread end to end, through the JSON contract and nothing else.
 
-A digital priced off one vol at its own strike misses the smile: the true price is the strike
-derivative of the CALL, so it carries a `-vega * dVol/dK` term the single-vol closed form cannot
-see. With the **Relative_Digital_Spread** Valuation Configuration option set, the engine prices
-the digital as a call/put spread of half-width `eps * Strike`, each leg reading the surface at its
-OWN strike - the smile term arrives as the finite difference the spread takes.
+A digital is the strike derivative of the CALL, so it carries a `-vega * dVol/dK` term the
+single-vol closed form cannot see. With `Relative_Digital_Spread` set, the engine prices it as a
+call/put spread of half-width `eps * Strike`, each leg reading the surface at its OWN strike.
+`CFFloatingInterestListDeal` takes the same replication under `Digital_Spread`, where the
+half-width is ABSOLUTE in rate - the convention a zero or negative strike requires - with the
+`call_or_put` factor orienting the floorlet's put spread.
 
-The same replication prices digital caplets and floorlets through `CFFloatingInterestListDeal`,
-where the option is **Digital_Spread** and the half-width is ABSOLUTE in rate - the convention a
-zero or negative rates strike requires - with the `call_or_put` factor orienting the floorlet's
-put spread.
-
-THE ORACLES ARE EXACT, not O(eps^2) approximations: every skewed surface here is authored on
-COLLINEAR moneyness nodes, so any interpolation reproduces the same line and the expected value is
-the two-leg Black difference computed below with the same vols the engine must read. The other
-half of each statement is the two degenerate anchors - the option absent is the single-vol closed
-form (regression), and the spread deal equals the two-vanilla portfolio the spread replicates,
-priced as ordinary EuropeanOption deals by the same document.
+THE ORACLES ARE EXACT, not O(eps^2): every skewed surface here is authored on COLLINEAR moneyness
+nodes, so any interpolation reproduces the same line and the expected value is the two-leg Black
+difference computed below. Each statement's other half is its two degenerate anchors - the option
+absent is the single-vol closed form, and the spread deal equals the two-vanilla portfolio it
+replicates, priced as ordinary EuropeanOption deals by the same document.
 """
 import io
 import json
@@ -181,17 +176,11 @@ def test_a_spread_digital_is_the_two_vanillas_it_replicates():
 def test_the_spread_reads_each_leg_at_its_own_vol():
     """The exact statement, with the smile's sign: on an equity skew (vol FALLING in strike) the
     digital call is worth MORE than the single-vol closed form by the `-vega * dVol/dK` the spread
-    picks up. The oracle is the two-leg Black difference at the line's own vols - exact because
-    the surface nodes are collinear.
+    picks up. The DEBUG organ pins what the pricer read - one line per leg, low strike at the
+    HIGHER vol.
 
-    MEASURED: 670.395 against the closed form's 478.856 - the smile term is +40% of this
-    document's digital, which is what makes the anchors decisive. MUTATION: both legs read at the
-    CENTER moneyness prices 478.882 (-28.6% against the oracle, the closed form plus the spread's
-    own curvature) - this gate, the replication identity and the FX twin all die on it, and the
-    flat-surface compo gate correctly survives.
-
-    The DEBUG organ pins WHAT the pricer read: one line per leg, and the low strike must read the
-    HIGHER vol - the smile pickup is the subject, so the log states it directly.
+    MEASURED 670.395 against the closed form's 478.856. MUTATION: both legs read at the CENTER
+    moneyness prices 478.882, -28.6% against the oracle.
     """
     out, log = _run(_job([BINARY], _equity_factors(), valuation=SPREAD_ON), debug=True)
     expected = _spread_closed(EQ_FWD, STRIKE, _eq_sigma, R_USD)
@@ -346,13 +335,11 @@ def test_a_digital_floorlet_spread_is_its_put_spread():
     """Replication with the payoff's own sign, flat surface: a digital floorlet is a PUT spread,
     `(P(K+eps) - P(K-eps)) / 2 eps`, and the caplet its call spread - `Digital_Spread` is an
     ABSOLUTE half-width in rate, the only convention that survives a zero or negative rates
-    strike. Flat vols make the oracle pure replication arithmetic, so the two things this gate
-    can fail on are the sign and the width - which are exactly the two defects the migration
-    introduced here: the ported branch dropped the `call_or_put` factor and turned the width
-    relative, and no gate existed to see either.
+    strike. Flat vols make the oracle pure replication arithmetic, so the gate can only fail on
+    the sign or the width.
 
-    MUTATION: the `call_or_put` factor removed reads the floorlet at -12894.06 against +12894.06
-    - the exact sign flip every digital floorlet priced with before this gate."""
+    MUTATION: the `call_or_put` factor removed reads the floorlet at -12894.06 against +12894.06.
+    """
     out, _ = _run(_job([_cap_deal('CAP', True), _cap_deal('FLR', False)], _cap_factors(0.0),
                        valuation=CAP_SPREAD_ON))
     for ref, cp in (('CAP', 1.0), ('FLR', -1.0)):
@@ -405,9 +392,8 @@ def test_an_aggregated_cap_prices_per_convention():
     Black time `t_end - (2/3)(t_end - t_start)`. Flat surface, both oracles exact, and the two
     conventions must separate - capping a sum is not summing the caps.
 
-    MUTATION: the pre-port routing restored (compound unconditionally, no daily branch) kills
-    this gate and the range-accrual one together - Pre_Aggregation silently priced as one
-    option on the compound, which is the defect the routing exists to prevent."""
+    MUTATION: compounding unconditionally (no daily branch) kills this gate and the range-accrual
+    one together."""
     items = _agg_items(CAP_START)
     out, _ = _run(_job(
         [_cap_deal('PRE', True, items=items, averaging='Pre_Aggregation',
@@ -451,8 +437,7 @@ def test_an_in_period_post_aggregation_cap_integrates_the_remaining_variance():
     Black guard silently prices intrinsic; the exact in-period integral
     `t_end^3 / (3 (t_end - t_start)^2)` is what the average's remaining variance actually is.
 
-    MUTATION: the plain rule reads 4.116 against the oracle's 22.868 (-82%) - the negative
-    tenor trips the Black guard and the ATM cap collapses to intrinsic."""
+    MUTATION: the plain rule reads 4.116 against the oracle's 22.868, -82%."""
     known = 4.0                 # ATM: the remaining-variance term IS the price here
     items = _agg_items(BASE - pd.DateOffset(days=14), known=known)
     out, _ = _run(_job([_cap_deal('MID', True, items=items, averaging='Post_Aggregation',

@@ -13,30 +13,24 @@
 
 """Who may write, proved on real homes - and every refusal read back off the log that recorded it.
 
-Enforcement here is a claim with two halves, and this file exercises both. The first half is that a
-home nobody has told about capabilities enforces NOTHING: a fresh `init_home` takes a fill from any
-actor at all, which is not a compatibility shim but the honest reading of a record that has never
-been told who may do what - and it is why increment 1's hundred and three gates are still green
-beside this file rather than rewritten under it. The second half is that a single declaration turns
-the writer on for every verb-bearing type at once, and that each refusal LANDS AS A FACT: the brief
-asks for a capability-denial gate per verb, and a denial nobody can replay is a decision that
-happened outside the record.
+Two halves. A home nobody has told about capabilities enforces NOTHING: a fresh `init_home` takes a
+fill from any actor - the honest reading of a record never told who may do what, and why increment
+1's gates are still green beside this file. And a single declaration turns the writer on for every
+verb-bearing type at once, with each refusal LANDING AS A FACT: a denial nobody can replay is a
+decision that happened outside the record.
 
-The sweep is closed over the vocabulary rather than listed by hand. `VERB_BEARING` is computed from
-`EVENT_VERB`, and the fixture table is asserted to cover exactly it, so a type added tomorrow with a
-verb and no case here turns this file red the day it appears instead of the day someone remembers
-to come back.
+The sweep is closed over the vocabulary rather than listed by hand: `VERB_BEARING` is computed from
+`EVENT_VERB` and the fixture table is asserted to cover exactly it, so a type added tomorrow with a
+verb and no case here turns this file red the day it appears.
 
-Faults are the house's kind - doctored data on disk, never a patched function. A capabilities
-document that is not canonical is put into the store directly, behind the verb that would have
-canonicalised it, which is exactly how a hand-edited policy would arrive.
+Faults are the house's kind - doctored data on disk, never a patched function. A non-canonical
+capabilities document is put into the store directly, behind the verb that would have canonicalised
+it, which is how a hand-edited policy arrives.
 
-The strand-and-recover walk is the brief's break-glass gate said in full, and every step of it is an
-ordinary appended fact: a document with zero admin grants LANDS (its declarer had admin under the
-document it replaces - a declaration applies to the appends after it), every later declaration is
-refused and the refusal recorded, a stranger's break-glass use lands and grants nothing, the genesis
-break-glass seat's use restores admin, a new document lands, and the whole history verifies green
-with the denials inside it.
+The strand-and-recover walk is the break-glass gate in full, every step an ordinary appended fact: a
+document with zero admin grants LANDS (its declarer had admin under the document it replaces), every
+later declaration is refused and recorded, a stranger's break-glass use lands and grants nothing,
+the genesis seat's use restores admin, a new document lands, and the history verifies green.
 """
 import ast
 import json
@@ -168,13 +162,10 @@ def attempts(log):
 # Enforcement is off until it is declared.
 
 def test_a_fresh_home_enforces_nothing_and_writes_exactly_as_increment_one_did(tmp_path):
-    """The compatibility claim, gated rather than asserted in a docstring.
-
-    A home that has never been told who may do what has no document to consult, so `evaluate` is
-    never called and a stranger's fill lands - and the FRAME it lands in is the increment-1 frame:
-    twelve fields, the firm class the classifier derives, and a chain that verifies entitled. This
-    is the one case that has to hold for the hundred and three gates beside this file to mean
-    anything after the writer learned to refuse.
+    """A home never told who may do what has no document to consult, so `evaluate` is never called
+    and a stranger's fill lands - in the increment-1 FRAME: twelve fields, the firm class the
+    classifier derives, and a chain that verifies entitled. The one case that has to hold for the
+    gates beside this file to mean anything after the writer learned to refuse.
     """
     home, log = minted(tmp_path)
 
@@ -202,17 +193,13 @@ def test_a_fresh_home_enforces_nothing_and_writes_exactly_as_increment_one_did(t
 
 
 def test_the_break_glass_handle_is_gated_from_event_one_and_not_by_declaration(tmp_path):
-    """The one authorization that does not wait for a document, on a home that has never had one.
+    """The one authorization that does not wait for a document. The recovery handle is not IN a
+    document - a recovery a declaration could revoke is not a recovery - so there is no declaration
+    whose absence could mean "anyone may". Left ungated it is an actor-free write channel into the
+    book of record, `reason` being free text in a sealed body.
 
-    Every other verb is unenforced until a capabilities document lands, which is the honest reading
-    of a record that has never been told who may do what. The recovery handle is not like the others
-    and cannot be: it is not IN a document - a recovery a declaration could revoke is not a recovery -
-    so there is no declaration whose absence could mean "anyone may". Left ungated it is an actor-free
-    write channel into the book of record, `reason` being free text in a sealed body, and the writer
-    emits nothing about the ones it accepts.
-
-    So the seat genesis named may use it here and now, and nobody else may, and the reach is a fact
-    either way - which is a strictly better record than a use that granted nothing.
+    So the seat genesis named may use it here and now, nobody else may, and the reach is a fact
+    either way.
     """
     home, log = minted(tmp_path)
     assert state_at(log)[0] is None, 'this home has never been told who may do what'
@@ -250,14 +237,11 @@ def test_the_frame_is_still_the_twelve_fields_increment_one_froze(tmp_path):
 # The brief's capability-denial gate: every verb, refused and recorded.
 
 def test_every_verb_bearing_type_refuses_an_unscoped_actor_and_records_the_refusal(tmp_path):
-    """The brief's capability-denial gate, verbatim: *every verb has a test proving the unscoped
-    actor is refused and the refusal is itself logged.*
-
-    One declaration turns the writer on for all of them, which is the design working - authorization
-    is a document and a function, not a check bolted onto each verb - and each refusal is asserted
-    twice over: the raised `CapabilityDenied` naming subject, verb, book scope, attempted type and
-    the LSN of the denial, and the `capability_denied` fact sitting at that LSN with the body a fold
-    will read. The document here grants nothing at all, so the sweep is total.
+    """Every verb, with the unscoped actor refused and the refusal itself logged. One declaration
+    turns the writer on for all of them - authorization is a document and a function, not a check
+    bolted onto each verb - and each refusal is asserted twice: the raised `CapabilityDenied` naming
+    subject, verb, book scope, attempted type and the denial's LSN, and the `capability_denied` fact
+    at that LSN. The document here grants nothing, so the sweep is total.
     """
     home, log = minted(tmp_path)
     table = attempts(log)
@@ -394,10 +378,9 @@ def test_the_evaluator_is_one_pure_function_over_a_document_and_a_fold():
     # is the property break-glass exists to answer rather than a defect to paper over
     assert evaluate(doc, seats, MINT, ADMIN, None) is False
     assert evaluate(None, seats, STRANGER, ADMIN, None) is True, 'no document, no enforcement'
-    # the two authorizations that live outside every document. The writer's own is unconditional -
-    # a denial that could be denied is a regress - while the recovery is the GENESIS SEAT's and
-    # nobody else's: it must survive a document that stranded every admin, and it must still be a
-    # gated write path, or an unscoped actor appends free text into the record at will.
+    # the two authorizations outside every document: the writer's own is unconditional (a denial
+    # that could be denied is a regress), the recovery is the GENESIS SEAT's and nobody else's -
+    # it must survive a document that stranded every admin and still be a gated write path
     assert evaluate(doc, seats, WRITER, WRITER, None) is True
     assert evaluate(doc, seats, MINT, RECOVERY, None) is True
     assert evaluate(doc, seats, STRANGER, RECOVERY, None) is False
@@ -454,27 +437,17 @@ def test_authorization_answers_as_of_the_lsn_it_is_asked_about(tmp_path):
 # Strand and recover - the brief's break-glass gate, walked.
 
 def test_a_declaration_can_strand_the_last_admin_and_break_glass_is_the_way_back(tmp_path):
-    """The walk the brief asks for, every step of it an ordinary appended fact.
+    """The walk, every step an ordinary appended fact. A replacement with zero admin grants LANDS
+    (its declarer held admin under the document it replaces). From there every later declaration is
+    refused and recorded. A stranger reaching for the break-glass handle is refused and the REACH is
+    recorded. The seat genesis named restores admin, a new document lands and clears the recovery,
+    and the whole history verifies with the denials inside it.
 
-    A replacement with zero admin grants LANDS, because its declarer held admin under the document
-    it replaces and a declaration applies to the appends after it. From that position every later
-    declaration is refused and the refusal recorded. A stranger reaching for the break-glass handle
-    is refused and the REACH is recorded, because a recovery seat that anybody may speak as is a
-    write channel rather than a recovery. The seat genesis named restores admin, a new document
-    lands - and clears the recovery, because an admin no declaration can revoke is the finding this
-    module says out loud - and the whole history verifies with the denials inside it.
-
-    Two mutants are killed here that nothing else in this file reaches.
-
-    Mutant 8, `capability.apply_event`'s `if genesis['break_glass'] is None:` -> `if True:`. The
-    break-glass seat is read ONCE, from the mint's own grant, and not from the latest thing calling
-    itself one. Without that guard the two-declaration sequence below - name a new break-glass seat,
-    then strand every admin - is a permanently unwritable home whose recovery grant somebody else
-    now holds, and the whole walk after it fails.
-
-    Mutant 11, the same line for `genesis['admin']`. The LSN-1 grants are half of `state_at`'s
-    documented answer and are read once and scope-filtered; a second declaration calling itself
-    genesis does not move them.
+    Two mutants nothing else here reaches. `capability.apply_event`'s
+    `if genesis['break_glass'] is None:` -> `if True:`: the seat is read ONCE from the mint's own
+    grant, not from the latest thing calling itself one - without that guard, naming a new seat and
+    then stranding every admin is a permanently unwritable home whose recovery somebody else holds.
+    The same line for `genesis['admin']`: the LSN-1 grants are read once and scope-filtered.
     """
     home, log = minted(tmp_path)
     declare(log, MINT, document(grants=((MINT, ADMIN, ANY_BOOK), (DESK, BOOK, BOOK_ONE))))
@@ -598,18 +571,14 @@ def test_a_capabilities_document_that_cannot_be_evaluated_does_not_land(tmp_path
 
 
 def test_a_doctored_policy_blob_folds_to_unreadable_and_break_glass_walks_out_of_it(tmp_path):
-    """The other half of the same law, and the reason the fold can trust what it reads: a policy
-    blob rewritten under its own name no longer hashes to it, so the store refuses on the way out
-    and the fold never sees the substituted document.
+    """A policy blob rewritten under its own name no longer hashes to it, so the store refuses on
+    the way out and the fold never sees the substituted document.
 
-    What it sees instead is `UNREADABLE`, and that is the whole of this gate's second half. The fold
-    runs inside the writer's own authorization hook, so a home whose declared blob was doctored would
-    otherwise meet that store refusal on EVERY append - a fill, a break-glass use, a replacement
-    policy - and be permanently unwritable while verifying green, which is exactly the state the
-    brief says the genesis break-glass grant exists to recover from ("a policy declaration that would
-    strand the last admin OR BRICK WRITES is recoverable through it"). So: every verb refused by
-    name, and then the walk out - the genesis seat's use, a replacement document, the desk writing
-    again.
+    What it sees is `UNREADABLE`. The fold runs inside the writer's authorization hook, so a home
+    with a doctored blob would otherwise meet that store refusal on EVERY append and be permanently
+    unwritable while verifying green - the state the genesis break-glass grant exists to recover
+    from. So: every verb refused by name, then the walk out - the genesis seat's use, a replacement
+    document, the desk writing again.
     """
     home, log = minted(tmp_path)
     blob = log.store.put(canonical_document(document(
@@ -655,14 +624,11 @@ def test_a_doctored_policy_blob_folds_to_unreadable_and_break_glass_walks_out_of
 
 
 def test_a_fold_answers_off_the_platter_rather_than_off_the_index_it_opened_with(tmp_path):
-    """A handle held across somebody else's append answers today's question, not the one it opened on.
-
-    Reading never claims the home - that is deliberate, so a replica is never locked out of a log
-    somebody is writing to - which means an open `SpineLog` outliving an append is the ORDINARY case
-    rather than an exotic one. A fold that walked an index derived when the handle opened would then
-    answer authorization questions out of a policy that has been replaced: a revocation that does not
-    reach the custody path, and "could X do Y" answering wrong AT THE HEAD, which is the one position
-    `state_at` should never be able to get wrong.
+    """A handle held across somebody else's append answers today's question. Reading never claims
+    the home - deliberately, so a replica is never locked out - which makes an open `SpineLog`
+    outliving an append the ORDINARY case. A fold walking an index derived when the handle opened
+    would answer authorization out of a replaced policy: a revocation that does not reach the
+    custody path, and "could X do Y" wrong AT THE HEAD.
 
     So the assertion is equality with a handle opened after the fact, on all three of the fold's
     answers - the document, the enumeration custody wraps keys on, and the evaluator's verdict.
@@ -723,11 +689,9 @@ def test_the_classifier_is_the_seam_and_it_answers_firm_in_phase_one():
 
 
 def test_the_envelope_asks_the_classifier_rather_than_stamping_a_constant():
-    """The seam read off the SOURCE, because in phase 1 no behaviour can tell the two apart: one
-    class means a writer that hardcoded `firm` and a writer that derived it produce identical
-    frames, and the difference only surfaces the day desk two arrives - which is exactly too late
-    to discover it. So this asserts the call, the way the import gate asserts the dependency
-    budget: a property of the source, checked while it is still cheap to be wrong about."""
+    """The seam read off the SOURCE, because in phase 1 no behaviour can tell the two apart: with
+    one class, a writer that hardcoded `firm` and one that derived it produce identical frames, and
+    the difference surfaces the day desk two arrives. So this asserts the call."""
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         'derivus_spine', 'log.py')
     with open(path, encoding='utf-8') as handle:

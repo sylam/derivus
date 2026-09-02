@@ -225,16 +225,14 @@ def _compo_digital(threshold, corr):
 
 
 def test_a_compo_autocall_is_a_digital_on_the_converted_spot(tmp_path):
-    """The compo value oracle, exact under the flat document: the pricer simulates the PRODUCT
-    S*X (spot scaled by the cross, fx carry per fixing, interval vol composed with the fx read),
-    and a single coupon makes the payoff a digital Black prices with no Monte Carlo error - the
-    survival probability at the t0 row is analytic. Compo OSS deals had NEVER priced before this
-    (`calc_vol_adjustment` returned a python-float b_adj that `torch.unsqueeze` refused, skipping
-    the deal), so this is the first value any compo autocall has ever been held to.
+    """The compo value oracle, exact under the flat document: the pricer simulates the PRODUCT S*X
+    and a single coupon makes the payoff a digital Black prices with no Monte Carlo error. Compo OSS
+    deals had never priced before this (`calc_vol_adjustment` returned a python-float b_adj that
+    `torch.unsqueeze` refused, skipping the deal).
 
     MEASURED: 0.45887454 against the closed form's 0.45887454, 4.8e-16 relative; the flipped
-    correlation lands on ITS closed form (0.43677514) exactly - both arms, so the sorted-pair
-    sign flip is measured to decide something rather than assumed."""
+    correlation lands on ITS closed form (0.43677514) exactly, so the sorted-pair sign flip is
+    measured rather than assumed."""
     out, _ = _run(_compo_job(), tmp_path, 'compo')
     expected = _compo_digital(1.00, CORR)
     assert abs(_mtm(out) - expected) / expected < 1e-9, (_mtm(out), expected)
@@ -293,20 +291,16 @@ def _cmc(job, tmp_path, name):
 
 
 def test_each_booked_date_carries_the_coupon_that_pays(tmp_path):
-    """A path pays EXACTLY `Units * coupon`, exactly ONCE - the payment, scaled, then the latch.
+    """A path pays EXACTLY `Units * coupon`, exactly ONCE - the payment, scaled, then the latch. The
+    document autocalls at its first coupon with certainty, so the first date books the whole payment
+    and later dates book nothing. Four defects, all invisible to a SINGLE-coupon document:
 
-    The document autocalls at its first coupon with certainty, so the first date books the whole
-    payment and the later dates book nothing. Four defects had to be fixed for this, and a
-    SINGLE-coupon document is blind to all four, the loop firing once so the wrong quantity and
-    the right one coincide:
-
-      * the settle sat in the coupon loop under a ROW-level `tau`, so it fired once per coupon
-        and `cash_settle` accumulated - 0.24 where 0.08 pays;
+      * the settle sat in the coupon loop under a ROW-level `tau`, firing once per coupon so
+        `cash_settle` accumulated - 0.24 where 0.08 pays;
       * it booked `P`, the accumulated VALUE, rather than the payment;
       * `nominal` scaled the mark and not the ledger, so `Units` and `Buy_Sell` never arrived;
       * `terminationDate` was stamped inside `sim_spot` and never returned, so every later block
-        re-priced and RE-PAID the deal as though it had never fired - 0.8/0.8/0.8 where
-        0.8/0/0 pays.
+        re-priced and RE-PAID the deal - 0.8/0.8/0.8 where 0.8/0/0 pays.
     """
     ledger, _ = _cmc(_cmc_job(threshold=0.01), tmp_path, 'amount')
     per_date = np.asarray(ledger.values, dtype=float).mean(axis=1)
@@ -316,19 +310,14 @@ def test_each_booked_date_carries_the_coupon_that_pays(tmp_path):
 
 
 def test_an_autocalled_path_pays_once_and_is_worth_nothing_after(tmp_path):
-    """A path that has autocalled pays once and is worth nothing after.
+    """A path that has autocalled pays once and is worth nothing after: the ledger reads
+    `0.8 / 0 / 0` and the profile `0.79206 / 0.8 / 0 / 0`.
 
-    The document autocalls at its FIRST coupon with certainty, so the ledger reads `0.8 / 0 / 0`
-    and the profile `0.79206 / 0.8 / 0 / 0` - the t0 mark is that single payment discounted, the
-    decision row carries the payment being made, and every later row is zero.
-
-    This was a strict xfail: `terminationDate` was maintained correctly inside `sim_spot` - per
-    scenario, off the observed indicator - and never returned, so the outer loop rebuilt it from
-    -1 for every block and the deal kept paying (0.8 / 0.8 / 0.8). The latch is now a by-product
-    of the simulation, carried into the next block's theta, and each decision registers ONE
+    `terminationDate` was maintained correctly inside `sim_spot` and never returned, so the outer
+    loop rebuilt it from -1 for every block and the deal kept paying (0.8 / 0.8 / 0.8). The latch is
+    now a by-product carried into the next block's theta, and each decision registers ONE
     counterfactual carrying its whole reach - the latch over every later row plus an own-row
-    fired/survived override; see `pv_MC_AutoCallSwap`'s docstring and
-    `test_boundary_pricer_events.py` for the gradient side.
+    fired/survived override.
     """
     ledger, mtm = _cmc(_cmc_job(threshold=0.01), tmp_path, 'zero_tail')
     cash = np.asarray(ledger.values, dtype=float).mean(axis=1)
@@ -408,26 +397,22 @@ def _cva_ladder(tmp_path, threshold, rungs=(0.3, 0.5, 1.0), report='USD', collat
 
 
 def test_the_cva_spot_delta_matches_the_same_document_bumped(tmp_path):
-    """The sensitivity gate, wholly inside the contract: `grad_cva`'s equity entry against a CRN
-    central-difference ladder of the same job document, live trigger.
+    """`grad_cva`'s equity entry against a CRN central-difference ladder of the same job document,
+    live trigger.
 
     MEASURED at 1024 x 4 batches, 256 inner, rungs 0.3/0.5/1.0 on spot 100:
 
         cva 0.005450535   AAD +1.3809097e-04   CRN 1.3581/1.4697/1.4362e-04
         disagreement 1.68% at the best rung, ladder flatness 8.22%
 
-    so the 5% tolerance carries a 3x margin inside a ladder whose own spread is wider than it.
-    The decision registers ONCE (`LatchedBoundarySet` with an own-row fired/survived override),
-    and each half of its reach suppressed alone kills this gate, measured on this document:
+    so the 5% tolerance carries a 3x margin inside a ladder whose own spread is wider. The decision
+    registers ONCE, and each half of its reach suppressed alone kills this gate:
 
-        latch neutralised (triggered := untriggered): AAD +2.5547825e-04, +73.83% - the tape
-                                  keeps paying rows the latch killed
-        own-row override suppressed: AAD +3.7148406e-05, -72.65% - the decision row's digital
-                                  flux gone
+        latch neutralised (triggered := untriggered): AAD +2.5547825e-04, +73.83%
+        own-row override suppressed: AAD +3.7148406e-05, -72.65%
 
-    Opposite signs, each ~43x the corrected residual - which is also why the WHOLE registration
-    suppressed is a weak mutant here (+5.15%): the two flux halves nearly cancel on this fixture,
-    so the per-half mutants are the ones that measure the subject.
+    Opposite signs, each ~43x the corrected residual - which is why the WHOLE registration
+    suppressed is a weak mutant here (+5.15%): the two halves nearly cancel on this fixture.
     """
     aad, crn, cva = _cva_ladder(tmp_path, threshold=1.02)
     best = min(crn, key=lambda c: abs(aad - c))
@@ -451,26 +436,21 @@ def _collateralised(job):
 
 
 def test_a_collateralised_cva_delta_carries_the_settled_coupon(tmp_path):
-    """The collateralised twin of the sensitivity gate: the same document under a zero-threshold
-    CSA, so each decision's counterfactual runs the gross->net chain and the settled-cash ledger
-    instead of reaching the report grid additively.
+    """The collateralised twin: the same document under a zero-threshold CSA, so each decision's
+    counterfactual runs the gross->net chain and the settled-cash ledger.
 
-    What this gate measures is the decision's LEDGER REACH. A trigger forced ON kills every later
+    What this measures is the decision's LEDGER REACH. A trigger forced ON kills every later
     coupon's settled cash; forced OFF it pays at the path's first later firing - so the
-    counterfactual must flip every payment row it touches, not only its own. Scoring the own
-    payment alone leaves the later coupons' booked cash in the margin period's exposure windows,
-    measured at +6.5% per added later decision on a two-coupon cut of this document (dumped
-    engine branch rows against a closed-form chain replica; the excess sits exactly on the later
-    coupon's C_ts_te window rows).
+    counterfactual must flip every payment row it touches. Scoring the own payment alone leaves the
+    later coupons' booked cash in the margin period's exposure windows, +6.5% per added later
+    decision on a two-coupon cut of this document.
 
     MEASURED at 1024 x 4 batches, rungs 0.3/0.5/1.0 on spot 100:
 
         cva 0.0017986481   AAD +5.0705166e-05   CRN 4.9345/5.0634/5.15172e-05
         disagreement 0.14% at the best rung, ladder flatness 4.29%
 
-    MUTATION: the ledger reach truncated to the decision's own row (the later `cash_events`
-    rows dropped in `objective_jumps`) reads +7.73% against the same
-    ladder - the reach rows are what this gate kills over.
+    MUTATION: the reach truncated to the decision's own row reads +7.73% against the same ladder.
     """
     aad, crn, cva = _cva_ladder(tmp_path, threshold=1.02, collateral=True)
     best = min(crn, key=lambda c: abs(aad - c))
@@ -491,12 +471,11 @@ def test_the_cva_spot_delta_matches_in_a_foreign_reporting_currency(tmp_path):
 
 
 def test_a_dead_trigger_contributes_no_spurious_delta(tmp_path):
-    """The control this deal shape can actually have. A threshold no path reaches makes the deal
-    WORTHLESS - a coupon-only autocall is nothing but its trigger, so there is no live-but-
-    fluxless configuration to control against (the fixture-degeneracy rule cuts both ways: state
-    the degeneracy, do not dress it as coverage). What a saturated trigger CAN gate is silence:
-    the registrations still run under `Gradient: Yes`, and they must contribute neither value nor
-    a spurious delta - cva, AAD and every CRN rung exactly zero."""
+    """The control this deal shape can have. A threshold no path reaches makes the deal WORTHLESS -
+    a coupon-only autocall is nothing but its trigger, so there is no live-but-fluxless
+    configuration to control against. What a saturated trigger CAN gate is silence: the
+    registrations still run under `Gradient: Yes` and must contribute neither value nor a spurious
+    delta - cva, AAD and every CRN rung exactly zero."""
     aad, crn, cva = _cva_ladder(tmp_path, threshold=10.0, rungs=(0.3, 0.5))
     assert cva == 0.0 and aad == 0.0 and all(c == 0.0 for c in crn), (aad, crn, cva)
 

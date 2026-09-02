@@ -197,15 +197,14 @@ def test_an_unreachable_extension_strike_is_the_guaranteed_strip():
 
 
 def test_an_undecided_strip_prices_its_black_optional():
-    """The strip's OSS machinery against Black: the continuation at the single decision is
-    linear in the decision spot, so the optional part is a scaled Black call and the whole
-    undecided value is closed-form up to Monte Carlo error.
+    """The strip's OSS machinery against Black: the continuation at the single decision is linear
+    in the decision spot, so the optional part is a scaled Black call and the whole undecided value
+    is closed-form up to Monte Carlo error.
 
-    MUTATION: the exercise direction flipped (extend when the spot is on the LOSING side) kills
-    this gate, the unreachable-strike anchor, the rolling Black gate and the dominance gate
-    together. The strip boundary mis-set by +10% reads 53.230 against the oracle's 84.362
-    (-37%): a materially wrong boundary loses real value, while SMALL boundary errors are
-    forgiven to second order - the envelope argument that lets the pricer detach it from AAD.
+    MUTATIONS: the exercise direction flipped kills this gate, the unreachable-strike anchor, the
+    rolling Black gate and the dominance gate together; the strip boundary mis-set by +10% reads
+    -37%. A materially wrong boundary loses real value while SMALL errors are forgiven to second
+    order, which is the envelope argument that lets the pricer detach it from AAD.
     """
     out, log = _run(_job(_deal()), debug=True)
     expected = _leg(0, K1) + _leg(1, K1) + _optional_black(1, [2, 3])
@@ -253,23 +252,17 @@ def test_the_declared_exerciser_defaults_to_the_reported_book():
 
 
 def test_the_mirror_booking_sums_to_zero():
-    """The acceptance the reported book alone cannot state: the same trade from the other desk.
-
-    The mirror flips Buy_Sell AND Exercised_By at once. The boundary does not move - it is where
-    the REPORTED continuation crosses zero, and `root_from_continuation`'s own monotone is the
-    continuation times `forward_sign`, so both books locate the same H off the same grid - which
-    leaves the mirror as this deal's row arithmetic negated: the same truncation set, the same
-    draws off the same seed, negation being exact in IEEE. So the pair sums to ZERO, not to Monte
-    Carlo error, and the gate is a machine-precision one.
+    """The acceptance the reported book alone cannot state: the same trade from the other desk,
+    flipping Buy_Sell AND Exercised_By at once. The boundary does not move - it is where the
+    REPORTED continuation crosses zero and both books locate the same H off the same grid - so the
+    mirror is this deal's row arithmetic negated, which is exact in IEEE. The pair sums to ZERO
+    rather than to Monte Carlo error.
 
     Both diagonals run, because they truncate opposite ways: Buy/Bank and Sell/Counterparty
-    continue ABOVE H (`decide_sign > 0`), Buy/Counterparty and Sell/Bank BELOW it.
-
-    MEASURED: every pair sums to exactly 0.0 - four pairs, both styles. Two mutants die here.
-    Reverting the backward pass's min to a max leaves the Rolling pairs at +3.65 and +3.67 on
-    books of 88.4 and -64.0 (4.1% and 5.7%) and the Strip untouched, the strip boundary being
-    closed-form - the fold is read only at a NESTED rolling decision. Orienting the OSS
-    truncation by `forward_sign` leaves every pair at ~+1.5e+02, 174% of book.
+    continue ABOVE H, Buy/Counterparty and Sell/Bank below it. Two mutants die here - reverting the
+    backward pass's min to a max leaves the Rolling pairs 4-6% out with the Strip untouched (its
+    boundary being closed-form), and orienting the OSS truncation by `forward_sign` leaves every
+    pair at 174% of book.
     """
     for style in ('Strip', 'Rolling'):
         for side, holder in (('Buy', 'Bank'), ('Buy', 'Counterparty')):
@@ -282,18 +275,14 @@ def test_the_mirror_booking_sums_to_zero():
 
 
 def test_the_written_side_prices_the_black_put_it_is_short():
-    """The client side of a bank-exercisable strip, against the same Black oracle flipped.
+    """The client side of a bank-exercisable strip against the same Black oracle FLIPPED: the
+    continuation region flips to S < H on the same strike, so the optional part is a short put
+    where the reported book is long a call, and the dominance bound inverts with it. Put-call
+    parity then closes the pair model-free - the two exercise sides add up to `never + always`,
+    which is what would move if the flipped truncation kept the wrong tail.
 
-    The continuation region flips to S < H on the SAME strike K2*B/A, so the optional part is a
-    short put where the reported book is long a call, and the dominance bound inverts with it:
-    the written side is worth at most both forced strategies where the exerciser's side is worth
-    at least both. Put-call parity then closes the pair exactly - the two exercise sides of one
-    strip add up to `never + always`, model-free, and that sum is what would move if the flipped
-    truncation kept the wrong tail.
-
-    MEASURED: written -62.180 against the oracle's -62.116, 1.0e-3 relative - the same Monte
-    Carlo error the reported book's Black gate reads; the parity residual is 4.5e-4 of
-    `never + always`. The truncation mutant reads +84.416 here, +236%.
+    1.0e-3 relative against the oracle, the same Monte Carlo error the reported book reads, and a
+    parity residual of 4.5e-4. The truncation mutant reads +236%.
     """
     v = _mtm(_run(_job(_deal(exercised_by='Counterparty')))[0])
     expected = _leg(0, K1) + _leg(1, K1) - _optional_black(1, [2, 3], sign=-1.0)
@@ -307,13 +296,12 @@ def test_the_written_side_prices_the_black_put_it_is_short():
 
 def test_the_reconstructed_mirror_profile_negates():
     """The mirror through the LIFECYCLE, which base valuation never reaches: on the CMC grid each
-    decision is reconstructed at its own fixing row off that scenario's spot, and there the
-    flipped truncation is a comparison rather than a draw. Every row must negate.
+    decision is reconstructed at its own fixing row off that scenario's spot, where the flipped
+    truncation is a comparison rather than a draw, and every row must negate exactly.
 
-    MEASURED: max |book + mirror| is exactly 0.0 across the whole profile, scale 917. This is the
-    ONLY gate the reconstruction comparison answers to - oriented by `forward_sign` it reads
-    721.9 (79%) here and leaves every base-valuation reading above untouched. The backward
-    pass's max-for-min reads 313.6 (34%)."""
+    The ONLY gate the reconstruction comparison answers to: oriented by `forward_sign` it reads 79%
+    of scale here and leaves every base-valuation reading untouched, and the backward pass's
+    max-for-min reads 34%."""
     book = np.asarray(_run(_profile_job(_deal(style='Rolling')))[0]['Results']['mtm'], dtype=float)
     mirror = np.asarray(_run(_profile_job(_mirror(style='Rolling')))[0]['Results']['mtm'],
                         dtype=float)
@@ -331,10 +319,10 @@ def test_an_unknown_exerciser_is_refused_by_name():
 
 
 def test_a_terminated_rolling_deal_needs_no_fabricated_lifecycle():
-    """A rolling deal the bank stopped extending, seen after the fact: the No is recorded at the
-    extension fixing, the decisions termination made moot stay BLANK, and the fixings that never
-    existed carry no prints. The book of record holds only facts, and the deal is exactly its
-    settled past - worth zero - rather than a load error demanding counterfactual data."""
+    """A rolling deal the bank stopped extending, seen after the fact: the No is recorded, the
+    decisions termination made moot stay BLANK, and the fixings that never existed carry no prints.
+    The record holds only facts, so the deal is exactly its settled past - worth zero - rather than
+    a load error demanding counterfactual data."""
     base = BASE + pd.DateOffset(days=300)          # between fixings 2 (day 273) and 3 (day 364)
     deal = _deal(style='Rolling', fixings={0: 1.26, 1: 1.28}, decisions={1: 'No'})
     out, _ = _run(_job(deal, base=base))
@@ -377,15 +365,12 @@ def _cva_job(spot=None, gradient='No', deal=None):
 
 def test_the_cva_delta_carries_the_extension_flux(tmp_path=None):
     """The extend/terminate decisions reconstructed at outer fixing rows are hard indicators, so
-    without a latch registration the CVA gradient drops their flux. The registration's branches
-    are derived from the SAME row arithmetic the pricer reports (`value = fixed + state * live`),
-    the alive branch the facts-only world and the dead branch the survived-weighted pending head
-    - so the `EXTENDABLE_LATCH` organ's reconstruction against the engine's own rows is the sharp
-    statement, with the CVA delta against its CRN ladder as the economic bound.
+    without a latch registration the CVA gradient drops their flux. The branches are derived from
+    the SAME row arithmetic the pricer reports, so the `EXTENDABLE_LATCH` organ's reconstruction
+    against the engine's own rows is the sharp statement and the CRN ladder the economic bound.
 
-    MEASURED: reconstruction 5.5e-8 relative (float32 roundoff); delta -0.07% against the best
-    rung with the registration, -3.17% with it suppressed - the flux is 3.2% of this document's
-    delta, and the suppressed mutant also kills the organ assertion outright."""
+    Reconstruction 5.5e-8 relative, float32 roundoff; the delta reads -0.07% against the best rung
+    with the registration and -3.17% suppressed, so the flux is 3.2% of this document's delta."""
     out, log = _run(_cva_job(gradient='Yes'), debug=True)
     organs = [ln for ln in log.splitlines() if 'EXTENDABLE_LATCH' in ln]
     assert organs, 'the latch registration logged nothing at DEBUG'
@@ -408,18 +393,13 @@ def test_the_cva_delta_carries_the_extension_flux(tmp_path=None):
 
 
 def test_a_mirror_cva_delta_carries_its_own_extension_flux():
-    """The registration on the mirror, where the gap is the only thing that could still point the
-    wrong way. The latch's reconstruction is built from `fired` and never reads the gap, so a gap
-    oriented off `forward_sign` instead of `decide_sign` would reconstruct perfectly and put the
-    kernel mass on the far side of every decision - visible only against a CRN ladder.
+    """The registration on the mirror, where the GAP is the only thing that could still point the
+    wrong way: the reconstruction is built from `fired` and never reads it, so a gap oriented off
+    `forward_sign` instead of `decide_sign` reconstructs perfectly while putting the kernel mass on
+    the far side of every decision - visible only against a CRN ladder, where it reads -37.9%.
 
-    And the flux is LARGER here than on the reported book: the mirror's exposure sits on the
-    terminated paths, so the decision's own jump is most of what the CVA is made of.
-
-    MEASURED: reconstruction 6.1e-5 on scales of 905 to 1.11e+03, ~6e-8 relative (float32
-    roundoff, the reported book's own reading); the delta reads +0.27% against its best rung, and
-    -18.4% with the registration suppressed - a fifth of this document's delta, against 3.2% on
-    the reported book. Orienting the gap by `forward_sign` reads -37.9% of the same ladder."""
+    The flux is LARGER here than on the reported book, the mirror's exposure sitting on the
+    terminated paths: +0.27% against the best rung, -18.4% suppressed, against 3.2% reported."""
     mirror = _mirror(style='Rolling')
     out, log = _run(_cva_job(gradient='Yes', deal=mirror), debug=True)
     organs = [ln for ln in log.splitlines() if 'EXTENDABLE_LATCH' in ln]
@@ -457,18 +437,16 @@ def _collateralised(job):
 
 
 def test_a_collateralised_cva_delta_carries_the_surviving_cash(tmp_path=None):
-    """The collateralised delta bound - and the record of a channel MEASURED to be second order.
+    """The collateralised delta bound, and the record of a channel MEASURED to be second order.
 
-    Under the CSA the counterfactual ledger should in principle flip with the decision (the
-    extendable pays on SURVIVING, an algebra `cash_events` cannot express). Measured across four
-    documents built to amplify it - base (+0.25%), ITM extension (-0.02%), vol 0.30 with a 20-day
-    margin period (+0.26%), and a one-fixing zero-lag tail where the flipped object is almost
-    pure cash (+0.03%, ladder 0.01%) - the residual never resolves above its CRN oracle. The
-    structural reason: unlike the autocall, whose flipped coupon was 28% of scale and became
-    at-risk cash at the decision's own row, the extendable's flipped payments settle far from
-    the decision, carried by the VALUE side (which `pending` scores exactly) until one brief
-    hazard-weighted window. The ledger channel is deliberately NOT built ahead of a document
-    that can falsify it; this gate stands as the economic bound."""
+    Under the CSA the counterfactual ledger should in principle flip with the decision, an algebra
+    `cash_events` cannot express. Across four documents built to amplify it - base, ITM extension,
+    vol 0.30 at a 20-day margin period, and a one-fixing zero-lag tail where the flipped object is
+    almost pure cash - the residual never resolves above its CRN oracle. The structural reason:
+    unlike the autocall's flipped coupon, which was 28% of scale and became at-risk cash at the
+    decision's own row, the extendable's flipped payments settle far from the decision and are
+    carried by the VALUE side until one brief hazard-weighted window. The ledger channel is
+    deliberately NOT built ahead of a document that can falsify it."""
     out, _ = _run(_collateralised(_cva_job(gradient='Yes')))
     g = out['Results']['grad_cva']['Gradient']
     aad = float(g.loc[[i for i in g.index if 'FxRate.EUR' in str(i[0])][0]])

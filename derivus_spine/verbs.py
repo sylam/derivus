@@ -14,28 +14,17 @@
 """The acts a desk performs on the record - booking, amending, lifecycle, marks, quotes and runs.
 
 The logic lives here and the engine holds thin delegators, so no module under `derivus/` learns
-about users, workflow or storage. Everything below takes plain data and injected callables - bytes,
-strings, numbers, a function - and holds no idea that an engine exists; the engine side reaches this
-module lazily and refuses by name when no home is configured.
+about users, workflow or storage: everything below takes plain data and injected callables.
+`pin_result` therefore takes an EXECUTOR rather than importing one, and the record checks what came
+back rather than trusting who ran it, the engine version included. No verb here carries an
+authorization check - the writer evaluates capability and lands the refusal as `capability_denied`,
+and a second check is a second place to get it wrong. Three verbs do restate a refusal the writer
+would give anyway, each on its own arm and each saying so in its own docstring: `apply_lifecycle`,
+`complete_run` and `declare_market`.
 
-That is why `pin_result` takes an executor rather than importing one: re-executing a claim would
-make the truth layer depend on the thing it records. The caller hands in a real function, and the
-record checks what came back rather than trusting who ran it - including the engine version, which
-the executor reports and this module compares against the claim.
-
-No verb here carries an authorization check: the writer evaluates capability and lands the refusal
-as `capability_denied`, and a second check would be a second place to get it wrong. The writer's
-flow is likewise untouched - blind tag, duplicate-tag coalescing on identical canonical bytes, blob
-fsynced before the event citing it, one exclusive claim on the home.
-
-Three verbs restate a refusal the writer would give anyway, each naming the verb: `apply_lifecycle`
-refuses anything but an election, an observation or a determination (the writer would accept a
-`fill` submitted through that arm), `complete_run` refuses a lane that mints nothing, and
-`declare_market` refuses a name that is not a name.
-
-Declared limitation: the desk's `book.json` is still the edge's own file, written by the edge after
-the event lands. Its rehoming as an LSN-pinned projection is not built here, so until then the log
-is what is true and the file is an interim stand-in.
+DECLARED LIMITATION: the desk's `book.json` is still the edge's own file, written after the event
+lands. Its rehoming as an LSN-pinned projection is not built, so the log is what is true and the
+file is an interim stand-in.
 """
 import json
 
@@ -198,12 +187,9 @@ def complete_run(log, actor, lane, claim, job, values, result, book=None, effect
 
     `claim` is the replay tuple as the engine reports it; `job`, `values` and `result` are the three
     objects that make it checkable, as bytes. The values address is checked against the claimed
-    `values_hash` rather than believed - the engine's values hash is the SHA-256 of that vector's
-    canonical bytes, so a disagreement means the vector handed in is not the one the run read.
-    `plan_hash` is not checked here, since checking it means compiling; an auditor recompiles it
-    from the `job` blob at this LSN.
-
-    A lane that mints nothing raises `MalformedEvent` rather than being dropped silently.
+    `values_hash` rather than believed. `plan_hash` is not checked here, since checking it means
+    compiling; an auditor recompiles it from the `job` blob at this LSN. A lane that mints nothing
+    raises `MalformedEvent` rather than being dropped silently.
     """
     if not mints(lane):
         raise MalformedEvent(
@@ -225,15 +211,13 @@ def pin_result(log, actor, claim, job, values, result, executor, book=None, effe
     """Promote a tuple this hub did not witness, returning the envelope, the addresses, and the
     `resolution` that reached it.
 
-    A cache hit is a `run_completed` at or before this head carrying the same four coordinates, so
-    there is nothing to reproduce. If that attestation names a different result the claim is
-    refused: one replay tuple cannot have two results.
-
-    Otherwise the injected `executor` is called as `executor(job, values, engine_version)` and must
-    answer `(version it ran at, result bytes)`. A version mismatch refuses by name, since a replay
-    claim is a claim at the recorded version. Bit-equality of the bytes is the fast path; anything
-    else falls to `policy.compare` against the declared tolerance policy, which is read before
-    anything runs, so a home that declares none refuses on every path including the cache hit.
+    A cache hit is a `run_completed` at or before this head carrying the same four coordinates; if
+    that attestation names a different result the claim is refused, since one replay tuple cannot
+    have two. Otherwise the injected `executor` is called as `executor(job, values, engine_version)`
+    and must answer `(version it ran at, result bytes)`, a version mismatch refusing by name.
+    Bit-equality is the fast path; anything else falls to `policy.compare` against the declared
+    tolerance policy, read before anything runs, so a home that declares none refuses on every path
+    including the cache hit.
 
     Nothing is appended on a refusal. A pin that succeeds twice coalesces on its idempotency tag.
     """

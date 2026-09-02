@@ -1,43 +1,37 @@
 """The verified ATM swaption grid as a `HullWhite2FactorModelPrices` block -
 `derivus_bloomberg.swaption_vol`.
 
-Nothing here opens a socket except the last gate, which skips by name where this workstation has no
-terminal. Everything else runs on ONE canned ZAR grid - five expiries against three tenors, walked
-through the package's real discovery grammar into a real verified map, with a poison table of dead
-cells authored on purpose - driven through the package's own reader and the real engine seams
-(`config.update_market_quote` and `schema.partition_market_price`, both imported READ-ONLY). The
-HW2F calibration itself is NOT run: the fit-through is the composition harness's reading, and what
-is held here is the block under it.
+Only the last gate opens a socket, and it skips by name where this workstation has no terminal.
+Everything else runs on ONE canned ZAR grid - five expiries against three tenors, walked through the
+package's real discovery grammar into a real verified map with a poison table of dead cells - driven
+through the package's own reader and the real engine seams (`config.update_market_quote`,
+`schema.partition_market_price`), imported READ-ONLY. The HW2F calibration is NOT run: the
+fit-through is the composition harness's reading.
 
 WHAT IS HELD:
 
-  the budget       `swaption_vol` imports the standard library, this package's own modules and a
-                   LAZY blpapi - read off the source and proved again in a fresh interpreter
+  the budget       `swaption_vol` imports the standard library, this package and a LAZY blpapi
   the columns      `INSTRUMENT_COLUMNS` equals the COMMITTED `HullWhite2FactorModelParameters`
                    declaration, read via `git show HEAD` and compared AS DATA - two day-count
-                   columns and no `Day_Count`, which is the defect authored blocks used to die on
-  the declaration  the SHIPPED ZAR conventions spelled out as data, and every way a convention can
-                   be absent, unread or unauthorable refusing at the seed
-  the screen       the order of distrust, one canned cell per verdict - and `zero` is the one that
-                   matters most, because a zero `Market_Volatility` USED TO BE a silent instruction
-                   to read the surface's ATM rather than a bad number. The engine refuses that row
-                   by name now; this screen stays, because a ladder is refused here where a desk can
-                   see which cell went dark
+                   columns and no `Day_Count`, the defect authored blocks used to die on
+  the declaration  the SHIPPED ZAR conventions as data, and every way a convention can be absent,
+                   unread or unauthorable refusing at the seed
+  the screen       the order of distrust, one canned cell per verdict - `zero` matters most,
+                   because a zero `Market_Volatility` used to be a silent instruction to read the
+                   surface's ATM rather than a bad number
   the row          the seed's declared conventions on every row, the vol scaled into the family's
-                   `Percent` column, `Weight` flat at v1's declaration, and the two-way and the
-                   stamp riding beside them as undeclared keys
-  the distribution declared, carried into `Quote_Source`, and READ BY THE ENGINE since 2026-09-01 -
-                   the finding this file gated in its open shape, now gated closed: the premium
-                   construction is held to the Bachelier pair as source AND as behaviour, and the
-                   block's own line is held to saying which convention its numbers are in, because
-                   the declaration the engine reads lives on a SURFACE this emitter does not author
+                   `Percent` column, `Weight` flat, and the two-way and stamp beside them
+  the distribution declared, carried into `Quote_Source`, and READ BY THE ENGINE: the premium
+                   construction held to the Bachelier pair as source AND as behaviour, and the
+                   block's own line held to saying which convention its numbers are in, because the
+                   declaration the engine reads lives on a SURFACE this emitter does not author
   the partition    this family has an EMPTY values half, so `update_market_quote` refuses a re-tick
                    and `reauthor` is the only route a re-quoted grid reaches a book by
   determinism      the same canned grid emits the same bytes
   live smoke       one real ZAR ladder off this workstation's terminal, or a skip by name
 
-NO MONKEYPATCHING. The canned terminal is the curve gate's own `BloombergSession` subclass, whose
-event walk yields rows; the engine is imported and never touched.
+NO MONKEYPATCHING: the canned terminal is the curve gate's `BloombergSession` subclass, and the
+engine is imported and never touched.
 """
 import copy
 import datetime
@@ -122,8 +116,8 @@ def canned_session(seed=None, poison=None):
 
 def ladder_of(seed=None, poison=None, screen=None, surface='ZAR-SWAPTION', as_of=AS_OF):
     # the poison table is resolved HERE and passed on explicitly, so the map and the session are
-    # built from the same one - `verified_map` lives in the curve gate and would otherwise fall back
-    # to that module's table, which is how a cell can be `invalid` in one half and live in the other
+    # built from the same one - `verified_map` lives in the curve gate and would otherwise fall
+    # back to that module's table
     seed, poison = seed or SEED, POISON if poison is None else poison
     return fetch_swaption_ladder(canned_session(seed, poison), verified_map(seed, poison), seed,
                                  'ZAR', as_of, surface=surface, screen=screen)
@@ -159,13 +153,10 @@ def test_the_swaption_emitter_imports_the_standard_library_and_nothing_else():
 
 def test_importing_the_swaption_emitter_lands_no_engine_and_no_blpapi():
     """Proved a second way, in a fresh interpreter - and the last line is why both emitters are
-    re-exported LAZILY: reaching one off the package must not cost the chain emitter its own
-    measured budget.
+    re-exported LAZILY: reaching one off the package must not cost the chain emitter its own budget.
 
-    THE CLAIMS ARE ASYMMETRIC, exactly as the curve twin's are. `derivus` and `blpapi` must not
-    land; `pandas` DOES, through the map layer this module reaches for its ticker grammar, and it is
-    asserted POSITIVELY - a gate that quietly allowed it would not be stating a budget, it would be
-    omitting one.
+    ASYMMETRIC, as the curve twin's is: `derivus` and `blpapi` must not land, `pandas` DOES through
+    the map layer and is asserted POSITIVELY.
     """
     landed = in_a_fresh_interpreter('import derivus_bloomberg.swaption_vol')
     assert 'derivus_bloomberg' in landed, 'the module did not import'
@@ -181,18 +172,15 @@ def test_importing_the_swaption_emitter_lands_no_engine_and_no_blpapi():
 # =============================================================================================
 
 def test_the_row_is_the_committed_schemas_own_declaration():
-    """THE GATE THIS BUILD WAS ASKED FOR, and it reads the COMMITTED state rather than the working
-    tree, so it holds while another workflow is mid-edit in `bootstrappers.py`.
+    """Read off the COMMITTED state rather than the working tree, so it holds while another workflow
+    is mid-edit in `bootstrappers.py`.
 
     `INSTRUMENT_COLUMNS` is a whitelist spelled in a package that may not import the engine, so it
-    can only be trusted if something compares it to the declaration - and it is compared AS DATA,
-    in order, off an AST parse of `git show HEAD:derivus/bootstrappers.py`.
+    is compared AS DATA, in order, off an AST parse of `git show HEAD:derivus/bootstrappers.py`.
 
-    TWO DAY-COUNT COLUMNS AND NO `Day_Count`. `create_market_swaps` reads `Floating_Day_Count` to
-    generate the float leg that gives the par swap rate and `Fixed_Day_Count` only on the
-    unequal-frequency branch; an authored block spelling one `Day_Count` for both is the defect the
-    roadmap records, and it dies in a cashflow generator rather than at the schema. This is that
-    defect turned into a comparison.
+    TWO DAY-COUNT COLUMNS AND NO `Day_Count`: `create_market_swaps` reads `Floating_Day_Count` for
+    the float leg and `Fixed_Day_Count` only on the unequal-frequency branch, so a block spelling
+    one `Day_Count` for both dies in a cashflow generator rather than at the schema.
     """
     declared = committed_fields('HullWhite2FactorModelParameters', table='Instrument_Definitions')
     assert tuple(declared) == swaption_vol.INSTRUMENT_COLUMNS, declared
@@ -205,12 +193,9 @@ def test_the_row_is_the_committed_schemas_own_declaration():
     assert tuple(key for key in row if key in declared) == swaption_vol.INSTRUMENT_COLUMNS
     assert set(row) - set(declared) == set(swaption_vol.QUOTE_VALUE_KEYS)
 
-    # the BLOCK-level keys, and every one of them is now DECLARED. `Quote_Source` used to be the
-    # one key this family had no column for - the emitter wrote it anyway because provenance is the
-    # evidence, and `bootstrap` read past it - which is the gap this half asserted. HW2F declares
-    # `Quote_Source` and `Quote_Timestamp` since 2026-09-01, on the shape both Heston-Nandi
-    # families already had, so the subtraction is empty. Read off the WORKING TREE, because the
-    # declaration lands in this same change and HEAD cannot be asked about it.
+    # the BLOCK-level keys, every one of them DECLARED. HW2F declares `Quote_Source` and
+    # `Quote_Timestamp` on the shape both Heston-Nandi families already had, so the subtraction is
+    # empty. Read off the WORKING TREE, because that declaration lands in this same change
     instrument = block_of()[1]['instrument']
     block_fields = committed_fields('HullWhite2FactorModelParameters', at=None)
     assert set(instrument) - set(block_fields) == set(), sorted(set(instrument) - set(block_fields))
@@ -221,25 +206,17 @@ def test_the_row_is_the_committed_schemas_own_declaration():
 
 
 def test_the_engine_reads_the_declared_distribution_and_this_block_says_which():
-    """THE FINDING, CLOSED, AND GATED IN ITS NEW SHAPE. This gate was
-    `test_the_engine_prices_a_lognormal_black_and_reads_no_distribution` and it asserted the GAP:
-    `SASN` is a NORMAL vol in basis points, `create_market_swaps` priced every benchmark's premium
-    with `utils.black_european_option_price` whatever the surface declared, and `InterestYieldVol`'s
-    `Distribution_Type` reached the deal path and nothing else. It said "the day
-    `create_market_swaps` reads a distribution this gate fails and says so", and that day was
-    2026-09-01. It is rewritten rather than deleted, holding the same seam from the other side.
+    """`SASN` is a NORMAL vol in basis points, and `create_market_swaps` used to price every
+    benchmark's premium with `utils.black_european_option_price` whatever the surface declared. It
+    reads `Distribution_Type` now, and this holds that seam from both sides.
 
-    TWO HALVES, AND THE SECOND ONE IS BEHAVIOURAL. The engine's premium construction is READ, as
-    text, off the working tree rather than off `git show HEAD` - the committed-source trick the
-    column gate uses is right for a DECLARATION, which has to hold while another workflow edits the
-    module, and wrong for a behaviour that only exists once the edit lands. So the source half is a
-    statement about what is running, and the run below is what proves it: the same ladder's own
-    numbers priced under the two declarations come out an ORDER OF MAGNITUDE apart, which is what
-    reading `Distribution_Type` is worth and what ignoring it cost.
+    TWO HALVES, THE SECOND BEHAVIOURAL. The engine's premium construction is READ as text off the
+    WORKING TREE rather than `git show HEAD` - the committed-source trick is right for a DECLARATION
+    and wrong for a behaviour that only exists once the edit lands. The run below proves it: the
+    same ladder's numbers priced under the two declarations come out an ORDER OF MAGNITUDE apart.
 
-    This package may not import the engine anywhere but here, and it does not: the import is inside
-    this gate, which is a test of the engine's seam rather than of the emitter's budget - the budget
-    gates one section up are what hold that line.
+    The engine import is inside this gate, which tests the engine's seam rather than the emitter's
+    budget; the budget gates one section up hold that line.
     """
     import inspect
 
@@ -357,12 +334,10 @@ def test_a_declaration_this_emitter_cannot_author_refuses_at_the_seed():
 def test_the_screen_classifies_off_the_terminals_own_answers():
     """The order of distrust, one canned cell per verdict.
 
-    `zero` sits second on purpose. Every other verdict here refuses a number that is WRONG; this
-    one refuses a number that is an INSTRUCTION: `create_market_swaps` reads
-    `if instrument['Market_Volatility'].amount:` and falls through to the swaption surface's own ATM
-    when it is false. A blank cell emitted as zero would therefore calibrate against whatever the
-    book's surface happened to hold, under the name of a quote the terminal never gave - and
-    nothing anywhere would say so.
+    `zero` sits second on purpose: every other verdict refuses a number that is WRONG, this one
+    refuses a number that is an INSTRUCTION. `create_market_swaps` reads
+    `if instrument['Market_Volatility'].amount:` and falls through to the surface's own ATM when it
+    is false, so a blank cell emitted as zero calibrates against whatever the book's surface held.
     """
     def cell(**extra):
         return swaption_vol.SwaptionQuote(**dict(
@@ -426,9 +401,8 @@ def test_a_ladder_below_its_floor_refuses_naming_what_the_terminal_served():
     assert '5 unpriced' in message and '1 zero' in message
     assert 'sigma_1, sigma_2, alpha_1, alpha_2, rho' in message
 
-    # and a block naming no surface refuses too: the family declares Swaption_Volatility REQUIRED
-    # and reads a cell's ATM off it wherever Market_Volatility is zero, so an unnamed surface is a
-    # calibration that resolves nothing
+    # a block naming no surface refuses too: the family declares Swaption_Volatility REQUIRED and
+    # reads a cell's ATM off it wherever Market_Volatility is zero
     import dataclasses
 
     with pytest.raises(BloombergConfigurationError, match='names no Swaption_Volatility surface'):
@@ -474,14 +448,10 @@ def test_every_row_carries_the_seeds_declared_conventions_and_the_scaled_vol():
 
 
 def test_the_wire_form_decodes_to_the_types_the_family_reads():
-    """READ-ONLY, AND NO CALIBRATION. The block goes through the engine's own JSON reader, and what
-    comes back are the types `create_market_swaps` indexes: `Start` and `Tenor` as `DateOffset`s it
-    adds to a base date, `Market_Volatility` as a `Percent` whose `.amount` is the fraction, and
-    `Weight` as a plain float.
-
-    That is the wire claim proved rather than described. The fit-through - what the model does with
-    a normal vol read as a lognormal one - is the composition harness's reading and is deliberately
-    not run here.
+    """READ-ONLY, AND NO CALIBRATION. The block goes through the engine's JSON reader and comes back
+    as the types `create_market_swaps` indexes: `Start` and `Tenor` as `DateOffset`s,
+    `Market_Volatility` as a `Percent` whose `.amount` is the fraction, `Weight` a plain float. The
+    fit-through is the composition harness's reading and is deliberately not run here.
     """
     import pandas as pd
     from derivus.config import Config
@@ -515,14 +485,10 @@ def test_the_wire_form_decodes_to_the_types_the_family_reads():
 # =============================================================================================
 
 def test_this_family_has_an_empty_values_half_so_a_retick_is_a_reauthoring():
-    """STRUCTURAL, not a preference, and it is the reason `reauthor` exists.
-
+    """STRUCTURAL, not a preference, and the reason `reauthor` exists.
     `schema.partition_market_price` gives every family whose quotes do not live in `Points` rows an
-    EMPTY values half - "a tick on such a block is a new plan, which is what it has always been" -
-    and this family quotes in `Instrument_Definitions`. So a moved vol is not a value at all:
-    `config.update_market_quote` sees the whole block as structure and refuses. `POST /book/hn`
-    drops its Heston-Nandi block before re-installing for a weaker reason (its strikes are a
-    function of the surface); here there is no tick that could reach the block in the first place.
+    EMPTY values half, and this family quotes in `Instrument_Definitions` - so a moved vol is not a
+    value at all and `update_market_quote` sees the whole block as structure and refuses.
     """
     from derivus import schema
     from derivus.config import update_market_quote
@@ -582,15 +548,12 @@ def test_the_same_canned_grid_emits_the_same_bytes():
 # =============================================================================================
 
 def test_a_live_terminal_answers_the_ladder_or_the_smoke_skips_by_name():
-    """LIVE SMOKE, and a workstation with no terminal is a SKIP rather than a failure.
+    """LIVE SMOKE; no terminal is a SKIP rather than a failure.
 
-    WHAT IS ASSERTED IS THE ROUTE: that this workstation's own map reaches a ZAR grid, that every
-    verified cell comes back as a quote or a NAMED refusal, and that whatever survives authors a
-    block whose columns are the family's own. The census is PRINTED and never asserted - a grid read
-    out of hours screens differently from one read at noon.
-
-    The conventions come from the PACKAGED seed where the workstation's carries none, exactly as the
-    curve smoke does, and this gate never edits a desk's own file.
+    WHAT IS ASSERTED IS THE ROUTE: this workstation's map reaches a ZAR grid, every verified cell
+    comes back as a quote or a NAMED refusal, and whatever survives authors a block whose columns
+    are the family's own. The census is PRINTED and never asserted. The conventions come from the
+    PACKAGED seed where the workstation's carries none, and this gate never edits a desk's file.
     """
     import time
 
@@ -617,10 +580,8 @@ def test_a_live_terminal_answers_the_ladder_or_the_smoke_skips_by_name():
             packaged_seed()['swaption']['ZAR']['conventions']
     print('\nconventions borrowed from the packaged seed: {}'.format(borrowed))
 
-    # NO_TERMINAL AND NOT `BloombergFXError`: a doctored seed refuses with a
-    # `BloombergConfigurationError`, which hangs off that base, and catching the base would report
-    # a broken workstation as an absent one - see the curve gate's taxonomy test, which holds the
-    # tuple both smokes share
+    # NO_TERMINAL AND NOT `BloombergFXError`: catching the base would report a broken workstation
+    # as an absent one - the curve gate's taxonomy test holds the tuple both smokes share
     started = time.time()
     try:
         with BloombergSession(timeout_ms=60000, connect_timeout_ms=5000) as session:

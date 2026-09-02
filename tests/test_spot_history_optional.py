@@ -46,13 +46,10 @@ def _cfg_without_history():
 
 
 def test_a_history_row_at_the_base_date_is_refused():
-    """History must be STRICTLY before the base date. A base-date row duplicates sim day 0 in
-    the bundle timeline and shifts every *_sim view one row back — the solver then scores each
-    decision against the step ENDING at its fork's anchor, a full day of lookahead per
-    decision. Measured before the guard: the in-sim greedy verdict read +$982/oz expected on a
-    fair three-month book (fork E[dF] correlated +0.89 with the realized outer step at β≈1),
-    and the fork's L_t equalled liability_sim[t+1] BITWISE. Killed by removing the refusal —
-    the run then completes with a confidently wrong verdict and nothing but this gate sees it."""
+    """History must be STRICTLY before the base date: a base-date row duplicates sim day 0 and
+    shifts every *_sim view one row back, giving each decision a full day of lookahead. Without
+    the refusal the in-sim greedy verdict reads +$982/oz expected on a fair three-month book, and
+    the fork's L_t equals liability_sim[t+1] BITWISE."""
     cfg = jsonlib.load(open(FIXTURE))
     calc = cfg['Calc']['Calculation']
     calc['Execution_Mode'] = 'solve_hedge'
@@ -75,13 +72,12 @@ def test_a_history_row_at_the_base_date_is_refused():
 
 
 def test_the_realized_history_reaches_the_tradable_prefix():
-    """The companion POSITIVE case: with `Spot_Price_History` present, a commodity tradable's
-    history prefix must BE the realized series, not the flat first-row broadcast. The lookup
-    resolves the deal's raw `Commodity` field (`'PLATINUM_LME.LME_CME'`, a composed name) to the
-    primary spot's full factor name - the key space `_spot_price_history` validates the dict
-    against. Keyed by the raw field it can never match: `.get()` -> None -> `tensor[:1].expand`
-    -> thirty rows of zero variation ahead of every rolling feature, silently, for every config
-    that passes validation - which is why this asserts variation AND the values."""
+    """With `Spot_Price_History` present, a commodity tradable's history prefix must BE the
+    realized series, not the flat first-row broadcast. The lookup resolves the deal's raw
+    `Commodity` field (a composed name) to the primary spot's full factor name - the key space
+    `_spot_price_history` validates against. Keyed by the raw field it never matches: `.get()` ->
+    None -> `tensor[:1].expand` -> thirty flat rows ahead of every rolling feature, silently. So
+    this asserts variation AND the values."""
     cfg = jsonlib.load(open(FIXTURE))
     calc = cfg['Calc']['Calculation']
     calc['Execution_Mode'] = 'solve_hedge'
@@ -116,12 +112,10 @@ def test_the_realized_history_reaches_the_tradable_prefix():
 
 def test_the_cash_account_prices_and_its_mark_accrues():
     """`CashAccountDeal` is a PRICED tradable - `Units / D(t)` - and its mark ratio is the ONLY
-    financing path: `_growth_factors` reads consecutive marks, and variation margin routes off the
-    runtime config, so a skipped cash deal loses interest on cash AND margin while everything else
-    stays plausible. The template's block lacked `Units`: `KeyError` -> the canonical deal guard
-    -> no tensor mark -> `_growth_factors` {} -> every balance passed through flat, in every run
-    of this fixture, with a repeated CRITICAL as the only evidence. Worth $0.54/oz at 2026 rates.
-    Any non-zero `Units` restores it - only the mark RATIO is consumed."""
+    financing path: a skipped cash deal loses interest on cash AND margin while everything else
+    stays plausible (missing `Units` -> KeyError -> no tensor mark -> `_growth_factors` {} ->
+    every balance flat, with a repeated CRITICAL as the only evidence). Worth $0.54/oz at 2026
+    rates. Any non-zero `Units` restores it - only the mark RATIO is consumed."""
     cfg = jsonlib.load(open(FIXTURE))
     calc = cfg['Calc']['Calculation']
     calc['Execution_Mode'] = 'solve_hedge'

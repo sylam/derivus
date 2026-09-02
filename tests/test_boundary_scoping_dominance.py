@@ -1,63 +1,45 @@
 """The portfolio where the boundary correction IS the sensitivity, and the mutation gate it buys.
 
-`test_boundary_pricer_events.py` gates the correction end to end, and its own closing comment
-states the limit: on both two-netting-set fixtures the boundary term is a small fraction of the
-reported gradient - 2.4% on the live-exposure one - so suppressing the term entirely leaves every
-gate there green. Those are gates on the TOTAL. This one is a gate on the TERM, and it needs a
-portfolio nobody runs.
+`test_boundary_pricer_events.py` gates the correction end to end, but on both its fixtures the
+boundary term is a small fraction of the reported gradient - 2.4% on the live-exposure one - so
+suppressing the term leaves every gate there green. Those are gates on the TOTAL; this is a gate on
+the TERM, and it needs a portfolio nobody runs.
 
-THE DEAL IS A DIGITAL, and that is the whole of the trick. A discretely monitored down-and-out
-BINARY struck at ~zero is worth `Cash_Payoff` times the probability it never crossed, so its spot
-sensitivity is almost entirely the flux of paths across the barrier; a knock-out CALL carries a
-vanilla's intrinsic delta that the correction then has to compete with. MEASURED at 1024 paths in
-one collateralised set, correction over smooth term: knock-out call 0.56 (H=90, monthly), 0.83
-(H=95), 2.07 (H=98, fortnightly), against 3.04 for the H=95 MONTHLY digital - the same term over a
-tenth of the smooth sensitivity, at a third of the fortnightly call's runtime.
+THE DEAL IS A DIGITAL. A discretely monitored down-and-out BINARY struck at ~zero is worth
+`Cash_Payoff` times the probability it never crossed, so its spot sensitivity is almost entirely the
+flux of paths across the barrier; a knock-out CALL carries a vanilla's intrinsic delta the
+correction has to compete with. MEASURED at 1024 paths, correction over smooth term: knock-out call
+0.56 / 0.83 / 2.07 against 3.04 for the H=95 monthly digital.
 
-THE SETS ARE COLLATERALISED AND PARKED ON THE RELU KINK, which is the row's own suggestion and buys
-two things at once: the collateral tracks the gross, so what smooth delta survives the digital is
-crushed further, and each set's own net crosses zero constantly, so scoring a counterfactual on one
-SET rather than on the PORTFOLIO is a different number. Two sets, because two published
-gross-to-net chains is the only shape in which a registration can be scored through the wrong one.
+THE SETS ARE COLLATERALISED AND PARKED ON THE RELU KINK, which buys two things: the collateral
+tracks the gross so what smooth delta survives is crushed further, and each set's net crosses zero
+constantly so scoring a counterfactual on one SET rather than the PORTFOLIO is a different number.
+Two sets, because two published gross-to-net chains is the only shape in which a registration can be
+scored through the wrong one. No minimum transfer amount, because that registers a SECOND decision
+and the subject here is the pricer event.
 
-NO MINIMUM TRANSFER AMOUNT. `_collateralised_barrier` in the neighbouring file binds one on purpose
-- it wants the transfer decision live - but that registers a SECOND decision whose own term does not
-survive this fixture (see THE LIFT), and the subject here is the pricer event.
+THE SEAM IS THE DECLARED FIELD, and nothing here patches a library object. At
+`SUPPRESSED_BANDWIDTH` the kernel underflows on every gap, `boundary_weights`'s local-linear fit is
+unsolvable and the correction is an exact zero - VERIFIED off-gate as BIT-IDENTICAL to the same run
+with `pricing.boundary_correction` deleted.
 
-THE SEAM IS THE DECLARED FIELD, and nothing here patches a library object. `Boundary_AAD_Bandwidth`
-is declared on the calculation with a default of 0.01; at `SUPPRESSED_BANDWIDTH` the kernel
-underflows on every gap, so `boundary_weights`'s local-linear fit is unsolvable, its weights are
-exactly zero and the correction is an exact zero rather than a small one. VERIFIED off-gate on this
-fixture: the reported gradient there is +0.00019686216001920737, BIT-IDENTICAL to the same run with
-`pricing.boundary_correction` deleted and identical again at a bandwidth of 1e-14, against a live
-+0.0010291805076251752. The suppression is total, and it is not a bandwidth reading.
+THE LIFT, and why it is not used. A DELTA-FREE cash cushion lifts the reported portfolio clear of
+the relu and multiplies the correction's share to 113% - and makes the reported gradient WRONG.
+MEASURED on the knock-out call at 4096 paths, cushion 0/10/30/100/300: CRN disagreement 10.1% /
+56.8% / 84.3% / 93.4% / 93.4%, saturating exactly where the relu stops binding. That is an engine
+defect, reported rather than gated here, and it is why the first gate asserts the portfolio still
+straddles zero.
 
-THE LIFT, and why it is not used - the obvious route, and a trap. A DELTA-FREE cash cushion (a
-forward bought at strike zero and one sold at K, whose sum is exactly K in every scenario and
-carries no equity delta) lifts the reported portfolio clear of the relu, makes the objective locally
-linear and stops the counterfactual jumps being truncated, which multiplies the correction's share
-to 113%. It also makes the reported gradient WRONG. MEASURED on the knock-out call at 4096 paths,
-cushion scanned 0/10/30/100/300: CRN disagreement 10.1% / 56.8% / 84.3% / 93.4% / 93.4%, saturating
-exactly where the relu stops binding (`mtm.min()` reaches 0); with a binding MTA in the set it reads
-95.8%, the MTA registration carrying +0.01655 of a +0.01710 correction against a CRN total of
-+0.00064. That is an engine defect, reported rather than gated here - this lane owns no engine file
-- and it is why the first gate below asserts the portfolio still straddles zero.
+WHAT THIS FILE DOES NOT GATE. The mutant is `Boundary_AAD_Bandwidth`, which suppresses the WHOLE
+correction, so what dies by 381.77% is the correction's existence rather than its SCOPING. A
+mis-scoping mutant has no public seam - every registration in `derivus/` names its `BoundarySet`
+class directly, with none of the `cls.apply` indirection the recompute node offers - so reaching one
+needs a module rebind, which this lane does not do. The fixture is BUILT so such a mutant would move
+a dominant term, but that claim is asserted nowhere and that half of the row stays open.
 
-WHAT THIS FILE DOES NOT GATE, said plainly because the row it answers is called "boundary SCOPING
-is not mutation-gated". The mutant here is `Boundary_AAD_Bandwidth`, which suppresses the WHOLE
-correction; what dies by 381.77% is therefore the correction's existence, not its scoping. A
-mis-scoping mutant - `portfolio_delta` returning the SET level, or a counterfactual scored against a
-zero portfolio - has no public seam: every registration in `derivus/` names its `BoundarySet` class
-directly (`pricing.py` 2330/3149/3635/4164/4170/4888, `instruments.py` 1417/3265), with none of the
-`cls.apply` indirection the recompute node offers, so reaching one needs a module rebind and this
-lane does not patch. The fixture is BUILT so such a mutant would move a dominant term - two
-collateralised sets, two published gross-to-net chains, each net crossing zero - but that claim is
-untested and is asserted nowhere. The correction is mutation-gated; its scoping is not, and that
-half of the row stays open.
-
-AND THE 30% TOLERANCE IS NOT AN ACCURACY CLAIM. The live AAD sits 21.54% from its own CRN ladder
-(23.82% at seed 2) and the gate accepts that: it is the estimator's residual at this path count,
-not agreement. What does the work is the 381.77% kill, twelve times clear of the tolerance.
+THE 30% TOLERANCE IS NOT AN ACCURACY CLAIM: the live AAD sits 21.54% from its own CRN ladder (23.82%
+at seed 2), which is the estimator's residual at this path count. What does the work is the 381.77%
+kill, twelve times clear of it.
 """
 import os
 import sys
@@ -130,22 +112,14 @@ def _gradient(bandwidth=None):
 def test_the_correction_dominates_the_smooth_cva_delta():
     """The reading this file exists to make: the boundary term is 2.96x the smooth sensitivity.
 
-    MEASURED at 16384 paths: the reported delta is +0.00077085 and the same run with the correction
-    suppressed reads +0.00019447, so the term is +0.00057638 - THREE TIMES the whole pathwise
-    sensitivity and 75% of the number that gets reported (2.84x at seed 2). On the neighbouring
-    file's two-set fixtures it is 2.4%, which is why the suppression mutant survives there and dies
-    here.
+    MEASURED at 16384 paths: reported delta +0.00077085, suppressed +0.00019447, so the term is
+    +0.00057638 - three times the whole pathwise sensitivity and 75% of what gets reported (2.84x at
+    seed 2). On the neighbouring file's fixtures it is 2.4%, which is why the mutant survives there.
 
-    Two guards, because a fixture can stop being its own subject in two different ways.
-
-    THE PORTFOLIO MUST STRADDLE ZERO. Lifting it clear of the relu is the other way to make the
-    correction dominate - the jumps stop being truncated and the share goes to 113% - and it is
-    measured to make the reported delta wrong by 84-96% (module docstring). A fixture that drifts
-    into that regime would be gating a defect as if it were the answer, so the relu binding is
-    asserted rather than assumed. Here the portfolio spans -18.0 to +14.3.
-
-    THE DOMINANCE ITSELF, floored at 1.5 against a measured 2.96. Under 1.0 the gate below is
-    measuring the smooth part of the delta and its mutant starts surviving."""
+    Two guards. THE PORTFOLIO MUST STRADDLE ZERO: lifting it clear of the relu also makes the
+    correction dominate, and makes the reported delta wrong by 84-96%, so the relu binding is
+    asserted rather than assumed (the portfolio spans -18.0 to +14.3). THE DOMINANCE ITSELF, floored
+    at 1.5 against a measured 2.96 - under 1.0 the gate below measures the smooth part."""
     mtm, cva, live = _run(DIGITAL_A, gradient=True, children=_two_collateralised_sets, **PATHS)
     assert mtm.min() < 0.0 < mtm.max(), (
         f'the portfolio no longer straddles zero (it spans {mtm.min():+.6g} to {mtm.max():+.6g}) - '
@@ -165,22 +139,17 @@ def test_the_suppressed_correction_dies_against_bump_and_reprice():
     """AAD against a CRN bump ladder, with the suppression mutant read off the SAME oracle.
 
     MEASURED, 16384 paths, seed 1: AAD +0.00077085 against a CRN best of +0.00093689, 21.54% apart
-    on a ladder flat to 2.83%. Flat is the word - the five rungs read 20.4 / 21.5 / 21.8 / 18.9 /
-    18.4%, which is a residual and not scatter. Seed 2 reads 23.82% at 2.99% flatness (AAD
-    +0.00076225, CRN +0.00094385), so the residual is the estimator's and not one seed's luck.
+    on a ladder flat to 2.83% (rungs 20.4 / 21.5 / 21.8 / 18.9 / 18.4% - a residual, not scatter).
+    Seed 2 reads 23.82% at 2.99% flatness.
 
-    THE TOLERANCE IS 30% AND IT IS THAT RESIDUAL PLUS THE SEED SPREAD, NOT A WIDENING TO FIT. It is
-    the correction estimator's own accuracy at the declared bandwidth and this path count, and it
-    falls with paths: the one-collateralised-set companion (the same digital alone, 128 inner sims)
-    reads 19.27% at 4096 paths and 15.36% at 16384, at 2.28x dominance with a 278.57% mutant. The
-    roadmap's open row on `stochastic_boundary_correction` says why - the estimator has no measured
+    THE 30% TOLERANCE IS THAT RESIDUAL PLUS THE SEED SPREAD, not a widening to fit: it is the
+    estimator's accuracy at the declared bandwidth and this path count, and it falls with paths (the
+    one-set companion reads 19.27% at 4096 and 15.36% at 16384). The estimator has no measured
     bandwidth plateau and its documented operating point is 32768 paths, which no gate here runs.
 
-    MUTATION - `Boundary_AAD_Bandwidth` at SUPPRESSED_BANDWIDTH, where the correction is an exact
-    zero: the same oracle reads 381.77% from it (374.96% at seed 2). KILLED, 12x clear of the
-    tolerance. That is the reading the roadmap row asked for: on the neighbouring file's
-    live-exposure two-set fixture the identical mutant moves the CRN disagreement from 2.20% to
-    0.23% and SURVIVES."""
+    MUTATION - `Boundary_AAD_Bandwidth` at SUPPRESSED_BANDWIDTH: the same oracle reads 381.77%
+    (374.96% at seed 2). KILLED, 12x clear. On the neighbouring file's two-set fixture the identical
+    mutant moves the CRN disagreement from 2.20% to 0.23% and SURVIVES."""
     live = _gradient()
     smooth = _gradient(bandwidth=SUPPRESSED_BANDWIDTH)
     r = ladder(price=lambda s: _run(DIGITAL_A, spot=s, children=_two_collateralised_sets,

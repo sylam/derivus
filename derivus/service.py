@@ -13,13 +13,12 @@
 
 """One vocabulary, two bindings: the Context verbs, over HTTP.
 
-`Context` is the in-process binding — `load_json`, `validate`, `describe`, `market_patch` /
-`patch_market`, `plan_hash` / `values_hash`, `run_job`. This module is the same verbs over HTTP: the
-calculation verbs own no logic of their own — each builds a Context, calls one of those methods and
-serialises what comes back — while the book, projection and queue verbs are this module's own layer
-over the same engine. A web SPA, a marimo notebook and an Excel add-in are all clients of the same
-endpoints, so nothing client-specific may enter the surface — and anything a client needs that the
-calculation verbs cannot answer is a missing verb on `Context`, not an endpoint that reaches inside.
+`Context` is the in-process binding. The calculation verbs here own no logic of their own - each
+builds a Context, calls one of its methods and serialises what comes back - while the book,
+projection and queue verbs are this module's own layer over the same engine. A web SPA, a marimo
+notebook and an Excel add-in are all clients of these endpoints, so nothing client-specific may
+enter the surface: anything a client needs that the calculation verbs cannot answer is a missing
+verb on `Context`, not an endpoint that reaches inside.
 
 | | |
 | --- | --- |
@@ -45,32 +44,27 @@ calculation verbs cannot answer is a missing verb on `Context`, not an endpoint 
 | `POST /book/xva` | recalculate the XVA projection - one queued CMC per netting set, every set or the named ones |
 | `GET /book/xva` | the XVA projection as it stands - the last run per netting set, joined with the book's own set list |
 
-THE BLOTTER'S TWO DATA VIEWS are `/book/risk` and `/book/xva`, and they are deliberately not the
-same kind of thing. Risk is WHOLE-BOOK and counterparty-blind: one base valuation with `Greeks:
-'First'` over the book as it stands, answered inline and cached on the content of everything the
-run reads, so it refreshes with the book. XVA is PER NETTING SET and a CACHED PROJECTION: a credit
-Monte Carlo is minutes of device time and must never ride a tick, so `DV_HOME/xva.json` holds the
-last run of each set and a desk asks for a recalc - all the sets, or the ones it names. The
-projection is a MOSAIC: each row carries its own `as_of`, a partial recalc moves only the rows it
-names, and staleness is data rather than a failure. Each row's `cva` and `fva` are COLUMNS of that
-one run - both are reductions of the same exposure cube, so one CMC produces both and they share an
-`as_of` and a replay tuple. There is no `kva`: no calculation in the engine computes one.
+THE BLOTTER'S TWO DATA VIEWS are deliberately different kinds of thing. `/book/risk` is WHOLE-BOOK
+and counterparty-blind: one base valuation with `Greeks: 'First'`, answered inline and cached on the
+content of everything the run reads. `/book/xva` is PER NETTING SET and a cached projection, a
+credit Monte Carlo being minutes of device time that must never ride a tick - `DV_HOME/xva.json`
+holds the last run of each set and a desk asks for a recalc. The projection is a MOSAIC: each row
+carries its own `as_of`, a partial recalc moves only the rows it names, and staleness is data rather
+than a failure. `cva` and `fva` are columns of one run, both reductions of the same exposure cube.
+There is no `kva`: no calculation in the engine computes one.
 
 Every POST body is either a job document or `{"plan_id": ...}` naming one already prepared, and
-nothing downstream can tell the two apart: the plan cache holds a pristine parse and every read of
-it is a deep copy, so a plan-id execute and a full-document execute of the same job report the same
-`result_id`. A posted job is a job FILE - `Config.read_json` takes `(text, name)` as readily as a
-path - so there is no second parser to keep in step with the first.
+nothing downstream can tell them apart - the plan cache holds a pristine parse and every read is a
+deep copy, so both report the same `result_id`. A posted job is a job FILE, `Config.read_json`
+taking `(text, name)` as readily as a path, so there is no second parser.
 
-There is no sync/async split at the API level. `/execute` always answers with a `result_id` and a
-status, and a base valuation is simply `done` by the first poll — one contract an Excel RTD cell
-and a browser poll loop can both be written against. A finished run answers with the shape of its
-tables and never their cells: a CMC's exposure is a cube, and a client fetches one table and one
-page of it. `fastapi` and `uvicorn` are the `service` extra and are imported only here, so
-`import derivus` never needs them.
+There is no sync/async split at the API level: `/execute` always answers with a `result_id` and a
+status, and a base valuation is simply `done` by the first poll - one contract an Excel RTD cell and
+a browser poll loop can both be written against. A finished run answers with the SHAPE of its tables
+and never their cells. `fastapi` and `uvicorn` are the `service` extra, imported only here.
 
-There is no auth, and CORS is open by default, because the service is a TRUSTED-NETWORK deployment:
-put it behind something that terminates both, or narrow the origins with `DV_Service --origin`.
+There is no auth and CORS is open by default: this is a TRUSTED-NETWORK deployment. Put it behind
+something that terminates both, or narrow the origins with `DV_Service --origin`.
 """
 
 import json
@@ -107,32 +101,29 @@ HEAVY = 1
 TICK_SECONDS = 30.0
 
 #: The metronome's backoff: this many failed ticks in a row stretch the interval by this factor
-#: until one succeeds. A terminal that went away, a market that closed - keep beating, stop asking
-#: every thirty seconds.
+#: until one succeeds. A terminal that went away, a market that closed - keep beating, stop asking.
 TICK_FAILURES = 3
 TICK_STRETCH = 5
 
 #: A quote prices on a LIVE spot when this workstation's terminal is up. That fetch rides in front
-#: of EVERY quote rather than on the cadence, so it gets a budget of its own: a terminal that is not
+#: of every quote rather than on the cadence, so it gets a budget of its own: a terminal that is not
 #: there must cost a salesperson nothing they can feel.
 SPOT_TIMEOUT_MS = 2000
 
-#: And the cost is paid once. A failure that reached the terminal is remembered process-wide for
-#: this long, so consecutive quotes skip the attempt instead of each re-paying the timeout. A plain
-#: clock and no thread machinery: the worst a race can do here is one extra request.
+#: And the cost is paid once: a failure that reached the terminal is remembered process-wide for
+#: this long, so consecutive quotes skip the attempt. A plain clock and no thread machinery - the
+#: worst a race can do is one extra request.
 SPOT_BACKOFF_SECONDS = 30.0
 
-#: Why a quote fell back to the book's ticked spot, in ONE wording. A quote NEVER fails for want of
-#: a live one - the book's is a real market, ticked on the cadence - so every branch below ends as
-#: a named note beside the price rather than as a refusal.
+#: Why a quote fell back to the book's ticked spot, in ONE wording. A quote never fails for want of
+#: a live one - the book's is a real market, ticked on the cadence.
 NO_LIVE_SPOT = "priced on the book's ticked spot - {}"
 
 #: `(monotonic stamp, note)` of the last live-spot attempt that REACHED the terminal and failed.
 _SPOT_FAILURE = (0.0, None)
 
-#: Browsers refuse a cross-origin fetch the server does not invite, so an SPA served from anywhere
-#: but the service itself cannot call it at all without this. Read when the middleware stack is
-#: built, which is the first request - long after `main` has parsed `--origin`.
+#: An SPA served from anywhere but the service itself cannot call it without this. Read when the
+#: middleware stack is built - the first request, long after `main` has parsed `--origin`.
 ORIGINS = ['*']
 
 #: The ENVELOPE the declarations sit inside, which `/schema` cannot describe: market data under
@@ -175,13 +166,11 @@ def evidence_for(document, context):
     """The two objects a standing attestation is checkable from, as the bytes they are stored as:
     the job document the plan recompiles from, and the values vector the run read.
 
-    Taken on the REQUEST thread, before anything runs: the claim's `values_hash` was taken here too,
-    and the spine checks the vector it is handed against that claim rather than believing it, so a
-    vector read after a run that touched the market would refuse by name.
+    Taken on the REQUEST thread, before anything runs, where the claim's `values_hash` was taken -
+    the spine checks the vector against that claim rather than believing it.
 
-    What is stored is the `Calc` ENVELOPE alone. A posted body may also carry `Patch`, `plan_id` or
-    `lane`, and none of those is the job - they are how the submission arrived. The patch is not
-    lost by the trim: the values vector beside it carries the whole market as patched.
+    What is stored is the `Calc` envelope alone: `Patch`, `plan_id` and `lane` are how the
+    submission arrived, not the job, and the values vector carries the whole market as patched.
     """
     job = {'Calc': document['Calc']} if 'Calc' in document else document
     return {'job': spine.canonical(job), 'values': spine.values_of(context)}
@@ -199,21 +188,17 @@ def attests(submitted):
 
 
 def attest(submitted, result):
-    """Append the standing lane's `run_completed` for a job whose numbers exist. Answers the
-    envelope. `result` is the canonical result bytes, and `attests` has already said yes.
+    """Append the standing lane's `run_completed` for a job whose numbers exist, answering the
+    envelope. `result` is the canonical result bytes; `attests` has already said yes.
 
-    TELEMETRY AND CURIOSITY MINT NOTHING, so this is a no-op on every job that carries no standing
-    lane - which is every job any existing caller submits.
+    Telemetry and curiosity mint nothing, so this is a no-op on every job carrying no standing lane.
 
-    A refusal here FAILS THE RUN: a run whose attestation was refused - an unscoped actor, no actor
-    at all, a home that is not there - has not acquired standing, and serving its numbers as though
-    it had is exactly the unbacked citation the rule exists to prevent. The refusal travels as the
-    run's own error, in the spine's own wording.
+    A refusal here FAILS THE RUN: a run whose attestation was refused has not acquired standing, and
+    serving its numbers as though it had is the unbacked citation the rule exists to prevent.
 
-    A STANDING JOB WITH NO EVIDENCE ATTESTS SOMEWHERE ELSE, and there is exactly one of those: the
-    structure quote, whose act is recorded as `quote_filed` - it pins the same two hashes AND
-    carries what was solved and what the desk took for it, so a `run_completed` beside it would be
-    two records of one act.
+    A standing job with no evidence attests somewhere else, and there is exactly one: the structure
+    quote, recorded as `quote_filed` - it pins the same two hashes and carries what was solved, so a
+    `run_completed` beside it would be two records of one act.
     """
     return spine.complete_run(submitted.replay, submitted.lane, submitted.evidence['job'],
                               submitted.evidence['values'], result)
@@ -228,11 +213,10 @@ def attested(envelope):
 
 
 def cost(calculation):
-    """The queue's cost class for this job, and a crude size ESTIMATE beside it.
+    """The queue's cost class for this job, and a crude size estimate beside it.
 
-    The class is what the dispatcher orders by. The estimate is paths times grid points -
-    `Batch_Size x Simulation_Batches x` the number of segments `Time_Grid` declares - and the last
-    factor is a proxy, not the grid: the real one needs the horizon the deal walk finds. A field a
+    The class is what the dispatcher orders by. The estimate is paths times grid points, where the
+    last factor is a PROXY - the real grid needs the horizon the deal walk finds. A field a
     calculation does not carry counts as one, so a base valuation estimates 1.
     """
     grid = len(str(calculation.get('Time_Grid', '')).split()) or 1
@@ -263,14 +247,13 @@ def rows_of(table):
 class PlanCache:
     """The parsed job, kept under the name of its plan, so EXECUTE can be plan plus values patch.
 
-    What is cached is the PARSE — decoding a job document and building its Deals, Curves and
-    DateLists — not the compile; `plan_id` is the content hash either way.
+    What is cached is the PARSE - decoding a job document and building its Deals, Curves and
+    DateLists - not the compile; `plan_id` is the content hash either way.
 
-    The entry is PRISTINE and every read is a deep copy, because an execute patches the market and
-    a describe walks the deal tree calling `reset` on every instrument. Two executes off one plan
-    therefore cannot contaminate each other or the plan they came from. Bounded and
-    least-recently-used: a plan is a parse, cheap to redo, and never the record of anything — the
-    replay tuple is.
+    The entry is pristine and every read a deep copy, because an execute patches the market and a
+    describe calls `reset` on every instrument, so two executes off one plan cannot contaminate
+    each other. Bounded and least-recently-used: a plan is a parse, cheap to redo, and never the
+    record of anything - the replay tuple is.
     """
 
     def __init__(self, size=32):
@@ -298,59 +281,53 @@ class PlanCache:
 class ComputeExecutor:
     """One worker thread over one priority queue, and the result store it alone writes.
 
-    There is no cpu lane. A base valuation IS a Monte Carlo for an autocall or a TARF book, so
-    every priced job takes the same road and device selection stays where it already lives — in
-    the engine. What the queue orders is COST CLASS: a base valuation jumps a simulation among the
-    jobs still waiting, within a class it is first in first out, and a running job is never
-    preempted.
+    There is no cpu lane: a base valuation IS a Monte Carlo for an autocall or a TARF book, so every
+    priced job takes the same road and device selection stays in the engine. What the queue orders
+    is COST CLASS - a base valuation jumps a simulation among the jobs still waiting, within a class
+    it is first in first out, and a running job is never preempted.
 
     A job is filed under the hash of its replay tuple, so submitting the same job twice is one
-    execution and one result — dedupe and retry-idempotency are the same feature. A submission
-    arriving while the first is still queued or running coalesces onto it rather than enqueueing a
-    second copy, because the store is checked and written under the same lock that enqueues.
+    execution and one result - dedupe and retry-idempotency are the same feature. A submission
+    arriving while the first is queued or running coalesces onto it, the store being checked and
+    written under the lock that enqueues.
 
-    COALESCING DEDUPES NUMBERS AND NOT LANES: the submission that coalesces carries a lane of its
-    own, so a standing submission landing on a run still in flight is PROMOTED onto it in `submit`,
-    and `finish` attests the promoted submission when the numbers land. An arrival after the result
-    is published finds `done` and attests on its own thread.
+    COALESCING DEDUPES NUMBERS AND NOT LANES: a standing submission landing on a run still in flight
+    is PROMOTED onto it in `submit`, and `finish` attests the promotion when the numbers land. An
+    arrival after the result is published finds `done` and attests on its own thread.
 
-    A stored result holds the run's tables under `tables`, keyed by the path that names each one.
-    That is what the two result endpoints project: one serves their shapes, the other serves one of
-    them, a page at a time.
+    A stored result holds the run's tables under `tables`, keyed by path - what the two result
+    endpoints project, one serving their shapes and the other one table a page at a time.
     """
 
     def __init__(self):
         self.results = {}
         # result_id -> the STANDING submission that coalesced onto a run still in flight, held
-        # until `finish` attests it. Empty on every box that records nothing, and empty again the
-        # moment the run it belongs to publishes or fails.
+        # until `finish` attests it
         self.standing = {}
         self.lock = threading.Lock()
         self.queue = queue.PriorityQueue()
-        # arrival order breaks ties within a cost class, and keeps the queue from ever comparing
-        # two Jobs
+        # arrival order breaks ties within a cost class, so the queue never compares two Jobs
         self.arrival = count()
         threading.Thread(target=self.work, daemon=True).start()
 
     def submit(self, job, cost):
         """File and enqueue the job unless its `result_id` is already known, and return the status
-        the caller sees immediately — `queued`, or wherever an identical earlier submission got to.
+        the caller sees immediately - `queued`, or wherever an identical earlier submission got to.
 
-        A STANDING SUBMISSION THAT COALESCES ONTO A RUN STILL IN FLIGHT IS PROMOTED HERE, because
-        this is the only place that sees both submissions: the job the worker dequeued carries the
-        FIRST caller's lane, which for a what-if mints nothing. The decision is taken under the lock
-        the worker publishes under, so this arm and `/execute`'s cannot both miss.
+        A standing submission coalescing onto a run still in flight is PROMOTED here, this being
+        the only place that sees both: the job the worker dequeued carries the first caller's lane,
+        which for a what-if mints nothing. Taken under the lock the worker publishes under, so this
+        arm and `/execute`'s cannot both miss.
 
-        An `error` result is not promoted onto: there are no numbers, nothing is served, and a
-        promotion filed against a run that will never be dequeued again would sit here forever.
+        An `error` result is not promoted onto: there are no numbers, and the promotion would sit
+        here forever against a run that is never dequeued again.
         """
         with self.lock:
             if job.result_id not in self.results:
                 self.results[job.result_id] = {'status': 'queued'}
                 self.queue.put((cost, next(self.arrival), job))
             elif attests(job) and self.results[job.result_id]['status'] in ('queued', 'running'):
-                # first standing declaration wins, the way a duplicate tag coalesces onto the LSN
-                # it already has: one run, one attestation, whoever asks for it after the first
+                # first standing declaration wins - one run, one attestation
                 self.standing.setdefault(job.result_id, job)
             return self.results[job.result_id]['status']
 
@@ -361,10 +338,9 @@ class ComputeExecutor:
     def note(self, result_id, **fields):
         """Add to a stored result from another thread. Answers the result as it now stands.
 
-        The worker is the only thread that WRITES a result, and this does not break that: it adds
-        to one that is already finished, under the same lock, and the one caller is the standing
-        lane's attestation of a run whose numbers this store already held. A result nobody is
-        holding is left alone rather than conjured.
+        The worker is still the only thread that WRITES one: this adds to a finished result, under
+        the same lock, for the one caller that is the standing lane's attestation of numbers this
+        store already held. A result nobody is holding is left alone rather than conjured.
         """
         with self.lock:
             stored = self.results.get(result_id)
@@ -376,20 +352,17 @@ class ComputeExecutor:
         """Attest a finished run where the record is owed one, and publish it. ONE transition.
 
         Attesting and publishing are one step under one lock: a standing run whose attestation was
-        refused has not acquired standing, so its numbers must not become readable before the record
-        holds the fact about them. That also leaves `submit` no window - a standing submission either
-        gets in before this block and is the one attested here, or it finds a published `done` and
-        attests on its own thread.
+        refused has not acquired standing, so its numbers must not become readable first. That also
+        leaves `submit` no window - a standing submission either gets in before this block and is
+        attested here, or it finds a published `done` and attests on its own thread.
 
         WHICH SUBMISSION IS ATTESTED is the job this thread dequeued wherever that one owes an
-        attestation of its own, and the promoted one only where it does not: the two name the same
-        numbers, but the evidence is a document rather than a hash and the run's own submitter is
-        the one whose document actually ran.
+        attestation, and the promoted one only where it does not: the evidence is a document rather
+        than a hash, and the run's own submitter is the one whose document actually ran.
 
         `canonical_result` is a CALLABLE for the reason `attests` is asked before it. A refusal
-        propagates out of here with `self.results` exactly as it found it, and the worker records
-        the error in its place. The lock order is this one then the spine's writer, never the
-        reverse.
+        leaves `self.results` as it found it and the worker records the error. The lock order is
+        this one then the spine's writer, never the reverse.
         """
         with self.lock:
             owed = self.standing.pop(job.result_id, None)
@@ -409,13 +382,12 @@ class ComputeExecutor:
                 self.results[job.result_id] = {'status': 'running'}
             try:
                 _, out = job.context.run_job()
-                # Stats is a flat dict of timings and counts (plus Calibrations provenance), not a
-                # table - through `tables_of` it would flatten into fake table paths
+                # Stats is a flat dict of timings and counts, not a table - through `tables_of` it
+                # would flatten into fake table paths
                 result = dict(status='done', tables=tables_of(as_json(out['Results'])),
                               stats=as_json(out.get('Stats', {})), **job.replay)
-                # a STANDING run says so here, at birth - for whichever submission of this tuple
-                # declared standing, which is not always the one this thread dequeued. Every other
-                # lane mints nothing and never gets past `attests`
+                # attested for whichever submission of this tuple declared standing, which is not
+                # always the one this thread dequeued
                 self.finish(job, result, lambda: spine.result_of(out))
             except Exception as error:
                 with self.lock:
@@ -428,13 +400,11 @@ class ComputeExecutor:
 class Book:
     """One live job document on disk - the FILE is the source of truth.
 
-    This is the state MCP, the SPA and Excel meet in: a booking lands as a file write, and every
-    client sees it on its next read. Reads check mtime and re-parse on change, so an external edit
-    is picked up too; the etag is a hash of the text, so a client polls one small GET and
-    re-renders only when the book actually moved. Writes are atomic (write-temp-then-replace) in
-    the file's own indent, and `mutate` holds one lock across read-edit-validate-write so two
-    bookings cannot interleave. Every read parses fresh, so an edit a refusal abandons never
-    reaches the cache.
+    The state MCP, the SPA and Excel meet in: a booking lands as a file write and every client sees
+    it on its next read. Reads check mtime and re-parse on change, so an external edit is picked up
+    too; the etag is a hash of the text, so a client polls one small GET. Writes are atomic
+    (write-temp-then-replace) in the file's own indent, and `mutate` holds one lock across
+    read-edit-validate-write. Every read parses fresh, so an abandoned edit never reaches the cache.
     """
 
     def __init__(self, path):
@@ -504,23 +474,20 @@ def context_for(body):
 def schema():
     """Every declaration in the engine, and the version that emitted them.
 
-    This is what makes a front end thin: panels, tables and enums are rendered from `schema.mapping`
-    rather than restated, so a field gaining a `bind`, a valid value or a new deal type reaches the
-    UI by being declared on the class.
+    What makes a front end thin: panels, tables and enums are rendered from the declarations rather
+    than restated, so a new field or deal type reaches the UI by being declared on the class.
     """
     return dict(as_json(mapping), engine_version=__version__)
 
 
 @app.get('/schema/job', summary='The job envelope, as a skeleton that loads')
 def schema_job():
-    """The ENVELOPE the declarations sit inside — the one piece of contract `/schema` cannot state.
+    """The ENVELOPE the declarations sit inside - the one piece of contract `/schema` cannot state.
 
-    `/schema` describes what goes in a `Calculation` block, a `Price Factors` block and a deal; this
-    describes where those blocks go, which is not guessable from them: market data under
-    `MergeMarketData.ExplicitMarketData` (or behind a `MarketDataFile` path instead of it), and a
-    deal as a `.Deal` token inside `Deals.Deals.Children[].Instrument`, nested by each node's own
-    `Children`. `Config.read_json` is the source of truth and this is a skeleton of what it reads:
-    post it to `/validate` or `/execute` unchanged and it loads, prices and validates clean.
+    `/schema` describes what goes in each block; this describes where the blocks go: market data
+    under `MergeMarketData.ExplicitMarketData` (or behind a `MarketDataFile` path), a deal as a
+    `.Deal` token inside `Deals.Deals.Children[].Instrument`, nested by each node's `Children`.
+    Post it to `/validate` or `/execute` unchanged and it loads, prices and validates clean.
     """
     return JOB_SKELETON
 
@@ -535,12 +502,8 @@ def validate(job: dict):
 
 @app.post('/describe', summary='What the engine parsed, and what running it would cost')
 def describe(job: dict):
-    """What the engine made of this job, without running any of it: the book counted by deal type,
-    the price factors it reaches on both sides of the want-list, and the `Calculation` block as
-    loaded — `cx.describe()` verbatim.
-
-    The dispatcher's own reading rides alongside under `cost`: the class this job would be queued
-    at, and a crude estimate of its size. Nothing here writes, so describing a job and then
+    """What the engine made of this job without running any of it - `cx.describe()` verbatim - plus
+    the dispatcher's own reading under `cost`. Nothing here writes, so describing a job and then
     executing it reports exactly what executing it alone reports.
     """
     context = context_for(job)
@@ -553,8 +516,7 @@ def prepare(job: dict):
     """Parse the job, name it by its plan hash and keep the parse under that name.
 
     `/execute` then takes `{"plan_id": ..., "Patch": {...}}` in place of the document, which is what
-    a client streaming market values wants: the plan is sent once and a tick is a delta. The parse
-    is cached, not the compile — that arrives behind this same verb with the live refill.
+    a client streaming market values wants: the plan is sent once and a tick is a delta.
     """
     context = load(job)
     return {'plan_id': PLANS.put(context), 'values_hash': context.values_hash(),
@@ -565,11 +527,9 @@ def lane_of(body, default=DEFAULT_LANE):
     """The attestation lane this submission declared, checked - or None where this box records
     nothing.
 
-    WITHOUT A SPINE HOME THE LANE IS ACCEPTED AND INERT, including a lane nobody has ever heard of:
-    every byte of such a box's answer is what it was before lanes existed. Where a home IS
-    configured the lane is a decision the record will act on, so an unknown one refuses by name
-    rather than being read as the default - `derivus_spine.verbs.check_lane` owns that refusal,
-    because the lanes are the record's vocabulary and not the service's.
+    Without a spine home the lane is ACCEPTED AND INERT, an unknown one included. Where a home is
+    configured the lane is a decision the record will act on, so an unknown one refuses by name -
+    `derivus_spine.verbs.check_lane` owns that refusal, the lanes being the record's vocabulary.
     """
     declared = body.get('lane', default)
     if not spine.configured():
@@ -579,24 +539,21 @@ def lane_of(body, default=DEFAULT_LANE):
 
 @app.post('/execute', summary='Submit a job, and get the id its numbers will be filed under')
 def execute(job: dict):
-    """Submit a job — a document or a `plan_id` — optionally over a values `Patch`, a delta exactly
+    """Submit a job - a document or a `plan_id` - optionally over a values `Patch`, a delta exactly
     as `patch_market` takes it, and optionally in a declared `lane`.
 
     The patch is applied BEFORE the hashes are taken, so `values_hash` describes what actually runs
     and two clients patching to the same market get one execution. The answer is always
-    `{result_id, status}` — plus an `attested` block on the one path that can answer it here: a
-    standing run whose numbers this box had already computed. A standing run whose numbers do not
-    exist yet is attested by the worker at completion, so its block arrives with the numbers. Poll
-    `/results/{result_id}` for the numbers, however cheap the job; the attestation is there too.
+    `{result_id, status}`, plus an `attested` block on the one path that can answer it here - a
+    standing run whose numbers this box had already computed. Otherwise the worker attests at
+    completion and the block arrives with the numbers at `/results/{result_id}`.
 
-    `lane` is `telemetry | curiosity | standing` and it answers ONE question — will a fact cite
-    these numbers? Telemetry is the blotter's repaint, curiosity is a what-if, and only standing
-    appends anything. The default is curiosity. Where no spine home is configured the parameter is
-    accepted and inert and every answer here is byte-identical to what it always was.
+    `lane` is `telemetry | curiosity | standing` and answers one question: will a fact cite these
+    numbers? Only standing appends anything; the default is curiosity. Without a spine home the
+    parameter is accepted and inert.
 
-    A STANDING run must post its DOCUMENT. An attestation has to carry the job the plan recompiles
-    from, and `Context.save_json` is explicitly not a complete round trip, so a `plan_id` — which
-    names a parse rather than a document — refuses with the remedy named.
+    A STANDING run must post its DOCUMENT: an attestation carries the job the plan recompiles from
+    and `Context.save_json` is not a complete round trip, so a `plan_id` refuses with the remedy.
     """
     context = context_for(job)
     context.patch_market(job.get('Patch', {}))
@@ -616,9 +573,8 @@ def execute(job: dict):
     calculation = context.current_cfg.deals['Calculation']
     answer = {'result_id': submitted.result_id,
               'status': EXECUTOR.submit(submitted, cost(calculation)['class'])}
-    # A STANDING RUN WHOSE NUMBERS ALREADY EXIST STILL ATTESTS: the lane is about STANDING rather
-    # than about arithmetic. The other side of the branch is not silence - a standing submission
-    # that coalesced onto a QUEUED or RUNNING run was promoted in `submit` and the worker attests it
+    # a standing run whose numbers already exist still attests - the lane is about standing rather
+    # than arithmetic. One that coalesced onto a queued or running run was promoted in `submit`
     if attests(submitted) and answer['status'] == 'done':
         stored = EXECUTOR.result(submitted.result_id)
         try:
@@ -634,13 +590,11 @@ def results(result_id: str):
     """`queued` / `running` while it waits, then the run's SUMMARY: the replay tuple its numbers
     reproduce from, and every table it produced named with its row count and column labels.
 
-    No cells. A credit Monte Carlo's exposure is dates by scenarios and does not fit in an answer
-    anyone wants to hold, so a client reads the shapes here and fetches the one table it is showing
-    from `/results/{result_id}/{table}`. A failed run carries the message and nothing else.
+    No cells - a client reads the shapes here and fetches the one table it is showing from
+    `/results/{result_id}/{table}`. A failed run carries the message and nothing else.
 
-    A job that publishes its own progress - a Bloomberg round trip is minutes of terminal time -
-    carries it under `progress` while it waits or runs, so one poll loop serves a cell that wants
-    a number and a screen that wants a bar.
+    A job that publishes its own progress carries it under `progress` while it waits or runs, so
+    one poll loop serves a cell that wants a number and a screen that wants a bar.
     """
     result = EXECUTOR.result(result_id)
     if result is None:
@@ -691,11 +645,10 @@ def booked_node(deal):
     """A booked deal as the NODE a job document holds: `{'Instrument': {'.Deal': fields}}` with
     `Children` hanging off the node beside `Instrument`.
 
-    A structure IS its legs, so `/book/quote` books a container and everything under it as ONE
-    trade. A composed deal arrives with the legs written INTO the container, which is the one
-    placement `Config` does not walk (`node['Children']`, never `deal['Children']`), so lifting them
-    here is what makes a composed structure bookable as it stands. The deal block is copied rather
-    than edited, because what a quote file holds is the record of what was quoted.
+    A structure IS its legs, so `/book/quote` books a container and everything under it as one
+    trade. A composed deal arrives with the legs written INTO the container, the one placement
+    `Config` does not walk, so lifting them here is what makes it bookable as it stands. The deal
+    block is copied rather than edited: a quote file is the record of what was quoted.
     """
     if 'Instrument' in deal:
         return deal
@@ -721,9 +674,9 @@ def deal_verdict(document, references, deal_path, already_missing):
     `(write, outcome)` for `Book.mutate`, written iff nothing is said against the CHANGED deals.
 
     What counts against them is their own authoring messages plus market data the book did not
-    ALREADY lack - `already_missing` is that baseline, taken before the change - so a book failing
-    elsewhere cannot block a correct change. Both mutating actions of `/book/deals` and every
-    approved quote end here, which is what makes a refusal one wording rather than three.
+    already lack (`already_missing`, taken before the change), so a book failing elsewhere cannot
+    block a correct change. Both mutating actions of `/book/deals` and every approved quote end
+    here, which makes a refusal one wording rather than three.
     """
     verdict = load(document).validate()
     refused = [message for reference in references
@@ -737,16 +690,13 @@ def deal_verdict(document, references, deal_path, already_missing):
 
 def deal_edit(document, deal, parent_reference=None):
     """One deal - or one whole structured subtree - added to a wire document, as the ONE edit
-    closure body `/book/deals` books through: the baseline taken, the node spliced in, the verdict
-    read off the whole document.
+    closure `/book/deals` books through: baseline taken, node spliced in, verdict read off the
+    whole document.
 
-    `splice_deal` gives a container an EMPTY `Children`, since a hand-booking fills it one deal at
-    a time; a quoted structure arrives with its legs already composed, so they land with it - one
-    booking, one atomic write, one verdict over the container and every leg.
-
-    `/book/quote` books an approved quote through this same function rather than a second write
-    path, so a structured deal is refused in exactly the wording - and by exactly the reading - a
-    hand-booked one is.
+    `splice_deal` gives a container an empty `Children`, a hand-booking filling it one deal at a
+    time; a quoted structure arrives with its legs composed, so they land with it as one booking,
+    one atomic write, one verdict. `/book/quote` books through this same function rather than a
+    second write path, so a structured deal is refused exactly as a hand-booked one is.
     """
     already_missing = set(load(document).validate()['factors'])
     node = booked_node(deal)
@@ -773,9 +723,9 @@ def instrument_of(node):
 def enclosing_set(document, deal_path):
     """The `NettingCollateralSet` a deal sits inside, walking outward from its parent, or None.
 
-    A CLIENT IS A NETTING SET: the counterparty and the CSA live on the set, so this is where a
-    fill's two reference fields come from. Walking outward rather than reading the immediate parent
-    is what lets a trade booked inside a sub-container of a set still name the set it belongs to.
+    A CLIENT IS A NETTING SET - the counterparty and the CSA live on it - so this is where a fill's
+    two reference fields come from. Walking outward rather than reading the immediate parent lets a
+    trade booked inside a sub-container still name the set it belongs to.
     """
     positions = str(deal_path).split('/')
     for depth in range(len(positions) - 1, 0, -1):
@@ -788,9 +738,8 @@ def enclosing_set(document, deal_path):
 def book_name(document):
     """The book a fill is attributed to: the job document's own `Deals.Reference`, or None.
 
-    The name matters because capability grants are (verb x book), so a desk scoped over one book
-    must not be able to book into another. A document naming none files a firm-level fact, which
-    only a `*` grant reaches - the strictest honest reading of a book that never named itself.
+    Capability grants are (verb x book), so a desk scoped over one book must not reach another. A
+    document naming none files a firm-level fact, which only a `*` grant reaches.
     """
     named = (document.get('Calc', {}).get('Deals', {}) or {}).get('Reference')
     return named if isinstance(named, str) and named else None
@@ -799,14 +748,13 @@ def book_name(document):
 def spine_fill(document, deal_path, quantity, execution_reference, actor=None):
     """Append the `fill` for a booking, and answer what the record now says. `{}` with no home.
 
-    THE EVENT GOES FIRST. This is called after the verdict and before `Book.mutate` writes the file,
-    so what is true is on the platter before the projection of it is. A failed file write leaves the
-    record holding a trade the desk's cache does not, which is the correct way round: the file is the
-    interim stand-in and the log is what is true.
+    THE EVENT GOES FIRST: called after the verdict and before `Book.mutate` writes the file, so a
+    failed write leaves the record holding a trade the desk's cache does not - the correct way
+    round, the file being the interim stand-in and the log what is true.
 
-    Three things a fill carries have no default and refuse by name when the book cannot supply
-    them: the netting set and its counterparty, which come from the set the trade sits inside; and
-    the execution reference, which is what makes a retry the same fact by construction.
+    Three things a fill carries have no default and refuse by name: the netting set and its
+    counterparty, off the set the trade sits inside, and the execution reference, which is what
+    makes a retry the same fact by construction.
     """
     if not spine.configured():
         return {}
@@ -861,21 +809,16 @@ def book_deals(request: dict):
     `deal` is a deal block, or a whole node - a container with its `Children` - which is how a
     quoted structure books: the legs land with the container, in one write and under one verdict.
 
-    The contract is validate-before-write, one spelling for both mutating actions: the change
-    lands on a copy, the whole document is validated, and the file is rewritten only if nothing is
-    said against the CHANGED deal - its own authoring messages, or market data the book did not
-    already lack. A refusal is `{written: False, ...}` and touches nothing - an answer, not an error.
+    The contract is VALIDATE-BEFORE-WRITE, one spelling for both mutating actions: the change lands
+    on a copy, the whole document is validated, and the file is rewritten only if nothing is said
+    against the CHANGED deal. A refusal is `{written: False, ...}` and touches nothing.
 
-    UNDER A SPINE HOME the write is a pair and the EVENT GOES FIRST: an `add` appends the `fill`
+    UNDER A SPINE HOME the write is a pair and the event goes first: an `add` appends the `fill`
     and an `amend` the `amendment` before the file is rewritten, and the outcome carries the
-    envelope under `recorded`. `quantity` (signed the way the desk takes it) and
-    `execution_reference` become required, and the deal must sit under a `NettingCollateralSet`
-    naming a counterparty; each of the three refuses BY NAME. A `delete` records nothing: the fact
-    that ends a trade is an election, an expiry observation or a status transition, filed through
-    `Context.apply_lifecycle` and never inferred from a deletion.
-
-    With no spine home configured every sentence above is inert and this verb is byte for byte what
-    it was.
+    envelope under `recorded`. `quantity` and `execution_reference` become required, and the deal
+    must sit under a `NettingCollateralSet` naming a counterparty; each of the three refuses by
+    name. A `delete` records nothing: what ends a trade is an election, an expiry observation or a
+    status transition, filed through `Context.apply_lifecycle`. Without a home this is inert.
     """
     action = request.get('action', 'add')
     if action not in ('add', 'amend', 'delete'):
@@ -919,10 +862,9 @@ def book_price(request: dict):
     `{result_id, status}` exactly like `/execute`, and the same content addressing applies: the
     same what-if twice is one run.
 
-    THE LANE IS CURIOSITY AND IT IS NOT A PARAMETER. This verb prices a book with a candidate in
-    it, which is what a what-if IS - nothing here will ever be cited by a fact, so it mints nothing
-    whether or not a spine home is configured. A candidate that becomes a trade is quoted through
-    `/book/structure` and booked through `/book/quote`, and those are the two verbs that record."""
+    THE LANE IS CURIOSITY AND NOT A PARAMETER: nothing here will ever be cited by a fact, so it
+    mints nothing whether or not a spine home is configured. A candidate that becomes a trade is
+    quoted through `/book/structure` and booked through `/book/quote`."""
     document, _ = live_book().read()
     try:
         if request.get('deal') is not None:
@@ -947,10 +889,8 @@ BOOK_RISK_LIMIT = 8
 
 def as_of():
     """When a projection or a risk vector was computed, as one ISO stamp - what a blotter shows
-    beside a number to say how old it is.
-
-    Milliseconds, not seconds: two recalcs of one set can land inside the same second, and a
-    stamp that cannot tell them apart cannot be the ordering key a mosaic of rows is read by.
+    beside a number to say how old it is. Milliseconds, not seconds: two recalcs of one set can
+    land inside the same second, and the stamp is the ordering key the mosaic is read by.
     """
     import datetime
 
@@ -962,8 +902,7 @@ def risk_etag(document):
 
     The whole `Deals` section, the whole `MergeMarketData` (a `MarketDataFile` path is market data
     too) and the `Calculation` block. Anything less serves yesterday's vector: a rolled `Base_Date`
-    or a changed report currency over an unmoved deal tree is a different risk, and a patched spot
-    lives inside the market section rather than beside it.
+    over an unmoved deal tree is a different risk.
     """
     return content_hash({'deals': document['Calc']['Deals'],
                          'market': document['Calc']['MergeMarketData'],
@@ -982,17 +921,16 @@ def top_level_paths(document):
 
 
 def greek_rows(frame):
-    """The gradient frame flattened, AGGREGATED across the whole book - which is the point.
+    """The gradient frame flattened, AGGREGATED across the whole book.
 
     `Greeks_First` is indexed by `(Rate, Tenor, Tenor2, Tenor3)` and carries one column per
-    reporting node plus a `Value` column holding the FACTOR's own level, so the consolidated risk
+    reporting node plus a `Value` column holding the factor's own level, so the consolidated risk
     is the sum across every column but that one.
 
-    The index is padded to three coordinates whatever the factor's real depth, and the depth is
-    read back PER FACTOR rather than per row: a curve's front point is a tenor of 0.0 and would
-    otherwise trim to nothing and read as a spot. So a factor whose every row is all zeros carries
-    no `tenor` key at all (a spot, one number), and a factor with any non-zero coordinate carries
-    the tenor list - the same length on every one of its rows - out to its own last used one.
+    The index is padded to three coordinates whatever the factor's depth, and the depth is read
+    back PER FACTOR rather than per row - a curve's front point is a tenor of 0.0 and would
+    otherwise trim to nothing and read as a spot. So an all-zero factor carries no `tenor` key at
+    all, and one with any non-zero coordinate carries the list out to its own last used one.
     """
     table = as_json(frame)['.DataFrame']
     columns = [position for position, name in enumerate(table['columns']) if name != 'Value']
@@ -1014,15 +952,13 @@ def consolidated_risk(document):
     """The consolidated view's whole computation: ONE base valuation with `Greeks: 'First'` over
     the book as it stands, in its own Context.
 
-    One run, because the gradient is taken off the ROOT netting set - a leaf's contribution is
-    already the whole book's - and because the `mtm` frame's per-deal rows ride free in the same
-    forward pass. Counterparties do not enter here at all; that is what makes this the CONSOLIDATED
-    view and `/book/xva` the per-set one.
+    One run, because the gradient is taken off the root netting set and the `mtm` frame's per-deal
+    rows ride free in the same forward pass. Counterparties do not enter here; that is what makes
+    this the CONSOLIDATED view and `/book/xva` the per-set one.
 
     `per_deal` is the frame's TOP-LEVEL rows, one per trade, so `mtm` is exactly their sum: a
-    structure's legs and a netting set's members are inside the row their container reports, and
-    adding them again would double the book. An empty book has no value to differentiate and never
-    reaches a run.
+    structure's legs and a set's members are inside the row their container reports, and adding
+    them again would double the book. An empty book never reaches a run.
     """
     run = deepcopy(document)
     run['Calc']['Calculation'] = dict(run['Calc']['Calculation'],
@@ -1056,16 +992,15 @@ def consolidated_risk(document):
 def book_risk():
     """The consolidated view's feed: the book's mark and its whole-book gradient, in one answer.
 
-    COUNTERPARTIES DO NOT MATTER HERE. The greeks are aggregated over the entire book and there is
-    nothing to slice by - the per-set reading is `/book/xva`.
+    Counterparties do not matter here - the greeks are aggregated over the entire book and there is
+    nothing to slice by; the per-set reading is `/book/xva`.
 
     Computed on a MISS and cached under `etag`, a hash of everything the run reads, so a blotter
     polls this on the same beat it polls `/book`. An empty book answers zeros without running
     anything; a book that will not price answers 422 naming the cause and caches nothing.
 
-    `mtm` is the sum of `per_deal`, which is one row per TOP-LEVEL trade (`reference`, its
-    positional `deal_path`, its value); `greeks` is `{factor, tenor?, value}` flattened off the
-    gradient frame, the tenor coordinates trimmed at the last non-zero one.
+    `mtm` is the sum of `per_deal`, one row per top-level trade; `greeks` is `{factor, tenor?,
+    value}` flattened off the gradient frame, trimmed at the last non-zero coordinate.
     """
     document, _ = live_book().read()
     etag = risk_etag(document)
@@ -1102,9 +1037,9 @@ XVA_CVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '',
                  'Gradient': 'No'}
 
 #: The FVA block a recalc switches on, beside the CVA one and off the SAME run - the projection's
-#: second column. `Counterparty` is the set's, as it is for CVA; the three curves are decided per
-#: set (see `funding_curves`); the rest is the same desk-projection posture as the CVA block -
-#: deterministic deflation, no stochastic funding, no gradient. A partial block KeyErrors in the run.
+#: second column. `Counterparty` is the set's; the three curves are decided per set (see
+#: `funding_curves`); the rest is the CVA block's own desk-projection posture. A partial block
+#: KeyErrors in the run.
 XVA_FVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '', 'Risk_Free_Curve': '',
                  'Funding_Cost_Interest_Curve': '', 'Funding_Benefit_Interest_Curve': '',
                  'Deflate_Stochastically': 'No', 'Stochastic_Funding': 'No', 'Gradient': 'No'}
@@ -1121,10 +1056,9 @@ def xva_path():
 
 def read_projection():
     """The projection as it stands on disk - `{'sets': {Reference: row}}`, empty where no recalc
-    has ever run. A fresh parse every time, because the worker thread writes this file and the
-    request thread reads it; a file that is there but not JSON refuses BY NAME rather than
-    answering an empty projection, since "no XVA at all" and "the file is broken" are different
-    facts and a desk must not read the second as the first."""
+    has ever run. A fresh parse every time, the worker thread writing this file and the request
+    thread reading it. A file that is there but not JSON refuses BY NAME: "no XVA at all" and "the
+    file is broken" are different facts."""
     try:
         with open(xva_path(), encoding='utf-8') as handle:
             return json.load(handle)
@@ -1168,11 +1102,10 @@ def netting_sets(document):
 def set_terms(deal):
     """`(counterparty, collateralized)` off a netting set's own CSA fields.
 
-    `Credit_Support_Amounts.Counterparty` is the one the engine reads too - it is declared as the
-    `SurvivalProb` factor the CVA discounts by - so the recalc and the row cannot name two
-    different counterparties. `Collateralized` is declared as 'True'/'False' TEXT and a JSON string
-    "False" is truthy in every browser that reads it, so the row carries the READING rather than
-    the spelling.
+    `Credit_Support_Amounts.Counterparty` is the one the engine reads too - the `SurvivalProb`
+    factor the CVA discounts by - so the recalc and the row cannot name two different
+    counterparties. `Collateralized` is declared as 'True'/'False' TEXT and the string "False" is
+    truthy in every browser, so the row carries the READING rather than the spelling.
     """
     support = deal.get('Credit_Support_Amounts') or {}
     return (support.get('Counterparty') or '',
@@ -1184,15 +1117,13 @@ def funding_curves(deal, risk_free):
 
     `Funding_Rate` is the curve a `NettingCollateralSet` already names as what it funds at, so the
     projection reads the funding leg where the book states it rather than inventing a desk-wide
-    spread nobody authored. A set that names none funds at the risk-free curve, and FVA is then
-    identically zero by construction - FCA and FBA are both a spread OVER risk-free, so equal curves
-    make the adjustment nothing. THAT ZERO IS A READING, not a placeholder: it says this set
-    declares no funding spread, and the remedy is to author `Funding_Rate` on the set.
+    spread nobody authored. A set that names none funds at the risk-free curve and FVA is then
+    identically zero - FCA and FBA are both spreads OVER risk-free. That zero is a READING, not a
+    placeholder: the remedy is to author `Funding_Rate` on the set.
 
-    Cost and benefit are the same curve because a single `Funding_Rate` is all the set declares -
-    and because `Config.calc_dependencies` registers the COST curve and the risk-free one as factor
-    dependencies but not the benefit curve, so a benefit curve nothing else pulls in would fail the
-    run for a missing factor.
+    Cost and benefit are the same curve because a single `Funding_Rate` is all the set declares,
+    and because `Config.calc_dependencies` registers the cost and risk-free curves as factor
+    dependencies but not the benefit one, so a benefit curve nothing else pulls in fails the run.
     """
     funding = deal.get('Funding_Rate') or risk_free
     return funding, funding
@@ -1203,30 +1134,27 @@ def xva_document(document, node, counterparty):
     adjustments the projection carries.
 
     The book's market data, calendars, bootstrappers and report currency travel WHOLE - the CVA
-    reads the counterparty's `SurvivalProb` block off them - and exactly four things are decided
-    here: the deal tree becomes that set alone, the calculation becomes a CMC, and the CVA and FVA
-    blocks are both switched on against the counterparty the SET names.
+    reads the counterparty's `SurvivalProb` block off them - and four things are decided here: the
+    deal tree becomes that set alone, the calculation becomes a CMC, and the CVA and FVA blocks are
+    both switched on against the counterparty the SET names.
 
-    ONE RUN, TWO NUMBERS. Both adjustments reduce the same exposure cube, so asking for them
-    together costs one CMC rather than two and lands them on one `as_of` and one replay tuple -
-    which is what makes them columns of the same row instead of two projections to reconcile.
+    ONE RUN, TWO NUMBERS. Both adjustments reduce the same exposure cube, so they cost one CMC and
+    land on one `as_of` and one replay tuple - columns of a row rather than projections to
+    reconcile.
 
-    AND THE CUBE IS NOT THE ONE A CVA-ONLY RUN SEES. `Funding_Valuation_Adjustment.Calculate` is
-    what sets `CMC_State.scale_survival`, and a netting set under that flag reports its MTM already
-    multiplied by the counterparty's survival probability - which the CVA integrand then weights by
-    the marginal default probability a second time. So the `cva` column here is a survival-scaled
-    one and reads BELOW a standalone CVA: measured on the gate's own book at 1024 paths, 0.97% low
-    for a counterparty at 2% hazard and 2.38% low for one at 5%, the shift tracking the hazard
-    exactly. That coupling lives in `Calculation` and `NettingCollateralSet.post_process`, not here;
-    it is named here because it is what the column MEANS, and a desk reconciling this projection
-    against a CVA-only run has to know which of the two it is holding.
+    AND THE CUBE IS NOT THE ONE A CVA-ONLY RUN SEES. `Funding_Valuation_Adjustment.Calculate` sets
+    `CMC_State.scale_survival`, so a netting set under that flag reports its MTM already multiplied
+    by the counterparty's survival probability, which the CVA integrand then weights by the
+    marginal default probability again. The `cva` column is therefore survival-scaled and reads
+    BELOW a standalone CVA - on the gate's book at 1024 paths, 0.97% low at 2% hazard and 2.38% low
+    at 5%, tracking the hazard. The coupling lives in `Calculation` and
+    `NettingCollateralSet.post_process`; it is named here because it is what the column MEANS.
 
-    The synthesized fields are a FLOOR, not a policy: `setdefault` leaves a book that states its
-    own path count, batching or deflation curve entirely alone, and a book that authors either
-    adjustment block keeps every field of it that is not the counterparty. `Deflation_Interest_Rate`
-    is synthesized at all because the declaration's default names a ZAR curve, which a book need not
-    carry - the report currency's own curve is the one deflation a book that priced at all has, and
-    it is the risk-free curve the funding spread is measured against for the same reason.
+    The synthesized fields are a FLOOR: `setdefault` leaves a book stating its own path count,
+    batching or deflation curve alone, and an authored adjustment block keeps every field but the
+    counterparty. `Deflation_Interest_Rate` is synthesized because the declaration's default names
+    a ZAR curve a book need not carry - the report currency's own is the one deflation any book
+    that priced at all has, and the risk-free curve the funding spread is measured against.
     """
     run = deepcopy(document)
     run['Calc']['Deals']['Deals']['Children'] = [node]
@@ -1252,24 +1180,19 @@ def xva_document(document, node, counterparty):
 class XvaJob:
     """One netting set's CVA and FVA as ONE unit of queued work, and the projection row it lands as.
 
-    TWO COLUMNS, ONE RUN. Both adjustments are reductions of the same exposure cube, so one CMC
-    produces both and the row carries them under one `as_of` and one replay tuple. A THIRD is not
-    coming this way: KVA is not built, and it is not a placeholder column here because no
-    calculation in the engine computes one - `Calculation.CreditMonteCarlo` reports `cva` and `fva`
-    and there is no capital charge anywhere behind it. A null column would read as "not run yet"
-    when the truth is "not implemented", and those are different facts.
+    TWO COLUMNS, ONE RUN. Both adjustments reduce the same exposure cube, so one CMC produces both
+    and the row carries them under one `as_of` and one replay tuple. There is no KVA column, not
+    even a null one: nothing in the engine computes a capital charge, and a null would read as "not
+    run yet" when the fact is "not implemented".
 
     PER-SET GRANULARITY IS THE POINT. A whole-book recalc queues one of these per set rather than
     one run over the lot, so the queue DRAINS between sets: a quote or a base valuation submitted
-    mid-recalc jumps every set still waiting (`COST_CLASS` puts a CMC at `HEAVY` and a
-    `BaseValuation` in front of it), the desk keeps working, and the projection fills in row by
-    row instead of all at once at the end.
+    mid-recalc jumps every set still waiting, and the projection fills in row by row.
 
-    The row is written on completion EITHER WAY. A run that fails - the commonest cause being a
-    counterparty the market data carries no `SurvivalProb` block for - lands `status: 'failed'`
-    carrying the engine's own wording, because a desk reads why a number is missing off the same
-    file the numbers are in. The error still travels on to the result store as an error, so
-    `/results/{result_id}` is never told a failed run succeeded.
+    The row is written on completion EITHER WAY. A failed run - commonly a counterparty the market
+    data carries no `SurvivalProb` block for - lands `status: 'failed'` with the engine's own
+    wording, because a desk reads why a number is missing off the same file the numbers are in. The
+    error still travels to the result store, so `/results/{result_id}` is never told otherwise.
     """
 
     def __init__(self, context, reference, terms, result_id, stamp):
@@ -1294,15 +1217,13 @@ class XvaJob:
     def adjustments(results, stored=False):
         """The columns one run's results carry - `{'cva': ..., 'fva': ...}`.
 
-        Takes the run's `Results` or a stored result's `tables`, which are the same mapping either
-        side of the JSON. `stored` is the one difference between the two readings, and it is where
-        the leniency belongs: a result filed BEFORE this column existed carries no `fva` at all and
-        is written UP rather than re-run, so a missing number there is age and reads None.
+        Takes the run's `Results` or a stored result's `tables`, the same mapping either side of
+        the JSON. `stored` is where the leniency belongs: a result filed before this column existed
+        carries no `fva` and is written UP rather than re-run, so a missing number there reads None.
 
-        A FRESH run is strict. Both adjustments were asked for in the same job, so an `fva` table
-        that is not there is a defect of this run rather than staleness, and filing a null a desk
-        would read as 'no funding cost' is the one thing that must not happen quietly. It raises,
-        and `run_job`'s own handler files the row as failed with the message.
+        A FRESH run is strict. Both adjustments were asked for in the same job, so a missing `fva`
+        table is a defect of this run rather than age, and filing a null a desk would read as 'no
+        funding cost' must not happen quietly - it raises, and `run_job` files the row as failed.
         """
         fva = results.get('fva') if stored else results['fva']
         return {'cva': float(results['cva']), 'fva': None if fva is None else float(fva)}
@@ -1311,9 +1232,8 @@ class XvaJob:
         """The row a run the store ALREADY holds lands as.
 
         Content addressing makes an identical recalc one execution, so a set whose numbers are
-        already filed is written up from them rather than paid for a second time - which is also
-        what keeps a projection whose file was lost (a fresh `DV_HOME`, a deleted row) one request
-        away from being whole again instead of one CMC away.
+        already filed is written up from them rather than paid for again - which also keeps a
+        projection whose file was lost one request away from whole rather than one CMC.
         """
         if result['status'] != 'done':
             return self.row(status='failed', error=result.get('error'))
@@ -1334,18 +1254,15 @@ class XvaJob:
 def book_xva(request: dict):
     """`{netting_sets: [Reference] | null}` - null is every `NettingCollateralSet` in the book.
 
-    THE PROJECTION IS NOT REFRESHED ON THE TICK. A credit Monte Carlo is minutes of device time,
-    so `xva.json` moves only when a desk asks it to, and this is the asking. One job is queued PER
-    SET, at the CMC's own cost class, and each writes its own row on completion - so a partial
-    recalc moves the rows it names and nothing else, and the desk's quotes and valuations keep
-    jumping the queue while the sets drain.
+    THE PROJECTION IS NOT REFRESHED ON THE TICK. A credit Monte Carlo is minutes of device time, so
+    `xva.json` moves only when a desk asks, and this is the asking. One job per SET, at the CMC's
+    own cost class, each writing its own row on completion - so a partial recalc moves the rows it
+    names and the desk's quotes keep jumping the queue while the sets drain.
 
-    Each job composes a `Credit_Monte_Carlo` over the book carrying THAT set's subtree, with
-    `Credit_Valuation_Adjustment.Calculate` AND `Funding_Valuation_Adjustment.Calculate` on and the
-    counterparty read off the set's own `Credit_Support_Amounts` for both. One run, two columns:
-    the adjustments reduce the same exposure cube, so the row's `cva` and `fva` share its `as_of`
-    and its replay tuple. A reference that names no netting set refuses BY NAME and queues nothing
-    at all, not even the sets that were spelled correctly.
+    Each job composes a `Credit_Monte_Carlo` over the book carrying THAT set's subtree, with both
+    adjustment blocks on against the counterparty the set's own `Credit_Support_Amounts` names, so
+    `cva` and `fva` share an `as_of` and a replay tuple. A reference that names no netting set
+    refuses BY NAME and queues nothing at all.
 
     Answers `{queued: [{reference, result_id}]}`. Content addressing applies: the same set over an
     unmoved book is one run, and asking twice hands back the id of the first.
@@ -1371,9 +1288,9 @@ def book_xva(request: dict):
         run = XvaJob(context, reference, terms, result_id, stamp)
         status = EXECUTOR.submit(Job(result_id, run, stamp), HEAVY)
         XVA_PENDING[reference] = result_id
-        # a job still queued or running writes its own row when it lands; one that has ALREADY run
-        # writes it here ONLY where the row is missing or names a different run - `as_of` means when
-        # the number was COMPUTED, and an identical recalc over an unmoved book computed nothing
+        # a queued or running job writes its own row when it lands; one that has already run writes
+        # here only where the row is missing or names a different run, `as_of` meaning when the
+        # number was COMPUTED
         if status not in ('queued', 'running'):
             standing = read_projection()['sets'].get(reference)
             if standing is None or standing.get('result_id') != result_id:
@@ -1387,10 +1304,9 @@ def projection_entry(row, **book):
     about it. Every field is always present - a never-run set reads `status: 'never run'` with
     nulls beside it - so a blotter renders one table rather than branching per row.
 
-    A ROW FILED BEFORE A COLUMN EXISTED IS STILL A ROW. `fva` is read the same way every other
-    field is, so a row written when CVA was the only adjustment reads `status: 'done'` with a real
-    `cva` and a null `fva` - the projection is a mosaic in TIME as well as across sets, and the
-    remedy for a null column is the same recalc as for an old `as_of`."""
+    A row filed before a column existed is still a row: `fva` is read like every other field, so a
+    CVA-only row reads `done` with a null `fva`. The projection is a mosaic in TIME as well as
+    across sets, and the remedy for a null column is the recalc an old `as_of` takes."""
     row = row or {}
     entry = dict({'reference': None, 'deal_path': None, 'counterparty': row.get('counterparty'),
                   'collateralized': row.get('collateralized'), 'note': None}, **book)
@@ -1411,24 +1327,19 @@ def book_xva_view():
     READ: nothing here runs, and the numbers are as old as their rows say they are.
 
     Netting sets are the instruments. Each entry carries what the book says the set is NOW
-    (`reference`, `deal_path`, `counterparty`, `collateralized`) over what the last run said about
-    it (`cva`, `fva`, `as_of`, `status` and the replay tuple - `result_id`, `plan_hash`,
-    `values_hash`, `seed`). A set the book carries with no row yet reads `status: 'never run'`; a
-    ROW whose set has since left the book is reported with a null `deal_path` and a `note` saying so
-    rather than silently dropped. A recalc still queued or running rides under `recalc`.
+    (`reference`, `deal_path`, `counterparty`, `collateralized`) over what the last run said
+    (`cva`, `fva`, `as_of`, `status` and the replay tuple). A set with no row yet reads `status:
+    'never run'`; a ROW whose set has since left the book carries a null `deal_path` and a `note`
+    rather than being dropped. A recalc still queued or running rides under `recalc`.
 
-    THE ADJUSTMENTS ARE COLUMNS OF ONE ROW. `cva` and `fva` come off ONE credit Monte Carlo per set,
-    so they share an `as_of` and a replay tuple and can be added without asking whether they were
-    priced on the same market. `fva` is the funding cost less the funding benefit over the exposure,
-    both measured as a spread over the risk-free curve, so a set that declares no `Funding_Rate`
-    of its own reads exactly 0.0 - no spread, no adjustment. There is NO `kva` column and there is
-    no null one either: nothing in the engine computes a capital charge, and a null would read as
-    "not recalculated yet" when the fact is "not implemented".
+    THE ADJUSTMENTS ARE COLUMNS OF ONE ROW, off one CMC per set, so they share an `as_of` and a
+    replay tuple and can be added without asking whether they were priced on the same market. `fva`
+    is the funding cost less the benefit over the exposure, both spreads over the risk-free curve,
+    so a set declaring no `Funding_Rate` reads exactly 0.0. There is no `kva` column and no null
+    one: nothing computes a capital charge, and a null would read as "not recalculated yet".
 
     STALENESS IS DATA. The rows carry different `as_of` stamps on purpose - that is what a partial
-    recalc means - so the view never blocks, never runs a CMC, and never hides how old a number is.
-    A row filed before the `fva` column existed reads `done` with a null `fva` for the same reason
-    and takes the same remedy: recalculate that set.
+    recalc means - so the view never blocks, never runs a CMC, and never hides a number's age.
     """
     document, _ = live_book().read()
     rows = read_projection().get('sets') or {}
@@ -1454,19 +1365,16 @@ class CapturedErrors(logging.Handler):
     and refuses the write when anything landed on it - a book must never carry a market its own
     bootstrap complained about.
 
-    IT CAPTURES ITS OWN THREAD AND NOTHING ELSE. The only channel `Config.bootstrap` publishes on
-    is the ROOT logger, so the capture has to go there, and the root logger is every thread's - a
-    queued `/book/price` whose pricing logs a CRITICAL (a skipped deal, a missing factor) inside a
-    tick's window turned a good tick into `written: False` with a foreign run's message as the
-    reason, and `Metronome.failed` counted a beat that had nothing wrong with it. `record.thread`
-    against the constructing thread's ident is the whole filter: single-threaded behaviour is
-    byte-identical, because there is only one thread for a record to have come from."""
+    IT CAPTURES ITS OWN THREAD AND NOTHING ELSE. `Config.bootstrap` publishes on the ROOT logger,
+    which is every thread's - a queued `/book/price` logging a CRITICAL inside a tick's window
+    turned a good tick into `written: False` with a foreign run's message as the reason.
+    `record.thread` against the constructing thread's ident is the whole filter, so single-threaded
+    behaviour is byte-identical."""
 
     def __init__(self):
         super().__init__(level=logging.ERROR)
         self.messages = []
-        #: the tick's own thread. A handler on the root logger hears the whole process; what this
-        #: bootstrap has to say for itself is what THIS thread said.
+        #: the tick's own thread - a root handler hears the whole process
         self.thread = threading.get_ident()
 
     def emit(self, record):
@@ -1546,17 +1454,15 @@ def market_edit(document, quotes, patch, bootstrap=None):
 def book_market(request: dict):
     """`{quotes?: {name: block}, patch?: {factor: {field: value}}, bootstrap?: 'Yes'|'No'}`.
 
-    The practical tick path: a quote source (`derivus_bloomberg.to_market_prices_block`, a desk
-    script, an MCP tool) posts `Market Prices` blocks; an update may move only each point's
-    `Quoted_Market_Value`, its two-way sides and its `Timestamp` - structure is a re-authoring,
-    refused by name. `patch` is the values delta as `patch_market` takes it, less the
+    The practical tick path: a quote source posts `Market Prices` blocks, and an update may move
+    only each point's `Quoted_Market_Value`, its two-way sides and its `Timestamp` - structure is a
+    re-authoring, refused by name. `patch` is the values delta as `patch_market` takes it, less the
     `Market Prices` half. The bootstrap (default: run iff quotes arrived) turns the quotes into the
-    price factors the pricers read, and the book file gains the whole result in one atomic write -
-    a bootstrap that reports an error writes NOTHING and hands the messages back.
+    price factors the pricers read, all in one atomic write - a bootstrap that reports an error
+    writes NOTHING and hands the messages back.
 
-    A `patch` naming a `Market Prices` block is refused with the remedy, and that is the one place
-    the book is stricter than the engine: `patch_market` takes a quote because an EXECUTE that rides
-    re-derives its curve from it, and a live book has no such step.
+    A `patch` naming a `Market Prices` block is refused with the remedy, the one place the book is
+    stricter than the engine: see `QUOTE_NOT_A_PATCH`.
     """
     live = live_book()
 
@@ -1575,17 +1481,15 @@ class BloombergJob:
     requested surface fetched and checked, and the whole lot installed and bootstrapped in one
     atomic write.
 
-    `derivus_bloomberg` is imported INSIDE `run_job`. blpapi lives only on a terminal workstation,
-    and the service has to start and serve every other verb on a machine that has never heard of
-    it - so the dependency is reached at the moment a desk asks for a fetch, and nowhere else.
+    `derivus_bloomberg` is imported INSIDE `run_job`: blpapi lives only on a terminal workstation
+    and the service must serve every other verb on a machine that has never heard of it.
 
-    The outcome is a book WRITE rather than tables, so it rides the run's own Stats under
-    `Bloomberg`, exactly as a solve's coordinates ride `Solved`. Progress rides `PROGRESS` under the
-    result id and is dropped in a `finally`.
+    The outcome is a book WRITE rather than tables, so it rides the run's Stats under `Bloomberg`,
+    as a solve's coordinates ride `Solved`. Progress rides `PROGRESS` under the result id.
 
     `routine` is the metronome's mode: the interactive verb PROVISIONS a workstation that has no
-    security map and a cadence must not, so a routine job checks for the map first and refuses by
-    name without opening a session at all - which keeps that refusal reachable with no terminal.
+    security map and a cadence must not, so a routine job checks for the map before opening a
+    session at all - which keeps that refusal reachable with no terminal.
     """
 
     def __init__(self, book, scope, result_id, routine=False):
@@ -1643,11 +1547,9 @@ class BloombergJob:
                 written = self.book.mutate(
                     lambda document: market_edit(document, quotes, {}, 'Yes'))
             except (ValueError, KeyError) as error:
-                # what `/book/market` turns into a 422, turned into the refusal a JOB lands as: a
-                # book carrying something the tick's own bootstrap cannot take (a re-authored
-                # block, a section it needs and lacks) is a refused beat, and the metronome's
-                # failed-beat handling reads `refused` off these Stats. Raising here would reach it
-                # as an unhandled job error instead, and the write is untouched either way
+                # what `/book/market` turns into a 422, turned into the refusal a JOB lands as -
+                # the metronome's failed-beat handling reads `refused` off these Stats, where
+                # raising would reach it as an unhandled job error
                 return self.outcome(started, written=False, refused=[str(error)])
             return self.outcome(started, provisioned=created, **written)
         finally:
@@ -1658,10 +1560,9 @@ def submit_bloomberg(scope, routine=False):
     """The terminal round trip as a queued job - the ONE seam `/book/bloomberg` and the metronome
     both ride.
 
-    Same job class, same single-worker queue, same result store: a posted tick and a beat of the
-    cadence are indistinguishable downstream, so a tick's write serialises with every pricing and
-    lands atomically exactly as a posted one does. `routine` is the only thing that separates
-    them, and all it says is "do not provision".
+    Same job class, same single-worker queue, same result store, so a posted tick and a beat of the
+    cadence are indistinguishable downstream. `routine` is the only thing that separates them, and
+    all it says is "do not provision".
     """
     live = live_book()
     document, etag = live.read()
@@ -1671,12 +1572,10 @@ def submit_bloomberg(scope, routine=False):
     # a fetch is an ACT against the terminal rather than a function of the book, so the submission
     # clock names it: two ticks against an unmoved book are two trips, never one coalesced result
     result_id = content_hash({'book': etag, 'bloomberg': scope, 'at': time.perf_counter()})
-    # THE TICK IS TELEMETRY. A repaint of the market is superseded by the next one before anything
-    # could cite it, so it is a reading rather than a record and it mints nothing - the lane is
-    # declared rather than left blank so the absence is a decision somebody can read back
+    # the tick is TELEMETRY - a repaint superseded by the next one before anything could cite it -
+    # and the lane is declared rather than left blank so the absence is a readable decision
     submitted = Job(result_id, BloombergJob(live, scope, result_id, routine), {}, spine.TELEMETRY)
-    # a tick is a fetch and a bootstrap, seconds of work - light, or the book stops ticking for
-    # the length of a whole-book recalc and then drains a burst of stale beats
+    # light, or the book stops ticking for a whole-book recalc and then drains a burst of stale beats
     return {'result_id': result_id,
             'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
 
@@ -1692,16 +1591,14 @@ def book_bloomberg(request: dict):
 
     The scope defaults to the desk's own: every `fx_vol` pair the security map carries, at the
     expiries it verified and the delta pillars `security_map.fx_vol_definition` defaults to. The
-    map is provisioned first - discovered and written when this workstation has none - then every
-    requested surface is checked for staleness and fetched, and what came back is installed and
-    bootstrapped through the same seam `/book/market` uses, in ONE atomic write. A quote whose
-    last print is late refuses the whole tick BY NAME and writes nothing: a dead series keeps
-    answering with a plausible number, and a book must never carry one unremarked.
+    map is provisioned first, then every requested surface is checked for staleness and fetched,
+    and what came back is installed and bootstrapped through the seam `/book/market` uses, in ONE
+    atomic write. A quote whose last print is late refuses the whole tick BY NAME and writes
+    nothing: a dead series keeps answering with a plausible number.
 
-    Answers `{result_id, status}` exactly like `/execute`, because a terminal round trip is
-    minutes of work: `/results/{result_id}` carries `progress` while it runs and the outcome under
-    `stats.Bloomberg` when it is done. The id names the ACT rather than the numbers - a fetch is a
-    trip to the terminal, so two ticks against an unmoved book are two fetches, never one.
+    Answers `{result_id, status}` like `/execute`, a terminal round trip being minutes of work:
+    `/results/{result_id}` carries `progress` while it runs and the outcome under `stats.Bloomberg`.
+    The id names the ACT rather than the numbers, so two ticks are two fetches.
     """
     return submit_bloomberg(
         {key: request[key] for key in ('pairs', 'expiries', 'pillars') if key in request})
@@ -1726,15 +1623,13 @@ def hn_edit(document, pair):
     bootstrapped, and the fitted factor landing with it in a single atomic write.
 
     A RE-CALIBRATION IS A RE-AUTHORING, so the block is dropped before it is installed rather than
-    ticked over. This block's structure IS a function of the surface - the delta-neutral straddle
-    strike moves with the ATM vol, the 25 delta strikes with the whole smile - so re-emitting it
-    after a tick legitimately moves the strikes, which `update_market_quote` refuses by name.
+    ticked over: its structure is a function of the surface - the delta-neutral straddle strike
+    moves with the ATM vol, the 25 delta strikes with the whole smile - so re-emitting it after a
+    tick legitimately moves the strikes, which `update_market_quote` refuses by name.
 
-    THE FAMILY ENTRY IS BORROWED FOR THIS RUN AND HANDED BACK: `Bootstrapper Configuration` names
-    the families every bootstrap runs, and every market tick is a bootstrap, so a book left
-    declaring this one would refit on every tick. It is added if missing and removed once the fit
-    has run; a book that declares the family itself is left declaring it. A book with no such
-    section refuses in the wording both market verbs refuse in.
+    THE FAMILY ENTRY IS BORROWED FOR THIS RUN AND HANDED BACK: every market tick is a bootstrap, so
+    a book left declaring this family would refit on every tick. It is added if missing and removed
+    once the fit has run; a book declaring the family itself keeps it.
     """
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     if not market.get('Bootstrapper Configuration'):
@@ -1749,10 +1644,8 @@ def hn_edit(document, pair):
     try:
         written, outcome = market_edit(document, {name: as_json(block)}, {}, 'Yes')
     except (ValueError, KeyError) as error:
-        # the catch `/book/market` makes a 422 of, made into the refusal a queued job lands as: a
-        # fit the install seam turns away is a refusal with the message under this run's own Stats,
-        # never an exception out of the worker. `written` False leaves the file untouched, which is
-        # what it would have been anyway
+        # what `/book/market` makes a 422 of, made into the refusal a queued job lands as - a
+        # message under this run's own Stats, never an exception out of the worker
         written, outcome = False, {'written': False, 'refused': [str(error)]}
     finally:
         if borrowed:
@@ -1771,17 +1664,14 @@ def hn_edit(document, pair):
 class HestonNandiJob:
     """One pair's Heston-Nandi calibration as ONE unit of queued work.
 
-    THE XVA MOSAIC'S PATTERN, and for its reason: the fit is a least squares over a Fourier
-    inversion of a daily GARCH recursion and it takes MINUTES - measured at 288 s for a ten-quote
-    ladder reaching six months, and still running past 21 minutes on one reaching a year. It can no
-    more ride a market tick than a credit Monte Carlo can, so it is queued at `HEAVY`: at three
-    orders of magnitude over a base valuation it must not sit in front of a salesperson's quote.
+    The XVA mosaic's pattern, for its reason: the fit is a least squares over a Fourier inversion
+    of a daily GARCH recursion and it takes MINUTES - 288 s for a ten-quote ladder reaching six
+    months, past 21 minutes on one reaching a year - so it is queued at `HEAVY` and must not sit in
+    front of a salesperson's quote.
 
-    There is no second file and no projection to write. The fitted
-    `HestonNandiModelParameters.<underlying>` block lands in the book's own `Price Factors`, which
-    is what every read of the book already serves - and what an FX TARF or accumulator resolves by
-    naming convention off its `Underlying_Currency`. The outcome rides the run's own `Stats` under
-    `HestonNandi`, and progress rides `PROGRESS` under the result id.
+    No second file and no projection: the fitted `HestonNandiModelParameters.<underlying>` block
+    lands in the book's own `Price Factors`, which every read of the book already serves and an FX
+    TARF resolves by naming convention. The outcome rides the run's `Stats` under `HestonNandi`.
     """
 
     def __init__(self, book, pair, result_id):
@@ -1789,8 +1679,7 @@ class HestonNandiJob:
 
     def run_job(self):
         started = time.perf_counter()
-        # minutes behind one result id, so the worker says what it is doing - the same PROGRESS
-        # seam a terminal round trip publishes on, and dropped in a `finally` the same way
+        # minutes behind one result id, so the worker says what it is doing
         PROGRESS[self.result_id] = {
             'done': 0, 'total': 1,
             'note': 'fitting {} against ten vega-weighted vols'.format(self.pair)}
@@ -1808,19 +1697,14 @@ def book_hn(request: dict):
     vega-weighted vols read off the surface the book already carries, and land them in it.
 
     ON REQUEST, NEVER ON THE TICK. The fit is minutes of work, so it is queued at the heavy cost
-    class and a desk's quotes and valuations keep jumping it. A market tick moves the surface and
-    leaves these parameters where they were - STRUCTURALLY, because the family is borrowed into
-    `Bootstrapper Configuration` for this run and handed back. The honest time to call this is after
-    a re-tick and before quoting the TARFs that read them.
+    class and a desk's quotes keep jumping it. A market tick moves the surface and leaves these
+    parameters where they were, STRUCTURALLY, the family being borrowed into `Bootstrapper
+    Configuration` for this run and handed back. Call it after a re-tick, before quoting the TARFs.
 
-    The quote ladder is stated once, on `HestonNandiModelParameters.fx_surface_block`: ATM at
-    1M/2M/3M/6M/9M/1Y plus 25 delta wings at 3M and 6M, weighted by Black vega, nothing past a year.
-    An expiry the surface does not carry moves to the nearest quoted one, and the block SAYS SO.
+    The quote ladder is stated once, on `HestonNandiModelParameters.fx_surface_block`.
 
-    Answers `{result_id, status}` like `/execute`; the outcome arrives under `stats.HestonNandi` -
-    the block installed, the factor written, the fitted parameters and the fit's wall time. THERE IS
-    NO GET SIDE: the written `HestonNandiModelParameters.<underlying>` factor IS the projection, and
-    `GET /book` already serves it.
+    Answers `{result_id, status}` like `/execute`; the outcome arrives under `stats.HestonNandi`.
+    There is no GET side: the written factor IS the projection and `GET /book` serves it.
 
     The pair is REFUSED HERE, on the request thread, when the book carries no built surface for it.
     The job re-authors the block against the document it locks, so a book that moved between the
@@ -1833,8 +1717,7 @@ def book_hn(request: dict):
         raise HTTPException(422, 'a calibration names the pair it fits, e.g. {"pair": "USD.ZAR"}')
     try:
         # the pre-flight IS the emitter, run on the read copy and thrown away: every refusal it
-        # names (no built surface, a parametric one, a cross, a missing curve) is a fact about the
-        # book that a desk must hear now rather than poll for
+        # names is a fact about the book a desk must hear now rather than poll for
         params = load(document).current_cfg.params
         block_name, _ = HestonNandiModelParameters.fx_surface_block(
             pair, params['Price Factors'], params['System Parameters'],
@@ -1852,21 +1735,20 @@ def book_hn(request: dict):
 class Metronome:
     """`DV_Service --tick SECONDS` - the background market ticker, as a thread that SUBMITS.
 
-    It owns no fetching of its own: every beat goes through `submit_bloomberg`, the same seam
-    `/book/bloomberg` rides, so a tick is the same job class on the same single-worker queue and
-    its write serialises with pricings and lands atomically like any other. What the thread adds
-    is a clock and three disciplines.
+    It owns no fetching: every beat goes through `submit_bloomberg`, the seam `/book/bloomberg`
+    rides, so a tick is the same job class on the same queue. What the thread adds is a clock and
+    three disciplines.
 
-    NEVER STACK. A terminal round trip can outlast an interval and two ticks never coalesce onto one
-    result, so the beat that finds its predecessor still `queued` or `running` is skipped, on a
-    reading taken off the executor's own store rather than off bookkeeping of the metronome's own.
+    NEVER STACK. A terminal round trip can outlast an interval and two ticks never coalesce, so a
+    beat that finds its predecessor `queued` or `running` is skipped - read off the executor's own
+    store rather than off bookkeeping of the metronome's.
 
     NEVER PROVISION. An unprovisioned `DV_HOME` refuses by name and the cadence carries on:
-    verifying a workstation's whole vocabulary stays the interactive verb's act.
+    verifying a workstation's vocabulary stays the interactive verb's act.
 
-    NEVER DIE. A failed tick is ONE warning line naming the cause, and the book is untouched by
-    construction, since a job that refuses writes nothing. Three failures in a row stretch the
-    interval fivefold until one succeeds. Nothing a beat can raise reaches the loop.
+    NEVER DIE. A failed tick is one warning line naming the cause, and the book is untouched by
+    construction since a job that refuses writes nothing. Three failures in a row stretch the
+    interval fivefold until one succeeds.
     """
 
     def __init__(self, interval, scope=None):
@@ -2002,10 +1884,8 @@ def book_solve(request: dict):
 def dv_home():
     """The desk's own user-data directory: `DV_HOME`, or `~/.derivus` when it is unset.
 
-    One env var names where a desk's files live, the same way `RF_SERVICE_URL` names the service
-    for every client. Read on every call rather than captured at import, because the book `main`
-    opens and the quotes a running service files are the same setting answered at two different
-    moments - and a client that moves it moves both.
+    Read on every call rather than captured at import, so a client that moves the setting moves
+    both the book `main` opens and the quotes a running service files.
     """
     return os.path.expanduser(os.environ.get('DV_HOME', os.path.join('~', '.derivus')))
 
@@ -2013,10 +1893,9 @@ def dv_home():
 def quote_dir():
     """Where a pending trade waits for its approval: `DV_HOME/tmp`, created on first use.
 
-    A quote is not a booking. `/book/structure` files the whole pending trade here under its own
-    `quote_id` and `/book/quote` books it from here, so the desk that gave the quote and the desk
-    that approves it meet in a FILE - and the file stays after the booking, because what was
-    quoted at what market is the audit trail of why the book carries what it carries.
+    A quote is not a booking: `/book/structure` files the pending trade here under its `quote_id`
+    and `/book/quote` books it from here, so the two desks meet in a FILE - and the file stays
+    after the booking, being the audit trail of why the book carries what it carries.
     """
     return os.path.join(dv_home(), 'tmp')
 
@@ -2024,10 +1903,9 @@ def quote_dir():
 def quote_stamp():
     """When a quote was GIVEN, as one ISO stamp in UTC - what the firm window is measured from.
 
-    UTC and offset-aware, unlike `as_of`: a projection row is read by the desk that computed it,
-    but a quote's age is arithmetic against a clock that keeps running, and a naive local stamp
-    puts an hour into that arithmetic twice a year. The `quote_id` cannot serve here - it hashes a
-    `perf_counter`, which is a monotonic tick with no epoch and no meaning across a restart.
+    UTC and offset-aware, unlike `as_of`: a quote's age is arithmetic against a running clock, and
+    a naive local stamp puts an hour into it twice a year. The `quote_id` cannot serve - it hashes
+    a `perf_counter`, a monotonic tick with no epoch.
     """
     import datetime
 
@@ -2055,21 +1933,17 @@ def check_pins(pending, document, quote_id):
     """The TWO-DIMENSIONAL firmness check on an approval: the verdict, or None where there is
     nothing to check.
 
-    A quote pins the book's plan hash and its values hash, and those are two clocks rather than
-    one. The VALUES dimension asks whether the market moved or the pin aged; the PLAN dimension
-    asks whether the book moved under the solve. They are disjoint by MEASUREMENT since the
-    `Market Prices` partition landed - a vol tick moves `values_hash` and leaves `plan_hash`
-    bit-identical - so a ticking market can never be read as a moved book, which is what makes the
-    two remedies different remedies.
+    A quote pins the book's plan hash and its values hash, which are two clocks. The VALUES
+    dimension asks whether the market moved or the pin aged; the PLAN dimension asks whether the
+    book moved under the solve. They are disjoint by MEASUREMENT - a vol tick moves `values_hash`
+    and leaves `plan_hash` bit-identical - so a ticking market is never read as a moved book.
 
-    This does NOT supersede `Quote Policy.firm_seconds`, which fired above it and still does. That
-    window is the DESK'S mandate - how long a salesperson may stand behind a price they gave - and
-    it is a promise to a client. These two are the RECORD'S: whether the market and the book the
-    price was computed against are still the ones a booking would land in. Both are checked, both
-    name themselves when they refuse, and a quote has to pass all three.
+    Neither supersedes `Quote Policy.firm_seconds`, which is the DESK'S mandate and a promise to a
+    client. These two are the RECORD'S: whether the market and the book the price was computed
+    against are still the ones a booking would land in. A quote has to pass all three.
 
-    Both ages come off `quoted_at`, because both pins were taken at the same instant; the signature
-    keeps them apart because they are separate clocks.
+    Both ages come off `quoted_at`, both pins having been taken at one instant; the signature keeps
+    them apart because they are separate clocks.
     """
     pinned = pending.get('pinned')
     if not spine.configured() or not pinned:
@@ -2084,14 +1958,12 @@ def check_pins(pending, document, quote_id):
 def solved_coordinates(legs):
     """What a quote SOLVED, as `leg.field -> number`.
 
-    A quote reports its solve per leg as `{field: value}` - a collar's financing leg solves a
-    `Strike_Price`, a forward extra a `Barrier_Price` - so the record flattens the pair into one
-    name rather than nesting. The name carries both halves because both are needed to read it: the
-    role says which leg was moved and the field says what about it, and a coordinate called
-    `Strike_Price` on a three-leg structure names nothing.
+    A quote reports its solve per leg as `{field: value}`, and the record flattens the pair into
+    one name: the role says which leg was moved and the field says what about it, and a coordinate
+    called `Strike_Price` on a three-leg structure names nothing.
 
     A leg that solved nothing contributes nothing, so a fully-specified quote files an empty
-    object - which is a quote with no solved coordinate rather than a missing field.
+    object - a quote with no solved coordinate rather than a missing field.
     """
     found = {}
     for leg in legs:
@@ -2105,13 +1977,12 @@ def quote_quantity(pending):
     side on it.
 
     A fill carries a quantity and never a position, and the sign is which way the desk went. The
-    quote is CLIENT paper - its legs carry the client's side - and `/book/quote` books the mirror,
-    so the desk's side is the opposite of the client's: a client who BOUGHT the structure leaves
-    the desk short it, which is a negative quantity. The reading is taken off the first leg that
-    carries a side, because a structure's legs are one trade and its container is what was dealt.
+    quote is CLIENT paper and `/book/quote` books the mirror, so the desk's side is the opposite: a
+    client who bought the structure leaves the desk short it. Read off the first leg carrying a
+    side, a structure's legs being one trade.
 
-    A quote with no notional and a quote with no sided leg both answer None, which `spine_fill`
-    turns into a named refusal rather than a guess - a quantity nobody stated is not a quantity.
+    A quote with no notional or no sided leg answers None, which `spine_fill` turns into a named
+    refusal rather than a guess.
     """
     quoted = pending.get('quote') or {}
     notional = (quoted.get('params') or {}).get('notional')
@@ -2122,20 +1993,15 @@ def quote_quantity(pending):
 
 
 def spot_failure():
-    """The remembered live-spot failure while it is still believed, or None.
-
-    Read before every attempt: a dead terminal is learned ONCE and costs the next half-minute of
-    quotes nothing at all, which is the whole difference between a feature and a two-second tax on
-    every price a desk asks for.
-    """
+    """The remembered live-spot failure while it is still believed, or None. Read before every
+    attempt, so a dead terminal is learned once rather than costing every quote its timeout."""
     stamp, note = _SPOT_FAILURE
     return note if note is not None and time.monotonic() - stamp < SPOT_BACKOFF_SECONDS else None
 
 
 def remember_spot_failure(note):
-    """Remember a live-spot failure that REACHED the terminal - only those. A home with no map or a
-    pair the map never verified costs a stat and a dict lookup, and the home a note names can change
-    between two quotes, so remembering those would buy nothing and make the note lie."""
+    """Remember a live-spot failure that REACHED the terminal, and only those: a missing map costs a
+    stat and a dict lookup, and the home it names can change between two quotes."""
     global _SPOT_FAILURE
     _SPOT_FAILURE = (time.monotonic(), note)
 
@@ -2143,19 +2009,15 @@ def remember_spot_failure(note):
 def live_spot_crosses(base_currency, currencies, host=None, port=None):
     """`({PAIR: cross}, None)` off this workstation's terminal, or `(None, note)` naming why not.
 
-    ONE request for every pair at once, through the same `derivus_bloomberg` machinery a tick
-    fetches a surface with: the security map says which verified ticker prices each currency
-    against the book's own base, and the session's tolerant reader answers them together.
-    `derivus_bloomberg` is imported HERE for the reason `BloombergJob` imports it inside `run_job` -
-    blpapi lives only on a terminal workstation, and the service serves every other verb on machines
-    that have never heard of it.
+    ONE request for every pair at once, through the `derivus_bloomberg` machinery a tick fetches a
+    surface with: the security map says which verified ticker prices each currency against the
+    book's own base. Imported HERE for the reason `BloombergJob` imports it inside `run_job`.
 
-    An unprovisioned home, a missing blpapi, a pair the map never verified: all of them end as a
-    named note, never as an error and never as provisioning - verifying a workstation's vocabulary
-    is minutes of terminal time and a person's act, exactly as the metronome has it.
+    An unprovisioned home, a missing blpapi, a pair the map never verified: all end as a named
+    NOTE, never as an error and never as provisioning.
 
-    `host`/`port` are the session's own endpoint arguments threaded through rather than hard-coded,
-    so a workstation whose Desktop API is not on the default socket reaches this one seam too.
+    `host`/`port` are the session's own endpoint arguments threaded through, so a workstation whose
+    Desktop API is not on the default socket reaches this seam too.
     """
     remembered = spot_failure()
     if remembered is not None:
@@ -2185,7 +2047,7 @@ def live_spot_crosses(base_currency, currencies, host=None, port=None):
     try:
         from derivus_bloomberg.session import BloombergSession
         # the connect is bounded as tightly as the request: a terminal that is not listening spends
-        # its whole budget in the socket, where `timeout_ms` alone would never reach
+        # its budget in the socket, where `timeout_ms` alone would never reach
         endpoint = {name: value for name, value in (('host', host), ('port', port))
                     if value is not None}
         with BloombergSession(timeout_ms=SPOT_TIMEOUT_MS, connect_timeout_ms=SPOT_TIMEOUT_MS,
@@ -2203,11 +2065,9 @@ def patch_live_spot(document, params):
     """This workstation's LIVE spot put onto the document a quote is about to price, and the
     account of which spot that turned out to be.
 
-    A spot is `bind='value'` data and `document` is the job's OWN copy - `/book/structure` hands
-    every job a fresh parse - so the book FILE is never written by a quote. Only the spot moves:
-    the vol surface and the curves stay the book's, because the cadence owns those and a
-    delta-quoted FX surface is meant to be read at whatever spot is standing. A spot, alone, is
-    stale within seconds of a quote being given.
+    A spot is `bind='value'` data and `document` is the job's OWN copy, so the book FILE is never
+    written by a quote. Only the spot moves - the vol surface and the curves stay the book's,
+    because the cadence owns those and a delta-quoted FX surface is read at whatever spot stands.
 
     Answers the `source`/`note` half of the outcome's `spot` block; the runner fills in the value
     it actually priced on, so the two cannot disagree.
@@ -2237,34 +2097,29 @@ class StructureJob:
     any pricing, and the pending trade is filed before the answer is published.
 
     `derivus.structures` is imported INSIDE `run_job`, the way `BloombergJob` reaches its own
-    package, so every other verb still serves on a tree whose structures module is missing. The
-    sheet writer is reached the same way and is genuinely optional - `xlsxwriter` is the `quote`
-    extra, and a desk that has not installed it gets the quote with `files['sheet_note']` naming the
-    install, never a refusal. The outcome is the whole quote rather than tables, so it rides the
-    run's own Stats under `Quote`.
+    package. The sheet writer is reached the same way and is genuinely optional - `xlsxwriter` is
+    the `quote` extra, and a desk without it gets the quote with `files['sheet_note']` naming the
+    install rather than a refusal. The outcome rides the run's Stats under `Quote`.
 
     THE DOCUMENT TRAVELS WHOLE, which is what lets the quote read its own mandate: the book's
-    `Quote Policy` block rides the same copy the legs price against, so the risk-impact half is a
+    `Quote Policy` block rides the copy the legs price against, so the risk-impact half is a
     property of the BOOK rather than of the service.
 
-    THE SPOT IS LIVE. Before the recipe runs, `patch_live_spot` puts this workstation's terminal
-    spot onto THIS job's copy of the book; the surface and the curves stay the book's, since the
-    cadence owns those. The book file is untouched either way, and the outcome's `spot` block says
-    which market was used.
+    THE SPOT IS LIVE. `patch_live_spot` puts this workstation's terminal spot onto THIS job's copy
+    before the recipe runs; the surface and curves stay the book's, the cadence owning those. The
+    book file is untouched either way and the outcome's `spot` block says which market was used.
 
     THE QUOTE IS FOR SOMEONE. `netting_set` names the client's `NettingCollateralSet` and travels
-    into `structures.quote`, which checks it against this job's own copy of the book before pricing
-    anything; the pending file carries it, and `/book/quote` books the mirror under that node.
-    `quoted_at` is written BESIDE the outcome, because the writer is the only thing that knows the
-    wall clock the approval's window is measured against.
+    into `structures.quote`, which checks it before pricing anything; the pending file carries it
+    and `/book/quote` books the mirror under that node. `quoted_at` is written beside the outcome,
+    the writer being the only thing that knows the clock the approval's window is measured against.
 
-    A QUOTE PINS TWO HASHES, under a spine home. They are the BOOK's - taken off the document as it
-    was read, before the live spot lands on this job's copy - because the approval asks whether the
-    market and the book this trade would LAND against have moved; which spot the legs were struck on
-    is answered under `spot`. The pair goes into the pending file under `pinned` and into the record
-    as `quote_filed`, which also carries what was solved, the edge the desk took and, where a
-    salesperson relayed one, what the client asked for, in a sealed body that a destroyed class key
-    erases. With no home configured the pending file is byte for byte the file it always was.
+    A QUOTE PINS TWO HASHES under a spine home. They are the BOOK's, taken before the live spot
+    lands on this copy, because the approval asks whether the market and book this trade would LAND
+    against have moved; which spot the legs were struck on is answered under `spot`. The pair goes
+    into the pending file under `pinned` and into the record as `quote_filed`, which also carries
+    what was solved, the edge taken and any relayed client ask, in a sealed body a destroyed class
+    key erases. With no home the pending file is byte for byte what it always was.
     """
 
     def __init__(self, document, structure, params, netting_set=None, request=None):
@@ -2337,28 +2192,24 @@ def book_structure(request: dict):
     priced and the solved ones solved.
 
     The recipe runs against the book's market data on an in-memory copy - the book file never
-    moves, because a quote is not a trade. The SPOT on that copy is this workstation's live one
-    when the terminal is up, and the book's last ticked one with a named reason when it is not;
-    the surface and the curves are always the book's, and the outcome's `spot` block says which
-    market the legs were struck on. What it DOES write is the pending trade:
-    `DV_HOME/tmp/<quote_id>.json` carries the quote, the composed deal and `quoted_at` - when the
-    quote was given, in UTC, which is what a firm window is measured from - and a `.xlsx` sheet
-    lands beside it when the `quote` extra is installed. `/book/quote` with that id is the
-    approval.
+    moves, a quote not being a trade. The SPOT on that copy is this workstation's live one when the
+    terminal is up and the book's last ticked one with a named reason when it is not; the surface
+    and curves are always the book's, and the outcome's `spot` block says which. What it DOES write
+    is the pending trade: `DV_HOME/tmp/<quote_id>.json` carries the quote, the composed deal and
+    `quoted_at`, with a `.xlsx` sheet beside it when the `quote` extra is installed.
 
     `netting_set` is WHO the quote is for: the Reference of a `NettingCollateralSet` already in the
-    book, where a client's counterparty and CSA are declared. It is checked HERE, against the book
-    as it stands, and an unknown one refuses 422 naming the sets the book holds - so a salesperson
-    finds out with the client still on the phone. Omitting it books the approval at the root.
+    book. Checked HERE against the book as it stands, and an unknown one refuses 422 naming the
+    sets the book holds, so a salesperson finds out with the client still on the phone. Omitting it
+    books the approval at the root.
 
-    Answers `{result_id, status}` exactly like `/execute`: `/results/{result_id}` carries the outcome
-    under `stats.Quote` when it is done, files and all. The id names the ACT rather than the numbers
-    - two identical asks are two quotes, never one coalesced result.
+    Answers `{result_id, status}` like `/execute`; the outcome arrives under `stats.Quote`. The id
+    names the ACT rather than the numbers, so two identical asks are two quotes.
 
-    THE LANE IS STANDING, and it is the one verb here that is: a quote's solve is a run a fact is
-    about to cite, and the fact is the quote itself. Under a spine home this files `quote_filed`,
-    pinning the book's plan and values hashes beside the solved coordinates and the edge. `request`
-    is optional and is what the CLIENT ASKED FOR, relayed: free text, filed inside the sealed body.
+    THE LANE IS STANDING, the one verb here that is: a quote's solve is a run a fact is about to
+    cite, and the fact is the quote itself. Under a spine home this files `quote_filed`, pinning
+    the book's plan and values hashes beside the solved coordinates and the edge. `request` is
+    optional and is what the CLIENT ASKED FOR, relayed - free text, filed in the sealed body.
     """
     from . import structures
 
@@ -2368,8 +2219,7 @@ def book_structure(request: dict):
         raise HTTPException(422, 'a quote names the structure it prices')
     params = request.get('params', {})
     netting_set = request.get('netting_set')
-    # the client is validated on THIS thread: a quote runs on a worker, and a 422 a salesperson can
-    # read beats an `error` status they have to poll for and then decode
+    # validated on THIS thread: a 422 a salesperson can read beats an `error` status to poll for
     try:
         structures.check_netting_set(document, netting_set)
     except ValueError as error:
@@ -2379,8 +2229,7 @@ def book_structure(request: dict):
                               'netting_set': netting_set, 'at': time.perf_counter()})
     submitted = Job(result_id, StructureJob(document, structure, params, netting_set,
                                             request.get('request')), {}, spine.STANDING)
-    # a quote is base valuations under the hood - light, so a salesperson's ask jumps every
-    # XVA set still waiting rather than draining behind a whole-book recalc
+    # base valuations under the hood, so a salesperson's ask jumps every XVA set still waiting
     return {'result_id': result_id,
             'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
 
@@ -2393,43 +2242,33 @@ def book_quote(request: dict):
     writes nothing and reads `{written: False, refused: [...]}` in the identical wording.
 
     The market may have moved since the quote was given, so the validation is against the book as
-    it is NOW rather than as it was quoted - an approval is a booking, and a booking is refused on
-    what it would land in. The file is not deleted: what was quoted, at what market, under what
-    id, is why the book carries what it carries.
+    it is NOW: an approval is a booking, and a booking is refused on what it would land in. The
+    file is not deleted - what was quoted, at what market, is why the book carries what it carries.
 
-    What books is the MIRROR of the pending deal: the quote is client paper and the book holds the
-    bank's position, so the approval is where the side flips - `structures.mirror`, the same verb
-    the risk-impact step prices the book-plus-candidate through, so the risk measured and the trade
-    booked cannot disagree by a sign. The file keeps the client frame it was quoted in.
+    What books is the MIRROR of the pending deal, `structures.mirror` being the verb the
+    risk-impact step also prices through, so the risk measured and the trade booked cannot disagree
+    by a sign. The file keeps the client frame it was quoted in.
 
-    WHERE it books is the quote's own `netting_set`: the mirror goes in under that node through
-    `deal_edit`'s `parent_reference`, so a client's trade lands inside the subtree its CVA is
-    projected over. A quote that named no set books at the root. The set is re-read off the book
-    HERE, and one that has been closed refuses in `splice_deal`'s own wording rather than silently
-    falling back to the root.
+    WHERE it books is the quote's own `netting_set`, through `deal_edit`'s `parent_reference`, so a
+    client's trade lands inside the subtree its CVA is projected over. A quote that named no set
+    books at the root; a set that has been closed refuses in `splice_deal`'s own wording.
 
     THE MODEL BOOKS WITH THE TRADE. A quote may have priced its legs under a spot model the book's
-    own `Valuation Configuration` does not name (`structures.spot_model` pins Heston-Nandi on the
-    QUOTE's copy wherever the book carries the calibration), and that copy is thrown away when the
-    quote is answered. The pending file records the pin (`valuation_configuration`) and it is merged
-    into the book HERE, inside the same edit closure the deal is spliced by: one lock, one
-    validation, one atomic write. A quote that pinned nothing merges nothing; a pin whose parameters
-    the book no longer carries REFUSES 422 rather than booking a switch that would skip the deal at
-    the next valuation.
+    `Valuation Configuration` does not name, and that copy is thrown away when the quote is
+    answered - so the pending file records the pin and it is merged HERE, inside the same edit
+    closure the deal is spliced by. A pin whose parameters the book no longer carries REFUSES 422
+    rather than booking a switch that would skip the deal at the next valuation.
 
-    A QUOTE IS FIRM FOR A WINDOW. Where the BOOK declares a `Quote Policy`, its `firm_seconds` is
-    how long an approval may stand on the price that was given, and an older pending quote is
-    refused 422 naming its age, the window and the remedy. A book declaring no policy holds every
-    quote approvable for ever. A pending file carrying no `quoted_at` is treated as AGED when a
-    window applies, and the refusal says so: an unknown age is not an age inside the window.
+    A QUOTE IS FIRM FOR A WINDOW. Where the BOOK declares a `Quote Policy`, `firm_seconds` is how
+    long an approval may stand on the price given, and an older quote is refused 422 naming its
+    age, the window and the remedy. No policy holds every quote approvable for ever. A pending file
+    carrying no `quoted_at` is treated as AGED: an unknown age is not an age inside the window.
 
-    AND UNDER A SPINE HOME, FIRM IN TWO MORE DIMENSIONS. A quote that pinned the book's plan and
-    values hashes is checked against the hashes standing NOW, on each dimension separately: the
-    market moved or its pin aged (VALUES), the book moved or its pin aged (PLAN). Each refusal names
-    its own dimension and its own remedy - a ticked market wants a re-quote, a moved book wants the
-    charge re-solved against the portfolio this trade would now join - and an approval passes all
-    three checks or none. The approval then appends the `fill` for the mirror BEFORE the file is
-    written, under the quote id as its execution reference. With no home configured this is inert.
+    AND UNDER A SPINE HOME, FIRM IN TWO MORE DIMENSIONS: a quote that pinned the book's plan and
+    values hashes is checked against those standing NOW, each dimension separately, each refusal
+    naming its own remedy - a ticked market wants a re-quote, a moved book wants the charge
+    re-solved. An approval passes all three checks or none. It then appends the `fill` for the
+    mirror BEFORE the file is written, under the quote id as its execution reference.
     """
     live = live_book()
     quote_id = request.get('quote_id')
@@ -2446,8 +2285,8 @@ def book_quote(request: dict):
         pending = json.load(handle)
 
     from . import structures
-    # the window is read off the BOOK, not off the quote: the mandate is the desk's and it is the
-    # desk's as it stands now, the same way the validation is against the book as it is now
+    # the window is read off the BOOK as it stands now, not off the quote: the mandate is the
+    # desk's, the same way the validation is against the book as it is now
     document, _ = live.read()
     try:
         policy = structures.read_policy(document)
@@ -2465,7 +2304,7 @@ def book_quote(request: dict):
                                          quote_id, structures.QUOTE_POLICY, firm))
         if age > firm:
             # the age to a tenth: a zero-second window refused at 0.1s must name an age a desk can
-            # tell from the window it broke, and rounding both to 0 would report neither
+            # tell from the window it broke
             raise HTTPException(422, 'quote {} was given {:.1f}s ago and {} holds a quote firm '
                                      'for {:.0f}s - re-quote: the market has had {:.1f} seconds '
                                      'to move'.format(quote_id, age, structures.QUOTE_POLICY,
@@ -2485,8 +2324,8 @@ def book_quote(request: dict):
             structures.pin_models(book, pending['deal'], pinned)
             outcome = dict(outcome, valuation_configuration=pinned)
         if written:
-            # the event first, then the file - `spine_fill`'s own law, and the ticket the fill is
-            # made the same fact by is the QUOTE ID: a quote is an act, and its id names that act
+            # the event first, then the file - `spine_fill`'s law - with the QUOTE ID as the
+            # execution reference that makes a retry the same fact
             outcome = dict(outcome, **spine_fill(
                 book, outcome['deal_path'], quote_quantity(pending), quote_id,
                 request.get('actor')))
@@ -2503,14 +2342,11 @@ def book_quote(request: dict):
 def blank_book():
     """A blank book: the job skeleton's envelope and market data with NO deals, dated today.
 
-    A fresh desk has no job file, so `--book` pointed at a path that does not exist starts one -
-    empty enough to mean nothing, furnished enough to work: the skeleton's USD factors stay so
-    the first booking has market data to validate against (the missing-factor delta would refuse
-    every deal on truly bare market data), and the dates are stamped to today because a starting
-    point is authored at creation, unlike the skeleton itself, whose fixed date is a gated
-    contract. The two bootstrapper families are declared for the same reason: a fresh desk's
-    first market tick (`/book/bloomberg` provisioning included) must find something able to turn
-    quotes into price factors, or first use dead-ends at a 422 no newcomer can act on."""
+    Empty enough to mean nothing, furnished enough to work. The skeleton's USD factors stay so the
+    first booking has market data to validate against (bare market data would refuse every deal on
+    the missing-factor delta); the dates are stamped to today, unlike the skeleton's own fixed one,
+    which is a gated contract; and the two bootstrapper families are declared so a fresh desk's
+    first market tick finds something able to turn quotes into price factors."""
     import datetime
 
     document = json.loads(json.dumps(JOB_SKELETON))
@@ -2535,13 +2371,12 @@ def open_book(path):
 def mount_ui(application, directory):
     """Serve a built web UI at `/ui`, and say whether there was one to serve.
 
-    The UI is a CLIENT of this service, optional to the core library, and its source lives
-    outside the package - so the mount is a flag, never an import-time assumption. A release
-    wheel carries the BUILT UI as package data (`derivus/_ui`, staged by the publish pipeline),
-    which `main` offers as the default directory when `--ui` is not given; a source tree without
-    a build simply serves no UI. `html=True` makes `/ui/` serve `index.html`; it does NOT fall
-    back to it for an unknown subpath, so the SPA navigates by tab state and hash rather than by
-    URL path - a router would ship deep links that 404 on reload.
+    The UI is a CLIENT of this service and its source lives outside the package, so the mount is a
+    flag rather than an import-time assumption. A release wheel carries the built UI as package
+    data (`derivus/_ui`), which `main` offers as the default; a source tree without a build serves
+    none. `html=True` makes `/ui/` serve `index.html` but does NOT fall back to it for an unknown
+    subpath, so the SPA navigates by tab state rather than URL path - a router would ship deep
+    links that 404 on reload.
     """
     import os
     from fastapi.staticfiles import StaticFiles
@@ -2603,8 +2438,8 @@ def main():
                          '--no-book serves none')
         if args.tick <= 0:
             parser.error('--tick {:g} is not an interval'.format(args.tick))
-        # a ticker that could never tick is a MISCONFIGURATION, so it is a usage error at startup
-        # rather than a warning every beat from a thread nobody is reading
+        # a ticker that could never tick is a misconfiguration: a usage error at startup rather
+        # than a warning every beat from a thread nobody is reading
         from derivus_bloomberg.errors import BloombergUnavailable
         from derivus_bloomberg.session import blpapi_module
         try:

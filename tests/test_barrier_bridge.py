@@ -3,22 +3,18 @@
 `pv_barrier_option` prices the remaining life with Reiner-Rubinstein, which assumes CONTINUOUS
 monitoring. The historical path state asked only whether the spot sat beyond the barrier ON a grid
 date, so every path that crossed and came back counted as still alive - a state inconsistent with
-the formula being applied to it, and one that got worse the coarser the grid.
+the formula applied to it, and worse the coarser the grid.
 
-The gate needs no external reference. Set r = q = 0 and the simulation drift to match, and the
-option value is a MARTINGALE: E[MTM_t] must equal the t=0 value at every t, on every grid. The t=0
-row is the pure closed form because no history has accumulated yet, so the test compares the
-pricer against itself and still pins the thing that was wrong. Endpoint-only survival fails it by
-+12.8% at 3m and +26.8% at 9m on the quarterly grid, and the error moves with the grid, which is
-what `test_bridge_is_grid_independent` reads directly.
+The gate needs no external reference: at r = q = 0 with the simulation drift to match, the option
+value is a MARTINGALE, so E[MTM_t] equals the t=0 value at every t on every grid, and the t=0 row
+is the pure closed form because no history has accumulated. Endpoint-only survival fails it by
++12.8% at 3m and +26.8% at 9m on the quarterly grid, moving WITH the grid.
 
-A MARTINGALE STATISTIC IS AN EXPECTATION AND COSTS PATHS. Every gate here that reads one states
-the seed distribution it was measured over, because a tolerance set against a single seed is a
-coin toss dressed as a threshold - `test_discrete_barrier_is_observed_only_on_its_own_dates` was
-exactly that, and it is gone: its statistic had a 1.46% seed sd against a 1% tolerance and failed
-23 of 50 seeds. Where a deterministic ledger says the same thing it is used INSTEAD of the
-expectation, and where the expectation is the only route the paths were raised until the noise
-sat clear of the defect. No tolerance in this file was widened to make it green.
+A MARTINGALE STATISTIC IS AN EXPECTATION AND COSTS PATHS, so every gate reading one states the
+seed distribution it was measured over: a tolerance set against a single seed is a coin toss
+dressed as a threshold. Where a deterministic LEDGER says the same thing it is used instead, and
+where the expectation is the only route the paths were raised until the noise sat clear of the
+defect. No tolerance here was widened to make it green.
 """
 import os
 import sys
@@ -44,9 +40,9 @@ SPOT = 100.0
 
 
 def _cfg():
-    """Down-and-out call, continuously monitored, in a zero-rate zero-dividend world so that the
-    value is a martingale under the simulation measure. The equity is driven by GBM, whose
-    lognormal interval law is what publishes a bridge variance rate at all."""
+    """Down-and-out call, continuously monitored, in a zero-rate zero-dividend world so the value is
+    a martingale under the simulation measure. GBM, whose lognormal interval law is what publishes
+    a bridge variance rate at all."""
     field = {
         'Object': 'EquityBarrierOption', 'Reference': 'BARR1', 'Currency': 'USD',
         'Payoff_Currency': 'USD', 'Equity': 'EQ', 'Dividends': 'EQ', 'Discount_Rate': 'USD',
@@ -70,8 +66,8 @@ def _cfg():
                               'Surface': utils.Curve([], [[m, t, VOL] for m in (0.8, 1.0, 1.2)
                                                           for t in (0.02, 2.0)])},
     }
-    # Drift 0 with r = q = 0 makes the SIMULATED spot a martingale, which is what lets the option
-    # value be one too - the pricing measure and the simulation measure have to be the same one.
+    # drift 0 with r = q = 0 makes the SIMULATED spot a martingale, which is what lets the option
+    # value be one: the pricing measure and the simulation measure have to be the same
     c.params['Price Models'] = {'GBMAssetPriceModel.EQ': {'Vol': VOL, 'Drift': 0.0}}
     c.params['Model Configuration'].append('EquityPrice', (), 'GBMAssetPriceModel')
     c.deals = {'Attributes': {'Reference': 'test', 'Tag_Titles': ''},
@@ -102,9 +98,9 @@ def _profile(grid, seed=1, batch=8192, deal=None, mcmc=None):
 
 
 def _cva(spot, deal, gradient, batch=4096, mcmc=None):
-    """CVA, and its AAD gradient when asked for. A counterparty is what gives the barrier a
-    sensitivity worth measuring: the exposure profile is where the touch state accumulates, which
-    base valuation - one deal-time row, no interval, no history - structurally cannot show."""
+    """CVA and its AAD gradient when asked. A counterparty is what gives the barrier a sensitivity
+    worth measuring: the exposure profile is where the touch state accumulates, which base
+    valuation - one deal-time row, no interval, no history - structurally cannot show."""
     c = _cfg()
     c.params['Price Factors']['EquityPrice.EQ']['Spot'] = spot
     c.params['Price Factors']['SurvivalProb.CPTY'] = {
@@ -125,8 +121,8 @@ def _cva(spot, deal, gradient, batch=4096, mcmc=None):
 
 
 def _analytic_touch_probability():
-    """P(the minimum of the GBM breaches the barrier before expiry), by reflection. Independent of
-    derivus - the whole point is that the pricer is checked against something it did not produce."""
+    """P(the minimum of the GBM breaches the barrier before expiry), by reflection - independent of
+    derivus, which is the point."""
     import math
     mu, sig, b = -0.5 * VOL ** 2, VOL, math.log(90.0 / SPOT)
     phi = lambda x: 0.5 * math.erfc(-x / math.sqrt(2.0))
@@ -134,15 +130,15 @@ def _analytic_touch_probability():
 
 
 def test_variance_rate_reproduces_the_processes_own_variance():
-    """The rate is only exact if it is the SIMULATION variance. A process discretises the scenario
-    grid into per-step vols; a rate against elapsed time must sum back to the same total, or the
-    bridge is being handed a vol that means something else - the pricing implied vol for the
-    option's remaining life is exactly such a quantity, carrying the same units."""
+    """The rate is only exact if it is the SIMULATION variance: a process discretises the scenario
+    grid into per-step vols and a rate against elapsed time must sum back to the same total, or the
+    bridge is handed a vol meaning something else - the pricing implied vol for the remaining life
+    is exactly such a quantity, carrying the same units."""
     from derivus.stochasticprocess import GBMAssetPriceModel
     import types
 
-    # UNEVEN scenario dates, and they must be the SCENARIO set - a single date leaves dt all zero,
-    # which makes both sides of the comparison zero and the assertion true for any rate at all.
+    # UNEVEN scenario dates, and the SCENARIO set: a single date leaves dt all zero, which makes
+    # both sides zero and the assertion true for any rate at all
     dates = {BASE + pd.Timedelta(days=d) for d in (0, 30, 90, 365)}
     grid = utils.TimeGrid(dates, dates, dates)
     grid.set_base_date(BASE)
@@ -160,22 +156,15 @@ def test_variance_rate_reproduces_the_processes_own_variance():
                                         ('0d 1m(1m)', 'monthly'),
                                         ('0d 1w(1w)', 'weekly')])
 def test_bridge_is_grid_independent(grid, label):
-    """With r = 0 the value is a martingale, so every date on every grid must report the t=0
-    price. The endpoint-only state fails this by +12.8% at 3m and +26.8% at 9m on the quarterly
-    grid, and by a DIFFERENT amount on each grid - a barrier's exposure profile should not depend
-    on how often the engine happens to look at it.
+    """With r = 0 the value is a martingale, so every date on every grid reports the t=0 price. The
+    endpoint-only state fails by +12.8% at 3m and +26.8% at 9m on the quarterly grid, and by a
+    DIFFERENT amount on each grid.
 
-    THE PATHS WERE RAISED, THE TOLERANCE WAS NOT. At the 8192 this ran at, the same statistic read
-    max 6.19% / 7.08% / 6.31% (quarterly / monthly / weekly) over seeds 1-20 and tripped its own 4%
-    on 1, 2 and 3 of the first 12 - it was pinned to seed 1, not proven. At 65536 the readings are
-    mean 0.72% / 0.84% / 0.98%, max 1.15% / 1.64% / 2.28% over the same 20 seeds, so 4% is 1.8x
-    above the worst noise and the defect sits 2.7x-7.2x above 4%: endpoint-only survival (the
-    Brownian-bridge variance forced falsy in `utils.barrier_touched`) reads 28.60% / 18.87% /
-    10.96% at seed 1. The cost is ~1.1s a grid.
-
-    MUTATIONS: endpoint-only survival => KILLED on all three grids. Note the defect SHRINKS as the
-    grid refines - the endpoint test misses less when it looks more often - so the weekly grid is
-    the binding rung and is what the batch was sized on."""
+    THE PATHS WERE RAISED, THE TOLERANCE WAS NOT. At 8192 the statistic read max 6.19-7.08% over
+    seeds 1-20 and tripped its own 4% on several - pinned to seed 1, not proven. At 65536 the max
+    is 1.15-2.28%, so 4% is 1.8x above the worst noise while the defect reads 10.96-28.60%. The
+    defect SHRINKS as the grid refines, so weekly is the binding rung and what the batch was sized
+    on. MUTATION: endpoint-only survival KILLED on all three grids."""
     mtm = _profile(grid, batch=65536)
     t0 = mtm.values[0].mean()
     assert t0 > 0.0, 'a bought down-and-out call should be worth something at inception'
@@ -186,11 +175,10 @@ def test_bridge_is_grid_independent(grid, label):
 
 
 def test_one_touch_paid_at_expiry_holds_its_value_until_then():
-    """A one-touch paying at EXPIRY owes the nominal on every path that has touched, so between
-    the touch and expiry such a path holds a CERTAIN claim worth its discounted value. That value
-    was carried as zero: a touched deal reported nothing for the rest of its life and then jumped
-    to the nominal on the last date. With r=0 the correct value is a martingale, and equals the
-    nominal times the touch probability at t=0."""
+    """A one-touch paying at EXPIRY owes the nominal on every touched path, so between the touch and
+    expiry such a path holds a CERTAIN claim worth its discounted value. That was carried as zero:
+    a touched deal reported nothing for the rest of its life and jumped to the nominal on the last
+    date. At r=0 the value is a martingale equal to the nominal times the t=0 touch probability."""
     mtm = _profile('0d 3m(3m)', deal=dict(ONE_TOUCH, Payment_Timing='Expiry'))
     v = mtm.values.mean(axis=1)
     expected = 100.0 * _analytic_touch_probability()
@@ -201,9 +189,9 @@ def test_one_touch_paid_at_expiry_holds_its_value_until_then():
 
 
 def test_one_touch_paid_on_touch_settles_and_leaves():
-    """The counterpart, and the reason the fix above is confined to Expiry timing: paid ON touch,
-    the cash settles and the path stops carrying it, so this profile SHOULD decay. Both timings
-    must still agree at inception, since with r=0 there is nothing to discount between them."""
+    """The counterpart, and why the fix above is confined to Expiry timing: paid ON touch the cash
+    settles and the path stops carrying it, so this profile SHOULD decay. Both timings still agree
+    at inception, r=0 leaving nothing to discount between them."""
     on_touch = _profile('0d 3m(3m)', deal=dict(ONE_TOUCH, Payment_Timing='Touch'))
     at_expiry = _profile('0d 3m(3m)', deal=dict(ONE_TOUCH, Payment_Timing='Expiry'))
     v = on_touch.values.mean(axis=1)
@@ -226,17 +214,14 @@ BARRIER_DEAL = {
     (BARRIER_DEAL, 'barrier'),
     (dict(ONE_TOUCH, Payment_Timing='Expiry'), 'one_touch')])
 def test_aad_delta_matches_bump_and_reprice(deal, label):
-    """The gradient has to be the derivative of the value actually reported. Under common random
-    numbers - same seed, so the same normals, the draws depending on seed and factor ordering
-    rather than on the spot - a central difference estimates the same derivative without touching
-    the tape, so agreement is evidence and not a restatement.
+    """The gradient has to be the derivative of the value actually reported, so under common random
+    numbers a central difference estimates the same derivative without touching the tape.
 
     An INDICATOR has zero derivative almost everywhere, so the knock-out channel contributed
-    nothing and AAD reported the wrong number while looking perfectly well-behaved: measured 9-19%
-    off for the barrier and 31-44% off for the one-touch, and - the discriminating signal - the
-    ladder SCATTERED instead of converging, because shrinking the bump changes how many paths sit
-    on the far side of the jump rather than refining a limit. Carrying survival as a probability
-    gives 0.00% disagreement at 0.00% flatness."""
+    nothing and AAD reported the wrong number while looking well-behaved: 9-19% off for the barrier
+    and 31-44% for the one-touch, and - the discriminating signal - the ladder SCATTERED instead of
+    converging, shrinking the bump changing how many paths sit on the far side of the jump.
+    Carrying survival as a probability gives 0.00% at 0.00% flatness."""
     aad = _cva(SPOT, deal, gradient=True)
     assert abs(aad) > 1e-6, 'a barrier with a live knock-out should have a spot delta'
     r = ladder(price=lambda s: _cva(s, deal, False), aad=aad, base=SPOT,
@@ -249,8 +234,8 @@ MONTHLY_BARRIER = [BASE + pd.Timedelta(days=d) for d in range(30, 366, 30)]
 
 
 def _cashflow_run(deal_overrides, batch, mcmc, grid='0d 1m(1m)'):
-    """One discrete-barrier run with its cash ledger, returned as the FRAMES rather than a total:
-    which row a settlement lands on is itself under test, and a sum over rows cannot see it."""
+    """One discrete-barrier run with its cash ledger, as FRAMES rather than a total: which row a
+    settlement lands on is itself under test, and a sum over rows cannot see it."""
     c = _cfg()
     c.deals['Deals']['Children'] = [{'Instrument': construct_instrument(
         dict(BARRIER_DEAL, **deal_overrides), {})}]
@@ -262,7 +247,7 @@ def _cashflow_run(deal_overrides, batch, mcmc, grid='0d 1m(1m)'):
 
 
 def _totals(deal_overrides, batch=512, mcmc=128):
-    """Inception price and every currency's settled cash, for the gates that only need magnitudes."""
+    """Inception price and every currency's settled cash, for the gates that need magnitudes."""
     mtm, cf = _cashflow_run(deal_overrides, batch, mcmc)
     return (mtm.values.mean(axis=1)[0], sum(float(np.nansum(v.values)) for v in cf.values()))
 
@@ -274,63 +259,34 @@ def _rebate_run(rebate, units):
 
 @pytest.mark.parametrize('grid', ['0d 1m(1m)', '0d 2d 1w(1w) 3m(1m)'])
 def test_discrete_barrier_is_observed_only_on_its_own_dates(grid):
-    """A DISCRETELY monitored barrier is observed on the dates its terms name, and nowhere else.
+    """A DISCRETELY monitored barrier is observed on the dates its terms name and nowhere else.
+    `pv_discrete_barrier_option` latched the crossing with a cumsum over every MTM row of each
+    block, so it monitored 37 reporting rows against 12 barrier dates - knocking scenarios out on
+    dates the deal never observes, monitoring expiry, and missing the first barrier date entirely.
 
-    pv_discrete_barrier_option latched the crossing with a cumsum over every MTM row of each block,
-    so on this fixture it monitored 37 reporting rows against 12 barrier dates - knocking scenarios
-    out on dates the deal never observes, monitoring expiry although BarrierDates flags it -1, and
-    (because the guard tested samples passed BEFORE the block) missing the first barrier date
-    entirely while lagging one block thereafter.
+    THE STATEMENT IS DETERMINISTIC IN THE PRICER'S OWN LEDGER, which is why this is not a martingale
+    check: that statistic had a 1.46% seed sd against a 1% tolerance and failed 23 of 50 seeds. At
+    `Cash_Rebate=1.0` and `Units=1.0` the knock-out rebate is one unit of ABSOLUTE cash, so
+    `Generate_Cashflows` writes a bare 0/1 indicator carrying the same `barrier_hit` latch the
+    price is built from. Four exact facts, no expectation anywhere:
 
-    THIS GATE USED TO BE A MARTINGALE CHECK AND WAS NEVER A GATE. It read the profile mean against
-    inception at 4096 paths against a 1% tolerance; measured over 50 seeds that statistic has mean
-    +0.35%, sd 1.46%, range -3.78% to +2.98%, and |stat| > 1% on 23 of the 50. Seed 1 reads -1.40%,
-    so the file was red for a reason that had nothing to do with the pricer. Averaging seeds cannot
-    rescue it cheaply either: 8 seeds only reach sd 0.34% and cost 8 runs, against a defect of the
-    same order.
-
-    THE SAME STATEMENT IS DETERMINISTIC IN THE PRICER'S OWN LEDGER. With `Cash_Rebate=1.0` and
-    `Units=1.0` the knock-out rebate is one unit of ABSOLUTE cash per path, so `Generate_Cashflows`
-    writes a bare 0/1 indicator of "this path knocked out here", carrying the same `barrier_hit`
-    latch the price is built from. Four exact facts, no expectation anywhere:
-
-      the settled rows ARE the authored barrier dates - the anchor is the deal's own date list,
+      the settled rows ARE the authored barrier dates,
       every entry is EXACTLY 0.0 or 1.0 and a path settles at most once,
-      a knocked-out path is worth EXACTLY 0.0 on every later row (`hit_value` is zeros for a
-        knock-out) and strictly positive on every row up to and including its knock-out,
+      a knocked-out path is worth EXACTLY 0.0 on every later row and strictly positive on every row
+        up to and including its knock-out,
       and it is owed EXACTLY 0.0 by the terminal settle.
 
-    The last two are what stop this being a cash-date check: they read `row_barrier_hit`, the mask
-    that prices the block, and tie it to the cash. Both grids assert bit-identically, which is the
-    grid-independence the martingale statistic was groping at - 24 rows against 12 barrier dates on
-    one, 37 against 12 on the other. Nothing here is an expectation, so nothing here is seed-luck:
-    measured, seeds 1-10 pass on both grids, where the statistic it replaces failed 23 of 50.
+    The last two stop this being a cash-date check: they read `row_barrier_hit`, the mask that
+    prices the block, and tie it to the cash. Both grids assert bit-identically.
 
-    MUTATIONS (in-process source rewrite of the pricer; the ledger is read at 2048 paths), each
-    verdict below is this test failing on both grids:
-      the historical cumsum-every-mtm-row form, guard on the observations passed BEFORE the block
-        => KILLED on the DATE assertion: 2024-07-28, the first barrier date, never settles. With
-        the dates assertion lifted it goes on to fail the value assertion too (1657 cells). Its
-        profile statistic reads -3.54%, inside one seed sd of the -2.79% the old prose quoted -
-        which is the measure of what that tolerance was worth.
-      the settle moved one row earlier => KILLED on dates on both grids, and it also leaves all
-        1504 knocked-out paths carrying value after their own settle
-      `newly_hit` dropped, so a crossed path re-settles on every later date => KILLED, 12 per path
-      the PRICE mask alone cumsummed over the block, cash ledger untouched => KILLED on the VALUE
-        assertion (1678 cells monthly, 5007 fine) - this is the mutant that proves the mtm half is
-        load-bearing rather than decorative, and its profile statistic moves only -1.40% -> -1.97%,
-        0.4 of one seed sd, so the old gate could not have seen it at any tolerance
-      the OSS skipping the first observation of its strip => KILLED (18 cells / 6 cells)
-      CONTROL, the latch's `|` commuted => SURVIVED, nothing moves
-      LIMITS OF THE GATE, both SURVIVED and both for reasons worth knowing: monitoring expiry at
-        the latch (`BarrierDates[i] != 0`) is INERT in the current shape - the last block's
-        `barrier_hit` has no later block to inform and its settle is excluded as the terminal row,
-        so that third of the original defect is unobservable here and needed the cumsum form to
-        bite. Monitoring expiry INSIDE the OSS (`isBarrierDate_block[j] != 0`) is invisible by
-        construction: this gate reads the outer latch's date structure and the exact zero/positive
-        pattern it produces, and an inner-fixing flag moves magnitudes, not either of those.
-        Magnitude is `test_discrete_monitoring_prices_to_an_independent_simulation`'s job - which
-        survives this one too, for its own fixture reason, recorded there."""
+    MUTATIONS, each KILLED on both grids: the historical cumsum form (the first barrier date never
+    settles), the settle moved one row earlier, `newly_hit` dropped so a crossed path re-settles,
+    the PRICE mask alone cumsummed with the ledger untouched (which is what proves the mtm half
+    load-bearing - its profile statistic moves 0.4 of one seed sd), and the OSS skipping its
+    strip's first observation. LIMIT: monitoring expiry SURVIVES, at the latch because the last
+    block has no later block to inform, and inside the OSS because that moves magnitudes rather
+    than the date structure this reads - which is
+    `test_discrete_monitoring_prices_to_an_independent_simulation`'s job."""
     mtm, cf = _cashflow_run(dict(Barrier_Price=95.0, Cash_Rebate=1.0, Units=1.0,
                                  Barrier_Dates=MONTHLY_BARRIER), 2048, 128, grid)
     assert list(cf) == ['USD'], f'one currency, so the USD frame IS the ledger: {list(cf)}'
@@ -364,26 +320,19 @@ def test_discrete_barrier_is_observed_only_on_its_own_dates(grid):
 
 
 def test_discrete_monitoring_prices_to_an_independent_simulation():
-    """What the martingale statistic could never say: the twelve observations are priced RIGHT, not
-    merely priced consistently with themselves. Inception carries no history - every scenario is
-    still alive - so this is the OSS's analytic treatment of the whole barrier strip, against a
-    simulation derivus did not produce.
+    """What the martingale statistic cannot say: the twelve observations are priced RIGHT rather
+    than consistently with themselves. Inception carries no history, so this is the OSS's analytic
+    treatment of the whole strip against a simulation derivus did not produce - 10.5m paths with
+    the terminal stub integrated in closed form, V_0 = 8.4787 +- 0.0051, against a reading of
+    8.475681 (-0.036%), deterministic in `Random_Seed` because the inner OSS draws Sobol.
 
-    REFERENCE: 10.5m paths of the same discrete down-and-out (S=K=100, H=90, sigma=25%, r=q=0,
-    twelve monthly observations on ACT_365, which is the clock the OSS's own fixings use), with the
-    five-day terminal stub past the last observation integrated in closed form rather than sampled:
-    V_0 = 8.4787 +- 0.0051. derivus reads 8.475681, i.e. -0.036%, and it is deterministic in
-    Random_Seed (identical to 6dp on seeds 1-5) because the inner OSS draws a Sobol sequence and
-    the t=0 scenario spot is the spot.
+    3e-3 is 8x the gap, and the slack is the inner QMC count's rather than the reference's: the
+    same configuration reads +0.80% at 128 simulations and -0.10% at 512, so both counts are
+    pinned and a sub-0.3% pricing error would not be seen here.
 
-    3e-3 is 8x the measured gap, and the slack is not the reference's - it is the inner QMC count's:
-    the same configuration reads +0.80% at MCMC_Simulations=128 and -0.10% at 512, so the batch and
-    the sim count are pinned and a sub-0.3% pricing error would not be seen here.
-
-    MUTATIONS: the OSS skipping the first observation of the strip => KILLED (+1.41%, 4.7x the
-    tolerance). LIMIT: the OSS monitoring expiry too (`isBarrierDate_block[j] != 0`) => SURVIVED,
-    for a fixture reason worth knowing - the barrier at 90 is BELOW the strike at 100, so a path
-    the extra observation would knock out already pays zero, and only a rebate would reveal it."""
+    MUTATION: the OSS skipping the strip's first observation KILLED at +1.41%. LIMIT: the OSS
+    monitoring expiry SURVIVES, the barrier at 90 being below the strike at 100, so a path the
+    extra observation knocks out already pays zero and only a rebate would reveal it."""
     v0 = _profile('0d 3m(3m)', batch=1024, mcmc=256,
                   deal=dict(BARRIER_DEAL, Barrier_Dates=MONTHLY_BARRIER)).values.mean(axis=1)[0]
     assert v0 == pytest.approx(8.4787, rel=3e-3), (
@@ -392,15 +341,12 @@ def test_discrete_monitoring_prices_to_an_independent_simulation():
 
 
 def test_discrete_barrier_rebate_is_paid_and_is_absolute_cash():
-    """Two defects in one field. The knock-out rebate was PRICED - sim_spot_oss accrues it, and it
-    is in the mtm of the row that knocks out - but never settled: hit_value is zero from the next
-    row on and the single cash_settle fires on the last row only, so the total settled cash was
-    bit-identical to the same deal with no rebate at all.
-
-    And it was scaled wrongly. pv_barrier_option reads Cash_Rebate as ABSOLUTE cash - it hands the
-    closed form cash_rebate/nominal and multiplies back - while everything sim_spot_oss returns is
-    scaled by nominal, so the same field on the same deal class meant Units times more cash under
-    discrete monitoring than under continuous. Doubling Units must not double a cash rebate."""
+    """Two defects in one field. The knock-out rebate was PRICED - `sim_spot_oss` accrues it into
+    the knocking row's mtm - but never settled, `hit_value` being zero from the next row on and the
+    single `cash_settle` firing on the last row only, so the settled cash was bit-identical to the
+    same deal with no rebate. And it was scaled wrongly: `pv_barrier_option` reads `Cash_Rebate` as
+    ABSOLUTE cash while everything `sim_spot_oss` returns is scaled by nominal, so one field meant
+    Units times more cash under discrete monitoring than continuous."""
     p0, c0 = _rebate_run(0.0, 1.0)
     p5, c5 = _rebate_run(5.0, 1.0)
     assert c5 - c0 > 0.0, 'the rebate is priced into the mtm but never settled'
@@ -424,20 +370,15 @@ def _digital(H, btype='Down_And_Out'):
 
 def test_digital_terminal_step_is_integrated_not_sampled():
     """A digital's payoff was an indicator on the DRAWN terminal spot, whose derivative is zero
-    almost everywhere - so the density term that is most of a digital's delta and vega never
-    reached the tape at all.
+    almost everywhere, so the density term that is most of a digital's delta and vega never reached
+    the tape. The barrier is out of reach so the outer latch never fires and this isolates the
+    terminal step: AAD reported EXACTLY zero, with the equity, vol and dividend factors absent from
+    the report rather than showing zero rows. Now 0.00% at 0.01% flatness.
 
-    The barrier is put out of reach so the outer already-hit latch never fires and this isolates
-    the terminal step. Before the fix AAD reported EXACTLY zero here, and the equity, vol and
-    dividend factors were absent from the greeks report rather than showing zero rows - a silent
-    total loss of sensitivity. Now: 0.00% against bump-and-reprice at 0.01% flatness.
-
-    NOTE the same deal WITH a live barrier still disagrees (33.7% at 9.96% flatness). That residual
-    is the outer barrier_hit latch in pv_discrete_barrier_option, a genuine jump in the value
-    function needing the boundary-flux machinery, not this terminal step - which is exactly why
-    this gate uses an unreachable barrier."""
+    The same deal WITH a live barrier still disagrees (33.7%), which is the outer `barrier_hit`
+    latch needing the boundary-flux machinery rather than this terminal step."""
     deal = _digital(1e-6)
-    # the OSS forks an inner Monte Carlo per outer path, so the outer batch stays small here
+    # the OSS forks an inner Monte Carlo per outer path, so the outer batch stays small
     kw = dict(batch=1024, mcmc=256)
     aad = _cva(SPOT, deal, gradient=True, **kw)
     assert abs(aad) > 1e-6, 'a digital must have a spot delta'
@@ -447,8 +388,8 @@ def test_digital_terminal_step_is_integrated_not_sampled():
 
 
 def test_digital_reports_its_equity_and_vol_factors():
-    """The failure mode was not a wrong number but a MISSING one: with a zero gradient the factor's
-    .grad is None and pricing.report_grad drops it, so the risk report simply had no equity row."""
+    """The failure mode was not a wrong number but a MISSING one: at a zero gradient the factor's
+    `.grad` is None and `report_grad` drops it, so the risk report had no equity row at all."""
     c = _cfg()
     c.params['Price Factors']['SurvivalProb.CPTY'] = {
         'Recovery_Rate': 0.4, 'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.4]])}
@@ -461,21 +402,19 @@ def test_digital_reports_its_equity_and_vol_factors():
             'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
             'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes'}})
     factors = {str(i[0]).split('.')[0] for i in out['Results']['grad_cva']['Gradient'].index}
-    # the surface above is authored under the PRE-TAG name and the gradient comes back tagged:
-    # `resolve_factor_key` accepts the old spelling on read, and the type the resolver asked for is
-    # what the factor-keyed gradient is filed under. Both halves of the leniency, in one assertion.
+    # the surface is authored under the PRE-TAG name and the gradient comes back tagged:
+    # `resolve_factor_key` accepts the old spelling on read, and the gradient is filed under the
+    # type the resolver asked for - both halves of the leniency in one assertion
     for needed in ('EquityPrice', 'EquityPriceVol'):
         assert needed in factors, f'{needed} missing from the greeks report; got {sorted(factors)}'
 
 
 def test_a_sold_knock_out_pays_its_rebate_rather_than_receiving_it():
-    """`nominal` in the discrete pricer ALREADY carries Buy_Sell, unlike pv_barrier_option where
-    buy_or_sell is a separate factor. Dividing the rebate by it therefore cancelled the direction,
-    and every rebate leg came back as +cash_rebate whichever way the deal was done - a seller who
-    must PAY on knock-out booked it as a receipt, in the reported price and in the settled cash.
-
-    Buy and Sell must be exact mirror images. The original rebate gate only ever ran Buy, which is
-    why this survived it."""
+    """`nominal` in the discrete pricer ALREADY carries `Buy_Sell`, unlike `pv_barrier_option` where
+    `buy_or_sell` is a separate factor, so dividing the rebate by it cancelled the direction and
+    every rebate leg came back as +cash_rebate whichever way the deal was done - a seller who must
+    PAY on knock-out booking it as a receipt. Buy and Sell must be exact mirror images; the
+    original rebate gate only ran Buy, which is why this survived it."""
     kw = dict(Barrier_Price=95.0,
               Barrier_Dates=[BASE + pd.Timedelta(days=d) for d in range(30, 361, 30)])
     buy = np.subtract(_totals(dict(kw, Buy_Sell='Buy', Cash_Rebate=5.0)),
@@ -490,13 +429,11 @@ def test_a_sold_knock_out_pays_its_rebate_rather_than_receiving_it():
 
 
 def test_a_barrier_date_on_expiry_settles_its_rebate_once():
-    """The per-observation settle fires on every barrier date, and the single settle after the loop
-    pays the whole terminal row - which already contains that rebate, because sim_spot_oss accrued
-    it. A deal whose last barrier date IS expiry therefore paid twice, and instruments.py unions
-    Expiry_Date into the observation dates, so that is the common case rather than a corner.
-
-    pv_barrier_option guards the identical double count with `expiry[index] > 0.0`. Strike is put
-    out of reach here so the rebate is the only cash in the run."""
+    """The per-observation settle fires on every barrier date and the single settle after the loop
+    pays the whole terminal row, which already contains that rebate. A deal whose last barrier date
+    IS expiry therefore paid twice - and `instruments.py` unions `Expiry_Date` into the observation
+    dates, so that is the common case. `pv_barrier_option` guards the same double count with
+    `expiry[index] > 0.0`. The strike is out of reach, so the rebate is the only cash in the run."""
     expiry = BASE + pd.Timedelta(days=365)
     at_expiry = _totals({'Barrier_Price': 95.0, 'Cash_Rebate': 5.0, 'Strike_Price': 1e6,
                           'Barrier_Dates': [expiry]})[1]
@@ -512,25 +449,17 @@ def test_the_bridge_honours_the_monitoring_frequency(freq_days, label):
     """A discretely monitored barrier is priced by a CONTINUOUS closed form against a barrier
     shifted away from the live region (Broadie-Glasserman-Kou). The bridge was handed the RAW
     barrier while the formula three lines later priced the shifted one, so the path state monitored
-    continuously a barrier the product observes monthly, and the two disagreed about the same deal.
+    continuously a barrier the product observes monthly.
 
-    With r = q = 0 the value is a martingale at ANY monitoring frequency. Measured before the fix:
-    monthly monitoring decayed -11.58% over the profile; continuous was unaffected, which is why
-    the original gate - written at the default 0d - could not see it.
+    At r = q = 0 the value is a martingale at ANY monitoring frequency. Before the fix monthly
+    monitoring decayed -11.58% over the profile while continuous was unaffected, which is why the
+    original gate - written at the default 0d - could not see it.
 
-    Same correction as `test_bridge_is_grid_independent` and for the same reason: at 8192 this
-    statistic read max 7.08% / 6.22% / 6.55% (continuous / monthly / weekly) over seeds 1-12 and
-    tripped its own 5% on 2, 1 and 2 of them. At 65536, over seeds 1-20:
-
-        continuous  mean 0.84% max 1.64%   monthly  mean 0.74% max 1.45%   weekly  mean 0.78% max 1.51%
-
-    so 5% is 3.0x above the worst noise, and endpoint-only survival reads 18.87% / 9.31% / 13.41%
-    at seed 1 - 1.9x above the tolerance at the binding monthly rung.
-
-    Inception rises with coarser monitoring (8.485 monthly against 7.176 continuous) because fewer
-    observations means fewer chances to knock out - a second reason a frequency-blind gate is weak.
-
-    MUTATIONS: endpoint-only survival => KILLED at all three frequencies."""
+    Same path-count correction as `test_bridge_is_grid_independent`: at 65536 the worst reading
+    over seeds 1-20 is 1.64%, so 5% is 3.0x above the noise while endpoint-only survival reads
+    9.31-18.87%. Inception RISES with coarser monitoring (8.485 monthly against 7.176 continuous),
+    fewer observations meaning fewer chances to knock out. MUTATION: endpoint-only survival KILLED
+    at all three frequencies."""
     deal = dict(BARRIER_DEAL, Barrier_Monitoring_Frequency=pd.DateOffset(days=freq_days))
     v = _profile('0d 1m(1m)', deal=deal, batch=65536).values.mean(axis=1)
     drift = np.abs(v - v[0]).max() / v[0]
@@ -540,8 +469,8 @@ def test_the_bridge_honours_the_monitoring_frequency(freq_days, label):
 
 
 def test_an_unknown_payment_timing_is_refused():
-    """`Payment_Timing` has exactly two values and the pricer's closed-form chain has exactly two
-    branches - no else. A third value used to price as whatever the last branch assignment left
-    behind; it now refuses at CONSTRUCTION, before `reset` and `add_grid_dates` read the field."""
+    """`Payment_Timing` has two values and the pricer's closed-form chain has two branches, no else.
+    A third used to price as whatever the last branch assignment left behind; it refuses at
+    CONSTRUCTION now, before `reset` and `add_grid_dates` read the field."""
     with pytest.raises(ValueError, match='Payment_Timing'):
         construct_instrument(dict(ONE_TOUCH, Payment_Timing='AtMaturity'), {})

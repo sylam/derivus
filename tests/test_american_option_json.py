@@ -1,42 +1,36 @@
 """`pv_american_option` end to end, through the JSON contract and nothing else.
 
-The census names this pricer `never-called`: every equity option fixture in the repo is European,
-so `EquityOptionDeal`'s `Option_Style: 'American'` arm has never been executed by a test. It is the
-Bjerksund-Stensland trigger approximation floored at Black - a SUB-OPTIMAL exercise policy, so its
-value is a LOWER bound on the American price, and the gates below are written as bounds rather than
-as a symmetric tolerance because that is the shape of the statement that is true.
+The census names this pricer `never-called`: every equity option fixture in the repo is European. It
+is the Bjerksund-Stensland trigger approximation floored at Black - a SUB-OPTIMAL exercise policy,
+so its value is a LOWER bound on the American price, and the gates are bounds rather than a
+symmetric tolerance.
 
-THE ORACLE is a Cox-Ross-Rubinstein binomial in numpy, carried at the same cost of carry `b` the
-document implies and averaged over `n` and `n+1` steps (CRR's leading error oscillates with the
-parity of the strike's node). Nothing of the engine's is reused. Its own convergence is gated:
-n=3000 against n=8000 agrees to better than 1e-4 relative on every fixture here.
+THE ORACLE is a Cox-Ross-Rubinstein binomial in numpy at the same carry `b` the document implies,
+averaged over `n` and `n+1` steps (CRR's leading error oscillates with the strike node's parity).
+Nothing of the engine's is reused, and its convergence is gated: n=3000 against n=8000 agrees to
+better than 1e-4 relative.
 
-`b` IS THE DOCUMENT'S OWN, and it is not `r - q`: `EquityOptionDeal` reads its carry off the equity
+`b` IS THE DOCUMENT'S OWN and is not `r - q`: `EquityOptionDeal` reads its carry off the equity
 forward at `Forward_Settlement`, two business days past expiry, so `b = (r - q) * T_fwd / T`. The
-European control below reproduces Black at that carry to 6e-5 and at `r - q` only to 1e-3, which is
-how the convention is measured rather than assumed.
+European control reproduces Black at that carry to 6e-5 and at `r - q` only to 1e-3.
 
 MEASURED, eighteen fixtures over three worlds, both option types, strikes 80/100/120 on a spot of
 100 at two years:
 
-  * dominance holds everywhere - Black <= engine <= converged binomial. The tightest margin is
-    **-9.6e-7** relative (r=8% q=2%, Call, K=100, where the premium rounds to nothing), which is
-    inside the binomial's OWN convergence error, so the upper bound is asserted with that slack
-    and the slack is the number the convergence gate below measures;
-  * worst relative gap to the converged binomial **2.07%** (r=5% q=10% sigma=20%, Call, K=120),
-    where the early-exercise premium is 13.4% of the value - the gate is 3%;
+  * dominance holds everywhere - Black <= engine <= converged binomial - with a tightest margin of
+    -9.6e-7 relative, inside the binomial's OWN convergence error, so the upper bound carries that
+    slack and the convergence gate is what measures it;
+  * worst relative gap to the converged binomial 2.07%, where the early-exercise premium is 13.4%
+    of the value - the gate is 3%;
   * the premium the approximation CAPTURES is 82.3% to 99.9% of the oracle's on the nine fixtures
-    where it is material (>= 10% of value, and up to 29.0%) - the gate is 75%, and a mutant that
-    returned Black would read 0%, giving up between 3.43 and 58.0 of mark.
+    where it is material - the gate is 75%, and a mutant returning Black reads 0%.
 
-THE TWO DEGENERATE ANCHORS are exact. At `q = 0` the carry is the rate, `b < r` is false, and the
-American call IS the European - **bit-identical**, 0 ULP, which is the `(b >= r) * Black` arm. And
-a call deep enough to sit past its own exercise trigger marks **exactly** its intrinsic, which is
-the `(S >= I) * (S - K)` arm with the `first_knockout` settlement beside it.
+THE TWO DEGENERATE ANCHORS are exact: at `q = 0` the American call IS the European, bit-identical
+(the `(b >= r) * Black` arm), and a call past its own exercise trigger marks exactly its intrinsic
+(the `(S >= I) * (S - K)` arm, with the `first_knockout` settlement beside it).
 
-DEGENERACY CHECKLIST: every fixture runs a non-zero `r != q` (three worlds: 5%/10%, 8%/2%,
-5%/10% at a second vol, plus the `q = 0` anchor), both option types, and both sides of the
-early-exercise decision - the deeply American leg of each world and its near-European twin.
+DEGENERACY CHECKLIST: every fixture runs a non-zero `r != q`, both option types, and both sides of
+the early-exercise decision - the deeply American leg of each world and its near-European twin.
 """
 import json
 import math

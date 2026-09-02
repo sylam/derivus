@@ -76,15 +76,13 @@ class Factor1D(object):
     """Represents a risk factor with a term structure (1D)"""
 
     def __init__(self, param):
-        """
-        Sets up the tenor grid and the interpolation scheme.
+        """Sets up the tenor grid and the interpolation scheme.
 
-        Interpolation is normally a single scheme over the whole curve. If Near_Interpolation,
-        Near_Date and a base_date are all present, two schemes are stacked instead, split on the
-        near index: the near tenor is the day count accrual to Near_Date clipped to the tenor
-        range, and near_idx_end is its right-side insertion point less one. Each scheme is fitted
-        on its own slice of tenors/rates - the near leg on [:near_idx_end+1] (the +1 keeps the
-        near tenor itself in the near leg) and the far leg on [near_idx_end:].
+        One scheme over the whole curve, unless `Near_Interpolation`, `Near_Date` and a base_date
+        are all present: then two are stacked, split on the near index (the day count accrual to
+        `Near_Date` clipped to the tenor range, right-inserted less one). Each is fitted on its own
+        slice - the near leg on `[:near_idx_end+1]`, whose +1 keeps the near tenor in the near leg,
+        and the far leg on `[near_idx_end:]`.
         """
         self.param = param
         self.tenors = self.get_tenor()
@@ -265,12 +263,11 @@ class Factor2D(object):
     def solves_delta_surface(self):
         """Whether this block still has to run the Malz solver - a Malz surface CARRYING deltas.
 
-        `Surface_Type` says two things and only one of them is about the solver: it names the
-        MONEYNESS CONVENTION the engine reads the surface at (log(F/K), term-interpolated in total
-        variance), and it says a delta smile is the form the block was authored in. A block
-        bootstrapped by `FXVolSurfaceParameters` is the first without the second - it carries the
-        solved log-moneyness `Surface` on the pinned x-grid its plan was compiled against, and
-        re-solving here would move that grid on every tick.
+        `Surface_Type` says two things and only one is about the solver: it names the moneyness
+        convention the engine reads at (log(F/K), term-interpolated in total variance), and it says
+        a delta smile is the form the block was authored in. A block bootstrapped by
+        `FXVolSurfaceParameters` is the first without the second - it carries the solved
+        log-moneyness `Surface` on a pinned x-grid, and re-solving would move it on every tick.
         """
         deltas = self.param.get('Delta_Surface')
         return self.get_subtype()[0] == 'Malz' and deltas is not None and deltas.array.any()
@@ -289,15 +286,14 @@ class Factor2D(object):
     def malz_skew(delta, vol, T):
         """One expiry's delta smile, split into the two wings `malz_sigma` interpolates over.
 
-        THE DELTA CONVENTION the wings are indexed by: a PREMIUM-ADJUSTED FORWARD delta (a call's
-        is (K/F)N(d2), a put's -(K/F)N(-d2)), with an ATM quote that is that convention's
-        DELTA-NEUTRAL STRADDLE, K = F exp(-sigma^2 T/2) and hence |delta| = 0.5 exp(-sigma^2 T/2).
-        So +-0.5 is a LABEL rather than a delta, and is replaced here by the delta it stands for.
-        A wing missing its ATM node gets it mirrored from the other side.
+        THE DELTA CONVENTION: a premium-adjusted FORWARD delta ((K/F)N(d2) for a call), with an ATM
+        quote at that convention's delta-neutral straddle, K = F exp(-sigma^2 T/2), hence
+        |delta| = 0.5 exp(-sigma^2 T/2). So +-0.5 is a LABEL rather than a delta and is replaced
+        here by the delta it stands for. A wing missing its ATM node gets it mirrored.
 
         A smile carrying both labels at different vols quotes two ATM numbers and the +0.5 one
-        wins: it sets `delta_atm`, and hence where every other node sits. The -0.5 vol is still
-        read as that wing's node.
+        wins, setting `delta_atm` and hence where every other node sits; the -0.5 vol is still read
+        as that wing's node.
         """
         d, v = np.asarray(delta, dtype=float), np.asarray(vol, dtype=float)
         order = np.argsort(d)
@@ -325,18 +321,15 @@ class Factor2D(object):
     def malz_delta(skew, T, x, iterations=64):
         """The delta each log-moneyness x = log(F/K) resolves to, as `(delta*, is_call, bracketed)`.
 
-        The vol at x is the fixed point of sigma = skew(delta(sigma, x)): the wing is a piecewise
-        linear vol in delta, and the delta of the strike x names depends on the vol being looked
-        up. x <= sigma_atm^2 T / 2 is the call wing (K at or below the delta-neutral straddle
-        strike), and each side is bracketed by its own extreme deltas - where the fixed point
-        falls outside that bracket the wing is CLAMPED to the endpoint that misses by less, which
-        flat-extrapolates the smile beyond its widest quoted delta. Vectorised bisection over the
-        brackets, converged to their own machine precision.
+        The vol at x is the fixed point of sigma = skew(delta(sigma, x)): the wing is piecewise
+        linear in delta and the delta of the strike x names depends on the vol looked up.
+        x <= sigma_atm^2 T / 2 is the call wing, and each side is bracketed by its own extreme
+        deltas - where the fixed point falls outside, the wing is CLAMPED to the nearer endpoint,
+        which flat-extrapolates the smile beyond its widest quoted delta. Vectorised bisection.
 
-        NOT DIFFERENTIABLE: a bisection's iterates are dyadic combinations of the two bracket
-        ENDPOINTS, so a tape run through this loop reports the bracket's derivative rather than
-        the root's. A derivative twin takes the three returns and re-does the arithmetic - see
-        `FXVolSurfaceParameters.carried_sigma`.
+        NOT DIFFERENTIABLE: a bisection's iterates are dyadic combinations of the bracket
+        ENDPOINTS, so a tape through this loop reports the bracket's derivative rather than the
+        root's. `FXVolSurfaceParameters.carried_sigma` is the derivative twin.
         """
         x = np.asarray(x, dtype=float)
         sqrt_t = np.sqrt(T)
@@ -1145,26 +1138,18 @@ class HestonNandiModelParameters(Factor0D):
 class HestonNandiComponentModelParameters(Factor0D):
     """The bootstrapped COMPONENT Heston-Nandi (Christoffersen-Jacobs-Ornthanalai-Wang) parameters.
 
-    The variance splits into a long-run component $q_t$ and a short-run deviation, under the
-    risk-neutral recursions
-
-    $$h_{t+1}=q_{t+1}+\\beta(h_t-q_t)+\\alpha\\Big[(z_t-\\gamma_1\\sqrt{h_t})^2-(1+\\gamma_1^2h_t)\\Big]$$
-    $$q_{t+1}=\\omega_t+\\rho q_t+\\phi\\Big[(z_t-\\gamma_2\\sqrt{h_t})^2-(1+\\gamma_2^2h_t)\\Big]$$
-
-    Both bracketed terms are exactly centered, so the short-run deviation $h_t-q_t$ is a pure
-    AR(1) at $\\beta$ and $E_t[q_{t+k}]$ is driven by $\\omega$ alone.
+    The variance splits into a long-run component $q_t$ and a short-run deviation that is a pure
+    AR(1) at $\\beta$; the recursions and the L-curve construction are in
+    [Market Prices](market_prices.md#hestonnandi-component).
 
     THERE IS NO OMEGA FIELD: $\\omega_t=L_{t+1}-\\rho L_t$ is a function of the **L_Curve**, whose
-    ANCHORING ($q_0=L(0)$) makes $E_0[q_t]=L_t$ exactly - so L IS the model's expected long-run
-    variance path, directly comparable to the market's forward variance strip. L is
-    piecewise-linear in $t$ between its knots and flat outside them.
+    anchoring ($q_0=L(0)$) makes $E_0[q_t]=L_t$ exactly, so L is the model's expected long-run
+    variance path. L is piecewise-linear between its knots and flat outside them. AND NO Q0 FIELD:
+    $q_0$ is $L(0)$, off the curve's first knot - written at tenor 0 with value **H0**, the two
+    states held equal at the base date since no option is quoted there.
 
-    AND NO Q0 FIELD: $q_0$ is $L(0)$, read off the curve's own first knot. The curve the
-    bootstrapper writes carries an explicit knot at tenor 0 whose value is **H0** - at the base
-    date the two states are held equal, no option being quoted at zero maturity to separate them.
-
-    The knots are STRUCTURAL (the calibration ladder's own pillars); the curve's VALUES are
-    `bind='value'` leaves, so a greek flows to each fitted pillar as it does to the seven scalars.
+    The knots are STRUCTURAL (the calibration ladder's pillars); the curve's VALUES are
+    `bind='value'` leaves, so a greek flows to each fitted pillar as to the seven scalars.
     """
     fields = [
         F('Alpha', 'Float', default=0, bind='value',
@@ -1485,19 +1470,17 @@ class InterestYieldVol(Factor3D):
     def displacement(self):
         """This surface's shifted-lognormal displacement, in the STRIKE's own units.
 
-        THE PRECEDENCE: the DECLARED `Shift` wins; `Property_Aliases` - which has no descriptor, so
-        no schema-authored block can carry it - is the legacy behind it; a premiums file's own
-        `Shift` column is the fallback under that.
+        THE PRECEDENCE: the declared `Shift` wins; `Property_Aliases` - which has no descriptor, so
+        no schema-authored block can carry it - is the legacy behind it; a premiums file's `Shift`
+        column is the fallback under that.
 
-        A `Shift` OF ZERO IS NOT AN INSTRUCTION. Zero is the field's own declared default, so an
-        authored zero and an unauthored one are the same document and neither outranks the legacy
-        alias.
+        A `Shift` of ZERO is not an instruction: it is the field's own declared default, so an
+        authored zero and an unauthored one are the same document.
 
-        THE UNITS ARE THE STRIKE'S, not the percentage points the legacy alias carries: a
-        `Percent(2.0)` already holds `2.0/100.0` in `amount`, so both routes reach the strike
-        through the same division and a displacement authored either way is bit-identical.
+        The units are the STRIKE's and not the legacy alias's percentage points - a `Percent(2.0)`
+        already holds `2.0/100.0` in `amount`, so both routes divide once and agree to the bit.
 
-        A DISPLACEMENT UNDER `Distribution_Type: 'Normal'` REFUSES - a shift displaces a lognormal
+        A displacement under `Distribution_Type: 'Normal'` REFUSES: a shift displaces a lognormal
         quote's strike, and a normal vol has nothing to displace.
         """
         distribution, shift = self.get_subtype()

@@ -1,47 +1,24 @@
 """FXAccumulatorOptionDeal end to end, through the JSON contract and nothing else.
 
-THE FORM, which is the point of this file: a test is a job JSON, run through the public surface
-(`Context.load_json` + `run_job`), whose expected answer is decided BEFORE the run and computed
-from a closed form this repo's engine has no part in. No `Config` object is built by hand, no
-internal constructor is imported, and nothing is patched - so what is exercised is the whole
-framework, from the document a user actually writes to the numbers it reports.
+THE FORM: a test is a job JSON run through the public surface (`Context.load_json` + `run_job`),
+whose expected answer is decided BEFORE the run from a closed form this engine has no part in. No
+`Config` is built by hand, no internal constructor imported, nothing patched.
 
-The deal is authored so it has a closed form: with the barrier out of reach an accumulator is a
-STRIP OF EUROPEANS - long `Underlying_Amount` of the ITM side and short `LeverageNotional` of the
-OTM side at each fixing, each paid at its own settlement date. So both the value AND the FX delta
-are Black, and the greek is checked as its own statement rather than merely for being finite.
+The deal is authored to have a closed form: with the barrier out of reach an accumulator is a STRIP
+OF EUROPEANS - long `Underlying_Amount` of the ITM side, short `LeverageNotional` of the OTM one at
+each fixing, each paid at its own settlement date. So the value AND the FX delta are Black, and the
+greek is checked as its own statement rather than for being finite.
 
-The USD curve is STEEP with a knot at every tenor the deal reads. A flat curve is a degeneracy:
-the interval carry strip and the raw zero-rate gather agree wherever the curve is flat however
-far apart r and q are, so a pricer differencing neither would pass. The reference reads the same
-curve with `numpy.interp`, which the knots make exact.
+The USD curve is STEEP with a knot at every tenor the deal reads, because a flat curve is a
+degeneracy: the interval carry strip and the raw zero-rate gather agree wherever the curve is flat,
+so a pricer differencing neither would pass. The reference reads the same curve with `numpy.interp`,
+which the knots make exact. Every constant is re-derived at import off the loaded document, so the
+assertions follow `tests/fixtures/fx_accumulator_job.json` rather than a transcription of it.
 
-Pre-registered, from `tests/fixtures/fx_accumulator_job.json` and nothing else - re-derived by
-`_expected()` at import off the loaded document, so the assertions follow the template rather
-than these constants:
-
-    value  +62.4979   $
-    dV/dS  +2522.61   $ per unit of EUR.USD
-
-The sign is the steep curve talking: by six months the USD rate reaches ~15% against a flat 2%
-EUR, so the forward sits well above the strike, the ITM leg dominates the leveraged OTM one and
-the strip is worth POSITIVE. On a flat 4% curve the same document is worth -28.30. That is worth
-stating because it is the arm the fixture exists for - the interval carry strip and a raw
-zero-rate gather agree on any flat curve, so a flat one cannot tell a pricer that differences
-neither from one that does.
-
-TOLERANCES ARE MEASURED, not chosen. This is a Monte Carlo pricer, and the seed-to-seed spread of
-the reported value was read across five seeds:
-
-    inner paths   sd      max |rel err| vs Black
-       16 384     0.210        1.024 %
-       65 536     0.148        0.833 %
-      262 144     0.059        0.298 %
-
-so the gate runs at 262 144 and allows 1 %, about five times the measured sd. The first draft ran
-at 16 384 and allowed 0.5 % - INSIDE one standard error - and passed on CPU purely by luck while
-failing on GPU, which is what produced this table. (The table was read on the flat-curve variant;
-the steep curve moves the level, not the estimator's spread.)
+TOLERANCES ARE MEASURED. The seed-to-seed spread of the reported value across five seeds is 0.210
+at 16,384 inner paths, 0.148 at 65,536 and 0.059 at 262,144, so the gate runs at 262,144 and allows
+1%, about five times the measured sd. The first draft ran at 16,384 and allowed 0.5% - INSIDE one
+standard error - and passed on CPU by luck while failing on GPU, which is what produced the table.
 """
 import json
 import math
@@ -66,8 +43,8 @@ def _deal_of(job):
     return job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']
 
 
-# Every constant the reference needs is READ OUT OF THE DOCUMENT, so the expectation and the job
-# cannot drift apart: edit the template and the closed form follows it.
+# every constant the reference needs is READ OUT OF THE DOCUMENT, so edit the template and the
+# closed form follows it
 _T = _template()
 _D = _deal_of(_T)
 _PF = _T['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
@@ -133,8 +110,8 @@ EXPECTED_VALUE, EXPECTED_DELTA = _expected()
 # the job document
 # --------------------------------------------------------------------------------------------
 def _job(greeks='No', **deal_overrides):
-    """The canonical document, varied. Switch coverage is a set of overrides on one template
-    rather than a second hand-built document that can quietly stop resembling it."""
+    """The canonical document, varied: switch coverage is overrides on ONE template rather than a
+    second hand-built document that can quietly stop resembling it."""
     job = _template()
     job['Calc']['Calculation']['Greeks'] = greeks
     _deal_of(job).update(deal_overrides)
@@ -173,12 +150,9 @@ def test_the_job_document_prices_the_expected_value(tmp_path):
 
 
 def test_the_job_document_reports_the_expected_fx_delta(tmp_path):
-    """The greek is a statement of its own, not a finiteness check.
-
-    A strip of Europeans has a closed-form delta, so `dV/d(EUR.USD spot)` is known before the run.
-    The engine reports the derivative of the number it reported, which is what makes this the
-    end-to-end check: a value that is right with a delta that is wrong is the failure mode a
-    price-only gate cannot see.
+    """The greek is a statement of its own and not a finiteness check: a strip of Europeans has a
+    closed-form delta, so `dV/d(EUR.USD spot)` is known before the run. A value that is right with
+    a delta that is wrong is the failure mode a price-only gate cannot see.
     """
     out = _run(_job(greeks='First'), tmp_path)
     assert abs(_mtm(out) - EXPECTED_VALUE) / abs(EXPECTED_VALUE) < TOL
@@ -190,8 +164,8 @@ def test_the_job_document_reports_the_expected_fx_delta(tmp_path):
 
 
 def test_the_declared_switches_flip_the_sign_they_should(tmp_path):
-    """`Buy_Sell` and `Option_Type` are declared switches, so the document is the way to exercise
-    them: selling mirrors exactly, and a put on this strip is the ITM and OTM legs swapped."""
+    """`Buy_Sell` and `Option_Type` are declared switches, exercised through the document: selling
+    mirrors exactly, and a put on this strip is the ITM and OTM legs swapped."""
     buy = _mtm(_run(_job(), tmp_path, 'buy'))
     sell = _mtm(_run(_job(Buy_Sell='Sell'), tmp_path, 'sell'))
     assert abs(buy + sell) <= 1e-9 * abs(buy), (buy, sell)
@@ -219,8 +193,8 @@ def test_a_declared_dead_deal_is_worth_nothing(tmp_path):
 # the knock-out itself, against a law the engine has no part in
 # --------------------------------------------------------------------------------------------
 def _brute_force_ko(barrier, barrier_up, n_paths=400_000, seed=7):
-    """Exact-law GBM at the fixing dates with the indicator knock-out - the product the analytic
-    survival truncation must reproduce. Returns (value, standard error)."""
+    """`(value, standard error)` for exact-law GBM at the fixing dates with the indicator
+    knock-out - the product the analytic survival truncation must reproduce."""
     import numpy as np
     rng = np.random.default_rng(seed)
     times = np.array([f / DAYS for f, _ in FIXINGS])
@@ -228,9 +202,8 @@ def _brute_force_ko(barrier, barrier_up, n_paths=400_000, seed=7):
     dt = np.diff(np.concatenate([[0.0], times]))
     z = rng.standard_normal((n_paths // 2, len(times)))
     z = np.concatenate([z, -z], axis=0)
-    # the carry over each INTERVAL is a difference of cumulative integrals, not one tenor's rate
-    # times the interval - the same statement the pricer's own `forward_carry_rate` makes, and on
-    # this steep curve the two differ by whole percent
+    # the carry over each INTERVAL is a difference of cumulative integrals and not one tenor's rate
+    # times the interval - on this steep curve the two differ by whole percent
     cum = np.array([(_r_usd(t) - Q_EUR) * t for t in times])
     drift = np.diff(np.concatenate([[0.0], cum])) - 0.5 * SIGMA ** 2 * dt
     s = np.exp(np.log(SPOT) + np.cumsum(drift + SIGMA * np.sqrt(dt) * z, axis=1))
@@ -249,11 +222,9 @@ import pytest
 @pytest.mark.parametrize('barrier,up,btype', [(1.20, True, 'Up_And_Out'),
                                               (1.02, False, 'Down_And_Out')])
 def test_the_knock_out_matches_an_exact_law_simulation(barrier, up, btype, tmp_path):
-    """Both declared `Barrier_Type` values, each against an independent indicator simulation.
-
-    The pricer integrates survival analytically and draws the surviving spot from the truncated
-    law; the reference just simulates and applies the indicator. They are the same product by two
-    routes that share no code.
+    """Both declared `Barrier_Type` values against an independent indicator simulation: the pricer
+    integrates survival analytically and draws from the truncated law, the reference simulates and
+    applies the indicator - the same product by two routes sharing no code.
     """
     v = _mtm(_run(_job(Barrier_Type=btype, Barrier_Price=barrier), tmp_path, f'ko{barrier}'))
     ref, se = _brute_force_ko(barrier, up)
@@ -291,12 +262,10 @@ def test_a_settled_fixing_beyond_the_barrier_kills_the_deal(tmp_path):
 
 
 def test_a_blank_barrier_is_refused_rather_than_priced_at_zero(tmp_path):
-    """`Barrier_Price` is `default=REQUIRED`, and a document that omits it anyway must refuse.
-
-    Left at 0.0 with the declared default direction the deal survives NO fixing and would price
-    to a silent scalar zero - a whole trade vanishing from a book with no error. The direction is
-    why this checks both: at 0.0 a `Down_And_Out` is merely unbarriered and prices its full strip,
-    so a one-direction fixture would score the hole harmless.
+    """`Barrier_Price` is `default=REQUIRED`, and a document omitting it anyway must refuse: left at
+    0.0 the deal survives NO fixing and prices to a silent scalar zero, a whole trade vanishing
+    from a book with no error. BOTH directions, because at 0.0 a `Down_And_Out` is merely
+    unbarriered and prices its full strip, so a one-direction fixture scores the hole harmless.
     """
     for btype in ('Up_And_Out', 'Down_And_Out'):
         job = _job(Barrier_Type=btype, Barrier_Price=0.0)
@@ -307,18 +276,14 @@ def test_a_blank_barrier_is_refused_rather_than_priced_at_zero(tmp_path):
 
 
 def test_a_fixing_dated_today_follows_the_price_factor(tmp_path):
-    """A fixing dated ON the base date reads the SIMULATED spot, not the value the trade recorded.
-
-    That is deliberate and it is what makes a sensitivity calculation correct: bumping
-    `FxRate.EUR` has to move that fixing's payoff, and it cannot if the fixing is a constant the
-    document supplied. `make_fixing_data` writes the recorded value only for `fixing[0] <
-    reference_date`, and a same-day reset is handed `Scenario >= 0` so it resolves off the path.
+    """A fixing dated ON the base date reads the SIMULATED spot and not the value the trade
+    recorded, which is what makes a sensitivity correct: bumping `FxRate.EUR` has to move that
+    fixing's payoff and cannot if the fixing is a constant.
 
     A VALUE assertion cannot tell the two designs apart - the declared print and the current spot
-    are the same number today - so the discriminating statement is the DELTA. One fixing, today,
-    struck in the money: the deal is worth `N1 * (S - K)` discounted to its settlement and its
-    spot delta is `N1 * D`, exactly. Were the fixing a constant the delta would be ZERO, which is
-    a whole fixing's sensitivity missing from a book that reports the right price.
+    are the same number today - so the discriminating statement is the DELTA. One fixing today,
+    struck in the money: the deal is worth `N1 * (S - K)` discounted and its spot delta is `N1 * D`
+    exactly, where a constant fixing would report ZERO.
     """
     strike, settle_day = 1.05, 3                      # ITM: the OTM leg contributes nothing
     job = _job(greeks='First', Strike_Price=strike, Accumulator_ExpiryDates=[
@@ -339,12 +304,9 @@ def test_a_fixing_dated_today_follows_the_price_factor(tmp_path):
 
 
 def test_the_deal_tags_reach_the_reported_row(tmp_path):
-    """`Tags` carries the non-essential book-keeping - portfolio, trader - and `Tag_Titles` names
-    the columns it lands in.
-
-    Nothing in pricing reads either, which is the whole reason to assert them: a field no pricer
-    touches is a field whose round trip nothing else can notice going wrong, and it is the field
-    a desk sorts its blotter by.
+    """`Tags` carries the book-keeping and `Tag_Titles` names the columns it lands in. Nothing in
+    pricing reads either, which is the reason to assert them: a field no pricer touches is one
+    whose round trip nothing else can notice going wrong, and a desk sorts its blotter by it.
     """
     out = _run(_job(), tmp_path, 'tags')
     rows = out['Results']['mtm']
@@ -355,11 +317,10 @@ def test_the_deal_tags_reach_the_reported_row(tmp_path):
 
 
 def _long_lag_job(greeks='No', spot=None, sims=1 << 16):
-    """The dead-branch document: settlements lag their fixings by MORE than the fixing spacing,
-    so a knocked deal carries several fixed-but-unsettled payoffs - the pending head - through
-    every reporting row between the knock and the last landing. A live barrier makes the latch
-    fire on real paths, which is what routes those rows through the boundary registration's dead
-    branch."""
+    """The dead-branch document: settlements lag their fixings by MORE than the fixing spacing, so a
+    knocked deal carries several fixed-but-unsettled payoffs - the pending head - through every
+    reporting row between the knock and the last landing. A live barrier makes the latch fire on
+    real paths, which routes those rows through the registration's dead branch."""
     job = _job(greeks=greeks, Barrier_Price=1.18, Accumulator_ExpiryDates=[
         [{'.Timestamp': _day(30 + 20 * i)}, {'.Timestamp': _day(30 + 20 * i + 45)}, 0.0]
         for i in range(6)])
@@ -371,9 +332,9 @@ def _long_lag_job(greeks='No', spot=None, sims=1 << 16):
 
 
 def _cva_long_lag(gradient='No', spot=None):
-    """The long-lag document as a credit Monte Carlo with the CVA block on: outer rows observe
-    fixings, the latch registration carries real dead cells, and the boundary correction scores
-    the knock jumps - which is the only place the dead branch is ever read."""
+    """The long-lag document as a credit Monte Carlo with CVA on: outer rows observe fixings, the
+    latch registration carries real dead cells, and the boundary correction scores the knock jumps -
+    the only place the dead branch is ever read."""
     job = _long_lag_job(spot=spot, sims=256)
     job['Calc']['Calculation'] = {
         'Object': 'CreditMonteCarlo', 'Base_Date': {'.Timestamp': BASE}, 'Currency': 'USD',
@@ -394,15 +355,13 @@ def _cva_long_lag(gradient='No', spot=None):
 
 def test_a_knocked_deal_still_carries_its_pending_settlements(tmp_path):
     """The dead branch is NOT zero: a knocked deal keeps the payoffs of fixings it survived whose
-    settlements have not landed - the pending head - through every reporting row between the
-    knock and the last landing. Only a gradient run ever reads those cells, through the latch
-    registration's counterfactual branches.
+    settlements have not landed - the pending head - through every reporting row between the knock
+    and the last landing, and only a gradient run reads those cells.
 
     The DISCRIMINATOR is the `ACCUMULATOR_LATCH` organ: the registration reconstructed at the
-    booked flags against the engine's own reported rows. With the pending head carried the
-    residual is float roundoff while the head itself is material - the same statement measured
-    at 1.07% of the profile when the branch was a zero. The CVA delta against its CRN ladder
-    rides along at the ladder's own resolution, an economic sanity bound rather than the gate.
+    booked flags against the engine's reported rows. With the head carried the residual is float
+    roundoff while the head itself is material. The CVA delta against its CRN ladder rides along as
+    an economic sanity bound rather than the gate.
     """
     import io as _io
     import logging as _logging
@@ -421,10 +380,9 @@ def test_a_knocked_deal_still_carries_its_pending_settlements(tmp_path):
     recon = max(parse(ln, 'recon_max') for ln in organs)
     head = max(parse(ln, 'head_max') for ln in organs)
     scale = max(parse(ln, 'scale') for ln in organs)
-    # MEASURED: head_max 444 on a 1600 profile scale (28% - the head is not a nicety), and the
-    # residual 1.22e-4 = 7.6e-8 relative, float32 roundoff for this engine precision; the bound
-    # carries a 13x margin. MUTATION: the dead branch zeroed again reads 156 - the booked
-    # knocks' own heads - nearly 100,000x over the bound.
+    # MEASURED: head_max 444 on a 1600 profile scale (28%) and the residual 7.6e-8 relative, which
+    # is float32 roundoff, so the bound carries 13x. MUTATION: the dead branch zeroed reads 156,
+    # nearly 100,000x over the bound.
     assert head > 1e-3 * scale, 'the document must carry a material pending head'
     assert recon < 1e-6 * scale, (recon, head, scale)
 
@@ -441,24 +399,24 @@ def test_a_knocked_deal_still_carries_its_pending_settlements(tmp_path):
 
 
 # --------------------------------------------------------------------------------------------
-# THE RECIPROCAL AXIS: one law per pair, and the reader learns which side of it the deal is on
+# THE RECIPROCAL AXIS: one law per pair, and which side of it the deal is on.
 #
-# `FxRate.<ccy>` is that currency priced in the BASE, so on a USD-base book only `FxRate.EUR` is a
-# rate the engine can simulate and only `.EUR` is a block the calibration can write. A deal whose
-# `Underlying_Currency` IS the base therefore pays on the RECIPROCAL of the fitted axis, and
-# settles in the other currency - which is a change of NUMERAIRE as well as of axis. The fitted law
-# carries to it exactly, at the cost of one parameter (`utils.hn_reciprocal_gamma`).
+# `FxRate.<ccy>` is that currency priced in the BASE, so on a USD-base book only `.EUR` is a rate
+# the engine can simulate and only `.EUR` is a block the calibration can write. A deal whose
+# `Underlying_Currency` IS the base pays on the RECIPROCAL of the fitted axis and settles in the
+# other currency - a change of NUMERAIRE as well as of axis - and the fitted law carries to it
+# exactly at the cost of one parameter (`utils.hn_reciprocal_gamma`).
 #
-# The deal below is the template's own mirror: USD notional, EUR settlement, the same schedule and
-# the same barrier out of reach, so it is still a strip of Europeans - on `1/S` this time.
+# The deal below is the template's mirror: USD notional, EUR settlement, the same schedule and
+# barrier out of reach, so it is still a strip of Europeans - on `1/S`.
 # --------------------------------------------------------------------------------------------
 SPY = 252.0
 
-#: The daily variance of a 10% flat vol, and the DEGENERATE Heston-Nandi that holds it: no ARCH, no
+#: The daily variance of a 10% flat vol and the DEGENERATE Heston-Nandi holding it: no ARCH, no
 #: leverage, no GARCH memory, so `h` is that number for all t and the strip has a Black closed form
-#: on whichever axis the law is carried to. It is the only fixture that can PIN the AXIS exactly -
-#: and at `Alpha: 0.0` the leverage term drops out of `hn_variance_step` entirely, so `Gamma_Star`
-#: and therefore `hn_reciprocal_gamma` have NO effect on it. The carry is pinned elsewhere.
+#: on whichever axis the law is carried to - the only fixture that can PIN the AXIS exactly. At
+#: `Alpha: 0.0` the leverage term drops out of `hn_variance_step`, so `hn_reciprocal_gamma` has no
+#: effect on it and the carry is pinned elsewhere.
 SIGMA_HN = 0.10
 H_DAILY = SIGMA_HN ** 2 / DAYS
 DEGENERATE = {'Property_Aliases': None, 'Omega': H_DAILY, 'Alpha': 0.0, 'Beta': 0.0,
@@ -469,8 +427,7 @@ DEGENERATE = {'Property_Aliases': None, 'Omega': H_DAILY, 'Alpha': 0.0, 'Beta': 
 LEVERED = {'Property_Aliases': None, 'Omega': 1e-12, 'Alpha': 2.0e-6, 'Beta': 0.45,
            'Gamma_Star': -474.34, 'H0': 7.8e-5}
 
-#: The deal's own axis: EUR per USD, the reciprocal of the `FxRate.EUR` the engine simulates -
-#: `FxRate.EUR` being one euro in the book's USD base, which is USD per EUR.
+#: The deal's own axis - EUR per USD, the reciprocal of the `FxRate.EUR` the engine simulates.
 RECIPROCAL_SPOT = 1.0 / SPOT
 RECIPROCAL_STRIKE = round(RECIPROCAL_SPOT, 4)
 
@@ -491,8 +448,8 @@ def _reciprocal_job(factor=DEGENERATE, model='HestonNandi', sims=None, **calc):
 
 
 def _reciprocal_expected():
-    """Black on the DEAL's own axis - the forward at the DEAL's own carry (`r_EUR - r_USD`) and the
-    variance the daily recursion accumulates. No reciprocal appears in it: that is the claim."""
+    """Black on the DEAL's own axis: the forward at its own carry (`r_EUR - r_USD`) and the variance
+    the daily recursion accumulates. No reciprocal appears in it, which is the claim."""
     value, prev_t, days = 0.0, 0.0, 0
     for fix, settle in FIXINGS:
         t, ts = fix / DAYS, settle / DAYS
@@ -510,35 +467,26 @@ def _reciprocal_expected():
 
 
 def test_a_base_currency_underlying_prices_on_its_own_axis_under_the_fitted_law(tmp_path):
-    """The reciprocal arm's AXIS, against a closed form the engine has no part in.
+    """The reciprocal arm's AXIS against a closed form the engine has no part in. The deal pays
+    EUR-per-USD while the only law the market carries is fitted on `FxRate.EUR`; it names the
+    pair's non-base token, and the strip is Black on the DEAL's own axis at its own carry
+    `r_EUR - r_USD`, with no convexity term and no reciprocal in the reference.
 
-    `Underlying_Currency` USD on a USD-base book: the deal pays EUR-per-USD while the only law the
-    market carries is fitted on `FxRate.EUR`, USD-per-EUR. Before this the deal could not name a
-    block at all - `.USD` is a numeraire, never a rate - and rode GBM on a calibrated book. Now it
-    names the pair's non-base token, and the strip is Black on the DEAL's own axis at the DEAL's own
-    carry `r_EUR - r_USD`, with no convexity term and no reciprocal anywhere in the reference.
-
-    WHAT THIS PINS, exactly: the token rule and the deal-axis carry. Keyed the pre-rule way it looks
-    up `HestonNandiModelParameters.USD`, the deal is SKIPPED and there is no row to read.
-
-    WHAT IT CANNOT PIN, said out loud: the parameter carry. `hn_variance_step` is
-    `omega + beta*h + alpha*(z - gamma_star*sqrt(h))**2`, so at `Alpha: 0.0` the leverage term is
-    identically zero and `Gamma_Star` - hence `hn_reciprocal_gamma` - has no effect on this fixture.
-    Measured: with the carry mutated to the identity this gate still passes. The carry's SIGN is
-    read by `test_one_trade_authored_from_either_axis_is_one_number_under_the_fitted_law` on the
-    levered fit, and the whole map in closed form by
-    `test_hn_component.py::test_the_reciprocal_carry_is_the_fx_option_symmetry_in_closed_form`.
-    The 2e-3 bound is the 3.3e-4 seed spread at 16,384 paths with room over it.
+    WHAT IT PINS: the token rule and the deal-axis carry. Keyed the pre-rule way the deal is
+    SKIPPED and there is no row to read. WHAT IT CANNOT PIN: the parameter carry, because at
+    `Alpha: 0.0` the leverage term is identically zero and `hn_reciprocal_gamma` has no effect -
+    measured, the carry mutated to the identity still passes here. The SIGN is read by
+    `test_one_trade_authored_from_either_axis_is_one_number_under_the_fitted_law` and the whole map
+    in closed form by `test_hn_component.py`. The 2e-3 bound is the 3.3e-4 seed spread with room.
     """
     reference = _reciprocal_expected()
     value = _mtm(_run(_reciprocal_job(sims=1 << 14), tmp_path, 'recip'))
     assert abs(value / reference - 1.0) < 2e-3, (value, reference)
 
 
-#: The two axes of one accumulator: EUR per USD on the reciprocal side, USD per EUR on the direct
-#: one, with the equivalent notional converting at the STRIKE exactly as the runner's own axis gate
-#: states (`N` USD is `N * K_A` EUR). Both barriers are out of reach, so both are strips of
-#: Europeans and the identity is the change of numeraire and nothing else.
+#: The two axes of one accumulator, the equivalent notional converting at the STRIKE (`N` USD is
+#: `N * K_A` EUR). Both barriers are out of reach, so both are strips of Europeans and the identity
+#: is the change of numeraire and nothing else.
 DIRECT_STRIKE = 1.10
 MIRROR_STRIKE = 1.0 / DIRECT_STRIKE
 
@@ -568,25 +516,18 @@ def _mirrored_job(orientation, sims):
 
 
 def test_one_trade_authored_from_either_axis_is_one_number_under_the_fitted_law(tmp_path):
-    """THE CONSISTENCY GATE, and the one that pins the DIRECTION of the carry.
+    """THE CONSISTENCY GATE, and the one that pins the DIRECTION of the carry. An accumulator on
+    1,000 dollars settled in euro and the euro accumulator it IS - notional converted at the
+    strike, sense inverted, knock-out flipped - are one trade, and one law must price them at one
+    number. The direct side rides the fit as written, the reciprocal side rides it CARRIED.
 
-    An accumulator on 1,000 dollars settled in euro and the euro accumulator it is - notional
-    converted at the strike, sense inverted, knock-out direction flipped - are the same trade, and
-    one law must price them at one number in the reporting currency. The direct side rides the fit
-    as written; the reciprocal side rides it CARRIED. A carry left out, or applied the wrong way,
-    is the same trade at two prices, which is the defect this whole row is about wearing different
-    clothes.
+    Carried, the two agree to 1.2e-3/2.3e-3 over 4,096 to 262,144 paths, which is the spread of two
+    INDEPENDENT runs and does not shrink. With the carry removed they disagree by 2.7% to 4.1% -
+    twenty times the 5e-3 bound - and it GROWS with the path count, being bias rather than noise.
 
-    MEASURED. Carried, the two agree to 1.2e-3 / 2.3e-3 over 4,096 to 262,144 paths, which is the
-    seed-to-seed spread of two INDEPENDENT runs at this file's own measured sd (0.09% each at
-    262,144, so 0.13% for the pair) and does not shrink because neither run's error does. With the
-    carry removed they disagree by 2.7% to 4.1% - twenty times the bound, and it GROWS with the
-    path count because it is a bias rather than noise. The bound is 5e-3.
-
-    WHAT THIS GATE DOES NOT RESOLVE, said out loud: the map is `1 - gamma*`, and the UNIT SHIFT in
-    it is worth only 2.7e-4 to 1.5e-3 here - under the floor. What this reads is the SIGN, which is
-    the 3-4% half. The whole map, unit shift included, is pinned in closed form at 1.4e-12 by
-    `test_hn_component.py::test_the_reciprocal_carry_is_the_fx_option_symmetry_in_closed_form`.
+    WHAT IT DOES NOT RESOLVE: the map is `1 - gamma*` and the UNIT SHIFT is worth only 2.7e-4 to
+    1.5e-3 here, under the floor. This reads the SIGN; the whole map is pinned in closed form at
+    1.4e-12 in `test_hn_component.py`.
     """
     import derivus.utils as utils
 
@@ -600,14 +541,11 @@ def test_one_trade_authored_from_either_axis_is_one_number_under_the_fitted_law(
 
 
 def test_a_family_that_cannot_be_carried_to_the_reciprocal_axis_refuses_by_name(tmp_path):
-    """The component family does not transport, and a deal that would have to be transported
-    REFUSES rather than pricing off a law nobody fitted.
-
-    The change of numeraire puts a state-dependent term in the component's long-run intercept -
-    `omega_t + phi*(1 - 2*gamma2)*h_t` - so the carried law is not a component parameter set and no
-    `L_Curve` describes it. That is a fact about the model, so the refusal is FATAL
-    (`UnpriceableSchedule`): a compile guard's canonical answer is to log and skip, and a skipped
-    deal marks at nothing on a job that then reports success.
+    """The component family does not transport, so a deal that would have to be REFUSES rather than
+    pricing off a law nobody fitted: the change of numeraire puts a state-dependent term in the
+    long-run intercept, so the carried law is not a component parameter set and no `L_Curve`
+    describes it. The refusal is FATAL, because a compile guard's canonical answer is to log and
+    skip and a skipped deal marks at nothing on a job that reports success.
     """
     component = {'Property_Aliases': None, 'Alpha': 3.5681e-06, 'Beta': 0.8138,
                  'Gamma_1': -64.992, 'Rho': 0.99, 'Phi': 1.9820e-06, 'Gamma_2': -64.992,
@@ -628,12 +566,10 @@ def test_a_family_that_cannot_be_carried_to_the_reciprocal_axis_refuses_by_name(
 
 
 def test_a_cross_pair_keeps_the_underlyings_own_read(tmp_path):
-    """Neither leg the base is OUT of the ruling's scope, and the read must not move.
-
-    Both tokens of a cross are simulated factors, so the composed spot's law is nothing the pair's
-    own calibration describes - the ruling says so and stops there. What the engine must therefore
-    still do is read `Underlying_Currency` byte for byte: a cross keyed off the settlement leg
-    instead would price one pair's deal off another pair's fit and never say so.
+    """Neither leg the base is OUT of the ruling's scope - both tokens of a cross are simulated
+    factors, so the composed spot's law is nothing the pair's calibration describes. What the
+    engine must still do is read `Underlying_Currency` byte for byte: a cross keyed off the
+    settlement leg would price one pair's deal off another pair's fit and never say so.
     """
     def cross(block):
         job = _template()

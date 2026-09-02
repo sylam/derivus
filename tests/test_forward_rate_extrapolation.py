@@ -1,54 +1,26 @@
 """`LinearExtrapolate` on `ForwardRate` - the carry curve read in FRONT of its first knot.
 
-A carry curve whose rate is linear in tenor (`z = c + a tau`) is identified exactly by two knots,
-and the line continues outside them. `CurveTenor.get_index` CLIPS a query to the knot bracket, so
-the default `Linear` read of a contract trading in front of the first knot is FLAT in z - the
-curvature term of the log-futures curve is silently lost. `ForwardRate` now declares
+A carry curve linear in tenor (`z = c + a tau`) is identified exactly by two knots and the line
+continues outside them, but `CurveTenor.get_index` CLIPS a query to the knot bracket, so the
+default `Linear` read of a contract trading in front of the first knot is FLAT in z and the
+log-futures curve's curvature term is silently lost. `ForwardRate` declares
 `interpolation_methods` and `construct_factor` routes it through `Price Factor Interpolation`, so a
-world can ask for the line instead.
+world can ask for the line instead. `LinearExtrapolate` clamps the index to a real end segment and
+leaves alpha UNCLIPPED - a two-point blend with alpha outside [0, 1] IS the line - while `Linear`
+keeps the clipped read.
 
-WHAT EACH GATE HOLDS
+KILL MAGNITUDE: routed and unrouted marks differ by 1.75% of the mark on the end-to-end deal, both
+written out here from the deal's own algebra. Ten one-token mutants are run by exec'ing the edit
+onto the module (control: 8 passed, 0 failing); each test's own docstring names what kills it, and
+two are killed by one gate only - the index clamped to `max_index` instead of `max_index - 1` (the
+unit blend gates alone, invisible end to end because the fixture's fixing sits in front of the
+FIRST knot), and the routed kind read as presence rather than value (the no-op gate alone).
 
-  1. THE BLEND, both branches, numpy and torch. `LinearExtrapolate` clamps the index to a real end
-     segment and leaves alpha UNCLIPPED - a two-point blend with alpha outside [0, 1] IS the line -
-     while `Linear` keeps the clipped read. Plus the numpy static `Factor1D.interpolate` branch,
-     which is the same claim on the path `current_value` takes.
-  2. END TO END, hand-pinned. One `CommodityAveragePriceSwapDeal` with a single fixing at tau ~0.25
-     against knots at tau ~0.5 / ~1.0, priced by `BaseValuation` twice: unrouted it is the flat-clip
-     value, routed it is the line's. Both numbers are written out here from the deal's own algebra,
-     and they differ by 1.75% of the mark.
-  3. UNROUTED IDENTITY. Routing `ForwardRate` to the DEFAULT (`Linear`) is a no-op, bit for bit -
-     the new branch is reachable only through a world that asks for it.
-  4. THE REGISTRY. The emitted `Interpolation_factor_map` carries the `ForwardRate` row, so the menu
-     a UI offers is the menu the engine implements.
-
-ANTI-PLACEBO. The knots are SLOPED (0.02 -> 0.01): on a flat carry both reads coincide and every
-gate here passes on a broken clamp. The fixing is in FRONT of the first knot, which is the side the
-clipped read cannot see past. The discount curve is zero so `D = 1` and the pinned number is the
-forward alone; the repo leg is NOT zero (0.02), so a carry read that had picked up the repo curve
-instead would miss both hand values.
-
-MUTATION MATRIX - every one RUN, by exec'ing a one-token edit of the function's own source onto its
-module. Control: 8 passed, 0 failing.
-
-| mutant | killed by | count |
-|---|---|---|
-| the `'Extrapolate' in self.type` guard reverted (`if False`) | the two blend gates, end to end | 3 |
-| the guard fires on EVERY kind (`if True`) | the two clip gates, end to end | 3 |
-| the index clamped to `max_index` instead of `max_index - 1` | the two blend gates | 2 |
-| `construct_factor` drops `ForwardRate` from the routed types | end to end | 1 |
-| `update_tenors` drops it | end to end | 1 |
-| `factor_interp_map` loses the identity row | end to end | 1 |
-| `check_interpolation` loses its branch | end to end | 1 |
-| the routed kind read as PRESENCE, not value | the no-op gate ONLY | 1 |
-| `Factor1D.interpolate` loses its branch, or either `np.where` | the numpy static read | 1 |
-| `ForwardRate.interpolation_methods` deleted | the registry | 1 |
-
-WHAT THE MATRIX SAYS OUT LOUD. The index-clamp mutant is invisible END TO END: the fixing sits in
-front of the FIRST knot, so only the low end is exercised there and the far-side clamp is never
-read. The unit gate queries both sides for exactly that reason. And the presence-keyed mutant is
-killed by the no-op gate and by nothing else - a routing that turned on whenever the section
-mentions `ForwardRate` prices every existing world differently and every other gate here passes it.
+ANTI-PLACEBO, and the fixture does not reproduce without it: the knots are SLOPED (0.02 -> 0.01),
+because on a flat carry both reads coincide and every gate here passes on a broken clamp; the
+fixing is in front of the first knot, the side the clipped read cannot see past; the discount curve
+is zero so `D = 1` and the pinned number is the forward alone; and the repo leg is NOT zero (0.02),
+so a carry read that had picked up the repo curve instead would miss both hand values.
 """
 import json
 import math

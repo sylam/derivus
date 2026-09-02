@@ -14,32 +14,25 @@ put-call/up-down transformations are exactly what the oracle must not share.
 The in-out parity KI = BS - KO is NOT a gate here: the pricer DEFINES knock-in that way, so the
 identity is tautological. The oracle carries both directions independently instead.
 
-MEASURED, all eight direction/window configurations against the oracle: worst 0.43% (Up_And_Out
-start-window), most under 0.2% - inside a 2% gate that carries the oracle's own daily-bridge
-error and ApproxBivN's ~7e-4 worst-case CDF error. MUTATIONS: the window mask dropped reads the
-expiry row at 9.51 against 75.83 (-87%, mid-life crossings knocking a two-day window); the limit
-clamp dropped brings the NaN back and kills the finiteness gate.
+MEASURED, all eight direction/window configurations against the oracle: worst 0.43%, most under
+0.2%, inside a 2% gate carrying the oracle's own daily-bridge error and ApproxBivN's ~7e-4 CDF
+error. MUTATIONS: the window mask dropped reads the expiry row 87% low; the limit clamp dropped
+brings the NaN back.
 
-`Cash_Rebate` IS NOW GATED, and it was worth exactly nothing before: `getpartialbarrierpayoff`
-carried no rebate term, so at base valuation the rebate moved the mark by 0.0000 in every one of
-the eight configurations while the oracle puts it at 14 to 34 on a notional of 1000 at a rebate of
-50. Both directions were affected - the knock-in through the roadmap's expiry pad, the knock-out
-through its missing pre-hit expectation. MEASURED on the isolated leg, worst 0.56%.
+`Cash_Rebate` was worth EXACTLY NOTHING before this: `getpartialbarrierpayoff` carried no rebate
+term, so the rebate moved the mark by 0.0000 in all eight configurations where the oracle puts it
+at 14 to 34 on a notional of 1000. Both directions - the knock-in through the expiry pad, the
+knock-out through its missing pre-hit expectation - and the isolated leg is now gated to 0.56%.
 
-THE REBATE LEGS ARE THE LIVE SIDE OF A LIVE WINDOW and nothing else, and the two other branches
-are reachable through the document rather than only in principle: a spot already on the barrier's
-far side (the deal is knocked, and base valuation carries NO touch mask - `need_spot_at_expiry` is
-zero, so the closed form answers alone) and a `Barrier_Limit_Date` in the PAST (a seasoned deal,
-where `limit` reaches the payoff negative). Both are certainties with no model in them and are
-gated as equalities; unguarded they read 83.76-107.00 where 0 or 50 is due and -30.31 to -52.47
-where 0 or 48.04 is.
+THE REBATE LEGS ARE THE LIVE SIDE OF A LIVE WINDOW and nothing else, and the two other branches are
+reachable through the document: a spot already on the barrier's far side, and a
+`Barrier_Limit_Date` in the PAST. Both are certainties with no model in them, gated as equalities;
+unguarded they read 83.76-107.00 where 0 or 50 is due and -30.31 to -52.47 where 0 or 48.04 is.
 
-THE GRID THESE CMC GATES RUN ON IS THE DEAL'S OWN, and it is [0, Limit_Date, Expiry_Date] - three
-rows, whatever `Time_grid` asks for. `FXPartialTimeBarrierOption` declares `path_dependent` but
-does not override `add_grid_dates`, so it contributes only its two reval dates and, as the only
-deal in the portfolio, its dates ARE the reporting grid. The window is therefore monitored over
-two intervals, which is exact for GBM given the bridge and is why the oracle agrees; it also means
-a profile assertion here reads three rows, and the middle one is the limit date.
+THE GRID THE CMC GATES RUN ON IS THE DEAL'S OWN, and it is [0, Limit_Date, Expiry_Date] - three
+rows, whatever `Time_grid` asks for, because `FXPartialTimeBarrierOption` declares `path_dependent`
+without overriding `add_grid_dates`. The window is therefore monitored over TWO intervals, which is
+exact for GBM given the bridge and is why the oracle agrees.
 """
 import io
 import json
@@ -120,10 +113,9 @@ def _mtm(out, ref='PB'):
 # --------------------------------------------------------------------------------------------
 def _oracle_legs(barrier_type, barrier, strike=1.25, at_start='No', option_type='Call',
                  t1=T1, t=T, paths=1 << 17, seed=7):
-    """The deal's two legs at t0: the option, and the rebate PER UNIT of `Cash_Rebate`.
-
-    The rebate follows the deal's own conventions - a knock-OUT pays at the hit, an untouched
-    knock-IN at expiry - so the hit-time discount accumulates per step rather than applying once.
+    """The deal's two legs at t0: the option, and the rebate PER UNIT of `Cash_Rebate`. The rebate
+    follows the deal's own conventions - a knock-OUT pays at the hit, an untouched knock-IN at
+    expiry - so the hit-time discount accumulates per step rather than applying once.
     """
     rng = np.random.default_rng(seed)
     steps = int(round(t * 365))
@@ -172,9 +164,9 @@ CASES = [(bt, at, bar) for at in ('Yes', 'No')
 @pytest.mark.parametrize('barrier_type,at_start,barrier', CASES,
                          ids=['%s-%s' % (bt, at) for bt, at, _ in CASES])
 def test_the_closed_form_prices_to_the_independent_oracle(barrier_type, at_start, barrier):
-    """Every direction and both windows against the bridge-corrected Monte Carlo. The tolerance
-    carries the oracle's own error (daily bridge under flat parameters) plus ApproxBivN's ~1e-4
-    CDF error scaled by notional - measured, with the worst case pinned in the module docstring."""
+    """Every direction and both windows against the bridge-corrected Monte Carlo. The 2% tolerance
+    carries the oracle's own daily-bridge error plus ApproxBivN's ~1e-4 CDF error scaled by
+    notional; the worst reading is in the module docstring."""
     v = _mtm(_run(_job(_deal(barrier_type, barrier, at_start=at_start))))
     ref = _oracle(barrier_type, barrier, at_start=at_start)
     scale = max(abs(ref), 0.02 * NOTIONAL)
@@ -194,20 +186,12 @@ REBATE_TYPES = ['Call'] * len(CASES) + ['Put', 'Put']
                          ids=['%s-%s-%s' % (bt, at, t)
                               for (bt, at, _), t in zip(REBATE_CASES, REBATE_TYPES)])
 def test_the_rebate_prices_to_the_independent_oracle(barrier_type, at_start, barrier, option_type):
-    """`Cash_Rebate` was worth EXACTLY NOTHING: `getpartialbarrierpayoff` carried no rebate term at
-    all, so at base valuation the rebate moved the mark by 0.0000 in all eight configurations while
-    it is worth 14-34 on a notional of 1000 at a rebate of 50. The knock-in's only appearance was
-    the expiry pad, which is why the roadmap named it - but the knock-out's pre-hit expectation was
-    missing by the same omission, and both are gated here.
-
-    The isolated leg is what this measures, not the mark: `v(R) - v(0)` against the oracle's own
-    rebate leg, so the option leg's error cannot pay for a rebate error. MEASURED at R=50 over the
-    eight Call configurations: worst 0.56% (Up_And_Out, start window), the rest 0.15-0.43%, and the
-    SIGN is the oracle's own daily-bridge bias every time - a knock-out's hit rebate reads high
-    against an oracle that misses crossings, an untouched knock-in's reads low.
-
+    """The ISOLATED leg, not the mark: `v(R) - v(0)` against the oracle's own rebate leg, so the
+    option leg's error cannot pay for a rebate error. Worst 0.56% over the eight Call
+    configurations, and the SIGN is the oracle's daily-bridge bias every time - a knock-out's hit
+    rebate reads high against an oracle that misses crossings, an untouched knock-in's reads low.
     The tolerance also carries `ApproxBivN`'s ~7e-4 CDF error, which enters the end-window legs
-    twice and is worth ~0.07 at this rebate."""
+    twice."""
     deal = dict(barrier_type=barrier_type, at_start=at_start, option_type=option_type)
     v0 = _mtm(_run(_job(_deal(barrier=barrier, rebate=0.0, **deal))))
     vr = _mtm(_run(_job(_deal(barrier=barrier, rebate=REBATE, **deal))))
@@ -218,8 +202,8 @@ def test_the_rebate_prices_to_the_independent_oracle(barrier_type, at_start, bar
     assert abs(vr - (opt + REBATE * reb)) / scale < 2e-2, (barrier_type, at_start, vr)
 
 
-#: (barrier_type, barrier, limit_days, the rebate leg's EXACT value). A start window is closed
-#: once its limit date has passed, and touched once the spot is on the barrier's far side - two
+#: `(barrier_type, barrier, limit_days, the rebate leg's EXACT value)`. A start window is closed
+#: once its limit date has passed and touched once the spot is on the barrier's far side - two
 #: shapes whose rebate legs are certainties with no model in them.
 CERTAIN = [
     ('Up_And_Out', 1.12, LIMIT_D, REBATE), ('Up_And_In', 1.12, LIMIT_D, 0.0),
@@ -234,26 +218,20 @@ CERTAIN = [
                               for bt, _, d, _ in CERTAIN])
 def test_a_touched_or_a_closed_window_pays_its_rebate_exactly_once_or_not_at_all(
         barrier_type, barrier, limit_days, leg):
-    """`partial_window_rebate`'s start-window forms are the LIVE side of a LIVE window and nothing
-    else, and both other branches are reachable through the document.
+    """`partial_window_rebate`'s start-window forms are the LIVE side of a LIVE window, and both
+    other branches are reachable through the document. A spot already on the barrier's far side has
+    touched at time zero, so the knock-out's rebate is worth exactly `Cash_Rebate` and the
+    knock-in's exactly nothing; a `Barrier_Limit_Date` in the PAST closes the window, so the
+    knock-out's is nothing and the untouched knock-in's is `Cash_Rebate * exp(-rT)`. Equalities
+    rather than Monte Carlo statements, base valuation carrying no touch mask at all.
 
-    A spot already on the barrier's far side has touched at time zero: the knock-out's rebate is
-    paid NOW and is worth exactly `Cash_Rebate`, the knock-in's can never be collected and is worth
-    exactly nothing. A `Barrier_Limit_Date` in the PAST closes the window: nothing can be hit any
-    more, so the knock-out's is nothing and the untouched knock-in's is a certain payment at expiry
-    worth exactly `Cash_Rebate * exp(-rT)`. Neither is a Monte Carlo statement - these are
-    equalities, gated to the bit-ish, and base valuation carries no touch mask at all
-    (`need_spot_at_expiry` is zero), so the closed form answers alone.
+    Unguarded, on a rebate of 50: the touched knock-out paid 83.76/92.30 where 50 is due, the
+    touched knock-in -30.31/-38.18 where nothing is, the seasoned knock-out 97.97/107.00 against
+    nothing, and the seasoned knock-in -44.11/-52.47 against 48.04.
 
-    MEASURED against the unguarded forms, on a rebate of 50: the touched knock-out paid
-    83.76/92.30 (up/down) where 50 is due, and the touched knock-in -30.31/-38.18 where nothing is;
-    the seasoned knock-out paid 97.97/107.00 against nothing due, and the seasoned knock-in
-    -44.11/-52.47 against 48.04. A survival probability read -1.05 and a discounted one-touch
-    +2.14 at their worst.
-
-    NOT this gate's subject: the OPTION leg of a start window is the same live-side-only reading
-    (a seasoned Up_And_Out below its own barrier marks -6.141370 where the vanilla is 85.23), and
-    that is unchanged at HEAD - a separate, older defect with its own row.
+    NOT this gate's subject: the OPTION leg of a start window is the same live-side-only reading (a
+    seasoned Up_And_Out below its barrier marks -6.14 where the vanilla is 85.23), which is a
+    separate open defect with its own roadmap row.
     """
     kwargs = dict(barrier_type=barrier_type, barrier=barrier, at_start='Yes',
                   limit_days=limit_days)
@@ -263,15 +241,11 @@ def test_a_touched_or_a_closed_window_pays_its_rebate_exactly_once_or_not_at_all
 
 
 def test_an_untouched_knock_in_ages_carrying_its_discounted_rebate():
-    """The roadmap's own statement of the defect: the knock-IN's rebate entered ONLY through the
-    expiry pad, so every pre-expiry row of an untouched deal marked it at zero and the profile
-    stepped up to it at the last row.
-
-    Aging is the test that can see it. A knock-in settles nothing before expiry, so under a
-    risk-neutral simulation its DEFLATED profile mean must sit on the t0 mark at every row - and a
-    rebate that appears only at expiry is exactly a profile that does not. MEASURED with the term
-    absent: the t0 mark is 5.62 against an expiry row of 39.9, a 7x step; with it, the deflated
-    profile holds the t0 mark of 39.86 across every row."""
+    """The knock-IN's rebate entered ONLY through the expiry pad, so every pre-expiry row of an
+    untouched deal marked it at zero and the profile stepped up at the last row. AGING is what sees
+    it: a knock-in settles nothing before expiry, so its DEFLATED profile mean must sit on the t0
+    mark at every row. With the term absent the t0 mark is 5.62 against an expiry row of 39.9, a 7x
+    step; with it, the profile holds 39.86 across every row."""
     deal = _deal('Down_And_In', 1.12, at_start='Yes', rebate=REBATE)
     t0 = _mtm(_run(_job(deal)))
     job = _job(deal, calc={
@@ -305,10 +279,9 @@ def test_an_unreachable_barrier_is_the_vanilla_and_a_certain_one_is_nothing():
 
 
 def test_rows_past_the_limit_date_are_finite_and_vanilla():
-    """The NaN the roadmap suspected: past Barrier_Limit_Date `limit` is negative and reaches
-    `sqrt` unclamped, so every CMC row between the limit and expiry priced NaN. Past the limit a
-    start-window deal IS a vanilla on its surviving paths - the profile must be finite
-    everywhere and the post-limit rows must track the vanilla document's profile."""
+    """Past `Barrier_Limit_Date` the `limit` is negative and reached `sqrt` unclamped, so every CMC
+    row between the limit and expiry priced NaN. Past the limit a start-window deal IS a vanilla on
+    its surviving paths, so the profile must be finite everywhere."""
     def cmc(deal):
         job = _job(deal, calc={
             'Object': 'CreditMonteCarlo', 'Time_grid': '0d 12m(1m)', 'Batch_Size': 1024,
@@ -324,11 +297,10 @@ def test_rows_past_the_limit_date_are_finite_and_vanilla():
 
 
 def test_a_touch_outside_the_window_does_not_knock():
-    """The window is the deal: a start-window that closes after two days leaves ten months in
-    which the spot can cross the barrier with no contractual effect - the deal is a vanilla on
-    virtually every path. The engine monitored EVERY interval, so mid-life crossings knocked a
-    barrier that no longer existed and the profile collapsed on exactly those paths. Post-fix
-    the partial document's profile tracks the vanilla document's row for row."""
+    """The window IS the deal: one that closes after two days leaves ten months in which the spot
+    can cross with no contractual effect, so the deal is a vanilla on virtually every path. The
+    engine monitored EVERY interval, so mid-life crossings knocked a barrier that no longer existed
+    and the profile collapsed on exactly those paths."""
     def profile_of(deal):
         job = _job(deal, calc={
             'Object': 'CreditMonteCarlo', 'Time_grid': '0d 12m(1m)', 'Batch_Size': 2048,
@@ -347,10 +319,8 @@ def test_a_touch_outside_the_window_does_not_knock():
                           'Expiry_Date': BASE + pd.DateOffset(days=EXPIRY_D),
                           'Option_Style': 'European', 'Settlement_Style': 'Cash'})
     assert np.isfinite(np.asarray(partial, float)).all()
-    # the discriminator is the EXPIRY row: pre-fix, mid-life crossings (P ~ 55% at this barrier
-    # by 12m) knocked a window that closed after two days, collapsing realised payoffs; post-fix
-    # the row matches the vanilla document's within Monte Carlo noise (the two documents' grids
-    # draw different paths, so the comparison is of means, not paths)
+    # the discriminator is the EXPIRY row, where mid-life crossings (P ~ 55% by 12m) collapsed the
+    # realised payoffs. The two documents' grids draw different paths, so this compares means
     a = float(np.asarray(partial.iloc[-1], float).mean())
     v = float(np.asarray(vanilla.iloc[-1], float).mean())
     assert abs(a - v) / v < 8e-2, (a, v)
@@ -360,11 +330,10 @@ def test_a_touch_outside_the_window_does_not_knock():
     ('Up_And_Out', 'Yes', 1.40), ('Up_And_Out', 'No', 1.40), ('Down_And_In', 'No', 1.20)],
     ids=['KO-start', 'KO-end', 'KI-end'])
 def test_the_deal_ages_as_a_martingale(barrier_type, at_start, barrier):
-    """The aging statement: under a risk-neutral simulation (model drift = the carry) the
-    DEFLATED profile mean must sit on the t0 mark at every row - across the window edge, through
-    the knock transitions the bridge probability accumulates, and onto the expiry settlement. Any
-    aging defect (a window monitored outside itself, a state dropped at the limit date, a
-    mis-bridged knock) shows up as decay or drift in what must be flat."""
+    """Under a risk-neutral simulation the DEFLATED profile mean sits on the t0 mark at every row -
+    across the window edge, through the knock transitions the bridge probability accumulates, and
+    onto the expiry settlement. Any aging defect - a window monitored outside itself, a state
+    dropped at the limit date, a mis-bridged knock - is decay or drift in what must be flat."""
     t0 = _mtm(_run(_job(_deal(barrier_type, barrier, at_start=at_start))))
     job = _job(_deal(barrier_type, barrier, at_start=at_start), calc={
         'Object': 'CreditMonteCarlo', 'Time_grid': '0d 12m(1m)', 'Batch_Size': 8192,
@@ -384,9 +353,8 @@ def test_the_deal_ages_as_a_martingale(barrier_type, at_start, barrier):
 # the window-touch decision, and which of its two forms is a LATCH
 # --------------------------------------------------------------------------------------------
 # `get_fx_barrier_underlying` publishes a bridge variance rate only while the deal's QUOTE leg is
-# static. Report the book off a THIRD currency and USD is simulated too, the rate is absent, every
-# interval variance is zero, and `barrier_touched` collapses from a Brownian-bridge probability to
-# a 0/1 endpoint test - the one form of this decision that is a latch.
+# static. Report off a THIRD currency and USD is simulated too, the rate is absent, every interval
+# variance is zero, and `barrier_touched` collapses to a 0/1 endpoint test - the latch form.
 def _cva_job(deal, spot=X0, gradient=False, bridge=True, hessian=False,
              batch=8192, batches=4, bandwidth=0.01, window_touch='Yes'):
     factors = {k: dict(v) for k, v in FACTORS.items()}
@@ -425,8 +393,8 @@ def _cva_job(deal, spot=X0, gradient=False, bridge=True, hessian=False,
 
 
 def _cva(**kwargs):
-    """(cva, dCVA/d(EUR spot) or None). The bumped runs change one factor value and nothing else,
-    so common random numbers arrive through the contract rather than through a patch."""
+    """`(cva, dCVA/d(EUR spot) or None)`. The bumped runs change one factor value and nothing else,
+    so common random numbers arrive through the contract rather than a patch."""
     out = _run(_cva_job(**kwargs))
     cva = float(out['Results']['cva'])
     if not kwargs.get('gradient'):
@@ -443,25 +411,20 @@ LATCH_DEAL = _deal('Up_And_Out', 1.32, at_start='Yes', limit_days=182)
 
 @pytest.mark.parametrize('bridge', [True, False], ids=['bridge', 'endpoints'])
 def test_the_window_touch_decision_registers_only_where_it_is_a_latch(bridge):
-    """One decision, ONE estimator - and which estimator depends on whether the bridge is there.
+    """ONE DECISION, ONE ESTIMATOR, and which estimator depends on whether the bridge is there.
+    With an interval variance `barrier_touched` returns a Brownian-bridge PROBABILITY continuous in
+    the spot, so ordinary AAD already carries the flux; without one it returns a 0/1 indicator with
+    zero derivative almost everywhere - a latch, and the only form needing a `LatchedBoundarySet`.
+    Registering on the bridge branch too would count one decision twice.
 
-    `barrier_touched` has two branches. With an interval variance it returns a Brownian-bridge
-    PROBABILITY that is continuous in the spot: an endpoint beyond the barrier makes the bridge
-    term exactly one, so the two agree at the crossing and ordinary AAD already carries the flux.
-    Without one it returns `(prev + beyond).clip(max=1)`, a 0/1 indicator with zero derivative
-    almost everywhere - a latch, and the only form that needs a `LatchedBoundarySet`. Registering
-    on the bridge branch as well would count the same decision twice.
+    The seam that says which happened, nothing patched: a CVA Hessian is refused BY NAME on a book
+    that registered a boundary correction, strictly before the exposure kink term is built. Both
+    branches refuse here - a knocked-out path is worth exactly zero, so an ATOM sits at the kink
+    either way - but for different reasons, which makes the MESSAGE the reading. The 'register on
+    both' and 'register on neither' mutants each swap one branch's message for the other's.
 
-    The seam that says which happened, with nothing patched: a CVA Hessian is refused BY NAME on a
-    book that registered a boundary correction, and that refusal is raised strictly before the
-    exposure kink term is built. Both branches refuse here - a knocked-out path is worth exactly
-    zero, so this deal puts an ATOM at the exposure kink either way - but they refuse for different
-    reasons and say so, which makes the message the exact reading. The 'register on both' and
-    'register on neither' mutants each swap one branch's message for the other's.
-
-    MEASURED on the bridge branch, which is why that half is a design statement and not a defect:
-    dCVA/dspot reads -2.742147 against a CRN ladder flat to 1.02% whose best rung is -2.730047,
-    0.44% apart, with no registration at all."""
+    On the bridge branch dCVA/dspot reads 0.44% off a CRN ladder flat to 1.02%, with no
+    registration at all - which is why that half is a design statement and not a defect."""
     job = _cva_job(LATCH_DEAL, gradient=True, bridge=bridge, hessian=True, batch=512, batches=1)
     with pytest.raises(utils.SecondOrderRefused) as refusal:
         _run(job)
@@ -479,16 +442,13 @@ def test_the_window_touch_registration_is_opt_in_and_off_by_default():
     """It decides the SIGN of the reported delta on a magnitude nobody has established, so it does
     not ship live: `Boundary_AAD_Window_Touch` defaults to No and the pricer registers nothing.
 
-    Two readings, both exact. The Hessian refusal on the endpoint branch says `ATOM of exposure`
-    with the switch off - the same message the bridge branch gives, i.e. nothing was registered -
-    and the reported gradient there is BIT-IDENTICAL to the same run with the correction suppressed
-    through `Boundary_AAD_Bandwidth`, which is what "registers nothing" means as a number.
+    Two exact readings: the Hessian refusal on the endpoint branch says `ATOM of exposure` with the
+    switch off - the bridge branch's message, i.e. nothing registered - and the reported gradient
+    is BIT-IDENTICAL to the same run with the correction suppressed through the bandwidth.
 
-    WHY IT IS NOT ON. At 16384 paths the CRN ladder over h = 1e-4..1e-2 reads -0.741, -1.027,
-    -0.909, -0.683, -0.785, -0.522, -0.585: a spread of 68% of its own median, against a corrected
-    -1.8134911 (77% out) and a suppressed +0.7865276. Every rung there is negative and only the
-    corrected delta shares their sign - but at 8192 paths the ladder is not even sign-unanimous
-    (+1.246, -1.214, -1.087), so the sign is not a gateable statement either.
+    WHY IT IS NOT ON: at 16384 paths the CRN ladder spreads 68% of its own median, against a
+    corrected delta 77% out and a suppressed one of the opposite sign - and at 8192 paths the
+    ladder is not even sign-unanimous, so the sign is not a gateable statement either.
     """
     job = _cva_job(LATCH_DEAL, gradient=True, bridge=False, hessian=True, batch=512, batches=1,
                    window_touch='No')
@@ -505,25 +465,18 @@ def test_the_window_touch_registration_is_opt_in_and_off_by_default():
 
 def test_asking_for_the_partial_barrier_sensitivities_does_not_move_the_exposure():
     """BIT-identical, not approximately: the correction is `gap - gap.detach()`, worth exactly zero
-    in the forward pass, so any drift means the registration path perturbed the valuation instead
-    of observing it. Run on the endpoint branch, the one that registers at all.
+    forward, so any drift means the registration path perturbed the valuation. On the endpoint
+    branch, the one that registers at all.
 
-    THE MAGNITUDE OF THE TERM IT GATES, and the declared limit on it. On this fixture at 32768
-    paths the reported dCVA/dspot reads -2.2467692 with the registration and +0.5207422 without -
-    the sign itself is what the flux decides. Its own bandwidth ladder is FLAT: -2.27999, -2.24677,
-    -2.12172, -2.02104 over 0.005 to 0.05, a 12% spread over a factor of ten, and the reading moves
-    2.4% between 4096 and 32768 paths.
+    THE TERM'S MAGNITUDE: at 32768 paths dCVA/dspot reads -2.2467692 with the registration and
+    +0.5207422 without, so the SIGN is what the flux decides, and its own bandwidth ladder is flat
+    to 12% over a factor of ten in the bandwidth.
 
-    WHAT IS NOT ESTABLISHED IS THE MAGNITUDE, and no gate here pretends otherwise. The CRN oracle
-    does not converge on this fixture: over h = 1e-4 to 1e-2 at 32768 paths it reads -1.141,
-    -0.911, -0.803, -1.466, -1.034, -0.774, -0.661 - a spread of 88% of its own median, scattering
-    rather than refining, which is what differencing across a genuine discontinuity looks like.
-    Against its closest rung the corrected delta is 35% out and the suppressed one 227%. This deal
-    prices on THREE rows (see the module docstring), so the whole window carries at most two
-    decisions and exactly one of them is live - there is no fixture of this instrument with more,
-    which is why the ladder cannot be tightened by raising paths alone. WHICH IS WHY THE
-    REGISTRATION IS OPT-IN: this gate asks for it by name through `Boundary_AAD_Window_Touch`, and
-    the shipped default registers nothing (the gate above)."""
+    WHAT IS NOT ESTABLISHED IS THAT MAGNITUDE, and no gate here pretends otherwise: the CRN oracle
+    spreads 88% of its own median and SCATTERS rather than refining, which is what differencing
+    across a genuine discontinuity looks like. The deal prices on THREE rows, so the window carries
+    at most two decisions and one is live - there is no fixture with more, which is why the ladder
+    cannot be tightened by raising paths. Which is why the registration is OPT-IN."""
     off, _ = _cva(deal=LATCH_DEAL, bridge=False, batch=1024, batches=1)
     on, grad = _cva(deal=LATCH_DEAL, gradient=True, bridge=False, batch=1024, batches=1)
     assert off == on, 'the exposure moved when sensitivities were requested: %r -> %r' % (off, on)
