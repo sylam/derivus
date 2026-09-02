@@ -2066,9 +2066,10 @@ def test_a_quoted_collar_is_filed_pending_and_books_at_zero(quoting, tmp_path):
 CALIBRATED = {'Property_Aliases': None, 'Omega': 1e-12, 'Alpha': 2.0e-6, 'Beta': 0.45,
               'Gamma_Star': -474.34, 'H0': 7.8e-5}
 
-#: An accumulator on the RAND, which is the orientation that joins: the engine keys a spot model
-#: off `Underlying_Currency`, the calibration writes the pair's non-domestic token, and an
-#: accumulator - unlike a TARF - may be quoted from either side.
+#: An accumulator on the RAND: the orientation whose underlying IS the token a spot model is keyed
+#: on, so it rides the fit as written and crosses no axis. What this gate is about is the pin
+#: reaching the book with the trade, not the keying - the keying's own gates are in
+#: `test_structures.py` and `test_fx_accumulator_json.py`.
 ACCUMULATOR = {'pair': 'USDZAR', 'expiry': '3M', 'notional': AMOUNT, 'notional_currency': 'ZAR',
                'fixing_frequency': '1M', 'knockout': USDZAR * 1.10}
 

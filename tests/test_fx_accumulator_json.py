@@ -438,3 +438,222 @@ def test_a_knocked_deal_still_carries_its_pending_settlements(tmp_path):
         crn.append((up - dn) / (2.0 * h))
     best = min(crn, key=lambda c: abs(aad - c))
     assert abs(aad - best) / abs(best) < 5e-2, (aad, crn, cva)
+
+
+# --------------------------------------------------------------------------------------------
+# THE RECIPROCAL AXIS: one law per pair, and the reader learns which side of it the deal is on
+#
+# `FxRate.<ccy>` is that currency priced in the BASE, so on a USD-base book only `FxRate.EUR` is a
+# rate the engine can simulate and only `.EUR` is a block the calibration can write. A deal whose
+# `Underlying_Currency` IS the base therefore pays on the RECIPROCAL of the fitted axis, and
+# settles in the other currency - which is a change of NUMERAIRE as well as of axis. The fitted law
+# carries to it exactly, at the cost of one parameter (`utils.hn_reciprocal_gamma`).
+#
+# The deal below is the template's own mirror: USD notional, EUR settlement, the same schedule and
+# the same barrier out of reach, so it is still a strip of Europeans - on `1/S` this time.
+# --------------------------------------------------------------------------------------------
+SPY = 252.0
+
+#: The daily variance of a 10% flat vol, and the DEGENERATE Heston-Nandi that holds it: no ARCH, no
+#: leverage, no GARCH memory, so `h` is that number for all t and the strip has a Black closed form
+#: on whichever axis the law is carried to. It is the only fixture that can PIN the AXIS exactly -
+#: and at `Alpha: 0.0` the leverage term drops out of `hn_variance_step` entirely, so `Gamma_Star`
+#: and therefore `hn_reciprocal_gamma` have NO effect on it. The carry is pinned elsewhere.
+SIGMA_HN = 0.10
+H_DAILY = SIGMA_HN ** 2 / DAYS
+DEGENERATE = {'Property_Aliases': None, 'Omega': H_DAILY, 'Alpha': 0.0, 'Beta': 0.0,
+              'Gamma_Star': 0.0, 'H0': H_DAILY}
+
+#: A calibrated-looking fit carrying the LEVERAGE the degenerate one cannot: what the change of
+#: numeraire is worth is read off this one.
+LEVERED = {'Property_Aliases': None, 'Omega': 1e-12, 'Alpha': 2.0e-6, 'Beta': 0.45,
+           'Gamma_Star': -474.34, 'H0': 7.8e-5}
+
+#: The deal's own axis: EUR per USD, the reciprocal of the `FxRate.EUR` the engine simulates -
+#: `FxRate.EUR` being one euro in the book's USD base, which is USD per EUR.
+RECIPROCAL_SPOT = 1.0 / SPOT
+RECIPROCAL_STRIKE = round(RECIPROCAL_SPOT, 4)
+
+
+def _reciprocal_job(factor=DEGENERATE, model='HestonNandi', sims=None, **calc):
+    """The template mirrored onto the base currency, under a declared spot model."""
+    job = _template()
+    market = job['Calc']['MergeMarketData']['ExplicitMarketData']
+    _deal_of(job).update({
+        'Currency': 'EUR', 'Underlying_Currency': 'USD', 'Discount_Rate': 'EUR',
+        'Strike_Price': RECIPROCAL_STRIKE, 'Barrier_Type': 'Up_And_Out', 'Barrier_Price': 5.0})
+    market['Price Factors']['{}ModelParameters.EUR'.format(model)] = dict(factor)
+    market['Valuation Configuration'] = {'FXAccumulatorOptionDeal': {'SpotModel': model}}
+    if sims:
+        job['Calc']['Calculation']['MCMC_Simulations'] = sims
+    job['Calc']['Calculation'].update(calc)
+    return job
+
+
+def _reciprocal_expected():
+    """Black on the DEAL's own axis - the forward at the DEAL's own carry (`r_EUR - r_USD`) and the
+    variance the daily recursion accumulates. No reciprocal appears in it: that is the claim."""
+    value, prev_t, days = 0.0, 0.0, 0
+    for fix, settle in FIXINGS:
+        t, ts = fix / DAYS, settle / DAYS
+        days += max(int(round((t - prev_t) * SPY)), 1)
+        prev_t = t
+        F = RECIPROCAL_SPOT * math.exp((Q_EUR - _r_usd(t)) * t)
+        sd = math.sqrt(days * H_DAILY)
+        d1 = (math.log(F / RECIPROCAL_STRIKE) + 0.5 * sd * sd) / sd
+        d2 = d1 - sd
+        call = F * _ndtr(d1) - RECIPROCAL_STRIKE * _ndtr(d2)
+        put = RECIPROCAL_STRIKE * _ndtr(-d2) - F * _ndtr(-d1)
+        value += math.exp(-Q_EUR * ts) * (N1 * call - N2 * put)
+    # reported in the job's USD reporting currency, off the EUR the deal settles in
+    return value * SPOT
+
+
+def test_a_base_currency_underlying_prices_on_its_own_axis_under_the_fitted_law(tmp_path):
+    """The reciprocal arm's AXIS, against a closed form the engine has no part in.
+
+    `Underlying_Currency` USD on a USD-base book: the deal pays EUR-per-USD while the only law the
+    market carries is fitted on `FxRate.EUR`, USD-per-EUR. Before this the deal could not name a
+    block at all - `.USD` is a numeraire, never a rate - and rode GBM on a calibrated book. Now it
+    names the pair's non-base token, and the strip is Black on the DEAL's own axis at the DEAL's own
+    carry `r_EUR - r_USD`, with no convexity term and no reciprocal anywhere in the reference.
+
+    WHAT THIS PINS, exactly: the token rule and the deal-axis carry. Keyed the pre-rule way it looks
+    up `HestonNandiModelParameters.USD`, the deal is SKIPPED and there is no row to read.
+
+    WHAT IT CANNOT PIN, said out loud: the parameter carry. `hn_variance_step` is
+    `omega + beta*h + alpha*(z - gamma_star*sqrt(h))**2`, so at `Alpha: 0.0` the leverage term is
+    identically zero and `Gamma_Star` - hence `hn_reciprocal_gamma` - has no effect on this fixture.
+    Measured: with the carry mutated to the identity this gate still passes. The carry's SIGN is
+    read by `test_one_trade_authored_from_either_axis_is_one_number_under_the_fitted_law` on the
+    levered fit, and the whole map in closed form by
+    `test_hn_component.py::test_the_reciprocal_carry_is_the_fx_option_symmetry_in_closed_form`.
+    The 2e-3 bound is the 3.3e-4 seed spread at 16,384 paths with room over it.
+    """
+    reference = _reciprocal_expected()
+    value = _mtm(_run(_reciprocal_job(sims=1 << 14), tmp_path, 'recip'))
+    assert abs(value / reference - 1.0) < 2e-3, (value, reference)
+
+
+#: The two axes of one accumulator: EUR per USD on the reciprocal side, USD per EUR on the direct
+#: one, with the equivalent notional converting at the STRIKE exactly as the runner's own axis gate
+#: states (`N` USD is `N * K_A` EUR). Both barriers are out of reach, so both are strips of
+#: Europeans and the identity is the change of numeraire and nothing else.
+DIRECT_STRIKE = 1.10
+MIRROR_STRIKE = 1.0 / DIRECT_STRIKE
+
+
+def _mirrored_job(orientation, sims):
+    """One trade, authored from either side of the pair, on one calibrated market."""
+    job = _template()
+    market = job['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Factors']['HestonNandiModelParameters.EUR'] = dict(LEVERED)
+    market['Valuation Configuration'] = {'FXAccumulatorOptionDeal': {'SpotModel': 'HestonNandi'}}
+    if orientation == 'direct':
+        # the fitted axis itself: EUR underlying, USD settlement, and a market call on the pair is
+        # an engine PUT here with its knock-out direction flipped to match
+        _deal_of(job).update({
+            'Currency': 'USD', 'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD',
+            'Option_Type': 'Put', 'Strike_Price': DIRECT_STRIKE,
+            'Underlying_Amount': N1 * MIRROR_STRIKE, 'LeverageNotional': N2 * MIRROR_STRIKE,
+            'Barrier_Type': 'Down_And_Out', 'Barrier_Price': 0.2})
+    else:
+        _deal_of(job).update({
+            'Currency': 'EUR', 'Underlying_Currency': 'USD', 'Discount_Rate': 'EUR',
+            'Option_Type': 'Call', 'Strike_Price': MIRROR_STRIKE,
+            'Underlying_Amount': N1, 'LeverageNotional': N2,
+            'Barrier_Type': 'Up_And_Out', 'Barrier_Price': 5.0})
+    job['Calc']['Calculation']['MCMC_Simulations'] = sims
+    return job
+
+
+def test_one_trade_authored_from_either_axis_is_one_number_under_the_fitted_law(tmp_path):
+    """THE CONSISTENCY GATE, and the one that pins the DIRECTION of the carry.
+
+    An accumulator on 1,000 dollars settled in euro and the euro accumulator it is - notional
+    converted at the strike, sense inverted, knock-out direction flipped - are the same trade, and
+    one law must price them at one number in the reporting currency. The direct side rides the fit
+    as written; the reciprocal side rides it CARRIED. A carry left out, or applied the wrong way,
+    is the same trade at two prices, which is the defect this whole row is about wearing different
+    clothes.
+
+    MEASURED. Carried, the two agree to 1.2e-3 / 2.3e-3 over 4,096 to 262,144 paths, which is the
+    seed-to-seed spread of two INDEPENDENT runs at this file's own measured sd (0.09% each at
+    262,144, so 0.13% for the pair) and does not shrink because neither run's error does. With the
+    carry removed they disagree by 2.7% to 4.1% - twenty times the bound, and it GROWS with the
+    path count because it is a bias rather than noise. The bound is 5e-3.
+
+    WHAT THIS GATE DOES NOT RESOLVE, said out loud: the map is `1 - gamma*`, and the UNIT SHIFT in
+    it is worth only 2.7e-4 to 1.5e-3 here - under the floor. What this reads is the SIGN, which is
+    the 3-4% half. The whole map, unit shift included, is pinned in closed form at 1.4e-12 by
+    `test_hn_component.py::test_the_reciprocal_carry_is_the_fx_option_symmetry_in_closed_form`.
+    """
+    import derivus.utils as utils
+
+    assert utils.hn_reciprocal_gamma(utils.hn_reciprocal_gamma(-474.34)) == -474.34
+    assert utils.hn_reciprocal_gamma(-474.34) > 0.0, 'the leverage skew mirrors with the axis'
+
+    sims = 1 << 16
+    mirror = _mtm(_run(_mirrored_job('reciprocal', sims), tmp_path, 'mirror'))
+    direct = _mtm(_run(_mirrored_job('direct', sims), tmp_path, 'direct'))
+    assert abs(mirror / direct - 1.0) < 5e-3, (mirror, direct)
+
+
+def test_a_family_that_cannot_be_carried_to_the_reciprocal_axis_refuses_by_name(tmp_path):
+    """The component family does not transport, and a deal that would have to be transported
+    REFUSES rather than pricing off a law nobody fitted.
+
+    The change of numeraire puts a state-dependent term in the component's long-run intercept -
+    `omega_t + phi*(1 - 2*gamma2)*h_t` - so the carried law is not a component parameter set and no
+    `L_Curve` describes it. That is a fact about the model, so the refusal is FATAL
+    (`UnpriceableSchedule`): a compile guard's canonical answer is to log and skip, and a skipped
+    deal marks at nothing on a job that then reports success.
+    """
+    component = {'Property_Aliases': None, 'Alpha': 3.5681e-06, 'Beta': 0.8138,
+                 'Gamma_1': -64.992, 'Rho': 0.99, 'Phi': 1.9820e-06, 'Gamma_2': -64.992,
+                 'H0': 7.295e-05,
+                 'L_Curve': {'.Curve': {'meta': [], 'data': [[0.0, 7.295e-05], [0.5, 9.647e-05]]}}}
+    try:
+        _run(_reciprocal_job(component, model='HestonNandiComponent', sims=1 << 10),
+             tmp_path, 'component')
+        raise AssertionError('the component family priced on an axis it cannot be carried to')
+    except Exception as refusal:
+        message = str(refusal)
+    assert 'HestonNandiComponent' in message and 'ACC1' in message, message
+    assert 'base currency' in message and 'long-run intercept' in message, message
+    assert "SpotModel: 'HestonNandi'" in message, 'a refusal without a remedy'
+
+    # and the same document under the family that DOES carry prices a number
+    assert math.isfinite(_mtm(_run(_reciprocal_job(sims=1 << 10), tmp_path, 'plain')))
+
+
+def test_a_cross_pair_keeps_the_underlyings_own_read(tmp_path):
+    """Neither leg the base is OUT of the ruling's scope, and the read must not move.
+
+    Both tokens of a cross are simulated factors, so the composed spot's law is nothing the pair's
+    own calibration describes - the ruling says so and stops there. What the engine must therefore
+    still do is read `Underlying_Currency` byte for byte: a cross keyed off the settlement leg
+    instead would price one pair's deal off another pair's fit and never say so.
+    """
+    def cross(block):
+        job = _template()
+        market = job['Calc']['MergeMarketData']['ExplicitMarketData']
+        factors = market['Price Factors']
+        factors['FxRate.GBP'] = dict(factors['FxRate.EUR'], Interest_Rate='GBP', Spot=1.27)
+        factors['InterestRate.GBP'] = dict(factors['InterestRate.EUR'], Currency='GBP')
+        factors['FXVol.EUR.GBP'] = dict(factors['FXVol.EUR.USD'])
+        factors[block] = dict(DEGENERATE)
+        market['Valuation Configuration'] = {
+            'FXAccumulatorOptionDeal': {'SpotModel': 'HestonNandi'}}
+        _deal_of(job).update({'Currency': 'GBP', 'Discount_Rate': 'GBP',
+                              'FX_Volatility': 'EUR.GBP', 'Barrier_Price': 50.0})
+        job['Calc']['Calculation']['MCMC_Simulations'] = 1 << 10
+        return job
+
+    priced = _run(cross('HestonNandiModelParameters.EUR'), tmp_path, 'cross_eur')
+    assert math.isfinite(_mtm(priced)), 'a cross must still read its own underlying'
+
+    skipped = _run(cross('HestonNandiModelParameters.GBP'), tmp_path, 'cross_gbp')
+    rows = skipped['Results']['mtm']
+    assert not len(rows[rows['Reference'] == 'ACC1']), (
+        "the cross read the settlement leg - a deal priced off another pair's fit")

@@ -1013,3 +1013,73 @@ def test_a_tarf_carries_an_exposure_profile_and_a_finite_cva_under_the_component
         'a row with no dispersion across paths - the component process is not driving the spot')
     cva = float(out['Results']['cva'])
     assert np.isfinite(cva) and cva != 0.0, 'CVA %r' % cva
+
+
+# ======================================================================================
+# THE RECIPROCAL CARRY - the second exact parameter map, and the one an FX book runs on
+# ======================================================================================
+
+#: The three laws the carry is read on. The USDZAR-shaped fit is the one an FX book actually
+#: carries; the equity-shaped one has the opposite skew sign, so nothing here can be passing on the
+#: sign of `gamma_star` alone; the third has no leverage at all, which is the degenerate face where
+#: the whole map reduces to the unit shift and nothing else can hide it.
+CARRY_LAWS = (('a USDZAR-shaped fit', 1e-12, 2.0e-6, 0.45, -474.34, 7.8e-5),
+              ('an equity-shaped fit', 1e-6, 4.0e-6, 0.60, 120.0, 9.0e-5),
+              ('no leverage at all', 1e-6, 3.0e-6, 0.70, 0.0, 8.0e-5))
+
+
+def test_the_reciprocal_carry_is_the_fx_option_symmetry_in_closed_form():
+    """`utils.hn_reciprocal_gamma` in CLOSED FORM, at machine precision, with no Monte Carlo in it.
+
+    An `FxRate` is a currency priced in the BASE, so a deal whose underlying IS the base pays on the
+    reciprocal of the only leg the calibration can fit AND settles in the other currency. That is a
+    change of NUMERAIRE, and the FxRate is itself the density that performs it - which shifts the
+    innovation by exactly one standard deviation and turns `(omega, alpha, beta, gamma*)` for `s`
+    into `(omega, alpha, beta, 1 - gamma*)` for `1/s`. One law, two currencies, one parameter.
+
+    THE IDENTITY IS THE FX OPTION SYMMETRY. At zero rates both numeraires discount at one, and a put
+    on `s` struck `K` is a call on `1/s` struck `1/K` with the notional converted at the strike:
+
+        (1 / K) * E_USD[(K - s)^+]  ==  s0 * E_EUR[(1/s - 1/K)^+]
+
+    Both sides are `utils.hn_call`'s own Fourier inversion, so there is no estimator between the map
+    and the claim and the tolerance is arithmetic rather than statistical.
+
+    MEASURED, worst over three laws x three strikes: 1.4e-12 carried. The map is not
+    over-determined by luck either - `-gamma*` (the sign flip without the unit shift) misses by up
+    to 3.2e-2 and the uncarried `gamma*` by up to 5.2, so both halves of the map are pinned here.
+    The Monte Carlo consistency gates cannot do that: on
+    `test_fx_accumulator_json.py`'s fixture the unit shift alone is worth 5e-4, under the floor.
+    """
+    spot, n_steps = 1.1, 63
+    # the two WRONG candidates, named for what each one omits: `-gamma*` takes the sign flip and
+    # drops the unit shift, `gamma*` takes neither
+    worst = worst_unshifted = worst_uncarried = 0.0
+    for label, om, al, be, ga, h0 in CARRY_LAWS:
+        law = dict(n_steps=n_steps, h1=_tensor(h0), omega=_tensor(om), alpha=_tensor(al),
+                   beta=_tensor(be), r=_tensor(0.0))
+        for strike in (0.95 * spot, spot, 1.10 * spot):
+            direct = float(utils.hn_put(
+                _tensor(spot), _tensor(strike), gamma_star=_tensor(ga), **law)) / strike
+
+            def mirror(gamma):
+                return spot * float(utils.hn_call(
+                    _tensor(1.0 / spot), _tensor(1.0 / strike),
+                    gamma_star=_tensor(gamma), **law))
+
+            carried = mirror(float(utils.hn_reciprocal_gamma(_tensor(ga))))
+            assert carried == pytest.approx(direct, rel=1e-10), (
+                '%s at K/S %.2f: carried %.14e vs direct %.14e' % (label, strike / spot,
+                                                                   carried, direct))
+            worst = max(worst, abs(carried / direct - 1.0))
+            worst_unshifted = max(worst_unshifted, abs(mirror(-ga) / direct - 1.0))
+            worst_uncarried = max(worst_uncarried, abs(mirror(ga) / direct - 1.0))
+
+    assert worst < 1e-10, 'the carry degraded to %.3e' % worst
+    # and both halves of the map are load-bearing on this grid
+    assert worst_unshifted > 1e-3, (
+        'the UNIT SHIFT is not resolved by this grid: -gamma*, which takes only the sign flip, '
+        'misses by %.3e' % worst_unshifted)
+    assert worst_uncarried > 1e-2, (
+        'the CARRY is not resolved by this grid: an uncarried gamma* misses by %.3e'
+        % worst_uncarried)

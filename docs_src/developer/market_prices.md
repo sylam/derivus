@@ -216,10 +216,12 @@ relative**.
 priced in the DOMESTIC currency. So the underlying is the token that is not domestic, the strikes
 are in that factor's units, and the block declares `Use_Forward` **Yes** with `Invert_Moneyness`
 set exactly as an `FXOptionDeal` on that surface sets it. The written
-`HestonNandiModelParameters.<underlying>` is then the factor an FX TARF resolves by naming
-convention off its `Underlying_Currency` — describing the same rate the pricer simulates.
-Inverting the rate flips the sign of the skew `Gamma_Star` carries, which is why that is worth a
-paragraph.
+`HestonNandiModelParameters.<underlying>` is then the factor an FX accrual leg resolves by naming
+convention off the pair's NON-BASE token (`utils.spot_model_currency`) — the same token this fit
+names, describing the same rate the pricer simulates. Inverting the rate flips the sign of the skew
+`Gamma_Star` carries, which is why that is worth a paragraph — and it is the same flip
+`utils.hn_reciprocal_gamma` performs for a deal written on the reciprocal of this axis, where
+`gamma*` becomes `1 − gamma*` under that deal's own numeraire.
 
 **Both signs of the skew live in one box.** `Gamma_Star`'s sign IS the direction of the smile:
 positive is the equity leverage shape, vol falling with strike in the underlying's own units, and

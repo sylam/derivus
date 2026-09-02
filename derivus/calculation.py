@@ -412,13 +412,20 @@ class Calculation(object):
 
     def set_deal_structures(self, deals, output, unit, deal_level_mtm=False):
         """Compile the deal tree. `unit` is the calculation's dtype/device anchor: a deal's
-        schedules are BOUND to it as they compile, so the tensor half's birthday is this walk."""
+        schedules are BOUND to it as they compile, so the tensor half's birthday is this walk.
+
+        The BASE CURRENCY is stamped here and only here: a deal is constructed before the book it
+        prices against is known, and base-vs-foreign decides which leg of an FX pair carries a spot
+        model's law (`utils.spot_model_currency`)."""
+        base_currency = utils.check_rate_name(
+            self.config.params['System Parameters']['Base_Currency'])
         for node in deals:
             instrument = node['Instrument']
             if node.get('Ignore') == 'True':
                 self.calc_stats['Ignored'] = self.calc_stats.setdefault('Ignored', 0) + 1
                 continue
 
+            instrument.base_currency = base_currency
             logging.root.name = instrument.field.get('Reference', '<undefined>')
             if node.get('Children'):
                 struct = DealStructure(instrument, store_results=deal_level_mtm)

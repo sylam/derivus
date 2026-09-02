@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pytest
 
 import derivus
-from derivus import schema, structures
+from derivus import schema, structures, utils
 from test_service import BASE, FACTORS, SPOT, dump, fx_vol_quotes, job
 
 #: The client's numbers, in the market's own terms - USDZAR, a rand notional, a one-year tenor.
@@ -64,6 +64,12 @@ ACCRUAL_SIMS = 16384
 #: is a band no axis error survives (the smallest of them, a barrier level inverted twice, moves
 #: the solved strike by percent).
 AXIS_TOLERANCE = 2e-4
+
+#: The same band under the fitted Heston-Nandi, MEASURED rather than inherited: the two
+#: orientations solve 2.6e-4 apart at 1024 paths, 2.3e-5 at 4096, 4.2e-6 at 16384 and 1.3e-5 at
+#: 65536 - converging, and TIGHTER at the gate's own path count than the lognormal's floor, because
+#: both sides run the same daily recursion rather than reading a surface at two moneynesses.
+HN_AXIS_TOLERANCE = 1e-4
 
 #: Every parameter in the store that is NOT required, and the value it must publish. A market
 #: convention is the only reason a sales parameter carries a default at all, so this list is the
@@ -1188,37 +1194,163 @@ def test_the_axis_refusal_fires_before_the_deal_is_furnished(book):
     assert deal == {'Object': 'FXTARFOptionDeal', 'Currency': 'USD', 'Underlying_Currency': 'ZAR'}
 
 
-def test_the_absence_note_names_the_whole_join(accrual_book):
-    """What the leg says when the model is NOT pinned, and it has to be the whole truth because a
-    desk reading it will otherwise re-run a calibration that was already run.
+def calibrated(document):
+    """The book with the pair's Heston-Nandi fit installed, as `/book/hn` writes it - under the
+    pair's NON-BASE token, which is the only leg of it an `FxRate` can be."""
+    document = copy.deepcopy(document)
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
+        'HestonNandiModelParameters.ZAR'] = dict(HN_PARAMS)
+    return document
 
-    Three keyings meet at this leg and they do not agree: the ENGINE keys spot-model parameters off
-    `Underlying_Currency`, the CALIBRATION writes the pair's non-domestic token (the only leg of
-    the pair an `FxRate` can be), and `furnish_accrual` forces a TARF onto the pair's BASE. So a
-    USDZAR TARF on a USD-base book looks up `.USD` while `/book/hn` wrote `.ZAR`, and it rides GBM
-    however many times the pair is calibrated. The note names the factor looked up, the one the
-    book actually carries, and the orientation that DOES join - which is the roadmap row for the
-    engine half stated where a salesperson can read it.
+
+def test_the_absence_note_names_the_factor_the_book_would_need(accrual_book):
+    """What the leg says when the model is NOT pinned, and what it says once the pair IS fitted.
+
+    THE KEYING IS ONE RULE NOW. A spot model's parameters are named for the pair's NON-BASE token,
+    that being the only leg of the pair the engine simulates and the only one the calibration can
+    write, so `structures.spot_model` and `get_spot_model_params_factor` make the same lookup. On a
+    book that has never been fitted the note names THAT factor and the verb that installs it - a
+    salesperson can act on it - and on a book that has been fitted, both orientations pin and there
+    is no note left to write. Which is the whole of the old note's second and third sentences
+    deleted rather than reworded: they existed to explain a disagreement that no longer exists.
     """
-    document = copy.deepcopy(accrual_book)
-    factors = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
-    factors['HestonNandiModelParameters.ZAR'] = dict(HN_PARAMS)
-
-    tarf = structures.quote(document, 'TargetRedemptionForward', dict(
+    tarf = structures.quote(copy.deepcopy(accrual_book), 'TargetRedemptionForward', dict(
         accrual_params(target=TARGET), notional_currency='USD'))
     note = leg(tarf, 'tarf')['note']
 
-    assert 'HestonNandiModelParameters.USD' in note, 'the factor looked up is unnamed'
-    assert 'HestonNandiModelParameters.ZAR' in note, 'the factor the book carries is unnamed'
-    assert 'Underlying_Currency' in note and 'base side' in note
+    assert 'HestonNandiModelParameters.ZAR' in note, 'the factor looked up is unnamed'
+    assert 'HestonNandiModelParameters.USD' not in note, (
+        'the base currency is a numeraire, never a rate - it can name no block')
+    assert 'non-base' in note and '/book/hn' in note, 'a note without a remedy'
     assert tarf['valuation_configuration'] is None, 'a model was pinned that cannot be resolved'
 
-    # the joining orientation: an accumulator has no target, so it quotes on the rand and JOINS
-    joined = structures.quote(document, 'Accumulator', dict(
-        accrual_params(knockout=SPOT * 1.10), notional=NOTIONAL, notional_currency='ZAR'))
-    assert leg(joined, 'accumulator')['note'] is None, 'the pinned arm still carries a note'
+    # and on the fitted book BOTH orientations join: the TARF forced onto the base currency, and
+    # the accumulator that crosses freely
+    document = calibrated(accrual_book)
+    joined = structures.quote(document, 'TargetRedemptionForward', dict(
+        accrual_params(target=TARGET), notional_currency='USD'))
+    assert leg(joined, 'tarf')['note'] is None, 'the pinned arm still carries a note'
     assert joined['valuation_configuration'] == {
+        'FXTARFOptionDeal': {'SpotModel': 'HestonNandi'}}
+
+    accumulator = structures.quote(document, 'Accumulator', dict(
+        accrual_params(knockout=SPOT * 1.10), notional=NOTIONAL, notional_currency='ZAR'))
+    assert leg(accumulator, 'accumulator')['note'] is None
+    assert accumulator['valuation_configuration'] == {
         'FXAccumulatorOptionDeal': {'SpotModel': 'HestonNandi'}}
+
+
+def test_the_token_rule_answers_the_same_token_in_either_spelling():
+    """One rule, four callers, two dialects.
+
+    The engine (`instruments`), discovery (`Config.calculate_dependencies`) and the calibration all
+    speak `check_rate_name` TUPLES; the runner here speaks flat names off the document. The rule
+    compares on the checked form, so a mixed call cannot answer `underlying` by falling through an
+    equality that was never going to hold. That answer is the PRE-RULE token, which on the wire is
+    the defect this row closes wearing the fix's clothes.
+    """
+    spellings = (('USD', 'ZAR', 'USD'), (('USD',), ('ZAR',), ('USD',)),
+                 ('USD', 'ZAR', ('USD',)), (('USD',), ('ZAR',), 'USD'))
+    for underlying, currency, base in spellings:
+        token = utils.spot_model_currency(underlying, currency, base)
+        assert utils.check_rate_name(token) == ('ZAR',), (underlying, currency, base, token)
+
+    # a CROSS keeps the underlying, in every spelling and byte for byte
+    assert utils.spot_model_currency('EUR', 'GBP', 'USD') == 'EUR'
+    assert utils.spot_model_currency(('EUR',), ('GBP',), ('USD',)) == ('EUR',)
+
+
+def test_a_book_that_declares_no_base_currency_refuses_instead_of_pinning(accrual_book):
+    """The base is the OTHER half of the token rule, and an unknown one may not be guessed.
+
+    The rule needs two things: the pair, which is on the deal, and the base, which is on the book.
+    A quote reads that off the EXPLICIT block - the same half `market_data` reads and the only half
+    a quote can write - while the engine reads its own merged params, so a book that keeps its
+    `System Parameters` behind a `MarketDataFile` answers nothing here.
+
+    NOTHING is what this must never resolve into a token. Falling back to `Underlying_Currency` is
+    the PRE-RULE read, and its answer is right or wrong depending on a base this layer just said it
+    cannot see: where the underlying is not the base the two agree by luck, and where it IS the base
+    the quote PINS a model the engine then looks up under the other name - a dependency-loop raise,
+    a skipped deal, and the trade marked at nothing on a job reporting success. A guess that is
+    sometimes right is the worst of the three, so the token is not guessed: it refuses, naming the
+    declaration that is missing, and pins nothing on the way out.
+    """
+    document = calibrated(accrual_book)
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    del market['System Parameters']
+
+    with pytest.raises(ValueError) as refusal:
+        structures.quote(document, 'Accumulator', dict(
+            accrual_params(knockout=SPOT * 1.10), notional=NOTIONAL, notional_currency='ZAR'))
+    assert 'Base_Currency' in str(refusal.value), 'a refusal that does not name what is missing'
+    assert 'NON-BASE' in str(refusal.value), 'a refusal that does not name the rule it could not run'
+    assert 'Valuation Configuration' not in market, 'a model was pinned off a guessed base'
+
+
+def test_a_tarf_on_a_fitted_pair_stops_riding_gbm(accrual_book):
+    """THE JOINING GATE, and the defect's own signature is what it reads.
+
+    A USDZAR TARF is forced onto the pair's BASE currency - a target is a cap on a sum of
+    differences and has no reading on the reciprocal - so it used to look up a factor named for the
+    base, which is a NUMERAIRE and can name no block at all. It therefore rode GBM however many
+    times the pair was calibrated, and the way that showed was BIT-IDENTITY: the solved strike
+    under the declared model and under no model at all were the same float, to the last bit, on a
+    book carrying the fit. MEASURED on this book, before: 16.774620757621133 both ways, separation
+    exactly 0.0. After: 17.409375992866366 against the same GBM 16.774620757621133, 3.78% apart,
+    against a solve floor of 2.5e-5 at this path count.
+
+    THE ACCUMULATOR'S EXISTING HIT IS UNMOVED, and that is the other half. It was already joining -
+    its notional is the rand, so its underlying was already the non-base token - so the keying
+    change must not move it by one bit. It does not: 18.15503015327775 before and after.
+    """
+    gbm = structures.quote(copy.deepcopy(accrual_book), 'TargetRedemptionForward', dict(
+        accrual_params(target=TARGET), notional_currency='USD'))
+    modelled = structures.quote(calibrated(accrual_book), 'TargetRedemptionForward', dict(
+        accrual_params(target=TARGET), notional_currency='USD'))
+
+    lognormal = leg(gbm, 'tarf')['strike_market']
+    garch = leg(modelled, 'tarf')['strike_market']
+    assert lognormal != garch, 'the declared model priced the lognormal, to the bit'
+    assert abs(garch / lognormal - 1.0) > 1e-2, (garch, lognormal)
+    assert abs(gbm['net']) <= SOLVE_TOLERANCE and abs(modelled['net']) <= SOLVE_TOLERANCE
+
+    accumulator = structures.quote(calibrated(accrual_book), 'Accumulator', dict(
+        accrual_params(knockout=SPOT * 1.10), notional=NOTIONAL, notional_currency='ZAR'))
+    # BIT-IDENTICAL across the change when measured directly (18.15503015327775 either side); the
+    # band here is the accumulation order's, not the claim's - the hit it must not lose is 5.1e-2
+    assert leg(accumulator, 'accumulator')['strike_market'] == pytest.approx(
+        18.15503015327775, rel=1e-9), 'the orientation that already joined moved'
+
+
+def test_the_accumulator_solves_one_strike_from_either_axis_under_the_model(accrual_book):
+    """RECIPROCAL CONSISTENCY under the fitted law - the axis gate's shape, one model on.
+
+    The rand orientation rides the fit as written; the dollar orientation is on the RECIPROCAL of
+    the axis it was fitted on and settles in the other currency, so the law is carried to that
+    numeraire (`utils.hn_reciprocal_gamma`). If it were not carried - if the pricer simply walked
+    the fitted law and read `1/s` - the two orientations would solve strikes 3.4e-3 apart and the
+    gap would NOT close with the path count, because it is a Siegel drift and not noise.
+
+    THE TOLERANCE IS MEASURED HERE AND NOT INHERITED. Under the model the two solve 2.6e-4 apart at
+    1,024 paths, 2.3e-5 at 4,096, 4.2e-6 at 16,384 and 1.3e-5 at 65,536 - converging, and TIGHTER
+    at the gate's own path count than the lognormal's own 2.5e-5 floor, because both orientations
+    now run the same daily recursion. The band is 1e-4.
+    """
+    document = calibrated(accrual_book)
+    both_ways = {'pair': PAIR, 'expiry': EXPIRY, 'fixing_frequency': FIXING_FREQUENCY,
+                 'knockout': SPOT * 1.10}
+    in_rand = structures.quote(copy.deepcopy(document), 'Accumulator', dict(
+        both_ways, notional=NOTIONAL, notional_currency='ZAR'))
+    strike = leg(in_rand, 'accumulator')['strike_market']
+    in_dollars = structures.quote(copy.deepcopy(document), 'Accumulator', dict(
+        both_ways, notional=NOTIONAL / strike, notional_currency='USD'))
+
+    assert leg(in_rand, 'accumulator')['note'] is None
+    assert leg(in_dollars, 'accumulator')['note'] is None
+    assert abs(in_rand['net']) <= SOLVE_TOLERANCE and abs(in_dollars['net']) <= SOLVE_TOLERANCE
+    assert leg(in_dollars, 'accumulator')['strike_market'] == pytest.approx(
+        strike, rel=HN_AXIS_TOLERANCE), 'the two orientations solved different strikes under one law'
 
 
 def test_a_composed_tarf_carries_an_exposure_profile(tmp_path):

@@ -80,6 +80,7 @@ import json
 import re
 import time
 
+from . import utils
 from .schema import F, REQUIRED
 
 #: A tenor as the job grammar spells one: a count and a period letter. Anchored and whitespace
@@ -110,8 +111,9 @@ ACCRUAL_DEALS = ('FXTARFOptionDeal', 'FXAccumulatorOptionDeal')
 SCHEDULE_FIELD = {'FXTARFOptionDeal': 'TARF_ExpiryDates',
                   'FXAccumulatorOptionDeal': 'Accumulator_ExpiryDates'}
 
-#: `<SpotModel>ModelParameters.<underlying>`, the naming convention `get_spot_model_params_factor`
-#: resolves the parameters by - so the presence check here and the engine's own lookup are one key.
+#: `<SpotModel>ModelParameters.<non-base token>`, the naming convention
+#: `get_spot_model_params_factor` resolves the parameters by (`utils.spot_model_currency` picks the
+#: token) - so the presence check here and the engine's own lookup are one key.
 SPOT_MODEL_FACTOR = '{}ModelParameters.{}'
 
 #: The model an accrual leg is priced under WHERE THE BOOK CARRIES A CALIBRATION. The switch lives
@@ -529,42 +531,34 @@ def declared(structure, params):
 
 
 def spot_model(document, deal_type, underlying, settlement):
-    """Pin `HestonNandi` on `deal_type` where THIS book carries a calibration for the leg's
-    underlying. Returns the leg's note, or `None` when the model was pinned.
+    """Pin `HestonNandi` on `deal_type` where THIS book carries a calibration for the leg's pair.
+    Returns the leg's note, or `None` when the model was pinned.
 
     The switch is a `Valuation Configuration` entry per deal TYPE rather than a deal field, and the
-    parameters resolve by naming convention off the leg's own underlying, so the presence check is
-    a lookup of the exact key `get_spot_model_params_factor` will make. It has to be made here: the
-    switch on with the factor absent raises inside the engine's dependency loop, which SKIPS the
-    deal and logs an ERROR, so the quote would return with its only leg priced at nothing.
+    parameters resolve by naming convention off the pair's NON-BASE token - the same
+    `utils.spot_model_currency` rule the engine's own lookup takes - so the presence check here and
+    that lookup are one key. It has to be made here: the switch on with the factor absent raises
+    inside the engine's dependency loop, which SKIPS the deal and logs an ERROR, so the quote would
+    return with its only leg priced at nothing.
 
-    LIMITATION - three keyings meet here and do not agree. The engine keys a deal's spot-model
-    parameters off `Underlying_Currency`; the calibration writes the pair's NON-DOMESTIC token,
-    which is the only leg of the pair it can simulate; and `furnish_accrual` forces a TARF onto the
-    pair's BASE currency. So a USDZAR TARF on a USD-base book looks up `.USD` while the calibration
-    wrote `.ZAR`, and it rides GBM however many times the pair is calibrated. Closing that is the
-    engine's half; the note names which factor was looked up and which one exists.
+    A CROSS - neither leg the book's base - keeps the underlying's name and is out of the ruling's
+    scope, both legs being simulated factors whose composed law nothing fits. A book that declares
+    no `Base_Currency` at all REFUSES here rather than guessing a token: pinning the wrong one is a
+    switch the engine then looks up under the other name, which is that same leg priced at nothing.
 
     Writes IN PLACE on the document the runner holds. Every pricing deep-copies that document
     through `alone`, so one write reaches every iterate of the solve.
     """
     factors = market_data(document)
-    factor = SPOT_MODEL_FACTOR.format(SPOT_MODEL, underlying)
+    token = utils.spot_model_currency(underlying, settlement, base_currency(document))
+    factor = SPOT_MODEL_FACTOR.format(SPOT_MODEL, token)
     if factor in factors:
         document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
             'Valuation Configuration', {}).setdefault(deal_type, {})['SpotModel'] = SPOT_MODEL
         return None
-    other = SPOT_MODEL_FACTOR.format(SPOT_MODEL, settlement)
-    note = ('priced GBM - the engine keys a deal\'s spot model off Underlying_Currency, so this '
-            'leg looked up {}, which this book does not carry'.format(factor))
-    if other in factors:
-        note += ('. The book DOES carry {}: the calibration writes the pair\'s non-domestic token, '
-                 'which is the only leg it can simulate, and this leg is on the other side'.format(
-                     other))
-    return note + ('. A pair whose BASE is the non-domestic token joins as it stands (EURUSD on a '
-                   'USD book, and either side of an accumulator); a USDZAR TARF rides GBM until '
-                   'the engine\'s spot-model keying learns the base side. The '
-                   'HestonNandiModelParameters bootstrapper installs {}'.format(factor))
+    return ('priced GBM - a spot model is keyed off the pair\'s non-base token, so this leg looked '
+            'up {}, which this book does not carry. The HestonNandiModelParameters bootstrapper '
+            'installs it: calibrate {} (/book/hn)'.format(factor, token))
 
 
 def pinned_models(document):
@@ -591,19 +585,23 @@ def pin_models(document, deal, pinned):
     logged, the trade marked at nothing - which is the outcome this pin exists to prevent.
     """
     factors = market_data(document)
+    base = base_currency(document)
     for leg in deal.get('Children') or []:
         block = leg['Instrument']['.Deal']
         entry = pinned.get(block.get('Object'))
         if not entry:
             continue
-        factor = SPOT_MODEL_FACTOR.format(entry['SpotModel'], block['Underlying_Currency'])
+        # the SAME token rule the engine's lookup takes, or the approval checks a key the engine
+        # will not ask for
+        token = utils.spot_model_currency(
+            block['Underlying_Currency'], block['Currency'], base)
+        factor = SPOT_MODEL_FACTOR.format(entry['SpotModel'], token)
         if factor not in factors:
             raise ValueError(
                 'this quote was priced under {} and the book no longer carries {} - booking the '
                 'switch would skip the deal at the next valuation and mark it at nothing. Re-run '
                 'the {} calibration for {}, or re-quote'.format(
-                    entry['SpotModel'], factor, entry['SpotModel'],
-                    block['Underlying_Currency']))
+                    entry['SpotModel'], factor, entry['SpotModel'], token))
     configuration = document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
         'Valuation Configuration', {})
     for deal_type, entry in pinned.items():
@@ -640,7 +638,15 @@ def engine_spot(document, underlying_currency, settlement_currency):
 
 
 def base_currency(document):
-    """The reporting currency every `FxRate.<ccy>.Spot` in this document is quoted in."""
+    """The reporting currency every `FxRate.<ccy>.Spot` in this document is quoted in, or `None`
+    where the document does not declare one.
+
+    Read off the EXPLICIT block alone, which is the same half of the book `market_data` reads and
+    the only half a quote can write; the engine reads the SAME declaration off its merged params,
+    so a `MarketDataFile` that is not repeated here answers `None` rather than the engine's number.
+    None is never resolved into a token - `utils.spot_model_currency` refuses it - so the two reads
+    can differ only into a refusal, never into a different token.
+    """
     return document.get('Calc', {}).get('MergeMarketData', {}).get(
         'ExplicitMarketData', {}).get('System Parameters', {}).get('Base_Currency')
 
@@ -1026,7 +1032,8 @@ def furnish_accrual(deal, params, document, base_date, underlying, inverted):
     has no target and crosses both axes freely.
 
     THE MODEL. `spot_model` pins Heston-Nandi where the book carries a calibration for this leg's
-    underlying, and hands back the note where it does not.
+    PAIR - keyed off its non-base token, whichever side the leg is written from - and hands back the
+    note where it does not.
 
     The axis refusal is this function's FIRST statement, before the schedule and the notionals: a
     refusal firing later has already written the block the caller holds.

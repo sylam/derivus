@@ -4837,6 +4837,41 @@ def check_fx_name(fx_correlation):
     return (1.0, (ccy1, ccy2)) if ccy1 < ccy2 else (-1.0, (ccy2, ccy1))
 
 
+def hn_reciprocal_gamma(gamma_star):
+    """The plain Heston-Nandi leverage parameter carried to the RECIPROCAL axis, under that axis'
+    own numeraire.
+
+    ONE law, two currencies: `FxRate.<ccy>` IS the density that changes numeraire, so the change
+    shifts the innovation by exactly one standard deviation and the fit's `(omega, alpha, beta,
+    gamma*)` for `s` describes `1/s` as `(omega, alpha, beta, 1 - gamma*)` at that deal's own
+    carry. A derivation, never a second fit. The COMPONENT family does not transport this way -
+    its long-run intercept picks up a state-dependent term and leaves the family.
+    """
+    return 1.0 - gamma_star
+
+
+def spot_model_currency(underlying, currency, base):
+    """The leg of an FX pair a spot model's parameters are named for: the NON-BASE one.
+
+    An `FxRate` is that currency priced in the base, so the base leg is the numeraire and has no
+    law of its own; a CROSS - neither leg the base - keeps the underlying. The answer comes back in
+    the caller's own spelling, but the comparison is made on `check_rate_name` tuples, so a flat
+    name and a checked one cannot disagree here and quietly hand back the pre-rule token.
+
+    An UNKNOWN base refuses: the token is not resolvable without it, and the one thing this must
+    never do is answer the underlying anyway - that IS the defect (a runner would pin a model the
+    engine then looks up under the other name, and the deal marks at nothing).
+    """
+    if base is None:
+        raise ValueError(
+            'a spot model is keyed off the pair\'s NON-BASE token, and this book\'s base currency '
+            'is not known here, so {}/{} cannot be resolved. A book declares it at System '
+            'Parameters.Base_Currency (in the ExplicitMarketData block a quote reads); a deal is '
+            'stamped with it by Calculation.set_deal_structures'.format(
+                '.'.join(check_rate_name(underlying)), '.'.join(check_rate_name(currency))))
+    return currency if check_rate_name(underlying) == check_rate_name(base) else underlying
+
+
 def implied_correlation(factor, sign=1.0):
     """The market implied correlation between a rate pair, read at eval off the `Correlation` price
     factor `Factor_dep` carries. An unauthored pair is uncorrelated, which is what `None` means.

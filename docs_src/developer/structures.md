@@ -130,14 +130,20 @@ where a leg becomes a strip:
 - **the model.** Both deals declare `spot_models = ('None', 'HestonNandi', 'HestonNandiComponent')`,
   of which the runner pins only `HestonNandi` (`structures.SPOT_MODEL`) — the component model is the
   autocall ladder's, not the runner's. The switch is a
-  `Valuation Configuration` entry per deal TYPE resolved by naming convention off the leg's own
-  underlying — `HestonNandiModelParameters.ZAR` for a rand-notional USDZAR TARF, `.USD` for the
-  same trade on a dollar notional, because `notional_currency` IS the underlying. `spot_model`
-  checks the book for that exact key and pins the model only where it is there. It has to: the
-  switch on with the factor absent raises inside the engine's dependency loop, which SKIPS the deal
-  and logs an ERROR, so a structure that pinned it unconditionally would quote ZERO on every
-  uncalibrated book. Where it is absent the leg carries a `note` instead, and that note names the
-  WHOLE truth — see [the join](#the-join) below.
+  `Valuation Configuration` entry per deal TYPE resolved by naming convention off the pair's
+  NON-BASE token — `HestonNandiModelParameters.ZAR` for a USDZAR leg on a USD book, whichever side
+  the notional is on, because the base currency is a numeraire and can name no block.
+  `spot_model` checks the book for that exact key and pins the model only where it is there. It has
+  to: the switch on with the factor absent raises inside the engine's dependency loop, which SKIPS
+  the deal and logs an ERROR, so a structure that pinned it unconditionally would quote ZERO on
+  every uncalibrated book. Where it is absent the leg carries a `note` naming that factor and the
+  verb that installs it — see [the join](#the-join) below. The rule needs the BASE as well as the
+  pair, and a quote reads that off `System Parameters.Base_Currency` in the EXPLICIT block — the
+  same half `market_data` reads and the only half a quote can write, while the engine reads its own
+  merged params. A book that keeps its `System Parameters` behind a `MarketDataFile` therefore
+  answers nothing here, and `utils.spot_model_currency` REFUSES an unknown base rather than
+  resolving it: guessing `Underlying_Currency` would pin a model the engine then looks up under the
+  other name, which is that same skipped deal by a longer route.
 - **and the model books with the trade.** The pin is written on the QUOTE's copy of the document,
   because a quote is not a trade and must not touch the book. That copy dies with the answer, so
   the outcome REPORTS what it pinned (`valuation_configuration`), the pending file records it, and
@@ -148,25 +154,40 @@ where a leg becomes a strip:
   the engine would then raise on — a skipped deal marks at nothing, which is the outcome the whole
   pin exists to prevent.
 
-### The join, and the note that says the whole truth {#the-join}
+### The join: one law per pair, and the reader learns the axis {#the-join}
 
-Three keyings meet at an accrual leg and **they do not agree**:
+Three keyings met at an accrual leg and they did not agree. **They are one rule now**, and the rule
+is the pair's NON-BASE token (`utils.spot_model_currency`, which the engine's lookup, the runner's
+presence check and the dependency discovery all call):
 
 | who | keys off | on a USD-base book, for USDZAR |
 |---|---|---|
-| the engine (`get_spot_model_params_factor`) | the deal's `Underlying_Currency` | whatever the notional says |
-| the calibration (`fx_surface_block`) | the pair's NON-domestic token — the only leg that IS an `FxRate` | writes `…ModelParameters.ZAR` |
-| `furnish_accrual` | forces a TARF onto the pair's BASE, since a target has no reading on the reciprocal | `Underlying_Currency` = USD |
+| the engine (`get_spot_model_params_factor`) | the pair's non-base token | `…ModelParameters.ZAR` |
+| the calibration (`fx_surface_block`) | the pair's non-base token — the only leg that IS an `FxRate` | writes `…ModelParameters.ZAR` |
+| `furnish_accrual` | still forces a TARF onto the pair's BASE, since a target has no reading on the reciprocal | `Underlying_Currency` = USD |
 
-So a USDZAR **TARF** looks up `HestonNandiModelParameters.USD` while `/book/hn` wrote `.ZAR`, and
-it prices GBM however many times the pair is calibrated — measured on the calibrated book, where
-the TARF's strike is bit-identical to its GBM one and the accumulator's is not. EURUSD joins (its
-base IS the non-domestic token) and so does either side of an **accumulator**, which has no target
-and crosses freely. Tonight's fix is HONESTY, not an engine change: the absence note names the
-factor that was looked up, the factor the book actually carries, and the orientation that works,
-so a desk does not re-run a calibration it has already run. The engine's half — spot-model support
-where `Underlying_Currency` is the domestic side — is a [roadmap](roadmap.md) row, and it is a
-modelling question rather than a lookup fix: a GARCH on `S` is not a GARCH on `1/S`.
+The base currency is a NUMERAIRE, never a rate: `FxRate.<ccy>` is that currency priced in the base,
+so `FxRate.USD` is identically one on a USD book and no fit describes it. A USDZAR TARF therefore
+used to look up a factor that could not exist and rode GBM however many times the pair was
+calibrated — measured on the calibrated book, where its solved strike came out **bit-identical** to
+its GBM one. Under the single rule it separates by **3.78%** on that book, against a solve floor of
+2.5e-5.
+
+**The forced TARF sits on the reciprocal of the fitted axis, and that is a change of NUMERAIRE as
+well as of axis** — the deal pays in the other currency. `FxRate.<ccy>` IS the density that changes
+numeraire, so the change shifts the innovation by exactly one standard deviation and the fitted
+`(omega, alpha, beta, gamma*)` describes the reciprocal as `(omega, alpha, beta, 1 − gamma*)` at
+the deal's own carry (`utils.hn_reciprocal_gamma`). One law, two currencies, one parameter — a
+derivation, never a second fit, which is why no pricer knows about the axis at all. Leaving it
+uncarried leaves one variance of Siegel drift in the answer: the two orientations of one
+accumulator then solve strikes **3.4e-3** apart and the gap does not close with the path count,
+against **4.2e-6** carried.
+
+The COMPONENT family does not transport — the change puts a state-dependent term in its long-run
+intercept, `omega_t + phi(1 − 2·gamma_2)h_t`, and leaves the family — so a component deal on the
+reciprocal axis REFUSES by name rather than pricing off a law nobody fitted. A CROSS pair (neither
+leg the base) keeps the underlying's own read: both tokens are simulated factors there and the
+composed spot's law is out of the ruling's scope.
 
 ### What the model is worth, and what it is not {#hn-worth}
 

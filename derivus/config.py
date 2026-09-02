@@ -1085,12 +1085,20 @@ class Config(object):
                   sorted([instrument.field['Currency'], utils.payoff_currency(instrument.field)])))]
              if instrument.field.get('Equity_Volatility') is not None
              and instrument.field['Currency'] != utils.payoff_currency(instrument.field) else []),
-            # FX analogue; getattr-guarded (FxRate is also visited with a bare {} sentinel)
+            # FX analogue, keyed on the pair's NON-BASE token - the leg the engine simulates, and
+            # the same `utils.spot_model_currency` rule the deal's own lookup takes, or discovery
+            # loads a block the compile will not ask for. getattr-guarded (FxRate is also visited
+            # with a bare {} sentinel)
             'FxRate': lambda instrument, factor_fields, params:
             [utils.Factor(instrument.options['SpotModel'] + 'ModelParameters',
-                          utils.check_rate_name(instrument.field['Underlying_Currency']))]
+                          utils.spot_model_currency(
+                              utils.check_rate_name(instrument.field['Underlying_Currency']),
+                              utils.check_rate_name(instrument.field['Currency']),
+                              utils.check_rate_name(
+                                  self.params['System Parameters']['Base_Currency'])))]
             if getattr(instrument, 'options', {}).get('SpotModel', 'None') != 'None'
-            and getattr(instrument, 'field', {}).get('Underlying_Currency') is not None else [],
+            and getattr(instrument, 'field', {}).get('Underlying_Currency') is not None
+            and getattr(instrument, 'field', {}).get('Currency') is not None else [],
         }
 
         # the list of returned factors

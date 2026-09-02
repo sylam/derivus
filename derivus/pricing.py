@@ -638,6 +638,19 @@ OSS_SPOT_MODEL_KITS = {'HestonNandi': PlainHestonNandiKit,
                        'HestonNandiComponent': ComponentHestonNandiKit}
 
 
+def reciprocal_spot_scalars(scalars):
+    """The plain HN parameters carried to the RECIPROCAL axis (`HN_Invert`).
+
+    An FX deal whose `Underlying_Currency` IS the base pays on `1/s`, `s` being the `FxRate` the
+    calibration fit, and it settles in the OTHER currency - so the payoff must be valued under that
+    currency's numeraire. The change is exact and costs one parameter
+    (`utils.hn_reciprocal_gamma`), which is why nothing else in a pricer knows about the axis: the
+    deal walks its OWN spot at its OWN carry under the transported law.
+    """
+    omega, alpha, beta, gamma_star, h0 = scalars
+    return omega, alpha, beta, utils.hn_reciprocal_gamma(gamma_star), h0
+
+
 def oss_model_scalars(factor_dep, shared):
     """The declared spot model's parameter tensors, in the order its own kit unpacks them.
 
@@ -662,13 +675,16 @@ def oss_model_kit(factor_dep, scalars):
     `scalars` are the model parameters as they cross the bound/theta split - `InnerMCRecompute`
     needs every tensor an explicit argument, so they arrive here rather than off `factor_dep`; the
     model NAME and the L curve's knots are compile-time facts and ride `factor_dep`. An empty
-    `scalars` is a GBM deal and answers None.
+    `scalars` is a GBM deal and answers None. `HN_Invert` carries the law to the deal's own axis
+    (`reciprocal_spot_scalars`); the compile has already refused any family that cannot go there.
     """
     if not scalars:
         return None
     model = factor_dep['HN_Params'][0][utils.FACTOR_INDEX_SubType]
     knots = factor_dep['HN_Params'][0][utils.FACTOR_INDEX_Tenor_Index].get(
         utils.HN_COMPONENT_CURVE_NAME)
+    if factor_dep.get('HN_Invert'):
+        scalars = reciprocal_spot_scalars(scalars)
     return OSS_SPOT_MODEL_KITS[model](scalars, knots, factor_dep['HN_Steps_Per_Year'])
 
 def cash_settle(shared, currency, time_index, value):
@@ -2812,7 +2828,9 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     The carry and vol arrive as interval strips built at the call site, ``use_forwards=True`` (every
     FX pricer reads the surface at forward moneyness, so the never-knocking limit prices at the
     quote the FX vanillas mark with). Under Heston-Nandi the strips are not built; the recursion
-    supplies the variance and ``sim_spot_tarf``'s (F1)-(F4) apply verbatim. RECOMPUTE: pure
+    supplies the variance and ``sim_spot_tarf``'s (F1)-(F4) and its RECIPROCAL AXIS note
+    (``HN_Invert``: an underlying that IS the book's base carries the fitted law to its own
+    numeraire and changes nothing else) apply verbatim. RECOMPUTE: pure
     bound/theta split; settles are RETURNED, and grouped settlements (several fixings paying one
     value date) accumulate through ``cash_settle``.
 
@@ -3647,6 +3665,12 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     byte-identical. RECOMPUTE: the vol strip is built at the call site and the simulation RETURNS
     its settled cashflows and registrations - the node's inputs are its whole theta surface.
 
+    THE RECIPROCAL AXIS (``HN_Invert``, an FX deal whose ``Underlying_Currency`` IS the book's
+    base). One law per pair, fitted on the leg the engine simulates and CARRIED to this deal's own
+    axis and numeraire by ``reciprocal_spot_scalars`` - one parameter, exactly. So nothing in this
+    loop knows about the axis: the deal walks its own spot at its own carry, and every level,
+    accrual, truncation and registration is the expression it always was.
+
     BOUNDARY AAD registers two decisions taken on simulated state: the target FILLING (the LATCHED
     shape, since a later block's accrual is only ever larger) and the OTM leg KNOCKING IN (per inner
     path). The redemption gap is built from the UNCLAMPED accrual ``raw``, because
@@ -3931,12 +3955,17 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 # the remaining target, decremented by this fixing's accrual on survivors
                 accr = cf_itm  # correct for both standard and inverted targets
                 if smooth:
-                    # the mask is inert at value and first order - `accr` is an exact zero off it -
-                    # and it would SEVER the kink term's curvature from the moving trigger that
-                    # curvature has to reach
-                    R = R - accr
+                    # on a LIVE fixing, neither the mask nor the crisp arm's clamp: both are inert
+                    # at value and first order and both would SEVER the kink term's curvature from
+                    # the moving trigger it has to reach. An OBSERVED fixing builds no kink term
+                    # (see `accrual_kink_term` above), so there the clamp costs no curvature and is
+                    # taken - that being the branch with no truncation to hold `accr` under R
+                    R = F.relu(R - accr) if use_past_fixing else R - accr
                 else:
-                    R = torch.where(itm_mask, R - accr, R)  # no overshoot: R stays >= 0
+                    # R clamped at 0, not decoration: `intr` clamps at the BLOCK's remaining target,
+                    # so only the survival truncation makes that the PATH's own - and it does not on
+                    # an OBSERVED fixing (no truncation) nor where a far cap saturates it under HN
+                    R = torch.where(itm_mask, F.relu(R - accr), R)
                 if smooth:
                     ledger.fire(p)
                     L = ledger.alive
@@ -4072,7 +4101,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         fixings = (fx_samples[np.newaxis, settle_index_local:, utils.RESET_INDEX_End_Day] -
                    t_block[:, utils.TIME_GRID_MTM, np.newaxis]).clip(min=0)
         drifts = utils.calc_fx_drift(
-            deal_data.Factor_dep['Underlying_Currency'], deal_data.Factor_dep['Currency'],
+            factor_dep['Underlying_Currency'], factor_dep['Currency'],
             fixings, t_block, shared, multiply_by_time=False)
         fixing_block = daycount_fn(fixings)
         settlement = (factor_dep['Settlement'][np.newaxis, settle_index_local:] -

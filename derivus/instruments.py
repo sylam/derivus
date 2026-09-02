@@ -421,8 +421,12 @@ def get_equity_price_vol_factor(fieldname, static_offsets, stochastic_offsets, a
 
 
 def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, stochastic_offsets):
-    """Resolve a non-GBM spot model's parameter factor by NAMING CONVENTION off the underlying the
-    deal already references: `<spot_model>ModelParameters.<name>`. Model-agnostic.
+    """Resolve a non-GBM spot model's parameter factor by NAMING CONVENTION off the factor whose
+    law it describes: `<spot_model>ModelParameters.<name>`. Model-agnostic.
+
+    An equity deal names its equity. An FX deal names the pair's NON-BASE token
+    (`utils.spot_model_currency`), that being the only leg of the pair the engine simulates and the
+    one the calibration writes.
 
     Returns the SVI-shaped index `[(stoch, [per-parameter sub-factors], spot_model,
     {curve parameter: knots})]`, subtype tagged with spot_model for the pricer's branch, or None
@@ -447,6 +451,34 @@ def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, 
     return [tuple([stoch, [utils.Factor(mp.type, mp.name + (param,))
                            for param in factor.current_value()], spot_model,
                    factor.curve_tenors() if hasattr(factor, 'curve_tenors') else {}])]
+
+
+def spot_model_reciprocal_axis(spot_model, underlying, currency, base, reference):
+    """Does this FX deal pay on the RECIPROCAL of the axis its spot model was fitted on - and, for a
+    family that cannot be carried there, the refusal.
+
+    An `FxRate` is a currency priced in the BASE, so a deal whose underlying IS the base pays on
+    `1/s` and settles in the other currency. One law still: the plain family transports to that
+    numeraire exactly, at the cost of one parameter (`utils.hn_reciprocal_gamma`). The COMPONENT
+    family does not - the change of numeraire puts a state-dependent term in its long-run intercept
+    and leaves the family - so it refuses rather than pricing off a law nobody fitted.
+
+    Compared on `check_rate_name` tuples, the same spelling-blind test `utils.spot_model_currency`
+    makes, or a mixed call misses the inversion and prices the fit on the axis it was not fitted on.
+    """
+    if utils.check_rate_name(underlying) != utils.check_rate_name(base):
+        return False
+    if spot_model != 'HestonNandi':
+        raise utils.UnpriceableSchedule(
+            '{0}: SpotModel={1!r} on a deal whose Underlying_Currency {2} IS the book\'s base '
+            'currency. The fit describes {3} - an FxRate is priced in the base, so the base leg '
+            'has no law of its own - and this deal pays on its reciprocal, settled in {3}. The '
+            'plain family carries to that numeraire exactly (one parameter, utils.'
+            'hn_reciprocal_gamma); {1} does not, because the change puts a state-dependent term in '
+            "its long-run intercept and leaves the family. Declare SpotModel: 'HestonNandi', or "
+            'quote the pair the other way up so the deal is written on {3} and no axis is '
+            'crossed'.format(reference, spot_model, '.'.join(underlying), '.'.join(currency)))
+    return True
 
 
 def get_interest_vol_factor(fieldname, tenor, static_offsets, stochastic_offsets, all_tenors):
@@ -485,6 +517,11 @@ class Deal(object):
     #: `factor_types`. The base declares GBM only, so a type that never wrote a non-GBM pricer
     #: refuses the switch instead of pricing GBM under its name.
     spot_models = ('None',)
+
+    #: `System Parameters.Base_Currency` as a checked name, stamped by the compile driver
+    #: (`Calculation.set_deal_structures`) because a deal is constructed before the book it prices
+    #: against is known. The one seam by which base-vs-foreign reaches a deal's compile surface.
+    base_currency = None
 
     def __init__(self, params, valuation_options):
         # a declared model this type cannot honour is a malformed program, not a market-data miss
@@ -5503,9 +5540,11 @@ class FXTARFOptionDeal(Deal):
             '- **SpotModel**: `None` (default — lognormal dynamics off the implied vol surface) or',
             '`HestonNandi`. Selects the model family driving the OSS fixing-to-fixing simulation.',
             'Parameters are resolved by naming convention from the',
-            '`<SpotModel>ModelParameters.<underlying>` price factor (e.g.',
-            '`HestonNandiModelParameters.EUR.USD`). Switching the model on without that factor in the',
-            'market data is a loud skip, never a silent lognormal fallback.',
+            '`<SpotModel>ModelParameters.<non-base token>` price factor — the leg of the pair that is',
+            'not the book\'s base currency, that being the only one which IS an `FxRate` and the only',
+            'one the calibration writes (e.g. `HestonNandiModelParameters.EUR` for an EURUSD leg on a',
+            'USD book, whichever side the deal is written from). Switching the model on without that',
+            'factor in the market data is a loud skip, never a silent lognormal fallback.',
             '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH steps',
             '(default 252; only read when SpotModel is not `None`).'
         ])
@@ -5526,7 +5565,9 @@ class FXTARFOptionDeal(Deal):
         The Heston-Nandi switch swaps the (moneyness, vol-surface) lookup for the daily GARCH
         recursion in the pricer, leaving the GBM `field_index['Volatility']` path untouched when
         off or absent. There is no deal field: the params factor is resolved by NAMING CONVENTION
-        off the FX underlying, `<SpotModel>ModelParameters.<Underlying_Currency>`."""
+        off the pair's NON-BASE token, `<SpotModel>ModelParameters.<that token>`, which for a TARF
+        forced onto the base is `Currency` rather than `Underlying_Currency`. Where the underlying
+        IS the base, `HN_Invert` carries that one law to this deal's own axis and numeraire."""
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Underlying_Currency': utils.check_rate_name(self.field['Underlying_Currency']),
                  'FX_Volatility': utils.check_rate_name(self.field['FX_Volatility'])}
@@ -5565,14 +5606,23 @@ class FXTARFOptionDeal(Deal):
             'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
         }
 
-        # opt-in Heston-Nandi spot model, by naming convention off the FX underlying - see docstring
-        hn = get_spot_model_params_factor(
-            self.options.get('SpotModel', 'None'), field['Underlying_Currency'],
+        # opt-in Heston-Nandi spot model, by naming convention off the pair's non-base token. The
+        # token is resolved only under the switch: it needs the book's base, and a GBM deal is
+        # priced on compile paths that never knew one
+        spot_model = self.options.get('SpotModel', 'None')
+        hn = None if spot_model == 'None' else get_spot_model_params_factor(
+            spot_model,
+            utils.spot_model_currency(
+                field['Underlying_Currency'], field['Currency'], self.base_currency),
             all_factors, static_offsets, stochastic_offsets)
         if hn is not None:
             field_index['HN_Params'] = hn
             # HN is calibrated on a per-DAY clock; a weekly/monthly fixing spans this many daily sub-steps
             field_index['HN_Steps_Per_Year'] = self.options.get('Steps_Per_Year', 252.0)
+            if spot_model_reciprocal_axis(
+                    self.options['SpotModel'], field['Underlying_Currency'], field['Currency'],
+                    self.base_currency, self.field.get('Reference')):
+                field_index['HN_Invert'] = True
 
         return field_index
 
@@ -5648,7 +5698,7 @@ class FXAccumulatorOptionDeal(Deal):
             '',
             '- **SpotModel**: `None` (default - lognormal dynamics off the implied vol surface) or',
             '`HestonNandi`, resolved by naming convention from',
-            '`<SpotModel>ModelParameters.<underlying>` exactly as for the FX TARF.',
+            '`<SpotModel>ModelParameters.<non-base token>` exactly as for the FX TARF.',
             '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH',
             'steps (default 252; only read when SpotModel is not `None`).'
         ])
@@ -5742,13 +5792,22 @@ class FXAccumulatorOptionDeal(Deal):
             'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
         }
 
-        # opt-in Heston-Nandi spot model, by naming convention off the FX underlying
-        hn = get_spot_model_params_factor(
-            self.options.get('SpotModel', 'None'), field['Underlying_Currency'],
+        # opt-in Heston-Nandi spot model, by naming convention off the pair's non-base token. The
+        # token is resolved only under the switch: it needs the book's base, and a GBM deal is
+        # priced on compile paths that never knew one
+        spot_model = self.options.get('SpotModel', 'None')
+        hn = None if spot_model == 'None' else get_spot_model_params_factor(
+            spot_model,
+            utils.spot_model_currency(
+                field['Underlying_Currency'], field['Currency'], self.base_currency),
             all_factors, static_offsets, stochastic_offsets)
         if hn is not None:
             field_index['HN_Params'] = hn
             field_index['HN_Steps_Per_Year'] = self.options.get('Steps_Per_Year', 252.0)
+            if spot_model_reciprocal_axis(
+                    self.options['SpotModel'], field['Underlying_Currency'], field['Currency'],
+                    self.base_currency, self.field.get('Reference')):
+                field_index['HN_Invert'] = True
 
         return field_index
 
