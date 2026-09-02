@@ -20,7 +20,7 @@
     `Objective: 'Analytic'` used to REFUSE `Quote_Sensitivity` by name; it is
     [built and gated](#the-analytic-quote-side), off the same quote leaf and through the same
     wrapper, and what it buys is a residual that is **separable** in (θ, q) — one of the two terms
-    Gauss–Newton drops is then structurally zero and the other is 8.75e-4 rather than a half. It
+    Gauss–Newton drops is then structurally zero and the other is 1.50e-4 rather than a half. It
     also lets [the re-solve oracle be tried on a solve that actually reaches its minimum](#the-re-solve-fourth-time),
     which is the fourth refutation of that reference and the one that says why. That build was one
     of the two prerequisites for the **2026-08-31 default flip** — a declared field cannot become
@@ -310,8 +310,9 @@ paths**, and `dθ/dq` is the derivative *conditional on that draw*.
     with `schrager_pelsser_swaption` and differences NORMAL VOLS, **plain**, so `least_squares` sees
     the quadratic it was written for and the two stages of the chain minimise the same function.
     The [Model punchlist](roadmap.md#model-punchlist) carries the measurement and the ruling:
-    `‖J'r‖` at θ\* falls from **8.24e3** on the quartic to **3.85e-6** on the plain residual — from
-    seven orders *outside* the declared `Stationarity_Tol` default to three orders *inside* it.
+    `‖J'r‖` at θ\* falls from **3.16e2** on the quartic to **8.63e-7** on the plain residual
+    (8.24e3 / 3.85e-6 before the 2026-09-02 seed+clock re-mark) — from five orders *outside* the
+    declared `Stationarity_Tol` default to three orders *inside* it.
 
     **The default is on this page's own chain, which is why it could flip at all.** The refusal
     `Quote_Sensitivity` used to meet on the analytic path has retired: the quote leaves are the same
@@ -440,12 +441,13 @@ goes round the splice rather than through it.
     the same distance from its minimum. A tolerance is therefore per block, and the identified
     fixture declares its own rather than inheriting the four-quote block's.
 
-    **On an over-determined block the chain does not get there.** It closes seven and a half of the
-    eight orders between its seed and stationarity — 2.9e11 down to 8.6e3 — and stops, because it is
+    **On an over-determined block the chain does not get there.** It closes most of the orders
+    between its seed and stationarity — 2.9e11 down to 3.16e2 (8.6e3 before the 2026-09-02
+    re-mark) — and stops, because it is
     minimising a QUARTIC in the pricing error and a quartic is flat enough near its minimum that the
     relative-improvement test fires long before the gradient does. The analytic objective is the
     same chain over a residual that is not pre-squared, and on the same block it reaches
-    **3.85e-6** — so this is a property of the OBJECTIVE'S SHAPE and not of the optimizer, measured
+    **8.63e-7** — so this is a property of the OBJECTIVE'S SHAPE and not of the optimizer, measured
     from both sides. On a block quoting fewer swaptions
     than the model has parameters this never shows: the fit is then interpolating and `‖J'r‖` is
     small for free. It is the whole reason `θ*(q)` is the optimizer's stopping point rather than the
@@ -468,7 +470,7 @@ below the smallest real eigenvalue and eight above the largest spurious one.
     `Jacobian_Rcond` defaults to 1e-8, which on the four-quote block separates *four* real directions
     from nineteen numerical zeros with orders to spare. An **identified** block has no such gap — 23
     real directions spanning the conditioning of the swaption grid itself, five orders end to end —
-    and the same cutoff keeps 18 of them. That is right rather than lossy: the term Gauss–Newton
+    and the same cutoff keeps 17 of them (18 at the pre-2026-09-02 mark). That is right rather than lossy: the term Gauss–Newton
     drops is the same *size* as the eigenvalues of the last five, so a derivative along them would be
     a derivative of the wrong Hessian. The gate reports the spectrum and how many each cutoff keeps.
 
@@ -552,10 +554,11 @@ and every difference below is a consequence of it.
     the premium was priced with rather than a second one. The two conventions are **9.7x–11.4x**
     apart on the same numeric ladder, which is 1/F and is what reading the declaration is worth.
     What it buys this page's residual: under `'Normal'` the closed-form inversion below returns the
-    quoted σ_N **as itself** — to 4.4e-16, times the `√(T_365.25/T_curve)` = 0.99965771 that the
-    premium's 365.25 clock and the inversion's ACT/365 one differ by — so `∂r/∂q` is exactly
-    `−w√(T_365.25/T_curve)` at every benchmark, independent of expiry, curve and θ, where the
-    lognormal diagonal runs −0.10232 … −0.08704. A lognormal vol point is worth about a *tenth* of a
+    quoted σ_N **as itself** — 0.0 to 2.2e-16, and `∂r/∂q` is exactly `−w` at every benchmark,
+    independent of expiry, curve and θ (until 2026-09-02 both carried the factor
+    `√(T_365.25/T_curve)` = 0.99965771 — the premium's 365.25 clock against the inversion's
+    ACT/365 one; the curve's day count won, one spelling now) — where the
+    lognormal diagonal runs −0.10235 … −0.08706. A lognormal vol point is worth about a *tenth* of a
     normal one, because it is a fraction of the forward rather than a rate.
 
 **One severance, one splice, one leaf.** The severance is where it always was — the market premium,
@@ -568,7 +571,7 @@ with the quote side on and off, `np.array_equal` and hex comparison rather than 
 is **θ\* itself**, taken through two whole optimizer chains rather than at a fixed θ.
 
 **It runs at the declared `Stationarity_Tol`.** No fixture tolerance is written on this path and
-none is allowed: the analytic chain reaches 3.85e-6 on the identified block against the field's own
+none is allowed: the analytic chain reaches 8.63e-7 on the identified block against the field's own
 **1e-3**, where the Monte Carlo path has to declare a **1e5** to be differentiated at all. That is
 the objective's shape showing up as a JSON default rather than as an argument.
 
@@ -592,15 +595,16 @@ with itself:
 | $\partial^2 r/\partial\theta\,\partial q = 0$ | $J$ across RE-AUTHORED quote rungs | `np.array_equal` — the block rebuilt from the JSON, the premium re-priced out of scipy |
 | the same, other way round | $\partial r/\partial q$ across θ rungs | `np.array_equal` |
 | the annuity is severed | `sp.annuity.requires_grad` | **False** — which is why the two above are exact rather than small |
-| the θ-side dropped term | double backward at θ\* | $\|\sum_i r_i\nabla^2 r_i\|_F$ **2.980e-3** against $\|J^\top J\|_F$ **3.405** — a ratio of **8.75e-4** beside a $\|r\|$ of 2.26e-3, and 6.31e-5 / −1.31e-3 / −4.47e-4 in the first, second and fourth eigen-directions |
+| the θ-side dropped term | double backward at θ\* | $\|\sum_i r_i\nabla^2 r_i\|_F$ **5.397e-4** against $\|J^\top J\|_F$ **3.604** — a ratio of **1.50e-4** beside a $\|r\|$ of 1.48e-3, and 5.53e-5 / 1.82e-4 / 3.71e-4 in the leading eigen-directions (2.980e-3 / 3.405 / 8.75e-4 / 2.26e-3 before the 2026-09-02 re-mark) |
 
 The Monte Carlo path's θ-side term is **0.500064** of what it corrects at any residual level. This
-one is 8.75e-4 and shrinks with the fit. Two objectives, one contraction, two different reasons it
+one is 1.50e-4 and shrinks with the fit — measured shrinking: it read 8.75e-4 at the pre-re-mark
+θ\*, whose fit was three times worse. Two objectives, one contraction, two different reasons it
 is the exact leading-order derivative.
 
-**The spectrum is this objective's own.** $J$ is 25 × 23 with singular values from **1.806** down to
-1.97e-13, and the declared `Jacobian_Rcond` keeps **13** of the 23 directions against 18 on the
-squared residual. Nothing is wrong: σ knots past the last benchmark expiry are in no swaption's
+**The spectrum is this objective's own.** $J$ is 25 × 23, and the declared `Jacobian_Rcond` keeps
+**15** of the 23 directions against 17 on the squared residual (13 against 18 at the pre-re-mark
+θ\*, whose spectrum ran 1.806 down to 1.97e-13). Nothing is wrong: σ knots past the last benchmark expiry are in no swaption's
 variance integral and two coordinates of this θ\* sit ON a bound. Those are directions 25 flat
 quotes do not identify, and `dθ/dq` along them is the minimum-norm representative exactly as
 [rank deficiency](#rank-deficiency) says.

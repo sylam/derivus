@@ -22,9 +22,32 @@ WHAT THE WORLD IS AUTHORED TO BE, and every choice is load-bearing:
   weekly one, at an unchanged standard error of 0.66%. `GRID` names where that gap is small
   enough for a band to mean something, and the live instrument SWEEPS the same axis rather than
   choosing a rung of it.
-- A **big FX vol (25%) and a strong FX/IR correlation (0.8)**. Neither is a realistic USDZAR
+- A **big FX vol (55%) and a strong FX/IR correlation (0.8)**. Neither is a realistic USDZAR
   quote and both are deliberate: the quanto drift is what the mutation removes, and a world where
   that drift is worth less than the Monte Carlo noise cannot tell a broken `K` from a working one.
+  **The vol was 25% until 2026-09-02 and the HW2F seed-and-clock re-mark is what moved it**, which
+  is this knob doing the job it is declared for rather than a re-tuning. At the re-marked theta*
+  `save_params` emits quanto correlations of OPPOSITE SIGN - (-0.5658, +0.1151) where the pair used
+  to share one - so the two factors' drift corrections partially CANCEL and the mutation's kill at
+  the binding cell fell from clearing its band to 2.03 sigma of it. The kill is exactly linear in
+  the FX vol, which is what makes the repair a reading rather than a search (`K` carries one factor
+  of `sigma_FX`), measured at the weekly grid on the 1Yx1Y cell:
+
+      FX vol     kill at 1Yx1Y     in sigma     kill / FX vol
+      25%           1.640%           2.03           6.56
+      40%           2.617%           3.06           6.54
+      55%           3.591%           3.83           6.53
+
+  The 6Mx1Y cell never came close - 3.75 / 5.96 / 8.13%, 4.7 to 9.9 sigma - so 1Yx1Y is what set
+  this. 55% clears `IDENTITY_SIGMA` by 28% at the binding cell and costs no wall clock at all.
+  THE OTHER TWO LEVERS WERE MEASURED AND REJECTED, both because identity 1 has a floor here that
+  neither removes: refining the grid takes the payoff-free NUMERAIRE miss to zero
+  (1Yx1Y -0.301% weekly, -0.069% at 3 days, +0.019% daily) but leaves identity 1 at -1.54% and the
+  kill unmoved at 1.96 sigma, because a drift error is not a discretisation one; and raising the
+  path count shrinks the band under the clean gate faster than it lifts the mutation over it -
+  identity 1's -2.108% is BIAS, so at four times the paths (se 0.806% -> 0.403%) it would fail
+  `test_the_composition_closes_on_the_models_own_domestic_price` at **5.2 sigma** while the kill
+  only reached 4.1. More paths make this world less able to pass, not more able to tell.
 
 EVERY BOUND IN THIS FILE IS MEASURED, NOT WISHED - and that is a rule about the SPELLING as much as
 the size. `IDENTITY_SIGMA` and `NUMERAIRE_SIGMA` are multiples of the standard error each reading
@@ -56,13 +79,48 @@ FX_SPOT = 1.0 / 16.0
 #: The FX/IR correlation, on the desk's own pair (ZAR per USD). Strong on purpose - see the module
 #: docstring. `implied_process` flips its sign on the way into the calibration.
 RHO = 0.8
+#: The ATM FX vol the whole surface is authored at, and the knob that sets how big the quanto drift
+#: the mutation removes actually is. Unrealistic on purpose, and 55% rather than 25% since the
+#: 2026-09-02 HW2F re-mark - the module docstring carries the sweep that chose it. It reaches the
+#: composition only: the calibration objective runs on `implied_process`'s SUPPRESSED twin, so
+#: theta* is not a function of this number and `test_the_fit_does_not_move_with_the_fx_inputs`
+#: is what says so.
+#:
+#: IT IS LOAD-BEARING FOR THE CLEAN GATE AS WELL AS FOR THE MUTATION, which "at zero wall-clock
+#: cost" does not say and this does. A bigger FX vol lifts the kill AND widens the run's own
+#: standard error, so it moves `test_the_composition_closes_on_the_models_own_domestic_price`
+#: too - and it moves it the RIGHT way, which is why 55% is a lever rather than a loosening. Both
+#: vols run whole at the re-marked theta*, weekly, 32768 paths, the binding 1Yx1Y cell:
+#:
+#:     FX vol   identity 1   se       sigma   headroom to IDENTITY_SIGMA
+#:     25%       -2.108%    0.806%    2.61              0.39
+#:     55%       -2.222%    0.937%    2.37              0.63
+#:
+#: So the sweep bought 0.24 sigma on the CLEAN gate at the same time as it bought the 1.8 on the
+#: kill that the module docstring's table reads: the miss grows slower in this knob than the error
+#: bar does, because identity 1's residual is a DRIFT error and the deflator's noise is not. What
+#: DID narrow that headroom is the
+#: re-mark itself - identity 1's miss at this cell roughly doubled, -1.13% to -2.108% at an
+#: unchanged 25% - and that is recorded as a FINDING beside `GRID` rather than absorbed here.
+FX_VOL = 0.55
 #: The scenario grid and sample the composition gates run at, CHOSEN OFF A MEASUREMENT rather
 #: than picked. The composition's own numeraire is a discretely-rolled bond, so the miss is a
-#: function of the step; on this world, at 32768 paths, identity 1 reads (6Mx1Y / 1Yx1Y)
-#: -0.27%/-6.93% monthly, +0.46%/-1.51% fortnightly and +0.26%/+1.13% weekly against a standard
-#: error of 0.70%/0.66%. Only the last of those is inside three of its own sigmas at BOTH cells,
-#: so weekly is where the band below is worth asserting - and the live instrument reports the
-#: same sweep rather than picking one rung of it.
+#: function of the step; on the PRE-2026-09-02 world, at 32768 paths, identity 1 read (6Mx1Y /
+#: 1Yx1Y) -0.27%/-6.93% monthly, +0.46%/-1.51% fortnightly and +0.26%/+1.13% weekly against a
+#: standard error of 0.70%/0.66%. Only the last of those was inside three of its own sigmas at
+#: BOTH cells, so weekly is where the band below is worth asserting - and the live instrument
+#: reports the same sweep rather than picking one rung of it.
+#:
+#: RE-MEASURED at the re-marked theta* and 55% FX vol, and WEEKLY STANDS - but for a different
+#: reason than it used to, which is worth stating because the old one no longer holds. Identity 1
+#: now reads -0.496%/-2.222% weekly against se 0.823%/0.937%, and REFINING THE GRID DOES NOT TAKE
+#: IT TO ZERO: at 25% FX vol the 1Yx1Y cell reads -2.108% weekly, -1.700% at three days and
+#: -1.540% daily, plateauing near -1.5%. What the grid DOES fix is the payoff-free numeraire
+#: identity, which is the half that IS a discretisation error and converges cleanly - -0.301%
+#: weekly, -0.069% at three days, +0.019% daily. So identity 1 carries a residual miss at 1Yx1Y
+#: that the step size does not explain, and weekly is kept because seven times the steps buys
+#: 0.5% of it. That residual is a FINDING and not a tolerance: it is inside the three-sigma band
+#: at this path count and would not be at four times it.
 GRID, BATCH, BATCHES, SEED = '0d 1w(1w)', 8192, 4, 5120
 #: The band identity 1 is asserted inside, as a multiple of the run's own standard error.
 IDENTITY_SIGMA = 3.0
@@ -71,11 +129,18 @@ IDENTITY_SIGMA = 3.0
 #: FIVE rather than three because this reading is bias PLUS noise where identity 1's is noise: the
 #: discretely-rolled bond's gap is deterministic and no path count removes it, so a band that only
 #: brackets the Monte Carlo error would tighten onto a miss that is not going anywhere. MEASURED at
-#: the grid and seed above: 6Mx1Y reads -0.040% against se 0.099% (0.40 sigma) and 1Yx1Y -0.315%
-#: against se 0.141% (2.23 sigma), so the binding cell clears this band by 2.2x. The multiple is
-#: what the SEED SPREAD sets rather than the pinned seed: across six probed seeds the worst 1Yx1Y
-#: reading is -0.5252%, about 3.7 of its own sigmas, which a three-sigma band fails and this one
-#: passes - and 5 sigma is still 0.7%, so a numeraire wrong by an order of magnitude cannot hide.
+#: the grid and seed above, BEFORE the 2026-09-02 re-mark and at that world's 25% FX vol: 6Mx1Y
+#: read -0.040% against se 0.099% (0.40 sigma) and 1Yx1Y -0.315% against se 0.141% (2.23 sigma),
+#: the binding cell clearing this band by 2.2x. The multiple is what the SEED SPREAD sets rather
+#: than the pinned seed: across six probed seeds the worst 1Yx1Y reading was -0.5252%, about 3.7 of
+#: its own sigmas, which a three-sigma band fails and this one passes.
+#:
+#: RE-MEASURED at the re-marked theta* and 55% FX vol: 6Mx1Y -0.031% (0.14 sigma) and 1Yx1Y
+#: -0.405% (1.24 sigma), so the binding cell clears the band by 4.0x. THE MISS BARELY MOVED, and
+#: that is the reading worth keeping: this identity has no theta in it at all - it is the FX
+#: drift's discretely-rolled money market in both currencies - so an HW2F re-mark cannot reach it,
+#: and what grew is its own error bar, a 55% FX vol being a noisier deflator. Identity 1 moved and
+#: this did not, which is the cleanest statement available that the two gates measure two things.
 NUMERAIRE_SIGMA = 5.0
 
 #: The composition's benchmarks: short expiries, so the numeraire is not what is being measured.
@@ -210,7 +275,7 @@ def authored_blocks():
         'InterestRatePrices.ZAR': rates_block('ZAR', 'ZAR', (7.0, ((1, 7.35), (2, 7.45),
                                                                   (3, 7.50), (5, 7.70),
                                                                   (10, 8.10)))),
-        'FXVolPrices.USD.ZAR': fx_vol_block('ZAR', 0.25),
+        'FXVolPrices.USD.ZAR': fx_vol_block('ZAR', FX_VOL),
         'HullWhite2FactorModelPrices.ZAR': swaption_block('ZAR-SWAPTION')}
 
 

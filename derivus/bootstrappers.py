@@ -74,9 +74,14 @@ class swaption_schedule_class(namedtuple('swaption_schedule', 'expiry pay_times 
 
     THE CLOCK IS THE DAY COUNT AND NOT `utils.DAYS_IN_YEAR`: `read_cache` builds `time_grid_years`,
     and therefore the grid every `J` integral is taken on, with the interest rate factor's own
-    `get_day_count_accrual`, while `create_market_swaps` measures its Black expiry in 365.25ths.
-    The two are 7e-4 years apart at a 1Y expiry - enough to miss the grid node the benchmark put
-    there - so the conversion happens once here, where schedule and curve are both in hand.
+    `get_day_count_accrual`. The two clocks are 7e-4 years apart at a 1Y expiry - enough to miss
+    the grid node the benchmark put there - so the conversion happens once here, where schedule
+    and curve are both in hand.
+
+    `expiry` IS THE SAME FLOAT THE PREMIUM WAS STRUCK ON. `create_market_swaps` measured its
+    option expiry in 365.25ths until 2026-09-02, so a premium and its own inversion read the same
+    instant on two clocks and a normal vol round-tripped as `sigma sqrt(T_365.25/T_curve)`. There
+    is now ONE year fraction, built here and handed to the pricer, the tensor twin and this field.
 
     `accruals` and `pay_times` are the FIXED leg's, because the annuity is. Where both legs share a
     frequency there is no separate fixed schedule - `set_fixed_amount` writes the coupon into the
@@ -139,10 +144,11 @@ class market_swap_class(namedtuple('market_swap', 'deal_data price weight schedu
         surface's declared `Distribution_Type`, a displacement, a premium file and a
         `Volatility_Delta` re-strike into `self.price`, so nothing here re-reads a quote.
 
-        Where the surface says `'Normal'` the inversion is the quote's own identity, to within a
-        CLOCK: the premium's expiry is measured in 365.25ths and `schedule.expiry` in the curve's
-        own day count, so the round trip carries $\\sqrt{T_{365.25}/T_{curve}}$ - 0.99965787 on an
-        ACT_365 curve, the same 7e-4 years `swaption_schedule_class` names.
+        Where the surface says `'Normal'` the inversion is the quote's own identity, EXACTLY:
+        `create_market_swaps` strikes the premium on `schedule.expiry` itself, so the $T_0$ that
+        goes in and the $T_0$ that comes back out are one float and the round trip is machine
+        precision. It carried $\\sqrt{T_{365.25}/T_{curve}}$ - 0.99965771 on an ACT_365 curve -
+        until the premium's own clock was unified with the curve's on 2026-09-02.
 
         `annuity` is the ANALYTIC price's own annuity off the same t=0 curve, so the residual below
         is the premium residual divided by a positive constant. It is built in numpy on that price
@@ -179,9 +185,11 @@ class market_swap_class(namedtuple('market_swap', 'deal_data price weight schedu
         Here the residual is the difference itself and `least_squares` does the squaring.
 
         The units are absolute normal vol, so `Weight` is a relative weight between benchmarks as it
-        is on the other path. This chain reaches $\\|J^Tr\\|$ 3.85e-6 on the repository's identified
+        is on the other path. This chain reaches $\\|J^Tr\\|$ 8.63e-7 on the repository's identified
         block, inside `Stationarity_Tol`'s declared 1e-3 default, where the squared residual stops
-        at 8.24e3 and needs a block-declared 1e5 to be differentiated at all.
+        at 3.16e2 and needs a block-declared 1e5 to be differentiated at all. Both fell with the
+        2026-09-02 seed-and-clock re-mark, from 3.85e-6 and 8.24e3; what did not move is the SIDE of
+        the declared default each lands on, which is the finding.
 
         THE RESIDUAL IS SEPARABLE: a difference of a theta-function and a q-function, so
         $\\partial r/\\partial q$ is DIAGONAL - each benchmark's vol enters its own residual and no
@@ -271,6 +279,36 @@ PREMIUM_CONVENTIONS = {
     'Lognormal': (utils.black_european_option_price, utils.black_european_option),
     'Normal': (utils.bachelier_european_option_price, utils.bachelier_european_option)}
 
+#: THE HW2F REVERSION-SPEED SEED, DELIBERATELY ASYMMETRIC. The family seeded `Alpha_1 = Alpha_2 =
+#: 0.1` beside two identical sigma curves until 2026-09-02, which hands the search TWO COPIES OF ONE
+#: FACTOR: the objective is exactly exchange-symmetric in `(alpha_i, sigma_i)` there, so every
+#: gradient step out of that point moves both coordinates alike and the whole first local
+#: minimisation is confined to the symmetric hyperplane. MEASURED on the repository's identified
+#: 25-quote block: basin hopping's iteration-0 L-BFGS-B runs from the old seed to
+#: `alpha_1 = alpha_2 = 0.011840` at a loss of 8.95e-6, and from this seed to (0.5002, 0.00267) at
+#: 5.33e-6 - **1.68x lower** for the same one call. Only `take_step` breaks the tie afterwards, and
+#: it breaks it by luck rather than by design: the step draws one multiplier PER coordinate, so the
+#: pair does separate from iteration 1 on, which is why the defect degrades a fit rather than
+#: freezing one.
+#:
+#: WHY THESE TWO NUMBERS. The ratio is 10x, so the seed is a FAST factor and a SLOW one rather than
+#: two of the same - the two-factor idiom itself - and their half-lives, `ln2/alpha` = 1.39y and
+#: 13.9y, bracket the expiry ladders this family is quoted on (the identified grid's 1Y-10Y, the
+#: emitter's shipped 3M-10Y). Both sit ABOVE every threshold the small-alpha series declares
+#: (`hw_alpha_series_B` 1e-3, `_H` 1e-2, `_IJK` 3e-2), so the seed itself never opens a
+#: removable-singularity branch; both are strictly interior to `alpha_bounds`, which `bounds_check`
+#: tests with strict inequalities; their SUM is 0.55, nowhere near the `alpha_1 + alpha_2 -> 0`
+#: hyperplane that is the family's other singular locus; and both are POSITIVE, so the
+#: sign-preserving basin step carries the separation through the whole random search and the
+#: crossing into a negative reversion speed is left to `least_squares` and the inner L-BFGS-B.
+#:
+#: The SIGMA seeds are unchanged and stay identical: separating the reversion speeds already makes
+#: the two factors two different factors, so no gradient step preserves the exchange any more and
+#: nothing is left for a second asymmetry to break.
+#:
+#: STANDING CONSEQUENCE: every HW2F theta* solved before this re-solves to a different vector.
+ALPHA_SEED = (0.5, 0.05)
+
 #: THE BRACKET THE `Volatility_Delta` IMPLIED-VOL RE-SOLVE RUNS IN, as a function of the row's own
 #: quoted vol. CO-KEYED WITH `PREMIUM_CONVENTIONS` and read off the SAME declared `Distribution_Type`
 #: at the same seam, so the convention that picks the pricer picks the scale its bracket is in and no
@@ -350,8 +388,17 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
     THE SCHEDULE THE ANALYTIC OBJECTIVE READS is extracted here and nowhere else, for EVERY
     benchmark whatever the block's `Objective`. Both leg generators have already run by the time the
     premium is priced, so converting the fixed leg's pay days and accruals to the curve's own year
-    fractions costs two numpy reads - see `swaption_schedule_class` for why that clock and not the
-    365.25 the Black expiry above uses.
+    fractions costs two numpy reads - see `swaption_schedule_class` for why that clock.
+
+    THERE IS ONE EXPIRY YEAR FRACTION AND IT IS THE CURVE'S. `expiry` is
+    `curve_factor.get_day_count_accrual`, read once per benchmark, and it is what the numpy
+    premium is priced on, what `market_premium` strikes the float64 twin on, what the
+    `Volatility_Delta` brentq re-solve brackets, and what `swaption_schedule_class` carries into
+    the inversion. It was `exp_days / utils.DAYS_IN_YEAR` until 2026-09-02, which made the market
+    premium and its own Bachelier inversion two clocks apart - visible on the Normal round trip as
+    `sigma sqrt(T_365.25/T_curve)` and invisible but present on the lognormal one. The DATES are
+    untouched: `exp_days`, the `mtm_time_grid` search and both leg generators read days and the
+    instrument's own declared day counts, and 365.25 still converts the vol tenors to grid days.
     """
     # a premium bumped by `Volatility_Delta` reaches the residual through a brentq implied-vol
     # solve, and a numerical root find carries no derivative - so the quote side declines it
@@ -381,7 +428,10 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
         effective = base_date + instrument['Start']
         maturity = effective + instrument['Tenor']
         exp_days = (effective - base_date).days
-        expiry = exp_days / utils.DAYS_IN_YEAR
+        # ONE CLOCK, and it is the CURVE'S: this expiry prices the premium, strikes the tensor
+        # twin, brackets the re-solve and is `schedule.expiry` below, so the Bachelier inversion
+        # reads back the year fraction the premium was struck on - see `swaption_schedule_class`
+        expiry = float(curve_factor.get_day_count_accrual(base_date, exp_days))
         time_index = np.searchsorted(time_grid.mtm_time_grid, [exp_days], side='right') - 1
         swaption_name = 'Swaption_{}_{}'.format(
             date_fmt(instrument['Start']), date_fmt(instrument['Tenor']))
@@ -423,7 +473,7 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
 
         # the annuity's own leg, in the CURVE's year fractions - see `swaption_schedule_class`
         schedule = swaption_schedule_class(
-            expiry=float(curve_factor.get_day_count_accrual(base_date, exp_days)),
+            expiry=expiry,
             pay_times=curve_factor.get_day_count_accrual(
                 base_date, fixed_schedule[:, utils.CASHFLOW_INDEX_Pay_Day]),
             accruals=fixed_schedule[:, utils.CASHFLOW_INDEX_Year_Frac].copy())
@@ -2710,8 +2760,10 @@ class LeastSquaresSolve(torch.autograd.Function):
     Carlo residual is already a square, so both dropped terms are HALF what they correct and cancel.
     The analytic residual is SEPARABLE - a theta-function minus a q-function - so `d^2r/dtheta dq`
     is exactly zero and the cross term is absent rather than cancelled, while the theta-side term is
-    the textbook `O(||r||)`: 8.75e-4 of `J^T J` in Frobenius norm on the identified block beside a
-    `||r||` of 2.26e-3, against the Monte Carlo path's 0.500064. Nothing here switches on the
+    the textbook `O(||r||)`: 1.50e-4 of `J^T J` in Frobenius norm on the identified block beside a
+    `||r||` of 1.48e-3, against the Monte Carlo path's 0.500064. That ratio SHRANK WITH THE FIT
+    across the 2026-09-02 re-mark - 8.75e-4 beside a `||r||` of 2.26e-3 before it - which is the
+    `O(||r||)` claim coming true rather than a re-based constant. Nothing here switches on the
     objective - the wrapper differentiates whatever residual the block declared.
 
     Both derivatives come from autograd on ONE fresh evaluation of the residual at `(theta*, q)`,
@@ -2802,11 +2854,13 @@ class RiskNeutralInterestRateModel(object):
         WHY THE DEFAULT IS THE CLOSED FORM, in measurements. SP sits inside one Monte Carlo
         evaluation's own noise at 22 of 25 benchmarks, because the simulation's numeraire bias
         (-0.35% to -1.61%) exceeds SP's freezing bias (-0.13 to +2.17bp) almost everywhere. Its
-        residual is a QUADRATIC rather than a quartic, so `||J'r||` at theta* is 3.85e-6 against
-        8.24e3 - inside `Stationarity_Tol`'s 1e-3 default rather than seven orders outside it, which
+        residual is a QUADRATIC rather than a quartic, so `||J'r||` at theta* is 8.63e-7 against
+        3.16e2 - inside `Stationarity_Tol`'s 1e-3 default rather than five orders outside it, which
         is what lets a quote-side backward run on the declared field. It is deterministic in the
-        sample, so two solves at one seed agree to the bit, and it is 5.6x faster on the four-quote
-        block. What `Monte_Carlo` keeps is being the engine's OWN estimator.
+        sample, so two solves at one seed agree to the bit, and it is 4.6x faster on the four-quote
+        block - 13x per evaluation against 3x the evaluations, and 5.6x before the 2026-09-02
+        re-mark lengthened the analytic chain's own path. What `Monte_Carlo` keeps is being the
+        engine's OWN estimator.
 
         The Monte Carlo closure is built EITHER WAY: on an analytic block it is not the objective
         but the auditor, and `SwaptionCalibration.honesty_reprice` runs it once at theta*.
@@ -3159,9 +3213,9 @@ scipy.optimize.leastsq.html) are used.',
                       'with the Schrager-Pelsser closed form and differences NORMAL VOLS, plain, so '
                       'it is exact in the sample rather than estimated, deterministic at a given '
                       'Random_Seed, quadratic in the pricing error where the other path is quartic '
-                      '(||J\'r|| at theta* 3.85e-6 against 8.24e3, inside Stationarity_Tol\'s own '
-                      '1e-3 default rather than seven orders outside it), differentiable in the '
-                      'quotes off a residual that is separable in (theta, q), and 5.6x faster on '
+                      '(||J\'r|| at theta* 8.63e-7 against 3.16e2, inside Stationarity_Tol\'s own '
+                      '1e-3 default rather than five orders outside it), differentiable in the '
+                      'quotes off a residual that is separable in (theta, q), and 4.6x faster on '
                       'the four-quote block. Monte_Carlo prices every benchmark through the '
                       'engine\'s own paths and differences the squared relative PREMIUM error, '
                       'which is what this family did before the measurement: it remains fully '
@@ -3212,8 +3266,8 @@ scipy.optimize.leastsq.html) are used.',
                       'holds only where that gradient vanishes, so above this the backward raises '
                       'and names the norm rather than reporting a quietly wrong number. The norm is '
                       'absolute and the objective sets its scale, so the default is the Analytic '
-                      'path\'s: that chain reaches 3.85e-6 on the repository\'s identified block '
-                      'while the Monte_Carlo one stops at 8.24e3 and has to declare a tolerance of '
+                      'path\'s: that chain reaches 8.63e-7 on the repository\'s identified block '
+                      'while the Monte_Carlo one stops at 3.16e2 and has to declare a tolerance of '
                       'its own'),
         F('Generate_Instruments', 'Text', default='No', values=['Yes', 'No'],
           description='Unbuilt: generate the definitions from Generation_Parameters instead'),
@@ -3396,6 +3450,10 @@ scipy.optimize.leastsq.html) are used.',
 
         THE SIMULATOR IS NOT TOUCHED: `precalculate` still installs $K$ for a foreign curve in a
         scenario run, being handed the emitted factor rather than this twin.
+
+        THE SEED IS ASYMMETRIC BY RULING and lives in `ALPHA_SEED`, which says what the symmetric
+        one cost. A block whose parameter factor already exists warm-starts off it instead and is
+        the author's own point, clipped to the declared bounds.
         """
         vol_tenors = np.array([0, 1, 3, 6, 12, 24, 48, 72, 96, 120]) / 12.0
         # construct an initial guess - need to read from params
@@ -3439,7 +3497,7 @@ scipy.optimize.leastsq.html) are used.',
             implied_obj = riskfactors.HullWhite2FactorModelParameters(
                 {'Quanto_FX_Volatility': quanto_fx,
                  'short_rate_fx_correlation': C,
-                 'Alpha_1': 0.1, 'Alpha_2': 0.1, 'Correlation': 0.01,
+                 'Alpha_1': ALPHA_SEED[0], 'Alpha_2': ALPHA_SEED[1], 'Correlation': 0.01,
                  'Sigma_1': utils.Curve([], list(zip(vol_tenors, [0.01] * vol_tenors.size))),
                  'Sigma_2': utils.Curve([], list(zip(vol_tenors, [0.01] * vol_tenors.size)))})
 

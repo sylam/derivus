@@ -31,9 +31,15 @@ so alpha_1 = 0.1 with alpha_2 = -0.1 is singular with neither reversion speed an
 
 REACHABILITY, measured in `test_the_basin_step_can_decay_but_never_cross` and read off the code in
 `test_least_squares_can_cross_zero_outright`: basin hopping's step is MULTIPLICATIVE
-(`bootstrappers.py:2845-2846`), so it preserves the sign of every reversion speed and can only decay
-toward zero - from 0.1 over 50 steps the median floor is 0.061 and 2.8% of walks reach below 3e-2,
-with a pure-decay bound of 1.9e-4. Crossing is done by the OPTIMIZERS: `scipy.least_squares` and
+(`bootstrappers.calc_loss`'s `basin_step`), so it preserves the sign of every reversion speed and
+can only decay toward zero - off `bootstrappers.ALPHA_SEED`, which is where the engine now starts,
+50 steps give a median floor of 0.0366 and 28.0% of walks reach below 3e-2, with a pure-decay bound
+of 9.65e-5 off the 0.05 coordinate. THE 2026-09-02 SEED LANDING MULTIPLIED THAT REACHABILITY BY
+TWELVE - the retired (0.1, 0.1) reads 0.0616 and 2.3% on the same arithmetic - so this module's own
+subject is where the live search now spends its time, which is an argument for pinning the branch
+rather than against the seed. The step draws one multiplier PER COORDINATE, so it also SEPARATES an
+equal pair, on the first step: that is why the symmetric seed the landing retired degraded a fit
+rather than freezing one. Crossing is done by the OPTIMIZERS: `scipy.least_squares` and
 basin hopping's own inner L-BFGS-B both run under `alpha_bounds = (-0.5, 2.4)`. And zero itself is
 reachable without solving at all, because `riskfactors.HullWhite2FactorModelParameters` declares
 `Alpha_1` and `Alpha_2` with `default=0`.
@@ -153,7 +159,7 @@ not a further measurement. Every number in this file was already in the tree whe
 checker says SP is the more accurate of the two over most of the grid (22 of 25 benchmarks inside
 one Monte Carlo evaluation's own noise, and the simulation's -0.35% to -1.61% numeraire bias
 exceeding SP's -0.13 to +2.17bp freezing bias almost everywhere), the stationarity gate says the
-plain residual lands INSIDE `Stationarity_Tol`'s own 1e-3 default where the quartic stops seven
+plain residual lands INSIDE `Stationarity_Tol`'s own 1e-3 default where the quartic stops five
 orders outside it, the determinism gate says two analytic solves at one seed agree to the bit, and
 the quote side is built and separable on that residual. What the flip does NOT retire is the Monte
 Carlo path: it is the engine's own estimator, it is the oracle every comparison here is taken
@@ -180,29 +186,48 @@ directly. It declares `Monte_Carlo` - undeclared it prices the alpha_2 rungs 0.1
 alpha-sum rungs 0.60% away from the post-fix column above, which nothing else in the suite
 reproduces.
 
-    the quartic, measured    on the identified 25-quote block, ||J'r|| at theta* is 8.24e3 under
-                             the Monte Carlo objective (||r|| 45.97, down from 2.86e11 at the
-                             seed) and 3.85e-6 under the analytic one (||r|| 2.26e-3, from
-                             6.00e-2). Seven orders OUTSIDE the declared Stationarity_Tol default
-                             of 1e-3, against three orders inside it.
-    the two answers          agree in repriced vol space - 5.14bp rms against the market at
-                             theta*_MC, 4.51 at theta*_An, 2.52 apart on the 25-quote grid - and
-                             share nothing in theta space, which is rank deficiency rather than
-                             disagreement. On the four-quote block each objective INTERPOLATES in
-                             its own metric, and the 2.45bp rms between them there is the
+    the quartic, measured    on the identified 25-quote block, ||J'r|| at theta* is 3.16e2 under
+                             the Monte Carlo objective (||r|| 22.11) and 8.63e-7 under the
+                             analytic one (||r|| 1.48e-3, from 4.96e-2 at the seed). FIVE orders
+                             OUTSIDE the declared Stationarity_Tol default of 1e-3, against three
+                             orders inside it - the side each lands on is what did not move at the
+                             2026-09-02 re-mark.
+    the two answers          agree in repriced vol space - 4.54bp rms against the market at
+                             theta*_MC, 2.96 at theta*_An, 3.43 apart on the 25-quote grid - and
+                             on that fixture they now AGREE in theta space too, both solving the
+                             correlation to the -0.95 end (0.0088 apart, where they were 0.936).
+                             The rank-deficiency finding survives on the four-quote block, where
+                             they are 0.603 apart. There each objective INTERPOLATES in its own
+                             metric, and the 4.16bp rms between them is the
                              simulation's numeraire error plus SP's freezing bias, adding at the
-                             10Y x 10Y corner to the 4.13bp printed.
-    the wall clock           four-quote chain over three seeds: 75.1s Monte Carlo against 13.4s
-                             analytic on this box in float64, a factor of 5.6. 12x per evaluation
-                             against 2.2x the evaluations. The 25-quote block solves analytically
-                             in 836s over 1915 evaluations - 0.437s each, twelve times the
-                             four-quote block's 0.036 for six times the benchmarks, because SP is
-                             one scalar call per benchmark against one batched kernel.
+                             10Y x 10Y corner to the 7.82bp printed (4.13 before the re-mark). That
+                             4.16 ROSE from 2.45 and is the only rms here that did: it is a
+                             cross-metric reading, and in the metric the Monte Carlo objective
+                             minimises the same theta* went ||r|| 4.4e-8 to 1.01e-8.
+    the corner               ID_ANALYTIC_THETA carries ONE active bound - Correlation on the -0.95
+                             end, which the objective's own profile through theta* is minimised at
+                             - where the retired vector carried a sigma knot on the 1e-5 floor AND
+                             one on the 0.09 ceiling. The PROJECTED gradient, which is what
+                             constrained stationarity means, went 4.47e-5 to 2.09e-7.
+    the auditor              the honesty reprice's WORST benchmark went -4.669% to -6.249% and
+                             every other reading of the same 25 fell: rms 2.709% to 2.387%,
+                             benchmarks outside 3% ten to three. On this fixture the maximum is
+                             ANTI-correlated with the fit and the two cannot both improve.
+    the wall clock           RE-TAKEN whole at the 2026-09-02 re-mark, not adjusted. Four-quote
+                             chain over three seeds: 75.3s Monte Carlo against 16.4s analytic on
+                             this box in float64, a factor of 4.6 - 13x per evaluation against 3.0x
+                             the evaluations, where it read 75.1 / 13.4 / 5.6 before. The 25-quote
+                             block solves analytically in 204s over 849 evaluations - 0.240s each,
+                             six times the four-quote block's 0.041 for six times the benchmarks,
+                             because SP is one scalar call per benchmark against one batched
+                             kernel. It cost 836s before, so the analytic 25-quote chain got FOUR
+                             TIMES SHORTER while the Monte Carlo one on the same block went four
+                             times LONGER - 531s to 2304s, see `ID_THETA`.
     what it owed             Quote_Sensitivity on the analytic path refused by name in the first
                              landing and is BUILT now - the separable residual's quote side, its
                              triangle and its refusals are gated below. An analytic solve still
                              ends by reporting what the engine's own Monte Carlo makes of theta*
-                             - -4.64% at its worst benchmark on the 25-quote block.
+                             - -6.25% at its worst benchmark on the 25-quote block.
 
 Riding along with it: `num_batches` and `batch_size` were undeclared class constants and the first
 bought NO paths when raised, because `t_Buffer` was cleared once before the batch loop and never
@@ -225,24 +250,59 @@ read now, off `Factor3D.get_subtype` and `InterestYieldVol.displacement`, and th
     the two conventions      one numeric ladder read both ways, 11.374x / 9.843x / 9.683x /
                              10.926x apart on the four-quote fixture - which is 1/F, and is what
                              pricing a normal vol as a lognormal one cost on every benchmark
-    a Normal block fits      theta* recorded as `NORMAL_FOUR_THETA`, ||J'r|| 3.97e-7 against ||r||
-                             1.75e-6, three orders inside the declared Stationarity_Tol, 11.5 s
+    a Normal block fits      theta* recorded as `NORMAL_FOUR_THETA`, ||J'r|| 1.17e-8 against ||r||
+                             2.10e-8, five orders inside the declared Stationarity_Tol, 21 s
     the market ROUND-TRIPS   a quoted sigma_N through the Bachelier premium through the closed-form
-                             inversion comes back as ITSELF to 0.0-4.4e-16 - times
-                             0.99965771007041049, which is sqrt(T_365.25/T_curve): the premium's
-                             clock is `utils.DAYS_IN_YEAR` and the inversion's is the curve's own
-                             day count. A STANDING FINDING, not fixed here, because the premium's
-                             clock sits on the far side of every recorded theta* in this file
-    dr/dq is the clock       exactly -sqrt(T_365.25/T_curve) at every benchmark, independent of
-                             expiry, curve and theta, because the Bachelier quote side is LINEAR -
-                             a difference quotient reproduces autograd to 4.0e-15 with no h-squared
-                             ladder, where the lognormal diagonal runs -0.10232 to -0.08704
+                             inversion comes back as ITSELF, 0.0 to 2.2e-16. It came back times
+                             0.99965771007041049 - sqrt(T_365.25/T_curve) - until the clock landing
+                             one day later, the premium's expiry being `utils.DAYS_IN_YEAR` and the
+                             inversion's the curve's own day count
+    dr/dq is exactly -w      -1.0 to 2.2e-16 at every benchmark, independent of expiry, curve and
+                             theta, because the Bachelier quote side is LINEAR and the two clocks
+                             are now one - a difference quotient reproduces autograd to 4.0e-15
+                             with no h-squared ladder, where the lognormal diagonal runs -0.10235
+                             to -0.08706
     the displacement         declared `Shift` outranks the undeclared `Property_Aliases`, both
                              routes bit-identical on the premium, a zero Shift is not an
                              instruction, and either spelling beside `Normal` refuses by name
     a zero quote refuses     and so does an absent one - the fallthrough to the surface's own ATM
                              read is retired, which drops the calibration's open severances from
                              three to two
+
+THE SEED AND THE CLOCK, 2026-09-02, and it is ONE re-marking event because each half alone moves
+every HW2F theta* and two re-markings is one too many. THE CLOCK: `create_market_swaps` measured
+the option expiry its premium is priced on in 365.25ths while the Bachelier inversion read
+`schedule.expiry` in the curve's day count; the curve's day count won, there is now ONE year
+fraction per benchmark, and the round trip and `dr/dq` rows above are what that bought. It is not a
+Normal-path repair - the same clock moved every LOGNORMAL premium by +3.31e-4 to +3.41e-4, the
+`sqrt(365.25/365)` the expiry gained, which `LOGNORMAL_RESTRUCK` records as eight hex premiums.
+THE SEED: `implied_process` seeded `Alpha_1 = Alpha_2` beside two identical sigma curves, which is
+two copies of one factor - the objective is exactly exchange-symmetric there and basin hopping
+minimises AT `x0` before it takes any step, so that first descent never leaves the symmetric
+hyperplane. `bootstrappers.ALPHA_SEED` is asymmetric now and
+`test_the_declared_alpha_seed_is_asymmetric_and_the_first_descent_leaves_the_ridge` is the one call
+that measures what the ridge cost.
+
+WHICH HALF MOVED WHAT, measured both ways rather than argued: on the identified 25-quote analytic
+block EITHER HALF ALONE KILLS THE CORNER. On the pristine tree at the previous commit the old seed
+returns this file's previous `ID_ANALYTIC_THETA` to the digit at 4.5125bp rms with a sigma knot on
+the 1e-5 floor carrying 98.87% of `||J'r||` and the declared seed returns 2.9582bp with no floored
+knot, so the SEED suffices; on the FIXED tree the old seed also returns 2.9591bp with no floored
+knot, so the CLOCK does too. This fixture does not attribute, which is why the seed's own case is
+the first descent above and the live 54-cell ladder rather than these four digits. What did NOT
+move is the correlation: five of six probed alpha seeds land with `Correlation` at the -0.95 end,
+which is where this 5x5 cube quoted flat at 20 vol has its own minimum along that axis
+(`test_the_corner_moved_off_the_sigma_floor_and_what_is_left_is_the_fixtures_own_minimum` asserts
+the profile), and the sixth reaches a strictly worse basin with nine knots on the floor - the live
+54-cell ladder solves rho interior. And the honesty reprice's WORST benchmark went the OTHER WAY,
+-4.67% to -6.25%, while the rest of that distribution improved - rms 2.709% to 2.387%, benchmarks
+outside 3% ten of 25 to three - which `ID_ANALYTIC_THETA` and
+`test_the_honesty_reprice_is_one_order_statistic_of_a_distribution_that_improved` record together.
+EVERY recorded theta* in this file re-records - all FIVE vectors - and the locus tables at the top
+of this docstring do NOT, which was measured rather than assumed: they are MODEL prices at a fixed
+theta, and at a PINNED theta the clock leaves the Schrager-Pelsser side bit-identical on all 25
+benchmarks while moving the market premium by at most +3.4127e-04. One clock, one side of the
+residual, every theta*.
 
 AND A FINDING FIRST TAKEN, THEN CLOSED BY RULING: the two objectives disagreed on a quanto'd
 currency. Schrager-Pelsser prices the domestic swaption, which is correct; the Monte Carlo
@@ -269,7 +329,7 @@ import scipy.optimize
 import scipy.stats
 import torch
 
-from derivus import riskfactors, utils
+from derivus import bootstrappers, riskfactors, utils
 from derivus.bootstrappers import (HullWhite2FactorModelParameters, LeastSquaresSolve,
                                    RiskNeutralInterestRate_State, SwaptionCalibration)
 from derivus.config import ModelParams
@@ -626,13 +686,17 @@ def test_bit_identity_at_the_reversion_speeds_this_repository_carries():
     `J` are integrated at, the analytic block's own asymmetric theta, and both ends of
     `alpha_bounds`. `ID_THETA` is the one spelling of theta*, so the solved ones are taken from it.
 
-    ONE OF THEM IS DELIBERATELY EXCLUDED FROM THE IJK LIST. `Alpha_2* = -0.017851` is inside
-    `HW_ALPHA_SERIES_IJK` and takes the series there, which is the finding
-    `test_the_solved_fixture_engages_the_series_branch` records - so IJK is held bit-identical at
-    `2|Alpha_2*| = 0.0357` and at the sum `0.1038` instead, both of which J is read at.
+    NOTHING IS EXCLUDED FROM THE IJK LIST ANY MORE, and that changed on 2026-09-02. `Alpha_2*` was
+    **-0.017851** - inside `HW_ALPHA_SERIES_IJK`, taking the series there - so IJK was held
+    bit-identical at `2|Alpha_2*|` and at the sum instead, and the exclusion carried an assertion of
+    its own so it could not become an oversight. The seed-and-clock re-mark solved `Alpha_2*` to
+    **+0.059856**, clear of every threshold, so all five solved speeds are now held directly. The
+    branch is still driven below its threshold, at an explicit rung rather than at whatever the
+    fixture happens to solve to - which is the more durable spelling and is what the last lines do.
     """
     a1, a2 = ID_THETA['Alpha_1'][0], ID_THETA['Alpha_2'][0]
-    authored = (0.1,) + tuple(SP_THETA['Alpha_1'] + SP_THETA['Alpha_2']) + (2.4, -0.5, -0.1)
+    authored = tuple(bootstrappers.ALPHA_SEED) + tuple(
+        SP_THETA['Alpha_1'] + SP_THETA['Alpha_2']) + (2.4, -0.5, -0.1)
     solved = (a1, a2, 2.0 * a1, 2.0 * a2, a1 + a2)
     tenor = torch.tensor(FACTOR_TENOR)
     for a in authored + solved:
@@ -640,23 +704,31 @@ def test_bit_identity_at_the_reversion_speeds_this_repository_carries():
         for name, sigma in SIGMA.items():
             assert np.array_equal(integral(hw_calc_H(ta, torch.exp), sigma),
                                   integral(prefix_H(ta, torch.exp), sigma)), ('H', a, name)
-            if a != a2:
-                assert np.array_equal(integral(hw_calc_IJK(ta, torch.exp), sigma, sigma),
-                                      integral(prefix_IJK(ta, torch.exp), sigma, sigma)), (
-                    'IJK', a, name)
+            assert np.array_equal(integral(hw_calc_IJK(ta, torch.exp), sigma, sigma),
+                                  integral(prefix_IJK(ta, torch.exp), sigma, sigma)), (
+                'IJK', a, name)
         assert torch.equal(hw_calc_B(ta, tenor), prefix_B(ta, tenor)), ('B', a)
         assert torch.equal(hw_alpha_floor(ta), ta), ('floor', a)
-    # and the excluded one IS the series, so the skip above is an exclusion and not an oversight
-    ta = torch.tensor(a2, dtype=DTYPE)
-    assert not np.array_equal(integral(hw_calc_IJK(ta, torch.exp), SIGMA['humped'], SIGMA['humped']),
-                              integral(prefix_IJK(ta, torch.exp), SIGMA['humped'], SIGMA['humped']))
+    # every speed above was ABOVE the threshold, which is what makes the loop a bit-identity claim
+    for a in authored + solved:
+        assert abs(a) > HW_ALPHA_SERIES_IJK, (
+            '{:.6g} is inside the IJK threshold, so the loop above is not the claim it reads '
+            'as'.format(a))
+    # and the branch below it IS the series, so the loop is a statement about where it is closed
+    # rather than about a branch that never opens
+    inside = torch.tensor(HW_ALPHA_SERIES_IJK / 2.0, dtype=DTYPE)
+    assert not np.array_equal(
+        integral(hw_calc_IJK(inside, torch.exp), SIGMA['humped'], SIGMA['humped']),
+        integral(prefix_IJK(inside, torch.exp), SIGMA['humped'], SIGMA['humped']))
 
 
 def test_the_branch_never_engages_on_an_authored_reversion_speed():
     """Nothing in this repository authors an HW2F alpha except the seed `implied_process` builds
-    when the price factor is absent, and that is 0.1 on both factors - a clear step above every
-    threshold. A fixture that DID engage the branch would be a finding, so this asserts rather
-    than assumes it."""
+    when the price factor is absent, and that is `bootstrappers.ALPHA_SEED` - (0.5, 0.05) since the
+    2026-09-02 landing, 0.1 on both factors before it. The SLOWER half is what this gate is really
+    about: 0.05 is a clear step above `HW_ALPHA_SERIES_IJK`'s 3e-2 but only 1.7x it, where the old
+    symmetric 0.1 was 3.3x, so the margin halved when the seed separated and is now worth reading
+    rather than assuming. A seed that DID engage the branch would be a finding."""
     price_factors = authored_world()
     rate = utils.check_rate_name('InterestRate.' + CURVE)
     ir_curve = riskfactors.construct_factor(
@@ -805,23 +877,95 @@ def test_the_atT_cross_term_carries_its_number():
     assert reading[1e-2] > 1e-10, 'the reference floor is in the way: {:.3e}'.format(reading[1e-2])
 
 
-def test_the_basin_step_can_decay_but_never_cross():
-    """`bootstrappers.py:2842-2849`, run as written. The step is MULTIPLICATIVE, so a reversion
-    speed keeps its sign for the whole search however long it runs - decay toward zero, never a
-    crossing of it."""
-    rng = np.random.RandomState(5120)
-    floors = []
-    for _ in range(2000):
-        alpha, floor = np.array([0.1, 0.1]), 1.0
-        for _ in range(50):  # niter=50, as `SwaptionCalibration.solve` calls it
-            alpha = (alpha * np.exp(rng.uniform(-0.125, 0.125, 2))).clip(-0.5, 2.4)
+def basin_walks(seed, walks=2000, niter=50, rng_seed=5120):
+    """`(floors, ratios)` over `walks` independent runs of `basin_step` as `solve` calls it.
+
+    The step is `bootstrappers.calc_loss`'s own arithmetic written out: a per-coordinate lognormal
+    multiplier at step 0.125, clipped to `alpha_bounds`, `niter` times. `floors` is the smallest
+    reversion speed each walk ever stood on and `ratios` the pair's separation at the end of it.
+    """
+    rng = np.random.RandomState(rng_seed)
+    floors, ratios = [], []
+    for _ in range(walks):
+        alpha, floor = np.array(seed, dtype=float), 1.0
+        for _ in range(niter):  # niter=50, as `SwaptionCalibration.solve` calls it
+            alpha = (alpha * np.exp(rng.uniform(-0.125, 0.125, alpha.size))).clip(-0.5, 2.4)
             floor = min(floor, alpha.min())
         floors.append(floor)
-    floors = np.array(floors)
-    assert (floors > 0.0).all(), 'a multiplicative step cannot change sign'
-    assert floors.min() < 0.05, 'but it decays: worst floor reached {:.3g}'.format(floors.min())
-    # the bound if every draw went the same way, which is what the threshold has to survive
-    assert 0.1 * np.exp(-0.125 * 50) < HW_ALPHA_SERIES_B
+        ratios.append(alpha[0] / alpha[1])
+    return np.array(floors), np.array(ratios)
+
+
+def test_the_basin_step_can_decay_but_never_cross():
+    """`bootstrappers.calc_loss`'s `basin_step`, run as written. The step is MULTIPLICATIVE, so a
+    reversion speed keeps its sign for the whole search however long it runs - decay toward zero,
+    never a crossing of it.
+
+    REACHABILITY IS READ AT THE SEED THE ENGINE ACTUALLY STARTS FROM, which is `ALPHA_SEED` since
+    2026-09-02, and it is TWELVE TIMES what the retired seed's was. 2000 walks of 50 steps each:
+
+        seed             median floor   worst    below IJK 3e-2   below H 1e-2   below B 1e-3
+        (0.1, 0.1)          0.0616     1.32e-2        2.3%            0.00%          0.00%
+        ALPHA_SEED          0.0366     7.04e-3       28.0%            0.15%          0.00%
+
+    The slow coordinate is 0.05 and the floor is the pair's minimum, so the live seed spends most
+    of a search inside the small-alpha series branch where the retired one barely touched it. THAT
+    IS AN ARGUMENT FOR THIS MODULE AND NOT AGAINST THE SEED: the branch is bit-exact above its
+    threshold and O(1e-11) relative below it (the crossover table in the module docstring), so what
+    the reading changes is the TRAFFIC through the branch this file exists to pin, not the error
+    the search carries. The pure-decay bound - every one of 50 draws going the same way, off the
+    0.05 coordinate - is 9.65e-5, which is what the `B` threshold has to survive and does.
+
+    AND IT SEPARATES AN EQUAL PAIR, which is the half that had to be established before the
+    2026-09-02 seed landing could say what the symmetric seed actually cost. The draw is
+    `rng.uniform(-step, step, alpha.size)` - one multiplier PER COORDINATE - so two equal speeds
+    come apart on the FIRST step and stay apart: at the declared `Random_Seed` the ratio is 1.0064
+    after one step and 0.757 after five. So the old seed did not freeze the pair; what it cost is
+    basin hopping's iteration-0 descent, which happens BEFORE any step is taken and is confined to
+    the symmetric hyperplane - see
+    `test_the_declared_alpha_seed_is_asymmetric_and_the_first_descent_leaves_the_ridge`. The step
+    does not UNDO a separation either: off `ALPHA_SEED` the median |log ratio| after 50 steps is
+    2.34 against the seed's own 2.303, and the closest of 2000 walks still ends 1.19x apart.
+    """
+    live, live_ratios = basin_walks(bootstrappers.ALPHA_SEED)
+    old, ratios = basin_walks((0.1, 0.1))
+
+    for tag, floors in (('ALPHA_SEED', live), ('(0.1, 0.1)', old)):
+        assert (floors > 0.0).all(), (
+            '{}: a multiplicative step cannot change sign'.format(tag))
+        assert floors.min() < 0.05, (
+            '{}: but it decays - worst floor reached {:.3g}'.format(tag, floors.min()))
+    # the LIVE seed's own reachability, which is the reading the module docstring quotes
+    assert 0.2 < float((live < HW_ALPHA_SERIES_IJK).mean()) < 0.4, (
+        'the shipped seed drops its slow factor into the IJK series branch in {:.1%} of searches '
+        'against a recorded 28.0% - this is the reading that says which branch the random search '
+        'spends its time in'.format(float((live < HW_ALPHA_SERIES_IJK).mean())))
+    assert float((live < HW_ALPHA_SERIES_IJK).mean()) > 5.0 * float(
+        (old < HW_ALPHA_SERIES_IJK).mean()), (
+        'the shipped seed no longer reaches the series branch an order of magnitude more often '
+        'than the retired one did: {:.1%} against {:.1%}'.format(
+            float((live < HW_ALPHA_SERIES_IJK).mean()),
+            float((old < HW_ALPHA_SERIES_IJK).mean())))
+    assert live.min() > HW_ALPHA_SERIES_B, (
+        'a walk off the shipped seed reached {:.3g}, below the B threshold, where the recorded '
+        'worst of 2000 is 7.04e-3'.format(live.min()))
+    # the separation: an equal pair NEVER comes back equal, over 2000 independent walks
+    assert (ratios != 1.0).all(), (
+        'the step returned an equal pair - it draws one multiplier per coordinate and cannot')
+    # and it separates them WIDELY: the log-ratio after 50 steps is a sum of 100 uniform draws,
+    # so its median is 0.477 - a factor 1.6 - against a worst walk of 7.1e-4 in 2000
+    assert np.median(np.abs(np.log(ratios))) > 0.3, (
+        'the median separation after a full search is a log-ratio of {:.3g} against a recorded '
+        '0.477'.format(float(np.median(np.abs(np.log(ratios))))))
+    # and it never UNDOES the declared seed's own separation, which is what carries it to the fit
+    assert np.abs(np.log(live_ratios)).min() > 0.15, (
+        'a walk off the shipped seed came back {:.3g} apart in log-ratio, against a recorded '
+        'closest of 0.177 in 2000'.format(float(np.abs(np.log(live_ratios)).min())))
+    # and one step off the declared seed is already the recorded 1.0064
+    one = np.array([0.1, 0.1]) * np.exp(np.random.RandomState(5120).uniform(-0.125, 0.125, 2))
+    assert abs(one[0] / one[1] - 1.0064054) < 1e-6, one
+    # the bound if every draw went the same way, off the seed's own SLOW coordinate
+    assert min(bootstrappers.ALPHA_SEED) * np.exp(-0.125 * 50) < HW_ALPHA_SERIES_B
 
 
 def test_least_squares_can_cross_zero_outright():
@@ -834,6 +978,75 @@ def test_least_squares_can_cross_zero_outright():
     alpha_field = next(f for f in riskfactors.HullWhite2FactorModelParameters.fields
                        if f.name == 'Alpha_1')
     assert alpha_field.default == 0
+
+
+def test_the_declared_alpha_seed_is_asymmetric_and_the_first_descent_leaves_the_ridge():
+    """THE SEED DEFECT, and the one call that measures it.
+
+    `implied_process` seeded `Alpha_1 = Alpha_2 = 0.1` beside two identical sigma curves until
+    2026-09-02, which is TWO COPIES OF ONE FACTOR: the objective is exactly exchange-symmetric in
+    `(alpha_i, sigma_i)` at such a point, so its gradient carries the same number in both
+    coordinates and every descent step out of it moves them alike. `SwaptionCalibration.solve` runs
+    basin hopping FIRST and scipy minimises at `x0` before it takes any step, so that entire first
+    descent happens inside the symmetric hyperplane.
+
+    MEASURED HERE on the identified 25-quote block, through the adapter the chain itself uses -
+    `calc_loss`'s own scalar-and-gradient closure at its own bounds - in one L-BFGS-B call each:
+
+        seed             first local minimum              loss        nit
+        (0.1, 0.1)       alpha = (0.0118397, 0.0118397)   8.952e-06    19    <- the ridge
+        ALPHA_SEED       alpha = (0.5001852, 0.0026678)   5.326e-06    31    <- 1.68x lower
+
+    THE STEP IS NOT WHAT WAS BROKEN, which is worth saying because it was the first suspect: it
+    draws one multiplier PER coordinate (`test_the_basin_step_can_decay_but_never_cross` runs that
+    arithmetic as written), so the pair does separate from iteration 1 onward and the old seed
+    DEGRADED a fit rather than freezing one. What it cost is the first descent, and the collinear
+    ridge that descent leaves the search standing on.
+
+    The numbers above are the docstring's; the assertions below are the SHAPE - a ridge, a
+    separation and an ordering - because an L-BFGS-B stopping point is a thing that can move by an
+    ulp under a scipy upgrade while every claim here stays true.
+    """
+    lo, hi = HullWhite2FactorModelParameters({}, DEVICE, DTYPE).alpha_bounds
+    a1, a2 = bootstrappers.ALPHA_SEED
+    assert a1 != a2, 'the declared seed is symmetric again - that is the defect itself'
+    # all FOUR box inequalities, on both coordinates, because `bounds_check` tests them strictly and
+    # an ordering between a1 and a2 is not asserted anywhere that would imply the other two
+    assert lo < a1 < hi and lo < a2 < hi, (
+        'the seed {} is outside the box ({}, {}) that `bounds_check` tests strictly'.format(
+            bootstrappers.ALPHA_SEED, lo, hi))
+    assert min(abs(a1), abs(a2)) > HW_ALPHA_SERIES_IJK, (
+        'the seed opens a small-alpha series branch at evaluation zero: {}'.format(
+            bootstrappers.ALPHA_SEED))
+    assert abs(a1 + a2) > HW_ALPHA_SERIES_IJK, 'the seed sits on the alpha-sum singular locus'
+    assert a1 > 0.0 and a2 > 0.0, (
+        'the basin step is multiplicative and preserves sign, so a seed that is to carry its '
+        'separation through the random search has to be one-signed')
+
+    calibration, _ = identified_calibration(benchmarks=ID_GRID, Objective='Analytic')
+    basin = calibration.optimizers[0]
+    x0, fn_grad, bounds = basin[1], basin[2], basin[5]
+    assert [float(v) for v in x0[:2]] == list(bootstrappers.ALPHA_SEED), (
+        'the chain did not start where the seam says it does: {}'.format(x0[:2]))
+
+    declared = scipy.optimize.minimize(fn_grad, x0, method='L-BFGS-B', jac=True, bounds=bounds)
+    symmetric_x0 = x0.copy()
+    symmetric_x0[0] = symmetric_x0[1] = 0.1
+    symmetric = scipy.optimize.minimize(
+        fn_grad, symmetric_x0, method='L-BFGS-B', jac=True, bounds=bounds)
+
+    # the OLD seed's first descent never leaves the ridge, to eight digits
+    assert abs(symmetric.x[0] / symmetric.x[1] - 1.0) < 1e-8, (
+        'the symmetric seed no longer descends inside the symmetric hyperplane - it reached '
+        '{} and this gate has stopped measuring what it was built for'.format(symmetric.x[:2]))
+    # the DECLARED seed's does, by an order of magnitude
+    assert declared.x[0] / declared.x[1] > 10.0, (
+        'the declared seed descended to two reversion speeds a factor {:.3g} apart - it is no '
+        'longer buying a fast factor and a slow one'.format(declared.x[0] / declared.x[1]))
+    # and it is the better point, which is what the ridge costs
+    assert declared.fun < symmetric.fun, (
+        'the declared seed reaches {:.6g} against the symmetric seed\'s {:.6g} - the recorded '
+        'readings are 5.33e-6 against 8.95e-6, a factor 1.68'.format(declared.fun, symmetric.fun))
 
 
 def test_params_ok_does_not_guard_this(calibration):
@@ -1183,23 +1396,43 @@ ID_ZERO = ((1.0, 0.0800), (2.0, 0.0835), (3.0, 0.0880), (5.0, 0.0915), (7.0, 0.0
 ID_SURFACE_E, ID_SURFACE_T, ID_MONEY = (0.25, 1.0, 2.0, 5.0), (1.0, 2.0, 5.0, 10.0), (-0.01, 0.0, 0.01)
 ID_STATIONARITY, ID_SEED = 1e5, 5120
 
-#: theta* AS SOLVED, so a gate reads the calibrated point without paying 531 seconds for it. The
+#: theta* AS SOLVED, so a gate reads the calibrated point without paying 2304 seconds for it. The
 #: chain is `SwaptionCalibration.solve` at the block's own `Random_Seed`, float32 on CUDA, which is
-#: what `construct_bootstrapper` hands a job; `test_the_recorded_theta_is_the_one_the_chain_returns`
-#: says what re-deriving it costs and `test_the_solved_fixture_engages_the_series_branch` reads the
-#: finding off it.
+#: what `construct_bootstrapper` hands a job.
+#:
+#: RE-RECORDED 2026-09-02 by the seed-and-clock landing, which moved every HW2F theta*. Both halves
+#: reach the Monte Carlo path: its residual divides a market premium by a model price and the
+#: premium moved +3.3e-4, and the seed is where the chain starts.
+#:
+#: IT COST 2304 s AGAINST THE OLD SEED'S 531, and that is worth recording because it is the one
+#: reading in this landing that went four times the wrong way. The analytic 25-quote chain went the
+#: other way by the same factor (836 s to 204 s at this seed, 204-367 s over the six-seed sweep
+#: `test_the_corner_moved_off_the_sigma_floor_and_what_is_left_is_the_fixtures_own_minimum`
+#: records). Nothing here is a per-evaluation cost - the
+#: objective is the same arithmetic on the same frozen Sobol sample - so it is the optimizer's PATH
+#: that is longer: `least_squares` on the Monte Carlo residual is minimising a QUARTIC in the
+#: pricing error (`market_swap_class.error` returns a residual that is already a square), and from a
+#: separated seed it takes far more of its own iterations to stop. That is the squared residual's
+#: own pathology showing up as wall clock rather than as `||J'r||` for once.
+#:
+#: WHAT MOVED IN IT: alpha (0.121636, -0.017851) -> (0.223648, 0.059856), rho -0.004643 -> -0.941196.
+#: BOTH reversion speeds are POSITIVE now, where the old vector's `Alpha_2` was negative and inside
+#: `HW_ALPHA_SERIES_IJK`. That retires this fixture's claim to engage the small-alpha series branch
+#: at its own calibrated point - see
+#: `test_the_solved_fixture_no_longer_engages_the_series_branch_and_that_is_the_finding`, which is
+#: the same gate re-based onto what is now true rather than deleted.
 ID_THETA = {
-    'Alpha_1': [0.12163561971138252],
-    'Alpha_2': [-0.017850818439802296],
-    'Correlation': [-0.004643081221729517],
-    'Sigma_1': [2.554538896307349e-03, 1.004817319102585e-03, 1.343422277830541e-03,
-                1.076457309536077e-05, 1.478665862232447e-02, 1.380606275051832e-02,
-                2.833980973809958e-02, 2.485187910497189e-02, 2.855546073988080e-03,
-                5.384350661188364e-03],
-    'Sigma_2': [1.873115003108978e-02, 2.103322558104992e-02, 1.769018359482288e-02,
-                1.503448002040386e-02, 1.554366014897823e-02, 1.599598675966263e-02,
-                2.692321315407753e-03, 1.005611754953861e-02, 2.024488896131515e-02,
-                1.966073922812939e-02]}
+    'Alpha_1': [0.2236477176394386],
+    'Alpha_2': [0.059855648875476106],
+    'Correlation': [-0.9411964519647071],
+    'Sigma_1': [0.048875401579212434, 0.037597874799372204, 0.01605911877783019,
+                0.019955134367379605, 0.017089982593522925, 0.0063462252324984845,
+                0.08043282984444651, 0.0816858786914603, 0.06612160740018493,
+                0.05477805411987446],
+    'Sigma_2': [0.07546553168585883, 0.054077255262949354, 0.022210485581280602,
+                0.032087034716934366, 0.0296409668489019, 0.030198948838079873,
+                0.05997267405985911, 0.0192699408355007, 0.06273524268924238,
+                0.05933545450099554]}
 #: the benchmark rows the checker prices: the identified grid's own corners, plus two whose FIXED
 #: and FLOATING frequencies DIFFER, which is the pair that settles the single-curve question
 CHECKER_BENCHMARKS = ((1, 1, 3, 3), (2, 5, 3, 6), (3, 3, 3, 12), (10, 10, 3, 3))
@@ -1324,9 +1557,10 @@ def checker_legs(world):
     rebuild against that column - a leg the analytic price reads that is not the leg the simulation
     pays would fail here rather than downstream as a disagreement nobody could attribute.
 
-    The clock is the CURVE's, ACT_365, and not `utils.DAYS_IN_YEAR`: `create_market_swaps` measures
-    its own expiry with 365.25 while `read_cache` builds `time_grid_years` with the day count, so an
-    expiry taken from the first would miss the grid node it is supposed to land on by 7e-4 years.
+    The clock is the CURVE's, ACT_365, and not `utils.DAYS_IN_YEAR`: `read_cache` builds
+    `time_grid_years` with the day count, so an expiry taken in 365.25ths would miss the grid node
+    it is supposed to land on by 7e-4 years. `create_market_swaps` measured its own premium expiry
+    that way until 2026-09-02 and now reads this same accrual - see `OLD_CLOCK`.
     """
     from derivus import bootstrappers, instruments
     out, curve = {}, world['curve']
@@ -1612,9 +1846,17 @@ def test_the_analytic_vol_is_the_simulated_vol_and_where_it_stops_being(checker)
         '10Y x 10Y reads {:+.3f}bp against a recorded 2.2 - the freezing bias is the one thing this '
         'measurement is for, and it has moved'.format(gap))
     # the swap rate IS a martingale under its own annuity measure, which is what makes sim_nvol a
-    # reference at all rather than a number off an unidentified measure
+    # reference at all rather than a number off an unidentified measure. THE BOUND IS 1.2e-2 AND
+    # WAS 5e-3: the 2026-09-02 re-mark solved the correlation to -0.9412, which is the -0.95 end
+    # of `corr_bounds`, so this fixture's own theta* now sits where the sweep gate already had to
+    # declare 1.2e-2 - it meets the SAME bound at the SAME place on the axis rather than a looser
+    # one. 24 of the 25 benchmarks read under 5.1e-4; the 10Y x 10Y corner reads -8.9e-3.
     for name, r in readings.items():
-        assert abs(r['drift']) < 5e-3, '{}: E^A[S]/K - 1 is {:.3e}'.format(name, r['drift'])
+        assert abs(r['drift']) < 1.2e-2, '{}: E^A[S]/K - 1 is {:.3e}'.format(name, r['drift'])
+    assert max(abs(r['drift']) for n, r in readings.items()
+               if n != 'Swaption_10Y_10Y') < 1e-3, (
+        'the martingale miss has spread off the 10Y x 10Y corner, where it is the level rho puts '
+        'on the model - the other 24 benchmarks read under 5.1e-4')
 
 
 #: The correlation sweep's own world: a short benchmark, the mixed-frequency one, and both
@@ -1658,53 +1900,59 @@ def test_the_bias_rides_the_correlation_axis(rho_sweep):
     variance that couples the two FROZEN loadings contributes almost nothing, which is where a
     two-factor freezing approximation is least stressed. `corr_bounds` is (-0.95, 0.95).
 
-    SP MINUS SIMULATED across that range, on this world at 1048576 paths, with the level beside it
-    because rho moves the level itself by a factor of 1.9:
+    SP MINUS SIMULATED at the two ENDS, on this world at 65536 paths, with the level beside it
+    because rho moves the level itself by a factor of 2.4 at the re-marked theta*:
 
         rho          1Y x 1Y          2Y x 5Y         5Y x 10Y        10Y x 10Y
-        -0.95    146.39  -0.117   129.17  +0.000   127.04  +0.258   145.32  +1.059
-        -0.60    161.00  -0.113   158.21  +0.017   149.40  +0.435   160.33  +1.459
-        -0.0046  183.19  -0.111   198.06  +0.053   181.20  +0.845   183.05  +2.094
-         0.00    183.35  -0.111   198.34  +0.053   181.43  +0.848   183.21  +2.099
-        +0.60    203.26  -0.109   231.61  +0.109   208.60  +1.391   203.54  +3.022
-        +0.95    214.02  -0.108   248.98  +0.146   222.92  +1.746   214.51  +3.795
+        -0.95    175.94  -0.130   201.05  +0.084   180.05  +1.034   183.13   +2.660
+        +0.95    518.84  +0.122   365.80  +0.585   473.92 +11.950   430.35  +21.581
 
-    MONOTONE IN RHO, and it is the 10Y-tenor column that carries it: the corner runs 1.06 -> 3.80
-    basis points end to end, so the fixture's own -0.0046 sits at 55% of the worst admissible value.
-    5Y x 10Y goes 0.26 -> 1.75 the same way. The short benchmark does not move at all - -0.117 to
-    -0.108 across the whole range - because on a one-year swap the two loadings barely differ and
-    the cross term has nothing to couple.
+    THE AXIS GOT MUCH STEEPER WITH THE 2026-09-02 RE-MARK, and that is the reading. theta*'s sigma
+    knots roughly tripled, so at rho = +0.95 - where the two factors REINFORCE rather than
+    cancelling - the model runs at 430 to 519 basis points of normal vol against 183 to 202 at the
+    other end, and the freezing approximation is being asked about a world it has no business in.
+    The corner ran 1.06 -> 3.80 bp end to end before the re-mark and runs **2.66 -> 21.58** now.
+    The short benchmark is still nearly flat, -0.130 to +0.122, because on a one-year swap the two
+    loadings barely differ and the cross term has nothing to couple - THAT is what says the growth
+    belongs to the tenor and to rho rather than to the level alone.
 
-    AGAINST THE NOISE, measured the way the grid above measures it - 64 re-scramblings of one
-    8192-path evaluation, on this world:
+    AND AT +0.95 THE SIMULATION ITSELF STOPS BEING A REFERENCE, which is the honest reading and is
+    new: the swap rate misses its own annuity-measure martingale by **11.8%** at the 10Y x 10Y
+    corner there (7.7e-3 before the re-mark) and `E[D A]/A(0) - 1` reads **-16.6%**. So that column
+    is not "SP is 21.58 bp wrong"; it is two estimators both out of their range, and the gate below
+    asserts the corner from both sides while holding the martingale bound only where the simulation
+    still meets it.
 
-        s.d.(sim_nvol)   1Y x 1Y   2Y x 5Y   5Y x 10Y   10Y x 10Y
+    AGAINST THE NOISE: the s.d. table below is the PRE-2026-09-02 reading and is DELIBERATELY NOT
+    re-taken, because it costs 64 re-scramblings of one 8192-path evaluation at each of three rho
+    values and nothing in this landing turns on it. It is kept because the SHAPE it establishes -
+    that the noise on `sim_nvol` is a fraction of a basis point at short tenors and about two at the
+    10Y corner - is what makes the gaps above readable at all, and that shape belongs to the sample
+    rather than to theta*.
+
+        s.d.(sim_nvol)   1Y x 1Y   2Y x 5Y   5Y x 10Y   10Y x 10Y      [pre-landing]
         rho = -0.95        0.452     0.400      0.440       0.778
         rho = -0.0046      0.660     0.805      0.960       2.040
         rho = +0.95        0.425     0.665      1.145       2.064
 
-    so the corner reads 1.36 s.d. at -0.95, 1.03 at the solved rho and 1.84 at +0.95, and 5Y x 10Y
-    reads 0.59, 0.88 and 1.53. THE VERDICT HOLDS ACROSS THE AXIS rather than only at a point - SP is
-    marginal on the 10Y tenor column and inside the noise everywhere else - but the margin at the
-    top of `corr_bounds` is half again what it is at the solved point, and that is where a
-    Gauss-Hermite quadrature would first pay for itself.
+    Read against it, the re-marked corner is about 3.4 s.d. at -0.95 - SP has gone from marginal on
+    the 10Y column to outside the noise there - and the +0.95 end is off the scale, for the reason
+    the paragraph above gives.
 
-    AND THE SIMULATION'S OWN ERROR RIDES THE SAME AXIS, which is why the martingale bound below is
-    1.2e-2 rather than the 5e-3 the solved rho meets. `E[D A]/A(0) - 1` and `E^A[S]/K - 1` at the
-    10Y x 10Y corner, on this world at 65536 paths:
+    THE SIMULATION'S OWN ERROR RIDES THE SAME AXIS, which is why the martingale bound below is
+    1.2e-2 at the low end and is not asserted at the corner of the high one. `E[D A]/A(0) - 1` and
+    `E^A[S]/K - 1` at the 10Y x 10Y corner, on this world at 65536 paths:
 
-        rho          numeraire      drift
-        -0.95        -8.4e-03   -1.9e-03
-        -0.0046      -1.7e-02   +3.2e-03
-        +0.95        -2.4e-02   +7.7e-03
+        rho          numeraire      drift        (pre-landing, for the shape)
+        -0.95        -1.25e-02   -9.31e-03       -8.4e-03   -1.9e-03
+        +0.95        -1.66e-01   +1.18e-01       -2.4e-02   +7.7e-03
 
     Both grow with the LEVEL rho puts on the model - the fixture's curve starts at a 1Y tenor and
     the deflator reads a ten-day rate off it, which `test_the_monte_carlo_carries_a_bias_of_its_own`
-    measures - so the +0.95 reading is the least clean of the three from BOTH sides, and the
-    doubling above is the honest shape of it rather than a number to quote to three figures.
+    measures - and at the re-marked theta* that growth is an order of magnitude rather than a
+    doubling.
 
-    This gate reads the two ENDS at 65536 paths, which is what it can afford; the tables above are
-    the same harness at sixteen times the sample.
+    This gate reads the two ENDS at 65536 paths, which is what it can afford.
     """
     for rho in RHO_ENDS:
         _, ok = rho_sweep[rho]
@@ -1719,12 +1967,12 @@ def test_the_bias_rides_the_correlation_axis(rho_sweep):
     assert high['Swaption_10Y_10Y']['sp_nvol'] / low['Swaption_10Y_10Y']['sp_nvol'] > 1.4, (
         'rho barely moves the analytic vol, so this sweep is not sweeping anything')
     # the corner, held from both sides at each end
-    assert 0.5 < gap(low, 'Swaption_10Y_10Y') < 2.2, (
-        '10Y x 10Y at rho = -0.95 reads {:+.3f}bp against a recorded 1.3'.format(
+    assert 1.5 < gap(low, 'Swaption_10Y_10Y') < 4.0, (
+        '10Y x 10Y at rho = -0.95 reads {:+.3f}bp against a recorded 2.66'.format(
             gap(low, 'Swaption_10Y_10Y')))
-    assert 3.0 < gap(high, 'Swaption_10Y_10Y') < 6.0, (
-        '10Y x 10Y at rho = +0.95 reads {:+.3f}bp against a recorded 4.5 - the whole point of this '
-        'sweep is that the corner is worse than the solved rho says'.format(
+    assert 15.0 < gap(high, 'Swaption_10Y_10Y') < 30.0, (
+        '10Y x 10Y at rho = +0.95 reads {:+.3f}bp against a recorded 21.58 - the whole point of '
+        'this sweep is that the corner is worse than the solved rho says'.format(
             gap(high, 'Swaption_10Y_10Y')))
     # and it GROWS with rho on the 10Y tenor, which is the finding rather than the level
     for name in ('Swaption_10Y_10Y', 'Swaption_5Y_10Y'):
@@ -1732,13 +1980,24 @@ def test_the_bias_rides_the_correlation_axis(rho_sweep):
             '{}: {:+.3f}bp at +0.95 against {:+.3f} at -0.95'.format(
                 name, gap(high, name), gap(low, name)))
     # while the short benchmark is flat in it, so the growth belongs to the tenor and not to rho
-    assert abs(gap(high, 'Swaption_1Y_1Y') - gap(low, 'Swaption_1Y_1Y')) < 0.1
+    assert abs(gap(high, 'Swaption_1Y_1Y') - gap(low, 'Swaption_1Y_1Y')) < 0.4
     # the swap rate is still a martingale under its own annuity measure at both ends, to the
     # tolerance the SIMULATION allows there rather than the 5e-3 the solved rho meets - see the
     # docstring's last table for why the bound has to widen with rho and not with the sample
-    for readings in (low, high):
-        for name, r in readings.items():
-            assert abs(r['drift']) < 1.2e-2, '{}: E^A[S]/K - 1 is {:.3e}'.format(name, r['drift'])
+    for name, r in low.items():
+        assert abs(r['drift']) < 1.2e-2, '{}: E^A[S]/K - 1 is {:.3e}'.format(name, r['drift'])
+    # at the OTHER end the simulation is out of its own range on the 10Y tenor, and that is the
+    # reading rather than a tolerance - the short and mid benchmarks still meet the same bound, so
+    # the breakdown belongs to the corner and not to the sample
+    for name in ('Swaption_1Y_1Y', 'Swaption_2Y_5Y'):
+        assert abs(high[name]['drift']) < 1.2e-2, '{}: E^A[S]/K - 1 is {:.3e}'.format(
+            name, high[name]['drift'])
+    assert high['Swaption_10Y_10Y']['drift'] > 5e-2, (
+        'the +0.95 corner no longer breaks the martingale - it read +11.8% and that is what this '
+        'sweep found: {:.3e}'.format(high['Swaption_10Y_10Y']['drift']))
+    assert high['Swaption_10Y_10Y']['numeraire'] < -5e-2, (
+        'and the numeraire with it, at a recorded -16.6%: {:.3e}'.format(
+            high['Swaption_10Y_10Y']['numeraire']))
 
 
 def test_the_monte_carlo_carries_a_bias_of_its_own(checker):
@@ -1987,35 +2246,54 @@ def test_the_declared_sample_shape_is_the_shape_the_engine_uses():
                 name, as_float(absent[name]), as_float(said[name])))
 
 
-def test_the_solved_fixture_engages_the_series_branch():
-    """A FIXTURE THAT DOES ENGAGE THE BRANCH, which the compatibility contract said to report
-    rather than absorb.
+def test_the_solved_fixture_no_longer_engages_the_series_branch_and_that_is_the_finding():
+    """THE FIXTURE THAT USED TO ENGAGE THE BRANCH, and the 2026-09-02 re-mark took it off.
 
-    `test_the_branch_never_engages_on_an_authored_reversion_speed` reads the SEED, and the seed is
-    0.1 on both factors. `theta*` is not the seed: on the identified 25-quote fixture the chain
-    solves `Alpha_2` to -0.017851 - negative, and inside `HW_ALPHA_SERIES_IJK`. `I[i][j]` is
-    integrated at `alpha_i` alone, so `I[1][0]` and `I[1][1]` take the SERIES branch at the
-    calibrated point of the repository's own identified fixture.
+    `test_the_branch_never_engages_on_an_authored_reversion_speed` reads the SEED. theta* is not the
+    seed, and until the seed-and-clock landing this fixture's own calibrated point WAS inside the
+    series region: the Monte Carlo chain solved `Alpha_2` to **-0.017851** - negative, and inside
+    `HW_ALPHA_SERIES_IJK` - so `I[1][0]` and `I[1][1]`, which are integrated at `alpha_i` alone,
+    took the series branch at the repository's own solved vector. That was the repair earning its
+    place: the optimizer walked there on its own, over a bound that straddles zero, and nothing on
+    the path would have told anyone if it had walked two orders further.
 
-    That is the repair earning its place rather than a problem: pre-fix, `hw_calc_IJK` at 1.8e-2 on
-    a jagged sigma reads about 1e-7 relative, which is small - the point is that the optimizer
-    walked there on its own, over a bound that straddles zero, and nothing on the path would have
-    told anyone if it had walked two orders further.
+    IT NOW SOLVES TO **+0.059856**, and this gate is re-based onto that rather than deleted, because
+    what it was really recording is REACHABILITY and that has not changed. Three things are held:
+    the branch is not engaged at this theta* (so no gate in this file is relying on it), the bound
+    that made it reachable is still the bound (`alpha_bounds` straddles zero and `least_squares`
+    crosses it - `test_least_squares_can_cross_zero_outright`), and the margin is stated rather than
+    assumed, because a coordinate 1.7 rungs above a threshold is a different claim from one ten
+    rungs above it.
+
+    THE SERIES CODE IS NOT NOW UNTESTED: it is driven directly, at fixed reversion speeds, by
+    `test_the_series_and_the_closed_form_are_the_same_function`,
+    `test_the_crossover_is_where_the_thresholds_say_it_is` and the two locus gates in this module's
+    own opening tables - none of which reads a solved vector. What this fixture stopped being is the
+    LIVE witness, and that is a fact about the fixture rather than about the branch.
     """
     alpha_1, alpha_2 = ID_THETA['Alpha_1'][0], ID_THETA['Alpha_2'][0]
-    assert alpha_2 < 0.0, 'the solved Alpha_2 is negative, which is the reachability claim'
-    assert abs(alpha_2) < HW_ALPHA_SERIES_IJK, (
-        'Alpha_2* is {:.6g} against the IJK threshold {:g}'.format(alpha_2, HW_ALPHA_SERIES_IJK))
-    # H and B are more forgiving and their thresholds are lower, so those branches stay closed
-    assert abs(alpha_2) > HW_ALPHA_SERIES_H and abs(alpha_2) > HW_ALPHA_SERIES_B
-    # J is taken at the SUM, and the sum is nowhere near either threshold
-    assert abs(alpha_1 + alpha_2) > HW_ALPHA_SERIES_IJK
-    assert abs(2.0 * alpha_2) > HW_ALPHA_SERIES_IJK
+    assert alpha_2 > 0.0, (
+        'the solved Alpha_2 is {:.6g}: this fixture is back inside the region the gate was '
+        're-based off, and the docstring above needs re-taking'.format(alpha_2))
+    # nothing this theta* is read at takes a series branch - the readings the checker gates
+    # publish are all on the closed form
+    for a in (alpha_1, alpha_2, alpha_1 + alpha_2, 2.0 * alpha_1, 2.0 * alpha_2):
+        assert abs(a) > HW_ALPHA_SERIES_IJK, (
+            'a reversion speed this theta* is read at, {:.6g}, is inside the IJK threshold '
+            '{:g}'.format(a, HW_ALPHA_SERIES_IJK))
+    # and the margin, stated: the tightest of them against the highest threshold
+    tightest = min(abs(a) for a in (alpha_1, alpha_2, alpha_1 + alpha_2))
+    assert tightest / HW_ALPHA_SERIES_IJK > 1.5, (
+        'the tightest reversion speed is {:.4g}, only {:.2f}x the IJK threshold - the recorded '
+        'margin is 2.0x on Alpha_2'.format(tightest, tightest / HW_ALPHA_SERIES_IJK))
+    # the reachability claim itself is unchanged and lives on the BOX, not on this vector
+    low, high = HullWhite2FactorModelParameters({}, DEVICE, DTYPE).alpha_bounds
+    assert low < 0.0 < high, 'the bound that made the series region reachable has moved'
 
 
 def test_the_recorded_theta_is_a_stationary_point_of_the_recorded_world(checker):
     """`ID_THETA` is a reading and this is what makes it one: the world it was solved in still
-    prices its benchmarks where the solve left them. Not a re-solve - that costs 531 seconds and
+    prices its benchmarks where the solve left them. Not a re-solve - that costs 2304 seconds and
     `docs_src/developer/quote_sensitivities.md` records that the chain does not reach stationarity
     on an over-determined block anyway - but the weaker and checkable claim that the recorded vector
     is the one this fixture's closure was built around.
@@ -2038,32 +2316,70 @@ def test_the_recorded_theta_is_a_stationary_point_of_the_recorded_world(checker)
 ID_GRID = tuple((e, t, 3, 3) for e in (1, 2, 3, 5, 10) for t in (1, 2, 3, 5, 10))
 
 #: theta* on that grid with `Objective: 'Analytic'`, AS SOLVED - the analytic twin of `ID_THETA`,
-#: so a gate reads the analytic answer without paying 836 seconds for it. `Random_Seed` 5120, CPU
-#: float64, 8192 paths declared but never drawn (the analytic closure draws none).
+#: so a gate reads the analytic answer without paying 204 seconds for it. `Random_Seed` 5120, CPU
+#: float64, 8192 paths declared but never drawn (the analytic closure draws none). Every number is
+#: written at `repr` precision, which round-trips a float64 by construction: transcribed at sixteen
+#: digits the previous vector came back one ulp out.
+#:
+#: RE-RECORDED 2026-09-02 by the seed-and-clock landing, and THE FIT IS A THIRD BETTER: rms over the
+#: 25 benchmarks falls from **4.5145 to 2.9594 basis points** of normal vol and `||r||` from
+#: 2.257e-3 to 1.480e-3. The old vector is not a stationary point of the new world - at the moved
+#: premium it reads `||J'r||` 5.75e-5, fifteen times its own recorded 3.85e-6 - which is the clock
+#: arriving; where the chain then goes is the seed's.
+#:
+#: BOTH SIGMA BOUNDS ARE GONE, which was the corner signature, and
+#: `test_the_corner_moved_off_the_sigma_floor_and_what_is_left_is_the_fixtures_own_minimum` is where
+#: that is asserted rather than written down. The retired vector carried TWO active bounds -
+#: `Sigma_1[5]` exactly on the 1e-5 floor and `Sigma_1[4]` 7.0e-7 under the 0.09 ceiling, both with
+#: the gradient pointing out - and NEITHER end is touched here: the nearest knot to the ceiling is
+#: `Sigma_1[7]` at 1.38e-5 off it, twenty times further and not a multiplier. What is left at a
+#: bound is `Correlation` at -0.9499987, carrying 97% of a `||J'r||` four times smaller. The reading
+#: that matters is the PROJECTED gradient - the raw one with the outward active component zeroed,
+#: which is what constrained stationarity actually means - and it went **4.47e-5 to 2.09e-7, a
+#: factor 214**. The correlation end is the FIXTURE'S: the objective's own profile along that axis
+#: through theta* is monotone from -0.95 outward and minimised AT the bound, the same shape at
+#: `ID_THETA`, and five of six probed alpha seeds land on it at the same rms to four digits. The
+#: sixth does not - and is a 4.4659bp fit with NINE knots on the floor.
+#:
+#: WHICH HALF OF THE LANDING DID IT: EITHER, ALONE. The pristine-tree probe - the premium clock
+#: still wrong - has the old seed returning this file's previous vector to the digit (rms 4.5125 bp,
+#: `||J'r||` 3.853e-6) and the declared seed returning **2.9582** bp with no floored knot, which
+#: establishes that the SEED suffices. On the FIXED tree the old seed also returns **2.9591** bp
+#: with no floored knot, which establishes that the CLOCK does too. So this fixture's corner does
+#: not attribute, and the seed's own case is a better first descent
+#: (`test_the_declared_alpha_seed_is_asymmetric_and_the_first_descent_leaves_the_ridge`) and the
+#: live 54-cell ladder rather than these four digits.
 #:
 #: THAT IT IS A SOLVE OUTPUT IS CHECKABLE IN SECONDS and is not taken on trust:
 #: `test_the_analytic_objective_reaches_a_stationarity_the_quartic_cannot` reads `||J'r||` here and
-#: gets 3.85e-6, which no authored vector lands on. Two coordinates sit ON a bound - `Sigma_1`'s
-#: 5th knot at the 0.09 ceiling and its 6th at the 1e-5 floor - so the point is not interior and
-#: unconstrained stationarity is not owed there; that it holds anyway says those directions carry
-#: no gradient rather than that the bound is doing the work.
-#: AND IT HAS BEEN RE-DERIVED THE LONG WAY: a full analytic chain on this block returns this vector
-#: in 836 s over 1915 evaluations, with `||J'r||` 3.853e-6 and `||r||` 2.256e-3 - the numbers below.
-#: Six of the twenty sigma knots are written here at SEVENTEEN significant digits because sixteen
-#: does not round-trip a float64: transcribed at 16 they came back one ulp out, which is invisible
-#: in every reading this file takes and is exactly why the constant is written to round-trip anyway.
+#: gets 8.63e-7, which no authored vector lands on.
+#:
+#: AND THE HONESTY REPRICE'S MAXIMUM WENT THE OTHER WAY WHILE THE AUDIT IMPROVED, which is recorded
+#: rather than absorbed and is gated in
+#: `test_the_honesty_reprice_is_one_order_statistic_of_a_distribution_that_improved`. The engine's
+#: own Monte Carlo auditor reads **-6.249% at `Swaption_5Y_2Y`** against the retired vector's
+#: -4.669% read through the same clock - but that is the WORST of 25 benchmarks, and the other
+#: readings of the same 25 all fell: rms 2.709% -> **2.387%**, and benchmarks more than 3% from the
+#: auditor **10 of 25 -> 3 of 25**. The maximum is the one place the fit did not show, because this
+#: theta* carries higher sigma knots - SEVEN of the twenty above 0.05 where the retired vector had
+#: five - and Schrager-Pelsser's freezing bias grows with the vol level. It is not the clock: the
+#: same -6.235% comes back from the declared seed on a pristine tree. On this fixture the maximum is
+#: ANTI-correlated with the fit - the six-seed sweep's worst fit reads the best honesty, -4.718% at
+#: 4.4659bp - so "rms lower" and "honesty no worse" cannot both be met here and which one a landing
+#: is judged on is an owner ruling. The live 54-cell probe moved the auditor the other way,
+#: -3.39% to -2.12%.
 ID_ANALYTIC_THETA = {
-    'Alpha_1': [0.019636043320534653],
-    'Alpha_2': [0.052303947299117401],
-    'Correlation': [-0.94086243266563796],
-    'Sigma_1': [0.0093430763366823093, 0.0078472524308586793, 0.010534180253796762,
-                0.024972435422619753, 0.089999295056638492, 1.0000000000000003e-05,
-                0.043491067322455008, 0.082356319833777003, 0.034608001948002336,
-                0.028132036904066834],
-    'Sigma_2': [0.0063492865790124309, 0.0041844033445664437, 0.0088736732224940721,
-                0.0089213613978900604, 0.074641807429185525, 0.02053997401379614,
-                0.063694656668906141, 0.074318374104084511, 0.026604763684314203,
-                0.021751976358139601]}
+    'Alpha_1': [0.2813034827193],
+    'Alpha_2': [0.073731864540266],
+    'Correlation': [-0.9499987110160323],
+    'Sigma_1': [0.011751240023735926, 0.01772698571220824, 0.018714771671368008,
+                0.027410420015248016, 0.022977367549116015, 0.009740267235151446,
+                0.07253821496125087, 0.0899861890705156, 0.08466199615274374,
+                0.08023573225258275],
+    'Sigma_2': [0.016275786547270594, 0.025608424932383113, 0.02695027130043976,
+                0.04443426160914259, 0.03511101780395394, 0.030027986018198727,
+                0.05853341042527687, 0.008795354296570166, 0.07069010279253891,
+                0.06961435242058203]}
 
 #: theta* on the FOUR-quote fixture under `Objective: 'Monte_Carlo'`, as solved on this box in
 #: float64. It is the bit-identity baseline: the same vector, to the bit, before and after the
@@ -2071,40 +2387,58 @@ ID_ANALYTIC_THETA = {
 #: a silent block reaches and no arithmetic at all -
 #: `test_the_monte_carlo_objective_still_solves_to_this_vector` is the gate and says what
 #: re-records it. `AN_FOUR_THETA` below is what the DEFAULT solves to now.
+#:
+#: RE-RECORDED 2026-09-02, the first time this vector has moved, by the landing that moved every
+#: HW2F theta*: BOTH halves reach it. The premium clock is on the Monte Carlo residual too - that
+#: residual divides a market premium by a model price, and the market premium moved +3.3e-4 - and
+#: the seed is where the chain starts. It read alpha = (0.022546, 0.0018554), rho = -0.26308
+#: before and reads (0.88382, 0.0035359), rho = -0.64207 now: a fast factor and a nearly
+#: driftless one, which is the shape the separated seed was chosen to reach and is within 8% of
+#: the alpha_1 the live 54-cell probe found from a separated seed.
 MC_FOUR_THETA = {
-    'Alpha_1': [0.022545754213621216],
-    'Alpha_2': [0.0018553868685500575],
-    'Correlation': [-0.26307585773035419],
-    'Sigma_1': [0.0059719210783128326, 0.0038731463946331019, 0.0053526691500668669,
-                0.01877328396894392, 0.021282629111535927, 0.016109986402646746,
-                0.0058307925191234539, 0.016199603181997538, 0.022549554433431374,
-                0.01412973457408096],
-    'Sigma_2': [0.0083557613189397927, 0.0068394360667839212, 0.0051707900399454295,
-                0.010321136905445082, 0.021028822081422899, 0.016774750165862013,
-                0.012819327482685442, 0.017221307246261863, 0.016757484356760555,
-                0.019917356820708082]}
+    'Alpha_1': [0.8838200347991989],
+    'Alpha_2': [0.003535909908850363],
+    'Correlation': [-0.6420711771679645],
+    'Sigma_1': [0.012048204866639782, 0.022289393326153036, 0.012131697402018596,
+                0.017336645235464358, 0.017761506195400695, 0.027001440506809755,
+                0.03867671946670284, 0.0051682892665788505, 0.02420097457038873,
+                0.021719967510674714],
+    'Sigma_2': [0.024878038790869982, 0.020798888165221196, 0.020152884562528145,
+                0.019816401225002778, 0.022499761487407982, 0.02053355304739493,
+                0.01835945160571706, 0.018447529927269692, 0.018423964357339267,
+                0.018494757668385337]}
 
 #: theta* on the FOUR-quote fixture under `Objective: 'Analytic'`, AS SOLVED - the analytic twin of
 #: `MC_FOUR_THETA` and the second half of the theta-comparison, so the reading is taken on the
 #: under-determined block as well as on the identified one. `Random_Seed` 5120, CPU float64;
-#: 12.8 seconds over 351 evaluations, against 76.3 over 170 for the vector above.
+#: RE-TAKEN 2026-09-02: 15.4 seconds over 403 evaluations, against 81.8 over 133 for the vector
+#: above. Evaluations counted at the two scipy adapters, which is not the instrument that recorded
+#: 351 and 170 before the re-mark - the wall clock is the like-for-like half (it read 12.8 and
+#: 76.3), and `test_the_analytic_solve_is_deterministic_and_the_seed_moves_what_the_quotes_do_not`
+#: carries the whole table.
 #:
-#: THAT IT IS A SOLVE OUTPUT IS CHECKABLE IN SECONDS: `||J'r||` here is 6.91e-8 against `||r||`
-#: 4.01e-7, which is a fit that INTERPOLATES - four quotes against 23 parameters - and no authored
+#: THAT IT IS A SOLVE OUTPUT IS CHECKABLE IN SECONDS: `||J'r||` here is 7.66e-9 against `||r||`
+#: 2.29e-8, which is a fit that INTERPOLATES - four quotes against 23 parameters - and no authored
 #: vector lands on it. `test_the_analytic_solve_is_deterministic_and_the_seed_moves_what_the_quotes_
 #: do_not` re-solves it at this seed and is what would catch it going stale.
+#:
+#: RE-RECORDED 2026-09-02 by the seed-and-clock landing, which moved every HW2F theta*. It read
+#: `||J'r||` 6.91e-8 against `||r||` 4.01e-7 at the old seed and the old premium clock, so the
+#: under-determined block now interpolates its four quotes an order of magnitude harder; the
+#: engine's own Monte Carlo auditor reads -2.263% here against -1.670% before, which is the null
+#: space this block does not identify rather than a worse fit (see `ID_ANALYTIC_THETA`).
 AN_FOUR_THETA = {
-    'Alpha_1': [0.048592845601884482],
-    'Alpha_2': [0.09440744561345675],
-    'Correlation': [-0.11090827716509652],
-    'Sigma_1': [1.2465372443084727e-02, 7.2778260503007170e-03, 1.4006085393093904e-02,
-                3.5430024521239784e-03, 1.5960553435155459e-02, 9.6506709744549873e-03,
-                1.2706915235818215e-02, 6.2807358340067013e-03, 1.8440690247164576e-02,
-                2.8377539119097413e-02],
-    'Sigma_2': [4.3376162862581984e-03, 1.4350349838542796e-02, 9.0120452652106865e-03,
-                4.0131799581242791e-03, 3.4400275670176540e-02, 2.2503998642944115e-02,
-                1.0268145640508276e-02, 3.1668568515472173e-02, 3.8415424141668202e-02,
-                4.1795126093191949e-02]}
+    'Alpha_1': [0.2849546414778107],
+    'Alpha_2': [0.034205762238456776],
+    'Correlation': [-0.038872809713065115],
+    'Sigma_1': [0.01477079675178202, 0.007501737216816033, 0.010196504317133285,
+                0.008804083972127764, 0.005551965570300839, 0.00851406227509759,
+                0.012679137814980049, 0.0040191968265081346, 0.010782787260332296,
+                0.01219901242331459],
+    'Sigma_2': [0.0076506352073352595, 0.013074727254761297, 0.012667036797553018,
+                0.008549497758875578, 0.030606943635628478, 0.01921286010311337,
+                0.013954072058773867, 0.02168436210611065, 0.029162520715096445,
+                0.03146698326207222]}
 
 
 def flat_theta(calibration, named):
@@ -2163,7 +2497,7 @@ def quote_calibration(theta=None, benchmarks=ID_GRID, vols=None, chain=False, **
     """`(SwaptionCalibration, world)` on the identified fixture with the ANALYTIC quote side on.
 
     `Stationarity_Tol` is DELETED from the block rather than declared: the analytic chain reaches
-    3.85e-6 on this fixture, so this path runs at the field's 1e-3 default where the Monte Carlo one
+    8.63e-7 on this fixture, so this path runs at the field's 1e-3 default where the Monte Carlo one
     has to write itself a 1e5. That is the contract of the build and it is authored here.
     """
     world = identified_closure(
@@ -2373,8 +2707,8 @@ def test_the_analytic_quote_side_is_built_and_the_splice_is_worth_exactly_zero()
     assert stationarity(on, theta) == stationarity(
         SwaptionCalibration('gate', off['objective'], off['implied_var'], None, off['process'],
                             off['swaps']), theta), (
-        "||J'r|| and ||r|| moved with the quote side on - the e065888 readings are 3.85e-6 and "
-        '2.26e-3 and this gate is what holds them still')
+        "||J'r|| and ||r|| moved with the quote side on - the recorded readings are 8.63e-7 and "
+        '1.48e-3 and this gate is what holds them still')
     # the schema stopped saying it is not built, which is half of what a user reads
     for field in ('Objective', 'Quote_Sensitivity'):
         text = next(f for f in HullWhite2FactorModelParameters.fields
@@ -2466,27 +2800,32 @@ def test_the_analytic_objective_reaches_a_stationarity_the_quartic_cannot():
 
     `market_swap_class.error` returns a residual that is ALREADY a square, so `least_squares`
     minimises a QUARTIC in the pricing error and stops where a quartic goes flat. The recorded
-    Monte Carlo theta* reads `||J'r||` **8.24e3** against `||r||` **45.97** on this box in float64
-    - `docs_src/developer/quote_sensitivities.md` recorded 8.6e3 and 46.1 in float32 on CUDA, the
-    same reading - having come down from **2.86e11** at the seed. Seven and a half of the eleven
-    orders, and it stops: which is why this file's own `ID_STATIONARITY` is **1e5**, because the
+    Monte Carlo theta* reads `||J'r||` **3.16e2** against `||r||` **22.11** on this box in float64
+    - it read 8.24e3 and 45.97 before the 2026-09-02 re-mark, and
+    `docs_src/developer/quote_sensitivities.md` recorded 8.6e3 and 46.1 in float32 on CUDA, the
+    same reading of the same pre-landing vector. Eight and a half of the eleven orders from the
+    seed's 2.86e11, and it stops: which is why this file's own `ID_STATIONARITY` is **1e5**, because the
     quote-side backward would otherwise refuse the fixture it was built for.
 
     `normal_vol_error` returns the difference itself, so `least_squares` minimises the sum of
-    squares it was written for. At the analytic theta*, same fixture, `||J'r||` is **3.85e-6**
-    against `||r||` **2.26e-3**, down from **6.00e-2** at the seed. In the units of the declared
+    squares it was written for. At the analytic theta*, same fixture, `||J'r||` is **8.63e-7**
+    against `||r||` **1.48e-3**, down from **4.96e-2** at the seed. In the units of the declared
     field that is the whole finding:
 
         objective        ||J'r|| at theta*     the Stationarity_Tol that accepts it
-        Monte Carlo             8.24e+03       1e5   (this file has to declare it)
-        Analytic                3.85e-06       1e-3  (the field's own DEFAULT)
+        Monte Carlo             3.16e+02       1e5   (this file has to declare it)
+        Analytic                8.63e-07       1e-3  (the field's own DEFAULT)
 
     EIGHT ORDERS of declared tolerance, and the analytic path is the one that clears the default.
+    BOTH numbers fell with the 2026-09-02 re-mark - the Monte Carlo from 8.24e3 and the analytic
+    from 3.85e-6 - and the finding is the SIDE of the declared default each lands on, which is
+    what did not move: 3.16e+02 is still five orders outside 1e-3 and 8.63e-07 is still three
+    orders inside it.
     The raw norms are in different units - a weighted squared PERCENTAGE against an absolute
-    normal VOL - so the 9.3 orders between them is not a like-for-like ratio and is not claimed as
+    normal VOL - so the 8.6 orders between them is not a like-for-like ratio and is not claimed as
     one. What IS like-for-like is the tolerance each needs, and the shape of the descent: the
-    quartic falls 7.5 orders and stops 8240 short of zero; the quadratic falls 4.2 orders and
-    lands 3.9e-6 short of it.
+    quartic falls 8.9 orders and stops 316 short of zero; the quadratic falls 4.8 orders and
+    lands 8.6e-7 short of it.
 
     THIS IS THE READING THE 2026-08-31 DEFAULT FLIP WAS TAKEN ON, together with the checker's
     accuracy grid. A field whose own default tolerance the family default cannot clear is a field
@@ -2497,8 +2836,8 @@ def test_the_analytic_objective_reaches_a_stationarity_the_quartic_cannot():
     assert field.default == 1e-3 and ID_STATIONARITY == 1e5, (field.default, ID_STATIONARITY)
 
     for tag, extra, theta, bound, resid in (
-            ('Monte_Carlo', {'Objective': 'Monte_Carlo'}, ID_THETA, (1e3, 1e5), (40.0, 55.0)),
-            ('Analytic', {'Objective': 'Analytic'}, ID_ANALYTIC_THETA, (0.0, 1e-3), (1e-3, 5e-3))):
+            ('Monte_Carlo', {'Objective': 'Monte_Carlo'}, ID_THETA, (1e2, 1e5), (15.0, 30.0)),
+            ('Analytic', {'Objective': 'Analytic'}, ID_ANALYTIC_THETA, (0.0, 1e-3), (1e-3, 2e-3))):
         calibration, _ = calibration_at(theta, **extra)
         norm, residual = stationarity(calibration, flat_theta(calibration, theta))
         assert bound[0] <= norm < bound[1], (
@@ -2514,6 +2853,279 @@ def test_the_analytic_objective_reaches_a_stationarity_the_quartic_cannot():
     assert 1e-3 < norm < 1.0, (
         'the analytic gradient at the seed reads {:.4g} against a recorded 6.0e-2 - if it is now '
         'tiny the seed is already stationary and the solve below measures nothing'.format(norm))
+
+
+#: The retired `ID_ANALYTIC_THETA` - the pre-2026-09-02 analytic answer on the identified grid,
+#: carried here rather than deleted because the corner gate below is worthless without the vector
+#: whose corner it is. `Sigma_1[5]` sits EXACTLY on the 1e-5 variance floor and `Sigma_1[4]` 7.0e-7
+#: under the 0.09 ceiling, and both carry an outward gradient: two active bounds, one of them a
+#: factor switched off.
+RETIRED_ANALYTIC_THETA = {
+    'Alpha_1': [0.019636043320534653],
+    'Alpha_2': [0.052303947299117401],
+    'Correlation': [-0.94086243266563796],
+    'Sigma_1': [0.0093430763366823093, 0.0078472524308586793, 0.010534180253796762,
+                0.024972435422619753, 0.089999295056638492, 1.0000000000000003e-05,
+                0.043491067322455008, 0.082356319833777003, 0.034608001948002336,
+                0.028132036904066834],
+    'Sigma_2': [0.0063492865790124309, 0.0041844033445664437, 0.0088736732224940721,
+                0.0089213613978900604, 0.074641807429185525, 0.02053997401379614,
+                0.063694656668906141, 0.074318374104084511, 0.026604763684314203,
+                0.021751976358139601]}
+
+
+def active_bounds(calibration, named):
+    """`(||J'r||, ||projected J'r||, [(coordinate, value, side, gradient)])` at a named theta.
+
+    A coordinate is ACTIVE where it sits within 1e-5 of its own box's width of an end AND the
+    gradient points OUT of the box there - which is the KKT test and not a proximity one, so a
+    coordinate that happens to stop near a bound the objective is pulling it away from does not
+    count as a multiplier. The PROJECTED norm is the raw gradient with those components zeroed: it
+    is what says whether theta* is a constrained stationary point, where the raw norm cannot.
+    """
+    theta = flat_theta(calibration, named)
+    x = theta.detach().clone().requires_grad_(True)
+    residual = calibration(x)
+    jacobian = torch.stack([torch.autograd.grad(residual[i], x, retain_graph=True)[0]
+                            for i in range(residual.numel())]).double()
+    gradient = (jacobian.t() @ residual.detach().double()).numpy()
+    model = HullWhite2FactorModelParameters({}, DEVICE, DTYPE)
+    free, active, k = gradient.copy(), [], 0
+    for key in calibration.keys:
+        low, high = (model.alpha_bounds if key.startswith('Alpha') else
+                     model.corr_bounds if key == 'Correlation' else model.sigma_bounds)
+        for i, value in enumerate(np.atleast_1d(named[key])):
+            name = '{}[{}]'.format(key, i) if np.atleast_1d(named[key]).size > 1 else key
+            width = high - low
+            if value - low < 1e-5 * width and gradient[k] > 0.0:
+                active.append((name, float(value), 'floor', float(gradient[k])))
+                free[k] = 0.0
+            elif high - value < 1e-5 * width and gradient[k] < 0.0:
+                active.append((name, float(value), 'ceiling', float(gradient[k])))
+                free[k] = 0.0
+            k += 1
+    return (float(np.linalg.norm(gradient)), float(np.linalg.norm(free)), active)
+
+
+def correlation_profile(calibration, named, grid=(-0.95, -0.94, -0.9, -0.8, -0.5, 0.0, 0.95)):
+    """`{rho: half the sum of squares}` along the correlation axis, everything else held at `named`.
+
+    The objective's OWN profile through theta*, which is the only thing that can say whether a
+    correlation on its bound is where the fixture's minimum is or where a search stopped.
+    """
+    theta = flat_theta(calibration, named)
+    index = sum(np.atleast_1d(named[k]).size
+                for k in calibration.keys[:calibration.keys.index('Correlation')])
+    out = {}
+    for rho in grid:
+        x = theta.detach().clone()
+        x[index] = rho
+        out[rho] = 0.5 * float((calibration(x).detach().double() ** 2).sum())
+    return out
+
+
+def test_the_corner_moved_off_the_sigma_floor_and_what_is_left_is_the_fixtures_own_minimum():
+    """THE CORNER, GATED. What the 2026-09-02 seed-and-clock landing was FOR, asserted rather than
+    written down - because the vector it retired reached its stopping point through a bound
+    multiplier, and nothing in this file said so.
+
+    A BOUND-DOMINATED `||J'r||` IS TWO DIFFERENT THINGS and the raw norm cannot tell them apart. At
+    a box-constrained least-squares minimum the gradient does NOT vanish: it is the sum of the
+    multipliers on the active bounds. So the reading that says whether theta* is a stationary point
+    is the PROJECTED gradient - the raw one with the outward-pointing active components zeroed -
+    and the reading that says whether the corner is PATHOLOGICAL is WHICH bound is active. Measured
+    on the identified 25-quote grid through the chain's own residual:
+
+        theta*                      ||J'r||    ||projected||   active bounds
+        retired (pre-landing)       5.75e-5      4.47e-5       Sigma_1[5] on the 1e-5 FLOOR,
+                                                               Sigma_1[4] on the 0.09 CEILING
+        ID_ANALYTIC_THETA           8.63e-7      2.09e-7       Correlation on the -0.95 end
+
+    TWO HUNDRED AND FOURTEEN TIMES better in the measure that means constrained stationarity, and
+    the surviving multiplier is on a different KIND of coordinate. A sigma knot pinned at 1e-5 is a
+    FACTOR SWITCHED OFF - the fit bought its residual by deleting a degree of freedom - and the
+    retired vector had one of those AND a knot on the ceiling. What is left is a correlation on its
+    end, which is a two-factor model saying the quotes want the strongest negative correlation the
+    box allows, and the box is an authored range rather than a degeneracy.
+
+    AND IT IS THE FIXTURE'S OWN MINIMUM, WHICH IS ASSERTED HERE RATHER THAN ARGUED. The objective's
+    profile along the correlation axis through theta*, everything else held:
+
+        rho        -0.95      -0.94      -0.90      -0.80      -0.50       0.00      +0.95
+        loss     1.095e-6   2.175e-6   2.598e-5   1.924e-4   1.248e-3   3.959e-3   1.061e-2
+
+    Monotone from the bound outward over the whole box, minimised AT the bound, and the same shape
+    at `ID_THETA` - the Monte Carlo answer, which stopped at -0.9412 and would go further. The
+    retired vector is the ONE probed point whose profile is not that shape: it is minimised at its
+    own -0.9409 and RISES toward -0.95, which is what a different basin looks like from inside. So
+    the correlation end is not where the search fell; it is where a 5x5 cube quoted flat at 20 vol
+    puts its minimum once no sigma knot is pinned.
+
+    THE SEED SWEEP SAYS THE SAME THING AND IS THE REASON THIS IS THE FIXTURE'S. Six alpha seeds
+    through the same chain, `Random_Seed` 5120, CPU float64, 204 to 367 s each - measured, and too
+    expensive to assert:
+
+        alpha seed        rms      rho          ||J'r||    sigma knots on the floor
+        (0.1, 0.1)      2.9591   -0.9500000    9.06e-7      0     <- the RETIRED seed
+        (0.5, 0.05)     2.9594   -0.9499987    8.63e-7      0     <- ALPHA_SEED
+        (0.05, 0.5)     2.9591   -0.9500000    9.11e-7      0
+        (0.2, 0.02)     2.9591   -0.9500000    9.10e-7      0
+        (0.8235,0.0053) 2.9592   -0.9500000    9.04e-7      0
+        (1.0, 0.1)      4.4659   +0.6929275    4.46e-5      9     <- the other basin
+
+    Five of six land on the same rms to four digits and the same correlation end. The sixth does
+    NOT reach it - and it is a fifty-percent worse fit with `||J'r||` fifty times larger and NINE
+    sigma knots on the floor, which is the corner this gate exists to catch, alive and reachable.
+    So the claim is not "every seed reaches the end": it is that every seed that reaches the good
+    basin reaches the end, and the escape from it is strictly worse.
+
+    AND THE CLOCK ALONE WOULD HAVE DONE IT, which corrects the landing's own first attribution. On
+    the FIXED tree the retired seed returns rms 2.9591 with no floored knot: the pristine-tree
+    measurement that read 4.5125 against 2.9582 was taken with the premium clock still wrong, so
+    what it established is that the seed suffices, not that the clock does not. Either half alone
+    kills this fixture's sigma-floor corner. The seed's own case is
+    `test_the_declared_alpha_seed_is_asymmetric_and_the_first_descent_leaves_the_ridge` - a better
+    first descent - and the live 54-cell ladder, not this fixture's rms.
+    """
+    calibration, _ = quote_calibration(ID_ANALYTIC_THETA)
+    norm, projected, active = active_bounds(calibration, ID_ANALYTIC_THETA)
+
+    # THE CORNER SIGNATURE THE LANDING KILLED: not one sigma knot pinned at either end of its box
+    model = HullWhite2FactorModelParameters({}, DEVICE, DTYPE)
+    low, high = model.sigma_bounds
+    for name in ('Sigma_1', 'Sigma_2'):
+        knots = np.asarray(ID_ANALYTIC_THETA[name], dtype=float)
+        assert (knots - low > 1e-5 * (high - low)).all(), (
+            '{} has a knot on the {:g} variance floor - {} - which is a FACTOR SWITCHED OFF and is '
+            'the corner the 2026-09-02 landing removed'.format(
+                name, low, [(i, v) for i, v in enumerate(knots) if v - low <= 1e-5 * (high - low)]))
+        assert (high - knots > 1e-5 * (high - low)).all(), (
+            '{} has a knot on the {:g} ceiling - {} - which the retired vector also had and this '
+            'one does not'.format(
+                name, high, [(i, v) for i, v in enumerate(knots) if high - v <= 1e-5 * (high - low)]))
+
+    # ONE active bound, and it is the correlation
+    assert [a[0] for a in active] == ['Correlation'] and active[0][2] == 'floor', (
+        'the active set at theta* is {} against the recorded single Correlation multiplier - if a '
+        'sigma knot is back on a bound the corner has returned'.format(active))
+    assert 0.9 < norm / abs(active[0][3]) < 1.1, (
+        'the correlation multiplier is {:.4g} of a ||J\'r|| of {:.4g}, against the recorded 97% - '
+        'if the rest of the gradient has grown this is no longer a constrained minimum with one '
+        'active bound'.format(abs(active[0][3]) / norm, norm))
+    # and the PROJECTED gradient, which is the reading that means stationarity
+    assert projected < 1e-6, (
+        'the projected gradient at theta* is {:.4g} against a recorded 2.09e-7 - the raw ||J\'r|| '
+        'is dominated by the correlation multiplier by construction, so THIS is the number that '
+        'says the free coordinates are stationary'.format(projected))
+
+    # THE RETIRED VECTOR, so none of the above is vacuous
+    retired_norm, retired_projected, retired_active = active_bounds(
+        calibration, RETIRED_ANALYTIC_THETA)
+    assert sorted(a[2] for a in retired_active) == ['ceiling', 'floor'], (
+        'the retired vector no longer carries the two sigma multipliers this gate contrasts '
+        'against: {}'.format(retired_active))
+    assert retired_projected > 100.0 * projected, (
+        'the retired vector\'s projected gradient is {:.4g} against theta*\'s {:.4g} - the recorded '
+        'readings are 4.47e-5 and 2.09e-7, a factor 214'.format(retired_projected, projected))
+
+    # THE CORRELATION END IS THE FIXTURE'S OWN MINIMUM, on both solved points
+    for tag, named in (('ID_ANALYTIC_THETA', ID_ANALYTIC_THETA), ('ID_THETA', ID_THETA)):
+        profile = correlation_profile(calibration, named)
+        rhos = sorted(profile)
+        assert rhos[0] == model.corr_bounds[0] and min(profile, key=profile.get) == rhos[0], (
+            '{}: the correlation profile through theta* is minimised at {:+.4g} rather than at the '
+            '{:g} end - if that is real the bound has stopped being where this fixture wants to be '
+            'and the corner reading above needs re-taking'.format(
+                tag, min(profile, key=profile.get), model.corr_bounds[0]))
+        assert all(profile[b] > profile[a] for a, b in zip(rhos, rhos[1:])), (
+            '{}: the profile is no longer monotone away from the bound: {}'.format(
+                tag, {k: '{:.4g}'.format(v) for k, v in profile.items()}))
+    # and the retired vector is the counter-example that makes the shape a reading
+    retired_profile = correlation_profile(calibration, RETIRED_ANALYTIC_THETA)
+    assert (min(retired_profile, key=retired_profile.get) != model.corr_bounds[0]), (
+        'the retired vector now wants the correlation end too, so the contrast this gate draws '
+        'between the two basins has gone: {}'.format(
+            {k: '{:.4g}'.format(v) for k, v in retired_profile.items()}))
+
+
+def honesty_errors(named, benchmarks=ID_GRID):
+    """`{benchmark: relative premium residual}` from the engine's OWN Monte Carlo estimator.
+
+    The whole vector `SwaptionCalibration.honesty_reprice` takes its maximum of, off the same
+    `objective.reprice` closure and the same frozen sample, so the two cannot disagree about what
+    the auditor said - only about how much of it is reported.
+    """
+    world = identified_closure(benchmarks=benchmarks, theta=named, Objective='Analytic')
+    calibration = SwaptionCalibration('gate', world['objective'], world['implied_var'], None,
+                                      world['process'], world['swaps'])
+    prices, _ = calibration.objective.reprice(calibration.implied_var)
+    return calibration, {name: float(value.detach()) / calibration.market_swaps[name].price - 1.0
+                         for name, value in prices.items()}
+
+
+def test_the_honesty_reprice_is_one_order_statistic_of_a_distribution_that_improved():
+    """THE HONESTY REPRICE WENT THE WRONG WAY AND THE AUDIT DID NOT, which is the reading the
+    2026-09-02 landing owes and the one `honesty_reprice` cannot give on its own.
+
+    `honesty_reprice` reports the WORST benchmark by construction - one order statistic of a
+    25-element distribution - and on this fixture that number rose, -4.669% to -6.249%. Every other
+    reading of the same distribution FELL. Both vectors audited through the same estimator, the same
+    8192-path frozen sample and the same clock, so this is one comparison and not two:
+
+        reading                              retired theta*     ID_ANALYTIC_THETA
+        worst benchmark                    -4.669% (1Y x 5Y)   -6.249% (5Y x 2Y)
+        rms over the 25                        2.709%              2.387%
+        benchmarks outside 3%                   10 of 25            3 of 25
+        span, best to worst              +4.408% .. -4.669%   +1.624% .. -6.249%
+
+    TEN benchmarks more than 3% from the auditor against THREE. That is what the fit bought, and
+    the max is the one place it did not show, because the distribution tightened around a mean that
+    moved down (-1.00% to -1.53%) rather than shrinking toward zero - the simulation's own numeraire
+    bias on this 1Y-first-node curve is negative at nearly every benchmark and no theta* removes it.
+
+    AND THE MAX IS ANTI-CORRELATED WITH THE FIT ON THIS FIXTURE, measured over the six-seed sweep
+    `test_the_corner_moved_off_the_sigma_floor_and_what_is_left_is_the_fixtures_own_minimum`
+    records. The seed that lands in the OTHER basin - rms 4.4659bp, nine sigma knots on the 1e-5
+    floor, `||J'r||` fifty times larger - reads the BEST honesty of the six at -4.718%, and every
+    seed that reaches the good basin reads -5.32% to -6.26%. So on this fixture "lower rms" and
+    "honesty no worse" are not two criteria that can both be met; they point opposite ways, and
+    which one a landing is judged on is a ruling rather than a measurement. This gate records the
+    measurement and asserts the half that is not ambiguous: the distribution.
+
+    THE LIVE 54-CELL LADDER MOVED THE AUDITOR THE OTHER WAY, -3.39% to -2.12%, which is the reading
+    a desk gets and is not this fixture's - a 5x5 cube quoted FLAT at 20 vol is authored to be
+    hard to fit, not to be audited well.
+    """
+    calibration, now = honesty_errors(ID_ANALYTIC_THETA)
+    _, retired = honesty_errors(RETIRED_ANALYTIC_THETA)
+    worst = max(now, key=lambda name: abs(now[name]))
+
+    # the library's own instrument agrees with the vector this gate takes apart
+    reported = calibration.honesty_reprice(flat_theta(calibration, ID_ANALYTIC_THETA))
+    assert reported[0] == worst and abs(reported[1] / now[worst] - 1.0) < 1e-9, (
+        'honesty_reprice reports {} against the {} this gate reads off the same closure'.format(
+            reported, (worst, now[worst])))
+    assert worst == 'Swaption_5Y_2Y' and abs(now[worst] + 0.062493) < 1e-4, (
+        'the worst benchmark is {} at {:+.4%} against the recorded Swaption_5Y_2Y at '
+        '-6.2493%'.format(worst, now[worst]))
+
+    # THE HALF THAT IS NOT AMBIGUOUS: the distribution, on every reading but its own extreme
+    rms = {tag: float(np.sqrt(np.mean([v * v for v in errors.values()])))
+           for tag, errors in (('now', now), ('retired', retired))}
+    outside = {tag: sum(abs(v) > 0.03 for v in errors.values())
+               for tag, errors in (('now', now), ('retired', retired))}
+    assert rms['now'] < rms['retired'], (
+        'the audit\'s rms over the 25 benchmarks is {:.4%} against the retired vector\'s {:.4%} - '
+        'the recorded readings are 2.387% and 2.709%, and this is the reading that says the whole '
+        'distribution improved where its maximum did not'.format(rms['now'], rms['retired']))
+    assert outside['now'] <= 4 < outside['retired'], (
+        '{} of 25 benchmarks are more than 3% from the auditor against the retired vector\'s {} - '
+        'the recorded readings are 3 and 10'.format(outside['now'], outside['retired']))
+    # and the max, which is the acceptance criterion this landing did NOT meet, recorded as such
+    assert abs(now[worst]) > abs(retired[max(retired, key=lambda n: abs(retired[n]))]), (
+        'the worst benchmark is no longer worse than the retired vector\'s - if the max has come '
+        'back under -4.669% the ruling this gate records has been overtaken and the docstring '
+        'needs re-taking')
 
 
 def repriced_vols(theta, benchmarks):
@@ -2534,21 +3146,35 @@ def repriced_vols(theta, benchmarks):
     return out
 
 
-def test_the_two_answers_agree_in_vol_space_and_share_nothing_in_theta_space():
+def test_the_two_answers_agree_in_vol_space_and_the_theta_space_half_is_the_fixtures():
     """THE THETA-COMPARISON, on BOTH fixtures, and it comes out as two findings rather than one.
 
     IN REPRICED NORMAL-VOL SPACE THEY AGREE. Every benchmark's ATM vol at both solved points,
     against the market's own inverted premium, in basis points. On the identified 25-quote grid,
     level 175 to 208:
 
-        rms |SP - market|      at Monte Carlo theta* 5.14bp      at Analytic theta* 4.51bp
-        worst benchmark        10.97bp (5Y x 5Y)                  9.43bp (5Y x 5Y)
-        rms |the two apart|    2.52bp, worst 6.38bp at 3Y x 10Y
+        rms |SP - market|      at Monte Carlo theta* 4.54bp      at Analytic theta* 2.96bp
+        worst benchmark        10.41bp (5Y x 1Y)                 -8.35bp (5Y x 2Y)
+        rms |the two apart|    3.43bp, worst 6.01bp
 
-    So the analytic solve fits the grid 12% better in the metric it is fitting, and the two answers
-    price the whole cube within 6.4 basis points of each other - the band the measured SP bias
-    itself spans (-0.13 to +2.17bp) plus one evaluation of the Monte Carlo's own noise (0.5 to
-    1.8bp), which is as close as two objectives on an unidentified block can be asked to come.
+    So the analytic solve fits the grid 35% better in the metric it is fitting, and the two answers
+    price the whole cube within 6.0 basis points of each other - which is as close as two
+    objectives on an unidentified block can be asked to come. BOTH COLUMNS IMPROVED WITH THE
+    2026-09-02 RE-MARK, which is the reading the landing is judged on: 5.14 -> 4.54bp at theta*_MC
+    and 4.51 -> 2.96bp at theta*_An, each objective measured on the fixture it is solved on.
+
+    AND THE THETA-SPACE HALF IS NOW THE FIXTURE'S RATHER THAN THE OBJECTIVE'S, which is a finding of
+    the 2026-09-02 re-mark rather than a tolerance that slipped - and this gate was RENAMED for it,
+    from `..._and_share_nothing_in_theta_space`, because a title that asserts what its own table
+    denies is worse than a re-based one. It used to read that the two answers
+    "share nothing" on BOTH fixtures, and on the 25-quote grid that is no longer true of the
+    correlation: both objectives now solve it to the -0.95 end (-0.9412 and -0.9500, **0.0088
+    apart** where they were 0.936 apart) and the whole vector is within 0.059. What is left of the
+    finding is the FOUR-QUOTE block, where they are still 0.603 apart in the correlation and 0.599
+    in `Alpha_1` - a 19-dimensional null space outright. So the assertion below is taken on that
+    fixture and REVERSED on the identified one: convergence there is asserted, because it is the
+    reading, and a re-separation would mean the correlation had come off the bound and this
+    paragraph needed re-taking.
 
     ON THE FOUR-QUOTE BLOCK THE SAME COMPARISON READS DIFFERENTLY, AND THAT IS THE POINT OF TAKING
     IT TWICE. Four quotes against 23 parameters is UNDER-determined, so each objective interpolates
@@ -2556,42 +3182,68 @@ def test_the_two_answers_agree_in_vol_space_and_share_nothing_in_theta_space():
     about the market:
 
         benchmark        market   SP @ theta*_MC   SP @ theta*_An   the two apart
-        1Y x 1Y          175.49       174.86           175.49          -0.63
-        2Y x 5Y          202.45       203.89           202.45          +1.44
-        3Y x 3Y          205.46       207.58           205.46          +2.12
-        10Y x 10Y        180.00       184.13           180.00          +4.13
+        1Y x 1Y          175.55       175.28           175.55          -0.27
+        2Y x 5Y          202.51       204.04           202.51          +1.53
+        3Y x 3Y          205.53       207.90           205.53          +2.37
+        10Y x 10Y        180.06       187.88           180.06          +7.82
 
-        rms |SP - market|    at theta*_MC 2.45bp    at theta*_An 0.00bp (it interpolates)
+        rms |SP - market|    at theta*_MC 4.16bp    at theta*_An 0.00bp (it interpolates)
 
-    The analytic column is the market column TO THE PRINTED DIGIT because `||r||` there is 4.0e-7 -
+    The analytic column is the market column TO THE PRINTED DIGIT because `||r||` there is 2.29e-8 -
     that is under-determination and not accuracy, and it is why the 25-quote block is the fixture
     the objective is judged on. What the OTHER column measures is worth having: at theta*_MC the
-    Monte Carlo premium residual is ~0 (`||r||` 4.4e-8), so 2.45bp rms is the whole SP-versus-MC gap
-    at a point where the simulation fits exactly - SP's freezing bias and the simulation's own
-    numeraire error, and at 10Y x 10Y they ADD rather than cancel. SP reads 4.13bp HIGH there:
-    about 2.9bp of it is the -1.61% numeraire error `test_the_monte_carlo_carries_a_bias_of_its_own`
-    measures at that benchmark on this 1Y-first-node curve (the model has to be pumped up to make a
-    biased-low estimator hit the market premium) and about 2.2bp is SP's own worst corner. Two
-    biases with two names, summing to the number printed, on the block where nothing else is moving.
+    Monte Carlo premium residual is ~0 (`||r||` 1.01e-8), so 4.16bp rms is the whole SP-versus-MC
+    gap at a point where the simulation fits exactly - SP's freezing bias and the simulation's own
+    numeraire error, and at 10Y x 10Y they ADD rather than cancel. SP reads 7.82bp HIGH there: the
+    model has to be pumped up to make a biased-low estimator hit the market premium, and the
+    2026-09-02 re-mark nearly doubled the gap (it read 4.13bp before) because the Monte Carlo
+    theta* moved further from the analytic one on this block than it used to be.
 
-    IN THETA SPACE THEY SHARE NOTHING ON EITHER FIXTURE, and that is rank deficiency
-    ([Quote Sensitivities](quote_sensitivities.md#rank-deficiency)) rather than a disagreement:
+    THIS ONE READING WENT THE WRONG WAY AND IT IS NOT A FIT GETTING WORSE, which is worth stating in
+    full because it is the only rms in this file that rose across the landing. 2.45 -> 4.16bp, and
+    the band below was widened `rms_mc=(1.2, 4.0)` -> `(2.0, 6.0)` to admit it. It is a CROSS-METRIC
+    reading: the Monte Carlo objective minimises the weighted squared relative PREMIUM error, and in
+    that metric - the one it is actually fitting - the same theta* went `||r||` 4.4e-8 -> 1.01e-8, a
+    factor 4.3 BETTER. What 4.16bp measures is how far apart two ESTIMATORS are at a point where one
+    of them interpolates, so it grows when theta* moves into a corner of the null space where SP and
+    the simulation disagree more, and it says nothing about the quality of the fit. Every rms taken
+    in the metric its own objective minimises improved: 5.14 -> 4.54bp (25-quote, MC), 4.51 ->
+    2.96bp (25-quote, analytic), `||r||` 4.4e-8 -> 1.01e-8 (4-quote, MC), 4.0e-7 -> 2.29e-8
+    (4-quote, analytic).
+
+    IN THETA SPACE THEY STILL SHARE NOTHING ON THE FOUR-QUOTE BLOCK, AND NO LONGER ON THE OTHER -
+    which is rank deficiency ([Quote Sensitivities](quote_sensitivities.md#rank-deficiency)) rather
+    than a disagreement, read on a fixture whose null space the re-mark moved the answers around in:
 
         fixture       Correlation           Alpha_1          Alpha_2       max |theta apart|
-        25-quote      -0.0046 / -0.9409   0.122 / 0.020   -0.018 / 0.052        0.936
-        4-quote       -0.2631 / -0.1109   0.023 / 0.049    0.002 / 0.094        0.152
+        25-quote      -0.9412 / -0.9500   0.224 / 0.281    0.060 / 0.074        0.059
+        4-quote       -0.6421 / -0.0389   0.884 / 0.285    0.004 / 0.034        0.603
 
-    The 25-quote block's singular spectrum runs `sigma_min/sigma_max` 4.6e-6 and the declared cutoff
-    keeps 18 of 23 directions, so most of theta is a direction 25 flat quotes cannot choose in; the
-    four-quote block has a 19-dimensional null space outright. Two objectives landing in different
-    parts of that null space is the expected result, and it is why the comparison that means
-    anything is the one above, in the space the quotes live in.
+    BOTH JACOBIANS ARE RANK DEFICIENT ON THIS BLOCK and the two objectives are so in different
+    amounts, re-taken 2026-09-02 at each one's own theta*: the ANALYTIC `J` runs
+    `sigma_min/sigma_max` 5.1e-15 and the declared 1e-8 cutoff keeps 15 of 23 directions (the
+    numbers `test_the_analytic_residual_is_separable_and_its_cross_term_is_structurally_zero`
+    holds),
+    the MONTE CARLO `J` runs 1.76e-6 and keeps 17 (it read 4.6e-6 and 18 before the re-mark). So
+    most of theta is a direction 25 flat quotes cannot choose in on either path; the four-quote
+    block has a 19-dimensional null space outright. Two objectives landing in different parts of that null
+    space is the expected result, and it is why the comparison that means anything is the one above,
+    in the space the quotes live in. WHAT THE RE-MARK SWAPPED is which fixture shows it: the
+    25-quote block's two answers converged onto the correlation bound while the four-quote block's
+    came apart, 0.152 to 0.603.
     """
+    # `theta` is the |Delta Correlation| the two answers are held APART by, except on the
+    # identified block since 2026-09-02, where they converged onto the bound and it is a ceiling.
+    # `rms_mc` on the four-quote block was WIDENED from (1.2, 4.0) at the re-mark - see the
+    # docstring: that column is the SP-versus-MC gap and not a fit residual, and the fit itself
+    # improved by 4.3x in the metric the Monte Carlo objective actually minimises
     for tag, benchmarks, mc_theta, an_theta, bound in (
             ('25-quote', ID_GRID, ID_THETA, ID_ANALYTIC_THETA,
-             dict(rms_mc=(3.0, 8.0), rms_an=(3.0, 7.0), apart=(4.0, 9.0), theta=0.9)),
+             dict(rms_mc=(3.0, 8.0), rms_an=(2.0, 4.0), apart=(5.0, 8.0), theta=0.1,
+                  converged=True)),
             ('4-quote', CHECKER_BENCHMARKS, MC_FOUR_THETA, AN_FOUR_THETA,
-             dict(rms_mc=(1.2, 4.0), rms_an=(0.0, 0.05), apart=(4.0, 7.0), theta=0.05))):
+             dict(rms_mc=(2.0, 6.0), rms_an=(0.0, 0.05), apart=(6.0, 9.0), theta=0.3,
+                  converged=False))):
         reading = {'mc': repriced_vols(mc_theta, benchmarks),
                    'analytic': repriced_vols(an_theta, benchmarks)}
         gaps = {k: np.array([model - market for model, market in r.values()])
@@ -2612,9 +3264,41 @@ def test_the_two_answers_agree_in_vol_space_and_share_nothing_in_theta_space():
             '{}: the two answers price the cube {:.3f}bp apart rms, worst {:.3f}'.format(
                 tag, float(np.sqrt((apart * apart).mean())), float(np.abs(apart).max())))
         # and the theta-space half, which is the finding rather than the agreement
-        assert abs(mc_theta['Correlation'][0] - an_theta['Correlation'][0]) > bound['theta'], (
-            '{}: the two correlations have converged - if that is real this fixture has become '
-            'identified and the null-space reading above needs re-taking'.format(tag))
+        gap = abs(mc_theta['Correlation'][0] - an_theta['Correlation'][0])
+        if bound['converged']:
+            assert gap < bound['theta'], (
+                '{}: the two correlations are {:.4g} apart, where the 2026-09-02 re-mark left them '
+                'both on the -0.95 end and 0.0088 apart - if they have separated again the '
+                'correlation has come off the bound and the docstring needs re-taking'.format(
+                    tag, gap))
+            for name in mc_theta:
+                assert np.abs(np.atleast_1d(mc_theta[name]) -
+                              np.atleast_1d(an_theta[name])).max() < 0.1, (
+                    '{}: the two answers have come apart in {} - this fixture was identified '
+                    'enough that they agreed to 0.059 across the whole vector'.format(tag, name))
+        else:
+            assert gap > bound['theta'], (
+                '{}: the two correlations have converged to {:.4g} - if that is real this fixture '
+                'has become identified and the null-space reading above needs '
+                're-taking'.format(tag, gap))
+
+    # THE FOUR-QUOTE FIT IN THE METRIC EACH OBJECTIVE ACTUALLY MINIMISES, which is the half the
+    # vol-space column cannot see and the half the 2026-09-02 landing is judged on: the 4.16bp above
+    # is the SP-versus-MC gap at a point where BOTH chains interpolate, and both interpolate HARDER
+    # than they did before the re-mark. Without this the only rms recorded on this fixture and this
+    # objective is one that rose, and nothing here would say the fit improved
+    for objective, named, before, now in (('Monte_Carlo', MC_FOUR_THETA, 4.4e-8, 1.0137e-08),
+                                          ('Analytic', AN_FOUR_THETA, 4.0e-7, 2.2874e-08)):
+        cal, _ = calibration_at(named, benchmarks=CHECKER_BENCHMARKS, Objective=objective)
+        norm = stationarity(cal, flat_theta(cal, named))[1]
+        assert abs(norm / now - 1.0) < 1e-3, (
+            '{}: ||r|| at the recorded four-quote theta* reads {:.4e} against {:.4e} - this is the '
+            'metric that objective minimises and the one the landing improved (it read {:.1e} '
+            'before the 2026-09-02 re-mark)'.format(objective, norm, now, before))
+        assert norm < before, (
+            '{}: ||r|| at theta* is {:.4e}, no better than the {:.1e} it read before the re-mark - '
+            'the vol-space column above is a cross-metric reading and THIS is the fit'.format(
+                objective, norm, before))
 
 
 def bootstrap_the_block(**extra):
@@ -2655,7 +3339,7 @@ def test_the_analytic_solve_reports_what_the_engines_own_estimator_makes_of_it(c
     `test_the_monte_carlo_carries_a_bias_of_its_own` measures for the SIMULATION'S OWN numeraire
     error at that same benchmark on this fixture's 1Y-first-node curve. So the honesty reprice is
     reporting the estimator's own bias with a tenth of a percent of approximation on top, which is
-    the honest thing for it to be reporting. On the 25-quote grid it reads -4.64% at 1Y x 5Y.
+    the honest thing for it to be reporting. On the 25-quote grid it reads -6.25% at 5Y x 2Y.
 
     THE NUMBER MOVES WITH THE REPRICE'S OWN PATH COUNT, which is the other reason it is reported
     rather than asserted tightly: this gate declares `Simulations: 2048` to stay under a minute and
@@ -2694,51 +3378,66 @@ def test_the_analytic_solve_is_deterministic_and_the_seed_moves_what_the_quotes_
     and its Metropolis test. Two runs at one seed therefore have to agree TO THE BIT, and they do.
 
     THE SEED SPREAD IS LARGER THAN THE MONTE CARLO PATH'S ON THIS FIXTURE, and that is recorded
-    because the opposite was expected. Across seeds 5120 / 7 / 99 on the four-quote identified
-    block, this box, CPU float64:
+    because the opposite was expected. RE-TAKEN 2026-09-02 with the re-marked chain, across seeds
+    5120 / 7 / 99 on the four-quote identified block, this box, CPU float64. Evaluations are counted
+    at the two scipy adapters - basin hopping's value-and-gradient closure plus the least-squares
+    residual, the jacobian calls not among them - which is a different instrument from the one that
+    recorded 170 and 351/358/394 before the re-mark, so the two columns are not comparable and only
+    this one is a reading:
 
-        objective       evaluations    s/evaluation    max |theta* apart|   where it lives
-        Monte Carlo    170/170/170    0.438..0.449            0.0       nowhere: bit-identical
-        Analytic       351/358/394    0.0362..0.0364          0.250     Correlation (0.155 in
-                                                                        Alpha_2, 0.075 Alpha_1)
+        objective     evaluations (basin + lsq)   s/evaluation   max |theta* apart|   where it lives
+        Monte Carlo   133 / 133 / 133             0.540..0.615          0.0      nowhere: identical
+        Analytic      403 / 399 / 407             0.0382..0.0424        0.643    Alpha_1 (0.377 in
+                                                                                 Correlation, 0.026
+                                                                                 in Alpha_2)
 
     Neither number is noise and both come from the same thing. FOUR quotes against 23 parameters
     leaves a 19-dimensional null space, so theta* is a MANIFOLD and both objectives fit it
-    essentially exactly - `||r||` is 4.4e-8 on the Monte Carlo path and 4.0e-7 on the analytic one.
-    What differs is which point of that manifold the search reaches. The Monte Carlo chain lands
-    0.273 off its seed and lands there for EVERY seed - bit-identical theta*, all three - so its
-    basin stage is contributing nothing the least-squares stage does not; the analytic evaluation is
-    twelve times cheaper, the chain makes twice as many of them, and it moves 0.121 / 0.368 / 0.371
-    off the seed on the three - the search is actually exploring. The correlation carrying all of
-    the spread is exactly the coordinate four ATM quotes say least about.
+    essentially exactly - `||r||` is 1.01e-8 on the Monte Carlo path and 2.29e-8 on the analytic one
+    at the declared seed (it read 4.4e-8 and 4.0e-7 before the re-mark, so BOTH interpolate harder
+    now). What differs is which point of that manifold the search reaches. The Monte Carlo chain
+    lands 0.652 off its seed and lands there for EVERY seed - bit-identical theta*, all three - so
+    its basin stage is contributing nothing the least-squares stage does not; the analytic
+    evaluation is thirteen times cheaper, the chain makes three times as many of them, and it moves
+    0.215 / 0.428 / 0.092 off the seed on the three - the search is actually exploring. THE SPREAD
+    MOVED COORDINATE with the re-mark, from Correlation to `Alpha_1`, and grew 0.250 to 0.643: the
+    separated seed starts the reversion speeds an order of magnitude apart, so `Alpha_1` is now the
+    coordinate with room to run, and it is still a coordinate four ATM quotes say nothing about.
+    The analytic chain's own `||r||` spreads with it - 2.29e-8 / 8.80e-7 / 1.25e-8 - all three
+    interpolating, none of them a worse fit.
 
     So this is a DETERMINISM gate and a spread READING, and the spread is not evidence FOR the
     analytic objective - it is evidence that this fixture does not identify its parameters, which
-    is the same thing `test_the_two_answers_agree_in_vol_space_and_share_nothing_in_theta_space`
+    is the same thing `test_the_two_answers_agree_in_vol_space_and_the_theta_space_half_is_the_fixtures`
     reads off the 25-quote block. The evidence for the objective is
     `test_the_analytic_objective_reaches_a_stationarity_the_quartic_cannot`.
 
-    WALL CLOCK, this box, CPU float64, nothing else running, over the same three seeds: the
-    four-quote chain is 76.3 / 74.4 / 74.6 s under the Monte Carlo objective and 12.8 / 13.0 /
-    14.3 s under the analytic one - 75.1 s against 13.4 s on the mean, a factor of 5.6 bought as
-    12x per evaluation against 2.2x the evaluations. The chain needs MORE iterations, not fewer,
-    which is what a smooth deterministic residual buys: `least_squares` can keep making progress on
-    one.
+    WALL CLOCK, this box, CPU float64, nothing else running, over the same three seeds and RE-TAKEN
+    2026-09-02: the four-quote chain is 81.8 / 71.8 / 72.4 s under the Monte Carlo objective and
+    15.4 / 16.9 / 16.8 s under the analytic one - 75.3 s against 16.4 s on the mean, a factor of
+    4.6 bought as 13x per evaluation against 3.0x the evaluations. It read 75.1 against 13.4 - a
+    factor 5.6 - before the re-mark: the Monte Carlo side did not move and the analytic chain got
+    LONGER, which is the same thing the 25-quote block shows in the other direction. The chain
+    needs MORE iterations, not fewer, which is what a smooth deterministic residual buys:
+    `least_squares` can keep making progress on one.
 
-    The 25-quote identified block solves analytically in 836 s on the same box, over 1915
-    evaluations at 0.437 s each - and that per-evaluation figure is the one to read, because it is
-    TWELVE times the four-quote block's 0.036 for six times the benchmarks. Schrager-Pelsser is
-    called once per benchmark and the grid it integrates `J` over grows with the expiry set, so the
-    analytic pass scales worse than the simulation's single batched kernel does. Batching it across
-    the benchmark set is the open build; what the objective buys today is exactness and a gradient.
+    The 25-quote identified block solves analytically in 204 s on the same box, over 849
+    evaluations at 0.240 s each - and that per-evaluation figure is the one to read, because it is
+    SIX times the four-quote block's 0.041 for six times the benchmarks. It was 836 s before the
+    re-mark, which is where the 25-quote analytic chain got FOUR TIMES SHORTER while the Monte
+    Carlo one on the same block got four times longer (`ID_THETA` records that side).
+    Schrager-Pelsser is called once per benchmark and the grid it integrates `J` over
+    grows with the expiry set, so the analytic pass scales worse than the simulation's single
+    batched kernel does. Batching it across the benchmark set is the open build; what the objective
+    buys today is exactness and a gradient.
 
-    THAT 836 IS NOT TO BE READ AGAINST THE 531 the roadmap records for the Monte Carlo objective on
-    the same block: that figure is float32 on CUDA, which is what `construct_bootstrapper` hands a
-    job, and this one is float64 on CPU. The two like-for-like readings are the four-quote pair
-    above. Per EVALUATION on CUDA float32 the analytic price is still the slower of the two -
-    0.158 s against 0.140 s, twenty-five scalar calls against one batched kernel - so batching it
-    across the benchmark set is the build this leaves on the table, and what the objective buys
-    today is exactness, a gradient, and a chain that agrees with itself.
+    THAT 217 IS NOT TO BE READ AGAINST THE 2304 s the Monte Carlo objective now takes on the same
+    block: that figure is float32 on CUDA, which is what `construct_bootstrapper` hands a job, and
+    this one is float64 on CPU. The two like-for-like readings are the four-quote pair above. Per
+    EVALUATION on CUDA float32 the analytic price is still the slower of the two - 0.158 s against
+    0.140 s, twenty-five scalar calls against one batched kernel - so batching it across the
+    benchmark set is the build this leaves on the table, and what the objective buys today is
+    exactness, a gradient, and a chain that agrees with itself.
     """
     first, second = (identified_calibration(Objective='Analytic')[0].solve() for _ in range(2))
     assert [float(v).hex() for v in first.numpy()] == [float(v).hex() for v in second.numpy()], (
@@ -2758,7 +3457,7 @@ def test_the_analytic_solve_is_deterministic_and_the_seed_moves_what_the_quotes_
     # the fit is essentially exact, which is what makes theta* a manifold rather than a point
     residual = stationarity(calibration, first)[1]
     assert residual < 1e-5, (
-        'the four-quote analytic fit reads ||r|| {:.3e} against a recorded 4.0e-7 - it is 4 quotes '
+        'the four-quote analytic fit reads ||r|| {:.3e} against a recorded 2.29e-8 - it is 4 quotes '
         'against 23 parameters, so it interpolates'.format(residual))
 
 
@@ -2957,7 +3656,7 @@ def test_the_analytic_residual_is_separable_and_its_cross_term_is_structurally_z
         dr/dq is DIAGONAL                600 of the 625 entries are STRUCTURALLY absent - autograd
                                          returns None off the unstacked residual, not a small
                                          number - and the materialised off-diagonal is exactly 0.0.
-                                         The diagonal runs -0.10232 to -0.08704, which is
+                                         The diagonal runs -0.10235 to -0.08706, which is
                                          dP/dq . sqrt(2pi/T0)/A: a lognormal vol point is about a
                                          tenth of a normal vol point here
         d2r/dtheta dq == 0               J is BIT-IDENTICAL across re-authored quote rungs and
@@ -2966,25 +3665,28 @@ def test_the_analytic_residual_is_separable_and_its_cross_term_is_structurally_z
                                          AROUND the splice by rebuilding the block
         the annuity is severed           `sp.annuity.requires_grad` is False, which is the reason
                                          the two above are exact rather than small
-        the theta-side dropped term      ||sum_i r_i grad^2 r_i||_F is 2.980e-3 against a ||J'J||_F
-                                         of 3.405 - a ratio of 8.75e-4 beside a ||r|| of 2.26e-3,
+        the theta-side dropped term      ||sum_i r_i grad^2 r_i||_F is 5.397e-4 against a ||J'J||_F
+                                         of 3.604 - a ratio of 1.50e-4 beside a ||r|| of 1.48e-3,
                                          so it is O(||r||) as the textbook says
 
     THAT LAST ROW IS THE POINT OF RETIRING THE QUARTIC, read on the OTHER side of the Gauss-Newton
     approximation. On the Monte Carlo residual the same term is 0.500064 of `J'J` - a HALF, at any
     residual level, because that residual is already a square - and it is only cancelled by a second
     dropped term of the same size on the quote side. Here there is no second term to cancel against
-    and none is needed: 8.75e-4, and it shrinks with the fit. Directionally it is 6.31e-5 of the
-    leading eigenvalue, -1.31e-3 of the second and -4.47e-4 of the fourth, so it is small in the
-    directions the pseudo-inverse keeps rather than only in the norm.
+    and none is needed: 1.50e-4, and IT SHRANK WITH THE FIT, which is the claim's own prediction
+    coming true rather than a re-based constant - the 2026-09-02 landing took `||r||` from 2.26e-3
+    to 1.48e-3, a factor 1.52, and took this ratio from 8.75e-4 to 1.50e-4. Directionally it is
+    5.53e-5 of the leading eigenvalue, 1.82e-4 of the second and 3.71e-4 of the fourth, so it is
+    small in the directions the pseudo-inverse keeps rather than only in the norm.
 
     THE SPECTRUM IS THIS OBJECTIVE'S OWN and is recorded because it is not the Monte Carlo path's.
-    `J` here is 25 x 23 with singular values from 1.806 down to 1.97e-13 - `sigma_min/sigma_max`
-    1.1e-13 - and the declared `Jacobian_Rcond` of 1e-8 keeps 13 of the 23 directions, against 18
-    on the squared residual. Nothing is wrong: sigma knots past the last benchmark expiry are in no
-    swaption's variance integral and two coordinates of this theta* sit ON a bound, so those are
-    directions 25 flat quotes genuinely do not identify, and `dtheta/dq` along them is the
-    minimum-norm representative exactly as
+    `J` here is 25 x 23 with singular values from 1.865 down to 9.57e-15 - `sigma_min/sigma_max`
+    5.1e-15 - and the declared `Jacobian_Rcond` of 1e-8, applied to `J'J`'s eigenvalues, keeps 15
+    of the 23 directions against 13 before the 2026-09-02 landing: theta* no longer parks a sigma
+    knot on the 1e-5 floor, and a coordinate not at a bound is one the quotes can still move.
+    What is left unidentified is genuine -
+    sigma knots past the last benchmark expiry are in no swaption's variance integral - and
+    `dtheta/dq` along those is the minimum-norm representative exactly as
     [Quote Sensitivities](quote_sensitivities.md#rank-deficiency) says.
     """
     calibration, world = quote_calibration(ID_ANALYTIC_THETA)
@@ -2997,7 +3699,7 @@ def test_the_analytic_residual_is_separable_and_its_cross_term_is_structurally_z
     assert float(quote_jac.diagonal().abs().min()) > 1e-2, 'the diagonal has gone quiet'
     assert np.array_equal(quote_jac.numpy(),
                           np.diag(np.diag(quote_jac.numpy()))), 'dr/dq is not diagonal'
-    assert 2e-3 < float(residual.norm()) < 3e-3, float(residual.norm())
+    assert 1e-3 < float(residual.norm()) < 2e-3, float(residual.norm())
 
     swap = calibration.market_swaps['Swaption_1Y_1Y']
     sp = world['process'].schrager_pelsser_swaption(
@@ -3026,8 +3728,8 @@ def test_the_analytic_residual_is_separable_and_its_cross_term_is_structurally_z
                            for i in range(gradient.numel())]).detach().double().numpy()
     gauss_newton = (jacobian.t() @ jacobian).numpy()
     ratio = float(np.linalg.norm(hessian) / np.linalg.norm(gauss_newton))
-    assert 3e-4 < ratio < 3e-3, (
-        'the dropped Hessian term is {:.4g} of J\'J against a recorded 8.75e-4 - it is O(||r||) on '
+    assert 5e-5 < ratio < 5e-4, (
+        'the dropped Hessian term is {:.4g} of J\'J against a recorded 1.50e-4 - it is O(||r||) on '
         'a residual nothing squared, and 0.5 is what a squared one reads'.format(ratio))
     eigenvalue, direction = np.linalg.eigh(gauss_newton)
     for k in (-1, -2, -4):
@@ -3035,8 +3737,8 @@ def test_the_analytic_residual_is_separable_and_its_cross_term_is_structurally_z
         assert abs((u @ hessian @ u) / (u @ gauss_newton @ u)) < 5e-3, (
             'direction {}: {:.3g}'.format(k, (u @ hessian @ u) / (u @ gauss_newton @ u)))
     kept = int((eigenvalue > declared('Jacobian_Rcond') * eigenvalue.max()).sum())
-    assert kept == 13, (
-        'the declared cutoff keeps {} of 23 directions against a recorded 13 - the analytic '
+    assert kept == 15, (
+        'the declared cutoff keeps {} of 23 directions against a recorded 15 - the analytic '
         'residual identifies fewer of them than the squared one\'s 18, which is a property of '
         'this objective and is what dtheta/dq is a minimum-norm representative along'.format(kept))
 
@@ -3217,37 +3919,38 @@ def test_the_re_solve_oracle_still_scatters_once_the_solve_does_reach_stationari
     times on the Monte Carlo path
     ([Quote Sensitivities](quote_sensitivities.md#the-manifold-finding)), and the diagnosis had two
     halves: the solve wanders in the directions the objective is FLAT in, and on the identified
-    25-quote block it also STOPS SHORT - `||J'r||` 8.24e3, seven and a half of eleven orders and no
-    further, so `theta*(q)` was the optimizer's stopping point rather than the argmin and full
-    column rank bought nothing. The analytic objective removes the second half outright: every
-    re-solve below lands at `||J'r||` between 8.6e-7 and 1.6e-5, at worst an order and a half INSIDE
-    the declared 1e-3 and nine below the Monte Carlo chain's stopping point. Same fixture, same
+    25-quote block it also STOPS SHORT - `||J'r||` 3.16e2 (8.24e3 before the 2026-09-02 re-mark),
+    eight and a half of eleven orders and no further, so `theta*(q)` was the optimizer's stopping
+    point rather than the argmin and full column rank bought nothing. The analytic objective removes the second half outright: every
+    re-solve below lands at `||J'r||` between 8.5e-7 and 9.7e-7 - three orders INSIDE the declared
+    1e-3 and nine below the Monte Carlo chain's stopping point, and all six within a factor of 1.15
+    of each other where before the 2026-09-02 re-mark they spread to 1.6e-5. Same fixture, same
     optimizer chain, same seed. The ladder is run on exactly the reference that was refuted, to see
     whether that was the half that mattered.
 
     IT WAS NOT. Quote 12 (3Y x 3Y) of the flat 25-quote grid, cold-started both sides, against a
-    one-pass `||dtheta/dq||` of 36.70 in that column:
+    one-pass `||dtheta/dq||` of 37.64 in that column:
 
-        h (vp)   ||theta(+h)-theta(-h)||   /2h    x36.70   cosine   in the kept 13   ||J'r|| both
-        0.5              0.03872          3.872   0.1055   0.0607       0.820        9.7e-7 8.6e-7
-        0.2              0.02182          5.456   0.1486   0.1657       0.576        9.4e-7 8.8e-7
-        0.1              1.92016          960.1   26.16    0.0197       0.807        1.6e-5 9.0e-7
+        h (vp)   ||theta(+h)-theta(-h)||   /2h    x37.64   cosine   in the kept 15   ||J'r|| both
+        0.5              0.03236          3.236   0.0860  -0.4172      0.981        9.7e-7 8.5e-7
+        0.2              0.01585          3.962   0.1053  -0.3371      0.802        9.4e-7 8.8e-7
+        0.1              0.01143          5.714   0.1518  -0.2495      0.578        9.2e-7 9.0e-7
 
-    The quotient GROWS as h shrinks - by two and a half orders at the finest rung, where the
-    up-bumped solve found a different basin outright (`||r||` 2.25e-3 against 1.46e-3, and 1.899
-    away from the recorded theta* while the down-bumped one is 0.279 away). And the displacement
-    points NOWHERE: a cosine of 0.02 to 0.17 against a random vector's own 1/sqrt(23) = 0.209, and a
-    fraction inside the 13 directions the cutoff keeps of 0.58 to 0.82 against a random vector's
-    sqrt(13/23) = 0.752. It is not preferentially in the discarded directions, which is what the
-    Monte Carlo path measured; it is just not the derivative.
+    The quotient GROWS as h shrinks - 3.24 to 5.71, and it is SEVEN TO TWELVE TIMES TOO SMALL at
+    every rung (fraction 0.086 to 0.152). And the displacement points the WRONG WAY: the cosine
+    against the one-pass derivative is NEGATIVE at all three rungs, -0.42 to -0.25, where a real
+    derivative would give +1 and a random direction would give +-0.209. That is a sharper refutation
+    than the pre-landing one, which had the displacement merely orthogonal (0.02 to 0.17); an
+    anti-aligned displacement is not a noisy derivative, it is not a derivative.
 
-    EVERY RE-SOLVE LANDS 0.27 TO 0.30 FROM THETA* WHATEVER h IS - 0.2967 / 0.2870 / 0.2788 on the
-    down side across bumps worth 0.18 / 0.073 / 0.037 in theta - so the displacement is set by where
-    each search stopped and not by the quote. Read beside the Monte Carlo path's own ladder at the
-    same three rungs - 0.037 / 0.021 / 0.013, quotients 3.7 / 5.3 / 6.7 - the two coarse rungs are
-    the SAME LADDER to two digits. An objective that reaches stationarity and one that stops eight
-    orders short displace by the same amount in the same way, which settles which half of the
-    diagnosis was load-bearing: it is the flat directions, and stationarity was never the obstacle.
+    THE 2026-09-02 RE-MARK MADE THE RE-SOLVES WELL-BEHAVED WITHOUT MAKING THEM A DERIVATIVE, and
+    that is the finding worth keeping. Before it, every re-solve landed 0.27 to 1.90 from theta* and
+    the finest rung found a different basin outright (`||r||` 2.25e-3 against 1.46e-3, quotient
+    960). Now they land **0.006 to 0.021** away - an order and a half tighter - every one stops at
+    `||J'r||` between 8.5e-7 and 9.7e-7, and the quotient ladder is monotone and tame. The corner is
+    gone, the chain is stable, and the re-solve oracle is still not `dtheta/dq`. Which settles the
+    diagnosis the other way round from how it looked: it was never the stopping point, and it is not
+    the conditioning either - it is that the objective is flat in the directions the quote moves.
 
     SO THE CLASSIC ORACLE IS STILL UNAVAILABLE HERE and `dtheta/dq` is NOT gated against it - the
     reference has no limit to converge to. What is gated instead is
@@ -3257,7 +3960,7 @@ def test_the_re_solve_oracle_still_scatters_once_the_solve_does_reach_stationari
     gate passes by FAILING to agree, and if it ever flips, the solve has started returning a
     function of its quotes and the comparison has become available.
 
-    WALL CLOCK: six cold analytic solves of the 25-quote block, 237 to 333 s each on this box in
+    WALL CLOCK: six cold analytic solves of the 25-quote block, 210 to 330 s each on this box in
     CPU float64. That is what a refuted oracle costs to keep refuted, and it is why the ladder is
     one column rather than the grid.
     """
@@ -3303,29 +4006,45 @@ def test_the_re_solve_oracle_still_scatters_once_the_solve_does_reach_stationari
     assert fine['quotient'] > 1.5 * coarse['quotient'], (
         'the re-solve quotient reads {:.4g} at h={} and {:.4g} at h={} - it CONVERGED. If that is '
         'real the solve has started returning a function of its quotes and dtheta/dq now has a '
-        'classic oracle to be gated against; the recorded readings are 3.872 and 960.1'.format(
+        'classic oracle to be gated against; the recorded readings are 3.236 and 5.714'.format(
             coarse['quotient'], bumps[0], fine['quotient'], bumps[-1]))
     for bump in bumps:
         got = reading[bump]
-        assert abs(got['fraction'] - 1.0) > 0.5 and abs(got['cosine']) < 0.4, (
-            'h={}: the re-solve displacement is {:.4g} of the one-pass derivative at a cosine of '
-            '{:.4f} - the recorded readings are 0.11 / 0.15 / 26.2 at cosines under 0.17, which is '
-            'below the 0.209 a RANDOM direction would score'.format(
-                bump, got['fraction'], got['cosine']))
-        assert 0.3 < got['inside'] < 0.95, (
-            'h={}: {:.3f} of the displacement lands in the 13 directions the cutoff keeps, against '
-            'the sqrt(13/23) = 0.752 a random one would - the recorded readings are 0.58 to 0.82, '
-            'which is to say the displacement is not preferentially in EITHER subspace'.format(
+        assert abs(got['fraction'] - 1.0) > 0.5, (
+            'h={}: the re-solve displacement is {:.4g} of the one-pass derivative - the recorded '
+            'readings are 0.086 / 0.105 / 0.152, seven to twelve times too small. If this is now '
+            'near 1.0 the oracle has become available and dtheta/dq can be gated against '
+            'it'.format(bump, got['fraction']))
+        # THE DIRECTION, and since the re-mark it is the sharper half: anti-aligned, not orthogonal
+        assert got['cosine'] < 0.0, (
+            'h={}: the displacement now points WITH the one-pass derivative at a cosine of {:+.4f} '
+            '- the recorded readings are -0.42 / -0.34 / -0.25 and an anti-aligned displacement is '
+            'what says this is not a noisy derivative'.format(bump, got['cosine']))
+        assert abs(got['cosine']) < 0.6, (
+            'h={}: cosine {:+.4f} against a recorded worst of -0.4172 - if the magnitude is '
+            'climbing toward 1 the re-solve is starting to track the derivative'.format(
+                bump, got['cosine']))
+        assert 0.5 < got['inside'] < 0.995, (
+            'h={}: {:.3f} of the displacement lands in the 15 directions the cutoff keeps, against '
+            'the sqrt(15/23) = 0.808 a random one would - the recorded readings are 0.578 to 0.981, '
+            'which brackets that number rather than sitting to one side of it'.format(
                 bump, got['inside']))
-        assert got['moved'] > 5e-3 and min(got['away']) > 0.2, (
+        assert got['moved'] > 5e-3 and min(got['away']) > 1e-3, (
             'h={}: the two re-solves land {} from the recorded theta* against a bump worth {:.4g} '
-            'in theta - the recorded distances are 0.27 to 1.90'.format(
+            'in theta - the recorded distances are 0.006 to 0.021'.format(
                 bump, got['away'], np.linalg.norm(predicted) * bump / 100.0))
-    assert min(fine['away']) > 0.5 * min(coarse['away']), (
-        'the distance from theta* FELL with h - {:.4g} at h={} against {:.4g} at h={}. It is 0.279 '
-        'against 0.268 on the record, a floor set by where each search stopped rather than by a '
-        'bump five times smaller'.format(min(fine['away']), bumps[-1], min(coarse['away']),
-                                         bumps[0]))
+    # THE DISTANCE NOW FALLS WITH h, which is the opposite of what it did before the re-mark and is
+    # asserted in that direction rather than left as a stale inequality: the chain is stable enough
+    # that a smaller bump lands nearer theta*. It is still not a derivative - the cosine says so.
+    assert min(fine['away']) < min(coarse['away']), (
+        'the distance from theta* no longer falls with h - {:.4g} at h={} against {:.4g} at h={}. '
+        'Before 2026-09-02 it did NOT fall (0.279 against 0.268, a floor set by where each search '
+        'stopped); the re-mark made the chain stable and this is where that shows'.format(
+            min(fine['away']), bumps[-1], min(coarse['away']), bumps[0]))
+    assert min(coarse['away']) / min(fine['away']) < 10.0, (
+        'the coarse rung lands {:.3g}x further from theta* than the fine one - the recorded ratio '
+        'is 2.7x, and a large one would mean a re-solve had found another basin again'.format(
+            min(coarse['away']) / min(fine['away'])))
 
 
 def test_a_premium_re_struck_by_volatility_delta_declines_the_analytic_quote_side():
@@ -3429,24 +4148,30 @@ NORMAL_VOLS = (1.45, 1.33, 1.26, 1.18)
 #: SOLVED - the third recorded vector in this file and the Normal path's own bit-identity baseline.
 #: `Random_Seed` 5120, CPU float64, 11.5 s over the analytic chain.
 #:
-#: THAT IT IS A SOLVE OUTPUT IS CHECKABLE IN SECONDS: at this point `||J'r||` is 3.97e-7 against
-#: `||r||` 1.75e-6 - a fit that INTERPOLATES, four quotes against 23 parameters, three orders inside
+#: RE-RECORDED 2026-09-02 by the seed-and-clock landing. Under `'Normal'` the clock moved the QUOTE
+#: this block fits - the premium and its Bachelier inversion now read one year fraction, so the
+#: market normal vol is the quote itself rather than 0.99965771 times it - and the seed moved where
+#: the chain starts, so both halves reach this vector. It read `||J'r||` 3.97e-7 against `||r||`
+#: 1.75e-6 before.
+#:
+#: THAT IT IS A SOLVE OUTPUT IS CHECKABLE IN SECONDS: at this point `||J'r||` is 1.17e-8 against
+#: `||r||` 2.10e-8 - a fit that INTERPOLATES, four quotes against 23 parameters, five orders inside
 #: `Stationarity_Tol`'s declared 1e-3 - and no authored vector lands there. It is NOT `AN_FOUR_THETA`
 #: and must not be: the same four numeric quotes read as normal vols are a different market, priced
 #: an order of magnitude higher (the factor is measured one gate down), so a Normal block solving to
 #: the lognormal vector would mean the declaration had not been read at all.
 NORMAL_FOUR_THETA = {
-    'Alpha_1': [0.044911017328440515],
-    'Alpha_2': [0.093980916640448234],
-    'Correlation': [-0.017002007850293693],
-    'Sigma_1': [0.013166555114526492, 0.0066780450745635277, 0.011086739786127967,
-                0.0082130541076930793, 0.01480363569268385, 0.0041758863439371368,
-                0.009362193779360338, 0.0057726715480369934, 0.015846363035801857,
-                0.020276108904876695],
-    'Sigma_2': [0.0065342633417983086, 0.011279126830008741, 0.0099490884628614419,
-                0.0058310523363879563, 0.017921953157256136, 0.0089542405441957081,
-                0.0080942137607090715, 0.016296040834081756, 0.019605175274476038,
-                0.022311053011973128]}
+    'Alpha_1': [0.24966452368249561],
+    'Alpha_2': [0.0488512794103916],
+    'Correlation': [-0.10980525520167612],
+    'Sigma_1': [0.012543554866911631, 0.007566168859012784, 0.014933287188537762,
+                0.007721973683818293, 0.004688568766587583, 0.008701363306803303,
+                0.012725926961641956, 0.004004880678613152, 0.00803724607640168,
+                0.014724211527068123],
+    'Sigma_2': [0.004425853435529894, 0.015578208610304378, 0.010456826442251882,
+                0.008118947663983501, 0.022538909612556043, 0.007469344759637167,
+                0.007904411824524817, 0.019770314249231875, 0.01973294557745891,
+                0.024658651123981138]}
 
 
 def surface_world(**declared):
@@ -3505,11 +4230,14 @@ def struck_annuity(swap, curve):
     return float((np.exp(-curve.current_value(t) * t) * swap.schedule.accruals).sum())
 
 
-#: the two clocks `create_market_swaps` and `swaption_schedule_class` measure the SAME expiry on:
-#: the premium's Black/Bachelier expiry is in 365.25ths (`utils.DAYS_IN_YEAR`) and the inversion's
-#: is the ACT_365 curve's own day count. A normal vol therefore round-trips as
-#: `sigma * sqrt(T_365.25 / T_curve)` and this is that constant.
-CLOCK = np.sqrt(365.0 / 365.25)
+#: THE CLOCK THAT USED TO BE THERE, kept as a number so the gates below can say what they killed.
+#: `create_market_swaps` measured its option expiry in 365.25ths (`utils.DAYS_IN_YEAR`) while the
+#: Bachelier inversion read `schedule.expiry` in the curve's own day count, so a quoted normal vol
+#: came back as `sigma * sqrt(T_365.25 / T_curve)` - 0.99965771 on an ACT_365 curve, and one number
+#: for the whole ladder because both clocks are linear in the day count. Since 2026-09-02 the
+#: premium is struck on `schedule.expiry` itself and the round trip is the identity, so this
+#: constant is what a gate asserts the answer is NOT.
+OLD_CLOCK = np.sqrt(365.0 / 365.25)
 
 
 def test_a_normal_surface_calibrates_and_the_market_side_round_trips():
@@ -3532,14 +4260,17 @@ def test_a_normal_surface_calibrates_and_the_market_side_round_trips():
     is measured against the annuity the premium was STRUCK on (see `struck_annuity`) and the residual
     is **0.0 to 4.4e-16** across the four benchmarks, which is float precision and nothing else.
 
-    WHAT IT ROUND-TRIPS THROUGH IS A CLOCK, and the gate states it rather than absorbing it.
-    `create_market_swaps` measures the option's expiry in 365.25ths while `schedule.expiry` is the
-    curve's ACT_365 day count, so what comes back is `sigma_N * sqrt(T_365.25/T_curve)` -
-    **0.99965771007041049**, a 3.4e-4 relative bias, the same 7e-4 years `swaption_schedule_class`
-    names one axis over. It predates this landing, it is the same on the lognormal path where it is
-    invisible, and it is NOT fixed here: the premium's clock is on the far side of `MC_FOUR_THETA`
-    and `AN_FOUR_THETA`, so moving it re-solves every recorded vector in this file. It is a finding
-    with a number, held here so it cannot drift unnoticed.
+    AND IT ROUND-TRIPS THROUGH NOTHING, which is the half that changed on 2026-09-02. The premium
+    used to be struck in 365.25ths while `schedule.expiry` was the curve's ACT_365 day count, so
+    what came back was `sigma_N * sqrt(T_365.25/T_curve)` - **0.99965771007041049**, a 3.4e-4
+    relative bias, the same 7e-4 years `swaption_schedule_class` names one axis over. THE CURVE'S
+    DAY COUNT WON: `create_market_swaps` now strikes the premium on `schedule.expiry` itself, so
+    the quote goes in and comes back out on one float and the round trip is **0.0 to 2.2e-16**.
+
+    THE TWO CLOCKS STILL EXIST and the gate says so, because a round trip that reads 1.0 is also
+    what a fixture with no clock difference in it would read. `exp_days / DAYS_IN_YEAR` and the
+    curve accrual are still 6.85e-4 apart here - that is asserted - and what changed is which of
+    them the premium is priced on. `OLD_CLOCK` is the bias that used to ride on the answer.
     """
     calibration, world = normal_calibration()
     theta = calibration.solve()
@@ -3561,22 +4292,30 @@ def test_a_normal_surface_calibrates_and_the_market_side_round_trips():
     assert residual < 1e-4, 'the four-quote Normal fit reads ||r|| {:.3e} against 1.75e-6'.format(
         residual)
 
-    # the round trip, on the annuity the premium was struck on
+    # the round trip, on the annuity the premium was struck on - the quote AS ITSELF
     worst = 0.0
-    for (name, swap), quoted in zip(world['swaps'].items(), NORMAL_VOLS):
+    for (name, swap), quoted, row in zip(world['swaps'].items(), NORMAL_VOLS,
+                                         CHECKER_BENCHMARKS):
         sigma = utils.Percent(quoted).amount
         recovered = as_float(swap.market_normal_vol(
             torch.tensor(struck_annuity(swap, world['curve']), dtype=DTYPE)))
-        assert abs(recovered / (sigma * CLOCK) - 1.0) < 1e-14, (
+        assert abs(recovered / sigma - 1.0) < 1e-14, (
             '{}: a quoted sigma_N of {:.6g} came back as {:.17g} - the Bachelier premium and its '
             'closed-form inversion are not each other'.format(name, sigma, recovered))
-        worst = max(worst, abs(recovered / (sigma * CLOCK) - 1.0))
-        # and the clock is the WHOLE of the gap, not a fitted fudge: it is the two day counts
-        assert abs(recovered / sigma - CLOCK) < 1e-15, name
-    assert worst < 1e-14, 'the worst round-trip residual is {:.3e} against a recorded 4.4e-16'.format(
+        worst = max(worst, abs(recovered / sigma - 1.0))
+        # and it is NOT the old clock: that bias was 3.4e-4, four orders above what is left
+        assert abs(recovered / sigma - OLD_CLOCK) > 1e-4, (
+            '{}: the round trip is still carrying sqrt(T_365.25/T_curve)'.format(name))
+        # THE TWO CLOCKS ARE STILL TWO NUMBERS - what moved is which one the premium reads, and a
+        # fixture whose day counts had converged would pass the identity above for no reason
+        expiry_365_25 = (BASE + pd.DateOffset(years=int(row[0])) - BASE).days / utils.DAYS_IN_YEAR
+        assert abs(swap.schedule.expiry / expiry_365_25 - 365.25 / 365.0) < 1e-15, (
+            '{}: the fixture no longer has two clocks in it, so this gate reaches nothing'.format(
+                name))
+    assert worst < 1e-14, 'the worst round-trip residual is {:.3e} against a recorded 2.2e-16'.format(
         worst)
-    assert abs(CLOCK - 0.99965771007041049) < 1e-15, (
-        'the clock constant moved - DAYS_IN_YEAR or the fixture day count changed')
+    assert abs(OLD_CLOCK - 0.99965771007041049) < 1e-15, (
+        'the old clock constant moved - DAYS_IN_YEAR or the fixture day count changed')
 
 
 def test_the_two_conventions_are_two_prices_and_the_normal_one_is_the_bachelier_premium():
@@ -3609,7 +4348,9 @@ def test_the_two_conventions_are_two_prices_and_the_normal_one_is_the_bachelier_
     factors = []
     for (name, swap), quoted in zip(normal['swaps'].items(), NORMAL_VOLS):
         sigma, other = utils.Percent(quoted).amount, lognormal['swaps'][name]
-        annuity, T = struck_annuity(swap, normal['curve']), swap.schedule.expiry * 365.0 / 365.25
+        # ONE CLOCK: the premium is struck on `schedule.expiry` itself since 2026-09-02, so the
+        # closed forms below are checked at the year fraction the pricer was actually handed
+        annuity, T = struck_annuity(swap, normal['curve']), swap.schedule.expiry
         assert struck_annuity(other, lognormal['curve']) == annuity, name
         assert abs(swap.price / (annuity * sigma * np.sqrt(T / (2.0 * np.pi))) - 1.0) < 1e-15, (
             '{}: the Normal premium is not the Bachelier one'.format(name))
@@ -3642,22 +4383,29 @@ LOW_NORMAL_VOLS = (0.78, 0.40, 0.78, 0.40)
 #: the bump is a tenth of the quote rather than a rounding of it
 RESTRIKE_DELTA = 0.0005
 
-#: THE LOGNORMAL ARM'S RE-STRUCK PREMIUM, HEX, MEASURED ON BOTH SIDES OF THE BRACKET LANDING - once
-#: in a pristine worktree at 91c29de and once here. `IMPLIED_VOL_BRACKETS['Lognormal']` is the
-#: historical `(0.01, vol + .5)` expression itself, so the arm is unmoved BY CONSTRUCTION; these are
-#: what turns that claim into a reading. The first ladder is the identified fixture's own 20% quotes,
-#: the second the 1.45%..1.18% one, which is the LOW end of the lognormal scale and the nearest a
-#: lognormal quote gets to the floor without going under it.
+#: THE LOGNORMAL ARM'S RE-STRUCK PREMIUM, HEX. `IMPLIED_VOL_BRACKETS['Lognormal']` is the historical
+#: `(0.01, vol + .5)` expression itself, so the BRACKET is unmoved by construction and these are
+#: what turns that claim into a reading. The first ladder is the identified fixture's own 20%
+#: quotes, the second the 1.45%..1.18% one, which is the LOW end of the lognormal scale and the
+#: nearest a lognormal quote gets to the floor without going under it.
+#:
+#: RE-RECORDED 2026-09-02 AND THIS IS THE CLOCK'S OWN RECEIPT ON THE LOGNORMAL PATH. The eight
+#: premiums moved **+3.31e-4 to +3.41e-4 relative**, every one of them upward, which is the
+#: `sqrt(365.25/365) - 1` = +3.424e-4 the expiry clock owes (short of it at the long expiries
+#: because Black is not exactly linear in `sqrt(T)`). That is the whole of the movement: nothing
+#: else in this arm changed, the bracket least of all. Until then these were the 91c29de reading,
+#: taken in a pristine worktree, and the arm's claim was bit-identity; the claim now is that the
+#: ONE clock reached it, by exactly the factor it had to.
 LOGNORMAL_RESTRUCK = {
-    'Swaption_1Y_1Y': '0x1.9c8a2a9a89d73p-8',
-    'Swaption_2Y_5Y': '0x1.3985f82206662p-5',
-    'Swaption_3Y_3Y': '0x1.c5f5901d68404p-6',
-    'Swaption_10Y_10Y': '0x1.f561d6b85874dp-5'}
+    'Swaption_1Y_1Y': '0x1.9cae339f80687p-8',
+    'Swaption_2Y_5Y': '0x1.39a1426559910p-5',
+    'Swaption_3Y_3Y': '0x1.c61cf04d59a3cp-6',
+    'Swaption_10Y_10Y': '0x1.f58c44f50b9c5p-5'}
 LOGNORMAL_LOW_RESTRUCK = {
-    'Swaption_1Y_1Y': '0x1.3a7a23d0de6ccp-11',
-    'Swaption_2Y_5Y': '0x1.c15c418a9e370p-9',
-    'Swaption_3Y_3Y': '0x1.396b61b81fa36p-9',
-    'Swaption_10Y_10Y': '0x1.4e702c39785c4p-8'}
+    'Swaption_1Y_1Y': '0x1.3a95b474ea4d1p-11',
+    'Swaption_2Y_5Y': '0x1.c183a49f3d69dp-9',
+    'Swaption_3Y_3Y': '0x1.3986da4e106bfp-9',
+    'Swaption_10Y_10Y': '0x1.4e8d7b3fbb9b6p-8'}
 
 
 def premium_frame(world):
@@ -3665,9 +4413,16 @@ def premium_frame(world):
 
     The premium file is the market's, so the honest fixture is one whose premiums ARE the block's -
     then a recovered implied vol has a known answer (the row's own quote) and the round trip is an
-    identity rather than a tolerance. `get_premium` divides the `Payer` column by 1e4, and this
-    multiplies by it; on these numbers that round trip is EXACT (measured 0.0 relative), so nothing
-    the gates below read is the file's scaling rather than the solve's.
+    identity rather than a tolerance. `get_premium` divides the `Payer` column by 1e4 and this
+    multiplies by it.
+
+    THAT SCALING ROUND TRIP IS NOT THE IDENTITY IN BINARY, and the gates below hold it to one ulp
+    rather than to the bit for that reason. `x * 1e4 / 1e4` returns `x` for most doubles and not
+    for all of them - 1e4 is not a power of two, so each half rounds - and which side of a
+    representable number the product lands on is a property of the premium's own bits. It WAS exact
+    on all four benchmarks until the 2026-09-02 clock landing moved every premium by 3.4e-4;
+    `Swaption_2Y_5Y` now comes back one ulp low. That is the file's scaling and not the solve's,
+    which is exactly what the assertion has to be able to say.
     """
     return pd.DataFrame([
         {'Currency': ID_CCY, 'Expiry': '{}Y'.format(e), 'UnderlyingTenor': '{}Y'.format(t),
@@ -3675,7 +4430,7 @@ def premium_frame(world):
          'Shift': '0%', 'StrikeValue': 8.0} for e, t, _, _ in CHECKER_BENCHMARKS])
 
 
-def old_bracket_residual(swap, world, expiry_years, premium):
+def old_bracket_residual(swap, world, premium):
     """The implied-vol residual `create_market_swaps` brackets, rebuilt OUT OF LIBRARY CODE.
 
     This is a reproduction and not a patch: nothing in `derivus` is monkeypatched, replaced or
@@ -3690,11 +4445,12 @@ def old_bracket_residual(swap, world, expiry_years, premium):
     second raises straight through it. 0.08 below is the file's `StrikeValue`, and any other number
     would give the same residual.
 
-    The expiry is `exp_days / DAYS_IN_YEAR` and not the schedule's, because that is the clock the
-    premium is struck on - see `CLOCK`.
+    The expiry is the SCHEDULE's, because since 2026-09-02 that is the clock the premium is struck
+    on and the bracket has to be rebuilt on the residual the engine actually solves - see
+    `OLD_CLOCK` for the 365.25ths this line used to read.
     """
     annuity = struck_annuity(swap, world['curve'])
-    expiry = (BASE + pd.DateOffset(years=int(expiry_years)) - BASE).days / utils.DAYS_IN_YEAR
+    expiry = swap.schedule.expiry
     return lambda v: annuity * utils.bachelier_european_option_price(
         0.08, 0.08, 0.0, v, expiry, 1.0, 1.0) - premium
 
@@ -3716,10 +4472,10 @@ def test_the_normal_re_strike_brackets_in_its_own_scale_and_the_lognormal_arm_is
     and 40bp refuse - which is the row's own reading reproduced.
 
         quoted        f(0.01) under the OLD bounds        verdict
-        78bp                 +7.697e-04                   refuses
-        40bp                 +1.106e-02                   refuses
-        78bp                 +2.894e-03                   refuses
-        40bp                 +1.991e-02                   refuses
+        78bp                 +7.700e-04                   refuses
+        40bp                 +1.107e-02                   refuses
+        78bp                 +2.895e-03                   refuses
+        40bp                 +1.992e-02                   refuses
 
     Those residuals are three to five orders above the noise on an annuity of order one, so the old
     bracket fails on the SIGN and not on a tolerance.
@@ -3737,9 +4493,12 @@ def test_the_normal_re_strike_brackets_in_its_own_scale_and_the_lognormal_arm_is
     sides are the library's own pricing on the same annuity, strike and clock, so every bit of the
     difference is the solve's: **0.0 to 3.3e-16 relative**, one ulp, across the four benchmarks.
 
-    THE LOGNORMAL ARM IS BIT-IDENTICAL and is held as hex. `IMPLIED_VOL_BRACKETS['Lognormal']` is
-    the historical expression itself, and the re-struck premiums match a reading taken in a pristine
-    worktree at 91c29de on both a 20% ladder and a 1.45%..1.18% one - eight premiums, hex for hex.
+    THE LOGNORMAL ARM IS UNMOVED BY THE BRACKET and is held as hex, on both a 20% ladder and a
+    1.45%..1.18% one - eight premiums, hex for hex. `IMPLIED_VOL_BRACKETS['Lognormal']` is the
+    historical expression itself, so what those eight numbers hold is everything else that could
+    have reached them. They moved ONCE, at the 2026-09-02 clock landing, by +3.31e-4 to +3.41e-4
+    relative - the `sqrt(365.25/365)` the premium's expiry gained and nothing else - and
+    `LOGNORMAL_RESTRUCK` records both which reading they are and why they left the previous one.
     """
     from derivus import bootstrappers
 
@@ -3775,9 +4534,12 @@ def test_the_normal_re_strike_brackets_in_its_own_scale_and_the_lognormal_arm_is
         picked = frame[(frame['Expiry'] == '{}Y'.format(row[0])) &
                        (frame['UnderlyingTenor'] == '{}Y'.format(row[1]))]
         premium = float(picked['Payer'].values[0]) / 10000.0
-        assert premium.hex() == float(priced).hex(), (
-            '{}: the premium file is not carrying the premium this block priced, so nothing below '
-            'is a statement about the solve'.format(name))
+        # ONE ULP, not the bit: the `Payer` column is scaled by 1e4 and back, which is not the
+        # identity in binary for every double - see `premium_frame`
+        assert abs(premium / float(priced) - 1.0) <= 2.0 ** -52, (
+            '{}: the premium file is not carrying the premium this block priced ({} against {}), '
+            'so nothing below is a statement about the solve'.format(
+                name, premium.hex(), float(priced).hex()))
 
         # THE ROUND TRIP: the recovered vol re-strikes to where quoting sigma + delta lands
         landed = swap.price / direct['swaps'][name].price - 1.0
@@ -3793,7 +4555,7 @@ def test_the_normal_re_strike_brackets_in_its_own_scale_and_the_lognormal_arm_is
         worst = max(worst, abs(landed))
 
         # THE OLD BOUNDS, REPRODUCED IN PROCESS: they refuse this fixture on the sign
-        residual = old_bracket_residual(swap, struck, row[0], premium)
+        residual = old_bracket_residual(swap, struck, premium)
         low, high = residual(0.01), residual(sigma + 0.5)
         assert low > 0.0 and high > 0.0, (
             '{}: the OLD bracket ends read {:+.4e} and {:+.4e} - if they now straddle, this '
@@ -3817,8 +4579,9 @@ def test_the_normal_re_strike_brackets_in_its_own_scale_and_the_lognormal_arm_is
                                     Objective='Analytic', premiums=premium_frame(flat),
                                     delta=0.005, **extra)
         assert {n: float(s.price).hex() for n, s in bumped['swaps'].items()} == recorded, (
-            'the LOGNORMAL re-struck premium moved off its 91c29de reading - the bracket landing '
-            'was contracted to leave that arm bit-identical: {}'.format(
+            'the LOGNORMAL re-struck premium moved off its recorded reading - the bracket landing '
+            'was contracted to leave that arm alone and the clock landing moved it exactly once, '
+            'by sqrt(365.25/365): {}'.format(
                 {n: float(s.price).hex() for n, s in bumped['swaps'].items()}))
 
 
@@ -3830,12 +4593,15 @@ def test_a_normal_block_carries_the_quote_side_and_its_bachelier_derivative():
     splice is `base + (carried - detach(carried))` whatever priced `base`, so a second convention
     cannot make it worth something forward.
 
-    THE DIAGONAL IS THE CLOCK, EXACTLY, and that is the reading only Bachelier can produce.
-    `sigma_mkt = P sqrt(2pi/T_curve) / A` with `P = A q sqrt(T_365.25/2pi)` is LINEAR in the quote,
-    so `dr/dq` is `-w sqrt(T_365.25/T_curve)` - the same **-0.9996577100704105** at every benchmark,
-    independent of expiry, of the curve and of theta. The lognormal path's own diagonal runs -0.10232
-    to -0.08704 on the identified block, which is `F` times this: a lognormal vol point is worth
-    about a tenth of a normal one because it is a fraction of the forward rather than a rate.
+    THE DIAGONAL IS EXACTLY `-w`, and that is the reading only Bachelier can produce.
+    `sigma_mkt = P sqrt(2pi/T0) / A` with `P = A q sqrt(T0/2pi)` is LINEAR in the quote and the two
+    `T0`s are ONE year fraction since the clock landing, so `dr/dq` is `-w` - the same
+    **-1.0**, to 2.2e-16, at every benchmark, independent of expiry, of the curve and of theta. It
+    read `-w sqrt(T_365.25/T_curve)` = -0.9996577100704105 until 2026-09-02, which is `OLD_CLOCK`
+    and is what this gate now asserts the diagonal is NOT. The lognormal path's own diagonal runs
+    -0.10235 to -0.08706 on the identified block (it read -0.10232 to -0.08704 until the clock
+    landed, the same 3.4e-4 the premiums moved by), which is `F` times this: a lognormal vol point is
+    worth about a tenth of a normal one because it is a fraction of the forward rather than a rate.
 
     AND IT IS EXACT UNDER A DIFFERENCE QUOTIENT rather than second-order accurate, which is the same
     linearity read from outside the tape. The rung is taken AROUND the splice - the block is rebuilt
@@ -3857,9 +4623,11 @@ def test_a_normal_block_carries_the_quote_side_and_its_bachelier_derivative():
         'the separable residual has exactly one live quote per row on this convention too')
     assert np.array_equal(quote_jac.numpy(), np.diag(np.diag(quote_jac.numpy()))), 'dr/dq'
     for i in range(n):
-        assert abs(float(quote_jac[i, i]) / -CLOCK - 1.0) < 1e-14, (
-            'benchmark {}: dr/dq is {:.17g} against the -sqrt(T_365.25/T_curve) a Bachelier quote '
-            'side owes'.format(i, float(quote_jac[i, i])))
+        assert abs(float(quote_jac[i, i]) + 1.0) < 1e-14, (
+            'benchmark {}: dr/dq is {:.17g} against the -w a Bachelier quote side owes once the '
+            'premium and its inversion read one clock'.format(i, float(quote_jac[i, i])))
+        assert abs(float(quote_jac[i, i]) + OLD_CLOCK) > 1e-4, (
+            'benchmark {}: dr/dq is still carrying sqrt(T_365.25/T_curve)'.format(i))
 
     # one FD rung through a RE-AUTHORED quote, which is linear here rather than h-squared
     for column, h in ((0, 0.5), (2, 0.05)):
@@ -4084,11 +4852,14 @@ def test_the_calibration_objective_is_measure_free_on_a_quanto_world():
     with a 15-20% FX vol curve and a 0.4 FX/IR correlation, at the recorded theta*, on one Sobol
     sample over `CHECKER_BENCHMARKS` - and what it reads now:
 
-        benchmark      MC premium, rho=0.4       rho=0     was          is now
-        1Y x 1Y             0.006407689690  0.006407689690  +5.96%   0.0 exactly
-        2Y x 5Y             0.036378626138  0.036378626138  +8.84%   0.0 exactly
-        3Y x 3Y             0.027227734062  0.027227734062 +11.80%   0.0 exactly
-        10Y x 10Y           0.059192865961  0.059192865961 +12.42%   0.0 exactly
+        benchmark      MC premium, rho=0.4       rho=0     the defect    is now
+        1Y x 1Y             0.006280267807  0.006280267807    +5.96%   0.0 exactly
+        2Y x 5Y             0.036982804395  0.036982804395    +8.84%   0.0 exactly
+        3Y x 3Y             0.027657448260  0.027657448260   +11.80%   0.0 exactly
+        10Y x 10Y           0.058735951675  0.058735951675   +12.42%   0.0 exactly
+
+    (the premiums re-recorded with `ID_THETA` on 2026-09-02; the percentage column is the DEFECT's
+    own reading at the vector it was measured on and is history rather than a live number)
 
     EXACTLY ZERO AND NOT FLOAT NOISE, and the reason is structural rather than lucky: the FX/IR
     correlation now reaches nothing the objective reads, so the two runs are the same arithmetic on
@@ -4138,9 +4909,9 @@ def test_the_calibration_objective_is_measure_free_on_a_quanto_world():
             '{}: the analytic price moved with the FX/IR correlation, which it must not - it reads '
             'J alone and J carries no quanto drift'.format(name))
     # the surviving column is the DOMESTIC one the defect's table recorded at rho=0
-    for name, recorded in (('Swaption_1Y_1Y', 0.006407689690), ('Swaption_2Y_5Y', 0.036378626138),
-                           ('Swaption_3Y_3Y', 0.027227734062),
-                           ('Swaption_10Y_10Y', 0.059192865961)):
+    for name, recorded in (('Swaption_1Y_1Y', 0.006280267807), ('Swaption_2Y_5Y', 0.036982804395),
+                           ('Swaption_3Y_3Y', 0.027657448260),
+                           ('Swaption_10Y_10Y', 0.058735951675)):
         assert abs(mc_on[name] / recorded - 1.0) < 1e-9, (
             '{}: {:.12f} against the recorded domestic {:.12f}'.format(name, mc_on[name], recorded))
 
@@ -4157,22 +4928,23 @@ def test_the_foreign_world_now_prices_bitwise_as_the_domestic_one_does():
     base-currency world's:
 
         benchmark        SP           MC        MC/SP-1   numeraire   sp_nvol  sim_nvol
-        1Y x 1Y     0.006411112  0.006416673   +0.0867%   -0.3477%     183.19   183.34
-        2Y x 5Y     0.036535297  0.036291369   -0.6677%   -0.8198%     198.06   197.98
-        3Y x 3Y     0.027575768  0.027342291   -0.8467%   -0.7845%     209.55   209.42
-        10Y x 10Y   0.060773332  0.059182974   -2.6169%   -1.6629%     183.05   180.14
+        1Y x 1Y     0.006266479  0.006263324   -0.0503%   -0.3475%     179.05   179.18
+        2Y x 5Y     0.037284734  0.036954575   -0.8855%   -0.8098%     202.12   202.04
+        3Y x 3Y     0.028031862  0.027743860   -1.0274%   -0.7686%     213.01   212.99
+        10Y x 10Y   0.061433749  0.058654416   -4.5241%   -1.3244%     185.04   182.31
 
     THREE TERMS AND NO FOURTH. The premium gap is the simulation's numeraire error (column four -
     this fixture's zero curve starts at a 1Y tenor, see
     `test_the_monte_carlo_carries_a_bias_of_its_own`), plus SP's freezing bias (columns five and
-    six, 0.08 to 2.91 bp of normal vol here), plus the per-evaluation noise of a quasi-random
-    sample. The 10.9 to 24.4 bp quanto term - one-signed and five to eleven times SP's own worst
+    six, 0.03 to 2.73 bp of normal vol here), plus the per-evaluation noise of a quasi-random
+    sample. RE-READ at the 2026-09-02 theta*, which widened the corner: 10Y x 10Y carries -4.52%
+    where it carried -2.62%, of which -1.32% is the numeraire and 2.73 bp of normal vol is SP
+    freezing at a theta* whose sigma knots are higher. The 10.9 to 24.4 bp quanto term - one-signed and five to eleven times SP's own worst
     corner - is gone, and the leg-convention term was already exactly zero
     (`test_the_single_curve_float_leg_is_exact_and_not_an_approximation`).
 
-    On the single 8192-path evaluation the objective itself makes, the same gap reads -0.0534%,
-    -0.4288%, -1.2621% and -2.6006%, which is -0.10, -0.85, -2.64 and -4.76 basis points of ATM
-    normal vol.
+    On the single 8192-path evaluation the objective itself makes, the same gap reads +0.2200%,
+    -0.8098%, -1.3357% and -4.3914%.
     """
     foreign = foreign_closure(0.4)
     domestic = identified_closure(benchmarks=CHECKER_BENCHMARKS, batch_size=8192,
@@ -4195,10 +4967,10 @@ def test_the_foreign_world_now_prices_bitwise_as_the_domestic_one_does():
                     name, route, got[name][route], want[name][route]))
         # and the gap that is left is the two biases this file already measures, not a third thing
         gap = got[name]['mc'] / got[name]['sp'] - 1.0
-        assert abs(gap) < 0.03, (
-            '{}: MC/SP - 1 is {:+.4%} against a recorded +0.09% to -2.62%, which is the numeraire '
+        assert abs(gap) < 0.055, (
+            '{}: MC/SP - 1 is {:+.4%} against a recorded -0.05% to -4.52%, which is the numeraire '
             'error plus SP\'s freezing bias plus sample noise'.format(name, gap))
-        assert abs(gap - got[name]['numeraire']) < 0.02, (
+        assert abs(gap - got[name]['numeraire']) < 0.035, (
             '{}: the gap {:+.4%} is no longer within sample noise of the numeraire error {:+.4%}, '
             'so a third term has appeared in the decomposition'.format(
                 name, gap, got[name]['numeraire']))
@@ -4269,16 +5041,46 @@ def test_re_enabling_the_quanto_drift_in_the_objective_restores_the_recorded_tab
     `implied_process` did before the split - and the objective is back under the base measure. The
     invariance gate above goes red, with the numbers the Known-defects row recorded:
 
-        benchmark      MC premium, rho=0.4       rho=0     moves by    recorded
-        1Y x 1Y             0.006789635    0.006407690    +5.9607%      +5.96%
-        2Y x 5Y             0.039594307    0.036378626    +8.8395%      +8.84%
-        3Y x 3Y             0.030439928    0.027227734   +11.7975%     +11.80%
-        10Y x 10Y           0.066546269    0.059192866   +12.4228%     +12.42%
+        benchmark      MC premium, rho=0.4       rho=0     moves by
+        1Y x 1Y             0.006255679    0.006280268     -0.3915%
+        2Y x 5Y             0.036024354    0.036982804     -2.5916%
+        3Y x 3Y             0.026942947    0.027657448     -2.5834%
+        10Y x 10Y           0.056071757    0.058735952     -4.5359%
 
-    and `KtT` reads 1.4321e-02 / 5.7542e-03 over the two factors at rho = 0.4, against exactly zero
-    at rho = 0 and exactly zero through the shipped seam. NOTHING IS PATCHED to get this: the
+    and `KtT` reads 1.2058e-01 / 1.8051e-02 over the two factors at rho = 0.4, against exactly zero
+    at rho = 0 and exactly zero through the shipped seam.
+
+    RE-RECORDED 2026-09-02 with `ID_THETA`, and THE COLUMN CHANGED SIGN, which is the mutation
+    reporting a property of the mark rather than of itself. It read +5.96% / +8.84% / +11.80% /
+    +12.42% at the pre-landing vector, where `save_params` emitted two quanto correlations of the
+    SAME sign; at this theta* they split (-0.2746, +0.1602), the two factors' corrections oppose,
+    and the base-measure drift now pushes the simulated premium DOWN. What the gate asserts is
+    unchanged and is the only thing that ever mattered here: the mutated objective moves with the
+    correlation and the shipped one does not move at all. NOTHING IS PATCHED to get this: the
     mutation is built out of the world's own parts through a public signature, so it cannot rot
     against a refactor of the code it is mutating.
+
+    THE SMALLEST OF THE FOUR FELL 15x - +5.96% to -0.3915% at 1Y x 1Y - AND THE FLOOR BELOW WAS
+    RE-DERIVED RATHER THAN FITTED TO IT. `tests/test_hw2f_composition.py` met the same defect by
+    sweeping its own declared `FX_VOL` to 55%, and that lever exists here too and was measured, not
+    assumed: `K` carries one factor of sigma_FX and the kill is exactly linear in it, on this world
+    as on that one -
+
+        FX vol curve      K          min |kill|    kill / K
+        x1 (15-20%)     1.2058e-01     0.3915%      0.0325
+        x2 (30-40%)     2.4116e-01     0.7819%      0.0324
+        x3 (45-60%)     3.6173e-01     1.1715%      0.0324
+
+    - so restoring the retired 5% floor would take THIRTEEN times the FX vol curve, a 195-260%
+    quote, where the composition file needed 2.2x to buy the 1.9x it was short. It is not available
+    here, and this fixture is pinned anyway: `quanto_world` is the world the defect was MEASURED on
+    and a fix measured on a different one is not a reading of the same thing. So the floor is set
+    from the quantity's own units instead - the paired invariance gate above requires the shipped
+    seam to move by EXACTLY zero and the four rows here are pinned to 1e-5 absolute, so a mutation
+    that moves a swaption premium by 0.1% is a hundred times the pin and material to a mark, and
+    that is the number. The measured 0.3915% clears it by 3.9x. THE SIGN IS ASSERTED TOO, because a
+    cancellation that had eaten the mutation would show as a column splitting sign before it showed
+    as a small one.
     """
     mutated = {}
     for correlation in (0.4, 0.0):
@@ -4288,17 +5090,31 @@ def test_re_enabling_the_quanto_drift_in_the_objective_restores_the_recorded_tab
 
     assert k_off == 0.0, 'the rho=0 leg carries a drift of {}, so this pair is not a sweep'.format(
         k_off)
-    assert abs(k_on / 1.4320906057655415e-02 - 1.0) < 1e-6, (
-        'the re-enabled quanto drift is {:.6e} against the recorded 1.4321e-02'.format(k_on))
-    for name, recorded in (('Swaption_1Y_1Y', 0.059607), ('Swaption_2Y_5Y', 0.088395),
-                           ('Swaption_3Y_3Y', 0.117975), ('Swaption_10Y_10Y', 0.124228)):
+    assert abs(k_on / 1.205779823689404e-01 - 1.0) < 1e-6, (
+        'the re-enabled quanto drift is {:.6e} against the recorded 1.2058e-01'.format(k_on))
+    for name, recorded in (('Swaption_1Y_1Y', -0.0039149), ('Swaption_2Y_5Y', -0.0259157),
+                           ('Swaption_3Y_3Y', -0.0258340), ('Swaption_10Y_10Y', -0.0453586)):
         moved = mc_on[name] / mc_off[name] - 1.0
         assert abs(moved - recorded) < 1e-5, (
             '{}: the mutated objective moves {:+.4%} with the correlation against the recorded '
             '{:+.4%} - if this has stopped reproducing, the mutation no longer reinstates the '
             'defect and the invariance gate above is unguarded'.format(name, moved, recorded))
-    # and the shipped seam does not move at all on the same worlds, which is the pair of readings
-    assert min(abs(mc_on[n] / mc_off[n] - 1.0) for n in mc_on) > 0.05
+    # ANTI-VACUITY, and the floor is the PREMIUM's own materiality rather than the reading: 0.1% is
+    # a hundred times the 1e-5 the four rows above are pinned to, and it is what a mark moves by.
+    # The paired invariance gate requires the SHIPPED seam to move by exactly 0.0 on these same two
+    # worlds, so there is no noise floor to clear here - only a size below which the reinstated
+    # defect would stop being one. Measured min 0.3915%, so this clears by 3.9x
+    moves = {n: mc_on[n] / mc_off[n] - 1.0 for n in mc_on}
+    assert min(abs(v) for v in moves.values()) > 1e-3, (
+        'the mutated objective\'s smallest move is {:.4%}, under the 0.1% a reinstated quanto drift '
+        'has to be worth for this gate to be measuring a defect - the recorded reading is -0.3915% '
+        'at 1Y x 1Y and the kill is linear in the FX vol curve if a bigger one is wanted'.format(
+            min(abs(v) for v in moves.values())))
+    assert len({v > 0.0 for v in moves.values()}) == 1, (
+        'the mutation now moves the four premiums in DIFFERENT directions: {} - the two factors\' '
+        'quanto corrections opposing is what shrank this kill 15x in 2026-09-02, and a column that '
+        'has split sign is one where they have started cancelling benchmark by '
+        'benchmark'.format({n: '{:+.4%}'.format(v) for n, v in moves.items()}))
 
 
 def emitted_factor(correlation=0.4):
@@ -4321,8 +5137,13 @@ def test_a_foreign_calibration_still_emits_the_quanto_factor():
     gate holds it: off the foreign world at theta*, the written factor carries
 
         Quanto_FX_Volatility        [(0,0.15),(1,0.15),(3,0.17),(5,0.18),(10,0.2)]
-        Quanto_FX_Correlation_1     -0.2975394327182203
-        Quanto_FX_Correlation_2     -0.26595488985172294
+        Quanto_FX_Correlation_1     -0.27457788626607527
+        Quanto_FX_Correlation_2     +0.16015750955565405
+
+    THE PAIR NOW SPLITS ITS SIGN, and the docstring below already said it could: at the 2026-09-02
+    theta* the two brackets `C (s_i + rho s_j) / D` land on opposite sides of zero where the
+    pre-landing vector put both negative (-0.2975, -0.2660). The linearity in `C` is what is
+    asserted and that is unmoved.
 
     both correlations off `get_quanto_correlation`, which reads the instantaneous FX/IR correlation
     the suppressed twin does not have and the emitted object does. `Alpha_1`, `Alpha_2`,
@@ -4335,8 +5156,8 @@ def test_a_foreign_calibration_still_emits_the_quanto_factor():
     assert np.array_equal(param['Quanto_FX_Volatility'].array,
                           np.array([[0.0, 0.15], [1.0, 0.15], [3.0, 0.17],
                                     [5.0, 0.18], [10.0, 0.20]]))
-    for name, recorded in (('Quanto_FX_Correlation_1', -0.2975394327182203),
-                           ('Quanto_FX_Correlation_2', -0.26595488985172294)):
+    for name, recorded in (('Quanto_FX_Correlation_1', -0.27457788626607527),
+                           ('Quanto_FX_Correlation_2', 0.16015750955565405)):
         assert param.get(name) is not None, (
             '{} is missing from the emitted factor'.format(name))
         assert abs(float(param[name]) / recorded - 1.0) < 1e-12, (
@@ -4356,12 +5177,19 @@ def test_the_simulator_still_carries_the_quanto_drift():
     simulated FX rate - and that is the branch this gate drives, off the factor
     `test_a_foreign_calibration_still_emits_the_quanto_factor` just watched being written. It reads
 
-        KtT, factor 1    1.4320906057655415e-02
-        KtT, factor 2    5.7542297351967470e-03
+        KtT, factor 1    1.205779823689404e-01
+        KtT, factor 2    1.805065169779931e-02
 
     which is THE SAME DRIFT the mutation gate reinstates in the objective, to the bit. That is the
     fix stated as an equality rather than as two inequalities: the quanto drift did not shrink and
     it did not go away, it moved to the only place a base-measure drift belongs.
+
+    RE-RECORDED 2026-09-02 with everything else downstream of `ID_THETA`. The drift is EIGHT TIMES
+    the pre-landing 1.4321e-02 / 5.7542e-03, which is what a theta* whose sigma knots roughly
+    tripled does to `K = rho_bar_i sigma_FX sigma_i B(alpha_i, .)`: the equality this gate asserts
+    is between two readings of one number and is unmoved, and the number itself moved with the
+    mark. `tests/test_hw2f_composition.py` carries the consequence on the other side - the two
+    emitted quanto correlations now split their sign, so the corrections partially cancel there.
     """
     world, _, factor = emitted_factor()
     world['loss'](world['implied_var'])
@@ -4383,7 +5211,7 @@ def test_the_simulator_still_carries_the_quanto_drift():
         shared, 0, implied_tensor=implied_tensor)
 
     scenario = [float(k.abs().max()) for k in process.KtT]
-    for i, recorded in enumerate((1.4320906057655415e-02, 5.7542297351967470e-03)):
+    for i, recorded in enumerate((1.205779823689404e-01, 1.805065169779931e-02)):
         assert abs(scenario[i] / recorded - 1.0) < 1e-9, (
             'factor {}: the scenario quanto drift reads {:.10e} against the recorded {:.10e} - the '
             'simulator is meant to be untouched by the calibration measure fix'.format(
