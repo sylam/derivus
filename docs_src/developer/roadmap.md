@@ -175,9 +175,24 @@ at k = 24-25 - monthly fixings (k = 21) sit at 98% of it, 2.2x the 11.2-day shor
 (1) map the carry residual through the exact 1D h-marginal quantiles - the h floor mass from
 k = 21 onward is exactly what it deletes; (2) adaptive striding where fixings sit within 10-15
 days of a barrier; Lugannani-Rice on the cached CGF where a consumer needs Phi past the
-quadrature's 1e-9. WAVE 2 is the three consumers in `pricing.py` - the OSS speed lever, HN
-branch-and-weight, and the conditional-p jump gamma - the HN exotic GAMMAS, written against
-this surface.
+quadrature's 1e-9. THE THREE CONSUMERS ARE BUILT across FOUR pricers (2026-09-02, the HN exotic GAMMAS):
+HN branch-and-weight on the no_averaging paths (fired branches as conditional expectations
+off the cached CF, one spelling; the crisp mixture and the smooth arm report the SAME delta
+BIT FOR BIT on values 2% apart - the mixture IS the flux, verified at the last bit), the
+conditional-p jump gamma for latched decisions with the stride's Phi as p (supersession gated
+on the registered BoundarySet type list - one estimator per decision), and fixing-to-fixing
+stepping behind the declared `HN_Stride` switch, default off byte-identical (hex-gated;
+pv_discrete_barrier_option reaches it through kit.substeps alone, 0.08%/0.22 SE vs the daily
+walk). THE SPEED CLAIM IS REFUTED: 111-147x SLOWER than the daily walk, the ratio WIDENING
+with the cube (fixed ~3.0s of strip builds + 4.8e-5 s/path of per-path Gil-Pelaez) - the
+machinery stays because it IS the smooth estimator's conditioning law, and the open lever is
+a batched Phi across the cube with B/C reuse across equal intervals. Gamma/vanna CRN Hessian
+ladders agree AND are flat on the HN TARF and autocall; the tilt cache is keyed on the
+strip's own bound with the decay check re-run on every call (a stale tilt cost 1.04e-3 and
+its verified margin). THE GBM CONDITIONAL-P ARM IS THE NAMED FOLLOW-UP: form otm_analytic
+from lognormal_partial_moment/lognormal_fired_gain on the crisp GBM path with the same
+supersession at the boundary_aad guard - the type-list gate shape is model-agnostic and
+already written.
 
 **THE HONEST HN CVA — a program of three existing rows, sequenced and ratified (2026-09-01).**
 A CVA on HN-priced TARFs and autocalls wants the OUTER simulation under the same HN family, and
@@ -344,10 +359,11 @@ with `p = Φ(·)` — buildable now. Under Heston–Nandi the per-DAY conditiona
 the walk is daily and conditioning on the last day is the bad regime; conditioning at the
 FIXING interval needs the k-step conditional law `exp(A_k + B_k h + C_k q)` — which is THE
 STRIDE's cached Φ, verbatim (`hn_cdf_logret` is the existing half), already required to be
-exactly differentiable by that design. So the stride gains a second consumer: it was a speed
-lever, and it is also the bandwidth-free jump-gamma estimator for every latched decision. HN
-books get this estimator the day the stride lands, as the same registration reuse with
-`Φ_stride` as `p`.
+exactly differentiable by that design. So the stride gained a second consumer: it was SOLD as a
+speed lever and is not one (measured 111-147x slower, widening with the cube); what it is, is
+the bandwidth-free jump-gamma estimator for every latched decision. HN books HAVE this
+estimator (2026-09-02), the same registration reuse with `Φ_stride` as `p`; the GBM arm -
+"buildable now" above - is the follow-up, the harder arm having landed first.
 
 **Branch and weight — the GBM half is BUILT, all four products** (`Branch_And_Weight: 'Yes'` on
 `BaseValuation`, default off and byte-identical off, per the supersession ruling;
@@ -389,8 +405,7 @@ miss closes to 0.16% while the crisp path still reads 16.2%, `Greeks: 'All'` run
 coupon where it refuses without the switch, and the survival ledger conserves at 0.0 with 37.6%
 of the weight alive. THE AVERAGING ARM REFUSES BY NAME rather than no-opping: the distribution of
 a MEAN of spots is not one fixing interval's lognormal, and its termination is a smoothed
-per-inner-path weight with no crisp per-scenario decision to replace. HN still refuses by name,
-citing the stride. THE REVIEW OF THIS LANDING ALSO SPLIT THE SUB-CASES THE PUT LEG KEEPS AS AN
+per-inner-path weight with no crisp per-scenario decision to replace. THE HN ARM IS BUILT (2026-09-02, behind `HN_Stride` - see the stride paragraph above); the averaging arm still refuses by name. THE REVIEW OF THIS LANDING ALSO SPLIT THE SUB-CASES THE PUT LEG KEEPS AS AN
 INDICATOR, which had shipped under one blanket "exact": two of the three are (an observed fixing,
 and a block opening on an unaligned one — the scenario's own spot and that coupon's own observed
 price fixing), but on a barrier date whose coupon row is ZERO the coupon block never runs and the

@@ -1885,7 +1885,27 @@ class Base_Revaluation(Calculation):
                       'autocall, whose conditioning law is the distribution of a mean of spots '
                       'rather than one fixing interval\'s. Off is the crisp path bit for bit, and '
                       'on it is a RE-ESTIMATION of the same deal - it changes which estimator '
-                      'prices a settlement convention, never which convention the deal settles on')
+                      'prices a settlement convention, never which convention the deal settles on'),
+        F('HN_Stride', 'Text', default='No', values=['Yes', 'No'],
+          description='Use THE STRIDE - the component Heston-Nandi k-step conditional law of the '
+                      'log spot given (h, q), cached per fixing interval - in place of the daily '
+                      'walk between fixings. One field governs its three consumers: the '
+                      'branch-and-weight HN arm (whose `p` must be the FIXING interval\'s own Phi '
+                      'and not the last daily Gaussian), the conditional-p jump gamma that '
+                      'replaces a kernel-flux registration on the crisp path, and the '
+                      'fixing-to-fixing sampler that jumps an unmonitored interval instead of '
+                      'walking it. THE THIRD IS NOT A SPEED LEVER and was bought as one: measured '
+                      'on a three-fixing component TARF it runs 111x to 147x SLOWER at 2^10 to '
+                      '2^15 inner paths, and the ratio WIDENS with the cube, so there is no '
+                      'crossover. The daily walk is cheap elementwise work over the whole cube and '
+                      'is FLAT in the path count; the stride pays a fixed per-interval cache build '
+                      'plus a Gil-Pelaez inversion PER PATH at every fixing. A batched Phi across '
+                      'the cube is the open lever and is not built. Turn this on for the two '
+                      'estimators, not for time. All three consumers consent to the same declared '
+                      'approximation - the state CARRIED across the jump is matched quadratically, '
+                      'exactly at one day and worst near twenty-four (tests/test_hn_stride.py) - '
+                      'which is why they share one switch. Component Heston-Nandi only; the plain '
+                      'family refuses by name. Off is the daily walk bit for bit')
     ]
 
     def __init__(self, config, **kwargs):
@@ -1963,6 +1983,9 @@ class Base_Revaluation(Calculation):
         # the SMOOTH estimator (`pricing.branch_and_weight`), declared on this calculation
         # alone; `execute` has completed the block, so the key is present and the read direct
         shared_mem.branch_and_weight = self.params['Branch_And_Weight'] == 'Yes'
+        # THE STRIDE (`pricing.ComponentHestonNandiKit.stride`), declared beside the switch above
+        # and read the same way - one field for all three of its consumers
+        shared_mem.hn_stride = self.params['HN_Stride'] == 'Yes'
         return shared_mem
 
     def report(self):

@@ -1213,6 +1213,15 @@ class Calculation_State(object):
         # valuation only); off is the crisp one-step-survival path bit for bit. False here is what
         # keeps `Credit_Monte_Carlo`, which declares no such field, on the crisp estimator.
         self.branch_and_weight = False
+        # THE STRIDE is wanted (`HN_Stride`, base valuation only): the component Heston-Nandi
+        # k-step conditional law in place of the daily walk between fixings. One field governs every
+        # consumer - the smooth estimator's HN arm, the conditional-p jump gamma and the
+        # unmonitored-interval sampler (`pv_discrete_barrier_option` is the one pricer that is ONLY
+        # that) - because all of them consent to the SAME declared approximation, the carried state
+        # across the jump. The third was bought as a SPEED lever and is not one: measured 111x to
+        # 147x slower, the ratio widening with the cube (`pricing.ComponentHestonNandiKit.substeps`
+        # carries the table and the diagnosis). Off is the daily walk bit for bit.
+        self.hn_stride = False
         # where the memoized quasi-random stream stands, per (dimension, sample_size) - only
         # `CMC_State.quasi_rng` advances it, but `rng_position` seeks every state's streams
         self.t_quasi_rng_batch = {}
@@ -2984,8 +2993,20 @@ def hn_component_to_plain(alpha, beta, gamma1, level):
 # calendar-shaped.
 #
 # THE CASE SPLIT IS A RULE, not a heuristic: a DAILY-MONITORED contract keeps the daily path and the
-# one-day probability, permanently - the daily advance is the reference implementation and the
-# stride never fires there. The stride is for the date-jumps the simulation does not take.
+# one-day probability, permanently - the daily advance is the reference implementation. The stride is
+# for the date-jumps the simulation does not take.
+#
+# WHAT THAT RULE DOES NOT SAY IS "the stride never fires there", which was the wording and was wrong.
+# Where the case split hands a consumer ZERO unmonitored days it strides nothing at all and off/on is
+# bit-identical (`pricing.pv_discrete_barrier_option`, whose daily-monitored shape reaches
+# `ComponentHestonNandiKit.substeps` with n_steps == 0). Where a pricer strides the WHOLE fixing
+# interval (`pv_MC_Tarf`, `pv_MC_Accumulator`), a daily-monitored contract's interval is ONE DAY and
+# the stride OPENS at k = 1. It is INERT there rather than absent, and that is the rule's real
+# content: the one-step law IS the daily law exactly (h_1 is quadratic in z and the one-step return
+# affine in it, so the quadratic carry has a zero residual - gated), and the same uniform draws the
+# same quantile of it. Measured on a daily-monitored TARF: 1.8e-11 relative on/off, which is the
+# Gil-Pelaez inversion's own resolution against `norm_icdf` and not a bit comparison, against 2.9e-2
+# on the monthly schedule the stride is actually for.
 # ======================================================================================
 
 #: The mixed partial derivatives of the joint transform at the origin that the carried-state
@@ -3277,16 +3298,31 @@ def hn_component_stride_draw(strip, u, h, q, x_cap=None, iters=32, tol=1.0e-14):
     nothing here rescales it.
 
     THE GRADIENT IS EXACT, not a differentiated iteration.  The root is found under ``no_grad`` and
-    then corrected by ONE Newton step whose terms carry the graph:
+    then corrected by Newton steps whose terms carry the graph:
 
-        x = x* + (u*Phi_cap - Q(x*)) / q(x*)
+        x <- x + (u*Phi_cap - Q(x)) / q(x*)
 
-    The correction is numerically zero (x* IS the root, to ``tol``), so the VALUE is the root; its
-    derivative is ``-(dQ/dtheta - u dPhi_cap/dtheta) / q``, which is the implicit function theorem
-    for this equation. The density divides as a detached constant, correctly: it multiplies a term
-    that vanishes.
+    Each correction is numerically zero (x* IS the root, to ``tol``), so the VALUE is the root; the
+    first step's derivative is ``-(dQ/dtheta - u dPhi_cap/dtheta) / q``, which is the implicit
+    function theorem for this equation. The density divides as a detached constant, correctly: it
+    multiplies a term that vanishes.
 
-    THE CORRECTION IS BOUNDED BY ONE STANDARD DEVIATION of the k-step law, which in normal running
+    TWO STEPS, AND THE SECOND IS WHAT MAKES THE SECOND DERIVATIVE EXIST.  Writing
+    ``g(x, theta) = Q(x, theta) - target(theta)``, one step off a DETACHED root has ``dx = 0`` going
+    in, so it returns ``-g_theta / q`` - the right first derivative from any starting point, which
+    is why one step sufficed for wave 1 - but ``-g_thetatheta / q`` at second order, missing the
+    ``g_xx dx^2 + 2 g_xtheta dx`` that only a starting point CARRYING ``dx`` supplies. A second step
+    starts from an ``x`` whose first derivative is already exact and closes it. That is Newton's own
+    quadratic convergence written on the tape, and it costs one more inversion pass.
+
+    MEASURED, k = 21 on a live component fit, differentiating the drawn return against its own
+    truncation level: one step reads ``d2x = -3.8318`` against a bumped-root truth of ``-3.9498``
+    (3.1% out, on a ladder flat to 0.2%) and two steps read ``-3.94967`` (0.002%). The VALUE is the
+    inverter's root to the last bit either way. Downstream it is worth 36% of an autocall's gamma:
+    the wave-2 consumers put the drawn spot through a coupon trigger and a put barrier, and a
+    second derivative that is 3% wrong per fixing is not 3% wrong per deal.
+
+    EACH CORRECTION IS BOUNDED BY ONE STANDARD DEVIATION of the k-step law, which in normal running
     never binds (it is bounding something of order 1e-16). It is there because the density is a
     divisor and a quadrature that has underflowed to zero in a deep tail would otherwise turn a
     rounding residual into an infinity, moving the drawn spot rather than leaving it alone.
@@ -3297,12 +3333,14 @@ def hn_component_stride_draw(strip, u, h, q, x_cap=None, iters=32, tol=1.0e-14):
     target = u * phi_cap
     root = hn_component_stride_invert(
         strip, target.detach(), h.detach(), q.detach(), iters, tol)
-    fx = hn_component_stride_cdf(strip, root, h, q)
-    dens = hn_component_stride_pdf(strip, root, h, q).detach()
+    dens = hn_component_stride_pdf(strip, root, h, q).detach().clamp_min(HN_STRIDE_TINY)
     bound = (hn_component_stride_cumulants(strip, h, q)[1].detach().clamp_min(0.0).sqrt()
              if strip.mom is not None else torch.ones_like(dens))
-    step = ((target - fx) / dens.clamp_min(HN_STRIDE_TINY)).clamp(min=-bound, max=bound)
-    return root + step, phi_cap
+    x = root
+    for _ in range(2):
+        x = x + ((target - hn_component_stride_cdf(strip, x, h, q)) / dens).clamp(
+            min=-bound, max=bound)
+    return x, phi_cap
 
 
 def hn_component_stride_carry_loadings(strip, h, q):

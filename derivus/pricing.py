@@ -13,6 +13,7 @@
 
 import logging
 import math
+from collections import namedtuple
 from functools import partial
 
 import numpy as np
@@ -66,6 +67,119 @@ DEBUG."""
 # Heston-Nandi OSS spot models, opt-in per deal via the Valuation Configuration switch
 # SpotModel='HestonNandi' or 'HestonNandiComponent'. The per-step advance is owned by utils;
 # a pricer names its model once through the KIT below and walks it after that.
+
+
+#: ONE fixing interval opened as a STRIDE - the cached k-step law, the spot and state it conditions
+#: on, and the CARRY SHIFT that moves this deal's own levels into the strip's measure and its drawn
+#: return back out of it. A strip is built at ``r = 0`` and keyed on calendar position alone
+#: (`ComponentHestonNandiKit.stride`), so ``shift`` is the whole of the deal's carry over the
+#: interval and every consumer of the interval - the survival probability, the truncated advance and
+#: the fired branch's partial moments - reads the same one. Skip it in either direction and the
+#: survival WEIGHT is still right while the survivor law sits the whole carry away from where the
+#: barrier is (`utils.hn_component_stride_strip`: 27x the daily walk's own quantile band at k = 21).
+HNStrideFixing = namedtuple('HNStrideFixing', 'strip day n_steps spot h q shift')
+
+
+#: How far outside the k-step law's own mean a barrier may be carried into the Gil-Pelaez inversion,
+#: in standard deviations of that law. The quadrature grid is resolved for the integrand's DECAY,
+#: not for the oscillation of ``exp(-i phi x)``, so a bound far outside the law aliases: the panels
+#: stop resolving a period and the "probability" that comes back is not one (measured 1.63 at
+#: ``x = 31.6``). Eight standard deviations is where the inversion's own RESOLUTION takes over from
+#: the law's tail - measured ``Phi = 1 - 3.8e-8`` there against a Gaussian tail of 6e-16 - so past
+#: it the answer is not refined by integrating, it is WRITTEN (`stride_cdf`).
+HN_STRIDE_BOUND_SD = 8.0
+
+#: The decay `hn_stride_phi_max` stops at when it can reach it, and the WORST it will accept when it
+#: cannot. Both are MEASURED against the daily walk the stride replaces, 2^20 paths, k = 21, on the
+#: 1/5/25/50/75/95/99% quantiles of the walk's own return: a state reaching -30 lands every quantile
+#: inside 2 standard errors and 8.2e-4 absolute, one reaching -11 inside 3 SE and 1.3e-3, and one
+#: reaching only -7 is 3.8e-2 out - 90 SE, and no longer a probability. So -10 is where a survival
+#: weight stops being one, and the state is FLOORED rather than integrated (`stride_state_floor`).
+HN_STRIDE_PHI_LOG_TOL, HN_STRIDE_PHI_MIN_DECAY = -25.0, -10.0
+
+#: The fractions of the interval's own long-run variance level the state floor is tried at, in
+#: order. The first that resolves the bound is taken, so a healthy cube pays nothing (0.0 is the
+#: first rung) and a cube that has drifted pays the smallest floor that buys it a probability.
+HN_STRIDE_STATE_FLOORS = (0.0, 1.0 / 32, 1.0 / 16, 0.125, 0.25, 0.375, 0.5, 0.75)
+
+#: Largest bound the stride's scan will reach for. Past this the node count buys resolution the
+#: oscillation does not need (`HN_STRIDE_BOUND_SD` keeps ``|x|`` inside a standard deviation or so)
+#: and every state that needs it has already turned.
+HN_STRIDE_PHI_CAP = 2.0 ** 20
+
+#: Gauss-Legendre panels the stride's strips are built on, against `utils.cf_european_probabilities`
+#: own default of 256. MEASURED, not chosen: against a 2^20-path daily walk at k = 21, on every
+#: decile of the walk's own return and at long-run levels from 2x down to a quarter, 32 panels (256
+#: nodes) and 256 panels (2048 nodes) agree to the LAST PRINTED DIGIT - the inversion is converged
+#: long before the default. 64 is that with a factor of two of headroom for a bound carried out to
+#: `HN_STRIDE_BOUND_SD`, and it matters because the footprint is what limits a cube: a differentiable
+#: draw holds about six (paths, node) complex128 buffers alive per fixing for the backward pass, so
+#: the default put a six-fixing TARF at 16k paths into a 24 GB device's OOM.
+HN_STRIDE_PANELS = 64
+
+
+def hn_stride_phi_max(omegas, hnc_params, h_box, q_box, r=0.0):
+    """The stride's quadrature bound: the BEST decay the recursion reaches, not the first bound to
+    meet a fixed tolerance.
+
+    `utils.hn_component_auto_phi_max` doubles until ``Re(logcf) - ln(phi)`` falls below its
+    tolerance on both inversion contours, and returns its CAP when it never does. For a European
+    price off the seed state it always does. FOR A CARRIED STATE IT ROUTINELY DOES NOT: past a
+    parameter- and step-count-dependent point the component A/B/C recursion DIVERGES rather than
+    decaying (the punchlist's own trap, and the reason a bound is not transferable), and a state
+    whose decay stalls above the tolerance before that point walks the scan straight through it.
+    Measured on a live component fit at k = 21, one stride in: the carried box reaches
+    ``q = 4.0e-5``, whose metric falls to -19.3 at phi 512 and -26.2 at 2048 and then TURNS, +156 at
+    8192 - and the tolerance-seeking scan returned 2^24, where the integrand is e+3.7e6. The whole
+    cube came back NaN at the second fixing, on 0.4% of paths that had touched the variance floor.
+
+    So this scan keeps the best rung and stops the moment the metric turns UPWARD, which is the
+    divergence's own signature. Returns ``(phi_max, best decay)``; ``-25`` is a stop rather than a
+    requirement and the caller reads the second value to decide whether the bound it got is a
+    quadrature bound at all (`ComponentHestonNandiKit.stride_state_floor`).
+
+    ALL FOUR CORNERS of the ``(h, q)`` box, for the reason `utils.hn_component_auto_phi_max` gives:
+    B and C are free to carry opposite signs, so the slowest-decaying state can be (h.max, q.min).
+    """
+    h = torch.as_tensor(h_box).detach().reshape(-1)
+    q = torch.as_tensor(q_box).detach().reshape(-1)
+    hs = torch.stack([h.min(), h.min(), h.max(), h.max()]).reshape(-1, 1)
+    qs = torch.stack([q.min(), q.max(), q.min(), q.max()]).reshape(-1, 1)
+    dt, dev = hs.dtype, hs.device
+    best, best_phi, phi = float('inf'), 8.0, 8.0
+    with torch.no_grad():
+        while phi <= HN_STRIDE_PHI_CAP:
+            z = torch.tensor([phi], dtype=dt, device=dev) * 1j
+            m = max(float(utils.hn_component_logmgf(z, omegas, hs, qs, *hnc_params, r).real.max()),
+                    float(utils.hn_component_logmgf(
+                        z + 1.0, omegas, hs, qs, *hnc_params, r).real.max())) - math.log(phi)
+            if m > best:
+                break                     # the metric has turned: the recursion is diverging
+            best, best_phi = m, phi
+            if m < HN_STRIDE_PHI_LOG_TOL:
+                break
+            phi *= 2.0
+    return best_phi, best
+
+
+def stride_normals(shared, num_sims, antithetic):
+    """The two independent standard normals the stride's CARRIED STATE needs, drawn from the same
+    regular stream the daily sub-steps draw from and paired the same antithetic way.
+
+    Two per stride against ``n_steps`` per daily walk - the draw count the third consumer was bought
+    for, and which the WALL CLOCK REFUTES: the stride runs 111x to 147x slower than the walk it
+    replaces (`ComponentHestonNandiKit.substeps` carries the table and the diagnosis), because a
+    daily step is cheap elementwise work over the whole cube while a stride is a per-interval cache
+    build plus a per-path inversion. The (F3) note every HN pricer carries applies unchanged - these
+    come from the global
+    generator, so finite-difference greeks w.r.t. non-HN factors pick up RNG noise where AAD ones
+    do not.
+    """
+    z = torch.randn([2, shared.simulation_batch, num_sims],
+                    dtype=shared.one.dtype, device=shared.one.device)
+    if antithetic:
+        z = torch.cat([z, -z], dim=-1)
+    return z[0], z[1]
 
 
 class PlainHestonNandiKit(object):
@@ -140,6 +254,9 @@ class ComponentHestonNandiKit(PlainHestonNandiKit):
         # and has no path axis - a (1, 1) rho turns a (n,) strip into (1, n)
         self.rho = self.params[3].reshape(())
         self._omegas, self._built = None, 0
+        # THE STRIDE's caches, per kit (a kit is built per pricing call, so a recompute rebuilds
+        # them): the Phi/carry strip per (day, length) and the Esscher tilt per (day, length, power)
+        self._strips, self._tilts = {}, {}
 
     def omegas(self, day, n_steps):
         """The `n_steps` intercepts starting at trading day `day`. The strip is built once and
@@ -164,7 +281,53 @@ class ComponentHestonNandiKit(PlainHestonNandiKit):
         return (self.h0, torch.zeros_like(self.h0) + self.q0(), 0)
 
     def substeps(self, Sj, state, b_step, n_steps, shared, num_sims, antithetic):
+        """The unmonitored days of a fixing interval - walked, or STRIDDEN under ``HN_Stride``.
+
+        THE STRIDE'S THIRD CONSUMER, AND IT IS NOT A SPEED LEVER - MEASURED. It was built as one:
+        an interval the deal never observes is exactly what a k-step law is for, and the DRAW COUNT
+        says so (the walk takes ``n_steps`` normals per path, the stride takes three). The draw
+        count is not the cost. On the three-fixing component TARF, best of two at each size, the
+        strided pricer runs 111x / 121x / 124x / 147x SLOWER at 2^10 / 2^12 / 2^14 / 2^15 inner
+        paths - 0.03s daily against 3.0s to 4.5s - and the ratio WIDENS with the cube rather than
+        closing, so there is no crossover to reach.
+
+        THE DIAGNOSIS. A daily step is a handful of cheap elementwise operations over the whole cube
+        at once, so the walk is FLAT in the path count (0.027s to 0.031s across a 32x range). The
+        stride pays, per fixing interval, a fixed cache build - about a second, most of it the bound
+        scan's kernel launches on a 4-element state - and then a Gil-Pelaez inversion PER PATH,
+        a (paths x node) complex reduction, at every fixing. Fixed cost 3.0s; marginal 4.8e-5 s a
+        path. THE OPEN LEVER IS A BATCHED PHI: one inversion across the whole cube, and the B and C
+        strips reused across intervals of equal length (which `utils`' calendar-anchoring note says
+        is sound - omega reaches A alone). Neither is built. THE STEPPING STAYS REGARDLESS - it is
+        the smooth estimator's own conditioning law, and the truncated draws are what
+        branch-and-weight is; this is not machinery kept for a speed claim that died.
+
+        THE CASE SPLIT IS A RULE, and the stride OPENS AT k = 1 rather than standing down. A
+        monitored final step reaches here as ``n_steps == 0`` and strides nothing at all - that is
+        the discrete-barrier pricer's daily-monitored shape, and off/on is bit-identical there. But
+        a pricer that strides the WHOLE fixing interval (`pv_MC_Tarf`, `pv_MC_Accumulator`) hands a
+        daily-monitored contract an interval of ONE DAY, and one day is a stride of length one. It
+        is numerically INERT there rather than absent: the one-step law IS the daily law exactly
+        (`tests/test_hn_stride.py::test_the_one_step_stride_is_the_daily_advance` - the quadratic
+        carry is not an approximation at k = 1, it is the answer), and the same uniform draws the
+        same quantile of it. Measured on a daily-monitored TARF, 1.8e-11 relative, against 2.9e-2 on
+        the monthly one - the inversion's own resolution against `norm_icdf`, not a bit comparison.
+        So: it fires and agrees, NOT "it never fires".
+
+        WHAT IT COSTS is the carried state: the walk moves ``(h, q)`` exactly and the stride matches
+        it quadratically, so this is a declared approximation and not a reassociation. Off, the walk
+        is the same expression it always was, down to the RNG draws.
+        """
         h, q, day = state
+        if n_steps and getattr(shared, 'hn_stride', False):
+            fix = self.stride_interval(Sj, state, b_step, n_steps)
+            u = torch.rand([shared.simulation_batch, num_sims],
+                           dtype=shared.one.dtype, device=shared.one.device)
+            if antithetic:
+                u = torch.cat([u, 1.0 - u], dim=-1)
+            e1, e2 = stride_normals(shared, num_sims, antithetic)
+            _, Sj, state = self.stride_advance(fix, b_step, u, e1, e2)
+            return Sj, state
         Sj, h, q = utils.hn_component_unmonitored_substeps(
             Sj, h, q, b_step, self.omegas(day, n_steps), self.params,
             shared, num_sims, antithetic)
@@ -188,6 +351,284 @@ class ComponentHestonNandiKit(PlainHestonNandiKit):
         h0, q0 = self.scalar_state()
         return (utils.hn_component_call if is_call else utils.hn_component_put)(
             S, K, list(self.omegas(0, n_steps)), h0, q0, *self.params, r_step)
+
+    # -- THE STRIDE. The k-step conditional law of the interval, in place of walking it. ----------
+
+    def stride(self, day, n_steps, h, q, moments=True):
+        """The cached ``n_steps``-day law starting at trading day ``day`` - one strip, whole cube.
+
+        BUILT AT ``r = 0`` AND KEYED ON CALENDAR POSITION ALONE, which is what lets one strip serve
+        every path and every row of a block: the cost of carry is a SHIFT on the moneyness rather
+        than a rebuild (`utils.hn_component_stride_strip`), and ``b_step`` reaches these pricers as
+        a per-path tensor. So the key here is ``(day, n_steps)`` and nothing about the deal.
+
+        THE QUADRATURE BOUND IS NOT TRANSFERABLE and a LARGER one is not conservative - past a
+        step-count-dependent point the A/B/C recursion diverges rather than decaying - so the box
+        the bound was resolved on is stored beside the strip and the strip is REBUILT whenever the
+        cube's state has left it. That is the punchlist's own trap, taken at the consumer.
+        """
+        key = (day, n_steps, bool(moments))
+        hb = (float(h.detach().min()), float(h.detach().max()))
+        qb = (float(q.detach().min()), float(q.detach().max()))
+        hit = self._strips.get(key)
+        if hit is not None and hit[2][0] <= hb[0] and hb[1] <= hit[2][1] \
+                and hit[3][0] <= qb[0] and qb[1] <= hit[3][1]:
+            return hit[0], hit[1]
+        box, omegas = self.params[0].new_tensor, list(self.omegas(day, n_steps))
+        floor, phi_max = self.stride_state_floor(omegas, hb, qb)
+        fb = (max(hb[0], floor), max(hb[1], floor)), (max(qb[0], floor), max(qb[1], floor))
+        strip = utils.hn_component_stride_strip(
+            omegas, self.params, 0.0, box(fb[0]), box(fb[1]),
+            moments=moments, phi_max=phi_max, panels=HN_STRIDE_PANELS)
+        self._strips[key] = (strip, floor, hb, qb)
+        return strip, floor
+
+    def stride_state_floor(self, omegas, hb, qb):
+        """The smallest floor on the carried state at which this interval's inversion is still a
+        probability, and the quadrature bound that goes with it.  Returns ``(floor, phi_max)``.
+
+        THE STRIDE'S OWN FLOOR MASS IS WHY THIS EXISTS. The carried state's residual is Gaussian and
+        the state is floored at `utils.HN_COMPONENT_VARIANCE_FLOOR`, so a share of the cube arrives
+        at a frozen 1e-12 (1.1% at k = 21, the stride suite's declared finding) and the long-run
+        component drifts with it. At a long-run level a tenth of its own the inversion no longer
+        decays before the recursion turns - measured -7, and a Phi 3.8e-2 out against a 2^20-path
+        walk - so integrating there returns a number that is not a probability.
+
+        The floor is expressed in the interval's OWN long-run variance level, read off the model's
+        omega strip (``omega_t = L_{t+1} - rho L_t``, so ``omega/(1 - rho)`` is that level and no
+        new constant is introduced), and the rungs are tried in order: a healthy cube takes 0.0 and
+        pays nothing. A cube that has drifted is CLAMPED - which is a declared approximation of
+        exactly the kind the model's own variance floor already is, one level up, and the mass it
+        moves is what a gate measures.
+        """
+        level = float(omegas[0].detach()) / max(1.0 - float(self.rho.detach()), 1.0e-12)
+        box = self.params[0].new_tensor
+        for f in HN_STRIDE_STATE_FLOORS:
+            floor = f * level
+            phi_max, best = hn_stride_phi_max(
+                omegas, self.params, box((max(hb[0], floor), max(hb[1], floor))),
+                box((max(qb[0], floor), max(qb[1], floor))))
+            if best <= HN_STRIDE_PHI_MIN_DECAY:
+                if f:
+                    logging.debug('HN_STRIDE floor %d steps: %.4g (%.3g of level) decay %.3g '
+                                  'phi_max %g', len(omegas), floor, f, best, phi_max)
+                return floor, phi_max
+        raise ValueError(
+            'HN_Stride: the {}-step inversion is not a probability on this cube at any state floor '
+            'up to {:.3g} of the interval\'s own long-run level (best decay {:.3g} at phi_max '
+            '{:.0f}; the state reached h in [{:.4g}, {:.4g}], q in [{:.4g}, {:.4g}] against a level '
+            'of {:.4g}). Past the bound the component A/B/C recursion DIVERGES rather than '
+            'decaying, so a larger one is not conservative and there is nothing to widen to. That '
+            'is a property of the calibrated parameters at this step count, not of the deal. What '
+            "works today: price with HN_Stride off, whose daily walk inverts nothing; or monitor "
+            'this deal on shorter intervals, which is what sets the step count.'.format(
+                len(omegas), HN_STRIDE_STATE_FLOORS[-1], best, phi_max,
+                hb[0], hb[1], qb[0], qb[1], level))
+
+    def stride_interval(self, Sj, state, b_step, n_steps):
+        """Open a fixing interval as ONE STRIDE - see :data:`HNStrideFixing`.
+
+        The state the fixing carries is the CLAMPED one (`stride_state_floor`), and every consumer
+        of the interval reads it off here rather than off the walker's own state, so the law that
+        draws the return, the loadings that carry the state and the partial moments that close a
+        fired branch are all conditioned on one state.
+        """
+        h, q, day = state
+        strip, floor = self.stride(day, n_steps, h, q)
+        return HNStrideFixing(strip, day, n_steps, Sj, h.clamp_min(floor), q.clamp_min(floor),
+                              b_step * n_steps)
+
+    def stride_bound(self, fix, level):
+        """A spot LEVEL as a return in the strip's own measure: the moneyness moved in by the carry
+        shift, which is the half of the un-shift a consumer must not skip."""
+        return torch.log(level / fix.spot) - fix.shift
+
+    def stride_support(self, fix):
+        """``(lo, hi)``: how far either side of the k-step law's own mean a bound may be carried
+        into the inversion, at :data:`HN_STRIDE_BOUND_SD` standard deviations. DETACHED - it is a
+        quadrature's reach, not a quantity anything differentiates.
+
+        The inversion carries ``exp(-i phi x)`` against a grid resolved for the integrand's DECAY,
+        so a bound far outside the law oscillates faster than the panels can follow: measured on an
+        unreachable TARF target (``x = 31.6`` where eight standard deviations is ``0.32``), ``Phi``
+        came back 1.63.
+        """
+        mean, var, _, _ = utils.hn_component_stride_cumulants(fix.strip, fix.h, fix.q)
+        edge = HN_STRIDE_BOUND_SD * var.detach().clamp_min(0.0).sqrt()
+        return (mean - edge).detach(), (mean + edge).detach()
+
+    def stride_cdf(self, fix, strip, x):
+        """``Q(R_k <= x)`` over a strip of this interval, SATURATED outside the law's own support.
+
+        THE SATURATION IS EXACTNESS, not tidiness. The inversion resolves a probability to about
+        1e-8, so a bound the interval cannot reach comes back as ``1 - 4e-8`` rather than one - and
+        a TARF whose remaining target is 1e15 currency units then books ``(1 - p) * R`` of 4e7 at
+        every fixing it was never going to fill. Measured: 2.3e8 against a true 8.2e5, on a deal
+        with no knockout in it at all. Past the support the answer is a zero or a one and both are
+        exact, so they are WRITTEN rather than integrated - and the derivative there is exactly
+        zero, which is also the truth about a trigger eight standard deviations away.
+        """
+        lo, hi = self.stride_support(fix)
+        cdf = utils.hn_component_stride_cdf(strip, x.clamp(min=lo, max=hi), fix.h, fix.q)
+        return torch.where(x >= hi, torch.ones_like(cdf),
+                           torch.where(x <= lo, torch.zeros_like(cdf), cdf))
+
+    def stride_advance(self, fix, b_step, u, e1, e2, x_bound=None, survive_below=True):
+        """Survival probability and ONE survival-truncated stride - ``oss_truncated_draw``'s sibling
+        over the k-step law, and the verb every branch-and-weight HN arm calls.
+
+        ``x_bound`` is the barrier ALREADY in the strip's measure (`stride_bound`); ``None`` strides
+        an unmonitored interval, whose ``p`` is one. ``survive_below`` reads exactly as it does at
+        ``oss_truncated_draw``: True truncates into the lower tail and ``p`` is the law's own
+        ``Phi``, False into the upper and ``p`` is its complement.
+
+        THE DOWN SIDE IS THE SAME PRIMITIVE, not a second inversion: the stride's draw solves
+        ``Q(R <= x) = u * Phi_cap`` for a cap it is handed, so an upper truncation is that solve at
+        ``u' = Phi + u*(1 - Phi)`` with NO cap - one uniform re-aimed, the implicit-function
+        reattachment carrying ``Phi``'s own graph through ``u'`` exactly as it carries the cap's.
+
+        `utils.hn_component_stride_step` ALWAYS WITH ``b_step``. It is the verb that un-shifts the
+        drawn return back into the deal's carry, and the state is carried at the UNSHIFTED return
+        because that is the mean the loadings centre on; calling it without ``b_step`` leaves the
+        whole survivor law a carry away from its own barrier.
+        """
+        h, q = fix.h, fix.q
+        if x_bound is None:
+            Sj, h, q, _ = utils.hn_component_stride_step(
+                fix.strip, fix.spot, h, q, u, e1, e2, x_cap=None, b_step=b_step)
+            return torch.ones_like(fix.spot), Sj, (h, q, fix.day + fix.n_steps)
+        # `p` is the SATURATED Phi and the draw takes the clamped cap: the two differ only where
+        # the bound is outside the law, where the truncation is inert and only `p` has to be exact
+        lo, hi = self.stride_support(fix)
+        below = self.stride_cdf(fix, fix.strip, x_bound)
+        if survive_below:
+            p = below
+            Sj, h, q, _ = utils.hn_component_stride_step(
+                fix.strip, fix.spot, h, q, u, e1, e2,
+                x_cap=x_bound.clamp(min=lo, max=hi), b_step=b_step)
+        else:
+            p = 1.0 - below
+            Sj, h, q, _ = utils.hn_component_stride_step(
+                fix.strip, fix.spot, h, q, below + u * p, e1, e2, x_cap=None, b_step=b_step)
+        return p, Sj, (h, q, fix.day + fix.n_steps)
+
+    def stride_tilt(self, fix, power):
+        """The ESSCHER-TILTED strip at real ``power`` - the partial-moment half of a fired branch.
+
+        ``E[e^{a R} 1{fired}] = M(a) * Q_a(fired)`` with ``Q_a`` the tilted law, whose log-CF is
+        ``A(a + i phi) + B(.) h + C(.) q`` minus its own value at ``phi = 0``. So the tilt is the
+        SAME backward recursion on a contour shifted off the imaginary axis, assembled onto the SAME
+        nodes and weights the strip already carries and inverted by the SAME Gil-Pelaez Phi: one
+        spelling of the cache, not a second formula. Returns ``(strip, A_0, B_0, C_0)`` - the tilted
+        strip and the three parts of ``log M(a)``, which is per PATH because it reads the state.
+
+        ``a = 1`` is exactly the share-measure contour `utils.cf_european_probabilities` runs for
+        P1, so a fired gain over this cache and `utils.hn_component_call` are the same two
+        probabilities assembled twice - which is the gate.
+
+        THE BOUND IS THE STRIP'S OWN, and that is sound BY CONSTRUCTION for ``a`` in {0, 1}: the
+        scan that resolved it read the ``i phi`` and ``i phi + 1`` contours both. Any other tilt -
+        an INVERTED accrual asks for ``a = -1`` - is CHECKED at the top node against
+        :data:`HN_STRIDE_PHI_MIN_DECAY`, which is the line the bound scan itself calls a
+        probability, and refused by name rather than integrated into garbage. Measured on a live fit
+        at k = 21, on the seed state: the strip's own bound leaves the ``a = 1`` contour at -25.45
+        and the ``a = -1`` contour at -25.38, so an inverted accrual rides the same cache - and so
+        does a tilt of 40 (-28.60) and of 60 (-33.30). What the check is actually for is the OTHER
+        failure: at ``a = 80`` the recursion is past the real MGF's own radius and the metric is
+        NaN, which is why the comparison below is spelled as a negated ``<=`` rather than a ``>``.
+
+        THE STRIP'S OWN BOUND IS PART OF THE KEY, and this cache is not coherent without it.
+        `stride` REBUILDS its strip whenever the cube's state box has left the one the quadrature
+        bound was resolved on - a later report row reaching a wider box is exactly that - and the
+        tilt is assembled ONTO that strip's nodes. Keyed on calendar position alone, a rebuilt strip
+        is served the OLD strip's tilt: measured on the fixture at k = 21, a first row on the seed
+        state resolves ``phi_max`` 256 and a second reaching h down to the floor resolves 512, and
+        the stale tilt puts the floored row's partial moment 1.04e-3 out. ``phi_max`` is the whole
+        of the strip's numeric identity here - the nodes are `utils.gauss_legendre` of it at a fixed
+        panel count and A/B/C follow from the nodes - so it keys the tilt exactly, with no spurious
+        miss where a rebuild happened to land on the same bound.
+
+        AND THE DECAY CHECK RE-RUNS ON EVERY CALL, cache hit included (`stride_tilt_decay`): it
+        reads the STATE BOX, which widens under the caller whether or not the bound moved, and a
+        check that ran once on the seed state is a claim about a box this fixing is not in. It costs
+        one top-node read off coefficients already in hand.
+        """
+        strip = fix.strip
+        key = (fix.day, fix.n_steps, float(power), strip.phi_max)
+        hit = self._tilts.get(key)
+        if hit is not None:
+            self.stride_tilt_decay(hit[0], fix, power)
+            return hit
+        omegas = list(self.omegas(fix.day, fix.n_steps))
+        a = strip.nodes.new_tensor(float(power))
+        A0, B0, C0 = utils.hn_component_abc(a, omegas, *self.params, 0.0)
+        At, Bt, Ct = utils.hn_component_abc(a + strip.nodes * 1j, omegas, *self.params, 0.0)
+        A, B, C = At - A0, Bt - B0, Ct - C0
+        tilt = (utils.HNComponentStride(strip.n_steps, strip.nodes, strip.wts, strip.phi_max,
+                                        A, B, C, None, strip.r), A0, B0, C0)
+        self.stride_tilt_decay(tilt[0], fix, power)
+        self._tilts[key] = tilt
+        return tilt
+
+    def stride_tilt_decay(self, tilt, fix, power):
+        """Verify one tilted strip's integrand has DECAYED at its own quadrature bound, on the state
+        box THIS fixing carries - `stride_tilt`'s refusal, factored out because it has to run on a
+        cache hit as well as on a build.
+
+        ``a`` in {0, 1} is sound by construction (the bound scan read both contours) and skips.
+        """
+        if float(power) in (0.0, 1.0):
+            return
+        A, B, C = tilt.A, tilt.B, tilt.C
+        # the integrand's envelope at the strip's top node, on BOTH corners of the state box -
+        # the slowest decay sits at the smallest variance, which pairing by rank never probes
+        top = max(float((A[..., -1] + B[..., -1] * hh + C[..., -1] * qq).real.max())
+                  for hh in (fix.h.min(), fix.h.max()) for qq in (fix.q.min(), fix.q.max()))
+        # NOT `>`: a tilt past the real MGF's own radius returns NaN rather than a large
+        # number, and NaN fails every comparison including the one that would have caught it
+        if not top - math.log(tilt.phi_max) <= HN_STRIDE_PHI_MIN_DECAY:
+            raise ValueError(
+                'HN_Stride: the Esscher tilt at power {} has not decayed at the strip\'s own '
+                'quadrature bound (phi_max {:.0f}, log integrand {:.3g} against a tolerance of '
+                '{:.0f}, on a state box of h in [{:.4g}, {:.4g}] and q in [{:.4g}, {:.4g}]). That '
+                'bound is resolved on the i*phi and i*phi+1 contours - the two a probability and a '
+                'forward-weighted mass ride - and it is NOT transferable to a third for free: past '
+                'a step-count- and parameter-dependent point the component A/B/C recursion '
+                'DIVERGES rather than decaying, so integrating here would return a number rather '
+                'than fail. What works today: price this deal with HN_Stride off, whose daily walk '
+                "needs no tilt; or with Branch_And_Weight: 'No', whose crisp estimator samples the "
+                'leg instead of integrating it.'.format(
+                    power, tilt.phi_max, top - math.log(tilt.phi_max), HN_STRIDE_PHI_MIN_DECAY,
+                    float(fix.h.min()), float(fix.h.max()),
+                    float(fix.q.min()), float(fix.q.max())))
+
+    def stride_partial_moment(self, fix, x_bound, fired_above, power=1.0):
+        """``E[S_k**power * 1{fired}]`` over the stride's k-step law - the analytic half of a fired
+        branch, and the exact sibling of :func:`lognormal_partial_moment` one family over.
+
+        ``x_bound`` is the trigger already in the strip's measure (`stride_bound`) and
+        ``fired_above`` says which tail fires, both read exactly as they do there. ``power = 0`` IS
+        the fired probability and skips the scale factors, being identities; a caller already
+        holding the survival ``p`` should use ``1 - p`` instead, because the survival ledger
+        telescopes only when the fired mass is that exact complement.
+
+        THE CARRY SHIFT ENTERS TWICE, once in the bound the caller moved in and once in the
+        ``exp(a * shift)`` that moves the moment back out - the same un-shift the drawn spot takes.
+        """
+        if not power:
+            below = self.stride_cdf(fix, fix.strip, x_bound)
+            return (1.0 - below) if fired_above else below
+        tilt, A0, B0, C0 = self.stride_tilt(fix, power)
+        below = self.stride_cdf(fix, tilt, x_bound)
+        tail = (1.0 - below) if fired_above else below
+        return (fix.spot ** power * torch.exp(power * fix.shift + A0 + B0 * fix.h + C0 * fix.q)
+                * tail)
+
+    def stride_fired_gain(self, fix, x_bound, strike, fired_above, power=1.0):
+        """``E[(S_k**power - strike**power) * 1{fired}]`` - the k-step law's own difference of two
+        partial moments, and :func:`lognormal_fired_gain` one family over."""
+        return (self.stride_partial_moment(fix, x_bound, fired_above, power) -
+                strike ** power * self.stride_partial_moment(fix, x_bound, fired_above, 0.0))
 
 
 #: The OSS kits, keyed by the `SpotModel` valuation option each deal declares. A pricer looks its
@@ -403,10 +844,18 @@ def branch_and_weight(shared, deal_data):
     interval IS the simulated step, so the strips a pricer already walks (``forward_carry_rate`` /
     ``forward_vol_rate``) are the ``m`` and ``s`` the construction wants.
 
-    Under Heston-Nandi that law is not in hand and this REFUSES by name: the HN walk is daily, so
-    the only Gaussian conditional available is the last daily sub-step, whatever the fixing spacing.
-    The fixing-interval conditional needs the k-step law ``exp(A_k + B_k h + C_k q)`` - the stride's
-    cached ``Phi`` and its survival-truncated inverse - and HN branch-and-weight lands with it.
+    UNDER COMPONENT HESTON-NANDI THAT LAW IS THE STRIDE and this admits the deal, provided the
+    ``HN_Stride`` switch consents to it. ``p`` is then the k-step law's own ``Phi`` over the WHOLE
+    fixing interval (never the last daily Gaussian - that is the s^-3 regime the design forbids),
+    the fired branch closes in the cache's own partial moments by the same Gil-Pelaez machinery, the
+    continuing branch is the survival-truncated inversion, and the carried ``(h, q)`` is the
+    stride's quadratic match. Without the switch it still refuses: the carry across the jump is a
+    declared approximation and a caller consents to it by name.
+
+    THE PLAIN FAMILY STILL REFUSES. The stride is the COMPONENT recursion's cache - it carries the
+    ``C*q`` state axis the plain law has no room for - and a plain deal is one point of that space
+    (``utils.hn_component_from_plain``, an exact map gated at 1.5e-13), so the remedy is to declare
+    the component model rather than to strap a second state onto a walk that cannot advance it.
 
     Read ONCE per deal at the top of a pricer, so the refusal lands before a draw is taken.
     """
@@ -415,19 +864,25 @@ def branch_and_weight(shared, deal_data):
     factor_dep = deal_data.Factor_dep
     if 'HN_Params' in factor_dep:
         model = factor_dep['HN_Params'][0][utils.FACTOR_INDEX_SubType]
+        stride = getattr(shared, 'hn_stride', False)
+        if model == 'HestonNandiComponent' and stride:
+            return True
         raise ValueError(
             "Branch_And_Weight: 'Yes' is refused on {} under SpotModel={!r} - the smooth estimator "
-            "conditions on the FIXING interval's own lognormal law, and a {} walk is DAILY, so the "
-            'only Gaussian conditional in hand is the last daily sub-step (the s^-3 regime, at '
-            'monthly fixings too, because the walk is daily whatever the fixings are). The '
-            'fixing-interval law and its survival-truncated inversion are THE STRIDE\'s cached Phi '
-            'and inverse-CDF verbatim - utils.hn_cdf_logret is the existing half - and HN '
-            'branch-and-weight lands the day the stride does (roadmap.md, "Branch and weight for '
-            'TARFs and autocalls"). Applying a Gaussian p here would be a wrong number wearing the '
-            "right estimator's name. What works today: price this deal under GBM (drop SpotModel), "
-            "or run it with Branch_And_Weight: 'No', which is the default and is the crisp OSS "
-            'estimator this deal already prices under, unchanged.'.format(
-                deal_data.Instrument.field.get('Reference'), model, model))
+            "conditions on the FIXING interval's own law, and a {} walk is DAILY, so the only "
+            'Gaussian conditional in hand is the last daily sub-step (the s^-3 regime, at monthly '
+            'fixings too, because the walk is daily whatever the fixings are). The fixing-interval '
+            "law and its survival-truncated inversion are THE STRIDE's cached Phi and inverse-CDF "
+            'verbatim - utils.hn_cdf_logret is the existing half - and it is built, for the '
+            'COMPONENT family, behind HN_Stride. Applying a Gaussian p here would be a wrong '
+            "number wearing the right estimator's name. What works today: {} price this deal under "
+            "GBM (drop SpotModel), or run it with Branch_And_Weight: 'No', which is the default "
+            'and is the crisp OSS estimator this deal already prices under, unchanged.'.format(
+                deal_data.Instrument.field.get('Reference'), model, model,
+                "declare HN_Stride: 'Yes', which consents to the CARRIED STATE the stride "
+                'approximates across each jump;' if model == 'HestonNandiComponent' else
+                "declare SpotModel: 'HestonNandiComponent' (utils.hn_component_from_plain is the "
+                'exact map, and the stride is that recursion\'s cache) with HN_Stride: \'Yes\';'))
     return True
 
 
@@ -478,6 +933,28 @@ def lognormal_fired_gain(spot, drift, vol, z_bound, strike, fired_above, power=1
     return (lognormal_partial_moment(spot, drift, vol, z_bound, fired_above, power) -
             (strike ** power) * lognormal_partial_moment(
                 spot, drift, vol, z_bound, fired_above, 0.0))
+
+
+def splice_conditional_p(crisp, mixture):
+    """THE CONDITIONAL-p SPLICE: report the CRISP term's value and the MIXTURE's every derivative.
+
+    Returns what a caller ADDS beside a crisp term it has already accumulated, so that the total
+    reads ``crisp + (mixture - mixture.detach()) - (crisp - crisp.detach())``. Both parentheses are
+    exact IEEE zeros, so the value is the crisp estimator's bit for bit while the whole gradient -
+    and the whole Hessian, there being no detached coefficient anywhere in it - is the mixture's.
+
+    THE MIXTURE IS WHAT A DECISION'S FLUX IS, not an estimate of it. Where a payoff jumps on a level
+    the simulation crosses, the kernel form has to estimate the density AT the jump (and, at second
+    order, its derivative) and pays 27% noise for a term sitting at 0.5%, on a bandwidth ladder that
+    never plateaus. Here the decision's probability given the state one conditioning step back is
+    computed analytically - under component Heston-Nandi that is the stride's cached ``Phi`` - and
+    the two branches enter as an expectation: first order Rao-Blackwellised, second order analytic,
+    no bandwidth anywhere.
+
+    ONE ESTIMATOR PER DECISION. Where this takes a decision it REPLACES that decision's kernel-flux
+    registration; leaving the ``BoundarySet`` in place beside it counts the same flux twice.
+    """
+    return (mixture - mixture.detach()) - (crisp - crisp.detach())
 
 
 class SurvivalLedger(object):
@@ -2355,6 +2832,12 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     that registration rather than joining it - one decision, one estimator. Off, and absent, is
     every line above bit for bit.
 
+    THE STRIDE (``HN_Stride: 'Yes'``, component Heston-Nandi only) makes the whole fixing interval
+    ONE survival-truncated k-step draw instead of a daily walk with the barrier read on its last
+    day. This deal has no fired branch to integrate - a knocked fixing pays exactly zero - so the
+    stride changes the SAMPLER and nothing else, on either estimator, and what it costs is the state
+    carried across each jump. Off is the daily walk bit for bit.
+
     THIS LOOP IS ALREADY THE SMOOTH ESTIMATOR: survival at a future fixing is
     ``oss_truncated_draw``'s analytic ``p``, the continuation is its truncated draw, and the fired
     branch pays exactly zero, so there is no ``p x realised`` shortcut in it and no indicator on the
@@ -2418,7 +2901,18 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                 Dj = D[j].reshape(-1, 1)
                 if dt > 0:
                     fwd_carry = carry_rate[j].reshape(-1, 1)
-                    if hn:
+                    if hn and stride:
+                        # THE WHOLE INTERVAL IS ONE STRIDE, survival-truncated at the barrier: the
+                        # k-step law's own Phi rather than the last daily Gaussian's, and the
+                        # survival conditioned over the interval rather than over its final day
+                        n_sub = max(int(round(float(dt) * hn_spy)), 1)
+                        b_step = fwd_carry * dt / n_sub
+                        fix = kit.stride_interval(Sj, st, b_step, n_sub)
+                        e1, e2 = stride_normals(shared, num_sims, True)
+                        p, Sj, st = kit.stride_advance(
+                            fix, b_step, u[j], e1, e2,
+                            kit.stride_bound(fix, barrier), barrier_up)
+                    elif hn:
                         # daily HN sub-steps; only the LAST is monitored, so the OSS truncation at
                         # the constant barrier is exact
                         n_sub = max(int(round(float(dt) * hn_spy)), 1)
@@ -2520,6 +3014,12 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     # read once before a draw is taken so a non-GBM refusal lands first; it SUPERSEDES the
     # registration below rather than joining it
     smooth = branch_and_weight(shared, deal_data)
+    # THE STRIDE (`HN_Stride`, component Heston-Nandi only): the whole fixing interval as one
+    # survival-truncated k-step draw rather than a daily walk with the barrier read on its last day.
+    # This deal has no fired branch to integrate - a knocked fixing pays exactly zero - so the
+    # stride changes the SAMPLER and nothing else, on either estimator
+    stride = (getattr(shared, 'hn_stride', False) and 'HN_Params' in factor_dep and
+              factor_dep['HN_Params'][0][utils.FACTOR_INDEX_SubType] == 'HestonNandiComponent')
     # curvature is the switch: the per-fixing kink term is never BUILT unless a second derivative
     # was asked for, so it costs exactly nothing on a first-order run
     second_order = smooth and getattr(shared, 'gamma', False)
@@ -3160,6 +3660,17 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     both of those registrations rather than joining them - one decision, one estimator, or the flux
     is counted twice. Off, and absent, is every line above bit for bit.
 
+    THE STRIDE (``HN_Stride: 'Yes'``, component Heston-Nandi only) replaces (F1)'s daily walk: the
+    WHOLE fixing interval becomes one survival-truncated k-step draw off the cached conditional law,
+    so ``p`` is that law's own ``Phi`` rather than the last daily Gaussian's - the regime the smooth
+    estimator needs and the daily one gets wrong by ``Delta_t^(-3/2)`` - and the survival is
+    conditioned over the interval rather than over the one day the cap is read on. It is what lets
+    branch-and-weight price this deal at all under Heston-Nandi; crisp, it also hands the knock-IN's
+    flux to the conditional-p mixture (`splice_conditional_p`), which reports the sampled
+    indicator's value and the integral's derivatives and SUPERSEDES that decision's registration.
+    What it costs is (F4)'s sibling: the state carried across each jump is matched quadratically
+    rather than walked. Off is the daily walk, bit for bit.
+
     Most of the construction is already here: the KO-in-step term IS the fired branch integrated
     against the fixing interval's own lognormal law, the moving trigger ``B_pnl = K + R/N`` IS
     ``K + R_{k-1}``, and the continuation IS the truncated draw. THE FIRED PAYMENT IS THE SAME ONE
@@ -3294,24 +3805,42 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                         rhs = (1.0 / K) + (R / N_i) * (-callOrPut)
                         B_pnl = 1.0 / rhs
 
+                    fix = None
                     if hn:
-                        # HN calibrates per day, so this fixing spans n_sub daily steps and only
-                        # the LAST is truncated, which is what makes the scheme exact
+                        # HN calibrates per day, so this fixing spans n_sub daily steps
                         n_sub = max(int(round(float(dt) * hn_spy)), 1)
                         b_step = fwd_carry * dt / n_sub  # per-step r-q; the total is fwd_carry*dt
-                        # the first n_sub-1 unmonitored daily steps, antithetic to align with the
-                        # u <-> 1-u halves of the truncated final draw below
+                    if hn and stride:
+                        # THE WHOLE INTERVAL IS ONE STRIDE, survival-truncated at the PnL barrier.
+                        # The conditioning step is the FIXING interval rather than its last day -
+                        # the regime the daily Gaussian gets wrong by Delta_t^(-3/2) - and the
+                        # survival conditioning covers the whole interval rather than the one day
+                        # the cap happens to be read on
+                        Sj_prev = Sj
+                        fix = kit.stride_interval(Sj, st, b_step, n_sub)
+                        e1, e2 = stride_normals(shared, num_sims, True)
+                        p, Sj, st = kit.stride_advance(
+                            fix, b_step, u[j], e1, e2,
+                            kit.stride_bound(fix, B_pnl), callOrPut > 0)
+                    elif hn:
+                        # only the LAST daily step is truncated, which is what makes the scheme
+                        # exact; the first n_sub-1 are unmonitored and antithetic, to align with
+                        # the u <-> 1-u halves of the truncated final draw below
                         Sj, st = kit.substeps(
                             Sj, st, b_step, n_sub - 1, shared, num_sims, antithetic=True)
                         h = kit.h(st)
                         fwd_drift = b_step - 0.5 * h  # the FINAL (monitored) daily step's drift
-                        z_max = (torch.log(B_pnl / Sj) - fwd_drift) / torch.sqrt(h)
+                        vol_step = torch.sqrt(h)
+                        z_max = (torch.log(B_pnl / Sj) - fwd_drift) / vol_step
                     else:
                         # the lognormal cap standardised, off the current Sj as S_{i-1}
                         fwd_drift = (fwd_carry - 0.5 * fwd_vol * fwd_vol) * dt
-                        z_max = (torch.log(B_pnl/Sj) - fwd_drift) / vol_dt
-                    # the survival side follows the PnL cap's direction
-                    p, Z = oss_truncated_draw(u[j], z_max, callOrPut > 0)
+                        vol_step = vol_dt
+                        z_max = (torch.log(B_pnl/Sj) - fwd_drift) / vol_step
+                    if fix is None:
+                        # the survival side follows the PnL cap's direction
+                        Sj_prev = Sj
+                        p, Z = oss_truncated_draw(u[j], z_max, callOrPut > 0)
 
                     # the analytic KO-in-step: the knocked-out weight pays the REMAINING TARGET,
                     # discounted at the j-th point. R is measurable one fixing back, so
@@ -3321,18 +3850,25 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                         P_alive = P_alive + (1.0 - p) * L_alive * R * Dj
                     # THE KNOCK-IN, INTEGRATED: `relu(-eff_intr) * 1{hit}` is supported on one tail
                     # of THIS interval's law, `otm_bound` carrying the strike's side and the
-                    # barrier's, and lies wholly inside the surviving set for every R >= 0
+                    # barrier's, and lies wholly inside the surviving set for every R >= 0. Under
+                    # the stride that law is the k-step one and the tail expectation is the SAME
+                    # cache's partial moments, Esscher-tilted; under GBM it is one lognormal
                     otm_analytic = None
-                    if smooth and otm_bound is not None:
-                        z_otm = (torch.log(otm_bound / Sj) - fwd_drift) / vol_dt
-                        otm_analytic = Dj * L * N_otm * (-gain_sign) * lognormal_fired_gain(
-                            Sj, fwd_drift, vol_dt, z_otm, K, callOrPut < 0, gain_power)
-                    if hn:
-                        # HN increment + h-recursion on the truncated final draw; leverage-
-                        # asymmetric because Z is survival-truncated (see hn_daily_advance)
-                        Sj, st = kit.advance(Sj, st, b_step, Z)
-                    else:
-                        Sj = Sj * (torch.exp(fwd_drift + vol_dt * Z) if dt > 0 else 1.0)
+                    if (smooth or fix is not None) and otm_bound is not None:
+                        otm_analytic = Dj * L * N_otm * (-gain_sign) * (
+                            kit.stride_fired_gain(
+                                fix, kit.stride_bound(fix, otm_bound), K, callOrPut < 0, gain_power)
+                            if fix is not None else lognormal_fired_gain(
+                                Sj_prev, fwd_drift, vol_step,
+                                (torch.log(otm_bound / Sj_prev) - fwd_drift) / vol_step,
+                                K, callOrPut < 0, gain_power))
+                    if fix is None:
+                        if hn:
+                            # HN increment + h-recursion on the truncated final draw; leverage-
+                            # asymmetric because Z is survival-truncated (see hn_daily_advance)
+                            Sj, st = kit.advance(Sj, st, b_step, Z)
+                        else:
+                            Sj = Sj * (torch.exp(fwd_drift + vol_dt * Z) if dt > 0 else 1.0)
                 else:
                     Sj = past_fixings[-min(reduced_samples, num_samples)].reshape(-1, 1)
                     p = 1.0
@@ -3352,7 +3888,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 # why an unleveraged deal has no kink at all
                 kink = accrual_kink_term(intr, j) if (
                     second_order and not use_past_fixing) else None
-                if otm_analytic is not None:
+                integrated = smooth and otm_analytic is not None
+                if integrated:
                     # integrated above; nothing of this leg is sampled, so no indicator is formed
                     barrier_hit = torch.zeros_like(Sj)
                 elif barrier > 0.0:
@@ -3367,17 +3904,26 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     # worth an exact zero forward and bit-zero at first order, so it rides the
                     # deal's own weights rather than a detached copy of them
                     cf_itm = cf_itm + kink * N_itm
-                    if otm_analytic is None:
+                    if not integrated:
                         cf_otm = cf_otm + kink * N_otm * barrier_hit
                 cf_step = L * p * (cf_itm - cf_otm)
                 P = P + Dj * cf_step
-                if otm_analytic is not None:
+                if integrated:
                     P = P - otm_analytic
+                elif otm_analytic is not None:
+                    # THE CONDITIONAL-p MIXTURE on the crisp path: the knock-IN is a jump on
+                    # simulated state, and its probability given the state one stride back is the
+                    # cache's own Phi - so the flux is an EXPECTATION rather than a kernel estimate
+                    # of a density. The reported value stays the sampled indicator's, bit for bit;
+                    # every derivative is the integral's. This SUPERSEDES the registration below -
+                    # `boundary_aad` is off wherever it takes the decision, or the flux double counts
+                    P = P + splice_conditional_p(-Dj * L * p * cf_otm, -otm_analytic)
                 if boundary_aad:
                     P_alive = P_alive + Dj * L_alive * p * (cf_itm - cf_otm)
-                    if barrier > 0.0:
+                    if barrier > 0.0 and otm_analytic is None:
                         # one decision per inner path; gap > 0 means KNOCKED IN, in log space, and
-                        # `expand_as` also covers the already-observed fixing
+                        # `expand_as` also covers the already-observed fixing. Skipped wherever the
+                        # conditional-p mixture took this decision - ONE estimator per decision
                         jump = (-buy_sell * Dj * L * p * F.relu(-intr) * N_otm).detach()
                         gaps.append((callOrPut * torch.log(barrier / Sj)).expand_as(jump))
                         jumps.append(jump)
@@ -3461,6 +4007,12 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     # read once before a draw is taken so a non-GBM refusal lands first. It SUPERSEDES the two
     # registrations below rather than joining them - one decision, one estimator
     smooth = branch_and_weight(shared, deal_data)
+    # THE STRIDE (`HN_Stride`, component Heston-Nandi only): the k-step law of the whole fixing
+    # interval in place of the daily walk across it. Under `smooth` it IS the estimator's
+    # conditioning law; crisp, it strides the interval and hands the knock-IN's flux to the
+    # conditional-p mixture, which supersedes both registrations below
+    stride = (getattr(shared, 'hn_stride', False) and 'HN_Params' in factor_dep and
+              factor_dep['HN_Params'][0][utils.FACTOR_INDEX_SubType] == 'HestonNandiComponent')
     # `eff_intr = gain_sign * (S**gain_power - K**gain_power)` on BOTH targets, which is what lets
     # one closed form serve the inverted accrual (`lognormal_fired_gain`'s own `power`)
     gain_power = -1.0 if invertedTarget else 1.0
@@ -3474,7 +4026,11 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     # second derivative, so it costs exactly nothing on a first-order run
     second_order = smooth and getattr(shared, 'gamma', False)
 
-    # gated: the target filling and the OTM knock-in both jump on simulated state
+    # gated: the target filling and the OTM knock-in both jump on simulated state. `smooth` removes
+    # both decisions; the CRISP MIXTURE (`stride and not smooth`, which is what puts `otm_analytic`
+    # in hand below) takes only the KNOCK-IN's - the redemption latch decides on the accrual of
+    # OBSERVED fixings, which has no conditioning step to integrate against - so under it the latch
+    # still registers and the knock-in's registration below does not
     boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
     b_gaps, b_fired, b_obs_before, b_inner, alive, row_ofs = [], [], [], [], [], 0
 
@@ -3571,6 +4127,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     # counterfactual to land on
     if boundary_aad and time_grid.report_index is not None:
         to_mtm = deal_to_mtm_grid(time_grid, deal_data, fx_rep)
+        mark = len(shared.boundary_sets)
         if b_gaps:
             # redemption: `triggered` is worth zero for every row the decision reaches, and
             # `untriggered` is the SAME loop run on a weight that was never zeroed
@@ -3584,6 +4141,18 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             shared.boundary_sets.append(utils.InnerBoundarySet(
                 gaps=list(gaps), rows=list(rows), jumps=list(jumps), reported=mtm.detach(),
                 to_mtm=to_mtm, report_index=time_grid.report_index))
+        # ONE DECISION, ONE ESTIMATOR - logged because this is the only place it is READABLE. The
+        # second-order refusal downstream names DEALS and never registrations, so whether the
+        # conditional-p mixture SUPERSEDED the knock-in's kernel flux or JOINED it (double counting
+        # the same decision, once analytically and once by the kernel) cannot be read off any
+        # reported frame. It can be read off the tail this deal added: crisp with a live barrier
+        # that tail is the redemption latch AND the knock-in's `InnerBoundarySet`; under the mixture
+        # it is the latch alone, the latch deciding on the accrual of OBSERVED fixings and having no
+        # conditioning step to integrate against.
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            logging.debug('TARF %s boundary sets: %s',
+                          deal_data.Instrument.field.get('Reference'),
+                          [type(b).__name__ for b in shared.boundary_sets[mark:]])
 
     return mtm
 
@@ -3647,9 +4216,20 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     ``test_branch_and_weight.py::test_a_zero_coupon_row_refuses_by_name``). The loop is unchanged
     by that: the defect was the arm's and the refusal is the loader's.
 
+    THE STRIDE (``HN_Stride: 'Yes'``, component Heston-Nandi only, no-averaging arm only) makes each
+    coupon interval ONE survival-truncated k-step draw: ``p`` is the interval's own cached ``Phi``
+    given the state at its start rather than the last daily Gaussian's, and the put leg's
+    conditioning step is then the fixing interval, which is what the smooth arm integrates against.
+    The advance is HELD and applied where the daily draw would have been taken, so the coupon
+    payment and the survival weight are updated in exactly the order the loop above describes.
+    Crisp, the put leg keeps its indicator for the VALUE and takes the mixture's derivatives through
+    `splice_conditional_p` - the same analytic term, spliced rather than substituted - which is what
+    closes its 18-22% delta-ladder miss without moving a price. Off is the daily walk bit for bit.
+
     THE AVERAGING ARM REFUSES BY NAME rather than no-opping: its termination is a smoothed
     per-inner-path weight with no crisp per-scenario decision to replace, and its own ``breached``
-    is a hard indicator on the AVERAGE.
+    is a hard indicator on the AVERAGE. The stride does not reach it either, and for the same
+    reason: a mean of spots is not one fixing interval's law, cached or otherwise.
     """
     def sim_autocall(S, isBarrierDate, isFixingDate, isFloatDate, floating, threshold, coupon, terminationDate):
         """The AVERAGING arm's inner path walk: coupons trigger off the running average of spots
@@ -3790,6 +4370,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                     # the conditioning step THIS iteration's coupon block advanced `Sj` over, or
                     # None - the put leg below integrates against it, and only a fresh one is one
                     interval = None
+                    # the spot and state a STRIDE has already moved this coupon to, applied where
+                    # the daily draw is taken so the P and L arithmetic keeps its order
+                    strided = None
 
                     if FloatingDate > 0:
                         P = P + L * fx * -FloatingDate * D[j]
@@ -3802,7 +4385,26 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         if dt > 0:
                             # `carry` arrives as the INTERVAL carry strip (forward_carry_rate)
                             forward_carry = carry_rate[coupon_index].reshape(-1, 1)
-                            if hn:
+                            if hn and stride:
+                                # THE WHOLE COUPON INTERVAL IS ONE STRIDE, survival-truncated at
+                                # the trigger: `p` is the k-step law's own Phi given the state at
+                                # the interval's start, not the last daily Gaussian's. The advance
+                                # is HELD and applied where the daily draw would have been taken,
+                                # so the payment and the weight are updated in the same order
+                                n_sub = max(int(round(float(dt) * hn_spy)), 1)
+                                b_step = forward_carry * dt / n_sub
+                                fixing = kit.stride_interval(Sj, st, b_step, n_sub)
+                                e1, e2 = stride_normals(shared, num_sims, False)
+                                p, Sj_next, st_next = kit.stride_advance(
+                                    fixing, b_step, u[coupon_index], e1, e2,
+                                    kit.stride_bound(fixing, K), True)
+                                strided = (Sj_next, st_next)
+                                if putBarrier > 0.0:
+                                    # held for the barrier block a screen below: the interval's own
+                                    # cached law, the weight from BEFORE `p` enters `L`, and the
+                                    # breach region inside the surviving set
+                                    interval = (fixing, Sj, None, None, L, min(putBarrier, K))
+                            elif hn:
                                 # HN daily sub-stepping to the coupon date. The autocall knocks out
                                 # only AT the coupon observation, so the OSS truncation - survival
                                 # is spot BELOW K - applies only on the final daily step
@@ -3822,7 +4424,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                     # held for the barrier block a screen below: `Sj` before the
                                     # advance, this interval's `m` and `s`, the weight from BEFORE
                                     # `p` enters `L`, and the breach region inside the surviving set
-                                    interval = (Sj, (forward_carry - 0.5 * vol * vol) * dt,
+                                    interval = (None, Sj, (forward_carry - 0.5 * vol * vol) * dt,
                                                 vol_dt, L, min(putBarrier, K))
                         else:
                             p = torch.where(K > Sj, 1.0, 0.0)
@@ -3881,7 +4483,12 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             # prevent underflow or overflow
                             safe_pu = torch.clamp(p * u[coupon_index], min=eps, max=1.0-eps)
 
-                            if hn:
+                            if strided is not None:
+                                # the stride drew and carried above; this is where it lands, so the
+                                # coupon and the weight above read the pre-advance spot exactly as
+                                # they do on the daily path
+                                Sj, st = strided
+                            elif hn:
                                 # the survival-truncated final draw and its h-recursion; at
                                 # dt <= 0 (the terminal fixing) there is no interval to advance
                                 if dt > 0:
@@ -3898,11 +4505,30 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                     if barrier > 0 and interval is not None:
                         # THE PUT LEG, INTEGRATED: `b_eff = min(B, K)` puts the breach region inside
                         # the SURVIVING set, and `L_prev` - the weight from before `p` entered `L` -
-                        # IS `L / p` without the 0/0 where every path fired
-                        Sj_prev, m, s, L_prev, b_eff = interval
-                        z_b = (torch.log(b_eff / Sj_prev) - m) / s
-                        P = P + L_prev * D[j] * fx * lognormal_fired_gain(
-                            Sj_prev, m, s, z_b, strike * (1.0 - rebate), False) / strike
+                        # IS `L / p` without the 0/0 where every path fired. Under the stride the
+                        # conditioning law is the interval's cached k-step one and the tail
+                        # expectation its own Esscher-tilted partial moments; under GBM, one
+                        # lognormal. `(S - strike*(1 - rebate))/strike` IS the breach payoff
+                        fixing, Sj_prev, m, s, L_prev, b_eff = interval
+                        analytic = L_prev * D[j] * fx * (
+                            kit.stride_fired_gain(fixing, kit.stride_bound(fixing, b_eff),
+                                                  strike * (1.0 - rebate), False)
+                            if fixing is not None else lognormal_fired_gain(
+                                Sj_prev, m, s, (torch.log(b_eff / Sj_prev) - m) / s,
+                                strike * (1.0 - rebate), False)) / strike
+                        if smooth:
+                            P = P + analytic
+                        else:
+                            # THE CONDITIONAL-p MIXTURE: crisp, this leg is a bare jump of
+                            # `rebate - (1 - B/strike)` and reads 18-22% off its own delta ladder
+                            # wherever the barrier is off the strike. The value stays the sampled
+                            # indicator's, bit for bit; every derivative is the integral's
+                            breach = torch.where(Sj <= putBarrier, 1.0, 0.0)
+                            crisp = L * D[j] * fx * breach * (rebate - (1.0 - Sj / strike))
+                            P = P + crisp + splice_conditional_p(crisp, analytic)
+                            if P_cf is not None:
+                                P_cf = P_cf + L_cf * D[j] * fx * breach * (
+                                    rebate - (1.0 - Sj / strike))
                     elif barrier > 0:
                         # no conditioning step this iteration, and EXACT on the spot the deal names
                         # in both the ways that happens: an OBSERVED fixing, and a block opening on
@@ -4047,6 +4673,14 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             "run it with Branch_And_Weight: 'No', the default, which is the crisp estimator this "
             'deal already prices under, unchanged.'.format(
                 deal_data.Instrument.field.get('Reference')))
+
+    # THE STRIDE (`HN_Stride`, component Heston-Nandi only): each coupon interval as one
+    # survival-truncated k-step draw rather than a daily walk reading the trigger on its last day.
+    # It reaches the no-averaging arm alone, for the same reason the switch above does - a mean of
+    # spots is not one interval's law, cached or otherwise
+    stride = (getattr(shared, 'hn_stride', False) and factor_dep['no_averaging'] and
+              'HN_Params' in factor_dep and
+              factor_dep['HN_Params'][0][utils.FACTOR_INDEX_SubType] == 'HestonNandiComponent')
 
     # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM. HN is
     # only wired into the no_averaging arm
