@@ -1688,9 +1688,67 @@ def getbarrierpayoff(direction, eta, phi, strike, H):
     return barrier_option
 
 
-def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBarrier, limit, expiry, r, b, sigma):
+def partial_window_rebate(spot, barrier, r, b, sigma, eta, startBarrier, limit, expiry):
+    '''Per unit of rebate, a partial-time window's two rebate legs: (paid at EXPIRY if the window
+    never touched, paid AT the hit). The window is [0, limit] or [limit, expiry].
+
+    The knock-IN convention is `getbarrierpayoff`'s E (never touched, paid at expiry) and the
+    knock-OUT's is its F (paid at the hit), read over the window instead of the whole life.
+
+    `limit` is SIGNED and the START window reads its sign: a window whose limit has passed is
+    CLOSED - it can never be hit, so the legs are the certain discounted rebate and nothing - and a
+    spot already at or beyond a LIVE window's barrier has touched at time zero. The closed forms
+    below are the live side of a live window only, and go out of [0, 1] on either other branch.
+    '''
+    h = torch.log(barrier / spot)
+    var = sigma * sigma
+    nu = b - 0.5 * var
+    mu = nu / var
+    lam = torch.sqrt(mu * mu + 2.0 * r / var)
+    window = limit.clamp(min=1e-6)
+    v_lim, v_exp = sigma * torch.sqrt(window), sigma * torch.sqrt(expiry)
+    e2, e4 = (-h + nu * window) / v_lim, (h + nu * window) / v_lim
+    z_lim, z_exp = h / v_lim + lam * v_lim, h / v_exp + lam * v_exp
+    reflect = torch.exp(2.0 * mu * h)
+    plus, minus = torch.exp(h * (mu + lam)), torch.exp(h * (mu - lam))
+    z_lim2, z_exp2 = z_lim - 2.0 * lam * v_lim, z_exp - 2.0 * lam * v_exp
+
+    if startBarrier:
+        no_touch = utils.norm_cdf(eta * e2) - reflect * utils.norm_cdf(eta * e4)
+        touch = plus * utils.norm_cdf(eta * z_lim) + minus * utils.norm_cdf(eta * z_lim2)
+        one, zero = torch.ones_like(no_touch), torch.zeros_like(no_touch)
+        beyond = (eta * h) >= 0.0
+        no_touch, touch = torch.where(beyond, zero, no_touch), torch.where(beyond, one, touch)
+        closed = limit <= 0.0
+        no_touch, touch = torch.where(closed, one, no_touch), torch.where(closed, zero, touch)
+    else:
+        # the window OPENS at `limit`, so each leg integrates the spot's law there against the
+        # remaining life: one bivariate per reflected term, correlation sqrt(limit/expiry)
+        rho = torch.sqrt(window / expiry)
+        g2, g4 = (-h + nu * expiry) / v_exp, (h + nu * expiry) / v_exp
+        no_touch = (utils.ApproxBivN(eta * e2, eta * g2, rho) -
+                    reflect * utils.ApproxBivN(-eta * e4, eta * g4, -rho))
+        # the last term is the path already BEYOND the barrier at `limit`: it touches there, and
+        # is paid discounted to `limit` rather than to a first passage after it
+        touch = (plus * utils.ApproxBivN(-eta * z_lim, eta * z_exp, -rho) +
+                 minus * utils.ApproxBivN(-eta * z_lim2, eta * z_exp2, -rho) +
+                 torch.exp(-r * window) * utils.norm_cdf(-eta * e2))
+    return no_touch * torch.exp(-r * expiry), touch
+
+
+def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBarrier, limit, expiry,
+                            r, b, sigma, rebate=0.0):
     '''Value a partial-time barrier option: the barrier is monitored only over the window that
-    starts (`startBarrier`) or ends at `limit`. Knock-ins are priced by parity off the vanilla.'''
+    starts (`startBarrier`) or ends at `limit`. Knock-ins are priced by parity off the vanilla.
+
+    `rebate` is PER UNIT and is valued on the deal's own coordinates, before the put-call
+    transformation below reflects them - a survival probability is not invariant under it.
+
+    `limit` is SIGNED: a row past the limit date reads it negative. The OPTION is the limit of the
+    same closed form at a vanishing `window` there (a closed start window IS the vanilla on its
+    surviving branch, a vanishing head IS the full barrier), which is why it prices off the clamp;
+    a rebate is not, so `partial_window_rebate` reads the sign itself.'''
+    window = limit.clamp(min=1e-6)
 
     def BarrierPutCallTransformation(spot, strike, barrier, r, b, upDown):
         return strike, spot, spot * strike / barrier, r - b, -b, -upDown
@@ -1700,9 +1758,9 @@ def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBar
                 strike * (utils.ApproxBivN(p5, p6, rho1) - torch.exp(log2) * utils.ApproxBivN(p7, p8, rho2)))
 
     def partial_barrier_option(spot, strike, barrier, r, b, eta):
-        rho = torch.sqrt(limit / expiry)
+        rho = torch.sqrt(window / expiry)
         vol = sigma * torch.sqrt(expiry)
-        vollimit = sigma * torch.sqrt(limit)
+        vollimit = sigma * torch.sqrt(window)
         halfvv = 0.5 * sigma * sigma
         logSpotOverStrike = torch.log(spot / strike)
         logSpotOverBarrier = torch.log(spot / barrier)
@@ -1710,7 +1768,7 @@ def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBar
         d2 = d1 - vol
         f1 = (logSpotOverStrike - 2.0 * logSpotOverBarrier + (b + halfvv) * expiry) / vol
         f2 = f1 - vol
-        e1 = (logSpotOverBarrier + (b + halfvv) * limit) / vollimit
+        e1 = (logSpotOverBarrier + (b + halfvv) * window) / vollimit
         e2 = e1 - vollimit
         e3 = e1 - 2.0 * logSpotOverBarrier / vollimit
         e4 = e3 - vollimit
@@ -1770,15 +1828,22 @@ def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBar
             spot * torch.exp(b * expiry), strike, sigma * torch.sqrt(expiry),
             1.0, 1.0, phi, None) * torch.exp(-r * expiry)
 
+    # on the DEAL's coordinates, before the reflection below: the knock-in is paid if the window
+    # never touched, the knock-out at the hit
+    reb = 0.0
+    if rebate:
+        never, at_hit = partial_window_rebate(
+            spot, barrier, r, b, sigma, eta, startBarrier, limit, expiry)
+        reb = rebate * (never if isKnockIn else at_hit)
+
     if phi == -1:
         spot, strike, barrier, r, b, eta = BarrierPutCallTransformation(spot, strike, barrier, r, b, eta)
 
     pv = partial_barrier_option(spot, strike, barrier, r, b, eta)
 
     if isKnockIn:
-        return bs - pv
-    else:
-        return pv
+        pv = bs - pv
+    return pv + reb if rebate else pv
 
 
 def compo_vol(vols, fx_vols, rho):
@@ -2555,11 +2620,39 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
     return torch.stack(mtm_list)
 
 
-def pv_partial_barrier_option(shared, time_grid, deal_data, nominal,
-                              spot, b, tau, tau1, payoff_currency, invert_moneyness=False):
+def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, tau, tau1,
+                              payoff_currency, fx_rep=None, invert_moneyness=False):
     """Partial-time barrier option over the deal's scenario grid: the closed form on the surviving
     branch, the vanilla (knock-in) or the rebate (knock-out) on the touched one, weighted by a
-    Brownian-bridge touch probability accumulated only INSIDE the barrier window."""
+    Brownian-bridge touch probability accumulated only INSIDE the barrier window.
+
+    ``Cash_Rebate`` is an absolute amount paid at the hit by a knock-out and at expiry by an
+    untouched knock-in, and both legs are valued over the WINDOW (``partial_window_rebate``): a
+    surviving row carries its forward-looking rebate, and the knock-out's realised payment stays
+    the increment in the accumulated touch probability, settled on the date it falls due. The
+    window is read SIGNED, so a ``Barrier_Limit_Date`` already past pays no knock-out rebate and a
+    certain knock-in one; base valuation applies no touch mask at all, so a spot already beyond the
+    barrier answers off the closed form alone.
+
+    BOUNDARY AAD (``shared.boundary_aad``): the touch test is a LATCH only where the bridge has no
+    variance to work with - `get_fx_barrier_underlying` publishes none as soon as the quote leg is
+    itself simulated - and only then can a ``LatchedBoundarySet`` register. With the bridge live,
+    ``barrier_touched`` is continuous in the spot (an endpoint beyond the barrier makes the bridge
+    probability exactly one, so the two agree at the crossing) and ordinary AAD already carries the
+    flux; one decision is ONE estimator, so registering there would count it twice. MEASURED, an
+    up-and-out whose window closes mid-profile: bridge live, the CVA delta reads 0.44% from a CRN
+    ladder flat to 1.02% with nothing registered at all.
+
+    IT IS OPT-IN, and that is why: on the endpoint branch the registration decides the SIGN
+    (-2.2467692 against +0.5207422 suppressed at 32768 paths; -1.8134911 against +0.7865276 at
+    16384) and its own bandwidth ladder is flat to 12% over a factor of ten, but its MAGNITUDE is
+    not established - the CRN oracle scatters 68-88% of its median over h = 1e-4..1e-2 and lands 35%
+    to 77% away. At 16384 paths every rung of that ladder is negative and only the corrected delta
+    shares their sign; at 8192 the ladder is not even sign-unanimous, so not even the sign is a
+    gateable statement. ``Boundary_AAD_Window_Touch`` therefore defaults to No and this pricer
+    registers nothing unless a document asks. This deal reports on three rows (it never overrides
+    ``add_grid_dates``), so the window carries exactly one live decision and no fixture of this
+    instrument carries more - which is what would have to change before the default can."""
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     factor_dep = deal_data.Factor_dep
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
@@ -2608,12 +2701,15 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal,
     expiry_years, limit_years = factor_dep[expiry_years_key]
 
     at_start = deal_data.Instrument.field['Barrier_At_Start'] == 'Yes'
-    # the clamp keeps the window positive (the closed form is NaN at zero) and is also the
-    # VALUATION there, both cases being limits of the same formula to O(clamp): a vanishing start
-    # window IS the vanilla on its surviving branch, a vanishing head IS the full barrier
+    # `limit_years` goes SIGNED past the limit date and the payoff clamps it for the closed form
+    # alone: the option is that formula's limit there, the rebate is not
+    # `Cash_Rebate` is an absolute amount and enters PER UNIT, as `pv_barrier_option`'s does; the
+    # guard is on the REBATE, so a rebate-free deal is bit-identical - a zero-nominal deal carrying
+    # a rebate divides by zero here exactly as `pv_barrier_option` does
     barrier_payoff = buy_or_sell * nominal * getpartialbarrierpayoff(
         isKnockIn, eta, phi, spot_prior, strike, adj_barrier, at_start,
-        limit_years.clamp(min=1e-6), expiry_years, r, b, sigma)
+        limit_years, expiry_years, r, b, sigma,
+        rebate=cash_rebate / nominal if cash_rebate else 0.0)
 
     if need_spot_at_expiry:
         # the SAME running touch probability as `pv_barrier_option`, accumulated ONLY inside the
@@ -2625,11 +2721,26 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal,
             [at_start or factor_dep['Limit_Date'] <= interval_days[0]],
             (interval_days[1:] <= factor_dep['Limit_Date']) if at_start else
             (interval_days[:-1] >= factor_dep['Limit_Date'])])
+        # the endpoint test is a crisp LATCH only where the bridge has no variance; with it live
+        # the touch probability is continuous in the spot and ordinary AAD carries the flux
+        latched = (getattr(shared, 'boundary_aad', False) and
+                   getattr(shared, 'boundary_window_touch', False) and
+                   not interval_variance.any() and
+                   fx_rep is not None and time_grid.report_index is not None)
+        b_gaps, b_fired, b_obs_before, b_rows = [], [], [], []
         rows, prev_touched, prev_spot = [], 0.0, None
         last_bar = adj_barrier.shape[0] - 1 if torch.is_tensor(adj_barrier) else None
         for index in range(deal_time.shape[0]):
             if in_window[index]:
                 bar_t = adj_barrier[min(index, last_bar)] if last_bar is not None else adj_barrier
+                if latched:
+                    # margin of this row's own endpoint test, graph retained, signed so gap > 0
+                    # means the barrier was CROSSED
+                    b_gaps.append(torch.log(spot[index] / bar_t) * (
+                        -1.0 if eta == BARRIER_DOWN else 1.0))
+                    b_fired.append(((spot[index] > bar_t) if eta == BARRIER_UP else
+                                    (spot[index] < bar_t)).detach())
+                    b_rows.append(index)
                 prev_touched = utils.barrier_touched(
                     prev_touched, prev_spot, spot[index], bar_t, interval_variance[index],
                     eta == BARRIER_UP)
@@ -2637,28 +2748,52 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal,
                 prev_touched = torch.zeros_like(spot[0])
             prev_spot = spot[index]
             rows.append(prev_touched)
+            # the row's OWN test has already resolved by the time it reports
+            b_obs_before.append(len(b_gaps))
         barrier_touched = torch.stack(rows)
         first_touch = barrier_touched[1:] - barrier_touched[:-1]
         payoff_at = buy_or_sell * torch.relu(phi * (spot_at - strike))
 
+        own_row = None
         if direction == BARRIER_IN:
             forward = spot_prior * torch.exp(b * expiry_years)
             payoff_prior = utils.black_european_option(
                 forward, strike, sigma, expiry, buy_or_sell, phi, shared) * torch.exp(-r * expiry_years)
-            european_part = barrier_touched * (nominal * torch.cat([payoff_prior, payoff_at], dim=0))
-            barrier_part = (1.0 - barrier_touched) * F.pad(
-                barrier_payoff, [0, 0, 0, 1], value=buy_or_sell * cash_rebate)
+            dead = nominal * torch.cat([payoff_prior, payoff_at], dim=0)
+            alive = F.pad(barrier_payoff, [0, 0, 0, 1], value=buy_or_sell * cash_rebate)
+            european_part = barrier_touched * dead
+            barrier_part = (1.0 - barrier_touched) * alive
             combined = european_part + barrier_part
             # the knock-in can only settle at the end
             cash_settle(shared, payoff_currency, deal_data.Time_dep.deal_time_grid[-1], combined[-1])
         else:
-            barrier_part = (1.0 - barrier_touched) * torch.cat([barrier_payoff, nominal * payoff_at], dim=0)
+            alive = torch.cat([barrier_payoff, nominal * payoff_at], dim=0)
+            dead = torch.zeros_like(alive)
+            barrier_part = (1.0 - barrier_touched) * alive
             rebate_part = buy_or_sell * cash_rebate * first_touch
-            combined = F.pad(buy_or_sell * cash_rebate * first_touch, [0, 0, 1, 0]) + barrier_part
+            combined = F.pad(rebate_part, [0, 0, 1, 0]) + barrier_part
             cash_settle(shared, payoff_currency, deal_data.Time_dep.deal_time_grid[-1], barrier_part[-1])
             if cash_rebate:
                 for cash_index, cash in zip(deal_data.Time_dep.deal_time_grid[1:], rebate_part):
                     cash_settle(shared, payoff_currency, cash_index, cash)
+            if latched and b_gaps and cash_rebate:
+                # the decision's OWN row also forks: firing FIRST pays the rebate there, while a
+                # row an earlier decision already killed pays nothing either way. One decision is
+                # ONE counterfactual, so the fork rides this registration rather than a second one
+                own_row, earlier = [], torch.zeros_like(b_fired[0])
+                for k, row in enumerate(b_rows):
+                    # row 0 is the deal in force today: `first_touch` starts at row 1
+                    fires = torch.zeros_like(alive[row]) if row == 0 else (
+                        buy_or_sell * cash_rebate * ~earlier)
+                    own_row.append((row, fires.detach(),
+                                    torch.where(earlier, dead[row], alive[row]).detach()))
+                    earlier = earlier | b_fired[k]
+        if latched and b_gaps:
+            shared.boundary_sets.append(utils.LatchedBoundarySet(
+                gaps=b_gaps, fired=b_fired, obs_before=np.array(b_obs_before),
+                untriggered=alive.detach(), triggered=dead.detach(), own_row=own_row,
+                to_mtm=deal_to_mtm_grid(time_grid, deal_data, fx_rep),
+                report_index=time_grid.report_index))
     else:
         combined = barrier_payoff
 
@@ -3165,13 +3300,20 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
 
 
 def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
-    """The bank-exercisable Strip/Rolling FX extendable forward.
+    """The Strip/Rolling FX extendable forward, exercisable from either side.
 
     K1 applies to all guaranteed fixings through Extension_Date inclusive; K2 to every fixing an
     extension creates. On a decision date the current fixing is already in force: its cashflow is
-    valued first, then the bank extends or the deal terminates permanently. The reporting side and
-    the deciding side are the same book, so `forward_sign` orients both the payoff and the
-    exercise rule - a sold deal is optimised exactly as a bought one, from its own side.
+    valued first, then the holder extends or the deal terminates permanently.
+
+    TWO SIGNS, and `Exercised_By` is where they part. `forward_sign` orients the PAYOFF;
+    `decide_sign = forward_sign * exercise_sign` orients the exercise rule - which side of the
+    boundary continues, which way the OSS draw truncates, and whether the backward pass keeps the
+    continuation by max or by min. On the reported book (`Bank`) they agree and a sold deal is
+    optimised exactly as a bought one, from its own side. On the MIRROR (`Counterparty`) they do
+    not: the exerciser optimises against this book. The boundary itself is the same spot either
+    way - it is where the reported continuation crosses zero, which no exerciser moves - so the
+    mirror of a deal is that deal negated, and the pair sums to zero at valuation.
 
     Future decisions are One-Step Survival: a backward one-dimensional Gauss-Hermite quadrature
     builds the zero-continuation boundary H_j per rolling decision (for the strip the single
@@ -3194,6 +3336,10 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
     k2 = factor_dep['Extension_Strike']
     notional = factor_dep['Notional']
     forward_sign = factor_dep['Buy_Sell'] * factor_dep['Option_Type']
+    # `forward_sign` orients the PAYOFF, `decide_sign` the exercise rule; they part company
+    # exactly on the mirror booking, where the counterparty optimises against the reported book
+    exercise_sign = factor_dep['Exercise_Sign']
+    decide_sign = forward_sign * exercise_sign
     style = factor_dep['Extension_Style']
     extension_index = int(factor_dep['Extension_Index'])
     decision_indices = [int(x) for x in factor_dep['Decision_Indices']]
@@ -3307,8 +3453,9 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
 
     def root_from_continuation(x_grid, continuation):
         """The spot at which the continuation value crosses zero, per batch row."""
-        # forward_sign makes the continuation increasing for both deal directions; cummax only
-        # removes quadrature ripples for LOCATING the zero - the recursion keeps the raw values
+        # forward_sign - not decide_sign - makes the REPORTED continuation increasing for both
+        # deal directions, and no exerciser moves its zero; cummax only removes quadrature
+        # ripples for LOCATING that zero, the recursion keeping the raw values
         monotone = torch.cummax(continuation * forward_sign, dim=1).values
         count = (monotone <= 0.0).sum(dim=1)
         gather = count.clamp(1, x_grid.shape[1] - 1).reshape(-1, 1)
@@ -3384,7 +3531,10 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
                 value = d_pay.reshape(-1, 1, 1) * forward_sign * notional * (s_next - k2)
                 if j + 1 <= n_fix - 2:
                     c_next = interp_batch(x_grid, continuation_values[j + 1], s_next / k2)
-                    value = value + d_cont.reshape(-1, 1, 1) * F.relu(c_next)
+                    # the exerciser keeps what is worth keeping TO IT: max on the reported book,
+                    # min on the mirror - one expression, `exercise_sign` folding it either way
+                    held = F.relu(exercise_sign * c_next) * exercise_sign
+                    value = value + d_cont.reshape(-1, 1, 1) * held
                 c_j = torch.sum(value * gh_w.reshape(1, 1, -1), dim=-1)
                 continuation_values[j] = c_j
                 pieces[j].append((k2 * root_from_continuation(x_grid, c_j)).detach())
@@ -3420,11 +3570,11 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
                 s_fix = observed_fixings[j]
                 if s_fix is None:
                     s_fix = spot[row_index]
-                extend = (s_fix > H) if forward_sign > 0 else (s_fix < H)
+                extend = (s_fix > H) if decide_sign > 0 else (s_fix < H)
                 if boundary_aad:
                     # gap > 0 means the latch FIRED - the deal terminated; the graph rides the
                     # scenario's own spot and the boundary is detached
-                    gap = torch.log(H / s_fix) if forward_sign > 0 else torch.log(s_fix / H)
+                    gap = torch.log(H / s_fix) if decide_sign > 0 else torch.log(s_fix / H)
                     b_latch.append((j, gap, (~extend).detach()))
             alive = alive * extend.to(alive.dtype)
         alive_after.append(alive)
@@ -3441,7 +3591,7 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
         sd = torch.sqrt(var_inc).reshape(-1, 1)
         drift = (log_inc.reshape(-1) - 0.5 * var_inc).reshape(-1, 1)
         z_bound = (torch.log(barrier.reshape(-1, 1) / prev_spot) - drift) / sd
-        p, Z = oss_truncated_draw(u, z_bound, survive_below=forward_sign < 0)
+        p, Z = oss_truncated_draw(u, z_bound, survive_below=decide_sign < 0)
         return p, prev_spot * torch.exp(drift + sd * Z)
 
     def state_at(after, mtm_day):

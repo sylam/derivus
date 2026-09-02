@@ -19,10 +19,13 @@ constant a class lists. A price factor's JSON block is one flat dict, so a facto
 flat list and `emit_factor` files the descriptors per type. `System` and the create-deal menu are
 the only hand-written stores left.
 
-Nothing here is read at valuation time: `Deal.__init__` stores the raw JSON unfiltered and
-`construct_factor` hands the raw block to the factor class. This is authoring-time metadata for
-the UI, the docs generator and the Excel add-in - a type's entry IS its descriptors, each keyed by
-the JSON key an author writes, so a panel, its defaults and the write-back key are one lookup.
+Almost nothing here is read at valuation time: `construct_factor` hands the raw block to the
+factor class, and this is authoring-time metadata for the UI, the docs generator and the Excel
+add-in - a type's entry IS its descriptors, each keyed by the JSON key an author writes, so a
+panel, its defaults and the write-back key are one lookup. The one exception is `default=`, which
+`declared_defaults` completes a calculation's params with and `DealFields` answers a deal's read
+by name from - for the `COMPLETABLE` fields only, a declared default being what a blank panel
+shows rather than what an engine means.
 
 `bind=` adds the second axis a front end needs: which fields a job may change without recompiling.
 See `partition_factor`.
@@ -228,6 +231,99 @@ def declared_defaults(cls, params):
               if f.default is not REQUIRED and f.default is not None}
     merged.update(params)
     return merged
+
+
+#: A blank Table by the `utils` container its `tag` names. `'null'` is what a widget writes for an
+#: empty table, so it is the DECLARED blank of every Table on a deal.
+BLANK_TABLE = {'DateList': lambda: utils.DateList({}),
+               'DateEqualList': lambda: utils.DateEqualList([]),
+               'CreditSupportList': lambda: utils.CreditSupportList([]),
+               'DateValueList': list, None: list}
+
+#: The period grammar, built on first use. `get_grid_grammar` is the one place periods are parsed;
+#: reaching it needs `config`, which imports this module, so the import is deferred to call time.
+_PERIOD = []
+
+#: `{deal class: {key: engine-form default}}`, filled by `deal_defaults`.
+_DEAL_DEFAULTS = {}
+
+#: The fields a DEAL completes from its declaration, by name. A declaration is authoring metadata
+#: and its `default=` is what a blank panel shows, NOT an economic statement: `FXBarrierOption`
+#: declares `Strike_Price` 0.0 and `Barrier_Type` 'Down_And_In', and answering either would turn a
+#: schema-invalid block into a plausible wrong number - measured, 741.53 for the strike and the
+#: Down_And_In value 6.37 for the type, against 78.93 for the deal the author meant. So completion
+#: is an ALLOWLIST of fields whose declared value IS the engine's own fallback and whose repair is
+#: gated; every other omission keeps its `KeyError` and the named skip that makes it visible. The
+#: list grows by measurement, one field at a time.
+COMPLETABLE = frozenset(['Barrier_Monitoring_Frequency', 'Cash_Rebate'])
+
+
+def _period_offset(period):
+    """`'3M'` -> a `DateOffset`, through the grammar a job's own periods are parsed with."""
+    if not _PERIOD:
+        from .config import get_grid_grammar
+        _PERIOD.append(get_grid_grammar()[1])
+    return _PERIOD[0].parseString(period)[0]
+
+
+def engine_default(field):
+    """One declared default in the form the ENGINE reads, not the form a widget shows.
+
+    A declaration is authoring metadata - a blank table is the string `'null'`, a period is `'3M'`,
+    a rate is a whole number of percent - so a default reaching a pricer is converted exactly as
+    the loader converts that field's wire form. A blank Text or Date stays blank, which is NOT the
+    same as an omitted field meaning falsy: `Expiry_Date` declares `''` and a blank date reaches a
+    comparison as a `str`. Which of these a deal may answer with is `COMPLETABLE`'s question.
+    """
+    if field.type == 'Table':
+        return BLANK_TABLE[field.tag]() if field.default == 'null' else copy.deepcopy(field.default)
+    if field.obj == 'Period':
+        return _period_offset(field.default)
+    if field.obj == 'Percent':
+        return utils.Percent(field.default)
+    if field.obj == 'Basis':
+        return utils.Basis(field.default)
+    return copy.deepcopy(field.default)
+
+
+def deal_defaults(cls):
+    """Every field a deal class declares a default for, in engine form.
+
+    Inherited declarations included, `REQUIRED` and `None` skipped on `declared_defaults`' terms.
+    Built once per class and never handed out directly - `DealFields` copies what it reads.
+    """
+    if cls not in _DEAL_DEFAULTS:
+        _DEAL_DEFAULTS[cls] = {f.key: engine_default(f)
+                               for group in getattr(cls, 'fields', []) or []
+                               for f in group.fields
+                               if f.default is not REQUIRED and f.default is not None}
+    return _DEAL_DEFAULTS[cls]
+
+
+class DealFields(dict):
+    """A deal's authored block, completed on a READ BY NAME from its own class's declarations.
+
+    `field[key]` falls through to `deal_defaults` for a `COMPLETABLE` key the author omitted - the
+    read that used to raise `KeyError` inside `calc_dependencies` and skip the deal to a silent
+    zero. Every other omission still raises, because a declared default is what a blank panel
+    shows and not what the engine means: completing one silently prices a schema-invalid block.
+
+    Everything else is exactly what the author wrote: `get`, `in`, iteration, `len` and the JSON
+    round trip, and therefore `plan_hash` and the factor universe `get_fieldname` discovers. A
+    default answers a read; it does not enter the program. An explicit `get(key, fallback)` is the
+    reader's own statement of what an omitted field means and keeps saying it.
+    """
+
+    def __init__(self, params=(), cls=None):
+        super(DealFields, self).__init__(params)
+        self.declared = deal_defaults(cls) if cls is not None else {}
+        self.furnished = {}
+
+    def __missing__(self, key):
+        if key not in COMPLETABLE or key not in self.declared:
+            raise KeyError(key)
+        # deep-copied on first read, so a mutable default is this deal's own and never the class's
+        return self.furnished.setdefault(key, copy.deepcopy(self.declared[key]))
 
 
 def validate_instrument(deal):

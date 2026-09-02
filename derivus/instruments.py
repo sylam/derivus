@@ -17,7 +17,7 @@ from functools import partial, reduce
 
 from . import utils, pricing
 from .schema import (
-    F, REQUIRED, Row, own,
+    F, REQUIRED, Row, own, DealFields,
     ADMIN, FX_ADMIN, CASHFLOWLISTDEAL, EQUITYOPTIONBASE, QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
 
 import numpy as np
@@ -530,7 +530,9 @@ class Deal(object):
             raise ValueError('{0} does not honour SpotModel={1!r}; it accepts {2}'.format(
                 type(self).__name__, spot_model, self.spot_models))
         self.options = valuation_options
-        self.field = params
+        # the authored block, answering a read by name from this type's own declarations - the one
+        # seam a `default=` reaches a deal through, on `declared_defaults`' ruling for calculations
+        self.field = DealFields(params, type(self))
         self.path_dependent = False
         # evaluate child dependencies through the accumulator
         self.accum_dependencies = False
@@ -5477,7 +5479,7 @@ class FXPartialTimeBarrierOption(Deal):
             deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
 
         pv = pricing.pv_partial_barrier_option(
-            shared, time_grid, deal_data, nominal, spot, b, tau, tau1, payoff_currency,
+            shared, time_grid, deal_data, nominal, spot, b, tau, tau1, payoff_currency, fx_rep,
             invert_moneyness=deal_data.Factor_dep['Invert_Moneyness'])
 
         mtm = pv * fx_rep
@@ -5836,9 +5838,12 @@ class FXExtendableForwardDeal(Deal):
         F('Extension_Strike', 'Float', default=REQUIRED),
         F('Extension_Date', 'Date', default=REQUIRED),
         F('Extension_Style', 'Text', default='Strip', values=['Strip', 'Rolling']),
+        # WHOSE right the extension is, from the REPORTED book: 'Bank' is the reporter and
+        # 'Counterparty' the mirror booking, where the exerciser optimises against this book.
+        F('Exercised_By', 'Text', default='Bank', values=['Bank', 'Counterparty']),
         F('Underlying_Amount', 'Float', default=0.0),
         # NO `tag`, read by iterating rows - the accumulator's schedule states the reason.
-        # `Extended` is a lifecycle fact (Yes/No once the bank has decided, blank otherwise),
+        # `Extended` is a lifecycle fact (Yes/No once the exerciser has decided, blank otherwise),
         # never a model output.
         F('Extendable_ExpiryDates', 'Table', default='null', row=Row([
             F('Fixing Date', 'Date'), F('Settlement Date', 'Date'), F('Value', 'Float'),
@@ -5852,7 +5857,14 @@ class FXExtendableForwardDeal(Deal):
 
     documentation = (
         'Fx And Equity', [
-            'A bank-exercisable FX extendable forward with periodic fixing cashflows.',
+            'An FX extendable forward with periodic fixing cashflows, exercisable by either side.',
+            '',
+            '**Exercised_By** names whose right the extension is, read from the REPORTED book.',
+            '*Bank* (the default) is the reporter: the deal is optimised from this book, as a',
+            'bought one and a sold one both are. *Counterparty* is the MIRROR booking - the client',
+            'side of a bank-exercisable deal - where the exerciser optimises AGAINST this book, so',
+            'the extension is kept when the continuation is worth less than nothing here. A deal',
+            'and its mirror (opposite **Buy_Sell**, opposite **Exercised_By**) sum to zero.',
             '',
             'Fixings up to and including **Extension_Date** are guaranteed at **Strike_Price**',
             '(K1). Any fixing created by an extension is struck at **Extension_Strike** (K2). The',
@@ -5860,17 +5872,17 @@ class FXExtendableForwardDeal(Deal):
             'the decision to continue or terminate the remaining schedule is applied.',
             '',
             '**Extension_Style = Strip**: the fixing count must be even and Extension_Date is the',
-            'last fixing of the first half. At that date the bank either activates the whole',
+            'last fixing of the first half. At that date the exerciser either activates the whole',
             'second half at K2 or terminates the deal after the current K1 fixing.',
             '',
             '**Extension_Style = Rolling**: starting at Extension_Date, each fixing carries a',
-            'bank decision whether to create exactly the next fixing at K2. The first decision',
+            'decision whether to create exactly the next fixing at K2. The first decision',
             'not to extend terminates the deal permanently after the current fixing.',
             '',
             '**Extendable_ExpiryDates** rows are [fixing date, settlement date, observed fixing,',
-            'observed extension decision]. The decision is a lifecycle fact: Yes/No when the bank',
-            'has decided (mandatory once the fixing is historical), blank otherwise - future',
-            'blanks are decided scenario-by-scenario by the exercise rule.',
+            'observed extension decision]. The decision is a lifecycle fact - and the SAME fact on',
+            'both sides of the mirror: Yes/No once taken (mandatory once the fixing is historical),',
+            'blank otherwise - future blanks are decided scenario-by-scenario by the exercise rule.',
             '',
             'GBM off the implied surface only; the exercise boundary at each rolling decision is',
             'built by a backward one-dimensional quadrature and the forward pass values the',
@@ -5919,6 +5931,11 @@ class FXExtendableForwardDeal(Deal):
             raise ValueError('FXExtendableForwardDeal requires positive K1 and K2 strikes')
 
         style = str(self.field['Extension_Style']).strip().lower()
+        exercised_by = str(self.field.get('Exercised_By') or 'Bank').strip()
+        if exercised_by not in ('Bank', 'Counterparty'):
+            raise ValueError(
+                'Exercised_By must be Bank or Counterparty, not {!r} - book the mirror side as '
+                'Counterparty and leave it blank for the reporter'.format(exercised_by))
         schedule = sorted(self.field['Extendable_ExpiryDates'], key=lambda x: x[0])
         if len(schedule) < 2:
             raise ValueError('FXExtendableForwardDeal requires at least two fixings')
@@ -5996,6 +6013,7 @@ class FXExtendableForwardDeal(Deal):
             'Decision_Indices': np.array(decision_indices, dtype=np.int64),
             'Extension_Index': extension_index,
             'Extension_Style': style,
+            'Exercise_Sign': 1.0 if exercised_by == 'Bank' else -1.0,
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
             'Option_Type': 1.0 if self.field.get('Option_Type', 'Call') == 'Call' else -1.0,
             'Notional': float(self.field['Underlying_Amount']),

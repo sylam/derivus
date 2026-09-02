@@ -132,8 +132,11 @@ def _foreign_report_currency(c, ccy='EUR'):
 
 def _run(deal, spot=bb.SPOT, gradient=False, batch=512, mcmc=128, collateralised=False,
          batches=1, exclude_paid_today=False, extra_deals=(), report_currency='USD',
-         children=None):
-    """One CMC run returning (netting mtm, cva, equity-spot gradient or None)."""
+         children=None, bandwidth=None):
+    """One CMC run returning (netting mtm, cva, equity-spot gradient or None).
+
+    `bandwidth` overrides the declared `Boundary_AAD_Bandwidth`; None leaves the document alone
+    and every reading in this file is taken at the declared 0.01."""
     c = bb._cfg()
     c.params['Price Factors']['EquityPrice.EQ']['Spot'] = spot
     c.params['Price Factors']['SurvivalProb.CPTY'] = {
@@ -153,7 +156,7 @@ def _run(deal, spot=bb.SPOT, gradient=False, batch=512, mcmc=128, collateralised
              'Children': kids}]
     else:
         c.deals['Deals']['Children'] = kids
-    _, out = derivus.run_cmc(c, prec=bb.DTYPE, overrides={
+    overrides = {
         'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
         'Simulation_Batches': batches, 'Random_Seed': 1, 'Currency': report_currency,
         'Tenor_Offset': 0.0,
@@ -161,7 +164,10 @@ def _run(deal, spot=bb.SPOT, gradient=False, batch=512, mcmc=128, collateralised
         'Gradient_Variables': 'Factors',
         'Credit_Valuation_Adjustment': {
             'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
-            'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes' if gradient else 'No'}})
+            'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes' if gradient else 'No'}}
+    if bandwidth is not None:
+        overrides['Boundary_AAD_Bandwidth'] = bandwidth
+    _, out = derivus.run_cmc(c, prec=bb.DTYPE, overrides=overrides)
     if torch.cuda.is_available():
         torch.cuda.empty_cache()   # the OSS forks an inner MC per path; runs here are sequential
     grad = None
@@ -922,4 +928,7 @@ def test_two_netting_sets_with_a_live_exposure_agree_with_bump_and_reprice():
     # The scoping itself is verified by measuring THAT TERM directly against a CRN ladder on a
     # two-set portfolio (mis-scoped -15.3%, fixed +1.3%), which is what 0a6ee69's message records.
     # A gate that isolates it needs a portfolio where the correction DOMINATES the smooth
-    # sensitivity, which is not a portfolio anyone runs.
+    # sensitivity, which is not a portfolio anyone runs - so it is authored rather than found, and
+    # it lives in `test_boundary_scoping_dominance.py`: two collateralised sets holding discrete
+    # down-and-out DIGITALS, where the term is 2.96x the smooth sensitivity and the same suppression
+    # mutant reads 381.77% off its own oracle instead of surviving.

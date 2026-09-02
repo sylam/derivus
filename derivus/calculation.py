@@ -904,6 +904,12 @@ class Credit_Monte_Carlo(Calculation):
           description='Which leaves the sensitivity engine differentiates'),
         F('Boundary_AAD_Bandwidth', 'Float', default=0.01,
           description='Kernel bandwidth of the boundary correction assembled into backward()'),
+        F('Boundary_AAD_Window_Touch', 'Text', default='No', values=['Yes', 'No'],
+          description='Register the partial-time barrier\'s window-touch decision as a boundary '
+                      'latch. OFF by default and deliberately: the correction decides the SIGN of '
+                      'the reported delta and its magnitude is not established - the CRN oracle '
+                      'scatters 68-88%% of its own median and is not even sign-unanimous below '
+                      '16384 paths, so this is an opt-in for measuring it, not a default'),
         F('Recompute_Inner_MC', 'Text', default='No', values=['Yes', 'No'],
           description='Re-simulate a Monte Carlo pricer\'s inner paths in backward() rather than '
                       'taping them; trades a second forward pass for the graph of every pricing'),
@@ -1256,6 +1262,10 @@ class Credit_Monte_Carlo(Calculation):
             keep_tensor=self.params.get('Keep_Tensor', 'No') == 'Yes')
         shared_mem.boundary_aad = calc_greeks is not None
         shared_mem.recompute_inner_mc = self.params.get('Recompute_Inner_MC', 'No') == 'Yes'
+        # the one registration that is opt-in rather than implied by wanting sensitivities: its
+        # magnitude is unestablished, so a document asks for it by name
+        shared_mem.boundary_window_touch = self.params.get(
+            'Boundary_AAD_Window_Touch', 'No') == 'Yes'
         return shared_mem
 
     def report(self, output):
@@ -1878,6 +1888,12 @@ class Base_Revaluation(Calculation):
                       '(`Greeks_Second`) as well - see the class docstring for its shape'),
         F('Boundary_AAD_Bandwidth', 'Float', default=0.01,
           description='Kernel bandwidth of the boundary correction assembled into backward()'),
+        F('Boundary_AAD_Window_Touch', 'Text', default='No', values=['Yes', 'No'],
+          description='Register the partial-time barrier\'s window-touch decision as a boundary '
+                      'latch. OFF by default and deliberately: the correction decides the SIGN of '
+                      'the reported delta and its magnitude is not established - the CRN oracle '
+                      'scatters 68-88%% of its own median and is not even sign-unanimous below '
+                      '16384 paths, so this is an opt-in for measuring it, not a default'),
         F('Recompute_Inner_MC', 'Text', default='No', values=['Yes', 'No'],
           description='Re-simulate a Monte Carlo pricer\'s inner paths in backward() rather than '
                       'taping them; trades a second forward pass for the graph of every pricing'),
@@ -1987,6 +2003,8 @@ class Base_Revaluation(Calculation):
             mcmc_sim, get_fxrate_factor(utils.check_rate_name(reporting_currency), self.static_factors, {}),
             all_vars_concat, self.params['Greeks'] == 'All')
         shared_mem.recompute_inner_mc = self.params.get('Recompute_Inner_MC', 'No') == 'Yes'
+        shared_mem.boundary_window_touch = self.params.get(
+            'Boundary_AAD_Window_Touch', 'No') == 'Yes'
         # the SMOOTH estimator (`pricing.branch_and_weight`), declared on this calculation
         # alone; `execute` has completed the block, so the key is present and the read direct
         shared_mem.branch_and_weight = self.params['Branch_And_Weight'] == 'Yes'
