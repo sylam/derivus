@@ -1419,6 +1419,18 @@ def report_fx(fx_rep, row):
             else fx_rep.reshape(-1)[0]).detach()
 
 
+def declared_ledger_residual(cash_events, prefix):
+    """The declared payments replayed at the BOOKED flags, against what was booked - the number
+    saying each fact names the decision that actually gates it.
+
+    ``prefix[i]`` is the dead prefix through the first i decisions, so a payment gated by ``d`` is
+    made on ``~prefix[d]``, and on that set ``prefix[d + 1]`` IS decision d's own flag.
+    """
+    return max((float((torch.where(prefix[d + 1], if_fired, if_not) * ~prefix[d] - booked
+                       ).abs().max())
+                for _, d, if_fired, if_not, booked in (cash_events or ()) if d >= 0), default=0.0)
+
+
 def interpolate(mtm, shared, time_grid, deal_data, interpolate_grid=True):
     """Deal grid -> MTM grid, stashing the interpolated value on the deal's result block."""
     if interpolate_grid and deal_data.Time_dep.interp.size > deal_data.Time_dep.deal_time_grid.size:
@@ -2182,13 +2194,16 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                                 deal_data.Time_dep.deal_time_grid[row_ofs - 1],
                                 nominal * rebate_per_unit * newly_hit)
                 if boundary_aad:
-                    # ONE entry per decision, in reporting currency: what this crossing pays if it
-                    # fires while the deal is alive, beside the ledger as booked. The terminal
-                    # crossing's rebate is inside the settle after the loop, so it declares zero
+                    # ONE entry per decision, in reporting currency: what THIS crossing pays if it
+                    # fires while the deal is alive, nothing if it does not, beside the ledger as
+                    # booked. The terminal crossing's rebate is inside the settle after the loop,
+                    # so it declares zero
                     fxr = report_fx(fx_rep, row_ofs - 1) if due else 0.0
                     b_cash.append((int(deal_data.Time_dep.deal_time_grid[row_ofs - 1]),
+                                   len(b_gaps) - 1,
                                    (fxr * nominal * rebate_per_unit *
                                     torch.ones_like(newly_hit)).detach(),
+                                   torch.zeros_like(newly_hit),
                                    (fxr * nominal * rebate_per_unit * newly_hit).detach()))
             barrier_hit = barrier_hit | crossed   # carry forward into the next block
 
@@ -2705,12 +2720,14 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
                     own_row.append((row, fires.detach(),
                                     torch.where(earlier, dead[row], alive[row]).detach()))
                     # and the ledger that fork books, one entry per decision in reporting currency:
-                    # the rebate settles on the date it is triggered. Row 0 pays nothing and the
-                    # TERMINAL row's rebate is inside the expiry settle, so both declare zero
+                    # the rebate settles on the date it is triggered, and nothing settles there if
+                    # it does not. Row 0 pays nothing and the TERMINAL row's rebate is inside the
+                    # expiry settle, so both declare zero
                     unit = (report_fx(fx_rep, row) * buy_or_sell * cash_rebate
                             if 0 < row < last_row else 0.0)
-                    b_cash.append((int(deal_data.Time_dep.deal_time_grid[row]),
+                    b_cash.append((int(deal_data.Time_dep.deal_time_grid[row]), k,
                                    (unit * torch.ones_like(alive[row])).detach(),
+                                   torch.zeros_like(alive[row]),
                                    (unit * (b_fired[k] & ~earlier).to(alive.dtype)).detach()))
                     earlier = earlier | b_fired[k]
         if latched and b_gaps:
@@ -2908,12 +2925,12 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     leveraged deal, and confined to cells the latch calls dead (magnitudes in roadmap.md). An exact
     branch would be a per-decision head profile, a fourth BoundarySet shape.
 
-    AND THE SETTLED LEDGER IS NOT DECLARED. Under a CSA the counterfactual's cash should flip with
-    the decision; this deal settles a STREAM of per-fixing cashflows, and `settles` states an
-    identity - the row pays out everything the deal is still worth - that a stream does not satisfy.
-    Declaring through it reads a knocked-out branch as settling 1476 at a row it settles nothing at.
-    What the stream needs is the unconditional fixing beside its own decision index, which is a
-    field nobody has a falsifying document for.
+    THE SETTLED LEDGER IS DECLARED PER FIXING. A stream cannot declare through ``settles``, which
+    states an identity - the row pays out everything the deal is still worth - that reads a
+    knocked-out branch as settling 1476 at a row it settles nothing at. ``cash_events`` states the
+    facts instead: each fixing's settled amount at its own settlement row, gated by its OWN breach
+    test, which pays nothing if it fires and kills every later fixing with it. The amount is the
+    pending head's own spelling at weight one, undiscounted where it lands.
 
     BRANCH AND WEIGHT (``Branch_And_Weight: 'Yes'``, base valuation only) SWAPS the estimator for
     that registration rather than joining it; off, and absent, is bit for bit. This loop is already
@@ -2945,14 +2962,15 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
         """OSS inner Monte Carlo over one block of MTM rows; mean PV and alive-branch PV per row.
 
         PURE bound/theta split for `InnerMCRecompute`. Returns `(mtm, alive_pv, settled,
-        settle_rows)`: the block's rows, the never-knocked branch the latch needs (empty when
-        sensitivities are off), and the first-fixing cashflow of every row settling today with the
-        block-local rows those land on. `prev_alive` is theta, carrying the observed samples' graph.
+        settle_rows, settle_cols)`: the block's rows, the never-knocked branch the latch needs
+        (empty when sensitivities are off), and the cashflow of every fixing settling today with the
+        block-local row and the SCHEDULE index each belongs to - the index being what names the
+        decision that gates it. `prev_alive` is theta, carrying the observed samples' graph.
         """
         # the declared model as a walking kit - the pricer names it once, here
         kit = oss_model_kit(factor_dep, hn_scalars)
         hn = kit is not None
-        mcmc, alive, settled, settle_rows = [], [], [], []
+        mcmc, alive, settled, settle_rows, settle_cols = [], [], [], [], []
         for i, (D, s, carry_rate, delta_t, tau) in enumerate(zip(
                 discount_rates, spot_prices, carry, times, settlement)):
             reduced_samples = len(delta_t)
@@ -3039,6 +3057,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                 if tau[j] == 0:
                     settled.append(cf_step.mean(axis=1))
                     settle_rows.append(i)
+                    settle_cols.append(fixing_offset + j)
             if ledger is not None:
                 ledger.check('ACCUMULATOR row {}'.format(i))
             mcmc.append(P.mean(axis=1))
@@ -3047,7 +3066,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
         return (torch.stack(mcmc),
                 torch.stack(alive) if alive else prev_alive.new_empty(0),
                 torch.stack(settled) if settled else prev_alive.new_empty(0),
-                settle_rows)
+                settle_rows, settle_cols)
 
     mtm_list = []
     factor_dep = deal_data.Factor_dep
@@ -3105,7 +3124,14 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     # from building an alive branch nobody reads
     boundary_aad = (getattr(shared, 'boundary_aad', False) and
                     not factor_dep['Barrier_Hit'] and not smooth)
-    b_gaps, b_crossed, b_obs_before, alive_blocks, b_pending = [], [], [], [], []
+    b_gaps, b_crossed, b_obs_before, alive_blocks, b_pending, b_cash = [], [], [], [], [], []
+
+    def fixing_cash(j):
+        """One fixing's settled amount at weight one: the signed payoff on its observed sample.
+        The pending head discounts it to a row; the ledger declares it at its settlement."""
+        intrinsic = (all_samples[j] - strike) * callOrPut
+        return buy_sell * (F.relu(intrinsic) * factor_dep['Notional1'] -
+                           F.relu(-intrinsic) * factor_dep['Notional2'])
 
     # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
     hn_scalars = oss_model_scalars(factor_dep, shared)
@@ -3128,6 +3154,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
         sobol = True
         shared.reset_qrg()
 
+    row_ofs = 0
     for b_idx, (discount_block, spot_block) in enumerate(
             utils.split_counts([discount, spot], counts, shared)):
         settle_index_local = int(settle_index[b_idx])
@@ -3156,14 +3183,21 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
         theta = (spot_block, sample_ts, fwd_drifts, alive_seq[settle_index_local],
                  discount_rates, vols, all_samples) + hn_scalars
         # the SAME callable either way: under the node it is called twice
-        block_mtm, block_alive, block_settled, settle_rows = InnerMCRecompute.run(
+        block_mtm, block_alive, block_settled, settle_rows, settle_cols = InnerMCRecompute.run(
             shared, simulate, *theta)
         theo_price = buy_sell * block_mtm
 
         # the by-products, performed once off the forward's result
-        for row, value in zip(settle_rows, block_settled):
-            cash_settle(shared, factor_dep['SettleCurrency'], np.searchsorted(
-                time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]), buy_sell * value)
+        for row, col, value in zip(settle_rows, settle_cols, block_settled):
+            index = int(np.searchsorted(time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]))
+            cash_settle(shared, factor_dep['SettleCurrency'], index, buy_sell * value)
+            if boundary_aad:
+                # the settled fixing as a payment fact, gated by its OWN breach test: a crossing
+                # there pays nothing, and every LATER fixing is killed with it
+                fxr = report_fx(fx_rep, row_ofs + row)
+                amount = (fxr * fixing_cash(col)).detach()
+                b_cash.append((index, col, torch.zeros_like(amount), amount,
+                               (fxr * buy_sell * value).detach()))
 
         if boundary_aad:
             # `obs_before` is stamped PER ROW off the block's LAST row: blocks are cut on the union
@@ -3182,15 +3216,13 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
             for r_local in range(len(t_block)):
                 j_hi = int(rows_obs[r_local])
                 if j_hi > settle_index_local:
-                    intrinsic = (torch.stack([all_samples[j] for j in range(
-                        settle_index_local, j_hi)]) - strike) * callOrPut
-                    pay = (F.relu(intrinsic) * factor_dep['Notional1'] -
-                           F.relu(-intrinsic) * factor_dep['Notional2'])
+                    pay = torch.stack([fixing_cash(j) for j in range(settle_index_local, j_hi)])
                     d_settle = discount_rates[r_local][:j_hi - settle_index_local].reshape(
                         j_hi - settle_index_local, -1)
-                    b_pending.append((settle_index_local, (buy_sell * d_settle * pay).detach()))
+                    b_pending.append((settle_index_local, (d_settle * pay).detach()))
                 else:
                     b_pending.append(None)
+        row_ofs += theo_price.shape[0]
         mtm_list.append(theo_price)
 
     mtm = torch.cat(mtm_list, dim=0)
@@ -3202,7 +3234,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
         latch = utils.LatchedBoundarySet(
             gaps=b_gaps, fired=b_crossed, obs_before=np.array(b_obs_before),
             untriggered=untriggered, triggered=torch.zeros_like(untriggered),
-            pending=b_pending,
+            pending=b_pending, cash_events=b_cash or None,
             to_mtm=deal_to_mtm_grid(time_grid, deal_data, fx_rep),
             report_index=time_grid.report_index)
         shared.boundary_sets.append(latch)
@@ -3216,9 +3248,11 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                 recon = latch.select(prefix)
                 head = max((float(c.abs().max()) for _, c in filter(None, b_pending)),
                            default=0.0)
-                logging.debug('ACCUMULATOR_LATCH recon_max=%.3g head_max=%.3g scale=%.3g',
-                              float((recon - mtm.detach()).abs().max()),
-                              head, float(mtm.detach().abs().max()))
+                logging.debug(
+                    'ACCUMULATOR_LATCH recon_max=%.3g head_max=%.3g ledger_max=%.3g scale=%.3g',
+                    float((recon - mtm.detach()).abs().max()), head,
+                    declared_ledger_residual(b_cash, prefix),
+                    float(mtm.detach().abs().max()))
 
     return mtm
 
@@ -3250,11 +3284,12 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
     branch is the facts-only world, the dead branch the survived-weighted pending head, both from
     the same `value = fixed + state * live` row arithmetic the forward reports.
 
-    THE SETTLED LEDGER IS NOT DECLARED. This deal settles a STREAM of per-fixing cashflows, and
-    `settles` states an identity - the row pays out everything the deal is still worth - that a
-    stream does not satisfy, so under a CSA the counterfactual's cash stays at what the realised
-    world paid. Measured to be second order here, and the record is in
-    `test_a_collateralised_cva_delta_carries_the_surviving_cash`.
+    THE SETTLED LEDGER IS DECLARED PER FIXING. `settles` states an identity - the row pays out
+    everything the deal is still worth - that a STREAM does not satisfy, so `cash_events` states the
+    facts instead: each fixing's cashflow at its own settlement row, at the facts-only weight, gated
+    by the last decision taken before that fixing. A fixing no reconstructed decision precedes is
+    unconditional cash and both branches carry it identically. The channel is second order on this
+    book - the record is `test_a_collateralised_cva_delta_carries_the_surviving_cash`.
     """
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -3529,7 +3564,7 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
     # registered decisions in day order; a fixing's pending bucket is the count of them strictly
     # before its own day, and a row's `obs_before` the count at or before the row's
     reg_days = np.array([fixing_days[j] for j, _, _ in b_latch])
-    mtm_values, b_alive_rows, b_trig_rows, b_pending = [], [], [], []
+    mtm_values, b_alive_rows, b_trig_rows, b_pending, b_cash = [], [], [], [], []
     for row_index, mtm_day in enumerate(mtm_days):
         start_idx = int(np.searchsorted(settlement_days, mtm_day, side='left'))
         if start_idx >= n_fix:
@@ -3588,6 +3623,13 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
                     trig_row = trig_row + c
                 else:
                     buckets[m - 1] = buckets.get(m - 1, 0.0) + c
+                if settlement_days[j] == mtm_day:
+                    # the same fact as a PAYMENT: at its own settlement `d_settle` is one, so the
+                    # bucket's own amount is the cash, gated by the last decision before the fixing.
+                    # `m == 0` is unconditional - both branches carry it identically
+                    fxr = report_fx(fx_rep, row_index)
+                    b_cash.append((int(deal_data.Time_dep.deal_time_grid[row_index]), m - 1,
+                                   torch.zeros_like(c), fxr * c, (fxr * cf).detach()))
 
         if (settlement_cf != 0).any():
             cash_settle(shared, factor_dep['SettleCurrency'],
@@ -3707,7 +3749,7 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
             obs_before=np.searchsorted(reg_days, mtm_days, side='right'),
             untriggered=torch.stack(b_alive_rows),
             triggered=torch.stack(b_trig_rows).detach(),
-            pending=b_pending,
+            pending=b_pending, cash_events=b_cash or None,
             to_mtm=deal_to_mtm_grid(time_grid, deal_data, fx_rep),
             report_index=time_grid.report_index)
         shared.boundary_sets.append(latch)
@@ -3717,9 +3759,11 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
                 for flag in latch.fired:
                     prefix.append(prefix[-1] | flag)
                 recon = latch.select(prefix)
-                logging.debug('EXTENDABLE_LATCH decisions=%d recon_max=%.3g scale=%.3g',
-                              len(b_latch), float((recon - mtm.detach()).abs().max()),
-                              float(mtm.detach().abs().max()))
+                logging.debug(
+                    'EXTENDABLE_LATCH decisions=%d recon_max=%.3g ledger_max=%.3g scale=%.3g',
+                    len(b_latch), float((recon - mtm.detach()).abs().max()),
+                    declared_ledger_residual(b_cash, prefix),
+                    float(mtm.detach().abs().max()))
 
     return mtm
 
@@ -3777,10 +3821,12 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     gamma is the desk's own call-spread width (spread measured in
     ``tests/test_branch_and_weight.py``).
 
-    AND THE SETTLED LEDGER IS NOT DECLARED. This deal settles a STREAM of per-fixing cashflows, and
-    `settles` states an identity - the row pays out everything the deal is still worth - that a
-    stream does not satisfy, so under a CSA the counterfactual's cash stays at what the realised
-    world paid from the first settlement onward.
+    THE SETTLED LEDGER IS DECLARED PER FIXING. `settles` states an identity - the row pays out
+    everything the deal is still worth - that a STREAM does not satisfy, so `cash_events` states the
+    facts instead: the settled fixing's own payment at its settlement row, gated by the redemption
+    that would have killed the deal before it, on the pending head's weight of one. The facts are
+    declared against the SCHEDULE index and rebased to the decision index at registration, `b_first`
+    still moving until the first decision lands.
     """
 
     def accrued(s, k, C, inverted):
@@ -4140,7 +4186,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     # KNOCK-IN's, so under it the redemption latch still registers and the knock-in does not
     boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
     b_gaps, b_fired, b_obs_before, b_inner, alive, row_ofs = [], [], [], [], [], 0
-    b_pending = []
+    b_pending, b_cash = [], []
 
     # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
     hn_scalars = oss_model_scalars(factor_dep, shared)
@@ -4234,6 +4280,18 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             b_pending.extend([(settle_index_local - b_first, buy_sell * block_pend[row].detach())
                               if block_pend.dim() == 3 else None
                               for row in range(theo_price.shape[0])])
+            # the settled fixing as a payment fact, gated by the redemption that would have killed
+            # the deal before it: the strip's own head at weight one (tau == 0, undiscounted). The
+            # CLAMP is the realised R - the scope `untriggered` already carries - and a post-cross
+            # row's nonzero if_not is inert only because the flags are monotone (fired stays fired)
+            if block_pend.dim() == 3:
+                for row, value in zip(settle_rows, block_settled):
+                    fxr = report_fx(fx_rep, row_ofs + row)
+                    amount = (fxr * buy_sell * block_pend[row][0]).detach()
+                    b_cash.append((int(np.searchsorted(
+                        time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM])),
+                        int(settle_index_local), torch.zeros_like(amount), amount,
+                        (fxr * buy_sell * value).detach()))
         row_ofs += theo_price.shape[0]
         mtm_list.append(theo_price)
 
@@ -4253,6 +4311,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 gaps=b_gaps, fired=b_fired, obs_before=np.array(b_obs_before),
                 untriggered=untriggered, triggered=torch.zeros_like(untriggered),
                 pending=b_pending if any(entry is not None for entry in b_pending) else None,
+                cash_events=[(t, f - int(b_first), on, off, bk)
+                             for t, f, on, off, bk in b_cash] or None,
                 to_mtm=to_mtm, report_index=time_grid.report_index)
             shared.boundary_sets.append(latch)
             if logging.getLogger().isEnabledFor(logging.DEBUG):
@@ -4262,10 +4322,12 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     prefix = [torch.zeros_like(latch.fired[0])]
                     for flag in latch.fired:
                         prefix.append(prefix[-1] | flag)
-                    logging.debug('TARF %s latch decisions=%d recon_max=%.3g scale=%.3g',
-                                  deal_data.Instrument.field.get('Reference'), len(b_gaps),
-                                  float((latch.select(prefix) - mtm.detach()).abs().max()),
-                                  float(mtm.detach().abs().max()))
+                    logging.debug(
+                        'TARF %s latch decisions=%d recon_max=%.3g ledger_max=%.3g scale=%.3g',
+                        deal_data.Instrument.field.get('Reference'), len(b_gaps),
+                        float((latch.select(prefix) - mtm.detach()).abs().max()),
+                        declared_ledger_residual(latch.cash_events, prefix),
+                        float(mtm.detach().abs().max()))
         if b_inner:
             rows, gaps, jumps = zip(*b_inner)
             shared.boundary_sets.append(utils.InnerBoundarySet(
@@ -4919,8 +4981,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 b_alive.append(block_alive)
                 settle_map = dict(zip(settle_rows, block_settled))
                 # per STAMPED decision (tau == 0): gap, flag (`gap >= 0` IS the trigger), the own-row
-                # fork, and the payment as a per-event `(mtm_row, amount, booked)` fact in reporting
-                # currency. A pending window's re-observation is not a new decision
+                # fork, and the coupon as a payment fact gated by that decision - paid if it fires,
+                # nothing if it does not. A pending window's re-observation is not a new decision
                 for k, row in enumerate(event_rows):
                     if all_fixings[row, 0] != 0.0:
                         continue
@@ -4929,9 +4991,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                     outputs[fixed + n_events + k],
                                     outputs[fixed + 2 * n_events + k]])
                     fxr = report_fx(fx_rep, row_ofs + row)
+                    coupon = (nominal * fxr * outputs[fixed + 3 * n_events + k]).detach()
                     b_cash.append((int(np.searchsorted(
                         time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM])),
-                        (nominal * fxr * outputs[fixed + 3 * n_events + k]).detach(),
+                        len(b_latch) - 1, coupon, torch.zeros_like(coupon),
                         (nominal * fxr * settle_map[row]).detach()))
         else:
             theo_cashflow = drifts.new_zeros((len(t_block), shared.simulation_batch))

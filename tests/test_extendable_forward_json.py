@@ -377,8 +377,10 @@ def test_the_cva_delta_carries_the_extension_flux(tmp_path=None):
     parse = lambda ln, key: float(ln.split(key + '=')[1].split()[0])
     assert all(parse(ln, 'decisions') == 2 for ln in organs), organs[-1]
     recon = max(parse(ln, 'recon_max') for ln in organs)
+    ledger = max(parse(ln, 'ledger_max') for ln in organs)
     scale = max(parse(ln, 'scale') for ln in organs)
     assert recon < 1e-5 * scale, (recon, scale)
+    assert ledger < 1e-5 * scale, (ledger, scale)
 
     g = out['Results']['grad_cva']['Gradient']
     aad = float(g.loc[[i for i in g.index if 'FxRate.EUR' in str(i[0])][0]])
@@ -439,14 +441,16 @@ def _collateralised(job):
 def test_a_collateralised_cva_delta_carries_the_surviving_cash(tmp_path=None):
     """The collateralised delta bound, and the record of a channel MEASURED to be second order.
 
-    Under the CSA the counterfactual ledger should in principle flip with the decision, an algebra
-    `cash_events` cannot express. Across four documents built to amplify it - base, ITM extension,
-    vol 0.30 at a 20-day margin period, and a one-fixing zero-lag tail where the flipped object is
-    almost pure cash - the residual never resolves above its CRN oracle. The structural reason:
+    Under the CSA the counterfactual ledger flips with the decision, which `cash_events` now states:
+    each fixing's cashflow at its own settlement row, at the facts-only weight, gated by the last
+    decision taken before it. It moved this document by nothing its own oracle can resolve - 0.25%
+    against the best CRN rung before, 0.27% after, on a ladder flat to 0.1% - and that reading is
+    the result, not a defect in it. The structural reason, which the four amplifying documents
+    (base, ITM extension, vol 0.30 at a 20-day margin period, a one-fixing zero-lag tail) all said:
     unlike the autocall's flipped coupon, which was 28% of scale and became at-risk cash at the
     decision's own row, the extendable's flipped payments settle far from the decision and are
-    carried by the VALUE side until one brief hazard-weighted window. The ledger channel is
-    deliberately NOT built ahead of a document that can falsify it."""
+    carried by the VALUE side until one brief hazard-weighted window. So the declaration closes the
+    completeness this stream owed and leaves the residual exactly where it was."""
     out, _ = _run(_collateralised(_cva_job(gradient='Yes')))
     g = out['Results']['grad_cva']['Gradient']
     aad = float(g.loc[[i for i in g.index if 'FxRate.EUR' in str(i[0])][0]])

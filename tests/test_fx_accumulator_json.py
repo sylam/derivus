@@ -379,12 +379,14 @@ def test_a_knocked_deal_still_carries_its_pending_settlements(tmp_path):
     parse = lambda ln, key: float(ln.split(key + '=')[1].split()[0])
     recon = max(parse(ln, 'recon_max') for ln in organs)
     head = max(parse(ln, 'head_max') for ln in organs)
+    ledger = max(parse(ln, 'ledger_max') for ln in organs)
     scale = max(parse(ln, 'scale') for ln in organs)
     # MEASURED: head_max 444 on a 1600 profile scale (28%) and the residual 7.6e-8 relative, which
     # is float32 roundoff, so the bound carries 13x. MUTATION: the dead branch zeroed reads 156,
     # nearly 100,000x over the bound.
     assert head > 1e-3 * scale, 'the document must carry a material pending head'
     assert recon < 1e-6 * scale, (recon, head, scale)
+    assert ledger < 1e-6 * scale, (ledger, scale)
 
     g = out['Results']['grad_cva']['Gradient']
     aad = float(g.loc[[i for i in g.index if 'FxRate.EUR' in str(i[0])][0]])

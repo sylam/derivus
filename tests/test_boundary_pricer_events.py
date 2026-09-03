@@ -748,9 +748,9 @@ def test_a_zero_gross_delta_reproduces_the_reported_net(exclude_paid_today):
         f'so every correction against it is mis-sized')
 
 
-def _spy_boundary(look, **run_kw):
-    """Run with `look(shared, reported_mtm)` called at the moment the correction is assembled -
-    the one place a registration, its chain and the reported portfolio all exist at once."""
+def _spy_around(look, run):
+    """`look(shared, reported_mtm)` called at the moment the correction is assembled - the one place
+    a registration, its chain and the reported portfolio all exist at once - around any runner."""
     import derivus.pricing as C
     seen = {}
     original = C.boundary_correction
@@ -761,10 +761,15 @@ def _spy_boundary(look, **run_kw):
 
     C.boundary_correction = probe
     try:
-        _run(gradient=True, **run_kw)
+        run()
     finally:
         C.boundary_correction = original
     return seen
+
+
+def _spy_boundary(look, **run_kw):
+    """`_spy_around` on this file's own equity book."""
+    return _spy_around(look, lambda: _run(gradient=True, **run_kw))
 
 
 REBATED_BARRIER = dict(DISCRETE_BARRIER, Cash_Rebate=5.0)
@@ -817,7 +822,25 @@ def test_a_run_of_held_balance_registers_its_transfer_decision_once():
         f'events for one transfer decision - the same counterfactual counted once per call')
 
 
-def test_a_latched_registration_declares_every_settlement_in_its_reach():
+def _latched_documents(tmp_path):
+    """One gradient document per latched pricer, each taken from the module that owns it: a fixture
+    rebuilt here would drift from the one that pricer's own gates measure."""
+    import test_boundary_tarf_events as bt
+    import test_extendable_forward_json as ef
+    import test_fx_accumulator_json as fa
+    return {
+        'barrier': lambda: _run(REBATED_BARRIER, gradient=True, collateralised=True,
+                                batch=256, mcmc=64),
+        'autocall': lambda: _run(AUTOCALL, gradient=True, collateralised=True,
+                                 batch=256, mcmc=64),
+        'accumulator': lambda: fa._run(fa._cva_long_lag(gradient='Yes'), tmp_path, 'reach'),
+        'tarf': lambda: bt._cmc(bt.PIN_CMC, gradient=True),
+        'extendable': lambda: ef._run(ef._collateralised(ef._cva_job(gradient='Yes'))),
+    }
+
+
+@pytest.mark.parametrize('pricer', ['barrier', 'autocall', 'accumulator', 'tarf', 'extendable'])
+def test_a_latched_registration_declares_every_settlement_in_its_reach(pricer, tmp_path):
     """A registration that does not name its deal's settlements is scored against the REALISED
     ledger: `net_from_gross` folds the cash that was actually paid into both branches while the
     collateral scan follows the counterfactual, and the two disagree from the settlement onward.
@@ -828,10 +851,12 @@ def test_a_latched_registration_declares_every_settlement_in_its_reach():
     paying on their own date plus an expiry that is the twelfth crossing's date as well - and the
     registration that shipped declared NONE of them, first decision reaching row 7.
 
-    ITS SCOPE IS THE BARRIER FAMILY, which is what this fixture registers. `settles` states an
-    identity - the row pays out everything the deal is still worth - and a pricer settling a STREAM
-    of per-fixing cashflows cannot declare through it, so the accumulator, the TARF and the
-    extendable are undeclared and this gate is not run on them.
+    ALL FIVE LATCHED PRICERS, each on the document its own module owns. `settles` states an identity
+    - the row pays out everything the deal is still worth - which only the barrier family satisfies;
+    the three STREAMED pricers declare the same per-event facts through `cash_events` instead, each
+    fixing's settled amount at its own row beside the decision that gates it. This gate's reading on
+    the engine before they declared: accumulator rows 4 6 8 10 11 12 from a first reach of row 1,
+    TARF rows 1 3 5 7 9 11 from row 0, extendable rows 15 24 33 from row 11 - none declared.
 
     One deal per netting set, so `shared.t_Cashflows` at this point is that deal's own ledger.
     """
@@ -849,13 +874,13 @@ def test_a_latched_registration_declares_every_settlement_in_its_reach():
                 break
             # `getattr`, so an engine that declares neither field dies on the assertion below with
             # the rows it left undeclared rather than on a missing attribute
-            declared = {int(t) for t, _, _ in (getattr(bset, 'cash_events', None) or [])}
+            declared = {int(e[0]) for e in (getattr(bset, 'cash_events', None) or [])}
             declared |= {int(t) for t, _ in (getattr(bset, 'settles', None) or [])}
             rows.append((bset.deal, first,
                          {r for r in booked if first is not None and r >= first}, declared))
         return {'rows': rows, 'booked': booked}
 
-    seen = _spy_boundary(look, deal=REBATED_BARRIER, collateralised=True, batch=256, mcmc=64)
+    seen = _spy_around(look, _latched_documents(tmp_path)[pricer])
     assert len(seen.get('booked', ())) > 1, (
         'the deal books at most one row, so a registration naming only its expiry would pass')
     assert seen['rows'], 'nothing latched registered at all - the fixture is not exercising this'

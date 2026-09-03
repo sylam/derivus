@@ -347,9 +347,13 @@ class LatchedBoundarySet(BoundarySet):
     # `(first_decision, (m, B) tensor)` whose slice t is the row-present value of decision
     # `first_decision + t`'s fixed-but-unsettled payoff. Detached.
     pending: list = None
-    # Per decision, `(mtm_row, amount, booked)`: the payment the trigger makes IF it fires while the
-    # deal is alive, and the ledger as booked - detached reporting-currency (B,) amounts. The
-    # collateral chain reads them through C_ts_te and the additive route ignores them.
+    # Per PAYMENT, `(mtm_row, decision, if_fired, if_not, booked)`: what the deal pays at that row
+    # in the two states of the decision that GATES it, and the ledger as booked - detached
+    # reporting-currency (B,) amounts, `decision` an index into `gaps` (-1 for cash no decision can
+    # touch). A trigger's own payment declares `(amount, 0)` at its own decision; a STREAM's fixing
+    # declares `(0, amount)` at the last decision that can kill it. Many payments may share a row,
+    # and a decision may gate many. The collateral chain reads them through C_ts_te; the additive
+    # route ignores them.
     cash_events: list = None
     # Per WHOLE-VALUE SETTLEMENT, `(mtm_row, booked)`: a row that pays out everything the deal is
     # still worth, and the amount booked there - detached reporting-currency (B,). THE ROW'S MTM IS
@@ -423,10 +427,15 @@ class LatchedBoundarySet(BoundarySet):
         counterfactual. A latched decision moves one scenario's reported value by a FINITE amount,
         so the objective's response is a difference across that amount.
 
-        Each counterfactual's ledger reach is derived from `cash_events` as it is scored: forced ON
-        the decision makes its own payment (if still alive as booked) and kills every later one;
-        forced OFF each later trigger pays iff no OTHER earlier decision fired. Rows before the
-        decision are identical in both worlds and are not carried.
+        Each counterfactual's ledger reach is derived from `cash_events` as it is scored, on ONE law
+        whichever family declared them: a payment gated by decision d survives iff no decision up to
+        d fired, and pays `if_fired` or `if_not` according to d's own state. So forcing d ON kills
+        every payment gated at or after it and makes d's own; forcing it OFF pays them, each on the
+        prefix that excludes d. A payment gated BEFORE the decision is identical in both worlds and
+        is carried only to keep its row's total whole.
+
+        WHOLE ROWS, because `cash_to_C` relu-splits received from paid: the split of a sum is not
+        the sum of the splits, so payments sharing a row are added before the row is declared.
 
         A declared `settles` row adds the other half of the reach: the deal's whole remaining value
         at that row is what it pays there, so the branch settles `booked + branch[row]`. Without it
@@ -439,25 +448,53 @@ class LatchedBoundarySet(BoundarySet):
         """
         for k, (gap, on, off) in enumerate(self.branch_deltas()):
             with torch.no_grad():
-                on_cash, off_cash = [], []
-                if self.cash_events:
-                    t, amount, booked = self.cash_events[k]
-                    dead = torch.zeros_like(self.fired[0])
-                    for flag in self.fired[:k]:
-                        dead = dead | flag
-                    on_cash = [(t, amount * ~dead, booked)]
-                    off_cash = [(t, torch.zeros_like(amount), booked)]
-                    # `dead` walks the OFF world from here: decision k never fires in it
-                    for j, (tj, amt, booked_j) in enumerate(self.cash_events[k + 1:], k + 1):
-                        on_cash.append((tj, torch.zeros_like(amt), booked_j))
-                        off_cash.append((tj, amt * (self.fired[j] & ~dead), booked_j))
-                        dead = dead | self.fired[j]
+                rows, changed = {}, []
+                for t, branch_on, branch_off, booked in self.ledger(k):
+                    if t not in rows:
+                        rows[t] = [0.0, 0.0, 0.0]
+                    entry = rows[t]
+                    entry[0] = entry[0] + (booked if branch_on is None else branch_on)
+                    entry[1] = entry[1] + (booked if branch_off is None else branch_off)
+                    entry[2] = entry[2] + booked
+                    if branch_on is not None and t not in changed:
+                        changed.append(t)
                 for t, booked in (self.settles or ()):
-                    on_cash.append((t, booked + on[t], booked))
-                    off_cash.append((t, booked + off[t], booked))
+                    if t not in rows:
+                        rows[t] = [0.0, 0.0, 0.0]
+                    entry = rows[t]
+                    entry[0], entry[1] = entry[0] + booked + on[t], entry[1] + booked + off[t]
+                    entry[2] = entry[2] + booked
+                    if t not in changed:
+                        changed.append(t)
+                on_cash = [(t, rows[t][0], rows[t][2]) for t in changed]
+                off_cash = [(t, rows[t][1], rows[t][2]) for t in changed]
                 jump = (score(self.portfolio_delta(on, on_cash)) -
                         score(self.portfolio_delta(off, off_cash)))
             yield gap, jump
+
+    def ledger(self, k):
+        """Per declared payment decision `k` can move, `(mtm_row, forced_on, forced_off, booked)`.
+
+        A branch of None means "whatever was booked" - a payment this decision cannot reach, yielded
+        so its row's total stays whole for the relu split, and never on its own account.
+        """
+        excl, before = torch.zeros_like(self.fired[0]), []
+        for j, flag in enumerate(self.fired):
+            before.append(excl)
+            if j != k:
+                excl = excl | flag
+        for t, d, if_fired, if_not, booked in (self.cash_events or ()):
+            if d < k:
+                # gated earlier, or by nothing at all (-1) - the same cash in both worlds
+                yield t, None, None, booked
+            elif d == k:
+                # the decision's own payment: forced ON it is made if nothing earlier killed the
+                # deal, forced OFF it is what the other side of that decision pays there
+                yield t, if_fired * ~before[d], if_not * ~before[d], booked
+            else:
+                # forced ON, decision k killed the deal before this payment's gate could pass it
+                yield (t, torch.zeros_like(booked),
+                       torch.where(self.fired[d], if_fired, if_not) * ~before[d], booked)
 
 
 @dataclass
