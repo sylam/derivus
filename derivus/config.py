@@ -1131,8 +1131,9 @@ class Config(object):
     def find_models(self, sorted_factors):
         """Splits the ordered factor universe into stochastic and (by set difference) static. A
         factor is stochastic iff `Model Configuration` resolves it to a process, it is not the base
-        currency, and its parameters are available - a `Price Models` block, or for an implied model
-        the `Price Factors` block of the factor it implies off. Reads the config, writes nothing."""
+        currency's own FX rate (identically one), and its parameters are available - a `Price Models`
+        block, or for an implied model the `Price Factors` block of the factor it implies off. Reads
+        the config, writes nothing."""
         stochastic_factors = {}
         additional_factors = {}
         for factor in sorted_factors:
@@ -1140,7 +1141,8 @@ class Config(object):
                 utils.check_tuple_name(factor), {}))
             # might need implied parameters
             additional_factor = self.params['Model Configuration'].additional_factors(stoch_proc, factor)
-            if stoch_proc and factor.name[0] != self.params['System Parameters']['Base_Currency']:
+            base_fx = factor.type == 'FxRate' and factor.name[0] == self.params['System Parameters']['Base_Currency']
+            if stoch_proc and not base_fx:
                 factor_model = utils.Factor(stoch_proc, factor.name)
                 implied = additional_factor is not None and self.params['Price Factors'].get(
                     utils.check_tuple_name(additional_factor)) is not None

@@ -2811,7 +2811,7 @@ class GARCHSpotModel(StochasticProcess):
         if np.any(self.n_sub >= 2):
             # Diagnostic (INFO, not WARN — precalculate reruns on every inner fork).
             logging.info('GARCHSpotModel coarse grid: n_sub up to %d — exact daily sub-stepping, '
-                         'the correlated draw rides the √E[h]-weighted combination.',
+                         'the correlated draw rides the sqrt(E[h])-weighted combination.',
                          int(self.n_sub.max()))
         self._log_lr_var = float(np.log(self.param['Omega'] / (1.0 - self.param['Alpha'] - self.param['Beta'])))
 
@@ -3262,7 +3262,7 @@ class HestonNandiImpliedSpotModel(StochasticProcess):
         if np.any(self.n_sub >= 2):
             # INFO (precalculate reruns on every inner fork).
             logging.info('%s coarse grid: n_sub up to %d — exact daily '
-                         'sub-stepping, the correlated draw rides the √E[h]-weighted combination.',
+                         'sub-stepping, the correlated draw rides the sqrt(E[h])-weighted combination.',
                          type(self).__name__, int(self.n_sub.max()))
 
         # as GBMAssetPriceTSModelImplied: the per-step carry (r-q)*dt is read as-of each step's

@@ -19,6 +19,19 @@ caller** (several items below are deliberately not started), and **look before y
 - **A collateralised set reading a knock-out rebate's 14 declared settlement dates** — the shape no gate exercises, left from the `add_grid_dates` closure.
 - **`pricing` (TARF block)** — The target pin fires on 27–61% of paths, 27% short uncorrected, and is gated structurally with no tolerance asserted because nothing resolves it better. Exact behind `Branch_And_Weight: 'Yes'`; the crisp default keeps the declared blindness. *Measured:* Estimator 13% bandwidth spread, oracle 8.9% flatness — neither better than ~10%. Do not tune on the oracle: it cannot see it either.
 - **`pv_MC_AutoCallSwap`** — The averaging branch cannot carry the termination latch — its termination is a smoothed per-inner-path weight with no crisp per-scenario decision. A lagging-payment schedule (coupon paying after its fixing) would have its pending window zeroed by the carry. No fixture reaches either; the latch marker (the fixing index that killed the path) is the hook an exemption keys on.
+- **`pv_MC_AutoCallSwap` (crisp arm) × the terminal put barrier** — the expiry-row
+  `torch.where(Sj <= putBarrier, ...)` is a decision no boundary set carries on this arm, so every
+  sensitivity the put leg touches is short its flux. Measured 2026-09-04 on a 2y USD SPX
+  `QEDI_CustomAutoCallSwap_V2` under the component model (converged fit, 16,384 sims, CRN ladders
+  at two bump sizes): base-valuation spot delta 0.0473 against 0.0534 / 0.0528 (12.3% off, ladder
+  flat to 1.25%), `H0` 24.8% off, the 2.29y `L` knot −5,946 against −15,274 / −17,397; with
+  `Barrier: 0.0` the same ladders close to 0.26% and 0.81%, and the rates delta is exact either
+  way. Under the credit MC the CVA delta is 23.7% off uncollateralised and 117% off under a
+  zero-threshold CSA on ladders flat to 0.23% / 0.81%. `Branch_And_Weight` with `HN_Stride`
+  does not answer it: that path reports spot, `H0` and every `L` knot at exactly 0 and a rates
+  delta of 282 against 354 — the spot graph is severed on the strided path. The GBM arm's
+  `lognormal_fired_gain` integrates the put leg only under the switch; the component arm has no
+  smooth put leg at all. Documents and ladders in the session scratchpad (`autocall_trials/`).
 - **`pv_MC_ExtendableForward`** — Two declared limits remain after the flux registration and the mirror booking. (1) The settled-cash channel under a CSA is not registered, on the measurement below: the flipped payments' exposure rides the value side until settlement, then one hazard-weighted margin window. The `cash_alive` design is recorded in `test_a_collateralised_cva_delta_carries_the_surviving_cash` and waits for a document that can falsify it. (2) The rolling backward pass carries a one-signed Gauss–Hermite smoothing bias over the relu kink. *Measured:* (1) +0.25% / −0.02% / +0.26% / +0.03% across four amplifying documents, against CRN ladders that resolve no finer. (2) Single-decision inside 5e-3 of Black; multi-decision bounded by the dominance gates only — the `Boundary_*` valuation options are the dials.
 - **Seasoned TARFs with pre-base settlements are discarded outright** — `instruments` drops settlement dates before the base date and then any declared fixing older than a month before the earliest survivor, so a fixing at −18d settled at −8d logs `fixings=1 resolved=0` and the deal marks bit-identical to the same document with that fixing deleted — priced against its full original target. The accrual netting (closed below) bites only at later profile rows. *Measured:* mark `0x3ffa9945323ddaf2` with and without the settled fixing.
 - **A TARF valued between two settlements marks NaN** — the lagged schedule at a base date with settlements at −2/+2/+88 days (`fixings=3 resolved=2`) marks `nan` on every tree measured. Exactly the one-settled-one-not geometry the seasoned work is about; no fixture reaches it.
@@ -49,7 +62,27 @@ caller** (several items below are deliberately not started), and **look before y
   discovered is still simulated does not frame: a (1, 1) static root against the (T, B) grid,
   `Shape of passed values is (1, 1), indices imply (2, 1)`. Beside any simulated deal it reports
   and is gated bit-identical to the longhand cashflow; alone it is new reachability the fold
-  opened (2026-09-03). Base valuation is unaffected.
+  opened (2026-09-03). Base valuation is unaffected. A SKIPPED deal alone meets the same frame
+  failure (a quanto autocall refused by the component arm, 2026-09-04).
+- **`HestonNandiComponentImpliedSpotModel` × a fit with `Beta` above `Rho`** — the all-pillar SPX
+  fit of 2026-09-03 (Beta 0.99502, Rho 0.99, Phi 0, its Dec-27 pillar floored) marks a finite base
+  valuation and **171 NaN of 3,328 credit-MC cells over 89 of 256 scenarios** (first at the 6M
+  rows), CVA and FVA NaN; the same book fitted with Dec-27 dropped (Beta 0.982) is clean on every
+  cell. Open decision 5's live instance: with `Beta > Rho` the long-run term `(Rho − Beta) q_t`
+  is negative and the coarse-grid walk finds no floor before the square root. Nothing refuses a
+  fit that lands there.
+- **`HestonNandiComponentModelParameters.bootstrap` × a floored ATM pillar** — a listed chain
+  whose ATM ladder carries a calendar-arbitrage pillar (a later expiry quoting less total variance
+  than an earlier one: SX5E Sep-27 at 15.0% behind Mar-27's 18.9%, SPX Dec-27 at 15.6% behind
+  Sep-27's 17.4%, both 2026-09-03) floors that pillar in the L bootstrap, and the floor's relative
+  miss squared at `atm_constraint_weight` 1e4 is then the whole objective: Nelder–Mead walks `H0`
+  from the correct front-ATM seed (17.03%) down to 7.04% because that shaves the shortfall from
+  0.101 to 0.026, and the wings never enter — converged at 344 evaluations with a worst wing of
+  234% and the strip 7.0 → 23.3 → 18.2 → 12.1%. `Rho` 0.97 does not help (the search runs to the
+  box corner with the pillar still floored). Dropping the arbitrage expiry from the ladder solves
+  every ATM row exactly and lands the same basin from three starts (worst wing 86%, the far call
+  wing); it is a JSON remedy, not a fix. Open decision 16. *Measured:* the seed trace in the
+  session scratchpad (`calib_scratch/seed_SX5E.log`, scaffold lines removed).
 - **`Credit_Monte_Carlo` × nothing to simulate** — a book whose deals reach no stochastic factor
   dies in `shared_mem.reset` on a zero-wide random block, and one whose deals have no date after
   the base date dies in `update_time_grid` on an empty `max()`; neither names the document. Both
@@ -57,6 +90,11 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Closed
 
+- **`config.find_models` (what the base currency's name excludes)** — every factor named by the
+  base currency was kept static, its curve included; a base-currency curve to simulate carried
+  another name. Decided 2026-09-03: only `FxRate.<base>` is excluded (identically one), so a curve
+  named as the base currency simulates once a model is declared for it; the naming convention
+  still works and no document declaring no such model moves. `test_base_currency_json.py`.
 - **`pricing.getpartialbarrierpayoff` (start-window arm)** — the option leg priced the live side of a live window and nothing else, so a seasoned knock-out marked **−6.141370** where the vanilla is 85.23. `start_window_state` — the same signed-limit and spot-vs-level tests the rebate resolution computes, one spelling — resolves on the knock-out closed form so the parity carries the knock-in: touched, the KO is dead (rebate at the hit) and the KI is the vanilla; closed untouched, the KO is the vanilla and the KI exactly nothing (+ its discounted expiry rebate). Eight of twelve resolution documents land on one float across directions and sides; live-window marks bit-identical, hexed. THE WALK AGREED ONLY AFTER ITS OWN FIX: the CMC's row-0 window mask forced a point test on every `Barrier_At_Start` document (`at_start or …`), so the mark and the scenario walk read opposite states on the closed-and-beyond corners — one spelling now, all eight agree to the walk's float32, bit-identical on every live-window profile. `test_partial_barrier_json.py::test_a_resolved_start_window_is_the_state_it_resolved_to`, `::test_a_closed_start_window_reads_the_same_state_its_own_scenario_walk_does`. Residual: the deal's own Black sits 0.137% from `FXOptionDeal`'s on agreeing inputs, inside the 2e-3 gate that carries it.
 - **`pv_MC_Tarf` (`accumulation`)** — the opening accrual netted every declared reset, settled or not, while the loop banked observed-unsettled fixings again, and the index sat one off per declared reset. The schedule is walked from zero by position (declared prefix off `TensorSchedule.declared_values`, one spelling), so each observed fixing banks its own accrual and the pot opens right. *Measured:* the lagged fixture banks 0.2 + 0.2 and caps the live fixing at the 0.1 they leave — 497.1924 against a three-leg closed-form oracle's 497.1905, discriminated against never-netted and netted-twice both; and **a TARF that crossed on its first declared fixing marked identically zero on every row and scenario** — it now pays the clamped target exactly (20.0, both directions). No-declared-reset documents bit-identical, hexed. `test_fx_tarf_json.py::test_two_observed_fixings_in_one_settlement_lag_bank_their_own_accruals`, `test_tarf_cash_settle.py::test_a_target_its_declared_fixing_exhausts_pays_that_target_and_stops`.
 - **`utils.MTABoundarySet` × a held balance** — one collateral decision was registered at every remaining margin call once a dead deal froze the balance below the MTA: one scenario was charged the whole counterfactual 77 times, 97% of the phantom on five frozen scenarios, hidden only while the relu truncated the knocked-out paths. `MTABoundaryEvent.live` marks the binding call per constant-balance run, per side (pooling the sides suppresses one half of an exactly-cancelling zero-MTA pair — measured, which is why zero-MTA books are bit-identical); an unstamped `live` refuses by name. Live-exposure gate 1.90% → 0.01%; zero-CVA gate exactly 0.0 both ways. Structural gate, no tolerance: max live events per run per side is 1, against 81 through the gate's own assertion on today's engine. `test_boundary_pricer_events.py::test_a_run_of_held_balance_registers_its_transfer_decision_once`.
@@ -151,6 +189,12 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
     refuse under the switch, so a blanket flip needs an averaging-falls-back-to-crisp rule first;
     the HN arm's cost is measured (the stride layer, above). Values re-mark within their own MC
     noise at 12–23× less variance; the greeks are the prize.
+
+16. **A floored pillar's place in the component objective.** `atm_constraint_weight` 1e4 was set
+    so a one-basis-point ATM miss outweighs the whole smile residual on an FX surface that never
+    floors; a chain that floors turns it into a wall the search climbs by wrecking `H0`. Refuse a
+    ladder the floor binds on (the emitter's check, before any fit), fit with the floored pillar
+    dropped, or weight the shortfall at the smile's own scale.
 
 ## Designed, not built
 

@@ -51,7 +51,7 @@ A closed chain must lag somewhere; all same-row is a same-instant loop and refus
 The main body seeds base-currency FX first, walks the book, adds report currency (linked to base), then optional CVA `SurvivalProb` and FVA/deflation curves (`add_interest_rate` pins a curve plus all transitive dependents to `reset_dates`).
 
 !!! warning "Invariant — base currency sorts first, stays static"
-    Base-currency FX is appended to every other `FxRate`'s dependency list and excluded from the stochastic set (`find_models`). Keep base a static, dependency-of-all-FX anchor.
+    Base-currency FX is appended to every other `FxRate`'s dependency list and excluded from the stochastic set (`find_models`) — the FX alone: a curve named as the base currency simulates once a model is declared for it. Keep base FX a static, dependency-of-all-FX anchor.
 
 ## Ordering — `topological_sort`
 
