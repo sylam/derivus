@@ -2808,7 +2808,8 @@ class RiskNeutralInterestRateModel(object):
 
                 # grab the implied process
                 implied_obj, process, vol_tenors = self.implied_process(
-                    base_currency, price_factors, price_models, ir_curve, rate)
+                    base_currency, price_factors, price_models, ir_curve, rate,
+                    vol_tenors=self.sigma_knots(implied_params['instrument'].get('Sigma_Knots')))
 
                 # set up the time grid
                 time_grid = utils.TimeGrid(mtm_dates, mtm_dates, mtm_dates)
@@ -2948,6 +2949,9 @@ scipy.optimize.leastsq.html) are used.',
                           'instead) and an absent one both refuse by name'),
             F('Weight', 'Float', description='Relative weight in the objective')]),
           description='The forward starting swaps the swaptions are struck on'),
+        F('Sigma_Knots', 'Table', default='null', row=Row([F('Tenor', 'Period')]),
+          description='The knots of both sigma term structures, as periods from the base date; absent, '
+                      'the ten at 0, 1M, 3M, 6M, 1Y, 2Y, 4Y, 6Y, 8Y and 10Y'),
         F('Objective', 'Text', default='Analytic', values=['Monte_Carlo', 'Analytic'],
           description='What the solve minimises. Analytic is the default: it prices every benchmark '
                       'with the Schrager-Pelsser closed form and differences NORMAL VOLS, plain, so '
@@ -3163,7 +3167,23 @@ scipy.optimize.leastsq.html) are used.',
 
         return objective, optimizers, implied_var_dict, market_swaptions, benchmarks
 
-    def implied_process(self, base_currency, price_factors, price_models, ir_curve, rate):
+    @staticmethod
+    def sigma_knots(rows):
+        """The declared `Sigma_Knots` as years (months / 12, the default grid's own arithmetic), or
+        None for the default. A knot with a day part is refused: the grid is monthly."""
+        if not rows:
+            return None
+        months = []
+        for row in rows:
+            offset = row[0] if isinstance(row, (list, tuple)) else row
+            kwds = getattr(offset, 'kwds', {})
+            if kwds.get('days') or kwds.get('weeks'):
+                raise ValueError('Sigma_Knots takes whole months: {} has a day part'.format(offset))
+            months.append(12 * kwds.get('years', 0) + kwds.get('months', 0))
+        return np.array(sorted(set(months)), dtype=float) / 12.0
+
+    def implied_process(self, base_currency, price_factors, price_models, ir_curve, rate,
+                        vol_tenors=None):
         """The seed parameters and the process the objective prices through - two implied objects on
         a quanto'd curve, carrying the same numbers.
 
@@ -3183,7 +3203,8 @@ scipy.optimize.leastsq.html) are used.',
         The seed is asymmetric by ruling; `ALPHA_SEED` says why. A block whose parameter factor
         already exists warm-starts off it instead, clipped to the declared bounds.
         """
-        vol_tenors = np.array([0, 1, 3, 6, 12, 24, 48, 72, 96, 120]) / 12.0
+        if vol_tenors is None:
+            vol_tenors = np.array([0, 1, 3, 6, 12, 24, 48, 72, 96, 120]) / 12.0
         # construct an initial guess - need to read from params
         param_name = utils.check_tuple_name(
             utils.Factor(type=self.__class__.__name__, name=rate[1:]))
