@@ -34,6 +34,7 @@ monkeypatching - the canned terminal is a `BloombergSession` subclass whose even
 """
 import ast
 import datetime
+import hashlib
 import json
 import math
 import os
@@ -1521,6 +1522,148 @@ def test_the_chain_emitter_declares_the_funding_curve_it_placed_its_strikes_with
     plain = equity_hn_block(canned_chain(), FORWARD, E2E_LADDER)[1]['instrument']
     assert 'Funding_Rate' not in plain and 'Funding_Rate_Type' not in plain
     assert 'discounting on' not in plain['Quote_Source']
+
+
+# =============================================================================================
+# 9  the best quotes an expiry - `quotes_per_expiry`
+# =============================================================================================
+
+#: The DEFAULT block's own bytes, `sha256` over `json.dumps(block, sort_keys=True)`, one per family.
+#: `quotes_per_expiry` is a switch and its OFF position is the delta ladder bit for bit. A relative
+#: tolerance cannot say that: re-associating one weight - `vega * sqrt(OI) / d` into
+#: `vega * (sqrt(OI) / d)` - passes every approx in this file and moves every document in the world.
+DEFAULT_BLOCK_SHA = {
+    'HestonNandiComponentModelPrices':
+        'c5954b15e2af50e05826bb7a6f37ed832cf0ac086aab7891c74c66aee98fc94d',
+    'HestonNandiModelPrices':
+        '972dd31b596126d4b90cceee837c83dd17aa98dade031d603ca7fc827a647cd8'}
+
+#: The two-pillar ladder of `E2E_LADDER` asking for five quotes an expiry: ten rows, over the
+#: family's own floor of eight, which is what makes the JSON half of this gate minutes and not hours.
+FIVE_LADDER = EquityLadder(pillars=(0.25, 0.5), wing_pillars=(), quotes_per_expiry=5)
+
+
+def test_five_quotes_an_expiry_span_the_smile_and_fit_through_the_job_json(caplog):
+    """THE QUOTES ARE THE AXIS. A listed chain is already dealt, so `quotes_per_expiry` takes the
+    best prints each expiry holds instead of snapping a delta target onto whatever is nearest: the
+    ATM - the row the component bootstrap spends on that expiry's L pillar - plus two quotes a side,
+    banded in standardised log-moneyness off that expiry's own ATM implied vol, one band per
+    standard deviation. LIQUIDITY CHOOSES THE QUOTE inside a band, `vega` alone WEIGHTS it.
+
+    Four claims, and the last one is a job document:
+
+      the shape      five rungs at every pillar, one ATM and two bands a side, on five DISTINCT
+                     contracts, and the ATM is the row the ENGINE will call ATM. It is snapped in
+                     the ENGINE's metric - min |K/F - 1|, `bootstrap`'s own split - rather than in
+                     log-moneyness, because this selector puts a second quote within a percent of
+                     the forward and there the two disagree: at 0.5y log says 5125 and the split
+                     says 5000, and the L pillar would be spent on a row the block called a wing
+      the band       every rung's standardised moneyness sits in the band its kind names, unless a
+                     note says that band was EMPTY - the canned chain's 2Y and 3Y call sides stop
+                     inside one sd, and a rung that quietly changed band is unauditable
+      the weight     `Weight` is the normalised Black vega, summing to one, with no liquidity in it;
+                     within its band the contract taken is the `_liquidity` argmax
+      the default    both family spellings hex-identical to `DEFAULT_BLOCK_SHA` with the option unset
+
+    The job document is the contract: `Context.load_json` + `config.bootstrap` on a book with no
+    surface in it, and the family writes its factor with one L knot per pillar plus the anchor.
+    """
+    import logging as _logging
+
+    import derivus
+    from derivus import utils
+    from derivus.config import CustomJsonEncoder
+
+    for family, digest in DEFAULT_BLOCK_SHA.items():
+        payload = json.dumps(emitted(family=family)[1], sort_keys=True).encode('utf-8')
+        assert hashlib.sha256(payload).hexdigest() == digest, family
+
+    chain = canned_chain()
+    ladder = EquityLadder(quotes_per_expiry=5)
+    rungs, notes, readings = select_rungs(chain, FORWARD, ladder)
+    assert [(rung.kind, rung.pillar, rung.contract.strike, rung.contract.option_type)
+            for rung in rungs] == [
+        ('ATM', 0.25, 5000.0, 'Put'), ('0sd call', 0.25, 5125.0, 'Call'),
+        ('0sd put', 0.25, 4875.0, 'Put'), ('1sd call', 0.25, 5500.0, 'Call'),
+        ('1sd put', 0.25, 4500.0, 'Put'),
+        ('ATM', 0.5, 5000.0, 'Put'), ('0sd call', 0.5, 5125.0, 'Call'),
+        ('0sd put', 0.5, 4875.0, 'Put'), ('1sd call', 0.5, 5750.0, 'Call'),
+        ('1sd put', 0.5, 4250.0, 'Put'),
+        ('ATM', 1.0, 5125.0, 'Put'), ('0sd call', 1.0, 5250.0, 'Call'),
+        ('0sd put', 1.0, 5000.0, 'Put'), ('1sd call', 1.0, 6500.0, 'Call'),
+        ('1sd put', 1.0, 4250.0, 'Put'),
+        ('ATM', 2.0, 5250.0, 'Put'), ('0sd call', 2.0, 5375.0, 'Call'),
+        ('0sd put', 2.0, 5125.0, 'Put'), ('1sd call', 2.0, 5500.0, 'Call'),
+        ('1sd put', 2.0, 4000.0, 'Put'),
+        ('ATM', 3.0, 5375.0, 'Put'), ('0sd call', 3.0, 5500.0, 'Call'),
+        ('0sd put', 3.0, 5250.0, 'Put'), ('1sd call', 3.0, 6000.0, 'Call'),
+        ('1sd put', 3.0, 3750.0, 'Put')]
+    assert len({(rung.contract.expiry, rung.contract.strike) for rung in rungs}) == 25
+
+    # the band each rung was taken from, and the note wherever it is not the one its kind names
+    moved = {note.split(' EMPTY')[0] for note in notes if 'EMPTY' in note}
+    assert moved == {'2y 1sd call', '3y 1sd call'}, notes
+    for rung in rungs:
+        if rung.kind == 'ATM':
+            continue
+        reading = readings[rung.pillar]
+        sd = abs(math.log(rung.contract.strike / rung.forward)) / (
+            reading['atm_vol'] * math.sqrt(reading['tau']))
+        band = min(max(math.ceil(sd) - 1, 0), 1)
+        assert rung.contract.option_type == rung.kind.split()[1].capitalize()
+        assert '{:g}sd'.format(band) == rung.kind.split()[0] or \
+            '{:g}y {}'.format(rung.pillar, rung.kind) in moved, (rung.kind, rung.pillar, sd)
+
+    # the weight is vega and nothing else; liquidity only chose WHICH print carries it
+    total = sum(rung.vega for rung in rungs)
+    assert sum(rung.weight for rung in rungs) == pytest.approx(1.0, rel=1e-12)
+    for rung in rungs:
+        assert rung.weight == pytest.approx(rung.vega / total, rel=1e-15)
+    # and inside its own band the contract taken is the liquidity argmax over the OTM candidates
+    for rung in rungs:
+        if rung.kind == 'ATM' or '{:g}y {}'.format(rung.pillar, rung.kind) in moved:
+            continue
+        reading = readings[rung.pillar]
+        side, band = rung.kind.split()[1].capitalize(), int(rung.kind[0])
+        atm = next(item.contract for item in rungs
+                   if item.pillar == rung.pillar and item.kind == 'ATM')
+        peers = [item for item in chain.contracts
+                 if item.expiry == reading['expiry'] and item is not atm
+                 and item.option_type == side == ('Call' if item.strike >= reading['forward']
+                                                  else 'Put')
+                 and min(max(math.ceil(abs(math.log(item.strike / reading['forward'])) / (
+                     reading['atm_vol'] * math.sqrt(reading['tau']))) - 1, 0), 1) == band]
+        assert peers and max(peers, key=lambda item: equity_chain._liquidity(
+            item, ladder)).strike == rung.contract.strike, rung.kind
+
+    # THE JOB DOCUMENT, through the real bootstrap in a book carrying no surface at all
+    name, block = equity_hn_block(chain, FORWARD, FIVE_LADDER)
+    rows = block['instrument']['European_Options']
+    assert len(rows) == 10 and sum(row['Weight'] for row in rows) == pytest.approx(1.0, rel=1e-12)
+    assert 'the best 5 an expiry chosen by liquidity and weighted by vega alone' in \
+        block['instrument']['Quote_Source']
+    block['instrument']['Max_Iterations'] = 8
+    document = job_document({name: block}, surface=False)
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Bootstrapper Configuration'] = {
+        'HestonNandiComponentModelParameters': {}}
+
+    config = derivus.Context().load_json(
+        (json.dumps(document, cls=CustomJsonEncoder), 'equity_chain')).current_cfg
+    with caplog.at_level(_logging.INFO):
+        config.bootstrap()
+    written = config.params['Price Factors'].get('HestonNandiComponentModelParameters.SPX')
+    assert written is not None and written['H0'] > 0.0 and written['Gamma_1'] > 0.0
+    curve = written[utils.HN_COMPONENT_CURVE_NAME]
+    assert len(curve.array) == 1 + len(FIVE_LADDER.pillars) and curve.array[0][0] == 0.0
+
+    # the ATM the emitter named is the row the family spends on that expiry's L pillar
+    for expiry in {row['Expiry_Date']['.Timestamp'] for row in rows}:
+        here = [row for row in rows if row['Expiry_Date']['.Timestamp'] == expiry]
+        forward = next(rung.forward for rung in rungs
+                       if rung.contract.expiry.isoformat() == expiry)
+        assert min(here, key=lambda row: abs(row['Strike'] / forward - 1.0))['Strike'] == \
+            next(rung.contract.strike for rung in rungs if rung.kind == 'ATM'
+                 and rung.contract.expiry.isoformat() == expiry)
 
 
 def test_a_live_terminal_answers_or_the_smoke_skips_by_name():

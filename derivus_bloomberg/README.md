@@ -180,6 +180,15 @@ name, block = equity_hn_block(chain, EquityForward(
   refuses, naming the chain's own expiries.
 - **The weight is `vega x sqrt(open interest) / (1 + spread/cap)`, normalised** — liquidity joins
   the vega weight, because a dead strike is not evidence.
+- **`quotes_per_expiry` takes the best prints instead of snapping a delta.** A listed chain is
+  already quoted, so where the board is deep enough to choose, set it and every expiry a pillar
+  claimed carries its ATM — the row the component bootstrap spends on that expiry's `L` pillar —
+  plus `n-1` quotes **spanning** the smile: each side's out-of-the-money quotes are banded in
+  standardised log-moneyness off that expiry's own ATM implied vol, one band per standard deviation
+  and the last one open, and the best print per band by `sqrt(OI) / (1 + spread/cap)` is taken, near
+  band first and sides alternating. An empty band falls back to the nearest one that is not, by
+  name. **Liquidity chooses the quote; `Weight` is the normalised Black vega alone.** Unset — the
+  default — none of this runs and the delta ladder above emits the same bytes it always did.
 - **The forward is declared, and so is which curve does which job.** `EquityForward` names the
   curve that **grows** the forward (`funding_rate` — the equity's own repo curve, which
   `utils.calc_eq_forward` integrates), the curve the **premium discounts on** (`discount_rate`) and

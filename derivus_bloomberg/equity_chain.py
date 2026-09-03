@@ -254,6 +254,12 @@ class EquityLadder:
     #: implied vol (see `select_rungs`). A listed chain has no delta axis to read, so the pillar is
     #: a target the rung then SNAPS off - it names where to look, never what was quoted.
     wing_delta: float = 0.25
+    #: HOW MANY QUOTES EACH ASSIGNED EXPIRY CARRIES, or None for the delta ladder above. Set, it
+    #: SUPERSEDES `wing_delta` and `wing_pillars`: every expiry a pillar claimed carries its ATM -
+    #: the L pillar - plus n-1 wings SPANNING the smile (`_span_wings`), chosen by liquidity and
+    #: weighted by vega alone. A listed chain is already quoted, so the ladder takes the best prints
+    #: it holds rather than snapping to coordinates nobody dealt at.
+    quotes_per_expiry: int | None = None
     #: The quoted spread, as a fraction of mid, past which a print is not a market. A quarter of
     #: mid is wide for an index ATM and ordinary for a far wing, so it is one cap over the whole
     #: chain; it ALSO enters the weight, halving a contract that barely survived against a locked one.
@@ -311,6 +317,10 @@ class EquityLadder:
                 'of'.format(extra))
         if not 0.0 < self.wing_delta < 0.5:
             raise BloombergConfigurationError('wing_delta must be strictly between 0 and 0.5')
+        if self.quotes_per_expiry is not None and self.quotes_per_expiry < 1:
+            raise BloombergConfigurationError(
+                'quotes_per_expiry counts the ATM rung, which IS the expiry\'s L pillar and the one '
+                'rung no expiry can go without, so it must be at least one')
         if not self.spread_cap > 0.0:
             raise BloombergConfigurationError('spread_cap must be positive')
         if self.minimum_contracts < 1:
@@ -785,19 +795,25 @@ def assign_expiries(expiries, ladder):
     return assigned, dropped
 
 
-def _snap_strike(candidates, forward, target):
+def _snap_strike(candidates, forward, target, ratio=False):
     """The listed contract nearest a target strike, taking the OTM leg at whatever strike wins.
 
     The OTM leg is the one a desk deals and the fit is blind to the choice (both families price
     puts by parity off the call), so the type follows the STRIKE rather than the rung's intention:
     a put wing snapping above the forward emits the call quoted at that strike.
+
+    `ratio` measures nearness as `|K/target - 1|` instead of in log-moneyness. It is the metric the
+    COMPONENT BOOTSTRAP re-derives its ATM split in, and the two separate once a second strike sits
+    within about a percent of the forward - which is where `quotes_per_expiry` puts one, so the ATM
+    rung it names is the row the L pillar is actually spent on.
     """
     best, distance = None, None
     for contract in candidates:
         wanted = 'Call' if contract.strike >= forward else 'Put'
         if contract.option_type != wanted:
             continue
-        moved = abs(math.log(contract.strike / target))
+        moved = abs(contract.strike / target - 1.0) if ratio else \
+            abs(math.log(contract.strike / target))
         if distance is None or moved < distance or (
                 moved == distance and contract.security < best.security):
             best, distance = contract, moved
@@ -838,10 +854,13 @@ def select_rungs(chain, forward, ladder=None):
         Weight = w / sum(w)
 
     Vega is at the contract's own implied vol off the declared forward, which is what makes the
-    objective scale-free across a term structure running to three years. `sqrt(OI)` because open
-    interest is evidence of attention and not a precision. The spread factor runs from 1 at a locked
-    market to 1/2 at the cap, so the tightest print is worth twice the widest survivor and nothing
-    that survived is worth zero.
+    objective scale-free across a term structure running to three years, and `_liquidity` is the
+    rest of it.
+
+    `quotes_per_expiry` REPLACES the wing half of all of that: every assigned expiry carries its ATM
+    plus n-1 quotes spanning the smile (`_span_wings`), and the weight is vega alone - liquidity
+    chose which print to take, vega says how much it counts. A listed chain is quoted; a delta
+    target is a coordinate to snap to, and there is nothing to snap to when the quotes are the axis.
     """
     ladder = ladder or EquityLadder()
     if not chain.contracts:
@@ -874,7 +893,7 @@ def select_rungs(chain, forward, ladder=None):
             _believed_carry(implied_q, pillar, expiry, forward, ladder)
         level = chain.spot * math.exp((forward.rate - carry) * tau)
 
-        atm = _snap_strike(candidates, level, level)
+        atm = _snap_strike(candidates, level, level, bool(ladder.quotes_per_expiry))
         if atm is None:
             notes.append('{:g}y DROPPED - {} carries no contract on the deal side of its '
                          'forward'.format(pillar, expiry.isoformat()))
@@ -888,10 +907,17 @@ def select_rungs(chain, forward, ladder=None):
         if not _close(expiries[expiry], pillar):
             notes.append('{:g}y -> {} ({:.4g}y)'.format(pillar, expiry.isoformat(), tau))
         rungs.append(_rung('ATM', pillar, atm, tau, level, forward.rate, ladder))
+        stddev = atm_vol * math.sqrt(tau)
 
+        if ladder.quotes_per_expiry:
+            picks, empty = _span_wings(candidates, atm, level, stddev,
+                                       ladder.quotes_per_expiry - 1, ladder)
+            notes.extend('{:g}y {}'.format(pillar, note) for note in empty)
+            rungs.extend(_rung(kind, pillar, wing, tau, level, forward.rate, ladder)
+                         for kind, wing in picks)
+            continue
         if pillar not in ladder.wing_pillars:
             continue
-        stddev = atm_vol * math.sqrt(tau)
         for side, label in ((1.0, '{:g}d call'.format(ladder.wing_delta * 100)),
                             (-1.0, '{:g}d put'.format(ladder.wing_delta * 100))):
             target = level * math.exp(0.5 * stddev * stddev + side * z * stddev)
@@ -988,17 +1014,76 @@ def _census(chain):
     return census
 
 
+def _liquidity(contract, ladder):
+    """`sqrt(OI) / (1 + spread/spread_cap)`. Open interest is evidence of attention rather than a
+    precision, which is why it enters as a square root; the spread factor runs from 1 at a locked
+    market to 1/2 at the cap, so the tightest print is worth twice the widest survivor and nothing
+    that survived is worth zero."""
+    spread = contract.spread if contract.spread is not None else ladder.spread_cap
+    return math.sqrt(max(contract.open_interest or 0.0, 0.0)) / (1.0 + spread / ladder.spread_cap)
+
+
+def _span_wings(candidates, atm, level, stddev, count, ladder):
+    """`(picks, notes)` - the `count` out-of-the-money quotes SPANNING one expiry's smile, as
+    `[(kind, contract)]`.
+
+    Each side's OTM quotes are banded in STANDARDISED log-moneyness, `|ln(K/F)| / (sigma sqrt t)`
+    off that expiry's own ATM implied vol: one band per standard deviation, the last one open, and
+    the kind names the band's inner edge. THE CUT IS ONE SD because inside it a quote reads the
+    smile's SLOPE and beyond it the wing's WIDTH, and standardising is what lets one cut serve a 3M
+    expiry and a 3Y one, where a fixed strike ratio would be four wings on one and none on the
+    other.
+
+    The best quote per band by `_liquidity` is taken, near band first and sides alternating, so five
+    quotes an expiry is the ATM plus two a side. An empty band falls back to the nearest band
+    holding an unused quote, its own side first, and the note names both - a rung that quietly
+    changed band is unauditable against the ladder.
+    """
+    bands = -(-count // 2)
+    pools = {}
+    for contract in candidates:
+        if contract is atm or contract.option_type != (
+                'Call' if contract.strike >= level else 'Put'):
+            continue
+        sd = abs(math.log(contract.strike / level)) / stddev
+        pools.setdefault((contract.option_type, min(max(math.ceil(sd) - 1, 0), bands - 1)),
+                         []).append(contract)
+    for pool in pools.values():
+        pool.sort(key=lambda item: (-_liquidity(item, ladder), item.security))
+
+    picks, notes = [], []
+    for band in range(bands):
+        for side in ('Call', 'Put'):
+            if len(picks) >= count:
+                break
+            key, kind = (side, band), '{:g}sd {}'.format(band, side.lower())
+            if not pools.get(key):
+                key = min((held for held in pools if pools[held]), default=None,
+                          key=lambda held: (held[0] != side, abs(held[1] - band), held[1]))
+                if key is None:
+                    notes.append('{} DROPPED - no unused OTM quote left at this expiry'.format(kind))
+                    continue
+                notes.append('{} EMPTY -> the {:g}sd {} band'.format(kind, key[1], key[0].lower()))
+            picks.append((kind, pools[key].pop(0)))
+    return picks, notes
+
+
 def _rung(kind, pillar, contract, tau, level, rate, ladder):
-    """One rung with its RAW weight - `vega * sqrt(OI) / (1 + spread/cap)`, normalised by the
-    caller over the ladder as emitted. The vega is taken at the contract's own implied vol, or at
-    the ladder's flat proxy where the mid yields none, so a screened contract never weighs zero
-    for want of an inversion."""
+    """One rung with its RAW weight, normalised by the caller over the ladder as emitted: PURE Black
+    vega where `quotes_per_expiry` chose the quotes - liquidity picked the print and vega weighs it
+    - and `vega * sqrt(OI) / (1 + spread/cap)` on the delta ladder, where nothing else did. The vega
+    is taken at the contract's own implied vol, or at the ladder's flat proxy where the mid yields
+    none, so a screened contract never weighs zero for want of an inversion."""
     vol = implied_vol(contract.mid, level, contract.strike, rate, tau,
                       contract.option_type == 'Call') or ladder.reference_vol
     vega = black_vega(level, contract.strike, rate, vol, tau)
-    spread = contract.spread if contract.spread is not None else ladder.spread_cap
-    liquidity = math.sqrt(max(contract.open_interest or 0.0, 0.0))
-    weight = vega * liquidity / (1.0 + spread / ladder.spread_cap)
+    weight = vega
+    if not ladder.quotes_per_expiry:
+        # spelled out rather than through `_liquidity`, whose association is a ranking key's and
+        # would move the emitted delta-ladder weights in their last bits
+        spread = contract.spread if contract.spread is not None else ladder.spread_cap
+        weight = vega * math.sqrt(max(contract.open_interest or 0.0, 0.0)) / (
+            1.0 + spread / ladder.spread_cap)
     return Rung(kind, pillar, contract, tau, level, vol, vega, weight)
 
 
@@ -1169,11 +1254,14 @@ def quote_source(chain, forward, ladder, rungs, rows, notes, readings):
                 '' if low <= reading['implied_dividend'] <= high
                 else ' OUTSIDE the declared band {:.4%}..{:.4%}'.format(low, high)))
         for pillar, reading in sorted(readings.items()))
+    mode = '' if ladder.quotes_per_expiry is None else \
+        ', the best {} an expiry chosen by liquidity and weighted by vega alone'.format(
+            ladder.quotes_per_expiry)
     source = (
-        '{} rungs ({}) on {} distinct contracts off the listed {} chain as at {}, {} contracts '
+        '{} rungs ({}){} on {} distinct contracts off the listed {} chain as at {}, {} contracts '
         'believed of {} asked ({}); premiums are the terminal\'s own two-way mids. Forward: spot '
         '{:.6g} (last printed {}) carried at r={:.4%} on {} against {}{} [{}]'.format(
-            len(rungs), '/'.join(sorted({rung.kind for rung in rungs})), len(rows),
+            len(rungs), '/'.join(sorted({rung.kind for rung in rungs})), mode, len(rows),
             chain.underlying, chain.as_of.isoformat(), len(chain.contracts),
             len(chain.contracts) + len(chain.rejected),
             ', '.join('{} {}'.format(count, verdict)
