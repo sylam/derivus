@@ -75,7 +75,7 @@ import numpy as np
 import pytest
 import torch
 
-from derivus import utils
+from derivus import pricing, utils
 from crn_ladder import ladder
 import hn_reference as hnref
 
@@ -1142,3 +1142,236 @@ def test_the_wall_clocks_are_recorded():
     # a cap of 32 puts a non-converging loop at ~64, so this separates "converging" from "running
     # the loop out" and nothing finer. The same draw reads 8.5x idle and 39x under load.
     assert t_draw / t_phi < 50.0, t_draw / t_phi
+
+
+# ======================================================================================
+# GATE 6 - the batched layer: one state factor, one polished root, two routes to second order
+# ======================================================================================
+
+def _factor_world(k=21, n=256, panels=64):
+    """A strip and a cube of states for the factorisation gates - `n` paths off one fixing."""
+    strip = _strip(k, panels=panels)
+    g = torch.Generator(device=DEV).manual_seed(19)
+    h = _t(H0) * torch.exp(0.3 * torch.randn(n, generator=g, dtype=DTYPE, device=DEV))
+    q = _t(Q0) * torch.exp(0.1 * torch.randn(n, generator=g, dtype=DTYPE, device=DEV))
+    u = torch.rand(n, generator=g, dtype=DTYPE, device=DEV) * 0.98 + 0.01
+    return strip, h, q, u
+
+
+def test_the_state_factor_is_the_only_state_dependent_object():
+    """`exp(A + B h + C q)` built ONCE and handed down is the same tensor as rebuilding it, so
+    every contraction over the cache answers bit for bit either way.
+
+    That is the whole content of the factorisation: the survival Phi, the density, each Newton
+    residual and both polish steps were five rebuilds of one object per truncated draw. Sharing it
+    is a saving and not a re-marking, which is what `torch.equal` here says.
+    """
+    strip, h, q, u = _factor_world()
+    e = utils.hn_component_stride_factor(strip, h, q)
+    x = utils.hn_component_stride_invert(strip, u, h, q)
+    assert torch.equal(utils.hn_component_stride_cdf(strip, x, h, q),
+                       utils.hn_component_stride_cdf(strip, x, h, q, e)), 'the shared Phi moved'
+    assert torch.equal(utils.hn_component_stride_pdf(strip, x, h, q),
+                       utils.hn_component_stride_pdf(strip, x, h, q, e)), 'the shared density moved'
+    assert torch.equal(x, utils.hn_component_stride_invert(strip, u, h, q, factor=e)), \
+        'the shared inversion moved'
+    cap = _t(np.log(1.10))
+    a, _ = utils.hn_component_stride_draw(strip, u, h, q, x_cap=cap)
+    b, _ = utils.hn_component_stride_draw(strip, u, h, q, x_cap=cap, factor=e)
+    assert torch.equal(a, b), 'the shared draw moved'
+
+
+def test_the_cumulant_seed_is_what_keeps_the_polish_short():
+    """The Cornish-Fisher warm start against a cold one, in standard deviations of the law.
+
+    The cache already holds the exact first four cumulants, so the seed costs three multiply-adds a
+    path and lands a fraction of a standard deviation from the root; the mean of the law - the cold
+    start a bracket alone would give - is a whole quantile away. What it buys is the iteration
+    count, the only part of the stride that is not a single pass over the cache.
+    """
+    strip, h, q, u = _factor_world()
+    root = utils.hn_component_stride_invert(strip, u, h, q)
+    mean, var, g1, g2 = utils.hn_component_stride_cumulants(strip, h, q)
+    sd = var.sqrt()
+    z = utils.norm_icdf(u)
+    w = (z + (z * z - 1.0) * g1 / 6.0 + (z ** 3 - 3.0 * z) * g2 / 24.0
+         - (2.0 * z ** 3 - 5.0 * z) * g1 * g1 / 36.0)
+    warm = float(((mean + sd * w - root).abs() / sd).max())
+    cold = float(((mean - root).abs() / sd).max())
+    assert warm < 0.35 * cold, (warm, cold)
+    print('\nseed distance in sd: Cornish-Fisher %.3f against the law mean %.3f' % (warm, cold))
+
+
+def test_an_unpolished_root_is_refused_rather_than_returned():
+    """The inversion REFUSES a root it has not resolved, because everything downstream
+    differentiates that equation AT a solution of it. Starved of iterations, it raises by name.
+
+    AND IT REFUSES THE RIGHT PATHS. The breaks inside the loop are COLLECTIVE, so one stalled path
+    holds every other open - and the population that stalls is not a tail root at the quadrature's
+    floor, it is a path asked for a quantile the law does not reach, whose bracket the widening loop
+    then walks off to an |x| of 1e3 or more. That answer is a pre-existing saturation of the deep
+    tail; refusing the WHOLE call for it kills a valuation over paths of weight 1e-10. This gate
+    walks the band the pricer itself aims at - `pricing.HN_STRIDE_BOUND_SD` clamps every survival
+    cap to mean - 8 sd - and reads that it is returned, that the paths still open there are exactly
+    the ones thrown outside the law, and that a starved solve is refused all the same.
+    """
+    strip, h, q, u = _factor_world()
+    utils.hn_component_stride_invert(strip, u, h, q)              # converges at the default 32
+    with pytest.raises(ValueError) as exc:
+        utils.hn_component_stride_invert(strip, u, h, q, iters=1)
+    assert 'did not converge' in str(exc.value) and 'implicit function theorem' in str(exc.value)
+
+    # the reachable band: the deepest cap the pricer can aim, at the production panel count
+    deep = _strip(126, panels=pricing.HN_STRIDE_PANELS)
+    g = torch.Generator(device=DEV).manual_seed(77)
+    n = 1 << 14
+    hh = _t(H0) * torch.exp(0.3 * torch.randn(n, generator=g, dtype=DTYPE, device=DEV))
+    qq = _t(Q0) * torch.exp(0.1 * torch.randn(n, generator=g, dtype=DTYPE, device=DEV))
+    uu = torch.rand(n, generator=g, dtype=DTYPE, device=DEV)
+    mean, var, _, _ = utils.hn_component_stride_cumulants(deep, hh, qq)
+    sd, worst, thrown = var.sqrt(), 0.0, 0
+    for n_sd in (4.0, 5.0, 6.0, pricing.HN_STRIDE_BOUND_SD):
+        cap = (mean - n_sd * sd).detach()
+        x, phi_cap = utils.hn_component_stride_draw(deep, uu, hh, qq, x_cap=cap)
+        assert torch.isfinite(x).all(), 'the draw at mean - %g sd is not finite' % n_sd
+        open_ = (utils.hn_component_stride_cdf(deep, x, hh, qq) - uu * phi_cap).abs() >= 1e-14
+        out = (x - mean).abs() > 20.0 * sd
+        assert not bool((open_ & ~out).any()), \
+            'a path INSIDE the law stalled at mean - %g sd, which is the case that must refuse' \
+            % n_sd
+        worst, thrown = max(worst, int(open_.sum())), max(thrown, int(out.sum()))
+    assert worst and thrown, 'no band here stalls at all, so this gate no longer reads what it ' \
+                             'is for: %d open, %d thrown' % (worst, thrown)
+    print('\nrefusal: the pricer\'s own band down to mean - %g sd is returned; the %d paths still '
+          'open there are all outside the law (%d thrown past 20 sd), and none inside it stalls'
+          % (pricing.HN_STRIDE_BOUND_SD, worst, thrown))
+
+
+def _ift_terms(strip, root, h, q):
+    """The five partials of `F(x, h)` at the root that the second-order IFT contracts."""
+    xv = root.detach().clone().requires_grad_(True)
+    hv = h.detach().clone().requires_grad_(True)
+    F = utils.hn_component_stride_cdf(strip, xv, hv, q)
+    f = torch.autograd.grad(F.sum(), xv, create_graph=True)[0]
+    F_h = torch.autograd.grad(F.sum(), hv, create_graph=True)[0]
+    F_xx = torch.autograd.grad(f.sum(), xv, retain_graph=True)[0]
+    F_xh = torch.autograd.grad(f.sum(), hv, retain_graph=True)[0]
+    F_hh = torch.autograd.grad(F_h.sum(), hv)[0]
+    return f.detach(), F_h.detach(), F_xx.detach(), F_xh.detach(), F_hh.detach()
+
+
+def test_the_second_derivative_of_the_draw_is_the_second_order_ift():
+    """TWO ROUTES to `d2x/dh2`, and the named one-step mutant between them.
+
+    Route A double-backwards through the drawn return - the two attached polish steps as the pricer
+    runs them. Route B contracts the second-order implicit function theorem explicitly off the same
+    cache:
+
+        x'  = -F_h / f
+        x'' = -(F_xx x'^2 + 2 F_xh x' + F_hh) / f
+
+    THE MUTANT IS ONE STEP. Off a DETACHED root a single attached correction returns `-F_hh/f`,
+    the right FIRST derivative with `-F_xx F_h^2/f^3 + 2 F_xh F_h/f^2` dropped at second order - an
+    O(1) term, not a small one. Two steps start from an `x` that already carries `dx` and close it.
+    This reads all three: A == B, mutant == -F_hh/f, and the gap between them IS the contraction.
+
+    MEASURED: the two routes agree to 4.1e-15 relative, and what one step drops is 349% of the
+    answer - the dropped contraction is larger than the term the mutant keeps, so a one-step polish
+    does not give a small error in the second derivative, it gives the wrong sign of one.
+    """
+    strip, h, q, u = _factor_world(n=64)
+    hv = h.detach().clone().requires_grad_(True)
+    x, _ = utils.hn_component_stride_draw(strip, u, hv, q)
+    d1 = torch.autograd.grad(x.sum(), hv, create_graph=True)[0]
+    d2 = torch.autograd.grad(d1.sum(), hv)[0]
+
+    root = utils.hn_component_stride_invert(strip, u, h, q)
+    f, F_h, F_xx, F_xh, F_hh = _ift_terms(strip, root, h, q)
+    xp = -F_h / f
+    xpp = -(F_xx * xp ** 2 + 2.0 * F_xh * xp + F_hh) / f
+    scale = float(xpp.abs().max())
+    assert float((d1 - xp).abs().max()) / float(xp.abs().max()) < 1e-9, 'first order disagrees'
+    two = float((d2 - xpp).abs().max()) / scale
+    assert two < 1e-6, 'the two routes to second order disagree: %.3g relative' % two
+
+    # the mutant, built from the same public verbs: ONE attached step off the detached root
+    hm = h.detach().clone().requires_grad_(True)
+    dens = utils.hn_component_stride_pdf(strip, root, hm, q).detach()
+    xm = root + (u - utils.hn_component_stride_cdf(strip, root, hm, q)) / dens
+    m1 = torch.autograd.grad(xm.sum(), hm, create_graph=True)[0]
+    m2 = torch.autograd.grad(m1.sum(), hm)[0]
+    assert float((m1 - xp).abs().max()) / float(xp.abs().max()) < 1e-9, \
+        'the mutant was supposed to keep first order'
+    assert float((m2 + F_hh / f).abs().max()) / scale < 1e-6, \
+        'the mutant is not the term it is named for'
+    dropped = -F_xx * xp ** 2 / f + 2.0 * F_xh * F_h / f ** 2
+    assert float((d2 - m2 - dropped).abs().max()) / scale < 1e-6, \
+        'the gap between one step and two is not the contraction it should be'
+    size = float(((d2 - m2).abs() / d2.abs().clamp_min(1e-300)).max())
+    assert size > 0.1, 'the dropped term is not O(1) on this fixture, so this gate reads nothing'
+
+    # AND THE POLISH CLAMP DOES NOT BIND. Each correction is bounded by one standard deviation of
+    # the law, a guard against a density underflowed to zero in a deep tail - but WHERE IT BINDS its
+    # gradient is zero and both routes above silently become something else, so the theorem this
+    # gate reads holds only while the corrections stay numerically zero.
+    corr = ((u - utils.hn_component_stride_cdf(strip, root, h, q)).abs()
+            / utils.hn_component_stride_pdf(strip, root, h, q).clamp_min(1e-300))
+    bind = float((corr / utils.hn_component_stride_cumulants(strip, h, q)[1].sqrt()).max())
+    assert bind < 1e-9, 'the polish clamp is within %.3g of binding, which zeroes its own ' \
+                        'gradient and makes both readings above meaningless' % bind
+    print('\nsecond order: two routes agree to %.2g relative; one step drops %.0f%% of it; the '
+          'polish clamp sits %.1g of a standard deviation from binding' % (two, 100.0 * size, bind))
+
+
+def test_the_cos_term_count_is_measured_against_the_production_strip():
+    """STEP 4, MEASURED. A cosine series on the SAME cached recursion, its range off the same
+    cumulants, against the Gauss-Legendre strip the stride actually runs.
+
+    64-128 terms is not enough here: at the operating point (k = 21, monthly fixings) 128 terms read
+    1.3e-5 against a production strip whose own error is 6.9e-7. 256 terms read 1.6e-9 - better than
+    512 Gauss-Legendre nodes at HALF the count, which is the prize and it is 2x, not the 4-8x a
+    64-term series would have been. THE RANGE IS PER CONTRACT: `mean +/- 8 sd` is
+    `pricing.HN_STRIDE_BOUND_SD`, the reach the saturation already declares, and widening it to 12
+    costs two orders (4.2e-7 at 256 terms) because the top frequency falls with the range.
+
+    Nothing runs on this path. It is the measurement the decision needs, gated so it stays true.
+    """
+    k = 21
+    om = list(OMEGAS[:k])
+    ref = utils.hn_component_stride_strip(
+        om, PRM, R_STEP, _t(0.15 * H0), _t(0.5 * Q0), panels=256)
+    prod = utils.hn_component_stride_strip(
+        om, PRM, R_STEP, _t(0.15 * H0), _t(0.5 * Q0), phi_max=ref.phi_max, panels=64)
+    n = 2048
+    g = torch.Generator(device=DEV).manual_seed(3)
+    h = _t(H0) * torch.exp(0.4 * torch.randn(n, generator=g, dtype=DTYPE, device=DEV))
+    q = _t(Q0) * torch.exp(0.1 * torch.randn(n, generator=g, dtype=DTYPE, device=DEV))
+    with torch.no_grad():
+        mean, var, _, _ = utils.hn_component_stride_cumulants(ref, h, q)
+        sd = var.sqrt()
+        x = mean + sd * torch.linspace(-4.0, 4.0, n, dtype=DTYPE, device=DEV)
+        exact = utils.hn_component_stride_cdf(ref, x, h, q)
+        gl = float((utils.hn_component_stride_cdf(prod, x, h, q) - exact).abs().max())
+
+        def cos_err(terms, sd_half):
+            half = sd_half * float(sd.max())
+            a, b = float(mean.min()) - half, float(mean.max()) + half
+            kk = torch.arange(terms, dtype=DTYPE, device=DEV)
+            uu = kk * np.pi / (b - a)
+            A, B, C = utils.hn_component_abc(uu * 1j, om, *PRM, R_STEP)
+            logcf = A + B * h.unsqueeze(-1) + C * q.unsqueeze(-1)
+            coef = (torch.exp(logcf) * torch.exp(-1j * uu * a)).real * (2.0 / (b - a))
+            coef = torch.cat([0.5 * coef[..., :1], coef[..., 1:]], dim=-1)
+            t = x.unsqueeze(-1) - a
+            integ = torch.where(kk > 0, torch.sin(kk * np.pi * t / (b - a))
+                                * (b - a) / (kk.clamp_min(1) * np.pi), t)
+            return float(((coef * integ).sum(-1) - exact).abs().max())
+
+        rows = {terms: cos_err(terms, 8.0) for terms in (64, 128, 256)}
+        wide = cos_err(256, 12.0)
+    print('\nk=21  Gauss-Legendre 512 nodes %.1e | COS at +/-8 sd  ' % gl
+          + '  '.join('N=%d %.1e' % (t, e) for t, e in sorted(rows.items()))
+          + '  | COS 256 at +/-12 sd %.1e' % wide)
+    assert rows[128] > gl, '128 COS terms now beat the production strip - re-read the claim'
+    assert rows[256] < gl, '256 COS terms no longer beat 512 GL nodes, which was the whole prize'
+    assert wide > rows[256], 'the range stopped being per-contract - a wider one costs terms'

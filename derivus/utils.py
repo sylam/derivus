@@ -2273,22 +2273,40 @@ def cf_adaptive_phi_max(logcf, carry, dtype=torch.float64, device='cpu',
                         log_tol=-40.0, start=8.0, cap=2.0 ** 24):
     """Smallest power-of-two ``phi_max`` at which the inversion integrand has decayed.
 
-    Doubles ``phi`` until ``Re(logcf) - ln(phi)`` drops below ``log_tol`` on BOTH inversion contours
-    (``i*phi`` and ``i*phi + 1``), the +1 share-measure contour normalised by the log forward-growth
-    ``carry``. ``logcf`` must already be reduced to the SLOWEST-DECAYING state in the batch, so the
-    scan runs on a 2-element phi. A closed-form cutoff is wrong here: the envelope decays slower
-    than the pure-Gaussian ``exp(-phi^2 V/2)``. Runs under ``no_grad``.
+    The criterion is ``Re(logcf) - ln(phi) < log_tol`` on BOTH inversion contours (``i*phi`` and
+    ``i*phi + 1``), the +1 share-measure contour normalised by the log forward-growth ``carry``.
+    ``logcf`` must already be reduced to the SLOWEST-DECAYING states in the batch. A closed-form
+    cutoff is wrong here: the envelope decays slower than the pure-Gaussian ``exp(-phi^2 V/2)``.
+    Runs under ``no_grad``.
+
+    THE WHOLE LADDER IS ONE EVALUATION. The doubling rungs are independent questions and the
+    backward recursion behind ``logcf`` is ELEMENTWISE in phi, so every candidate and both contours
+    ride one pass as a single tensor and the sequential test then reads the answers off. The branch
+    unwrap is anchored on the trailing axis, which stays length one, so each element is asked the
+    same question one at a time or batched. THE ANSWER IS BIT-IDENTICAL AS MEASURED, NOT BY
+    CONSTRUCTION: elementwise on CUDA, while on CPU torch dispatches a different complex kernel and
+    three or four rungs in twenty land 1-2 ulp apart. What survives that is the BOUND, because the
+    criterion is a threshold on a power-of-two ladder: consecutive rungs are whole units of the
+    metric apart and the perturbation is 1e-15 of one.
+
+    THE PLUG-IN CONTRACT: ``logcf`` receives a complex phi of shape ``(rung, 1)`` and must
+    broadcast its state axes in FRONT of it, returning ``(*state, rung, 1)``.
     """
     with torch.no_grad():
-        phi = float(start)
+        rungs, phi = [], float(start)
         while phi < cap:
-            z = torch.tensor([phi], dtype=dtype, device=device) * 1j
-            m0 = logcf(z).real
-            m1 = logcf(z + 1.0).real - carry
-            if float(torch.maximum(m0, m1).max()) - np.log(phi) < log_tol:
-                return phi
+            rungs.append(phi)
             phi *= 2.0
-        return phi
+        if not rungs:
+            return phi                     # ``start`` is already at the cap: nothing to scan
+        ladder = torch.tensor(rungs, dtype=dtype, device=device).reshape(-1, 1)
+        m0 = logcf(ladder * 1j).real
+        m1 = logcf(ladder * 1j + 1.0).real - carry
+        top = torch.maximum(m0, m1).movedim(-2, 0).reshape(len(rungs), -1).amax(-1).tolist()
+        for rung, m in zip(rungs, top):
+            if m - np.log(rung) < log_tol:
+                return rung
+        return phi                         # nothing decayed: the first rung past the cap
 
 
 def cf_european_probabilities(logcf, log_moneyness, carry, phi_max, panels=256, order=8,
@@ -2391,10 +2409,10 @@ def auto_phi_max(n_steps, h1, omega, alpha, beta, gamma_star, r,
     """Smallest power-of-two phi_max with Re(A + B*h1) - ln(phi) < log_tol.
 
     The HN glue for :func:`cf_adaptive_phi_max`: it reduces the batch to the extreme h1 (the
-    smallest, whose integrand decays slowest) so the scan runs on a 2-element phi.
+    smallest, whose integrand decays slowest) so the scan runs on a 2-element state.
     """
     h1t = torch.as_tensor(h1).detach()
-    hs = torch.stack([h1t.min(), h1t.max()]).to(omega.dtype).reshape(-1, 1)
+    hs = torch.stack([h1t.min(), h1t.max()]).to(omega.dtype).reshape(-1, 1, 1)
     carry = torch.as_tensor(r).detach() * int(n_steps)
     return cf_adaptive_phi_max(
         lambda z: hn_logmgf(z, n_steps, hs, omega, alpha, beta, gamma_star, r), carry,
@@ -2810,7 +2828,7 @@ def hn_component_auto_phi_max(omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, g
     """Smallest power-of-two phi_max with Re(A + B*h0 + C*q0) - ln(phi) < log_tol.
 
     The component glue for :func:`cf_adaptive_phi_max`, reducing the batch to the EXTREME states so
-    the scan runs on a 4-element phi.
+    the scan runs on a 4-element state.
 
     ALL FOUR CORNERS OF THE (h0, q0) BOX, not the two diagonal ones: B and C are free to carry
     OPPOSITE signs, so the slowest-decaying state can be (h.max, q.min), which pairing h with q by
@@ -2824,8 +2842,8 @@ def hn_component_auto_phi_max(omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, g
     """
     h = torch.as_tensor(h0).detach().to(alpha.dtype).reshape(-1)
     q = torch.as_tensor(q0).detach().to(alpha.dtype).reshape(-1)
-    hs = torch.stack([h.min(), h.min(), h.max(), h.max()]).reshape(-1, 1)
-    qs = torch.stack([q.min(), q.max(), q.min(), q.max()]).reshape(-1, 1)
+    hs = torch.stack([h.min(), h.min(), h.max(), h.max()]).reshape(-1, 1, 1)
+    qs = torch.stack([q.min(), q.max(), q.min(), q.max()]).reshape(-1, 1, 1)
     carry = torch.as_tensor(r).detach() * len(omegas)
     return cf_adaptive_phi_max(
         lambda z: hn_component_logmgf(z, omegas, hs, qs, alpha, beta, gamma1, rho, phi_q,
@@ -3078,27 +3096,42 @@ def _hn_stride_cast(strip, *xs):
         *[torch.as_tensor(x, dtype=strip.nodes.dtype, device=strip.nodes.device) for x in xs])
 
 
-def hn_component_stride_cdf(strip, x, h, q):
+def hn_component_stride_factor(strip, h, q):
+    """``E = exp(A + B h + C q)`` on the node axis - THE ONE STATE-DEPENDENT OBJECT the stride has.
+
+    Everything after it is a contraction over this cache: the survival p, each ``F(x)``/``f(x)``,
+    the Newton residuals, the fired branch's tilted mass, the backward polish terms. Built once per
+    fixing and handed down, it costs a survival-truncated draw one build where the contractions
+    would otherwise ask for five - and it is the same tensor either way, so nothing about a strip's
+    numbers moves with the sharing.
+    """
+    h, q = _hn_stride_cast(strip, h, q)
+    return torch.exp(_hn_stride_logcf(strip, h, q))
+
+
+def hn_component_stride_cdf(strip, x, h, q, factor=None):
     """``Q(R_k <= x | h, q)`` over the cache - the stride's Gil-Pelaez Phi.
 
     THE SAME QUADRATURE `hn_component_cdf_logret` RUNS, with the A/B/C recursion replaced by the
     cached strips and nothing else changed - same nodes, weights and assembly order, so the two
     agree bit-for-bit at equal ``phi_max``/``panels``/``order`` (gated). ``x``, ``h`` and ``q``
     broadcast together. Differentiable w.r.t. ``x``, the state, and every model parameter.
+
+    ``factor`` is this state's :func:`hn_component_stride_factor`, to avoid rebuilding it.
     """
     x, h, q = _hn_stride_cast(strip, x, h, q)
     shift = torch.exp(-1j * strip.nodes * x.unsqueeze(-1)) / (strip.nodes * 1j)
-    d = (shift * torch.exp(_hn_stride_logcf(strip, h, q))).real
+    d = (shift * (hn_component_stride_factor(strip, h, q) if factor is None else factor)).real
     return 1.0 - (0.5 + (d * strip.wts).sum(-1) / np.pi)
 
 
-def hn_component_stride_pdf(strip, x, h, q):
+def hn_component_stride_pdf(strip, x, h, q, factor=None):
     """The density of the k-step log-return, ``dQ/dx`` - the same inversion without ``1/(i phi)``
     (differentiating under the integral cancels it).  Used to reattach the exact gradient to the
     inverted draw, and as the Newton slope inside the inversion."""
     x, h, q = _hn_stride_cast(strip, x, h, q)
     d = (torch.exp(-1j * strip.nodes * x.unsqueeze(-1))
-         * torch.exp(_hn_stride_logcf(strip, h, q))).real
+         * (hn_component_stride_factor(strip, h, q) if factor is None else factor)).real
     return (d * strip.wts).sum(-1) / np.pi
 
 
@@ -3112,7 +3145,7 @@ def hn_component_stride_cumulants(strip, h, q):
     return k[0], k[1], k[2] / k[1] ** 1.5, k[3] / k[1] ** 2
 
 
-def hn_component_stride_invert(strip, p, h, q, iters=32, tol=1.0e-14, chunk=None):
+def hn_component_stride_invert(strip, p, h, q, iters=32, tol=1.0e-14, chunk=None, factor=None):
     """Solve ``Q(R_k <= x | h, q) = p`` for x, per path.  VALUE ONLY - no gradient.
 
     CORNISH-FISHER SEED, then safeguarded Newton. The seed is free - the cache already holds the
@@ -3121,26 +3154,58 @@ def hn_component_stride_invert(strip, p, h, q, iters=32, tol=1.0e-14, chunk=None
     cached density with a bisection fallback whenever a step leaves the running bracket, which is
     what makes this safe where Cornish-Fisher is not monotone.
 
-    The state-dependent factor ``exp(A + B h + C q)`` is HOISTED OUT of the loop, so an iteration is
-    one complex exponential and one dot product over the node axis - a reassociation of
+    The state-dependent factor ``exp(A + B h + C q)`` is HOISTED OUT of the loop and the rotation
+    ``exp(-i phi x)`` is shared by the residual and the slope, so an iteration is ONE complex
+    exponential and two dot products over the node axis - a reassociation of
     :func:`hn_component_stride_cdf`, not a second formula.
 
-    The gradient is not lost, it is DEFERRED: :func:`hn_component_stride_draw` reattaches it by one
-    graph-carrying Newton step at this root, exactly.
+    The gradient is not lost, it is DEFERRED: :func:`hn_component_stride_draw` reattaches it by two
+    graph-carrying Newton steps at this root - one for the implicit function theorem, the second for
+    the O(1) term a detached starting point drops at second order.
+
+    IT REFUSES RATHER THAN RETURNING AN UNPOLISHED ROOT: every second-order term downstream is built
+    by differentiating THIS equation at THIS root, and the implicit function theorem says nothing
+    about a point that does not solve it.
+
+    THE REFUSAL IS PER PATH, AND ONLY OF PATHS THE LAW REACHES. The two breaks above are collective,
+    so one stalled path holds every other open, and the ONE population that stalls is the one whose
+    target lies outside the law: past about mean - 5 sd the strip's own quadrature error exceeds the
+    probability being asked for, no bracket exists, and the widening loop walks off to an ``x`` of
+    1e3 to 1e5. Those paths are MARKED as they widen and exempted, because their answer is a
+    pre-existing saturation of the deep tail and not a convergence question - measured at k = 126,
+    a mean - 8 sd cap and 32,768 paths: 228 such, against 0 paths that stall inside the law's reach
+    in any band from the untruncated draw down to that cap. What is refused is a path whose own
+    +/-4 sd bracket held the root and which still did not resolve it - a starved iteration count or
+    a NaN - and one is enough to refuse the call.
 
     ``chunk`` blocks the path axis at :data:`HN_STRIDE_INVERT_BLOCK` complex elements. The iteration
     is elementwise, but the CONVERGENCE BREAK is collective, so a different blocking stops one
     iteration earlier or later and the roots agree to ``tol`` rather than bitwise (measured 7.1e-15
     in x between a 5,000-path solve and the same paths in blocks of 7).
+
+    ``factor`` is the state's :func:`hn_component_stride_factor` and must ALREADY BE AT THE CAST
+    SHAPE - one row per path this call solves. It is blocked alongside ``p`` and a factor that
+    merely broadcasts against it would be sliced out of step, so the shape is checked rather than
+    broadcast: the caller that has one has already cast its arguments together. THE GUARD IS HERE
+    AND NOWHERE ELSE because this is the only verb that slices the path axis - the CDF and the
+    density take a factor unchecked, having nothing to do with it but broadcast.
     """
     p, h, q = _hn_stride_cast(strip, p, h, q)
     n_node = strip.nodes.numel()
+    if factor is not None and tuple(factor.shape) != tuple(p.shape) + (n_node,):
+        raise ValueError(
+            'HN_Stride: a state factor of shape {} was handed to a {}-path inversion, which wants '
+            '{}. It is blocked with the path axis, so a broadcastable-but-narrower one would be '
+            'sliced out of step - build it from the arguments AFTER they are cast '
+            'together.'.format(tuple(factor.shape), p.numel(), tuple(p.shape) + (n_node,)))
     if chunk is None:
         chunk = max(1, int(HN_STRIDE_INVERT_BLOCK // n_node))
     if p.numel() > chunk:
         shape, pf, hf, qf = p.shape, p.reshape(-1), h.reshape(-1), q.reshape(-1)
+        ff = None if factor is None else factor.reshape(-1, n_node)
         return torch.cat([hn_component_stride_invert(
-            strip, pf[i:i + chunk], hf[i:i + chunk], qf[i:i + chunk], iters, tol, chunk)
+            strip, pf[i:i + chunk], hf[i:i + chunk], qf[i:i + chunk], iters, tol, chunk,
+            None if ff is None else ff[i:i + chunk])
             for i in range(0, pf.numel(), chunk)]).reshape(shape)
     with torch.no_grad():
         mom = strip.mom
@@ -3155,32 +3220,48 @@ def hn_component_stride_invert(strip, p, h, q, iters=32, tol=1.0e-14, chunk=None
                  - (2.0 * z * z * z - 5.0 * z) * g1 * g1 / 36.0)
             seed = mean + sd * w.clamp(-9.0, 9.0)
         nodes, wts = strip.nodes, strip.wts
-        cf = torch.exp(_hn_stride_logcf(strip, h, q))
+        cf = hn_component_stride_factor(strip, h, q) if factor is None else factor
         w_cdf, w_pdf = cf * wts / (nodes * 1j), cf * wts
 
-        def phi_of(xx):
-            e = torch.exp(-1j * nodes * xx.unsqueeze(-1))
+        def rotate(xx):
+            """``exp(-i phi x)`` on the node axis - the one transcendental an iterate costs."""
+            return torch.exp(-1j * nodes * xx.unsqueeze(-1))
+
+        def phi_of(xx, e=None):
+            e = rotate(xx) if e is None else e
             return 1.0 - (0.5 + (e * w_cdf).real.sum(-1) / np.pi)
 
-        def dens(xx):
-            e = torch.exp(-1j * nodes * xx.unsqueeze(-1))
+        def dens(xx, e=None):
+            e = rotate(xx) if e is None else e
             return (e * w_pdf).real.sum(-1) / np.pi
 
         lo, hi = torch.minimum(seed, mean) - 4.0 * sd, torch.maximum(seed, mean) + 4.0 * sd
+        beyond = torch.zeros_like(p, dtype=torch.bool)
         for _ in range(16):                       # widen until the bracket actually brackets
             below, above = phi_of(lo) > p, phi_of(hi) < p
             if not bool(below.any() or above.any()):
                 break
+            # A WIDENED PATH IS ONE ASKED FOR A QUANTILE THE LAW DOES NOT REACH - four standard
+            # deviations past a seed exact to four cumulants already spans it - so it is marked and
+            # exempted from the convergence refusal below
+            beyond |= below | above
             lo = torch.where(below, mean - 2.0 * (mean - lo), lo)
             hi = torch.where(above, mean + 2.0 * (hi - mean), hi)
         x = seed.clamp(min=lo, max=hi)
+        worst, n_open = float('nan'), 0
+        settled = False
         for _ in range(iters):
-            fx = phi_of(x) - p
+            # F(x) AND f(x) ARE TWO CONTRACTIONS OF ONE ROTATION: they are asked at the same x
+            # every iteration, and the rotation is the only transcendental in the loop
+            rot = rotate(x)
+            fx = phi_of(x, rot) - p
             lo = torch.where(fx <= 0.0, x, lo)
             hi = torch.where(fx > 0.0, x, hi)
-            if float(fx.abs().max()) < tol:
+            worst = float(fx.abs().max())
+            if worst < tol:
+                settled = True
                 break
-            step = x - fx / dens(x).clamp_min(HN_STRIDE_TINY)
+            step = x - fx / dens(x, rot).clamp_min(HN_STRIDE_TINY)
             # NON-STRICT against the bracket: a CONVERGED path has just set an endpoint to its own
             # x, and a strict test reads its Newton step as "outside" and bisects a bracket still
             # four standard deviations wide, throwing the root away
@@ -3189,11 +3270,31 @@ def hn_component_stride_invert(strip, p, h, q, iters=32, tol=1.0e-14, chunk=None
             done = bool(((nxt - x).abs() <= tol * sd).all())
             x = nxt
             if done:
+                settled = True
                 break
-        return x
+        if not settled:
+            # THE BREAKS ARE COLLECTIVE, so one path stalling holds every other one open. The
+            # refusal is therefore asked per path, and only of paths the law actually reaches
+            fx = (phi_of(x) - p).abs()
+            open_ = ~(fx < tol) & ~beyond
+            settled = not bool(open_.any())
+            n_open = int(open_.sum())
+            worst = float(fx[open_].max()) if n_open else float(fx.max())
+    if not settled:
+        raise ValueError(
+            'HN_Stride: {} of {} paths did not converge in {} iterations - the worst is {:.3g} '
+            'away in probability against a tolerance of {:.3g}, and every one of them was asked '
+            'for a quantile INSIDE the law\'s own reach. That root is not returned because every '
+            'term built on it differentiates THIS equation AT a solution of it: the draw\'s '
+            'gradient is the implicit function theorem and its second derivative two polish steps '
+            'from the root, neither of which says anything at a point that does not solve it. A '
+            'NaN in the inversion is the usual cause and means the strip is not a probability - '
+            'raise the state floor (`pricing.ComponentHestonNandiKit.stride_state_floor`) or price '
+            'with HN_Stride off.'.format(n_open, p.numel(), iters, worst, tol))
+    return x
 
 
-def hn_component_stride_draw(strip, u, h, q, x_cap=None, iters=32, tol=1.0e-14):
+def hn_component_stride_draw(strip, u, h, q, x_cap=None, iters=32, tol=1.0e-14, factor=None):
     """SURVIVAL-TRUNCATED inverse-CDF draw of the k-step log-return.  Returns ``(x, phi_cap)``.
 
     ``u`` is uniform on (0,1) and the draw solves ``Q(R_k <= x) = u * Phi_cap`` with
@@ -3222,19 +3323,23 @@ def hn_component_stride_draw(strip, u, h, q, x_cap=None, iters=32, tol=1.0e-14):
     EACH CORRECTION IS BOUNDED BY ONE STANDARD DEVIATION of the k-step law, which never binds in
     normal running. It is there because the density is a divisor, and a quadrature underflowed to
     zero in a deep tail would turn a rounding residual into an infinity.
+
+    ONE STATE FACTOR SERVES THE WHOLE DRAW - the cap's Phi, the inverter, the density at the root
+    and both polish steps are five contractions of the same ``exp(A + B h + C q)``, built once here.
     """
     u, h, q = _hn_stride_cast(strip, u, h, q)
+    e = hn_component_stride_factor(strip, h, q) if factor is None else factor
     phi_cap = (torch.ones_like(u) if x_cap is None
-               else hn_component_stride_cdf(strip, x_cap, h, q))
+               else hn_component_stride_cdf(strip, x_cap, h, q, e))
     target = u * phi_cap
     root = hn_component_stride_invert(
-        strip, target.detach(), h.detach(), q.detach(), iters, tol)
-    dens = hn_component_stride_pdf(strip, root, h, q).detach().clamp_min(HN_STRIDE_TINY)
+        strip, target.detach(), h.detach(), q.detach(), iters, tol, factor=e.detach())
+    dens = hn_component_stride_pdf(strip, root, h, q, e).detach().clamp_min(HN_STRIDE_TINY)
     bound = (hn_component_stride_cumulants(strip, h, q)[1].detach().clamp_min(0.0).sqrt()
              if strip.mom is not None else torch.ones_like(dens))
     x = root
     for _ in range(2):
-        x = x + ((target - hn_component_stride_cdf(strip, x, h, q)) / dens).clamp(
+        x = x + ((target - hn_component_stride_cdf(strip, x, h, q, e)) / dens).clamp(
             min=-bound, max=bound)
     return x, phi_cap
 

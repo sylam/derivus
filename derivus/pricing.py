@@ -124,25 +124,41 @@ def hn_stride_phi_max(omegas, hnc_params, h_box, q_box, r=0.0):
 
     All four corners of the ``(h, q)`` box: B and C may carry opposite signs, so the slowest-decaying
     state can be (h.max, q.min).
+
+    THE RUNGS RIDE ONE RECURSION. Each rung is an independent evaluation and the A/B/C recursion is
+    elementwise in phi, so the whole ladder and both contours go through as one tensor whose
+    trailing axis - the branch unwrap's anchor - stays length one; the best-decay walk then reads
+    the answers off in order. Same bound, same strip, same price, MEASURED RATHER THAN BY
+    CONSTRUCTION: on CPU torch dispatches a different complex kernel for the batch and the returned
+    DECAY moves by 1 ulp. The RUNG does not, because it is a threshold on a power-of-two ladder
+    whose rungs are units of the metric apart; nor does its consumer's ruling, `stride_state_floor`
+    reading the decay against :data:`HN_STRIDE_PHI_MIN_DECAY` with 15 to 42 units of margin.
     """
     h = torch.as_tensor(h_box).detach().reshape(-1)
     q = torch.as_tensor(q_box).detach().reshape(-1)
-    hs = torch.stack([h.min(), h.min(), h.max(), h.max()]).reshape(-1, 1)
-    qs = torch.stack([q.min(), q.max(), q.min(), q.max()]).reshape(-1, 1)
+    hs = torch.stack([h.min(), h.min(), h.max(), h.max()]).reshape(-1, 1, 1)
+    qs = torch.stack([q.min(), q.max(), q.min(), q.max()]).reshape(-1, 1, 1)
     dt, dev = hs.dtype, hs.device
-    best, best_phi, phi = float('inf'), 8.0, 8.0
+    rungs, phi = [], 8.0
+    while phi <= HN_STRIDE_PHI_CAP:
+        rungs.append(phi)
+        phi *= 2.0
     with torch.no_grad():
-        while phi <= HN_STRIDE_PHI_CAP:
-            z = torch.tensor([phi], dtype=dt, device=dev) * 1j
-            m = max(float(utils.hn_component_logmgf(z, omegas, hs, qs, *hnc_params, r).real.max()),
-                    float(utils.hn_component_logmgf(
-                        z + 1.0, omegas, hs, qs, *hnc_params, r).real.max())) - math.log(phi)
-            if m > best:
-                break                     # the metric has turned: the recursion is diverging
-            best, best_phi = m, phi
-            if m < HN_STRIDE_PHI_LOG_TOL:
-                break
-            phi *= 2.0
+        ladder = torch.tensor(rungs, dtype=dt, device=dev).reshape(-1, 1) * 1j
+
+        def envelope(z):
+            m = utils.hn_component_logmgf(z, omegas, hs, qs, *hnc_params, r).real
+            return m.movedim(-2, 0).reshape(len(rungs), -1).amax(-1).tolist()
+
+        tops = list(zip(envelope(ladder), envelope(ladder + 1.0)))
+    best, best_phi = float('inf'), 8.0
+    for phi, (m0, m1) in zip(rungs, tops):
+        m = max(m0, m1) - math.log(phi)
+        if m > best:
+            break                         # the metric has turned: the recursion is diverging
+        best, best_phi = m, phi
+        if m < HN_STRIDE_PHI_LOG_TOL:
+            break
     return best_phi, best
 
 

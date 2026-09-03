@@ -11,6 +11,7 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Open
 
+- **`hn_component_stride_invert`'s deep-tail bracket** — a target the strip cannot represent (past ~mean−5 sd the quadrature's error exceeds the probability asked; past mean−10 sd it loses monotonicity) has no bracket, the widening loop runs out, and the returned "root" is |x| of 10³–10⁵ — booked by `stride_advance` at ~1e-10 weight per path (396 paths below −100 at 2¹⁷; identical before and after the batched layer, so pre-existing). The convergence refusal now exempts these paths by the `beyond` mark, so they return as they always did rather than killing the valuation. The fix mirrors `stride_cdf`'s saturation — invert to the support edge, never beyond — and re-marks a default path, so it waits for the word. *Measured:* min draw −211,472 on both trees; zero open-and-never-widened stalls across 26 operating bands.
 - **The streamed-settlement pricers' ledger channel** — `pv_MC_Accumulator`, `pv_MC_Tarf` and `pv_MC_ExtendableForward` settle a stream of per-fixing cashflows, so a branch's change in remaining PV is not the change in what was paid: declaring through `settles` read a knocked-out accumulator as settling 1476 at a row it settles nothing at, and the field is scoped to whole-value settlements instead (the barrier family, closed below). Needs its own declared shape — the unconditional fixing beside its own decision index — and a document that can falsify it. The extendable's own settled-cash limit is measured second order and stands.
 - **`pv_partial_barrier_option` settlement completeness** — the rebate leg's per-decision `cash_events` are declared and audited off-gate (booked rows {1, 2}, declared {0, 1, 2}, support exact over 1024 paths) but no shipped gate forces completeness, for want of a collateralised partial-barrier document. The safety half is gated (`test_a_rebated_knock_out_registers_the_rebate_it_books_row_by_row`).
 - **`pricing.stochastic_boundary_correction` (`gates/boundary_bandwidth_plateau.py`)** — The bandwidth plateau holds and is carried, not closed: the 32768-path operating point became runnable when the Sobol chunking closed (2026-09-03) and the re-read there is pending. The declared `Boundary_AAD_Bandwidth` default 0.01 sits one rung inside the plateau's lower edge. The suppression seam is that same field at 1e-12, bit-identical to deleting the correction. *Measured:* At 16384 and 20480 paths the estimate holds over 0.005–0.08: seed-mean correction spread 2.41% (discrete barrier) / 3.87% (HN), reported CVA delta 0.60% / 0.24%, against seed floors 13.69% / 28.52%. No single seed sees it — per-seed spreads 12.7–23.1%, seeds disagreeing on the drift's sign, and the seed floor bounds part of the noise only because the Sobol stream is not derived from `Random_Seed`. Lower edge at 0.0025: 9–20% low, per-rung seed spread to 101% (kernel starvation). At 2048 paths the correction falls monotonically 23.76% and nothing holds still. Acceptance names 32768. Re-baselined onto the declared grid: the HN barrier gate is 1.18% against a 6.19% suppression mutant, and the discrete-barrier profile gate is a bit-exact rebate ledger.
@@ -123,6 +124,15 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
     the same category.
 12. **`Boundary_AAD_Window_Touch`'s magnitude.** The switch decides the sign; `add_grid_dates`
     landed 2026-09-03, so the enriched fixture and the re-measurement are now possible.
+13. **COS in the stride.** Measured, not shipped: 256 terms (not 64–128) beat the 512-node strip
+    by 400×, worth 2× on the stride path — at the cost of a second quadrature family through the
+    tilts, partial moments and saturation, on a default-off path already ruled not a speed lever.
+14. **The stride's deep-tail saturation.** Invert to the support edge rather than past it (the
+    defect row above); exact fix known, re-marks a default path.
+15. **The `Branch_And_Weight` default.** Prerequisites now in hand except one: the averaging arms
+    refuse under the switch, so a blanket flip needs an averaging-falls-back-to-crisp rule first;
+    the HN arm's cost is measured (the stride layer, above). Values re-mark within their own MC
+    noise at 12–23× less variance; the greeks are the prize.
 
 ## Designed, not built
 
@@ -178,8 +188,13 @@ at least as much as CVA: a tail quantile lives on the high-`h` paths a re-seed f
 **The stride's escalation rungs**, recorded with triggers: map the carry residual through the exact
 1D `h`-marginal quantiles (the `h`-floor mass from k = 21 onward is what it deletes); adaptive
 striding where fixings sit within 10–15 days of a barrier; Lugannani–Rice on the cached CGF where a
-consumer needs Φ past the quadrature's 1e-9. The open speed lever is a batched Φ across the cube
-with B/C reuse across equal intervals.
+consumer needs Φ past the quadrature's 1e-9. The open speed lever is located (2026-09-03): the
+origin moment block is 86% of a strided TARF's cost, its 13 autograd chains depend on the ω strip
+only through `A`, which is *linear* in it (`A = Σ D_t ω_t + Ã`, `D_t = B_t + C_t`), so the ω-free
+half is reusable across every interval of equal length — one matvec per interval, 11 of 12 blocks
+on a monthly schedule. Wants forward-mode jets or a per-step `D` strip, re-records the stride, not
+built. Second lever, measured smaller: COS needs 256 terms here (not the hoped 64–128; 128 is
+*worse* than the strip it would replace) and buys 2× — measured, not shipped, the call is open.
 
 **Incremental XVA as risk-impact v2** — a counterparty on the quote and
 `CVA(book + mirror) − CVA(book)` through `Credit_Monte_Carlo`, the same two-run seam with a
@@ -243,9 +258,11 @@ set; and five model items in the punchlist below.
   cache, survival-truncated inversion, and carried state by quadratic conditional matching with
   autograd mixed moments. The step returns the spot un-shifted into the deal's own carry — without
   it survivor quantiles sat 26.8× outside the walk's band, with it 0.44×. 69 oracle gates against
-  the exact 2D conditional sampler, error scanned in k (peak at k = 24–25). **The speed claim is
-  refuted**: 111–147× *slower* than the daily walk, widening with the cube. It stays because it is
-  the smooth estimator's conditioning law.
+  the exact 2D conditional sampler, error scanned in k (peak at k = 24–25). **The speed claim stays
+  refuted** (re-measured 2026-09-03 after the batched Fourier layer): order 100× slower than the
+  daily walk — quote the strided wall clock, not the ratio: 2.58–3.58 s against 2.96–4.74 s before,
+  13–24% off the fixed cost, while the daily leg is 25–38 ms and carries ±20% of any ratio on its
+  own. Still no crossover; it stays because it is the smooth estimator's conditioning law.
 - **The stride's three consumers, four pricers** (2026-09-02) — HN branch-and-weight on the
   no_averaging paths (crisp mixture and smooth arm report the same delta bit for bit on values 2%
   apart), the conditional-p jump gamma with Φ as `p` (supersession gated on the registered
@@ -594,12 +611,14 @@ declares another.
 
 **What remains narrow on the HN stack**: batched-carry `hn_call` (stochastic-rate CVA raises loud
 today rather than mispricing silently, and the already-hit leg raises the same refusal — the second
-caller that would pay for the fix), the `Steps_Per_Year` check, and a cheaper `phi_max` envelope.
-`hn_call` leaves `phi_max=None`, so every price re-derives the bound by doubling from 8 — 0.45 /
-1.13 / 3.42 s at 21 / 63 / 252 steps against 0.08 / 0.22 / 0.87 s pinned, i.e. **75–82% of every
-Heston–Nandi option price** — and an L-BFGS-B fit spends its whole life there (`POST /book/hn`
-measured 288 s on a four-pillar ladder reaching six months). A cheaper envelope, or reuse across a
-line search, is worth roughly **4×** on every calibration in the stack. `hit_value` staying GBM
+caller that would pay for the fix), and the `Steps_Per_Year` check. The `phi_max` scan is **CLOSED
+(2026-09-03)**: the doubling ladder runs as one batched recursion pass — bit-identical as measured
+(elementwise on CUDA; on CPU a different complex kernel lands 3–4 rungs in 20 within 1–2 ulp, the
+bound surviving because it is a threshold on a power-of-two ladder with 15–42 units of margin to
+`HN_STRIDE_PHI_MIN_DECAY`) — verified on 300 pinned keys both devices plus a four-pillar fit
+landing the same parameters to the last digit. The scan is now 0.08 / 0.26 / 0.98 s at 21 / 63 /
+252 steps against 0.15 / 0.22 / 0.87 s pinned — **31–38% of a price, was 75–82%** — so every
+calibration in the stack roughly halves. `hit_value` staying GBM
 under HN is closed: both vanillas take the declared model's closed form, worth 15.8% per unit and
 25.3% EPE / 26.9% PFE95 on the profile. The Malz surface lookup is gated again by
 `test_the_hn_ladder_is_ten_vega_weighted_points_on_the_surfaces_own_strikes`, which puts every strike
