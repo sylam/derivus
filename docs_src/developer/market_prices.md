@@ -179,8 +179,8 @@ has a kink at zero leverage.
 squares over a Fourier-inverted daily GARCH recursion and it is MINUTES: **288 s** on the four-pillar
 ladder reaching six months (549 s with the suite running beside it, to the same five parameters bit
 for bit), past 21 minutes on one reaching a year. Iteration count dominates step count, so neither
-reading predicts the other; both share that **75–82% of every option price is the adaptive `phi_max`
-scan** (0.87 s against 3.42 s per `hn_call` at 252 steps). So it rides no tick, and a market tick
+reading predicts the other; both share that the adaptive `phi_max` scan is **31–38% of every
+option price** since the doubling ladder batched. So it rides no tick, and a market tick
 leaves the parameters where they were. `Bootstrapper Configuration` names the families that run on
 every bootstrap and a tick is a bootstrap, so the verb BORROWS the family entry for its run and hands
 it back. It drops its own block before re-installing it, because these strikes are a FUNCTION of the
@@ -284,30 +284,43 @@ which under `Refuse` is the difference between a fit and a refusal.
 
 ### Wall time, measured
 
-**4.79 s an outer evaluation** on the four-pillar ladder reaching six months, which puts the declared
-300-evaluation cap at **24 minutes** and 400 at 32 — the default is the largest that fits the half
-hour, and a fit that stops there reports itself CAPPED with the residual it reached. One reading past
-the cap, at 400 evaluations on that ladder: ATM residual **0.000e+00**, worst wing 5.66% of premium.
-**What full convergence costs and buys is NOT MEASURED** — the one run taken to Nelder–Mead's own
-tolerance (1268 evaluations) ran under the reused-quadrature-bound defect below, so its numbers are
-void and it has not been repeated. The cap is justified on wall clock, not on diminishing returns.
+**One backward recursion for the bound strip plus one per quadrature bound the evaluation widens
+to** — two on the four-pillar ladder, and that is the floor there. `B` and `C` never read the
+`ω` strip and are time-homogeneous, and `A` is affine in it, so ONE pass at the longest maturity
+carries every maturity (a prefix), every `L` curve (a dot product) and every cost of carry (a
+per-step constant) — `utils.hn_component_abc_strip`, held by `bootstrappers.ComponentStrips`, which
+lives inside one evaluation and dies with it. The quadrature grid is a NESTED dyadic union
+(`utils.gauss_legendre_dyadic`): fixed blocks [0,8], [8,16], [16,32], …, each carrying at least the
+panel width `Quadrature_Panels` uniform panels buy over that block's own bound, so a contract at
+bound 2ᵏ integrates a PREFIX of one grid — 2,048 nodes at bound 512 against 512, at accuracy at or
+above the uniform grid's on every rung by construction, and measurably above it past 512, where 64
+uniform panels are under-resolved by up to 2.9e-08 relative.
 
-**It runs on the CPU**, whatever device the job was constructed with. The A/B/C recursion is `n`
-SEQUENTIAL steps of about ten elementwise operations over a 512-element complex vector, which is
-kernel-launch bound on a GPU: one 126-step price is **47 ms on the CPU against 186 ms on CUDA**
-(RTX 3090), and the `φ_max` scan 172 ms against 775 ms. The gap does not close with panels (16 to 128
-measured).
+**0.176 s an outer evaluation** on the four-pillar ladder reaching six months, against 2.21 s
+before the strips: the declared 300-evaluation cap is **53 s against 662 s**, not 24 minutes, and a
+fit that stops there still reports itself CAPPED with the residual it reached. The profile is 63%
+the two recursions (the branch unwrap 26% of the evaluation), 11% the bounds, 12% the quadrature
+and its grid, 14% `brentq` and the Python glue. **What full convergence buys, now measured**:
+Nelder–Mead to its own tolerance is 1,246 evaluations and 243 s for a wing residual of 1.604e-03
+against **2.049e-03** at the 300 cap (the objective's own value, scaled by the mean squared premium;
+the fit log's unscaled 1.196e-04 is the same number) — 22% better, in a different basin (`Gamma_1` −72.1 against
+−845.1). The cap is a policy call now, not a wall-clock one: the half hour buys about
+10,000 evaluations.
 
-**Every price derives its own `φ_max`.** The scan is 35–184 ms against 8–94 ms for the price itself,
-so reusing one bound across the ladder is worth about 4x — and it is wrong. More steps means faster
-decay, but past a parameter- and step-count-dependent point the A/B/C recursion DIVERGES, so a bound
-that is too large integrates garbage. Measured at a converged optimum: a 126-step price is
-0.7353321384 at `φ_max` 128/256/512, **0.7323069671 at 1024** and **9.4e+55 at 2048**, while the
-21-step contract in the same strip wants 512. Carrying the front bound to the back solves that
-pillar's `L` against a price 0.4% wrong, and because the ATM ladder is BOOTSTRAPPED it reprices
-exactly anyway — the only symptom is the report's own recompute reading a 3.5e-3 residual where it
-should read 1e-12. Gate: `test_a_quadrature_bound_is_not_transferable_between_contracts`. The lever
-is real and is a [roadmap](roadmap.md) row: a per-pillar bound VERIFIED at the solved level.
+**It runs on the CPU**, whatever device the job was constructed with. The evaluation's 126-step
+pass over the union grid — 2 contours × 2,048 complex nodes — is **53.9 ms on the CPU against
+112.6 ms on CUDA** (RTX 3090); widening to 3,072 nodes closes the gap only to 1.2×, the recursion
+being 126 sequential kernel launches whatever the node count. The pin stays.
+
+**Every price derives its own `φ_max`, and now for free.** The scan's criterion is the same affine
+form as the price, so the bound is READ off a 21-rung strip (`utils.hn_component_strip_phi_max`)
+rather than scanned for; over a replayed fit it lands the scanned bound at all 154 prices, the
+nearest rung sitting 0.06 units of the metric from the threshold against a 1e-15 perturbation.
+Sharing one would still be wrong: past a parameter- and step-count-dependent point the A/B/C
+recursion DIVERGES, so a bound that is too large integrates garbage. Measured at a converged
+optimum: a 126-step price is 0.7353321384 at `φ_max` 128/256/512, **0.7323069671 at 1024** and
+**9.4e+55 at 2048**, while the 21-step contract in the same strip wants 512. Gate:
+`test_a_quadrature_bound_is_not_transferable_between_contracts`.
 
 ### `Quote_Sensitivity` is refused
 

@@ -735,7 +735,9 @@ class HestonNandiModelParameters(object):
         F('Steps_Per_Year', 'Float', default=252.0,
           description='GARCH steps an expiry is spread over'),
         F('Quadrature_Panels', 'Integer', default=64,
-          description='Gauss-Legendre panels the characteristic function is inverted on'),
+          description='Gauss-Legendre panels the characteristic function is inverted on - over '
+                      '[0, phi_max] here; the component family lays them over [0, 8] and half as '
+                      'many over each doubling block of its nested grid'),
         F('Quote_Timestamp', 'Date', default='',
           description='When the quotes were seen - the vol surface\'s own as-of where this block '
                       'was authored off one (fx_surface_block). Stored, logged and reported; '
@@ -1376,6 +1378,45 @@ class HestonNandiModelParameters(object):
                     **dict(zip(utils.HN_PARAM_NAMES, (omega, alpha, beta, gamma, h0)))}
 
 
+class ComponentStrips:
+    """ONE backward recursion per objective evaluation, read by every price that evaluation makes.
+
+    One pass at the longest maturity carries every maturity, every L curve and every cost of carry -
+    see `utils.hn_component_abc_strip`. Two strips: the rung ladder every bound is read off, and the
+    quadrature grid, which GROWS to the widest bound a price asks for, the dyadic blocks being
+    nested so a narrower bound is a prefix of the same nodes. It dies with the evaluation.
+    """
+
+    def __init__(self, params, steps, panels, dtype, device):
+        self.params, self.steps, self.panels = params, int(steps), int(panels)
+        self.dtype, self.device, self.bound = dtype, device, 0.0
+        ladder = torch.tensor(
+            utils.cf_phi_max_ladder(), dtype=dtype, device=device).reshape(1, -1, 1)
+        self.scan = utils.hn_component_abc_strip(
+            torch.cat([ladder * 1j, ladder * 1j + 1.0]), self.steps, *params)
+
+    def grid(self, phi_max):
+        """The node/weight prefix integrating to `phi_max`, widening the strip if it has to."""
+        if phi_max > self.bound:
+            self.nodes, self.wts, self.cuts = utils.gauss_legendre_dyadic(
+                phi_max, self.panels, dtype=self.dtype, device=self.device)
+            self.bound = phi_max
+            self.quad = utils.hn_component_abc_strip(
+                torch.stack([self.nodes * 1j, self.nodes * 1j + 1.0]).unsqueeze(-2),
+                self.steps, *self.params)
+        k = self.cuts[phi_max]
+        return self.nodes[:k], self.wts[:k], k
+
+    def probabilities(self, logm, omegas, h0, q0, r):
+        """P1, P2 for a WHOLE GROUP of contracts sharing a step count, in one quadrature call."""
+        bound = utils.hn_component_strip_phi_max(self.scan, omegas, h0, q0, r)
+        nodes, wts, k = self.grid(bound)
+        block = utils.hn_component_strip_logcf(self.quad, omegas, h0, q0, r)[..., :k]
+        return utils.cf_european_probabilities(
+            lambda z: block[int(z.reshape(-1)[0].real)], logm, r * len(omegas), bound,
+            grid=(nodes, wts))
+
+
 class HestonNandiComponentModelParameters(HestonNandiModelParameters):
     documentation = (
         'Fx And Equity',
@@ -1449,10 +1490,10 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
 
     market_factor_type = 'HestonNandiComponentModelPrices'
 
-    #: The fit runs on the CPU whatever device the job was constructed with. The A/B/C recursion is
-    #: `n` sequential steps of about ten elementwise operations over a 512-element complex vector,
-    #: so it is kernel-launch bound. On an RTX 3090, one 126-step price: 47 ms CPU against 186 ms
-    #: CUDA, and the adaptive phi_max scan 172 ms against 775 ms.
+    #: The fit runs on the CPU whatever device the job was constructed with. One evaluation's
+    #: 126-step pass over the union grid (2 contours x 2048 complex nodes) is 53.9 ms on the CPU
+    #: against 112.6 ms on an RTX 3090; widening to 3072 nodes closes the gap only to 1.2x, the
+    #: recursion being 126 sequential kernel launches whatever the node count.
     device = torch.device('cpu')
 
     def __init__(self, param, device, dtype):
@@ -1500,10 +1541,11 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
                       'Never a silent negative variance'),
         F('Max_Iterations', 'Integer', default=300,
           description='Outer (Nelder-Mead) function evaluations. The objective re-bootstraps the '
-                      'whole L strip per iterate and every price derives its own quadrature bound, '
-                      'so this is THE wall-clock knob: measured at 4.79 s an evaluation on the '
-                      'four-pillar USDZAR ladder, which puts 300 at 24 minutes and 400 at 32. The '
-                      'default is the largest that fits the half hour; a fit that stops here '
+                      'whole L strip per iterate, so this is THE wall-clock knob: measured at '
+                      '0.176 s an evaluation on the four-pillar USDZAR ladder, which puts 300 at '
+                      '53 s. Nelder-Mead reaches its own tolerance there in 1246 evaluations and '
+                      '243 s for a wing residual 22% better in a different basin, so this default '
+                      'is a policy call and no longer a wall-clock one; a fit that stops here '
                       'reports itself CAPPED with the residual it actually reached rather than the '
                       'tolerance it did not'),
         F('Tolerance', 'Float', default=1e-8,
@@ -1616,23 +1658,26 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
     # ----------------------------------------------------------------------------------
 
     @classmethod
-    def price(cls, spot, strike, is_call, units, omegas, h0, q0, params, r, panels,
-              yield_discount=1.0):
-        """Component European option value - puts by put-call parity off the call, exactly as the
-        plain family's `price` does, and with the same `yield_discount` rescale (the internal price
-        discounts at the carry r-q; the value discounts at r, and parity survives the rescale)."""
-        # no phi_max knob: every price derives its own quadrature bound, a reused one not being
-        # conservative for this model - see `bootstrap_l` and `utils.hn_component_auto_phi_max`
-        call = utils.hn_component_call(spot, strike, omegas, h0, q0, *params, r, panels=panels)
-        n = len(omegas)
+    def price(cls, strips, spot, strike, is_call, units, omegas, h0, q0, r, yield_discount=1.0):
+        """Component European option value off one evaluation's `ComponentStrips` - puts by
+        put-call parity off the call, exactly as the plain family's `price` does, and with the same
+        `yield_discount` rescale (the internal price discounts at the carry r-q; the value discounts
+        at r, and parity survives the rescale).
+
+        `strike`, `is_call` and `units` BROADCAST, so a whole group of contracts at one step count
+        is one quadrature call. Every price still derives its own bound.
+        """
+        P1, P2 = strips.probabilities(torch.log(strike / spot), omegas, h0, q0, r)
+        forward = strike * torch.exp(-r * len(omegas))
         return units * yield_discount * (
-            call - (1.0 - is_call) * (spot - strike * torch.exp(-r * n)))
+            spot * P1 - forward * P2 - (1.0 - is_call) * (spot - forward))
 
     @classmethod
     def l_strip(cls, knots, levels, steps, rho, spy):
-        """The omega strip over `steps` daily steps from the (knots, levels) L curve."""
+        """The omega strip over `steps` daily steps from the (knots, levels) L curve - a TENSOR,
+        which is the shape the strips' dot product reads it at."""
         l_path = utils.hn_component_l_path(knots, levels, steps, spy)
-        return list(utils.hn_component_omega_path(l_path, rho))
+        return utils.hn_component_omega_path(l_path, rho)
 
     @classmethod
     def omega_floor(cls, knots, levels, rho, spy):
@@ -1647,8 +1692,7 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
         strip = cls.l_strip(knots, levels, max(int(round(float(knots[-1]) * spy)), 1), rho, spy)
         return min([float(x) for x in strip] + [float(levels[-1]) * (1.0 - float(rho))])
 
-    def bootstrap_l(self, atm, params, h0, rho, spy, panels, knots, declining, tolerance,
-                    refuse=True):
+    def bootstrap_l(self, atm, strips, h0, rho, spy, knots, declining, tolerance, refuse=True):
         """The inner triangular bootstrap: the L pillars, solved one at a time against their own ATM
         premium. Returns `(levels, notes, shortfall)` - the level at each knot (levels[0] is
         L(0) = h0 by the anchoring), any floors applied by name, and the summed squared relative
@@ -1664,11 +1708,12 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
         routinely, and a shortfall is a slope out of the infeasible region where `inf` is a wall. On
         the FINAL strip `Declining_Variance` decides for real.
 
-        Every price derives its own phi_max, at about 4x the cost of one reused scan, because a
-        reused bound is not conservative: past a parameter-dependent point the A/B/C recursion
-        diverges and an over-large bound integrates garbage. At one converged optimum the 21-step
-        contract's bound is 512 and the 126-step contract's 256, and that 126-step price reads
-        0.7353321384 at phi_max 512, 0.7323069671 at 1024 and 9.4e+55 at 2048.
+        Every price derives its own phi_max off `strips`, because a reused bound is not
+        conservative: past a parameter-dependent point the A/B/C recursion diverges and an
+        over-large bound integrates garbage. At one converged optimum the 21-step contract's bound
+        is 512 and the 126-step contract's 256, and that 126-step price reads 0.7353321384 at
+        phi_max 512, 0.7323069671 at 1024 and 9.4e+55 at 2048. What the strips share is the
+        RECURSION behind the bound, never the bound.
 
         The floor binds even on a rising term structure. A piecewise-linear L matched to segment
         integrals is the recurrence L_k = 2*A_k - L_(k-1), whose multiplier is -1: marginally stable,
@@ -1692,8 +1737,8 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
             def premium(level):
                 omegas = self.l_strip(knots[:k + 2], torch.stack(levels + [level]),
                                       int(n), rho, spy)
-                return float(self.price(spot, strike, is_call, units, omegas, h0, levels[0],
-                                        params, b, panels, q))
+                return float(self.price(strips, spot, strike, is_call, units, omegas, h0,
+                                        levels[0], b, q))
 
             low = max(floor, 1e-12)
             high = max(float(levels[-1]) * 2.0, low * 4.0)
@@ -1736,6 +1781,9 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
 
     def tensor(self, x):
         return torch.tensor(float(x), device=self.device, dtype=self.prec)
+
+    def vector(self, xs):
+        return torch.tensor([float(x) for x in xs], device=self.device, dtype=self.prec)
 
     # ----------------------------------------------------------------------------------
     # the outer fit
@@ -1875,10 +1923,17 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
                      self.tensor(row[0]['Units']), row[0]['Premium'],
                      self.tensor(row[1]), self.tensor(row[2])))
                    for row in atm_rows]
-            wings = [(row[0]['n'], self.tensor(row[0]['Strike']),
-                      1.0 if row[0]['Option_Type'] == 'Call' else 0.0,
-                      self.tensor(row[0]['Units']), row[0]['Premium'], row[0]['Weight'],
-                      self.tensor(row[1]), self.tensor(row[2])) for row in wing_rows]
+            # GROUPED by (step count, carry, yield): one quadrature call each, and a repeated
+            # contract is the heavier WEIGHT the emitter intends rather than a second price
+            grouped = {}
+            for option, b, yq, forward in wing_rows:
+                bucket = grouped.setdefault((option['n'], b, yq), {})
+                contract = (option['Strike'], 1.0 if option['Option_Type'] == 'Call' else 0.0,
+                            option['Units'], option['Premium'])
+                bucket[contract] = bucket.get(contract, 0.0) + option['Weight']
+            wings = [(n, *(self.vector([c[i] for c in bucket]) for i in range(4)),
+                      self.vector(bucket.values()), self.tensor(b), self.tensor(yq))
+                     for (n, b, yq), bucket in grouped.items()]
             if not wings:
                 logging.warning(
                     '{} carries no wing quotes - the L bootstrap will reprice the ATM ladder '
@@ -1888,7 +1943,8 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
             param_name = utils.check_tuple_name(price_param)
             x0 = self.seed(price_factors.get(param_name), atm_rows, by_expiry, spy, tie)
 
-            scale = np.mean([w[4] ** 2 for w in wings]) if wings else 1.0
+            scale = np.mean([r[0]['Premium'] ** 2 for r in wing_rows]) if wing_rows else 1.0
+            steps = max(row[0]['n'] for row in rows)
             calls = {'n': 0}
             state = {}
 
@@ -1904,18 +1960,18 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
                 params = self.unpack(x, tie, rho)
                 h0 = float(params[-1])
                 try:
+                    strips = ComponentStrips(params[:-1], steps, panels, self.prec, self.device)
                     # notes are dropped here: what is reported is the FINAL strip's, bootstrapped
                     # at the parameters actually written
                     levels, _, shortfall = self.bootstrap_l(
-                        atm, params[:-1], self.tensor(h0), rho, spy, panels, knots, declining,
-                        pillar_tol, refuse=False)
+                        atm, strips, self.tensor(h0), rho, spy, knots, declining, pillar_tol,
+                        refuse=False)
                     error = self.atm_constraint_weight * shortfall
                     for n, strike, is_call, units, premium, weight, b, yq in wings:
                         omegas = self.l_strip(knots, torch.stack(levels), int(n), rho, spy)
-                        fitted = float(self.price(spot, strike, is_call, units, omegas,
-                                                  self.tensor(h0), levels[0], params[:-1], b,
-                                                  panels, yq))
-                        error += weight * (premium - fitted) ** 2 / scale
+                        fitted = self.price(strips, spot, strike, is_call, units, omegas,
+                                            self.tensor(h0), levels[0], b, yq)
+                        error += float((weight * (premium - fitted) ** 2 / scale).sum())
                 except (ValueError, RuntimeError) as refusal:
                     state['last_refusal'] = str(refusal)
                     return np.inf
@@ -1935,12 +1991,13 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
                 params[0], params[1], params[2], params[4], params[5], params[6])]
             # the final strip is bootstrapped at the reported parameters, not the last iterate the
             # simplex tried, and this is the call `Declining_Variance` decides for real
+            strips = ComponentStrips(params[:-1], steps, panels, self.prec, self.device)
             levels, notes, _ = self.bootstrap_l(
-                atm, params[:-1], self.tensor(h0), rho, spy, panels, knots, declining, pillar_tol)
+                atm, strips, self.tensor(h0), rho, spy, knots, declining, pillar_tol)
             curve = utils.Curve([], [[float(k), float(v)] for k, v in zip(knots, levels)])
 
             self.report(instrument, market_price, spot, atm, wings, knots, levels, params,
-                        rho, spy, panels, result, elapsed, calls['n'], notes, state, max_iter)
+                        rho, spy, strips, result, elapsed, calls['n'], notes, state, max_iter)
 
             price_factors[param_name] = {
                 'Property_Aliases': None,
@@ -2008,26 +2065,28 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
         return both[0] - both[1]
 
     def report(self, instrument, market_price, spot, atm, wings, knots, levels, params,
-               rho, spy, panels, result, elapsed, calls, notes, state, max_iter):
+               rho, spy, strips, result, elapsed, calls, notes, state, max_iter):
         """What the fit MEASURED, logged beside what it wrote - the ATM residual (which is the
         bootstrap's own convergence, not a fit quality), the worst wing, the L curve as annualised
         vol, and the wall clock against the iteration cap it was given."""
         atm_resid = 0.0
         for n, (s, strike, is_call, units, target, b, q) in atm:
             omegas = self.l_strip(knots, torch.stack(levels), int(n), rho, spy)
-            fitted = float(self.price(s, strike, is_call, units, omegas, levels[0], levels[0],
-                                      params[:-1], b, panels, q))
+            fitted = float(self.price(strips, s, strike, is_call, units, omegas, levels[0],
+                                      levels[0], b, q))
             atm_resid = max(atm_resid, abs(fitted / target - 1.0) if target else abs(fitted))
         worst, worst_vol, total = 0.0, 0.0, 0.0
         for n, strike, is_call, units, premium, weight, b, yq in wings:
             omegas = self.l_strip(knots, torch.stack(levels), int(n), rho, spy)
-            fitted = float(self.price(spot, strike, is_call, units, omegas, params[-1], levels[0],
-                                      params[:-1], b, panels, yq))
-            worst = max(worst, abs(fitted / premium - 1.0))
+            fitted = self.price(strips, spot, strike, is_call, units, omegas, params[-1],
+                                levels[0], b, yq)
+            worst = max(worst, float((fitted / premium - 1.0).abs().amax()))
+            total += float((weight * (premium - fitted) ** 2).sum())
             # x100 for vol points: a 5% miss on a 25 delta wing premium is a few tenths of a vol
-            worst_vol = max(worst_vol, 100.0 * abs(self.quote_vol(
-                fitted, premium, spot, strike, is_call, units, b, n, yq)))
-            total += weight * (premium - fitted) ** 2
+            for i in range(len(premium)):
+                worst_vol = max(worst_vol, 100.0 * abs(self.quote_vol(
+                    float(fitted[i]), float(premium[i]), spot, strike[i], is_call[i], units[i],
+                    b, n, yq)))
         logging.info(
             '{} component Heston-Nandi: Alpha {:.6g}, Beta {:.6g}, Gamma_1 {:.6g}, Rho {:g} '
             '(pinned), Phi {:.6g}, Gamma_2 {:.6g}, H0 {:.6g}'.format(

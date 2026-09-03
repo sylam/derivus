@@ -69,6 +69,7 @@ import torch
 
 import derivus
 from derivus import run_baseval, utils
+from derivus.bootstrappers import ComponentStrips as COMPONENT_STRIPS
 from derivus.bootstrappers import HestonNandiComponentModelParameters as COMPONENT
 from derivus.config import Config, CustomJsonEncoder
 from derivus.instruments import construct_instrument
@@ -494,7 +495,7 @@ def fitted():
     and re-running it would double an eight-minute gate.
 
     `Max_Iterations` is left at its DECLARED default (300), so these gates measure what a job gets,
-    wall clock included: 300 outer evaluations in 1591 s, ATM residual 2.442e-15, worst wing 6.88%
+    wall clock included: 300 outer evaluations in 53 s, ATM residual 0.000e+00, worst wing 6.88%
     of premium / 0.462 vol points, weighted wing residual 1.196e-04. The fit reports itself CAPPED
     rather than claiming a tolerance Nelder-Mead did not reach.
 
@@ -555,14 +556,16 @@ def test_the_l_bootstrap_reprices_its_atm_ladder_and_lands_on_the_forward_varian
     discount = np.exp(-RATE * np.array([0.0]))          # flat curves: r == q, so carry is zero
 
     rungs = instrument['European_Options'][:4]          # the four distinct ATM rungs, in order
+    steps = max(int(round((p['Expiry_Date'] - BASE).days / 365.0 * SPY)) for p in rungs)
+    strips = COMPONENT_STRIPS(params, steps, 64, DTYPE, torch.device('cpu'))
     atm_resid = 0.0
     for point in rungs:
         t = (point['Expiry_Date'] - BASE).days / 365.0
         n = max(int(round(t * SPY)), 1)
         omegas = family.l_strip(knots, values, n, _tensor(written['Rho']), SPY)
         fitted_premium = float(family.price(
-            FX_SPOT, _tensor(point['Strike']), 1.0, _tensor(point['Units']), omegas,
-            values[0], values[0], params, _tensor((RATE - RATE) * t / n), 64,
+            strips, FX_SPOT, _tensor(point['Strike']), 1.0, _tensor(point['Units']), omegas,
+            values[0], values[0], _tensor((RATE - RATE) * t / n),
             _tensor(np.exp(-RATE * t))))
         atm_resid = max(atm_resid, abs(fitted_premium / point['Premium'] - 1.0))
     assert atm_resid < 1e-8, (

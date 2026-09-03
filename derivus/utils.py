@@ -2311,6 +2311,28 @@ def gauss_legendre(a, b, panels, order=8, dtype=torch.float64, device='cpu'):
             torch.tensor(wts[o], dtype=dtype, device=device))
 
 
+def gauss_legendre_dyadic(phi_max, panels, order=8, dtype=torch.float64, device='cpu', start=8.0):
+    """Gauss-Legendre nodes on ``[0, phi_max]`` NESTED across the doubling ladder of
+    :func:`cf_adaptive_phi_max`.  Returns ``(nodes, weights, cuts)``.
+
+    Fixed blocks ``[0, start]``, ``[start, 2*start]``, ``[2*start, 4*start]``, ..., the first at
+    ``panels`` panels and each doubling block at half that, so EVERY block carries at least the
+    panel width ``panels`` uniform panels buy over that block's own upper bound - accuracy at or
+    above :func:`gauss_legendre` on every rung, by construction. The grid for a smaller bound is
+    then a PREFIX of the grid for a larger one: ``cuts[rung]`` is how many leading nodes integrate
+    to ``rung``, so one backward recursion over the widest bound serves every contract under it.
+    """
+    nodes, wts, cuts, lo, hi, blocks = [], [], {}, 0.0, float(start), int(panels)
+    while True:
+        n, w = gauss_legendre(lo, hi, blocks, order, dtype, device)
+        nodes.append(n)
+        wts.append(w)
+        cuts[hi] = cuts.get(lo, 0) + len(n)
+        if hi >= phi_max:
+            return torch.cat(nodes), torch.cat(wts), cuts
+        lo, hi, blocks = hi, hi * 2.0, max(int(panels) // 2, 1)
+
+
 def complex_log_unwrap(w, dim=-1):
     """Complex log with the branch fixed by continuity ALONG ``dim`` (the phi grid).
 
@@ -2329,6 +2351,16 @@ def complex_log_unwrap(w, dim=-1):
         first = ang.narrow(dim, 0, 1)
         ang = torch.cat([first, first + torch.cumsum(d, dim=dim)], dim=dim)
     return torch.complex(torch.log(torch.abs(w)), ang)
+
+
+def cf_phi_max_ladder(start=8.0, cap=2.0 ** 24):
+    """The doubling rungs :func:`cf_adaptive_phi_max` scans - the ONE spelling of them, so a caller
+    that pre-computes its log-CF ON the ladder scans the same rungs it did."""
+    rungs, phi = [], float(start)
+    while phi < cap:
+        rungs.append(phi)
+        phi *= 2.0
+    return rungs
 
 
 def cf_adaptive_phi_max(logcf, carry, dtype=torch.float64, device='cpu',
@@ -2355,12 +2387,10 @@ def cf_adaptive_phi_max(logcf, carry, dtype=torch.float64, device='cpu',
     broadcast its state axes in FRONT of it, returning ``(*state, rung, 1)``.
     """
     with torch.no_grad():
-        rungs, phi = [], float(start)
-        while phi < cap:
-            rungs.append(phi)
-            phi *= 2.0
+        rungs = cf_phi_max_ladder(start, cap)
         if not rungs:
-            return phi                     # ``start`` is already at the cap: nothing to scan
+            return float(start)            # ``start`` is already at the cap: nothing to scan
+        phi = rungs[-1] * 2.0
         ladder = torch.tensor(rungs, dtype=dtype, device=device).reshape(-1, 1)
         m0 = logcf(ladder * 1j).real
         m1 = logcf(ladder * 1j + 1.0).real - carry
@@ -2372,7 +2402,7 @@ def cf_adaptive_phi_max(logcf, carry, dtype=torch.float64, device='cpu',
 
 
 def cf_european_probabilities(logcf, log_moneyness, carry, phi_max, panels=256, order=8,
-                              dtype=torch.float64, device='cpu', want=3):
+                              dtype=torch.float64, device='cpu', want=3, grid=None):
     """The two exercise probabilities P1, P2 of a European claim, by Fourier inversion.
 
     MODEL-AGNOSTIC.  Given a model whose aggregate log-return ``R = log(S_T/S_t)`` has the
@@ -2392,11 +2422,16 @@ def cf_european_probabilities(logcf, log_moneyness, carry, phi_max, panels=256, 
     any ``log(1 - ...)`` term); a Levy model returns ``A(phi)`` alone.  The caller also resolves
     ``phi_max`` via :func:`cf_adaptive_phi_max` on the same closure at the worst-case state.
 
+    ``grid`` : an optional precomputed ``(nodes, weights)`` in place of the internal build, for a
+    caller integrating many contracts on ONE shared grid (``phi_max``/``panels``/``order`` are then
+    unread).
+
     Differentiable w.r.t. every leaf reachable through ``logcf`` and ``carry``; float64 is required
     for the P1-P2 cancellation.
     """
     lm = log_moneyness.unsqueeze(-1)
-    nodes, wts = gauss_legendre(0.0, phi_max, panels, order, dtype, device)
+    nodes, wts = grid if grid is not None else gauss_legendre(
+        0.0, phi_max, panels, order, dtype, device)
     iphi = nodes * 1j
     shift = torch.exp(-1j * nodes * lm) / iphi                # K^{-i phi} S^{i phi} / (i phi)
     out = []
@@ -2900,17 +2935,91 @@ def hn_component_auto_phi_max(omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, g
     NOT CONSERVATIVE FOR THIS MODEL: past a parameter- and step-count-dependent point the A/B/C
     recursion DIVERGES rather than decaying. Measured on a converged four-pillar fit, a 126-step
     price is 0.7353 at phi_max 128/256/512, 0.7323 at 1024 and 9.4e+55 at 2048, while the 21-step
-    contract in the SAME strip wants 512. This scan is 75-82% of a plain HN option price.
+    contract in the SAME strip wants 512. :func:`hn_component_strip_phi_max` derives the same
+    bound off a strip instead of scanning for it.
     """
-    h = torch.as_tensor(h0).detach().to(alpha.dtype).reshape(-1)
-    q = torch.as_tensor(q0).detach().to(alpha.dtype).reshape(-1)
-    hs = torch.stack([h.min(), h.min(), h.max(), h.max()]).reshape(-1, 1, 1)
-    qs = torch.stack([q.min(), q.max(), q.min(), q.max()]).reshape(-1, 1, 1)
+    hs, qs = hn_component_state_corners(h0, q0, alpha.dtype, 2)
     carry = torch.as_tensor(r).detach() * len(omegas)
     return cf_adaptive_phi_max(
         lambda z: hn_component_logmgf(z, omegas, hs, qs, alpha, beta, gamma1, rho, phi_q,
                                       gamma2, r), carry, alpha.dtype, alpha.device,
         log_tol, start, cap)
+
+
+def hn_component_state_corners(h0, q0, dtype, trailing):
+    """ALL FOUR ``(h, q)`` corners of a state block, ``(4, 1, ...)`` with ``trailing`` unit axes -
+    the two diagonal ones do not bound the decay criterion."""
+    h = torch.as_tensor(h0).detach().to(dtype).reshape(-1)
+    q = torch.as_tensor(q0).detach().to(dtype).reshape(-1)
+    shape = (-1,) + (1,) * trailing
+    return (torch.stack([h.min(), h.min(), h.max(), h.max()]).reshape(shape),
+            torch.stack([q.min(), q.max(), q.min(), q.max()]).reshape(shape))
+
+
+def hn_component_abc_strip(phi, n_steps, alpha, beta, gamma1, rho, phi_q, gamma2,
+                           unwrap=True, phi_dim=-1):
+    """EVERY maturity's ``(A, B, C)`` from ONE backward pass.  Returns ``(phi, a, d, B, C)``.
+
+    A SIBLING of :func:`hn_component_abc`, whose loop body carries the two terms this one drops -
+    ``phi*r`` and ``D*omega_t``, each entering at exactly one place - and which answers a bitwise
+    gate. With ``a_k`` the cumulative ``-b - 0.5*log(w)`` after k+1 steps and ``d_k = B_k + C_k``,
+
+        A_n = a[n-1] + n*phi*r + sum_k d[k] * omegas[n-1-k],   (B_n, C_n) = (B[n], C[n])
+
+    for every ``n <= n_steps``: B and C are omega-free and time-homogeneous, and A is affine in the
+    curve. ``a`` is ``(n_steps, *phi.shape)``, ``B``/``C`` are ``(n_steps+1, *phi.shape)``, and
+    ``d`` is ``B + C`` over the steps flattened to ``(n_steps, -1)`` - the matrix the omega curve
+    dots into. :func:`hn_component_strip_logcf` is that read.
+    """
+    B = C = torch.zeros_like(phi)
+    acc = torch.zeros_like(phi)
+    a, Bs, Cs = [], [B], [C]
+    half_phi = 0.5 * phi
+    for _ in range(int(n_steps)):
+        D = B + C
+        Bq = D * phi_q
+        b = alpha * B + Bq
+        G = alpha * B * gamma1 + Bq * gamma2
+        w = 1.0 - 2.0 * b
+        logw = complex_log_unwrap(w, dim=phi_dim) if (unwrap and w.is_complex()) else torch.log(w)
+        acc = acc - b - 0.5 * logw
+        a.append(acc)
+        B, C = -half_phi + beta * B + (phi - 2.0 * G) ** 2 / (2.0 * w), D * rho - beta * B
+        Bs.append(B)
+        Cs.append(C)
+    B, C = torch.stack(Bs), torch.stack(Cs)
+    n = int(n_steps)
+    return phi, torch.stack(a), (B[:n] + C[:n]).reshape(n, -1), B, C
+
+
+def hn_component_strip_logcf(strip, omegas, h0, q0, r):
+    """``A + B*h0 + C*q0`` at ``len(omegas)`` steps, off :func:`hn_component_abc_strip`.
+
+    One dot product and one prefix read where :func:`hn_component_abc` runs a recursion. ``h0`` and
+    ``q0`` broadcast against the strip's own ``phi`` shape, as they do there.
+    """
+    phi, a, d, B, C = strip
+    n = len(omegas)
+    w = torch.as_tensor(omegas).flip(0).to(d.dtype)
+    A = (a[n - 1] if n else torch.zeros_like(phi)) + (n * r) * phi + (w @ d[:n]).reshape(phi.shape)
+    return A + B[n] * h0 + C[n] * q0
+
+
+def hn_component_strip_phi_max(strip, omegas, h0, q0, r, log_tol=-40.0):
+    """:func:`hn_component_auto_phi_max`'s bound, READ off a rung strip instead of scanned.
+
+    ``strip`` is :func:`hn_component_abc_strip` over :func:`cf_phi_max_ladder` with both
+    inversion contours stacked on axis -3; the primitive names the one it wants by the real offset
+    it adds to the ladder.
+    EVERY PRICE STILL DERIVES ITS OWN BOUND - the criterion is affine in the omega curve and in the
+    state, so only the recursion behind it is shared, never the answer.
+    """
+    hs, qs = hn_component_state_corners(h0, q0, strip[0].real.dtype, 3)
+    if bool(hs[0] == hs[-1]) and bool(qs[0] == qs[-1]):
+        hs, qs = hs[:1], qs[:1]            # a scalar state: the four corners are one
+    return cf_adaptive_phi_max(
+        lambda z: hn_component_strip_logcf(strip, omegas, hs, qs, r)[:, int(z.reshape(-1)[0].real)],
+        torch.as_tensor(r).detach() * len(omegas), strip[0].real.dtype, strip[0].device, log_tol)
 
 
 def _component_p1_p2(logm, omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, gamma2, r,

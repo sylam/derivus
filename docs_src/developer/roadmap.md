@@ -539,8 +539,14 @@ HW2F block, so nothing re-baselined; `derivus_bloomberg/swaption_vol.py` deliber
 `Objective`, so a Bloomberg-emitted ladder now solves analytically and that emitter's docstring says
 so.
 
-**Standing consequences — two re-marking events.** Every foreign-curve HW2F parameter set solved
-before the domestic-measure fix re-solves to a different θ\*. Every HW2F θ\* solved before
+**Standing consequences — three re-marking events.** Every component Heston–Nandi θ\* solved before
+2026-09-03 re-solves on the calibration strips: the quadrature nodes are a dyadic union grid rather
+than uniform panels and `A` accumulates as a dot product, so every price moves at rounding and a
+derivative-free search over 300 evaluations can amplify that into a different basin. On the
+four-pillar USDZAR fixture it did not — θ\* is unmoved in all five fitted coordinates and the
+bootstrapped `L` pillars move 1.5e-14 relative — but that is a fixture reading, not a guarantee.
+Every foreign-curve HW2F parameter set solved before the domestic-measure fix re-solves to a
+different θ\*. Every HW2F θ\* solved before
 2026-09-02 re-marks again on the `ALPHA_SEED` and premium-clock change: the seed moves where the
 chain starts on a block with no existing parameter factor, and the clock moves the market side of
 both objectives on every block. A desk naming an old θ\* has two options and no third — re-baseline,
@@ -608,9 +614,18 @@ exactly — fitted by an inner triangular bootstrap with the skew globals concen
 construction, its two pins and its negative-omega guard are in
 [Market Prices](market_prices.md#hestonnandi-component). The gate spine is the nesting identity
 (φ = 0, flat `L`: the component closed form *is* `hn_call` at 1.5e-13, and the sub-step walks the
-plain path on bitwise-identical draws) — `tests/test_hn_component.py`. At 4.79 s an outer evaluation
-the declared 300-evaluation cap is 24 minutes, and the fit reports itself CAPPED rather than
-claiming a tolerance it did not reach.
+plain path on bitwise-identical draws) — `tests/test_hn_component.py`. The calibration runs **one
+backward recursion for the bound strip plus one per quadrature bound an evaluation widens to** (two
+on the four-pillar ladder): `B` and `C` never read the `ω` strip and are
+time-homogeneous, `A` is affine in it, so one pass at the longest maturity carries every maturity,
+every `L` curve and every carry (`utils.hn_component_abc_strip` held by
+`bootstrappers.ComponentStrips`), and the quadrature grid is a nested dyadic union
+(`utils.gauss_legendre_dyadic`) a narrower bound reads a prefix of. **0.176 s an outer evaluation
+against 2.21 s** puts the declared 300-evaluation cap at 53 s against 662 s rather than 24 minutes;
+the fit still reports itself CAPPED rather than claiming a tolerance it did not reach, and what
+full convergence buys is now measured — 1,246 evaluations and 243 s for a wing residual 22% better,
+in a different basin. The per-pillar bound row closes with it, subsumed: a bound off the strips
+costs one dot product, so every price still derives its own.
 
 *What the component family still owes*, beyond the two open decisions above:
 
@@ -619,14 +634,6 @@ claiming a tolerance it did not reach.
   pricer's cost. A sampler drawing the interval's aggregate return and terminal `(h, q)` from their
   joint law has to reproduce the day-stepped path's distribution, which already exists and is
   already gated. Nothing about it is designed yet.
-- **A per-pillar quadrature bound verified at the solved level.** The adaptive `φ_max` scan is
-  35–184 ms against 8–94 ms for the price, so a reused bound is most of the calibration's wall clock
-  — but reusing one **misprices**: past a parameter- and step-count-dependent point the A/B/C
-  recursion diverges rather than decaying, so a bound that is too *large* integrates garbage. A
-  126-step price is 0.7353321384 at `φ_max` 128–512 and 9.4e+55 at 2048, while a 21-step contract in
-  the same strip wants 512. Gated by
-  `test_a_quadrature_bound_is_not_transferable_between_contracts`. What would keep the speed and stay
-  sound: derive once at the bracket, re-derive at the root, re-solve only if it moved.
 - **The OSS row re-seeds at day zero**, and the L curve makes that a bigger approximation. The plain
   model's limitation F4 — `h` re-seeds to `H0` at every MTM row — carries over, and the intercept
   strip also restarts at `ω_0`, so a back row prices under the *front* of the L curve. On a term
