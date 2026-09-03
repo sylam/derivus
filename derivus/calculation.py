@@ -80,15 +80,29 @@ class DealStructure(object):
         return deal_time_dep
 
     def add_deal_to_structure(self, base_date, deal, static_offsets, stochastic_offsets,
-                              all_factors, all_tenors, time_grid, calendars, stats, unit):
+                              all_factors, all_tenors, time_grid, calendars, stats, unit,
+                              valuation_options=None):
         """Compile `deal` into this structure. A structure's deals are netted off before
         the structure's own rules are applied.
+
+        The HISTORY FOLD runs first and inside the same guard: a deal its observations leave no
+        decisions is replaced by the deal it became, and a refusal reading those observations is a
+        compile refusal like any other.
 
         A compile failure is logged and the deal is SKIPPED, which lets a portfolio of thousands
         survive one deal it cannot bind. `utils.is_fatal_pricing_error` is the exception, and the
         same predicate `Deal.calculate` reads one layer down: a framework fault, or a schedule
         refused by name, must not become a deal that marks at nothing on a job reporting success.
         """
+        try:
+            deal = deal.resolve_history(base_date, calendars, valuation_options or {})
+        except Exception as e:
+            logging.error('{0} {1} - Skipped'.format(deal.field['Object'], e.args))
+            if utils.is_fatal_pricing_error(e):
+                raise
+            stats['Deals Skipped'] = stats.setdefault('Deals Skipped', 0) + 1
+            return
+
         deal_time_dep = self.calc_time_dependency(base_date, deal, time_grid)
         if deal_time_dep is not None:
             try:
@@ -410,9 +424,16 @@ class Calculation(object):
 
         The BASE CURRENCY is stamped here and only here: a deal is constructed before the book it
         prices against is known, and base-vs-foreign decides which leg of an FX pair carries a spot
-        model's law (`utils.spot_model_currency`)."""
+        model's law (`utils.spot_model_currency`).
+
+        The job's whole `Valuation Configuration` is handed down for the same reason: a deal whose
+        observations leave it no decisions compiles as ANOTHER type (`Deal.resolve_history`), and
+        that type's own block is what the substitute must read. The substitute is local to the
+        compile - the loaded book is never rewritten - and its reval dates are a SUBSET of the ones
+        this grid was built from, so the fold cannot move the grid under itself."""
         base_currency = utils.check_rate_name(
             self.config.params['System Parameters']['Base_Currency'])
+        valuation_options = self.config.params.get('Valuation Configuration', {})
         for node in deals:
             instrument = node['Instrument']
             if node.get('Ignore') == 'True':
@@ -431,7 +452,8 @@ class Calculation(object):
 
             output.add_deal_to_structure(
                 self.base_date, instrument, self.static_factors, self.stoch_factors, self.all_factors,
-                self.all_tenors, self.time_grid, self.config.holidays, self.calc_stats, unit)
+                self.all_tenors, self.time_grid, self.config.holidays, self.calc_stats, unit,
+                valuation_options)
 
 
 #: The quasi-random stream's fixed identity: the scramble seed of every Sobol engine and the offset

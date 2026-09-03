@@ -88,8 +88,12 @@ PINNED = {
         'a5f6560a00df96fd7f0a5b5b1087e60495c6321517431c54e6afcb13931f5d73', 5, 0),
     'commodity_aps_world.json': (
         '1847aa7c7053b57255426bee4aae1da44954b955b52116a6a14d5ad26be6b07f', 6, 0),
+    # re-pinned 2026-09-03: the DOCUMENT changed, not the reading of it. `Barrier_Hit` retired -
+    # the knock-out is a fold over the schedule - so the block lost a field and the plan is a
+    # different program. The factor universe is untouched (5, 0) and the mark is bit-identical at
+    # 62.428908447906807, which is the half of this pin that says nothing else moved
     'fx_accumulator_job.json': (
-        '14df269ed239e6640cb8a44a01224f11a4d265815fc7c9d564cf7bf8933badc7', 5, 0),
+        '4e04eb1cb3d428d956d66ea091d1e3568320bde3283876313dcdccfdc82444a5', 5, 0),
     'fx_tarf_job.json': (
         '0413fa7e4ff497523561e44e1ab205369d6948731061e3479fd2714a099f93d1', 5, 0),
     'platinum_hedge_shipping.json': (

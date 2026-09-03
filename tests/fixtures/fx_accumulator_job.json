@@ -158,7 +158,6 @@
                 "LeverageNotional": 2000.0,
                 "Barrier_Type": "Up_And_Out",
                 "Barrier_Price": 5.0,
-                "Barrier_Hit": "No",
                 "Accumulator_ExpiryDates": [
                   [
                     {

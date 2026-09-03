@@ -2916,9 +2916,9 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
 
     BOUNDARY AAD: the knock-out is decided on OUTER scenario state, so the whole latch is built
     outside the node - gaps signed so ``gap > 0`` means CROSSED, ``untriggered`` the alive branch on
-    a weight the observed indicators never zero, ``triggered`` ZEROS. A deal declared
-    ``Barrier_Hit`` registers nothing, its death being data. The alive prefix folds ``Barrier_Hit``
-    with every settled fixing's own breach test, so the deal prices from the data without the flag.
+    a weight the observed indicators never zero, ``triggered`` ZEROS. A deal whose settled prefix
+    already breached registers nothing, its death being data - ``Prefix_Breached`` is that fold
+    over the schedule, not a flag the document declares.
 
     DECLARED LIMITATION: the zero dead branch omits the pending settlements a knocked deal still
     owes - exact wherever the settlement lag is shorter than the fixing spacing, NOT one-signed on a
@@ -2949,8 +2949,8 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     its OWN settlement date and paid with weight ``L_{j-1} * p_j``, so a path knocking at fixing
     ``k`` has already been paid for every fixing before it, whatever their settlement lag.
 
-    WHAT THE SWITCH DOES NOT SMOOTH: the observed fixings' breach tests and the ``Barrier_Hit``
-    flag, which are data rather than simulated state, and under base valuation carry no graph.
+    WHAT THE SWITCH DOES NOT SMOOTH: the observed fixings' breach tests and the settled prefix's
+    own, which are data rather than simulated state, and under base valuation carry no graph.
     """
 
     def survives(s):
@@ -3106,7 +3106,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     logging.debug('ACCUMULATOR %s fixings=%d resolved=%d barrier=%.6g up=%d dead=%d blocks=%d',
                   deal_data.Instrument.field.get('Reference'), len(fx_samples.schedule),
                   len(known_resets) + len(sim_samples), barrier, int(barrier_up),
-                  int(bool(factor_dep['Barrier_Hit'])), len(counts))
+                  int(bool(factor_dep['Prefix_Breached'])), len(counts))
 
     # read once before a draw is taken so a non-GBM refusal lands first; it SUPERSEDES the
     # registration below rather than joining it
@@ -3123,7 +3123,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     # a declared-dead deal has no flux to record, and folding that in here keeps the simulation
     # from building an alive branch nobody reads
     boundary_aad = (getattr(shared, 'boundary_aad', False) and
-                    not factor_dep['Barrier_Hit'] and not smooth)
+                    not factor_dep['Prefix_Breached'] and not smooth)
     b_gaps, b_crossed, b_obs_before, alive_blocks, b_pending, b_cash = [], [], [], [], [], []
 
     def fixing_cash(j):
@@ -3139,10 +3139,10 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     if hn:
         hn_spy = factor_dep['HN_Steps_Per_Year']
 
-    # prefix knock-out state: the declared flag OR any observed sample's own breach. `Barrier_Hit`
-    # and the settled fixings' tests fold in calc_dependencies; the unsettled observed and
-    # simulated fixings fold here, per sample
-    state = shared.one.new_ones(shared.simulation_batch) * (0.0 if factor_dep['Barrier_Hit'] else 1.0)
+    # prefix knock-out state, entirely a fold over observations: the settled fixings' breach tests
+    # fold in calc_dependencies (`Prefix_Breached`); the unsettled observed and simulated fixings
+    # fold here, per sample
+    state = shared.one.new_ones(shared.simulation_batch) * (0.0 if factor_dep['Prefix_Breached'] else 1.0)
     alive_seq = [state]
     for k in range(len(all_samples)):
         state = state * survives(all_samples[k]).to(shared.one.dtype)

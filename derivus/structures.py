@@ -400,7 +400,7 @@ class Accumulator:
                             'unfavourable fixing, against one on a favourable one')]
     legs = [Leg('accumulator', 'FXAccumulatorOptionDeal',
                 {'Option_Type': 'Call', 'Buy_Sell': 'Buy',
-                 'Barrier_Type': 'Up_And_Out', 'Barrier_Hit': 'No'},
+                 'Barrier_Type': 'Up_And_Out'},
                 {'Barrier_Price': 'knockout'})]
     recipe = [Solve('accumulator', 'Strike_Price', 0.0)]
 

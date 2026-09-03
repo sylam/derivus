@@ -495,7 +495,6 @@ def _acc_cfg(barrier=1.15, spot=None):
             'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': hnc.TARF_STRIKE,
             'Underlying_Amount': hnc.TARF_N1, 'LeverageNotional': 2.0 * hnc.TARF_N1,
             'Barrier_Type': 'Up_And_Out', 'Barrier_Price': barrier * hnc.TARF_STRIKE,
-            'Barrier_Hit': 'No',
             'Accumulator_ExpiryDates': [[d, d, 0.0] for d in dates]}
     cfg = hnc._tarf_config(deal)
     valuation = {'FXAccumulatorOptionDeal': {'SpotModel': 'HestonNandiComponent',

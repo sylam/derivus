@@ -184,9 +184,20 @@ def test_the_declared_switches_flip_the_sign_they_should(tmp_path):
     assert abs(put - value) / abs(value) < 5e-3, (put, value)
 
 
-def test_a_declared_dead_deal_is_worth_nothing(tmp_path):
-    """`Barrier_Hit` is a declared switch and its whole meaning is that the deal has ended."""
-    assert _mtm(_run(_job(Barrier_Hit='Yes'), tmp_path, 'dead')) == 0.0
+def test_a_declared_consequence_is_refused_by_name(tmp_path):
+    """`Barrier_Hit` has retired: a knock-out is a fold over the schedule, and a document that can
+    both declare the consequence and record the fixing can disagree with itself.
+
+    The refusal must be FATAL rather than a skip - a consequence-shaped document swallowed into
+    `Deals Skipped` marks the trade at nothing on a job that reports success, which is the failure
+    the flag's own last value ('Yes' with nothing recorded) would have produced silently.
+    """
+    for declared in ('Yes', 'No'):
+        with pytest.raises(Exception) as refusal:
+            _run(_job(Barrier_Hit=declared), tmp_path, 'consequence' + declared)
+        message = str(refusal.value)
+        assert 'Barrier_Hit' in message and 'CONSEQUENCE' in message, message
+        assert 'Accumulator_ExpiryDates' in message, message
 
 
 # --------------------------------------------------------------------------------------------
@@ -251,8 +262,9 @@ def test_an_observed_fixing_is_its_exact_payoff(tmp_path):
 
 
 def test_a_settled_fixing_beyond_the_barrier_kills_the_deal(tmp_path):
-    """Knock-out state carried in from before the base date is DATA: a settled fixing whose
-    recorded value breached ends the deal even when `Barrier_Hit` was not set."""
+    """Knock-out state carried in from before the base date is DATA, and now the ONLY thing that
+    carries it: a settled fixing whose recorded value breached ends the deal, with no flag beside
+    it that could have said otherwise."""
     job = _job(Barrier_Price=1.14)
     deal = job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']
     deal['Accumulator_ExpiryDates'] = [

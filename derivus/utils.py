@@ -655,7 +655,8 @@ class UnpriceableSchedule(Exception):
     the AUTHOR did not state and no rule recovers, so the answer is the name of the thing and the
     remedy, never a guess. `make_float_cashflows`' zero-length rate window is the first: a reset
     whose rate start equals its rate end has no forward rate to read, and no `Row` declares the
-    tenor that would define one.
+    tenor that would define one. A schedule saying too MUCH is refused here too: a consequence
+    field beside the observations that already fold to it (`refuse_consequence_field`).
 
     FATAL by `is_fatal_pricing_error`, which is the whole point: a compile guard's canonical
     response is to log and increment `Deals Skipped`, and a skipped deal marks at nothing while the
@@ -2135,6 +2136,26 @@ def filter_data_frame(df, from_date, to_date, rate=None):
     index2 = (pd.Timestamp(to_date) - excel_offset).days
     return df.loc[index1:index2] if rate is None else df.loc[index1:index2][
         [col for col in df.columns if col.startswith(rate)]]
+
+
+def bars_touched(bars, level, barrier_up):
+    """Whether a continuously-monitored level was touched over a daily `(low, high)` bar series.
+
+    A bar BRACKETS every intraday print of its day, so the verdict is exact without the prints:
+    `Up` touches iff any high reaches the level, `Down` iff any low reaches it. Touching IS
+    crossing - the inequalities are weak, and an exact-touch day is a hit.
+
+    Pure and source-free. WHERE THE BARS COME FROM - hydrating `(index, date, source)` facts from
+    the log or the market data - is spine increment 4's, not this function's.
+    """
+    for low, high in bars:
+        if low > high:
+            raise UnpriceableSchedule(
+                'a daily bar has low {:g} above high {:g}, which brackets nothing - a bar is the '
+                'range every print of its day fell inside'.format(low, high))
+        if (high >= level) if barrier_up else (low <= level):
+            return True
+    return False
 
 
 # Math Type stuff

@@ -38,6 +38,22 @@ caller** (several items below are deliberately not started), and **look before y
 - **`calculation` (CVA Hessian)** — `Hessian: 'Yes'` with `Gradient: 'No'` is a silent no-op — the second-order block rides the first-order tape and should refuse by name. The Silverman bandwidth is per-batch, so `Simulation_Batches > 1` oversmooths relative to the run's true path count.
 - **`utils.spot_model_currency` (declared scope reduction)** — The component family does not transport to the reciprocal axis — the change puts a state-dependent term in its long-run intercept (`ω_t + φ(1 − 2γ₂)h_t`) and leaves the family — so a component deal whose underlying *is* the base currency refuses by name (`UnpriceableSchedule`, fatal), crisp arm included, naming the plain family and the other orientation as remedies.
 - **`bootstrappers.py` (HW2F solve debug block)** — Overwrites `debug.deals` and attempts `write_trade_file('ZAR.aap')` in the CWD. Inert today, but a run from a writable CWD drops an artifact where the no-artifacts rule forbids one. Delete the block or route it to a declared output directory.
+- **`tests/test_declared_defaults.py` (two plan-hash pins)** — `platinum_hedge_shipping.json` and
+  `policy_test_simulate_only.json` have hashed to different plans since 91c29de (the two-sided wings
+  and the FVA column, 2026-09-02), whose targeted run did not reach the pin; stable across fresh
+  processes, so not the `.DateOffset` defect below. Whether the move is a declared plan change or a
+  values-plane field leaking into the plan is unclassified; re-pin once it is. Neither fixture
+  carries a barrier or an accumulator (bisected 2026-09-03).
+- **`Credit_Monte_Carlo.report` × a folded static root** — a book whose only deal folded to a
+  `FixedCashflowDeal` (a knock-out crossed on the base date) while the factor the original barrier
+  discovered is still simulated does not frame: a (1, 1) static root against the (T, B) grid,
+  `Shape of passed values is (1, 1), indices imply (2, 1)`. Beside any simulated deal it reports
+  and is gated bit-identical to the longhand cashflow; alone it is new reachability the fold
+  opened (2026-09-03). Base valuation is unaffected.
+- **`Credit_Monte_Carlo` × nothing to simulate** — a book whose deals reach no stochastic factor
+  dies in `shared_mem.reset` on a zero-wide random block, and one whose deals have no date after
+  the base date dies in `update_time_grid` on an empty `max()`; neither names the document. Both
+  should refuse by name (found 2026-09-03 probing a lone `FixedCashflowDeal`).
 
 ### Closed
 
@@ -52,7 +68,6 @@ caller** (several items below are deliberately not started), and **look before y
 - **`calculation.CMC_State.quasi_rng` (the Sobol dimension cap)** — A draw wider than 21201 refused inside the pricer and killed the run downstream. Wide draws now chunk at successive positions (`SOBOL_MAX_DIMENSION`), the position ledger is keyed by the width the caller asked for, and the anchored arm strides by `span × sample_size` — successive draws distinct, zero cross-batch collisions at 32768/42407/63603, historical and anchored arms agreeing draw for draw. At or below the cap the single-chunk path writes exactly what it always wrote (hex-identical fixtures, standing position included). 32768-path OSS runs now price, unblocking the bandwidth plateau's operating point. `test_multi_gpu.py::test_a_draw_wider_than_the_engine_is_its_chunks_at_successive_positions`, `::test_a_wide_draw_advances_the_stream_by_every_chunk_it_took`.
 - **`pricing.sim_spot_oss` / `sim_spot` (`dt == 0`)** — A reporting row on an observation date was simulated as a σ=1% kick instead of resolved exactly. The step now applies an exact indicator (`survives`: an up barrier is crossed strictly above the level) with the draw still consumed, so every downstream draw is unmoved; a digital read at an observation-date row is exact where it scattered over 127 distinct marks. `test_barrier_bridge.py::test_a_rebate_read_at_an_observation_date_row_is_exact`, `::test_a_row_that_is_not_an_observation_date_is_untouched`.
 - **`instruments.FXPartialTimeBarrierOption.add_grid_dates`** — The deal now contributes the reporting grid the way its siblings do, gated on a knock-out rebate (a knock-in's rebate pays at expiry, which `reset` already declares): KO no-rebate 2/2 dates, KI+rebate 2/2, KO+rebate 14/14, with every existing profile and CVA hex-identical. `test_partial_barrier_json.py::test_only_a_knock_out_rebate_settles_on_the_reporting_grid`.
-
 - **autocall × collateral chain** — The per-decision ledger flipped only the decision's own payment, so later coupons' booked cash sat in the wrong margin windows. `LatchedBoundarySet` now derives each decision's ledger reach from its declared `cash_events`: six-coupon gate 0.14% against its CRN ladder, own-row-only mutant +7.73%. `test_autocall_json.py::test_a_collateralised_cva_delta_carries_the_settled_coupon`.
 - **`pv_MC_ExtendableForward`** — Registration off the pricer's own `value = fixed + state·live` split closes the CVA delta from −3.17% to −0.07%. `Exercised_By` splits the payoff's `forward_sign` from `decide_sign`, so a deal and its mirror are one exact negation — all four style×side pairs sum to 0.0 across the CMC profile. `test_extendable_forward_json.py::test_the_cva_delta_carries_the_extension_flux`, `::test_the_mirror_booking_sums_to_zero`. Fixed alongside: `_job` shared `FACTORS` by reference, so file-order readings predating the fix are suspect.
 - **`pricing.pv_partial_barrier_option`** — Three structural defects (a non-positive window into `sqrt`; `touched` ignoring the window, −87% on realised payoffs; down + end-window + continuous never pricing) and two formula defects in the `eta == 0` B1 branch. Bridge-corrected MC oracle, worst 0.43% over eight configurations — `test_partial_barrier_json.py`.
@@ -139,23 +154,21 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
 
 ## Designed, not built
 
-**Barrier state as a fold over fixings** (decided 2026-09-02; builds beside spine increment 4).
-No deal stores a consequence: `Barrier_Hit` retires from the accumulator's schema and from
-`structures.py`'s leg furnishing, a document carrying it refuses as consequence-shaped, and
-hit-state is derived at compile from the deal's terms plus observed fixings. The fold splits on one
-criterion — does the deal still take future decisions? None left: it compiles as what it became (a
-hit KO is its rebate cashflow at its declared timing, a hit KI is the vanilla, a touched one-touch a
-fixed cashflow, a called autocall its coupon at that fixing's settlement). Decisions remain: same
-deal, folded parameters (the TARF's remaining target, the accumulator's `pending`). Two fail-loud
-refusals: a monitoring date ≤ base date with no observed fixing — absence of a fixing is not absence
-of a hit — and the consequence field on input. Discrete monitoring reads a close per `Barrier_Dates`
-row (the table grows an `Observed` column); continuous monitoring reads daily (low, high) bars under
-`(index, date, source)` — a bar is a fact that brackets every intraday print, and a disputed
-determination is a superseded bar, never an edited flag. The fixing index is derived from the
-underlying factor name; only `Fixing_Source` is declarable. A t0-folded state registers no boundary
-set, so the sensitivity architecture is untouched. Buildable now: the `Observed` column, the fold,
-the transformations, the refusals, the bar predicate. Increment 4's: hydrating both fact kinds from
-the log, where the book file becomes a projection.
+**Barrier state as a fold over fixings — the REMAINING half** (decided 2026-09-02, built through
+2026-09-03; see Built). What is still designed rather than built is the rest of the fold's reach.
+The **continuous** side: monitoring reads daily (low, high) bars under `(index, date, source)` — a
+bar is a fact that brackets every intraday print, and a disputed determination is a superseded bar,
+never an edited flag. `utils.bars_touched` is the predicate and is gated; the SOURCE is increment
+4's, so `EquityOneTouchOption`, `FXBarrierOption`, `FXOneTouchOption` and
+`FXPartialTimeBarrierOption` still price from terms alone. The **autocall**: `Barrier_Dates` on
+`QEDI_CustomAutoCallSwap` is monitored discretely but its state rides `Price_Fixing`'s own observed
+value, and the transformation is "a called autocall is its coupon at that fixing's settlement" —
+which folds the coupon and threshold ladders together, not just the put barrier, and wants the
+`BarrierIsHit` read at `pricing.py:4807` retired with it (it tests `is not None`, so it fires on
+`'No'`). The **TARF and accumulator's** decisions-remain arm: folded parameters (remaining target,
+`pending`) rather than a substituted deal. The fixing index is derived from the underlying factor
+name; only `Fixing_Source` is declarable. Increment 4's: hydrating both fact kinds from the log,
+where the book file becomes a projection.
 
 **Spine increments 4–7** — projections plus the diary, tier policy, the doorbell, the generated
 binding. The book file's rehoming as an LSN-pinned projection and the plan compiler as a fold over
@@ -246,6 +259,31 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **Barrier state as a fold over fixings, the buildable half** (2026-09-03) —
+  `tests/test_barrier_fold_json.py`, 29 gates, base valuation and credit Monte Carlo. **No deal stores a consequence**: `Barrier_Hit` is
+  gone from `FXAccumulatorOptionDeal` and from `structures.py`'s accumulator leg, and a document
+  carrying it refuses `UnpriceableSchedule` by name whatever it says — measured first, the flag and
+  the fact it asserts give the same bit-identical zero, so the OR could only change an answer where
+  nothing backed the claim. The accumulator's prefix is now `Prefix_Breached`, the fold alone; the
+  fixture reprices at 62.428908447906807, unmoved. **The `Observed` column**: a `Barrier_Dates` row
+  on the two discrete deals is `[date, Observed]`, blank by default. Blank on a future date is
+  nothing; blank on a date ≤ base date refuses — absence of a fixing is not absence of a hit, which
+  is what the one-column table said silently, since `get_start_index` walks past every resolved row.
+  Nine documents not using the column reprice byte-identical across the change, plan hash and factor
+  universe with them. **The fold** runs at `Deal.resolve_history`, called once per deal inside
+  `add_deal_to_structure`'s own guard: a crossing leaves no decisions, so the deal compiles as the
+  deal it BECAME — a hit KI as `EquityOptionDeal`/`EquityBinaryOption`, a hit KO as the
+  `FixedCashflowDeal` paying its rebate on the crossing date — built through `construct_instrument`
+  under that type's own valuation block. Construct-time substitution rather than a `torch.where` in
+  the pricer, because `pv_discrete_barrier_option`'s existing `hit_value` leg is the argument: a
+  second spelling of the same European that shipped once marking already-hit rows at +1432%. A t0
+  fact is a scalar, needs no per-scenario branch, and registers no boundary set — gated through the
+  document, `Greeks: 'All'` refusing on the unfolded barrier and answering on the folded one, to the
+  bit of the vanilla's own second-order block; under a credit Monte Carlo a folded document
+  walks its own document's profile bit for bit beside the unaffected ones. What the fold is worth: the knocked-in call reads
+  +74.9% unfolded, the Up-and-In +193.0%, and the knock-outs mark 18.23–30.98 of option value they
+  no longer own against a rebate of 40. Five mutations, every one caught: strict crossing (2), blank
+  Observed walked past (1), either substitution dropped (6, 4), the fold never run (11).
 - **Composition harness** — `gates/hw2f_composition.py` + `tests/test_hw2f_composition.py`, 14
   gates, run on live prints 2026-09-01. Curves reprice their own quotes to 1.07e-12 / 1.69e-13 bp
   and the 54-row ZAR normal-vol ladder fits to 1.348 bp rms; the fit is ρ-invariant on the

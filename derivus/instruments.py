@@ -114,6 +114,114 @@ def option_date_info(field, base_date, calendars, business_days=2):
     return expiry, settlement, forward_settlement
 
 
+def refuse_consequence_field(field, name, deal_type, remedy):
+    """Refuse a document declaring a CONSEQUENCE the engine folds for itself.
+
+    A knock, an expiry, an accrual is what the observations already say; a field asserting one is a
+    second, unfalsifiable source for the same answer. The spine's vocabulary closure at the deal
+    schema (`derivus_spine.vocabulary`).
+    """
+    if name in field:
+        raise utils.UnpriceableSchedule(
+            '{}: {!r} declares a CONSEQUENCE ({}={!r}), and the state it asserts is DERIVED from '
+            'the observations rather than declared beside them - a document that can say both can '
+            'disagree with itself. Delete the field; {}'.format(
+                field.get('Reference', deal_type), name, name, field[name], remedy))
+
+
+def became(source, deal_type, calendars, valuation_options, **overrides):
+    """`source` as a live `deal_type`, carrying every field that type declares plus `overrides`.
+
+    The substitute is built the way a document of that type is - through `construct_instrument`,
+    under that type's OWN valuation block - so it prices as its own document rather than as a
+    branch inside the deal it replaced.
+    """
+    cls = globals()[deal_type]
+    declared = {f.key for group in cls.fields for f in group.fields}
+    field = dict(source.field)
+    field.update(overrides)
+    field = {k: v for k, v in field.items() if k in declared}
+    field['Object'] = deal_type
+    deal = construct_instrument(field, valuation_options)
+    deal.base_currency = source.base_currency
+    deal.reset(calendars)
+    return deal
+
+
+def barrier_monitoring_rows(rows):
+    """A `Barrier_Dates` table as `[(date, observed-or-None)]`.
+
+    One column is a bare date and reads blank; two is the date and its `Observed` close. Both
+    shapes load, so a document written before the column existed is unchanged on the wire.
+    """
+    out = []
+    for row in rows:
+        if isinstance(row, (list, tuple)):
+            observed = row[1] if len(row) > 1 and row[1] not in ('', None) else None
+            out.append((row[0], None if observed is None else float(observed)))
+        else:
+            out.append((row, None))
+    return out
+
+
+def barrier_state_at(rows, base_date, barrier, barrier_up, deal_type, reference):
+    """The monitoring schedule's resolved verdict at `base_date`: `(hit, date)`, `(False, None)`
+    where nothing observed has crossed.
+
+    A monitoring date on or before the base date with no `Observed` REFUSES - the absence of a
+    fixing is not the absence of a hit, and a schedule the engine silently walked past is a deal
+    priced alive on no evidence.
+    """
+    hit_on = None
+    for date, observed in sorted(barrier_monitoring_rows(rows), key=lambda row: row[0]):
+        if date > base_date:
+            break
+        if observed is None:
+            raise utils.UnpriceableSchedule(
+                '{}: the {} monitoring date {:%Y-%m-%d} is on or before the base date '
+                '{:%Y-%m-%d} and its Observed close is blank. The absence of a fixing is not the '
+                'absence of a hit, and the engine will not price the deal alive on no evidence - '
+                'author the close that date fixed at in the Barrier_Dates row, or delete the row '
+                'if the level was never watched then'.format(
+                    reference or deal_type, deal_type, date, base_date))
+        if hit_on is None and (observed >= barrier if barrier_up else observed <= barrier):
+            hit_on = date
+    return hit_on is not None, hit_on
+
+
+def resolve_discrete_barrier(deal, base_date, calendars, valuation_options, vanilla_type):
+    """A discretely-monitored barrier deal folded against the `Observed` closes already in.
+
+    No decisions left and the level was crossed: the deal IS the vanilla (knock-in) or IS its
+    rebate cashflow at the crossing (knock-out), built as a document of that type. Decisions
+    remain - or nothing crossed - and the deal is unchanged, its resolved rows already behind the
+    pricer's first monitored date.
+
+    A t0-folded state registers no boundary set, so nothing here reaches the sensitivity
+    architecture. Continuous monitoring (no `Barrier_Dates`) needs a daily bar series to fold
+    over; hydrating one is spine increment 4's, so it is returned untouched.
+    """
+    rows = deal.field.get('Barrier_Dates', [])
+    if not rows:
+        return deal
+    barrier_type = deal.field['Barrier_Type']
+    hit, hit_on = barrier_state_at(
+        rows, base_date, float(deal.field['Barrier_Price']), 'Up' in barrier_type,
+        type(deal).__name__, deal.field.get('Reference'))
+    if not hit:
+        return deal
+    if 'In' in barrier_type:
+        return became(deal, vanilla_type, calendars, valuation_options,
+                      Settlement_Date=deal.field.get('Settlement_Date') or deal.field['Expiry_Date'])
+    # the rebate is per DEAL and signed by Buy_Sell, which `FixedCashflowDeal` reads off `Amount`
+    return became(deal, 'FixedCashflowDeal', calendars, valuation_options,
+                  Currency=utils.payoff_currency(deal.field),
+                  Discount_Rate=deal.field['Discount_Rate'] or deal.field['Currency'],
+                  Amount=(1.0 if deal.field['Buy_Sell'] == 'Buy' else -1.0) *
+                         float(deal.field.get('Cash_Rebate', 0.0)),
+                  Payment_Date=hit_on)
+
+
 def calc_factor_index(field, static_offsets, stochastic_offsets, all_tenors={}):
     """Return a factor's offset in the scenario block, whether it is static or stochastic."""
     if static_offsets.get(field) is not None:
@@ -536,6 +644,14 @@ class Deal(object):
     def reset(self, calendars=None):
         self.reval_dates = set()
         self.settlement_currencies = {}
+
+    def resolve_history(self, base_date, calendars, valuation_options):
+        """This deal as its OBSERVED history has already made it, or `self` where decisions remain.
+
+        Called once per deal by the compile driver. A deal with no decisions left is not this deal
+        priced through a dead branch, it is the simpler deal it became.
+        """
+        return self
 
     def add_grid_dates(self, parser, base_date, grid):
         pass
@@ -3522,7 +3638,8 @@ class EquityDiscreteExplicitAsianOption(Deal):
 
 class EquityBarrierBinaryOption(Deal):
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBarrierBinaryOption', [
-        F('Barrier_Dates', 'Table', default='null', row=Row([F('Date', 'Date')])),
+        F('Barrier_Dates', 'Table', default='null',
+          row=Row([F('Date', 'Date'), F('Observed', 'Float')])),
         F('Cash_Payoff', 'Float', default=REQUIRED),
         F('Barrier_Type', 'Text', default='Down_And_In', values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_Price', 'Float', default=0),
@@ -3542,17 +3659,22 @@ class EquityBarrierBinaryOption(Deal):
                      'A discrete barrier binary (digital) option priced using the same One-Step Survival (OSS)',
                      'Monte Carlo approach as `EquityBarrierOption`, with `isdigital=True` so the terminal payoff',
                      'is a fixed cash amount rather than a vanilla call/put payoff.',
-                     'See `EquityBarrierOption` for the full OSS methodology, including the **SpotModel**',
-                     'valuation option shared by both deals.'
+                     'See `EquityBarrierOption` for the full OSS methodology, the `Barrier_Dates` `Observed`',
+                     'column and its compile-time fold, and the **SpotModel** valuation option shared by both',
+                     'deals. A knocked-in binary compiles as the plain `EquityBinaryOption` it now is.'
                      ])
 
     def __init__(self, params, valuation_options):
         super(EquityBarrierBinaryOption, self).__init__(params, valuation_options)
 
+    def resolve_history(self, base_date, calendars, valuation_options):
+        return resolve_discrete_barrier(
+            self, base_date, calendars, valuation_options, 'EquityBinaryOption')
+
     def reset(self, calendars):
         super(EquityBarrierBinaryOption, self).reset()
         self.payoff_ccy = utils.payoff_currency(self.field)
-        barrierdates = set(self.field['Barrier_Dates'])
+        barrierdates = {d for d, _ in barrier_monitoring_rows(self.field['Barrier_Dates'])}
         self.add_reval_dates(barrierdates.union({self.field['Expiry_Date']}), self.field['Payoff_Currency'])
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
@@ -3568,11 +3690,8 @@ class EquityBarrierBinaryOption(Deal):
         field['Discount_Rate'] = utils.check_rate_name(
             self.field['Discount_Rate']) if self.field['Discount_Rate'] else field['Currency']
 
-        all_dates = sorted(
-            set(self.field['Barrier_Dates']).union([self.field['Expiry_Date']])
-        )
-
-        ab = set(self.field.get('Barrier_Dates', []))
+        ab = {d for d, _ in barrier_monitoring_rows(self.field.get('Barrier_Dates', []))}
+        all_dates = sorted(ab.union([self.field['Expiry_Date']]))
 
         field_index = {
             'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
@@ -4194,6 +4313,10 @@ class EquityOneTouchOption(Deal):
             'Expiry': (self.field['Expiry_Date'] - base_date).days}
 
         if self.field.get('Barrier_Dates', []):
+            # NOT a monitoring schedule the pricer walks: this deal is monitored CONTINUOUSLY and
+            # the dates only estimate the spacing the continuity correction is sized on. So the
+            # table grows no `Observed` column - a touch is a fold over daily bars, which is spine
+            # increment 4's to hydrate
             average_days = np.mean(
                 [x.days for x in np.diff(sorted(set(self.field['Barrier_Dates'])))])
             field_index['Barrier_Monitoring'] = 0.5826 * np.sqrt(average_days / 365.0)
@@ -4237,7 +4360,8 @@ class EquityBarrierOption(Deal):
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBarrierOption', [
         F('Cash_Rebate', 'Float', default=0),
         F('Units', 'Float', default=0.0),
-        F('Barrier_Dates', 'Table', default='null', row=Row([F('Date', 'Date')])),
+        F('Barrier_Dates', 'Table', default='null',
+          row=Row([F('Date', 'Date'), F('Observed', 'Float')])),
         F('Barrier_Monitoring_Frequency', 'Text', default='0M', obj='Period'),
         F('Barrier_Type', 'Text', default='Down_And_In', values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_Price', 'Float', default=0),
@@ -4260,6 +4384,15 @@ class EquityBarrierOption(Deal):
                      '',
                      'The barrier is observed at a scheduled set of fixing dates. Between observation dates the',
                      'spot evolves freely; only at barrier dates does OSS truncation apply.',
+                     '',
+                     '**Observed history**',
+                     '',
+                     'A `Barrier_Dates` row is `[date, Observed]`, the close that date fixed at, blank until it',
+                     'is known. A row on or before the base date with a blank `Observed` is REFUSED: the absence',
+                     'of a fixing is not the absence of a hit. Any observed close crossing the level resolves the',
+                     'deal at compile - a knocked-in option compiles as the plain `EquityOptionDeal` it now is,',
+                     'and a knocked-out one as the `FixedCashflowDeal` paying its rebate on the crossing date.',
+                     'There is no hit flag to declare; the state is derived from the rows.',
                      '',
                      '**Knock-Out**',
                      '',
@@ -4320,10 +4453,14 @@ class EquityBarrierOption(Deal):
         self.payoff_ccy = utils.payoff_currency(self.field)
         self.path_dependent = True
 
+    def resolve_history(self, base_date, calendars, valuation_options):
+        return resolve_discrete_barrier(
+            self, base_date, calendars, valuation_options, 'EquityOptionDeal')
+
     def reset(self, calendars):
         super(EquityBarrierOption, self).reset()
         if self.field.get('Barrier_Dates', []):
-            barrierdates = set(self.field['Barrier_Dates'])
+            barrierdates = {d for d, _ in barrier_monitoring_rows(self.field['Barrier_Dates'])}
             self.add_reval_dates(barrierdates.union({self.field['Expiry_Date']}), self.payoff_ccy)
         else:
             self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy)
@@ -4387,10 +4524,8 @@ class EquityBarrierOption(Deal):
                        }
 
         if self.field.get('Barrier_Dates', []):
-            all_dates = sorted(
-                set(self.field['Barrier_Dates']).union([self.field['Expiry_Date']])
-            )
-            ab = set(self.field.get('Barrier_Dates', []))
+            ab = {d for d, _ in barrier_monitoring_rows(self.field['Barrier_Dates'])}
+            all_dates = sorted(ab.union([self.field['Expiry_Date']]))
             field_index['Observation_Dates'] = utils.make_fixing_data(
                 base_date, time_grid, [[x, 0] for x in all_dates])
             field_index['Barrier_Dates'] = [1 if x in ab else -1 for x in all_dates]
@@ -5653,7 +5788,6 @@ class FXAccumulatorOptionDeal(Deal):
         F('LeverageNotional', 'Float', default=0.0),
         F('Barrier_Type', 'Text', default='Up_And_Out', values=['Up_And_Out', 'Down_And_Out']),
         F('Barrier_Price', 'Float', default=REQUIRED),
-        F('Barrier_Hit', 'Text', default='No', values=['No', 'Yes']),
         # NO `tag`: a tag names the utils container the wire form uses, and a tagged table
         # arrives as that object. This schedule is read by iterating rows.
         F('Accumulator_ExpiryDates', 'Table', default='null', row=Row([
@@ -5689,9 +5823,9 @@ class FXAccumulatorOptionDeal(Deal):
             'resolved by its exact indicator.',
             '',
             'Accumulator_ExpiryDates rows are [fixing date, settlement date, observed fixing],',
-            'with the observed fixing blank until it is known. Barrier_Hit may be set when the',
-            'source system already knows an earlier fixing knocked the deal out; a settled',
-            'fixing whose recorded value breaches the barrier knocks the deal out either way.',
+            'with the observed fixing blank until it is known. The knock-out state is DERIVED',
+            'from those rows - a settled fixing whose recorded value breaches the barrier ends',
+            'the deal - and there is no flag to declare it with.',
             '',
             '**Valuation options** (set in the Valuation Configuration section, per deal type)',
             '',
@@ -5720,11 +5854,13 @@ class FXAccumulatorOptionDeal(Deal):
                           calendars):
         """Resolve the accumulator's factor dependencies and the opt-in spot-model switch.
 
-        The knock-out state carried in from before the base date is DATA: the declared
-        `Barrier_Hit` flag is OR'd with every settled fixing's own breach test, so the prefix the
-        pricer starts from is what the schedule records. Unsettled and future fixings are the
-        pricer's business. The Heston-Nandi switch is the TARF's - see
+        The knock-out state carried in from before the base date is a FOLD over the schedule:
+        every settled fixing's own breach test, and nothing else. Unsettled and future fixings are
+        the pricer's business. The Heston-Nandi switch is the TARF's - see
         FXTARFOptionDeal.calc_dependencies."""
+        refuse_consequence_field(self.field, 'Barrier_Hit', 'FXAccumulatorOptionDeal', (
+            'record the fixing that knocked it out in Accumulator_ExpiryDates - its date, its '
+            'settlement date and the value that breached'))
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Underlying_Currency': utils.check_rate_name(self.field['Underlying_Currency']),
                  'FX_Volatility': utils.check_rate_name(self.field['FX_Volatility'])}
@@ -5787,7 +5923,7 @@ class FXAccumulatorOptionDeal(Deal):
             'Notional2': self.field['LeverageNotional'],
             'Barrier_Price': barrier,
             'Barrier_Up': barrier_up,
-            'Barrier_Hit': self.field.get('Barrier_Hit', 'No') == 'Yes' or settled_breach,
+            'Prefix_Breached': settled_breach,
             'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
         }
 
