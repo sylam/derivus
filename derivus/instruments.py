@@ -1304,6 +1304,8 @@ class NettingCollateralSet(Deal):
                                                previous.detach(), required.detach()),
                         utils.MTABoundaryEvent(index, 'post', post_gap,
                                                previous.detach(), required.detach())])
+                # one registration per run of held balance - the whole series decides it
+                utils.mark_binding_calls(mta_events)
                 boundary_balance = Bt.detach()
 
             report_time = local_time_grid[factor_dep['Te']]
@@ -1433,9 +1435,15 @@ class NettingCollateralSet(Deal):
 
                     The ledger is relu-split into received/paid before cumulating, so the exact
                     delta needs the booked amount beside the branch - the split of a difference is
-                    not the difference of the splits."""
-                    rec_d = torch.relu(branch) - torch.relu(booked)
-                    pay_d = torch.relu(-branch) - torch.relu(-booked)
+                    not the difference of the splits. A registration declares REPORTING-currency
+                    amounts while `Cf_Rec`/`Cf_Pay` cumulate base ones, so the row's own cross
+                    carries it across; the two coincide on a base-reporting book and nowhere else.
+                    """
+                    # a row past this set's own prefix is masked out of `rec`/`pay` below, so the
+                    # clamp only keeps the gather in range
+                    fx_t = g_fx_local[min(t, g_fx_local.shape[0] - 1)]
+                    rec_d = fx_t * (torch.relu(branch) - torch.relu(booked))
+                    pay_d = fx_t * (torch.relu(-branch) - torch.relu(-booked))
                     if g_ept:
                         rec, pay = (g_rec_lo < t) & (t <= g_Te), (g_pay_lo < t) & (t <= g_Te)
                         today = branch.new((g_Te == t).astype('f8')).reshape(-1, 1)

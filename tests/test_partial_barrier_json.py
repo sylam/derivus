@@ -484,6 +484,32 @@ def test_asking_for_the_partial_barrier_sensitivities_does_not_move_the_exposure
     assert grad is not None and abs(grad) > 0.0, 'no EUR spot gradient was reported at all'
 
 
+REBATED_LATCH_DEAL = _deal('Up_And_Out', 1.32, at_start='Yes', limit_days=182, rebate=REBATE)
+
+
+def test_a_rebated_knock_out_registers_the_rebate_it_books_row_by_row():
+    """A knock-out's rebate settles ON THE DATE OF THE HIT, so a registration naming only the
+    expiry leaves every earlier rebate row at its realised amount in both counterfactuals - and a
+    collateral scan that follows the branch then disagrees with the cash from that row onward.
+    `cash_events` now carries one entry per decision, the rebate that decision pays if it fires
+    first; row 0 books nothing and the terminal row's rebate is inside the expiry settle, so both
+    declare zero.
+
+    MEASURED off-gate on this deal: two decisions, cash booked at rows 1 and 2, declared {0, 1, 2}
+    against {2} with the leg undeclared - row 1 undeclared and inside the first decision's reach.
+    The declared amount is non-zero on exactly the paths the ledger paid one on, all 1024, at the
+    row's own cross (60.2586 against a ledger 50.0, the USD/GBP rate there).
+
+    WHAT SHIPS HERE IS THE SAFETY HALF. This registration is built on a path no other fixture
+    takes, and building it must not move a reported number - bit-identical, not approximately. The
+    COMPLETENESS half needs a collateralised partial-barrier document, which this file has not got.
+    """
+    off, _ = _cva(deal=REBATED_LATCH_DEAL, bridge=False, batch=1024, batches=1)
+    on, grad = _cva(deal=REBATED_LATCH_DEAL, gradient=True, bridge=False, batch=1024, batches=1)
+    assert off == on, 'the exposure moved when sensitivities were requested: %r -> %r' % (off, on)
+    assert grad is not None and abs(grad) > 0.0, 'no EUR spot gradient was reported at all'
+
+
 def test_only_a_knock_out_rebate_settles_on_the_reporting_grid():
     """`FXPartialTimeBarrierOption` declared `path_dependent` and overrode nothing, so a rebate it
     settles row by row had no dates to settle on. It now takes `FXBarrierOption`'s override, under

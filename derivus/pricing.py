@@ -1396,6 +1396,13 @@ def deal_to_mtm_grid(time_grid, deal_data, fx_rep):
     return lambda profile: interp_to_mtm_grid(profile * scale, time_grid, deal_data).detach()
 
 
+def report_fx(fx_rep, row):
+    """``fx_rep`` at one pricer row, detached: a simulated cross has a row, a static one is a
+    single number. What a ledger fact declared in the reporting currency is scaled by."""
+    return (fx_rep[row] if fx_rep.dim() > 1 and fx_rep.shape[0] > 1
+            else fx_rep.reshape(-1)[0]).detach()
+
+
 def interpolate(mtm, shared, time_grid, deal_data, interpolate_grid=True):
     """Deal grid -> MTM grid, stashing the interpolated value on the deal's result block."""
     if interpolate_grid and deal_data.Time_dep.interp.size > deal_data.Time_dep.deal_time_grid.size:
@@ -1801,7 +1808,9 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     BOUNDARY AAD (``shared.boundary_aad``): the gap is each crossing's margin, graph retained,
     signed so ``gap > 0`` means CROSSED. The whole latch is built OUTSIDE the recompute node, the
     decision being an outer scenario spot. Blocks where every scenario has resolved skip the OSS and
-    carry no counterfactual - running one would draw random numbers and move the reported value.
+    carry no counterfactual - running one would draw random numbers and move the reported value. The
+    registration DECLARES its ledger: ``settles`` for the expiry, which pays the deal's whole value,
+    and ``cash_events`` for the rebate leg, one entry per crossing on the date it falls due.
 
     BRANCH AND WEIGHT (``Branch_And_Weight: 'Yes'``, base valuation only) SWAPS the estimator for
     that registration rather than joining it; off, and absent, is bit for bit. This sampler is
@@ -2101,7 +2110,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     smooth = branch_and_weight(shared, deal_data)
     second_order = smooth and getattr(shared, 'gamma', False)
     boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
-    b_gaps, b_crossed, b_obs_before, b_alive, b_dead = [], [], [], [], []
+    b_gaps, b_crossed, b_obs_before, b_alive, b_dead, b_cash = [], [], [], [], [], []
 
     for index, (discount_block, spot_block, moneyness_block, rem_exp) in enumerate(
             utils.split_counts([discount, spot, moneyness, expiry_years], counts, shared)):
@@ -2127,11 +2136,21 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             if cash_rebate and direction == BARRIER_OUT:
                 # settle the rebate on the date it falls due; the TERMINAL row is excluded, the
                 # settle after the loop already paying it in full
-                if row_ofs < len(deal_data.Time_dep.deal_time_grid):
-                    newly_hit = (crossed & ~barrier_hit).to(spot_block.dtype)
+                due = row_ofs < len(deal_data.Time_dep.deal_time_grid)
+                newly_hit = (crossed & ~barrier_hit).to(spot_block.dtype)
+                if due:
                     cash_settle(shared, factor_dep['SettleCurrency'],
                                 deal_data.Time_dep.deal_time_grid[row_ofs - 1],
                                 nominal * rebate_per_unit * newly_hit)
+                if boundary_aad:
+                    # ONE entry per decision, in reporting currency: what this crossing pays if it
+                    # fires while the deal is alive, beside the ledger as booked. The terminal
+                    # crossing's rebate is inside the settle after the loop, so it declares zero
+                    fxr = report_fx(fx_rep, row_ofs - 1) if due else 0.0
+                    b_cash.append((int(deal_data.Time_dep.deal_time_grid[row_ofs - 1]),
+                                   (fxr * nominal * rebate_per_unit *
+                                    torch.ones_like(newly_hit)).detach(),
+                                   (fxr * nominal * rebate_per_unit * newly_hit).detach()))
             barrier_hit = barrier_hit | crossed   # carry forward into the next block
 
         tenor_block = factor_dep['Expiry'] - t_block[:, utils.TIME_GRID_MTM]
@@ -2254,10 +2273,14 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
     if boundary_aad and b_gaps and time_grid.report_index is not None:
         # branches stay on THIS pricer's grid and currency; report_index is None on a grid nobody
-        # reports off, where there is no reporting row to register against
+        # reports off, where there is no reporting row to register against. The deal's whole value
+        # is settled at expiry, so a branch settles what THAT branch is worth there
         shared.boundary_sets.append(utils.LatchedBoundarySet(
             gaps=b_gaps, fired=b_crossed, obs_before=np.array(b_obs_before),
             untriggered=torch.cat(b_alive, dim=0), triggered=torch.cat(b_dead, dim=0),
+            cash_events=b_cash or None,
+            settles=[(int(deal_data.Time_dep.deal_time_grid[-1]),
+                      (report_fx(fx_rep, -1) * mtm_list[-1][-1]).detach())],
             to_mtm=deal_to_mtm_grid(time_grid, deal_data, fx_rep),
             report_index=time_grid.report_index))
 
@@ -2498,7 +2521,10 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
     variance to work with, and only then can a ``LatchedBoundarySet`` register. With the bridge live
     ``barrier_touched`` is continuous in the spot and ordinary AAD already carries the flux, so
     registering would count one decision twice (measured: the CVA delta reads 0.44% from a CRN
-    ladder flat to 1.02% with nothing registered).
+    ladder flat to 1.02% with nothing registered). The registration DECLARES its ledger: ``settles``
+    for the expiry, which pays out everything left, and ``cash_events`` for the knock-out's rebate,
+    one entry per decision on the date the hit pays - zero at row 0, which books nothing, and zero
+    at the terminal row, whose rebate is inside the expiry settle.
 
     IT IS OPT-IN (``Boundary_AAD_Window_Touch``, default No). On the endpoint branch the
     registration decides the SIGN and its own bandwidth ladder is flat to 12% over a factor of ten,
@@ -2578,7 +2604,7 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
                    getattr(shared, 'boundary_window_touch', False) and
                    not interval_variance.any() and
                    fx_rep is not None and time_grid.report_index is not None)
-        b_gaps, b_fired, b_obs_before, b_rows = [], [], [], []
+        b_gaps, b_fired, b_obs_before, b_rows, b_cash = [], [], [], [], []
         rows, prev_touched, prev_spot = [], 0.0, None
         last_bar = adj_barrier.shape[0] - 1 if torch.is_tensor(adj_barrier) else None
         for index in range(deal_time.shape[0]):
@@ -2632,17 +2658,32 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
                 # an earlier decision killed pays nothing either way. One decision is ONE
                 # counterfactual, so the fork rides this registration rather than a second one
                 own_row, earlier = [], torch.zeros_like(b_fired[0])
+                last_row = alive.shape[0] - 1
                 for k, row in enumerate(b_rows):
                     # row 0 is the deal in force today: `first_touch` starts at row 1
                     fires = torch.zeros_like(alive[row]) if row == 0 else (
                         buy_or_sell * cash_rebate * ~earlier)
                     own_row.append((row, fires.detach(),
                                     torch.where(earlier, dead[row], alive[row]).detach()))
+                    # and the ledger that fork books, one entry per decision in reporting currency:
+                    # the rebate settles on the date it is triggered. Row 0 pays nothing and the
+                    # TERMINAL row's rebate is inside the expiry settle, so both declare zero
+                    unit = (report_fx(fx_rep, row) * buy_or_sell * cash_rebate
+                            if 0 < row < last_row else 0.0)
+                    b_cash.append((int(deal_data.Time_dep.deal_time_grid[row]),
+                                   (unit * torch.ones_like(alive[row])).detach(),
+                                   (unit * (b_fired[k] & ~earlier).to(alive.dtype)).detach()))
                     earlier = earlier | b_fired[k]
         if latched and b_gaps:
+            # the deal's whole remaining value is settled at expiry - a knock-out's terminal
+            # rebate row lands there too - so a branch settles what THAT branch is worth there,
+            # while every EARLIER rebate row is a decision's own payment through `cash_events`
             shared.boundary_sets.append(utils.LatchedBoundarySet(
                 gaps=b_gaps, fired=b_fired, obs_before=np.array(b_obs_before),
                 untriggered=alive.detach(), triggered=dead.detach(), own_row=own_row,
+                cash_events=b_cash or None,
+                settles=[(int(deal_data.Time_dep.deal_time_grid[-1]),
+                          (report_fx(fx_rep, -1) * combined[-1]).detach())],
                 to_mtm=deal_to_mtm_grid(time_grid, deal_data, fx_rep),
                 report_index=time_grid.report_index))
     else:
@@ -2827,6 +2868,13 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     owes - exact wherever the settlement lag is shorter than the fixing spacing, NOT one-signed on a
     leveraged deal, and confined to cells the latch calls dead (magnitudes in roadmap.md). An exact
     branch would be a per-decision head profile, a fourth BoundarySet shape.
+
+    AND THE SETTLED LEDGER IS NOT DECLARED. Under a CSA the counterfactual's cash should flip with
+    the decision; this deal settles a STREAM of per-fixing cashflows, and `settles` states an
+    identity - the row pays out everything the deal is still worth - that a stream does not satisfy.
+    Declaring through it reads a knocked-out branch as settling 1476 at a row it settles nothing at.
+    What the stream needs is the unconditional fixing beside its own decision index, which is a
+    field nobody has a falsifying document for.
 
     BRANCH AND WEIGHT (``Branch_And_Weight: 'Yes'``, base valuation only) SWAPS the estimator for
     that registration rather than joining it; off, and absent, is bit for bit. This loop is already
@@ -3162,6 +3210,12 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
     approximated. Reconstructed outer-grid decisions register a `LatchedBoundarySet`: the alive
     branch is the facts-only world, the dead branch the survived-weighted pending head, both from
     the same `value = fixed + state * live` row arithmetic the forward reports.
+
+    THE SETTLED LEDGER IS NOT DECLARED. This deal settles a STREAM of per-fixing cashflows, and
+    `settles` states an identity - the row pays out everything the deal is still worth - that a
+    stream does not satisfy, so under a CSA the counterfactual's cash stays at what the realised
+    world paid. Measured to be second order here, and the record is in
+    `test_a_collateralised_cva_delta_carries_the_surviving_cash`.
     """
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -3683,6 +3737,11 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     fine at monthly and quarterly fixing spacing and rough at daily, where the economically right
     gamma is the desk's own call-spread width (spread measured in
     ``tests/test_branch_and_weight.py``).
+
+    AND THE SETTLED LEDGER IS NOT DECLARED. This deal settles a STREAM of per-fixing cashflows, and
+    `settles` states an identity - the row pays out everything the deal is still worth - that a
+    stream does not satisfy, so under a CSA the counterfactual's cash stays at what the realised
+    world paid from the first settlement onward.
     """
 
     def accrued(s, k, C, inverted):
@@ -4835,8 +4894,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                     b_latch.append([gap, (gap >= 0).detach(), row_ofs + row,
                                     outputs[fixed + n_events + k],
                                     outputs[fixed + 2 * n_events + k]])
-                    fxr = (fx_rep[row_ofs + row] if fx_rep.dim() > 1 and
-                           fx_rep.shape[0] > 1 else fx_rep.reshape(-1)[0])
+                    fxr = report_fx(fx_rep, row_ofs + row)
                     b_cash.append((int(np.searchsorted(
                         time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM])),
                         (nominal * fxr * outputs[fixed + 3 * n_events + k]).detach(),

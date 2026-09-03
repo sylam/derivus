@@ -234,7 +234,18 @@ class MTABoundarySet:
 
         The receive and post sides of one call share a jump: D = 1 means "a transfer happened" for
         both, so only the gap differs. Computing it once halves the replays.
+
+        The jump is masked by the event's `live`: a run of calls over which the balance is HELD
+        publishes ONE transfer decision, and the coefficient carries it once. Masking the jump
+        masks the kernel weight it multiplies, the product being the same three factors - and the
+        amplification refusal, which reads the weights the SOLVE produced, sees the gaps either way.
         """
+        unstamped = sum(event.live is None for event in self.events)
+        if unstamped:
+            raise ValueError(
+                '{} of {} margin-call events reached the correction with no `live` mask: '
+                '`mark_binding_calls` decides it over the whole series, so every site that builds '
+                'events owes it one call'.format(unstamped, len(self.events)))
         with torch.no_grad():
             reported = self.replay(self.balance)
         jumps = {}
@@ -249,7 +260,7 @@ class MTABoundarySet:
                     jumps[event.call_index] = transferred - held
             # outside the block: `no_grad` is thread-local, and a generator suspended inside one
             # leaves it set in whoever resumes it - handing the caller a gap that carries no graph
-            yield event.gap, jumps[event.call_index]
+            yield event.gap, jumps[event.call_index] * event.live
 
 
 @dataclass
@@ -340,6 +351,12 @@ class LatchedBoundarySet(BoundarySet):
     # deal is alive, and the ledger as booked - detached reporting-currency (B,) amounts. The
     # collateral chain reads them through C_ts_te and the additive route ignores them.
     cash_events: list = None
+    # Per WHOLE-VALUE SETTLEMENT, `(mtm_row, booked)`: a row that pays out everything the deal is
+    # still worth, and the amount booked there - detached reporting-currency (B,). THE ROW'S MTM IS
+    # THE SETTLEMENT, which is what lets a branch declare `booked + branch[row]`; a row that settles
+    # one cashflow of a STREAM cannot use this - there `branch[row]` is the change in what remains,
+    # not in what was paid, and the two differ by the whole of the deal's future.
+    settles: list = None
 
     def branch_deltas(self):
         """Per decision, the deal-mtm delta with that decision forced ON and forced OFF.
@@ -411,13 +428,18 @@ class LatchedBoundarySet(BoundarySet):
         forced OFF each later trigger pays iff no OTHER earlier decision fired. Rows before the
         decision are identical in both worlds and are not carried.
 
+        A declared `settles` row adds the other half of the reach: the deal's whole remaining value
+        at that row is what it pays there, so the branch settles `booked + branch[row]`. Without it
+        the chain folds the REALISED cash into both branches while the balance scan follows the
+        counterfactual, and the two disagree from the settlement onward.
+
         The yield is OUTSIDE the no_grad block on purpose: `no_grad` is thread-local, and a
         generator suspended inside one leaves it set in whoever resumes it - which would hand the
         caller a gap whose `gap - gap.detach()` carries no graph.
         """
         for k, (gap, on, off) in enumerate(self.branch_deltas()):
             with torch.no_grad():
-                on_cash = off_cash = None
+                on_cash, off_cash = [], []
                 if self.cash_events:
                     t, amount, booked = self.cash_events[k]
                     dead = torch.zeros_like(self.fired[0])
@@ -430,6 +452,9 @@ class LatchedBoundarySet(BoundarySet):
                         on_cash.append((tj, torch.zeros_like(amt), booked_j))
                         off_cash.append((tj, amt * (self.fired[j] & ~dead), booked_j))
                         dead = dead | self.fired[j]
+                for t, booked in (self.settles or ()):
+                    on_cash.append((t, booked + on[t], booked))
+                    off_cash.append((t, booked + off[t], booked))
                 jump = (score(self.portfolio_delta(on, on_cash)) -
                         score(self.portfolio_delta(off, off_cash)))
             yield gap, jump
@@ -526,6 +551,52 @@ class MTABoundaryEvent:
     gap: object                     # tensor, graph retained
     previous_balance: object        # tensor, detached
     required_balance: object        # tensor, detached
+    # Per scenario, whether THIS call is the one its run of held balance registers - stamped by
+    # `mark_binding_calls` over the whole series, no call being able to decide it alone.
+    live: object = None
+
+
+def mark_binding_calls(events):
+    """Stamp each event's `live` mask: one registration per run of calls the balance is HELD across,
+    receive and post separately.
+
+    A constant `previous_balance` means every call in the run publishes the same transfer decision,
+    and the balance can make that transfer once. The binding call is the one whose gap is largest;
+    ties keep the first. Where every call transfers, each run is one call and the mask is all True.
+    """
+    for side in sorted({event.side for event in events}):
+        _mark_side([event for event in events if event.side == side])
+
+
+def _mark_side(events):
+    """One side's binding calls: the largest gap in each run of held balance, ties to the first."""
+    if not events:
+        return
+    previous = torch.stack([event.previous_balance for event in events])
+    gaps = torch.stack([event.gap.detach() for event in events])
+    new_run = torch.ones_like(previous, dtype=torch.bool)
+    new_run[1:] = previous[1:] != previous[:-1]
+
+    # the run's largest gap at every one of its events: a forward running maximum, then swept back
+    run_max = torch.empty_like(gaps)
+    running = torch.full_like(gaps[0], float('-inf'))
+    for k in range(gaps.shape[0]):
+        running = torch.where(new_run[k], gaps[k], torch.maximum(running, gaps[k]))
+        run_max[k] = running
+    for k in range(gaps.shape[0] - 2, -1, -1):
+        run_max[k] = torch.where(new_run[k + 1], run_max[k], run_max[k + 1])
+
+    keep = gaps == run_max
+    taken = torch.zeros_like(keep[0])
+    for k, event in enumerate(events):
+        taken = torch.where(new_run[k], torch.zeros_like(taken), taken)
+        keep[k] = keep[k] & ~taken
+        taken = taken | keep[k]
+        event.live = keep[k]
+    if logging.getLogger().isEnabledFor(logging.DEBUG):
+        logging.debug('MTA BINDING side=%s events=%d runs=%.4g live=%.4g', events[0].side,
+                      len(events), float(new_run.to(gaps.dtype).sum(dim=0).max()),
+                      float(keep.to(gaps.dtype).sum(dim=0).max()))
 
 
 # Custom Exceptions

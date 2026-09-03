@@ -98,33 +98,42 @@ INTERPOLATING_DEAL = {
     'Forward_Price': 100.0, 'Maturity_Date': bb.BASE + pd.Timedelta(days=137)}
 
 
-def _foreign_report_currency(c, ccy='EUR'):
+def _foreign_report_currency(c, ccy='EUR', vol=0.12):
     """Report in `ccy` while every deal still pays USD, so `fx_rep` is a simulated (T, B) cross
-    rather than `shared.one`. Nothing else about the portfolio changes."""
+    rather than `shared.one`. Nothing else about the portfolio changes.
+
+    THE MODEL IS WHAT MAKES IT SIMULATED. `Base_Currency` stays USD, so USD is the numeraire and
+    never carries a process; the cross is stochastic only because `FxRate.EUR` does. Declared the
+    other way round the factor is skipped for lacking a price model and the cross reads as a
+    constant 1/1.25 at every row - which is what this fixture did while its own docstring claimed a
+    (T, B) cross, and it left every row index the branches are gathered by dead.
+
+    `vol` at zero keeps the (T, B) shape and every row gather while pinning the rows to one value,
+    which is what an identity between two DIFFERENT rows needs."""
     c.params['Price Factors']['FxRate.' + ccy] = {
         'Domestic_Currency': None, 'Interest_Rate': ccy, 'Priority': 1, 'Spot': 1.25}
-    c.params['Price Factors']['FxRate.USD']['Domestic_Currency'] = ccy
     c.params['Price Factors']['InterestRate.' + ccy] = {
         'Currency': ccy, 'Day_Count': 'ACT_365', 'Sub_Type': None,
         'Curve': utils.Curve([], [[0.0, 0.0], [5.0, 0.0]])}
-    c.params['Price Models']['GBMAssetPriceModel.USD'] = {'Vol': 0.12, 'Drift': 0.0}
+    c.params['Price Models']['GBMAssetPriceModel.' + ccy] = {'Vol': vol, 'Drift': 0.0}
     c.params['Model Configuration'].append('FxRate', (), 'GBMAssetPriceModel')
     return ccy
 
 
 def _run(deal, spot=bb.SPOT, gradient=False, batch=512, mcmc=128, collateralised=False,
          batches=1, exclude_paid_today=False, extra_deals=(), report_currency='USD',
-         children=None, bandwidth=None):
+         children=None, bandwidth=None, report_vol=0.12, seed=1):
     """One CMC run returning (netting mtm, cva, equity-spot gradient or None).
 
     `bandwidth` overrides the declared `Boundary_AAD_Bandwidth`; None leaves the document alone
-    and every reading in this file is taken at the declared 0.01."""
+    and every reading in this file is taken at the declared 0.01. `seed` is the document's, so a
+    second draw is a second document rather than a second code path."""
     c = bb._cfg()
     c.params['Price Factors']['EquityPrice.EQ']['Spot'] = spot
     c.params['Price Factors']['SurvivalProb.CPTY'] = {
         'Recovery_Rate': 0.4, 'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.4]])}
     if report_currency != 'USD':
-        _foreign_report_currency(c, report_currency)
+        _foreign_report_currency(c, report_currency, vol=report_vol)
     kids = [{'Instrument': construct_instrument(d, {})} for d in (deal,) + tuple(extra_deals)]
     if children is not None:
         c.deals['Deals']['Children'] = children(c)
@@ -140,7 +149,7 @@ def _run(deal, spot=bb.SPOT, gradient=False, batch=512, mcmc=128, collateralised
         c.deals['Deals']['Children'] = kids
     overrides = {
         'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
-        'Simulation_Batches': batches, 'Random_Seed': 1, 'Currency': report_currency,
+        'Simulation_Batches': batches, 'Random_Seed': seed, 'Currency': report_currency,
         'Tenor_Offset': 0.0,
         'MCMC_Simulations': mcmc, 'Deflation_Interest_Rate': 'USD', 'Generate_Cashflows': 'Yes',
         'Gradient_Variables': 'Factors',
@@ -216,7 +225,8 @@ def test_the_registered_barrier_branches_reproduce_the_reported_value(interpolat
 
     UNITS: `fx_rep` is `shared.one` only when payoff and reporting currencies match; otherwise it
     is a simulated (T, B) cross, so a branch registered without it is a delta in the wrong currency
-    and leaves the fx factor's own flux off the tape - measured at exactly the USD/EUR spot."""
+    and leaves the fx factor's own flux off the tape - out by that cross at every row, which starts
+    at the declared 1.25 USD/EUR spot and moves with the simulation from there."""
     seen = _spy_registration(
         'BARR1', deal=DISCRETE_BARRIER, batch=256, mcmc=64, report_currency=report_currency,
         extra_deals=(INTERPOLATING_DEAL,) if interpolated else ())
@@ -515,11 +525,12 @@ def test_collateralised_barrier_latch_gradient_matches_bump_and_reprice():
     barrier's own 51, 81 interpolated - so this is where the branch profile was worst mis-mapped
     and the uncollateralised gate (17 rows, no interpolation) could not see it.
 
-    6.71% apart at 16384 paths on a ladder flat to 1.70%; two further seeds read 3.37% and 4.80%.
-    MUTATION - the correction deleted - reads 47.4%, 5.9x clear, the correction being 28% of the
+    1.08% apart at 16384 paths on a ladder flat to 1.73%; two further seeds read 0.61% and 1.06%.
+    It was 6.71% before the settled ledger was declared, which is what most of that residual was.
+    MUTATION - the correction deleted - reads 45.27%, 42x clear, the correction being 31.9% of the
     reported gradient. The 8% tolerance is the correction estimator's own bandwidth envelope at
-    this path count (-2.41% to -6.25% across bandwidths 0.005..0.05 against one oracle), where at
-    65536 paths the disagreement is 4.55% and still falling monotonically in h."""
+    this path count, re-taken against one oracle: +1.09 / +5.45 / +1.34 / +1.24% at bandwidths
+    0.01 / 0.005 / 0.02 / 0.05, so the narrowest kernel is what sizes it and not the reading."""
     kw = dict(batch=512, mcmc=128, collateralised=True, batches=32)
     aad = _run(DISCRETE_BARRIER, gradient=True, **kw)[2]
     r = ladder(price=lambda s: _run(DISCRETE_BARRIER, spot=s, **kw)[1],
@@ -735,6 +746,198 @@ def test_a_zero_gross_delta_reproduces_the_reported_net(exclude_paid_today):
     assert seen['diff'] == 0.0, (
         f'a zero gross delta moved the net by {seen["diff"]:.4e}: the counterfactual is rebased, '
         f'so every correction against it is mis-sized')
+
+
+def _spy_boundary(look, **run_kw):
+    """Run with `look(shared, reported_mtm)` called at the moment the correction is assembled -
+    the one place a registration, its chain and the reported portfolio all exist at once."""
+    import derivus.pricing as C
+    seen = {}
+    original = C.boundary_correction
+
+    def probe(shared, objective, reported_mtm, bandwidth):
+        seen.update(look(shared, reported_mtm) or {})
+        return original(shared, objective, reported_mtm, bandwidth)
+
+    C.boundary_correction = probe
+    try:
+        _run(gradient=True, **run_kw)
+    finally:
+        C.boundary_correction = original
+    return seen
+
+
+REBATED_BARRIER = dict(DISCRETE_BARRIER, Cash_Rebate=5.0)
+
+
+def test_a_run_of_held_balance_registers_its_transfer_decision_once():
+    """A transfer the balance cannot make twice is ONE decision, however many calls publish it.
+
+    Over a run of margin calls the balance is held across, `previous` is constant, so every call in
+    the run yields the same counterfactual and the same jump - and the estimator was weighting one
+    decision's flux by the length of the run: 81 calls inside one run on this fixture, every one of
+    them live. `mark_binding_calls` keeps the call whose gap is largest, ties to the first.
+
+    PER SIDE, which is the whole of why receive and post are not pooled: with the minimum transfer
+    amount at zero the two boundaries coincide and their contributions cancel exactly, and pooling
+    would keep one of the pair and invent an MTA term on a book that has no MTA.
+
+    A COUNTING identity with no tolerance, per scenario. The second assertion is what stops it
+    being vacuous: a fixture whose every call transfers has runs of one and passes by construction.
+    """
+    def look(shared, reported_mtm):
+        mta = [b for b in shared.boundary_sets if isinstance(b, utils.MTABoundarySet)]
+        assert mta, 'no MTA registration at all - this fixture gates nothing'
+        worst, longest = 0, 0
+        for bset in mta:
+            for side in ('receive', 'post'):
+                events = [e for e in bset.events if e.side == side]
+                previous = torch.stack([e.previous_balance for e in events])
+                # an engine declaring no mask registers every call, which IS the mutant reading -
+                # taken through this gate's own assertion rather than an AttributeError
+                live = torch.stack([torch.ones_like(previous[0], dtype=torch.bool)
+                                    if getattr(e, 'live', None) is None else e.live
+                                    for e in events])
+                new_run = torch.ones_like(previous, dtype=torch.bool)
+                new_run[1:] = previous[1:] != previous[:-1]
+                run_id = torch.cumsum(new_run.to(torch.int64), dim=0)
+                for r in range(1, int(run_id.max()) + 1):
+                    in_run = run_id == r
+                    worst = max(worst, int((live & in_run).sum(dim=0).max()))
+                    longest = max(longest, int(in_run.sum(dim=0).max()))
+        return {'live_per_run': worst, 'longest_run': longest}
+
+    seen = _spy_boundary(look, deal=DISCRETE_BARRIER, batch=256, mcmc=64,
+                         children=_collateralised_barrier)
+    assert seen['longest_run'] > 1, (
+        f'no run of held balance is longer than one call ({seen["longest_run"]}), so every call '
+        f'transfers and this gate cannot see a repeat')
+    assert seen['live_per_run'] == 1, (
+        f'a run of calls over which the balance is HELD registers {seen["live_per_run"]} live '
+        f'events for one transfer decision - the same counterfactual counted once per call')
+
+
+def test_a_latched_registration_declares_every_settlement_in_its_reach():
+    """A registration that does not name its deal's settlements is scored against the REALISED
+    ledger: `net_from_gross` folds the cash that was actually paid into both branches while the
+    collateral scan follows the counterfactual, and the two disagree from the settlement onward.
+
+    So the declaration is a counting identity - every row the deal books cash at, from the first
+    decision's reach onward, is named by `settles` or by `cash_events`. No tolerance. The rebated
+    barrier is the sharp fixture: rows 12 20 30 36 44 54 60 68 78 84 92 94, eleven crossings each
+    paying on their own date plus an expiry that is the twelfth crossing's date as well - and the
+    registration that shipped declared NONE of them, first decision reaching row 7.
+
+    ITS SCOPE IS THE BARRIER FAMILY, which is what this fixture registers. `settles` states an
+    identity - the row pays out everything the deal is still worth - and a pricer settling a STREAM
+    of per-fixing cashflows cannot declare through it, so the accumulator, the TARF and the
+    extendable are undeclared and this gate is not run on them.
+
+    One deal per netting set, so `shared.t_Cashflows` at this point is that deal's own ledger.
+    """
+    def look(shared, reported_mtm):
+        booked = {int(r) for rows in (shared.t_Cashflows or {}).values() for r, v in rows.items()
+                  if float(v.detach().abs().max()) > 0.0}
+        rows = []
+        for bset in shared.boundary_sets:
+            if not isinstance(bset, utils.LatchedBoundarySet):
+                continue
+            first = None
+            for _, on, off in bset.branch_deltas():
+                live = torch.nonzero((on - off).abs().amax(dim=1) > 0)
+                first = int(live.min()) if live.numel() else None
+                break
+            # `getattr`, so an engine that declares neither field dies on the assertion below with
+            # the rows it left undeclared rather than on a missing attribute
+            declared = {int(t) for t, _, _ in (getattr(bset, 'cash_events', None) or [])}
+            declared |= {int(t) for t, _ in (getattr(bset, 'settles', None) or [])}
+            rows.append((bset.deal, first,
+                         {r for r in booked if first is not None and r >= first}, declared))
+        return {'rows': rows, 'booked': booked}
+
+    seen = _spy_boundary(look, deal=REBATED_BARRIER, collateralised=True, batch=256, mcmc=64)
+    assert len(seen.get('booked', ())) > 1, (
+        'the deal books at most one row, so a registration naming only its expiry would pass')
+    assert seen['rows'], 'nothing latched registered at all - the fixture is not exercising this'
+    for deal, first, reach, declared in seen['rows']:
+        assert reach <= declared, (
+            f'{deal} books cash at rows {sorted(reach - declared)} inside the reach of a decision '
+            f'first landing on row {first}, and declares {sorted(declared) or "nothing"} - those '
+            f'payments stay at their realised amount in every counterfactual')
+
+
+@pytest.mark.parametrize('exclude_paid_today', [False, True], ids=['plain', 'exclude_paid_today'])
+def test_a_ledger_row_declared_at_what_was_booked_moves_the_net_by_nothing(exclude_paid_today):
+    """The sibling of the zero-gross-delta gate, on the other channel: declaring the world that
+    HAPPENED must reproduce the set's own net EXACTLY.
+
+    `cash_to_C` relu-splits received from paid before differencing, and the split of a difference
+    is not the difference of the splits - so a row whose branch amount equals its booked one is the
+    arithmetic's own fixed point and anything but bit-identical says the ledger channel rebases
+    every correction that rides it. Both `Exclude_Paid_Today` settings, the option moving the
+    window edges AND adding a Vte term of its own.
+    """
+    def look(shared, reported_mtm):
+        for bset in shared.boundary_sets:
+            if not isinstance(bset, utils.LatchedBoundarySet) or bset.net_from_gross is None:
+                continue
+            settles = getattr(bset, 'settles', None)
+            if not settles:
+                continue
+            with torch.no_grad():
+                zero = bset.to_mtm(torch.zeros_like(bset.untriggered))
+                base = bset.net_from_gross(zero)
+                same = bset.net_from_gross(zero, [(t, amount, amount) for t, amount in settles])
+                return {'diff': float((same - base).abs().max()),
+                        'scale': float(base.abs().max())}
+        return None
+
+    seen = _spy_boundary(look, deal=REBATED_BARRIER, collateralised=True, batch=256, mcmc=64,
+                         exclude_paid_today=exclude_paid_today)
+    assert 'diff' in seen, 'no registration declared a settlement under a chain - nothing gated'
+    assert seen['diff'] == 0.0, (
+        f'declaring the ledger as it was booked moved the net by {seen["diff"]:.4e} against a '
+        f'level of {seen["scale"]:.4g}: the counterfactual is rebased through its cash')
+
+
+@pytest.mark.parametrize('report_currency', ['USD', 'EUR'])
+def test_a_declared_ledger_row_is_read_in_the_currency_it_was_declared_in(report_currency):
+    """A registration declares its payments in the REPORTING currency; `Cf_Rec`/`Cf_Pay` cumulate
+    BASE-currency amounts, each converted at its own row.
+
+    So the identity is a unit: one reporting-currency unit of extra cash at a settlement row moves
+    the reported net by one. Unscaled it moved it by 0.80 in EUR - exactly 1/1.25, the declared
+    USD/EUR spot - and by 1.00 in USD, which is why no USD-reporting fixture could see it and why
+    the zero-ledger gate above cannot either: at the booked amount both splits are zero whatever
+    the scale is.
+
+    THE CROSS IS SIMULATED AND FLAT, which is what makes the unit exact. Cash settled at row t is
+    carried as BASE money and reported at row j's own cross, so the chain owes `fx(t) / fx(j)` and
+    the unit is that ratio - MEASURED at 12% vol, 1.0183 / 1.0310 / 1.0322 / 1.0419 across the four
+    report rows this payment reaches, per-path spread to 0.019. That ratio is the correct answer
+    and not a statement about currency, so the gate pins the vol at zero: the cross keeps its
+    (T, B) shape and every row gather runs, while the two rows carry one value.
+    """
+    def look(shared, reported_mtm):
+        for bset in shared.boundary_sets:
+            if not isinstance(bset, utils.LatchedBoundarySet) or bset.net_from_gross is None:
+                continue
+            settles = getattr(bset, 'settles', None)
+            if not settles:
+                continue
+            with torch.no_grad():
+                zero = bset.to_mtm(torch.zeros_like(bset.untriggered))
+                t, amount = settles[-1]
+                moved = bset.net_from_gross(zero, [(t, amount + torch.ones_like(amount), amount)])
+                return {'unit': float((moved - bset.net_from_gross(zero)).abs().max())}
+        return None
+
+    seen = _spy_boundary(look, deal=REBATED_BARRIER, collateralised=True, batch=256, mcmc=64,
+                         report_currency=report_currency, report_vol=0.0)
+    assert 'unit' in seen, 'no registration declared a settlement under a chain - nothing gated'
+    assert abs(seen['unit'] - 1.0) < 1e-9, (
+        f'one reporting-currency unit of declared cash moved the net by {seen["unit"]:.10g}: the '
+        f'ledger channel is being read in the wrong currency')
 
 
 LONG_ADDING_EXPOSURE = dict(DOMINATING_SHORT, Reference='LONG1', Buy_Sell='Buy', Units=50.0,
