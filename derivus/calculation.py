@@ -440,6 +440,9 @@ class Calculation(object):
 QUASI_SEED = 1234
 QUASI_ANCHOR = 1024
 
+#: `torch.quasirandom.SobolEngine`'s dimension cap. A draw wider than this is taken in chunks.
+SOBOL_MAX_DIMENSION = 21201
+
 
 def batch_seed(random_seed, batch_index):
     """The seed a batch runs under: a SplitMix64 mix of (seed, global batch), not `seed + batch`.
@@ -484,9 +487,11 @@ class CMC_State(utils.Calculation_State):
         self.t_Scenario_Buffer = {}
         self.t_quasi_rng = {}
         self.t_quasi_rng_batch = {}
-        # Each dimension's Sobol engine and the absolute position it stands at. Tracking position
-        # is what lets one `quasi_rng` serve both arms - see there.
+        # Where each REQUESTED width's stream stands, and separately the engine cached per ENGINE
+        # width with its own standing position - a chunked draw's two keys are not the same number.
+        # Tracking position is what lets one `quasi_rng` serve both arms - see there.
         self.sobol_position = {}
+        self.sobol_engine = {}
         # The GLOBAL index of the batch being run, set by `set_quasi_batch` under deterministic
         # sharding only. None leaves `quasi_rng` indexing by this process's own draw count.
         self.quasi_batch = None
@@ -512,14 +517,22 @@ class CMC_State(utils.Calculation_State):
         STANDING position rather than recomputing it: one dimension drawn at two sample sizes shares
         one engine and interleaves, and that interleaving must survive byte for byte.
 
-        The draw, the memo, the clamp and the icdf happen once, below, for both arms.
+        ABOVE `SOBOL_MAX_DIMENSION` the draw is taken in `span` dimension chunks at successive
+        positions and concatenated, each chunk advancing the stream by `sample_size` exactly as one
+        draw of that width does. A wide draw therefore CONSUMES `span * sample_size` of the stream,
+        which is the stride both arms step by, or consecutive batches would read the same points.
+        One chunk - every dimension at or below the cap - is the single draw unchanged, engine,
+        position and bytes.
+
+        The memo, the clamp and the icdf happen once, below, for both arms.
         """
         batch_key = (dimension, sample_size)
         call = self.t_quasi_rng_batch.setdefault(batch_key, 0)
+        span = -(-dimension // SOBOL_MAX_DIMENSION)
 
         if self.quasi_batch is None:
             index = call
-            position = self.sobol_position.get(dimension, (None, QUASI_ANCHOR))[1]
+            position = self.sobol_position.get(dimension, QUASI_ANCHOR)
         else:
             if call:
                 # a genuine second draw of one shape inside one batch, which has no distinct batch
@@ -534,14 +547,19 @@ class CMC_State(utils.Calculation_State):
                     'second consumer its own dimension.'.format(
                         dimension, sample_size, call + 1, self.quasi_batch))
             index = self.quasi_batch
-            position = QUASI_ANCHOR + index * sample_size
+            position = QUASI_ANCHOR + index * span * sample_size
 
         sample_key = (dimension, sample_size, index)
 
         if sample_key not in self.t_quasi_rng:
-            engine = self._sobol_at(dimension, position)
-            sample_sobol = engine.draw(sample_size, dtype=self.one.dtype)
-            self.sobol_position[dimension] = (engine, position + sample_size)
+            chunks, at = [], position
+            for start in range(0, dimension, SOBOL_MAX_DIMENSION):
+                engine = self._sobol_at(min(SOBOL_MAX_DIMENSION, dimension - start), at)
+                chunks.append(engine.draw(sample_size, dtype=self.one.dtype))
+                at += sample_size
+                self.sobol_engine[engine.dimension] = (engine, at)
+            self.sobol_position[dimension] = at
+            sample_sobol = chunks[0] if len(chunks) == 1 else torch.cat(chunks, dim=1)
             margin = 1.0e-6
             u = sample_sobol.clamp(min=margin, max=1.0 - margin).to(self.one.device)
             self.t_quasi_rng[sample_key] = (utils.norm_icdf(u), u)
@@ -556,7 +574,7 @@ class CMC_State(utils.Calculation_State):
         position it already stands at, so it never seeks; a sharded worker pays the jump to the
         start of its own slice once and then advances the same way.
         """
-        engine, standing = self.sobol_position.get(dimension, (None, QUASI_ANCHOR))
+        engine, standing = self.sobol_engine.get(dimension, (None, QUASI_ANCHOR))
         if engine is None or position < standing:
             engine = torch.quasirandom.SobolEngine(
                 dimension=dimension, scramble=True, seed=QUASI_SEED)
@@ -1630,8 +1648,16 @@ class Credit_Monte_Carlo(Calculation):
                     Dt_T = torch.squeeze(torch.exp(
                         -zero.gather_weighted_curve(shared_mem, mtm_grid.reshape(1, -1))), dim=0)
 
+                # FVA scales every set's reported MTM by survival (`CMC_State.scale_survival`), and
+                # that factor is positive and deterministic per bucket, so `relu` commutes with it:
+                # the CVA integrand takes it back out and reads the same either way
+                unscale = torch.squeeze(torch.exp(utils.calc_time_grid_curve_rate(
+                    survival, np.zeros((1, 3)), shared_mem).gather_weighted_curve(
+                    shared_mem, mtm_grid.reshape(1, -1), multiply_by_time=False)), dim=0) \
+                    if shared_mem.scale_survival else 1.0
+
                 # tensors['mtm'] is in reporting currency - we need to convert back to base
-                pv_exposure = torch.relu(tensors['mtm'] * fx_report * Dt_T) / fx_report[0]
+                pv_exposure = torch.relu(tensors['mtm'] * unscale * fx_report * Dt_T) / fx_report[0]
 
                 if params['Credit_Valuation_Adjustment']['Stochastic_Hazard_Rates'] == 'Yes':
                     surv = utils.calc_time_grid_curve_rate(
@@ -1687,7 +1713,8 @@ class Credit_Monte_Carlo(Calculation):
                     cva_for_aad = tensors['cva']
                     if shared_mem.boundary_sets:
                         objective = lambda mtm: pricing.cva_per_scenario(
-                            torch.relu(mtm * fx_report * Dt_T) / fx_report[0], prob, recovery)
+                            torch.relu(mtm * unscale * fx_report * Dt_T) / fx_report[0],
+                            prob, recovery)
                         correction = pricing.boundary_correction(
                             shared_mem, objective, tensors['mtm'],
                             float(params.get('Boundary_AAD_Bandwidth', 0.01)))
@@ -1696,7 +1723,7 @@ class Credit_Monte_Carlo(Calculation):
                     if hessian:
                         # the relu's argument above, SIGNED; built only when second order is asked
                         kink = pricing.exposure_kink_term(
-                            tensors['mtm'] * fx_report * Dt_T / fx_report[0])
+                            tensors['mtm'] * unscale * fx_report * Dt_T / fx_report[0])
                         # mirrors the reported reduction exactly: same trapezoid, prob and recovery,
                         # so the (exact-zero) term rides the objective's own weights
                         cva_for_aad = cva_for_aad + (1.0 - recovery) * (

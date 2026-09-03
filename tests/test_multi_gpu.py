@@ -423,6 +423,17 @@ def test_the_anchored_position_is_the_unsharded_one():
     assert torch.equal(skipped.draw(size, dtype=torch.float64), historical[4])
 
 
+def _quasi_state():
+    """A cold `CMC_State` carrying only what the quasi stream reads, on the unsharded arm."""
+    from derivus.calculation import CMC_State
+    state = CMC_State.__new__(CMC_State)
+    state.one = torch.zeros(1, dtype=torch.float64)
+    state.t_quasi_rng, state.t_quasi_rng_batch = {}, {}
+    state.sobol_position, state.sobol_engine = {}, {}
+    state.quasi_batch = None
+    return state
+
+
 def test_the_historical_arm_is_still_one_free_running_engine():
     """Deduping the two arms into one `quasi_rng` must not move the default path. The historical arm
     reads its engine's STANDING position, so it is the same engine advancing draw after draw -
@@ -430,13 +441,10 @@ def test_the_historical_arm_is_still_one_free_running_engine():
     two sample sizes interleaves on a single engine. Neither hash-gated world does that, so the
     unsharded pins would not have caught it.
     """
-    from derivus.calculation import QUASI_ANCHOR, QUASI_SEED, CMC_State
+    from derivus.calculation import QUASI_ANCHOR, QUASI_SEED
     from torch.quasirandom import SobolEngine
 
-    state = CMC_State.__new__(CMC_State)
-    state.one = torch.zeros(1, dtype=torch.float64)
-    state.t_quasi_rng, state.t_quasi_rng_batch, state.sobol_position = {}, {}, {}
-    state.quasi_batch = None                      # the default, unsharded arm
+    state = _quasi_state()
 
     # one dimension, two sample sizes, interleaved - and a repeat of the first shape after
     plan = [(7, 64), (7, 32), (7, 64), (7, 32)]
@@ -452,6 +460,71 @@ def test_the_historical_arm_is_still_one_free_running_engine():
             'the historical arm left the free-running engine at (%d, %d)' % (dimension, size))
 
 
+def test_a_draw_wider_than_the_engine_is_its_chunks_at_successive_positions():
+    """`SobolEngine` caps its dimension at 21201, and `oss_uniforms` asks for the PATH COUNT as the
+    dimension - so every OSS pricer refused above the cap, `Deal.calculate` swallowed it into a
+    `CRITICAL ... skipped` line and the run died downstream on a collapsed frame. 20480 ran; 21248
+    and 32768 did not.
+
+    A wider draw is now taken in chunks of at most the cap at successive positions and
+    concatenated, each chunk advancing the stream by `sample_size` exactly as one draw of that
+    width does. Held here against `SobolEngine` itself, both sides of the cap: 21201 is one engine
+    at the anchor, 32768 is 21201 at the anchor plus 11567 one sample_size on.
+    """
+    from derivus.calculation import QUASI_ANCHOR, QUASI_SEED, SOBOL_MAX_DIMENSION
+    from torch.quasirandom import SobolEngine
+
+    margin, size = 1.0e-6, 8
+
+    def raw(dimension, position):
+        engine = SobolEngine(dimension=dimension, scramble=True, seed=QUASI_SEED)
+        engine.fast_forward(position)
+        return engine.draw(size, dtype=torch.float64)
+
+    at_cap = _quasi_state().quasi_rng(SOBOL_MAX_DIMENSION, size)[1]
+    assert torch.equal(at_cap, raw(SOBOL_MAX_DIMENSION, QUASI_ANCHOR).clamp(
+        min=margin, max=1.0 - margin)), 'a draw AT the cap is no longer the single engine own bytes'
+
+    wide = 32768
+    over = _quasi_state().quasi_rng(wide, size)[1]
+    assert over.shape == (size, wide), over.shape
+    expected = torch.cat([raw(SOBOL_MAX_DIMENSION, QUASI_ANCHOR),
+                          raw(wide - SOBOL_MAX_DIMENSION, QUASI_ANCHOR + size)], dim=1)
+    assert torch.equal(over, expected.clamp(min=margin, max=1.0 - margin)), (
+        'the chunked draw is not its chunks at successive positions')
+
+
+def test_a_wide_draw_advances_the_stream_by_every_chunk_it_took():
+    """A chunked draw consumes `span * sample_size` of the stream, and BOTH arms have to step by
+    that or two draws of one shape return the same points.
+
+    The historical arm reads a standing position keyed by the width it was ASKED for, which above
+    the cap is never a width any engine has - left keyed by the chunks, it stood at the anchor
+    for ever and a second draw repeated the first byte for byte. The anchored arm reads
+    `QUASI_ANCHOR + batch * span * sample_size`; at one stride per batch, chunk 1 of batch b and
+    chunk 0 of batch b+1 are the same 21201 points.
+
+    Both are held against the property that survives either arm: successive draws differ, and the
+    two arms agree draw for draw, which is what makes anchoring a repositioning rather than a
+    second model.
+    """
+    from derivus.calculation import SOBOL_MAX_DIMENSION
+
+    size = 8
+    for dimension in (1024, SOBOL_MAX_DIMENSION, SOBOL_MAX_DIMENSION + 1, 32768, 63603):
+        historical = _quasi_state()
+        for batch in range(3):
+            walked = historical.quasi_rng(dimension, size)[1]
+            anchored = _quasi_state()
+            anchored.set_quasi_batch(batch)
+            assert torch.equal(anchored.quasi_rng(dimension, size)[1], walked), (
+                'the two arms part at dimension %d, batch %d' % (dimension, batch))
+            if batch:
+                assert not torch.equal(walked, previous), (
+                    'dimension %d repeated its draw: the stream did not advance' % dimension)
+            previous = walked
+
+
 def test_the_anchored_memo_does_not_grow_with_the_batch_count():
     """The memo is a WITHIN-batch convenience on the anchored arm, dropped between batches. It
     cannot be dropped on the historical arm, where a draw's position is wherever the engine crawled
@@ -459,16 +532,7 @@ def test_the_anchored_memo_does_not_grow_with_the_batch_count():
     the previous batch's entries grows a dict nothing reads (20,480 bytes a batch). Both halves:
     it stays bounded, and bounding it moved no number.
     """
-    from derivus.calculation import CMC_State
-
-    def bare():
-        state = CMC_State.__new__(CMC_State)
-        state.one = torch.zeros(1, dtype=torch.float64)
-        state.t_quasi_rng, state.t_quasi_rng_batch, state.sobol_position = {}, {}, {}
-        state.quasi_batch = None
-        return state
-
-    walker = bare()
+    walker = _quasi_state()
     drawn, sizes = [], []
     for b in range(8):
         walker.set_quasi_batch(b)
@@ -485,7 +549,7 @@ def test_the_anchored_memo_does_not_grow_with_the_batch_count():
 
     # and dropping the earlier batches changed nothing: each is still what a cold state draws
     for b, expected in enumerate(drawn):
-        cold = bare()
+        cold = _quasi_state()
         cold.set_quasi_batch(b)
         assert torch.equal(cold.quasi_rng(6, 128)[1], expected), (
             'batch %d moved when the memo stopped carrying it' % b)
@@ -497,12 +561,7 @@ def test_a_second_draw_in_one_batch_is_refused_by_name():
     the second DRAW and not on a memoized re-read - `reset_qrg` then the same request is the
     inner-MC replay idiom and must return the identical tensor.
     """
-    from derivus.calculation import CMC_State
-
-    state = CMC_State.__new__(CMC_State)          # the quasi stream needs none of the rest
-    state.one = torch.zeros(1, dtype=torch.float64)
-    state.t_quasi_rng, state.t_quasi_rng_batch, state.sobol_position = {}, {}, {}
-    state.quasi_batch = None
+    state = _quasi_state()
     state.set_quasi_batch(2)
 
     first = state.quasi_rng(4, 64)
@@ -520,24 +579,15 @@ def test_a_second_draw_in_one_batch_is_refused_by_name():
 def test_the_anchored_stream_is_a_function_of_the_batch_alone():
     """Two states standing at different points in their own history draw the SAME batch the same
     way - which is the whole property sharding needs and the one the historical path lacks."""
-    from derivus.calculation import CMC_State
-
-    def fresh():
-        state = CMC_State.__new__(CMC_State)
-        state.one = torch.zeros(1, dtype=torch.float64)
-        state.t_quasi_rng, state.t_quasi_rng_batch, state.sobol_position = {}, {}, {}
-        state.quasi_batch = None
-        return state
-
     # one state walks batches 0..3, as an unsharded worker would
-    walker = fresh()
+    walker = _quasi_state()
     walked = {}
     for b in range(4):
         walker.set_quasi_batch(b)
         walked[b] = walker.quasi_rng(6, 128)[1].clone()
 
     # another starts cold at batch 2, as the second worker of a two-way shard does
-    latecomer = fresh()
+    latecomer = _quasi_state()
     latecomer.set_quasi_batch(2)
     assert torch.equal(latecomer.quasi_rng(6, 128)[1], walked[2])
     latecomer.set_quasi_batch(3)

@@ -29,10 +29,11 @@ reachable through the document: a spot already on the barrier's far side, and a
 `Barrier_Limit_Date` in the PAST. Both are certainties with no model in them, gated as equalities;
 unguarded they read 83.76-107.00 where 0 or 50 is due and -30.31 to -52.47 where 0 or 48.04 is.
 
-THE GRID THE CMC GATES RUN ON IS THE DEAL'S OWN, and it is [0, Limit_Date, Expiry_Date] - three
-rows, whatever `Time_grid` asks for, because `FXPartialTimeBarrierOption` declares `path_dependent`
-without overriding `add_grid_dates`. The window is therefore monitored over TWO intervals, which is
-exact for GBM given the bridge and is why the oracle agrees.
+THE GRID THE CMC GATES RUN ON IS [0, Limit_Date, Expiry_Date] - three rows, because `'0d 12m(1m)'`
+parses to {0d, 12m} and the deal contributes the limit. Not the deal's doing: `calc_deal_grid`
+unions `base_time_grid` into every deal's own grid, so a finer `Time_grid` is honoured row by row.
+The window is therefore monitored over TWO intervals here, which is exact for GBM given the bridge
+and is why the oracle agrees.
 """
 import io
 import json
@@ -481,3 +482,29 @@ def test_asking_for_the_partial_barrier_sensitivities_does_not_move_the_exposure
     on, grad = _cva(deal=LATCH_DEAL, gradient=True, bridge=False, batch=1024, batches=1)
     assert off == on, 'the exposure moved when sensitivities were requested: %r -> %r' % (off, on)
     assert grad is not None and abs(grad) > 0.0, 'no EUR spot gradient was reported at all'
+
+
+def test_only_a_knock_out_rebate_settles_on_the_reporting_grid():
+    """`FXPartialTimeBarrierOption` declared `path_dependent` and overrode nothing, so a rebate it
+    settles row by row had no dates to settle on. It now takes `FXBarrierOption`'s override, under
+    the one condition that pricer states: `Cash_Rebate` is paid AT THE HIT by a knock-out and AT
+    EXPIRY by an untouched knock-in, and only the first of those falls due on a grid row.
+
+    So all three shapes, and the knock-in is the one a rebate alone would have got wrong.
+
+    WHAT THIS DID NOT MOVE, measured rather than assumed: no fixture re-baselined, by a bit.
+    `TimeGrid.calc_deal_grid` unions `base_time_grid` into every deal's own grid, so a
+    path_dependent deal was already priced at each parsed `Time_grid` row, and `update_time_grid`
+    unions the same parse into `mtm_dates`. The gates' three rows are `'0d 12m(1m)'` parsing to
+    {0d, 12m} - the grid string, not this override. What is live is the settlement half.
+    """
+    grid, config = '0d 1m(1m)', derivus.config.Config()
+    for barrier_type, rebate, dates in (('Down_And_Out', 0.0, 2), ('Down_And_In', REBATE, 2),
+                                        ('Down_And_Out', REBATE, 14)):
+        deal = derivus.config.construct_instrument(
+            _deal(barrier_type, 1.15, rebate=rebate), {})
+        deal.reset({})
+        assert len(deal.reval_dates) == 2, 'the declared dates are the limit and the expiry'
+        deal.add_grid_dates(config.parse_grid, BASE, grid)
+        assert len(deal.reval_dates) == dates, sorted(deal.reval_dates)
+        assert {c: len(d) for c, d in deal.settlement_currencies.items()} == {'USD': dates}

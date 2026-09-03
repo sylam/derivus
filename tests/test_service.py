@@ -2289,7 +2289,7 @@ def test_fva_is_a_column_of_the_same_row_off_the_same_run(desk_xva, tmp_path):
     NS_B funds at risk-free and carries exactly 0.0, since FCA and FBA are each a spread OVER
     risk-free. That exact zero is a computed number, not a column standing in for one.
 
-    MEASURED, 1024 paths, seed 1: NS_A cva 119.68 / fva 302.82, NS_B cva 290.65 / fva 0.0.
+    MEASURED, 1024 paths, seed 1: NS_A cva 120.85 / fva 302.82, NS_B cva 297.74 / fva 0.0.
 
     Then the mosaic on both columns: a deal booked into NS_A with only NS_A recalced moves cva AND
     fva together under one new stamp, and leaves NS_B byte for byte.
@@ -2322,6 +2322,38 @@ def test_fva_is_a_column_of_the_same_row_off_the_same_run(desk_xva, tmp_path):
     assert after['NS_A']['fva'] > before['NS_A']['fva'], 'a bigger position must cost more to fund'
     assert after['NS_A']['as_of'] > before['NS_A']['as_of']
     assert after['NS_B'] == before['NS_B'], 'a partial recalc touched a row it was not asked for'
+
+
+def test_the_cva_column_reads_the_same_whether_or_not_fva_ran(desk_xva):
+    """One run serving both adjustments must not make the credit one a different number.
+
+    `Funding_Valuation_Adjustment.Calculate` sets `CMC_State.scale_survival`, so every set reports
+    its MTM already multiplied by the counterparty's survival probability. That factor is positive
+    and deterministic per bucket, so `relu` commutes with it and the CVA integrand divides it back
+    out. Both of the projection's sets, 1024 paths, seed 1: 0 ULP. Un-divided the same two runs read
+    119.676 against 120.845 (-0.967%, 2% hazard) and 290.646 against 297.741 (-2.383%, 5% hazard),
+    tracking the hazard as a survival scaling must.
+
+    `fva` is the other half and is NOT compared, because there is nothing to compare it against: a
+    CVA-only run reports no `fva` key at all. It keeps the scaled cube it is defined on.
+    """
+    with open(service.BOOK.path) as handle:
+        document = json.load(handle)
+    for node in document['Calc']['Deals']['Deals']['Children']:
+        deal = node['Instrument']['.Deal']
+        both = service.xva_document(document, node, deal['Credit_Support_Amounts']['Counterparty'])
+        both['Calc']['Calculation'].update(Batch_Size=1024, Simulation_Batches=1, Random_Seed=1)
+        off = json.loads(json.dumps(both))
+        off['Calc']['Calculation']['Funding_Valuation_Adjustment']['Calculate'] = 'No'
+
+        on_results = in_process(both).run_job()[1]['Results']
+        off_results = in_process(off).run_job()[1]['Results']
+        assert float(on_results['cva']) == float(off_results['cva']), (
+            deal['Reference'], float(on_results['cva']), float(off_results['cva']))
+        assert float(on_results['cva']) > 0.0, (
+            'the set priced no credit exposure at all', deal['Reference'])
+        assert 'fva' in on_results and 'fva' not in off_results, (
+            'the FVA-off run reports an `fva` the gate would have to hold', deal['Reference'])
 
 
 def test_a_row_filed_before_the_fva_column_existed_still_reads(desk_xva, tmp_path):

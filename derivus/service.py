@@ -1142,13 +1142,11 @@ def xva_document(document, node, counterparty):
     land on one `as_of` and one replay tuple - columns of a row rather than projections to
     reconcile.
 
-    AND THE CUBE IS NOT THE ONE A CVA-ONLY RUN SEES. `Funding_Valuation_Adjustment.Calculate` sets
+    AND THE CUBE IS THE ONE A CVA-ONLY RUN SEES. `Funding_Valuation_Adjustment.Calculate` sets
     `CMC_State.scale_survival`, so a netting set under that flag reports its MTM already multiplied
-    by the counterparty's survival probability, which the CVA integrand then weights by the
-    marginal default probability again. The `cva` column is therefore survival-scaled and reads
-    BELOW a standalone CVA - on the gate's book at 1024 paths, 0.97% low at 2% hazard and 2.38% low
-    at 5%, tracking the hazard. The coupling lives in `Calculation` and
-    `NettingCollateralSet.post_process`; it is named here because it is what the column MEANS.
+    by the counterparty's survival probability; that factor is positive and deterministic per
+    bucket, so the CVA integrand divides it back out and the `cva` column reads the same either
+    way, 0 ULP on both of the gate's sets. FVA keeps the scaled cube it is defined on.
 
     The synthesized fields are a FLOOR: `setdefault` leaves a book stating its own path count,
     batching or deflation curve alone, and an authored adjustment block keeps every field but the

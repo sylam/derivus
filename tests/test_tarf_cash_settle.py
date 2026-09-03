@@ -89,14 +89,18 @@ def _job(buy_sell):
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}}]}}}}
 
 
-def _ledger(buy_sell, tmp_path):
-    path = os.path.join(str(tmp_path), f'tarf_{buy_sell}.json')
+def _run(job, tmp_path, name):
+    path = os.path.join(str(tmp_path), name + '.json')
     with open(path, 'w') as f:
-        json.dump(_job(buy_sell), f, default=str)
+        json.dump(job, f, default=str)
     cx = rf.Context()
     cx.load_json(path)
     _, out = cx.run_job()
-    return out['Results']['cashflows']['USD']
+    return out
+
+
+def _ledger(buy_sell, tmp_path):
+    return _run(_job(buy_sell), tmp_path, f'tarf_{buy_sell}')['Results']['cashflows']['USD']
 
 
 def test_a_sold_tarf_books_the_mirror_of_a_bought_one(tmp_path):
@@ -108,3 +112,24 @@ def test_a_sold_tarf_books_the_mirror_of_a_bought_one(tmp_path):
         'a sold TARF books the mirror of a bought one - the ledger carries direction exactly as '
         'the mtm does')
     assert float(np.abs(buy.values).sum()) > 0.0, 'the fixture settled nothing'
+
+
+def test_an_oss_run_wider_than_the_sobol_dimension_cap_prices(tmp_path):
+    """`oss_uniforms` asks `quasi_rng` for the PATH COUNT as the Sobol dimension, and the engine
+    caps at 21201: above it the draw refused inside the pricer, `Deal.calculate` swallowed it into
+    a `CRITICAL ... skipped` line and the run died downstream on the collapsed frame. 20480 ran;
+    21248 and 32768 did not, whatever `MCMC_Simulations` said.
+
+    This is the smallest OSS document in the repo taken past the cap: the profile must be finite
+    everywhere and the fixing settling today must still book its exact 50.00. The chunking itself is
+    held against `SobolEngine` in `test_multi_gpu.py`; what this gate says is that the pricer
+    reaches it.
+    """
+    job = _job('Buy')
+    job['Calc']['Calculation'].update(Batch_Size=1 << 15, MCMC_Simulations=1 << 6)
+    out = _run(job, tmp_path, 'tarf_wide')
+    profile = np.asarray(out['Results']['mtm'], dtype=float)
+    assert np.isfinite(profile).all(), 'a run past the dimension cap priced NaN'
+    assert profile.shape[1] == 1 << 15, profile.shape
+    today = float(out['Results']['cashflows']['USD'].values[0].mean())
+    assert abs(today - EXPECTED_TODAY) < 1e-3, (today, EXPECTED_TODAY)

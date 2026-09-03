@@ -336,8 +336,7 @@ def test_the_pin_fires_on_a_material_share_of_paths_and_its_branches_are_the_rep
     prefix = [torch.zeros_like(bset.fired[0])]
     for flag in bset.fired:
         prefix.append(prefix[-1] | flag)
-    selected = bset.to_mtm(torch.where(
-        torch.stack(prefix)[bset.obs_before], bset.triggered, bset.untriggered))
+    selected = bset.to_mtm(bset.select(prefix))
     assert torch.equal(selected, seen['reported']), (
         'the registered branches do not reconstruct the reported deal value; max |d| '
         f'{float((selected - seen["reported"]).abs().max()):.6g} against a reported |mean| of '
@@ -387,21 +386,53 @@ def test_the_pin_is_a_boundary_only_when_the_leveraged_leg_pays(deal, leverage):
     was worth tens of thousands, which is the whole jump.
 
     So any fixture for this site that drops the leverage leg measures nothing. Both directions are
-    gated, because only the pair says which way round it is."""
+    gated, because only the pair says which way round it is.
+
+    Read on the paths that FIRED, as the BRANCH DELTA the correction scores rather than as the
+    surviving branch's own worth: a row that redeems inside its own strip banks the crossing fixing
+    on both sides, so that branch is not zero and only the difference is the jump."""
     seen = _pin_registration(deal)
     bset, = [x for x in seen['sets'] if isinstance(x, utils.LatchedBoundarySet)]
     fired = [float(f.to(DTYPE).mean()) for f in bset.fired]
     assert max(fired) > 0.2, (
         f'the pin fires on at most {max(fired):.1%} of paths, so this says nothing either way')
-    last = len(bset.fired) - 1
-    rows = np.flatnonzero(np.asarray(bset.obs_before) == last + 1)
-    alive = bset.untriggered[rows][:, bset.fired[last]].abs().max()
+    jump = max(float((on - off)[:, flag].abs().max())
+               for (_, on, off), flag in zip(bset.branch_deltas(), bset.fired) if flag.any())
     if leverage:
-        assert float(alive) > 0.0, (
-            'a pinned path is worth nothing had it NOT redeemed, so redemption costs nothing and '
-            'the pin is not a boundary - but the OTM leg is switched on, so it should be')
+        assert jump > 0.0, (
+            'forcing the redemption on and off moves nothing, so redemption costs nothing and the '
+            'pin is not a boundary - but the OTM leg is switched on, so it should be')
     else:
-        assert float(alive) == 0.0, (
-            f'with no OTM leg a pinned path should have had nothing left to lose, yet the '
-            f'counterfactual is worth {float(alive):.6g} - the pin IS a boundary at zero leverage '
-            f'and the header of this file is wrong')
+        assert jump == 0.0, (
+            f'with no OTM leg a pinned path should have had nothing left to lose, yet forcing the '
+            f'decision moves the mark by {jump:.6g} - the pin IS a boundary at zero leverage and '
+            f'the header of this file is wrong')
+
+
+def test_a_row_reports_the_redemption_its_own_strip_took():
+    """A reporting row sitting ON a fixing date walks that fixing OBSERVED, and an observed fixing
+    has no conditioning step: its survival is an exact 0/1 on a spot the scenario decided. So the
+    deal can redeem INSIDE the row's own strip, and the row has to report THAT decision, not the
+    one its block opened on - or the flux of a decision the pricer took reaches nothing.
+
+    The chain is dense in the accrual index for exactly that reason: rows of one block have walked
+    different lengths of the same strip, so they report different decisions, and a row that
+    redeemed part-way through is worth the fixings it banked getting there rather than zero
+    (`pending`). Registering only the opening left the reported profile unreconstructable by 117214
+    on a mark of 140496.
+
+    Every fixing date here is also a reporting row, so this is the ordinary shape, not a corner."""
+    seen = _pin_registration(PIN_CMC)
+    bset, = [x for x in seen['sets'] if isinstance(x, utils.LatchedBoundarySet)]
+    assert bset.pending is not None, 'no row banked anything, so a redeemed row would read zero'
+    by_block = {}
+    for row, entry in enumerate(bset.pending):
+        by_block.setdefault(None if entry is None else int(entry[0]), []).append(
+            int(bset.obs_before[row]))
+    assert any(len(set(rows)) > 1 for rows in by_block.values()), (
+        f'every row of a block reports the same decision, so none is reporting a redemption its '
+        f'own strip took: {by_block}')
+    banked = [float(entry[1].abs().max()) for entry in bset.pending if entry is not None]
+    assert banked and max(banked) > 0.0, (
+        'the banked fixings are identically zero, so `pending` is inert and a row that redeemed '
+        'mid-strip reconstructs as worth nothing')

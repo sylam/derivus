@@ -1840,6 +1840,12 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         to integrate against.
         """
         eps = torch.finfo(shared.one.dtype).eps
+
+        def survives(spot):
+            """Survival at a ZERO-LENGTH step, on `crossed`'s own convention: an UP barrier is
+            crossed strictly above the level, so a spot sitting ON it survives."""
+            return ((spot <= barrier) if eta == BARRIER_UP else (spot >= barrier)).to(spot.dtype)
+
         # the declared model as a walking kit - the pricer names it once, here
         kit = oss_model_kit(factor_dep, hn_scalars)
         hn = kit is not None
@@ -1848,14 +1854,18 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         # integral. GBM folds it with the vol; HN keeps it raw, its recursion supplying variance
         dt = times.unsqueeze(axis=2)                        # [N_block, N_fix, 1]
         carry_int = carry * dt                              # [N_block, N_fix, batch]
+        # a ZERO-LENGTH step moves nothing: it resolves against the row's own spot below, and the
+        # mask is what makes it the identity. Read on the HOST - the day-count strip is constant.
+        # HN keeps its whole-daily-step floor, its variance being model state rather than dt-scaled
+        zero_step = (times <= 0).detach().cpu().numpy()     # [N_block, N_fix]
         if not hn:
-            # `vols` is the INTERVAL vol strip (forward_vol_rate), so this is interval variance
+            live = (dt > 0).to(carry_int.dtype)             # [N_block, N_fix, 1]
+            # `vols` is the INTERVAL vol strip (forward_vol_rate), so this is interval variance.
+            # The floor stays under `sqrt`, whose gradient at an exact zero is not finite
             var = vols * vols * dt                          # [N_block, N_fix, batch]
-            # the floor is the ZERO-LENGTH interval's survival width and only that; both consumers
-            # read the SAME variance, so every interval is a martingale under its own drawn law
             var = torch.where(dt > 0, var, var.clamp(min=1e-4))
-            drift = carry_int - 0.5 * var                   # [N_block, N_fix, batch]
-            vol = torch.sqrt(var)                           # [N_block, N_fix, batch]
+            drift = (carry_int - 0.5 * var) * live          # [N_block, N_fix, batch]
+            vol = torch.sqrt(var) * live                    # [N_block, N_fix, batch]
 
         isBarrierDate_block = BarrierDates[offset:]
 
@@ -1948,41 +1958,56 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
                 if isdigital and j == N_fix - 1:
                     # integrate the terminal step: a sampled indicator puts no density term on the
-                    # tape, and that term is most of a digital's delta and vega
-                    z_pay = (torch.log(strike / Sj) - r_j) / sig_j
-                    lo, hi = (z_pay, None) if phi == OPTION_CALL else (None, z_pay)
-                    if isBarrierDate_block[j] > 0:
-                        z_max = (torch.log(barrier / Sj) - r_j) / sig_j
-                        if eta == BARRIER_UP:
-                            p = utils.norm_cdf(z_max)
-                            hi = z_max if hi is None else torch.minimum(hi, z_max)
-                        else:
-                            p = 1.0 - utils.norm_cdf(z_max)
-                            lo = z_max if lo is None else torch.maximum(lo, z_max)
-                        if direction == BARRIER_OUT:
-                            P = P + (1.0 - p) * L * rebate_per_unit * D[j].reshape(-1, 1)
-                    # joint P(pays AND survives this fixing); survival is inside it, so it weights
-                    # the L carried IN, while L itself still advances for the parity rebate leg
-                    joint = ((utils.norm_cdf(hi) if hi is not None else 1.0) -
-                             (utils.norm_cdf(lo) if lo is not None else 0.0)).clamp(min=0.0)
+                    # tape, and that term is most of a digital's delta and vega. A ZERO-LENGTH one
+                    # has nothing to integrate - its spot is the row's own, so `joint` is exact
+                    if zero_step[blk][j]:
+                        joint = (phi * (Sj - strike) > 0.0).to(Sj.dtype)
+                        if isBarrierDate_block[j] > 0:
+                            p = survives(Sj)
+                            joint = joint * p
+                    else:
+                        z_pay = (torch.log(strike / Sj) - r_j) / sig_j
+                        lo, hi = (z_pay, None) if phi == OPTION_CALL else (None, z_pay)
+                        if isBarrierDate_block[j] > 0:
+                            z_max = (torch.log(barrier / Sj) - r_j) / sig_j
+                            if eta == BARRIER_UP:
+                                p = utils.norm_cdf(z_max)
+                                hi = z_max if hi is None else torch.minimum(hi, z_max)
+                            else:
+                                p = 1.0 - utils.norm_cdf(z_max)
+                                lo = z_max if lo is None else torch.maximum(lo, z_max)
+                        # joint P(pays AND survives this fixing)
+                        joint = ((utils.norm_cdf(hi) if hi is not None else 1.0) -
+                                 (utils.norm_cdf(lo) if lo is not None else 0.0)).clamp(min=0.0)
+                    if isBarrierDate_block[j] > 0 and direction == BARRIER_OUT:
+                        P = P + (1.0 - p) * L * rebate_per_unit * D[j].reshape(-1, 1)
+                    # survival is inside `joint`, so it weights the L carried IN, while L itself
+                    # still advances for the parity rebate leg
                     surv_payoff = L * joint
                     if isBarrierDate_block[j] > 0:
                         L = p * L
                     continue
 
                 if isBarrierDate_block[j] > 0:
-                    # z_max: the standard-normal threshold at which spot = H, under
-                    # log(S_j/S_{j-1}) = r_j + sig_j * Z (r_j already carries -0.5*var)
-                    z_max = (torch.log(barrier / Sj) - r_j) / sig_j  # [batch, 2*num_sims]
-
-                    if eta == BARRIER_UP:
-                        # survive = spot ends below H => Z < z_max
-                        p = utils.norm_cdf(z_max)
-                        Z = utils.norm_icdf(torch.clamp(u[j] * p, eps, 1.0 - eps))
+                    if zero_step[blk][j]:
+                        # the row IS the observation date, so survival is its own spot against the
+                        # level - an EXACT indicator. `u[j]` is still drawn and discarded, so no
+                        # later step moves
+                        p = survives(Sj)
+                        Z = utils.norm_icdf(torch.clamp(u[j], eps, 1.0 - eps))
                     else:
-                        # survive = spot ends above H => Z > z_max
-                        p = 1.0 - utils.norm_cdf(z_max)
-                        Z = utils.norm_icdf(torch.clamp((1.0 - p) + u[j] * p, eps, 1.0 - eps))
+                        # z_max: the standard-normal threshold at which spot = H, under
+                        # log(S_j/S_{j-1}) = r_j + sig_j * Z (r_j already carries -0.5*var)
+                        z_max = (torch.log(barrier / Sj) - r_j) / sig_j  # [batch, 2*num_sims]
+
+                        if eta == BARRIER_UP:
+                            # survive = spot ends below H => Z < z_max
+                            p = utils.norm_cdf(z_max)
+                            Z = utils.norm_icdf(torch.clamp(u[j] * p, eps, 1.0 - eps))
+                        else:
+                            # survive = spot ends above H => Z > z_max
+                            p = 1.0 - utils.norm_cdf(z_max)
+                            Z = utils.norm_icdf(torch.clamp((1.0 - p) + u[j] * p, eps, 1.0 - eps))
 
                     if direction == BARRIER_OUT:
                         # paths hitting the barrier pay the cash rebate at this fixing
@@ -3627,10 +3652,12 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
     BOUNDARY AAD registers two decisions taken on simulated state: the target FILLING (LATCHED, a
     later block's accrual being only ever larger) and the OTM leg KNOCKING IN (per inner path). The
-    redemption gap is built from the UNCLAMPED accrual ``raw``, because ``accumulation ==
-    min(raw, target)`` carries no graph on the very paths that decided. A graphless historic
-    decision is registered anyway - it contributes zero, and skipping it corrupts the latch
-    reconstruction.
+    redemption latches once as the block OPENS and again at each OBSERVED fixing inside it, those
+    being crossings the strip takes itself; a row that redeems mid-strip keeps the fixings it
+    reached, which is what the latch's ``pending`` carries. The opening gap is built from the
+    UNCLAMPED accrual ``raw``, because ``accumulation == min(raw, target)`` carries no graph on the
+    very paths that decided. A graphless historic decision is registered anyway - it contributes
+    zero, and skipping it corrupts the latch reconstruction.
 
     BRANCH AND WEIGHT (``Branch_And_Weight: 'Yes'``, base valuation only) SWAPS the estimator for
     both registrations rather than joining them, or the flux is counted twice; off, and absent, is
@@ -3670,7 +3697,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         """The running accrual after one more fixing, clamped at the target."""
         return (accumulated + accrued(s, k, C, inverted)).clamp(max=targetValue)
 
-    def sim_spot_tarf(settlement, sobol, num_sims,
+    def sim_spot_tarf(settlement, sobol, num_sims, settle_offset,
                       spot_prices, times, carry, prev_accum, discount_rates, vols_all,
                       past_fixings, *hn_scalars):
         """Inner one-step-survival Monte Carlo over one block of MTM rows; the mean PV per row.
@@ -3689,7 +3716,10 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
         - REDEMPTION: the accrual clamps AT ``targetValue``, so the equality fires on a
           positive-measure set. The counterfactual is the same loop on a weight that was never
-          zeroed - one extra accumulator, nothing re-simulated, no draw consumed.
+          zeroed - one extra accumulator, nothing re-simulated, no draw consumed. A row REDEEMS
+          INSIDE ITS OWN STRIP where an observed fixing crosses, and is then worth the fixings it
+          reached rather than zero, so each observed fixing's payment on a weight of ONE is
+          returned beside the depth the row observed - what the latch's ``pending`` counts.
         - KNOCK-IN: decided on ``Sj``, one decision per inner path, jump
           ``-Dj * L * p * relu(-intr) * N_otm``, gap in log space so a bandwidth means what it means
           at a barrier. At an already-observed fixing the decision is per SCENARIO and the gap is
@@ -3704,6 +3734,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         # per-block results, and the by-products the caller performs once
         mcmc, alive, settled, gaps, jumps = [], [], [], [], []
         settle_rows, knock_rows = [], []
+        # per row, what each OBSERVED fixing pays on a weight of one. The count varies inside a
+        # block - a later row has seen more of the same strip - so the depth is returned with it
+        obs_pend = []
         for i, (D, s, carry_rate, delta_t, tau) in enumerate(zip(
                 discount_rates, spot_prices, carry, times, settlement)):
 
@@ -3734,6 +3767,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             R = (remaining_target * factor_dep['Notional1']).expand_as(P)
             N_itm = notional1
             N_otm = notional2
+            row_pend = []
             for j in range(reduced_samples):
                 # `carry` and `vols` both arrive as INTERVAL strips (forward_carry_rate,
                 # forward_vol_rate)
@@ -3822,18 +3856,29 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                         else:
                             Sj = Sj * (torch.exp(fwd_drift + vol_dt * Z) if dt > 0 else 1.0)
                 else:
-                    Sj = past_fixings[-min(reduced_samples, num_samples)].reshape(-1, 1)
+                    # the strip's j-th fixing is the schedule's `settle_offset + j`-th, which is
+                    # where the resolved samples stand too - declared ones first, then simulated.
+                    # Counted from the END it was the same index only where every fixing of the
+                    # schedule is resolved AND `calc_fx_cross` added no broadcast row
+                    Sj = past_fixings[min(settle_offset + j, num_samples - 1)].reshape(-1, 1)
                     p = 1.0
                     # an OBSERVED fixing has no conditioning step to integrate against: its spot is
                     # data, so the knock-in is an exact indicator and the accrual carries no density
                     otm_analytic = None
-                # the effective intrinsic in the target's own measure, clamped at the per-path
-                # remaining target
+                # the effective intrinsic in the target's own measure, clamped at the remaining
+                # target: the BLOCK's, which the survival truncation makes the PATH's own, except on
+                # an OBSERVED fixing, which has no truncation and so clamps at `R` itself
                 if not invertedTarget:
                     eff_intr = (Sj - K) * callOrPut
                 else:
                     eff_intr = (1.0 / Sj - 1.0 / K) * (-callOrPut)
-                intr = eff_intr.clamp(max=remaining_target)
+                if use_past_fixing:
+                    # the crossing fixing pays exactly the remainder and the deal REDEEMS: an exact
+                    # 0/1 survival, which is what the ledger's identity wants at an observed fixing
+                    cap = R / N_itm
+                    intr, p_obs = torch.minimum(eff_intr, cap), (eff_intr < cap).to(L.dtype)
+                else:
+                    intr = eff_intr.clamp(max=remaining_target)
                 itm_mask = (intr > 0.0)
                 # ONE kernel serves both legs: `relu(-x)` kinks exactly where `relu(x)` does and the
                 # term is even, so the net cashflow carries `(N_itm - N_otm)` of it - which is also
@@ -3859,6 +3904,10 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     if not integrated:
                         cf_otm = cf_otm + kink * N_otm * barrier_hit
                 cf_step = L * p * (cf_itm - cf_otm)
+                if boundary_aad and use_past_fixing:
+                    # what a row that has already REDEEMED still carries: this fixing's payment on
+                    # a weight of one, which the latch counts over the fixings the path reached
+                    row_pend.append((Dj * (cf_itm - cf_otm)).mean(axis=1))
                 P = P + Dj * cf_step
                 if integrated:
                     P = P - otm_analytic
@@ -3882,20 +3931,23 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 if smooth:
                     # on a LIVE fixing, neither the mask nor the crisp arm's clamp: both are inert
                     # at value and first order, and both would SEVER the kink term's curvature from
-                    # the moving trigger. An OBSERVED fixing builds no kink term, so the clamp there
-                    # costs no curvature - and that branch has no truncation to hold `accr` under R
+                    # the moving trigger. An OBSERVED fixing builds no kink term, so the relu that
+                    # absorbs `cap`'s last bit costs no curvature there
                     R = F.relu(R - accr) if use_past_fixing else R - accr
                 else:
-                    # R clamped at 0, not decoration: `intr` clamps at the BLOCK's remaining target,
-                    # so only the survival truncation makes that the PATH's own - and it does not on
-                    # an OBSERVED fixing (no truncation) nor where a far cap saturates it under HN
+                    # R clamped at 0, not decoration: the LIVE clamp is the block's, and only the
+                    # survival truncation makes it the PATH's own - which it does not where a far
+                    # cap saturates the draw under HN
                     R = torch.where(itm_mask, F.relu(R - accr), R)
+                surv = p_obs if use_past_fixing else p
                 if smooth:
-                    ledger.fire(p)
+                    ledger.fire(surv)
                     L = ledger.alive
                 else:
-                    L = p * L
+                    L = surv * L
                 if boundary_aad:
+                    # the weight NO redemption zeroed - the block's own or an observed fixing's,
+                    # both of which register and both of which the latch reconstructs from here
                     L_alive = p * L_alive
                 # a settlement at tau == 0 is RETURNED, because a recompute would settle twice
                 if j == 0 and tau[0] == 0:
@@ -3906,13 +3958,21 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             mcmc.append(P.mean(axis=1))
             if boundary_aad:
                 alive.append(P_alive.mean(axis=1))
+                obs_pend.append(row_pend)
+
+        # padded to the DEEPEST row's prefix, so the block is one tensor; a shallower row's tail
+        # entries are zero and the latch never reaches them, its own depth stopping it first
+        width = max([len(x) for x in obs_pend], default=0)
+        pending = torch.stack([torch.stack(row + [torch.zeros_like(mcmc[0])] * (width - len(row)))
+                               for row in obs_pend]) if width else prev_accum.new_empty(0)
 
         # a fresh empty each time, never one tensor twice - an autograd.Function output list is
         # positional, and the same object in two slots is one output with two names
         return (torch.stack(mcmc),
                 torch.stack(alive) if alive else prev_accum.new_empty(0),
                 torch.stack(settled) if settled else prev_accum.new_empty(0),
-                settle_rows, knock_rows) + tuple(gaps) + tuple(jumps)
+                settle_rows, knock_rows, [len(x) for x in obs_pend], pending
+                ) + tuple(gaps) + tuple(jumps)
 
     mtm_list = []
     factor_dep = deal_data.Factor_dep
@@ -3982,6 +4042,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     # KNOCK-IN's, so under it the redemption latch still registers and the knock-in does not
     boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
     b_gaps, b_fired, b_obs_before, b_inner, alive, row_ofs = [], [], [], [], [], 0
+    b_pending = []
 
     # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
     hn_scalars = oss_model_scalars(factor_dep, shared)
@@ -4039,12 +4100,13 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             factor_dep['Invert_Moneyness'], use_forwards=True), cum_t,
             sample_ts) if not hn else spot_block.new_empty(0)
 
-        simulate = partial(sim_spot_tarf, settlement, sobol, shared.MCMC_sims)
+        simulate = partial(sim_spot_tarf, settlement, sobol, shared.MCMC_sims, settle_index_local)
         theta = (spot_block, sample_ts, fwd_drifts, accumulation[settle_index_local],
                  discount_rates, vols, all_samples) + hn_scalars
         # the SAME callable either way: under the node it is called twice
         outputs = InnerMCRecompute.run(shared, simulate, *theta)
-        block_mtm, block_alive, block_settled, settle_rows, knock_rows = outputs[:5]
+        (block_mtm, block_alive, block_settled, settle_rows, knock_rows,
+         obs_depth, block_pend) = outputs[:7]
         theo_price = buy_sell * block_mtm
 
         # the by-products, performed once off the forward's result. The settled cash carries the
@@ -4057,16 +4119,28 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             alive.append(block_alive)
             # one knock-in decision per (row, fixing), each with the row it was taken on; `fixed`
             # names the tuple's fixed prefix - adding an output means moving it
-            fixed, n_inner = 5, len(knock_rows)
+            fixed, n_inner = 7, len(knock_rows)
             b_inner.extend([[row_ofs + row, outputs[fixed + k], outputs[fixed + n_inner + k]]
                             for k, row in enumerate(knock_rows)])
-            # one latched redemption decision per block; `expand` because block 0's accrual is the
-            # HISTORIC one, a single number rather than a per-scenario tensor
-            b_gaps.append((raw[settle_index_local] - targetValue).squeeze(dim=1).expand(
-                shared.simulation_batch))
-            b_fired.append((targetValue - accumulation[settle_index_local] == 0.0).squeeze(
-                dim=1).expand(shared.simulation_batch).detach())
-            b_obs_before.extend([len(b_gaps)] * theo_price.shape[0])
+            # THE REDEMPTION CHAIN IS DENSE IN THE ACCRUAL INDEX. A block opens on one decision,
+            # but its rows walk different lengths of the OBSERVED prefix and each reports the
+            # decision at the last fixing IT has seen - so every index in between needs one too.
+            # `expand` because block 0's accrual is the HISTORIC one, a single number rather than a
+            # per-scenario tensor
+            if not b_gaps:
+                b_first = settle_index_local
+            deepest = min(settle_index_local + max(obs_depth, default=0), len(raw) - 1)
+            while b_first + len(b_gaps) <= deepest:
+                n = b_first + len(b_gaps)
+                b_gaps.append((raw[n] - targetValue).squeeze(dim=1).expand(
+                    shared.simulation_batch))
+                b_fired.append((targetValue - accumulation[n] == 0.0).squeeze(
+                    dim=1).expand(shared.simulation_batch).detach())
+            b_obs_before.extend([min(settle_index_local + depth, deepest) - b_first + 1
+                                 for depth in obs_depth])
+            b_pending.extend([(settle_index_local - b_first, buy_sell * block_pend[row].detach())
+                              if block_pend.dim() == 3 else None
+                              for row in range(theo_price.shape[0])])
         row_ofs += theo_price.shape[0]
         mtm_list.append(theo_price)
 
@@ -4078,13 +4152,27 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         to_mtm = deal_to_mtm_grid(time_grid, deal_data, fx_rep)
         mark = len(shared.boundary_sets)
         if b_gaps:
-            # redemption: `triggered` is worth zero for every row the decision reaches, and
-            # `untriggered` is the SAME loop run on a weight that was never zeroed
+            # redemption: `triggered` is worth zero once the deal is dead and the strip is behind
+            # it, `pending` is what a row that redeemed INSIDE its own strip still banked, and
+            # `untriggered` is the SAME loop run on a weight no redemption zeroed
             untriggered = buy_sell * torch.cat(alive, dim=0).detach()
-            shared.boundary_sets.append(utils.LatchedBoundarySet(
+            latch = utils.LatchedBoundarySet(
                 gaps=b_gaps, fired=b_fired, obs_before=np.array(b_obs_before),
                 untriggered=untriggered, triggered=torch.zeros_like(untriggered),
-                to_mtm=to_mtm, report_index=time_grid.report_index))
+                pending=b_pending if any(entry is not None for entry in b_pending) else None,
+                to_mtm=to_mtm, report_index=time_grid.report_index)
+            shared.boundary_sets.append(latch)
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                # the flags come off `accumulation`, the strip's own crossings off `R`: they are
+                # the same decision only where the two index the schedule alike
+                with torch.no_grad():
+                    prefix = [torch.zeros_like(latch.fired[0])]
+                    for flag in latch.fired:
+                        prefix.append(prefix[-1] | flag)
+                    logging.debug('TARF %s latch decisions=%d recon_max=%.3g scale=%.3g',
+                                  deal_data.Instrument.field.get('Reference'), len(b_gaps),
+                                  float((latch.select(prefix) - mtm.detach()).abs().max()),
+                                  float(mtm.detach().abs().max()))
         if b_inner:
             rows, gaps, jumps = zip(*b_inner)
             shared.boundary_sets.append(utils.InnerBoundarySet(
@@ -4465,13 +4553,15 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         else:
             isFixingDate = FixingDates[offset:]
             dt = times.unsqueeze(axis=2)
-            # `vols` is the INTERVAL strip (forward_vol_rate), so this product is interval variance.
-            # The floor is the ZERO-LENGTH interval's width and only that, and both consumers read
-            # the SAME variance
+            # a ZERO-LENGTH step is the IDENTITY - the row IS the observation date, so the running
+            # average takes its own spot rather than a sigma kick of it. The floor stays under
+            # `sqrt`, whose gradient at an exact zero is not finite; the mask is what zeroes the step
+            live = (dt > 0).to(vols.dtype)
+            # `vols` is the INTERVAL strip (forward_vol_rate), so this product is interval variance
             var = vols * vols * dt
             var = torch.where(dt > 0, var, var.clamp(min=1e-4))
-            drift = carry * dt - 0.5 * var
-            vol = torch.sqrt(var)
+            drift = (carry * dt - 0.5 * var) * live
+            vol = torch.sqrt(var) * live
 
             mcmc = []
             for i, (tau, D, s, r, sigma, floating) in enumerate(zip(

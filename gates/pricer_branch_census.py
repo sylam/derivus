@@ -71,6 +71,7 @@ FAMILY = (
     'pv_barrier_option', 'pv_one_touch_option', 'pv_partial_barrier_option',
     'pv_american_option', 'pv_european_option',
     'getbarrierpayoff', 'getpartialbarrierpayoff', 'partial_window_rebate',
+    'oss_truncated_draw',
 )
 
 #: `{(qualname, source text, direction): what a fixture would need to reach it}`, as measured over

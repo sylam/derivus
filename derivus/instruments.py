@@ -5390,6 +5390,22 @@ class FXPartialTimeBarrierOption(Deal):
         self.payoff_ccy = utils.payoff_currency(self.field)
         self.add_reval_dates({self.field['Expiry_Date'], self.field['Barrier_Limit_Date']}, self.payoff_ccy)
 
+    def add_grid_dates(self, parser, base_date, grid):
+        # a cash rebate is paid on touch if the option knocks out; an untouched knock-in pays its
+        # rebate at expiry, which `reset` already declares
+        if self.field['Cash_Rebate'] and 'Out' in self.field['Barrier_Type']:
+            if isinstance(grid, str):
+                grid_dates = parser(base_date, self.field['Expiry_Date'], grid)
+                self.reval_dates.update(grid_dates)
+                self.settlement_currencies.setdefault(self.payoff_ccy, set()).update(grid_dates)
+            else:
+                # this is called if the grid is fully defined i.e. a set of dates
+                for curr, cash_flow in self.settlement_currencies.items():
+                    last_pmt = max(cash_flow)
+                    delta = set([x for x in grid if x < last_pmt])
+                    self.settlement_currencies[curr].update(delta)
+                    self.reval_dates.update(delta)
+
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
 

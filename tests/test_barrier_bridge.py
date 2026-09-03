@@ -474,3 +474,68 @@ def test_an_unknown_payment_timing_is_refused():
     CONSTRUCTION now, before `reset` and `add_grid_dates` read the field."""
     with pytest.raises(ValueError, match='Payment_Timing'):
         construct_instrument(dict(ONE_TOUCH, Payment_Timing='AtMaturity'), {})
+
+
+# --------------------------------------------------------------------------------------------
+# THE ZERO-LENGTH STEP
+#
+# A reporting row that IS an observation date opens the OSS strip with `dt = 0`. That step used to
+# be SIMULATED at the variance floor - a 1% sigma kick with an Ito correction - so the survival it
+# decided was a `Phi` around the level rather than the level itself. `instruments.py` unions the
+# barrier dates into the reval dates, so on a discrete barrier EVERY reporting row past inception
+# is one of these.
+# --------------------------------------------------------------------------------------------
+ZERO_STEP_REBATE = 7.0
+
+
+def _one_date_rebate_run(batch=512, mcmc=64):
+    """A knock-out whose only observation is expiry, with a strike out of reach: the expiry row is
+    the rebate and nothing else."""
+    c = _cfg()
+    c.deals['Deals']['Children'] = [{'Instrument': construct_instrument(dict(
+        BARRIER_DEAL, Barrier_Price=100.0, Strike_Price=1000.0, Units=1.0,
+        Cash_Rebate=ZERO_STEP_REBATE,
+        Barrier_Dates=[BASE + pd.Timedelta(days=365)]), {})}]
+    _, out = derivus.run_cmc(c, prec=DTYPE, overrides={
+        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 1y(3m)', 'Batch_Size': batch,
+        'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
+        'MCMC_Simulations': mcmc, 'Deflation_Interest_Rate': 'USD'})
+    return np.asarray(out['Results']['mtm'], dtype=float)
+
+
+def test_a_rebate_read_at_an_observation_date_row_is_exact():
+    """The zero-length step resolves by comparing the row's own spot to the level, so the mark at
+    that row is a TWO-POINT distribution: a knocked scenario is worth exactly `Cash_Rebate`,
+    undiscounted because the fixing is the row, and a surviving one exactly nothing. There is no
+    third value for a sampled indicator to put between them.
+
+    Simulated at the floor it read 127 distinct values across 512 scenarios, smeared upward from
+    1.1e-14, and left 41.8% of them marking the rebate exactly where the level knocks 54.7%.
+
+    The strike is out of reach and the only observation is expiry, so the rebate is the whole mark
+    and nothing has to be believed about the option leg."""
+    last = _one_date_rebate_run()[-1]
+    values = np.unique(last)
+    assert set(values.tolist()) == {0.0, ZERO_STEP_REBATE}, (
+        f'{len(values)} distinct marks where the level allows two: {values[:8]}')
+    assert 0.1 < float((last == ZERO_STEP_REBATE).mean()) < 0.9, (
+        'the fixture knocked out every scenario or none - it gates nothing')
+
+
+def test_a_row_that_is_not_an_observation_date_is_untouched():
+    """The other half of the same statement: nothing moves where there is no zero-length step.
+
+    Inception has every observation ahead of it, so its first interval is positive and the exact
+    branch is never taken. Pinned as a CMC row rather than a base valuation, whose reduction is not
+    bit-stable run to run on this device (8.402328989083189 against ...82585 over two processes).
+
+    Every row AFTER it is an observation date, and those moved by -0.13% to +0.46% over
+    four discrete-barrier profiles (knock-out, knock-out with rebate, knock-in, and one whose dates
+    sit off the reporting clock), the knock-in moving most because its parity leg reads the
+    survival twice."""
+    monthly = [BASE + pd.DateOffset(months=k) for k in range(1, 12)]
+    profile = _profile('0d 1y(1m)', deal=dict(BARRIER_DEAL, Barrier_Price=90.0,
+                                              Barrier_Dates=monthly), batch=1024, mcmc=128)
+    rows = np.asarray(profile, dtype=float)
+    assert float(rows[0].mean()) == 8.502928579398969, float(rows[0].mean())
+    assert not np.array_equal(rows[1], rows[0]), 'the profile is flat - nothing is being compared'
