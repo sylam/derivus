@@ -1571,6 +1571,15 @@ def getbarrierpayoff(direction, eta, phi, strike, H):
     return barrier_option
 
 
+def start_window_state(spot, barrier, eta, limit):
+    """A start window's two resolved states: the spot already BEYOND the barrier (touched at time
+    zero) and the window CLOSED by a limit date already past.
+
+    Closed wins - today's spot says nothing about a level nobody is watching any more.
+    """
+    return (eta * torch.log(barrier / spot)) >= 0.0, limit <= 0.0
+
+
 def partial_window_rebate(spot, barrier, r, b, sigma, eta, startBarrier, limit, expiry):
     '''Per unit of rebate, a partial-time window's two rebate legs: (paid at EXPIRY if the window
     never touched, paid AT the hit). The window is [0, limit] or [limit, expiry].
@@ -1600,9 +1609,8 @@ def partial_window_rebate(spot, barrier, r, b, sigma, eta, startBarrier, limit, 
         no_touch = utils.norm_cdf(eta * e2) - reflect * utils.norm_cdf(eta * e4)
         touch = plus * utils.norm_cdf(eta * z_lim) + minus * utils.norm_cdf(eta * z_lim2)
         one, zero = torch.ones_like(no_touch), torch.zeros_like(no_touch)
-        beyond = (eta * h) >= 0.0
+        beyond, closed = start_window_state(spot, barrier, eta, limit)
         no_touch, touch = torch.where(beyond, zero, no_touch), torch.where(beyond, one, touch)
-        closed = limit <= 0.0
         no_touch, touch = torch.where(closed, one, no_touch), torch.where(closed, zero, touch)
     else:
         # the window OPENS at `limit`, so each leg integrates the spot's law there against the
@@ -1627,9 +1635,13 @@ def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBar
     `rebate` is PER UNIT and is valued on the deal's own coordinates, before the put-call
     transformation below reflects them - a survival probability is not invariant under it.
 
-    `limit` is SIGNED: a row past the limit date reads it negative. The OPTION is the limit of the
-    same closed form at a vanishing `window` there, which is why it prices off the clamp; a rebate
-    is not, so `partial_window_rebate` reads the sign itself.'''
+    `limit` is SIGNED: a row past the limit date reads it negative. A START window resolves the two
+    states its closed form cannot reach, on the same signed limit and spot-vs-level test the rebate
+    leg reads: TOUCHED, a certainty off today's spot, kills the knock-out and leaves the knock-in the
+    vanilla; CLOSED, the window is over and no touch is carried through it, so the knock-out is the
+    vanilla and the knock-in worthless. Closed wins, which is the rebate leg's convention and
+    `pv_partial_barrier_option`'s scenario walk's. The barrier-state fold (roadmap.md) retires both
+    at compile.'''
     window = limit.clamp(min=1e-6)
 
     def BarrierPutCallTransformation(spot, strike, barrier, r, b, upDown):
@@ -1705,7 +1717,7 @@ def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBar
 
         return pv * torch.exp(-r * expiry)
 
-    if isKnockIn:
+    if isKnockIn or startBarrier:
         bs = utils.black_european_option(
             spot * torch.exp(b * expiry), strike, sigma * torch.sqrt(expiry),
             1.0, 1.0, phi, None) * torch.exp(-r * expiry)
@@ -1718,10 +1730,21 @@ def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBar
             spot, barrier, r, b, sigma, eta, startBarrier, limit, expiry)
         reb = rebate * (never if isKnockIn else at_hit)
 
+    # the same two states, read on the same coordinates and in the same order
+    if startBarrier:
+        beyond, closed = start_window_state(spot, barrier, eta, limit)
+
     if phi == -1:
         spot, strike, barrier, r, b, eta = BarrierPutCallTransformation(spot, strike, barrier, r, b, eta)
 
     pv = partial_barrier_option(spot, strike, barrier, r, b, eta)
+
+    if startBarrier:
+        # resolved on the KNOCK-OUT leg, which the parity below turns into the knock-in's: a touched
+        # window kills the option and leaves the knock-in the vanilla, a closed one leaves the
+        # knock-out the vanilla and the knock-in exactly nothing
+        pv = torch.where(beyond, torch.zeros_like(pv), pv)
+        pv = torch.where(closed, bs, pv)
 
     if isKnockIn:
         pv = bs - pv
@@ -2606,14 +2629,14 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
 
     if need_spot_at_expiry:
         # the SAME running touch probability as pv_barrier_option, accumulated ONLY inside the
-        # barrier window. The interval straddling the limit date is attributed to the side its far
-        # end sits on, and the bridge tests the shifted barrier the closed form prices against
+        # barrier window - row 0 is a POINT test and every row after it an interval, each read on
+        # the day its far end sits on, so a window already CLOSED at row 0 tests nothing. The
+        # bridge tests the shifted barrier the closed form prices against
         interval_variance = utils.bridge_interval_variance(shared, factor_dep, deal_time)
         interval_days = deal_time[:, utils.TIME_GRID_MTM]
-        in_window = np.concatenate([
-            [at_start or factor_dep['Limit_Date'] <= interval_days[0]],
-            (interval_days[1:] <= factor_dep['Limit_Date']) if at_start else
-            (interval_days[:-1] >= factor_dep['Limit_Date'])])
+        limit_day = factor_dep['Limit_Date']
+        in_window = (interval_days <= limit_day) if at_start else np.concatenate([
+            [limit_day <= interval_days[0]], interval_days[:-1] >= limit_day])
         # the endpoint test is a crisp LATCH only where the bridge has no variance; with it live
         # the touch probability is continuous in the spot and ordinary AAD carries the flux
         latched = (getattr(shared, 'boundary_aad', False) and
@@ -4126,21 +4149,16 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         hn_spy = factor_dep['HN_Steps_Per_Year']
 
 
-    # the accumulation to date, over the declared past values and then the simulated fixings
-    acc = shared.one * 0.0
-    for sample_val in fx_samples.schedule[:, utils.RESET_INDEX_Value]:
-        if sample_val:
-            acc = calc_accum_value(targetValue, acc, sample_val * shared.one, strike, callOrPut, invertedTarget)
-
-    accumulation = [acc]
-    for sample_val in next_samples:
+    # the accrual by SCHEDULE POSITION - `accumulation[k]` nets the first k fixings, the declared
+    # ones and then the simulated ones behind them. A block opens on the pot its SETTLED fixings
+    # left, so an observed-but-unsettled fixing enters through the strip's loop and nowhere else
+    accumulation, raw = [shared.one * 0.0], [shared.one * 0.0]
+    declared = [x * shared.one for x in fx_samples.declared_values()]
+    for sample_val in declared + list(next_samples):
         accumulation.append(calc_accum_value(
             targetValue, accumulation[-1], sample_val, strike, callOrPut, invertedTarget))
-
-    # the UNCLAMPED accrual: the clamp kills the derivative AT the decision, so a gap needs `raw`
-    if boundary_aad:
-        raw = [acc]
-        for sample_val in next_samples:
+        if boundary_aad:
+            # the same walk UNCLAMPED: the clamp kills the derivative AT the decision
             raw.append(raw[-1] + accrued(sample_val, strike, callOrPut, invertedTarget))
 
     sobol = False

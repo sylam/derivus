@@ -157,6 +157,14 @@ def _oracle(barrier_type, barrier, **kwargs):
     return _oracle_legs(barrier_type, barrier, **kwargs)[0]
 
 
+#: the plain European the resolved states are measured against, engine to engine
+VANILLA = {'Object': 'FXOptionDeal', 'Reference': 'VAN', 'Currency': 'USD',
+           'Underlying_Currency': 'EUR', 'Payoff_Currency': 'USD', 'Discount_Rate': 'USD',
+           'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
+           'Strike_Price': 1.25, 'Underlying_Amount': NOTIONAL,
+           'Expiry_Date': BASE + pd.DateOffset(days=EXPIRY_D),
+           'Option_Style': 'European', 'Settlement_Style': 'Cash'}
+
 CASES = [(bt, at, bar) for at in ('Yes', 'No')
          for bt, bar in (('Up_And_Out', 1.40), ('Up_And_In', 1.40),
                          ('Down_And_Out', 1.12), ('Down_And_In', 1.12))]
@@ -230,15 +238,112 @@ def test_a_touched_or_a_closed_window_pays_its_rebate_exactly_once_or_not_at_all
     touched knock-in -30.31/-38.18 where nothing is, the seasoned knock-out 97.97/107.00 against
     nothing, and the seasoned knock-in -44.11/-52.47 against 48.04.
 
-    NOT this gate's subject: the OPTION leg of a start window is the same live-side-only reading (a
-    seasoned Up_And_Out below its barrier marks -6.14 where the vanilla is 85.23), which is a
-    separate open defect with its own roadmap row.
+    The OPTION leg reads the same two states off the same test, gated below.
     """
     kwargs = dict(barrier_type=barrier_type, barrier=barrier, at_start='Yes',
                   limit_days=limit_days)
     v0 = _mtm(_run(_job(_deal(rebate=0.0, **kwargs))))
     vr = _mtm(_run(_job(_deal(rebate=REBATE, **kwargs))))
     assert abs((vr - v0) - leg) < 1e-9 * REBATE, (barrier_type, limit_days, vr - v0, leg)
+
+
+#: `(barrier_type, barrier, limit_days, state)`. A START window resolves two ways with no model
+#: left in it: TOUCHED - a live window whose spot already sits on the barrier's far side - and
+#: CLOSED, a limit date in the past, which base valuation carries no touch through.
+RESOLVED = [
+    ('Up_And_Out', 1.12, LIMIT_D, 'dead'), ('Down_And_Out', 1.40, LIMIT_D, 'dead'),
+    ('Up_And_In', 1.12, LIMIT_D, 'vanilla'), ('Down_And_In', 1.40, LIMIT_D, 'vanilla'),
+    ('Up_And_Out', 1.12, -30, 'vanilla'), ('Up_And_Out', 1.40, -30, 'vanilla'),
+    ('Down_And_Out', 1.12, -30, 'vanilla'), ('Down_And_Out', 1.40, -30, 'vanilla'),
+    ('Up_And_In', 1.12, -30, 'nothing'), ('Up_And_In', 1.40, -30, 'nothing'),
+    ('Down_And_In', 1.12, -30, 'nothing'), ('Down_And_In', 1.40, -30, 'nothing')]
+
+
+def test_a_resolved_start_window_is_the_state_it_resolved_to():
+    """The OPTION leg's half of the resolution the rebate leg above already makes, on the twelve
+    documents that reach it: TOUCHED is a certainty off today's spot - the knock-out is dead and its
+    rebate is due NOW, the knock-in is the vanilla - while CLOSED is the history the deal carries,
+    which is none, so the knock-out is the vanilla and the knock-in worth nothing but its expiry
+    rebate. Both legs read the same states in the same order, and so does the scenario walk gated
+    below.
+
+    THE EIGHT-FLOAT IDENTITY IS ABOUT DETECTION, NOT ARITHMETIC. `pv = where(closed, bs, pv)` hands
+    back the literal `bs` and the knock-in parity subtracts it from itself, so the one float all
+    eight land on (85.2998492970, 0x40555330bb1b22a7) can only break if a document is read into the
+    wrong state. WHICH documents land there is the content: a touched knock-in and a closed
+    knock-out, in both directions and on BOTH sides of the level. The other four are exact literals:
+    nothing, or the rebate at its own timing.
+
+    Unresolved, the same twelve read: 85.98 and 404.02 for the touched knock-in, -0.68 and -318.72
+    for the touched knock-out where 0 and 50 are due, 91.44 and 456.40 for the closed knock-in where
+    nothing is, and 84.63 / **-6.141370** / 84.63 / -371.10 for the closed knock-out - the -6.14
+    being a seasoned `Up_And_Out` sitting below its own barrier, which is the reading this defect
+    was carried under.
+
+    THE TIE TO A REAL VANILLA STAYS A TOLERANCE. The deal's own Black reads 85.2998 against the
+    engine's `FXOptionDeal` at 85.4172, 0.137% apart on inputs that agree - the same gap
+    `test_an_unreachable_barrier_is_the_vanilla_and_a_certain_one_is_nothing` carries, and not this
+    gate's subject.
+    """
+    v_van = _mtm(_run(_job(VANILLA)), 'VAN')
+    vanillas = set()
+    for barrier_type, barrier, limit_days, state in RESOLVED:
+        kwargs = dict(barrier_type=barrier_type, barrier=barrier, at_start='Yes',
+                      limit_days=limit_days)
+        v0 = _mtm(_run(_job(_deal(rebate=0.0, **kwargs))))
+        vr = _mtm(_run(_job(_deal(rebate=REBATE, **kwargs))))
+        where = (barrier_type, barrier, limit_days, v0, vr)
+        if state == 'vanilla':
+            assert vr == v0, ('a resolved window carries no rebate leg', where)
+            vanillas.add(v0)
+        elif state == 'dead':
+            assert v0 == 0.0, ('a touched knock-out is worth nothing', where)
+            assert vr == REBATE, ('the rebate is paid AT the hit, which is now', where)
+        else:
+            assert v0 == 0.0, ('a closed knock-in never knocked in', where)
+            assert abs(vr - REBATE * math.exp(-R_USD * T)) < 1e-9 * REBATE, where
+    assert len(vanillas) == 1, ('the vanilla is one number, not %d' % len(vanillas), vanillas)
+    assert abs(vanillas.pop() - v_van) / v_van < 2e-3, (vanillas, v_van)
+
+
+#: the eight CLOSED documents of `RESOLVED`, both directions and both sides of the level
+CLOSED_BOTH_SIDES = [(bt, bar) for bt in ('Up_And_Out', 'Down_And_Out', 'Up_And_In', 'Down_And_In')
+                     for bar in (1.12, 1.40)]
+
+
+def test_a_closed_start_window_reads_the_same_state_its_own_scenario_walk_does():
+    """The mark reads the resolution off a closed form and the scenario walk off its touch
+    accumulator. They are the same deal on the same date and must name the same state.
+
+    ROW 0 IS A POINT TEST, and `in_window` took it for every `Barrier_At_Start` document whether or
+    not the window was still open - so a deal whose window closed 30 days ago tested a barrier
+    nobody was watching, exactly the defect `test_a_touch_outside_the_window_does_not_knock` names
+    one row earlier. Rows 1..n never had it, so the walk contradicted itself as well as the mark:
+    the seasoned `Up_And_Out` 1.12 marked 85.2998 and its own row 0 read **0.0000**, while its
+    knock-in marked 0 and read **85.2999**. The four documents INSIDE the level always agreed and
+    must not move.
+
+    The row is a certainty, so it is read per scenario: every path shares the base date's spot, and
+    a resolved knock-in is exactly `0.0` on all of them. The knock-out's tie to the mark is 1.4e-8,
+    the CMC's float32 against the mark's float64.
+    """
+    for barrier_type, barrier in CLOSED_BOTH_SIDES:
+        deal = _deal(barrier_type, barrier, at_start='Yes', limit_days=-30)
+        base = _mtm(_run(_job(deal)))
+        job = _job(deal, calc={
+            'Object': 'CreditMonteCarlo', 'Time_grid': '0d 12m(1m)', 'Batch_Size': 256,
+            'Simulation_Batches': 1, 'MCMC_Simulations': 1, 'Deflation_Interest_Rate': 'USD'})
+        md = job['Calc']['MergeMarketData']['ExplicitMarketData']
+        md['Price Models'] = {'GBMAssetPriceModel.EUR': {'Vol': SIGMA, 'Drift': R_USD - R_EUR}}
+        md['Model Configuration'] = {'.ModelParams': {
+            'modeldefaults': {'FxRate': 'GBMAssetPriceModel'}, 'modelfilters': {}}}
+        row0 = np.asarray(_run(job)['Results']['mtm'], float)[0]
+        where = (barrier_type, barrier, base, row0.min(), row0.max())
+        assert row0.min() == row0.max(), ('a resolved row is one number per scenario', where)
+        if 'In' in barrier_type:
+            assert base == 0.0 and row0.max() == 0.0, ('a closed knock-in never knocked in', where)
+        else:
+            assert abs(row0.max() - base) < 1e-6 * base, ('the walk and the mark disagree', where)
 
 
 def test_an_untouched_knock_in_ages_carrying_its_discounted_rebate():
@@ -265,13 +370,7 @@ def test_an_untouched_knock_in_ages_carrying_its_discounted_rebate():
 def test_an_unreachable_barrier_is_the_vanilla_and_a_certain_one_is_nothing():
     """The two degenerate anchors: a KO whose barrier no path reaches is the plain European
     (engine-vs-engine against an FXOptionDeal document), and its KI is worth nothing."""
-    vanilla = {'Object': 'FXOptionDeal', 'Reference': 'VAN', 'Currency': 'USD',
-               'Underlying_Currency': 'EUR', 'Payoff_Currency': 'USD', 'Discount_Rate': 'USD',
-               'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
-               'Strike_Price': 1.25, 'Underlying_Amount': NOTIONAL,
-               'Expiry_Date': BASE + pd.DateOffset(days=EXPIRY_D),
-               'Option_Style': 'European', 'Settlement_Style': 'Cash'}
-    v_van = _mtm(_run(_job(vanilla)), 'VAN')
+    v_van = _mtm(_run(_job(VANILLA)), 'VAN')
     for at_start in ('Yes', 'No'):
         ko = _mtm(_run(_job(_deal('Up_And_Out', 5.0, at_start=at_start))))
         ki = _mtm(_run(_job(_deal('Up_And_In', 5.0, at_start=at_start))))

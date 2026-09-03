@@ -114,6 +114,40 @@ def test_a_sold_tarf_books_the_mirror_of_a_bought_one(tmp_path):
     assert float(np.abs(buy.values).sum()) > 0.0, 'the fixture settled nothing'
 
 
+#: small enough that the ONE declared fixing exhausts it on its own: 0.05 of accrual against 0.02
+#: of target, so the deal pays the clamped target and dies on the fixing that settles today.
+CROSSING_TARGET = 0.02
+CROSSING_PAYMENT = N1 * CROSSING_TARGET                # 20.00, and nothing on any later row
+
+
+def test_a_target_its_declared_fixing_exhausts_pays_that_target_and_stops(tmp_path):
+    """The opening accrual netted every declared reset whether or not it had SETTLED, so a fixing
+    already declared was inside the pot before the strip reached it. Where the pot it filled was the
+    whole target the deal was born dead: `R` opened at zero, every fixing behind it clamped to
+    nothing, and the document below priced and booked IDENTICALLY ZERO on every row and every
+    scenario - a TARF that crossed on its first fixing marked flat.
+
+    Nets the settled fixings only and there is nothing to net: this fixing settles ON the base date,
+    which is not yet settled at the row that books it. So the deal pays `min(0.05, 0.02) x 1000` =
+    **20.00** in the mark and in the ledger at row 0, and exactly nothing after - the whole payoff
+    of a TARF whose target its first fixing exhausts, with no model left in it.
+
+    Both directions, because the ledger carries the sign and the mtm does too.
+    """
+    for buy_sell, sign in (('Buy', 1.0), ('Sell', -1.0)):
+        job = _job(buy_sell)
+        job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']['TargetLevel'] = \
+            CROSSING_TARGET
+        out = _run(job, tmp_path, 'tarf_crossing_' + buy_sell)
+        mtm = np.asarray(out['Results']['mtm'], dtype=float)
+        cash = np.asarray(out['Results']['cashflows']['USD'].values, dtype=float)
+        for name, rows in (('mark', mtm), ('ledger', cash)):
+            assert abs(rows[0] - sign * CROSSING_PAYMENT).max() < 1e-3, (
+                buy_sell, name, rows[0].min(), rows[0].max(), sign * CROSSING_PAYMENT)
+            assert np.array_equal(rows[1:], np.zeros_like(rows[1:])), (
+                buy_sell, name, 'a redeemed TARF paid after it died', rows[1:].max())
+
+
 def test_an_oss_run_wider_than_the_sobol_dimension_cap_prices(tmp_path):
     """`oss_uniforms` asks `quasi_rng` for the PATH COUNT as the Sobol dimension, and the engine
     caps at 21201: above it the draw refused inside the pricer, `Deal.calculate` swallowed it into

@@ -1406,16 +1406,20 @@ class TensorSchedule(object):
             raise ScheduleLifecycleError('{} was never bound to a calculation'.format(self))
         return self.bound[index:]
 
+    def declared_values(self, index=RESET_INDEX_Value, filter_index=RESET_INDEX_Reset_Day):
+        """The already-fixed rows' `index` column as plain scalars, in schedule order."""
+        return [x[index] for x in self.schedule if x[filter_index] < 0.0]
+
     def known_resets(self, num_scenarios, index=RESET_INDEX_Value,
                      filter_index=RESET_INDEX_Reset_Day, include_today=False):
         """The already-fixed rows' VALUE column, one `(1, num_scenarios)` tensor each.
         `include_today` keeps a row resetting today, which only an equity reset wants."""
         key = ('known_resets', num_scenarios, index, include_today)
         if self.derived.get(key) is None:
-            self.derived[key] = [
-                self.unit.new_full((1, num_scenarios), x[index]) for x in self.schedule
-                if ((x[filter_index] <= 0.0 and x[index] > 0) if include_today
-                    else x[filter_index] < 0.0)]
+            values = ([x[index] for x in self.schedule
+                       if x[filter_index] <= 0.0 and x[index] > 0] if include_today
+                      else self.declared_values(index, filter_index))
+            self.derived[key] = [self.unit.new_full((1, num_scenarios), x) for x in values]
         return self.derived[key]
 
 

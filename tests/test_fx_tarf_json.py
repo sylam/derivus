@@ -207,9 +207,12 @@ LAGGED_SCHEDULE = [[{'.Timestamp': '2024-06-10'}, {'.Timestamp': '2024-07-01'}, 
                    [{'.Timestamp': '2024-06-20'}, {'.Timestamp': '2024-07-05'}, 1.3],
                    [{'.Timestamp': '2024-09-27'}, {'.Timestamp': '2024-09-29'}, 0.0]]
 
-#: Small enough that the first observed fixing alone exhausts it, so the second one's accrual has
-#: nothing left to take and the clamp is what decides the answer. 0.5 against two 0.2 accruals.
+#: Large enough that neither OBSERVED fixing exhausts it - 0.5 against two 0.2 accruals - so both
+#: bank what they are worth and the live fixing behind them is capped by what they left.
 LAGGED_TARGET = 0.5
+
+#: Exactly what they leave. A deal written to it CROSSES at the first observed fixing.
+REDEEM_TARGET = 0.1
 
 
 def _lagged_job(smooth=False, **overrides):
@@ -222,39 +225,61 @@ def _lagged_job(smooth=False, **overrides):
     return job
 
 
-def _banked(row):
-    """The remaining target banked at one schedule row's settlement, discounted to the base date."""
+def _leg(row, accrual):
+    """One schedule row's payment at its own settlement, discounted to the base date."""
     ts = _offset(row[1]['.Timestamp']) / DAYS
-    return math.exp(-_r_usd(ts) * ts) * (LAGGED_TARGET - 2.0 * (LAGGED_SCHEDULE[0][2] - STRIKE)) * N1
+    return math.exp(-_r_usd(ts) * ts) * accrual * N1
 
 
-def test_two_observed_fixings_in_one_settlement_lag_redeem_at_the_first(tmp_path):
-    """The observed fixing's own remaining target, on the one branch that has no truncation to hold
-    it.
+def _black(fwd, k, sd, call=True):
+    return ((fwd * _ndtr((math.log(fwd / k) + 0.5 * sd * sd) / sd) -
+             k * _ndtr((math.log(fwd / k) - 0.5 * sd * sd) / sd)) if call else
+            (k * _ndtr(-(math.log(fwd / k) - 0.5 * sd * sd) / sd) -
+             fwd * _ndtr(-(math.log(fwd / k) + 0.5 * sd * sd) / sd)))
+
+
+def _live_leg(row, level, remaining):
+    """The one SIMULATED fixing, walking on from the last observed level under a remaining target
+    of `remaining`.
+
+    However the one-step survival splits it, that fixing pays `min(relu(S - K), remaining)` on
+    `N1` - the knocked weight banks the remainder, the surviving one its own intrinsic - so the ITM
+    leg is the CALL SPREAD `C(K) - C(K + remaining)`. The OTM leg is unclamped and lies wholly
+    inside the surviving set, so it is the plain leveraged put.
+    """
+    t, ts = (_offset(row[0]['.Timestamp']) / DAYS, _offset(row[1]['.Timestamp']) / DAYS)
+    fwd, sd = level * math.exp((_r_usd(t) - Q_EUR) * t), SIGMA * math.sqrt(t)
+    return math.exp(-_r_usd(ts) * ts) * (
+        N1 * (_black(fwd, STRIKE, sd) - _black(fwd, STRIKE + remaining, sd)) -
+        N2 * _black(fwd, STRIKE, sd, call=False))
+
+
+def test_two_observed_fixings_in_one_settlement_lag_bank_their_own_accruals(tmp_path):
+    """The pot a block opens on, on the one branch where a fixing is data rather than a draw.
 
     Two fixings are already FIXED and not yet SETTLED, so both walk in-loop with `p = 1` and no
-    survival cap. `R` opens at 0.1 after the declared prefix and the first observed fixing is worth
-    0.2, so it CROSSES: it pays exactly the remainder and the deal redeems, the second observed
-    fixing and the live one paying nothing behind it.
+    survival cap - and the opening accrual must not have netted them, or the loop pays what the pot
+    has already taken. It nets the SETTLED fixings only, of which there are none here: `R` opens at
+    the whole 0.5, each observed fixing banks its own 0.2 at its own settlement, and the live fixing
+    behind them is capped by the 0.1 they left.
 
-    THE ORACLE is one banked leg at its own settlement, and it is an equality to the float: the live
-    fixing is dead weight, and even alive it is capped at the strike by `R == 0` and survived by
-    `Phi(z_max)` = 1.5e-4 of the paths.
+    THE ORACLE is those two banked legs plus a closed form for the live one - a call spread against
+    a leveraged put, no target arithmetic left in it. It agrees at 3.9e-6, which is the inner Sobol
+    draw and not a model difference; the gate is set 25x wider.
 
-    MEASURED: 99.98989 redeeming, against 199.9566 when each observed fixing took the whole block
-    remainder and the weight was never zeroed. GBM, no Heston-Nandi anywhere.
+    MEASURED: 497.1924 against an oracle of 497.1905. With every declared reset in the pot, settled
+    or not, the same document read 99.98989 - the first fixing banking 0.1, the remainder that
+    netting had already left, rather than the 0.2 it is worth.
 
     BOTH ESTIMATORS, because both reach it: an OBSERVED fixing builds no kink term, so the smooth
     arm's decrement is the crisp one's and the two agree to the bit.
-
-    WHAT THIS DOES NOT BLESS: the pot the payment comes out of. `accumulation[0]` nets EVERY
-    declared reset, settled or not, so a known-but-unsettled fixing is already inside
-    `remaining_target` when the loop pays it again - a separate, pre-existing defect with its own
-    roadmap row. This gate pins the per-fixing remainder and the redemption, not the opening `R`.
     """
-    banked = _banked(LAGGED_SCHEDULE[0])
+    accrual = LAGGED_SCHEDULE[0][2] - STRIKE
+    oracle = (_leg(LAGGED_SCHEDULE[0], accrual) + _leg(LAGGED_SCHEDULE[1], accrual) +
+              _live_leg(LAGGED_SCHEDULE[2], LAGGED_SCHEDULE[1][2],
+                        LAGGED_TARGET - 2.0 * accrual))
     value = _mtm(_run(_lagged_job(), tmp_path, 'lagged')[0])
-    assert abs(value - banked) < 1e-9 * banked, (value, banked)
+    assert abs(value - oracle) < 1e-4 * oracle, (value, oracle)
 
     smooth = _mtm(_run(_lagged_job(smooth=True), tmp_path, 'lagged_smooth')[0])
     assert smooth == value, ('the smooth arm decremented differently', smooth, value)
@@ -263,20 +288,25 @@ def test_two_observed_fixings_in_one_settlement_lag_redeem_at_the_first(tmp_path
 def test_a_redeemed_deal_pays_nothing_after_the_crossing_fixing(tmp_path):
     """Redemption zeroes the alive weight, so nothing a later fixing declares can reach the mark.
 
+    Written to `REDEEM_TARGET`, the first observed fixing is worth more than the whole target: it
+    CROSSES, paying exactly the remainder, and the second observed fixing and the live one fall
+    behind a zero weight.
+
     The second observed fixing's SETTLEMENT is pushed out a month - its discount factor, and nothing
     else the block reads. A deal still paying it moves by that factor on 0.1 of target; a redeemed
     one cannot see it at all, and the two runs must agree bit for bit.
 
-    Its LEVEL is deliberately left alone: every declared reset is inside `accumulation[0]`, so
-    moving one moves the opening `R` and the shape this gate is about.
+    Its LEVEL is deliberately left alone: it is the level the crossing is measured against, so
+    moving it moves the shape this gate is about rather than the discounting.
     """
     later = [LAGGED_SCHEDULE[0],
              [LAGGED_SCHEDULE[1][0], {'.Timestamp': '2024-08-05'}, LAGGED_SCHEDULE[1][2]],
              LAGGED_SCHEDULE[2]]
-    base = _mtm(_run(_lagged_job(), tmp_path, 'redeem')[0])
-    moved = _mtm(_run(_lagged_job(TARF_ExpiryDates=later), tmp_path, 'redeem_moved')[0])
+    base = _mtm(_run(_lagged_job(TargetLevel=REDEEM_TARGET), tmp_path, 'redeem')[0])
+    moved = _mtm(_run(_lagged_job(TargetLevel=REDEEM_TARGET, TARF_ExpiryDates=later),
+                      tmp_path, 'redeem_moved')[0])
     assert moved == base, ('the deal paid after it redeemed', moved, base)
-    assert abs(base - _banked(LAGGED_SCHEDULE[0])) < 1e-9 * base, base
+    assert abs(base - _leg(LAGGED_SCHEDULE[0], REDEEM_TARGET)) < 1e-9 * base, base
 
 
 def test_the_second_observed_fixing_in_a_block_reads_its_own_level(tmp_path):
