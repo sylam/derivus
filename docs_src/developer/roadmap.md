@@ -19,19 +19,15 @@ caller** (several items below are deliberately not started), and **look before y
 - **A collateralised set reading a knock-out rebate's 14 declared settlement dates** — the shape no gate exercises, left from the `add_grid_dates` closure.
 - **`pricing` (TARF block)** — The target pin fires on 27–61% of paths, 27% short uncorrected, and is gated structurally with no tolerance asserted because nothing resolves it better. Exact behind `Branch_And_Weight: 'Yes'`; the crisp default keeps the declared blindness. *Measured:* Estimator 13% bandwidth spread, oracle 8.9% flatness — neither better than ~10%. Do not tune on the oracle: it cannot see it either.
 - **`pv_MC_AutoCallSwap`** — The averaging branch cannot carry the termination latch — its termination is a smoothed per-inner-path weight with no crisp per-scenario decision. A lagging-payment schedule (coupon paying after its fixing) would have its pending window zeroed by the carry. No fixture reaches either; the latch marker (the fixing index that killed the path) is the hook an exemption keys on.
-- **`pv_MC_AutoCallSwap` (crisp arm) × the terminal put barrier** — the expiry-row
-  `torch.where(Sj <= putBarrier, ...)` is a decision no boundary set carries on this arm, so every
-  sensitivity the put leg touches is short its flux. Measured 2026-09-04 on a 2y USD SPX
-  `QEDI_CustomAutoCallSwap_V2` under the component model (converged fit, 16,384 sims, CRN ladders
-  at two bump sizes): base-valuation spot delta 0.0473 against 0.0534 / 0.0528 (12.3% off, ladder
-  flat to 1.25%), `H0` 24.8% off, the 2.29y `L` knot −5,946 against −15,274 / −17,397; with
-  `Barrier: 0.0` the same ladders close to 0.26% and 0.81%, and the rates delta is exact either
-  way. Under the credit MC the CVA delta is 23.7% off uncollateralised and 117% off under a
-  zero-threshold CSA on ladders flat to 0.23% / 0.81%. `Branch_And_Weight` with `HN_Stride`
-  does not answer it: that path reports spot, `H0` and every `L` knot at exactly 0 and a rates
-  delta of 282 against 354 — the spot graph is severed on the strided path. The GBM arm's
-  `lognormal_fired_gain` integrates the put leg only under the switch; the component arm has no
-  smooth put leg at all. Documents and ladders in the session scratchpad (`autocall_trials/`).
+- **`Credit_Monte_Carlo` × the autocall's delta on a barrier-free book** — with the put barrier
+  registered (Closed, below) the CVA delta of the 2y USD SPX `QEDI_CustomAutoCallSwap_V2` still
+  reads 14.6% off its ladder uncollateralised and 68.6% under a zero-threshold CSA, and the SAME
+  book with `Barrier: 0.0` — nothing for the barrier to register — reads 11.7% and 92.5%; GBM
+  under the CSA closes to 0.25%. The residual is the component walk's, not the barrier's, and wants
+  its own measurement (2026-09-04). Beside it: the float and the terminal put are paid inside the
+  accumulator and reach no `cash_settle`, so `Results['cashflows']` carries the coupons alone while
+  the ledger DECLARES the float — settling it moves the collateralised CVA (GBM 0.234494 → 0.210429,
+  component 0.170177 → 0.147908) and nothing else, a change of its own.
 - **`pv_MC_ExtendableForward`** — Two declared limits remain after the flux registration and the mirror booking. (1) The settled-cash channel under a CSA is not registered, on the measurement below: the flipped payments' exposure rides the value side until settlement, then one hazard-weighted margin window. The `cash_alive` design is recorded in `test_a_collateralised_cva_delta_carries_the_surviving_cash` and waits for a document that can falsify it. (2) The rolling backward pass carries a one-signed Gauss–Hermite smoothing bias over the relu kink. *Measured:* (1) +0.25% / −0.02% / +0.26% / +0.03% across four amplifying documents, against CRN ladders that resolve no finer. (2) Single-decision inside 5e-3 of Black; multi-decision bounded by the dominance gates only — the `Boundary_*` valuation options are the dials.
 - **Seasoned TARFs with pre-base settlements are discarded outright** — `instruments` drops settlement dates before the base date and then any declared fixing older than a month before the earliest survivor, so a fixing at −18d settled at −8d logs `fixings=1 resolved=0` and the deal marks bit-identical to the same document with that fixing deleted — priced against its full original target. The accrual netting (closed below) bites only at later profile rows. *Measured:* mark `0x3ffa9945323ddaf2` with and without the settled fixing.
 - **A TARF valued between two settlements marks NaN** — the lagged schedule at a base date with settlements at −2/+2/+88 days (`fixings=3 resolved=2`) marks `nan` on every tree measured. Exactly the one-settled-one-not geometry the seasoned work is about; no fixture reaches it.
@@ -90,6 +86,19 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Closed
 
+- **`pv_MC_AutoCallSwap` (crisp arm) × the terminal put barrier** — the expiry-row
+  `torch.where(Sj <= putBarrier, ...)` carried no boundary set, so every sensitivity the put leg
+  touched was short its flux: on the 2y USD SPX `QEDI_CustomAutoCallSwap_V2` under the component
+  model the base-valuation spot delta read 12.3% off its ladder, `H0` 24.8%, the 2.29y `L` knot
+  175%, every one closing to under 1% with `Barrier: 0.0`. Closed 2026-09-04: the crisp line
+  registers an `InnerBoundarySet` beside the coupon latch — one decision per inner path, gap
+  `log(B/S)`, jump `L·D·fx·(rebate − (1 − S/K))`, node outputs under the recompute node — only where
+  the conditional-p splice did not take it, so the stride and `Branch_And_Weight` register nothing
+  extra. Spot 12.3% → **0.97%**, `H0` → 5.8%, the knot → **2.9%**; the rates delta moves 354.2 →
+  447.3, which a seven-rung ladder shows is right (no path crosses at 1e-4, 1e-3…1e-2 read
+  436.5…467.3). The float rows declare their `cash_events` on the streamed law (twelve payments
+  where there were four, `ledger_max` 0.0). Every value bit-identical; `Greeks: 'All'` now refuses
+  on this deal as on any registered decision. The credit-MC residual is the Open row above.
 - **`config.find_models` (what the base currency's name excludes)** — every factor named by the
   base currency was kept static, its curve included; a base-currency curve to simulate carried
   another name. Decided 2026-09-03: only `FxRate.<base>` is excluded (identically one), so a curve

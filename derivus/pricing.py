@@ -4364,7 +4364,11 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     every later row, the own-row override forking the decision row, and the ledger triple a
     collateralised exposure reads through ``C_ts_te``. One decision is ONE counterfactual - an
     objective with a kink scores two partial counterfactuals differently from their sum. A
-    re-observation of an old decision registers nothing.
+    re-observation of an old decision registers nothing. THE TERMINAL PUT registers beside it as an
+    ``InnerBoundarySet`` - one decision per inner path, only on the crisp line, the conditional-p
+    splice having taken it wherever it ran. The FLOAT declares each settled fixing as a stream's
+    payment gated by the last decision before its date, which is what puts it in the ledger a
+    collateralised counterfactual replays.
 
     BRANCH AND WEIGHT REACHES THE NO-AVERAGING ARM (``Branch_And_Weight: 'Yes'``, base valuation
     only) and SUPERSEDES that registration rather than joining it. A constant coupon already makes
@@ -4482,7 +4486,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         hn = kit is not None
         # the by-products the caller performs once
         settled, settle_rows, event_rows, gaps, fired, survived = [], [], [], [], [], []
-        alive, cash_on = [], []
+        alive, cash_on, float_rows, float_cash = [], [], [], []
+        bar_rows, bar_gaps, bar_jumps = [], [], []
 
         isBarrierDate = BarrierDates[offset:]
         isFloatingDate = Floating[offset:]
@@ -4544,6 +4549,12 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         P = P + L * fx * -FloatingDate * D[j]
                         if P_cf is not None:
                             P_cf = P_cf + L_cf * fx * -FloatingDate * D[j]
+                        if boundary_aad and tau == 0.0 and j == 0:
+                            # the row's OWN date: this is the cash that changes hands, and it is
+                            # paid BEFORE any decision that date takes - the caller gates it on the
+                            # decision before
+                            float_rows.append(i)
+                            float_cash.append((fx * -FloatingDate * D[j]).squeeze(1).detach())
 
                     if coup > 0:
                         K = thresh * strike
@@ -4693,9 +4704,18 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         # in both the ways that happens: an OBSERVED fixing, and a block opening on
                         # an unaligned one
                         breach = torch.where(Sj <= putBarrier, 1.0, 0.0)
-                        P = P + L * D[j] * fx * breach * (rebate - (1.0 - Sj / strike))
+                        put_leg = L * D[j] * fx * (rebate - (1.0 - Sj / strike))
+                        P = P + breach * put_leg
                         if P_cf is not None:
                             P_cf = P_cf + L_cf * D[j] * fx * breach * (rebate - (1.0 - Sj / strike))
+                        if boundary_aad and putBarrier > 0.0:
+                            # ONE decision per inner path, gap > 0 meaning BREACHED, and the jump is
+                            # what this row's accumulator gains if that path's indicator flips. Only
+                            # here: where `interval` is not None the splice already took it. A
+                            # barrier date with no barrier decides nothing - its gap is log(0)
+                            bar_jumps.append(put_leg.detach())
+                            bar_gaps.append(torch.log(putBarrier / Sj).expand_as(bar_jumps[-1]))
+                            bar_rows.append(i)
 
 
                 if ledger is not None:
@@ -4747,7 +4767,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 torch.stack(settled) if settled else spot_prices.new_empty(0),
                 settle_rows, event_rows, terminationDate,
                 torch.stack(alive) if alive else spot_prices.new_empty(0),
-                ) + tuple(gaps) + tuple(fired) + tuple(survived) + tuple(cash_on)
+                float_rows, bar_rows,
+                ) + tuple(gaps) + tuple(fired) + tuple(survived) + tuple(cash_on) + tuple(
+                    float_cash) + tuple(bar_gaps) + tuple(bar_jumps)
 
     mtm_list = []
     factor_dep = deal_data.Factor_dep
@@ -4860,7 +4882,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     # wrong; what ordinary AAD drops is the flux of scenarios across the threshold
     boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
     row_ofs = 0
-    b_latch, b_obs, b_alive, b_cash = [], [], [], []
+    b_latch, b_obs, b_alive, b_cash, b_inner = [], [], [], [], []
 
     for index, (forward_block, discount_block, spot_block, moneyness_block) in enumerate(
             utils.split_counts([forward, discount, spot, moneyness], counts, shared)):
@@ -4939,6 +4961,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             # decisions latched STRICTLY BEFORE this block's rows, at block granularity - the
             # block's own fixing is priced by its own simulation (the barrier's spelling)
             b_obs.extend([len(b_latch)] * len(t_block))
+            # the latch this block opens on, and the last decision that can kill its float payments
+            block_dead, d_float = (terminationDate != -1).squeeze(1), len(b_latch) - 1
         # skip the simulation once EVERY scenario has autocalled - nothing is left to price
         if (terminationDate == -1).any():
             if factor_dep['no_averaging']:
@@ -4969,14 +4993,14 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             outputs = InnerMCRecompute.run(shared, simulate, *theta)
             # `terminationDate` comes back stamped by this block's observed fixing and is handed to
             # the NEXT block's theta - an autocalled path pays once and is worth nothing after
-            theo_cashflow, block_settled, settle_rows, event_rows, terminationDate, block_alive = \
-                outputs[:6]
+            (theo_cashflow, block_settled, settle_rows, event_rows, terminationDate, block_alive,
+             float_rows, bar_rows) = outputs[:8]
             # the by-products, performed once off the forward's result. `nominal` is
             # `Buy_Sell * Units` and scales the MARK below, so the settled cash carries it too
             for row, value in zip(settle_rows, block_settled):
                 cash_settle(shared, factor_dep['SettleCurrency'], np.searchsorted(
                     time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]), nominal * value)
-            fixed, n_events = 6, len(event_rows)
+            fixed, n_events = 8, len(event_rows)
             if boundary_aad and factor_dep['no_averaging']:
                 b_alive.append(block_alive)
                 settle_map = dict(zip(settle_rows, block_settled))
@@ -4996,6 +5020,21 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM])),
                         len(b_latch) - 1, coupon, torch.zeros_like(coupon),
                         (nominal * fxr * settle_map[row]).detach()))
+                # THE FLOAT IS A STREAM: its fixing settles on a weight the decisions of its own
+                # date cannot touch, so the last decision before the block is what kills it
+                for k, row in enumerate(float_rows):
+                    paid = (nominal * report_fx(fx_rep, row_ofs + row) *
+                            outputs[fixed + 4 * n_events + k]).detach()
+                    b_cash.append((int(np.searchsorted(
+                        time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM])),
+                        d_float, torch.zeros_like(paid), paid,
+                        torch.where(block_dead, torch.zeros_like(paid), paid)))
+                # THE TERMINAL PUT: one decision per inner path, the row it lands on and the
+                # UNDIVIDED change to that row's own accumulator if the indicator flips
+                b_first = fixed + 4 * n_events + len(float_rows)
+                b_inner.extend([[row_ofs + row, outputs[b_first + k],
+                                 (nominal * outputs[b_first + len(bar_rows) + k]).detach()]
+                                for k, row in enumerate(bar_rows)])
         else:
             theo_cashflow = drifts.new_zeros((len(t_block), shared.simulation_batch))
             if boundary_aad and factor_dep['no_averaging']:
@@ -5008,20 +5047,38 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
     mtm = torch.cat(mtm_list, dim=0)
 
-    if b_latch and time_grid.report_index is not None:
-        # one counterfactual per decision, its whole reach: latch + own-row fork + every payment row
-        # the flip touches. Branches stay on the pricer's grid; report_index is None on a grid
-        # nobody reports off
-        gaps, flags, own_rows, on_v, off_v = zip(*b_latch)
-        untriggered = (nominal * torch.cat(b_alive, dim=0)).detach()
-        shared.boundary_sets.append(utils.LatchedBoundarySet(
-            gaps=list(gaps), fired=list(flags), obs_before=np.array(b_obs),
-            untriggered=untriggered, triggered=torch.zeros_like(untriggered),
-            own_row=[(r, nominal * a, nominal * b)
-                     for r, a, b in zip(own_rows, on_v, off_v)],
-            cash_events=b_cash,
-            to_mtm=deal_to_mtm_grid(time_grid, deal_data, fx_rep),
-            report_index=time_grid.report_index))
+    # report_index is None on a grid nobody reports off, where there is no reporting row for a
+    # counterfactual to land on
+    if (b_latch or b_inner) and time_grid.report_index is not None:
+        to_mtm = deal_to_mtm_grid(time_grid, deal_data, fx_rep)
+        if b_latch:
+            # one counterfactual per decision, its whole reach: latch + own-row fork + every payment
+            # row the flip touches. Branches stay on the pricer's grid
+            gaps, flags, own_rows, on_v, off_v = zip(*b_latch)
+            untriggered = (nominal * torch.cat(b_alive, dim=0)).detach()
+            latch = utils.LatchedBoundarySet(
+                gaps=list(gaps), fired=list(flags), obs_before=np.array(b_obs),
+                untriggered=untriggered, triggered=torch.zeros_like(untriggered),
+                own_row=[(r, nominal * a, nominal * b)
+                         for r, a, b in zip(own_rows, on_v, off_v)],
+                cash_events=b_cash, to_mtm=to_mtm, report_index=time_grid.report_index)
+            shared.boundary_sets.append(latch)
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                with torch.no_grad():
+                    prefix = [torch.zeros_like(latch.fired[0])]
+                    for flag in latch.fired:
+                        prefix.append(prefix[-1] | flag)
+                    logging.debug(
+                        'AUTOCALL %s latch decisions=%d payments=%d recon_max=%.3g '
+                        'ledger_max=%.3g scale=%.3g',
+                        deal_data.Instrument.field.get('Reference'), len(b_latch), len(b_cash),
+                        float((latch.select(prefix) - mtm.detach()).abs().max()),
+                        declared_ledger_residual(b_cash, prefix), float(mtm.detach().abs().max()))
+        if b_inner:
+            rows, gaps, jumps = zip(*b_inner)
+            shared.boundary_sets.append(utils.InnerBoundarySet(
+                gaps=list(gaps), rows=list(rows), jumps=list(jumps), reported=mtm.detach(),
+                to_mtm=to_mtm, report_index=time_grid.report_index))
 
     return mtm
 
