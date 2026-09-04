@@ -923,6 +923,10 @@ class Credit_Monte_Carlo(Calculation):
         F('Recompute_Inner_MC', 'Text', default='No', values=['Yes', 'No'],
           description='Re-simulate a Monte Carlo pricer\'s inner paths in backward() rather than '
                       'taping them; trades a second forward pass for the graph of every pricing'),
+        F('HN_Stride', 'Text', default='No', values=['Yes', 'No'],
+          description='The stride inside every inner Monte Carlo, as BaseValuation declares it: '
+                      'the component k-step law between fixings, with the conditional-p mixture '
+                      'carrying the flux of every decision at both orders'),
         F('Credit_Valuation_Adjustment', 'Container',
           default={"Calculate": "No", "Counterparty": "", "Bank": "",
                    "Deflate_Stochastically": "Yes", "Stochastic_Hazard_Rates": "No",
@@ -1265,6 +1269,7 @@ class Credit_Monte_Carlo(Calculation):
             keep_tensor=self.params.get('Keep_Tensor', 'No') == 'Yes')
         shared_mem.boundary_aad = calc_greeks is not None
         shared_mem.recompute_inner_mc = self.params.get('Recompute_Inner_MC', 'No') == 'Yes'
+        shared_mem.hn_stride = self.params.get('HN_Stride', 'No') == 'Yes'
         # the one registration that is opt-in rather than implied by wanting sensitivities - its
         # magnitude is unestablished, so a document asks for it by name
         shared_mem.boundary_window_touch = self.params.get(
@@ -2059,9 +2064,10 @@ class Base_Revaluation(Calculation):
             # the transposed spelling is pandas' own migration off groupby(axis=1) (removed in
             # pandas 3) and runs identically back to 1.x
             if greek_name == 'Greeks_Second':
-                summary = pd.concat(greek_val, axis=1).T.groupby(level=[0, 1, 2, 3, 4]).sum().T
+                summary = pd.concat(greek_val, axis=1).T.groupby(level=[0, 1, 2, 3, 4]).sum(skipna=False).T
             elif greek_name == 'Greeks_First':
-                summary = pd.concat(greek_val, axis=1).T.groupby(level=0).sum().T
+                # a NaN gradient is reported as NaN, never summed away into a zero
+                summary = pd.concat(greek_val, axis=1).T.groupby(level=0).sum(skipna=False).T
             else:
                 raise Exception('Unknown Greek requested', greek_name)
             self.output.setdefault(greek_name, summary)

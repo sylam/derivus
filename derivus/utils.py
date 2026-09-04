@@ -3507,6 +3507,15 @@ def hn_component_stride_draw(strip, u, h, q, x_cap=None, iters=32, tol=1.0e-14, 
     return x, phi_cap
 
 
+def sqrt_or_zero(v):
+    """``sqrt(max(v, 0))`` with a ZERO gradient where ``v <= 0``: ``clamp_min(0).sqrt()`` is the
+    same value but its backward is ``inf * 0`` there, a NaN on every leaf behind it - measured on a
+    fit with ``Phi`` exactly 0, where the long-run component's residual variance is exactly 0."""
+    positive = v > 0
+    return torch.where(positive, torch.sqrt(torch.where(positive, v, torch.ones_like(v))),
+                       torch.zeros_like(v))
+
+
 def hn_component_stride_carry_loadings(strip, h, q):
     """THE CARRIED-STATE APPROXIMATION, pinned.  Returns a :data:`HNComponentStrideCarry`.
 
@@ -3548,8 +3557,8 @@ def hn_component_stride_carry_loadings(strip, h, q):
     c_h = (mu2 * m['upp'] - mu3 * m['up']) / den
     b_q = (m['vp'] * spread - m['vpp'] * mu3) / den
     c_q = (mu2 * m['vpp'] - mu3 * m['vp']) / den
-    sd_h = (m['uu'] - (b_h * m['up'] + c_h * m['upp'])).clamp_min(0.0).sqrt()
-    sd_q = (m['vv'] - (b_q * m['vp'] + c_q * m['vpp'])).clamp_min(0.0).sqrt()
+    sd_h = sqrt_or_zero(m['uu'] - (b_h * m['up'] + c_h * m['upp']))
+    sd_q = sqrt_or_zero(m['vv'] - (b_q * m['vp'] + c_q * m['vpp']))
     cov = m['uv'] - (b_q * m['up'] + c_q * m['upp'])
     return HNComponentStrideCarry(
         m['p'], m['u'] - c_h * mu2, b_h, c_h, m['v'] - c_q * mu2, b_q, c_q, sd_h, sd_q,
@@ -3569,7 +3578,7 @@ def hn_component_stride_carry(strip, x, h, q, e1, e2, loadings=None):
     y = x - ld.mean_x
     fit_h = ld.a_h + ld.b_h * y + ld.c_h * y * y
     fit_q = ld.a_q + ld.b_q * y + ld.c_q * y * y
-    n2 = ld.corr * e1 + (1.0 - ld.corr ** 2).clamp_min(0.0).sqrt() * e2
+    n2 = ld.corr * e1 + sqrt_or_zero(1.0 - ld.corr ** 2) * e2
     return ((fit_h + ld.sd_h * e1).clamp(min=HN_COMPONENT_VARIANCE_FLOOR),
             (fit_q + ld.sd_q * n2).clamp(min=HN_COMPONENT_VARIANCE_FLOOR))
 
