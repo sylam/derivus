@@ -23,8 +23,12 @@ caller** (several items below are deliberately not started), and **look before y
   registered (Closed, below) the CVA delta of the 2y USD SPX `QEDI_CustomAutoCallSwap_V2` still
   reads 14.6% off its ladder uncollateralised and 68.6% under a zero-threshold CSA, and the SAME
   book with `Barrier: 0.0` — nothing for the barrier to register — reads 11.7% and 92.5%; GBM
-  under the CSA closes to 0.25%. The residual is the component walk's, not the barrier's, and wants
-  its own measurement (2026-09-04). Beside it: the float and the terminal put are paid inside the
+  under the CSA closes to 0.25%. Measured further the same day: with the coupons settling ON their
+  fixing dates (lag 0 instead of Friday-to-Wednesday) the registered-barrier document closes to
+  **0.78%** (ladder flat to 4%), so on that trade the LAGGED SETTLEMENT is what the latch
+  mishandles — the `pv_MC_AutoCallSwap` row above names the pending window; the barrier-free V2
+  document keeps 11.0% at lag 0 on a flat ladder, and the float-less V1 variants' ladders
+  scatter 75–172% at 256 × 2048 and read nothing. Beside it: the float and the terminal put are paid inside the
   accumulator and reach no `cash_settle`, so `Results['cashflows']` carries the coupons alone while
   the ledger DECLARES the float — settling it moves the collateralised CVA (GBM 0.234494 → 0.210429,
   component 0.170177 → 0.147908) and nothing else, a change of its own.
