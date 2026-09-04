@@ -3984,7 +3984,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     # THE KNOCK-IN, INTEGRATED: `otm_bound` carries the strike's side and the
                     # barrier's, so this tail lies wholly inside the surviving set for every R >= 0
                     otm_analytic = None
-                    if (smooth or fix is not None) and otm_bound is not None:
+                    # a conditioning step exists under the smooth estimator, the stride, and GBM,
+                    # where the fixing interval IS the simulated step; the daily HN arm has none
+                    if (smooth or fix is not None or not hn) and otm_bound is not None:
                         otm_analytic = Dj * L * N_otm * (-gain_sign) * (
                             kit.stride_fired_gain(
                                 fix, kit.stride_bound(fix, otm_bound), K, callOrPut < 0, gain_power)
@@ -4366,8 +4368,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     through ``C_ts_te``. One decision is ONE counterfactual - an
     objective with a kink scores two partial counterfactuals differently from their sum. A
     re-observation of an old decision registers nothing. THE TERMINAL PUT registers beside it as an
-    ``InnerBoundarySet`` - one decision per inner path, only on the crisp line, the conditional-p
-    splice having taken it wherever it ran. NOTHING ELSE IS DECLARED: the float leg and the put are
+    ``InnerBoundarySet`` - one decision per inner path - only where no conditioning step exists (the
+    plain daily HN arm, an observed fixing, a block opening on an unaligned one); under GBM and the
+    stride the conditional-p splice takes it. NOTHING ELSE IS DECLARED: the float leg and the put are
     paid but never ``cash_settle``d here, and a fact the chain cannot find in ``Cf_Rec`` replays a
     ledger the reported world does not have.
 
@@ -4590,10 +4593,12 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                 vol_dt = vol * torch.sqrt(dt)
                                 p = utils.norm_cdf(
                                     (torch.log(K / Sj) - (forward_carry - 0.5 * vol * vol) * dt) / vol_dt)
-                                if smooth and putBarrier > 0.0:
+                                if putBarrier > 0.0:
                                     # held for the barrier block a screen below: `Sj` before the
                                     # advance, this interval's `m` and `s`, the weight from BEFORE
-                                    # `p` enters `L`, and the breach region inside the surviving set
+                                    # `p` enters `L`, and the breach region inside the surviving set.
+                                    # Under GBM the fixing interval IS the simulated step, so the
+                                    # crisp put leg takes the mixture's derivatives as the stride's does
                                     interval = (None, Sj, (forward_carry - 0.5 * vol * vol) * dt,
                                                 vol_dt, L, min(putBarrier, K))
                         else:
