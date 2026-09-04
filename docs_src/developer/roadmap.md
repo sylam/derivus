@@ -176,10 +176,10 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
 2. **The compo smile coordinate**, undeclared because every fixture is flat. Same class as (1).
 3. **The 36 disagreeing `.field.get` sites** (three fatal): hold a surviving fallback to its
    declaration, or leave the reads as they are. Enumerated in `tests/test_declared_defaults.py`.
-4. **Component-HN `Quote_Sensitivity`.** Refused: the quote derivative needs IFT through the inner
-   `brentq` on each `L` pillar plus a rule for the derivative-free outer search over the skew
-   globals. The IFT half is the arithmetic `CalibrationSolve.backward` already runs; what a quote
-   tick means for the outer half has to be decided before it can be computed.
+4. **Component-HN `Quote_Sensitivity`.** Still refused, but the blocker has moved: `∂r/∂θ` is
+   built — the outer search's own Jacobian, the inner `brentq` differentiated by one Newton step at
+   its root. What is not built is `∂r/∂q`, the rule joining them, and a stationarity check for a
+   search that can legitimately stop on the divergence wall rather than at `J'r = 0`.
 5. **Component-HN positivity.** `q_{t+1} ≥ ω_t + ρq_t − φ − φγ₂²h_t` has no sign for free once
    `φ > 0`. The simulator floors (`utils.HN_COMPONENT_VARIANCE_FLOOR`, active on 2 of 8192 inner
    paths over 248 steps) while the closed form integrates the unfloored law. Floor, a bound on
@@ -242,17 +242,6 @@ which folds the coupon and threshold ladders together, not just the put barrier,
 `pending`) rather than a substituted deal. The fixing index is derived from the underlying factor
 name; only `Fixing_Source` is declarable. Increment 4's: hydrating both fact kinds from the log,
 where the book file becomes a projection.
-
-**Autograd Levenberg–Marquardt through the calibration strips** (queued 2026-09-04) — the
-component outer fit is derivative-free only because the L strip is concentrated out through a
-`brentq` root find per pillar. Both halves of the gradient are measured: autograd through the
-recursion costs 4.1–4.8× the value in the five globals and the whole L strip, and the implicit
-function theorem through `brentq` is closed form because a pillar's premium depends on its level only
-through `A`, which is exactly affine in it (1.4e-15 relative), so `dL/dθ` is a forward substitution
-over the pillars — the arithmetic `CalibrationSolve` already runs. Expected 20–50 iterates at about
-five evaluation-equivalents against Nelder–Mead's 1,000–1,900 evaluations to its own tolerance, and it
-closes open decision 4. To build in: the floor's shortfall as a residual row (a kink), the MGF's
-divergence wall boxed away, the shares and their box kept, and the re-mark of θ\* it implies.
 
 **Spine increments 4–7** — projections plus the diary, tier policy, the doorbell, the generated
 binding. The book file's rehoming as an LSN-pinned projection and the plan compiler as a fold over
@@ -342,6 +331,28 @@ with the mock-built suite and has no replacement; batching Schrager–Pelsser ac
 set; and five model items in the punchlist below.
 
 ## Built
+
+- **The component outer fit by autograd Levenberg–Marquardt** (2026-09-04) — `Outer_Search`,
+  declared beside the simplex, which stays the default (hex-identical to what shipped) until the
+  divergence wall below is fixed; the flip is one word. The residual
+  VECTOR is one row per ATM pillar (an exact zero where it solved, its relative miss at
+  `atm_constraint_weight` where it floored) plus one per wing contract, and its sum of squares is
+  the scalar the simplex read — one set of prices, both spellings, so the two searches minimise the
+  same number. **The inner root find is on the tape**: `brentq` still finds `L_k*`, and the level
+  RETURNED is `L_k* − F_k/detach(∂F_k/∂L_k)`, so autograd carries `dL_k/dθ` and `dL_k/dL_j` exactly
+  — the implicit function theorem as an expression, `quote_sensitivities.md`'s delta-solve splice.
+  A floored pillar's level is `admissible_level(L_(k-1), ρ)` and differentiates through it.
+  **Measured** against Nelder–Mead at its own tolerance, `Floor` on the bank books: USDZAR
+  1,246 evaluations / 231 s → 75 + 42 Jacobians / 103 s; SX5E 1,883 / 312 s → 60 + 39 / 94 s; NKY
+  1,614 / 864 s → 52 + 32 / 354 s; SPX 1,351 / 1,053 s → 48 + 25 / 819 s, where LM is also the
+  BETTER fit (5.696e+02 against 5.784e+02) and floors no pillar where Nelder–Mead floors one.
+  Elsewhere the residuals are within 1.4% either way, the worst wing the same or better (NKY
+  33.70% → 27.17%), every ATM row 1e-15. The Jacobian agrees with a central
+  difference to **5.3e-09** per column at the seed, the disagreement growing as `h` shrinks.
+  **What LM does NOT buy**: it stops where the MGF diverges. A 1e-5 step in `β` at the fixture's
+  optimum caps the `φ_max` scan on the 126-step pillar's floor probe, and LM started at
+  Nelder–Mead's converged θ\* cannot take one feasible trust-region step — a simplex slides along
+  that wall, a trust region only scales into it. `Nelder_Mead` stays reachable for exactly that.
 
 - **Barrier state as a fold over fixings, the buildable half** (2026-09-03) —
   `tests/test_barrier_fold_json.py`, 29 gates, base valuation and credit Monte Carlo. **No deal stores a consequence**: `Barrier_Hit` is

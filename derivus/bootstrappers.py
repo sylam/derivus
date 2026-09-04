@@ -1461,8 +1461,12 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
          'SIGN-FREE LEVERAGE REPARAMETRISATION - $\\alpha=|l|\\beta/\\gamma_1^2$, $\\gamma_1=\\mathrm{sgn}',
          '(l)|\\gamma_1|$ for a signed share $l\\in[-1,1]$ - so both skew directions live in one box and',
          '$\\beta(1-|l|)\\ge0$ keeps the variance recursion positive. $\\phi$ is fitted as a SHARE of',
-         '$\\alpha$ (same units, and the share is scale-free), and the search is derivative-free',
-         '(Nelder-Mead): the inner solve is a root find, so no gradient passes through it.',
+         '$\\alpha$ (same units, and the share is scale-free). *Outer_Search* picks the search: the',
+         'derivative-free simplex (the default) or LEVENBERG-MARQUARDT on the residual vector, where',
+         'the A/B/C strips are autodiffed and the inner root find is spliced as ONE NEWTON STEP at',
+         'its own *brentq* root - $L_k=L_k^*-F_k/\mathrm{detach}(\partial F_k/\partial L_k)$ -',
+         'so the implicit function theorem across the triangular bootstrap is an EXPRESSION autograd',
+         'differentiates rather than a rule.',
          '',
          'TWO PINS, both declared rather than hidden. *Rho* is PINNED (default 0.99 per step): the',
          'L-parametrisation has evicted $\\rho$ from the ATM fit - $L$ hits the term structure',
@@ -1482,9 +1486,10 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
          'else. Everything else - the vega weights, the surface\'s own strikes, nothing past 1Y, the',
          'substitution note - is inherited unchanged from *HestonNandiModelPrices*.',
          '',
-         '*Quote_Sensitivity* is REFUSED on this family. The quote derivative would have to pass',
-         'through the inner root find by the implicit function theorem, which is real work and is',
-         'not built; a family that answered zeros would be worse than one that says so.'
+         '*Quote_Sensitivity* is REFUSED on this family. $\\partial r/\\partial\\theta$ now exists -',
+         'it is what the outer search steps on - but $\\partial r/\\partial q$ and the rule that',
+         'turns the two into a quote tick are not built, and a family that answered zeros would be',
+         'worse than one that says so.'
          ]
     )
 
@@ -1510,6 +1515,11 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
     #: residual - at 1e4 a one basis point ATM miss costs a good fit's whole smile residual. At
     #: weight 1 the simplex settled 0.63% inside the infeasible region on the USDZAR fixture.
     atm_constraint_weight = 1.0e4
+
+    #: What every residual row reads at a candidate whose moment generating function diverges.
+    #: Levenberg-Marquardt cannot step off +inf; it can measure a wall, shrink its trust region and
+    #: retry, and no feasible row on any book fitted here comes within three orders of this.
+    infeasible_residual = 1.0e6
 
     #: More contracts than the plain family's six, the ATM rungs being consumed by the bootstrap: a
     #: ladder whose wings collapse onto one expiry has no smile term structure in it.
@@ -1539,13 +1549,25 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
           description='What a pillar demanding L to fall faster than rho decays it does. Refuse '
                       'names the pillar; Floor takes the least admissible level and says so. '
                       'Never a silent negative variance'),
+        F('Outer_Search', 'Text', default='Nelder_Mead',
+          values=['Nelder_Mead', 'Levenberg_Marquardt'],
+          description='How the skew globals are searched. Levenberg_Marquardt differentiates the '
+                      'residual vector - the A/B/C recursion by autograd, and each L pillar by ONE '
+                      'NEWTON STEP at its own brentq root, so the implicit function theorem across '
+                      'the inner solve rides the expression - and steps by scipy trf against that '
+                      'Jacobian: 17-31x fewer evaluations, 1.3-3.3x the wall clock, residuals '
+                      'within 1.4 percent either way because both searches stop on the same '
+                      'divergence wall (market_prices.md). The simplex stays the default until '
+                      'that wall is fixed; the flip is this one word'),
         F('Max_Iterations', 'Integer', default=300,
-          description='Outer (Nelder-Mead) function evaluations. The objective re-bootstraps the '
-                      'whole L strip per iterate, so this is THE wall-clock knob: measured at '
-                      '0.176 s an evaluation on the four-pillar USDZAR ladder, which puts 300 at '
-                      '53 s. Nelder-Mead reaches its own tolerance there in 1246 evaluations and '
-                      '243 s for a wing residual 22% better in a different basin, so this default '
-                      'is a policy call and no longer a wall-clock one; a fit that stops here '
+          description='Outer evaluations of the objective - Nelder-Mead simplex points, or the '
+                      'trial points Levenberg-Marquardt tests, each ACCEPTED one costing a '
+                      'Jacobian on top (one backward per residual row, about a fifth of an '
+                      'evaluation each). Every evaluation re-bootstraps the whole L strip, so this '
+                      'is THE wall-clock knob: measured at 0.176 s an evaluation on the '
+                      'four-pillar USDZAR ladder, which puts 300 at 53 s. LM lands that ladder at '
+                      'a residual Nelder-Mead needs 1246 evaluations to beat, in 24; the default '
+                      'is a policy call and no longer a wall-clock one. A fit that stops here '
                       'reports itself CAPPED with the residual it actually reached rather than the '
                       'tolerance it did not'),
         F('Tolerance', 'Float', default=1e-8,
@@ -1553,8 +1575,9 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
         F('Pillar_Tolerance', 'Float', default=1e-14,
           description='brentq tolerance on a pillar\'s L level, relative to its bracket'),
         F('Quote_Sensitivity', 'Text', default='No', values=['Yes', 'No'],
-          description='REFUSED on this family: the quote derivative would have to pass through the '
-                      'inner root find by the implicit function theorem, which is not built')
+          description='REFUSED on this family: the theta side of the quote derivative is built - '
+                      'it is the outer search\'s own Jacobian - but the quote side and the rule '
+                      'joining them are not')
     ] + HestonNandiModelParameters.fields[-1:]
 
     # ----------------------------------------------------------------------------------
@@ -1648,10 +1671,13 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
         The margin is one part in 1e9 above the exact crossing: the level is written to a Curve and
         the omega strip is rebuilt from it in a different order, so the exact crossing comes back an
         ulp either side of zero (-2.7e-20 on the humped fixture), which still reads as negative.
+
+        A TENSOR in is a tensor out: a floored pillar's level is a function of the pillar before it,
+        and the differentiable fit reads dL_k/dL_(k-1) through this expression.
         """
         gap = 1.0 - rho
-        exact = float(previous) * (1.0 - gap * days / (1.0 + (days - 1) * gap))
-        return exact * (1.0 + 1e-9) if exact > 0.0 else exact
+        exact = previous * (1.0 - gap * days / (1.0 + (days - 1) * gap))
+        return exact * (1.0 + 1e-9) if torch.as_tensor(exact).detach() > 0.0 else exact
 
     # ----------------------------------------------------------------------------------
     # pricing + the inner triangular bootstrap
@@ -1694,9 +1720,9 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
 
     def bootstrap_l(self, atm, strips, h0, rho, spy, knots, declining, tolerance, refuse=True):
         """The inner triangular bootstrap: the L pillars, solved one at a time against their own ATM
-        premium. Returns `(levels, notes, shortfall)` - the level at each knot (levels[0] is
-        L(0) = h0 by the anchoring), any floors applied by name, and the summed squared relative
-        premium miss on the floored pillars (zero when every pillar solved).
+        premium. Returns `(levels, notes, misses)` - the level at each knot (levels[0] is
+        L(0) = h0 by the anchoring), any floors applied by name, and ONE ROW PER PILLAR: the
+        relative premium miss where it floored, an exact zero where it solved.
 
         Triangular because the model is: an option to T reads L only on [0, T], so pillar k's
         premium is a function of pillars 0..k and nothing later, and each is a one-dimensional root
@@ -1704,9 +1730,9 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
         previous pillar and doubles out, and one that runs out refuses by name with what it searched.
 
         `refuse` separates the search from the answer. Inside the outer optimizer the floor is taken
-        and the miss returned as a shortfall the objective adds - a simplex walks into a box corner
-        routinely, and a shortfall is a slope out of the infeasible region where `inf` is a wall. On
-        the FINAL strip `Declining_Variance` decides for real.
+        and its miss returned as that pillar's row - a search walks into a box corner routinely, and
+        a miss is a slope out of the infeasible region where a refusal is a wall. On the FINAL strip
+        `Declining_Variance` decides for real.
 
         Every price derives its own phi_max off `strips`, because a reused bound is not
         conservative: past a parameter-dependent point the A/B/C recursion diverges and an
@@ -1719,8 +1745,13 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
         integrals is the recurrence L_k = 2*A_k - L_(k-1), whose multiplier is -1: marginally stable,
         so an error in L(0) alternates in sign and never decays. H0 sets the PHASE of the strip,
         which is what identifies it here - the outer fit's smile residual being the other half.
+
+        A DIFFERENTIABLE h0 makes the levels differentiable, which is what the Levenberg-Marquardt
+        outer search wants. brentq still finds the root; the level RETURNED is then one Newton step
+        at it, so autograd carries dL_k/dtheta and dL_k/dL_j exactly - the implicit function theorem
+        written as an expression rather than as a rule (`quote_sensitivities.md`, the delta solve).
         """
-        levels, notes, shortfall = [h0], [], 0.0
+        levels, notes, misses = [h0], [], []
         for k, (n, quote) in enumerate(atm):
             days = int(n - (0 if not k else atm[k - 1][0]))
             floor = self.admissible_level(levels[-1], days, float(rho))
@@ -1735,16 +1766,21 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
                     'positive premium'.format(n / spy, target))
 
             def premium(level):
+                # SCALAR: the group is one contract, and a level is one number in the L strip
                 omegas = self.l_strip(knots[:k + 2], torch.stack(levels + [level]),
                                       int(n), rho, spy)
-                return float(self.price(strips, spot, strike, is_call, units, omegas, h0,
-                                        levels[0], b, q))
+                return self.price(strips, spot, strike, is_call, units, omegas, h0,
+                                  levels[0], b, q).reshape(())
 
-            low = max(floor, 1e-12)
-            high = max(float(levels[-1]) * 2.0, low * 4.0)
-            error = lambda x: premium(self.tensor(x)) - target
-            lo_err = error(low)
-            if lo_err > 0.0:
+            low = torch.clamp_min(floor, 1e-12)
+            # what the search decides is read off the value, never through the graph
+            bottom, previous = float(low.detach()), float(levels[-1].detach())
+            high = max(previous * 2.0, bottom * 4.0)
+            error = lambda x: float(premium(self.tensor(x)).detach()) - target
+            at_floor = premium(low)
+            miss = (at_floor - target) / target
+            relative = float(miss.detach())
+            if relative > 0.0:
                 # the pillar wants less variance than the floor admits - named on every path out
                 message = (
                     'HestonNandiComponent: the {:g}y ATM pillar demands a long-run variance BELOW '
@@ -1754,15 +1790,15 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
                     'long-run component - and then the variance - negative, so this refuses rather '
                     'than floors: set Declining_Variance to Floor to take {:.6g} and have the fit '
                     'say so, or lower Rho so the level is allowed to decay faster'.format(
-                        n / spy, low, float(levels[-1]), days, float(rho),
-                        lo_err + target, target, lo_err / target, low))
+                        n / spy, bottom, previous, days, float(rho),
+                        float(at_floor.detach()), target, relative, bottom))
                 if refuse and declining == 'Refuse':
                     raise ValueError(message)
                 notes.append('pillar {:g}y FLOORED at {:.6g} - its own level would need L to fall '
                              'faster than rho={:g} decays it; the pillar reprices {:+.2%}'.format(
-                                 n / spy, low, float(rho), lo_err / target))
-                shortfall += (lo_err / target) ** 2
-                levels.append(self.tensor(low))
+                                 n / spy, bottom, float(rho), relative))
+                misses.append(miss)
+                levels.append(low)
                 continue
             expansions = 0
             while error(high) < 0.0:
@@ -1774,10 +1810,17 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
                         'pillar - its premium is still {:.6g} below the target {:.6g} at a level '
                         'of {:.6g} (annualised vol {:.1%}), searched up from {:.6g}. The quote is '
                         'not reachable under these globals; check the ATM vol on that rung'.format(
-                            n / spy, -error(high), target, high, float(np.sqrt(high * spy)), low))
-            levels.append(self.tensor(scipy.optimize.brentq(
-                error, low, high, xtol=tolerance * max(high, 1e-12), rtol=8.9e-16)))
-        return levels, notes, shortfall
+                            n / spy, -error(high), target, high, float(np.sqrt(high * spy)),
+                            bottom))
+            root = self.tensor(scipy.optimize.brentq(
+                error, bottom, high, xtol=tolerance * max(high, 1e-12), rtol=8.9e-16))
+            if h0.requires_grad:
+                shift = premium(root.requires_grad_(True)) - target
+                root = root.detach() - shift / torch.autograd.grad(
+                    shift, root, retain_graph=True)[0].detach()
+            levels.append(root)
+            misses.append(self.tensor(0.0))
+        return levels, notes, misses
 
     def tensor(self, x):
         return torch.tensor(float(x), device=self.device, dtype=self.prec)
@@ -1815,9 +1858,10 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
             if instrument.get('Quote_Sensitivity', 'No') == 'Yes':
                 raise Exception(
                     'Quote_Sensitivity: {} concentrates the L curve out through a bracketed root '
-                    'find (brentq), which carries no derivative. Propagating a quote tick would '
-                    'need the implicit function theorem across the inner solve AND the outer '
-                    'Nelder-Mead, which is not built - the IFT half is a roadmap row. Set '
+                    'find (brentq). The THETA side of the quote derivative is built - the outer '
+                    'search differentiates that root find by one Newton step at it - but the QUOTE '
+                    'side dr/dq and the rule joining the two are not, and neither is a stationarity '
+                    'check for a search that can stop on a wall. Set '
                     'Quote_Sensitivity to No. The plain HestonNandiModelPrices family is NOT the '
                     'remedy - it declares no Quote_Sensitivity field at all; the differentiable '
                     'quote chains are the surface and curve families (FXVolPrices, '
@@ -1855,6 +1899,7 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
             rho = self.tensor(rho)
             tie = instrument.get('Tie_Gamma_2', declared['Tie_Gamma_2']) == 'Yes'
             declining = instrument.get('Declining_Variance', declared['Declining_Variance'])
+            search = instrument.get('Outer_Search', declared['Outer_Search'])
             max_iter = int(instrument.get('Max_Iterations', declared['Max_Iterations']))
             tolerance = float(instrument.get('Tolerance', declared['Tolerance']))
             pillar_tol = float(instrument.get('Pillar_Tolerance', declared['Pillar_Tolerance']))
@@ -1945,33 +1990,41 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
 
             scale = np.mean([r[0]['Premium'] ** 2 for r in wing_rows]) if wing_rows else 1.0
             steps = max(row[0]['n'] for row in rows)
-            calls = {'n': 0}
+            residual_rows = len(atm) + sum(len(row[4]) for row in wings)
+            calls = {'n': 0, 'j': 0}
             state = {}
 
-            def objective(x):
-                """One outer iterate: re-bootstrap L, then score the wings.
+            def evaluate(x):
+                """One outer iterate: re-bootstrap L, then score the wings - as the objective
+                SCALAR and as the residual VECTOR whose sum of squares it is, off one set of
+                prices, so the two searches minimise the same number and not two spellings of it.
 
                 L is concentrated out, so the ATM ladder is repriced exactly at every candidate the
-                bootstrap could solve and this is a pure smile residual. A candidate whose pillars
-                hit the declining-variance floor carries that miss at `atm_constraint_weight`, a
-                slope the simplex can walk down; one whose MGF diverges scores +inf.
+                bootstrap could solve and this is a pure smile residual. A pillar that hits the
+                declining-variance floor carries its own relative miss at `atm_constraint_weight`.
                 """
-                calls['n'] += 1
                 params = self.unpack(x, tie, rho)
-                h0 = float(params[-1])
+                strips = ComponentStrips(params[:-1], steps, panels, self.prec, self.device)
+                # notes are dropped here: what is reported is the FINAL strip's, bootstrapped at
+                # the parameters actually written
+                levels, _, misses = self.bootstrap_l(
+                    atm, strips, params[-1], rho, spy, knots, declining, pillar_tol, refuse=False)
+                error = self.atm_constraint_weight * sum(float(m.detach()) ** 2 for m in misses)
+                terms = [self.atm_constraint_weight ** 0.5 * m for m in misses]
+                for n, strike, is_call, units, premium, weight, b, yq in wings:
+                    omegas = self.l_strip(knots, torch.stack(levels), int(n), rho, spy)
+                    fitted = self.price(strips, spot, strike, is_call, units, omegas, params[-1],
+                                        levels[0], b, yq)
+                    error += float((weight * (premium - fitted) ** 2 / scale).sum().detach())
+                    terms.append((weight / scale).sqrt() * (premium - fitted))
+                return error, torch.cat([term.reshape(-1) for term in terms])
+
+            def objective(x):
+                """The simplex's scalar. A candidate whose MGF diverges scores +inf: Nelder-Mead
+                reflects away from a point it cannot evaluate."""
+                calls['n'] += 1
                 try:
-                    strips = ComponentStrips(params[:-1], steps, panels, self.prec, self.device)
-                    # notes are dropped here: what is reported is the FINAL strip's, bootstrapped
-                    # at the parameters actually written
-                    levels, _, shortfall = self.bootstrap_l(
-                        atm, strips, self.tensor(h0), rho, spy, knots, declining, pillar_tol,
-                        refuse=False)
-                    error = self.atm_constraint_weight * shortfall
-                    for n, strike, is_call, units, premium, weight, b, yq in wings:
-                        omegas = self.l_strip(knots, torch.stack(levels), int(n), rho, spy)
-                        fitted = self.price(strips, spot, strike, is_call, units, omegas,
-                                            self.tensor(h0), levels[0], b, yq)
-                        error += float((weight * (premium - fitted) ** 2 / scale).sum())
+                    error = evaluate(x)[0]
                 except (ValueError, RuntimeError) as refusal:
                     state['last_refusal'] = str(refusal)
                     return np.inf
@@ -1980,10 +2033,42 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
                     return np.inf
                 return error
 
+            def residual(x):
+                """The same terms unsummed. A divergent MGF returns `infeasible_residual` on every
+                row rather than +inf, which least squares cannot step off - a trust region shrinks
+                on a wall it can measure."""
+                calls['n'] += 1
+                try:
+                    rows = evaluate(x)[1]
+                    if bool(rows.isfinite().all()):
+                        return rows.detach().cpu().numpy()
+                    state['last_refusal'] = 'the characteristic function diverged at this candidate'
+                except (ValueError, RuntimeError) as refusal:
+                    state['last_refusal'] = str(refusal)
+                return np.full(residual_rows, self.infeasible_residual)
+
+            def jacobian(x, *unused):
+                """dr/dx by autograd at a fitted leaf, one backward per row - the strips, the L
+                pillars through their Newton splice and the floor all on the one graph. Asked for
+                only at an ACCEPTED point, so a wall needs no derivative of its own."""
+                calls['j'] += 1
+                leaf = torch.tensor(np.asarray(x, dtype=float), device=self.device,
+                                    dtype=self.prec, requires_grad=True)
+                rows = evaluate(leaf)[1]
+                return torch.stack([
+                    torch.autograd.grad(rows, leaf, unit, retain_graph=True)[0]
+                    for unit in torch.eye(residual_rows, dtype=self.prec,
+                                          device=self.device)]).numpy()
+
             started = time.time()
-            result = scipy.optimize.minimize(
-                objective, x0, method='Nelder-Mead', bounds=self.box(tie),
-                options={'maxfev': max_iter, 'xatol': 1e-10, 'fatol': tolerance})
+            if search == 'Nelder_Mead':
+                result = scipy.optimize.minimize(
+                    objective, x0, method='Nelder-Mead', bounds=self.box(tie),
+                    options={'maxfev': max_iter, 'xatol': 1e-10, 'fatol': tolerance})
+            else:
+                result = scipy.optimize.least_squares(
+                    residual, x0, jac=jacobian, bounds=tuple(zip(*self.box(tie))), method='trf',
+                    x_scale='jac', ftol=tolerance, xtol=1e-10, gtol=1e-10, max_nfev=max_iter)
             elapsed = time.time() - started
 
             params = self.unpack(result.x, tie, rho)
@@ -1997,7 +2082,7 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
             curve = utils.Curve([], [[float(k), float(v)] for k, v in zip(knots, levels)])
 
             self.report(instrument, market_price, spot, atm, wings, knots, levels, params,
-                        rho, spy, strips, result, elapsed, calls['n'], notes, state, max_iter)
+                        rho, spy, strips, result, elapsed, calls, notes, state, max_iter)
 
             price_factors[param_name] = {
                 'Property_Aliases': None,
@@ -2015,8 +2100,10 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
         Untied, the vector grows a sixth coordinate: Gamma_2 as a RATIO to Gamma_1, in [0, 5]. The
         magnitude is free - the long-run smile's own width - but the direction is not, a smile
         rising at one horizon and falling at another being a kink no sub-year ladder identifies.
-        Ratio 1 is the tie, and where the untied fit starts."""
-        x = torch.tensor(np.asarray(x, dtype=float), device=self.device, dtype=self.prec)
+        Ratio 1 is the tie, and where the untied fit starts. A TENSOR passes straight through,
+        which is how the Levenberg-Marquardt Jacobian gets a leaf at the head of the graph."""
+        x = x if torch.is_tensor(x) else torch.tensor(
+            np.asarray(x, dtype=float), device=self.device, dtype=self.prec)
         alpha, beta, gamma1, phi, h0 = self.reparam(x)
         return alpha, beta, gamma1, rho, phi, gamma1 if tie else gamma1 * x[5], h0
 
@@ -2108,10 +2195,10 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
                                 'so the two part company in the tail'.format(
                                     utils.HN_COMPONENT_VARIANCE_FLOOR),)))
         logging.info(
-            '  {} outer evaluations in {:.1f}s ({}), ATM residual {:.3e} (bootstrapped), worst '
+            '  {} outer evaluations{} in {:.1f}s ({}), ATM residual {:.3e} (bootstrapped), worst '
             'wing {:.2%} of premium / {:.3f} vol points, weighted wing residual {:.3e}'.format(
-                calls, elapsed,
-                'converged: ' + str(result.message) if calls < max_iter else
+                calls['n'], ' and {} Jacobians'.format(calls['j']) if calls['j'] else '', elapsed,
+                'converged: ' + str(result.message) if calls['n'] < max_iter else
                 'CAPPED at Max_Iterations={} - the tolerance actually reached is the residual '
                 'above, not the declared one'.format(max_iter),
                 atm_resid, worst, worst_vol, total))

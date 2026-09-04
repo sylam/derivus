@@ -230,8 +230,14 @@ model.
 
 **Outer — the smile, with `L` concentrated out.** The skew globals are fitted to the WING quotes with
 the whole `L` strip re-bootstrapped at every iterate, so every candidate reprices the term structure
-exactly and is judged only on the smile. Derivative-free (Nelder–Mead), because the inner solve is a
-root find. It inherits the plain family's [sign-free leverage
+exactly and is judged only on the smile. `Outer_Search` picks the search — the derivative-free
+simplex by default, or **Levenberg–Marquardt against an autograd Jacobian**: the A/B/C strips carry the graph, and the inner root find is spliced as ONE NEWTON STEP at its own
+`brentq` root, `L_k = L_k* − F_k / detach(∂F_k/∂L_k)`, so `dL_k/dθ` and `dL_k/dL_j` are the
+[implicit function theorem](quote_sensitivities.md#the-tape-boundary) written as an EXPRESSION
+rather than as a rule. The residual vector is one row per ATM pillar — an exact zero where it
+solved, its relative miss at `atm_constraint_weight` where it floored — plus one per wing contract,
+and its sum of squares IS the scalar a simplex would read, so `Outer_Search: Nelder_Mead` keeps the
+derivative-free search on the same number. It inherits the plain family's [sign-free leverage
 reparametrisation](#hestonnandi-fx) — with `β(1−|l|) ≥ 0` keeping the recursion positive — and adds a
 second share.
 
@@ -301,11 +307,45 @@ before the strips: the declared 300-evaluation cap is **53 s against 662 s**, no
 fit that stops there still reports itself CAPPED with the residual it reached. The profile is 63%
 the two recursions (the branch unwrap 26% of the evaluation), 11% the bounds, 12% the quadrature
 and its grid, 14% `brentq` and the Python glue. **What full convergence buys, now measured**:
-Nelder–Mead to its own tolerance is 1,246 evaluations and 243 s for a wing residual of 1.604e-03
+Nelder–Mead to its own tolerance is 1,246 evaluations and 231 s for a wing residual of 1.604e-03
 against **2.049e-03** at the 300 cap (the objective's own value, scaled by the mean squared premium;
 the fit log's unscaled 1.196e-04 is the same number) — 22% better, in a different basin (`Gamma_1` −72.1 against
 −845.1). The cap is a policy call now, not a wall-clock one: the half hour buys about
 10,000 evaluations.
+
+**The outer search, measured.** Both searches minimise the same number, so the columns compare
+rung for rung. Each at its own tolerance, `Declining_Variance: Floor` on the three bank books, the
+residual as the fit log prints it — the fixture's 9.358e-05 is the objective's own 1.603e-03
+before the mean-squared-premium scaling:
+
+| ladder | rows | Nelder–Mead | LM | residual NM → LM | worst wing NM → LM |
+| --- | --- | --- | --- | --- | --- |
+| USDZAR, 4 pillars | 10 | 1,246 evals / 231 s | 75 evals + 42 J / 103 s | 9.358e-05 → 9.717e-05 | 5.62% → 5.68% |
+| SX5E, 10 rungs | 10 | 1,883 / 312 s | 60 + 39 / 94 s | 1.814e+02 → 1.816e+02 | 86.44% → 85.85% |
+| NKY, 14 rungs | 14 | 1,614 / 864 s | 52 + 32 / 354 s | 3.560e+04 → 3.611e+04 | 33.70% → 27.17% |
+| SPX, 25 rungs | 25 | 1,351 / 1,053 s | 48 + 25 J / 819 s | 5.784e+02 → 5.696e+02 | 100.00% → 99.06% |
+
+**A Jacobian costs about one evaluation per residual row** — one backward per row through the same
+126-step strip, and `is_grads_batched` buys nothing (1.68 s against 1.78 s), the recursion being
+sequential. So LM buys 17–31× fewer evaluations and spends most of it back on Jacobians: net
+**1.3× (SPX, 25 rows) to 3.3× (SX5E, 10 rows)**, the gain falling as the ladder widens.
+
+**Both searches stop against the SAME wall, and only one can slide along it.** Measured at the
+fixture's optimum: a 1e-5 step DOWN in `β` makes the 126-step pillar's floor probe — the price at
+the least admissible level, the extreme state of the whole fit — run the `φ_max` scan to its 2²⁴ cap,
+so the candidate is infeasible and reads `infeasible_residual`. LM started at Nelder–Mead's own
+converged θ\* cannot take one feasible trust-region step (18 evaluations, 1 Jacobian, no move):
+a trust region only SCALES its direction, while a simplex contracts anisotropically and walks along
+the boundary. That is the whole of the fixture's 3.9% residual gap, and it is why
+`Outer_Search: Nelder_Mead` is kept rather than deleted.
+
+**The wall is the FLOOR PROBE's, not the fitted ladder's** — recorded, not fixed. At that same
+perturbed candidate the 126-step pillar's root sits at 1.95× its floor and every level from 1.02×
+the floor up prices at a `φ_max` of 512 or 256; only the floor itself, a diagnostic level no fitted
+`L` reaches, runs to the cap, and `brentq` then walks into that neighbourhood and raises. Both
+searches read the candidate as infeasible when its own ladder is entirely priceable. Making the
+floor DECISION robust to an unpriceable floor would move the wall for both, and re-mark every θ\*
+this family has written.
 
 **It runs on the CPU**, whatever device the job was constructed with. The evaluation's 126-step
 pass over the union grid — 2 contours × 2,048 complex nodes — is **53.9 ms on the CPU against
@@ -324,8 +364,9 @@ optimum: a 126-step price is 0.7353321384 at `φ_max` 128/256/512, **0.732306967
 
 ### `Quote_Sensitivity` is refused
 
-Refused by name: the quote derivative needs IFT through the inner `brentq` plus a rule for the
-derivative-free outer search; not built (roadmap). **The plain family is not the alternative** —
+Refused by name. `∂r/∂θ` now EXISTS — it is the Jacobian the outer search steps on, and the inner
+`brentq` is differentiated by the Newton splice above — but `∂r/∂q` and the rule joining the two are
+not built, and neither is a stationarity check for a search that can stop on a wall (roadmap). **The plain family is not the alternative** —
 `HestonNandiModelPrices` declares no `Quote_Sensitivity` field at all, so naming it would send a desk
 to a block that ignores the switch. The refusal names the quote chains that are differentiable
 instead: `FXVolPrices`, `InterestRatePrices`, `GBMAssetPriceTSModelPrices` and
