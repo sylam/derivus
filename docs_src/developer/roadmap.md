@@ -214,6 +214,17 @@ which folds the coupon and threshold ladders together, not just the put barrier,
 name; only `Fixing_Source` is declarable. Increment 4's: hydrating both fact kinds from the log,
 where the book file becomes a projection.
 
+**Autograd Levenberg–Marquardt through the calibration strips** (queued 2026-09-04) — the
+component outer fit is derivative-free only because the L strip is concentrated out through a
+`brentq` root find per pillar. Both halves of the gradient are measured: autograd through the
+recursion costs 4.1–4.8× the value in the five globals and the whole L strip, and the implicit
+function theorem through `brentq` is closed form because a pillar's premium depends on its level only
+through `A`, which is exactly affine in it (1.4e-15 relative), so `dL/dθ` is a forward substitution
+over the pillars — the arithmetic `CalibrationSolve` already runs. Expected 20–50 iterates at about
+five evaluation-equivalents against Nelder–Mead's 1,000–1,900 evaluations to its own tolerance, and it
+closes open decision 4. To build in: the floor's shortfall as a residual row (a kink), the MGF's
+divergence wall boxed away, the shares and their box kept, and the re-mark of θ\* it implies.
+
 **Spine increments 4–7** — projections plus the diary, tier policy, the doorbell, the generated
 binding. The book file's rehoming as an LSN-pinned projection and the plan compiler as a fold over
 fixings supersession are increment 4's.
@@ -589,6 +600,10 @@ than uniform panels and `A` accumulates as a dot product, so every price moves a
 derivative-free search over 300 evaluations can amplify that into a different basin. On the
 four-pillar USDZAR fixture it did not — θ\* is unmoved in all five fitted coordinates and the
 bootstrapped `L` pillars move 1.5e-14 relative — but that is a fixture reading, not a guarantee.
+On 2026-09-04 the recursion became one spelling — `hn_component_abc` reads the strip's last row —
+so the STRIDE's documents re-mark at rounding too (the tilt and the stride strip run the same
+recursion): the three stride-on documents move 1.7e-16, 1.3e-15 and 1.4e-16 relative, the
+stride-off marks and the component credit MC are bit-identical, and θ\* is unmoved.
 Every foreign-curve HW2F parameter set solved before the domestic-measure fix re-solves to a
 different θ\*. Every HW2F θ\* solved before
 2026-09-02 re-marks again on the `ALPHA_SEED` and premium-clock change: the seed moves where the

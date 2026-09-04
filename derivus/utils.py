@@ -2861,24 +2861,13 @@ def hn_component_unmonitored_substeps(Sj, h, q, b_step, omegas, hnc_params, shar
 
 def hn_component_abc(phi, omegas, alpha, beta, gamma1, rho, phi_q, gamma2, r,
                      unwrap=True, phi_dim=-1, terminal=None):
-    """Backward A/B/C recursion over the ``omegas`` strip.  Returns ``(A, B, C)`` satisfying
+    """``(A, B, C)`` after ``len(omegas)`` backward steps - the last row of
+    :func:`hn_component_abc_strip` - satisfying
 
         E_t[S_{t+n}^phi] = S_t^phi * exp(A + B*h_t + C*q_t)
 
     so the component affine log-CF of the aggregate log-return is ``A + B*h_0 + C*q_0`` - the
     closure handed to :func:`cf_european_probabilities`.
-
-    THE ALGEBRA, one step back, writing D = B + C, b = alpha*B + D*phi_q and
-    G = alpha*B*gamma1 + D*phi_q*gamma2 (so w = 1 - 2b is the Gaussian normalisation of the
-    combined quadratic in z, whose two centers gamma1 and gamma2 do NOT coincide):
-
-        A <- A + phi*r + D*omega_t - b - 0.5*log(w)
-        B <- -phi/2 + beta*B + (phi - 2G)^2 / (2w)
-        C <- D*rho - beta*B                       (B on the RIGHT is the OLD B)
-
-    The ``-b`` is what the two CENTERING subtractions leave once the (1 + gamma^2 h) terms have
-    cancelled the quadratics' own h-coefficients; drop it and the price is wrong by a factor that
-    grows with the step count.
 
     ``omegas`` is consumed in REVERSE (the backward induction reaches step t last), so ``omegas[0]``
     is the intercept of the FIRST step - the orientation :func:`hn_component_omega_path` emits.
@@ -2886,32 +2875,18 @@ def hn_component_abc(phi, omegas, alpha, beta, gamma1, rho, phi_q, gamma2, r,
     ``phi`` : real OR complex tensor; if complex it must vary smoothly and ascending along
     ``phi_dim`` for the branch unwrap of ``log(w)``.
 
-    ``terminal`` : optional ``(u, v)``, the terminal condition ``(B_0, C_0)`` in place of ``(0, 0)``.
-    It costs one broadcast add before the loop and NOTHING inside it, and turns this into the JOINT
-    transform of the return and the state it lands in:
+    ``terminal`` : optional ``(u, v)``, the terminal condition ``(B_0, C_0)`` in place of ``(0, 0)``,
+    which turns this into the JOINT transform of the return and the state it lands in:
 
         E_t[exp(phi*R_n + u*h_{t+n} + v*q_{t+n})] = exp(A + B*h_t + C*q_t)
 
     the one source the stride's carried-state moments are autodiffed out of
     (:func:`hn_component_stride_strip`).  The default ``(0, 0)`` integrates the state out.
     """
-    A = torch.zeros_like(phi)
-    B = torch.zeros_like(phi)
-    C = torch.zeros_like(phi)
-    if terminal is not None:
-        B, C = B + terminal[0], C + terminal[1]
-    half_phi = 0.5 * phi
-    phir = phi * r
-    for omega_t in reversed(omegas):
-        D = B + C
-        Bq = D * phi_q
-        b = alpha * B + Bq
-        G = alpha * B * gamma1 + Bq * gamma2
-        w = 1.0 - 2.0 * b
-        logw = complex_log_unwrap(w, dim=phi_dim) if (unwrap and w.is_complex()) else torch.log(w)
-        A = A + phir + D * omega_t - b - 0.5 * logw
-        B, C = -half_phi + beta * B + (phi - 2.0 * G) ** 2 / (2.0 * w), D * rho - beta * B
-    return A, B, C
+    n = len(omegas)
+    strip = hn_component_abc_strip(phi, n, alpha, beta, gamma1, rho, phi_q, gamma2, unwrap, phi_dim,
+                                   terminal)
+    return hn_component_strip_a(strip, omegas, r), strip[3][n], strip[4][n]
 
 
 def hn_component_logmgf(phi, omegas, h0, q0, alpha, beta, gamma1, rho, phi_q, gamma2, r, **kw):
@@ -2957,22 +2932,34 @@ def hn_component_state_corners(h0, q0, dtype, trailing):
 
 
 def hn_component_abc_strip(phi, n_steps, alpha, beta, gamma1, rho, phi_q, gamma2,
-                           unwrap=True, phi_dim=-1):
+                           unwrap=True, phi_dim=-1, terminal=None):
     """EVERY maturity's ``(A, B, C)`` from ONE backward pass.  Returns ``(phi, a, d, B, C)``.
 
-    A SIBLING of :func:`hn_component_abc`, whose loop body carries the two terms this one drops -
-    ``phi*r`` and ``D*omega_t``, each entering at exactly one place - and which answers a bitwise
-    gate. With ``a_k`` the cumulative ``-b - 0.5*log(w)`` after k+1 steps and ``d_k = B_k + C_k``,
+    THE ALGEBRA, one step back, writing D = B + C, b = alpha*B + D*phi_q and
+    G = alpha*B*gamma1 + D*phi_q*gamma2 (so w = 1 - 2b is the Gaussian normalisation of the
+    combined quadratic in z, whose two centers gamma1 and gamma2 do NOT coincide):
+
+        A <- A + phi*r + D*omega_t - b - 0.5*log(w)
+        B <- -phi/2 + beta*B + (phi - 2G)^2 / (2w)
+        C <- D*rho - beta*B                       (B on the RIGHT is the OLD B)
+
+    The ``-b`` is what the two CENTERING subtractions leave once the (1 + gamma^2 h) terms have
+    cancelled the quadratics' own h-coefficients; drop it and the price is wrong by a factor that
+    grows with the step count. B and C never read the curve and are time-homogeneous, and A is
+    affine in it, so with ``a_k`` the cumulative ``-b - 0.5*log(w)`` after k+1 steps and
+    ``d_k = B_k + C_k``,
 
         A_n = a[n-1] + n*phi*r + sum_k d[k] * omegas[n-1-k],   (B_n, C_n) = (B[n], C[n])
 
-    for every ``n <= n_steps``: B and C are omega-free and time-homogeneous, and A is affine in the
-    curve. ``a`` is ``(n_steps, *phi.shape)``, ``B``/``C`` are ``(n_steps+1, *phi.shape)``, and
-    ``d`` is ``B + C`` over the steps flattened to ``(n_steps, -1)`` - the matrix the omega curve
-    dots into. :func:`hn_component_strip_logcf` is that read.
+    for every ``n <= n_steps`` (:func:`hn_component_strip_a`). ``a`` is ``(n_steps, *phi.shape)``,
+    ``B``/``C`` are ``(n_steps+1, *phi.shape)``, and ``d`` is ``B + C`` over the steps flattened to
+    ``(n_steps, -1)`` - the matrix the omega curve dots into. ``terminal`` seeds ``(B_0, C_0)``.
     """
-    B = C = torch.zeros_like(phi)
-    acc = torch.zeros_like(phi)
+    # seeded at the loop's own broadcast shape, as the running recursion widened to on its first step
+    B = C = acc = phi.new_zeros(torch.broadcast_shapes(phi.shape, *(
+        getattr(p, 'shape', ()) for p in (alpha, beta, gamma1, rho, phi_q, gamma2))))
+    if terminal is not None:
+        B, C = B + terminal[0], C + terminal[1]
     a, Bs, Cs = [], [B], [C]
     half_phi = 0.5 * phi
     for _ in range(int(n_steps)):
@@ -2992,17 +2979,22 @@ def hn_component_abc_strip(phi, n_steps, alpha, beta, gamma1, rho, phi_q, gamma2
     return phi, torch.stack(a), (B[:n] + C[:n]).reshape(n, -1), B, C
 
 
-def hn_component_strip_logcf(strip, omegas, h0, q0, r):
-    """``A + B*h0 + C*q0`` at ``len(omegas)`` steps, off :func:`hn_component_abc_strip`.
-
-    One dot product and one prefix read where :func:`hn_component_abc` runs a recursion. ``h0`` and
-    ``q0`` broadcast against the strip's own ``phi`` shape, as they do there.
-    """
-    phi, a, d, B, C = strip
+def hn_component_strip_a(strip, omegas, r):
+    """``A`` at ``len(omegas)`` steps off :func:`hn_component_abc_strip`: one prefix read and one dot
+    product, the curve entering as a tensor so a per-step tensor keeps its graph."""
+    phi, a, d, B, _ = strip
     n = len(omegas)
-    w = torch.as_tensor(omegas).flip(0).to(d.dtype)
-    A = (a[n - 1] if n else torch.zeros_like(phi)) + (n * r) * phi + (w @ d[:n]).reshape(phi.shape)
-    return A + B[n] * h0 + C[n] * q0
+    w = (omegas if torch.is_tensor(omegas) else
+         torch.stack([torch.as_tensor(o) for o in omegas]) if n else torch.zeros(0))
+    w = w.reshape(-1).flip(0).to(d.dtype)
+    return (a[n - 1] if n else 0.0) + (n * r) * phi + (w @ d[:n]).reshape(B.shape[1:])
+
+
+def hn_component_strip_logcf(strip, omegas, h0, q0, r):
+    """``A + B*h0 + C*q0`` at ``len(omegas)`` steps, off :func:`hn_component_abc_strip`. ``h0`` and
+    ``q0`` broadcast against the strip's own ``phi`` shape."""
+    n = len(omegas)
+    return hn_component_strip_a(strip, omegas, r) + strip[3][n] * h0 + strip[4][n] * q0
 
 
 def hn_component_strip_phi_max(strip, omegas, h0, q0, r, log_tol=-40.0):
