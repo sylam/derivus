@@ -98,7 +98,10 @@ caller** (several items below are deliberately not started), and **look before y
   registers an `InnerBoundarySet` beside the coupon latch — one decision per inner path, gap
   `log(B/S)`, jump `L·D·fx·(rebate − (1 − S/K))`, node outputs under the recompute node — only where
   the conditional-p splice did not take it, so the stride and `Branch_And_Weight` register nothing
-  extra. Spot 12.3% → **0.97%**, `H0` → 5.8%, the knot → **2.9%**; the rates delta moves 354.2 →
+  extra. Under `HN_Stride: 'Yes'` the same document reads spot 0.16% off its own ladder at first
+  order and gamma 0.02% off a ladder of the AAD delta at second (`Greeks: 'All'`, 2,642 s for the
+  26 × 26 Hessian at 16,384 sims), the stride's conditional-p mixture carrying both orders.
+  On the crisp arm: spot 12.3% → **0.97%**, `H0` → 5.8%, the knot → **2.9%**; the rates delta moves 354.2 →
   447.3, which a seven-rung ladder shows is right (no path crosses at 1e-4, 1e-3…1e-2 read
   436.5…467.3). The float rows declare their `cash_events` on the streamed law (twelve payments
   where there were four, `ledger_max` 0.0). Every value bit-identical; `Greeks: 'All'` now refuses
