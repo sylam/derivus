@@ -339,9 +339,9 @@ class LatchedBoundarySet(BoundarySet):
     obs_before: object              # (T,) int: decisions strictly before each row, PRICER grid
     untriggered: object             # (T, B) detached, PRICER grid: value while it has not fired
     triggered: object               # (T, B) detached, PRICER grid: value once it has
-    # A decision whose OWN row also forks (an autocall's observed coupon): None, or per-decision
-    # `(pricer_row, value_if_fired, value_if_not)`, detached. Rides THIS set rather than a second
-    # registration - one decision must be ONE counterfactual (see the class docstring).
+    # The rows a decision forks that `obs_before` does not reach: None, or per decision a LIST of
+    # `(pricer_row, value_if_fired, value_if_not)`, detached. A LAGGED settlement forks every row
+    # of its block, not only the observation's. One decision is still ONE counterfactual.
     own_row: list = None
     # Settled-cash-in-transit a DEAD row still carries: None, or one entry per PRICER row - None or
     # `(first_decision, (m, B) tensor)` whose slice t is the row-present value of decision
@@ -392,12 +392,12 @@ class LatchedBoundarySet(BoundarySet):
                     run_off = run_off | (torch.zeros_like(flag) if j == k else flag)
                     on.append(run_on)
                     off.append(run_off)
-                own = self.own_row[k] if self.own_row else None
+                own = (self.own_row[k] if self.own_row else None) or ()
                 deltas = []
-                for state, branch_val in ((on, own and own[1]), (off, own and own[2])):
+                for state, side in ((on, 1), (off, 2)):
                     profile = self.select(state)
-                    if own is not None:
-                        profile[own[0]] = branch_val
+                    for fork in own:
+                        profile[fork[0]] = fork[side]
                     deltas.append(self.to_mtm(profile) - reported)
             yield (gap,) + tuple(deltas)
 

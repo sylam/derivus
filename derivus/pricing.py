@@ -2717,8 +2717,8 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
                     # row 0 is the deal in force today: `first_touch` starts at row 1
                     fires = torch.zeros_like(alive[row]) if row == 0 else (
                         buy_or_sell * cash_rebate * ~earlier)
-                    own_row.append((row, fires.detach(),
-                                    torch.where(earlier, dead[row], alive[row]).detach()))
+                    own_row.append([(row, fires.detach(),
+                                     torch.where(earlier, dead[row], alive[row]).detach())])
                     # and the ledger that fork books, one entry per decision in reporting currency:
                     # the rebate settles on the date it is triggered, and nothing settles there if
                     # it does not. Row 0 pays nothing and the TERMINAL row's rebate is inside the
@@ -4361,8 +4361,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     BOUNDARY AAD: the trigger's gap is decided on ``Sj`` INSIDE the simulation, so under the node it
     is an OUTPUT whose cotangent carries the correction. Each STAMPED decision (``tau == 0``)
     registers ONE ``LatchedBoundarySet`` entry carrying its whole reach: the carried latch killing
-    every later row, the own-row override forking the decision row, and the ledger triple a
-    collateralised exposure reads through ``C_ts_te``. One decision is ONE counterfactual - an
+    every later row, an own-row override per row of its own block - a LAGGED settlement decides
+    them all off the one observed fixing - and the ledger triple a collateralised exposure reads
+    through ``C_ts_te``. One decision is ONE counterfactual - an
     objective with a kink scores two partial counterfactuals differently from their sum. A
     re-observation of an old decision registers nothing. THE TERMINAL PUT registers beside it as an
     ``InnerBoundarySet`` - one decision per inner path, only on the crisp line, the conditional-p
@@ -5004,16 +5005,17 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             if boundary_aad and factor_dep['no_averaging']:
                 b_alive.append(block_alive)
                 settle_map = dict(zip(settle_rows, block_settled))
-                # per STAMPED decision (tau == 0): gap, flag (`gap >= 0` IS the trigger), the own-row
-                # fork, and the coupon as a payment fact gated by that decision - paid if it fires,
-                # nothing if it does not. A pending window's re-observation is not a new decision
+                # per STAMPED decision (tau == 0): gap, flag (`gap >= 0` IS the trigger), the rows
+                # it forks - a LAGGED block decides EVERY row off its one observed fixing, so all
+                # fork - and the coupon it gates. A re-observation of an old window is not a new one
+                forks = [(row_ofs + r, outputs[fixed + n_events + m],
+                          outputs[fixed + 2 * n_events + m]) for m, r in enumerate(event_rows)]
                 for k, row in enumerate(event_rows):
                     if all_fixings[row, 0] != 0.0:
                         continue
                     gap = outputs[fixed + k]
-                    b_latch.append([gap, (gap >= 0).detach(), row_ofs + row,
-                                    outputs[fixed + n_events + k],
-                                    outputs[fixed + 2 * n_events + k]])
+                    b_latch.append([gap, (gap >= 0).detach(),
+                                    forks if last_fixing is not None else [forks[k]]])
                     fxr = report_fx(fx_rep, row_ofs + row)
                     coupon = (nominal * fxr * outputs[fixed + 3 * n_events + k]).detach()
                     b_cash.append((int(np.searchsorted(
@@ -5054,13 +5056,13 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         if b_latch:
             # one counterfactual per decision, its whole reach: latch + own-row fork + every payment
             # row the flip touches. Branches stay on the pricer's grid
-            gaps, flags, own_rows, on_v, off_v = zip(*b_latch)
+            gaps, flags, own_rows = zip(*b_latch)
             untriggered = (nominal * torch.cat(b_alive, dim=0)).detach()
             latch = utils.LatchedBoundarySet(
                 gaps=list(gaps), fired=list(flags), obs_before=np.array(b_obs),
                 untriggered=untriggered, triggered=torch.zeros_like(untriggered),
-                own_row=[(r, nominal * a, nominal * b)
-                         for r, a, b in zip(own_rows, on_v, off_v)],
+                own_row=[[(r, nominal * a, nominal * b) for r, a, b in fork]
+                         for fork in own_rows],
                 cash_events=b_cash, to_mtm=to_mtm, report_index=time_grid.report_index)
             shared.boundary_sets.append(latch)
             if logging.getLogger().isEnabledFor(logging.DEBUG):
