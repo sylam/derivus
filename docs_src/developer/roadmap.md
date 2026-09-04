@@ -19,17 +19,24 @@ caller** (several items below are deliberately not started), and **look before y
 - **A collateralised set reading a knock-out rebate's 14 declared settlement dates** — the shape no gate exercises, left from the `add_grid_dates` closure.
 - **`pricing` (TARF block)** — The target pin fires on 27–61% of paths, 27% short uncorrected, and is gated structurally with no tolerance asserted because nothing resolves it better. Exact behind `Branch_And_Weight: 'Yes'`; the crisp default keeps the declared blindness. *Measured:* Estimator 13% bandwidth spread, oracle 8.9% flatness — neither better than ~10%. Do not tune on the oracle: it cannot see it either.
 - **`pv_MC_AutoCallSwap`** — The averaging branch cannot carry the termination latch — its termination is a smoothed per-inner-path weight with no crisp per-scenario decision. A lagging-payment schedule (coupon paying after its fixing) would have its pending window zeroed by the carry — the no-averaging arm's reach half of that closed 2026-09-04 (Closed, below), `pending` itself still unused here. No fixture reaches the averaging case; the latch marker (the fixing index that killed the path) is the hook an exemption keys on.
-- **`Credit_Monte_Carlo` × the autocall's delta, what is left** — with the put barrier registered and
-  a lagged block's reach closed (both Closed, below) the 2y USD SPX `QEDI_CustomAutoCallSwap_V2`'s
-  CVA delta reads **2.13%** off its ladder uncollateralised (flat 0.23%) and **69.4%** under a
-  zero-threshold CSA (flat 0.81%); GBM under the CSA 0.25%. The reach fix moved the CSA row from
-  68.6% to 69.4%, so the collateralised residual is the chain's and not the latch's. The
-  barrier-free document at LAG 0 keeps 11.0% on a 2.2%-flat ladder, unmoved by either fix: there
-  every block reads `last_fixing is None` and the coupons price through `norm_cdf`, so that is a
-  third thing. Beside it: the float and the terminal put are paid inside the accumulator and reach
-  no `cash_settle`, so `Results['cashflows']` carries the coupons alone while the ledger DECLARES the
-  float — settling it moves the collateralised CVA (GBM 0.234494 → 0.210429, component 0.170177 →
-  0.147908) and nothing else, a change of its own (2026-09-04).
+- **`Credit_Monte_Carlo` × the autocall's delta, what is left** — the collateralised residual had
+  two parts. The FIRST was a ledger the counterfactual replayed and the value never had: the float
+  leg was declared in `cash_events` but never `cash_settle`d, so `cash_to_C` moved cash against a
+  `Cf_Rec` holding the four coupons alone (nine declared rows against four settled on the 2y USD SPX
+  book; the row they share declared −2.45 where +0.94 booked) — found by diffing that replay against
+  the coupon-only gate's, where the two lists coincide digit for digit. The declaration is gone
+  (values bit-identical; `LatchedBoundarySet.cash_events` states the law: only settled cash may be
+  declared), the CSA row 69.4% → **51.2%**, GBM under the CSA 6.0% → **1.2%**. The SECOND is the
+  kernel flux estimator's own variance, open: under a zero-threshold CSA the correction must supply
+  2.5× the pathwise term and at 256 outer paths the local-linear kernel holds one to three gaps
+  (amplification 1.0 — starved, not refused); it scatters with the path count, 51.2% at 256, 18.2%
+  over at 1,024, 10.2% at 2,048, and the coupon-only gate itself reads 0.14% at 1,024 × 4 against
+  5.5% at 256 × 1. Widening the bandwidth to 0.05 reads 13.5% here and costs the uncollateralised
+  row 2.13% → 6.85%. The path count, not the deal. Beside it, unchanged: the float and the terminal
+  put reach no `cash_settle`, so `Results['cashflows']` carries the coupons alone — settling the
+  float moves the collateralised CVA (component 0.170177 → 0.147908) and buys nothing in the delta
+  (52.6% against its own ladder), a change of its own. The barrier-free lag-0 11.0% is a third
+  thing, untouched (2026-09-04).
 - **`pv_MC_AutoCallSwap` × a lagged block's terminal rows** — a block whose rows lie between a
   fixing and its settlement sets `last_fixing` off its LAST row, so a row dated before that fixing
   prices the coupon crisply off a spot it has not reached: on the campaign's book rows 2028-06-03

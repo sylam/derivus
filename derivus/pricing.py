@@ -4367,9 +4367,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     objective with a kink scores two partial counterfactuals differently from their sum. A
     re-observation of an old decision registers nothing. THE TERMINAL PUT registers beside it as an
     ``InnerBoundarySet`` - one decision per inner path, only on the crisp line, the conditional-p
-    splice having taken it wherever it ran. The FLOAT declares each settled fixing as a stream's
-    payment gated by the last decision before its date, which is what puts it in the ledger a
-    collateralised counterfactual replays.
+    splice having taken it wherever it ran. NOTHING ELSE IS DECLARED: the float leg and the put are
+    paid but never ``cash_settle``d here, and a fact the chain cannot find in ``Cf_Rec`` replays a
+    ledger the reported world does not have.
 
     BRANCH AND WEIGHT REACHES THE NO-AVERAGING ARM (``Branch_And_Weight: 'Yes'``, base valuation
     only) and SUPERSEDES that registration rather than joining it. A constant coupon already makes
@@ -4487,7 +4487,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         hn = kit is not None
         # the by-products the caller performs once
         settled, settle_rows, event_rows, gaps, fired, survived = [], [], [], [], [], []
-        alive, cash_on, float_rows, float_cash = [], [], [], []
+        alive, cash_on = [], []
         bar_rows, bar_gaps, bar_jumps = [], [], []
 
         isBarrierDate = BarrierDates[offset:]
@@ -4550,12 +4550,6 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         P = P + L * fx * -FloatingDate * D[j]
                         if P_cf is not None:
                             P_cf = P_cf + L_cf * fx * -FloatingDate * D[j]
-                        if boundary_aad and tau == 0.0 and j == 0:
-                            # the row's OWN date: this is the cash that changes hands, and it is
-                            # paid BEFORE any decision that date takes - the caller gates it on the
-                            # decision before
-                            float_rows.append(i)
-                            float_cash.append((fx * -FloatingDate * D[j]).squeeze(1).detach())
 
                     if coup > 0:
                         K = thresh * strike
@@ -4768,9 +4762,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 torch.stack(settled) if settled else spot_prices.new_empty(0),
                 settle_rows, event_rows, terminationDate,
                 torch.stack(alive) if alive else spot_prices.new_empty(0),
-                float_rows, bar_rows,
+                bar_rows,
                 ) + tuple(gaps) + tuple(fired) + tuple(survived) + tuple(cash_on) + tuple(
-                    float_cash) + tuple(bar_gaps) + tuple(bar_jumps)
+                    bar_gaps) + tuple(bar_jumps)
 
     mtm_list = []
     factor_dep = deal_data.Factor_dep
@@ -4962,8 +4956,6 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             # decisions latched STRICTLY BEFORE this block's rows, at block granularity - the
             # block's own fixing is priced by its own simulation (the barrier's spelling)
             b_obs.extend([len(b_latch)] * len(t_block))
-            # the latch this block opens on, and the last decision that can kill its float payments
-            block_dead, d_float = (terminationDate != -1).squeeze(1), len(b_latch) - 1
         # skip the simulation once EVERY scenario has autocalled - nothing is left to price
         if (terminationDate == -1).any():
             if factor_dep['no_averaging']:
@@ -4995,13 +4987,13 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             # `terminationDate` comes back stamped by this block's observed fixing and is handed to
             # the NEXT block's theta - an autocalled path pays once and is worth nothing after
             (theo_cashflow, block_settled, settle_rows, event_rows, terminationDate, block_alive,
-             float_rows, bar_rows) = outputs[:8]
+             bar_rows) = outputs[:7]
             # the by-products, performed once off the forward's result. `nominal` is
             # `Buy_Sell * Units` and scales the MARK below, so the settled cash carries it too
             for row, value in zip(settle_rows, block_settled):
                 cash_settle(shared, factor_dep['SettleCurrency'], np.searchsorted(
                     time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]), nominal * value)
-            fixed, n_events = 8, len(event_rows)
+            fixed, n_events = 7, len(event_rows)
             if boundary_aad and factor_dep['no_averaging']:
                 b_alive.append(block_alive)
                 settle_map = dict(zip(settle_rows, block_settled))
@@ -5022,18 +5014,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM])),
                         len(b_latch) - 1, coupon, torch.zeros_like(coupon),
                         (nominal * fxr * settle_map[row]).detach()))
-                # THE FLOAT IS A STREAM: its fixing settles on a weight the decisions of its own
-                # date cannot touch, so the last decision before the block is what kills it
-                for k, row in enumerate(float_rows):
-                    paid = (nominal * report_fx(fx_rep, row_ofs + row) *
-                            outputs[fixed + 4 * n_events + k]).detach()
-                    b_cash.append((int(np.searchsorted(
-                        time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM])),
-                        d_float, torch.zeros_like(paid), paid,
-                        torch.where(block_dead, torch.zeros_like(paid), paid)))
                 # THE TERMINAL PUT: one decision per inner path, the row it lands on and the
                 # UNDIVIDED change to that row's own accumulator if the indicator flips
-                b_first = fixed + 4 * n_events + len(float_rows)
+                b_first = fixed + 4 * n_events
                 b_inner.extend([[row_ofs + row, outputs[b_first + k],
                                  (nominal * outputs[b_first + len(bar_rows) + k]).detach()]
                                 for k, row in enumerate(bar_rows)])

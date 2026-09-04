@@ -352,8 +352,10 @@ class LatchedBoundarySet(BoundarySet):
     # reporting-currency (B,) amounts, `decision` an index into `gaps` (-1 for cash no decision can
     # touch). A trigger's own payment declares `(amount, 0)` at its own decision; a STREAM's fixing
     # declares `(0, amount)` at the last decision that can kill it. Many payments may share a row,
-    # and a decision may gate many. The collateral chain reads them through C_ts_te; the additive
-    # route ignores them.
+    # and a decision may gate many. The collateral chain reads them through C_ts_te AGAINST THE
+    # LEDGER `cash_settle` BUILT, so only settled cash may be declared - a payment the pricer priced
+    # but never booked replays a ledger the reported world has not got. The additive route ignores
+    # them.
     cash_events: list = None
     # Per WHOLE-VALUE SETTLEMENT, `(mtm_row, booked)`: a row that pays out everything the deal is
     # still worth, and the amount booked there - detached reporting-currency (B,). THE ROW'S MTM IS
