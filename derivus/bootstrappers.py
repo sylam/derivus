@@ -1464,7 +1464,7 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
          '$\\alpha$ (same units, and the share is scale-free). *Outer_Search* picks the search: the',
          'derivative-free simplex (the default) or LEVENBERG-MARQUARDT on the residual vector, where',
          'the A/B/C strips are autodiffed and the inner root find is spliced as ONE NEWTON STEP at',
-         'its own *brentq* root - $L_k=L_k^*-F_k/\mathrm{detach}(\partial F_k/\partial L_k)$ -',
+         'its own *brentq* root - $L_k=L_k^*-F_k/\\mathrm{detach}(\\partial F_k/\\partial L_k)$ -',
          'so the implicit function theorem across the triangular bootstrap is an EXPRESSION autograd',
          'differentiates rather than a rule.',
          '',
