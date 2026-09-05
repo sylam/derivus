@@ -198,8 +198,8 @@ def required_fields(cls):
 
 
 def declared_defaults(cls, params):
-    """A calculation block completed by its own declarations - the `F` default under every key the
-    author omitted, so reads inside `execute` may index directly.
+    """A block completed by its own declarations - the `F` default under every key the author
+    omitted, so a reader may index directly.
 
     Mutable defaults are deep-copied per call. `REQUIRED` and `None` are skipped: the first has
     nothing to offer, the second declares a field the engine is content to find missing."""

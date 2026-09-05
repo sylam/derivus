@@ -536,8 +536,9 @@ def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, 
 
     Returns the SVI-shaped index `[(stoch, [per-parameter sub-factors], spot_model,
     {curve parameter: knots})]`, subtype tagged with spot_model for the pricer's branch, or None for
-    `spot_model == 'None'` (GBM). The fourth slot carries any curve-valued parameter's knots: the
-    values ride the static buffer as leaves, the knots are structural and resolve once here.
+    `spot_model == 'None'` (GBM). The fourth slot carries every structural fact the factor answers -
+    each curve's knots and the non-leaf scalars its kit reads - the leaves themselves riding the
+    static buffer and resolving on the tensor side.
 
     The value is validated against `Deal.spot_models` at construction, so what is left here is
     presence: a model switched on but absent from the market data raises KeyError, which the
@@ -555,7 +556,7 @@ def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, 
     factor = get_factor_component(mp, all_factors)
     return [tuple([stoch, [utils.Factor(mp.type, mp.name + (param,))
                            for param in factor.current_value()], spot_model,
-                   factor.curve_tenors() if hasattr(factor, 'curve_tenors') else {}])]
+                   factor.curve_tenors()])]
 
 
 def spot_model_reciprocal_axis(spot_model, underlying, currency, base, reference):

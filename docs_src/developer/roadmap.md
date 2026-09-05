@@ -239,8 +239,8 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
 **LogVar2FJ beyond phase 1** (designed 2026-09-04, phase 1 built 2026-09-05; see Built and
 `logvar2fj_spec.md`). The **calibrator** (`bootstrappers.LogVar2FJModelParameters`, spec 5) and
 with it the curve's mapping to a real market forward-variance strip: phase 1 authors `L_Curve` by
-hand and `utils.lv_curve_from_forward_variance` is the mapping alone, which on the campaign's own
-CJOW surface leaves **3.21 vol points** RMSE against spec 8's expected 0.2 - and refused outright
+hand and the pack's `artifacts/logvar2fj/logvar2fj.py` carries the mapping alone, which on the
+campaign's own CJOW surface leaves **3.21 vol points** RMSE against spec 8's expected 0.2 - and refused outright
 at the earlier default `lambda = 1.5`, whose jump variance 2.46e-2 EXCEEDED that surface's 3-month
 forward variance (the spec now sets 0.21), so `xi_diff <= 0` and the curve is not a number. Stage 0 fixing `lambda` for the
 surface is the missing half. **TARF, accumulator and discrete barrier** by the same `(m, s)`
@@ -412,24 +412,26 @@ set; and five model items in the punchlist below.
   a finite difference in a parameter acting on the tails counts knock-in flips in a region few
   paths reach; the same AAD (identical on both arms, the splice) against ladders of the SMOOTH
   value (`Branch_And_Weight: 'Yes'`, the put integrated) reads **0.02% / 0.01% / 0.02% /
-  0.00%**, ladders flat to 0.07%. At the spec's revised defaults (2026-09-05: sigma_l 0.4,
-  sigma_s 1.5, lambda 0.35, mu_J -0.15, beta 0.25) the crisp document's spot reads 0.53%, rates
-  1.17%, the L curve 1.11%, `Mu_J` 0.28% on a ladder flat to 0.03%, gamma 0.02%. THE CVA DELTA IS THE OPEN ROW: at 2,048 outer the authored daily
+  0.00%**, ladders flat to 0.07%. At the 2026-09-05 defaults (sigma_l 0.4, sigma_s 1.5,
+  lambda 0.35, mu_J -0.15, beta 0.25), since superseded by the Q-sized set, the crisp document's
+  spot reads 0.53%, rates 1.17%, the L curve 1.11%, `Mu_J` 0.28% on a ladder flat to 0.03%,
+  gamma 0.02%. THE CVA DELTA IS THE OPEN ROW: at 2,048 outer the authored daily
   step does not fit the card at all, and at a 21-day step the uncollateralised spot delta reads
   +5.524e-5 against a ladder extrapolating to +5.55e-5 by three points or +5.82e-5 by the two
   finest - 0.5% to 5.1% - while the collateralised row runs out of memory there and is unread.
   `Recompute_Inner_MC` on and off agree BIT FOR BIT on the CVA and its spot gradient, on the limit
   document and the default one, the walk living inside `sim_spot`; the model's own leaves agree to
   1e-7, which is float32 reassociation under the node rather than a dropped cotangent.
-  Phase 0's `checks.py` re-runs on the moved functions at the same numbers (60 checks, 0 failures),
-  and the block-summing scan the pricer walks - `lv_walk(blocks=...)`, which never materialises
+  The pack's `checks.py` is the model's gate until `tests/test_logvar2fj.py` lands (67 checks with
+  one deliberate miss: at the Q-sized defaults a weekly internal step is not licensed on the coupon
+  leg, the 5-day gap 3.4 SE against the daily walk), and the block-summing scan the pricer walks - `lv_walk(blocks=...)`, which never materialises
   `m_x` or `var` - matches the matmul filter to the gate's 1e-12 and takes 183 s against 244 s at
   1024 x 4096 x 1260 on CPU.
   THE TWO FORWARD-SKEW LEVERS NOW CARRY CALENDAR BUCKETS (2026-09-05): `Rho_S` and `Mu_J` are
   `bind='value'` curves whose knots ARE the buckets' start times in years, the kit reads both at
   the ABSOLUTE step-start times as it reads `L`, and the factor refuses at load a bucket whose
-  `c = 1 - Rho_S^2 - Rho_L^2` falls under `LV_C_MIN = 0.12`, two curves whose knots differ, or a
-  lever still spelt as phase 1's Float - so
+  `c = 1 - Rho_S^2 - Rho_L^2` falls under the factor's own `C_Min` (default 0.12), two curves
+  whose knots differ, or a lever still spelt as a Float - so
   one knot at 0 is the constant-parameter model, which reads phase 1's MTM to the bit
   (`-0x1.a32dcde94c00ap+5`) with the GBM limit still `-0x1.a1f306d03a597p+5` and its CVA
   `0x1.5057040000000p-4`, while a second bucket at 1y (`rho_s` -0.80, `mu_J` -0.20) leaves a

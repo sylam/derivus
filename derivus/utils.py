@@ -188,6 +188,7 @@ FactorRiskClass = {
     'SurvivalProb': 'Credit',
     'Correlation': 'CrossClass', 'ObservedBasis': 'CrossClass',
     'GBMAssetPriceTSModelParameters': 'CrossClass', 'HestonNandiModelParameters': 'CrossClass',
+    'HestonNandiComponentModelParameters': 'CrossClass', 'LogVar2FJModelParameters': 'CrossClass',
     # TRANSITIONAL: an untagged surface cannot decide its own class. Here only because the store
     # still declares the name `resolve_factor_key` reads, and it retires with that shim.
     'VolatilityGrid': 'CrossClass'
@@ -3632,7 +3633,7 @@ def hn_component_stride_step(strip, Sj, h, q, u, e1, e2, x_cap=None, loadings=No
 
 # ======================================================================================
 # LOGVAR2FJ - two-factor log-variance with co-jumps, walked on an INTERNAL step and priced through
-# the sample-then-Phi stride. Theory and the phase-0 gates: logvar2fj_spec.md.
+# the sample-then-Phi stride. Theory: logvar2fj_spec.md.
 #
 # One Markov chain on an internal step delta; a stride from any date to any date is a BLOCK of that
 # chain, so two dates give the same law however the interval between them is cut. Given every
@@ -3649,7 +3650,7 @@ def hn_component_stride_step(strip, Sj, h, q, u, e1, e2, x_cap=None, loadings=No
 #: source of that name set, shared with the riskfactors class and every consumption site.
 LV_PARAM_NAMES = ('Kappa_L', 'Sigma_L', 'Rho_L', 'Kappa_S', 'Sigma_S', 'Sigma_J', 'Nu')
 
-#: The parameters that are STRUCTURAL rather than leaves: the jump intensity, whose whole content
+#: The structural parameters THE KIT reads off the factor: the jump intensity, whose whole content
 #: is the law of integer counts and so is not on the tape, and the cap, a guard on log-variance
 #: rather than a modelling device. A leaf at either would report a derivative nothing carries.
 LV_STRUCTURAL_NAMES = ('Lambda', 'Cap_A', 'Cap_Beta')
@@ -3664,26 +3665,17 @@ LV_BUCKET_NAMES = ('Rho_S', 'Mu_J')
 #: structural knots and VALUES that are leaves.
 LV_CURVE_NAMES = ('L_Curve',) + LV_BUCKET_NAMES
 
-#: The floor on the idiosyncratic share c = 1 - rho_s(t)^2 - rho_l^2, asserted in every bucket at
-#: parameter load (spec 2.2.2): below it the truncation conditions on nothing and a surface that
-#: wants it is asking for a one-shock model.
-LV_C_MIN = 0.12
-
-#: The model's only guard, taken in each division by a block standard deviation (spec 2.8) and
-#: nowhere else. Small enough to be inert, large enough to bound z at ~1e12.
-LV_SIGMA_TINY = 1.0e-12
-
 #: Jumps per internal step past which the inverse-CDF count truncates. At lam*delta ~ 0.006 the
 #: truncated mass is 5e-11; at a 21-day step it is 9e-6 and drifts a 5y forward by 4e-5.
 LV_MAX_JUMPS = 3
 
 
 def lv_counts(u, lam, deltas):
-    """Poisson(lam*delta) counts per step by inverse CDF, truncated at 3 (spec 2.5).
+    """Poisson(lam*delta) counts per step by inverse CDF, truncated at `LV_MAX_JUMPS` (spec 2.5).
 
     Integer and off the tape: lam is structural, so nothing here carries a gradient.
     """
-    a = float(lam) * deltas
+    a = lam * deltas
     pmf = torch.exp(-a)
     cdf = pmf.clone()
     N = torch.zeros(u.shape, dtype=torch.int8, device=u.device)
@@ -3712,40 +3704,20 @@ def lv_ou_step_weights(kappa, sigma, deltas):
     return phi, sigma * sqrt_or_zero((1.0 - phi * phi) / (2.0 * kappa))
 
 
-def lv_filter_matmul(kappa, sigma, deltas):
-    """Lower-triangular OU filter over a non-uniform grid, its weights and initial decay.
-
-    F[k, j] = prod_{i=j+1..k} phi_i for j <= k; with per-step input x_j the state after step k
-    is state_{k+1} = d[k]*state_0 + (x @ F.T)[..., k].
-    """
-    t = torch.cumsum(deltas, dim=0)
-    _, w = lv_ou_step_weights(kappa, sigma, deltas)
-    # Mask the exponent, not the exponential: exp(+kappa dt) above the diagonal overflows
-    # for large kappa * t_n, and tril's zero gradient would then be 0 * inf.
-    F = torch.tril(torch.exp(-kappa * torch.tril(t[:, None] - t[None, :])))
-    return F, w, torch.exp(-kappa * t)
-
-
 def lv_block_ends(block_of_step):
     """Index of the last step of each block."""
     return torch.cumsum(torch.bincount(block_of_step), dim=0) - 1
 
 
-def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0,
-            method='matmul', want_paths=False, blocks=None):
-    """Walk both log-variance factors and form each step's return mean and variance.
+def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0, blocks):
+    """Walk both log-variance factors and BLOCK-SUM the return law of each monitored interval.
 
-    eta_l, eta_s, counts are [batch, sims, n]; curve_at_grid is L at the n+1 grid times and
-    params['Rho_S'], params['Mu_J'] are the bucket values in force at each step start;
-    state0 = (l0, s0) is [batch, sims]. Returns (m_x, var, s_path, l_path); m_x carries no
-    carry term (it is added per block) and the paths are None unless want_paths. 'scan' builds
-    no [n, n] matrix and holds no state path unless one is asked for.
-
-    `blocks` (the per-step block index, scan only) makes the scan ACCUMULATE each block's sums as
-    it passes that block's steps and return (M, Sigma^2) of shape [..., n_blocks] in their place,
-    so nothing of shape [batch, sims, n] is materialised at all. That is the shape spec 3 asks for
-    and the only one a pricing call walks; `lv_block_stats` is the matmul path's own aggregation
-    and the two are gated equal.
+    eta_l, eta_s, counts are [batch, sims, n]; curve_at_grid is L at the n+1 grid times,
+    params['Rho_S'] and params['Mu_J'] are the bucket values in force at each step start,
+    state0 = (l0, s0) is [batch, sims] and `blocks` is the per-step block index. Returns
+    (M, Sigma^2) over [..., n_blocks]: the scan ACCUMULATES each block's sums as it passes that
+    block's steps, so nothing of shape [batch, sims, n] is materialised at all. M carries no
+    carry term - that is added per block by the caller.
     """
     rl, sj, nu = params['Rho_L'], params['Sigma_J'], params['Nu']
     a, beta = params['Cap_A'], params['Cap_Beta']
@@ -3756,126 +3728,27 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0,
     rs, mu = params['Rho_S'] * ones, params['Mu_J'] * ones
     sj2 = sj * sj
     comp = params['Lambda'] * deltas * (torch.exp(mu + 0.5 * sj2) - 1.0)
-    l0, s0 = state0
-
-    if method == 'matmul':
-        F_s, w_s, d_s = lv_filter_matmul(params['Kappa_S'], params['Sigma_S'], deltas)
-        F_l, w_l, d_l = lv_filter_matmul(params['Kappa_L'], params['Sigma_L'], deltas)
-        Nf = counts.to(eta_l.dtype)
-        x_s = w_s * eta_s + nu * Nf
-        s_path = torch.cat([s0[..., None], s0[..., None] * d_s + x_s @ F_s.T], dim=-1)
-        dev_l = (l0 - curve_at_grid[0])[..., None] * d_l + (w_l * eta_l) @ F_l.T
-        l_path = torch.cat([l0[..., None], curve_at_grid[1:] + dev_l], dim=-1)
-        V = deltas * torch.exp(lv_cap(l_path[..., :-1] + s_path[..., :-1], a, beta))
-        sq = sqrt_or_zero(V)
-        var = (1.0 - rs * rs - rl * rl) * V + Nf * sj2
-        m_x = -0.5 * V + rl * sq * eta_l + rs * sq * eta_s + Nf * mu - comp
-        return m_x, var, (s_path if want_paths else None), (l_path if want_paths else None)
-
+    l, s = state0
     phi_s, w_s = lv_ou_step_weights(params['Kappa_S'], params['Sigma_S'], deltas)
     phi_l, w_l = lv_ou_step_weights(params['Kappa_L'], params['Sigma_L'], deltas)
-    ends = set() if blocks is None else set(lv_block_ends(blocks).tolist())
-    l, s, acc_m, acc_v = l0, s0, 0.0, 0.0
-    ms, vs, ls, ss = [], [], [l0], [s0]
+    ends = set(lv_block_ends(blocks).tolist())
+    acc_m, acc_v, ms, vs = 0.0, 0.0, [], []
     for k in range(deltas.shape[0]):
         Nk = counts[..., k].to(eta_l.dtype)
         rs_k, mu_k = rs[..., k], mu[..., k]
         V = deltas[k] * torch.exp(lv_cap(l + s, a, beta))
         sq = sqrt_or_zero(V)
-        var = (1.0 - rs_k * rs_k - rl * rl) * V + Nk * sj2
-        m_x = (-0.5 * V + rl * sq * eta_l[..., k] + rs_k * sq * eta_s[..., k]
-               + Nk * mu_k - comp[..., k])
-        if blocks is None:
-            ms.append(m_x)
-            vs.append(var)
-        else:
-            acc_m, acc_v = acc_m + m_x, acc_v + var
-            if k in ends:
-                ms.append(acc_m)
-                vs.append(acc_v)
-                acc_m, acc_v = 0.0, 0.0
+        acc_v = acc_v + ((1.0 - rs_k * rs_k - rl * rl) * V + Nk * sj2)
+        acc_m = acc_m + (-0.5 * V + rl * sq * eta_l[..., k] + rs_k * sq * eta_s[..., k]
+                         + Nk * mu_k - comp[..., k])
+        if k in ends:
+            ms.append(acc_m)
+            vs.append(acc_v)
+            acc_m, acc_v = 0.0, 0.0
         s = phi_s[..., k] * s + w_s[..., k] * eta_s[..., k] + nu * Nk
         l = (curve_at_grid[k + 1] + phi_l[..., k] * (l - curve_at_grid[k])
              + w_l[..., k] * eta_l[..., k])
-        if want_paths:
-            ss.append(s)
-            ls.append(l)
-    paths = (torch.stack(ss, -1), torch.stack(ls, -1)) if want_paths else (None, None)
-    return torch.stack(ms, -1), torch.stack(vs, -1), paths[0], paths[1]
-
-
-def lv_block_stats(m_x, var, carry_blocks, block_of_step, s_path=None, l_path=None):
-    """Aggregate the per-step mean and variance onto monitored blocks by one matmul.
-
-    Returns (M, Sigma, end_states); end_states is the (l, s) grid state at each block end when
-    the state paths are given, else None.
-    """
-    n = block_of_step.shape[0]
-    nb = int(block_of_step.max()) + 1
-    A = torch.zeros(nb, n, dtype=m_x.dtype, device=m_x.device)
-    A[block_of_step, torch.arange(n, device=m_x.device)] = 1.0
-    M = m_x @ A.T + carry_blocks
-    Sigma = sqrt_or_zero(var @ A.T)
-    end_states = None
-    if s_path is not None:
-        idx = lv_block_ends(block_of_step) + 1
-        end_states = (l_path[..., idx], s_path[..., idx])
-    return M, Sigma, end_states
-
-
-def lv_black(forward, strike, total_sd, is_call=True):
-    """Black on a TOTAL standard deviation, not an annualised vol."""
-    sd = total_sd.clamp_min(LV_SIGMA_TINY) if torch.is_tensor(total_sd) else total_sd
-    d1 = torch.log(forward / strike) / sd + 0.5 * total_sd
-    d2 = d1 - total_sd
-    if is_call:
-        return forward * norm_cdf(d1) - strike * norm_cdf(d2)
-    return strike * norm_cdf(-d2) - forward * norm_cdf(-d1)
-
-
-def lv_vanilla(S, strike, M, Sigma, discount, is_call=True):
-    """Conditional Black over the walk's shocks (spec 2.4); averages the last axis."""
-    forward = S * torch.exp(M + 0.5 * Sigma * Sigma)
-    return discount * lv_black(forward, strike, Sigma, is_call).mean(dim=-1)
-
-
-def lv_ou_variance(sigma, kappa, t):
-    """Variance at t of an OU log-variance factor started from a known value."""
-    return sigma * sigma * (1.0 - torch.exp(-2.0 * kappa * t)) / (2.0 * kappa)
-
-
-def lv_curve_from_forward_variance(xi, params, grid):
-    """Curve knots L(t) giving each step the market forward variance xi (spec 2.6).
-
-    The jump variance lam*(mu_J^2 + sigma_J^2) is removed from the target and the fast
-    factor's compound-Poisson term of E[exp(l+s)] is carried; the cap is ignored. BUCKET-BLIND:
-    ``Mu_J`` is read as ONE value, not the walk's per-step tensor, so a bucketed document maps a
-    bucket at a time (spec 2.3.1).
-    """
-    ks, lam = params['Kappa_S'], params['Lambda']
-    xi_diff = xi - lam * (params['Mu_J'] ** 2 + params['Sigma_J'] ** 2)
-    var_g = (lv_ou_variance(params['Sigma_S'], ks, grid)
-             + lv_ou_variance(params['Sigma_L'], params['Kappa_L'], grid))
-    deltas = grid[1:] - grid[:-1]
-    lag = torch.tril(grid[:, None] - grid[None, 1:], -1)
-    jump = torch.tril(torch.exp(params['Nu'] * torch.exp(-ks * lag)) - 1.0, -1) @ (lam * deltas)
-    return torch.log(xi_diff) - 0.5 * var_g - jump
-
-
-def lv_jump_cumulants(params, T, V):
-    """Cumulants of a frozen-variance one-period return: Gaussian V plus compound Poisson.
-
-    V is the total diffusive base variance over T. The return's Gaussian part is all of V, not
-    c*V: the leverage shocks carry the other (rho_l^2 + rho_s^2)*V of it. kappa_n = lam*T*E[J^n]
-    for n >= 2 with J ~ N(mu_J, sigma_J^2). Returns (k2, k3, k4, skewness, excess kurtosis).
-    Bucket-blind alike: ONE ``Mu_J``, so a bucketed document reads one bucket's own cumulants.
-    """
-    mu, sg = params['Mu_J'], params['Sigma_J']
-    lt = params['Lambda'] * T
-    k2 = V + lt * (mu ** 2 + sg ** 2)
-    k3 = lt * (mu ** 3 + 3.0 * mu * sg ** 2)
-    k4 = lt * (mu ** 4 + 6.0 * mu ** 2 * sg ** 2 + 3.0 * sg ** 4)
-    return k2, k3, k4, k3 / k2 ** 1.5, k4 / (k2 * k2)
+    return torch.stack(ms, -1), torch.stack(vs, -1)
 
 
 # Correlated sub-stepping -- exact within-interval dynamics between coarse scenario nodes. A coarse

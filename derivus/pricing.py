@@ -64,9 +64,9 @@ and 4.0x below the mass, at any path count. ``exposure_kink_term`` logs the ladd
 DEBUG."""
 
 
-# Heston-Nandi OSS spot models, opt-in per deal via the Valuation Configuration switch
-# SpotModel='HestonNandi' or 'HestonNandiComponent'. The per-step advance is owned by utils;
-# a pricer names its model once through the KIT below and walks it after that.
+# OSS spot models, opt-in per deal via the Valuation Configuration switch `SpotModel`. The
+# per-step advance is owned by utils; a pricer names its model once through the KIT below and
+# walks it after that.
 
 
 #: ONE fixing interval opened as a stride - the cached k-step law, the spot and state it conditions
@@ -184,12 +184,14 @@ class PlainHestonNandiKit(object):
     args; the kit owns the name->args unpack and the state, which is opaque to the pricer.
     """
 
-    #: what `oss_model_scalars` reads off the parameter factor and in which order this kit
-    #: unpacks it - the scalars, then each fitted CURVE's values - and whether it walks DAILY:
-    #: the three facts those two functions used to branch on the subtype string for
+    #: `param_names` and `curve_names` are what `oss_model_scalars` reads off the parameter factor
+    #: and in which order this kit unpacks it - the scalars, then each fitted CURVE's values.
+    #: `daily` is whether the family walks a per-step state, `strides` whether it opens a fixing
+    #: interval as one k-step draw; both are read by the pricers and by `branch_and_weight`.
     param_names = utils.HN_PARAM_NAMES
     curve_names = ()
     daily = True
+    strides = False
 
     def __init__(self, scalars, knots, factor_dep):
         *self.params, self.h0 = scalars          # (omega, alpha, beta, gamma_star), H0
@@ -242,6 +244,7 @@ class ComponentHestonNandiKit(PlainHestonNandiKit):
 
     param_names = utils.HN_COMPONENT_PARAM_NAMES
     curve_names = (utils.HN_COMPONENT_CURVE_NAME,)
+    strides = True
 
     def __init__(self, scalars, knots, factor_dep):
         *self.params, self.h0, self.l_values = scalars   # (alpha,beta,g1,rho,phi,g2), H0, L values
@@ -298,7 +301,7 @@ class ComponentHestonNandiKit(PlainHestonNandiKit):
         it quadratically - a declared approximation. Off, the walk is unchanged down to the draws.
         """
         h, q, day = state
-        if n_steps and getattr(shared, 'hn_stride', False):
+        if n_steps and shared.hn_stride:
             fix = self.stride_interval(Sj, state, b_step, n_steps)
             u = torch.rand([shared.simulation_batch, num_sims],
                            dtype=shared.one.dtype, device=shared.one.device)
@@ -589,6 +592,7 @@ class LogVar2FJKit(object):
     param_names = utils.LV_PARAM_NAMES
     curve_names = utils.LV_CURVE_NAMES
     daily = False
+    strides = False
 
     def __init__(self, scalars, knots, factor_dep):
         n = len(self.param_names)
@@ -619,9 +623,8 @@ class LogVar2FJKit(object):
 
         The grid runs `Internal_Step_Days` trading days on the `Steps_Per_Year` clock between
         fixings, every fixing landing ON a grid point, so there are no stubs and the block sums are
-        exact. The state seeds at ``l = L(t_row)``, ``s = 0`` per row - the declared phase-1
-        approximation, of the same class as the daily kits' per-row re-seed; phase 3 carries the
-        state in from the outer node.
+        exact. The state seeds at ``l = L(t_row)``, ``s = 0`` per row, of the same class as the
+        daily kits' per-row re-seed.
 
         THE SCAN BLOCK-SUMS AS IT PASSES: `utils.lv_walk` accumulates each interval's ``M`` and
         ``Sigma^2`` inside its own loop, so no ``[batch, sims, n]`` tensor exists but the draws.
@@ -640,14 +643,13 @@ class LogVar2FJKit(object):
         params = dict(self.params, **{x: utils.bucket_at(self.knots[x], self.values[x], t[:-1])
                                       for x in utils.LV_BUCKET_NAMES})
         seed = delta.new_zeros(shared.simulation_batch, num_sims)
-        M, var, _, _ = utils.lv_walk(
-            params, curve, delta, *self.draws(shared, num_sims, delta),
-            state0=(seed + curve[0], seed), method='scan', blocks=block)
+        M, var = utils.lv_walk(params, curve, delta, *self.draws(shared, num_sims, delta),
+                               state0=(seed + curve[0], seed), blocks=block)
         return M + (carry * deltas.reshape(-1, 1)).T.unsqueeze(1), utils.sqrt_or_zero(var)
 
 
 #: The OSS kits, keyed by the `SpotModel` valuation option each deal declares. A pricer looks its
-#: model up once (`oss_model_kit`) and never names one again, so a third family is a class here and
+#: model up once (`oss_model_kit`) and never names one again, so a fourth family is a class here and
 #: a row in this dict rather than a fifth branch in four pricers.
 OSS_SPOT_MODEL_KITS = {'HestonNandi': PlainHestonNandiKit,
                        'HestonNandiComponent': ComponentHestonNandiKit,
@@ -700,6 +702,16 @@ def oss_model_kit(factor_dep, scalars):
         scalars = reciprocal_spot_scalars(scalars)
     knots = code[utils.FACTOR_INDEX_Tenor_Index]
     return kit(scalars, {c: knots[c] for c in kit.curve_names}, factor_dep)
+
+
+def oss_strides(factor_dep, shared):
+    """Does this deal open each fixing interval as ONE survival-truncated k-step draw?
+
+    `HN_Stride` consented to by the caller, and a declared family that carries the stride.
+    """
+    return (shared.hn_stride and 'HN_Params' in factor_dep and
+            OSS_SPOT_MODEL_KITS[factor_dep['HN_Params'][0][utils.FACTOR_INDEX_SubType]].strides)
+
 
 def cash_settle(shared, currency, time_index, value):
     """Book `value` against `currency` at `time_index`, if that date is a settlement point."""
@@ -880,12 +892,11 @@ def branch_and_weight(shared, deal_data):
     factor_dep = deal_data.Factor_dep
     if 'HN_Params' in factor_dep:
         model = factor_dep['HN_Params'][0][utils.FACTOR_INDEX_SubType]
-        stride = getattr(shared, 'hn_stride', False)
         if not OSS_SPOT_MODEL_KITS[model].daily:
             # a NON-daily kit's own conditioning step IS the fixing interval, so its `p` is that
             # block's Phi and nothing here is approximated - the model is admitted unconditionally
             return True
-        if model == 'HestonNandiComponent' and stride:
+        if OSS_SPOT_MODEL_KITS[model].strides and shared.hn_stride:
             return True
         raise ValueError(
             "Branch_And_Weight: 'Yes' is refused on {} under SpotModel={!r} - the smooth estimator "
@@ -900,7 +911,7 @@ def branch_and_weight(shared, deal_data):
             'and is the crisp OSS estimator this deal already prices under, unchanged.'.format(
                 deal_data.Instrument.field.get('Reference'), model, model,
                 "declare HN_Stride: 'Yes', which consents to the CARRIED STATE the stride "
-                'approximates across each jump;' if model == 'HestonNandiComponent' else
+                'approximates across each jump;' if OSS_SPOT_MODEL_KITS[model].strides else
                 "declare SpotModel: 'HestonNandiComponent' (utils.hn_component_from_plain is the "
                 'exact map, and the stride is that recursion\'s cache) with HN_Stride: \'Yes\';'))
     return True
@@ -2243,7 +2254,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     # read once before a draw is taken so a non-GBM refusal lands first; it SUPERSEDES the
     # registration below rather than joining it
     smooth = branch_and_weight(shared, deal_data)
-    second_order = smooth and getattr(shared, 'gamma', False)
+    second_order = smooth and shared.gamma
     boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
     b_gaps, b_crossed, b_obs_before, b_alive, b_dead, b_cash = [], [], [], [], [], []
 
@@ -3198,11 +3209,10 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     # THE STRIDE (`HN_Stride`, component Heston-Nandi only): the whole fixing interval as one
     # survival-truncated k-step draw. No fired branch to integrate here, so it changes the SAMPLER
     # and nothing else, on either estimator
-    stride = (getattr(shared, 'hn_stride', False) and 'HN_Params' in factor_dep and
-              factor_dep['HN_Params'][0][utils.FACTOR_INDEX_SubType] == 'HestonNandiComponent')
+    stride = oss_strides(factor_dep, shared)
     # curvature is the switch: the per-fixing kink term is never BUILT unless a second derivative
     # was asked for, so it costs nothing on a first-order run
-    second_order = smooth and getattr(shared, 'gamma', False)
+    second_order = smooth and shared.gamma
 
     # a declared-dead deal has no flux to record, and folding that in here keeps the simulation
     # from building an alive branch nobody reads
@@ -4253,8 +4263,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     # THE STRIDE (`HN_Stride`, component Heston-Nandi only): the k-step law of the whole fixing
     # interval in place of the daily walk. Under `smooth` it IS the estimator's conditioning law;
     # crisp, it hands the knock-IN's flux to the conditional-p mixture
-    stride = (getattr(shared, 'hn_stride', False) and 'HN_Params' in factor_dep and
-              factor_dep['HN_Params'][0][utils.FACTOR_INDEX_SubType] == 'HestonNandiComponent')
+    stride = oss_strides(factor_dep, shared)
     # `eff_intr = gain_sign * (S**gain_power - K**gain_power)` on BOTH targets, which is what lets
     # one closed form serve the inverted accrual (`lognormal_fired_gain`'s own `power`)
     gain_power = -1.0 if invertedTarget else 1.0
@@ -4266,7 +4275,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         else None
     # curvature is the switch: the per-fixing kink term is never BUILT when nobody asked for a
     # second derivative, so it costs nothing on a first-order run
-    second_order = smooth and getattr(shared, 'gamma', False)
+    second_order = smooth and shared.gamma
 
     # `smooth` removes both decisions; the CRISP MIXTURE (`stride and not smooth`) takes only the
     # KNOCK-IN's, so under it the redemption latch still registers and the knock-in does not
@@ -4950,9 +4959,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     # THE STRIDE (`HN_Stride`, component Heston-Nandi only): each coupon interval as one
     # survival-truncated k-step draw. It reaches the no-averaging arm alone, for the reason the
     # switch above does - a mean of spots is not one interval's law
-    stride = (getattr(shared, 'hn_stride', False) and factor_dep['no_averaging'] and
-              'HN_Params' in factor_dep and
-              factor_dep['HN_Params'][0][utils.FACTOR_INDEX_SubType] == 'HestonNandiComponent')
+    stride = oss_strides(factor_dep, shared) and factor_dep['no_averaging']
 
     # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM. HN is
     # only wired into the no_averaging arm
