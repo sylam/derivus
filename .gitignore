@@ -39,6 +39,7 @@ tests/_stepper_out*/
 # tests/test_hw2f_composition.py is its canned twin and runs the same pipeline functions, so one
 # spelling of that pipeline has to be in the tree. The 28 MB of live prints still are not.
 !/gates/hw2f_composition.py
+!/gates/reach.py
 
 # Reference notebooks from Huge & Savine (github.com/differential-machine-learning/notebooks).
 # Third-party work under its own licence - kept locally, not redistributed here.
