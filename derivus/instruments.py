@@ -3913,7 +3913,7 @@ class EquityBinaryOption(EquityOptionDeal):
 class QEDI_CustomAutoCallSwap(Deal):
     fields = [ADMIN, EQUITYOPTIONBASE, QEDI_CUSTOMAUTOCALLSWAP]
 
-    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent')
+    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent', 'LogVar2FJ')
 
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
@@ -3961,13 +3961,18 @@ class QEDI_CustomAutoCallSwap(Deal):
                       '`HestonNandi`. Selects the model family driving the OSS simulation and its analytic legs;',
                       'the parameters are resolved by naming convention from the',
                       '`<SpotModel>ModelParameters.<underlying>` price factor (e.g.',
-                      '`HestonNandiModelParameters.SPX`). Switching the model on without that factor in the',
+                      '`HestonNandiModelParameters.SPX`). `LogVar2FJ` is the two-factor log-variance model with',
+                      'co-jumps, which walks its own INTERNAL step and hands each fixing interval one Gaussian',
+                      'block law rather than a daily state. Switching the model on without that factor in the',
                       'market data is a loud skip, never a silent lognormal fallback. Requires the',
                       'non-averaging autocall (one fixing per coupon) and a single-currency payoff: a',
                       'Quanto/Compo carry is a lognormal quantity, so declaring one alongside a non-`None`',
                       'SpotModel is the same loud skip.',
                       '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH steps',
-                      '(default 252; only read when SpotModel is not `None`).'
+                      '(default 252; only read when SpotModel is not `None`).',
+                      '- **Internal_Step_Days**: trading days per internal step of a model that walks one',
+                      '(`LogVar2FJ`; default 1). A NUMERICAL setting, not a parameter: prices converge as it',
+                      'shrinks and a fit must be run at the step its pricing will use.'
                       ])
 
     def __init__(self, params, valuation_options):
@@ -4123,6 +4128,9 @@ class QEDI_CustomAutoCallSwap(Deal):
         if hn is not None:
             field_index['HN_Params'] = hn
             field_index['HN_Steps_Per_Year'] = self.options.get('Steps_Per_Year', 252.0)
+            # the internal step is a NUMERICAL setting of the model that walks one, so it sits
+            # beside the clock it is counted on rather than on the parameter factor
+            field_index['Internal_Step_Days'] = self.options.get('Internal_Step_Days', 1)
 
         return field_index
 

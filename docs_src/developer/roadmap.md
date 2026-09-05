@@ -236,6 +236,28 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
 
 ## Designed, not built
 
+**LogVar2FJ beyond phase 1** (designed 2026-09-04, phase 1 built 2026-09-05; see Built and
+`logvar2fj_spec.md`). The **calibrator** (`bootstrappers.LogVar2FJModelParameters`, spec 5) and
+with it the curve's mapping to a real market forward-variance strip: phase 1 authors `L_Curve` by
+hand and `utils.lv_curve_from_forward_variance` is the mapping alone, which on the campaign's own
+CJOW surface leaves **3.21 vol points** RMSE against spec 8's expected 0.2 - and refuses outright
+at the spec's default `lambda = 1.5`, whose jump variance 2.46e-2 EXCEEDS that surface's 3-month
+forward variance, so `xi_diff <= 0` and the curve is not a number. Stage 0 fixing `lambda` for the
+surface is the missing half. **TARF, accumulator and discrete barrier** by the same `(m, s)`
+substitution the autocall's arm now makes - each is the same GBM branch with the interval's law
+swapped, and a daily-monitored barrier is a block of one internal step. The **density recursion**
+(phase 2): one FFT convolution per monitored date against the block Gaussian, as an alternative
+inner estimator. The **xVA outer generator carrying `(S, l, s)`** (phase 3), which retires the
+per-row re-seed phase 1 declares - the kit seeds `l = L(t_row)`, `s = 0` at every MTM row, of the
+same class as the daily kits' own re-seed. The **reciprocal axis** (`HN_Invert`'s analogue): a mean
+shift on the three shocks and a tilt of the jump-size law, still Gaussian, so the FX arm can price
+a base-currency underlying. And **G9's delta convergence on a booked deal**: phase 0 resolves the
+internal step on its own autocall's coupon leg, but the engine's own ladder in the internal step
+has not been taken, and it is what licenses a weekly step for xVA - where it is not optional,
+because a daily walk's tape at 2,048 x 2,048 x 509 does not fit a 24 GiB card in either direction
+(the draws alone are 3 x 7.95 GiB, and `Recompute_Inner_MC` replays one block's graph, not one
+step's).
+
 **Barrier state as a fold over fixings — the REMAINING half** (decided 2026-09-02, built through
 2026-09-03; see Built). What is still designed rather than built is the rest of the fold's reach.
 The **continuous** side: monitoring reads daily (low, high) bars under `(index, date, source)` — a
@@ -334,6 +356,45 @@ with the mock-built suite and has no replacement; batching Schrager–Pelsser ac
 set; and five model items in the punchlist below.
 
 ## Built
+
+- **LogVar2FJ, phase 1 - the kit, the factor and the autocall's arm** (2026-09-05) - two
+  mean-reverting log-variance factors and a co-jump, walked on an INTERNAL step and handed to the
+  autocall as each fixing interval's own Gaussian block law. The model is free functions in
+  `utils` (`lv_walk` and the OU filter both ways, `lv_counts`, `lv_cap`, the curve mapping, the
+  cumulants), the factor is `LogVar2FJModelParameters` (nine leaves, three STRUCTURAL scalars -
+  the counts' law is not on the tape and the cap is a guard - and an `L_Curve` whose knots are
+  structural and values leaves), the kit is `pricing.LogVar2FJKit`, and `Internal_Step_Days` is a
+  NUMERICAL setting beside `Steps_Per_Year`. The three kits now DECLARE what `oss_model_scalars` /
+  `oss_model_kit` used to branch on the subtype string for - `param_names`, `curve_name`, `daily` -
+  so the readers are registry lookups and every Heston-Nandi document is hex-identical
+  (`run_trials.py base` digit for digit, `greeks`'s rows and every ladder, the GBM TARF, a
+  component TARF and a plain-HN barrier). The GBM arm's `else` becomes the `(m, s)` branch and
+  `branch_and_weight` ADMITS a non-daily kit, its refusal text kept for the daily ones. **The GBM
+  limit is GBM**: every shock and jump off and the cap out of reach, the 2y SPX autocall reads
+  -52.24366533926075 against GBM's -52.24366533926085 (1.9e-15 relative, `-0x1.a1f306d03a597p+5`
+  against `-0x1.a1f306d03a5a5p+5`) and the credit MC's CVA is bit-identical at
+  `0x1.5057040000000p-4` - the walk drawing from the PLAIN generator, which is the row's own `u`
+  stream only where `sobol` is off, so at 16 scenarios or fewer the two documents share no seed and
+  the reading degrades to MC error (1.9e-3 at a batch of 8). At the spec's test defaults on a flat
+  L: base valuation -52.686 in 1.0 s, CVA 0.0817 / FVA 0.1089 uncollateralised and 0.2256 / 0.3036
+  under the CSA, the profile dispersed and the ledger's four coupons settled. Against CRN ladders
+  at 65,536 paths: spot **0.54%** (ladder flat 1.05%), rates **0.81%** (2.06%), `Mu_J` **1.97%**
+  (0.76%), and - nothing registering on this arm, the put leg being spliced - `Greeks: 'All'` FLOWS
+  where the component arm refuses, the spot Hessian cell landing **0.013%** off the AAD delta's own
+  ladder. `Sigma_J` reads 3.72% against a ladder flat to 1.96% and the L curve 6.59% against one
+  flat to 3.09%; `Nu`, `Rho_S` and `Sigma_S` are reported against ladders that do not plateau
+  (11.8%-32.4%) and gate nothing - those rungs are a fifth to a quarter of the parameter, and
+  phase 0's standalone bump at 1e-4 agrees with the same functions' autograd to 1e-7. THE CVA DELTA IS THE OPEN ROW: at 2,048 outer the authored daily
+  step does not fit the card at all, and at a 21-day step the uncollateralised spot delta reads
+  +5.524e-5 against a ladder extrapolating to +5.55e-5 by three points or +5.82e-5 by the two
+  finest - 0.5% to 5.1% - while the collateralised row runs out of memory there and is unread.
+  `Recompute_Inner_MC` on and off agree BIT FOR BIT on the CVA and its spot gradient, on the limit
+  document and the default one, the walk living inside `sim_spot`; the model's own leaves agree to
+  1e-7, which is float32 reassociation under the node rather than a dropped cotangent.
+  Phase 0's `checks.py` re-runs on the moved functions at the same numbers (60 checks, 0 failures),
+  and the block-summing scan the pricer walks - `lv_walk(blocks=...)`, which never materialises
+  `m_x` or `var` - matches the matmul filter to the gate's 1e-12 and takes 183 s against 244 s at
+  1024 x 4096 x 1260 on CPU.
 
 - **Conditional-p at a jump, the GBM arm** (2026-09-04) — the crisp GBM autocall's put leg and
   TARF's knock-in take `splice_conditional_p` off the fixing interval's own lognormal law, which

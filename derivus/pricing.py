@@ -184,7 +184,14 @@ class PlainHestonNandiKit(object):
     args; the kit owns the name->args unpack and the state, which is opaque to the pricer.
     """
 
-    def __init__(self, scalars, knots, steps_per_year):
+    #: what `oss_model_scalars` reads off the parameter factor and in which order this kit
+    #: unpacks it, whether the family carries a fitted curve, and whether it walks DAILY - the
+    #: three facts those two functions used to branch on the subtype string for
+    param_names = utils.HN_PARAM_NAMES
+    curve_name = None
+    daily = True
+
+    def __init__(self, scalars, knots, factor_dep):
         *self.params, self.h0 = scalars          # (omega, alpha, beta, gamma_star), H0
 
     def seed(self):
@@ -233,10 +240,13 @@ class ComponentHestonNandiKit(PlainHestonNandiKit):
     simulates because both start at the same place.
     """
 
-    def __init__(self, scalars, knots, steps_per_year):
+    param_names = utils.HN_COMPONENT_PARAM_NAMES
+    curve_name = utils.HN_COMPONENT_CURVE_NAME
+
+    def __init__(self, scalars, knots, factor_dep):
         *self.params, self.h0, self.l_values = scalars   # (alpha,beta,g1,rho,phi,g2), H0, L values
         self.knots = knots
-        self.steps_per_year = float(steps_per_year)
+        self.steps_per_year = float(factor_dep['HN_Steps_Per_Year'])
         # rho squeezed to 0-dim: scalar parameters arrive (-1, 1) to broadcast against the
         # [batch, sims] variance state, but the omega path is indexed by trading day and has no
         # path axis - a (1, 1) rho turns a (n,) strip into (1, n)
@@ -566,11 +576,77 @@ class ComponentHestonNandiKit(PlainHestonNandiKit):
                 strike ** power * self.stride_partial_moment(fix, x_bound, fired_above, 0.0))
 
 
+class LogVar2FJKit(object):
+    """LogVar2FJ as an OSS kit: ONE internal-step walk per MTM row, off which each remaining fixing
+    interval reads its own Gaussian block law ``(M, Sigma)``.
+
+    Not a daily kit - there is no per-step state for a pricer to carry, because given the walk's
+    shocks and counts the whole interval's return is exactly Gaussian (spec 1.2). So the pricer's
+    GBM arithmetic serves this model verbatim: ``p`` is one Phi, the continuing draw one Phi^-1 and
+    the put leg's fired branch `lognormal_fired_gain` at this ``(M, Sigma)``.
+    """
+
+    param_names = utils.LV_PARAM_NAMES
+    curve_name = utils.LV_CURVE_NAME
+    daily = False
+
+    def __init__(self, scalars, knots, factor_dep):
+        *params, self.l_values = scalars
+        structural = factor_dep['HN_Params'][0][utils.FACTOR_INDEX_Tenor_Index]
+        self.params = dict(zip(self.param_names, params),
+                           **{x: float(structural[x]) for x in utils.LV_STRUCTURAL_NAMES})
+        self.knots = knots
+        self.steps_per_year = float(factor_dep['HN_Steps_Per_Year'])
+        self.step_days = float(factor_dep['Internal_Step_Days'])
+
+    def draws(self, shared, num_sims, deltas):
+        """The walk's two normals and its jump counts, over ``[batch, sims, n]`` and IN FLOAT32 -
+        the only tensors of that shape a pricing call holds, 1.05 GiB each at 256 x 2048 over a 2y
+        daily grid, promoted step by step inside the scan.
+
+        From the PLAIN generator, which `utils.rng_position` replays by state under
+        `InnerMCRecompute` and every Heston-Nandi unmonitored sub-step already draws from: a Sobol
+        walk block is 3n dimensions wide and MEMOIZED per row, 6 GiB a row at this shape. So the
+        row's `u` shares this stream exactly where `sobol` is off - at 16 scenarios or fewer.
+        """
+        shape = [shared.simulation_batch, num_sims, int(deltas.shape[0])]
+        z = torch.randn([2] + shape, dtype=torch.float32, device=shared.one.device)
+        u = torch.rand(shape, dtype=torch.float32, device=shared.one.device)
+        return z[0], z[1], utils.lv_counts(u, self.params['Lambda'], deltas)
+
+    def blocks(self, row_t, deltas, carry, shared, num_sims):
+        """Every remaining fixing interval's block law, ``(M, Sigma)`` of shape [batch, sims] each.
+
+        The grid runs `Internal_Step_Days` trading days on the `Steps_Per_Year` clock between
+        fixings, every fixing landing ON a grid point, so there are no stubs and the block sums are
+        exact. The state seeds at ``l = L(t_row)``, ``s = 0`` per row - the declared phase-1
+        approximation, of the same class as the daily kits' per-row re-seed; phase 3 carries the
+        state in from the outer node.
+
+        THE SCAN BLOCK-SUMS AS IT PASSES: `utils.lv_walk` accumulates each interval's ``M`` and
+        ``Sigma^2`` inside its own loop, so no ``[batch, sims, n]`` tensor exists but the draws.
+        """
+        steps = [max(int(round(float(dt) * self.steps_per_year / self.step_days)), 1)
+                 for dt in deltas]
+        delta = torch.cat([(dt / n).expand(n) for dt, n in zip(deltas, steps)])
+        block = torch.repeat_interleave(
+            torch.arange(len(steps), device=delta.device),
+            torch.tensor(steps, dtype=torch.long, device=delta.device))
+        curve = utils.curve_at(self.knots, self.l_values,
+                               float(row_t) + torch.cat([delta.new_zeros(1), delta.cumsum(0)]))
+        seed = delta.new_zeros(shared.simulation_batch, num_sims)
+        M, var, _, _ = utils.lv_walk(
+            self.params, curve, delta, *self.draws(shared, num_sims, delta),
+            state0=(seed + curve[0], seed), method='scan', blocks=block)
+        return M + (carry * deltas.reshape(-1, 1)).T.unsqueeze(1), utils.sqrt_or_zero(var)
+
+
 #: The OSS kits, keyed by the `SpotModel` valuation option each deal declares. A pricer looks its
-#: model up once (`oss_model_kit`) and never names one again, so a third GARCH family is a class
-#: here and a row in this dict rather than a fifth branch in four pricers.
+#: model up once (`oss_model_kit`) and never names one again, so a third family is a class here and
+#: a row in this dict rather than a fifth branch in four pricers.
 OSS_SPOT_MODEL_KITS = {'HestonNandi': PlainHestonNandiKit,
-                       'HestonNandiComponent': ComponentHestonNandiKit}
+                       'HestonNandiComponent': ComponentHestonNandiKit,
+                       'LogVar2FJ': LogVar2FJKit}
 
 
 def reciprocal_spot_scalars(scalars):
@@ -588,19 +664,18 @@ def reciprocal_spot_scalars(scalars):
 def oss_model_scalars(factor_dep, shared):
     """The declared spot model's parameter tensors, in the order its own kit unpacks them.
 
-    Read by the canonical name tuple the model owns (`utils.HN_PARAM_NAMES` /
-    `HN_COMPONENT_PARAM_NAMES` plus its curve). Scalars come out (-1, 1) to broadcast against the
-    [batch, sims] state; a curve parameter comes out flat, being indexed by knot and not by path.
-    Empty tuple where the deal prices GBM, which `oss_model_kit` reads as None.
+    Read by the canonical name tuple the KIT declares (`param_names` plus `curve_name`). Scalars
+    come out (-1, 1) to broadcast against the [batch, sims] state; a curve parameter comes out
+    flat, being indexed by knot and not by path. Empty tuple where the deal prices GBM, which
+    `oss_model_kit` reads as None.
     """
     if 'HN_Params' not in factor_dep:
         return ()
     code = factor_dep['HN_Params'][0]
+    kit = OSS_SPOT_MODEL_KITS[code[utils.FACTOR_INDEX_SubType]]
     block = {x.name[-1]: shared.t_Static_Buffer[x] for x in code[utils.FACTOR_INDEX_Offset]}
-    if code[utils.FACTOR_INDEX_SubType] == 'HestonNandiComponent':
-        return tuple([block[k].reshape(-1, 1) for k in utils.HN_COMPONENT_PARAM_NAMES] +
-                     [block[utils.HN_COMPONENT_CURVE_NAME].reshape(-1)])
-    return tuple(block[k].reshape(-1, 1) for k in utils.HN_PARAM_NAMES)
+    return tuple([block[k].reshape(-1, 1) for k in kit.param_names] +
+                 ([block[kit.curve_name].reshape(-1)] if kit.curve_name else []))
 
 
 def oss_model_kit(factor_dep, scalars):
@@ -614,12 +689,11 @@ def oss_model_kit(factor_dep, scalars):
     """
     if not scalars:
         return None
-    model = factor_dep['HN_Params'][0][utils.FACTOR_INDEX_SubType]
-    knots = factor_dep['HN_Params'][0][utils.FACTOR_INDEX_Tenor_Index].get(
-        utils.HN_COMPONENT_CURVE_NAME)
+    code = factor_dep['HN_Params'][0]
+    kit = OSS_SPOT_MODEL_KITS[code[utils.FACTOR_INDEX_SubType]]
     if factor_dep.get('HN_Invert'):
         scalars = reciprocal_spot_scalars(scalars)
-    return OSS_SPOT_MODEL_KITS[model](scalars, knots, factor_dep['HN_Steps_Per_Year'])
+    return kit(scalars, code[utils.FACTOR_INDEX_Tenor_Index].get(kit.curve_name), factor_dep)
 
 def cash_settle(shared, currency, time_index, value):
     """Book `value` against `currency` at `time_index`, if that date is a settlement point."""
@@ -801,6 +875,10 @@ def branch_and_weight(shared, deal_data):
     if 'HN_Params' in factor_dep:
         model = factor_dep['HN_Params'][0][utils.FACTOR_INDEX_SubType]
         stride = getattr(shared, 'hn_stride', False)
+        if not OSS_SPOT_MODEL_KITS[model].daily:
+            # a NON-daily kit's own conditioning step IS the fixing interval, so its `p` is that
+            # block's Phi and nothing here is approximated - the model is admitted unconditionally
+            return True
         if model == 'HestonNandiComponent' and stride:
             return True
         raise ValueError(
@@ -4459,7 +4537,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
         return mtm_list.mean(axis=2)
 
-    def sim_spot(offset, times, t_tenor, last_fixing, sobol, num_sims,
+    def sim_spot(offset, times, t_tenor, row_times, last_fixing, sobol, num_sims,
                  spot_prices, vols, carry, terminationDate, discount_rates, floating_leg,
                  past_fixings, *hn_scalars):
         """Inner one-step-survival Monte Carlo over one block of MTM rows; the mean PV per row.
@@ -4487,7 +4565,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         timesteps, num_samples = times.shape
         # the declared model as a walking kit - the pricer names it once, here
         kit = oss_model_kit(factor_dep, hn_scalars)
-        hn = kit is not None
+        hn = kit is not None and kit.daily
         # the by-products the caller performs once
         settled, settle_rows, event_rows, gaps, fired, survived = [], [], [], [], [], []
         alive, cash_on = [], []
@@ -4526,6 +4604,11 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                     fixing_aligned = False
                 if hn:
                     st = kit.seed()  # re-seed the variance state at the start of this MTM row
+                elif kit is not None and reduced_samples:
+                    # a NON-daily kit has no per-step state to carry: one internal-step walk here
+                    # gives every remaining interval its own Gaussian block law, drawn AFTER the
+                    # row's `u` and disjoint from it wherever `sobol` is on
+                    law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims)
 
                 P = torch.zeros((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
                 L = torch.ones((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
@@ -4589,18 +4672,21 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                 p = utils.norm_cdf(
                                     (torch.log(K / Sj) - (b_step - 0.5 * h)) / torch.sqrt(h))
                             else:
-                                vol = v[coupon_index].reshape(-1, 1)  # [batch,1]
-                                vol_dt = vol * torch.sqrt(dt)
-                                p = utils.norm_cdf(
-                                    (torch.log(K / Sj) - (forward_carry - 0.5 * vol * vol) * dt) / vol_dt)
+                                # THE INTERVAL'S OWN LAW as `(m, s)` - the kit's walked block, or
+                                # the step GBM simulates, the fixing interval BEING that step. `s`
+                                # shadows the row's spot, which `Sj` captured before the loop
+                                if kit is None:
+                                    vol = v[coupon_index].reshape(-1, 1)  # [batch,1]
+                                    m, s = ((forward_carry - 0.5 * vol * vol) * dt,
+                                            vol * torch.sqrt(dt))
+                                else:
+                                    m, s = law[0][..., coupon_index], law[1][..., coupon_index]
+                                p = utils.norm_cdf((torch.log(K / Sj) - m) / s)
                                 if putBarrier > 0.0:
                                     # held for the barrier block a screen below: `Sj` before the
-                                    # advance, this interval's `m` and `s`, the weight from BEFORE
-                                    # `p` enters `L`, and the breach region inside the surviving set.
-                                    # Under GBM the fixing interval IS the simulated step, so the
-                                    # crisp put leg takes the mixture's derivatives as the stride's does
-                                    interval = (None, Sj, (forward_carry - 0.5 * vol * vol) * dt,
-                                                vol_dt, L, min(putBarrier, K))
+                                    # advance, the interval's own law, the weight from BEFORE `p`
+                                    # enters `L`, and the breach region inside the surviving set
+                                    interval = (None, Sj, m, s, L, min(putBarrier, K))
                         else:
                             p = torch.where(K > Sj, 1.0, 0.0)
                             if tau == 0.0:
@@ -4670,9 +4756,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                     Sj, st = kit.advance(
                                         Sj, st, b_step, utils.norm_icdf(safe_pu))
                             else:
-                                Sj = Sj * (torch.exp(
-                                    (forward_carry - 0.5 * vol * vol) * dt + vol_dt * utils.norm_icdf(
-                                        safe_pu)) if dt > 0 else 1.0)
+                                Sj = Sj * (torch.exp(m + s * utils.norm_icdf(safe_pu))
+                                           if dt > 0 else 1.0)
                             coupon_index += 1
                         else:
                             fixing_aligned = True
@@ -4981,8 +5066,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 # compo: the simulation steps S*X, so each interval's vol is the PRODUCT's; the
                 # expiry-read else-branch above is already compo via adj['vol']
                 interval_vols = compo_vol(interval_vols, adj['fx_vol'].unsqueeze(1), adj['rho'])
-            simulate = partial(sim_spot, sample_index_t, sample_ts,
-                               all_fixings[:, 0], last_fixing, sobol, shared.MCMC_sims)
+            simulate = partial(sim_spot, sample_index_t, sample_ts, all_fixings[:, 0],
+                               daycount_fn(t_block[:, utils.TIME_GRID_MTM]), last_fixing, sobol,
+                               shared.MCMC_sims)
             theta = (spot_block, interval_vols, fwd_drifts, terminationDate, discount_rates,
                      floating_leg,
                      all_eq_samples if factor_dep['no_averaging'] else spot_block.new_empty(0)

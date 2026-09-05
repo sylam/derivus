@@ -857,7 +857,7 @@ def test_the_kit_answers_a_zero_length_walk_before_it_has_a_strip():
     scalars = [_tensor(COMPONENT_FACTOR[k]).reshape(-1, 1)
                for k in utils.HN_COMPONENT_PARAM_NAMES] + [
         torch.stack([_tensor(v) for v in curve[:, 1]])]
-    kit = ComponentHestonNandiKit(scalars, curve[:, 0], SPY)
+    kit = ComponentHestonNandiKit(scalars, curve[:, 0], {'HN_Steps_Per_Year': SPY})
 
     _, _, day = kit.seed()
     assert day == 0, 'the row does not open at trading day zero'
@@ -870,7 +870,7 @@ def test_the_kit_answers_a_zero_length_walk_before_it_has_a_strip():
         _tensor(COMPONENT_FACTOR['Rho']))
     assert torch.equal(kit.omegas(0, 21), expected), (
         'the strip built behind the zero-length call is not omega_t = L_(t+1) - rho*L_t')
-    warm = ComponentHestonNandiKit(scalars, curve[:, 0], SPY)
+    warm = ComponentHestonNandiKit(scalars, curve[:, 0], {'HN_Steps_Per_Year': SPY})
     assert torch.equal(kit.omegas(0, 21), warm.omegas(0, 21)), (
         'the strip built on the zero-length call differs from a longer walk\'s own')
 

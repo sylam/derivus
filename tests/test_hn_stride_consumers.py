@@ -114,7 +114,7 @@ def _kit():
     curve = f['L_Curve'].array
     scalars = [_t(f[k]).reshape(-1, 1) for k in utils.HN_COMPONENT_PARAM_NAMES]
     scalars += [torch.tensor(curve[:, 1], dtype=DT)]
-    return pricing.ComponentHestonNandiKit(scalars, curve[:, 0], SPY)
+    return pricing.ComponentHestonNandiKit(scalars, curve[:, 0], {'HN_Steps_Per_Year': SPY})
 
 
 class _Shared(object):

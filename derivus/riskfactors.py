@@ -1200,6 +1200,77 @@ class HestonNandiComponentModelParameters(Factor0D):
                     **{self.curve: self.param[self.curve].array[:, 1]})
 
 
+class LogVar2FJModelParameters(Factor0D):
+    """The LogVar2FJ parameters - two mean-reverting log-variance factors and a co-jump.
+
+    $h_t=\\exp(\\text{cap}(\\ell_t+s_t))$ is the annualised DIFFUSIVE variance; the slow factor
+    $\\ell$ reverts to **L_Curve** at $\\kappa_\\ell$ and the fast $s$ to zero at $\\kappa_s$, and a
+    compound-Poisson event moves the return by a Gaussian $N(\\mu_J,\\sigma_J^2)$ and lifts $s$ by
+    $\\nu$. Given the shocks and the counts a block return is exactly Gaussian, which is the whole
+    of the pricing (logvar2fj_spec.md).
+
+    **Lambda**, **Cap_A** and **Cap_Beta** are STRUCTURAL, not leaves: the counts' law is not on
+    the tape, and the cap is a guard that a calibrated model never reaches, so a derivative
+    reported at either would be wrong. The curve's knots are structural and its VALUES are
+    `bind='value'` leaves, as the component Heston-Nandi L curve's are.
+    """
+    fields = [
+        F('Kappa_L', 'Float', default=0, bind='value',
+          description='Slow reversion speed $\\kappa_\\ell$, per year'),
+        F('Sigma_L', 'Float', default=0, bind='value',
+          description='Slow vol-of-log-variance $\\sigma_\\ell$'),
+        F('Rho_L', 'Float', default=0, bind='value', description='Slow leverage $\\rho_\\ell$'),
+        F('Kappa_S', 'Float', default=0, bind='value',
+          description='Fast reversion speed $\\kappa_s$, per year'),
+        F('Sigma_S', 'Float', default=0, bind='value',
+          description='Fast vol-of-log-variance $\\sigma_s$'),
+        F('Rho_S', 'Float', default=0, bind='value', description='Fast leverage $\\rho_s$'),
+        F('Mu_J', 'Float', default=0, bind='value', description='Mean log-return jump $\\mu_J$'),
+        F('Sigma_J', 'Float', default=0, bind='value', description='Jump dispersion $\\sigma_J$'),
+        F('Nu', 'Float', default=0, bind='value',
+          description='Fast log-variance co-jump $\\nu$ per event'),
+        F('Lambda', 'Float', default=0,
+          description='Jump intensity $\\lambda$ per year - STRUCTURAL, bumped by re-authoring'),
+        F('Cap_A', 'Float', default=2.772588722239781,
+          description='Log-variance cap level $a$ - STRUCTURAL, default $\\log 16$ (400% vol)'),
+        F('Cap_Beta', 'Float', default=0.5,
+          description='Log-variance cap width $\\beta$ - STRUCTURAL'),
+        F('L_Curve', 'Curve', bind='value',
+          description='Log annualised DIFFUSIVE variance $L$ at knots in years, piecewise linear '
+                      'between them and flat outside')
+    ]
+    #: one source of truth for each name set - utils owns the canonical tuples, which the free
+    #: functions and the kit consume by the same names
+    parameters = utils.LV_PARAM_NAMES
+    structural = utils.LV_STRUCTURAL_NAMES
+    curve = utils.LV_CURVE_NAME
+
+    def __init__(self, param):
+        super(LogVar2FJModelParameters, self).__init__(param)
+
+    def get_tenor(self):
+        """The L curve's knots, in years - the ONE term structure this factor carries."""
+        return self.param[self.curve].array[:, 0]
+
+    def get_tenor_indices(self):
+        zero = np.array([[0.0]])
+        return dict({x: zero for x in self.parameters},
+                    **{self.curve: self.get_tenor().reshape(-1, 1)})
+
+    def curve_tenors(self):
+        """Every structural fact a consumer needs off this factor: the curve's knots, and the three
+        parameters that are not leaves. Resolved once at dependency time, so nothing rides the
+        tensor side that carries no derivative."""
+        return dict({self.curve: self.get_tenor()},
+                    **{x: self.param[x] for x in self.structural})
+
+    def current_value(self, tenors=None, offset=0.0):
+        """The LEAVES only - the nine scalars and the curve's values, which is what `bind='value'`
+        publishes and what a greek flows to."""
+        return dict({x: np.array([self.param[x]]) for x in self.parameters},
+                    **{self.curve: self.param[self.curve].array[:, 1]})
+
+
 class GBMAssetPriceTSModelParameters(Factor1D):
     """
     Represents the Bootstrapped TS implied parameters for a risk neutral process

@@ -264,10 +264,10 @@ def test_unknown_spot_model_fails_loudly(build, name):
 
     THAT ALONE IS SELF-REFERENTIAL - the message quotes the class's own declaration, so it would
     hold on a deal that accepted a model no pricer can walk. The second source is the KIT REGISTRY:
-    `pricing.OSS_SPOT_MODEL_KITS` is what `oss_model_kit` looks a name up in, so a deal type may
-    declare exactly the models that have a kit, plus 'None' (GBM, which has no kit by definition).
-    A family added to one side and not the other is a deal that declares a model it cannot price,
-    or a kit nothing reaches."""
+    `pricing.OSS_SPOT_MODEL_KITS` is what `oss_model_kit` looks a name up in. The two sides are not
+    equal - a family reaches the deal types whose pricers walk it, one at a time - so what is
+    checked is each containment: a deal declares no model without a kit, and no kit goes
+    unreached by every deal type."""
     import derivus.instruments as _i
     import derivus.pricing as _p
 
@@ -277,9 +277,13 @@ def test_unknown_spot_model_fails_loudly(build, name):
     accepted = getattr(_i, name).spot_models
     assert 'HestonNandi' in accepted, 'the fixture deal no longer declares a GARCH family at all'
     assert 'Heston_Nandi' in str(e.value) and str(accepted) in str(e.value)
-    assert set(accepted) == set(_p.OSS_SPOT_MODEL_KITS) | {'None'}, (
-        '%s declares %r but the OSS kit registry carries %r - one side grew a GARCH family the '
-        'other has not' % (name, sorted(accepted), sorted(_p.OSS_SPOT_MODEL_KITS)))
+    kits = set(_p.OSS_SPOT_MODEL_KITS)
+    assert set(accepted) - {'None'} <= kits, (
+        '%s declares %r but the OSS kit registry carries %r - a deal declaring a model it cannot '
+        'price' % (name, sorted(accepted), sorted(kits)))
+    reached = {m for cls in vars(_i).values() for m in getattr(cls, 'spot_models', ())}
+    assert kits <= reached, ('no deal type declares %r - a kit nothing reaches'
+                            % sorted(kits - reached))
 
 
 @pytest.mark.parametrize('build', [
