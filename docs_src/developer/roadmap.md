@@ -381,10 +381,14 @@ set; and five model items in the punchlist below.
   at 65,536 paths: spot **0.54%** (ladder flat 1.05%), rates **0.81%** (2.06%), `Mu_J` **1.97%**
   (0.76%), and - nothing registering on this arm, the put leg being spliced - `Greeks: 'All'` FLOWS
   where the component arm refuses, the spot Hessian cell landing **0.013%** off the AAD delta's own
-  ladder. `Sigma_J` reads 3.72% against a ladder flat to 1.96% and the L curve 6.59% against one
-  flat to 3.09%; `Nu`, `Rho_S` and `Sigma_S` are reported against ladders that do not plateau
-  (11.8%-32.4%) and gate nothing - those rungs are a fifth to a quarter of the parameter, and
-  phase 0's standalone bump at 1e-4 agrees with the same functions' autograd to 1e-7. THE CVA DELTA IS THE OPEN ROW: at 2,048 outer the authored daily
+  ladder. THE TAIL PARAMETERS' LADDERS ARE THE CRISP VALUE'S NOISE, not the tape's: on the crisp
+  arm `Sigma_J`, `Nu`, `Rho_S` and `Sigma_S` read 3-28% off ladders that scatter 2-112%, because
+  a finite difference in a parameter acting on the tails counts knock-in flips in a region few
+  paths reach; the same AAD (identical on both arms, the splice) against ladders of the SMOOTH
+  value (`Branch_And_Weight: 'Yes'`, the put integrated) reads **0.02% / 0.01% / 0.02% /
+  0.00%**, ladders flat to 0.07%. At the spec's revised defaults (2026-09-05: sigma_l 0.4,
+  sigma_s 1.5, lambda 0.35, mu_J -0.15, beta 0.25) the crisp document's spot reads 0.53%, rates
+  1.17%, the L curve 1.11%, `Mu_J` 0.28% on a ladder flat to 0.03%, gamma 0.02%. THE CVA DELTA IS THE OPEN ROW: at 2,048 outer the authored daily
   step does not fit the card at all, and at a 21-day step the uncollateralised spot delta reads
   +5.524e-5 against a ladder extrapolating to +5.55e-5 by three points or +5.82e-5 by the two
   finest - 0.5% to 5.1% - while the collateralised row runs out of memory there and is unread.
