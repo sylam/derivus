@@ -547,7 +547,7 @@ class Config(object):
         A bootstrapper that leaves no `<type>.*` price factor behind silently did nothing (misnamed
         Market Prices block, or class-name mismatch), so every run is checked. The curve and FX vol
         bootstraps write ordinary `InterestRate`/`FXVol` blocks and declare that as
-        `price_factor_type`; the other five are named for their own class.
+        `price_factor_type`; the other six are named for their own class.
         """
         # need to implement ordered dicts in the params obj - TODO
         for bootstrapper_name, params in sorted(self.params['Bootstrapper Configuration'].items()):

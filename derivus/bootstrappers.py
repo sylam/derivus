@@ -847,6 +847,12 @@ class HestonNandiModelParameters(object):
         return np.array([np.log(omega), psi, -share if gamma < 0.0 else share,
                          abs(gamma) / 1000.0, np.log(h0)])
 
+    def tensor(self, x):
+        return torch.tensor(float(x), device=self.device, dtype=self.prec)
+
+    def vector(self, xs):
+        return torch.tensor([float(x) for x in xs], device=self.device, dtype=self.prec)
+
     @classmethod
     def moneyness(cls, strike, spot, forward, vol_surface, use_forward, invert_moneyness):
         """The moneyness coordinate to look the vol surface up at.
@@ -1177,9 +1183,10 @@ class HestonNandiModelParameters(object):
                 # forward and inverts where the pair's own deals invert it
                 'Use_Forward': 'Yes', 'Invert_Moneyness': 'Yes' if invert else 'No',
                 # the step clock is what the fitted parameters mean - a deal's `Steps_Per_Year`
-                # must be this number - so it is stated, and read off the field's own declaration
-                'Steps_Per_Year': declared['Steps_Per_Year'],
-                'Quadrature_Panels': declared['Quadrature_Panels'],
+                # must be this number - so it is stated, at the field's own declared default. A
+                # family that inverts nothing declares no panel count and gets no line
+                **{name: declared[name] for name in ('Steps_Per_Year', 'Quadrature_Panels')
+                   if name in declared},
                 'Quote_Timestamp': price_factors[vol_name].get('Quote_Timestamp') or '',
                 'Quote_Source': source,
                 'European_Options': quotes}}
@@ -1226,6 +1233,78 @@ class HestonNandiModelParameters(object):
         q = 0.0 if carry is None else float(carry.current_value(t))
         return q if funding is None else q + (discount_rate - float(funding.current_value(t)))
 
+    @classmethod
+    def resolve_block(cls, market_price, instrument, price_factors, factor_interp, sys_params):
+        """`({field: constructed factor}, spot)` - everything a block names, resolved before an
+        option is looked at, so a book carrying two ladders fails on the one that is wrong.
+
+        A missing reference refuses by name (`resolve_references`), and so does a surface whose vol
+        is not a table lookup at a strike: a mis-looked-up vol converges to the wrong answer.
+        """
+        factors = cls.resolve_references(market_price, instrument, price_factors, factor_interp)
+        surface = factors.get('Volatility')
+        if surface is not None:
+            surface.delta = sys_params.get('Volatility_Delta', 0.0)
+        if instrument['Quote_Type'] == 'Implied_Volatility':
+            subtype = surface.get_subtype()
+            if subtype[0] not in cls.tabular_surfaces:
+                raise ValueError(
+                    '{0}: volatility {1} has Surface_Type {2} (Moneyness_Rule {3}); only {4} '
+                    'surfaces carry a vol AT A STRIKE, which is what Quote_Type '
+                    'Implied_Volatility prices its target premium at. Quote the premiums directly '
+                    '(Quote_Type Premium) instead'.format(
+                        market_price, instrument['Volatility'], subtype[0], subtype[1],
+                        '/'.join(cls.tabular_surfaces)))
+        return factors, float(factors['Underlying'].current_value()[0])
+
+    def prepare_quotes(self, sys_params, instrument, factors, spot):
+        """Each `European_Options` row as `(option, t, r, q, forward, sign, strike, sigma,
+        premium)` - the numbers every family in this hierarchy builds its objective from.
+
+        `t` is the `Discount_Rate` curve's own day count accrual, the forward grows at
+        `effective_yield`'s `r - q`, and a blank `Strike` is the forward. Under
+        `Implied_Volatility` the premium is Black at the surface's vol AT THE STRIKE; under
+        `Premium` the quote IS the premium and `sigma` is inverted back out of it, which is what
+        seeds a fit and what its diagnostics are read in.
+        """
+        discount, surface = factors['Discount_Rate'], factors.get('Volatility')
+        carry, funding = factors.get('Yield'), factors.get('Funding_Rate')
+        quote_type = instrument['Quote_Type']
+        use_forward = instrument.get('Use_Forward') == 'Yes'
+        invert_moneyness = instrument.get('Invert_Moneyness') == 'Yes'
+        for option in instrument['European_Options']:
+            t = discount.get_day_count_accrual(
+                sys_params['Base_Date'], (option['Expiry_Date'] - sys_params['Base_Date']).days)
+            r = float(discount.current_value(t))
+            q = self.effective_yield(r, funding, carry, t)
+            forward = spot * np.exp((r - q) * t)
+            sign = 1.0 if option['Option_Type'] == 'Call' else -1.0
+            strike = forward if not option['Strike'] else option['Strike']
+            if quote_type == 'Implied_Volatility':
+                moneyness = self.moneyness(
+                    strike, spot, forward, surface, use_forward, invert_moneyness)
+                sigma = surface.current_value([[moneyness, t]])[0] if not option[
+                    'Quoted_Market_Value'] else option['Quoted_Market_Value']
+                sigma += surface.delta
+                premium = utils.black_european_option_price(
+                    forward, strike, r, sigma, t, option['Units'], sign)
+            else:
+                premium = option['Units'] * option['Quoted_Market_Value']
+                # back out the Black vol of the quote (seeds the fit and the diagnostics)
+                call = option['Quoted_Market_Value'] + (0.0 if sign > 0 else
+                                                        forward - strike) * np.exp(-r * t)
+                sigma = np.sqrt(utils.bs_implied_total_var(
+                    call, spot * np.exp(-q * t), strike, r * t, 1) / t)
+            yield option, t, r, q, forward, sign, strike, sigma, premium
+
+    @staticmethod
+    def quote_trailer(instrument):
+        """Where the quotes came from, in the record beside the parameters they produced."""
+        if instrument.get('Quote_Source') or instrument.get('Quote_Timestamp'):
+            logging.info('  quotes: {} (as at {})'.format(
+                instrument.get('Quote_Source') or 'authored by hand',
+                instrument.get('Quote_Timestamp') or 'no stated time'))
+
     def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices, calendars, debug=None):
         '''
         Calibrates the risk neutral Heston-Nandi GARCH(1,1) parameters to a set of European options
@@ -1245,66 +1324,19 @@ class HestonNandiModelParameters(object):
             if market_factor.type == self.market_factor_type:
                 instrument = implied_params['instrument']
 
-                # the spot and discount curve, plus whatever else this quote type reads
-                factors = self.resolve_references(
-                    market_price, instrument, price_factors, factor_interp)
-                underlying, discount = factors['Underlying'], factors['Discount_Rate']
-                carry, funding = factors.get('Yield'), factors.get('Funding_Rate')
-                vol_surface = factors.get('Volatility')
-                if vol_surface is not None:
-                    vol_surface.delta = sys_params.get('Volatility_Delta', 0.0)
-
-                spot = float(underlying.current_value()[0])
-                quote_type = instrument['Quote_Type']
+                factors, spot = self.resolve_block(
+                    market_price, instrument, price_factors, factor_interp, sys_params)
                 steps_per_year = instrument.get('Steps_Per_Year', 252.0)
                 panels = instrument.get('Quadrature_Panels', 64)
-                use_forward = instrument.get('Use_Forward') == 'Yes'
-                invert_moneyness = instrument.get('Invert_Moneyness') == 'Yes'
-
-                # a mis-looked-up vol converges to the wrong answer, so refuse rather than guess
-                if quote_type == 'Implied_Volatility':
-                    subtype = vol_surface.get_subtype()
-                    if subtype[0] not in self.tabular_surfaces:
-                        raise ValueError(
-                            '{0}: volatility {1} has Surface_Type {2} (Moneyness_Rule {3}); only '
-                            '{4} surfaces carry a vol AT A STRIKE, which is what Quote_Type '
-                            'Implied_Volatility prices its target premium at. Quote the premiums '
-                            'directly (Quote_Type Premium) instead'.format(
-                                market_price, instrument['Volatility'], subtype[0], subtype[1],
-                                '/'.join(self.tabular_surfaces)))
 
                 # grouped by expiry, so one expiry's strikes share a characteristic function
                 expiries = {}
-                for option in instrument['European_Options']:
-                    t = discount.get_day_count_accrual(
-                        sys_params['Base_Date'], (option['Expiry_Date'] - sys_params['Base_Date']).days)
-                    r = float(discount.current_value(t))
-                    q = self.effective_yield(r, funding, carry, t)
-                    forward = spot * np.exp((r - q) * t)
-                    sign = 1.0 if option['Option_Type'] == 'Call' else -1.0
-                    option['Strike'] = forward if not option['Strike'] else option['Strike']
-                    option['r'] = r
-                    option['q'] = q
-                    option['T'] = t
+                for option, t, r, q, forward, sign, strike, sigma, premium in self.prepare_quotes(
+                        sys_params, instrument, factors, spot):
+                    option['Strike'], option['r'], option['q'], option['T'] = strike, r, q, t
                     # GARCH steps to expiry; the carry is spread so exp(-b_step*n) is exp(-(r-q)*t)
                     option['n'] = max(int(round(t * steps_per_year)), 1)
-                    if quote_type == 'Implied_Volatility':
-                        moneyness = self.moneyness(
-                            option['Strike'], spot, forward, vol_surface, use_forward, invert_moneyness)
-                        sigma = vol_surface.current_value([[moneyness, t]])[0] if not option[
-                            'Quoted_Market_Value'] else option['Quoted_Market_Value']
-                        sigma += vol_surface.delta
-                        option['Moneyness'] = moneyness
-                        option['Premium'] = utils.black_european_option_price(
-                            forward, option['Strike'], r, sigma, t, option['Units'], sign)
-                    else:
-                        option['Premium'] = option['Units'] * option['Quoted_Market_Value']
-                        # back out the Black vol of the quote (seeds the fit and the diagnostics)
-                        call = option['Quoted_Market_Value'] + (0.0 if sign > 0 else
-                                                                forward - option['Strike']) * np.exp(-r * t)
-                        sigma = np.sqrt(utils.bs_implied_total_var(
-                            call, spot * np.exp(-q * t), option['Strike'], r * t, 1) / t)
-                    option['sigma'] = sigma
+                    option['Premium'], option['sigma'] = premium, sigma
                     expiries.setdefault(option['n'], []).append(option)
 
                 groups = [(n, tensor((opts[0]['r'] - opts[0]['q']) * opts[0]['T'] / n),
@@ -1366,11 +1398,7 @@ class HestonNandiModelParameters(object):
                         utils.hn_persistence(alpha, beta, gamma),
                         utils.hn_ann_vol(omega, alpha, beta, gamma, steps_per_year),
                         result.fun, result.message))
-                # where the quotes came from, in the record beside the parameters they produced
-                if instrument.get('Quote_Source') or instrument.get('Quote_Timestamp'):
-                    logging.info('  quotes: {} (as at {})'.format(
-                        instrument.get('Quote_Source') or 'authored by hand',
-                        instrument.get('Quote_Timestamp') or 'no stated time'))
+                self.quote_trailer(instrument)
 
                 # canonical HN_PARAM_NAMES order, paired with reparam's output tuple
                 price_factors[param_name] = {
@@ -1822,12 +1850,6 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
             misses.append(self.tensor(0.0))
         return levels, notes, misses
 
-    def tensor(self, x):
-        return torch.tensor(float(x), device=self.device, dtype=self.prec)
-
-    def vector(self, xs):
-        return torch.tensor([float(x) for x in xs], device=self.device, dtype=self.prec)
-
     # ----------------------------------------------------------------------------------
     # the outer fit
     # ----------------------------------------------------------------------------------
@@ -1868,23 +1890,12 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
                     'InterestRatePrices, GBMAssetPriceTSModelPrices, HullWhite2FactorModelPrices), '
                     'which solve through torch rather than through brentq'.format(market_price))
 
-            # resolved before an option is looked at; a missing one refuses by name
-            factors = self.resolve_references(
-                market_price, instrument, price_factors, factor_interp)
-            underlying, discount = factors['Underlying'], factors['Discount_Rate']
-            carry, funding = factors.get('Yield'), factors.get('Funding_Rate')
-            vol_surface = factors.get('Volatility')
-            if vol_surface is not None:
-                vol_surface.delta = sys_params.get('Volatility_Delta', 0.0)
-
-            spot = float(underlying.current_value()[0])
-            quote_type = instrument['Quote_Type']
+            factors, spot = self.resolve_block(
+                market_price, instrument, price_factors, factor_interp, sys_params)
             # every default read off the field's own declaration, so the two cannot disagree
             declared = {field.name: field.default for field in self.fields}
             spy = float(instrument.get('Steps_Per_Year', declared['Steps_Per_Year']))
             panels = instrument.get('Quadrature_Panels', declared['Quadrature_Panels'])
-            use_forward = instrument.get('Use_Forward') == 'Yes'
-            invert_moneyness = instrument.get('Invert_Moneyness') == 'Yes'
             rho = float(instrument.get('Rho', declared['Rho']))
             if not 0.0 <= rho < 1.0:
                 raise ValueError(
@@ -1904,43 +1915,12 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
             tolerance = float(instrument.get('Tolerance', declared['Tolerance']))
             pillar_tol = float(instrument.get('Pillar_Tolerance', declared['Pillar_Tolerance']))
 
-            if quote_type == 'Implied_Volatility':
-                subtype = vol_surface.get_subtype()
-                if subtype[0] not in self.tabular_surfaces:
-                    raise ValueError(
-                        '{0}: volatility {1} has Surface_Type {2} (Moneyness_Rule {3}); only {4} '
-                        'surfaces carry a vol AT A STRIKE, which is what Quote_Type '
-                        'Implied_Volatility prices its target premium at. Quote the premiums '
-                        'directly (Quote_Type Premium) instead'.format(
-                            market_price, instrument['Volatility'], subtype[0], subtype[1],
-                            '/'.join(self.tabular_surfaces)))
-
             rows = []
-            for option in instrument['European_Options']:
-                t = discount.get_day_count_accrual(
-                    sys_params['Base_Date'], (option['Expiry_Date'] - sys_params['Base_Date']).days)
-                r = float(discount.current_value(t))
-                q = self.effective_yield(r, funding, carry, t)
-                forward = spot * np.exp((r - q) * t)
-                sign = 1.0 if option['Option_Type'] == 'Call' else -1.0
-                option['Strike'] = forward if not option['Strike'] else option['Strike']
-                option['T'] = t
+            for option, t, r, q, forward, sign, strike, sigma, premium in self.prepare_quotes(
+                    sys_params, instrument, factors, spot):
+                option['Strike'], option['T'] = strike, t
                 option['n'] = max(int(round(t * spy)), 1)
-                if quote_type == 'Implied_Volatility':
-                    moneyness = self.moneyness(
-                        option['Strike'], spot, forward, vol_surface, use_forward, invert_moneyness)
-                    sigma = vol_surface.current_value([[moneyness, t]])[0] if not option[
-                        'Quoted_Market_Value'] else option['Quoted_Market_Value']
-                    sigma += vol_surface.delta
-                    option['Premium'] = utils.black_european_option_price(
-                        forward, option['Strike'], r, sigma, t, option['Units'], sign)
-                else:
-                    option['Premium'] = option['Units'] * option['Quoted_Market_Value']
-                    call = option['Quoted_Market_Value'] + (0.0 if sign > 0 else
-                                                            forward - option['Strike']) * np.exp(-r * t)
-                    sigma = np.sqrt(utils.bs_implied_total_var(
-                        call, spot * np.exp(-q * t), option['Strike'], r * t, 1) / t)
-                option['sigma'] = sigma
+                option['Premium'], option['sigma'] = premium, sigma
                 # the per-step carry and the yield rescale, as the plain family builds them
                 rows.append((option, (r - q) * t / option['n'], np.exp(-q * t), forward))
 
@@ -2142,7 +2122,6 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
         Both premia go back through `bs_implied_total_var` off the forward, with the units and the
         yield rescale stripped so the two sides are the same contract. The objective minimises a
         premium residual; a desk reads a vol one. Returned absolute - the caller scales to points."""
-        forward = float(spot) * np.exp(float(b) * int(n))
         scale = float(units) * float(yield_discount)
         both = []
         for value in (fitted, premium):
@@ -2207,10 +2186,1037 @@ class HestonNandiComponentModelParameters(HestonNandiModelParameters):
         if state.get('last_refusal'):
             logging.info('  the search visited infeasible candidates; the last said: {}'.format(
                 state['last_refusal']))
-        if instrument.get('Quote_Source') or instrument.get('Quote_Timestamp'):
-            logging.info('  quotes: {} (as at {})'.format(
-                instrument.get('Quote_Source') or 'authored by hand',
-                instrument.get('Quote_Timestamp') or 'no stated time'))
+        self.quote_trailer(instrument)
+
+
+#: One quote inside the fit: its block index `j`, the contract (`ratio` being the strike over spot,
+#: built once because the price reads it every evaluation), and the two market numbers the
+#: vol-space residual is built from - the target premium and the Black vega at the quoted vol.
+LVQuote = namedtuple(
+    'lv_quote',
+    'j spot strike ratio is_call units T rate carry forward premium vega weight sigma')
+
+#: One forward-start target: a window `[j1, j2]` of the same walk, a strike as a fraction of
+#: S_T1, and the same two market numbers taken at the target vol.
+LVForward = namedtuple(
+    'lv_forward', 'j1 j2 T1 tenor strike ratio carry premium vega weight target')
+
+#: The three structural numbers the PRICE FACTOR declares, read here rather than re-spelt so the
+#: calibrator's bound and the factor's own load assertion cannot disagree.
+LV_FACTOR_DEFAULTS = {field.name: field.default
+                      for field in riskfactors.LogVar2FJModelParameters.fields}
+
+
+class LogVar2FJModelParameters(HestonNandiModelParameters):
+    documentation = (
+        'Fx And Equity',
+        ['The LogVar2FJ model (`logvar2fj_spec.md`) fitted to European options and, where the desk',
+         'has them, to FORWARD-START smiles. Two mean-reverting log-variance factors carry a',
+         'compound-Poisson co-jump:',
+         '',
+         '$$h_t=\\exp\\big(\\mathrm{cap}(\\ell_t+s_t)\\big),\\qquad',
+         '\\ell\\to L(t)\\ \\text{at}\\ \\kappa_\\ell,\\qquad s\\to0\\ \\text{at}\\ \\kappa_s$$',
+         '',
+         'and an event moves the return by $N(\\mu_J(t),\\sigma_J^2)$ while lifting $s$ by $\\nu$.',
+         'GIVEN the two shocks and the counts a block return is EXACTLY Gaussian, so a vanilla is',
+         'that block\'s conditional Black averaged over paths - `pricing.lognormal_fired_gain` per',
+         'path, no new closed form - and the whole objective stays on one AAD tape. Each block is',
+         'priced off its own SAMPLE forward, a martingale control variate that costs one',
+         '`logsumexp` and takes the fixed draws\' level bias out of every strike at once.',
+         '',
+         'THE OBJECTIVE IS IN VOL SPACE TO FIRST ORDER. Each quote contributes',
+         '$(V_{model}-V_{market})/\\mathcal{V}_{market}$ with $\\mathcal{V}$ the Black vega at the',
+         'quoted vol, so autograd carries the residual with no root find on the tape. The draws are',
+         'FIXED and antithetic, which is what makes the objective deterministic and its gradient',
+         'the derivative of the number `least_squares` is minimising. The report prints the TRUE',
+         'inversion of both premia, unweighted and vega-weighted: three functionals, named, because',
+         'a fit is quoted in whichever the reader had in mind.',
+         '',
+         'ONE WALK PER EVALUATION, ON THE QUOTES\' OWN CLOCK. The internal grid steps',
+         '*Internal_Step_Days* trading days on the *Steps_Per_Year* clock, and a block ends at every',
+         'quoted maturity and at every forward target\'s $T_1$ and $T_2$ - its last step a STUB',
+         'landing it exactly on $T$, so the variance the fit reads at a maturity is the variance a',
+         'pricer reads at that tenor of the curve written out. The block sums are cumulated, so a',
+         'maturity is a prefix and a forward window the difference of two prefixes.',
+         '',
+         'THE STAGES (spec 5.2), warm-started, each `least_squares` over its own subset:',
+         '',
+         '0. $\\kappa_\\ell$, $\\kappa_s$, $\\lambda$ and the cap are STRUCTURAL and never enter a',
+         'fitted vector. $\\mu_J$ seeds at $\\log$ *Wing_Strike* and $\\sigma_J$ at half that',
+         'magnitude, then $\\lambda=w_J\\xi_0/(\\mu_J^2+\\sigma_J^2)$ - the wing a desk hedges is ONE',
+         'jump, and vanillas do not identify $\\lambda$ apart from the jump sizes.',
+         '1. The curve $L$ from the ATM term structure through spec 2.6\'s mapping, then RE-SOLVED',
+         'pillar by pillar against the model\'s own ATM price - sequentially from the front, which',
+         'is exactly triangular. $L(0)$ is TIED to the first pillar (5.4.3): no option separates',
+         'them, and a free phase there reprices nothing. Re-run after every later stage.',
+         '2. $(\\mu_J,\\sigma_J)$ on the 1-3 month rows. 3. $(\\rho_s,\\sigma_s,\\nu)$ on the 1-12',
+         'month rows. 4. $(\\rho_\\ell,\\sigma_\\ell)$ beyond one year, left at zero where the',
+         'surface quotes nothing there.',
+         '5. THE FORWARD BLOCK, in the order spec 5.3 states and only where *Forward_Smiles* is',
+         'set: the later buckets of $\\mu_J(t)$, then of $\\rho_s(t)$, then the jump share $w_J$ by',
+         'a BOUNDED SCALAR SEARCH - $w_J$ moves $\\lambda$, which moves integer counts, so it is',
+         'not a coordinate any Jacobian can carry. The spot smile at $T$ never sees a bucket later',
+         'than $T$ and a forward smile prices on nothing else, which is why the lever is CALENDAR',
+         'TIME and not the vol state (2.3.1, measured three ways). The forward row priced is',
+         '$E[(S_{T_2}/S_{T_1}-k)^+]$; a TRADED forward-start is',
+         '$E[S_{T_1}(R-k)^+]/E[S_{T_1}]$, about 0.4 vol points of level away, so a market quote',
+         'wants the share measure and a reference model\'s slopes do not.',
+         '6. A joint polish over everything but $\\lambda$, the $\\kappa$\'s and the cap.',
+         '',
+         'BOUNDS LIVE HERE AND NOWHERE ELSE. The engine puts no transform on $\\rho_s$ - one cost a',
+         'tenth of the spot skew before it was found - so the box is the calibrator\'s:',
+         '$\\rho_s\\in[-\\sqrt{1-\\rho_\\ell^2-c_{min}},0]$, re-derived as $\\rho_\\ell$ moves, with a',
+         'soft penalty sized to bite in the last percent of it. *C_Min* is the SAME declaration the',
+         'price factor asserts at load, so the fit cannot land past what the model will read, and',
+         '$c=1-\\rho_s^2-\\rho_\\ell^2$ is the dial between second-order noise and the 105-120%',
+         'residual. A bucket landing ON the box is the box stopping $\\rho_s$ rather than the data,',
+         'which is a surface asking for a ONE-SHOCK model: REFUSED by name with the bucket, its',
+         '$c$, and the convexity residual that goes with the floor (2.2.2). There is no `Floor`',
+         'arm and no *Stationary_Spread* field: the stationary log-vol sd is reported.',
+         '',
+         'WHAT THE FIT REPORTS. RMSE in vol points per maturity, and over the surface both',
+         'unweighted and vega-weighted; the wing residual at 70/80% and the convexity residual at',
+         '110/120%; the jump share asked and the one REALISED as',
+         '$\\lambda(\\mu_J^2+\\sigma_J^2)/\\xi_0$, which is the quantity 5.1\'s box is applied to;',
+         'the leverage products and $c$ with its efficiency factor $(\\sqrt c/0.22)^3$; the',
+         'stationary log-vol sd, flagged outside [0.4, 0.9]; the cap headroom mass, which REFUSES',
+         'above 1e-5 because the cap is a guard and not a modelling device; the stickiness ratios',
+         '$\\psi(T_1,\\Delta)$ model beside target; and THE IDENTIFICATION TABLE - the SVD of the',
+         'DATA rows of `least_squares`\' own Jacobian at each fitted point, its columns scaled by',
+         '$1/\\|J_{:,j}\\|$ (the `x_scale=\'jac\'` scaling), naming the parameter loadings of every',
+         'direction below *Jacobian_Rcond* times the largest. The penalty rows are left out because',
+         'their singular value is an algebraic constant of *C_Min*, and the unscaled column norms',
+         'go beside the table because scaling reads conditioning: a well-conditioned direction',
+         'whose column norm is 1e-6 moves nothing. With *Forward_Smiles* set the polish\'s table is',
+         'taken TWICE, with the forward rows and without, which is what says whether the later',
+         'bucket is pinned by them or by nothing.',
+         '',
+         'THE FAILURE MODE IS REPORTED BY NAME (spec 5.3): a vanilla RMSE degraded by more than 0.1',
+         'vol points at the target maturities, or a composition residual above 0.3 at the first',
+         'rung BEYOND the last bucket boundary - the rung that is the composition of the two',
+         'conditional laws - means the forward target is asking for a conditional law this model',
+         'does not have with these buckets. The structure is not refined further without a',
+         'decision.'
+         ]
+    )
+
+    market_factor_type = 'LogVar2FJModelPrices'
+    #: The fit runs on the CPU whatever device the job was constructed with. One evaluation is a
+    #: Python loop over internal steps on `[paths]` tensors and so is dispatch-bound rather than
+    #: bandwidth-bound: 504 daily steps at 8192 paths measure 0.36 s here against 0.57 s on an
+    #: RTX 3090, and the vmapped backward 1.9 s either way.
+    device = torch.device('cpu')
+
+    identification_note = ('the forward-smile targets: the later buckets of Rho_S and Mu_J are '
+                           'identified by them and by nothing else')
+
+    #: The plain family's block, less the Fourier panel count this model has no inversion for, plus
+    #: this family's own. `European_Options` stays LAST, as it is there.
+    fields = [field for field in HestonNandiModelParameters.fields[:-1]
+              if field.name != 'Quadrature_Panels'] + [
+        F('Internal_Step_Days', 'Integer', default=1,
+          description='Trading days per INTERNAL step of the walk, on the Steps_Per_Year clock. '
+                      'Delta is a modelling choice, not a nuisance: a deal priced at a step the '
+                      'fit did not run on simulates a different model. It is NOT written onto the '
+                      'factor and nothing asserts the match, so the cost is a caller\'s to carry: '
+                      'landing a third of a daily step past the tenor a curve knot sits at moves '
+                      'the shortest ATM vol by 0.12 vol points'),
+        F('Paths', 'Integer', default=8192,
+          description='Paths the fixed antithetic draws carry. The objective is deterministic in '
+                      'them, so this sets the noise floor under every fitted number rather than a '
+                      'confidence interval around it: at the default, re-running a 34-quote fit at '
+                      'three seeds moves the ATM term structure by 0.1 to 0.6 vol points and an L '
+                      'pillar by up to 2.6'),
+        F('Random_Seed', 'Integer', default=1,
+          description='Seeds the fixed draws. Re-running at another seed is the honest way to '
+                      'read how much of a parameter is the surface and how much is the sample'),
+        F('Kappa_L', 'Float', default=0.5,
+          description='STRUCTURAL slow reversion speed, per year - a prior, never fitted: a '
+                      'sub-year ladder does not identify a reversion speed apart from the '
+                      'vol-of-vol it multiplies'),
+        F('Kappa_S', 'Float', default=6.0,
+          description='STRUCTURAL fast reversion speed, per year, on the same terms as Kappa_L'),
+        F('Cap_A', 'Float', default=LV_FACTOR_DEFAULTS['Cap_A'],
+          description='STRUCTURAL log-variance cap level, raised to L(0) + 6*s_inf where the '
+                      'fitted spread asks for it (spec 2.7 level rule) and never lowered. The '
+                      'default is 1000% vol; a fit reaching within 5 Cap_Beta of it is refused'),
+        F('Cap_Beta', 'Float', default=LV_FACTOR_DEFAULTS['Cap_Beta'],
+          description='STRUCTURAL log-variance cap width'),
+        F('C_Min', 'Float', default=LV_FACTOR_DEFAULTS['C_Min'],
+          description='Floor on the idiosyncratic share c = 1 - Rho_S^2 - Rho_L^2, written onto '
+                      'the factor and asserted there at load. THE SAME NUMBER bounds Rho_S here, '
+                      'so the fit cannot land past what the model will read. A dial between '
+                      'second-order noise and the 105-120% residual; a book may run it near 0.06'),
+        F('Jump_Share', 'Float', default=0.25,
+          description='w_J of spec 5.1 - the jump share of total variance at the SHORTEST '
+                      'calibrated maturity, which is what fixes Lambda. Seeds stage 5\'s bounded '
+                      'search for it, and is the answer where Forward_Smiles is empty'),
+        F('Wing_Strike', 'Float', default=0.85,
+          description='The wing the desk hedges, as a ratio of spot at the shortest maturity: '
+                      'Mu_J seeds at its log and Sigma_J at half that magnitude. A wing is ONE '
+                      'jump, not many small ones (spec 5.1)'),
+        F('Lambda', 'Text', default='',
+          description='Blank DERIVES the jump intensity by spec 5.1 off Jump_Share and the seeded '
+                      'jump sizes; a number PINS it, which is what a structural review writes '
+                      'back. Never a fitted coordinate - its whole content is the law of integer '
+                      'counts, which no Jacobian carries'),
+        F('Param_Buckets', 'Table', default='null', row=Row([
+            F('Tenor', 'Float', description='Years from the base date the bucket STARTS at')]),
+          description='Calendar-time buckets Rho_S and Mu_J are piecewise constant on. Empty is '
+                      'ONE bucket - the constant-parameter model. Align them to the forward-smile '
+                      'horizons: a spot smile at T never sees a bucket later than T'),
+        F('Forward_Smiles', 'Table', default='null', row=Row([
+            F('T1', 'Float', description='Forward start, in years'),
+            F('Delta', 'Float', description='Tenor of the forward-start option, in years'),
+            F('Strike', 'Float', description='Strike as a fraction of S_T1'),
+            F('Target_Vol', 'Float', description='The forward-start implied vol to hit'),
+            F('Weight', 'Float', default=1.0,
+              description='Relative weight within the forward block')]),
+          description='Spec 5.3\'s forward-skew target: market forward-start or cliquet quotes '
+                      'where they exist, else a reference model\'s forward smiles. Empty SKIPS '
+                      'stage 5, and a vanilla-only calibration is then what it is - not an '
+                      'autocall calibration'),
+        F('Forward_Weight', 'Float', default=1.0 / 3.0,
+          description='The forward block\'s share of the total objective weight, the vanillas '
+                      'carrying the rest'),
+        F('Bucket_Smoothness', 'Float', default=0.02,
+          description='Weight on the difference between adjacent buckets of either lever. At the '
+                      'default a 0.1 step costs 0.2 vol points of residual - what a forward '
+                      'target outweighs and sampling noise does not; spec 5.4.4\'s 1.0 swamps the '
+                      'forward rows on a surface this size'),
+        F('Jacobian_Rcond', 'Float', default=1e-3,
+          description='A singular value below this times the largest names a FLAT direction, '
+                      'whose right singular vector the identification table prints as parameter '
+                      'loadings. Read at every fitted stage'),
+        F('Max_Iterations', 'Integer', default=150,
+          description='EVALUATIONS least_squares may spend per stage (scipy\'s max_nfev). One '
+                      'evaluation is one walk; each accepted point costs a Jacobian on top (one '
+                      'vmapped backward). A stage stopping here reports itself CAPPED with the '
+                      'residual it reached, which is the tolerance it actually got to'),
+        F('Tolerance', 'Float', default=1e-8,
+          description='Convergence tolerance (scipy\'s ftol) on each stage\'s weighted vol-space '
+                      'residual'),
+        F('Pillar_Tolerance', 'Float', default=1e-14,
+          description='The relative ATM miss each L knot\'s own Newton solve stops at, as the '
+                      'component family spells it')
+    ] + HestonNandiModelParameters.fields[-1:]
+
+    #: The fitted box, per coordinate (spec 5.2). `Rho_S`'s own lower edge is derived from `Rho_L`
+    #: and `C_Min` at every stage and so cannot live here.
+    box = {'Sigma_L': (0.0, 2.0), 'Rho_L': (-0.6, 0.0), 'Sigma_S': (0.5, 5.0),
+           'Nu': (0.0, 0.6), 'Sigma_J': (0.02, 0.25), 'Mu_J': (-0.40, -0.03)}
+    #: How far inside `C_Min` and inside `share_box` the soft penalties start, and what a full
+    #: margin's violation costs: 1.25 vol points of residual, which the data rows at a one-point
+    #: RMSE just outweigh - so a soft edge bites in the last percent and the BOX stops the fit.
+    c_margin, soft_penalty = 0.05, 0.25
+    #: What a degraded vanilla RMSE costs stage 5, per spec 5.3's failure mode: 0.1 vol points of
+    #: degradation at the target maturities buys 10 vol points of residual, so forward skew is
+    #: bought only where the spot smile can pay for it. Read in the FIRST-ORDER metric.
+    vanilla_guard, vanilla_band = 100.0, 0.001
+    #: The jump share's own box (5.1 step 2), applied to the REALISED share
+    #: lambda(mu_J^2 + sigma_J^2)/xi_0 - below it the one-month wing is unreachable, above it the
+    #: 6-12 month smiles carry more jump convexity than the market has.
+    share_box = (0.05, 0.35)
+    #: Newton steps one L knot's own ATM price gets, and the largest move in log-variance one may
+    #: take: the price is monotone in the level, so this only damps a first step off a bad seed.
+    l_iterations, l_damping = 12, 0.5
+    #: The mass of path-days within 5 Cap_Beta of the cap that REFUSES the fit (spec 2.7), and the
+    #: stationary log-vol sd VIX options imply, outside which the fit is flagged (2.2.1).
+    cap_headroom_max, log_vol_sd_band = 1e-5, (0.4, 0.9)
+    #: The relative ATM miss a pillar may still carry when the fit is done. The bootstrap solves to
+    #: `Tolerance`; anything left here is a pillar the OTHER parameters have put out of reach.
+    atm_miss_max = 1e-4
+    #: Where the spec's stages cut the ladder, in years: stage 2 the wing's own horizon, stage 3
+    #: the sub-year smile, stage 4 what is left beyond it.
+    stage_horizons = (0.25, 1.0)
+
+    def __init__(self, param, device, dtype):
+        # the constructed device and dtype are ignored - see the `device` note and `prec`
+        self.param = param
+
+    # ----------------------------------------------------------------------------------
+    # the walk, and the prices inside the fit
+    # ----------------------------------------------------------------------------------
+
+    def draws(self, paths, steps, seed):
+        """The walk's two normals and its jump UNIFORMS - fixed for the whole fit, and antithetic.
+
+        The uniforms rather than the counts, because a count is `lv_counts(u, lambda, .)` and stage
+        5 moves lambda. Pseudo-random off `Random_Seed`: a Sobol block 3n dimensions wide buys
+        nothing where every evaluation reads the same draws.
+        """
+        gen = torch.Generator(device=self.device).manual_seed(int(seed))
+        half = max(int(paths) // 2, 1)
+        kw = {'generator': gen, 'dtype': self.prec, 'device': self.device}
+        z_l, z_s = torch.randn(half, steps, **kw), torch.randn(half, steps, **kw)
+        u = torch.rand(half, steps, **kw)
+        return torch.cat([z_l, -z_l]), torch.cat([z_s, -z_s]), torch.cat([u, 1.0 - u])
+
+    def walk(self, scalars, levers, buckets, curve, deltas, times, draws, blocks, n):
+        """`(M, Sigma^2)` CUMULATED to every grid point, off ONE internal-step walk.
+
+        A maturity is then a prefix and a forward window the difference of two prefixes, so the
+        whole quote set and the whole forward block cost one pass. The two levers are read at the
+        ABSOLUTE step-START times, as `L` is: the buckets are calendar time from the base date,
+        which is how `pricing.LogVar2FJKit` reads them.
+        """
+        params = dict(scalars, **{name: utils.bucket_at(buckets, levers[name], times[:n])
+                                  for name in utils.LV_BUCKET_NAMES})
+        eta_l, eta_s, counts = (draw[:, :n] for draw in draws)
+        seed = eta_l.new_zeros(eta_l.shape[0])
+        M, var = utils.lv_walk(params, curve[:n + 1], deltas[:n], eta_l, eta_s, counts,
+                               (seed + curve[0], seed), blocks[:n])
+        return M.cumsum(-1), var.cumsum(-1)
+
+    @staticmethod
+    def conditional_black(M, var, carry, strike):
+        """`E[(S_T/S - k)^+]` over the walk's paths - spec 2.4's vanilla, which IS
+        `pricing.lognormal_fired_gain` at this block's own Gaussian law, averaged.
+
+        Priced off the SAMPLE forward: at the default paths the fixed draws leave
+        `E[exp(M + var/2)]` up to 15 basis points off the analytic `exp(carry)`, which `refit_l`
+        would otherwise absorb into `L` as a fifth of a vol point of calibration noise. Dividing it
+        out is a martingale control variate - one `logsumexp`, and it takes the level bias out of
+        every strike of the block at once.
+        """
+        sigma = utils.sqrt_or_zero(var)
+        drift = M + carry - torch.logsumexp(M + 0.5 * var, 0) + np.log(M.shape[0])
+        return pricing.lognormal_fired_gain(
+            1.0, drift, sigma, (torch.log(strike) - drift) / sigma, strike, True).mean()
+
+    def value(self, cum, quote):
+        """One quote's model premium: the conditional Black over the paths, the discount and the
+        yield rescale as the component family applies them, and a put by parity off the ANALYTIC
+        forward - so a put and a call at one strike cannot disagree by the sample."""
+        gain = quote.spot * self.conditional_black(
+            cum[0][..., quote.j], cum[1][..., quote.j], quote.carry, quote.ratio)
+        return quote.units * np.exp(-quote.rate * quote.T) * (
+            gain if quote.is_call else gain - (quote.forward - quote.strike))
+
+    def forward_value(self, cum, target):
+        """One forward-start target's model premium in units of `S_T1`: the block over `[T1, T2]`
+        ALONE, whose law given the draws is Gaussian, so `(S_T2/S_T1 - k)^+` is the same
+        conditional Black over that window and nothing is drawn at `T1` (spec 5.3)."""
+        return self.conditional_black(
+            cum[0][..., target.j2] - cum[0][..., target.j1],
+            cum[1][..., target.j2] - cum[1][..., target.j1], target.carry, target.ratio)
+
+    def quote_vol(self, cum, quote):
+        """The model-minus-market difference in Black vol at one quote, both premia inverted off
+        the same forward with the units and the yield rescale stripped.
+
+        The objective is a vol residual only to first order; this is the inversion itself, taken
+        OFF THE TAPE, so what the report prints is what a desk would read. Returned as a decimal.
+        """
+        both = []
+        for premium in (float(self.value(cum, quote)), quote.premium):
+            call = premium / quote.units + (0.0 if quote.is_call else (
+                quote.forward - quote.strike) * np.exp(-quote.rate * quote.T))
+            both.append(np.sqrt(max(utils.bs_implied_total_var(
+                call, quote.spot * np.exp(quote.carry - quote.rate * quote.T), quote.strike,
+                quote.rate * quote.T, 1), 0.0) / quote.T))
+        return both[0] - both[1]
+
+    def rmse(self, cum, quotes):
+        """The vol-space RMS residual over `quotes` to first order, off the tape - the reading
+        stage 5's guard hinges on and the one its own rows carry."""
+        return float(np.sqrt(np.mean([((float(self.value(cum, quote)) - quote.premium)
+                                       / quote.vega) ** 2 for quote in quotes])))
+
+    def cap_headroom(self, scalars, curve, deltas, draws):
+        """The mass of path-days with headroom `(a - (l+s))/beta` under 5 (spec 2.7).
+
+        The state's own recursion, which `lv_walk` consumes and does not publish, run ONCE at the
+        parameters actually written: the cap is a guard, and a calibration that reaches it is a
+        failure this report has to be able to state.
+        """
+        eta_l, eta_s, counts = draws
+        a, beta, nu = (float(scalars[x]) for x in ('Cap_A', 'Cap_Beta', 'Nu'))
+        phi_s, w_s = utils.lv_ou_step_weights(scalars['Kappa_S'], scalars['Sigma_S'], deltas)
+        phi_l, w_l = utils.lv_ou_step_weights(scalars['Kappa_L'], scalars['Sigma_L'], deltas)
+        counts = counts.to(eta_l.dtype)
+        s = torch.zeros_like(eta_l[:, 0])
+        l, near = s + curve[0], 0.0
+        for k in range(deltas.shape[0]):
+            near += float(((a - (l + s)) / beta < 5.0).sum())
+            s = phi_s[k] * s + w_s[k] * eta_s[:, k] + nu * counts[:, k]
+            l = curve[k + 1] + phi_l[k] * (l - curve[k]) + w_l[k] * eta_l[:, k]
+        return near / (eta_l.shape[0] * deltas.shape[0])
+
+    # ----------------------------------------------------------------------------------
+    # the L curve: spec 2.6's seed, then the triangular re-solve
+    # ----------------------------------------------------------------------------------
+
+    @classmethod
+    def seed_curve(cls, xi, scalars, mu_j, delta, ends):
+        """Spec 2.6's mapping: the L level at each PILLAR whose UNCONDITIONAL diffusive variance is
+        the market's own forward variance there.
+
+        With `l_0 = L(0)`, `s_0 = 0`,
+        `E[exp(l+s)] = exp(L(t) + (Var(l) + Var(s))/2 + sum_j lam*d*(exp(nu*phi_s^m) - 1))`, so a
+        pillar is `log(xi - lam(mu^2 + sigma^2))` less those two, accumulated along the internal
+        grid: each OU variance by its own recursion, the fast factor's compound-Poisson part as a
+        running sum. A SEED - `solve_l` then matches the model's own ATM price at each pillar - so
+        it lives beside its one caller rather than in `utils`.
+        """
+        lam, nu = float(scalars['Lambda']), float(scalars['Nu'])
+        jump = lam * (mu_j ** 2 + float(scalars['Sigma_J']) ** 2)
+        diffusive = np.asarray(xi, dtype=float) - jump
+        if (diffusive <= 0.0).any():
+            raise ValueError(
+                'the seeded jump variance lambda*(mu_J^2 + sigma_J^2) = {:.6g} is at or above this '
+                'surface\'s own forward variance at {} of {} knots (smallest {:.6g}), so xi_diff '
+                '<= 0 and spec 2.6\'s mapping has no answer. Lower Jump_Share or the wing the jump '
+                'is sized off (Wing_Strike), or pin a smaller Lambda'.format(
+                    jump, int((diffusive <= 0.0).sum()), diffusive.size, float(np.min(xi))))
+        phi = {x: np.exp(-float(scalars['Kappa_' + x]) * delta) for x in ('S', 'L')}
+        weight = {x: float(scalars['Sigma_' + x]) ** 2 * (1.0 - phi[x] ** 2)
+                     / (2.0 * float(scalars['Kappa_' + x])) for x in ('S', 'L')}
+        var, compound, levels, k = {'S': 0.0, 'L': 0.0}, 0.0, [], 0
+        for step in range(max(ends) + 1):
+            if step in ends:
+                levels.append(np.log(diffusive[k]) - 0.5 * (var['S'] + var['L']) - compound)
+                k += 1
+            compound += lam * delta * (np.exp(nu * phi['S'] ** step) - 1.0)
+            var = {x: phi[x] ** 2 * var[x] + weight[x] for x in ('S', 'L')}
+        return np.array(levels)
+
+    def solve_l(self, levels, targets, premium, tolerance):
+        """The L pillars re-solved against their own ATM quote, sequentially from the front.
+
+        Exactly triangular, as the component family's inner bootstrap is: an option to `T_k` reads
+        `L` only on `[0, T_k]`, so each pillar is a ONE-DIMENSIONAL solve given the pillars before
+        it. `L(0)` is not a free dimension - spec 5.4.3 ties it to the first pillar, no option
+        separating them - so it is the same number and the curve is flat over the first segment.
+        Newton on the pillar's own level with the slope from autograd - the price is monotone in it
+        - damped to `l_damping` per step and ITERATED to `tolerance` rather than run a fixed number
+        of passes.
+
+        Returns the levels and each pillar's relative miss, which is the bootstrap's own
+        convergence and not a fit quality.
+        """
+        misses = []
+        for k in range(len(levels)):
+            miss = float('nan')
+            for _ in range(self.l_iterations):
+                pillar = levels[k].detach().requires_grad_(True)
+                value = premium(levels[:k] + [pillar] + levels[k + 1:], k)
+                miss = float(value.detach()) / targets[k] - 1.0
+                if abs(miss) < tolerance:
+                    break
+                step = float((targets[k] - value.detach())
+                             / torch.autograd.grad(value, pillar)[0])
+                levels[k] = pillar.detach() + max(-self.l_damping, min(self.l_damping, step))
+            misses.append(miss)
+        return levels, misses
+
+    def identification(self, tag, labels, jacobian, rcond):
+        """The SVD of the DATA rows of `least_squares`' own Jacobian at the fitted point, its
+        columns scaled by `1/||J_:,j||` - the `x_scale='jac'` scaling the solve itself runs on and
+        returns the matrix without.
+
+        The penalty and smoothness rows are LEFT OUT: their largest singular value is an algebraic
+        constant of `C_Min` and `c_margin`, so a table taken over them reports a threshold rather
+        than what the quotes identify. The singular values in order, and for every direction below
+        `Jacobian_Rcond` times the largest, the PARAMETER LOADINGS of its right singular vector -
+        so a flat or collinear direction is NAMED rather than averaged over. A stage with fewer
+        rows than parameters has exact null directions and says so. The unscaled COLUMN NORMS go
+        beside them, because scaling makes the table read conditioning: a well-conditioned
+        direction whose column norm is 1e-6 moves nothing, and only the norm says so.
+        """
+        matrix = np.atleast_2d(np.asarray(jacobian, dtype=float))
+        norms = np.linalg.norm(matrix, axis=0)
+        values, vectors = np.linalg.svd(matrix / np.where(norms > 0.0, norms, 1.0))[1:]
+        values = np.concatenate([values, np.zeros(len(labels) - values.size)])
+        logging.info('  identification, {}: singular values {}; column norms {}'.format(
+            tag, '  '.join('{:.3e}'.format(x) for x in values),
+            ', '.join('{} {:.2e}'.format(name, x) for name, x in zip(labels, norms))))
+        for i in np.flatnonzero(values <= rcond * max(values[0], 1e-300)):
+            logging.info('    FLAT at {:.3e} ({:.1e} of the largest): {}'.format(
+                values[i], values[i] / values[0], ', '.join(
+                    '{} {:+.3f}'.format(labels[k], vectors[i][k])
+                    for k in np.argsort(-np.abs(vectors[i])))))
+
+    # ----------------------------------------------------------------------------------
+    # the outer fit
+    # ----------------------------------------------------------------------------------
+
+    def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices,
+                  calendars, debug=None):
+        """Calibrates the LogVar2FJ parameters and writes a `LogVar2FJModelParameters` price
+        factor.
+
+        The quote preparation is the plain family's, quote for quote. The quotes then SPLIT into an
+        ATM ladder the L bootstrap consumes one pillar at a time - the ATM quote at an expiry being
+        the one nearest its own forward, so a hand-authored block reads as an emitted one does -
+        and the whole set, which every fitted stage is judged on. A previously written factor warm
+        starts every scalar, both levers and the curve.
+        """
+        for market_price, implied_params in market_prices.items():
+            rate = utils.check_rate_name(market_price)
+            market_factor = utils.Factor(rate[0], rate[1:])
+            if market_factor.type != self.market_factor_type:
+                continue
+            instrument = implied_params['instrument']
+            factors, spot = self.resolve_block(
+                market_price, instrument, price_factors, factor_interp, sys_params)
+            discount, carry = factors['Discount_Rate'], factors.get('Yield')
+            funding = factors.get('Funding_Rate')
+
+            # every default read off the field's own declaration, so the two cannot disagree
+            declared = {field.name: field.default for field in self.fields}
+            read = lambda name: instrument.get(name, declared[name])
+            table = lambda name: instrument.get(name) or []
+            delta = int(read('Internal_Step_Days')) / float(read('Steps_Per_Year'))
+            c_min, rcond = float(read('C_Min')), float(read('Jacobian_Rcond'))
+            tolerance, max_iter = float(read('Tolerance')), int(read('Max_Iterations'))
+            pillar_tol = float(read('Pillar_Tolerance'))
+            smoothness = float(read('Bucket_Smoothness'))
+
+            quotes = [LVQuote(
+                j=None, spot=spot, strike=strike, ratio=self.tensor(strike / spot),
+                is_call=sign > 0, units=option['Units'], T=t, rate=r, carry=(r - q) * t,
+                forward=forward, premium=premium, weight=float(option['Weight']), sigma=sigma,
+                vega=option['Units'] * self.fx_black_vega(forward, strike, r, sigma, t))
+                for option, t, r, q, forward, sign, strike, sigma, premium
+                in self.prepare_quotes(sys_params, instrument, factors, spot)]
+            dead = [quote for quote in quotes if not quote.vega > 0.0]
+            if dead:
+                logging.warning(
+                    '{}: {} of {} quotes carry a Black vega of zero at their own quoted vol and '
+                    'are DROPPED - the residual is a premium miss over that vega, so a contract '
+                    'nothing prices has no vol-space reading. Strikes: {}'.format(
+                        market_price, len(dead), len(quotes),
+                        ', '.join('{:.4g} at {:.3f}y'.format(x.strike, x.T) for x in dead)))
+                quotes = [quote for quote in quotes if quote.vega > 0.0]
+            if not quotes:
+                logging.error('{} carries no quotes - nothing to bootstrap'.format(market_price))
+                continue
+
+            # the split: one ATM per distinct expiry (nearest its own forward), the rest wings
+            by_expiry = {}
+            for quote in quotes:
+                by_expiry.setdefault(quote.T, []).append(quote)
+            atm = [min(by_expiry[T], key=lambda x: abs(x.strike / x.forward - 1.0))
+                   for T in sorted(by_expiry)]
+
+            targets = []
+            for row in table('Forward_Smiles'):
+                t1, t2 = float(row['T1']), float(row['T1']) + float(row['Delta'])
+                r1, r2 = float(discount.current_value(t1)), float(discount.current_value(t2))
+                # the window's own carry, differenced off the two maturities the curves read
+                window = ((r2 - self.effective_yield(r2, funding, carry, t2)) * t2
+                          - (r1 - self.effective_yield(r1, funding, carry, t1)) * t1)
+                strike, vol = float(row['Strike']), float(row['Target_Vol'])
+                targets.append(LVForward(
+                    j1=None, j2=None, T1=t1, tenor=t2 - t1, strike=strike,
+                    ratio=self.tensor(strike), carry=window,
+                    premium=utils.black_european_option_price(
+                        np.exp(window), strike, 0.0, vol, t2 - t1, 1.0, 1.0),
+                    vega=self.fx_black_vega(np.exp(window), strike, 0.0, vol, t2 - t1),
+                    weight=float(row['Weight']), target=vol))
+
+            # THE GRID, on the QUOTES' OWN CLOCK: a block ends at every quoted maturity and at
+            # every window's two ends, its steps `Internal_Step_Days` long except the last, a STUB
+            # landing the block exactly on T. So the variance the fit reads at a maturity is the
+            # variance a pricer reads at that tenor of the curve written out, to the digit.
+            ends = sorted(set(by_expiry) | {t for target in targets
+                                            for t in (target.T1, target.T1 + target.tenor)})
+            at = {T: j for j, T in enumerate(ends)}
+            spans = np.diff([0.0] + ends)
+            counts = np.maximum(np.round(spans / delta), 1.0).astype(int)
+            upto = np.cumsum(counts)
+            share = float(read('Forward_Weight')) if targets else 0.0
+            total = sum(quote.weight for quote in quotes)
+            quotes = [quote._replace(j=at[quote.T],
+                                     weight=np.sqrt(quote.weight * (1.0 - share) / total))
+                      for quote in quotes]
+            atm = [quote._replace(j=at[quote.T]) for quote in atm]
+            if targets:
+                total = sum(target.weight for target in targets)
+                targets = [target._replace(
+                    j1=at[target.T1], j2=at[target.T1 + target.tenor],
+                    weight=np.sqrt(target.weight * share / total)) for target in targets]
+
+            deltas = self.vector(np.concatenate(
+                [np.append(np.full(n - 1, delta), span - (n - 1) * delta)
+                 for n, span in zip(counts, spans)]))
+            times = torch.cat([deltas.new_zeros(1), deltas.cumsum(0)])
+            blocks = torch.repeat_interleave(
+                torch.arange(len(ends), device=self.device),
+                torch.tensor(counts.tolist(), device=self.device))
+            uniforms = self.draws(int(read('Paths')), int(upto[-1]), int(read('Random_Seed')))
+            knots = np.array([0.0] + [quote.T for quote in atm])
+
+            # STAGE 0, the structural half: the jump sized off the wing the desk hedges, lambda off
+            # the share it carries at the SHORTEST maturity (5.1). The kappas and the cap width are
+            # read and never moved; a previous factor then replaces every seed but those.
+            wing, xi_0 = float(read('Wing_Strike')), atm[0].sigma ** 2
+            buckets = np.array([0.0] + sorted(
+                float(row['Tenor']) for row in table('Param_Buckets') if float(row['Tenor']) > 0.0))
+            state = {'Kappa_L': float(read('Kappa_L')), 'Kappa_S': float(read('Kappa_S')),
+                     'Sigma_L': 1.0, 'Rho_L': -0.4, 'Sigma_S': 2.4, 'Nu': 0.3,
+                     'Sigma_J': 0.5 * abs(np.log(wing)), 'Cap_A': float(read('Cap_A')),
+                     'Cap_Beta': float(read('Cap_Beta')),
+                     'Rho_S': [-0.75] * buckets.size, 'Mu_J': [np.log(wing)] * buckets.size}
+            # 5.1's OWN jump sizes, off the wing the desk hedges - never off what stage 2 later
+            # fits. A lambda chasing mu_J puts the day-to-day stability back on the parameter 5.1
+            # exists to take it off, and a mu_J on its upper bound then explodes it.
+            jump_size = 1.25 * np.log(wing) ** 2
+            pinned = str(read('Lambda')).strip()
+            share_j = float(read('Jump_Share'))
+            state['Lambda'] = float(pinned) if pinned else share_j * xi_0 / jump_size
+
+            param_name = utils.check_tuple_name(
+                utils.Factor(self.__class__.__name__, market_factor.name))
+            previous, levels = price_factors.get(param_name), None
+            if previous:
+                state.update({name: float(previous[name]) for name in utils.LV_PARAM_NAMES
+                              if not name.startswith('Kappa')})
+                state['Lambda'] = float(previous['Lambda'])
+                state.update({name: utils.bucket_at(
+                    previous[name].array[:, 0], self.vector(previous[name].array[:, 1]),
+                    self.vector(buckets)).tolist() for name in utils.LV_BUCKET_NAMES})
+                levels = list(utils.curve_at(previous['L_Curve'].array[:, 0],
+                                             self.vector(previous['L_Curve'].array[:, 1]),
+                                             self.vector(knots[1:])))
+
+            def counted():
+                """The integer counts at the CURRENT lambda, redrawn only where stage 5's bounded
+                search for the jump share moves it - nothing else in the fit can."""
+                return uniforms[0], uniforms[1], utils.lv_counts(
+                    uniforms[2], state['Lambda'], deltas)
+
+            draws = counted()
+
+            def l_curve(pillars):
+                """`L` at the walk's grid times. `L(0)` is TIED to the first pillar (spec 5.4.3):
+                no option separates them, and a free phase there reprices nothing."""
+                return utils.curve_at(knots, torch.stack(pillars[:1] + pillars), times)
+
+            def build(x, coords):
+                """The full parameter set as tensors, the fitted coordinates taken off `x` - the
+                leaf a Jacobian hangs on - and everything else off `state`."""
+                scalars = {name: self.tensor(value) for name, value in state.items()
+                           if name not in utils.LV_BUCKET_NAMES}
+                levers = {name: [self.tensor(v) for v in state[name]]
+                          for name in utils.LV_BUCKET_NAMES}
+                for i, (name, bucket) in enumerate(coords):
+                    if bucket is None:
+                        scalars[name] = x[i]
+                    else:
+                        levers[name][bucket] = x[i]
+                return scalars, {name: torch.stack(v) for name, v in levers.items()}
+
+            def evaluate(x=None, coords=(), n=None, curve=None):
+                """One walk at these parameters, and the curve it read."""
+                scalars, levers = build(x, coords)
+                return scalars, levers, self.walk(
+                    scalars, levers, buckets, l_curve(levels) if curve is None else curve, deltas,
+                    times, draws, blocks, int(upto[-1]) if n is None else n)
+
+            def rows_of(cum, judged, forwards):
+                """Every row's vol-space residual, `(model - market)/vega_market`, weighted."""
+                return ([quote.weight * (self.value(cum, quote) - quote.premium) / quote.vega
+                         for quote in judged] +
+                        [target.weight * (self.forward_value(cum, target) - target.premium)
+                         / target.vega for target in forwards])
+
+            def residual_of(x, coords, judged, forwards, guard=None, smooth=False):
+                """The stage's residual VECTOR: its own rows FIRST, which is what the
+                identification table reads, then the penalties the spec states - the idiosyncratic
+                share and the REALISED jump share approaching their boxes, and where stage 5 asks,
+                the vanilla degradation at the target maturities and the levers' smoothness."""
+                scalars, levers, cum = evaluate(x, coords)
+                terms = rows_of(cum, judged, forwards)
+                terms.append(self.soft_penalty * torch.relu(
+                    c_min + self.c_margin
+                    - (1.0 - levers['Rho_S'] ** 2 - scalars['Rho_L'] ** 2)))
+                realised = state['Lambda'] * (
+                    levers['Mu_J'][0] ** 2 + scalars['Sigma_J'] ** 2) / xi_0
+                terms.append(self.soft_penalty * (torch.relu(realised - self.share_box[1])
+                                                  + torch.relu(self.share_box[0] - realised)))
+                if guard is not None:
+                    held, base = guard
+                    kept = torch.stack([(self.value(cum, quote) - quote.premium) / quote.vega
+                                        for quote in held])
+                    terms.append(self.vanilla_guard * torch.relu(
+                        (kept * kept).mean().sqrt() - base - self.vanilla_band))
+                if smooth and buckets.size > 1:
+                    terms += [smoothness * levers[name].diff()
+                              for name in utils.LV_BUCKET_NAMES]
+                return torch.cat([term.reshape(-1) for term in terms])
+
+            def refit_l():
+                """Stage 1, re-run after every later stage: the mapping's seed on the first pass
+                where no previous factor supplied one, then the triangular re-solve at whatever the
+                globals now are."""
+                nonlocal levels
+                if levels is None:
+                    variance = np.array([quote.sigma ** 2 * quote.T for quote in atm])
+                    xi = np.diff(np.concatenate([[0.0], variance])) / np.diff(knots)
+                    levels = [self.tensor(x) for x in self.seed_curve(
+                        xi, build(None, ())[0], state['Mu_J'][0], delta,
+                        {int(upto[quote.j]) for quote in atm})]
+
+                def premium(pillars, k):
+                    quote = atm[k]
+                    return self.value(
+                        evaluate(n=int(upto[quote.j]), curve=l_curve(pillars))[2], quote)
+
+                levels, misses = self.solve_l(
+                    levels, [quote.premium for quote in atm], premium, pillar_tol)
+                atm_misses[:] = misses
+                return misses
+
+            def label(coord):
+                return coord[0] if coord[1] is None else '{}[{:g}y]'.format(
+                    coord[0], buckets[coord[1]])
+
+            def value_of(coord):
+                return state[coord[0]] if coord[1] is None else state[coord[0]][coord[1]]
+
+            def bounds_of(coord, coords):
+                """`Rho_S`'s box is `C_Min`'s own - the SAME declaration the factor asserts at load
+                - re-derived off `Rho_L` unless this stage is moving it too, where the widest box
+                and the soft penalty do the work the spec asks of them."""
+                if coord[0] != 'Rho_S':
+                    return self.box[coord[0]]
+                rho_l = 0.0 if ('Rho_L', None) in coords else state['Rho_L']
+                return -np.sqrt(max(1.0 - rho_l * rho_l - c_min, 0.0)), 0.0
+
+            def jacobian_at(x, coords, judged, forwards, **kw):
+                """dr/dx by autograd at a fitted leaf - ONE vmapped backward over the residual
+                rows, which reads the per-row loop's answer to the bit at a fifth of its cost on
+                this graph."""
+                calls['j'] += 1
+                leaf = torch.tensor(np.asarray(x, dtype=float), device=self.device,
+                                    dtype=self.prec, requires_grad=True)
+                terms = residual_of(leaf, coords, judged, forwards, **kw)
+                return torch.autograd.grad(
+                    terms, leaf, torch.eye(terms.numel(), dtype=self.prec, device=self.device),
+                    is_grads_batched=True)[0].numpy()
+
+            tables, calls, atm_misses = [], {'n': 0, 'j': 0}, []
+
+            def stage(tag, coords, judged, forwards=(), **kw):
+                """One stage: `least_squares` over `coords` against its own rows, the fitted values
+                written back into `state`, its identification table kept over the DATA rows alone,
+                and the L curve re-solved at what it landed on."""
+                edges = [bounds_of(coord, coords) for coord in coords]
+                x0 = np.clip([value_of(coord) for coord in coords], *map(np.array, zip(*edges)))
+
+                def residual(x):
+                    calls['n'] += 1
+                    return residual_of(self.vector(x), coords, judged, forwards,
+                                       **kw).detach().numpy()
+
+                started = time.time()
+                result = scipy.optimize.least_squares(
+                    residual, x0, bounds=tuple(zip(*edges)), method='trf', x_scale='jac',
+                    jac=lambda x, *rest: jacobian_at(x, coords, judged, forwards, **kw),
+                    ftol=tolerance, xtol=1e-12, max_nfev=max_iter)
+                for coord, value in zip(coords, result.x):
+                    if coord[1] is None:
+                        state[coord[0]] = float(value)
+                    else:
+                        state[coord[0]][coord[1]] = float(value)
+                tables.append((tag, [label(coord) for coord in coords],
+                               result.jac[:len(judged) + len(forwards)]))
+                logging.info(
+                    '  stage {}: {} rows, {} evaluations, residual {:.4e}{}, {:.1f}s'.format(
+                        tag, result.fun.size, result.nfev,
+                        float(np.sqrt((result.fun ** 2).sum())),
+                        '' if result.nfev < max_iter else ' CAPPED at Max_Iterations',
+                        time.time() - started))
+                refit_l()
+
+            def solve_share():
+                """Stage 5's third variable, by a BOUNDED SCALAR search rather than a coordinate.
+
+                `w_J` sets lambda by 5.1, lambda sets the law of the integer counts, and a count
+                drawn by inverse CDF off a fixed uniform is a STEP function of it - so no Jacobian
+                carries this direction and least_squares would read the flat one it has. The same
+                weighted sum of squares, at counts redrawn per candidate; the box IS spec 5.1's.
+                """
+                def objective(w):
+                    nonlocal draws
+                    state['Lambda'] = w * xi_0 / jump_size
+                    draws = counted()
+                    calls['n'] += 1
+                    cum = evaluate()[2]
+                    return sum(float(row) ** 2 for row in rows_of(cum, guarded, targets)) + (
+                        self.vanilla_guard * max(
+                            self.rmse(cum, guarded) - base_rmse - self.vanilla_band, 0.0)) ** 2
+
+                found = scipy.optimize.minimize_scalar(
+                    objective, bounds=self.share_box, method='bounded',
+                    options={'xatol': 1e-3, 'maxiter': 20})
+                objective(found.x)
+                return float(found.x)
+
+            started = time.time()
+            refit_l()
+            # spec 2.7's LEVEL rule, applied on the seeded curve and again once the spread is fitted
+            cap = lambda: max(float(read('Cap_A')), float(levels[0]) + 6.0 * np.sqrt(
+                state['Sigma_S'] ** 2 / (2.0 * state['Kappa_S'])
+                + state['Sigma_L'] ** 2 / (2.0 * state['Kappa_L'])))
+            state['Cap_A'] = cap()
+
+            short = [q for q in quotes if q.T <= self.stage_horizons[0]]
+            middle = [q for q in quotes if q.T <= self.stage_horizons[1]]
+            long = [q for q in quotes if q.T > self.stage_horizons[1]]
+            stage('2 (mu_J, sigma_J)', [('Mu_J', 0), ('Sigma_J', None)],
+                  short or middle or quotes)
+            stage('3 (rho_s, sigma_s, nu)',
+                  [('Rho_S', 0), ('Sigma_S', None), ('Nu', None)], middle or quotes)
+            if long:
+                stage('4 (rho_l, sigma_l)', [('Rho_L', None), ('Sigma_L', None)], long)
+            else:
+                state['Rho_L'], state['Sigma_L'] = 0.0, 0.0
+                logging.info('  stage 4 skipped: nothing is quoted beyond {:g}y, so the slow '
+                             'leverage is left at zero rather than fitted to nothing'.format(
+                                 self.stage_horizons[1]))
+            state['Cap_A'] = cap()
+
+            guarded = [q for q in quotes if any(
+                min(abs(q.T - t.T1 - t.tenor), abs(q.T - t.T1)) < delta for t in targets)]
+            base_rmse = self.rmse(evaluate()[2], guarded) if guarded else 0.0
+            if targets and buckets.size > 1:
+                later = list(range(1, buckets.size))
+                stage('5a mu_J(t)', [('Mu_J', b) for b in later], guarded, targets,
+                      guard=(guarded, base_rmse), smooth=True)
+                stage('5b rho_s(t)', [('Rho_S', b) for b in later], guarded, targets,
+                      guard=(guarded, base_rmse), smooth=True)
+            if targets and not pinned:
+                share_j = solve_share()
+                refit_l()
+
+            polish = [(name, None) for name in
+                      (('Sigma_L', 'Rho_L', 'Sigma_S', 'Nu', 'Sigma_J') if long else
+                       ('Sigma_S', 'Nu', 'Sigma_J'))]
+            polish += [(name, b) for name in utils.LV_BUCKET_NAMES for b in range(buckets.size)]
+            stage('6 joint polish', polish, quotes, targets, smooth=True)
+            elapsed = time.time() - started
+            if targets:
+                # the polish's table TWICE, with the forward rows and WITHOUT: which is what says
+                # whether a later bucket is pinned by them or by nothing
+                tables.append(('6 joint polish, vanillas only', [label(x) for x in polish],
+                               jacobian_at([value_of(x) for x in polish], polish,
+                                           quotes, (), smooth=True)[:len(quotes)]))
+
+            scalars, levers, cum = evaluate()
+            fit = dict(knots=knots, levels=levels, buckets=buckets, atm_misses=atm_misses,
+                       quotes=quotes, targets=targets, cum=cum, scalars=scalars, draws=draws,
+                       curve=l_curve(levels), deltas=deltas, tables=tables, rcond=rcond,
+                       c_min=c_min, share=share_j, elapsed=elapsed, calls=calls,
+                       base_rmse=base_rmse, guarded=guarded,
+                       misses=[100.0 * self.quote_vol(cum, quote) for quote in quotes],
+                       realised=state['Lambda'] * (state['Mu_J'][0] ** 2
+                                                   + state['Sigma_J'] ** 2) / xi_0)
+            fit['headroom'] = self.verify(market_price, state, fit)
+            self.report(instrument, market_price, state, fit)
+
+            price_factors[param_name] = {
+                'Property_Aliases': None,
+                **{name: float(state[name])
+                   for name in utils.LV_PARAM_NAMES + utils.LV_STRUCTURAL_NAMES},
+                'C_Min': c_min,
+                'L_Curve': utils.Curve([], [[float(k), float(v)]
+                                            for k, v in zip(knots, levels[:1] + levels)]),
+                **{name: utils.Curve([], [[float(t), float(v)]
+                                          for t, v in zip(buckets, state[name])])
+                   for name in utils.LV_BUCKET_NAMES}}
+
+    # ----------------------------------------------------------------------------------
+    # the diagnostics
+    # ----------------------------------------------------------------------------------
+
+    def forward_smile(self, cum, targets):
+        """`{(T1, Delta): {strike: (model vol, target vol)}}` - every forward-start target's own
+        implied vol beside the one it was set to, by the same numpy inversion the vanillas use."""
+        smiles = {}
+        for target in targets:
+            price = float(self.forward_value(cum, target))
+            vol = np.sqrt(max(utils.bs_implied_total_var(
+                price, np.exp(target.carry), target.strike, 0.0, 1), 0.0) / target.tenor)
+            smiles.setdefault((target.T1, target.tenor), {})[target.strike] = (vol, target.target)
+        return smiles
+
+    def stickiness(self, cum, targets, quotes):
+        """`psi(T1, Delta)` model and target: the forward 90-110 slope over the SPOT slope at
+        maturity `Delta`, in the model's own smile and in the quoted one (spec 5.3).
+
+        The widest pair the forward target carries stands for 90-110, and the SPOT slope is read at
+        the quoted strikes nearest that same pair - a ratio of two slopes taken at two different
+        moneyness spans is not a stickiness. A tenor with one strike, or whose `Delta` no quoted
+        maturity lands on, has no ratio and is left out.
+        """
+        rows = {}
+        for (T1, tenor), smile in self.forward_smile(cum, targets).items():
+            nearest = min({quote.T for quote in quotes}, key=lambda T: abs(T - tenor))
+            rung = [quote for quote in quotes if quote.T == nearest]
+            if len(smile) < 2 or len(rung) < 2:
+                continue
+            low, high = min(smile), max(smile)
+            gap = np.log(high / low)
+            at = lambda k: min(rung, key=lambda quote: abs(quote.strike / quote.forward - k))
+            under, over = at(low), at(high)
+            spread = np.log((over.strike / over.forward) / (under.strike / under.forward))
+            if not spread:
+                continue
+            model, target = ((smile[low][i] - smile[high][i]) / gap for i in (0, 1))
+            market = (under.sigma - over.sigma) / spread
+            fitted = market + (self.quote_vol(cum, under) - self.quote_vol(cum, over)) / spread
+            rows[(T1, tenor)] = (100 * model, 100 * target, 100 * fitted, 100 * market,
+                                 model / fitted if fitted else float('nan'),
+                                 target / market if market else float('nan'))
+        return rows
+
+    @staticmethod
+    def band(fit, lo, hi):
+        """`(RMS, worst)` vol-point miss over the moneyness band `[lo, hi]`, or `None` where the
+        surface quotes nothing in it."""
+        rows = [x for x, quote in zip(fit['misses'], fit['quotes'])
+                if lo <= quote.strike / quote.forward <= hi]
+        return (np.sqrt(np.mean([x * x for x in rows])), max(rows, key=abs)) if rows else None
+
+    def verify(self, market_price, state, fit):
+        """The three failures a calibrated surface may not carry, raised BEFORE the report so a
+        refusal is a message rather than half a log. Returns the cap headroom the report prints.
+
+        Each names what it measured and the remedy, because none of them is a number a caller can
+        recover on its own.
+        """
+        stuck = [i for i, x in enumerate(fit['atm_misses']) if abs(x) > self.atm_miss_max]
+        if stuck:
+            raise ValueError(
+                '{}: no L level reprices the {} ATM pillar{} - {}. The triangular bootstrap is '
+                'monotone in a pillar\'s own level, so a pillar that walks its Newton steps out '
+                'and still misses is one the OTHER parameters have put out of reach: at these '
+                'globals the jumps alone carry more variance than the pillar has. Lower '
+                'Jump_Share, pin a smaller Lambda, or quote a surface this model can reach'.format(
+                    market_price, len(stuck), '' if len(stuck) == 1 else 's',
+                    ', '.join('{:g}y {:+.2%}'.format(fit['knots'][i + 1], fit['atm_misses'][i])
+                              for i in stuck)))
+
+        # the BOX is the event, not the soft margin above it: the fit is bounded at exactly C_Min,
+        # so a bucket landing there is one the box stopped rather than an interior optimum
+        c = 1.0 - np.array(state['Rho_S']) ** 2 - state['Rho_L'] ** 2
+        edge = np.flatnonzero(c <= fit['c_min'] + 1e-9)
+        if edge.size:
+            convexity = self.band(fit, 1.05, 1.25)
+            raise ValueError(
+                '{}: the idiosyncratic share c = 1 - Rho_S^2 - Rho_L^2 is ON its floor C_Min={:g} '
+                'in {} of {} bucket{} ({}), so the box - not the data - is what stopped Rho_S, and '
+                'this surface wants MORE leverage than one shock plus a co-jump can carry: it '
+                'wants a ONE-SHOCK model (spec 2.2.2). The 110-120% convexity residual that goes '
+                'with the floor is {}. Lower C_Min (a book may run it near 0.06, at the cost of '
+                'the second-order noise the share buys), or fit a surface whose skew this '
+                'structure can reach'.format(
+                    market_price, fit['c_min'], edge.size, c.size, '' if c.size == 1 else 's',
+                    ', '.join('{:g}y c {:.3f} at Rho_S {:+.4f}'.format(
+                        fit['buckets'][i], c[i], state['Rho_S'][i]) for i in edge),
+                    'nothing quoted there' if convexity is None else
+                    '{:+.3f} vol points RMS, worst {:+.3f}'.format(*convexity)))
+
+        headroom = self.cap_headroom(fit['scalars'], fit['curve'], fit['deltas'], fit['draws'])
+        if headroom > self.cap_headroom_max:
+            raise ValueError(
+                '{}: {:.3e} of path-days sit within 5*Cap_Beta of the cap at Cap_A={:.4g}, above '
+                'the {:g} a calibrated surface may carry. The cap exists to make E[S^p] finite and '
+                'to stop an exp overflowing, NOT to shape a smile, so a fit that reaches it is a '
+                'failure rather than a warning (spec 2.7). Raise Cap_A, or fit a surface whose '
+                'vol-of-vol this model can carry'.format(
+                    market_price, headroom, state['Cap_A'], self.cap_headroom_max))
+        return headroom
+
+    def report(self, instrument, market_price, state, fit):
+        """What the fit MEASURED, logged beside what it wrote (spec 5.2's diagnostics, 5.3's
+        stickiness ratios and failure mode, and the identification table).
+
+        The vol-point readings go through `utils.bs_implied_total_var` OFF THE TAPE: the objective
+        is a vol residual only to first order, and this is the true inversion of both premia, so
+        what a desk reads here is what a desk would read. Both the UNWEIGHTED RMSE and the
+        vega-weighted one the objective actually minimises are printed, because they are different
+        functionals and a fit is quoted in whichever the reader had in mind.
+        """
+        quotes, buckets, misses = fit['quotes'], fit['buckets'], fit['misses']
+        # keyed by POSITION: two quotes at one strike and expiry compare equal as tuples
+        rung_of = lambda T: [i for i, quote in enumerate(quotes) if quote.T == T]
+        logging.info(
+            '{} LogVar2FJ: {}'.format(market_price, ', '.join(
+                '{} {:.6g}'.format(name, state[name])
+                for name in utils.LV_PARAM_NAMES + utils.LV_STRUCTURAL_NAMES)))
+        logging.info('  L curve (annualised diffusive vol): {}'.format(', '.join(
+            '{:g}y {:.2%}'.format(k, float(np.sqrt(np.exp(float(v)))))
+            for k, v in zip(fit['knots'], fit['levels'][:1] + fit['levels']))))
+        for name in utils.LV_BUCKET_NAMES:
+            logging.info('  {}: {}'.format(name, ', '.join(
+                '{:g}y {:+.4f}'.format(t, v) for t, v in zip(buckets, state[name]))))
+        for T in sorted({quote.T for quote in quotes}):
+            rung = rung_of(T)
+            worst = max(rung, key=lambda i: abs(misses[i]))
+            logging.info('    {:5.3f}y  RMSE {:5.3f} vol points over {} quotes, worst {:+.3f} at '
+                         '{:.0%} of forward'.format(
+                             T, np.sqrt(np.mean([misses[i] ** 2 for i in rung])), len(rung),
+                             misses[worst], quotes[worst].strike / quotes[worst].forward))
+        weights = np.array([quote.weight for quote in quotes]) ** 2
+        logging.info('  RMSE {:.3f} vol points unweighted over {} quotes, {:.3f} vega-weighted '
+                     '(the objective\'s own); the bootstrap\'s ATM misses {}'.format(
+                         np.sqrt(np.mean([x ** 2 for x in misses])), len(quotes),
+                         np.sqrt(np.dot(weights, np.square(misses)) / weights.sum()),
+                         ', '.join('{:+.1e}'.format(x) for x in fit['atm_misses'])))
+        for tag, lo, hi in (('wing 70-80%', 0.65, 0.85), ('convexity 110-120%', 1.05, 1.25)):
+            found = self.band(fit, lo, hi)
+            logging.info('  {} residual: {}'.format(
+                tag, 'nothing quoted there' if found is None else
+                '{:+.3f} vol points RMS, worst {:+.3f}'.format(*found)))
+
+        c = 1.0 - np.array(state['Rho_S']) ** 2 - state['Rho_L'] ** 2
+        logging.info(
+            '  jump share {:.1%} asked of the {:g}y variance and {:.1%} REALISED as '
+            'lambda(mu_J^2 + sigma_J^2)/xi_0 (lambda {:.4g}); leverage products rho_s*sigma_s {}, '
+            'rho_l*sigma_l {:+.3f}; c {} with efficiency {}'.format(
+                fit['share'], fit['knots'][1], fit['realised'], state['Lambda'],
+                '/'.join('{:+.3f}'.format(x * state['Sigma_S']) for x in state['Rho_S']),
+                state['Rho_L'] * state['Sigma_L'],
+                '/'.join('{:.3f}'.format(x) for x in c),
+                '/'.join('{:.1f}x'.format((np.sqrt(x) / 0.22) ** 3) for x in c)))
+        sd = 0.5 * np.sqrt(state['Sigma_S'] ** 2 / (2.0 * state['Kappa_S'])
+                           + state['Sigma_L'] ** 2 / (2.0 * state['Kappa_L']))
+        logging.info('  stationary log-vol sd {:.3f}{}'.format(
+            sd, '' if self.log_vol_sd_band[0] <= sd <= self.log_vol_sd_band[1] else
+            ' - OUTSIDE the {:g}-{:g} VIX options imply (spec 2.2.1)'.format(*self.log_vol_sd_band)))
+        logging.info('  cap headroom: {:.2e} of path-days within 5*Cap_Beta of Cap_A={:.4g}'.format(
+            fit['headroom'], state['Cap_A']))
+
+        for (T1, tenor), row in self.stickiness(fit['cum'], fit['targets'], quotes).items():
+            logging.info(
+                '  psi({:g}y into {:g}y): forward slope model {:.2f} target {:.2f}, spot slope '
+                'model {:.2f} market {:.2f}, psi {:.3f} against {:.3f}'.format(T1, tenor, *row))
+        # spec 5.3's composition check is the smile BEYOND the last bucket boundary: that rung is
+        # the composition of the conditional laws either side of it, and the rungs inside the last
+        # bucket are ordinary vanillas the earlier buckets already fitted
+        beyond = [T for T in sorted({q.T for q in quotes}) if buckets.size > 1 and T > buckets[-1]]
+        if beyond:
+            worst = np.sqrt(np.mean([misses[i] ** 2 for i in rung_of(beyond[0])]))
+            logging.info('  composition residual {:.3f} vol points at {:g}y, the first rung beyond '
+                         'the {:g}y bucket boundary{}'.format(
+                             worst, beyond[0], buckets[-1], '' if worst <= 0.3 else
+                             ' - ABOVE 0.3, spec 5.3\'s failure mode'))
+        if fit['guarded']:
+            now = self.rmse(fit['cum'], fit['guarded'])
+            logging.info('  vanilla RMSE at the forward targets\' maturities moved {:+.3f} vol '
+                         'points over stage 5, in the FIRST-ORDER metric the guard is in{}'.format(
+                             100.0 * (now - fit['base_rmse']),
+                             '' if now - fit['base_rmse'] <= self.vanilla_band else
+                             ' - DEGRADED past 0.1, spec 5.3\'s failure mode'))
+        for tag, labels, jacobian in fit['tables']:
+            self.identification(tag, labels, jacobian, fit['rcond'])
+        logging.info('  {} evaluations and {} Jacobians in {:.1f}s'.format(
+            fit['calls']['n'], fit['calls']['j'], fit['elapsed']))
+        self.quote_trailer(instrument)
 
 
 class GBMAssetPriceTSModelParameters(object):

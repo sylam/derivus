@@ -2,7 +2,7 @@
 
 `Market Prices` is the risk-neutral half of the market data: the **quotes** a risk-neutral model is
 fitted to, where `Price Factors` holds the curves and surfaces a historical calibration produces. A
-*bootstrapper* turns each block into the factor or model parameters the simulation reads. All seven
+*bootstrapper* turns each block into the factor or model parameters the simulation reads. All eight
 families are built.
 
 ## A quote is an instrument, a quote type and a number {#a-quote}
@@ -43,6 +43,7 @@ declarations, and `construct_bootstrapper` resolves the class by name from the
 | `CSForwardPriceModelPrices` | European energy futures options | `CSForwardPriceModelParameters` — sigma, alpha |
 | `HestonNandiModelPrices` | European options on any spot | `HestonNandiModelParameters` — omega, alpha, beta, gamma\*, H0 |
 | `HestonNandiComponentModelPrices` | the same ladder, wings widened | `HestonNandiComponentModelParameters` — alpha, beta, gamma₁, rho, phi, gamma₂, H0 **and an L curve** |
+| `LogVar2FJModelPrices` | the same option table, plus forward-start smiles | `LogVar2FJModelParameters` — seven scalars, an L curve **and two bucketed levers** |
 | `HullWhite2FactorModelPrices` | forward-starting swaps against a swaption surface | `HullWhite2FactorModelParameters` — two sigma curves, two alphas, a correlation |
 | `InterestRatePrices` | deposits, FRAs, swaps and FX forward outrights | an `InterestRate` zero curve |
 | `FXVolPrices` | ATM vols, risk reversals and butterflies | an `FXVol` log-moneyness surface |
@@ -384,6 +385,56 @@ the component TARF gate: **2 of 8192 inner paths** over 248 daily steps at a fit
 — without the floor that is a NaN in an exposure profile and a CVA. The closed form does NOT floor,
 so the two agree only where the floor is inactive; the closed-form-versus-Monte-Carlo gate asserts the
 margin (2.6e+07 to 3.9e+07 times the floor) rather than assuming it.
+
+## `LogVar2FJModelPrices` — a Monte Carlo fit with a forward-skew term {#logvar2fj}
+
+**The block** is the plain family's — the references, `Quote_Type`, `European_Options` — less the
+Fourier `Quadrature_Panels` this model has no inversion to declare one for, plus the walk
+(`Internal_Step_Days`, `Paths`, `Random_Seed`), the structural constants (`Kappa_L`, `Kappa_S`,
+`Cap_A`, `Cap_Beta`, `C_Min`, `Jump_Share`, `Wing_Strike`, `Lambda`), the calendar-time
+`Param_Buckets`, and spec 5.3's `Forward_Smiles` target with `Forward_Weight` and
+`Bucket_Smoothness`. `derivus_bloomberg.equity_chain` emits it off the same chain selection as the
+two Heston-Nandi spellings — one selection, byte-identical option tables, `FAMILY_HEADER` the only
+difference — and the inherited `fx_surface_block` authors the FX one, its header read off whatever
+the family declares. What it fits, in what order, what it refuses and what it only reports is the
+family's own [Bootstrapping page](../bootstrapping/fx_and_equity.md). What follows is what it
+MEASURED, on the CJOW harness surface: 34 premium quotes over five maturities to 2y, `Paths` 8192,
+daily δ, CPU (`artifacts/logvar2fj/harness_cjow.py`, spec 8 steps 0–4).
+
+| | vanilla only | with the 5.3 forward target |
+|---|---|---|
+| RMSE, true inversion — unweighted / vega-weighted | **0.99 / 0.34** vol points | 0.88 / 0.37 |
+| per maturity, 1m … 2y | 2.33 / 0.95 / 0.18 / 0.31 / 0.07 | 1.67 / 1.36 / 0.20 / 0.31 / 0.11 |
+| wall clock, evaluations + Jacobians | **144 s**, 47 + 41 | 356 s, 93 + 62 |
+| ψ(1y into 1y), CJOW's being 1.008 | 0.983 | 0.956 |
+| composition residual beyond the last bucket | — | 0.108 vol points at 2y |
+
+against spec 9's < 90 s on a GPU and spec 8's ≤ 0.2 vol points from one month out. **The short end
+is the open number**: 2.3 vol points at 1m, all of it the 70–80% wing (+1.56 RMS, worst +4.47) and
+the 110–120% convexity (+0.80 RMS) — what a two-shock structure costs against a one-shock reference.
+`c` settles 3e-4 inside its soft margin at both floors (0.170 at `C_Min` 0.12, 0.110 at 0.06), so
+the margin and not the box is what sets it, and the box binding is a refusal by name.
+
+**`Nu` is not identified by this surface.** It lands at 1e-12 in every fit and its Jacobian column
+norm is 9.7e-4 against `Sigma_S`'s 7.8e-3 and `Rho_S`'s 1.6e-2 — well-conditioned once scaled and
+moving nothing unscaled, which is why the identification table prints the scaled singular values and
+the unscaled norms together. **The noise floor** at the default `Paths`, read by re-drawing the
+whole fit at three `Random_Seed`s, is 0.10–0.63 vol points on the fitted ATM term structure and up
+to 2.6 on an L pillar; the fast trio (`Sigma_S`, `Rho_S`, `Mu_J`) holds to 2%, and the slow pair
+(`Sigma_L`, `Rho_L`) does not hold at all — `Sigma_L` reads 0.283 / 0.0004 / 0.253. **A warm start**
+off the written factor slides along exactly that pair to a point 60–90% away whose objective is 3%
+worse and whose unweighted RMSE is 7% better: a valley, not a failure to converge.
+
+**The forward-skew sensitivity** is what the two calibrations are for: the campaign's 2y SPX autocall
+reads −32.875 off the vanilla-only factor and −33.651 off the forward-target one, a gap of **−0.776,
+−2.4%**, against CJOW's −32.068 (SE 1.6e-1 / 1.8e-1 / 2.3e-1 at 2¹⁵ paths × 4 seeds). `SE² × wall
+time` **on the deal value** is 1.63e-2 and 3.73e-2 against CJOW's 7.08e-2; spec 9 states that target
+on the coupon leg, which nothing here measures.
+
+**A traded forward-start is a different contract** from the one the block prices: `Forward_Smiles`
+targets `E[(S_T2/S_T1 − k)⁺]`, a market forward-start pays `E[S_T1(R − k)⁺]/E[S_T1]`, and the two are
+about 0.4 vol points of level apart. Safe against a reference model's slopes (source 2 of 5.3), wrong
+for market quotes (source 1), which are therefore not yet supported.
 
 ## `FXVolPrices` — a smile quoted in delta, and where the conversion runs {#fxvolprices}
 

@@ -726,8 +726,9 @@ def test_the_floor_and_the_defaults_are_the_families_own_numbers():
     assert equity_chain.QUADRATURE_PANELS == declared['Quadrature_Panels']
     component = {field.name: field.default
                  for field in HestonNandiComponentModelParameters.fields}
-    assert equity_chain.COMPONENT_HEADER == {
-        'Rho': component['Rho'], 'Quote_Sensitivity': component['Quote_Sensitivity']}
+    assert equity_chain.FAMILY_HEADER[equity_chain.COMPONENT_FAMILY] == {
+        'Quadrature_Panels': component['Quadrature_Panels'], 'Rho': component['Rho'],
+        'Quote_Sensitivity': component['Quote_Sensitivity']}
     assert equity_chain.HN_REFERENCE_TYPES.keys() == \
         HestonNandiModelParameters.factor_types.keys()
     for field, spelled in equity_chain.HN_REFERENCE_TYPES.items():
@@ -888,10 +889,15 @@ def test_the_block_writes_only_fields_the_family_declares():
     the stamp - read as an EQUALITY against `MARKET_QUOTE_VALUES` rather than as a gap."""
     from derivus import schema
     from derivus.bootstrappers import (HestonNandiComponentModelParameters,
-                                       HestonNandiModelParameters)
+                                       HestonNandiModelParameters, LogVar2FJModelParameters)
 
-    for family, klass in ((equity_chain.COMPONENT_FAMILY, HestonNandiComponentModelParameters),
-                          (equity_chain.PLAIN_FAMILY, HestonNandiModelParameters)):
+    families = {equity_chain.COMPONENT_FAMILY: HestonNandiComponentModelParameters,
+                equity_chain.PLAIN_FAMILY: HestonNandiModelParameters,
+                equity_chain.LOGVAR_FAMILY: LogVar2FJModelParameters}
+    assert set(families) == set(equity_chain.FAMILIES), (
+        'a family the emitter admits has no schema gate: {}'.format(
+            set(equity_chain.FAMILIES) ^ set(families)))
+    for family, klass in families.items():
         name, block = emitted(family=family)
         assert name == '{}.SPX'.format(family)
         declared = {field.name: field for field in klass.fields}
@@ -933,14 +939,75 @@ def test_one_selection_writes_both_family_spellings():
     assert json.dumps(component['instrument']['European_Options'], sort_keys=True) == \
         json.dumps(plain['instrument']['European_Options'], sort_keys=True)
     difference = set(component['instrument']) - set(plain['instrument'])
-    assert difference == set(equity_chain.COMPONENT_HEADER)
-    assert {key: component['instrument'][key] for key in difference} == \
-        equity_chain.COMPONENT_HEADER
+    assert difference == set(equity_chain.FAMILY_HEADER[equity_chain.COMPONENT_FAMILY]) - set(
+        equity_chain.FAMILY_HEADER[equity_chain.PLAIN_FAMILY])
+    assert {key: component['instrument'][key] for key in difference} == {
+        key: value for key, value
+        in equity_chain.FAMILY_HEADER[equity_chain.COMPONENT_FAMILY].items()
+        if key in difference}
     assert {key: value for key, value in component['instrument'].items()
             if key not in difference} == plain['instrument']
 
     with pytest.raises(BloombergConfigurationError, match='not a Heston-Nandi quote family'):
         equity_hn_block(canned_chain(), FORWARD, family='FXVolPrices')
+
+
+def test_the_chain_emits_a_logvar2fj_block_that_bootstraps(caplog):
+    """THE THIRD SPELLING, end to end: the same option table, a header LogVar2FJ declares, and a
+    real fit off it.
+
+    One selection; what differs is the header. LogVar2FJ prices by conditional Black over a walk
+    and inverts nothing, so it declares no `Quadrature_Panels` and the emitter writes none - which
+    is a header line rather than a blank one, a block carrying only what its family declares.
+
+    The fit is a MONTE CARLO one, so `Paths` and `Max_Iterations` are cut to what a gate can pay
+    for and the numbers here are the harness's job, not this one's. What is measured is that a
+    chain-emitted block reaches `Config.bootstrap`, writes the factor `Config.bootstrap` checks for
+    under the CLASS name, and that the price factor's own loader accepts what was written.
+    """
+    import logging as _logging
+
+    import derivus
+    from derivus.config import CustomJsonEncoder
+    from derivus import utils
+    from derivus.riskfactors import LogVar2FJModelParameters
+
+    name, block = emitted(family=equity_chain.LOGVAR_FAMILY, pillars=(0.25, 0.5),
+                          wing_pillars=(0.25, 0.5), minimum_contracts=4)
+    assert name == 'LogVar2FJModelPrices.SPX'
+    assert 'Quadrature_Panels' not in block['instrument'], (
+        'the block declares a Fourier panel count for a model that inverts nothing')
+    assert block['instrument']['European_Options'] == emitted(
+        family=equity_chain.PLAIN_FAMILY, pillars=(0.25, 0.5), wing_pillars=(0.25, 0.5),
+        minimum_contracts=4)[1]['instrument']['European_Options'], (
+        'one selection wrote two different option tables')
+
+    block['instrument'].update(Paths=512, Max_Iterations=4, Internal_Step_Days=5)
+    document = job_document({name: block}, surface=False)
+    document['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Bootstrapper Configuration'] = {'LogVar2FJModelParameters': {}}
+    with caplog.at_level(_logging.INFO):
+        config = derivus.Context().load_json(
+            (json.dumps(document, cls=CustomJsonEncoder), 'logvar2fj')).current_cfg
+        config.bootstrap()
+
+    written = config.params['Price Factors'].get('LogVar2FJModelParameters.SPX')
+    assert written is not None, (
+        'the family wrote no factor off a premium-quoted chain block - Config.bootstrap keys on '
+        'the CLASS name, and a mismatch there is a silent no-op')
+    assert not [record for record in caplog.records if 'skipping' in record.getMessage()]
+    for key in utils.LV_PARAM_NAMES + utils.LV_STRUCTURAL_NAMES + ('C_Min',):
+        assert key in written and math.isfinite(float(written[key])), key
+    for curve in utils.LV_CURVE_NAMES:
+        assert len(written[curve].array), curve
+    # the two levers carry the SAME buckets and the L curve a knot at tenor zero, which is what the
+    # price factor asserts at load - so the loader is the gate on what was written
+    assert written['L_Curve'].array[0][0] == 0.0
+    LogVar2FJModelParameters(dict(written))
+    print('\nfitted off the chain block: {}\nL (annualised diffusive vol): {}'.format(
+        {key: float(written[key]) for key in utils.LV_PARAM_NAMES},
+        [(float(knot), round(float(math.exp(0.5 * level)), 4))
+         for knot, level in written['L_Curve'].array]))
 
 
 def test_the_two_way_is_carried_and_the_crossed_print_never_reaches_it():
@@ -1190,7 +1257,8 @@ def test_the_component_family_fits_the_chain_block_with_no_authored_surface(capl
         'a reference was skipped rather than read or refused')
     for key in ('Alpha', 'Beta', 'Gamma_1', 'Rho', 'Phi', 'Gamma_2', 'H0'):
         assert key in written and math.isfinite(float(written[key])), key
-    assert written['Rho'] == pytest.approx(equity_chain.COMPONENT_HEADER['Rho'])
+    assert written['Rho'] == pytest.approx(
+        equity_chain.FAMILY_HEADER[equity_chain.COMPONENT_FAMILY]['Rho'])
     assert written['H0'] > 0.0 and written['Beta'] > 0.0
     # a positive Gamma_1 is the equity leverage sign
     assert written['Gamma_1'] > 0.0, 'a falling index smile fitted with the FX leverage sign'

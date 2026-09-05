@@ -255,7 +255,8 @@ points against CJOW's 12.0 whether the state was re-seeded or carried, and the S
 was half CJOW's too - the deficit was the (rho, sigma) sizing, not the re-seed. At the Q-sized
 defaults (rho_s -0.75, sigma_s 2.4, rho_l -0.4, sigma_l 1.0, lambda 0.21) the spot 90-110 slope
 ratio reads 0.57 / 0.82 / 0.86 / 0.92 at 3m / 6m / 1y / 2y, the stickiness ratio 0.96 against
-CJOW's 1.01, the 1y skew -1.47 against -1.48 (KS 0.011-0.026), the autocall -34.07 against
+CJOW's 1.01, the 1y skew -1.47 against -1.48 (marginal KS 0.015-0.055 against CJOW's exact CDF at the fitted
+parameters, 0.057-0.109 at the seeded curve), the autocall -34.07 against
 -32.07 at 32,768 inner, and the vanilla RMSE 0.82 / 0.33 vol points at 1y / 2y before any fit;
 the curve mapping is first order in the vol-of-vol (the 1y variance lands 8% low, the 2y 9%
 high), stage 1's iteration. NONE OF THE SPEC'S LEVEL-DEPENDENT LEVERS MOVES THE
@@ -381,6 +382,63 @@ with the mock-built suite and has no replacement; batching Schrager–Pelsser ac
 set; and five model items in the punchlist below.
 
 ## Built
+
+- **The LogVar2FJ calibrator** (2026-09-05) - `bootstrappers.LogVar2FJModelParameters`, block
+  `LogVar2FJModelPrices`, fits the seven scalars, the L curve and the two bucketed levers to
+  European premiums and, where a desk has them, to spec 5.3's forward-start smiles. It subclasses
+  the plain family, whose quote preparation is now ONE `prepare_quotes` and one `resolve_block`
+  where three verbatim copies stood, so the component family's written factor is hex-identical
+  through the hoist (`Alpha 0x1.70faeb9ac5818p-22` and every L knot) and so is a chain-emitted
+  plain fit; `fx_surface_block` writes only what a family declares, with a gate per family, and
+  the chain emitter admits the family through one `FAMILY_HEADER` registry. THE OBJECTIVE IS
+  MONTE CARLO AND DETERMINISTIC: one fixed-draw antithetic walk per evaluation on the QUOTES' OWN
+  clock - a stub step lands each block exactly on its quote's `T`, so the variance the fit reads at
+  a maturity is what a pricer reads at that tenor of the written curve (the trading-day clock
+  mis-read a 1m ATM by 0.12 vol points) - each block priced off its sample forward as a martingale
+  control variate (at 8,192 paths the fixed draws leave `E[exp(M + V/2)]` 15 bp off the forward,
+  which the L bootstrap had absorbed as a fifth of a vol point), the residual
+  `(V_model - V_market)/vega_market` in vol space to first order with no root find on the tape, the
+  Jacobian one vmapped backward reading a central difference to 1.6e-6, and `L(0)` tied to the
+  first pillar (spec 5.4.3) so no free phase remains. `Lambda` never enters a fitted vector: it is
+  derived by 5.1 off the wing the desk hedges and re-derived only as the jump share moves, by a
+  bounded scalar search, since an inverse-CDF count off a fixed uniform is a step function of it.
+  `C_Min` is one declaration read three ways - the block writes it, the factor asserts it, the
+  calibrator bounds `Rho_S` with it - with the penalty sized to bite in the last percent of the box
+  and the BOX binding a refusal by name (the earlier unsized penalty was a wall every fit stopped
+  on, which had read as "the surface wants a one-shock model"); the jump-share box is applied to
+  the REALISED share, printed beside the one asked. `verify` runs before `report`, so a refusal is
+  a message rather than half a log. THE IDENTIFICATION TABLE publishes the SVD of the DATA rows of
+  `least_squares`' Jacobian at each fitted point, columns scaled by `1/||J_:,j||`, with the unscaled
+  norms beside it (the penalty rows' leading singular value was an algebraic constant of `C_Min`),
+  taken twice for the polish where `Forward_Smiles` is set. MEASURED on the campaign's CJOW surface
+  (34 premiums to 2y, 8,192 paths, daily step, CPU; `artifacts/logvar2fj/harness_cjow.py`, spec 8
+  steps 0-4): the spot fit reads **0.99 vol points unweighted and 0.34 vega-weighted** in 144 s and
+  47 evaluations with no stage capped, against spec 9's 90 s on a GPU and spec 8's 0.2 vol points
+  from one month out - the short end carries all of it (2.33 at 1m: the 70-80% wing +1.56 RMS and
+  the 110-120% convexity +0.80, which is what two shocks and a co-jump cost against a one-shock
+  reference), the 90-110 slopes 68.9 / 52.0 / 36.7 / 24.3 / 13.7 against CJOW's 83.7 / 75.4 /
+  38.0 / 23.8 / 13.7, the marginal KS 0.015-0.055 against CJOW's exact CDF, every ATM pillar to
+  8e-15. With `Forward_Smiles` at CJOW's three tenors and buckets [0.5, 1.0] the composition
+  residual at 2y - the first rung BEYOND the last boundary, which is 5.3's check - is 0.108 vol
+  points, the vanillas at the target maturities improve by 0.196, and psi reads 0.964 / 0.956 /
+  0.865 against 0.973 / 1.008 / 0.620: on this surface the forward block does not buy the
+  1y-into-1y ratio, the vanilla-only fit already reading 0.983, and what it buys is
+  identification (`Rho_S[1y]`'s column norm 1.59e-2 with the forward rows against 4.90e-3
+  without). The 2y SPX autocall reads -32.875 off the vanilla-only factor and -33.651 off the
+  forward-target one against CJOW's -32.068: **the deal's forward-skew sensitivity is -2.4%**, and
+  `SE^2 x wall time` on the deal value is a third to a half of CJOW's across two runs (spec 9
+  states the target on the coupon leg, which nothing yet measures). `Nu` is unidentified on this
+  surface - 1e-12 in every fit, a column norm of 9.7e-4 against `Sigma_S`'s 7.8e-3. The noise
+  floor at 8,192 paths is 0.1-0.6 vol points on the ATM term structure and 2.6 on an L pillar; the
+  fast trio holds to 2% across seeds and the slow pair (`Sigma_L`, `Rho_L`) does not, which is the
+  valley a warm start slides along to a point 3% worse in the objective and 7% better unweighted.
+  NEXT (spec 5.4, contracted): the inner bootstrap at every iterate with the IFT through the root
+  and `Quote_Sensitivity` through both solves, `Fit_Mode: Bootstrap` with four bucketed curves,
+  `Internal_Step_Days` written onto the factor and asserted at pricing, the `Floor` arm and
+  `Stationary_Spread`, the share-measure forward-start (`E[S_T1 (R - k)^+]/E[S_T1]`, 0.4 vol points
+  of level from what the block prices, so market quotes are not yet a legal source), and the fit
+  object the per-iterate bootstrap wants. `tests/test_market_prices_partition.py` 38,
+  `tests/test_equity_chain.py` 39.
 
 - **LogVar2FJ phase 2, the three pricers - TARF, accumulator and discrete barrier on the (m, s)
   substitution** (2026-09-05) - the three OSS pricers take the walking kit's block law where GBM

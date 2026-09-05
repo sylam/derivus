@@ -9,10 +9,15 @@ WHICH TABLE IS THE QUOTE TABLE is DERIVED rather than listed: `schema.quote_cont
 table a quote table when its row declares all four value keys, so a family joins the value plane by
 DECLARING the columns rather than by being named somewhere.
 
-The rule is applied UNIFORMLY. Three of the seven declared families have an EMPTY values half and
+The rule is applied UNIFORMLY. Three of the eight declared families have an EMPTY values half and
 a tick on them is still a new plan - not an exemption per family, but what the one rule says about
 a block whose rows declare no value keys, asserted here BY NAME so a family that later declares
 them cannot arrive unpartitioned.
+
+THE EMITTED HEADER IS ITS FAMILY'S DECLARATION, held here for EVERY family that authors a block
+off a surface: `fx_surface_block` is inherited, so a field one family declares and another does not
+is a line the header must not carry unconditionally - which is how a `KeyError` on the panel count
+reached the family that inverts nothing.
 
 The projection DROPS the four keys where `partition_factor` shadows a value to `None`, which is the
 tick guard's own ruling read back: a pillar that starts or stops being quoted two-sided is the same
@@ -23,9 +28,9 @@ writes a STRING and `Config.parse_json` wanted a kwargs DICT, so a block this en
 not be read back by one of its own two decoders. Both read the string now.
 
 Every block here is real: the ZAR strip `test_interest_rate_prices` authors, the USDZAR smile
-`derivus_bloomberg` normalises, and the two Heston-Nandi ladders the engine EMITS off the surface
-that smile builds. The three families with no fixture are held to their own declarations, which is
-the stronger statement: a family declaring no `Points` field has no block with a values half.
+`derivus_bloomberg` normalises, and the three option ladders the engine EMITS off the surface that
+smile builds. The two families with no fixture are held to their own declarations, which is the
+stronger statement: a family declaring no `Points` field has no block with a values half.
 """
 import ast
 import copy
@@ -43,7 +48,8 @@ import pytest
 import derivus
 from derivus import bootstrappers, schema, utils
 from derivus.bootstrappers import (FXVolSurfaceParameters, HestonNandiComponentModelParameters,
-                                   HestonNandiModelParameters, InterestRateCurveParameters)
+                                   HestonNandiModelParameters, InterestRateCurveParameters,
+                                   LogVar2FJModelParameters)
 from derivus.config import Config, CustomJsonEncoder, ModelParams, update_market_quote
 
 from rates_world import BASE as RATES_BASE
@@ -54,14 +60,14 @@ from test_service import CLIENT, JSON, desk, desk_smile, dump, fx_vol_quotes, jo
 FX_BLOCK = 'FXVolPrices.USD.ZAR'
 HN_BLOCK = 'HestonNandiModelPrices.ZAR'
 
-#: `emit_market_prices`' own predicate, so a seventh family arriving with no row below fails the
-#: first gate rather than partitioning silently.
+#: `emit_market_prices`' own predicate, so a family arriving with no row below fails the first
+#: gate rather than partitioning silently.
 FAMILIES = {cls.__dict__['market_factor_type']: cls
             for cls in vars(bootstrappers).values()
             if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)
             and 'market_factor_type' in cls.__dict__}
 
-#: Where each family's quotes live, BY NAME. Four of these tables carry the value plane; the other
+#: Where each family's quotes live, BY NAME. Five of these tables carry the value plane; the other
 #: three have an empty values half and stay wholly plan-side, which is the one rule and not three
 #: exceptions to it.
 QUOTE_CONTAINER = {'CSForwardPriceModelPrices': 'Energy_Futures_Options',
@@ -70,7 +76,8 @@ QUOTE_CONTAINER = {'CSForwardPriceModelPrices': 'Energy_Futures_Options',
                    'HestonNandiComponentModelPrices': 'European_Options',
                    'HestonNandiModelPrices': 'European_Options',
                    'HullWhite2FactorModelPrices': 'Instrument_Definitions',
-                   'InterestRatePrices': 'Points'}
+                   'InterestRatePrices': 'Points',
+                   'LogVar2FJModelPrices': 'European_Options'}
 
 #: Spelled here rather than read off `schema.MARKET_QUOTE_CONTAINERS`: the derivation is what these
 #: gates hold, so asking it which families it covers would be asking the answer to grade itself.
@@ -93,11 +100,17 @@ def loaded(market_prices, deals=None):
     return derivus.Context().load_json((dump(document), 'partition'))
 
 
+#: The families that author a block off a built surface, and so are held to `fx_surface_block`'s
+#: declaration-driven header as well as to the partition.
+SURFACE_FAMILIES = (HestonNandiModelParameters, HestonNandiComponentModelParameters,
+                    LogVar2FJModelParameters)
+
+
 def family_blocks():
     """One REAL block per declared family, built once and handed out as a DEEP COPY - a cached live
     reference is a fixture the session can edit.
 
-    Four come from fixtures the suite already builds. The other three have no fixture in this repo;
+    Five come from fixtures the suite already builds. The other three have no fixture in this repo;
     what stands for them is their own declarations completed by `schema.declared_defaults`, which
     is the stronger statement: none declares a `Points` field, so no block of them can carry a
     values half.
@@ -110,11 +123,11 @@ def family_blocks():
         _BLOCKS['InterestRatePrices'] = market_prices[ZAR_BLOCK]
         _BLOCKS['FXVolPrices'] = fx_vol_quotes()[FX_BLOCK]
 
-        # the smile a desk posts, bootstrapped into the surface both ladders are authored off
+        # the smile a desk posts, bootstrapped into the surface every ladder is authored off
         surface = loaded(desk_smile()).current_cfg
         surface.bootstrap()
         assert 'FXVol.USD.ZAR' in surface.params['Price Factors'], 'the surface did not build'
-        for family in (HestonNandiModelParameters, HestonNandiComponentModelParameters):
+        for family in SURFACE_FAMILIES:
             _BLOCKS[family.market_factor_type] = family.fx_surface_block(
                 'USD.ZAR', surface.params['Price Factors'], surface.params['System Parameters'],
                 surface.params['Price Factor Interpolation'])[1]
@@ -129,6 +142,24 @@ def family_blocks():
         for name, cls in FAMILIES.items():
             _BLOCKS.setdefault(name, {'instrument': schema.declared_defaults(cls, {})})
     return copy.deepcopy(_BLOCKS)
+
+
+def test_an_authored_block_carries_only_the_fields_its_own_family_declares():
+    """`fx_surface_block` is INHERITED, so its header must be its family's declaration and not the
+    first family's. A field one family declares and another does not - `Quadrature_Panels`, which
+    a model that inverts nothing has no panel count for - is a line the emitter reads off the
+    declarations or a `KeyError` on the family that lacks it. MUTANT: the header spelling
+    `declared['Quadrature_Panels']` raises here for LogVar2FJ before any partition runs.
+    """
+    for family in SURFACE_FAMILIES:
+        instrument = family_blocks()[family.market_factor_type]['instrument']
+        declared = {field.name for field in family.fields}
+        assert set(instrument) - declared == set(), (
+            '{} wrote {}, which its own fields do not declare'.format(
+                family.market_factor_type, sorted(set(instrument) - declared)))
+        assert ('Quadrature_Panels' in instrument) == ('Quadrature_Panels' in declared), (
+            '{}: the panel count is written exactly where it is declared'.format(
+                family.market_factor_type))
 
 
 # ---------------------------------------------------------------------------------------------

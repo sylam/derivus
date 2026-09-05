@@ -83,22 +83,26 @@ HN_REFERENCE_TYPES = {'Underlying': 'EquityPrice', 'Volatility': 'EquityPriceVol
                       'Discount_Rate': 'InterestRate', 'Yield': 'DividendRate',
                       'Funding_Rate': 'InterestRate'}
 
-#: The two spellings of the target family, emitted off ONE selection: the component family for the
-#: multi-year ATM term structure its L curve holds, the plain one for the five-parameter fit.
-COMPONENT_FAMILY = 'HestonNandiComponentModelPrices'
-PLAIN_FAMILY = 'HestonNandiModelPrices'
-FAMILIES = (COMPONENT_FAMILY, PLAIN_FAMILY)
-
 #: The two switches the emitter STATES rather than lets fall through, at the families' own
 #: declared defaults. The STEP CLOCK is what the fitted parameters mean, so a deal's
 #: `Steps_Per_Year` has to be this number or it simulates a different model.
 STEPS_PER_YEAR = 252.0
 QUADRATURE_PANELS = 64
 
-#: The extra header the COMPONENT family declares and the plain one does not, at that family's own
-#: declared defaults. `Rho` is a pin the block has to state; `Quote_Sensitivity` Yes is REFUSED by
-#: this family.
-COMPONENT_HEADER = {'Rho': 0.99, 'Quote_Sensitivity': 'No'}
+#: The target families and the header each declares BEYOND the shared one, emitted off ONE
+#: selection: the component family for the multi-year ATM term structure its L curve holds (`Rho` a
+#: pin the block states, `Quote_Sensitivity` Yes being refused there), the plain one for the
+#: five-parameter fit, and LogVar2FJ, which prices by conditional Black over a walk and so declares
+#: no `Quadrature_Panels` at all - a header line rather than a blank one, a block carrying only
+#: what its family declares.
+COMPONENT_FAMILY = 'HestonNandiComponentModelPrices'
+PLAIN_FAMILY = 'HestonNandiModelPrices'
+LOGVAR_FAMILY = 'LogVar2FJModelPrices'
+FAMILY_HEADER = {COMPONENT_FAMILY: {'Quadrature_Panels': QUADRATURE_PANELS,
+                                    'Rho': 0.99, 'Quote_Sensitivity': 'No'},
+                 PLAIN_FAMILY: {'Quadrature_Panels': QUADRATURE_PANELS},
+                 LOGVAR_FAMILY: {}}
+FAMILIES = tuple(FAMILY_HEADER)
 
 #: The value-plane keys an option quote row carries beside its mid - the two-way the print was
 #: dealt on and its own clock, which are the evidence.
@@ -1117,10 +1121,10 @@ def market_price_name(family, forward):
 def equity_hn_block(chain, forward, ladder=None, family=COMPONENT_FAMILY):
     """`(Market Prices name, block)` - the chain as ONE Heston-Nandi quote block.
 
-    ONE SELECTION, TWO SPELLINGS. `select_rungs` runs the same way for both families and the
+    ONE SELECTION, THREE SPELLINGS. `select_rungs` runs the same way for every family and the
     `European_Options` table is byte-identical between them; only the header each family declares
-    differs. `collapse_rungs` keeps that true of the two families' READING of the table as well.
-    The component spelling additionally states `Rho` and `Quote_Sensitivity` No.
+    differs. `collapse_rungs` keeps that true of the families' READING of the table as well, and
+    the header is `FAMILY_HEADER`'s own registry entry rather than a branch per family.
 
     PREMIUMS, NOT VOLS. `Quote_Type` is Premium and `Quoted_Market_Value` the mid of the terminal's
     two-way, in the underlying's own units, with `QUOTE_VALUE_KEYS` beside it as DECLARED value
@@ -1185,15 +1189,13 @@ def equity_hn_block(chain, forward, ladder=None, family=COMPONENT_FAMILY):
         'Quote_Type': 'Premium',
         'Use_Forward': 'No', 'Invert_Moneyness': 'No',
         'Steps_Per_Year': ladder.steps_per_year,
-        'Quadrature_Panels': ladder.quadrature_panels,
+        # what each family declares BEYOND the shared header, at its own declared defaults - the
+        # panel count off the ladder, which is where a caller may move it
+        **{key: ladder.quadrature_panels if key == 'Quadrature_Panels' else value
+           for key, value in FAMILY_HEADER[family].items()},
         'Quote_Timestamp': _timestamp(chain.as_of),
         'Quote_Source': quote_source(chain, forward, ladder, rungs, rows, notes, readings),
         'European_Options': quotes}
-    if family == COMPONENT_FAMILY:
-        instrument.update(COMPONENT_HEADER)
-        # the option table stays LAST whichever family this is, so the two spellings differ only
-        # in their header
-        instrument['European_Options'] = instrument.pop('European_Options')
     return market_price_name(family, forward), {'instrument': instrument}
 
 
