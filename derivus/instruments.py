@@ -559,6 +559,15 @@ def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, 
                    factor.curve_tenors()])]
 
 
+def set_spot_model_index(field_index, hn, options):
+    """Write a declared spot model's compile facts - the parameter factor, the trading-day clock a
+    daily family sub-steps on, and the internal step a walking one takes. A GBM deal writes none."""
+    if hn is not None:
+        field_index['HN_Params'] = hn
+        field_index['HN_Steps_Per_Year'] = options.get('Steps_Per_Year', 252.0)
+        field_index['Internal_Step_Days'] = options.get('Internal_Step_Days', 1)
+
+
 def spot_model_reciprocal_axis(spot_model, underlying, currency, base, reference):
     """Does this FX deal pay on the RECIPROCAL of the axis its spot model was fitted on - and, for a
     family that cannot be carried there, the refusal.
@@ -566,7 +575,8 @@ def spot_model_reciprocal_axis(spot_model, underlying, currency, base, reference
     An `FxRate` is a currency priced in the BASE, so a deal whose underlying IS the base pays on
     `1/s` and settles in the other currency. The plain family transports to that numeraire exactly,
     at the cost of one parameter (`utils.hn_reciprocal_gamma`); the COMPONENT family does not - the
-    change of numeraire puts a state-dependent term in its long-run intercept and leaves the family.
+    change puts a state-dependent term in its long-run intercept and leaves the family - and
+    LogVar2FJ's own carry, a mean shift on the shocks with a tilt of the jump law, is not built.
 
     Compared on `check_rate_name` tuples, the same spelling-blind test `utils.spot_model_currency`
     makes, or a mixed call misses the inversion and prices the fit on the wrong axis.
@@ -574,15 +584,18 @@ def spot_model_reciprocal_axis(spot_model, underlying, currency, base, reference
     if utils.check_rate_name(underlying) != utils.check_rate_name(base):
         return False
     if spot_model != 'HestonNandi':
+        why = ('the change of numeraire puts a state-dependent term in its long-run intercept'
+               if spot_model == 'HestonNandiComponent' else
+               'its carry, a mean shift on the shocks with a tilt of the jump law, is not built')
         raise utils.UnpriceableSchedule(
             '{0}: SpotModel={1!r} on a deal whose Underlying_Currency {2} IS the book\'s base '
             'currency. The fit describes {3} - an FxRate is priced in the base, so the base leg '
             'has no law of its own - and this deal pays on its reciprocal, settled in {3}. The '
-            'plain family carries to that numeraire exactly (one parameter, utils.'
-            'hn_reciprocal_gamma); {1} does not, because the change puts a state-dependent term in '
-            "its long-run intercept and leaves the family. Declare SpotModel: 'HestonNandi', or "
-            'quote the pair the other way up so the deal is written on {3} and no axis is '
-            'crossed'.format(reference, spot_model, '.'.join(underlying), '.'.join(currency)))
+            'plain family carries to that numeraire exactly (one parameter, '
+            "utils.hn_reciprocal_gamma); {1} does not, because {4}. Declare SpotModel: "
+            "'HestonNandi', or quote the pair the other way up so the deal is written on {3} and "
+            'no axis is crossed'.format(
+                reference, spot_model, '.'.join(underlying), '.'.join(currency), why))
     return True
 
 
@@ -3647,7 +3660,7 @@ class EquityBarrierBinaryOption(Deal):
         F('Settlement_Date', 'Date', default='')
 ])]
 
-    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent')
+    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent', 'LogVar2FJ')
 
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
@@ -3662,7 +3675,9 @@ class EquityBarrierBinaryOption(Deal):
                      'is a fixed cash amount rather than a vanilla call/put payoff.',
                      'See `EquityBarrierOption` for the full OSS methodology, the `Barrier_Dates` `Observed`',
                      'column and its compile-time fold, and the **SpotModel** valuation option shared by both',
-                     'deals. A knocked-in binary compiles as the plain `EquityBinaryOption` it now is.'
+                     'deals - `HestonNandi`, `HestonNandiComponent` or `LogVar2FJ`, the last of which walks',
+                     'its own internal step and is exact where the observation dates lie on that grid. A',
+                     'knocked-in binary compiles as the plain `EquityBinaryOption` it now is.'
                      ])
 
     def __init__(self, params, valuation_options):
@@ -3724,9 +3739,7 @@ class EquityBarrierBinaryOption(Deal):
         hn = get_spot_model_params_factor(
             self.options.get('SpotModel', 'None'), field['Equity'],
             all_factors, static_offsets, stochastic_offsets)
-        if hn is not None:
-            field_index['HN_Params'] = hn
-            field_index['HN_Steps_Per_Year'] = self.options.get('Steps_Per_Year', 252.0)
+        set_spot_model_index(field_index, hn, self.options)
 
         return field_index
 
@@ -4126,12 +4139,7 @@ class QEDI_CustomAutoCallSwap(Deal):
                                 spot_model, self.field['Currency']))
         hn = get_spot_model_params_factor(
             spot_model, field['Equity'], all_factors, static_offsets, stochastic_offsets)
-        if hn is not None:
-            field_index['HN_Params'] = hn
-            field_index['HN_Steps_Per_Year'] = self.options.get('Steps_Per_Year', 252.0)
-            # the internal step is a NUMERICAL setting of the model that walks one, so it sits
-            # beside the clock it is counted on rather than on the parameter factor
-            field_index['Internal_Step_Days'] = self.options.get('Internal_Step_Days', 1)
+        set_spot_model_index(field_index, hn, self.options)
 
         return field_index
 
@@ -4377,7 +4385,7 @@ class EquityBarrierOption(Deal):
         F('Payoff_Type', 'Text', default='Standard', values=['Standard', 'Quanto', 'Compo'])
 ])]
 
-    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent')
+    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent', 'LogVar2FJ')
 
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
@@ -4445,16 +4453,21 @@ class EquityBarrierOption(Deal):
                      '**Valuation options** (set in the Valuation Configuration section, per deal type)',
                      '',
                      '- **SpotModel**: `None` (default — lognormal dynamics off the implied vol surface),',
-                     '`HestonNandi` or `HestonNandiComponent`. Selects the model family driving the OSS simulation;',
-                     'the barrier-hit and in-out-parity legs then use the matching closed form (the Heston-Nandi CF',
-                     'pricer instead of Black-Scholes). Parameters are resolved by naming convention from the',
+                     '`HestonNandi`, `HestonNandiComponent` or `LogVar2FJ`. Selects the model family driving',
+                     'the OSS simulation; the barrier-hit and in-out-parity legs then use the matching closed',
+                     'form (the Heston-Nandi CF pricer instead of Black-Scholes), and `LogVar2FJ` walks its own',
+                     'INTERNAL step, giving each observation interval one Gaussian block law - exact where the',
+                     'dates lie on that grid, as a daily-monitored barrier does, and both European legs are its',
+                     'conditional Black over the walk. Parameters are resolved by naming convention from the',
                      '`<SpotModel>ModelParameters.<underlying>` price factor (e.g.',
                      '`HestonNandiModelParameters.SPX`). Switching the model on without that factor in the',
                      'market data is a loud skip, never a silent lognormal fallback. Requires a',
                      'single-currency payoff: a Quanto/Compo carry is a lognormal quantity, so declaring',
                      'one alongside a non-`None` SpotModel is the same loud skip.',
                      '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH steps',
-                     '(default 252; only read when SpotModel is not `None`).'
+                     '(default 252; only read when SpotModel is not `None`).',
+                     '- **Internal_Step_Days**: trading days per internal step of a model that walks one',
+                     '(`LogVar2FJ`; default 1). A NUMERICAL setting, not a parameter.'
                      ])
 
     def __init__(self, params, valuation_options):
@@ -4557,9 +4570,7 @@ class EquityBarrierOption(Deal):
                                 spot_model, self.field['Currency']))
         hn = get_spot_model_params_factor(
             spot_model, field['Equity'], all_factors, static_offsets, stochastic_offsets)
-        if hn is not None:
-            field_index['HN_Params'] = hn
-            field_index['HN_Steps_Per_Year'] = self.options.get('Steps_Per_Year', 252.0)
+        set_spot_model_index(field_index, hn, self.options)
 
         return field_index
 
@@ -5651,7 +5662,7 @@ class FXTARFOptionDeal(Deal):
         F('Barrier', 'Float', default=0)
 ])]
 
-    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent')
+    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent', 'LogVar2FJ')
 
     factor_fields = {'Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
@@ -5681,15 +5692,19 @@ class FXTARFOptionDeal(Deal):
             '**Valuation options** (set in the Valuation Configuration section, per deal type)',
             '',
             '- **SpotModel**: `None` (default — lognormal dynamics off the implied vol surface),',
-            '`HestonNandi` or `HestonNandiComponent`. Selects the model family driving the OSS',
-            'fixing-to-fixing simulation. Parameters are resolved by naming convention from the',
+            '`HestonNandi`, `HestonNandiComponent` or `LogVar2FJ`. Selects the model family driving the',
+            'OSS fixing-to-fixing simulation; `LogVar2FJ` walks its own INTERNAL step and hands each fixing',
+            'interval one Gaussian block law, which the PnL-cap survival and the integrated knock-in tail',
+            'both read. Parameters are resolved by naming convention from the',
             '`<SpotModel>ModelParameters.<non-base token>` price factor — the leg of the pair that is',
             'not the book\'s base currency, that being the only one which IS an `FxRate` and the only',
             'one the calibration writes (e.g. `HestonNandiModelParameters.EUR` for an EURUSD leg on a',
             'USD book, whichever side the deal is written from). Switching the model on without that',
             'factor in the market data is a loud skip, never a silent lognormal fallback.',
             '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH steps',
-            '(default 252; only read when SpotModel is not `None`).'
+            '(default 252; only read when SpotModel is not `None`).',
+            '- **Internal_Step_Days**: trading days per internal step of a model that walks one',
+            '(`LogVar2FJ`; default 1). A NUMERICAL setting, not a parameter.'
         ])
 
     def __init__(self, params, valuation_options):
@@ -5759,9 +5774,7 @@ class FXTARFOptionDeal(Deal):
                 field['Underlying_Currency'], field['Currency'], self.base_currency),
             all_factors, static_offsets, stochastic_offsets)
         if hn is not None:
-            field_index['HN_Params'] = hn
-            # HN is calibrated on a per-DAY clock; a weekly/monthly fixing spans this many daily sub-steps
-            field_index['HN_Steps_Per_Year'] = self.options.get('Steps_Per_Year', 252.0)
+            set_spot_model_index(field_index, hn, self.options)
             if spot_model_reciprocal_axis(
                     self.options['SpotModel'], field['Underlying_Currency'], field['Currency'],
                     self.base_currency, self.field.get('Reference')):
@@ -5803,7 +5816,7 @@ class FXAccumulatorOptionDeal(Deal):
             F('Fixing Date', 'Date'), F('Settlement Date', 'Date'), F('Value', 'Float')]))
 ])]
 
-    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent')
+    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent', 'LogVar2FJ')
 
     factor_fields = {'Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
@@ -5839,10 +5852,13 @@ class FXAccumulatorOptionDeal(Deal):
             '**Valuation options** (set in the Valuation Configuration section, per deal type)',
             '',
             '- **SpotModel**: `None` (default - lognormal dynamics off the implied vol surface),',
-            '`HestonNandi` or `HestonNandiComponent`, resolved by naming convention from',
-            '`<SpotModel>ModelParameters.<non-base token>` exactly as for the FX TARF.',
+            '`HestonNandi`, `HestonNandiComponent` or `LogVar2FJ`, resolved by naming convention from',
+            '`<SpotModel>ModelParameters.<non-base token>` exactly as for the FX TARF; `LogVar2FJ` walks',
+            'its own INTERNAL step and hands each fixing interval the block law this loop truncates at.',
             '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH',
-            'steps (default 252; only read when SpotModel is not `None`).'
+            'steps (default 252; only read when SpotModel is not `None`).',
+            '- **Internal_Step_Days**: trading days per internal step of a model that walks one',
+            '(`LogVar2FJ`; default 1). A NUMERICAL setting, not a parameter.'
         ])
 
     def __init__(self, params, valuation_options):
@@ -5946,8 +5962,7 @@ class FXAccumulatorOptionDeal(Deal):
                 field['Underlying_Currency'], field['Currency'], self.base_currency),
             all_factors, static_offsets, stochastic_offsets)
         if hn is not None:
-            field_index['HN_Params'] = hn
-            field_index['HN_Steps_Per_Year'] = self.options.get('Steps_Per_Year', 252.0)
+            set_spot_model_index(field_index, hn, self.options)
             if spot_model_reciprocal_axis(
                     self.options['SpotModel'], field['Underlying_Currency'], field['Currency'],
                     self.base_currency, self.field.get('Reference')):

@@ -117,9 +117,10 @@ price. `furnish_accrual` is where a leg becomes a strip:
 - **the notionals.** `Underlying_Amount` is the notional PER FIXING and `LeverageNotional` is
   `leverage ×` it. `leverage` is the registry's first parameter with a DEFAULT (2.0, the market's own
   gearing), published as the descriptor's `value` and read through `declared()` rather than a `.get`.
-- **the model.** Both deals declare `spot_models = ('None', 'HestonNandi', 'HestonNandiComponent')`, of
-  which the runner pins only `HestonNandi` (`structures.SPOT_MODEL`) — the component model is the
-  autocall ladder's. The switch is a `Valuation Configuration` entry per deal TYPE resolved by naming
+- **the model.** Both deals declare `spot_models = ('None', 'HestonNandi',
+  'HestonNandiComponent', 'LogVar2FJ')`, of which the runner pins only `HestonNandi`
+  (`structures.SPOT_MODEL`) — the component model is the autocall ladder's, and LogVar2FJ walks its
+  own internal step. The switch is a `Valuation Configuration` entry per deal TYPE resolved by naming
   convention off the pair's NON-BASE token — `HestonNandiModelParameters.ZAR` for a USDZAR leg on a USD
   book, whichever side the notional is on, because the base currency is a numeraire and can name no
   block. `spot_model` checks the book for that exact key and pins the model only where it is there: the

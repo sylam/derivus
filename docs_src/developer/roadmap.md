@@ -382,6 +382,43 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **LogVar2FJ phase 2, the three pricers - TARF, accumulator and discrete barrier on the (m, s)
+  substitution** (2026-09-05) - the three OSS pricers take the walking kit's block law where GBM
+  reads its own step: `hn` means `kit.daily`, `walks` a kit with no per-step state, `kit is None`
+  GBM, one spelling per pricer; a walk per MTM row after the row's uniforms, antithetic in `-eta`
+  and `1 - u_N` as `oss_uniforms` mirrors, hands each interval its `(M, Sigma)`, which the bound,
+  the truncated draw, `otm_analytic` and the advance all read. A barrier observed on the internal
+  grid is a block of one internal step and exact; off it the intervals are sub-divided
+  independently, so the exactness is the grid's. Both European legs are one kit verb,
+  `LogVar2FJKit.european` - the strip summed to expiry, `lognormal_fired_gain` per path or the
+  block's Phi, averaged - with the division by Sigma guarded (spec 2.8): a terminal row has no
+  strip left, and an unguarded 0/0 at the money took an exposure matrix to NaN. ONE ESTIMATOR PER
+  DECISION: an already-knocked-in barrier IS the in-out-parity vanilla, so it leaves `sim_spot_oss`
+  as a node by-product instead of being drawn a second time outside the recompute node and on the
+  tape - the leg that made `Greeks: 'First'` move a live down-and-in's reported value 3.1%, now
+  hex-identical with greeks on and off, the CVA and its L-curve, jump and spot gradients
+  bit-identical with `Recompute_Inner_MC` on and off. The four deals declare the model and one
+  `set_spot_model_index` writes `Internal_Step_Days` beside `HN_Steps_Per_Year` at all five
+  compile sites, where three spelt it and four did not. Every existing reading is unmoved: 14 GBM
+  and Heston-Nandi documents hex for hex against a pristine 454f457 tree, 17 more the reviewer
+  authored (observed fixings, same-day, partial-time, quanto, compo, digital), `tarf_hex.py`,
+  `hn_hex.py`, `run_trials.py base` digit for digit, the GBM limit at rounding on all four
+  documents (1.7e-15 / 1.7e-15 / 2.4e-16 / 1.7e-14, the last the vanilla leg's pairwise-sum
+  rounding). Every Q-sized value lands within 1.3 SE of a brute-force oracle that draws every
+  internal step's return, once the engine's own seed error is counted beside the oracle's, and
+  in-out parity reads 79.702795 from both sides against a 79.754 +/- 0.195 vanilla. On the smooth
+  value at 65,536 paths the spot and `Mu_J` deltas agree with CRN ladders to 0.4% and 0.09%,
+  `Greeks: 'All'` flows on both smooth arms with gamma 1.09% and 0.28% off the AAD delta's own
+  ladder, and the crisp splice's delta is the smooth arm's to the bit; the `Rho_S` rows are a
+  consistency check on shared draws, not a resolved sensitivity - their seed scatter at 65,536
+  paths is 16% and 38%. The accumulator's crisp and smooth values coincide under every model:
+  that loop already integrates the knock-out. OPEN: the European leg still branches on the family
+  in two places, since the HN closed form wants a step count and a scalar carry where LogVar2FJ
+  wants the walked block; the collateralised CVA spot delta stays 5.13% off a ladder at 9.73%
+  flatness (the open row above). `campaign/lv_deals.py` and `artifacts/logvar2fj/oracles.py` are
+  the documents and the oracles; `lv_deals.py guards` holds the two regressions. Net +80 tracked
+  lines, `utils.py` untouched.
+
 - **LogVar2FJ, phase 1 - the kit, the factor and the autocall's arm** (2026-09-05) - two
   mean-reverting log-variance factors and a co-jump, walked on an INTERNAL step and handed to the
   autocall as each fixing interval's own Gaussian block law. The model is free functions in

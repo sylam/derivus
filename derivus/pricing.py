@@ -603,7 +603,7 @@ class LogVar2FJKit(object):
         self.steps_per_year = float(factor_dep['HN_Steps_Per_Year'])
         self.step_days = float(factor_dep['Internal_Step_Days'])
 
-    def draws(self, shared, num_sims, deltas):
+    def draws(self, shared, num_sims, deltas, antithetic):
         """The walk's two normals and its jump counts, over ``[batch, sims, n]`` and IN FLOAT32 -
         the only tensors of that shape a pricing call holds, 1.05 GiB each at 256 x 2048 over a 2y
         daily grid, promoted step by step inside the scan.
@@ -612,13 +612,16 @@ class LogVar2FJKit(object):
         `InnerMCRecompute` and every Heston-Nandi unmonitored sub-step already draws from: a Sobol
         walk block is 3n dimensions wide and MEMOIZED per row, 6 GiB a row at this shape. So the
         row's `u` shares this stream exactly where `sobol` is off - at 16 scenarios or fewer.
+        ``antithetic`` mirrors it along the SIMS axis, ``-eta`` and ``1 - u_N`` (spec 3).
         """
         shape = [shared.simulation_batch, num_sims, int(deltas.shape[0])]
         z = torch.randn([2] + shape, dtype=torch.float32, device=shared.one.device)
         u = torch.rand(shape, dtype=torch.float32, device=shared.one.device)
+        if antithetic:
+            z, u = torch.cat([z, -z], dim=-2), torch.cat([u, 1.0 - u], dim=-2)
         return z[0], z[1], utils.lv_counts(u, self.params['Lambda'], deltas)
 
-    def blocks(self, row_t, deltas, carry, shared, num_sims):
+    def blocks(self, row_t, deltas, carry, shared, num_sims, antithetic):
         """Every remaining fixing interval's block law, ``(M, Sigma)`` of shape [batch, sims] each.
 
         The grid runs `Internal_Step_Days` trading days on the `Steps_Per_Year` clock between
@@ -630,7 +633,8 @@ class LogVar2FJKit(object):
         ``Sigma^2`` inside its own loop, so no ``[batch, sims, n]`` tensor exists but the draws.
 
         The two bucketed levers are read at the ABSOLUTE step-START times, as ``L`` is: the
-        buckets are calendar time from the base date, not time from this row.
+        buckets are calendar time from the base date, not time from this row. ``antithetic`` is
+        REQUIRED because the wrong value is a shape error at every consumer, never a quiet bias.
         """
         steps = [max(int(round(float(dt) * self.steps_per_year / self.step_days)), 1)
                  for dt in deltas]
@@ -642,10 +646,27 @@ class LogVar2FJKit(object):
         curve = utils.curve_at(self.knots['L_Curve'], self.values['L_Curve'], t)
         params = dict(self.params, **{x: utils.bucket_at(self.knots[x], self.values[x], t[:-1])
                                       for x in utils.LV_BUCKET_NAMES})
-        seed = delta.new_zeros(shared.simulation_batch, num_sims)
-        M, var = utils.lv_walk(params, curve, delta, *self.draws(shared, num_sims, delta),
+        eta_l, eta_s, counts = self.draws(shared, num_sims, delta, antithetic)
+        seed = delta.new_zeros(eta_l.shape[:-1])
+        M, var = utils.lv_walk(params, curve, delta, eta_l, eta_s, counts,
                                state0=(seed + curve[0], seed), blocks=block)
         return M + (carry * deltas.reshape(-1, 1)).T.unsqueeze(1), utils.sqrt_or_zero(var)
+
+    def european(self, S, law, K, is_call, digital):
+        """This model's own European, undiscounted - the barrier's KI parity leg and its
+        already-hit leg, where a daily kit reads its closed form. The strip's per-interval laws
+        sum into the terminal one (variances add), off which each path prices a conditional Black
+        (`lognormal_fired_gain`) or, for a digital, the block's own Phi, averaged over the walk -
+        the expectation spec 2.4 writes. A TERMINAL row has NO strip left, so Sigma is exactly zero
+        and the division is guarded there (spec 2.8): the leg reads its intrinsic, the digital
+        0.5 at the strike."""
+        M, sd = law[0].sum(-1), utils.sqrt_or_zero((law[1] * law[1]).sum(-1))
+        z = (torch.log(K / S) - M) / sd.clamp_min(torch.finfo(sd.dtype).tiny)
+        if digital:
+            Phi = utils.norm_cdf(z)
+            return ((1.0 - Phi) if is_call else Phi).mean(-1)
+        return ((1.0 if is_call else -1.0) * lognormal_fired_gain(
+            S, M, sd, z, K, is_call)).mean(-1)
 
 
 #: The OSS kits, keyed by the `SpotModel` valuation option each deal declares. A pricer looks its
@@ -1975,10 +1996,11 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     control lands within ~1.4% of Black.
     """
 
-    def sim_spot_oss(offset, sobol, num_sims,
+    def sim_spot_oss(offset, sobol, num_sims, row_times,
                      spot_prices, vols, sd_to_expiry, times, carry, discount_rates, *hn_scalars):
-        """Run the OSS inner Monte Carlo; returns the per-block mean PV as ``(mtm,)``, the tuple
-        being ``InnerMCRecompute``'s contract.
+        """Run the OSS inner Monte Carlo; returns ``(mtm,)``, the tuple being
+        ``InnerMCRecompute``'s contract - plus, under a walking kit, the in-out-parity vanilla as a
+        by-product, that leg BEING the already-hit value and priced off this row's own walk.
 
         PURE bound/theta split: leading arguments are the block's shape, trailing ones every
         graph-carrying tensor. It takes BOTH vol quantities - ``vols`` the per-interval strip
@@ -2001,9 +2023,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             crossed strictly above the level, so a spot sitting ON it survives."""
             return ((spot <= barrier) if eta == BARRIER_UP else (spot >= barrier)).to(spot.dtype)
 
-        # the declared model as a walking kit - the pricer names it once, here
+        # the outer function's kit on THIS call's tensors; `hn` and `walks` are its class facts
         kit = oss_model_kit(factor_dep, hn_scalars)
-        hn = kit is not None
 
         # `carry` is the INTERVAL carry rate (forward_carry_rate), so this product is the interval
         # integral. GBM folds it with the vol; HN keeps it raw, its recursion supplying variance
@@ -2013,7 +2034,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         # mask is what makes it the identity. Read on the HOST - the day-count strip is constant.
         # HN keeps its whole-daily-step floor, its variance being model state rather than dt-scaled
         zero_step = (times <= 0).detach().cpu().numpy()     # [N_block, N_fix]
-        if not hn:
+        if kit is None:
             live = (dt > 0).to(carry_int.dtype)             # [N_block, N_fix, 1]
             # `vols` is the INTERVAL vol strip (forward_vol_rate), so this is interval variance.
             # The floor stays under `sqrt`, whose gradient at an exact zero is not finite
@@ -2024,11 +2045,11 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
         isBarrierDate_block = BarrierDates[offset:]
 
-        mcmc = []
+        mcmc, parity = [], []
         for blk, (s, D) in enumerate(zip(spot_prices, discount_rates)):
             # s: [batch], D: [N_fix, batch]
             N_fix = D.shape[0]
-            if not hn:
+            if kit is None:
                 r, sigma = drift[blk], vol[blk]  # [N_fix, batch] each
 
             # antithetic variates: [N_fix, batch, 2*num_sims] (shared OSS spelling, bit-identical)
@@ -2041,9 +2062,12 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                 nj = [max(int(round(float(t) * hn_spy)), 1) for t in times[blk]]
                 b_steps = [(carry_int[blk][j] / nj[j]).reshape(-1, 1) for j in range(N_fix)]
                 st = kit.seed()
+            elif walks:
+                # one walk per row, AFTER its `u` and mirrored the way `oss_uniforms` mirrors
+                law = kit.blocks(row_times[blk], times[blk], carry[blk], shared, num_sims, True)
 
             if direction == BARRIER_IN:
-                if not hn:
+                if kit is None:
                     # the parity vanilla: KI = Vanilla - KO_pure + rebate * E[L_T]. ONE vol prices
                     # every European leg - the `sd_to_expiry` the already-hit leg marks with, not
                     # the strip's own total
@@ -2055,6 +2079,11 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                     else:
                         vanilla_pv = utils.black_european_option(
                             fwd_to_T, strike, vol_to_T, 1.0, 1.0, phi, shared) * D[-1]
+                elif walks:
+                    # the model's own European over the SAME walk, the whole remaining grid as ONE
+                    vanilla_pv = kit.european(
+                        s.reshape(-1, 1), law, strike, phi == OPTION_CALL, isdigital) * D[-1]
+                    parity.append(vanilla_pv)
                 else:
                     # the HN closed form; a scalar r_step needs batch-constant carry, so the guard
                     # is loud rather than silent
@@ -2108,8 +2137,10 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                             Sj, st, b_step, nj[j], shared, num_sims, antithetic=True)
                     continue
 
-                r_j = r[j].reshape(-1, 1)      # [batch, 1]
-                sig_j = sigma[j].reshape(-1, 1) # [batch, 1]
+                if kit is None:
+                    r_j, sig_j = r[j].reshape(-1, 1), sigma[j].reshape(-1, 1)  # [batch, 1] each
+                else:
+                    r_j, sig_j = law[0][..., j], law[1][..., j]   # the interval's own block law
 
                 if isdigital and j == N_fix - 1:
                     # integrate the terminal step: a sampled indicator puts no density term on the
@@ -2197,7 +2228,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
             mcmc.append(P.mean(dim=1).clamp(min=0.0))
 
-        return (torch.stack(mcmc),)
+        return (torch.stack(mcmc),) + ((torch.stack(parity),) if parity else ())
 
     mtm_list = []
     factor_dep = deal_data.Factor_dep
@@ -2226,9 +2257,12 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     # inside nominal, so dividing by it would book a sold knock-out's rebate as a receipt
     rebate_per_unit = cash_rebate / size
 
-    # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
+    # the declared model's parameter tensors, by ITS OWN canonical name tuple, and the kit they
+    # build: a DAILY family sub-steps this pricer's interval, a walking one hands it one block law
+    # and GBM is neither, which is also which deals build an implied-surface quantity
     hn_scalars = oss_model_scalars(factor_dep, shared)
-    hn = bool(hn_scalars)
+    kit = oss_model_kit(factor_dep, hn_scalars)
+    hn, walks = kit is not None and kit.daily, kit is not None and not kit.daily
     if hn:
         hn_spy = factor_dep['HN_Steps_Per_Year']
 
@@ -2316,7 +2350,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         # the implied surface has no consumer, so neither vol quantity is built
         expiry_vols = utils.calc_time_grid_vol_rate(
             factor_dep['Volatility'], moneyness_block, expiry,
-            shared) if not hn else spot_block.new_empty(0)
+            shared) if kit is None else spot_block.new_empty(0)
 
         adj = None
         if factor_dep.get('Check_Payoff_Type', False):
@@ -2330,6 +2364,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         sample_ts = drifts.new(
             np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)]))
         cum_t = drifts.new(fixing_block)
+        row_times = daycount_fn(t_block[:, utils.TIME_GRID_MTM])
         # the carry over each INTERVAL, which is not the zero carry to each fixing
         # (forward_carry_rate); `fixing_block` is the cumulative strip the difference needs
         fwd_drifts = forward_carry_rate(drifts, cum_t, sample_ts)
@@ -2337,14 +2372,14 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         # moneyness, differenced into forward variance (forward_vol_rate)
         interval_vols = forward_vol_rate(forward_vol_strip(
             deal_data, shared.one * strike, spot_block, drifts, fixing_block, shared,
-            invert_moneyness, use_forwards), cum_t, sample_ts) if not hn else spot_block.new_empty(0)
+            invert_moneyness, use_forwards), cum_t, sample_ts) if kit is None else spot_block.new_empty(0)
         if adj is not None and adj['fx_vol'] is not None:
             # compo: the simulation steps S*X, so each interval's vol is the PRODUCT's - the
             # asset's own interval strip composed with the fx expiry read
             interval_vols = compo_vol(interval_vols, adj['fx_vol'].unsqueeze(1), adj['rho'])
         # sigma(K, tau) * sqrt(tau): the ONE European standard deviation, marked by the already-hit
         # leg below and by the in-out-parity vanilla inside sim_spot_oss
-        sd_to_expiry = expiry_vols * torch.sqrt(rem_exp.clamp(min=1e-4)) if not hn else expiry_vols
+        sd_to_expiry = expiry_vols * torch.sqrt(rem_exp.clamp(min=1e-4)) if kit is None else expiry_vols
 
         # discount rates per fixing: [N_block, N_fix, batch]
         discount_rates = utils.calc_discount_rate(discount_block, fixings, shared)
@@ -2352,16 +2387,30 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         all_hit = row_barrier_hit.all()
         some_hit = row_barrier_hit.any()
 
+        # THE OSS, run even where every row has resolved if a walking kit's hit leg is inside it
+        run_oss = not all_hit or (walks and direction == BARRIER_IN)
+        if run_oss:
+            simulate = partial(sim_spot_oss, sample_index_t, sobol, shared.MCMC_sims, row_times)
+            theta = (spot_block, interval_vols, sd_to_expiry, sample_ts, fwd_drifts,
+                     discount_rates) + hn_scalars
+            # the SAME callable either way: under the node it is called twice
+            oss_result, *parity = InnerMCRecompute.run(shared, simulate, *theta)
+            oss_result = nominal * oss_result
+
         # vanilla European for already-hit scenarios (KI) or zeros (KO); also built when a
-        # counterfactual will want it - a closed form cannot perturb the OSS stream
+        # counterfactual will want it - nothing here may perturb the OSS stream
         if some_hit or boundary_aad:
-            if direction == BARRIER_IN:
+            if direction != BARRIER_IN:
+                hit_value = shared.one.new_zeros(len(t_block), shared.simulation_batch)
+            elif walks:
+                # an already-knocked-in KI IS that vanilla: one estimator, off the row's own walk
+                hit_value = nominal * parity[0]
+            else:
                 # ONE forward, shared with the in-out-parity leg inside sim_spot_oss - the two
                 # value the same European on the same state
                 log_fwd = total_log_forward(fwd_drifts, sample_ts)              # [N_block, batch]
                 if hn:
-                    # an already-knocked-in KI IS a vanilla, priced under the DECLARED model on the
-                    # parity leg's discretisation - same per-row n_total, same scalar carry
+                    # same per-row n_total, same scalar carry
                     carry_det = log_fwd.detach()  # a guard reads a magnitude, not the tape
                     carry_spread = float((carry_det.amax(dim=1) - carry_det.amin(dim=1)).max())
                     if carry_spread > 1.0e-9:
@@ -2369,7 +2418,6 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                             'HN already-hit KI leg needs batch-constant carry; carry varies across '
                             'scenarios by {:.2e} (stochastic rates?) - extend hn_call to batched '
                             'carry or price this barrier under GBM'.format(carry_spread))
-                    kit = oss_model_kit(factor_dep, hn_scalars)
                     rows = []
                     for row, spot_row in enumerate(spot_block):
                         # n_steps drives the variance recursion, so it is a scalar per MTM row
@@ -2396,27 +2444,19 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                 terminal_df = torch.squeeze(utils.calc_discount_rate(
                     discount_block, tenor_block.reshape(-1, 1), shared), dim=1)     # [N_block, batch]
                 hit_value = nominal * vanilla * terminal_df
-            else:
-                hit_value = shared.one.new_zeros(len(t_block), shared.simulation_batch)
 
         if all_hit:
-            # every row of every scenario has already resolved - skip OSS entirely
+            # every row of every scenario has already resolved
             theo_cashflow = hit_value
         else:
-            simulate = partial(sim_spot_oss, sample_index_t, sobol, shared.MCMC_sims)
-            theta = (spot_block, interval_vols, sd_to_expiry, sample_ts, fwd_drifts,
-                     discount_rates) + hn_scalars
-            # the SAME callable either way: under the node it is called twice
-            oss_result, = InnerMCRecompute.run(shared, simulate, *theta)
-            oss_result = nominal * oss_result
             # override per-row per-scenario where the barrier had already been crossed
             theo_cashflow = torch.where(
                 row_barrier_hit, hit_value, oss_result) if some_hit else oss_result
 
         if boundary_aad:
             b_dead.append(hit_value.detach())
-            # all_hit blocks skipped the OSS, so they carry no counterfactual
-            b_alive.append((hit_value if all_hit else oss_result).detach())
+            # a block that skipped the OSS carries no counterfactual
+            b_alive.append((oss_result if run_oss else hit_value).detach())
 
         mtm_list.append(theo_cashflow)
 
@@ -3051,7 +3091,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     def survives(s):
         return (s < barrier) if barrier_up else (s > barrier)
 
-    def sim_spot_accumulator(settlement, fixing_offset, sobol, num_sims,
+    def sim_spot_accumulator(settlement, fixing_offset, sobol, num_sims, row_times,
                              spot_prices, times, carry, prev_alive, discount_rates, vols_all,
                              past_fixings, *hn_scalars):
         """OSS inner Monte Carlo over one block of MTM rows; mean PV and alive-branch PV per row.
@@ -3062,9 +3102,9 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
         block-local row and the SCHEDULE index each belongs to - the index being what names the
         decision that gates it. `prev_alive` is theta, carrying the observed samples' graph.
         """
-        # the declared model as a walking kit - the pricer names it once, here
+        # the declared model as a kit - the pricer names it once, here
         kit = oss_model_kit(factor_dep, hn_scalars)
-        hn = kit is not None
+        hn, walks = kit is not None and kit.daily, kit is not None and not kit.daily
         mcmc, alive, settled, settle_rows, settle_cols = [], [], [], [], []
         for i, (D, s, carry_rate, delta_t, tau) in enumerate(zip(
                 discount_rates, spot_prices, carry, times, settlement)):
@@ -3074,9 +3114,12 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                 if boundary_aad:
                     alive.append(shared.one.new_zeros(shared.simulation_batch))
                 continue
-            if not hn:
+            if kit is None:
                 vols = vols_all[i]
             u = oss_uniforms(shared, reduced_samples, num_sims, sobol)
+            if walks:
+                # one walk per row, AFTER its `u` and mirrored the way `oss_uniforms` mirrors
+                law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, True)
             Sj = torch.unsqueeze(s, 1)
             st = kit.seed() if hn else None
             P = shared.one.new_zeros((shared.simulation_batch, 2 * num_sims))
@@ -3115,12 +3158,15 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                         p, Z = oss_truncated_draw(u[j], z_bound, barrier_up)
                         Sj, st = kit.advance(Sj, st, b_step, Z)
                     else:
-                        fwd_vol = vols[j].reshape(-1, 1)
-                        vol_dt = fwd_vol * torch.sqrt(dt)
-                        fwd_drift = (fwd_carry - 0.5 * fwd_vol * fwd_vol) * dt
-                        z_bound = (torch.log(barrier / Sj) - fwd_drift) / vol_dt
+                        if kit is None:
+                            fwd_vol = vols[j].reshape(-1, 1)
+                            vol_step = fwd_vol * torch.sqrt(dt)
+                            fwd_drift = (fwd_carry - 0.5 * fwd_vol * fwd_vol) * dt
+                        else:
+                            fwd_drift, vol_step = law[0][..., j], law[1][..., j]
+                        z_bound = (torch.log(barrier / Sj) - fwd_drift) / vol_step
                         p, Z = oss_truncated_draw(u[j], z_bound, barrier_up)
-                        Sj = Sj * torch.exp(fwd_drift + vol_dt * Z)
+                        Sj = Sj * torch.exp(fwd_drift + vol_step * Z)
                     payoff_spot = Sj
                     p_alive = p
                 else:
@@ -3273,7 +3319,8 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
             factor_dep['Invert_Moneyness'], use_forwards=True), cum_t,
             sample_ts) if not hn else spot_block.new_empty(0)
 
-        simulate = partial(sim_spot_accumulator, settlement, settle_index_local, sobol, shared.MCMC_sims)
+        simulate = partial(sim_spot_accumulator, settlement, settle_index_local, sobol,
+                           shared.MCMC_sims, daycount_fn(t_block[:, utils.TIME_GRID_MTM]))
         theta = (spot_block, sample_ts, fwd_drifts, alive_seq[settle_index_local],
                  discount_rates, vols, all_samples) + hn_scalars
         # the SAME callable either way: under the node it is called twice
@@ -3935,7 +3982,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         """The running accrual after one more fixing, clamped at the target."""
         return (accumulated + accrued(s, k, C, inverted)).clamp(max=targetValue)
 
-    def sim_spot_tarf(settlement, sobol, num_sims, settle_offset,
+    def sim_spot_tarf(settlement, sobol, num_sims, settle_offset, row_times,
                       spot_prices, times, carry, prev_accum, discount_rates, vols_all,
                       past_fixings, *hn_scalars):
         """Inner one-step-survival Monte Carlo over one block of MTM rows; the mean PV per row.
@@ -3966,9 +4013,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         """
 
         K = strike
-        # the declared model as a walking kit - the pricer names it once, here
+        # the declared model as a kit - the pricer names it once, here
         kit = oss_model_kit(factor_dep, hn_scalars)
-        hn = kit is not None
+        hn, walks = kit is not None and kit.daily, kit is not None and not kit.daily
         # per-block results, and the by-products the caller performs once
         mcmc, alive, settled, gaps, jumps = [], [], [], [], []
         settle_rows, knock_rows = [], []
@@ -3980,10 +4027,13 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
             # the number of fixings still to simulate in this block
             reduced_samples = len(delta_t)
-            if not hn:
+            if kit is None:
                 vols = vols_all[i]
             if reduced_samples:
                 u = oss_uniforms(shared, reduced_samples, num_sims, sobol)
+                if walks:
+                    # one walk per row, AFTER its `u` and mirrored the way `oss_uniforms` mirrors
+                    law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, True)
 
             Sj = torch.unsqueeze(s, 1)  # [batch, 1]
             # the HN variance state, re-seeded per MTM row
@@ -4015,9 +4065,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
                 if dt > 0:
                     fwd_carry = carry_rate[j].reshape(-1, 1)  # [batch,1]
-                    if not hn:
+                    if kit is None:
                         fwd_vol = vols[j].reshape(-1, 1)      # [batch,1]
-                        vol_dt = fwd_vol * torch.sqrt(dt)
                 else:
                     use_past_fixing = True
 
@@ -4060,9 +4109,12 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                         vol_step = torch.sqrt(h)
                         z_max = (torch.log(B_pnl / Sj) - fwd_drift) / vol_step
                     else:
-                        # the lognormal cap standardised, off the current Sj as S_{i-1}
-                        fwd_drift = (fwd_carry - 0.5 * fwd_vol * fwd_vol) * dt
-                        vol_step = vol_dt
+                        # the PnL cap standardises in the interval's own law, off Sj as S_{i-1}
+                        if kit is None:
+                            fwd_drift = (fwd_carry - 0.5 * fwd_vol * fwd_vol) * dt
+                            vol_step = fwd_vol * torch.sqrt(dt)
+                        else:
+                            fwd_drift, vol_step = law[0][..., j], law[1][..., j]
                         z_max = (torch.log(B_pnl/Sj) - fwd_drift) / vol_step
                     if fix is None:
                         # the survival side follows the PnL cap's direction
@@ -4078,8 +4130,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     # THE KNOCK-IN, INTEGRATED: `otm_bound` carries the strike's side and the
                     # barrier's, so this tail lies wholly inside the surviving set for every R >= 0
                     otm_analytic = None
-                    # a conditioning step exists under the smooth estimator, the stride, and GBM,
-                    # where the fixing interval IS the simulated step; the daily HN arm has none
+                    # a conditioning step exists under the smooth estimator, the stride, and any
+                    # model whose fixing-interval law is in hand; the daily HN arm has none
                     if (smooth or fix is not None or not hn) and otm_bound is not None:
                         otm_analytic = Dj * L * N_otm * (-gain_sign) * (
                             kit.stride_fired_gain(
@@ -4094,7 +4146,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                             # asymmetric because Z is survival-truncated (see hn_daily_advance)
                             Sj, st = kit.advance(Sj, st, b_step, Z)
                         else:
-                            Sj = Sj * (torch.exp(fwd_drift + vol_dt * Z) if dt > 0 else 1.0)
+                            Sj = Sj * torch.exp(fwd_drift + vol_step * Z)
                 else:
                     # the strip's j-th fixing is the schedule's `settle_offset + j`-th, which is
                     # where the resolved samples stand too - declared ones first, then simulated.
@@ -4334,7 +4386,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             factor_dep['Invert_Moneyness'], use_forwards=True), cum_t,
             sample_ts) if not hn else spot_block.new_empty(0)
 
-        simulate = partial(sim_spot_tarf, settlement, sobol, shared.MCMC_sims, settle_index_local)
+        simulate = partial(sim_spot_tarf, settlement, sobol, shared.MCMC_sims,
+                           settle_index_local, daycount_fn(t_block[:, utils.TIME_GRID_MTM]))
         theta = (spot_block, sample_ts, fwd_drifts, accumulation[settle_index_local],
                  discount_rates, vols, all_samples) + hn_scalars
         # the SAME callable either way: under the node it is called twice
@@ -4580,7 +4633,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         timesteps, num_samples = times.shape
         # the declared model as a walking kit - the pricer names it once, here
         kit = oss_model_kit(factor_dep, hn_scalars)
-        hn = kit is not None and kit.daily
+        hn, walks = kit is not None and kit.daily, kit is not None and not kit.daily
         # the by-products the caller performs once
         settled, settle_rows, event_rows, gaps, fired, survived = [], [], [], [], [], []
         alive, cash_on = [], []
@@ -4619,11 +4672,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                     fixing_aligned = False
                 if hn:
                     st = kit.seed()  # re-seed the variance state at the start of this MTM row
-                elif kit is not None and reduced_samples:
-                    # a NON-daily kit has no per-step state to carry: one internal-step walk here
-                    # gives every remaining interval its own Gaussian block law, drawn AFTER the
-                    # row's `u` and disjoint from it wherever `sobol` is on
-                    law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims)
+                elif walks and reduced_samples:
+                    # one walk per row, AFTER its `u`; NOT antithetic, this loop drawing raw
+                    law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, False)
 
                 P = torch.zeros((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
                 L = torch.ones((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)

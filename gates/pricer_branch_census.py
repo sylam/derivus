@@ -171,6 +171,15 @@ UNREACHED = {
     ('pv_discrete_barrier_option.sim_spot_oss', 'if isBarrierDate_block[j] > 0:', 'body#3'):
         "an HN block whose FINAL fixing is a barrier date - the terminal-step branch of the same "
         "recursion.",
+    ('pv_discrete_barrier_option.sim_spot_oss', 'elif walks:', 'body#1'):
+        "a document declaring SpotModel LogVar2FJ - the walking kit's block law; no fixture does.",
+    ('pv_discrete_barrier_option.sim_spot_oss', 'elif walks:', 'body#2'):
+        "the same document at the in-out-parity vanilla, which that model prices by conditional "
+        "Black over the walk and returns as the already-hit leg's by-product.",
+    ('pv_discrete_barrier_option.sim_spot_oss', 'if kit is None:', 'else#4'):
+        "the same document, where each monitored interval reads its law off that block.",
+    ('pv_discrete_barrier_option', 'elif walks:', 'body'):
+        "the same document already knocked in, whose hit value is that by-product.",
     ('pv_discrete_barrier_option', 'if carry_spread > 1.0e-9:', 'body'):
         "an already-knocked-in HN barrier under a stochastic carry. The sibling of the "
         "sim_spot_oss refusal above, and equally unexercised.",
@@ -188,9 +197,13 @@ UNREACHED = {
         "the same inverted TARF, on the PnL barrier B_pnl.",
     ('pv_MC_Tarf.sim_spot_tarf', 'if not invertedTarget:', 'else#2'):
         "the same inverted TARF, on the second B_pnl site.",
-    ('pv_MC_Tarf.sim_spot_tarf', 'if not hn:', 'else#2'):
+    ('pv_MC_Tarf.sim_spot_tarf', 'if kit is None:', 'else#2'):
         "a Heston-Nandi TARF at the PER-STEP vol read. The block-level read a screen above takes "
-        "both arms; this one has never seen `hn` true with a positive interval.",
+        "both arms; this one has never seen a declared model with a positive interval.",
+    ('pv_MC_Tarf.sim_spot_tarf', 'if walks:', 'body'):
+        "a document declaring SpotModel LogVar2FJ - the walking kit's block law; no fixture does.",
+    ('pv_MC_Tarf.sim_spot_tarf', 'if kit is None:', 'else#3'):
+        "the same document, where the fixing interval reads its law off that block.",
     ('pv_MC_Tarf.sim_spot_tarf', 'if fix is None:', 'else#2'):
         "a TARF step at an already OBSERVED fixing, on the advance rather than the draw - a "
         "reporting row whose block opens on a past fixing.",
@@ -235,7 +248,7 @@ UNREACHED = {
         "the same: a block whose spot comes from past_fixings.",
     ('pv_MC_AutoCallSwap.sim_spot', 'if reduced_samples:', 'else'):
         "an autocall MTM row with no remaining coupon observations.",
-    ('pv_MC_AutoCallSwap.sim_spot', 'elif kit is not None and reduced_samples:', 'body'):
+    ('pv_MC_AutoCallSwap.sim_spot', 'elif walks and reduced_samples:', 'body'):
         "a document declaring SpotModel LogVar2FJ - the non-daily kit's block law; no fixture "
         "declares one.",
     ('pv_MC_AutoCallSwap.sim_spot', 'if kit is None:', 'else'):
@@ -269,8 +282,8 @@ UNREACHED = {
 #: from a silently mispriced direction.
 MUST_COVER = {
     ('pv_discrete_barrier_option', 'if some_hit or boundary_aad:', 'body'),
-    ('pv_discrete_barrier_option', 'if direction == BARRIER_IN:', 'body'),
-    ('pv_discrete_barrier_option', 'if direction == BARRIER_IN:', 'else'),
+    ('pv_discrete_barrier_option', 'if direction != BARRIER_IN:', 'body'),
+    ('pv_discrete_barrier_option', 'if direction != BARRIER_IN:', 'else'),
     ('pv_discrete_barrier_option', 'if all_hit:', 'body'),
     ('pv_discrete_barrier_option', 'if hn:', 'body#2'),
     ('pv_discrete_barrier_option', 'if hn:', 'else#2'),
