@@ -258,10 +258,17 @@ ratio reads 0.57 / 0.82 / 0.86 / 0.92 at 3m / 6m / 1y / 2y, the stickiness ratio
 CJOW's 1.01, the 1y skew -1.47 against -1.48 (KS 0.011-0.026), the autocall -34.07 against
 -32.07 at 32,768 inner, and the vanilla RMSE 0.82 / 0.33 vol points at 1y / 2y before any fit;
 the curve mapping is first order in the vol-of-vol (the 1y variance lands 8% low, the 2y 9%
-high), stage 1's iteration. The spec's state-dependent leverage (2.3.1) is NOT a forward-skew
-lever on this surface: rho_s' from 0 to -4 moves psi from 0.96 to 0.94 and lowers both slopes,
-and its rho_max tanh reads rho_s = -0.75 as -0.60 (a tenth of the spot skew) rather than
-staying invisible. The **reciprocal axis** (`HN_Invert`'s analogue): a mean
+high), stage 1's iteration. NONE OF THE SPEC'S LEVEL-DEPENDENT LEVERS MOVES THE
+STICKINESS RATIO on this surface (`artifacts/logvar2fj/probe_levers.py`, state carried, 2^17
+paths): rho_s' 0 to -4 reads psi 0.96 to 0.94 (and its rho_max tanh read rho_s -0.75 as -0.60,
+since removed); sigma_s' 0 to 0.8 raises the spot AND forward slopes together, 20.4 to 24.8 and
+19.6 to 23.8, psi 0.96 throughout; mu_J' 0 to 1 raises the spot slope 20.4 to 24.3 and the
+forward 19.6 to 22.2, psi 0.96 to 0.91; the jump share is the one lever with the right sign,
+lambda 0 / 0.1 / 0.21 / 0.42 / 0.8 reading psi 0.93 / 0.95 / 0.96 / 0.98 / 0.99 at fixed jump
+sizes - it cannot pass 1. A forward smile in this model is its spot smile averaged over the
+state, and a parameter that moves with the state moves both; what separates the two horizons
+is a parameter that moves with TIME (the piecewise-constant mu_J(t), rho_s(t) the spec names
+as the next lever), which the spot 1y smile never sees and the 1y-into-1y smile prices on. The **reciprocal axis** (`HN_Invert`'s analogue): a mean
 shift on the three shocks and a tilt of the jump-size law, still Gaussian, so the FX arm can price
 a base-currency underlying. And **G9's delta convergence on a booked deal**: phase 0 resolves the
 internal step on its own autocall's coupon leg, but the engine's own ladder in the internal step
