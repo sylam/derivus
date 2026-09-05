@@ -37,8 +37,8 @@ caller** (several items below are deliberately not started), and **look before y
   float moves the collateralised CVA (component 0.170177 → 0.147908) and buys nothing in the delta
   (52.6% against its own ladder), a change of its own. The barrier-free lag-0 11.0% is a third
   thing, untouched (2026-09-04). NOT the component model's alone: GBM under the same CSA at
-  2,048 outer reads 11.8% short of a ladder flat to 2.2%, where its 1.2% at 256 sat on a ladder
-  12% non-flat (2026-09-04 night, the put leg's flux analytic by then).
+  2,048 outer reads 11.8% short of a ladder flat to 2.2%, where its 0.8% at 256 sat on a ladder
+  12.1% non-flat (2026-09-04 night, the put leg's flux analytic by then).
 - **`pv_MC_AutoCallSwap` × a lagged block's terminal rows** — a block whose rows lie between a
   fixing and its settlement sets `last_fixing` off its LAST row, so a row dated before that fixing
   prices the coupon crisply off a spot it has not reached: on the campaign's book rows 2028-06-03
@@ -240,9 +240,9 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
 `logvar2fj_spec.md`). The **calibrator** (`bootstrappers.LogVar2FJModelParameters`, spec 5) and
 with it the curve's mapping to a real market forward-variance strip: phase 1 authors `L_Curve` by
 hand and `utils.lv_curve_from_forward_variance` is the mapping alone, which on the campaign's own
-CJOW surface leaves **3.21 vol points** RMSE against spec 8's expected 0.2 - and refuses outright
-at the spec's default `lambda = 1.5`, whose jump variance 2.46e-2 EXCEEDS that surface's 3-month
-forward variance, so `xi_diff <= 0` and the curve is not a number. Stage 0 fixing `lambda` for the
+CJOW surface leaves **3.21 vol points** RMSE against spec 8's expected 0.2 - and refused outright
+at the earlier default `lambda = 1.5`, whose jump variance 2.46e-2 EXCEEDED that surface's 3-month
+forward variance (the spec now sets 0.21), so `xi_diff <= 0` and the curve is not a number. Stage 0 fixing `lambda` for the
 surface is the missing half. **TARF, accumulator and discrete barrier** by the same `(m, s)`
 substitution the autocall's arm now makes - each is the same GBM branch with the interval's law
 swapped, and a daily-monitored barrier is a block of one internal step. The **density recursion**

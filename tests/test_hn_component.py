@@ -641,10 +641,9 @@ def test_quote_sensitivity_refuses_by_name_on_this_family():
     """`Quote_Sensitivity: Yes` is REFUSED with the reason and the alternative - not answered with
     zeros, not silently ignored.
 
-    The quote derivative needs IFT through the inner `brentq` on each L pillar (tractable, and what
-    `CalibrationSolve.backward` already runs) AND through the outer derivative-free search, which is
-    not a root find at all: what a quote tick MEANS for the skew globals has to be decided first.
-    Not built (roadmap).
+    The THETA side is built - the outer search differentiates each pillar's `brentq` root by one
+    Newton step at it - but the QUOTE side `dr/dq`, the rule joining the two and a stationarity
+    check for a search that can stop on a wall are not (roadmap).
 
     THE REFUSAL COMES BEFORE ANY WORK - checked on the block, before a factor is resolved - so a job
     that asked for the impossible finds out immediately rather than eight minutes later.
@@ -663,7 +662,7 @@ def test_quote_sensitivity_refuses_by_name_on_this_family():
     message = str(refusal.value)
     assert 'Quote_Sensitivity' in message
     assert 'brentq' in message, 'the refusal does not name what carries no derivative'
-    assert 'implicit function theorem' in message
+    assert 'dr/dq' in message, 'the refusal does not name the half that is not built'
     # THE REMEDY HAS TO BE TRUE: the plain HestonNandiModelPrices block declares no
     # Quote_Sensitivity field at all, so naming it sends a desk to a block that ignores the switch.
     # Read off the declaration rather than the message, so the assertion cannot go stale with it
@@ -671,7 +670,6 @@ def test_quote_sensitivity_refuses_by_name_on_this_family():
     assert 'Quote_Sensitivity' not in [f.name for f in PLAIN_FAMILY.fields], (
         'the plain family now declares Quote_Sensitivity - the refusal may name it again')
     assert 'FXVolPrices' in message, 'a refusal without a quote chain that IS differentiable'
-    assert 'roadmap' in message, 'the refusal does not say where the missing half is tracked'
     assert 'HestonNandiComponentModelParameters.ZAR' not in config.params['Price Factors'], (
         'the refusal still wrote a factor')
 
@@ -754,6 +752,21 @@ COMPONENT_FACTOR = {
                                 [2.0 / 12.0, 8.565e-05], [0.25, 9.383e-05], [0.5, 9.647e-05]])}
 
 
+def _kit_scalars():
+    """The fixture's parameters as `oss_model_scalars` reads them: scalars shaped (-1, 1) to
+    broadcast against the state, then the L curve's values."""
+    curve = COMPONENT_FACTOR['L_Curve'].array
+    return [_tensor(COMPONENT_FACTOR[k]).reshape(-1, 1)
+            for k in utils.HN_COMPONENT_PARAM_NAMES] + [
+        torch.stack([_tensor(v) for v in curve[:, 1]])]
+
+
+def _kit():
+    """A `ComponentHestonNandiKit` on the fixture's parameters, the curve indexed by knot."""
+    return ComponentHestonNandiKit(_kit_scalars(), COMPONENT_FACTOR['L_Curve'].array[:, 0],
+                                   {'HN_Steps_Per_Year': SPY})
+
+
 def _tarf_deal(fix_days, target=UNREACHABLE, buy_sell='Buy'):
     dates = [BASE + pd.Timedelta(days=d) for d in fix_days]
     return {'Object': 'FXTARFOptionDeal', 'Reference': 'TARF1', 'Currency': 'USD',
@@ -765,12 +778,14 @@ def _tarf_deal(fix_days, target=UNREACHABLE, buy_sell='Buy'):
             'TARF_ExpiryDates': [[d, d, None] for d in dates]}
 
 
-def _tarf_config(deal, counterparty=False, simulate=False):
+def _tarf_config(deal, counterparty=False, simulate=False, valuation=None):
     """The gate's JSON: the component parameter factor in `Price Factors`, the switch in
     `Valuation Configuration`, and - for the exposure profile - the component PROCESS in
-    `Model Configuration`. Both seams in one document."""
-    valuation = {'FXTARFOptionDeal': {'SpotModel': 'HestonNandiComponent',
-                                      'Steps_Per_Year': SPY}}
+    `Model Configuration`. Both seams in one document. `valuation` replaces the block the deal is
+    constructed under, for a caller whose deal is not the TARF."""
+    if valuation is None:
+        valuation = {'FXTARFOptionDeal': {'SpotModel': 'HestonNandiComponent',
+                                          'Steps_Per_Year': SPY}}
     config = Config()
     config.params['System Parameters']['Base_Currency'] = 'USD'
     config.params['System Parameters']['Base_Date'] = BASE
@@ -854,10 +869,7 @@ def test_the_kit_answers_a_zero_length_walk_before_it_has_a_strip():
     the same intercepts a fully warmed kit answers.
     """
     curve = COMPONENT_FACTOR['L_Curve'].array
-    scalars = [_tensor(COMPONENT_FACTOR[k]).reshape(-1, 1)
-               for k in utils.HN_COMPONENT_PARAM_NAMES] + [
-        torch.stack([_tensor(v) for v in curve[:, 1]])]
-    kit = ComponentHestonNandiKit(scalars, curve[:, 0], {'HN_Steps_Per_Year': SPY})
+    kit = _kit()
 
     _, _, day = kit.seed()
     assert day == 0, 'the row does not open at trading day zero'
@@ -866,11 +878,11 @@ def test_the_kit_answers_a_zero_length_walk_before_it_has_a_strip():
 
     # and the strip behind it is real: the intercepts the curve itself differences to
     expected = utils.hn_component_omega_path(
-        utils.hn_component_l_path(curve[:, 0], scalars[-1], 21, SPY),
+        utils.hn_component_l_path(curve[:, 0], _kit_scalars()[-1], 21, SPY),
         _tensor(COMPONENT_FACTOR['Rho']))
     assert torch.equal(kit.omegas(0, 21), expected), (
         'the strip built behind the zero-length call is not omega_t = L_(t+1) - rho*L_t')
-    warm = ComponentHestonNandiKit(scalars, curve[:, 0], {'HN_Steps_Per_Year': SPY})
+    warm = _kit()
     assert torch.equal(kit.omegas(0, 21), warm.omegas(0, 21)), (
         'the strip built on the zero-length call differs from a longer walk\'s own')
 

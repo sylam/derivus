@@ -79,20 +79,22 @@ def _flat_vol(sig):
     return utils.Curve([], [[m, t, sig] for m in (0.8, 1.0, 1.2) for t in (0.02, 2.0)])
 
 
-def _price_factors(sig, hn_params, r, q, payoff_ccy=None, rho=RHO):
+def _price_factors(sig, hn_params, r, q, payoff_ccy=None, rho=RHO,
+                   param_factor='HestonNandiModelParameters.EQ', spot=None):
     pf = {
         'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Priority': 1, 'Spot': 1.0},
         'InterestRate.USD': {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                              'Curve': utils.Curve([], [[0.0, r], [5.0, r]])},
-        'EquityPrice.EQ': {'Spot': SPOT, 'Currency': 'USD', 'Interest_Rate': 'USD', 'Issuer': '',
-                           'Respect_Default': 'No', 'Jump_Level': 0.0},
+        'EquityPrice.EQ': {'Spot': SPOT if spot is None else spot, 'Currency': 'USD',
+                           'Interest_Rate': 'USD', 'Issuer': '', 'Respect_Default': 'No',
+                           'Jump_Level': 0.0},
         'DividendRate.EQ': {'Currency': 'USD', 'Floor': None,
                             'Curve': utils.Curve([], [[0.01, q], [5.0, q]])},
         'VolatilityGrid.EQ': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
                               'Surface': _flat_vol(sig)},
     }
     if hn_params is not None:
-        pf['HestonNandiModelParameters.EQ'] = dict(hn_params, Property_Aliases=None)
+        pf[param_factor] = dict(hn_params, Property_Aliases=None)
     if payoff_ccy not in (None, 'USD'):
         pair = '.'.join(sorted(['USD', payoff_ccy]))
         pf.update({
@@ -110,14 +112,19 @@ def _price_factors(sig, hn_params, r, q, payoff_ccy=None, rho=RHO):
 
 
 def _cfg(field, ref, sig=SIGMA, hn_params=None, r=0.0, q=0.0, spot_model='auto',
-         payoff=None, rho=RHO):
+         payoff=None, rho=RHO, param_factor='HestonNandiModelParameters.EQ', spot=None,
+         options=None):
     """`spot_model='auto'` turns the switch on iff `hn_params` is supplied; an explicit string
     decouples the switch from factor presence for the resolution-semantics gates.
 
     `payoff=(currency, Payoff_Type)` settles in a SECOND currency, which is the only way the
     quanto/compo carry turns on - `Check_Payoff_Type` reads the currency PAIR and not the payoff
     type alone. `rho` is that carry's only free parameter, so it is the knob the refusal gate
-    varies to prove its fixture is not zeroing the quantity under test."""
+    varies to prove its fixture is not zeroing the quantity under test.
+
+    `param_factor`, `spot` and `options` are what a SECOND family's fixtures move: the parameter
+    factor it is named by, the equity spot it is struck at, and the extra valuation options its
+    deal block declares."""
     if payoff is not None:
         field = dict(field, Payoff_Currency=payoff[0], Payoff_Type=payoff[1])
         if payoff[1] == 'Compo' and payoff[0] != field['Currency']:
@@ -135,9 +142,9 @@ def _cfg(field, ref, sig=SIGMA, hn_params=None, r=0.0, q=0.0, spot_model='auto',
     c.params['System Parameters']['Base_Currency'] = 'USD'
     c.params['System Parameters']['Base_Date'] = BASE
     c.params['Price Factors'] = _price_factors(
-        sig, hn_params, r, q, payoff[0] if payoff else None, rho)
+        sig, hn_params, r, q, payoff[0] if payoff else None, rho, param_factor, spot)
     c.params['Price Models'] = {}
-    val = {field['Object']: {'SpotModel': spot_model}} if spot_model else {}
+    val = {field['Object']: dict({'SpotModel': spot_model}, **(options or {}))} if spot_model else {}
     c.params['Valuation Configuration'] = val
     inst = construct_instrument(field, val)
     c.deals = {'Attributes': {'Reference': 'test', 'Tag_Titles': ''},
@@ -265,9 +272,9 @@ def test_unknown_spot_model_fails_loudly(build, name):
     THAT ALONE IS SELF-REFERENTIAL - the message quotes the class's own declaration, so it would
     hold on a deal that accepted a model no pricer can walk. The second source is the KIT REGISTRY:
     `pricing.OSS_SPOT_MODEL_KITS` is what `oss_model_kit` looks a name up in. The two sides are not
-    equal - a family reaches the deal types whose pricers walk it, one at a time - so what is
-    checked is each containment: a deal declares no model without a kit, and no kit goes
-    unreached by every deal type."""
+    equal - a NON-DAILY family reaches the deal types whose pricers walk it, one at a time - so
+    what is checked is a containment each way: a deal declares no model without a kit, and every
+    DAILY kit reaches this deal type."""
     import derivus.instruments as _i
     import derivus.pricing as _p
 
@@ -281,6 +288,17 @@ def test_unknown_spot_model_fails_loudly(build, name):
     assert set(accepted) - {'None'} <= kits, (
         '%s declares %r but the OSS kit registry carries %r - a deal declaring a model it cannot '
         'price' % (name, sorted(accepted), sorted(kits)))
+    daily = {m for m in kits if _p.OSS_SPOT_MODEL_KITS[m].daily}
+    assert daily <= set(accepted), ('%s no longer declares %r'
+                                    % (name, sorted(daily - set(accepted))))
+
+
+def test_no_kit_goes_unreached_by_every_deal_type():
+    """The registry-wide half: a kit no deal type declares is a family nothing can price."""
+    import derivus.instruments as _i
+    import derivus.pricing as _p
+
+    kits = set(_p.OSS_SPOT_MODEL_KITS)
     reached = {m for cls in vars(_i).values() for m in getattr(cls, 'spot_models', ())}
     assert kits <= reached, ('no deal type declares %r - a kit nothing reaches'
                             % sorted(kits - reached))

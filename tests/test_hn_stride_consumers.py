@@ -75,12 +75,12 @@ import torch
 
 import derivus
 from derivus import run_baseval, calculation, pricing, utils
-from derivus.config import Config
 from derivus.instruments import construct_instrument
 
 # the component world, its parameter factor and its TARF, borrowed rather than re-authored: that
 # fixture is already gated on the model reaching deals (`tests/test_hn_component.py`, gate 5)
 import test_hn_component as hnc
+import test_hn_oss_pricers as oss
 from crn_ladder import ladder
 
 DT = torch.float64
@@ -107,27 +107,16 @@ def test_uses_repo_under_test():
 # The kit, off the fixture's own parameter factor - the seam every consumer calls.
 # ======================================================================================
 
-def _kit():
-    """A `ComponentHestonNandiKit` on the fixture's parameters, built the way `oss_model_scalars`
-    builds one: scalars (-1, 1) to broadcast against the state, the curve indexed by knot."""
-    f = hnc.COMPONENT_FACTOR
-    curve = f['L_Curve'].array
-    scalars = [_t(f[k]).reshape(-1, 1) for k in utils.HN_COMPONENT_PARAM_NAMES]
-    scalars += [torch.tensor(curve[:, 1], dtype=DT)]
-    return pricing.ComponentHestonNandiKit(scalars, curve[:, 0], {'HN_Steps_Per_Year': SPY})
-
-
 class _Shared(object):
-    """Just enough calculation state for the kit's draws: `stride_normals` reads three fields."""
+    """Just enough calculation state for the kit's draws: `stride_normals` reads `one` and
+    `simulation_batch`."""
 
-    def __init__(self, sims=1, gamma=False):
+    def __init__(self):
         self.one = torch.ones([1, 1], dtype=DT)
         self.simulation_batch = 1
-        self.gamma = gamma
-        self.hn_stride = True
 
 
-def _fixing(kit, spot=hnc.TARF_SPOT, day=0, n=21, carry=0.0, sims=1):
+def _fixing(kit, spot=hnc.TARF_SPOT, n=21, carry=0.0, sims=1):
     """One interval opened as a stride, off the seed state."""
     b_step = torch.full((1, 1), float(carry), dtype=DT)
     return kit.stride_interval(torch.full((1, sims), float(spot), dtype=DT), kit.seed(), b_step, n)
@@ -137,17 +126,15 @@ def _fixing(kit, spot=hnc.TARF_SPOT, day=0, n=21, carry=0.0, sims=1):
 # THE SWITCH. Declared once, default off, and the state carries it without a fallback.
 # ======================================================================================
 
-def test_the_field_is_declared_on_base_valuation_alone():
-    """One field for three consumers, defaulting off, on the calculation that owns the estimator
-    switch beside it. `Credit_Monte_Carlo` declares neither."""
-    declared = {f.name: f for f in calculation.Base_Revaluation.fields}
-    assert 'HN_Stride' in declared, 'the field is not declared on Base_Revaluation'
+@pytest.mark.parametrize('calc', [calculation.Base_Revaluation, calculation.Credit_Monte_Carlo])
+def test_the_field_is_declared_on_both_calculations_with_one_default(calc):
+    """One field for three consumers, defaulting off, declared beside the estimator switch on both
+    calculations that price under the model."""
+    declared = {f.name: f for f in calc.fields}
+    assert 'HN_Stride' in declared, '{} does not declare the field'.format(calc.__name__)
     field = declared['HN_Stride']
     assert field.default == 'No', 'the switch does not default off'
     assert sorted(field.values) == ['No', 'Yes']
-    for other in (calculation.Credit_Monte_Carlo,):
-        assert 'HN_Stride' not in {f.name for f in other.fields}, (
-            '{} declares the field'.format(other.__name__))
 
 
 def test_the_state_declares_it_so_a_pricer_reads_it_without_a_fallback():
@@ -223,7 +210,7 @@ def test_the_plain_family_refuses_even_with_the_stride_switch_on():
 def test_the_estimator_switch_off_admits_every_model(stride):
     """Off, the seam answers False and asks no questions - the stride switch alone changes the
     SAMPLER, never the estimator."""
-    for model in (None, 'HestonNandi', 'HestonNandiComponent'):
+    for model in [None] + sorted(pricing.OSS_SPOT_MODEL_KITS):
         assert pricing.branch_and_weight(_State(False, stride), _deal_data(model)) is False
 
 
@@ -234,7 +221,7 @@ def test_the_estimator_switch_off_admits_every_model(stride):
 def test_the_carry_shift_moves_a_level_into_the_strips_own_measure():
     """THE UN-SHIFT, half one: the strip is built at r = 0 and keyed on calendar position alone, so
     a deal's carry enters as a move on the moneyness and not as a second strip."""
-    kit = _kit()
+    kit = hnc._kit()
     b = 0.0004
     plain, carried = _fixing(kit, carry=0.0), _fixing(kit, carry=b)
     assert plain.strip is carried.strip, 'the cache was keyed on the carry'
@@ -248,7 +235,7 @@ def test_the_stride_returns_the_spot_un_shifted_into_the_deals_carry():
     OUT keeps the survival WEIGHT right while the survivor law sits a carry away from the barrier:
     at k = 21 under b = 4r the median survivor is `b * k` low, exactly.
     """
-    kit = _kit()
+    kit = hnc._kit()
     b, n = 0.0004, 21
     fix = _fixing(kit, carry=b, sims=4096)
     u = torch.rand((1, 4096), dtype=DT)
@@ -269,7 +256,7 @@ def test_the_inversion_saturates_outside_the_laws_own_support():
     """FINDING 1. A trigger the interval cannot reach is a probability of exactly one, and the
     inversion cannot say so - it resolves to about 1e-8 and aliases past 1 long before that. Both
     are read: the raw quadrature at an unreachable bound, and the saturation that makes it exact."""
-    kit = _kit()
+    kit = hnc._kit()
     fix = _fixing(kit)
     raw_x = kit.stride_bound(fix, _t(1.0e15))
     assert float(raw_x) > 30.0, 'the fixture no longer has an unreachable bound in it'
@@ -289,7 +276,7 @@ def test_an_unreachable_target_costs_the_deal_nothing():
     """FINDING 1 as the deal reads it: `(1 - p) * R` is the TARF's fired branch and `R` can be
     enormous, so a survival probability off by the inversion's resolution is off by `4e-8 * R` in
     currency - over 1e7 here. Written against the SEAM, so the number is the construction's."""
-    kit = _kit()
+    kit = hnc._kit()
     fix = _fixing(kit)
     R = 1.0e9 * 1.0e6                                     # the fixture's unreachable target x N1
     x = kit.stride_bound(fix, _t(1.0e15))
@@ -303,7 +290,7 @@ def test_an_unreachable_target_costs_the_deal_nothing():
 def test_the_bound_stops_where_the_recursion_turns():
     """FINDING 2. The metric decays, then TURNS - that is the divergence, and a scan chasing a
     tolerance past it returns a bound where the integrand is astronomically large."""
-    kit = _kit()
+    kit = hnc._kit()
     omegas = list(kit.omegas(21, 21))
     box = kit.params[0].new_tensor
     # a state one quarter of its own long-run level, where a carried cube reaches after a stride or
@@ -333,7 +320,7 @@ def test_the_bound_stops_where_the_recursion_turns():
 def test_the_state_is_floored_into_the_region_the_cache_can_invert():
     """FINDING 3. The floor is expressed in the interval's OWN long-run level off the model's omega
     strip - no new constant - and a healthy cube pays nothing for it."""
-    kit = _kit()
+    kit = hnc._kit()
     omegas = list(kit.omegas(0, 21))
     healthy, _ = kit.stride_state_floor(omegas, (7.0e-5, 8.0e-5), (7.0e-5, 9.0e-5))
     assert healthy == 0.0, 'a healthy cube was floored'
@@ -355,7 +342,7 @@ def test_the_tilt_at_one_is_the_share_measure_the_european_price_rides():
     At r = 0 the martingale property makes `log M(1)` an exact structural zero, read rather than
     assumed: a non-zero tilt normaliser is a recursion that does not price a forward.
     """
-    kit = _kit()
+    kit = hnc._kit()
     fix = _fixing(kit, n=21)
     tilt, A0, B0, C0 = kit.stride_tilt(fix, 1.0)
     assert abs(float(A0)) < 1e-14 and abs(float(B0)) < 1e-14 and abs(float(C0)) < 1e-14, (
@@ -378,7 +365,7 @@ def test_the_partial_moments_match_a_quadrature_over_the_strides_own_density(fir
     """A SECOND, INDEPENDENT reference to 1e-5: the tail integral against the stride's PDF, which is
     the inversion without the `1/(i phi)` and shares no line with the tilt - so an error in the
     Esscher construction cannot hide behind the same error in its oracle."""
-    kit = _kit()
+    kit = hnc._kit()
     fix = _fixing(kit, n=21)
     B = hnc.TARF_SPOT * 1.02
     xb = float(kit.stride_bound(fix, _t(B)))
@@ -399,7 +386,7 @@ def test_p_times_the_realised_payoff_is_biased():
     """THE MUTATION THAT MUST DIE. The fired branch is a CONDITIONAL expectation; `p x (payoff on
     the surviving sample)` samples the payoff on the wrong side of the trigger. It is not variance -
     it does not shrink with paths - and here it carries the WRONG SIGN, -0.1387 against +0.2433."""
-    kit = _kit()
+    kit = hnc._kit()
     n_paths = 1 << 15
     fix = _fixing(kit, n=21, sims=n_paths)
     B = hnc.TARF_SPOT * 0.98
@@ -430,7 +417,7 @@ def test_the_drawn_return_is_differentiable_TWICE():
     so unable to share the defect. At k = 21: d2 -3.94967 against a bumped-root -3.94975, with the
     VALUE the root to the last bit. One step read -3.8318, and 36% of an autocall's gamma.
     """
-    kit = _kit()
+    kit = hnc._kit()
     fix = _fixing(kit, n=21)
     u = torch.tensor([[0.37]], dtype=DT)
 
@@ -496,11 +483,9 @@ def _acc_cfg(barrier=1.15, spot=None):
             'Underlying_Amount': hnc.TARF_N1, 'LeverageNotional': 2.0 * hnc.TARF_N1,
             'Barrier_Type': 'Up_And_Out', 'Barrier_Price': barrier * hnc.TARF_STRIKE,
             'Accumulator_ExpiryDates': [[d, d, 0.0] for d in dates]}
-    cfg = hnc._tarf_config(deal)
-    valuation = {'FXAccumulatorOptionDeal': {'SpotModel': 'HestonNandiComponent',
-                                             'Steps_Per_Year': SPY}}
-    cfg.params['Valuation Configuration'] = valuation
-    cfg.deals['Deals']['Children'] = [{'Instrument': construct_instrument(deal, valuation)}]
+    cfg = hnc._tarf_config(deal, valuation={
+        'FXAccumulatorOptionDeal': {'SpotModel': 'HestonNandiComponent',
+                                    'Steps_Per_Year': SPY}})
     if spot is not None:
         cfg.params['Price Factors']['FxRate.ZAR']['Spot'] = spot
     return cfg, 'ACC1'
@@ -509,33 +494,12 @@ def _acc_cfg(barrier=1.15, spot=None):
 AC_SPOT = AC_STRIKE = 100.0
 
 
-def _equity_config(deal, valuation, spot):
-    """The COMPONENT equity world both equity fixtures price in: the parameter factor is resolved
-    off the deal's `Equity` by naming convention rather than declared per deal type, which is why
-    the TARF's `_tarf_config` cannot serve an equity."""
-    cfg = Config()
-    cfg.params['System Parameters']['Base_Currency'] = 'USD'
-    cfg.params['System Parameters']['Base_Date'] = BASE
-    cfg.params['Price Factors'] = {
-        'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Priority': 1,
-                       'Spot': 1.0},
-        'InterestRate.USD': {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
-                             'Curve': utils.Curve([], [[0.0, 0.0], [5.0, 0.0]])},
-        'EquityPrice.EQ': {'Spot': spot if spot is not None else AC_SPOT, 'Currency': 'USD',
-                           'Interest_Rate': 'USD', 'Issuer': '', 'Respect_Default': 'No',
-                           'Jump_Level': 0.0},
-        'DividendRate.EQ': {'Currency': 'USD', 'Floor': None,
-                            'Curve': utils.Curve([], [[0.01, 0.0], [5.0, 0.0]])},
-        'VolatilityGrid.EQ': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
-                              'Surface': utils.Curve([], [[m, t, 0.14] for m in (0.8, 1.0, 1.2)
-                                                          for t in (0.02, 2.0)])},
-        'HestonNandiComponentModelParameters.EQ': dict(hnc.COMPONENT_FACTOR)}
-    cfg.params['Price Models'] = {}
-    cfg.params['Valuation Configuration'] = valuation
-    cfg.deals = {'Attributes': {'Reference': 'test', 'Tag_Titles': ''},
-                 'Deals': {'Children': [{'Instrument': construct_instrument(deal, valuation)}]},
-                 'Calculation': {'Base_Date': BASE, 'Currency': 'USD'}}
-    return cfg
+#: The COMPONENT equity world both equity fixtures price in, off `test_hn_oss_pricers`'s own
+#: document builder. The parameter factor is resolved off the deal's `Equity` by naming convention
+#: rather than declared per deal type, which is why the TARF's `_tarf_config` cannot serve one.
+_EQUITY = {'sig': 0.14, 'hn_params': hnc.COMPONENT_FACTOR, 'spot_model': 'HestonNandiComponent',
+           'param_factor': 'HestonNandiComponentModelParameters.EQ',
+           'options': {'Steps_Per_Year': SPY}}
 
 
 #: The FOURTH consumer's schedules, where the case split is readable: monthly barrier dates leave
@@ -558,9 +522,7 @@ def _barrier_cfg(schedule=BARRIER_MONTHLY, spot=None, bprice=85.0):
             'Units': 1000.0, 'Barrier_Type': 'Down_And_Out', 'Barrier_Price': bprice,
             'Cash_Rebate': 0.0, 'Barrier_Dates': dates,
             'Barrier_Monitoring_Frequency': pd.DateOffset(days=1)}
-    valuation = {'EquityBarrierOption': {'SpotModel': 'HestonNandiComponent',
-                                         'Steps_Per_Year': SPY}}
-    return _equity_config(deal, valuation, spot), 'BARR1'
+    return oss._cfg(deal, 'BARR1', spot=spot, **_EQUITY)
 
 
 def _autocall_cfg(put_barrier=0.85, rebate=0.0, spot=None):
@@ -577,9 +539,7 @@ def _autocall_cfg(put_barrier=0.85, rebate=0.0, spot=None):
             'Autocall_Coupons': [[d, 0.05] for d in dates],
             'Autocall_Thresholds': [[d, 1.05] for d in dates],
             'Barrier_Dates': [dates[-1]], 'Autocall_Floating': []}
-    valuation = {'QEDI_CustomAutoCallSwap': {'SpotModel': 'HestonNandiComponent',
-                                             'Steps_Per_Year': SPY}}
-    return _equity_config(deal, valuation, spot), 'AC1'
+    return oss._cfg(deal, 'AC1', spot=spot, **_EQUITY)
 
 
 def _run(cfg_ref, sims=SIMS, seed=SEED, **calc):
@@ -591,6 +551,20 @@ def _run(cfg_ref, sims=SIMS, seed=SEED, **calc):
     value = float(rows[rows['Reference'] == ref]['Value'].iloc[0])
     assert np.isfinite(value), 'the deal was skipped or produced a non-finite value'
     return value, out
+
+
+def _debug_lines(build, marker, **calc):
+    """The DEBUG lines carrying `marker` that one priced document logged to the root logger."""
+    buf, root = io.StringIO(), logging.getLogger()
+    handler, old = logging.StreamHandler(buf), root.level
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG)
+    try:
+        _run(build, **calc)
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(old)
+    return [l for l in buf.getvalue().splitlines() if marker in l]
 
 
 def _first(out, factor):
@@ -633,11 +607,9 @@ def test_the_gbm_path_is_untouched_by_the_switch():
         deal = hnc._tarf_deal(FIX_DAYS, target=2.0)
         deal['Barrier'] = 0.9 * hnc.TARF_STRIKE
         deal['LeverageNotional'] = 2.0 * hnc.TARF_N1
-        cfg = hnc._tarf_config(deal)
         # no spot model, so the factor is not a dependency and the walk is the surface's lognormal
-        cfg.params['Valuation Configuration'] = {}
+        cfg = hnc._tarf_config(deal, valuation={})
         del cfg.params['Price Factors']['HestonNandiComponentModelParameters.ZAR']
-        cfg.deals['Deals']['Children'] = [{'Instrument': construct_instrument(deal, {})}]
         return cfg, 'TARF1'
 
     off, _ = _run(gbm())
@@ -769,16 +741,7 @@ def test_the_survival_ledger_conserves_on_a_strided_document():
     """`sum_j alive_{j-1}*(1 - p_j) + alive_final` is the starting weight per path to 1e-12, and it
     is exact only because the fired mass is spelled `1 - p` off the same `p` the stride truncated
     with - of which the saturation is part."""
-    buf, root = io.StringIO(), logging.getLogger()
-    handler, old = logging.StreamHandler(buf), root.level
-    root.addHandler(handler)
-    root.setLevel(logging.DEBUG)
-    try:
-        _run(_tarf_cfg(), **SMOOTH)
-    finally:
-        root.removeHandler(handler)
-        root.setLevel(old)
-    lines = [l for l in buf.getvalue().splitlines() if 'LEDGER TARF' in l]
+    lines = _debug_lines(_tarf_cfg(), 'LEDGER TARF', **SMOOTH)
     assert lines, 'the ledger logged nothing - the smooth arm did not run'
     worst = max(float(l.split('conservation=')[1].split()[0]) for l in lines)
     assert worst < 1e-12, 'the survival ledger lost mass: {:.3g}\n{}'.format(
@@ -872,16 +835,7 @@ def _registered(build, **calc):
     """The BoundarySet type list one priced document left behind, off the registration site's DEBUG
     line - the only place the supersession is readable, refusals naming deals and not
     registrations."""
-    buf, root = io.StringIO(), logging.getLogger()
-    handler, old = logging.StreamHandler(buf), root.level
-    root.addHandler(handler)
-    root.setLevel(logging.DEBUG)
-    try:
-        _run(build, Greeks='First', **calc)
-    finally:
-        root.removeHandler(handler)
-        root.setLevel(old)
-    lines = [l for l in buf.getvalue().splitlines() if 'boundary sets:' in l]
+    lines = _debug_lines(build, 'boundary sets:', Greeks='First', **calc)
     assert len(lines) == 1, 'expected one TARF registration line, got {}'.format(lines)
     return ast.literal_eval(lines[0].split('boundary sets: ')[1])
 
@@ -926,7 +880,7 @@ def test_the_daily_gaussian_p_is_the_wrong_regime_at_monthly_fixings():
     conditional in hand is the LAST daily sub-step, and using it as the fixing interval's `p` is a
     wrong number wearing the right estimator's name. At k = 21 the daily conditional calls a 5%
     move impossible while the k-step law puts it between 0.02 and 0.99."""
-    kit = _kit()
+    kit = hnc._kit()
     fix = _fixing(kit, n=21)
     B = hnc.TARF_SPOT * 1.05
     stride_p = float(kit.stride_cdf(fix, fix.strip, kit.stride_bound(fix, _t(B))))
@@ -951,7 +905,7 @@ def test_the_tilt_is_verified_on_a_contour_its_bound_was_not_resolved_on():
     returns NaN, and NaN fails every comparison - including, written the obvious way round, the one
     meant to catch it.
     """
-    kit = _kit()
+    kit = hnc._kit()
     fix = _fixing(kit, n=21)
     for power in (1.0, -1.0):
         tilt, _, _, _ = kit.stride_tilt(fix, power)
@@ -988,7 +942,7 @@ def test_the_tilt_cache_is_keyed_on_the_strip_it_is_assembled_onto():
     widens the box on every profile. Forced at the seam, where the stale tilt puts the floored
     row's partial moment 1.04e-3 out.
     """
-    kit = _kit()
+    kit = hnc._kit()
     fix1 = _fixing(kit, n=21)
     tilt1, _, _, _ = kit.stride_tilt(fix1, 1.0)
     fix2 = _wide(kit)
@@ -1028,7 +982,7 @@ def test_the_tilt_decay_check_re_runs_on_a_cache_hit():
     same strip at an unfloored 1e-12 leaves it at -6.4, past the -10 the bound scan calls a
     probability. `stride_interval` clamps, which is why this is written rather than reached.
     """
-    kit = _kit()
+    kit = hnc._kit()
     fix = _fixing(kit, n=21)
     kit.stride_tilt(fix, -1.0)                 # passes at -25.4 and caches
     assert kit._tilts, 'the tilt did not cache at all'

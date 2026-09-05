@@ -6,8 +6,8 @@ analytically with weight `1 - Phi(zB)` and payoff `E[J(S_k) | fired]`, the CONTI
 smoothing.
 
 Pinned here: the fired branch is a conditional expectation, never `p x realised payoff`; the switch
-is declared on `Base_Revaluation` alone and off is the crisp path bit for bit; GBM only, and a
-non-GBM spot model refuses by name.
+is declared on `Base_Revaluation` alone and off is the crisp path bit for bit; GBM and any kit
+whose conditioning step IS the fixing interval; a DAILY non-GBM kit refuses by name.
 
 Products: TARF, accumulator, discrete barrier, autocall - each against a differentiable trapezoid
 reference written in this file out of `math`/`torch` alone, so an error in the closed form cannot
@@ -525,7 +525,7 @@ def test_the_switch_off_is_the_crisp_path(tmp_path):
 
 
 # ======================================================================================
-# GBM ONLY (`pricing.branch_and_weight`)
+# THE CONDITIONING STEP (`pricing.branch_and_weight`)
 # ======================================================================================
 
 def _deal_data(spot_model=None):
@@ -552,7 +552,7 @@ class _State(utils.Calculation_State):
         self.branch_and_weight = on
 
 
-@pytest.mark.parametrize('spot_model', [None, 'HestonNandi', 'HestonNandiComponent'])
+@pytest.mark.parametrize('spot_model', [None] + sorted(pricing.OSS_SPOT_MODEL_KITS))
 def test_the_switch_off_admits_every_model(spot_model):
     """Off, the seam answers False and asks no questions - the refusal below cannot reach a run
     that did not ask for the smooth estimator."""
@@ -563,11 +563,12 @@ def test_a_gbm_deal_under_the_switch_is_admitted():
     assert pricing.branch_and_weight(_State(True), _deal_data(None)) is True
 
 
-@pytest.mark.parametrize('spot_model', ['HestonNandi', 'HestonNandiComponent'])
-def test_the_switch_refuses_under_heston_nandi(spot_model):
-    """GBM ONLY: the conditioning step must be the FIXING interval's own lognormal law. Under HN
-    the walk is daily, so the only Gaussian conditional in hand is the last sub-step and a Gaussian
-    `p` there would be a wrong number under the right estimator's name. Both flavours refuse.
+@pytest.mark.parametrize('spot_model', sorted(
+    m for m in pricing.OSS_SPOT_MODEL_KITS if pricing.OSS_SPOT_MODEL_KITS[m].daily))
+def test_the_switch_refuses_under_a_daily_kit(spot_model):
+    """The conditioning step must be the FIXING interval's own lognormal law. A DAILY kit walks
+    sub-steps, so the only Gaussian conditional in hand is the last one and a Gaussian `p` there
+    would be a wrong number under the right estimator's name. Every daily flavour refuses.
     """
     with pytest.raises(ValueError) as refusal:
         pricing.branch_and_weight(_State(True), _deal_data(spot_model))
@@ -578,6 +579,14 @@ def test_the_switch_refuses_under_heston_nandi(spot_model):
     assert 'hn_cdf_logret' in message, message
     # a refusal names its remedies
     assert 'GBM' in message and "Branch_And_Weight: 'No'" in message, message
+
+
+@pytest.mark.parametrize('spot_model', sorted(
+    m for m in pricing.OSS_SPOT_MODEL_KITS if not pricing.OSS_SPOT_MODEL_KITS[m].daily))
+def test_the_switch_admits_a_kit_that_conditions_on_the_fixing_interval(spot_model):
+    """A kit whose conditioning step IS the fixing interval hands the estimator the law it needs,
+    so it is admitted on the same terms as GBM."""
+    assert pricing.branch_and_weight(_State(True), _deal_data(spot_model)) is True
 
 
 # ======================================================================================
@@ -1728,11 +1737,12 @@ def test_the_autocall_put_leg_lands_on_its_own_ladder(put_barrier, rebate, tmp_p
         '{}'.format(rung))
 
 
-def test_the_crisp_put_leg_still_jumps_and_the_switch_is_what_fixes_it(tmp_path):
-    """THE KILL, kept as a live measurement. The SAME document under the crisp estimator misses its
-    own ladder wherever the put payoff jumps - 16.2% at a 70% barrier - while landing on it where
-    that payoff is continuous. Goes red if the crisp path is ever quietly smoothed, which would
-    make the row above pass for the wrong reason."""
+def test_the_crisp_put_leg_lands_on_its_ladder_with_or_without_the_switch(tmp_path):
+    """THE KILL, kept as a live measurement. The crisp estimator's put leg used to miss its own
+    ladder wherever the payoff jumps - 16.2% at a 70% barrier - and the switch was what closed it.
+    Since the GBM arm splices the put leg's conditional `p` into the crisp value (one estimator per
+    decision) the crisp document lands on its ladder too: 2.66% at the 70% barrier, the crisp
+    ladder's own flip-counting noise, against 0.02% where the payoff is continuous."""
     def miss(put_barrier, smooth):
         def job(**kw):
             built = _autocall_doc(put_barrier, sims=1 << 16, **kw)
@@ -1744,19 +1754,16 @@ def test_the_crisp_put_leg_still_jumps_and_the_switch_is_what_fixes_it(tmp_path)
         return abs(rung.best - rung.aad) / max(abs(rung.aad), 1e-30), rung
 
     jump_crisp, rung = miss(0.7, smooth=False)
-    assert jump_crisp > 0.10, (
-        'the CRISP autocall put leg no longer misses its own bump ladder ({:.2%}) - either the '
-        'indicator has been smoothed on the default path, which is a re-baseline nobody asked '
-        'for, or this document no longer has a jumping put leg to measure\n{}'.format(
-            jump_crisp, rung))
+    assert jump_crisp < 0.05, (
+        'the CRISP autocall put leg misses its own bump ladder ({:.2%}) - the conditional-p splice '
+        'no longer carries the jump\n{}'.format(jump_crisp, rung))
     flat_crisp, rung = miss(1.0, smooth=False)
     assert flat_crisp < 0.02, (
-        'the crisp autocall is inexact even where its put payoff is CONTINUOUS, so the diagnosis '
-        'this section rests on is blaming the wrong thing\n{}'.format(rung))
-    jump_smooth, _ = miss(0.7, smooth=True)
-    assert jump_smooth < 0.02 and jump_crisp / max(jump_smooth, 1e-30) > 10.0, (
-        'the switch is not what closes the gap: crisp {:.2%} against smooth {:.2%}'.format(
-            jump_crisp, jump_smooth))
+        'the crisp autocall is inexact even where its put payoff is CONTINUOUS\n{}'.format(rung))
+    jump_smooth, rung = miss(0.7, smooth=True)
+    assert jump_smooth < 0.02, (
+        'the smooth estimator misses its ladder where the put payoff jumps ({:.2%})\n{}'.format(
+            jump_smooth, rung))
 
 
 # ======================================================================================

@@ -80,8 +80,7 @@ FAMILY = (
 #:
 #: The shape of what is left, after the American arm and the eight closed-form barrier payoffs were
 #: closed: no PUT partial barrier and no rebate on one, no quanto/compo, no inverted or put TARF, no
-#: Heston-Nandi barrier on an exposure grid, and an autocall with no floating leg. Reading at
-#: 1ed927a: 59 arcs.
+#: Heston-Nandi barrier on an exposure grid, and an autocall with no floating leg.
 UNREACHED = {
     # ---- getbarrierpayoff: the two completeness elses -------------------------------------------
     # The selector is (direction, eta, phi, strike vs H) and the four arms of each block partition
@@ -236,9 +235,11 @@ UNREACHED = {
         "the same: a block whose spot comes from past_fixings.",
     ('pv_MC_AutoCallSwap.sim_spot', 'if reduced_samples:', 'else'):
         "an autocall MTM row with no remaining coupon observations.",
-    ('pv_MC_AutoCallSwap.sim_spot', 'if putBarrier > 0.0:', 'else'):
-        "the strided coupon step on an autocall with NO put barrier, so no interval is held for the "
-        "barrier block below it.",
+    ('pv_MC_AutoCallSwap.sim_spot', 'elif kit is not None and reduced_samples:', 'body'):
+        "a document declaring SpotModel LogVar2FJ - the non-daily kit's block law; no fixture "
+        "declares one.",
+    ('pv_MC_AutoCallSwap.sim_spot', 'if kit is None:', 'else'):
+        "the same document, where the coupon interval reads its law off that block.",
     ('pv_MC_AutoCallSwap.sim_spot', 'if logging.getLogger().isEnabledFor(logging.DEBUG):', 'body'):
         "the AUTOCALL_SETTLE debug line. Nothing runs the suite at DEBUG; a diagnostic rather than "
         "a payoff, and the one entry here no fixture should be written for.",
