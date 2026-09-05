@@ -267,8 +267,14 @@ forward 19.6 to 22.2, psi 0.96 to 0.91; the jump share is the one lever with the
 lambda 0 / 0.1 / 0.21 / 0.42 / 0.8 reading psi 0.93 / 0.95 / 0.96 / 0.98 / 0.99 at fixed jump
 sizes - it cannot pass 1. A forward smile in this model is its spot smile averaged over the
 state, and a parameter that moves with the state moves both; what separates the two horizons
-is a parameter that moves with TIME (the piecewise-constant mu_J(t), rho_s(t) the spec names
-as the next lever), which the spot 1y smile never sees and the 1y-into-1y smile prices on. The **reciprocal axis** (`HN_Invert`'s analogue): a mean
+is a parameter that moves with TIME, and the spec's fifth revision makes `rho_s(t)` and
+`mu_J(t)` piecewise constant on calendar buckets. MEASURED (`probe_buckets.py`, year-two
+bucket, spot 1y slope 20.38 unmoved to the digit in every row): `rho_s` -0.80 / -0.85 in year
+two reads psi 0.99 / 1.02 (c 0.200 / 0.118, the second below `c_min`), `mu_J` -0.20 / -0.25
+reads 1.01 / 1.09 with the forward ATM 18.5% -> 20.3% (bigger jumps add variance the curve's
+year-two segment must absorb), both together 1.04 / 1.14. The lever levers; the 2y vanillas'
+composition check and the autocall's forward-skew sensitivity (§8) decide how much of it to
+carry. The **reciprocal axis** (`HN_Invert`'s analogue): a mean
 shift on the three shocks and a tilt of the jump-size law, still Gaussian, so the FX arm can price
 a base-currency underlying. And **G9's delta convergence on a booked deal**: phase 0 resolves the
 internal step on its own autocall's coupon leg, but the engine's own ladder in the internal step
