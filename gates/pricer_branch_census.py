@@ -268,7 +268,7 @@ UNREACHED = {
         "a latched autocall event on a row whose fixing is a PAST observation, so the loop skips it "
         "as a re-observation rather than a new decision - needs boundary_aad on a grid whose block "
         "re-observes a fixing it has already seen.",
-    ('pv_MC_AutoCallSwap', "if boundary_aad and factor_dep['no_averaging']:", 'body#3'):
+    ('pv_MC_AutoCallSwap', "if boundary_aad and factor_dep['oss_windows']:", 'body#3'):
         "the all-resolved block's counterfactual: boundary_aad on, and a block reached after EVERY "
         "scenario has autocalled, so the rows carry a zero counterfactual.",
 }

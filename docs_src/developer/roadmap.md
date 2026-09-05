@@ -18,7 +18,7 @@ caller** (several items below are deliberately not started), and **look before y
 - **`NettingCollateralSet` backward, recompute node off** — One gradient entry takes two distinct float64 values from bit-identical inputs — a nondeterministic GPU reduction, not a graph defect. It bounds how tightly any collateralised sensitivity gate can be pinned. Nothing done.
 - **A collateralised set reading a knock-out rebate's 14 declared settlement dates** — the shape no gate exercises, left from the `add_grid_dates` closure.
 - **`pricing` (TARF block)** — The target pin fires on 27–61% of paths, 27% short uncorrected, and is gated structurally with no tolerance asserted because nothing resolves it better. Exact behind `Branch_And_Weight: 'Yes'`; the crisp default keeps the declared blindness. *Measured:* Estimator 13% bandwidth spread, oracle 8.9% flatness — neither better than ~10%. Do not tune on the oracle: it cannot see it either.
-- **`pv_MC_AutoCallSwap`** — The averaging branch cannot carry the termination latch — its termination is a smoothed per-inner-path weight with no crisp per-scenario decision. A lagging-payment schedule (coupon paying after its fixing) would have its pending window zeroed by the carry — the no-averaging arm's reach half of that closed 2026-09-04 (Closed, below), `pending` itself still unused here. No fixture reaches the averaging case; the latch marker (the fixing index that killed the path) is the hook an exemption keys on.
+- **`pv_MC_AutoCallSwap`** — The averaging coupon carries the termination latch under `LogVar2FJ` and cannot under the daily kits or GBM. A window of fixings is priced by sampling the window's own blocks and truncating the PREFIX return (spec 2.4.1), so the termination is a crisp per-scenario decision again and `Branch_And_Weight: 'Yes'` is admitted; GBM and the daily families keep the full-path branch, whose termination is a smoothed per-inner-path weight with no decision to stamp, and refuse by name. *Measured (2026-09-06):* the five-fixing document reads 0.76 combined SE against a brute-force oracle and a whole-interval window (26 weekly fixings, prefix 3.8–7.4% of the interval) 0.04; the smooth value is 0.67 SE from the crisp; spot delta 0.035% and gamma 0.0093% off their CRN ladders. A lagging-payment schedule (coupon paying after its fixing) would still have its pending window zeroed by the carry — `pending` remains unused here. Open: the two arms price different barrier legs for a multi-fixing window (the OSS arm decides the breach on the window's average, the full-path branch on the barrier date's spot), and nothing in the book says which the desk means.
 - **`Credit_Monte_Carlo` × the autocall's delta, what is left** — the collateralised residual had
   two parts. The FIRST was a ledger the counterfactual replayed and the value never had: the float
   leg was declared in `cash_events` but never `cash_settle`d, so `cash_to_C` moved cash against a
@@ -381,6 +381,35 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **LogVar2FJ on the autocall's averaging arm** (2026-09-06, spec 2.4.1) - a coupon whose decision
+  reads the arithmetic average of a window of fixings is priced by SAMPLING THE WINDOW AND
+  TRUNCATING THE PREFIX: the window's fixing-to-fixing blocks are ordinary blocks of the daily walk
+  (the pricer already hands `kit.blocks` the whole fixing strip, so the block plan and the
+  `blocks()` signature are untouched), their returns are drawn as plain Gaussians off the
+  dimensions the row's Sobol block already carried, `G = (1/n) sum exp(Delta_i)` with the observed
+  fixings' share as a constant, and the survival event is a half-line in the prefix return - one
+  `Phi`, one `Phi^-1`, the put leg one `lognormal_fired_gain` at `spot -> S G`,
+  `strike -> strike(1 - rebate) - c`. A window of one collapses to `c = 0`, `G = 1` bitwise, which
+  is why the deal as authored reads `-0x1.a32dcde94c00ap+5` to the bit and the GBM five-fixing
+  document is hex-identical across the change (`-0x1.bb53368e105d2p+5`), as are the CMC's CVA, its
+  spot gradient and the ledger on the as-authored deal. The termination is a crisp per-scenario
+  decision again, so the averaging coupon carries the latch (`Greeks: 'First'` on and off
+  hex-identical) and `Branch_And_Weight: 'Yes'` is ADMITTED for a walking kit; GBM and the daily
+  kits keep the full-path branch and refuse by name; `no_averaging` is `oss_windows`, since the
+  flag now means "prices on the OSS arm", averaging included. Spec 2.4.1's whole-interval root
+  (treatment i) is not built because a zero-length prefix is unreachable here: a fixing on the
+  previous coupon's date belongs to that coupon and enters as a constant, so the conditioning step
+  is always the first unobserved interval - measured at the limit (26 weekly fixings, prefix
+  3.8-7.4% of the interval) at 0.04 combined SE against a brute-force oracle. MEASURED at 65,536
+  paths, five seeds: the five-fixing document -37.62 +/- 0.10 against the oracle's -37.06 +/- 0.72
+  (0.76 combined SE); on the calibrated market the averaging is worth +0.58 (0.95%) and cuts the
+  estimator's SE 3.7x; the smooth value 0.67 SE from the crisp; spot delta 0.035% off its CRN
+  ladder (flatness 0.13%) and gamma 0.0093% off the AAD delta's ladder under `Greeks: 'All'`;
+  under the credit MC at 256 x 2,048 the profile is dispersed and the ledger settles the four
+  coupons on their settlement dates, CVA 0.0732. Net +84 tracked lines. PROOF DOCUMENTS:
+  `artifacts/lv_averaging_20260906/lvav.py hex | arms | first | values | oracle | greeks | full |
+  cmc | cmcone` (twelve documents, the three hex rows re-taken on main at landing).
+
 - **LogVar2FJ phase 2 - spec 5.4's engine bootstrapper: the L strip re-bootstrapped at every
   iterate, the implicit function theorem as an expression, and risk in quote space through ONE
   node** (2026-09-06) - the inner triangular bootstrap runs at EVERY outer iterate, so every
@@ -697,7 +726,8 @@ set; and five model items in the punchlist below.
   integral at 1.1e-3 / 4.8e-5 / 3.6e-4 / 9.7e-4 on value / delta / gamma / vanna, variance ratio
   11.9× at 4096 paths, and the target pin becomes exact. The autocall's put leg is one
   `lognormal_fired_gain` conditional on survival — written without that division it reads 61.8% out
-  on the strike — closing an 18–22% ladder miss to 0.16%. The averaging arm refuses by name.
+  on the strike — closing an 18–22% ladder miss to 0.16%. The averaging coupon is admitted under
+  `LogVar2FJ` (the window sampled, the prefix truncated); GBM and the daily kits refuse by name.
   `TargetAdjustment` is retired: it repriced a 'Full Gain' deal 44% on a flag documented as variance
   reduction.
 - **Exposure gamma at a kink — the ½Ku² term** (`Hessian: 'Yes'` on the CVA block;

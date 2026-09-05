@@ -57,7 +57,7 @@ PRICERS = list(DEALS)
 
 def _averaging_autocall():
     """`bp.AUTOCALL` with TWO `Price_Fixing` dates per `Autocall_Coupon` date, which is what selects
-    `pv_MC_AutoCallSwap`'s other branch: `no_averaging` is `len(pf_dates) == len(ac_dates)` over the
+    `pv_MC_AutoCallSwap`'s other branch: `oss_windows` is one window of fixings per coupon over the
     fixings inside the window, so 9 against 4 is False.
 
     THREE DATES ARE LOAD-BEARING, each around a defect the branch has at HEAD:
@@ -451,7 +451,7 @@ def test_the_barrier_correction_is_live_and_rides_no_cotangent(monkeypatch):
 
 def averaging_run(monkeypatch, **kwargs):
     """`cmc('averaging', ...)` plus what the pricer DID, which is what makes the branch gates below
-    non-vacuous rather than a second spelling of the fixture: the `no_averaging` flag it was
+    non-vacuous rather than a second spelling of the fixture: the `oss_windows` flag it was
     dispatched with, each block's `(row count, settle_rows)`, and the mtm-grid DAY every settlement
     was booked on.
 
@@ -470,7 +470,7 @@ def averaging_run(monkeypatch, **kwargs):
             return outputs
 
     def spy_pricer(shared, time_grid, deal_data, *args):
-        flags.append(deal_data.Factor_dep['no_averaging'])
+        flags.append(deal_data.Factor_dep['oss_windows'])
         grids.append(time_grid.mtm_time_grid)
         return pricer(shared, time_grid, deal_data, *args)
 
@@ -498,7 +498,7 @@ def test_the_averaging_branch_is_reached_and_settles_off_its_returned_rows(monke
     mutation moves both switch settings alike - which is why this is an absolute statement."""
     (_, _, _, cash), flags, blocks, days = averaging_run(monkeypatch)
     assert flags and not any(flags), (
-        'the averaging fixture priced through the no_averaging branch, so section (f) is a slower '
+        'the averaging fixture priced through the OSS arm, so section (f) is a slower '
         'copy of section (a): {}'.format(flags))
     settling = [b for b in blocks if b[1]]
     assert settling and all(b == (2, [1]) for b in settling), (

@@ -725,6 +725,17 @@ def oss_model_kit(factor_dep, scalars):
     return kit(scalars, {c: knots[c] for c in kit.curve_names}, factor_dep)
 
 
+def oss_window_ends(fixings, coupons):
+    """Each coupon's LAST fixing index, or None where the fixings do not partition into one
+    non-empty window per coupon with nothing left over."""
+    if not len(fixings):
+        return None
+    ends = np.searchsorted(np.array(fixings, dtype='datetime64[ns]'),
+                           np.array(coupons, dtype='datetime64[ns]'), 'right') - 1
+    return ends if (ends[0] >= 0 and (np.diff(ends) > 0).all()
+                    and ends[-1] == len(fixings) - 1) else None
+
+
 def oss_strides(factor_dep, shared):
     """Does this deal open each fixing interval as ONE survival-truncated k-step draw?
 
@@ -898,6 +909,8 @@ def branch_and_weight(shared, deal_data):
     The conditioning step is the FIXING INTERVAL's own lognormal law, which is what makes ``p`` a
     ``Phi`` and the continuing draw a ``Phi^-1`` (``oss_truncated_draw``). Under GBM the fixing
     interval IS the simulated step, so the strips a pricer already walks are its ``m`` and ``s``.
+    An AVERAGING coupon has that law too where the kit walks blocks: the window is sampled and the
+    PREFIX return truncated (spec 2.4.1), so the conditioning law is the prefix's own Gaussian.
 
     Under component Heston-Nandi that law is the STRIDE, so the deal is admitted provided
     ``HN_Stride`` consents: the carry across each jump is a declared approximation and a caller
@@ -4501,12 +4514,22 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     branches, read at the moneyness the deal declares; the per-fixing smile convention is open
     (roadmap.md). Quanto bends the carry at the expiry read; compo prices the product S*X.
 
+    THE COUPON READS A WINDOW. Each coupon owns a window of one or more price fixings; a window of
+    one is the spot at that fixing and a longer one their arithmetic AVERAGE. On the OSS arm the
+    window's own fixing-to-fixing blocks are SAMPLED as plain Gaussians and the survival truncates
+    the PREFIX return alone (spec 2.4.1) - the average is ``c + S*exp(R_pre)*G`` with ``c`` the
+    observed fixings and ``G`` the sampled ones, so ``{A <= K}`` is still a half-line in ``R_pre``
+    and every leg on the average is ``lognormal_fired_gain`` at a shifted forward. A fixing AT the
+    row is an observation, not a step. Only a kit whose conditioning step IS the fixing interval is
+    admitted with a window longer than one; GBM and the daily families keep the full-path branch.
+
     THE KNOCK-OUT LATCH IS CARRIED. ``terminationDate`` is stamped inside ``sim_spot`` at each
     observed fixing, returned as a by-product and handed to the next block's theta - an autocalled
-    path settles its coupon once and marks zero from then on. The averaging branch cannot stamp it,
+    path settles its coupon once and marks zero from then on. The full-path branch cannot stamp it,
     its termination being a smoothed per-inner-path weight, and returns it unchanged.
 
-    BOUNDARY AAD: the trigger's gap is decided on ``Sj`` INSIDE the simulation, so under the node it
+    BOUNDARY AAD: the trigger's gap is decided on the window's own average INSIDE the simulation,
+    so under the node it
     is an OUTPUT whose cotangent carries the correction. Each STAMPED decision (``tau == 0``)
     registers ONE ``LatchedBoundarySet`` entry carrying its whole reach: the carried latch killing
     every later row, an own-row override per row of its own block - a LAGGED settlement decides
@@ -4520,7 +4543,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     paid but never ``cash_settle``d here, and a fact the chain cannot find in ``Cf_Rec`` replays a
     ledger the reported world does not have.
 
-    BRANCH AND WEIGHT REACHES THE NO-AVERAGING ARM (``Branch_And_Weight: 'Yes'``, base valuation
+    BRANCH AND WEIGHT REACHES THE OSS ARM (``Branch_And_Weight: 'Yes'``, base valuation
     only) and SUPERSEDES that registration rather than joining it. A constant coupon already makes
     ``(1 - p) * L * coup * D_j`` a conditional expectation; what the switch adds is the deal's
     SECOND per-fixing decision, the PUT LEG INTEGRATED rather than sampled -
@@ -4542,20 +4565,20 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     OBSERVED fixing and a block opening on an unaligned one. A coupon row of ``<= 0`` would be a
     third and inexact way; ``calc_dependencies`` refuses that document by name.
 
-    THE STRIDE (``HN_Stride: 'Yes'``, component Heston-Nandi only, no-averaging arm only) makes each
+    THE STRIDE (``HN_Stride: 'Yes'``, component Heston-Nandi only, OSS arm only) makes each
     coupon interval ONE survival-truncated k-step draw, so the put leg's conditioning step is the
     fixing interval. The advance is HELD and applied where the daily draw would have been taken, so
     the payment and the weight update in the order above. Crisp, the put leg keeps its indicator for
     the VALUE and takes the mixture's derivatives through `splice_conditional_p`, closing the 18-22%
     delta-ladder miss without moving a price. Off is the daily walk bit for bit.
 
-    THE AVERAGING ARM REFUSES BY NAME rather than no-opping: its termination is a smoothed
+    THE FULL-PATH BRANCH REFUSES BY NAME rather than no-opping: its termination is a smoothed
     per-inner-path weight with no crisp per-scenario decision to replace, and its ``breached`` is a
     hard indicator on the AVERAGE. The stride does not reach it either, for the same reason - a mean
     of spots is not one fixing interval's law.
     """
     def sim_autocall(S, isBarrierDate, isFixingDate, isFloatDate, floating, threshold, coupon, terminationDate):
-        """The AVERAGING arm's inner path walk: coupons trigger off the running average of spots and
+        """The FULL-PATH branch's inner walk: coupons trigger off the running average of spots and
         termination is a smoothed heaviside, so there is no crisp per-scenario decision."""
         avg = 0.0
         averageCounter = 0.0
@@ -4605,7 +4628,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
         return mtm_list.mean(axis=2)
 
-    def sim_spot(offset, times, t_tenor, row_times, last_fixing, sobol, num_sims,
+    def sim_spot(offset, times, row_days, row_times, last_fixing, windows, sobol, num_sims,
                  spot_prices, vols, carry, terminationDate, discount_rates, floating_leg,
                  past_fixings, *hn_scalars):
         """Inner one-step-survival Monte Carlo over one block of MTM rows; the mean PV per row.
@@ -4618,8 +4641,11 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         decision: a gap (carrying the correction's cotangent), two detached branch coefficients, and
         the payment the trigger controls had it fired.
 
+        ``windows`` is each remaining coupon's window as ``(length, observed, first index)`` into
+        the equity strip, which is what makes a window of one the no-averaging arithmetic exactly.
+
         ``terminationDate`` arrives as the latch a PRIOR block left (-1 alive, else the fixing index
-        that killed the path), is stamped where a fixing is observed (``tau == 0``) and returned for
+        that killed the path), is stamped where the row IS the coupon's own date and returned for
         the next block. The accumulators run ALIVE with the latch masking the exits: ``P`` is
         homogeneous in its initial weight, so the masked exit equals the killed weight bit for bit,
         and the same pass yields the ``alive`` rows the latched registration needs.
@@ -4644,16 +4670,16 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         threshold = Threshold[offset:]
         coupon = Coupon[offset:]
 
-        # exactly one fixing per coupon date means there is no averaging
-        if factor_dep['no_averaging']:
+        # every coupon owning its own window of fixings is the one-step-survival arm
+        if factor_dep['oss_windows']:
             eps = torch.finfo(shared.one.dtype).eps
             fx = isQuanto * (fixFXRate - 1.0) + 1.0
             # block-entry latch state: a scenario that fires at THIS block's fixing settles its
             # coupon here and dies from the next block on
             dead = (terminationDate != -1).squeeze(1)
             mcmc = []
-            for i, (tau, df, s, v, carry_rate, delta_t, floating) in enumerate(zip(
-                    t_tenor, discount_rates, spot_prices, vols, carry, times, floating_leg)):
+            for i, (row_at, df, s, v, carry_rate, delta_t, floating) in enumerate(zip(
+                    row_days, discount_rates, spot_prices, vols, carry, times, floating_leg)):
 
                 # zero when only the floating leg is left
                 reduced_samples = len(delta_t)
@@ -4664,12 +4690,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                     else:
                         u = torch.rand([reduced_samples, shared.simulation_batch, num_sims],
                                        dtype=shared.one.dtype, device=shared.one.device)
-                if last_fixing is None:
-                    Sj = torch.unsqueeze(s, 1)
-                    fixing_aligned = True
-                else:
-                    Sj = torch.unsqueeze(past_fixings[last_fixing], 1)
-                    fixing_aligned = False
+                Sj = torch.unsqueeze(
+                    s if last_fixing is None else past_fixings[last_fixing], 1)
                 if hn:
                     st = kit.seed()  # re-seed the variance state at the start of this MTM row
                 elif walks and reduced_samples:
@@ -4687,7 +4709,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 # rather than hoisted out of the loop
                 D = df.unsqueeze(2)
 
-                coupon_index = 0
+                coupon_index = coupon_count = 0
 
                 for j, (coup, thresh, FloatingDate, barrier) in enumerate(
                         zip(coupon, threshold, isFloatingDate, isBarrierDate)):
@@ -4697,6 +4719,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                     # the spot and state a STRIDE has already moved this coupon to, applied where
                     # the daily draw is taken so the P and L arithmetic keeps its order
                     strided = None
+                    # what this date's decisions read: the window's average where a coupon block
+                    # ran, this row's own spot otherwise
+                    decided = Sj
 
                     if FloatingDate > 0:
                         P = P + L * fx * -FloatingDate * D[j]
@@ -4705,7 +4730,18 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
                     if coup > 0:
                         K = thresh * strike
-                        dt = delta_t[coupon_index] if fixing_aligned else 0.0
+                        n_win, n_obs, obs_lo = windows[coupon_count].tolist()
+                        coupon_count += 1
+                        obs = past_fixings[obs_lo:obs_lo + n_obs].sum(0).unsqueeze(1) if n_obs else 0.0
+                        ahead = n_win - n_obs
+                        if ahead and delta_t[coupon_index] <= 0:
+                            # a fixing AT this row is an OBSERVATION, not a step - the row's own
+                            # spot IS it, and the interval it would open has no length
+                            obs, ahead, coupon_index = obs + Sj, ahead - 1, coupon_index + 1
+                        # the average's observed part and its sampled factor; a window of one
+                        # leaves both at the constants the no-averaging arithmetic reads
+                        c, G, win_end = obs / n_win, 1.0 / n_win, 1.0
+                        dt = delta_t[coupon_index] if ahead else 0.0
                         if dt > 0:
                             # `carry` arrives as the INTERVAL carry strip (forward_carry_rate)
                             forward_carry = carry_rate[coupon_index].reshape(-1, 1)
@@ -4725,7 +4761,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                     # held for the barrier block a screen below: the interval's own
                                     # cached law, the weight from BEFORE `p` enters `L`, and the
                                     # breach region inside the surviving set
-                                    interval = (fixing, Sj, None, None, L, min(putBarrier, K))
+                                    interval = (fixing, Sj, None, None, L, min(putBarrier, K), c)
                             elif hn:
                                 # HN daily sub-stepping to the coupon date. The autocall knocks out
                                 # only AT the coupon observation, so the OSS truncation - survival
@@ -4747,17 +4783,31 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                             vol * torch.sqrt(dt))
                                 else:
                                     m, s = law[0][..., coupon_index], law[1][..., coupon_index]
-                                p = utils.norm_cdf((torch.log(K / Sj) - m) / s)
+                                if ahead > 1:
+                                    # THE WINDOW: fixing-to-fixing blocks of the same walk, drawn
+                                    # as plain Gaussians off their own dimensions of this row's
+                                    # block, and summed into the average's factor `G`
+                                    win = slice(coupon_index + 1, coupon_index + ahead)
+                                    z = utils.norm_icdf(
+                                        torch.clamp(u[win], eps, 1.0 - eps)).permute(1, 2, 0)
+                                    steps = (law[0][..., win] + law[1][..., win] * z).cumsum(-1)
+                                    win_end = torch.exp(steps[..., -1])
+                                    G = (1.0 + torch.exp(steps).sum(-1)) / n_win
+                                scale = Sj * G
+                                p = utils.norm_cdf(
+                                    (torch.log(torch.clamp_min((K - c) / scale, eps)) - m) / s)
                                 if putBarrier > 0.0:
-                                    # held for the barrier block a screen below: `Sj` before the
-                                    # advance, the interval's own law, the weight from BEFORE `p`
-                                    # enters `L`, and the breach region inside the surviving set
-                                    interval = (None, Sj, m, s, L, min(putBarrier, K))
+                                    # held for the barrier block a screen below: the average's
+                                    # lognormal factor before the advance, the prefix's own law,
+                                    # the weight from BEFORE `p` enters `L`, the breach region
+                                    # inside the surviving set, and the observed shift
+                                    interval = (None, scale, m, s, L, min(putBarrier, K), c)
                         else:
-                            p = torch.where(K > Sj, 1.0, 0.0)
-                            if tau == 0.0:
-                                # stamp the latch: the fixing IS this row, the decision is the
-                                # scenario's own spot, and the marker is the fixing that killed it
+                            decided = obs / n_win
+                            p = torch.where(K > decided, 1.0, 0.0)
+                            if row_at[j] == 0.0:
+                                # stamp the latch: the coupon's date IS this row, the decision is
+                                # the scenario's own average, and the marker is the fixing index
                                 terminationDate = torch.where(
                                     (terminationDate == -1) & (p == 0), float(offset), terminationDate)
 
@@ -4767,12 +4817,12 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             # than a second simulation
                             P_cf = P_cf + fx * (1 - p) * L_cf * coup * D[j]
                             L_cf = p * L_cf
-                        elif boundary_aad and dt <= 0:
-                            # the autocall is OBSERVED here, so Sj is the scenario's own spot and
-                            # gap > 0 means the trigger FIRED. The branches are DEAD-AWARE: a
-                            # scenario an earlier fixing latched has nothing left to jump
+                        elif boundary_aad and not ahead:
+                            # the autocall is OBSERVED here, so `decided` is the scenario's own
+                            # average and gap > 0 means the trigger FIRED. The branches are
+                            # DEAD-AWARE: a scenario an earlier fixing latched has nothing to jump
                             event_rows.append(i)
-                            gaps.append(torch.log(Sj / K).squeeze(dim=1))
+                            gaps.append(torch.log(decided / K).squeeze(dim=1))
                             fired.append(torch.where(
                                 dead, 0.0, (P + fx * L * coup * D[j]).mean(axis=1)).detach())
                             # the payment the trigger makes IF it fires, UNMASKED: which worlds
@@ -4794,10 +4844,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             L = ledger.alive
                         else:
                             L = p * L
-                        if tau == 0.0 and dt <= 0:
-                            # SETTLE HERE, not at the bottom of the loop: `tau` is row-level, so a
-                            # test down there holds for every coupon and would book the running `P`
-                            # - the accumulated VALUE, not the payment - once per coupon
+                        if row_at[j] == 0.0:
+                            # SETTLE HERE, not at the bottom of the loop: a test down there holds
+                            # for every coupon and would book the running `P` - the accumulated
+                            # VALUE, not the payment - once per coupon
                             row_cash = torch.where(dead, 0.0, coupon_cash.mean(axis=1))
                             if logging.getLogger().isEnabledFor(logging.DEBUG):
                                 logging.debug(
@@ -4806,7 +4856,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             settled.append(row_cash)
                             settle_rows.append(i)
 
-                        if fixing_aligned:
+                        if ahead:
                             # prevent underflow or overflow
                             safe_pu = torch.clamp(p * u[coupon_index], min=eps, max=1.0-eps)
 
@@ -4816,56 +4866,57 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                 # do on the daily path
                                 Sj, st = strided
                             elif hn:
-                                # the survival-truncated final draw and its h-recursion; at
-                                # dt <= 0 (the terminal fixing) there is no interval to advance
-                                if dt > 0:
-                                    Sj, st = kit.advance(
-                                        Sj, st, b_step, utils.norm_icdf(safe_pu))
+                                # the survival-truncated final draw and its h-recursion
+                                Sj, st = kit.advance(Sj, st, b_step, utils.norm_icdf(safe_pu))
                             else:
-                                Sj = Sj * (torch.exp(m + s * utils.norm_icdf(safe_pu))
-                                           if dt > 0 else 1.0)
-                            coupon_index += 1
-                        else:
-                            fixing_aligned = True
+                                Sj = Sj * torch.exp(m + s * utils.norm_icdf(safe_pu))
+                            # the average this coupon decided on, then the window's LAST fixing,
+                            # which is where the next coupon's prefix opens
+                            decided = c + Sj * G
+                            Sj = Sj * win_end
+                            coupon_index += ahead
 
                     if barrier > 0 and interval is not None:
                         # THE PUT LEG, INTEGRATED: `b_eff = min(B, K)` puts the breach region inside
                         # the SURVIVING set, and `L_prev` - the weight from before `p` entered `L` -
                         # IS `L / p` without the 0/0 where every path fired
-                        fixing, Sj_prev, m, s, L_prev, b_eff = interval
+                        fixing, scale, m, s, L_prev, b_eff, c = interval
                         analytic = L_prev * D[j] * fx * (
                             kit.stride_fired_gain(fixing, kit.stride_bound(fixing, b_eff),
                                                   strike * (1.0 - rebate), False)
                             if fixing is not None else lognormal_fired_gain(
-                                Sj_prev, m, s, (torch.log(b_eff / Sj_prev) - m) / s,
-                                strike * (1.0 - rebate), False)) / strike
+                                scale, m, s,
+                                (torch.log(torch.clamp_min((b_eff - c) / scale, eps)) - m) / s,
+                                strike * (1.0 - rebate) - c, False)) / strike
                         if smooth:
                             P = P + analytic
                         else:
                             # THE CONDITIONAL-p MIXTURE: value stays the sampled indicator's bit for
                             # bit, every derivative is the integral's
-                            breach = torch.where(Sj <= putBarrier, 1.0, 0.0)
-                            crisp = L * D[j] * fx * breach * (rebate - (1.0 - Sj / strike))
+                            breach = torch.where(decided <= putBarrier, 1.0, 0.0)
+                            crisp = L * D[j] * fx * breach * (rebate - (1.0 - decided / strike))
                             P = P + crisp + splice_conditional_p(crisp, analytic)
                             if P_cf is not None:
                                 P_cf = P_cf + L_cf * D[j] * fx * breach * (
-                                    rebate - (1.0 - Sj / strike))
+                                    rebate - (1.0 - decided / strike))
                     elif barrier > 0:
                         # no conditioning step this iteration, and EXACT on the spot the deal names
                         # in both the ways that happens: an OBSERVED fixing, and a block opening on
                         # an unaligned one
-                        breach = torch.where(Sj <= putBarrier, 1.0, 0.0)
-                        put_leg = L * D[j] * fx * (rebate - (1.0 - Sj / strike))
+                        breach = torch.where(decided <= putBarrier, 1.0, 0.0)
+                        put_leg = L * D[j] * fx * (rebate - (1.0 - decided / strike))
                         P = P + breach * put_leg
                         if P_cf is not None:
-                            P_cf = P_cf + L_cf * D[j] * fx * breach * (rebate - (1.0 - Sj / strike))
+                            P_cf = P_cf + L_cf * D[j] * fx * breach * (
+                                rebate - (1.0 - decided / strike))
                         if boundary_aad and putBarrier > 0.0:
                             # ONE decision per inner path, gap > 0 meaning BREACHED, and the jump is
                             # what this row's accumulator gains if that path's indicator flips. Only
                             # here: where `interval` is not None the splice already took it. A
                             # barrier date with no barrier decides nothing - its gap is log(0)
                             bar_jumps.append(put_leg.detach())
-                            bar_gaps.append(torch.log(putBarrier / Sj).expand_as(bar_jumps[-1]))
+                            bar_gaps.append(
+                                torch.log(putBarrier / decided).expand_as(bar_jumps[-1]))
                             bar_rows.append(i)
 
 
@@ -4890,8 +4941,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             vol = torch.sqrt(var) * live
 
             mcmc = []
-            for i, (tau, D, s, r, sigma, floating) in enumerate(zip(
-                    t_tenor, discount_rates, spot_prices, drift, vol, floating_leg)):
+            for i, (row_at, D, s, r, sigma, floating) in enumerate(zip(
+                    row_days, discount_rates, spot_prices, drift, vol, floating_leg)):
                 if sobol:
                     z = shared.quasi_rng(shared.simulation_batch, num_samples * num_sims)[0].T.reshape(
                         num_samples, shared.simulation_batch, -1)
@@ -4907,10 +4958,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 mcmc.append(pv)
 
                 # RETURNED, because a replay would settle these twice
-                if tau == 0.0:
+                if row_at[0] == 0.0:
                     settled.append(pv)
                     settle_rows.append(i)
-            # the averaging branch carries NO latch out - its termination is a smoothed
+            # the full-path branch carries NO latch out - its termination is a smoothed
             # per-inner-path weight, with no crisp per-scenario decision to stamp. The incoming
             # latch is respected (sim_autocall's `inforce`) and returned unchanged
 
@@ -4934,7 +4985,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     dual_samples = samples.dual()
     start_index, counts = np.unique(start_idx, return_counts=True)
 
-    if factor_dep['no_averaging']:
+    if factor_dep['oss_windows']:
         # a reset can be prior to its coupon date, so the two schedules are tracked separately
         equity_samples = factor_dep['Price_Fixing']
         coupon_samples = factor_dep['Coupon_Fixing']
@@ -4954,6 +5005,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         coupon_equity_index = equity_samples.schedule[:, utils.RESET_INDEX_Reset_Day].searchsorted(
             coupon_samples.schedule[:, utils.RESET_INDEX_Reset_Day], 'right') - 1
         coupon_equity_index = np.append(coupon_equity_index, coupon_equity_index[-1] + 1)
+        # each coupon's window OPENS one past its predecessor's last fixing
+        coupon_window_lo = np.concatenate([[0], coupon_equity_index[:-1] + 1])
 
     if 'Forward' in factor_dep:
         resets = factor_dep['Cashflows'].Resets
@@ -4968,7 +5021,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         forward = discount
 
     BarrierDates = factor_dep['Barrier_Dates']
-    if not factor_dep['no_averaging']:
+    if not factor_dep['oss_windows']:
         FixingDates = [1 if x != -1 else -1 for x in factor_dep['Price_Fixing']]
     Threshold = factor_dep['Autocall_Thresholds']
     Floating = factor_dep['Autocall_Floating']
@@ -4982,38 +5035,39 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     nominal = factor_dep['Buy_Sell'] * deal_data.Instrument.field['Units']
     terminationDate = -shared.one.new_ones(shared.simulation_batch, 1)
 
-    # `averaging` changes the PRODUCT, not just the estimator: the OSS path integrates each coupon's
-    # survival analytically, the averaging path simulates a mean of spots
-    logging.debug('AUTOCALL %s coupons=%d thresholds=%d averaging=%d barrier=%.6g blocks=%d',
+    # the ARM changes the estimator, not the product: the OSS path integrates each coupon's
+    # survival analytically off its window's prefix, the full-path one simulates a mean of spots
+    logging.debug('AUTOCALL %s coupons=%d thresholds=%d fullpath=%d barrier=%.6g blocks=%d',
                   deal_data.Instrument.field.get('Reference'), int((np.asarray(Coupon) > 0).sum()),
-                  len(Threshold), int(not factor_dep['no_averaging']), putBarrier, len(counts))
+                  len(Threshold), int(not factor_dep['oss_windows']), putBarrier, len(counts))
 
     # read once before a draw is taken so a non-GBM refusal lands first. It SUPERSEDES the
     # registration below rather than joining it - one decision, one estimator
     smooth = branch_and_weight(shared, deal_data)
-    if smooth and not factor_dep['no_averaging']:
+    if smooth and not factor_dep['oss_windows']:
         raise ValueError(
-            "Branch_And_Weight: 'Yes' is refused on {} because it averages - more than one price "
-            'fixing per coupon, or a barrier date off the coupon dates, so the deal prices on the '
-            'AVERAGING arm. That arm has no crisp per-scenario decision for the switch to replace: '
-            'its termination is a smoothed per-inner-path weight (pricing.smooth_heaviside_up) and '
-            'its breach is a hard indicator on the AVERAGE, whose conditioning law is the '
-            'distribution of a MEAN of spots and not one fixing interval\'s lognormal - which the '
-            'construction does not have (roadmap.md, "Branch and weight for TARFs and autocalls"). '
-            'Pricing it here would put the smooth estimator\'s name on an estimator that is not it. '
-            'What works today: book this deal with ONE price fixing per coupon date and every '
-            "barrier date ON a coupon date, which is the no-averaging arm the switch does price; or "
-            "run it with Branch_And_Weight: 'No', the default, which is the crisp estimator this "
-            'deal already prices under, unchanged.'.format(
+            "Branch_And_Weight: 'Yes' is refused on {} because it prices on the FULL-PATH branch - "
+            'a barrier date off the coupon dates, or a window of fixings under GBM or a DAILY spot '
+            'model, which have no block law to truncate the window prefix against (spec 2.4.1). '
+            'That branch has no crisp per-scenario decision for the switch to replace: its '
+            'termination is a smoothed per-inner-path weight (pricing.smooth_heaviside_up) and its '
+            'breach is a hard indicator on the AVERAGE, whose conditioning law is the distribution '
+            "of a MEAN of spots and not one fixing interval's lognormal - which the construction "
+            'does not have (roadmap.md, "Branch and weight for TARFs and autocalls"). Pricing it '
+            "here would put the smooth estimator's name on an estimator that is not it. What works "
+            'today: put every barrier date ON a coupon date and either book ONE price fixing per '
+            "coupon or declare SpotModel: 'LogVar2FJ', which prices the window on the OSS arm the "
+            "switch does reach; or run it with Branch_And_Weight: 'No', the default, which is the "
+            'crisp estimator this deal already prices under, unchanged.'.format(
                 deal_data.Instrument.field.get('Reference')))
 
     # THE STRIDE (`HN_Stride`, component Heston-Nandi only): each coupon interval as one
     # survival-truncated k-step draw. It reaches the no-averaging arm alone, for the reason the
     # switch above does - a mean of spots is not one interval's law
-    stride = oss_strides(factor_dep, shared) and factor_dep['no_averaging']
+    stride = oss_strides(factor_dep, shared) and factor_dep['oss_windows']
 
     # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM. HN is
-    # only wired into the no_averaging arm
+    # only wired into the OSS arm
     hn_scalars = oss_model_scalars(factor_dep, shared)
     hn = bool(hn_scalars)
     if hn:
@@ -5043,7 +5097,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         all_fixings = (dual_samples.np[np.newaxis, sample_index_t:, utils.RESET_INDEX_End_Day] -
                        t_block[:, utils.TIME_GRID_MTM, np.newaxis])
         fixings = (factor_dep['Price_Fixing'].schedule[np.newaxis, eq_start_index[index]:, utils.RESET_INDEX_End_Day] -
-                   t_block[:, utils.TIME_GRID_MTM, np.newaxis]) if factor_dep['no_averaging'] else all_fixings
+                   t_block[:, utils.TIME_GRID_MTM, np.newaxis]) if factor_dep['oss_windows'] else all_fixings
 
         drifts = utils.calc_eq_drift(
             deal_data.Factor_dep['Equity_Zero'], deal_data.Factor_dep['Dividend_Yield'],
@@ -5106,18 +5160,24 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             floating_leg = spot_block
 
         discount_rates = utils.calc_discount_rate(discount_block, all_fixings, shared)
-        if boundary_aad and factor_dep['no_averaging']:
+        if boundary_aad and factor_dep['oss_windows']:
             # decisions latched STRICTLY BEFORE this block's rows, at block granularity - the
             # block's own fixing is priced by its own simulation (the barrier's spelling)
             b_obs.extend([len(b_latch)] * len(t_block))
         # skip the simulation once EVERY scenario has autocalled - nothing is left to price
         if (terminationDate == -1).any():
-            if factor_dep['no_averaging']:
-                fixing_index = coupon_equity_index[cp_start_index[index]]
-                last_fixing = None if fixing_index == eq_start_index[index] else fixing_index
+            if factor_dep['oss_windows']:
+                eq0 = eq_start_index[index]
+                hi = coupon_equity_index[cp_start_index[index]:]
+                lo = coupon_window_lo[cp_start_index[index]:]
+                # each remaining coupon's window: how long it is, how much of it this block has
+                # already observed, and where it opens in the equity strip
+                windows = np.stack(
+                    [hi - lo + 1, np.clip(np.minimum(hi + 1, eq0) - lo, 0, None), lo], axis=1)
+                last_fixing = None if hi[0] >= eq0 else hi[0]
             else:
-                last_fixing = None
-            # the interval carry and vol strips, which is also what puts the AVERAGING branch's
+                last_fixing = windows = None
+            # the interval carry and vol strips, which is also what puts the FULL-PATH branch's
             # `carry * dt` and `vols * vols * dt` on interval integrals. Both take the ZERO carry
             # `drifts`; the strip takes the spot moneyness this pricer marks its Europeans at
             cum_t = drifts.new(fixing_block) if fixing_block.any() else fixing_block
@@ -5130,12 +5190,12 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 # compo: the simulation steps S*X, so each interval's vol is the PRODUCT's; the
                 # expiry-read else-branch above is already compo via adj['vol']
                 interval_vols = compo_vol(interval_vols, adj['fx_vol'].unsqueeze(1), adj['rho'])
-            simulate = partial(sim_spot, sample_index_t, sample_ts, all_fixings[:, 0],
-                               daycount_fn(t_block[:, utils.TIME_GRID_MTM]), last_fixing, sobol,
-                               shared.MCMC_sims)
+            simulate = partial(sim_spot, sample_index_t, sample_ts, all_fixings,
+                               daycount_fn(t_block[:, utils.TIME_GRID_MTM]), last_fixing, windows,
+                               sobol, shared.MCMC_sims)
             theta = (spot_block, interval_vols, fwd_drifts, terminationDate, discount_rates,
                      floating_leg,
-                     all_eq_samples if factor_dep['no_averaging'] else spot_block.new_empty(0)
+                     all_eq_samples if factor_dep['oss_windows'] else spot_block.new_empty(0)
                      ) + hn_scalars
             # the SAME callable either way: under the node it is called twice
             outputs = InnerMCRecompute.run(shared, simulate, *theta)
@@ -5149,16 +5209,19 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 cash_settle(shared, factor_dep['SettleCurrency'], np.searchsorted(
                     time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]), nominal * value)
             fixed, n_events = 7, len(event_rows)
-            if boundary_aad and factor_dep['no_averaging']:
+            if boundary_aad and factor_dep['oss_windows']:
                 b_alive.append(block_alive)
                 settle_map = dict(zip(settle_rows, block_settled))
-                # per STAMPED decision (tau == 0): gap, flag (`gap >= 0` IS the trigger), the rows
+                # per STAMPED decision (the row IS the coupon's date): gap, flag (`gap >= 0` IS
+                # the trigger), the rows
                 # it forks - a LAGGED block decides EVERY row off its one observed fixing, so all
                 # fork - and the coupon it gates. A re-observation of an old window is not a new one
                 forks = [(row_ofs + r, outputs[fixed + n_events + m],
                           outputs[fixed + 2 * n_events + m]) for m, r in enumerate(event_rows)]
                 for k, row in enumerate(event_rows):
-                    if all_fixings[row, 0] != 0.0:
+                    # only the row that is the decision's own COUPON date registers; every other
+                    # row of a lagged block re-observes it and is a fork, not a decision
+                    if row not in settle_map:
                         continue
                     gap = outputs[fixed + k]
                     b_latch.append([gap, (gap >= 0).detach(),
@@ -5177,7 +5240,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                 for k, row in enumerate(bar_rows)])
         else:
             theo_cashflow = drifts.new_zeros((len(t_block), shared.simulation_batch))
-            if boundary_aad and factor_dep['no_averaging']:
+            if boundary_aad and factor_dep['oss_windows']:
                 # every scenario resolved: both branches are the same zero, so the rows carry no
                 # counterfactual - the barrier's all_hit discipline
                 b_alive.append(theo_cashflow)

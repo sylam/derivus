@@ -3978,8 +3978,12 @@ class QEDI_CustomAutoCallSwap(Deal):
                       '`HestonNandiModelParameters.SPX`). `LogVar2FJ` is the two-factor log-variance model with',
                       'co-jumps, which walks its own INTERNAL step and hands each fixing interval one Gaussian',
                       'block law rather than a daily state. Switching the model on without that factor in the',
-                      'market data is a loud skip, never a silent lognormal fallback. Requires the',
-                      'non-averaging autocall (one fixing per coupon) and a single-currency payoff: a',
+                      'market data is a loud skip, never a silent lognormal fallback. `LogVar2FJ` also',
+                      'prices an AVERAGING coupon - a window of fixings whose arithmetic mean is compared',
+                      'to the threshold - by sampling the window and truncating the prefix return, which',
+                      'keeps the termination a crisp per-scenario decision; the daily families require one',
+                      'fixing per coupon. Every barrier date must sit ON a coupon date, and the payoff must',
+                      'be single-currency: a',
                       'Quanto/Compo carry is a lognormal quantity, so declaring one alongside a non-`None`',
                       'SpotModel is the same loud skip.',
                       '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH steps',
@@ -4004,7 +4008,7 @@ class QEDI_CustomAutoCallSwap(Deal):
 
         The non-GBM spot model resolves by NAMING CONVENTION off the equity underlying, with no
         deal field: <SpotModel>ModelParameters.<equity>; off or absent gives None (GBM). Only the
-        fast no_averaging OSS path carries the non-GBM branch, hence the raise; a Quanto/Compo
+        one-step-survival arm carries the non-GBM branch, hence the raise; a Quanto/Compo
         payoff raises for the same reason, since `calc_vol_adjustment` derives its carry from a
         LOGNORMAL implied ATM vol no leg of the non-GBM branch reads. Both refusals land in the
         deal-skip path, so a refusal is an attributable value loss rather than a wrong number.
@@ -4042,15 +4046,25 @@ class QEDI_CustomAutoCallSwap(Deal):
 
         # DISABLED: warn when max(all_dates) > self.field['Expiry_Date'] - see docstring
 
-        # the common case is no averaging - one fixing per coupon date, barrier dates on coupon
-        # dates - which enables the much faster calc below
+        # THE OSS ARM. Every coupon owns a WINDOW of fixings and every barrier date sits on a
+        # coupon date; a window of ONE is the common case the fast calc below was written for, and
+        # a longer one is the arithmetic average, which only a kit whose conditioning step IS the
+        # fixing interval can truncate the prefix of (`pv_MC_AutoCallSwap`, spec 2.4.1).
         # HACK - fixings are aligned to coupons by assuming a fixing is at most a month early
+        spot_model = self.options.get('SpotModel', 'None')
         ac_dates = sorted([x for x in ac if x >= base_date])
         pf_dates = sorted([x for x in pf if x > min(ac_dates) - pd.DateOffset(months=1)])
-
-        no_averaging = len(pf_dates) == len(ac_dates) and np.all(
-            [f <= c for f, c in zip(pf_dates, ac_dates)]) and not np.any(
-            [x not in coupon_dates for x in ab if x >= base_date])
+        barriers_on_coupons = not np.any([x not in coupon_dates for x in ab if x >= base_date])
+        one_each = len(pf_dates) == len(ac_dates) and np.all(
+            [f <= c for f, c in zip(pf_dates, ac_dates)])
+        if not one_each:
+            # a WINDOW's own observed fixings reach back to its own coupon's predecessor, further
+            # than the month above, and every one of them enters the average as a constant
+            prior = [x for x in ac if x < min(ac_dates)]
+            pf_dates = sorted([x for x in pf if not prior or x > max(prior)])
+        oss_windows = barriers_on_coupons and (one_each or (
+            spot_model != 'None' and not pricing.OSS_SPOT_MODEL_KITS[spot_model].daily
+            and pricing.oss_window_ends(pf_dates, ac_dates) is not None))
 
         field_index = {
             'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
@@ -4071,7 +4085,7 @@ class QEDI_CustomAutoCallSwap(Deal):
             'Expiry': (self.field['Expiry_Date'] - base_date).days
         }
 
-        if no_averaging:
+        if oss_windows:
             # A ZERO-COUPON ROW IS REFUSED, not priced. This arm advances both the spot and the
             # price-fixing index INSIDE the coupon block (`if coup > 0` in pv_MC_AutoCallSwap), so
             # a row quoted zero runs no block and the coupon after it takes this row's interval -
@@ -4088,7 +4102,9 @@ class QEDI_CustomAutoCallSwap(Deal):
                             self.field.get('Reference', 'this QEDI_CustomAutoCallSwap'),
                             coupon_date, ac[coupon_date], stale))
 
-            all_dates = sorted(all_dates)
+            # a WINDOW's fixings are grid dates of their own: a block whose rows straddle one
+            # would read the same remaining-fixing strip either side of it
+            all_dates = sorted(all_dates.union(fixing_dates) if not one_each else all_dates)
             # move the threshold dates to the coupon dates
             tl = {c: at[t] for c, t in zip(ac, at)}
 
@@ -4105,7 +4121,7 @@ class QEDI_CustomAutoCallSwap(Deal):
                 'Price_Fixing': utils.make_fixing_data(base_date, time_grid, [[x, pf[x]] for x in pf_dates]),
                 'Coupon_Fixing': utils.make_fixing_data(base_date, time_grid, [[x, ac[x]] for x in ac_dates]),
                 'Autocall_Thresholds': [tl.get(x, -1) for x in all_dates],
-                'no_averaging': True
+                'oss_windows': True
             })
         else:
             all_dates = sorted(all_dates.union(fixing_dates))
@@ -4114,7 +4130,7 @@ class QEDI_CustomAutoCallSwap(Deal):
                     base_date, time_grid, [[x, pf.get(x, -1)] for x in all_dates]),
                 'Price_Fixing': [pf.get(x, -1) for x in all_dates],
                 'Autocall_Thresholds': [at.get(x, -1) for x in all_dates],
-                'no_averaging': False
+                'oss_windows': False
             })
             logging.warning('Autocall involves averaging - running older pricing model')
 
@@ -4127,10 +4143,15 @@ class QEDI_CustomAutoCallSwap(Deal):
         self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors)
 
         # non-GBM spot model, by naming convention off the equity - see docstring
-        spot_model = self.options.get('SpotModel', 'None')
-        if spot_model != 'None' and not field_index['no_averaging']:
-            raise ValueError('SpotModel=%s requires the non-averaging autocall (one fixing per '
-                             'coupon); the averaging (full-path) sim has no non-GBM path' % spot_model)
+        if spot_model != 'None' and not field_index['oss_windows']:
+            raise ValueError(
+                'SpotModel=%s requires the one-step-survival autocall: every barrier date ON a '
+                'coupon date, and every coupon owning a window of fixings that its predecessor '
+                'does not. A window of MORE than one fixing is the arithmetic average, which the '
+                'OSS arm prices by truncating the prefix of the window (spec 2.4.1) and so needs '
+                'a kit whose conditioning step IS the fixing interval - LogVar2FJ; a DAILY kit '
+                'has only its last daily sub-step and takes one fixing per coupon. The '
+                'averaging (full-path) sim has no non-GBM path at all.' % spot_model)
         if spot_model != 'None' and field_index['Check_Payoff_Type']:
             raise ValueError('SpotModel=%s cannot price Payoff_Type=%s settled in %s; the quanto/compo '
                              'carry is a lognormal implied-ATM-vol adjustment with no %s equivalent - '
