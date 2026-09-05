@@ -2763,6 +2763,22 @@ def curve_at(knots, values, t):
     return values[j - 1] + frac * (values[j] - values[j - 1])
 
 
+#: Slack in years matching a walk time to a bucket knot. A grid's ACCUMULATED cumsum lands a
+#: boundary a few ulps low - 252 daily steps reach 1 - 3.1e-15 - and would start its bucket a step
+#: late; buckets are calendar dates and never sit within the 30 ms this allows.
+BUCKET_TOL = 1.0e-9
+
+
+def bucket_at(knots, values, t):
+    """A bucketed parameter's value in force at times ``t`` in years: PIECEWISE CONSTANT, the last
+    knot at or before ``t`` (within ``BUCKET_TOL``) and the first value before the first knot.
+    ``knots`` is structural (numpy), ``values`` the differentiable leaf, and the answer carries
+    ``t``'s shape."""
+    k = torch.as_tensor(np.ascontiguousarray(knots, dtype=float),
+                        dtype=values.dtype, device=values.device) - BUCKET_TOL
+    return values[torch.clamp(torch.searchsorted(k, t, right=True) - 1, min=0)]
+
+
 def hn_component_omega_path(l_path, rho):
     """``omega_t = L_{t+1} - rho*L_t`` for t = 0..n-1, from an (n+1,) L path - the whole content of
     the L parametrisation.
@@ -3629,19 +3645,29 @@ def hn_component_stride_step(strip, Sj, h, q, u, e1, e2, x_cap=None, loadings=No
 # the price factor declares; `pricing.LogVar2FJKit` owns the unpack, the grid and the draws.
 # ======================================================================================
 
-#: The `LogVar2FJModelParameters` price factor's LEAF parameters, in canonical order - the single
+#: The `LogVar2FJModelParameters` price factor's SCALAR leaves, in canonical order - the single
 #: source of that name set, shared with the riskfactors class and every consumption site.
-LV_PARAM_NAMES = ('Kappa_L', 'Sigma_L', 'Rho_L', 'Kappa_S', 'Sigma_S', 'Rho_S',
-                  'Mu_J', 'Sigma_J', 'Nu')
+LV_PARAM_NAMES = ('Kappa_L', 'Sigma_L', 'Rho_L', 'Kappa_S', 'Sigma_S', 'Sigma_J', 'Nu')
 
 #: The parameters that are STRUCTURAL rather than leaves: the jump intensity, whose whole content
 #: is the law of integer counts and so is not on the tape, and the cap, a guard on log-variance
 #: rather than a modelling device. A leaf at either would report a derivative nothing carries.
 LV_STRUCTURAL_NAMES = ('Lambda', 'Cap_A', 'Cap_Beta')
 
-#: The CURVE parameter's name - log annualised DIFFUSIVE variance at knots in years, piecewise
-#: linear between them and flat outside. Its VALUES are leaves; its knots are structural.
-LV_CURVE_NAME = 'L_Curve'
+#: The two forward-skew levers, piecewise CONSTANT on calendar-time buckets whose START times are
+#: the curves' knots (spec 2.3.1) - one knot at 0 is the constant-parameter model. Both carry the
+#: same buckets, which the factor asserts.
+LV_BUCKET_NAMES = ('Rho_S', 'Mu_J')
+
+#: The CURVE parameters, in the order the kit unpacks them. `L_Curve` is log annualised DIFFUSIVE
+#: variance at knots in years, piecewise linear between them and flat outside; all three carry
+#: structural knots and VALUES that are leaves.
+LV_CURVE_NAMES = ('L_Curve',) + LV_BUCKET_NAMES
+
+#: The floor on the idiosyncratic share c = 1 - rho_s(t)^2 - rho_l^2, asserted in every bucket at
+#: parameter load (spec 2.2.2): below it the truncation conditions on nothing and a surface that
+#: wants it is asking for a one-shock model.
+LV_C_MIN = 0.12
 
 #: The model's only guard, taken in each division by a block standard deviation (spec 2.8) and
 #: nowhere else. Small enough to be inert, large enough to bound z at ~1e12.
@@ -3650,11 +3676,6 @@ LV_SIGMA_TINY = 1.0e-12
 #: Jumps per internal step past which the inverse-CDF count truncates. At lam*delta ~ 0.006 the
 #: truncated mass is 5e-11; at a 21-day step it is 9e-6 and drifts a 5y forward by 4e-5.
 LV_MAX_JUMPS = 3
-
-
-def lv_exp(x):
-    """exp of a tensor or a python float."""
-    return torch.exp(x) if torch.is_tensor(x) else math.exp(x)
 
 
 def lv_counts(u, lam, deltas):
@@ -3714,7 +3735,8 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0,
             method='matmul', want_paths=False, blocks=None):
     """Walk both log-variance factors and form each step's return mean and variance.
 
-    eta_l, eta_s, counts are [batch, sims, n]; curve_at_grid is L at the n+1 grid times;
+    eta_l, eta_s, counts are [batch, sims, n]; curve_at_grid is L at the n+1 grid times and
+    params['Rho_S'], params['Mu_J'] are the bucket values in force at each step start;
     state0 = (l0, s0) is [batch, sims]. Returns (m_x, var, s_path, l_path); m_x carries no
     carry term (it is added per block) and the paths are None unless want_paths. 'scan' builds
     no [n, n] matrix and holds no state path unless one is asked for.
@@ -3725,13 +3747,15 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0,
     and the only one a pricing call walks; `lv_block_stats` is the matmul path's own aggregation
     and the two are gated equal.
     """
-    rl, rs = params['Rho_L'], params['Rho_S']
-    mu, sj, nu = params['Mu_J'], params['Sigma_J'], params['Nu']
+    rl, sj, nu = params['Rho_L'], params['Sigma_J'], params['Nu']
     a, beta = params['Cap_A'], params['Cap_Beta']
-    c = 1.0 - rs * rs - rl * rl
+    # the trailing axis is the grid's, the bucketed levers arriving per STEP and a scalar spreading
+    # to the constant-parameter model. The leading axis keeps a step's slice DIMENSIONED: torch
+    # demotes a 0-dim float64 against a float32 count, adding the jump mean in single precision.
+    ones = torch.ones_like(deltas).unsqueeze(0)
+    rs, mu = params['Rho_S'] * ones, params['Mu_J'] * ones
     sj2 = sj * sj
-    # the trailing axis is the grid's, whatever leading ones the parameters broadcast in
-    comp = params['Lambda'] * deltas * (lv_exp(mu + 0.5 * sj2) - 1.0)
+    comp = params['Lambda'] * deltas * (torch.exp(mu + 0.5 * sj2) - 1.0)
     l0, s0 = state0
 
     if method == 'matmul':
@@ -3744,7 +3768,7 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0,
         l_path = torch.cat([l0[..., None], curve_at_grid[1:] + dev_l], dim=-1)
         V = deltas * torch.exp(lv_cap(l_path[..., :-1] + s_path[..., :-1], a, beta))
         sq = sqrt_or_zero(V)
-        var = c * V + Nf * sj2
+        var = (1.0 - rs * rs - rl * rl) * V + Nf * sj2
         m_x = -0.5 * V + rl * sq * eta_l + rs * sq * eta_s + Nf * mu - comp
         return m_x, var, (s_path if want_paths else None), (l_path if want_paths else None)
 
@@ -3755,10 +3779,12 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0,
     ms, vs, ls, ss = [], [], [l0], [s0]
     for k in range(deltas.shape[0]):
         Nk = counts[..., k].to(eta_l.dtype)
+        rs_k, mu_k = rs[..., k], mu[..., k]
         V = deltas[k] * torch.exp(lv_cap(l + s, a, beta))
         sq = sqrt_or_zero(V)
-        var = c * V + Nk * sj2
-        m_x = -0.5 * V + rl * sq * eta_l[..., k] + rs * sq * eta_s[..., k] + Nk * mu - comp[..., k]
+        var = (1.0 - rs_k * rs_k - rl * rl) * V + Nk * sj2
+        m_x = (-0.5 * V + rl * sq * eta_l[..., k] + rs_k * sq * eta_s[..., k]
+               + Nk * mu_k - comp[..., k])
         if blocks is None:
             ms.append(m_x)
             vs.append(var)
@@ -3822,7 +3848,9 @@ def lv_curve_from_forward_variance(xi, params, grid):
     """Curve knots L(t) giving each step the market forward variance xi (spec 2.6).
 
     The jump variance lam*(mu_J^2 + sigma_J^2) is removed from the target and the fast
-    factor's compound-Poisson term of E[exp(l+s)] is carried; the cap is ignored.
+    factor's compound-Poisson term of E[exp(l+s)] is carried; the cap is ignored. BUCKET-BLIND:
+    ``Mu_J`` is read as ONE value, not the walk's per-step tensor, so a bucketed document maps a
+    bucket at a time (spec 2.3.1).
     """
     ks, lam = params['Kappa_S'], params['Lambda']
     xi_diff = xi - lam * (params['Mu_J'] ** 2 + params['Sigma_J'] ** 2)
@@ -3840,6 +3868,7 @@ def lv_jump_cumulants(params, T, V):
     V is the total diffusive base variance over T. The return's Gaussian part is all of V, not
     c*V: the leverage shocks carry the other (rho_l^2 + rho_s^2)*V of it. kappa_n = lam*T*E[J^n]
     for n >= 2 with J ~ N(mu_J, sigma_J^2). Returns (k2, k3, k4, skewness, excess kurtosis).
+    Bucket-blind alike: ONE ``Mu_J``, so a bucketed document reads one bucket's own cumulants.
     """
     mu, sg = params['Mu_J'], params['Sigma_J']
     lt = params['Lambda'] * T

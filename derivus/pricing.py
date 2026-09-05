@@ -185,10 +185,10 @@ class PlainHestonNandiKit(object):
     """
 
     #: what `oss_model_scalars` reads off the parameter factor and in which order this kit
-    #: unpacks it, whether the family carries a fitted curve, and whether it walks DAILY - the
-    #: three facts those two functions used to branch on the subtype string for
+    #: unpacks it - the scalars, then each fitted CURVE's values - and whether it walks DAILY:
+    #: the three facts those two functions used to branch on the subtype string for
     param_names = utils.HN_PARAM_NAMES
-    curve_name = None
+    curve_names = ()
     daily = True
 
     def __init__(self, scalars, knots, factor_dep):
@@ -241,11 +241,11 @@ class ComponentHestonNandiKit(PlainHestonNandiKit):
     """
 
     param_names = utils.HN_COMPONENT_PARAM_NAMES
-    curve_name = utils.HN_COMPONENT_CURVE_NAME
+    curve_names = (utils.HN_COMPONENT_CURVE_NAME,)
 
     def __init__(self, scalars, knots, factor_dep):
         *self.params, self.h0, self.l_values = scalars   # (alpha,beta,g1,rho,phi,g2), H0, L values
-        self.knots = knots
+        self.knots = knots[utils.HN_COMPONENT_CURVE_NAME]
         self.steps_per_year = float(factor_dep['HN_Steps_Per_Year'])
         # rho squeezed to 0-dim: scalar parameters arrive (-1, 1) to broadcast against the
         # [batch, sims] variance state, but the omega path is indexed by trading day and has no
@@ -587,15 +587,15 @@ class LogVar2FJKit(object):
     """
 
     param_names = utils.LV_PARAM_NAMES
-    curve_name = utils.LV_CURVE_NAME
+    curve_names = utils.LV_CURVE_NAMES
     daily = False
 
     def __init__(self, scalars, knots, factor_dep):
-        *params, self.l_values = scalars
+        n = len(self.param_names)
         structural = factor_dep['HN_Params'][0][utils.FACTOR_INDEX_Tenor_Index]
-        self.params = dict(zip(self.param_names, params),
+        self.params = dict(zip(self.param_names, scalars[:n]),
                            **{x: float(structural[x]) for x in utils.LV_STRUCTURAL_NAMES})
-        self.knots = knots
+        self.knots, self.values = knots, dict(zip(self.curve_names, scalars[n:]))
         self.steps_per_year = float(factor_dep['HN_Steps_Per_Year'])
         self.step_days = float(factor_dep['Internal_Step_Days'])
 
@@ -625,6 +625,9 @@ class LogVar2FJKit(object):
 
         THE SCAN BLOCK-SUMS AS IT PASSES: `utils.lv_walk` accumulates each interval's ``M`` and
         ``Sigma^2`` inside its own loop, so no ``[batch, sims, n]`` tensor exists but the draws.
+
+        The two bucketed levers are read at the ABSOLUTE step-START times, as ``L`` is: the
+        buckets are calendar time from the base date, not time from this row.
         """
         steps = [max(int(round(float(dt) * self.steps_per_year / self.step_days)), 1)
                  for dt in deltas]
@@ -632,11 +635,13 @@ class LogVar2FJKit(object):
         block = torch.repeat_interleave(
             torch.arange(len(steps), device=delta.device),
             torch.tensor(steps, dtype=torch.long, device=delta.device))
-        curve = utils.curve_at(self.knots, self.l_values,
-                               float(row_t) + torch.cat([delta.new_zeros(1), delta.cumsum(0)]))
+        t = float(row_t) + torch.cat([delta.new_zeros(1), delta.cumsum(0)])
+        curve = utils.curve_at(self.knots['L_Curve'], self.values['L_Curve'], t)
+        params = dict(self.params, **{x: utils.bucket_at(self.knots[x], self.values[x], t[:-1])
+                                      for x in utils.LV_BUCKET_NAMES})
         seed = delta.new_zeros(shared.simulation_batch, num_sims)
         M, var, _, _ = utils.lv_walk(
-            self.params, curve, delta, *self.draws(shared, num_sims, delta),
+            params, curve, delta, *self.draws(shared, num_sims, delta),
             state0=(seed + curve[0], seed), method='scan', blocks=block)
         return M + (carry * deltas.reshape(-1, 1)).T.unsqueeze(1), utils.sqrt_or_zero(var)
 
@@ -664,9 +669,9 @@ def reciprocal_spot_scalars(scalars):
 def oss_model_scalars(factor_dep, shared):
     """The declared spot model's parameter tensors, in the order its own kit unpacks them.
 
-    Read by the canonical name tuple the KIT declares (`param_names` plus `curve_name`). Scalars
-    come out (-1, 1) to broadcast against the [batch, sims] state; a curve parameter comes out
-    flat, being indexed by knot and not by path. Empty tuple where the deal prices GBM, which
+    Read by the canonical name tuples the KIT declares (`param_names`, then `curve_names`).
+    Scalars come out (-1, 1) to broadcast against the [batch, sims] state; a curve parameter comes
+    out flat, being indexed by knot and not by path. Empty tuple where the deal prices GBM, which
     `oss_model_kit` reads as None.
     """
     if 'HN_Params' not in factor_dep:
@@ -675,14 +680,14 @@ def oss_model_scalars(factor_dep, shared):
     kit = OSS_SPOT_MODEL_KITS[code[utils.FACTOR_INDEX_SubType]]
     block = {x.name[-1]: shared.t_Static_Buffer[x] for x in code[utils.FACTOR_INDEX_Offset]}
     return tuple([block[k].reshape(-1, 1) for k in kit.param_names] +
-                 ([block[kit.curve_name].reshape(-1)] if kit.curve_name else []))
+                 [block[c].reshape(-1) for c in kit.curve_names])
 
 
 def oss_model_kit(factor_dep, scalars):
     """The declared spot model's kit, built from the tensors the pure inner function was handed.
 
     `scalars` cross the bound/theta split - `InnerMCRecompute` needs every tensor an explicit
-    argument - while the model name and the L curve's knots are compile-time facts on `factor_dep`.
+    argument - while the model name and every curve's knots are compile-time facts on `factor_dep`.
     An empty `scalars` is a GBM deal and answers None. `HN_Invert` carries the law to the deal's own
     axis (`reciprocal_spot_scalars`); the compile has already refused any family that cannot go
     there.
@@ -693,7 +698,8 @@ def oss_model_kit(factor_dep, scalars):
     kit = OSS_SPOT_MODEL_KITS[code[utils.FACTOR_INDEX_SubType]]
     if factor_dep.get('HN_Invert'):
         scalars = reciprocal_spot_scalars(scalars)
-    return kit(scalars, code[utils.FACTOR_INDEX_Tenor_Index].get(kit.curve_name), factor_dep)
+    knots = code[utils.FACTOR_INDEX_Tenor_Index]
+    return kit(scalars, {c: knots[c] for c in kit.curve_names}, factor_dep)
 
 def cash_settle(shared, currency, time_index, value):
     """Book `value` against `currency` at `time_index`, if that date is a settlement point."""

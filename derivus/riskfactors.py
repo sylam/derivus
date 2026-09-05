@@ -1209,9 +1209,17 @@ class LogVar2FJModelParameters(Factor0D):
     $\\nu$. Given the shocks and the counts a block return is exactly Gaussian, which is the whole
     of the pricing (logvar2fj_spec.md).
 
+    **Rho_S** and **Mu_J** are the forward-skew levers and are piecewise CONSTANT on calendar-time
+    buckets: their knots ARE the buckets' start times in years, the two curves carry the same ones,
+    and one knot at 0 is the constant-parameter model. A spot smile never sees a later bucket and a
+    forward smile prices on nothing else (spec 2.3.1), which is why the lever is calendar time and
+    not the vol state. The constructor asserts the idiosyncratic share
+    $c(t)=1-\\rho_s(t)^2-\\rho_\\ell^2\\ge$ **LV_C_MIN** in every bucket, refusing with the bucket's
+    time and the three numbers.
+
     **Lambda**, **Cap_A** and **Cap_Beta** are STRUCTURAL, not leaves: the counts' law is not on
     the tape, and the cap is a guard that a calibrated model never reaches, so a derivative
-    reported at either would be wrong. The curve's knots are structural and its VALUES are
+    reported at either would be wrong. Every curve's knots are structural and its VALUES are
     `bind='value'` leaves, as the component Heston-Nandi L curve's are.
     """
     fields = [
@@ -1224,51 +1232,73 @@ class LogVar2FJModelParameters(Factor0D):
           description='Fast reversion speed $\\kappa_s$, per year'),
         F('Sigma_S', 'Float', default=0, bind='value',
           description='Fast vol-of-log-variance $\\sigma_s$'),
-        F('Rho_S', 'Float', default=0, bind='value', description='Fast leverage $\\rho_s$'),
-        F('Mu_J', 'Float', default=0, bind='value', description='Mean log-return jump $\\mu_J$'),
         F('Sigma_J', 'Float', default=0, bind='value', description='Jump dispersion $\\sigma_J$'),
         F('Nu', 'Float', default=0, bind='value',
           description='Fast log-variance co-jump $\\nu$ per event'),
         F('Lambda', 'Float', default=0,
           description='Jump intensity $\\lambda$ per year - STRUCTURAL, bumped by re-authoring'),
-        F('Cap_A', 'Float', default=2.772588722239781,
-          description='Log-variance cap level $a$ - STRUCTURAL, default $\\log 16$ (400% vol)'),
-        F('Cap_Beta', 'Float', default=0.5,
+        F('Cap_A', 'Float', default=4.605170185988092,
+          description='Log-variance cap level $a$ - STRUCTURAL, default $\\log 100$ (1000% vol)'),
+        F('Cap_Beta', 'Float', default=0.25,
           description='Log-variance cap width $\\beta$ - STRUCTURAL'),
         F('L_Curve', 'Curve', bind='value',
           description='Log annualised DIFFUSIVE variance $L$ at knots in years, piecewise linear '
-                      'between them and flat outside')
+                      'between them and flat outside'),
+        F('Rho_S', 'Curve', bind='value',
+          description='Fast leverage $\\rho_s(t)$, piecewise constant on buckets starting at its '
+                      'knots (years)'),
+        F('Mu_J', 'Curve', bind='value',
+          description='Mean log-return jump $\\mu_J(t)$, piecewise constant on the same buckets')
     ]
     #: one source of truth for each name set - utils owns the canonical tuples, which the free
     #: functions and the kit consume by the same names
     parameters = utils.LV_PARAM_NAMES
     structural = utils.LV_STRUCTURAL_NAMES
-    curve = utils.LV_CURVE_NAME
+    curves = utils.LV_CURVE_NAMES
 
     def __init__(self, param):
         super(LogVar2FJModelParameters, self).__init__(param)
-
-    def get_tenor(self):
-        """The L curve's knots, in years - the ONE term structure this factor carries."""
-        return self.param[self.curve].array[:, 0]
+        flat = [c for c in self.curves if not isinstance(self.param[c], utils.Curve)]
+        if flat:
+            raise ValueError(
+                'LogVar2FJModelParameters: %s must be authored as CURVES - knots in years, and '
+                'for the two levers those knots ARE the calendar buckets. A bare number is the '
+                'phase-1 spelling; [[0.0, x]] is the one-bucket model that reproduces it'
+                % ', '.join(flat))
+        knots = self.curve_tenors()
+        if not np.array_equal(knots['Rho_S'], knots['Mu_J']):
+            raise ValueError(
+                'LogVar2FJModelParameters: Rho_S and Mu_J are piecewise constant on the SAME '
+                'calendar buckets, so their knots must be equal - %s against %s'
+                % (knots['Rho_S'].tolist(), knots['Mu_J'].tolist()))
+        rho_s, rho_l = self.param['Rho_S'].array[:, 1], float(self.param['Rho_L'])
+        c = 1.0 - rho_s * rho_s - rho_l * rho_l
+        for i in np.flatnonzero(c < utils.LV_C_MIN):
+            raise ValueError(
+                'LogVar2FJModelParameters: the bucket at %gy declares Rho_S %g against Rho_L %g, '
+                'so c = 1 - Rho_S^2 - Rho_L^2 = %g, below LV_C_MIN %g. The truncation conditions '
+                "on c of the interval's variance, and a surface wanting less wants a one-shock "
+                'model (spec 2.2.2) - fit against the bound, do not declare past it'
+                % (knots['Rho_S'][i], rho_s[i], rho_l, c[i], utils.LV_C_MIN))
 
     def get_tenor_indices(self):
         zero = np.array([[0.0]])
         return dict({x: zero for x in self.parameters},
-                    **{self.curve: self.get_tenor().reshape(-1, 1)})
+                    **{c: self.param[c].array[:, :1] for c in self.curves})
 
     def curve_tenors(self):
-        """Every structural fact a consumer needs off this factor: the curve's knots, and the three
-        parameters that are not leaves. Resolved once at dependency time, so nothing rides the
-        tensor side that carries no derivative."""
-        return dict({self.curve: self.get_tenor()},
+        """Every structural fact a consumer needs off this factor: each curve's knots - the L
+        pillars, and for the two levers the buckets - and the three parameters that are not
+        leaves. Resolved once at dependency time, so nothing rides the tensor side that carries
+        no derivative."""
+        return dict({c: self.param[c].array[:, 0] for c in self.curves},
                     **{x: self.param[x] for x in self.structural})
 
     def current_value(self, tenors=None, offset=0.0):
-        """The LEAVES only - the nine scalars and the curve's values, which is what `bind='value'`
-        publishes and what a greek flows to."""
+        """The LEAVES only - the seven scalars and each curve's values, which is what
+        `bind='value'` publishes and what a greek flows to."""
         return dict({x: np.array([self.param[x]]) for x in self.parameters},
-                    **{self.curve: self.param[self.curve].array[:, 1]})
+                    **{c: self.param[c].array[:, 1] for c in self.curves})
 
 
 class GBMAssetPriceTSModelParameters(Factor1D):

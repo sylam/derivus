@@ -386,11 +386,12 @@ set; and five model items in the punchlist below.
   mean-reverting log-variance factors and a co-jump, walked on an INTERNAL step and handed to the
   autocall as each fixing interval's own Gaussian block law. The model is free functions in
   `utils` (`lv_walk` and the OU filter both ways, `lv_counts`, `lv_cap`, the curve mapping, the
-  cumulants), the factor is `LogVar2FJModelParameters` (nine leaves, three STRUCTURAL scalars -
-  the counts' law is not on the tape and the cap is a guard - and an `L_Curve` whose knots are
-  structural and values leaves), the kit is `pricing.LogVar2FJKit`, and `Internal_Step_Days` is a
+  cumulants), the factor is `LogVar2FJModelParameters` (seven scalar leaves, three STRUCTURAL
+  scalars - the counts' law is not on the tape and the cap is a guard - and three curves whose
+  knots are structural and values leaves), the kit is `pricing.LogVar2FJKit`, and
+  `Internal_Step_Days` is a
   NUMERICAL setting beside `Steps_Per_Year`. The three kits now DECLARE what `oss_model_scalars` /
-  `oss_model_kit` used to branch on the subtype string for - `param_names`, `curve_name`, `daily` -
+  `oss_model_kit` used to branch on the subtype string for - `param_names`, `curve_names`, `daily` -
   so the readers are registry lookups and every Heston-Nandi document is hex-identical
   (`run_trials.py base` digit for digit, `greeks`'s rows and every ladder, the GBM TARF, a
   component TARF and a plain-HN barrier). The GBM arm's `else` becomes the `(m, s)` branch and
@@ -424,6 +425,18 @@ set; and five model items in the punchlist below.
   and the block-summing scan the pricer walks - `lv_walk(blocks=...)`, which never materialises
   `m_x` or `var` - matches the matmul filter to the gate's 1e-12 and takes 183 s against 244 s at
   1024 x 4096 x 1260 on CPU.
+  THE TWO FORWARD-SKEW LEVERS NOW CARRY CALENDAR BUCKETS (2026-09-05): `Rho_S` and `Mu_J` are
+  `bind='value'` curves whose knots ARE the buckets' start times in years, the kit reads both at
+  the ABSOLUTE step-start times as it reads `L`, and the factor refuses at load a bucket whose
+  `c = 1 - Rho_S^2 - Rho_L^2` falls under `LV_C_MIN = 0.12`, two curves whose knots differ, or a
+  lever still spelt as phase 1's Float - so
+  one knot at 0 is the constant-parameter model, which reads phase 1's MTM to the bit
+  (`-0x1.a32dcde94c00ap+5`) with the GBM limit still `-0x1.a1f306d03a597p+5` and its CVA
+  `0x1.5057040000000p-4`, while a second bucket at 1y (`rho_s` -0.80, `mu_J` -0.20) leaves a
+  9-month deal at `-0x1.8228e7d1645d2p+3` under both markets and gives its own year-two leaves a
+  gradient that ladders **0.02%** (`Rho_S`) and **0.12%** (`Mu_J`) against CRN on the smooth value.
+  A boundary is matched to the walk time within `utils.BUCKET_TOL`: 252 daily steps accumulate to
+  1 - 3.1e-15, and without it a knot authored at exactly 1y would start its bucket one step late.
 
 - **Conditional-p at a jump, the GBM arm** (2026-09-04) — the crisp GBM autocall's put leg and
   TARF's knock-in take `splice_conditional_p` off the fixing interval's own lognormal law, which
