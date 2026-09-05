@@ -249,12 +249,19 @@ swapped, and a daily-monitored barrier is a block of one internal step. The **de
 (phase 2): one FFT convolution per monitored date against the block Gaussian, as an alternative
 inner estimator. The **xVA outer generator carrying `(S, l, s)`** (phase 3), which retires the
 per-row re-seed phase 1 declares - the kit seeds `l = L(t_row)`, `s = 0` at every MTM row, of the
-same class as the daily kits' own re-seed. Measured 2026-09-05 (`artifacts/logvar2fj/harness_cjow.py`
-section 5): carrying the state through the first year moves the 1y-into-1y forward smile's
-70-120 slope from 5.3 to 5.3 vol points against CJOW's 12.0, and the terminal skew at 6m-2y is
-half CJOW's at the spec's revised defaults (-1.0 / -0.5 against -1.8 / -1.2) - so the forward
-skew an autocall prices on is the leverage-and-jump pair's to reach, not the re-seed's, and the
-calibrator's long-dated wings (stage 4) or a forward-start target is what will decide it. The **reciprocal axis** (`HN_Invert`'s analogue): a mean
+same class as the daily kits' own re-seed. Measured 2026-09-05 (`artifacts/logvar2fj/harness_cjow.py`,
+`probe_rho_prime.py`): at the spec's P-sized defaults the 1y-into-1y forward slope read 5.3 vol
+points against CJOW's 12.0 whether the state was re-seeded or carried, and the SPOT 1y slope
+was half CJOW's too - the deficit was the (rho, sigma) sizing, not the re-seed. At the Q-sized
+defaults (rho_s -0.75, sigma_s 2.4, rho_l -0.4, sigma_l 1.0, lambda 0.21) the spot 90-110 slope
+ratio reads 0.57 / 0.82 / 0.86 / 0.92 at 3m / 6m / 1y / 2y, the stickiness ratio 0.96 against
+CJOW's 1.01, the 1y skew -1.47 against -1.48 (KS 0.011-0.026), the autocall -34.07 against
+-32.07 at 32,768 inner, and the vanilla RMSE 0.82 / 0.33 vol points at 1y / 2y before any fit;
+the curve mapping is first order in the vol-of-vol (the 1y variance lands 8% low, the 2y 9%
+high), stage 1's iteration. The spec's state-dependent leverage (2.3.1) is NOT a forward-skew
+lever on this surface: rho_s' from 0 to -4 moves psi from 0.96 to 0.94 and lowers both slopes,
+and its rho_max tanh reads rho_s = -0.75 as -0.60 (a tenth of the spot skew) rather than
+staying invisible. The **reciprocal axis** (`HN_Invert`'s analogue): a mean
 shift on the three shocks and a tilt of the jump-size law, still Gaussian, so the FX arm can price
 a base-currency underlying. And **G9's delta convergence on a booked deal**: phase 0 resolves the
 internal step on its own autocall's coupon leg, but the engine's own ladder in the internal step
