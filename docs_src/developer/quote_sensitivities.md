@@ -332,14 +332,25 @@ direction is the **minimum-norm representative**. No ridge is added: a Tikhonov 
 unique-looking number that is the derivative of a different problem.
 
 !!! warning "On an identified block the cutoff is a real decision, not a formality"
-    `Jacobian_Rcond` defaults to 1e-8, which on the four-quote block separates four real directions
-    from nineteen numerical zeros with four orders of headroom below the smallest real eigenvalue and
-    eight above the largest spurious one. An **identified** block has no such gap — 23 real directions
-    spanning the conditioning of the swaption grid itself, five orders end to end — and the same cutoff
-    keeps 17 of them (18 at the pre-2026-09-02 mark). That is right rather than lossy: the term
-    Gauss–Newton drops is the same *size* as the eigenvalues of the last five, so a derivative along
-    them would be a derivative of the wrong Hessian. The gate reports the spectrum and how many each
-    cutoff keeps.
+    `Jacobian_Rcond` is a relative cutoff on the singular values of the **column-scaled** Jacobian
+    `J/‖J_:,j‖` — the `x_scale='jac'` matrix the solve itself steps on — and defaults to **1e-5**
+    (since 2026-09-06; it was 1e-8 on the eigenvalues of the raw `JᵀJ`, which is a 1e-4 cutoff in σ
+    and means nothing where the column norms span orders). On σ of the scaled matrix 1e-8 keeps a
+    direction 1.4e-6 of the largest whose `dθ/dq` amplifies seven hundred thousand fold. The
+    four-quote block keeps 4 of 4 at any cutoff under 0.21. The identified block's scaled spectrum
+    has one gap — 2.97e-4 of the largest against 1.43e-6, two hundred fold — and the default sits in
+    it, keeping **16 of the 23** directions (the old σ² cutoff kept 15). That is right rather than
+    lossy: the term Gauss–Newton drops is the same *size* as the singular values below the gap, so a
+    derivative along them would be a derivative of the wrong Hessian.
+
+    **The box is part of the fixed point.** What holds at θ\* inside a box is the KKT condition, not
+    `Jᵀr = 0`, so the contraction is taken over the coordinates the active set leaves free:
+    `bootstrappers.active_set` holds a coordinate that lies within 1e-4 of the box width of a bound
+    *and* whose gradient `(Jᵀr)_j` points into it — scipy's own `active_mask` is a step-length report
+    and reads empty with a coordinate jammed against its floor. Contracting a held coordinate answers
+    in a direction the fit cannot move in: on a reduced LogVar2FJ fit `Nu` read −3791 where a
+    re-solved polish reads 0. Every held bound is named in the family's report whether or not quote
+    sensitivities were asked for, because a binding bound is a calibration statement.
 
 ### The re-solve reference, refuted three times {#the-manifold-finding}
 
@@ -368,8 +379,9 @@ What *is* well posed is the direction the quotes **do** identify: step the param
 $d\theta/dq \cdot h$ and re-price **without re-solving**. On four quotes that recovers 1.0274 /
 1.0121 / 1.0005 / 1.0002 of the predicted move at one percent, a half, a fifth and a tenth, and the
 wrong-signed step lands three to four times further out than doing nothing. On the identified fixture
-it lands at 1.0382, and the mandated sign-flip mutation turns it into −0.9796. **That check is the
-value-space reference**, in place of the ladder.
+it lands between 0.809 and 1.195 at a hundredth of a vol point (the representative on the scaled
+metric is a longer walk in θ, so the check reads at a tenth of the old step), and the mandated
+sign-flip mutation negates it. **That check is the value-space reference**, in place of the ladder.
 
 ### The analytic objective's quote side — separable, and that is the whole of it {#the-analytic-quote-side}
 
@@ -433,11 +445,13 @@ leading-order derivative.
 is allowed: the analytic chain reaches 8.63e-7 on the identified block against the field's own
 **1e-3**, where the Monte Carlo path has to declare **1e5** to be differentiated at all.
 
-**The spectrum is this objective's own.** $J$ is 25 × 23 and `Jacobian_Rcond` keeps **15** of the 23
-directions against 17 on the squared residual (13 at the pre-re-mark θ\*). Nothing is wrong: σ knots
-past the last benchmark expiry are in no swaption's variance integral, and two coordinates of this θ\*
-sit ON a bound. Those are directions 25 flat quotes do not identify, and `dθ/dq` along them is the
-minimum-norm representative exactly as [rank deficiency](#rank-deficiency) says.
+**The spectrum is this objective's own.** $J$ is 25 × 23 and `Jacobian_Rcond` keeps **16** of the 23
+directions at the re-set 1e-5 on the column-scaled Jacobian (15 on the old σ² cutoff, 13 at the
+pre-re-mark θ\*). Nothing is wrong: σ knots past the last benchmark expiry are in no swaption's
+variance integral, and the KKT set holds one coordinate of this θ\* — `Correlation` on its −0.95
+floor with the gradient pushing into it — while `Sigma_1[7]`, 2.6e-4 of its box width under the
+0.09 ceiling, stays free. Those are directions 25 flat quotes do not identify, and `dθ/dq` along
+them is the minimum-norm representative exactly as [rank deficiency](#rank-deficiency) says.
 
 **The triangle closes.** `V` is the four benchmarks priced by the engine's **own Monte Carlo** at θ\*,
 so the value chain shares no arithmetic with the residual under test. One backward through
@@ -445,8 +459,24 @@ so the value chain shares no arithmetic with the residual under test. One backwa
 **2.22e-16** relative; the same as $v\cdot d\theta/dq$ with the OPERATOR, **1.088e-14**; the same with
 $\partial r/\partial q$ from a RE-AUTHORED central difference, **9.376e-06 / 3.750e-07 / 1.500e-08**
 at h = 0.5 / 0.1 / 0.02 vol points — $h^2$ twice. Stepping θ by `dθ/dq · h` and re-pricing without
-re-solving closes on 1 from both sides and linearly in h (1.0382 / 0.9561 at a tenth of a vol point on
-the worst benchmark, 1.0013 / 0.9997 on the best), and the mandated sign flip negates every one.
+re-solving closes on 1 from both sides and linearly in h (0.809 to 1.195 at a hundredth of a vol
+point, 0.905 to 1.013 at a five-hundredth), and the mandated sign flip negates every one.
+
+**One node, one metric.** `LeastSquaresSolve` is the single Gauss–Newton IFT node, serving
+`HullWhite2FactorModelPrices` and `LogVar2FJModelPrices` alike: the operand supplies `solve()`,
+`__call__(x)`, `interior(x, g)` and `labels`, the Jacobian is one vmapped backward (bit-identical to
+the per-row loop on both objectives, 0.22 s against 1.21 s on the identified block), and the
+pseudo-inverse is taken on the column-scaled Jacobian, so the minimum-norm representative in the
+null space is the one in the metric the solver steps in. That is a convention, and the only
+defensible one — otherwise a quote's delta is allocated across unidentified directions by the units
+the parameters happen to be written in — but it is still a convention, so the backward logs each
+quote's delta beside the share of it lying in the null space the cutoff discards: the Euclidean
+projection of `dθ/dq_j` onto the unscaled Jacobian's null space over `‖dθ/dq_j‖`, and the same for
+the value's cotangent. On the four-quote block that share is 0.99–1.00 on every quote, which is why
+the fourth benchmark's `dV/dq` read 0.1356 under the scaled metric where the unscaled one read 0.2704
+with θ\* and the three identified benchmarks unchanged to the digit
+(`tests/fixtures/hw2f_four_quote_job.json` pins those numbers with this sentence); on the identified
+block it is 0.70 typical, on a LogVar2FJ autocall fit 0.90.
 
 !!! warning "`.grad` after an analytic chain is 0.3–2.3% of the answer, which is worse than six orders out"
     Basin hopping calls `total_loss.backward()` per evaluation and the quote leaves accumulate across

@@ -43,7 +43,7 @@ declarations, and `construct_bootstrapper` resolves the class by name from the
 | `CSForwardPriceModelPrices` | European energy futures options | `CSForwardPriceModelParameters` — sigma, alpha |
 | `HestonNandiModelPrices` | European options on any spot | `HestonNandiModelParameters` — omega, alpha, beta, gamma\*, H0 |
 | `HestonNandiComponentModelPrices` | the same ladder, wings widened | `HestonNandiComponentModelParameters` — alpha, beta, gamma₁, rho, phi, gamma₂, H0 **and an L curve** |
-| `LogVar2FJModelPrices` | the same option table, plus forward-start smiles | `LogVar2FJModelParameters` — seven scalars, an L curve **and two bucketed levers** |
+| `LogVar2FJModelPrices` | the same option table, plus forward-start smiles | `LogVar2FJModelParameters` — five scalars, an L curve **and four bucketed levers** |
 | `HullWhite2FactorModelPrices` | forward-starting swaps against a swaption surface | `HullWhite2FactorModelParameters` — two sigma curves, two alphas, a correlation |
 | `InterestRatePrices` | deposits, FRAs, swaps and FX forward outrights | an `InterestRate` zero curve |
 | `FXVolPrices` | ATM vols, risk reversals and butterflies | an `FXVol` log-moneyness surface |
@@ -370,8 +370,10 @@ Refused by name. `∂r/∂θ` now EXISTS — it is the Jacobian the outer search
 not built, and neither is a stationarity check for a search that can stop on a wall (roadmap). **The plain family is not the alternative** —
 `HestonNandiModelPrices` declares no `Quote_Sensitivity` field at all, so naming it would send a desk
 to a block that ignores the switch. The refusal names the quote chains that are differentiable
-instead: `FXVolPrices`, `InterestRatePrices`, `GBMAssetPriceTSModelPrices` and
-`HullWhite2FactorModelPrices`, which solve through torch rather than through `brentq`.
+instead: `FXVolPrices`, `InterestRatePrices`, `GBMAssetPriceTSModelPrices`,
+`HullWhite2FactorModelPrices` and — on the same ladder this family reads —
+[`LogVar2FJModelPrices`](#logvar2fj), which walks and splices its own root rather than bracketing
+one.
 
 ### Positivity is a property of the model, not of the box
 
@@ -388,53 +390,134 @@ margin (2.6e+07 to 3.9e+07 times the floor) rather than assuming it.
 
 ## `LogVar2FJModelPrices` — a Monte Carlo fit with a forward-skew term {#logvar2fj}
 
-**The block** is the plain family's — the references, `Quote_Type`, `European_Options` — less the
-Fourier `Quadrature_Panels` this model has no inversion to declare one for, plus the walk
-(`Internal_Step_Days`, `Paths`, `Random_Seed`), the structural constants (`Kappa_L`, `Kappa_S`,
-`Cap_A`, `Cap_Beta`, `C_Min`, `Jump_Share`, `Wing_Strike`, `Lambda`), the calendar-time
-`Param_Buckets`, and spec 5.3's `Forward_Smiles` target with `Forward_Weight` and
-`Bucket_Smoothness`. `derivus_bloomberg.equity_chain` emits it off the same chain selection as the
-two Heston-Nandi spellings — one selection, byte-identical option tables, `FAMILY_HEADER` the only
-difference — and the inherited `fx_surface_block` authors the FX one, its header read off whatever
-the family declares. What it fits, in what order, what it refuses and what it only reports is the
-family's own [Bootstrapping page](../bootstrapping/fx_and_equity.md). What follows is what it
-MEASURED, on the CJOW harness surface: 34 premium quotes over five maturities to 2y, `Paths` 8192,
-daily δ, CPU (`artifacts/logvar2fj/harness_cjow.py`, spec 8 steps 0–4).
+**The block** is the plain family's, less the Fourier `Quadrature_Panels` this model has no
+inversion to declare one for, plus `Fit_Mode`, the walk, the structural constants, the two declared
+guards, the weights, the calendar-time `Param_Buckets`, `Event_Days`, spec 5.3's forward block and
+`Quote_Sensitivity` — each documented where it is declared.
+`derivus_bloomberg.equity_chain` emits it off the same chain selection as the two Heston-Nandi
+spellings — one selection, byte-identical option tables, `FAMILY_HEADER` the only difference — and
+the inherited `fx_surface_block` authors the FX one, asked here for **two delta pillars** at the
+component family's four wing expiries, because a `Bootstrap` bucket frees one parameter per wing
+quote. What follows is what it MEASURED.
+
+**The L strip is re-bootstrapped at EVERY outer iterate**, so every candidate reprices the ATM term
+structure exactly and is judged on the smile alone; the ATM misses the report prints are 1e-16 to
+1e-13 rather than the 1e-12 to 1e-9 a between-stage refit left. The level each pillar returns is one
+Newton step at its own root, so `dL/dθ` rides the tape and the outer solver keeps its exact Jacobian.
+What that costs is one graph pass per pillar per iterate: the search itself runs off the tape on the
+previous sweep's slope, and on the walk at 8192 paths over 504 daily steps a forward pass is 0.280 s
+against 0.756 s with its backward. The grid is the QUOTES' own, `Internal_Step_Days` trading days
+between block ends with a stub landing each block on its `T`: reading the same rung on the
+trading-day grid instead costs **0.124 vol points** at the 1m ATM (`jac_check.py`).
+
+**On the CJOW harness surface** (`artifacts/logvar2fj/harness_cjow.py`, spec 8 steps 0–4: 34
+premium quotes over five maturities to 2y, `Paths` 8192, daily δ, CPU, three processes contending):
 
 | | vanilla only | with the 5.3 forward target |
 |---|---|---|
-| RMSE, true inversion — unweighted / vega-weighted | **0.99 / 0.34** vol points | 0.88 / 0.37 |
-| per maturity, 1m … 2y | 2.33 / 0.95 / 0.18 / 0.31 / 0.07 | 1.67 / 1.36 / 0.20 / 0.31 / 0.11 |
-| wall clock, evaluations + Jacobians | **144 s**, 47 + 41 | 356 s, 93 + 62 |
-| ψ(1y into 1y), CJOW's being 1.008 | 0.983 | 0.956 |
-| composition residual beyond the last bucket | — | 0.108 vol points at 2y |
+| RMSE, true inversion — unweighted / vega-weighted | **1.020 / 0.331** vol points | 0.995 / 0.337 |
+| the 5 ATM rungs / the 29 WINGS, by the same statistic the FX table uses | 0.161 / **1.063** | 0.320 / 1.331 |
+| per maturity, 1m … 2y | 2.30 / 0.79 / 0.25 / 0.52 / 0.08 | 2.98 / 0.80 / 0.27 / 0.50 / 0.37 |
+| wall clock, evaluations + Jacobians | **1142 s**, 79 + 61 | 1206 s, 81 + 53 |
+| the inner bootstrap, per sweep over 5 pillars | 18.7 pillar passes, **5.3** of them a backward | 19.2, 5.5 |
+| ψ(1y into 1y), CJOW's being 1.008 | 0.985 | 0.964 |
+| composition residual beyond the last bucket | — | **0.119** vol points at 2y |
+| the campaign's 2y autocall, CJOW's −32.068 (SE 0.226) | −32.433 (SE 0.135) | −33.080 (SE 0.061) |
 
-against spec 9's < 90 s on a GPU and spec 8's ≤ 0.2 vol points from one month out. **The short end
-is the open number**: 2.3 vol points at 1m, all of it the 70–80% wing (+1.56 RMS, worst +4.47) and
-the 110–120% convexity (+0.80 RMS) — what a two-shock structure costs against a one-shock reference.
-`c` settles 3e-4 inside its soft margin at both floors (0.170 at `C_Min` 0.12, 0.110 at 0.06), so
-the margin and not the box is what sets it, and the box binding is a refusal by name.
+against spec 9's < 90 s on a GPU and spec 8's ≤ 0.2 vol points from one month out. The composition
+residual is under spec 5.3's 0.3 failure mode and the vanilla-only autocall is **1.1%** of CJOW; the
+forward target moves it out again to 3.2%, and that gap, −0.647, is the deal's forward-skew
+sensitivity, reported as such rather than as an error. What the per-iterate bootstrap did NOT buy is
+the short end: 2.3 vol points at 1m, all of it the 70–80% wing (+1.61 RMS, worst +4.68) and the
+110–120% convexity (+0.72 RMS), which is what a two-shock structure costs against a one-shock
+reference and remains the open number. `SE² × wall time` on the deal value is 1.28e-2 and 2.51e-3
+against CJOW's 5.29e-2.
 
-**`Nu` is not identified by this surface.** It lands at 1e-12 in every fit and its Jacobian column
-norm is 9.7e-4 against `Sigma_S`'s 7.8e-3 and `Rho_S`'s 1.6e-2 — well-conditioned once scaled and
-moving nothing unscaled, which is why the identification table prints the scaled singular values and
-the unscaled norms together. **The noise floor** at the default `Paths`, read by re-drawing the
-whole fit at three `Random_Seed`s, is 0.10–0.63 vol points on the fitted ATM term structure and up
-to 2.6 on an L pillar; the fast trio (`Sigma_S`, `Rho_S`, `Mu_J`) holds to 2%, and the slow pair
-(`Sigma_L`, `Rho_L`) does not hold at all — `Sigma_L` reads 0.283 / 0.0004 / 0.253. **A warm start**
-off the written factor slides along exactly that pair to a point 60–90% away whose objective is 3%
-worse and whose unweighted RMSE is 7% better: a valley, not a failure to converge.
+!!! warning "Read the two columns against the sampling floor, not against each other"
+    Re-drawing the whole fit at three `Random_Seed`s moves the fitted ATM term structure by 0.10 to
+    0.63 vol points and an L pillar by up to 2.6. The 1.020 against 0.995 and the ψ 0.985 against
+    0.964 are both INSIDE that floor: what the forward target demonstrably moves is the composition
+    residual and the deal, not the spot fit.
 
-**The forward-skew sensitivity** is what the two calibrations are for: the campaign's 2y SPX autocall
-reads −32.875 off the vanilla-only factor and −33.651 off the forward-target one, a gap of **−0.776,
-−2.4%**, against CJOW's −32.068 (SE 1.6e-1 / 1.8e-1 / 2.3e-1 at 2¹⁵ paths × 4 seeds). `SE² × wall
-time` **on the deal value** is 1.63e-2 and 3.73e-2 against CJOW's 7.08e-2; spec 9 states that target
-on the coupon leg, which nothing here measures.
+**Two modes on one banked surface** (`artifacts/logvar2fj/fx_ladder.py`, the campaign's USDZAR
+`FXVol` at `Paths` 8192, daily δ, CPU, four processes contending), against BOTH Heston-Nandi
+families fitted to the SAME 22 contracts. Six of those rungs are the ATM one of each expiry, which
+any family carrying an L curve solves to zero, so folding them into one RMSE reports the split
+rather than the fit: the table separates them and the headline is the WING RMSE over the other 16.
 
-**A traded forward-start is a different contract** from the one the block prices: `Forward_Smiles`
-targets `E[(S_T2/S_T1 − k)⁺]`, a market forward-start pays `E[S_T1(R − k)⁺]/E[S_T1]`, and the two are
-about 0.4 vol points of level apart. Safe against a reference model's slopes (source 2 of 5.3), wrong
-for market quotes (source 1), which are therefore not yet supported.
+| fit | ATM rungs | 16 WING rungs, RMSE | worst wing | wall clock |
+|---|---|---|---|---|
+| LogVar2FJ `Global` | 6 at **0.0e+00** vol points | **0.131** | −0.251 | 254 s |
+| LogVar2FJ `Bootstrap` | 6 at 0.0e+00 | 0.575 | +1.291 | 222 s |
+| plain Heston-Nandi | 6 at 1.45e-01 | 0.663 | −1.744 | 420 s |
+| component Heston-Nandi | residual 4.4e-15 | prints no per-quote record; worst wing **0.760** | +0.760 | 137 s, CAPPED at 300 evaluations |
+
+`Global` fits the wings **five times** better than the plain family and **six times** better than
+the component one, which carries an L curve of its own and the same four wing expiries. `Bootstrap`
+is worse than either, and structurally so: bucket `k` acts only on `[E_{k−1}, E_k)` while the option
+to `E_k` averages over every bucket before it, so a later bucket has progressively less leverage on
+the quote that frees it — on a sub-year ladder that is most of the ladder. It is the mode for a deal
+read at many fixings, not the mode that fits a surface best, and the report says per bucket which
+parameters were free and which tied.
+
+!!! note "The fitted L strip is not the market's forward-variance strip, and that is unexplained"
+    Both modes reprice every ATM rung to 1e-14 through a curve that sits well under the market's own
+    strip and zig-zags across it — `Global` reads 9.08 / 7.98 / 9.44 / 8.35 / 10.79 / 9.21% against
+    9.85 / 10.08 / 10.58 / 11.04 / 12.04 / 12.75%, `Bootstrap` 9.04 / 7.60 / 9.10 / 7.49 / 9.48 /
+    8.28%. The jump and the two shocks make up the difference, so the ATM is right and the
+    decomposition is a choice the data did not pin. The component family's own L strip on the same
+    ladder rises across the ladder with two small reversals (9.93 / 9.81 / 11.01 / 10.54 / 12.12 /
+    12.70 / 13.26%), which is the same kind of finding as its `-1`-multiplier phase oscillation. The
+    CJOW fit does it too - 14.56 / 5.51 / 19.95 / 10.76 / 13.37% against a market strip of 15.97 /
+    12.73 / 15.71 / 19.77 / 17.52%. All of them are printed beside the market's by the harnesses and
+    banked; the tie is not touched.
+
+**Risk in quote space.** `Quote_Sensitivity` **Yes** keeps the written parameters connected to the
+numbers quoted. The outer fit is a least-squares minimum, so its half is the Gauss-Newton contraction
+at the stationarity point — **`LeastSquaresSolve`, the one node the swaption family also solves
+through** — taken over the coordinates `least_squares` did not stop against a bound, and on the
+COLUMN-SCALED Jacobian at `Jacobian_Rcond`, which is the same matrix and the same cutoff the
+identification table reads. The L strip's half is the Newton splice the inner solve already carries,
+so `dL/dq` needs no rule of its own; the residual and its Jacobian are taken once at θ\* and kept, so
+a whole `dθ/dq` matrix is one contraction per written parameter rather than one fit's worth of
+evaluations each. `Stationarity_Tol` refuses the lot where θ\* is not a stationary point — a stage
+that stopped at `Max_Iterations` has no quote derivative to report. Measured on the campaign's 2y SPX
+autocall priced off a factor the same `Context` calibrated (`artifacts/logvar2fj/quote_risk.py`,
+nine quotes, `Paths` 2048):
+
+| gate | result |
+|---|---|
+| `dV/dq` one backward vs `dV/dθ · dθ/dq` | **4.4e-16 to 5.8e-14** relative over nine quotes — and a TAUTOLOGY: both route through the same backward, so what closes is the ATTACHMENT |
+| `Quote_Sensitivity` Yes vs No, the written factor | **identical on all 14 fields** |
+| the fit's own stationarity `‖Jᵀr‖` at θ\* | **1.55e-08** against `‖r‖` 7.65e-05, all seven coordinates free of their box |
+| the re-authored central difference, the leg that tests the THEOREM | **does not close**: −39.8 at a half-width of 0.005 and +115.4 at 0.0025, against the backward's 4989 |
+
+The market premium each row measures against carries its quote as a splice worth zero forward, which
+is why the fit cannot move when the switch flips.
+
+!!! warning "The third leg is the only one that tests the theorem, and on this document it fails"
+    Re-authoring a quote and re-solving goes AROUND the node instead of through it, and it is a
+    truth only where `q → θ*` is single valued. Here it is not: the two re-fits either side of a
+    0.005 tick land with `Rho_L` **on its −0.6 box** one side and at −0.127 the other, which are two
+    different KKT points rather than two points on one smooth manifold, and every coordinate's
+    re-fit displacement is two to three orders under the contraction's. **`Jacobian_Rcond` is the
+    dial that reaches this**, and it is measured: on a reduced USDZAR polish whose five scaled
+    singular values are 1.940 / 0.871 / 0.567 / 0.384 / 0.0861, raising the cutoff from 1e-3 to 0.05
+    drops the last direction and takes `Sigma_S` from −430.8 to −232.2 against a re-solved −196.3,
+    and `Rho_S` from +11.5 to −13.4 against −15.7 — from sign-wrong to within a fifth. What a desk
+    should read first is the identification table.
+
+**Refused under `Fit_Mode` Bootstrap**: bucket `k` is fitted given the buckets before it, so θ\* is
+a stationary point of no single objective and the contraction would report the last bucket's
+derivative as the whole surface's.
+
+**A traded forward-start is a different contract** from a reference model's slopes, and the block
+says which it is being given: **Quotes** prices `E[S_T1(R − k)⁺]/E[S_T1]`, the same per-path gain
+under the share measure and about 0.4 vol points of level away from **Reference**'s ratio
+expectation `E[(S_T2/S_T1 − k)⁺]`. **Prior** needs no table and tilts the market's own spot smile at
+each Δ by `Stickiness_Prior`; at ψ = 1 the target smile reads the market's own slope back, which
+`checks.py prior` gates. Either table-reading source with no rows refuses rather than quietly
+fitting the vanillas alone.
 
 ## `FXVolPrices` — a smile quoted in delta, and where the conversion runs {#fxvolprices}
 

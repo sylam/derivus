@@ -3648,20 +3648,21 @@ def hn_component_stride_step(strip, Sj, h, q, u, e1, e2, x_cap=None, loadings=No
 
 #: The `LogVar2FJModelParameters` price factor's SCALAR leaves, in canonical order - the single
 #: source of that name set, shared with the riskfactors class and every consumption site.
-LV_PARAM_NAMES = ('Kappa_L', 'Sigma_L', 'Rho_L', 'Kappa_S', 'Sigma_S', 'Sigma_J', 'Nu')
+LV_PARAM_NAMES = ('Kappa_L', 'Sigma_L', 'Rho_L', 'Kappa_S', 'Nu')
 
 #: The structural parameters THE KIT reads off the factor: the jump intensity, whose whole content
 #: is the law of integer counts and so is not on the tape, and the cap, a guard on log-variance
 #: rather than a modelling device. A leaf at either would report a derivative nothing carries.
 LV_STRUCTURAL_NAMES = ('Lambda', 'Cap_A', 'Cap_Beta')
 
-#: The two forward-skew levers, piecewise CONSTANT on calendar-time buckets whose START times are
-#: the curves' knots (spec 2.3.1) - one knot at 0 is the constant-parameter model. Both carry the
-#: same buckets, which the factor asserts.
-LV_BUCKET_NAMES = ('Rho_S', 'Mu_J')
+#: The four levers piecewise CONSTANT on calendar-time buckets whose START times are the curves'
+#: knots (spec 2.3.1) - one knot at 0 is the constant-parameter model. `Rho_S` and `Mu_J` are the
+#: forward-skew pair; `Sigma_S` and `Sigma_J` carry buckets because Bootstrap mode frees them per
+#: expiry (5.4.1). All four carry the same buckets, which the factor asserts.
+LV_BUCKET_NAMES = ('Rho_S', 'Mu_J', 'Sigma_S', 'Sigma_J')
 
 #: The CURVE parameters, in the order the kit unpacks them. `L_Curve` is log annualised DIFFUSIVE
-#: variance at knots in years, piecewise linear between them and flat outside; all three carry
+#: variance at knots in years, piecewise linear between them and flat outside; all five carry
 #: structural knots and VALUES that are leaves.
 LV_CURVE_NAMES = ('L_Curve',) + LV_BUCKET_NAMES
 
@@ -3713,23 +3714,24 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0, blocks)
     """Walk both log-variance factors and BLOCK-SUM the return law of each monitored interval.
 
     eta_l, eta_s, counts are [batch, sims, n]; curve_at_grid is L at the n+1 grid times,
-    params['Rho_S'] and params['Mu_J'] are the bucket values in force at each step start,
-    state0 = (l0, s0) is [batch, sims] and `blocks` is the per-step block index. Returns
+    params[name] for each of `LV_BUCKET_NAMES` is that lever's bucket value in force at each step
+    start, state0 = (l0, s0) is [batch, sims] and `blocks` is the per-step block index. Returns
     (M, Sigma^2) over [..., n_blocks]: the scan ACCUMULATES each block's sums as it passes that
     block's steps, so nothing of shape [batch, sims, n] is materialised at all. M carries no
     carry term - that is added per block by the caller.
     """
-    rl, sj, nu = params['Rho_L'], params['Sigma_J'], params['Nu']
+    rl, nu = params['Rho_L'], params['Nu']
     a, beta = params['Cap_A'], params['Cap_Beta']
     # the trailing axis is the grid's, the bucketed levers arriving per STEP and a scalar spreading
     # to the constant-parameter model. The leading axis keeps a step's slice DIMENSIONED: torch
     # demotes a 0-dim float64 against a float32 count, adding the jump mean in single precision.
     ones = torch.ones_like(deltas).unsqueeze(0)
     rs, mu = params['Rho_S'] * ones, params['Mu_J'] * ones
+    ss, sj = params['Sigma_S'] * ones, params['Sigma_J'] * ones
     sj2 = sj * sj
     comp = params['Lambda'] * deltas * (torch.exp(mu + 0.5 * sj2) - 1.0)
     l, s = state0
-    phi_s, w_s = lv_ou_step_weights(params['Kappa_S'], params['Sigma_S'], deltas)
+    phi_s, w_s = lv_ou_step_weights(params['Kappa_S'], ss, deltas)
     phi_l, w_l = lv_ou_step_weights(params['Kappa_L'], params['Sigma_L'], deltas)
     ends = set(lv_block_ends(blocks).tolist())
     acc_m, acc_v, ms, vs = 0.0, 0.0, [], []
@@ -3738,7 +3740,7 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0, blocks)
         rs_k, mu_k = rs[..., k], mu[..., k]
         V = deltas[k] * torch.exp(lv_cap(l + s, a, beta))
         sq = sqrt_or_zero(V)
-        acc_v = acc_v + ((1.0 - rs_k * rs_k - rl * rl) * V + Nk * sj2)
+        acc_v = acc_v + ((1.0 - rs_k * rs_k - rl * rl) * V + Nk * sj2[..., k])
         acc_m = acc_m + (-0.5 * V + rl * sq * eta_l[..., k] + rs_k * sq * eta_s[..., k]
                          + Nk * mu_k - comp[..., k])
         if k in ends:

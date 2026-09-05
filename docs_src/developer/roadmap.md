@@ -185,7 +185,8 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
 2. **The compo smile coordinate**, undeclared because every fixture is flat. Same class as (1).
 3. **The 36 disagreeing `.field.get` sites** (three fatal): hold a surviving fallback to its
    declaration, or leave the reads as they are. Enumerated in `tests/test_declared_defaults.py`.
-4. **Component-HN `Quote_Sensitivity`.** Still refused, but the blocker has moved: `∂r/∂θ` is
+4. **Component-HN `Quote_Sensitivity`.** Still refused (the LogVar2FJ family has all three since
+   2026-09-06 through the one `LeastSquaresSolve` node), but the blocker has moved: `∂r/∂θ` is
    built — the outer search's own Jacobian, the inner `brentq` differentiated by one Newton step at
    its root. What is not built is `∂r/∂q`, the rule joining them, and a stationarity check for a
    search that can legitimately stop on the divergence wall rather than at `J'r = 0`.
@@ -236,20 +237,21 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
 
 ## Designed, not built
 
-**LogVar2FJ beyond phase 1** (designed 2026-09-04, phase 1 built 2026-09-05; see Built and
-`logvar2fj_spec.md`). The **calibrator** (`bootstrappers.LogVar2FJModelParameters`, spec 5) and
-with it the curve's mapping to a real market forward-variance strip: phase 1 authors `L_Curve` by
-hand and the pack's `artifacts/logvar2fj/logvar2fj.py` carries the mapping alone, which on the
-campaign's own CJOW surface leaves **3.21 vol points** RMSE against spec 8's expected 0.2 - and refused outright
-at the earlier default `lambda = 1.5`, whose jump variance 2.46e-2 EXCEEDED that surface's 3-month
-forward variance (the spec now sets 0.21), so `xi_diff <= 0` and the curve is not a number. Stage 0 fixing `lambda` for the
-surface is the missing half. **TARF, accumulator and discrete barrier** by the same `(m, s)`
-substitution the autocall's arm now makes - each is the same GBM branch with the interval's law
-swapped, and a daily-monitored barrier is a block of one internal step. The **density recursion**
-(phase 2): one FFT convolution per monitored date against the block Gaussian, as an alternative
-inner estimator. The **xVA outer generator carrying `(S, l, s)`** (phase 3), which retires the
-per-row re-seed phase 1 declares - the kit seeds `l = L(t_row)`, `s = 0` at every MTM row, of the
-same class as the daily kits' own re-seed. Measured 2026-09-05 (`artifacts/logvar2fj/harness_cjow.py`,
+**LogVar2FJ, what remains** (designed 2026-09-04; phase 1, the three pricers and the calibrator
+with spec 5.4's engine bootstrapper built 2026-09-05/06 - see Built and `logvar2fj_spec.md`). In
+lanes as of 2026-09-06: **the L curve piecewise-constant between ATM expiries** (spec 5.4.3, the
+owner's ruling on the strip that zig-zags 14.6 / 5.5 / 20.0 / 10.8 / 13.4 vol against the market's
+16.0 / 12.7 / 15.7 / 19.8 / 17.5 - a segment integral that depends on both ends is a recurrence with
+multiplier -1, a flat segment's depends on its own level alone); **the averaging arm** by 2.4.1
+(sample the window, truncate the prefix); **per-block checkpointing with regenerated draws** (§6)
+and the deletion of the step setting (§12: the day is the model); **the reciprocal axis** (§2.8:
+mean shifts on the two shocks inside the step, the counts at `lambda exp(mu_J + sigma_J^2/2)`, the
+block law `-(M + Sigma^2)`), without which `spot_model_reciprocal_axis` refuses the family on a
+base-currency notional and the desk pin cannot move. Not yet cut: the **density recursion** (one
+FFT convolution per monitored date against the block Gaussian, as an alternative inner estimator)
+and the **xVA outer generator carrying `(S, l, s)`** (phase 3), which retires the per-row re-seed
+phase 1 declares - the kit seeds `l = L(t_row)`, `s = 0` at every MTM row, of the same class as the
+daily kits' own re-seed. Measured 2026-09-05 (`artifacts/logvar2fj/harness_cjow.py`,
 `probe_rho_prime.py`): at the spec's P-sized defaults the 1y-into-1y forward slope read 5.3 vol
 points against CJOW's 12.0 whether the state was re-seeded or carried, and the SPOT 1y slope
 was half CJOW's too - the deficit was the (rho, sigma) sizing, not the re-seed. At the Q-sized
@@ -275,14 +277,10 @@ two reads psi 0.99 / 1.02 (c 0.200 / 0.118, the second below `c_min`), `mu_J` -0
 reads 1.01 / 1.09 with the forward ATM 18.5% -> 20.3% (bigger jumps add variance the curve's
 year-two segment must absorb), both together 1.04 / 1.14. The lever levers; the 2y vanillas'
 composition check and the autocall's forward-skew sensitivity (§8) decide how much of it to
-carry. The **reciprocal axis** (`HN_Invert`'s analogue): a mean
-shift on the three shocks and a tilt of the jump-size law, still Gaussian, so the FX arm can price
-a base-currency underlying. And **G9's delta convergence on a booked deal**: phase 0 resolves the
-internal step on its own autocall's coupon leg, but the engine's own ladder in the internal step
-has not been taken, and it is what licenses a weekly step for xVA - where it is not optional,
-because a daily walk's tape at 2,048 x 2,048 x 509 does not fit a 24 GiB card in either direction
-(the draws alone are 3 x 7.95 GiB, and `Recompute_Inner_MC` replays one block's graph, not one
-step's).
+carry. The daily walk's tape at 2,048 x 2,048 x 509 does not fit a 24 GiB card in either
+direction (the draws alone are 3 x 7.95 GiB, and `Recompute_Inner_MC` replays one block's graph,
+not one step's), which is what the checkpoint lane above exists for: no coarser chain is licensed
+(G9 reads the 5-day gap at 3.4 SE on the coupon leg).
 
 **Barrier state as a fold over fixings — the REMAINING half** (decided 2026-09-02, built through
 2026-09-03; see Built). What is still designed rather than built is the rest of the fold's reach.
@@ -382,6 +380,74 @@ with the mock-built suite and has no replacement; batching Schrager–Pelsser ac
 set; and five model items in the punchlist below.
 
 ## Built
+
+- **LogVar2FJ phase 2 - spec 5.4's engine bootstrapper: the L strip re-bootstrapped at every
+  iterate, the implicit function theorem as an expression, and risk in quote space through ONE
+  node** (2026-09-06) - the inner triangular bootstrap runs at EVERY outer iterate, so every
+  candidate reprices the ATM term structure exactly (misses 1e-16 to 1e-13) and is judged on the
+  smile alone; the level each pillar returns is one Newton step at its own root,
+  `L_k* - F_k/detach(dF_k/dL_k)`, so `dL/dtheta` rides the tape and the outer solver keeps its
+  exact vmapped Jacobian; the search is a chord off the previous sweep's slope, off the tape,
+  three rounds to `Pillar_Tolerance` (0.280 s a forward pass against 0.756 s with its backward at
+  8,192 paths over 504 daily steps; 18.7 pillar passes a sweep, 5.3 carrying a backward).
+  `Quote_Sensitivity` is SUPPORTED and its contraction is `LeastSquaresSolve` - the swaption
+  family's node, which absorbed `LVQuoteSolve` rather than acquiring a sibling: one
+  `autograd.Function` over `(calibration, rcond, stationarity, *quotes)`, the vmapped Jacobian in
+  place of the per-row loop (bit-identical on both HW2F objectives, 0.22 s against 1.21 s on the
+  identified block), the contraction on the COLUMN-SCALED Jacobian at `Jacobian_Rcond` over the
+  coordinates the KKT active set leaves free (`active_set`: within 1e-4 of the box width of a
+  bound AND the gradient pointing into it - scipy's `active_mask` is a step-length report and read
+  EMPTY with `Nu` at a denormal above its floor; on the reduced USDZAR fit the KKT set holds `Nu`
+  and `Sigma_J[0y]` and the contraction then reads `Sigma_S[0y]` 14.10 against a re-solve flat at
+  13.82 / 13.82 / 13.82 over h = 2e-4 / 1e-4 / 5e-5, where contracting the whole vector read 216
+  and `Nu` -3791 against 0). That fold fixed two defects the swaption path had carried - a relative
+  cutoff on an unscaled `J^T J` whose column norms span orders, and a contraction over coordinates
+  the box holds - and re-set HW2F's `Jacobian_Rcond` from 1e-8 to **1e-5**: on sigma of the scaled
+  matrix 1e-8 keeps a direction 1.4e-6 of the largest and amplifies `dtheta/dq` 7e5-fold; the
+  identified block's one spectral gap is 2.97e-4 against 1.43e-6 and 1e-5 sits in it, keeping 16
+  of 23 where the old sigma^2 cutoff kept 15, with `Correlation` held on its -0.95 floor. HW2F's
+  fitted parameters and identified directions are unchanged to the digit; in the null space the
+  minimum-norm representative is now the one in the metric the solver steps in, so on the
+  four-quote block the fourth benchmark's `dV/dq` reads 0.1356 where the unscaled spelling read
+  0.2704, and every quote delta is logged beside its NULL-SPACE SHARE (0.99-1.00 there, 0.70
+  typical on the identified block, 0.90 on a LogVar2FJ autocall fit) - the part that is convention
+  (`tests/fixtures/hw2f_four_quote_job.json` pins the four numbers with that sentence). Every
+  binding bound is named in both families' reports whether or not quote sensitivities were asked
+  for. `Fit_Mode` Global | Bootstrap makes the ladder's wing expiries the calendar buckets, which
+  makes `Sigma_S` and `Sigma_J` bucketed curves beside `Rho_S` and `Mu_J`: `LV_BUCKET_NAMES` is
+  four, the factor's curves five, one knot at 0 reads every existing document to the bit.
+  `Internal_Step_Days` is NOT written onto the factor - the field, its structural entry and the
+  kit's load refusal came off; the deal's own declaration is what the kit walks until the
+  checkpoint lane deletes the setting (spec 2.1: the day is the model) - and the trading-day-grid
+  cost is measured again at **0.124 vol points** at the 1m ATM. `Stationarity_Tol` is declared and
+  the node raises on it, and a stage that stopped CAPPED at `Max_Iterations` refuses
+  `Quote_Sensitivity` by name (a converged polish reads `||J^T r||` 2.19e-6 against a capped one's
+  6.13e-6, so the norm alone could not have said it). On the banked USDZAR ladder six of the 22
+  rungs are the ATM rung of an expiry any curve family solves to zero, so the statistic is the
+  per-contract table and its WING RMSE, one spelling shared with the CJOW harness: LogVar2FJ
+  `Global` reads **0.131** over the 16 wings against the plain family's **0.663** and the
+  component family's worst wing **0.760** (CAPPED at 300 evaluations), `Bootstrap` 0.575 -
+  restricting the smoothness rows to the buckets a stage has fitted took it from 0.764/0.704 to
+  0.490/0.455 unweighted/vega-weighted. On CJOW the composition residual is 0.119 and the
+  vanilla-only autocall 1.1% of CJOW, the forward target moving it to 3.2% for a forward-skew
+  sensitivity of -0.647; the short end is unmoved at 2.3 vol points and 1,142 s against spec 9's
+  90 s remain the open numbers; the fitted L strip zig-zags (the flat-L lane above). The
+  triangle's first two legs are a chain-rule TAUTOLOGY (both route through the same backward;
+  their 4.4e-16 to 5.8e-14 tests the attachment); the third leg, the re-authored central
+  difference, is the only one that tests the theorem and does NOT close on the autocall document -
+  the re-fits either side of a tick land at different active sets (`Rho_L` on its -0.6 box one
+  side), so the quotient is a jump, the Hull-White page's finding again; the quote delta is the
+  one-sided derivative on the current active set and the direction check is its gate. Deviations
+  from the spec, all of them: `Wing_Weight` 1.0 against 5.4.4's 2.0; `Pillar_Tolerance` 1e-10
+  against 1e-14; `Max_Iterations` 150 against 60; `Jump_Share` 0.25 against 0.15;
+  `Bucket_Smoothness` 0.02 against 1.0; `Forward_Smile_Source` Prior tilts the MARKET's spot slope
+  where 5.3 says the model's own, because a target that moves with the iterate is not a target;
+  `Event_Days` is a multiplier on the interpolated level, identified by nothing (two straddling
+  pillars are spent on their own knots). Net +1,329 tracked lines. PROOF DOCUMENTS: `lv_hex.py`
+  (`-0x1.a32dcde94c00ap+5` to the bit), `lv_trials.py limit` (GBM 1.9e-15, CVA hex-identical),
+  `lv_deals.py hex` (14 keys, 0 mismatches against every banked file), the reduced USDZAR
+  quote-risk document (the KKT table above), the four-quote HW2F document on both engines
+  (theta* identical, the moves table), the identified 25-quote document once (733 s).
 
 - **The LogVar2FJ calibrator** (2026-09-05) - `bootstrappers.LogVar2FJModelParameters`, block
   `LogVar2FJModelPrices`, fits the seven scalars, the L curve and the two bucketed levers to

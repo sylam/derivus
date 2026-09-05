@@ -738,7 +738,7 @@ def test_the_floor_and_the_defaults_are_the_families_own_numbers():
     assert EquityLadder().pillars == (0.25, 0.5, 1.0, 2.0, 3.0)
     assert len(EquityLadder().wing_pillars) == len(
         HestonNandiComponentModelParameters.fx_wing_expiries) == 4
-    assert EquityLadder().wing_delta == HestonNandiModelParameters.fx_wing_pillar == 0.25
+    assert (EquityLadder().wing_delta,) == HestonNandiModelParameters.fx_wing_pillars == (0.25,)
 
 
 def test_a_ladder_that_contradicts_itself_refuses_at_construction():
@@ -1000,7 +1000,7 @@ def test_the_chain_emits_a_logvar2fj_block_that_bootstraps(caplog):
         assert key in written and math.isfinite(float(written[key])), key
     for curve in utils.LV_CURVE_NAMES:
         assert len(written[curve].array), curve
-    # the two levers carry the SAME buckets and the L curve a knot at tenor zero, which is what the
+    # the four levers carry the SAME buckets and the L curve a knot at tenor zero, which is what the
     # price factor asserts at load - so the loader is the gate on what was written
     assert written['L_Curve'].array[0][0] == 0.0
     LogVar2FJModelParameters(dict(written))

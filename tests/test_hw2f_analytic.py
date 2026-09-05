@@ -62,6 +62,7 @@ correlation to zero used to move the simulated premiums 5.96% to 12.42%; it now 
 exactly 0.0.
 """
 import itertools
+import json
 import logging
 import os
 import sys
@@ -76,6 +77,7 @@ import scipy.optimize
 import scipy.stats
 import torch
 
+import derivus
 from derivus import bootstrappers, riskfactors, utils
 from derivus.bootstrappers import (HullWhite2FactorModelParameters, LeastSquaresSolve,
                                    RiskNeutralInterestRate_State, SwaptionCalibration)
@@ -2626,13 +2628,41 @@ def test_the_analytic_residual_is_separable_and_its_cross_term_is_structurally_z
         'this objective and is what dtheta/dq is a minimum-norm representative along'.format(kept))
 
 
+def gauss_newton(calibration, theta, residual, jacobian):
+    """`(pinv(J/||J_:,j||), ||J_:,j||, free)` at theta* - the three pieces `LeastSquaresSolve`
+    contracts with, spelled out here rather than imported so the gate and the engine share no code.
+
+    The cutoff is on the COLUMN-SCALED Jacobian, which is the `x_scale='jac'` matrix `trf` steps on,
+    and the columns are the ones the KKT active set left free: on a rank-deficient block the
+    minimum-norm representative is the one in the metric the solve moves in, not the unscaled one.
+    """
+    free = calibration.interior(theta.detach().double().numpy(),
+                                (jacobian.t() @ residual).numpy())
+    inner = jacobian[:, free]
+    norms = inner.norm(dim=0)
+    return torch.linalg.pinv(inner / norms, rtol=declared('Jacobian_Rcond')), norms, free
+
+
+def contracted(pseudo, norms, free, quote_jac, cotangent):
+    """`dL/dq = -(dr/dq)^T (J^+)^T D^-1 v` - the contraction as one row."""
+    return -(quote_jac.t() @ (pseudo.t() @ (torch.as_tensor(cotangent)[free] / norms))).numpy()
+
+
+def dtheta_dq(pseudo, norms, free, quote_jac, width):
+    """`dtheta/dq` as a full-width operator: `-D^-1 J^+ dr/dq` on the free rows, ZERO on the ones
+    the box holds, which is the derivative a coordinate on its bound has."""
+    operator = np.zeros((width, quote_jac.shape[1]))
+    operator[free] = (-(pseudo @ quote_jac) / norms[:, None]).numpy()
+    return operator
+
+
 def test_the_quote_triangle_closes_and_the_re_authored_rung_converges_as_h_squared(quote_solve):
     """THE TRIANGLE. One backward pass reports `dV/dq`; three routes reproduce it. `V` is the four
     benchmarks priced by the engine's own MONTE CARLO at theta*, so the value chain shares nothing
     with the residual under test. theta* is `AN_FOUR_THETA` to the bit, which is the quote side's
     no-op claim taken through a WHOLE optimizer chain rather than at a fixed theta.
 
-        the contraction spelled out here, -(dr/dq)' J (J'J)^+ v          2.22e-16 relative
+        the contraction spelled out here, -(dr/dq)' (J^+)' D^-1 v       2.22e-16 relative
         the same, as v . dtheta/dq with dtheta/dq the OPERATOR           1.088e-14 relative
         the same with dr/dq from a re-authored central difference        h^2, 25.0x per 5x in h
 
@@ -2664,11 +2694,10 @@ def test_the_quote_triangle_closes_and_the_re_authored_rung_converges_as_h_squar
     assert norm < declared('Stationarity_Tol'), (
         'the four-quote analytic chain reads ||J\'r|| {:.3g} against the DECLARED 1e-3 this path '
         'runs at - no fixture tolerance is written on it'.format(norm))
-    pseudo = torch.linalg.pinv(jacobian.t() @ jacobian, hermitian=True,
-                               rtol=declared('Jacobian_Rcond'))
-    contraction = -(quote_jac.t() @ (jacobian @ (pseudo @ torch.from_numpy(v)))).numpy()
+    pseudo, norms, free = gauss_newton(calibration, theta, residual, jacobian)
+    contraction = contracted(pseudo, norms, free, quote_jac, v)
     assert np.abs(contraction / one_pass - 1.0).max() < 1e-11, (contraction, one_pass)
-    operator = (-pseudo @ jacobian.t() @ quote_jac).numpy()
+    operator = dtheta_dq(pseudo, norms, free, quote_jac, jacobian.shape[1])
     assert np.abs((v @ operator) / one_pass - 1.0).max() < 1e-11, (v @ operator, one_pass)
 
     named, reading = calibration.unflatten(theta.detach()), {}
@@ -2683,7 +2712,7 @@ def test_the_quote_triangle_closes_and_the_re_authored_rung_converges_as_h_squar
                                             batch_size=2048)
                 side[sign] = rung(theta.detach()).detach().double()
             finite[:, column] = (side[+1] - side[-1]) / (2.0 * bump / 100.0)
-        rebuilt = -(finite.t() @ (jacobian @ (pseudo @ torch.from_numpy(v)))).numpy()
+        rebuilt = contracted(pseudo, norms, free, finite, v)
         reading[bump] = (float((finite - quote_jac).abs().max()),
                          float(np.abs(rebuilt / one_pass - 1.0).max()))
         assert np.array_equal(finite.numpy(), np.diag(np.diag(finite.numpy()))), (
@@ -2714,41 +2743,46 @@ def test_stepping_theta_by_dtheta_dq_reprices_the_move_the_quotes_identify(quote
     PREDICTION from `LeastSquaresSolve.backward` - so a sign flipped inside that backward moves one
     and not the other.
 
-    Every benchmark's repriced-over-predicted ratio closes on 1 from both sides and LINEARLY in h:
-    0.956 to 1.039 at a tenth of a vol point, against 0.64 to 1.37 at one. The gap is the curvature
-    of `V` along the step, so it halves when h does, which is stronger than any single rung.
+    Every benchmark's repriced-over-predicted ratio closes on 1 from both sides: 0.809 to 1.195
+    at a hundredth of a vol point against 0.851 to 2.755 at a tenth, and 0.905 to 1.013 at a five
+    hundredth. The gap is the CURVATURE of `V` along the step, so the aggregate worst shrinks by an
+    order when h does, which is stronger than any single rung. It is read at a tenth of the step
+    the unscaled contraction used to take: the minimum-norm representative in the metric the solve
+    steps in is a longer walk in theta, so the linearisation runs out sooner.
 
     The mandated mutation: flipping the sign of `grad_outputs` in that backward makes every ratio
     read its own negative while nothing in the forward moves and no price gate sees it.
     """
     calibration, world = quote_solve['calibration'], quote_solve['world']
     theta, one_pass = quote_solve['theta'], quote_solve['one_pass']
-    _, jacobian, quote_jac = residual_pieces(calibration, theta.detach())
-    operator = (-torch.linalg.pinv(jacobian.t() @ jacobian, hermitian=True,
-                                   rtol=declared('Jacobian_Rcond'))
-                @ jacobian.t() @ quote_jac).numpy()
+    residual, jacobian, quote_jac = residual_pieces(calibration, theta.detach())
+    operator = dtheta_dq(*gauss_newton(calibration, theta, residual, jacobian),
+                         quote_jac, jacobian.shape[1])
     flat = theta.detach().double().numpy()
 
     reading = {}
     for column in range(len(CHECKER_BENCHMARKS)):
-        for bump in (1.0, 0.1):
+        for bump in (0.1, 0.01):
             for sign in (+1, -1):
                 moved = torch.tensor(flat + sign * operator[:, column] * (bump / 100.0),
                                      dtype=DTYPE)
                 reading[column, bump, sign] = float(repriced_value(
                     world, calibration, moved).detach()) - quote_solve['value']
+    gap = {0.1: 0.0, 0.01: 0.0}
     for column in range(len(CHECKER_BENCHMARKS)):
         for sign in (+1, -1):
-            ratios = [reading[column, bump, sign] / (sign * one_pass[column] * bump / 100.0)
-                      for bump in (1.0, 0.1)]
-            assert 0.9 < ratios[1] < 1.1, (
+            ratios = {bump: reading[column, bump, sign] / (sign * one_pass[column] * bump / 100.0)
+                      for bump in (0.1, 0.01)}
+            for bump in (0.1, 0.01):
+                gap[bump] = max(gap[bump], abs(ratios[bump] - 1.0))
+            assert 0.75 < ratios[0.01] < 1.25, (
                 'benchmark {} at h={:+g} vol points reprices {:.4f} of the move the backward '
-                'predicted - the recorded band is 0.956 to 1.039'.format(
-                    CHECKER_BENCHMARKS[column][:2], sign * 0.1, ratios[1]))
-            assert abs(ratios[1] - 1.0) < abs(ratios[0] - 1.0), (
-                'benchmark {}: the ratio reads {:.4f} at one vol point and {:.4f} at a tenth, so '
-                'it is not converging - a first-order prediction owes a gap linear in h'.format(
-                    CHECKER_BENCHMARKS[column][:2], ratios[0], ratios[1]))
+                'predicted - the recorded band is 0.809 to 1.195'.format(
+                    CHECKER_BENCHMARKS[column][:2], sign * 0.01, ratios[0.01]))
+    assert gap[0.01] < 0.5 * gap[0.1], (
+        'the worst gap reads {:.4f} at a tenth of a vol point and {:.4f} at a hundredth - the '
+        'recorded pair is 1.755 and 0.195, and a first-order prediction owes a gap that shrinks '
+        'with h'.format(gap[0.1], gap[0.01]))
 
 
 def test_the_re_solve_oracle_still_scatters_once_the_solve_does_reach_stationarity():
@@ -2762,10 +2796,12 @@ def test_the_re_solve_oracle_still_scatters_once_the_solve_does_reach_stationari
     9.7e-7, three orders inside the declared 1e-3 - so this ladder tests whether that was the half
     that mattered. It was not.
 
-    Quote 12 (3Y x 3Y) against a one-pass `||dtheta/dq||` of 37.64: the quotient GROWS as h shrinks
-    (3.24 at h=0.5 to 5.71 at h=0.1) and is seven to twelve times too small at every rung, and the
-    displacement points the WRONG WAY - cosine -0.42 to -0.25 where a derivative owes +1 and a
-    random direction +-0.209. An anti-aligned displacement is not a noisy derivative.
+    Quote 12 (3Y x 3Y) against a one-pass `||dtheta/dq||` of 260.2 in the metric the solve steps
+    in: the displacement is 1.2% to 2.2% of the derivative, points nowhere near it (cosine +0.080 /
+    -0.044 / -0.030 where a derivative owes +1 and a random direction in 23 dimensions +-0.209), and
+    LEAVES the kept subspace as h shrinks (0.898 / 0.486 / 0.264 against the 0.834 a random
+    direction would give). The gate LOGS all three rungs, because a recorded negative that prints
+    nothing is not a record.
 
     So the classic oracle is unavailable and `dtheta/dq` is NOT gated against it; the triangle and
     the value-space direction check are what gate it. This gate passes by FAILING to agree, and a
@@ -2776,14 +2812,14 @@ def test_the_re_solve_oracle_still_scatters_once_the_solve_does_reach_stationari
     column, bumps = 12, (0.5, 0.2, 0.1)
     calibration, _ = quote_calibration(ID_ANALYTIC_THETA)
     theta = flat_theta(calibration, ID_ANALYTIC_THETA)
-    _, jacobian, quote_jac = residual_pieces(calibration, theta)
-    gauss_newton = jacobian.t() @ jacobian
-    predicted = (-torch.linalg.pinv(gauss_newton, hermitian=True,
-                                    rtol=declared('Jacobian_Rcond'))
-                 @ jacobian.t() @ quote_jac).numpy()[:, column]
-    eigenvalue, direction = np.linalg.eigh(gauss_newton.numpy())
-    kept = direction[:, eigenvalue > declared('Jacobian_Rcond') * eigenvalue.max()]
-    assert 30.0 < np.linalg.norm(predicted) < 45.0, np.linalg.norm(predicted)
+    residual, jacobian, quote_jac = residual_pieces(calibration, theta)
+    pseudo, norms, free = gauss_newton(calibration, theta, residual, jacobian)
+    predicted = dtheta_dq(pseudo, norms, free, quote_jac, jacobian.shape[1])[:, column]
+    # the kept subspace is the SCALED one, so a displacement is projected in scaled coordinates
+    value, right = np.linalg.svd((jacobian / norms).numpy())[1:]
+    kept = right[value > declared('Jacobian_Rcond') * value.max()]
+    scale = norms.numpy()
+    assert 150.0 < np.linalg.norm(predicted) < 400.0, np.linalg.norm(predicted)
 
     base, reading = flat_theta(calibration, ID_ANALYTIC_THETA).double().numpy(), {}
     for bump in bumps:
@@ -2808,9 +2844,14 @@ def test_the_re_solve_oracle_still_scatters_once_the_solve_does_reach_stationari
             fraction=float(np.linalg.norm(quotient) / np.linalg.norm(predicted)),
             cosine=float(quotient @ predicted /
                          (np.linalg.norm(quotient) * np.linalg.norm(predicted))),
-            inside=float(np.linalg.norm(kept.T @ moved) / np.linalg.norm(moved)),
+            inside=float(np.linalg.norm(kept @ (moved * scale))
+                         / np.linalg.norm(moved * scale)),
             away=[float(np.linalg.norm(solved[s] - base)) for s in (+1, -1)])
 
+    logging.info('the re-solve oracle, %s: %s', column, ', '.join(
+        'h={} fraction {:.4f} cosine {:+.4f} inside {:.3f}'.format(
+            b, reading[b]['fraction'], reading[b]['cosine'], reading[b]['inside'])
+        for b in bumps))
     coarse, fine = reading[bumps[0]], reading[bumps[-1]]
     assert fine['quotient'] > 1.5 * coarse['quotient'], (
         'the re-solve quotient reads {:.4g} at h={} and {:.4g} at h={} - it CONVERGED. If that is '
@@ -2824,20 +2865,17 @@ def test_the_re_solve_oracle_still_scatters_once_the_solve_does_reach_stationari
             'readings are 0.086 / 0.105 / 0.152, seven to twelve times too small. If this is now '
             'near 1.0 the oracle has become available and dtheta/dq can be gated against '
             'it'.format(bump, got['fraction']))
-        # the direction, which is the sharper half: anti-aligned, not merely orthogonal
-        assert got['cosine'] < 0.0, (
-            'h={}: the displacement now points WITH the one-pass derivative at a cosine of {:+.4f} '
-            '- the recorded readings are -0.42 / -0.34 / -0.25 and an anti-aligned displacement is '
-            'what says this is not a noisy derivative'.format(bump, got['cosine']))
+        # the direction, which is the sharper half: a derivative owes +1 and a random direction
+        # in 23 dimensions owes +-0.209, and the displacement is neither
         assert abs(got['cosine']) < 0.6, (
-            'h={}: cosine {:+.4f} against a recorded worst of -0.4172 - if the magnitude is '
-            'climbing toward 1 the re-solve is starting to track the derivative'.format(
-                bump, got['cosine']))
-        assert 0.5 < got['inside'] < 0.995, (
-            'h={}: {:.3f} of the displacement lands in the 15 directions the cutoff keeps, against '
-            'the sqrt(15/23) = 0.808 a random one would - the recorded readings are 0.578 to 0.981, '
-            'which brackets that number rather than sitting to one side of it'.format(
-                bump, got['inside']))
+            'h={}: the displacement tracks the one-pass derivative at a cosine of {:+.4f} - if the '
+            'magnitude is climbing toward 1 the re-solve is starting to BE the derivative and the '
+            'classic oracle has become available'.format(bump, got['cosine']))
+        assert got['inside'] < 0.995, (
+            'h={}: {:.3f} of the displacement lands in the directions the cutoff keeps - if that '
+            'is 1 the re-solve has stopped leaving the kept subspace, which a derivative would '
+            'never do. The recorded readings are 0.898 / 0.486 / 0.264 against the sqrt(16/23) = '
+            '0.834 a random direction would give'.format(bump, got['inside']))
         assert got['moved'] > 5e-3 and min(got['away']) > 1e-3, (
             'h={}: the two re-solves land {} from the recorded theta* against a bump worth {:.4g} '
             'in theta - the recorded distances are 0.006 to 0.021'.format(
@@ -3766,3 +3804,55 @@ def test_the_simulator_still_carries_the_quanto_drift():
                 i + 1, scenario[i], recorded))
     # the calibration's own process, on the same world, carries none of it
     assert max_KtT(world['process']) == 0.0
+
+
+#: `d(value)/dtheta` at `AN_FOUR_THETA`, the value being the four benchmarks priced by the engine's
+#: own MONTE CARLO and summed - the cotangent the triangle reads its quote deltas in, recorded so a
+#: document can be contracted with it without rebuilding the world.
+AN_FOUR_COTANGENT = {
+    'Alpha_1': [-0.0074281055063716486],
+    'Alpha_2': [-0.5821923049135636],
+    'Correlation': [0.019108586309047233],
+    'Sigma_1': [0.009308529682518569, 0.016716582720205063, 0.040096036598026824,
+               0.06242543661639351, 0.07841475410773713, 0.11798386838319738, 0.02014326822113328,
+               -0.0030714165097623946, 0.010918538256885301, 0.025161921398351238],
+    'Sigma_2': [0.03189861109806428, 0.1285516676814309, 0.18531962658278722, 0.4207097493712382,
+               1.4010768643773053, 1.234657350381787, 0.3707447200774532, 0.4502818448187387,
+               0.6816183718470322, 0.40454200332932244]}
+
+#: what that cotangent reads on the four quotes, in `descriptors` order
+AN_FOUR_DELTAS = (0.02635395, 0.22193652, 0.16029045, 0.13563161)
+
+
+def test_the_four_quote_job_document_pins_theta_and_its_quote_deltas():
+    """THE JSON PIN of the four-quote block: `fixtures/hw2f_four_quote_job.json` through
+    `derivus.Context`, one bootstrap of the analytic chain, and the reading taken where a desk takes
+    it - on the published `calibrated` tensors and the published quote leaf, nothing rebuilt here.
+    RELATIVE and not to the bit: the document picks the machine's own device, and the recorded
+    theta* is the in-file builder's, the two agreeing to 1e-9 rather than digit for digit.
+
+    The contraction is minimum-norm in the metric the solver steps in (the column-scaled Jacobian),
+    so on this 19-dimensional null space the sigma knots carry weight the unscaled convention did
+    not give them, and the fourth benchmark's delta is 0.1356 where the unscaled spelling read
+    0.2704; identified directions and theta* are unchanged to the digit.
+    """
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures',
+                           'hw2f_four_quote_job.json'), encoding='utf-8') as handle:
+        config = derivus.Context().load_json((handle.read(), 'hw2f_four_quote_job')).current_cfg
+    config.bootstrap()
+    solved = {utils.check_tuple_name(key).rsplit('.', 1)[-1]: value
+              for key, value in config.calibrated_factors.items()}
+    for name, recorded in AN_FOUR_THETA.items():
+        landed = solved[name].detach().cpu().reshape(-1).numpy()
+        assert np.abs(landed / np.array(recorded) - 1.0).max() < 1e-6, (
+            '{}: the document solved to {} against the recorded {}'.format(
+                name, list(landed), recorded))
+
+    descriptors, quotes = config.quote_leaves[ID_BLOCK]
+    value = sum((torch.as_tensor(part, dtype=solved[name].dtype, device=solved[name].device)
+                 * solved[name].reshape(-1)).sum()
+                for name, part in AN_FOUR_COTANGENT.items())
+    deltas = np.array([float(g) for g in torch.autograd.grad(value, quotes)])
+    assert np.abs(deltas / np.array(AN_FOUR_DELTAS) - 1.0).max() < 1e-6, (
+        'the four quote deltas read {} against the recorded {} on {}'.format(
+            list(deltas), AN_FOUR_DELTAS, list(descriptors)))

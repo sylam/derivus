@@ -632,7 +632,7 @@ class LogVar2FJKit(object):
         THE SCAN BLOCK-SUMS AS IT PASSES: `utils.lv_walk` accumulates each interval's ``M`` and
         ``Sigma^2`` inside its own loop, so no ``[batch, sims, n]`` tensor exists but the draws.
 
-        The two bucketed levers are read at the ABSOLUTE step-START times, as ``L`` is: the
+        The four bucketed levers are read at the ABSOLUTE step-START times, as ``L`` is: the
         buckets are calendar time from the base date, not time from this row. ``antithetic`` is
         REQUIRED because the wrong value is a shape error at every consumer, never a quiet bias.
         """

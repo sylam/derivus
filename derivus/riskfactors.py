@@ -1215,18 +1215,19 @@ class LogVar2FJModelParameters(CurveModelParameters):
     $\\nu$. Given the shocks and the counts a block return is exactly Gaussian, which is the whole
     of the pricing (logvar2fj_spec.md).
 
-    **Rho_S** and **Mu_J** are the forward-skew levers and are piecewise CONSTANT on calendar-time
-    buckets: their knots ARE the buckets' start times in years, the two curves carry the same ones,
-    and one knot at 0 is the constant-parameter model. A spot smile never sees a later bucket and a
-    forward smile prices on nothing else (spec 2.3.1), which is why the lever is calendar time and
-    not the vol state. The constructor asserts the idiosyncratic share
+    **Rho_S**, **Mu_J**, **Sigma_S** and **Sigma_J** are piecewise CONSTANT on calendar-time
+    buckets: their knots ARE the buckets' start times in years, the four curves carry the same
+    ones, and one knot at 0 is the constant-parameter model. A spot smile never sees a later bucket
+    and a forward smile prices on nothing else (spec 2.3.1), which is why the lever is calendar
+    time and not the vol state; `Bootstrap` mode frees the vol-of-vol pair per expiry on the same
+    buckets (5.4.1). The constructor asserts the idiosyncratic share
     $c(t)=1-\\rho_s(t)^2-\\rho_\\ell^2\\ge$ **C_Min** in every bucket, refusing with the bucket's
     time and the three numbers.
 
     **Lambda**, **Cap_A**, **Cap_Beta** and **C_Min** are STRUCTURAL, not leaves: the counts' law
-    is not on the tape, and the cap and the floor are guards a calibrated model never reaches, so a
-    derivative reported at any of them would be wrong. Every curve's knots are structural and its
-    VALUES are `bind='value'` leaves, as the component Heston-Nandi L curve's are.
+    is not on the tape, and the cap and the floor are guards a calibrated model never reaches, so
+    a derivative reported at any of them would be wrong. Every curve's knots are structural and
+    its VALUES are `bind='value'` leaves, as the component Heston-Nandi L curve's are.
     """
     fields = [
         F('Kappa_L', 'Float', default=0, bind='value',
@@ -1236,9 +1237,6 @@ class LogVar2FJModelParameters(CurveModelParameters):
         F('Rho_L', 'Float', default=0, bind='value', description='Slow leverage $\\rho_\\ell$'),
         F('Kappa_S', 'Float', default=0, bind='value',
           description='Fast reversion speed $\\kappa_s$, per year'),
-        F('Sigma_S', 'Float', default=0, bind='value',
-          description='Fast vol-of-log-variance $\\sigma_s$'),
-        F('Sigma_J', 'Float', default=0, bind='value', description='Jump dispersion $\\sigma_J$'),
         F('Nu', 'Float', default=0, bind='value',
           description='Fast log-variance co-jump $\\nu$ per event'),
         F('Lambda', 'Float', default=0,
@@ -1257,7 +1255,11 @@ class LogVar2FJModelParameters(CurveModelParameters):
           description='Fast leverage $\\rho_s(t)$, piecewise constant on buckets starting at its '
                       'knots (years)'),
         F('Mu_J', 'Curve', bind='value',
-          description='Mean log-return jump $\\mu_J(t)$, piecewise constant on the same buckets')
+          description='Mean log-return jump $\\mu_J(t)$, piecewise constant on the same buckets'),
+        F('Sigma_S', 'Curve', bind='value',
+          description='Fast vol-of-log-variance $\\sigma_s(t)$, on the same buckets'),
+        F('Sigma_J', 'Curve', bind='value',
+          description='Jump dispersion $\\sigma_J(t)$, on the same buckets')
     ]
     #: one source of truth for each name set - utils owns the canonical tuples, which the free
     #: functions and the kit consume by the same names
@@ -1272,15 +1274,18 @@ class LogVar2FJModelParameters(CurveModelParameters):
         if flat:
             raise ValueError(
                 'LogVar2FJModelParameters: %s must be authored as CURVES - knots in years, and '
-                'for the two levers those knots ARE the calendar buckets. A bare number is not a '
+                'for the four levers those knots ARE the calendar buckets. A bare number is not a '
                 'curve; [[0.0, x]] is the one-bucket model that reproduces it'
                 % ', '.join(flat))
         knots = self.curve_tenors()
-        if not np.array_equal(knots['Rho_S'], knots['Mu_J']):
+        odd = [c for c in utils.LV_BUCKET_NAMES if not np.array_equal(knots[c], knots['Rho_S'])]
+        if odd:
             raise ValueError(
-                'LogVar2FJModelParameters: Rho_S and Mu_J are piecewise constant on the SAME '
-                'calendar buckets, so their knots must be equal - %s against %s'
-                % (knots['Rho_S'].tolist(), knots['Mu_J'].tolist()))
+                'LogVar2FJModelParameters: %s are piecewise constant on the SAME calendar '
+                'buckets, so their knots must be equal - %s against Rho_S %s'
+                % (', '.join(utils.LV_BUCKET_NAMES),
+                   ', '.join('%s %s' % (c, knots[c].tolist()) for c in odd),
+                   knots['Rho_S'].tolist()))
         rho_s, rho_l = self.param['Rho_S'].array[:, 1], float(self.param['Rho_L'])
         c_min = float(self.declared['C_Min'])
         c = 1.0 - rho_s * rho_s - rho_l * rho_l
@@ -1294,8 +1299,8 @@ class LogVar2FJModelParameters(CurveModelParameters):
 
     def curve_tenors(self):
         """Every structural fact the kit reads off this factor: each curve's knots - the L
-        pillars, and for the two levers the buckets - and the structural scalars, at their declared
-        defaults where unauthored. Resolved once at dependency time, so nothing rides the tensor
+        pillars, and for the four levers the buckets - and the structural scalars, at their
+        declared defaults where unauthored. Resolved once at dependency time, so nothing rides the tensor
         side that carries no derivative."""
         return dict({c: self.param[c].array[:, 0] for c in self.curve_names},
                     **{x: self.declared[x] for x in self.structural})

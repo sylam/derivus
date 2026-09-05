@@ -1,0 +1,477 @@
+{
+ "Calc": {
+  "Calculation": {
+   "Object": "BaseValuation",
+   "Base_Date": {
+    ".Timestamp": "2026-08-03"
+   },
+   "Currency": "ZAR",
+   "MCMC_Simulations": 1,
+   "Random_Seed": 1
+  },
+  "Deals": {
+   "Tag_Titles": "",
+   "Reference": "hw2f",
+   "Deals": {
+    "Children": []
+   }
+  },
+  "MergeMarketData": {
+   "MarketDataFile": "",
+   "ExplicitMarketData": {
+    "Bootstrapper Configuration": {
+     "HullWhite2FactorModelParameters": {}
+    },
+    "Market Prices": {
+     "HullWhite2FactorModelPrices.ZAR-JIBAR-3M": {
+      "instrument": {
+       "Batches": 1,
+       "Generate_Instruments": "No",
+       "Instrument_Definitions": [
+        {
+         "Fixed_Day_Count": "ACT_365",
+         "Fixed_Frequency": {
+          ".DateOffset": "3M"
+         },
+         "Floating_Day_Count": "ACT_365",
+         "Floating_Frequency": {
+          ".DateOffset": "3M"
+         },
+         "Market_Volatility": {
+          ".Percent": 20.0
+         },
+         "Start": {
+          ".DateOffset": "1Y"
+         },
+         "Tenor": {
+          ".DateOffset": "1Y"
+         },
+         "Weight": 1.0
+        },
+        {
+         "Fixed_Day_Count": "ACT_365",
+         "Fixed_Frequency": {
+          ".DateOffset": "6M"
+         },
+         "Floating_Day_Count": "ACT_365",
+         "Floating_Frequency": {
+          ".DateOffset": "3M"
+         },
+         "Market_Volatility": {
+          ".Percent": 20.0
+         },
+         "Start": {
+          ".DateOffset": "2Y"
+         },
+         "Tenor": {
+          ".DateOffset": "5Y"
+         },
+         "Weight": 1.0
+        },
+        {
+         "Fixed_Day_Count": "ACT_365",
+         "Fixed_Frequency": {
+          ".DateOffset": "12M"
+         },
+         "Floating_Day_Count": "ACT_365",
+         "Floating_Frequency": {
+          ".DateOffset": "3M"
+         },
+         "Market_Volatility": {
+          ".Percent": 20.0
+         },
+         "Start": {
+          ".DateOffset": "3Y"
+         },
+         "Tenor": {
+          ".DateOffset": "3Y"
+         },
+         "Weight": 1.0
+        },
+        {
+         "Fixed_Day_Count": "ACT_365",
+         "Fixed_Frequency": {
+          ".DateOffset": "3M"
+         },
+         "Floating_Day_Count": "ACT_365",
+         "Floating_Frequency": {
+          ".DateOffset": "3M"
+         },
+         "Market_Volatility": {
+          ".Percent": 20.0
+         },
+         "Start": {
+          ".DateOffset": "10Y"
+         },
+         "Tenor": {
+          ".DateOffset": "10Y"
+         },
+         "Weight": 1.0
+        }
+       ],
+       "Objective": "Analytic",
+       "Quote_Sensitivity": "Yes",
+       "Random_Seed": 5120,
+       "Simulations": 2048,
+       "Swaption_Volatility": "ZAR_SWAPTION"
+      }
+     }
+    },
+    "Price Factors": {
+     "FxRate.ZAR": {
+      "Domestic_Currency": null,
+      "Interest_Rate": "ZAR-JIBAR-3M",
+      "Priority": 1,
+      "Spot": 1.0
+     },
+     "InterestRate.ZAR-JIBAR-3M": {
+      "Currency": "ZAR",
+      "Curve": {
+       ".Curve": {
+        "data": [
+         [
+          1.0,
+          0.08
+         ],
+         [
+          2.0,
+          0.0835
+         ],
+         [
+          3.0,
+          0.088
+         ],
+         [
+          5.0,
+          0.0915
+         ],
+         [
+          7.0,
+          0.095
+         ],
+         [
+          10.0,
+          0.0905
+         ]
+        ],
+        "meta": []
+       }
+      },
+      "Day_Count": "ACT_365",
+      "Sub_Type": null
+     },
+     "InterestYieldVol.ZAR_SWAPTION": {
+      "Currency": "ZAR",
+      "Distribution_Type": "Lognormal",
+      "Property_Aliases": null,
+      "Shift": {
+       ".Percent": 0.0
+      },
+      "Surface": {
+       ".Curve": {
+        "data": [
+         [
+          -0.01,
+          0.25,
+          1.0,
+          0.19896569961034238
+         ],
+         [
+          -0.01,
+          0.25,
+          2.0,
+          0.19693837406980155
+         ],
+         [
+          -0.01,
+          0.25,
+          5.0,
+          0.19347263816700183
+         ],
+         [
+          -0.01,
+          0.25,
+          10.0,
+          0.19044195914915024
+         ],
+         [
+          -0.01,
+          1.0,
+          1.0,
+          0.20366573590279974
+         ],
+         [
+          -0.01,
+          1.0,
+          2.0,
+          0.2016384103622589
+         ],
+         [
+          -0.01,
+          1.0,
+          5.0,
+          0.19817267445945919
+         ],
+         [
+          -0.01,
+          1.0,
+          10.0,
+          0.1951419954416076
+         ],
+         [
+          -0.01,
+          2.0,
+          1.0,
+          0.2077203869838814
+         ],
+         [
+          -0.01,
+          2.0,
+          2.0,
+          0.20569306144334057
+         ],
+         [
+          -0.01,
+          2.0,
+          5.0,
+          0.20222732554054085
+         ],
+         [
+          -0.01,
+          2.0,
+          10.0,
+          0.19919664652268926
+         ],
+         [
+          -0.01,
+          5.0,
+          1.0,
+          0.21465185878948084
+         ],
+         [
+          -0.01,
+          5.0,
+          2.0,
+          0.21262453324894
+         ],
+         [
+          -0.01,
+          5.0,
+          5.0,
+          0.2091587973461403
+         ],
+         [
+          -0.01,
+          5.0,
+          10.0,
+          0.2061281183282887
+         ],
+         [
+          0.0,
+          0.25,
+          1.0,
+          0.19876569961034238
+         ],
+         [
+          0.0,
+          0.25,
+          2.0,
+          0.19673837406980155
+         ],
+         [
+          0.0,
+          0.25,
+          5.0,
+          0.19327263816700183
+         ],
+         [
+          0.0,
+          0.25,
+          10.0,
+          0.19024195914915024
+         ],
+         [
+          0.0,
+          1.0,
+          1.0,
+          0.20346573590279973
+         ],
+         [
+          0.0,
+          1.0,
+          2.0,
+          0.2014384103622589
+         ],
+         [
+          0.0,
+          1.0,
+          5.0,
+          0.19797267445945918
+         ],
+         [
+          0.0,
+          1.0,
+          10.0,
+          0.1949419954416076
+         ],
+         [
+          0.0,
+          2.0,
+          1.0,
+          0.2075203869838814
+         ],
+         [
+          0.0,
+          2.0,
+          2.0,
+          0.20549306144334056
+         ],
+         [
+          0.0,
+          2.0,
+          5.0,
+          0.20202732554054084
+         ],
+         [
+          0.0,
+          2.0,
+          10.0,
+          0.19899664652268925
+         ],
+         [
+          0.0,
+          5.0,
+          1.0,
+          0.21445185878948084
+         ],
+         [
+          0.0,
+          5.0,
+          2.0,
+          0.21242453324894
+         ],
+         [
+          0.0,
+          5.0,
+          5.0,
+          0.20895879734614028
+         ],
+         [
+          0.0,
+          5.0,
+          10.0,
+          0.2059281183282887
+         ],
+         [
+          0.01,
+          0.25,
+          1.0,
+          0.19896569961034238
+         ],
+         [
+          0.01,
+          0.25,
+          2.0,
+          0.19693837406980155
+         ],
+         [
+          0.01,
+          0.25,
+          5.0,
+          0.19347263816700183
+         ],
+         [
+          0.01,
+          0.25,
+          10.0,
+          0.19044195914915024
+         ],
+         [
+          0.01,
+          1.0,
+          1.0,
+          0.20366573590279974
+         ],
+         [
+          0.01,
+          1.0,
+          2.0,
+          0.2016384103622589
+         ],
+         [
+          0.01,
+          1.0,
+          5.0,
+          0.19817267445945919
+         ],
+         [
+          0.01,
+          1.0,
+          10.0,
+          0.1951419954416076
+         ],
+         [
+          0.01,
+          2.0,
+          1.0,
+          0.2077203869838814
+         ],
+         [
+          0.01,
+          2.0,
+          2.0,
+          0.20569306144334057
+         ],
+         [
+          0.01,
+          2.0,
+          5.0,
+          0.20222732554054085
+         ],
+         [
+          0.01,
+          2.0,
+          10.0,
+          0.19919664652268926
+         ],
+         [
+          0.01,
+          5.0,
+          1.0,
+          0.21465185878948084
+         ],
+         [
+          0.01,
+          5.0,
+          2.0,
+          0.21262453324894
+         ],
+         [
+          0.01,
+          5.0,
+          5.0,
+          0.2091587973461403
+         ],
+         [
+          0.01,
+          5.0,
+          10.0,
+          0.2061281183282887
+         ]
+        ],
+        "meta": []
+       }
+      }
+     }
+    },
+    "Price Models": {},
+    "System Parameters": {
+     "Base_Currency": "ZAR",
+     "Base_Date": {
+      ".Timestamp": "2026-08-03"
+     }
+    }
+   }
+  }
+ }
+}
