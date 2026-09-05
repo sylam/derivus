@@ -249,7 +249,12 @@ swapped, and a daily-monitored barrier is a block of one internal step. The **de
 (phase 2): one FFT convolution per monitored date against the block Gaussian, as an alternative
 inner estimator. The **xVA outer generator carrying `(S, l, s)`** (phase 3), which retires the
 per-row re-seed phase 1 declares - the kit seeds `l = L(t_row)`, `s = 0` at every MTM row, of the
-same class as the daily kits' own re-seed. The **reciprocal axis** (`HN_Invert`'s analogue): a mean
+same class as the daily kits' own re-seed. Measured 2026-09-05 (`artifacts/logvar2fj/harness_cjow.py`
+section 5): carrying the state through the first year moves the 1y-into-1y forward smile's
+70-120 slope from 5.3 to 5.3 vol points against CJOW's 12.0, and the terminal skew at 6m-2y is
+half CJOW's at the spec's revised defaults (-1.0 / -0.5 against -1.8 / -1.2) - so the forward
+skew an autocall prices on is the leverage-and-jump pair's to reach, not the re-seed's, and the
+calibrator's long-dated wings (stage 4) or a forward-start target is what will decide it. The **reciprocal axis** (`HN_Invert`'s analogue): a mean
 shift on the three shocks and a tilt of the jump-size law, still Gaussian, so the FX arm can price
 a base-currency underlying. And **G9's delta convergence on a booked deal**: phase 0 resolves the
 internal step on its own autocall's coupon leg, but the engine's own ladder in the internal step
