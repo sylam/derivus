@@ -40,7 +40,7 @@ caller** (several items below are deliberately not started), and **look before y
 - **`NettingCollateralSet` backward, recompute node off** — One gradient entry takes two distinct float64 values from bit-identical inputs — a nondeterministic GPU reduction, not a graph defect. It bounds how tightly any collateralised sensitivity gate can be pinned. Nothing done.
 - **A collateralised set reading a knock-out rebate's 14 declared settlement dates** — the shape no gate exercises, left from the `add_grid_dates` closure.
 - **`pricing` (TARF block)** — The target pin fires on 27–61% of paths, 27% short uncorrected, and is gated structurally with no tolerance asserted because nothing resolves it better. Exact behind `Branch_And_Weight: 'Yes'`; the crisp default keeps the declared blindness. *Measured:* Estimator 13% bandwidth spread, oracle 8.9% flatness — neither better than ~10%. Do not tune on the oracle: it cannot see it either.
-- **`pv_MC_AutoCallSwap`** — The averaging coupon carries the termination latch under `LogVar2FJ` and cannot under the daily kits or GBM. A window of fixings is priced by sampling the window's own blocks and truncating the PREFIX return (spec 2.4.1), so the termination is a crisp per-scenario decision again and `Branch_And_Weight: 'Yes'` is admitted; GBM and the daily families keep the full-path branch, whose termination is a smoothed per-inner-path weight with no decision to stamp, and refuse by name. *Measured (2026-09-06):* the five-fixing document reads 0.76 combined SE against a brute-force oracle and a whole-interval window (26 weekly fixings, prefix 3.8–7.4% of the interval) 0.04; the smooth value is 0.67 SE from the crisp; spot delta 0.035% and gamma 0.0093% off their CRN ladders. A lagging-payment schedule (coupon paying after its fixing) would still have its pending window zeroed by the carry — `pending` remains unused here. Open: the two arms price different barrier legs for a multi-fixing window (the OSS arm decides the breach on the window's average, the full-path branch on the barrier date's spot), and nothing in the book says which the desk means.
+- **`pv_MC_AutoCallSwap`** — The averaging coupon carries the termination latch under `LogVar2FJ` and cannot under the daily kits or GBM. A window of fixings is priced by sampling the window's own blocks and truncating the PREFIX return (spec 2.4.1), so the termination is a crisp per-scenario decision again and `Branch_And_Weight: 'Yes'` is admitted; GBM and the daily families keep the full-path branch, whose termination is a smoothed per-inner-path weight with no decision to stamp, and refuse by name. *Measured (2026-09-06):* the five-fixing document reads 0.76 combined SE against a brute-force oracle and a whole-interval window (26 weekly fixings, prefix 3.8–7.4% of the interval) 0.04; the smooth value is 0.67 SE from the crisp; spot delta 0.035% and gamma 0.0093% off their CRN ladders. A lagging-payment schedule (coupon paying after its fixing) would still have its pending window zeroed by the carry — `pending` remains unused here. *Closed 2026-09-06:* the deal says which - `Barrier_Observation`, `'Spot'` (default) or `'Average'`, read by both arms.
 - **`Credit_Monte_Carlo` × the autocall's delta, what is left** — the collateralised residual had
   two parts. The FIRST was a ledger the counterfactual replayed and the value never had: the float
   leg was declared in `cash_events` but never `cash_settle`d, so `cash_to_C` moved cash against a
@@ -627,6 +627,51 @@ set; and five model items in the punchlist below.
   coupons on their settlement dates, CVA 0.0732. Net +84 tracked lines. PROOF DOCUMENTS:
   `artifacts/lv_averaging_20260906/lvav.py hex | arms | first | values | oracle | greeks | full |
   cmc | cmcone` (twelve documents, the three hex rows re-taken on main at landing).
+
+- **`Barrier_Observation`: the autocall's put barrier reads the barrier date's spot or the coupon
+  window's average** (2026-09-06, owner's ruling) - two conventions, both real products, neither
+  derivable from the other, and the DEAL now declares which: one field on
+  `QEDI_CustomAutoCallSwap` (`_V2` by inheritance), `'Spot'` | `'Average'`, DEFAULT `'Spot'` - a
+  barrier is a level on the spot and that is the plain reading of a term sheet. ONE registry,
+  `pricing.BARRIER_OBSERVATION`, hands each caller the two readings of its own quantity and the
+  field picks one, so neither arm gains a branch. On the OSS arm under a walking kit both readings
+  are half-lines in the SAME prefix return - the average's `(K - c)/S G` and the spot's `B/S W`
+  with `W` the window's own cumulative return to its LAST FIXING, the nearest boundary the walk
+  has - so the breach is their INTERSECTION and the put leg stays one `lognormal_fired_gain` at a
+  shifted forward, no second draw and no new closed form; the stride carries its bound in the
+  strip's own measure the same way, and an interval is now built only where a barrier date reads
+  it. The full-path branch reads the barrier AFTER the fixing accumulates and compares the
+  window's running SUM against `putBarrier * count`, so `Spot` takes no divide at all. A window of
+  ONE is the same bit under both values and unmoved: `campaign/lv_hex.py`
+  **-0x1.aad8d5d75f8c9p+5** under the default, under `'Spot'` and under `'Average'`; the repo's
+  own `autocall_job.json` `0x1.87f8285dd41fcp-2`; the component family and its stride
+  `-0x1.ffdf759c774dap+4` / `-0x1.f9ab6bb9189f5p+4`, both re-taken on main; the GBM five-fixing
+  full-path document `-0x1.bb53368e105d2p+5`. On the calibrated market the five-fixing LogVar2FJ
+  document under `'Average'` reproduces main's five seeds BIT FOR BIT, crisp and smooth, and under
+  `'Spot'` the lane's own default. MEASURED at 65,536 paths, five seeds, CRN-paired: at a
+  five-business-day window and a 70% barrier the field is worth nothing measurable (-0.005 at 0.1
+  paired SE crisp, -0.008 at 1.4 smooth, +0.045 at 1.0 on the full-path arm); at a WHOLE-INTERVAL
+  window (26 weekly fixings) it is worth **+0.37** (5.5 SE, 1.2%) on the zero-rate twin, where the
+  brute force re-told to read the same thing agrees at 0.02 and -0.15 combined SE (0.36 / 0.42 on
+  the five-day), and **+1.87** (29.9 SE, 3.8%) at the GBM limit - where the FULL-PATH arm makes
+  the same move, +1.84, the two **0.029 apart** on their own 0.063 / 0.094, which is what gates
+  that branch's own reading. `Greeks: 'First'` on and off hex-identical under `Spot`
+  (`-0x1.e1d116592091fp+5`), spot delta 0.03% off its CRN ladder (flatness 0.12%) and gamma
+  0.008%; the credit MC at 256 x 2,048 reads CVA 0.0731208 with a dispersed profile and the four
+  coupons on their settlement dates. OPEN: on the OSS arm a SECOND consecutive coupon whose window
+  is wholly observed reads the FIRST one's last fixing under `'Spot'`, the block entering with
+  that `Sj` - the same staleness its prefix already carries, and no document here reaches it.
+  REFUSED BY NAME rather than left silent: an `'Average'` barrier date whose coupon window holds
+  no fixing would compare a mean of nothing, so `calc_dependencies` raises `UnpriceableSchedule`
+  naming the date and both remedies, on either arm - a barrier dated on the first float payment,
+  a quarter before the first observation, refuses, and the same document under `'Spot'` prices at
+  `-0x1.5116d53b3209ap+4`. Net +54 tracked lines. PROOF DOCUMENTS: `campaign/lv_hex.py`,
+  `artifacts/lv_averaging_20260906/lvav.py obs_hex | obs_stride | arms | values | obs_values |
+  obs_oracle | obs_full | obs_limit | obs_refuse | first | greeks | cmc`,
+  `tests/fixtures/autocall_job.json`,
+  `tests/fixtures/policy_test_simulate_only.json`,
+  `campaign/documents/9500/hex_tarf_True.json` (the last three the `gates/reach.py --dirty` cover,
+  re-taken on main and on the lane).
 
 - **LogVar2FJ phase 2 - spec 5.4's engine bootstrapper: the L strip re-bootstrapped at every
   iterate, the implicit function theorem as an expression, and risk in quote space through ONE

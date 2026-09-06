@@ -1030,6 +1030,12 @@ def lognormal_fired_gain(spot, drift, vol, z_bound, strike, fired_above, power=1
                 spot, drift, vol, z_bound, fired_above, 0.0))
 
 
+#: What an autocall's put barrier is observed on - the deal's `Barrier_Observation`. Each caller
+#: hands the two readings of its own quantity; a coupon window of one makes them the same bits.
+BARRIER_OBSERVATION = {'Spot': lambda spot, average: spot,
+                       'Average': lambda spot, average: average}
+
+
 def splice_conditional_p(crisp, mixture):
     """The conditional-p splice: report the CRISP term's value and the MIXTURE's every derivative.
 
@@ -4550,7 +4556,12 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     (roadmap.md). Quanto bends the carry at the expiry read; compo prices the product S*X.
 
     THE COUPON READS A WINDOW. Each coupon owns a window of one or more price fixings; a window of
-    one is the spot at that fixing and a longer one their arithmetic AVERAGE. On the OSS arm the
+    one is the spot at that fixing and a longer one their arithmetic AVERAGE. Which of the two the
+    PUT BARRIER reads is ``Barrier_Observation`` - and the spot at the barrier date is the
+    window's LAST FIXING here, the nearest boundary this walk has. Both readings are half-lines in
+    the SAME prefix return, so the breach is their intersection, the put leg stays one
+    ``lognormal_fired_gain``, the payoff is the average either way, and a window of one is one bit
+    under both. On the OSS arm the
     window's own fixing-to-fixing blocks are SAMPLED as plain Gaussians and the survival truncates
     the PREFIX return alone (spec 2.4.1) - the average is ``c + S*exp(R_pre)*G`` with ``c`` the
     observed fixings and ``G`` the sampled ones, so ``{A <= K}`` is still a half-line in ``R_pre``
@@ -4609,12 +4620,14 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
     THE FULL-PATH BRANCH REFUSES BY NAME rather than no-opping: its termination is a smoothed
     per-inner-path weight with no crisp per-scenario decision to replace, and its ``breached`` is a
-    hard indicator on the AVERAGE. The stride does not reach it either, for the same reason - a mean
-    of spots is not one fixing interval's law.
+    hard indicator, on the average or the spot as the deal declares. The stride does not reach it
+    either, for the same reason - a mean of spots is not one fixing interval's law.
     """
     def sim_autocall(S, isBarrierDate, isFixingDate, isFloatDate, floating, threshold, coupon, terminationDate):
         """The FULL-PATH branch's inner walk: coupons trigger off the running average of spots and
-        termination is a smoothed heaviside, so there is no crisp per-scenario decision."""
+        termination is a smoothed heaviside, so there is no crisp per-scenario decision. An
+        ``'Average'`` barrier date reads the window's fixings TO that date, and one that has none
+        is refused in ``calc_dependencies`` rather than compared against a mean of nothing."""
         avg = 0.0
         averageCounter = 0.0
         fx = isQuanto * (fixFXRate - 1.0) + 1.0
@@ -4630,12 +4643,15 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         for t in range(tMax):
             inforce = 1.0 * (terminationDate < 0.0)
 
-            if isBarrierDate[t] > 0.0:
-                breachEvent = inforce * (S[t] <= putBarrier)
-
             if isFixingDate[t] > 0.0:
                 sumOfSpots = sumOfSpots + S[t]
                 averageCounter = averageCounter + 1.0
+
+            if isBarrierDate[t] > 0.0:
+                # AFTER the fixing, so an `Average` date reads its own window fixing too; the count
+                # scales the LEVEL rather than dividing the sum, which costs `Spot` nothing
+                breachEvent = inforce * (observe(S[t], sumOfSpots) <=
+                                         putBarrier * observe(1.0, averageCounter))
 
             if isFloatDate[t] > 0.0:
                 lastKnownFloatingRate = -floating[floatingTime]
@@ -4792,11 +4808,12 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                     fixing, b_step, u[coupon_index], e1, e2,
                                     kit.stride_bound(fixing, K), True)
                                 strided = (Sj_next, st_next)
-                                if putBarrier > 0.0:
-                                    # held for the barrier block a screen below: the interval's own
-                                    # cached law, the weight from BEFORE `p` enters `L`, and the
-                                    # breach region inside the surviving set
-                                    interval = (fixing, Sj, None, None, L, min(putBarrier, K), c)
+                                if barrier > 0 and putBarrier > 0.0:
+                                    # held below: the interval's cached law, the weight from BEFORE
+                                    # `p` enters `L`, and the breach's bound inside the surviving
+                                    # set. A daily kit has ONE fixing, where the two readings agree
+                                    interval = (fixing, Sj, None, None, L,
+                                                kit.stride_bound(fixing, min(putBarrier, K)), c)
                             elif hn:
                                 # HN daily sub-stepping to the coupon date. The autocall knocks out
                                 # only AT the coupon observation, so the OSS truncation - survival
@@ -4829,14 +4846,18 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                     win_end = torch.exp(steps[..., -1])
                                     G = (1.0 + torch.exp(steps).sum(-1)) / n_win
                                 scale = Sj * G
+                                k_ratio = (K - c) / scale
                                 p = utils.norm_cdf(
-                                    (torch.log(torch.clamp_min((K - c) / scale, eps)) - m) / s)
-                                if putBarrier > 0.0:
-                                    # held for the barrier block a screen below: the average's
-                                    # lognormal factor before the advance, the prefix's own law,
-                                    # the weight from BEFORE `p` enters `L`, the breach region
-                                    # inside the surviving set, and the observed shift
-                                    interval = (None, scale, m, s, L, min(putBarrier, K), c)
+                                    (torch.log(torch.clamp_min(k_ratio, eps)) - m) / s)
+                                if barrier > 0 and putBarrier > 0.0:
+                                    # held below: the average's lognormal factor before the
+                                    # advance, the prefix's own law, the weight from BEFORE `p`
+                                    # enters `L`, the breach's half-line INTERSECTED with the
+                                    # surviving one - both bound the same return - and the shift
+                                    b_ratio = observe(putBarrier, putBarrier - c) / (
+                                        Sj * observe(win_end, G))
+                                    interval = (None, scale, m, s, L, (torch.log(torch.clamp_min(
+                                        torch.minimum(b_ratio, k_ratio), eps)) - m) / s, c)
                         else:
                             decided = obs / n_win
                             p = torch.where(K > decided, 1.0, 0.0)
@@ -4911,48 +4932,51 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             Sj = Sj * win_end
                             coupon_index += ahead
 
-                    if barrier > 0 and interval is not None:
-                        # THE PUT LEG, INTEGRATED: `b_eff = min(B, K)` puts the breach region inside
-                        # the SURVIVING set, and `L_prev` - the weight from before `p` entered `L` -
-                        # IS `L / p` without the 0/0 where every path fired
-                        fixing, scale, m, s, L_prev, b_eff, c = interval
-                        analytic = L_prev * D[j] * fx * (
-                            kit.stride_fired_gain(fixing, kit.stride_bound(fixing, b_eff),
-                                                  strike * (1.0 - rebate), False)
-                            if fixing is not None else lognormal_fired_gain(
-                                scale, m, s,
-                                (torch.log(torch.clamp_min((b_eff - c) / scale, eps)) - m) / s,
-                                strike * (1.0 - rebate) - c, False)) / strike
-                        if smooth:
-                            P = P + analytic
+                    if barrier > 0:
+                        # WHAT THE BREACH READS - the deal's `Barrier_Observation`: the window's
+                        # last fixing, which is where the walk left `Sj`, or the average the trigger
+                        # itself decided on. The PAYOFF stays the average under both
+                        at = observe(Sj, decided)
+                        if interval is not None:
+                            # THE PUT LEG, INTEGRATED against `bound`, and `L_prev` - the weight
+                            # from before `p` entered `L` - IS `L / p` without the 0/0 where every
+                            # path fired
+                            fixing, scale, m, s, L_prev, bound, c = interval
+                            analytic = L_prev * D[j] * fx * (
+                                kit.stride_fired_gain(fixing, bound, strike * (1.0 - rebate), False)
+                                if fixing is not None else lognormal_fired_gain(
+                                    scale, m, s, bound,
+                                    strike * (1.0 - rebate) - c, False)) / strike
+                            if smooth:
+                                P = P + analytic
+                            else:
+                                # THE CONDITIONAL-p MIXTURE: value stays the sampled indicator's bit
+                                # for bit, every derivative is the integral's
+                                breach = torch.where(at <= putBarrier, 1.0, 0.0)
+                                crisp = L * D[j] * fx * breach * (rebate - (1.0 - decided / strike))
+                                P = P + crisp + splice_conditional_p(crisp, analytic)
+                                if P_cf is not None:
+                                    P_cf = P_cf + L_cf * D[j] * fx * breach * (
+                                        rebate - (1.0 - decided / strike))
                         else:
-                            # THE CONDITIONAL-p MIXTURE: value stays the sampled indicator's bit for
-                            # bit, every derivative is the integral's
-                            breach = torch.where(decided <= putBarrier, 1.0, 0.0)
-                            crisp = L * D[j] * fx * breach * (rebate - (1.0 - decided / strike))
-                            P = P + crisp + splice_conditional_p(crisp, analytic)
+                            # no conditioning step this iteration, and EXACT on the level the deal
+                            # names in both the ways that happens: an OBSERVED fixing, and a block
+                            # opening on an unaligned one
+                            breach = torch.where(at <= putBarrier, 1.0, 0.0)
+                            put_leg = L * D[j] * fx * (rebate - (1.0 - decided / strike))
+                            P = P + breach * put_leg
                             if P_cf is not None:
                                 P_cf = P_cf + L_cf * D[j] * fx * breach * (
                                     rebate - (1.0 - decided / strike))
-                    elif barrier > 0:
-                        # no conditioning step this iteration, and EXACT on the spot the deal names
-                        # in both the ways that happens: an OBSERVED fixing, and a block opening on
-                        # an unaligned one
-                        breach = torch.where(decided <= putBarrier, 1.0, 0.0)
-                        put_leg = L * D[j] * fx * (rebate - (1.0 - decided / strike))
-                        P = P + breach * put_leg
-                        if P_cf is not None:
-                            P_cf = P_cf + L_cf * D[j] * fx * breach * (
-                                rebate - (1.0 - decided / strike))
-                        if boundary_aad and putBarrier > 0.0:
-                            # ONE decision per inner path, gap > 0 meaning BREACHED, and the jump is
-                            # what this row's accumulator gains if that path's indicator flips. Only
-                            # here: where `interval` is not None the splice already took it. A
-                            # barrier date with no barrier decides nothing - its gap is log(0)
-                            bar_jumps.append(put_leg.detach())
-                            bar_gaps.append(
-                                torch.log(putBarrier / decided).expand_as(bar_jumps[-1]))
-                            bar_rows.append(i)
+                            if boundary_aad and putBarrier > 0.0:
+                                # ONE decision per inner path, gap > 0 meaning BREACHED, and the jump
+                                # is what this row's accumulator gains if that path's indicator
+                                # flips. Only here: where `interval` is not None the splice already
+                                # took it. A barrier date with no barrier decides nothing - log(0)
+                                bar_jumps.append(put_leg.detach())
+                                bar_gaps.append(
+                                    torch.log(putBarrier / at).expand_as(bar_jumps[-1]))
+                                bar_rows.append(i)
 
 
                 if ledger is not None:
@@ -5062,6 +5086,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     Floating = factor_dep['Autocall_Floating']
     Coupon = factor_dep['Autocall_Coupons']
     putBarrier = factor_dep['Barrier']
+    observe = BARRIER_OBSERVATION[factor_dep['Barrier_Observation']]
     isQuanto = 1.0 * (deal_data.Instrument.field.get('Payoff_Type') == 'Quanto')
     fixFXRate = deal_data.Instrument.field.get('FixFXRate', 1.0)
     rebate = deal_data.Instrument.field.get('Rebate', 0.0)

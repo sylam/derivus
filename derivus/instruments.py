@@ -3955,6 +3955,13 @@ class QEDI_CustomAutoCallSwap(Deal):
                       '',
                       '**Put barrier** (optional)',
                       '',
+                      '**Barrier_Observation** picks what the breach reads on a coupon whose window holds more',
+                      'than one fixing: `Spot` (the default) reads the spot at the barrier date - the last',
+                      'fixing of the window on the OSS arm - and `Average` reads that window as the trigger',
+                      'does, its arithmetic mean. A window of one fixing prices the same bit either way, and',
+                      'the payoff stays the average under both. An `Average` barrier date whose coupon',
+                      'window holds no fixing is refused by name, not compared against a mean of nothing.',
+                      '',
                       'When a put barrier is present, a second OSS truncation applies within each surviving path',
                       'to handle the put protection level. The analytic contribution is the conditional put payoff',
                       'given the barrier is crossed, valued from the barrier level.',
@@ -4009,7 +4016,9 @@ class QEDI_CustomAutoCallSwap(Deal):
 
         THE ZERO-COUPON ROW IS THE THIRD REFUSAL AND IT IS FATAL (`UnpriceableSchedule`, per
         `utils.is_fatal_pricing_error`): it says the DOCUMENT is wrong, not that the engine cannot
-        reach it. The max(all_dates) <= Expiry_Date warning is currently DISABLED."""
+        reach it. An `'Average'` barrier date whose coupon window holds no fixing is the FOURTH
+        and the same kind - the mean it would read is a mean of nothing. The
+        max(all_dates) <= Expiry_Date warning is currently DISABLED."""
         field = {
             'Currency': utils.check_rate_name(self.field['Currency']),
             'Payoff_Currency': utils.check_rate_name(self.field['Payoff_Currency']),
@@ -4060,6 +4069,22 @@ class QEDI_CustomAutoCallSwap(Deal):
             spot_model != 'None' and not pricing.OSS_SPOT_MODEL_KITS[spot_model].daily
             and pricing.oss_window_ends(pf_dates, ac_dates) is not None))
 
+        if self.field['Barrier_Observation'] == 'Average':
+            # AN `Average` BARRIER READS ITS COUPON'S WINDOW, which opens after that coupon's
+            # predecessor, and a mean of no fixings is not a level. Both arms, though only the
+            # full-path one can author it: an OSS window is non-empty by construction
+            for barrier_date in sorted(x for x in ab if x >= base_date):
+                opens = max([x for x in coupon_dates if x < barrier_date] or [pd.Timestamp.min])
+                if not any(opens < x <= barrier_date for x in fixing_dates):
+                    raise utils.UnpriceableSchedule(
+                        "{}: Barrier_Observation is 'Average' and no price fixing falls in the "
+                        'coupon window the barrier dated {:%Y-%m-%d} is observed in, so the mean '
+                        'it reads is a mean of nothing. Move that barrier date onto or after an '
+                        "observation, or declare Barrier_Observation: 'Spot', which reads the "
+                        "barrier date's own spot".format(
+                            self.field.get('Reference', 'this QEDI_CustomAutoCallSwap'),
+                            barrier_date))
+
         field_index = {
             'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
             'Payoff_Currency': get_fxrate_factor(field['Payoff_Currency'], static_offsets, stochastic_offsets),
@@ -4076,6 +4101,7 @@ class QEDI_CustomAutoCallSwap(Deal):
             'Strike_Price': self.field['Strike_Price'],
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
             'Barrier': self.field.get('Barrier', 0.0) * self.field['Strike_Price'],
+            'Barrier_Observation': self.field['Barrier_Observation'],
             'Expiry': (self.field['Expiry_Date'] - base_date).days
         }
 

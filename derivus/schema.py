@@ -228,7 +228,7 @@ _DEAL_DEFAULTS = {}
 #: schema-invalid block into a plausible wrong number - 741.53 against the 78.93 the author meant.
 #: So completion is an ALLOWLIST of fields whose declared value IS the engine's own fallback; every
 #: other omission keeps its `KeyError` and the named skip that makes it visible.
-COMPLETABLE = frozenset(['Barrier_Monitoring_Frequency', 'Cash_Rebate'])
+COMPLETABLE = frozenset(['Barrier_Monitoring_Frequency', 'Barrier_Observation', 'Cash_Rebate'])
 
 
 def _period_offset(period):
@@ -610,7 +610,10 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
     F('Barrier_Dates', 'Table', default='null', row=Row([F('Date', 'Date')])),
     F('Autocall_Coupons', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
     F('Autocall_Thresholds', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
-    F('Payoff_Type', 'Text', default='Standard', values=['Standard', 'Quanto', 'Compo'])
+    F('Payoff_Type', 'Text', default='Standard', values=['Standard', 'Quanto', 'Compo']),
+    F('Barrier_Observation', 'Text', default='Spot', values=['Spot', 'Average'],
+      description="Where the put barrier is observed - the barrier date's own spot, or the "
+                  "arithmetic average of the coupon window it falls in")
 ])
 
 QEDI_CUSTOMSWAP = Group('QEDI_CustomSwap.Fields', [
