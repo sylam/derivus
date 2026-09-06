@@ -33,9 +33,8 @@ pip install --index-url=https://blpapi.bloomberg.com/repository/releases/python/
 ```
 
 Sanity check: start the service and `GET /schema` answers with `engine_version`. From a clone,
-`pytest tests -q -rs` runs the suite — on CPU expect a skip or two that name their reasons (a
-`torch.compile` backend for the fused Heston-Nandi sub-step; one CRN oracle calibrated under
-CUDA; the quote sheet without `derivus[quote]`).
+`pytest tests -q -rs` runs the suite — on CPU expect a skip or two that name their reasons (one
+CRN oracle calibrated under CUDA; the quote sheet without `derivus[quote]`).
 
 ## Start the stack
 

@@ -79,8 +79,8 @@ FAMILY = (
 #: work-list item, not an excuse.
 #:
 #: The shape of what is left, after the American arm and the eight closed-form barrier payoffs were
-#: closed: no PUT partial barrier and no rebate on one, no quanto/compo, no inverted or put TARF, no
-#: Heston-Nandi barrier on an exposure grid, and an autocall with no floating leg.
+#: closed: no PUT partial barrier and no rebate on one, no quanto/compo, no inverted or put TARF,
+#: and an autocall with no floating leg.
 UNREACHED = {
     # ---- getbarrierpayoff: the two completeness elses -------------------------------------------
     # The selector is (direction, eta, phi, strike vs H) and the four arms of each block partition
@@ -150,42 +150,18 @@ UNREACHED = {
         "the same loop completing - unreachable until a fixture carries a rebate at all.",
 
     # ---- pv_discrete_barrier_option: the OSS inner MC and the already-hit leg -------------------
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if isdigital:', 'body#2'):
+    ('pv_discrete_barrier_option.sim_spot_oss', 'if isdigital:', 'body'):
         "an EquityBarrierBinaryOption reaching the in-out-parity vanilla leg of the OSS recursion.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if float(carry_total.detach().max() - carry_total.detach().min()) > 1.0e-9:', 'body'):
-        "a Heston-Nandi barrier under a STOCHASTIC discount/dividend curve, so the carry varies "
-        "across scenarios. This is the refusal that stops HN pricing with a batched carry and no "
-        "test has ever made it fire - the class the boundary_weights 1e-30 threshold was in.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if isBarrierDate_block[j] > 0:', 'body#2'):
-        "a Heston-Nandi discrete barrier whose block contains a barrier observation date: the HN "
-        "sub-stepping arm of the OSS recursion. Every HN barrier fixture prices under base "
-        "valuation, so the block never spans one.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if eta == BARRIER_UP:', 'body#2'):
-        "the same HN arm with an Up barrier.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if eta == BARRIER_UP:', 'else#2'):
-        "the same HN arm with a Down barrier.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if direction == BARRIER_OUT:', 'body#2'):
-        "the same HN arm on a knock-OUT.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if direction == BARRIER_OUT:', 'else#2'):
-        "the same HN arm on a knock-IN.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if isBarrierDate_block[j] > 0:', 'body#3'):
-        "an HN block whose FINAL fixing is a barrier date - the terminal-step branch of the same "
-        "recursion.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'elif walks:', 'body#1'):
+    ('pv_discrete_barrier_option.sim_spot_oss', 'if kit is not None:', 'body'):
         "a document declaring SpotModel LogVar2FJ - the walking kit's block law; no fixture does.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'elif walks:', 'body#2'):
+    ('pv_discrete_barrier_option.sim_spot_oss', 'if kit is None:', 'else#2'):
         "the same document at the in-out-parity vanilla, which that model prices by conditional "
         "Black over the walk and returns as the already-hit leg's by-product.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if kit is None:', 'else#4'):
+    ('pv_discrete_barrier_option.sim_spot_oss', 'if kit is None:', 'else#3'):
         "the same document, where each monitored interval reads its law off that block.",
-    ('pv_discrete_barrier_option', 'elif walks:', 'body'):
+    ('pv_discrete_barrier_option', 'elif kit is not None:', 'body'):
         "the same document already knocked in, whose hit value is that by-product.",
-    ('pv_discrete_barrier_option', 'if carry_spread > 1.0e-9:', 'body'):
-        "an already-knocked-in HN barrier under a stochastic carry. The sibling of the "
-        "sim_spot_oss refusal above, and equally unexercised.",
-    ('pv_discrete_barrier_option', 'if isdigital:', 'body#1'):
-        "an already-knocked-in HN digital barrier - the hn_cdf_logret leg of the hit value.",
-    ('pv_discrete_barrier_option', 'if isdigital:', 'body#2'):
+    ('pv_discrete_barrier_option', 'if isdigital:', 'body'):
         "an already-knocked-in GBM digital barrier. This is the cash-payoff twin of the leg that "
         "carried the +1432% forward defect, and it is still not executed by anything.",
 
@@ -197,16 +173,10 @@ UNREACHED = {
         "the same inverted TARF, on the PnL barrier B_pnl.",
     ('pv_MC_Tarf.sim_spot_tarf', 'if not invertedTarget:', 'else#2'):
         "the same inverted TARF, on the second B_pnl site.",
-    ('pv_MC_Tarf.sim_spot_tarf', 'if kit is None:', 'else#2'):
-        "a Heston-Nandi TARF at the PER-STEP vol read. The block-level read a screen above takes "
-        "both arms; this one has never seen a declared model with a positive interval.",
-    ('pv_MC_Tarf.sim_spot_tarf', 'if walks:', 'body'):
+    ('pv_MC_Tarf.sim_spot_tarf', 'if kit is not None:', 'body'):
         "a document declaring SpotModel LogVar2FJ - the walking kit's block law; no fixture does.",
-    ('pv_MC_Tarf.sim_spot_tarf', 'if kit is None:', 'else#3'):
+    ('pv_MC_Tarf.sim_spot_tarf', 'if kit is None:', 'else#2'):
         "the same document, where the fixing interval reads its law off that block.",
-    ('pv_MC_Tarf.sim_spot_tarf', 'if fix is None:', 'else#2'):
-        "a TARF step at an already OBSERVED fixing, on the advance rather than the draw - a "
-        "reporting row whose block opens on a past fixing.",
     ('pv_MC_Tarf.sim_spot_tarf', 'if not integrated:', 'body'):
         "a TARF carrying its OTM kink crisply rather than integrated - the non-integrated arm of "
         "the smoothing dial.",
@@ -248,7 +218,7 @@ UNREACHED = {
         "the same: a block whose spot comes from past_fixings.",
     ('pv_MC_AutoCallSwap.sim_spot', 'if reduced_samples:', 'else'):
         "an autocall MTM row with no remaining coupon observations.",
-    ('pv_MC_AutoCallSwap.sim_spot', 'elif walks and reduced_samples:', 'body'):
+    ('pv_MC_AutoCallSwap.sim_spot', 'if kit is not None and reduced_samples:', 'body'):
         "a document declaring SpotModel LogVar2FJ - the non-daily kit's block law; no fixture "
         "declares one.",
     ('pv_MC_AutoCallSwap.sim_spot', 'if kit is None:', 'else'):
@@ -285,8 +255,7 @@ MUST_COVER = {
     ('pv_discrete_barrier_option', 'if direction != BARRIER_IN:', 'body'),
     ('pv_discrete_barrier_option', 'if direction != BARRIER_IN:', 'else'),
     ('pv_discrete_barrier_option', 'if all_hit:', 'body'),
-    ('pv_discrete_barrier_option', 'if hn:', 'body#2'),
-    ('pv_discrete_barrier_option', 'if hn:', 'else#2'),
+    ('pv_discrete_barrier_option', 'elif kit is not None:', 'else'),
     ('pv_discrete_barrier_option.sim_spot_oss', 'if direction == BARRIER_IN:', 'body'),
     ('pv_discrete_barrier_option.sim_spot_oss', 'if direction == BARRIER_IN:', 'else'),
     ('pv_barrier_option', 'if direction == BARRIER_IN:', 'body'),

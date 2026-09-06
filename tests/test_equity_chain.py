@@ -1,4 +1,4 @@
-"""The listed equity option CHAIN as a Heston-Nandi quote block - `derivus_bloomberg.equity_chain`.
+"""The listed equity option CHAIN as one option quote block - `derivus_bloomberg.equity_chain`.
 
 Everything but the last gate runs on ONE canned chain: 192 listed contracts over six expiries,
 mixed liquidity, both exercise styles, and a poison table of dead prints authored on purpose. No
@@ -453,7 +453,7 @@ def test_a_stale_spot_refuses_the_way_a_stale_contract_does():
 
 
 def test_an_american_chain_refuses_by_name_with_its_remedy():
-    """An American premium is not the European premium a Heston-Nandi fit prices against, so a
+    """An American premium is not the European premium this fit prices against, so a
     single-name chain refuses rather than fitting the wrong number under the right name. The
     refusal names the underlying, the count, the style and the remedy; "eight distinct contracts"
     would name the symptom."""
@@ -622,7 +622,7 @@ def test_the_distinct_contract_floor_fires_naming_the_chains_own_expiries():
     message = str(refusal.value)
     assert '2026-11-30' in message and '2027-02-28' in message
     assert 'distinct contract' in message and 'at least 8' in message
-    assert 'HestonNandiComponentModelPrices' in message
+    assert 'LogVar2FJModelPrices' in message
     # the notes ride into the refusal, so it says what each rung DID
     assert '1y DROPPED' in message
 
@@ -716,29 +716,19 @@ def test_two_rungs_on_one_contract_are_one_row_at_the_summed_weight():
 def test_the_floor_and_the_defaults_are_the_families_own_numbers():
     """The emitter cannot import the engine, so every number it hard-codes is held against the
     engine's own DECLARATION here. A default that moves on either side has to move on both."""
-    from derivus.bootstrappers import (HestonNandiComponentModelParameters,
-                                       HestonNandiModelParameters)
+    from derivus.bootstrappers import LogVar2FJModelParameters as Family
 
-    assert EquityLadder().minimum_contracts == \
-        HestonNandiComponentModelParameters.fx_minimum_contracts == 8
-    declared = {field.name: field.default for field in HestonNandiModelParameters.fields}
+    assert EquityLadder().minimum_contracts == Family.fx_minimum_contracts == 8
+    declared = {field.name: field.default for field in Family.fields}
     assert equity_chain.STEPS_PER_YEAR == declared['Steps_Per_Year']
-    assert equity_chain.QUADRATURE_PANELS == declared['Quadrature_Panels']
-    component = {field.name: field.default
-                 for field in HestonNandiComponentModelParameters.fields}
-    assert equity_chain.FAMILY_HEADER[equity_chain.COMPONENT_FAMILY] == {
-        'Quadrature_Panels': component['Quadrature_Panels'], 'Rho': component['Rho'],
-        'Quote_Sensitivity': component['Quote_Sensitivity']}
-    assert equity_chain.HN_REFERENCE_TYPES.keys() == \
-        HestonNandiModelParameters.factor_types.keys()
-    for field, spelled in equity_chain.HN_REFERENCE_TYPES.items():
-        assert spelled in HestonNandiModelParameters.factor_types[field], field
+    assert equity_chain.REFERENCE_TYPES.keys() == Family.factor_types.keys()
+    for field, spelled in equity_chain.REFERENCE_TYPES.items():
+        assert spelled in Family.factor_types[field], field
 
-    # the declared ladder: the product horizon, and the component family's widened wings
+    # the declared ladder: the product horizon, and the family's widened wings
     assert EquityLadder().pillars == (0.25, 0.5, 1.0, 2.0, 3.0)
-    assert len(EquityLadder().wing_pillars) == len(
-        HestonNandiComponentModelParameters.fx_wing_expiries) == 4
-    assert (EquityLadder().wing_delta,) == HestonNandiModelParameters.fx_wing_pillars == (0.25,)
+    assert len(EquityLadder().wing_pillars) == len(Family.fx_wing_expiries) == 4
+    assert EquityLadder().wing_delta in Family.fx_wing_pillars
 
 
 def test_a_ladder_that_contradicts_itself_refuses_at_construction():
@@ -888,68 +878,31 @@ def test_the_block_writes_only_fields_the_family_declares():
     `Quote_Type`, and the option row's nine columns are `OPTION_QUOTE`'s six plus the two-way and
     the stamp - read as an EQUALITY against `MARKET_QUOTE_VALUES` rather than as a gap."""
     from derivus import schema
-    from derivus.bootstrappers import (HestonNandiComponentModelParameters,
-                                       HestonNandiModelParameters, LogVar2FJModelParameters)
+    from derivus.bootstrappers import LogVar2FJModelParameters as Family
 
-    families = {equity_chain.COMPONENT_FAMILY: HestonNandiComponentModelParameters,
-                equity_chain.PLAIN_FAMILY: HestonNandiModelParameters,
-                equity_chain.LOGVAR_FAMILY: LogVar2FJModelParameters}
-    assert set(families) == set(equity_chain.FAMILIES), (
-        'a family the emitter admits has no schema gate: {}'.format(
-            set(equity_chain.FAMILIES) ^ set(families)))
-    for family, klass in families.items():
-        name, block = emitted(family=family)
-        assert name == '{}.SPX'.format(family)
-        declared = {field.name: field for field in klass.fields}
-        instrument = block['instrument']
-        assert set(instrument) <= set(declared), sorted(set(instrument) - set(declared))
-        for key, value in instrument.items():
-            if declared[key].values:
-                assert value in declared[key].values, (family, key, value)
-        assert instrument['Quote_Type'] == 'Premium'
-        assert 'Premium' in declared['Quote_Type'].values
+    name, block = emitted()
+    assert name == '{}.SPX'.format(equity_chain.FAMILY)
+    declared = {field.name: field for field in Family.fields}
+    instrument = block['instrument']
+    assert set(instrument) <= set(declared), sorted(set(instrument) - set(declared))
+    for key, value in instrument.items():
+        if declared[key].values:
+            assert value in declared[key].values, (key, value)
+    assert instrument['Quote_Type'] == 'Premium'
+    assert 'Premium' in declared['Quote_Type'].values
 
-        rows = instrument['European_Options']
-        columns = {field.name for field in declared['European_Options'].row.fields}
-        assert columns == {'Expiry_Date', 'Strike', 'Option_Type', 'Units', 'Weight',
-                           'Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask', 'Timestamp'}
-        for row in rows:
-            assert columns <= set(row), 'a row is missing a column the family declares'
-            # the three-way identity: the keys the row carries beside `OPTION_QUOTE`'s six, the
-            # keys the emitter declares, and the house's value plane are ONE SET - which is what
-            # puts `European_Options` in `MARKET_QUOTE_CONTAINERS`. A column added on any side has
-            # to appear on the other two.
-            assert set(row) - {field.name for field in schema.OPTION_QUOTE} == \
-                set(equity_chain.QUOTE_VALUE_KEYS) == \
-                set(schema.MARKET_QUOTE_VALUES) - {'Quoted_Market_Value'}
-        assert 'European_Options' in schema.MARKET_QUOTE_CONTAINERS, (
-            'the option row declares the value keys and the value plane does not know it')
-
-
-def test_one_selection_writes_both_family_spellings():
-    """ONE SELECTION, TWO NAMES: the same option table row for row and byte for byte, differing
-    only in the header each family declares - the component one states its pinned `Rho` and its
-    refused `Quote_Sensitivity`, and the plain family declares neither."""
-    component_name, component = emitted(family=equity_chain.COMPONENT_FAMILY)
-    plain_name, plain = emitted(family=equity_chain.PLAIN_FAMILY)
-
-    assert (component_name, plain_name) == ('HestonNandiComponentModelPrices.SPX',
-                                            'HestonNandiModelPrices.SPX')
-    assert component['instrument']['European_Options'] == plain['instrument']['European_Options']
-    assert json.dumps(component['instrument']['European_Options'], sort_keys=True) == \
-        json.dumps(plain['instrument']['European_Options'], sort_keys=True)
-    difference = set(component['instrument']) - set(plain['instrument'])
-    assert difference == set(equity_chain.FAMILY_HEADER[equity_chain.COMPONENT_FAMILY]) - set(
-        equity_chain.FAMILY_HEADER[equity_chain.PLAIN_FAMILY])
-    assert {key: component['instrument'][key] for key in difference} == {
-        key: value for key, value
-        in equity_chain.FAMILY_HEADER[equity_chain.COMPONENT_FAMILY].items()
-        if key in difference}
-    assert {key: value for key, value in component['instrument'].items()
-            if key not in difference} == plain['instrument']
-
-    with pytest.raises(BloombergConfigurationError, match='not a Heston-Nandi quote family'):
-        equity_option_block(canned_chain(), FORWARD, family='FXVolPrices')
+    columns = {field.name for field in declared['European_Options'].row.fields}
+    assert columns == {'Expiry_Date', 'Strike', 'Option_Type', 'Units', 'Weight',
+                       'Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask', 'Timestamp'}
+    for row in instrument['European_Options']:
+        assert columns <= set(row), 'a row is missing a column the family declares'
+        # the three-way identity: the keys the row carries beside `OPTION_QUOTE`'s six, the keys
+        # the emitter declares, and the house's value plane are ONE SET - which is what puts
+        # `European_Options` in `MARKET_QUOTE_CONTAINERS`. A column added on any side has to
+        # appear on the other two.
+        assert set(row) - {field.name for field in schema.OPTION_QUOTE} ==             set(equity_chain.QUOTE_VALUE_KEYS) ==             set(schema.MARKET_QUOTE_VALUES) - {'Quoted_Market_Value'}
+    assert 'European_Options' in schema.MARKET_QUOTE_CONTAINERS, (
+        'the option row declares the value keys and the value plane does not know it')
 
 
 def test_the_chain_emits_a_logvar2fj_block_that_bootstraps(caplog):
@@ -972,15 +925,10 @@ def test_the_chain_emits_a_logvar2fj_block_that_bootstraps(caplog):
     from derivus import utils
     from derivus.riskfactors import LogVar2FJModelParameters
 
-    name, block = emitted(family=equity_chain.LOGVAR_FAMILY, pillars=(0.25, 0.5),
-                          wing_pillars=(0.25, 0.5), minimum_contracts=4)
+    name, block = emitted(pillars=(0.25, 0.5), wing_pillars=(0.25, 0.5), minimum_contracts=4)
     assert name == 'LogVar2FJModelPrices.SPX'
     assert 'Quadrature_Panels' not in block['instrument'], (
         'the block declares a Fourier panel count for a model that inverts nothing')
-    assert block['instrument']['European_Options'] == emitted(
-        family=equity_chain.PLAIN_FAMILY, pillars=(0.25, 0.5), wing_pillars=(0.25, 0.5),
-        minimum_contracts=4)[1]['instrument']['European_Options'], (
-        'one selection wrote two different option tables')
 
     block['instrument'].update(Paths=512, Max_Iterations=4)
     document = job_document({name: block}, surface=False)
@@ -1240,7 +1188,7 @@ def test_the_component_family_fits_the_chain_block_with_no_authored_surface(capl
     assert not [factor for factor in market['Price Factors'] if factor.startswith('EquityPriceVol')]
     assert block['instrument']['Volatility'] == 'SPX', (
         'the block does not name a surface, so nothing is being said about naming one it lacks')
-    market['Bootstrapper Configuration'] = {'HestonNandiComponentModelParameters': {}}
+    market['Bootstrapper Configuration'] = {'LogVar2FJModelParameters': {}}
 
     config = derivus.Context().load_json(
         (json.dumps(document, cls=CustomJsonEncoder), 'equity_chain')).current_cfg
@@ -1249,34 +1197,27 @@ def test_the_component_family_fits_the_chain_block_with_no_authored_surface(capl
         config.bootstrap()
     elapsed = time.time() - started
 
-    written = config.params['Price Factors'].get('HestonNandiComponentModelParameters.SPX')
+    written = config.params['Price Factors'].get('LogVar2FJModelParameters.SPX')
     assert written is not None, (
         'the component family wrote no factor off a premium-quoted chain block in a surface-free '
         'book - the circularity is still standing')
     assert not [record for record in caplog.records if 'skipping' in record.getMessage()], (
         'a reference was skipped rather than read or refused')
-    for key in ('Alpha', 'Beta', 'Gamma_1', 'Rho', 'Phi', 'Gamma_2', 'H0'):
-        assert key in written and math.isfinite(float(written[key])), key
-    assert written['Rho'] == pytest.approx(
-        equity_chain.FAMILY_HEADER[equity_chain.COMPONENT_FAMILY]['Rho'])
-    assert written['H0'] > 0.0 and written['Beta'] > 0.0
-    # a positive Gamma_1 is the equity leverage sign
-    assert written['Gamma_1'] > 0.0, 'a falling index smile fitted with the FX leverage sign'
-    # the L curve: a knot at tenor zero anchoring q0 = L(0), then one per ATM pillar
     from derivus import utils
-    curve = written[utils.HN_COMPONENT_CURVE_NAME]
-    assert len(curve.array) == 1 + len(E2E_LADDER.pillars) and curve.array[0][0] == 0.0
-    assert all(level > 0.0 for _, level in curve.array), curve.array
+    for key in utils.LV_PARAM_NAMES + utils.LV_STRUCTURAL_NAMES:
+        assert key in written and math.isfinite(float(written[key])), key
+    # the L curve: a knot per segment between ATM expiries, the first at tenor zero
+    curve = written['L_Curve']
+    assert len(curve.array) and curve.array[0][0] == 0.0
 
-    # the reading, recorded: the bootstrap's own ATM residual off its report, and the wall clock
-    reported = [record.getMessage() for record in caplog.records if 'ATM residual' in
-                record.getMessage()]
+    # the reading, recorded: the bootstrap's own vol-point RMSE off its report, and the wall clock
+    reported = [record.getMessage() for record in caplog.records
+                if 'RMSE' in record.getMessage()]
     assert reported, 'the family fitted and reported nothing about it'
-    print('\nfitted off the chain block, no surface in the book: {}\nL (annualised vol): {}\n{}\n'
+    print('\nfitted off the chain block, no surface in the book: {}\nL (log variance): {}\n{}\n'
           'bootstrap wall clock {:.1f}s'.format(
-              {key: float(written[key]) for key in utils.HN_COMPONENT_PARAM_NAMES},
-              [(float(knot), round(float(math.sqrt(level * 252.0)), 4))
-               for knot, level in curve.array],
+              {key: float(written[key]) for key in utils.LV_PARAM_NAMES},
+              [(float(knot), round(float(level), 4)) for knot, level in curve.array],
               reported[-1].strip(), elapsed))
 
 
@@ -1294,12 +1235,12 @@ def test_a_surface_the_book_does_carry_is_still_read_where_the_quote_type_reads_
         block['instrument']['Max_Iterations'] = 8
         document = job_document({name: block}, surface=surface)
         document['Calc']['MergeMarketData']['ExplicitMarketData'][
-            'Bootstrapper Configuration'] = {'HestonNandiComponentModelParameters': {}}
+            'Bootstrapper Configuration'] = {'LogVar2FJModelParameters': {}}
         config = derivus.Context().load_json(
             (json.dumps(document, cls=CustomJsonEncoder), 'equity_chain')).current_cfg
         config.bootstrap()
-        written = config.params['Price Factors']['HestonNandiComponentModelParameters.SPX']
-        return [float(written[key]) for key in utils.HN_COMPONENT_PARAM_NAMES]
+        written = config.params['Price Factors']['LogVar2FJModelParameters.SPX']
+        return [float(written[key]) for key in utils.LV_PARAM_NAMES]
 
     with_surface, without = fitted(True), fitted(False)
     assert with_surface == without, (
@@ -1311,7 +1252,7 @@ def test_a_surface_the_book_does_carry_is_still_read_where_the_quote_type_reads_
 # 7  a missing reference refuses; the skip is dead
 # =============================================================================================
 
-def bootstrapped(block, family='HestonNandiComponentModelPrices', **world):
+def bootstrapped(block, family=equity_chain.FAMILY, **world):
     """`(config, refusal or None)` - one block through the REAL bootstrap, the config returned
     either way so a gate can ask what was written."""
     import derivus
@@ -1363,13 +1304,13 @@ def test_a_missing_required_reference_refuses_by_name_and_never_skips(
 
     assert refusal is not None, 'a blank {} under {} still skipped'.format(field, quote_type)
     message = str(refusal)
-    assert 'HestonNandiComponentModelPrices.SPX' in message, 'the refusal does not name the block'
+    assert 'LogVar2FJModelPrices.SPX' in message, 'the refusal does not name the block'
     assert field in message and required in message, message
     assert quote_type in message, 'the refusal does not name the quote type doing the requiring'
     if field == 'Volatility':
         assert 'Quote_Type Premium' in message, 'the second remedy is not offered'
     assert not [factor for factor in config.params['Price Factors']
-                if factor.startswith('HestonNandiComponentModelParameters.')], (
+                if factor.startswith('LogVar2FJModelParameters.')], (
         'a refused block wrote a price factor anyway')
     assert not [record for record in caplog.records if 'skipping' in record.getMessage()], (
         'the refusal still logged a skip')
@@ -1387,7 +1328,7 @@ def test_a_reference_the_book_does_not_carry_refuses_naming_the_factor_it_looked
     assert refusal is not None, 'a named-but-absent curve still skipped'
     assert 'InterestRate.ZAR' in str(refusal) and 'Discount_Rate' in str(refusal), str(refusal)
     assert not [factor for factor in config.params['Price Factors']
-                if factor.startswith('HestonNandiComponentModelParameters.')]
+                if factor.startswith('LogVar2FJModelParameters.')]
 
     # and it refuses before anything is resolved at all
     block['instrument'].update({'Discount_Rate': 'USD', 'Quote_Type': 'Mid'})
@@ -1428,7 +1369,7 @@ def repo_world(market_prices=None, deals=()):
 
 
 def probe_block(funding=REPO, days=FORWARD_DAYS):
-    """A `HestonNandiModelPrices.SPX` block whose every quote leaves `Strike` at ZERO - the declared
+    """A `LogVar2FJModelPrices.SPX` block whose every quote leaves `Strike` at ZERO - the declared
     meaning of which is `0 reads the forward`, and the family fills the row in in place. So after a
     real bootstrap each row's `Strike` IS the fit's own forward, read out of the engine.
 
@@ -1463,18 +1404,18 @@ def fitted_forwards(block, deals=()):
     from derivus import run_baseval, utils
     from derivus.config import CustomJsonEncoder
 
-    name = 'HestonNandiModelPrices.SPX'
+    name = 'LogVar2FJModelPrices.SPX'
     document = repo_world({name: block}, deals)
     document['Calc']['MergeMarketData']['ExplicitMarketData'][
-        'Bootstrapper Configuration'] = {'HestonNandiModelParameters': {}}
+        'Bootstrapper Configuration'] = {'LogVar2FJModelParameters': {}}
     config = derivus.Context().load_json(
         (json.dumps(document, cls=CustomJsonEncoder), 'forward-identity')).current_cfg
     config.bootstrap()
     rows = config.params['Market Prices'][name]['instrument']['European_Options']
-    written = config.params['Price Factors']['HestonNandiModelParameters.SPX']
+    written = config.params['Price Factors']['LogVar2FJModelParameters.SPX']
     out = run_baseval(config)[1] if deals else None
     return ([row['Strike'] for row in rows],
-            [float(written[key]) for key in utils.HN_PARAM_NAMES], out)
+            [float(written[key]) for key in utils.LV_PARAM_NAMES], out)
 
 
 def probe_deals(expiries):
@@ -1536,7 +1477,7 @@ def test_no_funding_curve_is_the_arithmetic_this_family_always_had():
 
     Both halves in HEX rather than to a tolerance, at the function and through a real fit.
     """
-    from derivus.bootstrappers import HestonNandiModelParameters as HN
+    from derivus.bootstrappers import LogVar2FJModelParameters as HN
 
     class Flat:
         def __init__(self, level):
@@ -1569,7 +1510,7 @@ def test_the_chain_emitter_declares_the_funding_curve_it_placed_its_strikes_with
     """The emitter's half: `EquityForward` names the funding curve, the block carries it in the
     field the family resolves, and `Quote_Source` says which curve did which job. Blank, the block
     writes no `Funding_Rate` at all rather than a declaration nobody made."""
-    from derivus.bootstrappers import HestonNandiModelParameters
+    from derivus.bootstrappers import LogVar2FJModelParameters
 
     spread = EquityForward(
         underlying_factor='SPX', volatility_factor='SPX', discount_rate='USD',
@@ -1579,9 +1520,9 @@ def test_the_chain_emitter_declares_the_funding_curve_it_placed_its_strikes_with
 
     assert (instrument['Funding_Rate'], instrument['Funding_Rate_Type']) == (REPO, 'InterestRate')
     assert instrument['Discount_Rate'] == 'USD'
-    assert 'Funding_Rate' in {field.name for field in HestonNandiModelParameters.fields}
+    assert 'Funding_Rate' in {field.name for field in LogVar2FJModelParameters.fields}
     assert instrument['Funding_Rate_Type'] in \
-        HestonNandiModelParameters.factor_types['Funding_Rate']
+        LogVar2FJModelParameters.factor_types['Funding_Rate']
     source = instrument['Quote_Source']
     assert 'carried at r=5.2500% on {} against SPX'.format(REPO) in source
     assert 'premiums discounting on USD' in source
@@ -1596,15 +1537,11 @@ def test_the_chain_emitter_declares_the_funding_curve_it_placed_its_strikes_with
 # 9  the best quotes an expiry - `quotes_per_expiry`
 # =============================================================================================
 
-#: The DEFAULT block's own bytes, `sha256` over `json.dumps(block, sort_keys=True)`, one per family.
+#: The DEFAULT block's own bytes, `sha256` over `json.dumps(block, sort_keys=True)`.
 #: `quotes_per_expiry` is a switch and its OFF position is the delta ladder bit for bit. A relative
 #: tolerance cannot say that: re-associating one weight - `vega * sqrt(OI) / d` into
 #: `vega * (sqrt(OI) / d)` - passes every approx in this file and moves every document in the world.
-DEFAULT_BLOCK_SHA = {
-    'HestonNandiComponentModelPrices':
-        'c5954b15e2af50e05826bb7a6f37ed832cf0ac086aab7891c74c66aee98fc94d',
-    'HestonNandiModelPrices':
-        '972dd31b596126d4b90cceee837c83dd17aa98dade031d603ca7fc827a647cd8'}
+DEFAULT_BLOCK_SHA = '1af1f92d4c6c3afb65bee1bb4a07b6aa33ad6747f5e0e6eab36842539580426f'
 
 #: The two-pillar ladder of `E2E_LADDER` asking for five quotes an expiry: ten rows, over the
 #: family's own floor of eight, which is what makes the JSON half of this gate minutes and not hours.
@@ -1639,12 +1576,10 @@ def test_five_quotes_an_expiry_span_the_smile_and_fit_through_the_job_json(caplo
     import logging as _logging
 
     import derivus
-    from derivus import utils
     from derivus.config import CustomJsonEncoder
 
-    for family, digest in DEFAULT_BLOCK_SHA.items():
-        payload = json.dumps(emitted(family=family)[1], sort_keys=True).encode('utf-8')
-        assert hashlib.sha256(payload).hexdigest() == digest, family
+    payload = json.dumps(emitted()[1], sort_keys=True).encode('utf-8')
+    assert hashlib.sha256(payload).hexdigest() == DEFAULT_BLOCK_SHA, DEFAULT_BLOCK_SHA
 
     chain = canned_chain()
     ladder = EquityLadder(quotes_per_expiry=5)
@@ -1713,16 +1648,16 @@ def test_five_quotes_an_expiry_span_the_smile_and_fit_through_the_job_json(caplo
     block['instrument']['Max_Iterations'] = 8
     document = job_document({name: block}, surface=False)
     document['Calc']['MergeMarketData']['ExplicitMarketData']['Bootstrapper Configuration'] = {
-        'HestonNandiComponentModelParameters': {}}
+        'LogVar2FJModelParameters': {}}
 
     config = derivus.Context().load_json(
         (json.dumps(document, cls=CustomJsonEncoder), 'equity_chain')).current_cfg
     with caplog.at_level(_logging.INFO):
         config.bootstrap()
-    written = config.params['Price Factors'].get('HestonNandiComponentModelParameters.SPX')
-    assert written is not None and written['H0'] > 0.0 and written['Gamma_1'] > 0.0
-    curve = written[utils.HN_COMPONENT_CURVE_NAME]
-    assert len(curve.array) == 1 + len(FIVE_LADDER.pillars) and curve.array[0][0] == 0.0
+    written = config.params['Price Factors'].get('LogVar2FJModelParameters.SPX')
+    assert written is not None and len(written['L_Curve'].array)
+    curve = written['L_Curve']
+    assert curve.array[0][0] == 0.0
 
     # the ATM the emitter named is the row the family spends on that expiry's L pillar
     for expiry in {row['Expiry_Date']['.Timestamp'] for row in rows}:

@@ -10,8 +10,8 @@ coupon exactly when the spot finishes at or above the autocall threshold, so
     PV = Units * coupon * D(T) * N(d2),   d2 = (ln(S/K) + (r - q - sigma^2/2) T) / (sigma sqrt T)
 
 with `K = threshold * strike`. That is exact under the GBM the document declares, so the gate is a
-value assertion rather than a sanity check - the same reason `test_hn_oss_pricers.py` uses a
-one-coupon autocall to pin the Heston-Nandi read.
+value assertion rather than a sanity check - the same reason the OSS pricer gates use a
+one-coupon autocall to pin the spot-model read.
 
 Pre-registered from the document below (spot 100, strike 100, r 4%, q 1%, sigma 25%, 1y coupon at
 threshold 1.00, coupon 0.08, Units 10):

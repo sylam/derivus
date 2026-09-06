@@ -338,7 +338,7 @@ reval with no re-bootstrap in it.
 
     It is ONE rule for **every** family: a boundary that depended on which block you were looking at
     would not be a boundary. Five of the seven families do not quote in `Points` at all —
-    `HullWhite2FactorModelPrices` in `Instrument_Definitions`, the two Heston-Nandi families and
+    `HullWhite2FactorModelPrices` in `Instrument_Definitions`, `LogVar2FJModelPrices` and
     `CSForwardPriceModelPrices` in their own option tables, `GBMAssetPriceTSModelPrices` with no quote
     table whatever — so their values half is **empty** and a tick on one of them is still a new plan.
     `tests/test_market_prices_partition.py` states it per family by name.

@@ -117,10 +117,9 @@ price. `furnish_accrual` is where a leg becomes a strip:
 - **the notionals.** `Underlying_Amount` is the notional PER FIXING and `LeverageNotional` is
   `leverage ×` it. `leverage` is the registry's first parameter with a DEFAULT (2.0, the market's own
   gearing), published as the descriptor's `value` and read through `declared()` rather than a `.get`.
-- **the model.** Both deals declare `spot_models = ('None', 'HestonNandi',
-  'HestonNandiComponent', 'LogVar2FJ')`, of which the runner pins only `LogVar2FJ`
-  (`structures.SPOT_MODEL`) — the two Heston-Nandi families are pinned by a book that authors the
-  switch itself. The switch is a `Valuation Configuration` entry per deal TYPE resolved by naming
+- **the model.** Both deals declare `spot_models = ('None', 'LogVar2FJ')`, and the runner pins
+  `LogVar2FJ` (`structures.SPOT_MODEL`). The switch is a `Valuation Configuration` entry per deal
+  TYPE resolved by naming
   convention off the pair's NON-BASE token — `LogVar2FJModelParameters.ZAR` for a USDZAR leg on a USD
   book, whichever side the notional is on, because the base currency is a numeraire and can name no
   block. `spot_model` checks the book for that exact key and pins the model only where it is there: the
@@ -162,22 +161,19 @@ measured on the calibrated book, where its solved strike came out **bit-identica
 Under the single rule it separates by **3.78%** on that book, against a solve floor of 2.5e-5.
 
 **The forced TARF sits on the reciprocal of the fitted axis, which is a change of NUMERAIRE as well as
-of axis** — the deal pays in the other currency. `FxRate.<ccy>` IS the density that changes numeraire,
-so the change shifts the innovation by exactly one standard deviation and the fitted
-`(omega, alpha, beta, gamma*)` describes the reciprocal as `(omega, alpha, beta, 1 − gamma*)` at the
-deal's own carry (`utils.hn_reciprocal_gamma`). One law, two currencies, one parameter — a derivation,
-never a second fit, which is why no pricer knows about the axis. Leaving it uncarried leaves one
-variance of Siegel drift in the answer: the two orientations of one accumulator then solve strikes
-**3.4e-3** apart and the gap does not close with the path count, against **4.2e-6** carried.
+of axis** — the deal pays in the other currency, and a law that cannot be carried there prices on an
+axis nobody fitted. Leaving the carry out leaves one variance of Siegel drift in the answer: the two
+orientations of one accumulator then solve strikes **3.7e-3** apart and the gap does not close with
+the path count.
 
-**LogVar2FJ transports too, as a measure change rather than a parameter.** Under the `S`-numeraire
+**LogVar2FJ transports as a measure change rather than a parameter.** Under the `S`-numeraire
 the step's density factorises over its own draws, so each shifts by its own loading —
 `eta_l ~ N(rho_l sqrt(V), 1)`, `eta_s ~ N(rho_s sqrt(V), 1)`, the counts at
 `lambda delta exp(mu_J + sigma_J^2/2)` and the return's own shock by one standard deviation — and
 the block law becomes `-(M + Sigma^2)` at the deal's own carry (`utils.lv_walk`). One law, two
 currencies, no second fit. In the GBM limit the reciprocal-axis TARF is **bit-identical** to GBM's
 (15.0858444086898 under both); on the fitted market the two orientations of one accumulator solve
-**2.0e-4** apart at 16,384 paths against the plain family's 1.4e-5 and GBM's own 4.1e-5 — the
+**2.0e-4** apart at 16,384 paths against GBM's own 4.1e-5 — the
 shocks' estimator error, not the numeraire, and the one number this carry still owes a path count.
 Uncarried they solve 3.7e-3 apart and the gap does not close with the path count, as the plain
 family's 3.4e-3 does not. So under the pin a USD-base book quotes its TARF (15.31369426 against
@@ -186,26 +182,25 @@ family's 3.4e-3 does not. So under the pin a USD-base book quotes its TARF (15.3
 The COMPONENT family does not transport — the change puts a state-dependent term in its long-run
 intercept, `omega_t + phi(1 − 2·gamma_2)h_t`, and leaves the family — so a component deal on the
 reciprocal axis REFUSES by name rather than pricing off a law nobody fitted; `spot_model_reciprocal_axis`
-is the allow-list (`HestonNandi`, `LogVar2FJ`) a family joins. A CROSS pair (neither leg the base)
+is the allow-list (`LogVar2FJ`) a family joins. A CROSS pair (neither leg the base)
 keeps the underlying's own read: both tokens are simulated factors there and the composed spot's
 law is out of the ruling's scope.
 
-### What the model is worth, and what it is not {#hn-worth}
+### What the model is worth, and what it is not {#model-worth}
 
-The case for Heston-Nandi on an accrual strip is **not "the skew and only the skew"**. On the gate's
-book, with the USDZAR parameters `/book/hn` actually fits (`Omega` 2.757e-6, `Alpha` 7.784e-8, `Beta`
-1.079e-3, `Gamma_Star` −3529.45, `H0` 7.027e-5; persistence 0.9708, initial vol 13.31% rising to a
-long-run 15.64%), an accumulator's zero-cost strike moves **+0.378%** from GBM to Heston-Nandi. Of that
-the LEVERAGE CHANNEL alone — `Alpha` to zero with the persistence and the stationary per-step variance
-held where the fit put them — is **+0.048%**, about an eighth. The sign of `Gamma_Star` alone is
-+0.003%, which is the solve's own Monte Carlo floor at 16,384 paths (2.5e-5 relative) and therefore
-*not resolved* at this path count; under a stronger leverage channel at the same persistence (`Alpha`
-2e-6, `Gamma_Star` ±474) the same flip is worth **0.43%**.
+The case for a spot model on an accrual strip is **not "the skew and only the skew"**. Measured on
+the gate's book under the plain Heston-Nandi family - retired 2026-09-06, the reading kept because
+the decomposition is the model class's and not that family's - an accumulator's zero-cost strike
+moved **+0.378%** from GBM, of which the LEVERAGE CHANNEL alone (the ARCH coefficient to zero with
+the persistence and the stationary per-step variance held where the fit put them) was **+0.048%**,
+about an eighth, and the sign of the leverage alone +0.003%, inside the solve's own Monte Carlo
+floor at 16,384 paths.
 
-So what the model is mostly worth on this book is its VARIANCE PATH — a level and a persistence a
-lognormal read off the same surface does not have — and the skew is a real but secondary term. The
-calibration shows the same asymmetry: the fit reprices its own ten quotes to a worst point of 4.73% and
-a weighted residual of 6.21e-5, against **13.13%** and **2.83e-4** with the leverage channel removed.
+So what a spot model is mostly worth on this book is its VARIANCE PATH — a level and a persistence a
+lognormal read off the same surface does not have — and the skew is a real but secondary term. What
+LogVar2FJ adds over that is the FORWARD skew, a lever in calendar time rather than in the state
+([Market Prices](market_prices.md#logvar2fj)), plus the second-order greeks and the quote-space risk
+neither retired family carried.
 
 ## The spread is quoted, the mid is booked {#two-sided}
 

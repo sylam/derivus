@@ -10,7 +10,6 @@ The bootstrapper configurations so far supported are:
 "GBMAssetPriceTSModelParameters": "GBMAssetPriceTSModelPrices",
 "HullWhite2FactorModelParameters": "HullWhite2FactorModelPrices",
 "CSForwardPriceModelParameters": "CSForwardPriceModelPrices",
-"HestonNandiModelParameters": "HestonNandiModelPrices",
-"HestonNandiComponentModelParameters": "HestonNandiComponentModelPrices"
+"LogVar2FJModelParameters": "LogVar2FJModelPrices"
 }
 ```

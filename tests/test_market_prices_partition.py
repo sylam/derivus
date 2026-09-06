@@ -47,8 +47,7 @@ import pytest
 
 import derivus
 from derivus import bootstrappers, schema, utils
-from derivus.bootstrappers import (FXVolSurfaceParameters, HestonNandiComponentModelParameters,
-                                   HestonNandiModelParameters, InterestRateCurveParameters,
+from derivus.bootstrappers import (FXVolSurfaceParameters, InterestRateCurveParameters,
                                    LogVar2FJModelParameters)
 from derivus.config import Config, CustomJsonEncoder, ModelParams, update_market_quote
 
@@ -58,7 +57,7 @@ from test_quote_propagation import BLOCK as ZAR_BLOCK, CCY, bootstrapped, market
 from test_service import CLIENT, JSON, desk, desk_smile, dump, fx_vol_quotes, job  # noqa: F401
 
 FX_BLOCK = 'FXVolPrices.USD.ZAR'
-HN_BLOCK = 'HestonNandiModelPrices.ZAR'
+LV_BLOCK = 'LogVar2FJModelPrices.ZAR'
 
 #: `emit_market_prices`' own predicate, so a family arriving with no row below fails the first
 #: gate rather than partitioning silently.
@@ -73,8 +72,6 @@ FAMILIES = {cls.__dict__['market_factor_type']: cls
 QUOTE_CONTAINER = {'CSForwardPriceModelPrices': 'Energy_Futures_Options',
                    'FXVolPrices': 'Points',
                    'GBMAssetPriceTSModelPrices': None,
-                   'HestonNandiComponentModelPrices': 'European_Options',
-                   'HestonNandiModelPrices': 'European_Options',
                    'HullWhite2FactorModelPrices': 'Instrument_Definitions',
                    'InterestRatePrices': 'Points',
                    'LogVar2FJModelPrices': 'European_Options'}
@@ -102,8 +99,7 @@ def loaded(market_prices, deals=None):
 
 #: The families that author a block off a built surface, and so are held to `fx_surface_block`'s
 #: declaration-driven header as well as to the partition.
-SURFACE_FAMILIES = (HestonNandiModelParameters, HestonNandiComponentModelParameters,
-                    LogVar2FJModelParameters)
+SURFACE_FAMILIES = (LogVar2FJModelParameters,)
 
 
 def family_blocks():
@@ -213,21 +209,19 @@ def test_every_family_partitions_by_the_one_rule_and_round_trips_exactly(family)
 
 
 def test_the_fx_authored_ladders_name_no_funding_curve():
-    """THE BIT-IDENTITY BAR ON THE FX ROUTE. The Heston-Nandi families grew a `Funding_Rate` so an
+    """THE BIT-IDENTITY BAR ON THE FX ROUTE. The option family grew a `Funding_Rate` so an
     equity's forward can grow on its own repo curve; an FX pair needs none, `fx_surface_block`
     already naming the pair's own two curves - the domestic `Discount_Rate` and the foreign `Yield`,
     which is what `utils.calc_fx_forward` builds from - so the basis term is not evaluated at all.
 
-    Asserted on the blocks the engine EMITS off a real built surface, both spellings.
+    Asserted on the block the engine EMITS off a real built surface.
     """
-    for family in ('HestonNandiModelPrices', 'HestonNandiComponentModelPrices'):
-        instrument = family_blocks()[family]['instrument']
-        assert 'Funding_Rate' not in instrument and 'Funding_Rate_Type' not in instrument, (
-            '{} declares a funding curve, so its forward is no longer the one it always built'
-            .format(family))
-        assert instrument['Discount_Rate'] and instrument['Yield'], (
-            '{}: the pair\'s two curves are what the forward is built from'.format(family))
-    assert 'Funding_Rate' in {f.key for f in HestonNandiModelParameters.fields}, (
+    instrument = family_blocks()['LogVar2FJModelPrices']['instrument']
+    assert 'Funding_Rate' not in instrument and 'Funding_Rate_Type' not in instrument, (
+        'the block declares a funding curve, so its forward is no longer the one it always built')
+    assert instrument['Discount_Rate'] and instrument['Yield'], (
+        'the pair\'s two curves are what the forward is built from')
+    assert 'Funding_Rate' in {f.key for f in LogVar2FJModelParameters.fields}, (
         'the reference this gate says the FX route does not use is not declared at all')
 
 
@@ -276,20 +270,20 @@ def test_a_short_values_half_refuses_rather_than_dropping_the_rows_it_cannot_pai
 
 def hashed():
     """One job carrying two families and two quote tables - the desk's USDZAR smile in `Points` and
-    the `HestonNandiModelPrices` ladder in `European_Options` - so the same rule reaches two
+    the `LogVar2FJModelPrices` ladder in `European_Options` - so the same rule reaches two
     differently shaped blocks in one hash.
 
     The world states its own preconditions, because the gates below degrade to VACUOUS rather than
     red when it arrives empty: a row-count refusal over zero `Points` compares 0 against 0.
     """
     smile = desk_smile()
-    context = loaded(dict(smile, **{HN_BLOCK: family_blocks()['HestonNandiModelPrices']}))
+    context = loaded(dict(smile, **{LV_BLOCK: family_blocks()['LogVar2FJModelPrices']}))
     prices = context.current_cfg.params['Market Prices']
 
     assert len(prices[FX_BLOCK]['instrument']['Points']) == len(
         smile[FX_BLOCK]['instrument']['Points']) > 1, (
         'the loaded smile is not the smile that was posted - this world is contaminated')
-    assert len(prices[HN_BLOCK]['instrument']['European_Options']) > 1, (
+    assert len(prices[LV_BLOCK]['instrument']['European_Options']) > 1, (
         'the option ladder arrived with no quotes - there is nothing to move either way')
     return context, prices
 
@@ -310,8 +304,8 @@ def test_a_quote_tick_moves_the_values_hash_and_leaves_the_plan_bit_identical():
     # what each fixture's first row ALREADY carries, so a case is known to be a MOVE or an ARRIVAL
     # rather than whichever it happened to be
     carried = {FX_BLOCK: {'Quoted_Market_Value', 'Timestamp'},
-               HN_BLOCK: {'Quoted_Market_Value'}}
-    for block, container in ((FX_BLOCK, 'Points'), (HN_BLOCK, 'European_Options')):
+               LV_BLOCK: {'Quoted_Market_Value'}}
+    for block, container in ((FX_BLOCK, 'Points'), (LV_BLOCK, 'European_Options')):
         for field, value in (('Quoted_Market_Value', 0.16), ('Quoted_Bid', 0.15),
                              ('Timestamp', pd.Timestamp('2024-06-28 17:45'))):
             context, prices = hashed()
@@ -346,7 +340,7 @@ def test_re_authoring_a_quote_set_moves_the_plan(case, plan_too, values_too):
     context, prices = hashed()
     before = (context.plan_hash(), context.values_hash())
     points = prices[FX_BLOCK]['instrument']['Points']
-    ladder = prices[HN_BLOCK]['instrument']['European_Options']
+    ladder = prices[LV_BLOCK]['instrument']['European_Options']
     edits = {'pillar': lambda: points[1].__setitem__('Pillar', 0.1),
              'expiry': lambda: points[0].__setitem__('Expiry', 0.3),
              'use': lambda: points[0].__setitem__('Use', 'No'),

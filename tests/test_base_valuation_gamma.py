@@ -21,10 +21,10 @@ asked twice:
   CONVEXITY  a swap's d2V/dr2 against a CENTRAL DIFFERENCE of the reported AAD delta. Base
              valuation is deterministic, so the ladder is pure truncation error: 3.0e-6 -> 3.0e-8
              -> 2.9e-10 over h = 1e-3..1e-5, h^2 to three digits.
-  LADDER     the same difference on the two MONTE CARLO fixtures, which is the only correctness
+  LADDER     the same difference on the MONTE CARLO fixture, which is the only correctness
              statement where no closed form is. It is owed because SYMMETRY IS NOT ONE:
              `report_hessian` mirrors an upper triangle, so `H == H.T` holds of whatever the AAD
-             put there. The HN rung is also the eager-vs-fused equality gate.
+             put there.
 
 TWO REFUSALS, both because the alternative is a number that looks right.
 
@@ -33,12 +33,6 @@ TWO REFUSALS, both because the alternative is a number that looks right.
   keeping the smooth part. The refusal names the deals and points at bumping the ADJOINT under
   common random numbers; it is `utils.SecondOrderRefused` so a caller can fall back to `'First'`.
   `Recompute_Inner_MC` is refused for its own reason and gated in `test_recompute_equity_pricers`.
-
-AND ONE REPAIR: `utils.hn_log_substep` is `torch.compile`d and AOTAutograd's compiled backward has
-no double backward, so every Heston-Nandi valuation with an unmonitored sub-step died on
-`Greeks: 'All'`. The eager spelling is kept beside the fused one and `shared.gamma` picks; the
-LADDER is what says the two spellings are one function. Both those gates reset `torch._dynamo`
-afterwards, which is load-bearing rather than tidy - see the seam gate's docstring.
 """
 import os
 import sys
@@ -58,7 +52,6 @@ from derivus.instruments import construct_instrument
 from derivus.schema import mapping
 import rates_world as rw
 import test_recompute_equity_pricers as re_
-from conftest import needs_hn_fused
 
 DTYPE = torch.float64
 #: The device `run_baseval` hands a job, and therefore the one the seam gate must walk: its oracle
@@ -159,24 +152,13 @@ def gbm_autocall_cfg(spot=None):
     return config
 
 
-def hn_autocall_cfg(spot=None):
-    """The Heston-Nandi autocall of `test_hn_oss_pricers` - one coupon 30 days out, so 29
-    unmonitored sub-steps are walked to reach it - at a bumped spot when asked."""
-    import test_hn_oss_pricers as hn
-    config, _ = hn._autocall_cfg([30], [1.05], [0.05], 30, hn_params=hn.STRONG)
-    if spot is not None:
-        config.params['Price Factors']['EquityPrice.EQ']['Spot'] = spot
-    return config
-
-
-#: (the fixture, its inner paths, the h-ladder with what each rung is allowed). Both are autocalls
-#: at BASE valuation, which is what lets them past the refusal below - one reporting row means no
-#: coupon is OBSERVED - and they are the only Monte Carlo fixtures here reporting a second-order
-#: block at all. 4096 is `test_recompute_equity_pricers`' OWN count, so this leaves the compiler no
-#: new shape. The last rung's tolerance is an ULP ENVELOPE and not a truncation bound.
+#: (the fixture, its inner paths, the h-ladder with what each rung is allowed). An autocall at
+#: BASE valuation, which is what lets it past the refusal below - one reporting row means no coupon
+#: is OBSERVED - and the only Monte Carlo fixture here reporting a second-order block at all. 4096
+#: is `test_recompute_equity_pricers`' OWN count. The last rung's tolerance is an ULP ENVELOPE and
+#: not a truncation bound.
 MONTE_CARLO_LADDER = {
-    'gbm': (gbm_autocall_cfg, 1 << 12, [(1e-2, 1e-6), (1e-3, 1e-8), (1e-4, 2e-10)]),
-    'heston-nandi': (hn_autocall_cfg, 1 << 12, [(1e-2, 2e-3), (1e-3, 2e-5), (1e-4, 2e-7)])}
+    'gbm': (gbm_autocall_cfg, 1 << 12, [(1e-2, 1e-6), (1e-3, 1e-8), (1e-4, 2e-10)])}
 
 
 def valued(config, greeks='All', simulations=1):
@@ -422,109 +404,32 @@ def test_hedge_monte_carlo_refuses_the_second_order_block():
         context.run_job()
 
 
-# ---------------------------------------------------------------- the repair the audit found
-
-@needs_hn_fused
-def test_the_heston_nandi_sub_step_is_twice_differentiable():
-    """`utils.hn_log_substep` is `torch.compile`d and AOTAutograd's compiled backward RAISES on
-    double backward, so every HN valuation whose fixings are more than a day apart died on
-    `Greeks: 'All'` - invisible because nothing could ask.
-
-    Gated at the SEAM rather than through a pricer, `shared.gamma` being what picks the eager
-    spelling. Both directions are asserted: the fused build must still be what an ordinary run
-    takes, or the fix is a silent 5.9x on every Heston-Nandi job.
-
-    IT WALKS THE DEVICE A JOB WALKS. With no device on the tensors the fused half compiled for the
-    CPU inductor backend whatever the box was, and on a CUDA box with no host C++ compiler that
-    backend cannot build - so what came back was `InductorError: cl is not found` rather than the
-    refusal being gated, and the gate could not tell one raise from the other. `needs_hn_fused` is
-    this gate's own precondition: it asks for exactly the backend the tensors need before the
-    compiled backward exists to refuse.
-
-    `torch._dynamo.reset()` afterwards is NOT tidiness. The compiler cache is a process global keyed
-    on traced shapes, and this file feeds it a shape no pricer uses, a compile that FAILS, and both
-    spellings at a third shape. Without the resets `test_recompute_equity_pricers`' HN price moves
-    in its LAST BIT between the taped and recomputed passes, because the two no longer get the same
-    generated kernel - an order effect only the whole suite sees.
-    """
-    class Shared:
-        gamma = True
-        simulation_batch = 4
-        one = torch.ones([1, 1], dtype=DTYPE, device=DEVICE)
-
-    def second_derivative(gamma):
-        shared = Shared()
-        shared.gamma = gamma
-        omega = torch.tensor(1e-6, dtype=DTYPE, device=DEVICE, requires_grad=True)
-        params = (omega, torch.tensor(0.1, dtype=DTYPE, device=DEVICE),
-                  torch.tensor(0.8, dtype=DTYPE, device=DEVICE),
-                  torch.tensor(2.0, dtype=DTYPE, device=DEVICE))
-        spot = torch.full([4, 2], 100.0, dtype=DTYPE, device=DEVICE)
-        h = torch.full([4, 2], 4e-5, dtype=DTYPE, device=DEVICE)
-        torch.manual_seed(1)
-        walked, _ = utils.hn_unmonitored_substeps(
-            spot, h, torch.zeros([4, 2], dtype=DTYPE, device=DEVICE), 3, params, shared, 2,
-            antithetic=False)
-        grad, = torch.autograd.grad(walked.sum(), omega, create_graph=True)
-        return float(torch.autograd.grad(grad, omega)[0])
-
-    try:
-        assert second_derivative(gamma=True) != 0.0, 'the eager sub-step reported no curvature'
-        with pytest.raises(RuntimeError, match='double backward'):
-            second_derivative(gamma=False)
-    finally:
-        torch._dynamo.reset()
-
-
-def test_a_heston_nandi_valuation_reports_a_second_order_block():
-    """The same repair end to end on the fixture that exposed it - an HN autocall whose single
-    coupon is 30 days out, so 29 unmonitored sub-steps are walked to reach it. It registers no
-    boundary correction at base valuation, so it gets the block. THAT IS SHAPE, NOT CORRECTNESS:
-    symmetry is what `report_hessian` does to whatever it assembled and "non-trivial" is a floor.
-    The ladder below measures the numbers."""
-    _, first, second = valued(hn_autocall_cfg())
-    assert np.abs(second.values).max() > 0.0, 'the HN second-order block came back empty'
-    assert np.array_equal(second.values, second.values.T)
-    assert {r[0] for r in second.index} & {'EquityPrice.EQ'}, (
-        'the spot is not in the reported block: {}'.format(sorted({r[0] for r in second.index})))
-
-
-# the HN rung differences a `Greeks: 'First'` delta, and THAT walks the compiled sub-step (only the
-# gamma takes the eager spelling), so it alone carries the fused precondition rather than dying
-# three layers downstream on a collapsed frame
-@pytest.mark.parametrize('fixture', [pytest.param(f, marks=needs_hn_fused) if f == 'heston-nandi'
-                                     else f for f in sorted(MONTE_CARLO_LADDER)])
+@pytest.mark.parametrize('fixture', sorted(MONTE_CARLO_LADDER))
 def test_a_monte_carlo_gamma_is_the_derivative_of_its_own_reported_delta(fixture):
-    """d2V/dS2 against a CENTRAL DIFFERENCE of the reported AAD delta on the two Monte Carlo
-    fixtures - the correctness statement the block has nowhere a closed form reaches.
+    """d2V/dS2 against a CENTRAL DIFFERENCE of the reported AAD delta on the Monte Carlo
+    fixture - the correctness statement the block has nowhere a closed form reaches.
 
     IT IS OWED BECAUSE SYMMETRY IS NOT A CHECK: `report_hessian` mirrors an upper triangle, so
     `H == H.T` is true of whatever the AAD put there, and that beside "not empty" was every gate
-    the Heston-Nandi block had.
+    the block had.
 
     Common random numbers leave the ladder as pure truncation error - one seed, one scenario, and a
     bumped spot rescaling the paths the same draws generate. On CUDA float64:
 
         gbm            gamma -2.91303e-05,  2.12e-07 -> 2.12e-09 -> 7.61e-11
-        heston-nandi   gamma  2.69093e-06,  3.62e-04 -> 3.62e-06 -> 3.44e-08
 
-    h^2 to two digits over the first two rungs. h = 1e-5 turns back UP on the GBM fixture, which is
-    the difference's own cancellation. THE LAST RUNG IS AN ULP ENVELOPE: at h = 1e-4 one ulp of
-    either delta moves the quotient by 3.7e-11 relative, so the CUDA reading is 2.05 ulps, the CPU
-    one 0.60, and the 2e-10 tolerance is 5.4 - two orders inside the rung above, so the ladder
-    still has to FALL. A wrong gamma is caught at h = 1e-3.
+    h^2 to two digits over the first two rungs. h = 1e-5 turns back UP, which is the difference's
+    own cancellation. THE LAST RUNG IS AN ULP ENVELOPE: at h = 1e-4 one ulp of either delta moves
+    the quotient by 3.7e-11 relative, so the CUDA reading is 2.05 ulps, the CPU one 0.60, and the
+    2e-10 tolerance is 5.4 - two orders inside the rung above, so the ladder still has to FALL. A
+    wrong gamma is caught at h = 1e-3.
 
     Every rung is scored against the gamma from its OWN run and never the number written here: the
     draw stream is per-device, so a CPU box prices different paths and reads 1.3% away.
 
-    THE HN RUNG IS ALSO THE EAGER-AGAINST-FUSED EQUALITY GATE - `shared.gamma` walks the eager
-    sub-step for the second derivative while the differenced delta walks the compiled one - which
-    is why it carries `needs_hn_fused` and the GBM one does not: without a backend the deal is
-    skipped CRITICAL and the mark collapses to a scalar zero three layers downstream.
-
-    BOTH FIXTURES RUN AT `test_recompute_equity_pricers`' OWN 4096 PATHS, which is a requirement:
-    a count nothing else uses caches a shape nothing else has, after which that file's last-bit
-    gates move. The reset afterwards is the same precaution taken twice.
+    THE FIXTURE RUNS AT `test_recompute_equity_pricers`' OWN 4096 PATHS, which is a requirement: a
+    count nothing else uses caches a shape nothing else has, after which that file's last-bit gates
+    move.
     """
     build, simulations, ladder = MONTE_CARLO_LADDER[fixture]
     try:

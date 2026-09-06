@@ -670,8 +670,8 @@ def test_market_price_descriptor_shape(market_type):
 @pytest.mark.parametrize('market_type', sorted(market_price_classes()))
 def test_no_market_price_declares_a_key_twice(market_type):
     """One dict per type keyed by the JSON name, so a name declared twice loses a descriptor. The
-    Heston-Nandi block builds its eight factor-reference fields from `factor_types`, which is
-    exactly the shape that can produce one."""
+    option block builds its eight factor-reference fields from `factor_types`, which is exactly the
+    shape that can produce one."""
     keys = [f.key for f in market_price_classes()[market_type].__dict__['fields']]
     dupes = sorted({k for k in keys if keys.count(k) > 1})
     assert not dupes, f'{market_type} declares {dupes} more than once'
@@ -733,9 +733,9 @@ def test_the_quote_block_declares_what_the_bootstrapper_reads(market_type):
     Two live defects: the Hull-White row declared `Day_Count` while `create_market_swaps` hard-reads
     `Floating_Day_Count` and `Fixed_Day_Count`, so a schema-authored block raised KeyError before
     the first swaption priced; and `Weight` is read by the Clewlow-Strickland objective and declared
-    only by Heston-Nandi, so an energy option quote had no weight column.
+    only by the option family, so an energy option quote had no weight column.
 
-    One direction only: the converse would need the Heston-Nandi factor references, which `resolve`
+    One direction only: the converse would need the option family's factor references, which `resolve`
     reads with a COMPUTED key, and `Generate_Instruments` / `Generation_Parameters`, declared as
     unbuilt functionality."""
     module_ast = ast.parse(inspect.getsource(bootstrappers))
@@ -792,8 +792,8 @@ def test_a_quote_type_means_different_things_to_different_families():
     """The capability the per-type store exists for, pinned so a return to a flat one fails.
 
     The flat store published `ATM` / `Implied_Volatility` / `Premium` for every family. The
-    Clewlow-Strickland bootstrapper supports only `Implied_Volatility`, Heston-Nandi takes that or
-    `Premium`, and an interest-rate quote is a par rate - three questions sharing one name, which
+    Clewlow-Strickland bootstrapper supports only `Implied_Volatility`, the option family takes that
+    or `Premium`, and an interest-rate quote is a par rate - three questions sharing one name, which
     is right because the JSON is per family.
 
     `InterestRatePrices` declares the one convention it implements: a value the solve does not
@@ -817,10 +817,7 @@ def test_a_quote_type_means_different_things_to_different_families():
 
     quote_type = {t: find(d) for t, d in MARKET_PRICES['types'].items()}
     assert quote_type == {'CSForwardPriceModelPrices': ['Implied_Volatility'],
-                          'HestonNandiModelPrices': ['Implied_Volatility', 'Premium'],
-                          # the component family INHERITS the Heston-Nandi block's quote
-                          # declarations, so it answers the same question
-                          'HestonNandiComponentModelPrices': ['Implied_Volatility', 'Premium'],
+                          'LogVar2FJModelPrices': ['Implied_Volatility', 'Premium'],
                           'GBMAssetPriceTSModelPrices': None,
                           'HullWhite2FactorModelPrices': None,
                           'FXVolPrices': ['ATM', 'RR', 'BF'],

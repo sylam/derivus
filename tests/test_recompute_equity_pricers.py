@@ -44,9 +44,7 @@ from derivus import pricing, run_baseval, utils
 from derivus.instruments import construct_instrument
 import test_barrier_bridge as bb
 import test_boundary_pricer_events as bp
-import test_hn_oss_pricers as hn
 import test_recompute_inner_mc as rc
-from conftest import needs_hn_fused
 
 DTYPE = bb.DTYPE
 #: The two adopters, in the fixtures that already gate their boundary registrations -
@@ -160,32 +158,6 @@ def base_hessian(pricer, recompute, sims=1 << 10):
         'MCMC_Simulations': sims, 'Random_Seed': 1, 'Greeks': 'All',
         'Recompute_Inner_MC': recompute})
     return out['Results']['Greeks_Second'].values.astype(np.float64)
-
-
-#: The same two pricers under Heston-Nandi, base valuation. These are what gate the THETA HOIST:
-#: the five GARCH scalars come off `t_Static_Buffer` and were read from the enclosing scope, and a
-#: closure read is differentiated as a CONSTANT under the node - silently, and only for the factor
-#: that was hoisted. Nothing in the GBM fixtures above can see it.
-HN_DEALS = {
-    'autocall': lambda: hn._autocall_cfg([30], [1.05], [0.05], 30, hn_params=hn.STRONG),
-    'barrier': lambda: hn._barrier_cfg(
-        'Down_And_Out', 90.0, list(range(1, 31)), 30, hn_params=hn.STRONG)}
-
-
-def hn_baseval(pricer, recompute, sims=1 << 12):
-    """(price, whole gradient vector, the Heston-Nandi entries of it)."""
-    config, reference = HN_DEALS[pricer]()
-    _, out = run_baseval(config, overrides={
-        'MCMC_Simulations': sims, 'Random_Seed': 1, 'Greeks': 'First',
-        'Recompute_Inner_MC': recompute})
-    rows = out['Results']['mtm']
-    price = float(rows[rows['Reference'] == reference]['Value'].iloc[0])
-    frame = out['Results']['Greeks_First']
-    column, = [x for x in frame.columns if x != 'Value']
-    gradient = frame[column]
-    hn_rows = [i for i in gradient.index if 'HestonNandiModelParameters' in str(i[0])]
-    return (price, gradient.values.astype(np.float64),
-            gradient.loc[hn_rows].values.astype(np.float64))
 
 
 def suppressed_correction(run, monkeypatch):
@@ -321,32 +293,6 @@ def test_a_registered_boundary_correction_is_refused_first():
     for recompute in ('No', 'Yes'):
         with pytest.raises(Exception, match=r"Greeks: 'All' is refused.*BARR1"):
             base_hessian('barrier', recompute)
-
-
-# only the autocall's simulation reaches the fused sub-step on these fixtures (measured: the
-# barrier passes on a compiler-less CPU box), so the precondition rides that param alone
-@pytest.mark.parametrize('pricer', [pytest.param(p, marks=needs_hn_fused) if p == 'autocall' else p
-                                    for p in PRICERS])
-def test_the_heston_nandi_theta_survives_the_node(pricer):
-    """The gate on the hoist itself, and the only one that can see it.
-
-    A tensor `simulate` reads out of a CLOSURE is differentiated as a constant under the node -
-    autograd only returns a gradient for what was passed to `apply` - and it fails silently, in one
-    factor, on a fixture that has that factor. Both pricers read their five GARCH scalars off
-    `t_Static_Buffer` in the enclosing scope; both now pass them in. Verified by reverting the
-    barrier's hoist in the source and re-running: this gate turns red, and it is the only one here
-    with a GARCH factor to turn red on. The non-zero assertion is what stops a GARCH-free fixture
-    making the bit-identity vacuous."""
-    price_off, grad_off, hn_off = hn_baseval(pricer, 'No')
-    price_on, grad_on, hn_on = hn_baseval(pricer, 'Yes')
-    assert len(hn_off) and np.abs(hn_off).max() > 0.0, (
-        f'{pricer}: no Heston-Nandi sensitivity is reported at all, so a hoist that was never '
-        f'made would pass this gate')
-    assert price_off == price_on, f'{pricer}: HN price moved: {price_off!r} -> {price_on!r}'
-    assert np.array_equal(grad_off, grad_on), (
-        '{}: the recomputed HN gradient is not the taped one - a theta the simulation reads from '
-        'its closure is being differentiated as a constant:\n{}\n{}'.format(
-            pricer, grad_off, grad_on))
 
 
 # ---------------------------------------------------------------- (e) the mutations

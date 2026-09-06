@@ -194,7 +194,7 @@ def test_the_row_is_the_committed_schemas_own_declaration():
     assert set(row) - set(declared) == set(swaption_vol.QUOTE_VALUE_KEYS)
 
     # the BLOCK-level keys, every one of them DECLARED. HW2F declares `Quote_Source` and
-    # `Quote_Timestamp` on the shape both Heston-Nandi families already had, so the subtraction is
+    # `Quote_Timestamp` on the shape the option family already had, so the subtraction is
     # empty. Read off the WORKING TREE, because that declaration lands in this same change
     instrument = block_of()[1]['instrument']
     block_fields = committed_fields('HullWhite2FactorModelParameters', at=None)

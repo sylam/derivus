@@ -26,7 +26,6 @@ import derivus
 from derivus import utils
 from derivus.instruments import construct_instrument
 from crn_ladder import ladder
-from conftest import needs_hn_fused
 import test_barrier_bridge as bb
 
 MONTHLY = [bb.BASE + pd.Timedelta(days=d) for d in range(30, 366, 30)]
@@ -598,46 +597,6 @@ def test_the_correction_generalises_to_the_other_barrier_direction():
     aad = _run(deal, gradient=True, **kw)[2]
     r = ladder(price=lambda s: _run(deal, spot=s, **kw)[1], aad=aad, base=bb.SPOT, rungs=LIVE_RUNGS)
     assert r.agrees(tol=0.01), f'up-barrier gap sign or counterfactual is wrong\n{r}'
-
-
-@needs_hn_fused
-def test_the_correction_covers_heston_nandi_barriers():
-    """`instruments.py` refuses the CONTINUOUS barrier variant for `SpotModel='HestonNandi'`, so
-    every HN barrier routes through the discrete pricer and its already-hit latch. The registration
-    sits in the shared pricer, but HN takes a different branch through `sim_spot_oss` and its
-    `hit_value` for a knock-out is zeros rather than a closed form.
-
-    1.18% apart on a ladder flat to 3.49%, on a CVA delta of 1.47 the oracle resolves cleanly.
-    MUTATION - the correction deleted - reads 6.19%, a 3x margin, the correction being 4.7% of the
-    reported gradient (an order under the GBM barrier's 24%, the HN counterfactual being the
-    model-free zeros branch).
-
-    Every reading is on the repaired `pricing.boundary_weights` guard: it carried a refusal that
-    could never fire - a Cauchy-Schwarz ratio bounded by 1, tested against 1e-30 - and one HN
-    decision solved a local-linear fit on two points 0.021 apart, returning weights +50.4/-49.5."""
-    import test_hn_barrier_cmc as hb
-
-    def run(spot, gradient):
-        c = hb._cfg(True)
-        c.params['Price Factors']['EquityPrice.EQ']['Spot'] = spot
-        c.params['Price Factors']['SurvivalProb.CPTY'] = {
-            'Recovery_Rate': 0.4, 'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.4]])}
-        _, out = derivus.run_cmc(c, prec=hb.DTYPE, overrides={
-            'Run_Date': hb.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': 512,
-            'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
-            'MCMC_Simulations': 256, 'Deflation_Interest_Rate': 'USD',
-            'Gradient_Variables': 'Factors',
-            'Credit_Valuation_Adjustment': {
-                'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
-                'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes' if gradient else 'No'}})
-        if not gradient:
-            return float(out['Results']['cva'])
-        g = out['Results']['grad_cva']['Gradient']
-        return float(g.loc[[i for i in g.index if 'EquityPrice' in str(i[0])][0]])
-
-    aad = run(100.0, True)
-    r = ladder(price=lambda s: run(s, False), aad=aad, base=100.0, rungs=LIVE_RUNGS)
-    assert r.agrees(tol=0.02), f'the HN barrier path is not carrying the boundary term\n{r}'
 
 
 def _cumulative_gradients(**kw):

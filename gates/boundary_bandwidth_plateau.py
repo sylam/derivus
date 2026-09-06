@@ -23,10 +23,11 @@ already uses: at 1e-12 the kernel underflows on every scenario, `boundary_weight
 empty-kernel branch, and the correction contributes an exact zero. Nothing is patched, and the
 registration still happens and is still scored.
 
-TWO SUBJECTS, both the roadmap row's own re-baselined gates, ridden as fixtures rather than rerun as
-tests: the monthly discrete down-and-out of `test_boundary_pricer_events.DISCRETE_BARRIER`, whose
-correction is 24% of its reported gradient, and the Heston-Nandi barrier of
-`test_hn_barrier_cmc._cfg(True)`, whose correction is 4.7% of its own.
+ONE SUBJECT, the roadmap row's own re-baselined gate, ridden as a fixture rather than rerun as a
+test: the monthly discrete down-and-out of `test_boundary_pricer_events.DISCRETE_BARRIER`, whose
+correction is 24% of its reported gradient. A second subject under a declared spot model, whose
+knocked-out counterfactual is the model-free zeros branch, read 4.7% before the Heston-Nandi
+families were retired and has no fixture today.
 
 SEEDS ARE THE YARDSTICK AND THAT IS THE WHOLE METHOD. "Holds still" is meaningless in the absolute:
 the estimate is a Monte Carlo functional, so the question is whether moving the bandwidth over a
@@ -122,8 +123,6 @@ from derivus.instruments import construct_instrument
 
 import test_barrier_bridge as bb
 import test_boundary_pricer_events as bpe
-import test_hn_barrier_cmc as hb
-from conftest import HN_FUSED_COMPILES
 
 #: the documented operating point, from `Boundary_AAD_Bandwidth`'s own field note
 DOCUMENTED_PATHS = 32768
@@ -139,8 +138,8 @@ DECLARED_WINDOW = (0.0025, 0.02)
 #: the empty-kernel branch, reached through the declared field rather than through a patch
 SUPPRESSED = 1e-12
 SEEDS = (1, 2, 3)
-#: inner OSS sims per scenario - 32 for the discrete barrier, 16 for Heston-Nandi, the most each
-#: subject fits at these path counts. Common random numbers across the ladder - one seed draws one
+#: inner OSS sims per scenario - 32 for the discrete barrier, the most the subject fits at these
+#: path counts. Common random numbers across the ladder - one seed draws one
 #: set of inner paths and every bandwidth reads it - so this sets the level the whole ladder shares
 #: and cannot manufacture or hide spread ACROSS it. The estimator's sample count is the outer paths.
 MCMC = 32
@@ -222,13 +221,7 @@ def discrete_barrier():
     return c, {'Generate_Cashflows': 'Yes'}
 
 
-def hn_barrier():
-    """`test_hn_barrier_cmc._cfg(True)` - the same latch under a declared Heston-Nandi spot, whose
-    knocked-out counterfactual is the model-free zeros branch."""
-    return _with_counterparty(hb._cfg(True)), {}
-
-
-SUBJECTS = {'discrete': discrete_barrier, 'hn': hn_barrier}
+SUBJECTS = {'discrete': discrete_barrier}
 
 
 def spread(values):
@@ -309,13 +302,6 @@ def main():
     paths_list = [int(p) for p in args.paths.split(',')]
     ladder = [float(b) for b in args.ladder.split(',')]
     names = [s.strip() for s in args.subjects.split(',')]
-    if 'hn' in names and not HN_FUSED_COMPILES:
-        raise SystemExit(
-            'gates/boundary_bandwidth_plateau.py: the Heston-Nandi subject drives '
-            'utils.hn_log_substep_fused, and torch.compile has no backend for this box\'s device '
-            '(triton under CUDA, a host C++ compiler under CPU). Install one, or run '
-            '--subjects discrete.')
-
     print('mcmc %d   recompute %s   batches %d   seeds %s   declared bandwidth %g' % (
         args.mcmc, args.recompute, args.batches, seeds, DECLARED))
     print('ladder %s   suppressed at %g (empty-kernel branch)\n' % (ladder, SUPPRESSED))

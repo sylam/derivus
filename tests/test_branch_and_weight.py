@@ -525,18 +525,19 @@ def test_the_switch_off_is_the_crisp_path(tmp_path):
 
 
 # ======================================================================================
-# THE CONDITIONING STEP (`pricing.branch_and_weight`)
+# THE CONDITIONING STEP (`Calculation_State.branch_and_weight`)
 # ======================================================================================
 
 def _deal_data(spot_model=None):
-    """A real `FXTARFOptionDeal` off the fixture's deal block, with `HN_Params` shaped as
-    `instruments.get_hn_factor` shapes it: `(is_stochastic, [factors], SpotModel, curve tenors)`."""
+    """A real `FXTARFOptionDeal` off the fixture's deal block, with `Spot_Model` shaped as
+    `instruments.get_spot_model_params_factor` shapes it:
+    `(is_stochastic, [factors], SpotModel, curve tenors)`."""
     with open(TARF_TEMPLATE) as f:
         block = json.load(f)['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']
     instrument = instruments.construct_instrument(dict(block, Object='FXTARFOptionDeal'), {})
     factor_dep = {}
     if spot_model is not None:
-        factor_dep['HN_Params'] = [(False, [utils.Factor(
+        factor_dep['Spot_Model'] = [(False, [utils.Factor(
             spot_model + 'ModelParameters', ('EUR.USD', 'Alpha'))], spot_model, {})]
     return utils.DealDataType(
         Instrument=instrument, Factor_dep=factor_dep, Time_dep=None, Calc_res=None)
@@ -1487,33 +1488,9 @@ def test_the_recompute_node_replays_the_barriers_smooth_callable(over):
         'replayed'.format(_eq_first(taped), _eq_first(replay)))
 
 
-HN_PARAMS = {'Omega': 2.757e-06, 'Alpha': 7.784e-08, 'Beta': 1.079e-03,
-             'Gamma_Star': -3529.45, 'H0': 7.027e-05, 'Property_Aliases': None}
-
-
-def test_a_heston_nandi_document_under_the_switch_does_not_price(tmp_path):
-    """GBM ONLY, on a document rather than at the seam. The TARF is pinned to a Heston-Nandi spot
-    model and asked for the switch: the deal is SKIPPED with a refusal naming the model, the stride
-    that owns the conditional law it would need, and both remedies. The same document prices with
-    the switch off, which is what makes the refusal the switch's and not the market data's."""
-    def hn_job(**calc):
-        job = _tarf_doc(**calc)
-        market = job['Calc']['MergeMarketData']['ExplicitMarketData']
-        market['Price Factors']['HestonNandiModelParameters.EUR'] = HN_PARAMS
-        market['Valuation Configuration'] = {'FXTARFOptionDeal': {'SpotModel': 'HestonNandi'}}
-        return job
-
-    priced, _, _ = _run_doc(hn_job(), tmp_path, 'hn_off')
-    assert np.isfinite(priced) and priced != 0.0, (
-        'the Heston-Nandi document does not price with the switch OFF either, so the refusal '
-        'below would be attributable to the market data rather than to the switch')
-    refused, _, log = _run_doc(_smooth(hn_job()), tmp_path, 'hn_on', debug=True)
-    assert math.isnan(refused), 'the deal priced under a model the switch has no law for'
-    # the loader logs the exception's ARGS, so every quote arrives escaped
-    log = log.replace('\\', '')
-    assert 'HestonNandi' in log and 'stride' in log.lower(), log[-1200:]
-    assert 'hn_cdf_logret' in log, 'the refusal cites where its Phi would have to come from'
-    assert 'GBM' in log and "Branch_And_Weight: 'No'" in log, 'a refusal names its remedies'
+# THE SWITCH IS NO LONGER FAMILY-CONDITIONAL: the one surviving spot model hands each fixing
+# interval its own Gaussian block law, so `p` is that block's Phi and the estimator is admitted on
+# the same terms as GBM. The refusal this stood for died with the daily families.
 
 
 # ======================================================================================

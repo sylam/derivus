@@ -835,7 +835,7 @@ def test_the_sharded_estimate_agrees_with_the_unsharded_one():
 def test_the_unsharded_default_did_not_move():
     """The historical stream, pinned by hash: `deterministic_batches` defaults off, so an ordinary
     caller draws what it drew before the determinism work landed. This hash was taken from the tree
-    before those changes; `tests/test_hn_barrier_cmc.py` is the standing regression gate.
+    before those changes.
     """
     _, out = shard(0, 1, deterministic=False)
     assert sha(out['Results']['mtm'].values) == '2df61471b2970c5e', (

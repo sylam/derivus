@@ -52,21 +52,30 @@ ACCRUAL_SIMS = 16384
 #: of them, a barrier level inverted twice, moves the solved strike by percent).
 AXIS_TOLERANCE = 2e-4
 
-#: The same band under the fitted Heston-Nandi, MEASURED: 2.6e-4 apart at 1024 paths, 2.3e-5 at
-#: 4096, 4.2e-6 at 16384, 1.3e-5 at 65536 - tighter than the lognormal's floor, because both sides
-#: run the same daily recursion rather than reading a surface at two moneynesses.
-HN_AXIS_TOLERANCE = 1e-4
+#: The same band under the fitted spot model, MEASURED on the FX gate's own book: 2.0e-4 apart at
+#: 16,384 paths against the lognormal's 4.1e-5 - the two shocks' estimator error, both orientations
+#: walking one law rather than reading a surface at two moneynesses.
+MODEL_AXIS_TOLERANCE = 5e-4
 
 #: Every parameter in the store that is NOT required, and the value it must publish. A market
 #: convention is the only reason a sales parameter carries a default, so this is the one place a new
 #: one has to be argued for.
 DECLARED_DEFAULTS = {'leverage': 2.0}
 
-#: A calibrated Heston-Nandi factor for the rand, as `/book/hn` writes one - the JOINING side of the
-#: pair. Not a fit: stationary (persistence 0.90) and roughly the surface's own vol, which is all
-#: the gates that read it need.
-HN_PARAMS = {'Property_Aliases': None, 'Omega': 1e-12, 'Alpha': 2.0e-6, 'Beta': 0.45,
-             'Gamma_Star': -474.34, 'H0': 7.8e-5}
+#: A calibrated LogVar2FJ factor for the rand, as `/book/model` writes one - the JOINING side of
+#: the pair. The banked USDZAR `Global` fit, rounded to what a gate reading a note and a solved
+#: strike needs; the curves are the fit's own segments, in years.
+MODEL_PARAMS = {
+    'Property_Aliases': None, 'Kappa_L': 0.5, 'Sigma_L': 0.0, 'Rho_L': 0.0, 'Kappa_S': 6.0,
+    'Nu': 4.401650676117734e-08, 'Lambda': 0.07345372461752837, 'Cap_A': 4.605170185988092,
+    'Cap_Beta': 0.25, 'C_Min': 0.12,
+    'L_Curve': utils.Curve([], [[0.0, -4.79855357189], [0.0821917808219, -4.92096383098],
+                                [0.167123287671, -4.88786832253], [0.249315068493, -4.84055015853],
+                                [0.498630136986, -4.69955594235], [0.747945205479, -4.61140627756]]),
+    'Rho_S': utils.Curve([], [[0.0, -0.452329478871]]),
+    'Mu_J': utils.Curve([], [[0.0, -0.0850191941054]]),
+    'Sigma_S': utils.Curve([], [[0.0, 3.62882617626]]),
+    'Sigma_J': utils.Curve([], [[0.0, 0.0200000020229]])}
 
 #: The strip: monthly fixings to the tenor, and a cap of 1.50 rand of cumulative favourable move on
 #: a spot of 18.50 - reachable enough that the redemption is part of the price.
@@ -966,8 +975,8 @@ def test_an_accrual_strip_costs_nothing_and_strikes_better_than_the_forward(accr
     notional at `leverage x notional` off a default the client never stated, and the target copied
     through UNCONVERTED with `InvertedTarget` False.
 
-    The HN pin is exercised by its ABSENCE, the only arm this repo can reach: no fixture carries a
-    `HestonNandiModelParameters` factor for an FX underlying, so the leg prices GBM and SAYS so.
+    The model pin is exercised by its ABSENCE, the only arm this repo can reach: no fixture carries
+    a `LogVar2FJModelParameters` factor for an FX underlying, so the leg prices GBM and SAYS so.
     Pinning the model on a book with no calibration instead raises inside the dependency loop, which
     SKIPS the deal and marks the quote's only leg at nothing.
     """
@@ -990,7 +999,7 @@ def test_an_accrual_strip_costs_nothing_and_strikes_better_than_the_forward(accr
     assert deal['LeverageNotional'] == 2.0 * NOTIONAL, 'the declared leverage never reached the deal'
     assert deal['TargetLevel'] == TARGET and deal['InvertedTarget'] is False, (
         'the target is the client number, on the pair own axis')
-    assert 'HestonNandiModelParameters' in row['note'], row['note']
+    assert 'LogVar2FJModelParameters' in row['note'], row['note']
     assert not accrual_book['Calc']['MergeMarketData']['ExplicitMarketData'].get(
         'Valuation Configuration'), 'a model was pinned on a book that cannot price it'
 
@@ -1062,11 +1071,11 @@ def test_the_axis_refusal_fires_before_the_deal_is_furnished(book):
 
 
 def calibrated(document):
-    """The book with the pair's Heston-Nandi fit installed under its NON-BASE token, which is the
+    """The book with the pair's spot-model fit installed under its NON-BASE token, which is the
     only leg of the pair an `FxRate` can be."""
     document = copy.deepcopy(document)
     document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
-        'HestonNandiModelParameters.ZAR'] = dict(HN_PARAMS)
+        'LogVar2FJModelParameters.ZAR'] = dict(MODEL_PARAMS)
     return document
 
 
@@ -1082,10 +1091,10 @@ def test_the_absence_note_names_the_factor_the_book_would_need(accrual_book):
         accrual_params(target=TARGET), notional_currency='USD'))
     note = leg(tarf, 'tarf')['note']
 
-    assert 'HestonNandiModelParameters.ZAR' in note, 'the factor looked up is unnamed'
-    assert 'HestonNandiModelParameters.USD' not in note, (
+    assert 'LogVar2FJModelParameters.ZAR' in note, 'the factor looked up is unnamed'
+    assert 'LogVar2FJModelParameters.USD' not in note, (
         'the base currency is a numeraire, never a rate - it can name no block')
-    assert 'non-base' in note and '/book/hn' in note, 'a note without a remedy'
+    assert 'non-base' in note and '/book/model' in note, 'a note without a remedy'
     assert tarf['valuation_configuration'] is None, 'a model was pinned that cannot be resolved'
 
     # and on the fitted book BOTH orientations join: the TARF forced onto the base currency, and
@@ -1095,13 +1104,13 @@ def test_the_absence_note_names_the_factor_the_book_would_need(accrual_book):
         accrual_params(target=TARGET), notional_currency='USD'))
     assert leg(joined, 'tarf')['note'] is None, 'the pinned arm still carries a note'
     assert joined['valuation_configuration'] == {
-        'FXTARFOptionDeal': {'SpotModel': 'HestonNandi'}}
+        'FXTARFOptionDeal': {'SpotModel': 'LogVar2FJ'}}
 
     accumulator = structures.quote(document, 'Accumulator', dict(
         accrual_params(knockout=SPOT * 1.10), notional=NOTIONAL, notional_currency='ZAR'))
     assert leg(accumulator, 'accumulator')['note'] is None
     assert accumulator['valuation_configuration'] == {
-        'FXAccumulatorOptionDeal': {'SpotModel': 'HestonNandi'}}
+        'FXAccumulatorOptionDeal': {'SpotModel': 'LogVar2FJ'}}
 
 
 def test_the_token_rule_answers_the_same_token_in_either_spelling():
@@ -1180,12 +1189,12 @@ def test_the_accumulator_solves_one_strike_from_either_axis_under_the_model(accr
 
     The rand orientation rides the fit as written; the dollar orientation is on the RECIPROCAL of
     the fitted axis and settles in the other currency, so the law is carried to that numeraire
-    (`utils.hn_reciprocal_gamma`). Uncarried - walking the fitted law and reading `1/s` - the two
-    solve 3.4e-3 apart and the gap does NOT close with the path count: a Siegel drift, not noise.
+    (`utils.lv_walk`'s own measure change). Uncarried - walking the fitted law and reading `1/s` -
+    the two solve 3.7e-3 apart and the gap does NOT close with the path count: a Siegel drift, not
+    noise.
 
-    MEASURED: 2.6e-4 apart at 1,024 paths, 2.3e-5 at 4,096, 4.2e-6 at 16,384, 1.3e-5 at 65,536 -
-    tighter at the gate's own count than the lognormal's 2.5e-5 floor, because both orientations run
-    the same daily recursion. The band is 1e-4.
+    MEASURED on the FX gate's book: 2.0e-4 apart at 16,384 paths against the lognormal's 4.1e-5 -
+    the shocks' estimator error rather than the numeraire. The band is 5e-4.
     """
     document = calibrated(accrual_book)
     both_ways = {'pair': PAIR, 'expiry': EXPIRY, 'fixing_frequency': FIXING_FREQUENCY,
@@ -1200,7 +1209,7 @@ def test_the_accumulator_solves_one_strike_from_either_axis_under_the_model(accr
     assert leg(in_dollars, 'accumulator')['note'] is None
     assert abs(in_rand['net']) <= SOLVE_TOLERANCE and abs(in_dollars['net']) <= SOLVE_TOLERANCE
     assert leg(in_dollars, 'accumulator')['strike_market'] == pytest.approx(
-        strike, rel=HN_AXIS_TOLERANCE), 'the two orientations solved different strikes under one law'
+        strike, rel=MODEL_AXIS_TOLERANCE), 'the two orientations solved different strikes under one law'
 
 
 def test_a_composed_tarf_carries_an_exposure_profile(tmp_path):

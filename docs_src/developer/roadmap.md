@@ -19,21 +19,6 @@ caller** (several items below are deliberately not started), and **look before y
   checked and the root moved where it was not; 48f4779 is not in any checkout any more, so the
   move is unpinned. Read the 48f4779 -> 7ed3faf pair at a fixed strike before the next hex claim
   on an accrual document's ROOT.
-- **`HestonNandiComponentModelParameters` x the last `L_Curve` knot's gradient** - on the 2y SPX
-  autocall the AAD reports -15,474 on `L_Curve[last]` while the CRN ladder of the same document
-  reads exactly +0 at both rungs (2026-09-06, `artifacts/fx_gate/out_row45.json`; the campaign's
-  banked `out_greeks.json` reads the same). A knot no price reads carries a gradient, or a knot
-  every price reads carries a ladder that cannot see it; either is a wrong greek on the family the
-  autocall desk runs. Not measured further because the FX gate does not retire the family on it.
-- **A `torch.compile` failure SKIPS the deal** - the fused Heston-Nandi substep's CPU backend
-  raises `InvalidCxxCompiler` without MSVC on PATH, `Deal.calculate`'s guard swallows it, and the
-  run continues to a frame-shape error downstream (`Shape of passed values is (1, 1), indices imply
-  (37, 1)`). Should refuse by name at the compile, like every other unpriceable document.
-- **`structures` hard-codes the desk's spot-model family in three places** - `SPOT_MODEL`, the
-  presence check and the leg note: on a book carrying only a LogVar2FJ or component factor the
-  runner prices under the authored `Valuation Configuration` and its note still says "priced GBM -
-  looked up `HestonNandiModelParameters.ZAR`". The pin-flip lane's closed list.
-- **`hn_component_stride_invert`'s deep-tail bracket** — a target the strip cannot represent (past ~mean−5 sd the quadrature's error exceeds the probability asked; past mean−10 sd it loses monotonicity) has no bracket, the widening loop runs out, and the returned "root" is |x| of 10³–10⁵ — booked by `stride_advance` at ~1e-10 weight per path (396 paths below −100 at 2¹⁷; identical before and after the batched layer, so pre-existing). The convergence refusal now exempts these paths by the `beyond` mark, so they return as they always did rather than killing the valuation. The fix mirrors `stride_cdf`'s saturation — invert to the support edge, never beyond — and re-marks a default path, so it waits for the word. *Measured:* min draw −211,472 on both trees; zero open-and-never-widened stalls across 26 operating bands.
 - **`pv_partial_barrier_option` settlement completeness** — the rebate leg's per-decision `cash_events` are declared and audited off-gate (booked rows {1, 2}, declared {0, 1, 2}, support exact over 1024 paths) but no shipped gate forces completeness, for want of a collateralised partial-barrier document. The safety half is gated (`test_a_rebated_knock_out_registers_the_rebate_it_books_row_by_row`).
 - **`pricing.stochastic_boundary_correction` (`gates/boundary_bandwidth_plateau.py`)** — The bandwidth plateau holds and is carried, not closed: the 32768-path operating point became runnable when the Sobol chunking closed (2026-09-03) and the re-read there is pending. The declared `Boundary_AAD_Bandwidth` default 0.01 sits one rung inside the plateau's lower edge. The suppression seam is that same field at 1e-12, bit-identical to deleting the correction. *Measured:* At 16384 and 20480 paths the estimate holds over 0.005–0.08: seed-mean correction spread 2.41% (discrete barrier) / 3.87% (HN), reported CVA delta 0.60% / 0.24%, against seed floors 13.69% / 28.52%. No single seed sees it — per-seed spreads 12.7–23.1%, seeds disagreeing on the drift's sign, and the seed floor bounds part of the noise only because the Sobol stream is not derived from `Random_Seed`. Lower edge at 0.0025: 9–20% low, per-rung seed spread to 101% (kernel starvation). At 2048 paths the correction falls monotonically 23.76% and nothing holds still. Acceptance names 32768. Re-baselined onto the declared grid: the HN barrier gate is 1.18% against a 6.19% suppression mutant, and the discrete-barrier profile gate is a bit-exact rebate ledger.
 - **`tests/test_boundary_scoping_dominance.py`** — The correction is mutation-gated; its *scoping* is not — a mis-scoping mutant (set-level `portfolio_delta`) has no public seam, since every registration names its class directly. Said in the gate's own docstring. *Measured (re-recorded 2026-09-03, after the ledger fix):* the fixture is authored because correction/smooth is 3.80 on a down-and-out digital struck at ~zero. At 16384 paths the live lane agrees with its CRN oracle at **2.74%** (flatness 2.83%; the suppressed half bit-identical across the fix, so the whole move was the correction), tolerance 0.10; the bandwidth-suppression mutant reads 366.61%, and the same mutant on the old two-set fixture survives at 0.23%.
@@ -207,55 +192,36 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
 2. **The compo smile coordinate**, undeclared because every fixture is flat. Same class as (1).
 3. **The 36 disagreeing `.field.get` sites** (three fatal): hold a surviving fallback to its
    declaration, or leave the reads as they are. Enumerated in `tests/test_declared_defaults.py`.
-4. **Component-HN `Quote_Sensitivity`.** Still refused (the LogVar2FJ family has all three since
-   2026-09-06 through the one `LeastSquaresSolve` node), but the blocker has moved: `∂r/∂θ` is
-   built — the outer search's own Jacobian, the inner `brentq` differentiated by one Newton step at
-   its root. What is not built is `∂r/∂q`, the rule joining them, and a stationarity check for a
-   search that can legitimately stop on the divergence wall rather than at `J'r = 0`.
-5. **Component-HN positivity.** `q_{t+1} ≥ ω_t + ρq_t − φ − φγ₂²h_t` has no sign for free once
-   `φ > 0`. The simulator floors (`utils.HN_COMPONENT_VARIANCE_FLOOR`, active on 2 of 8192 inner
-   paths over 248 steps) while the closed form integrates the unfloored law. Floor, a bound on
-   `φγ₂²`, or a different long-run innovation.
-6. **Which state an OSS row inherits (F4).** The fix is shallow — the kit's day counter starts at
-   the row's own trading-day offset and the state comes off the outer path — but it is a decision,
-   and should be taken for the plain and component families at once.
-7. **Two rates-emitter design questions**, recorded rather than decided: an OIS block is ~14 MB
+4. **Which state an OSS row inherits.** The fix is shallow — the kit seeds its walk at the row's
+   own offset and the state comes off the outer path — but it is a decision. LogVar2FJ re-seeds
+   `l = L(t_row)`, `s = 0` per MTM row and inherits the question the retired families raised.
+5. **Two rates-emitter design questions**, recorded rather than decided: an OIS block is ~14 MB
     live (~26,000 authored floats on a 30Y strip, bounded by `CurveScreen.maximum_fixings`) —
     accept it through `/book/market` or build a term-authored OIS variant; and neither side rolls a
     business day (a 2Y USD OIS pays on a Saturday) — one convention on both sides, gated.
-8. **The α-seed's worst benchmark.** The honesty reprice reads −6.25% against the retired seed's
+6. **The α-seed's worst benchmark.** The honesty reprice reads −6.25% against the retired seed's
     −4.64% while its rms improved 2.71% → 2.39% and the outside-3% count fell 10 → 3. The max is one
     order statistic, anti-correlated with the fit on this flat-quoted cube; gated rather than
     absorbed, owner's eye wanted.
-9. **PFE vs CVA measure policy.** CVA is a Q-expectation wanting the market-calibrated outer; PFE
+7. **PFE vs CVA measure policy.** CVA is a Q-expectation wanting the market-calibrated outer; PFE
     is a P-quantile wanting a historically-estimated one, with the pricing kit staying
     market-implied. One run reports EE and PFE off one outer measure, so a book wanting each metric
     in its own measure runs twice under two `Model Configuration`s. Desk policy to state.
-10. **`get_implied_correlation`'s two single-caller wrappers.** They would stop two callers building
+8. **`get_implied_correlation`'s two single-caller wrappers.** They would stop two callers building
     type-prefixed correlation-name tuples, but they brush the no-abstraction-ahead-of-a-second-caller
     rule. Held until a third correlation pair appears or the rule is judged to outrank it; no gate
     covers tuple literals.
-11. **Flagged, not authorised.** `runtime` carries free functions over the hedge bundle in two
+9. **Flagged, not authorised.** `runtime` carries free functions over the hedge bundle in two
     clusters (Objective, Accounting) with `_UTILITY_OBJECTS` duplicated — the shape
     [Conventions](conventions.md) calls a class waiting to happen. `DealStructure`'s recursions are
     the same category.
-12. **`Boundary_AAD_Window_Touch`'s magnitude.** The switch decides the sign; `add_grid_dates`
+10. **`Boundary_AAD_Window_Touch`'s magnitude.** The switch decides the sign; `add_grid_dates`
     landed 2026-09-03, so the enriched fixture and the re-measurement are now possible.
-13. **COS in the stride.** Measured, not shipped: 256 terms (not 64–128) beat the 512-node strip
-    by 400×, worth 2× on the stride path — at the cost of a second quadrature family through the
-    tilts, partial moments and saturation, on a default-off path already ruled not a speed lever.
-14. **The stride's deep-tail saturation.** Invert to the support edge rather than past it (the
-    defect row above); exact fix known, re-marks a default path.
-15. **The `Branch_And_Weight` default.** Prerequisites now in hand except one: the averaging arms
-    refuse under the switch, so a blanket flip needs an averaging-falls-back-to-crisp rule first;
-    the HN arm's cost is measured (the stride layer, above). Values re-mark within their own MC
-    noise at 12–23× less variance; the greeks are the prize.
-
-16. **A floored pillar's place in the component objective.** `atm_constraint_weight` 1e4 was set
-    so a one-basis-point ATM miss outweighs the whole smile residual on an FX surface that never
-    floors; a chain that floors turns it into a wall the search climbs by wrecking `H0`. Refuse a
-    ladder the floor binds on (the emitter's check, before any fit), fit with the floored pillar
-    dropped, or weight the shortfall at the smile's own scale.
+11. **The `Branch_And_Weight` default.** Prerequisites now in hand except one: the averaging arms
+    refuse under the switch, so a blanket flip needs an averaging-falls-back-to-crisp rule first.
+    The family question is closed — the one surviving spot model hands each fixing interval its own
+    Gaussian block law, so it is admitted on the same terms as GBM. Values re-mark within their own
+    MC noise at 12–23× less variance; the greeks are the prize.
 
 ## Designed, not built
 
@@ -400,6 +366,56 @@ with the mock-built suite and has no replacement; batching Schrager–Pelsser ac
 set; and five model items in the punchlist below.
 
 ## Built
+
+- **The retirement** (2026-09-06, licensed outright by the owner: "we didn't actually validate HN or
+  TARFs or accumulators, so we can remove HN any time we like in favour of LogVar2FJ") — both
+  Heston-Nandi families are GONE from the engine, in four commits off the desk pin above, **net
+  −9,103 lines** with 786 added — −4,262 in the engine, −4,841 in the gates, tests and docs. What went: the two calibrators and `ComponentStrips`; the two price
+  factors; the two OSS kits and the whole STRIDE (`HN_Stride`, its three consumers, the phi_max
+  scan, the Esscher tilts, the carried-state loadings); the two implied spot processes; the
+  Heston-Nandi half of `utils` and the model-agnostic Fourier inversion it was the last reader of;
+  seventeen test files' worth of arms and six whole ones. What stayed: GBM as the limit and the
+  reference, Hull-White, the curve families, `FXVolPrices`, `LeastSquaresSolve`, `InnerMCRecompute`,
+  the boundary sets.
+
+  **The quote preparation was HOISTED before anything was deleted.** `HestonNandiModelParameters`
+  carried the ladder every option family reads — `resolve_block`, `prepare_quotes`, `quote_trailer`,
+  `fx_surface_block`, the reference fields, the moneyness dispatch — and `LogVar2FJModelParameters`
+  inherited it. That half is now `bootstrappers.OptionQuoteFamily`, family-neutral, with the model's
+  own half (the GARCH box, `reparam`, the Fourier price, the objective) deleted from under it;
+  LogVar2FJ's MRO is `LogVar2FJModelParameters -> OptionQuoteFamily -> object` and carries nothing
+  Heston-Nandi. The hoist is worth **zero to the bit**: the banked USDZAR FX ladder re-fitted on it
+  in both `Global` and `Bootstrap` modes reads every written parameter and every L knot hex-identical
+  to the pre-hoist fit, the 22 emitted rungs identical, the wing RMSE 0.131682 and 0.573582 the same
+  digits. The four-quote HW2F pin document is bit-identical too — θ\* and all four `dV/dq`
+  (+4.601481694837237, −14.607195319955192, −8.728049049402394, +39.370686531805916).
+
+  **`OSS_SPOT_MODEL_KITS` is a registry of one, and every branch that asked which kind of kit it
+  held collapsed.** `kit.daily` and `kit.strides` had one value left, so the four OSS pricers' daily
+  arms went — the barrier's HN closed-form parity leg and its batched-carry refusal, the TARF's
+  sub-step loop and its stride, the accumulator's, the autocall's — and `pricing.branch_and_weight`
+  folded into the flag it read: the one surviving family hands each fixing interval its own Gaussian
+  block law, so the smooth estimator is admitted on the same terms as GBM and the daily-kit refusal
+  it existed for has nothing left to refuse. The `factor_dep` keys stopped lying: `HN_Params`,
+  `HN_Steps_Per_Year` and `HN_Invert` are `Spot_Model`, `Steps_Per_Year` and `Invert_Spot`.
+
+  **Every LogVar2FJ and GBM document is hex-identical across all four stages.** `lv_hex.py`
+  −0x1.aad8d5d75f8c9p+5; `lv_trials.py limit` at −0x1.a1f306d03a5a5p+5 (GBM) and
+  −0x1.a1f306d03a59fp+5 (the LogVar2FJ limit) with CVA 0x1.5057040000000p-4 / 0x1.5057060000000p-4;
+  `tarf_hex.py`'s crisp GBM TARF −0x1.2c48f36318e38p+5 at delta 1814.77 with the same one
+  `LatchedBoundarySet`; `lv_deals.py hex`'s eight surviving GBM keys unmoved to the digit. The TARF
+  credit MC under LogVar2FJ reads CVA 0.07946623117 with a profile identical to main's, the
+  reciprocal-axis accumulator credit MC 0.2118722349 over seven finite dispersed rows. A document
+  that DECLARES a retired family refuses by name at load: *FXTARFOptionDeal does not honour
+  SpotModel='HestonNandi'; it accepts ('None', 'LogVar2FJ')*.
+
+  **Six `lv_deals.py hex` keys went by construction**, and one of them was mislabelled: `gbm barrier
+  credit mc` walked its equity under `HestonNandiImpliedSpotModel` — only its DEAL was GBM — so it
+  died with the scenario process like the five openly Heston-Nandi ones. A `Model Configuration`
+  naming a retired process does not refuse by name: the factor drops out of the simulated set with a
+  per-deal WARNING and a credit MC then dies on a zero-factor reshape. That is the pre-existing
+  behaviour of ANY unknown process name, verified identical on main with a nonsense one, and it is
+  an open row rather than a regression.
 
 - **The desk pin moves to LogVar2FJ** (2026-09-06, licensed by the FX gate's addendum) -
   `structures.SPOT_MODEL` is `LogVar2FJ` and `/book/hn` becomes the family-neutral `/book/model`
@@ -1214,16 +1230,7 @@ HW2F block, so nothing re-baselined; `derivus_bloomberg/swaption_vol.py` deliber
 `Objective`, so a Bloomberg-emitted ladder now solves analytically and that emitter's docstring says
 so.
 
-**Standing consequences — three re-marking events.** Every component Heston–Nandi θ\* solved before
-2026-09-03 re-solves on the calibration strips: the quadrature nodes are a dyadic union grid rather
-than uniform panels and `A` accumulates as a dot product, so every price moves at rounding and a
-derivative-free search over 300 evaluations can amplify that into a different basin. On the
-four-pillar USDZAR fixture it did not — θ\* is unmoved in all five fitted coordinates and the
-bootstrapped `L` pillars move 1.5e-14 relative — but that is a fixture reading, not a guarantee.
-On 2026-09-04 the recursion became one spelling — `hn_component_abc` reads the strip's last row —
-so the STRIDE's documents re-mark at rounding too (the tilt and the stride strip run the same
-recursion): the three stride-on documents move 1.7e-16, 1.3e-15 and 1.4e-16 relative, the
-stride-off marks and the component credit MC are bit-identical, and θ\* is unmoved.
+**Standing consequences — two re-marking events.**
 Every foreign-curve HW2F parameter set solved before the domestic-measure fix re-solves to a
 different θ\*. Every HW2F θ\* solved before
 2026-09-02 re-marks again on the `ALPHA_SEED` and premium-clock change: the seed moves where the
@@ -1261,7 +1268,7 @@ landing 0.27–0.30 from θ\* whatever the bump. See
 across the benchmark set (25 scalar calls lose to one batched kernel, 0.158 s against 0.140 s on
 CUDA).
 
-**The equity Heston–Nandi chain emitter is built** (`derivus_bloomberg/equity_chain.py`,
+**The equity chain emitter is built** (`derivus_bloomberg/equity_chain.py`,
 `tests/test_equity_chain.py`); the three engine findings it named are closed above. Chain discovery
 goes through the package's own session seam with every response screened as untrusted evidence — a
 live SPX chain measured 8,000 asked / 3,729 believed / 4,271 refused, led by stale and
@@ -1270,12 +1277,14 @@ pillar the chain cannot serve is dropped by name; before that rule the review me
 objective landing on a single print. The undeclared-dividend carry is a median over five two-sided
 parity pairs with a band refusal, weight is `vega·√OI/(1 + spread/cap)`, the distinct-contract floor
 of eight is counted after snapping, and premium quotes carry the two-way. The emitted block fits
-through the real component-HN bootstrap at an ATM residual of 4.4e-16. Design: equities calibrate
-**to the chain**, quoting premiums, because a listed price is a print while its implied vol is a
-convention; the target family is component HN, since equity autocalls run 3–5Y and a multi-year ATM
-term structure is what one ω cannot hold. V1 is **indices only** — an American single-name chain
-refuses by name — and discrete cash dividends on single names are a declared modelling gap the daily
-recursion does not carry. The emitter must declare which curve feeds the carry, or the calibration's
+through the real bootstrap on a book with no surface in it — 0.272 vol points over six rungs, ATM
+misses 2.0e-15 and -1.1e-14 (`artifacts/hnret/chain_block.py`); it read an ATM residual of 4.4e-16
+through the component Heston-Nandi bootstrap before that family was retired. Design: equities
+calibrate **to the chain**, quoting premiums, because a listed price is a print while its implied
+vol is a convention; the target family is `LogVar2FJModelPrices`, since equity autocalls run 3–5Y
+and a multi-year ATM term structure is what one flat variance level cannot hold. V1 is **indices
+only** — an American single-name chain refuses by name — and discrete cash dividends on single names
+are a declared modelling gap. The emitter must declare which curve feeds the carry, or the calibration's
 forward disagrees with the pricer's.
 
 **The MC's numeraire bias is the curve's tenor grid, not discretisation** (refining 10-daily to
@@ -1283,74 +1292,12 @@ daily does not move it): the first node is 1Y while `reduce_deflate` asks for a 
 adding 1D/1M/3M/6M collapses it from −1.6e-2 to −1.1e-3. A fixture lesson every risk-neutral
 calibration inherits.
 
-**Component Heston–Nandi (CJOW) is built end to end**, as a strict extension of the plain family:
-`utils.hn_component_*`, `HestonNandiComponentModelParameters` on both sides (the price factor
-carries an **L curve** whose values are `bind='value'` leaves),
-`HestonNandiComponentImpliedSpotModel`, and one kit in `pricing.py` that all four OSS pricers walk,
-so a third GARCH family is a class and a dict row rather than a fifth branch in four pricers. The
-long-run intercept is a curve — `ω_t = L_{t+1} − ρL_t`, anchored `q_0 = L(0)` so `E_0[q_t] = L_t`
-exactly — fitted by an inner triangular bootstrap with the skew globals concentrated over it; the
-construction, its two pins and its negative-omega guard are in
-[Market Prices](market_prices.md#hestonnandi-component). The gate spine is the nesting identity
-(φ = 0, flat `L`: the component closed form *is* `hn_call` at 1.5e-13, and the sub-step walks the
-plain path on bitwise-identical draws) — `tests/test_hn_component.py`. The calibration runs **one
-backward recursion for the bound strip plus one per quadrature bound an evaluation widens to** (two
-on the four-pillar ladder): `B` and `C` never read the `ω` strip and are
-time-homogeneous, `A` is affine in it, so one pass at the longest maturity carries every maturity,
-every `L` curve and every carry (`utils.hn_component_abc_strip` held by
-`bootstrappers.ComponentStrips`), and the quadrature grid is a nested dyadic union
-(`utils.gauss_legendre_dyadic`) a narrower bound reads a prefix of. **0.176 s an outer evaluation
-against 2.21 s** puts the declared 300-evaluation cap at 53 s against 662 s rather than 24 minutes;
-the fit still reports itself CAPPED rather than claiming a tolerance it did not reach, and what
-full convergence buys is now measured — 1,246 evaluations and 243 s for a wing residual 22% better,
-in a different basin. The per-pillar bound row closes with it, subsumed: a bound off the strips
-costs one dot product, so every price still derives its own.
-
-*What the component family still owes*, beyond the two open decisions above:
-
-- **The fixing-jump sampler is v2, and the day-step is its oracle.** Every OSS interval walks `n_sub`
-  daily sub-steps because the recursion is calibrated per trading day — exact, and most of the
-  pricer's cost. A sampler drawing the interval's aggregate return and terminal `(h, q)` from their
-  joint law has to reproduce the day-stepped path's distribution, which already exists and is
-  already gated. Nothing about it is designed yet.
-- **The OSS row re-seeds at day zero**, and the L curve makes that a bigger approximation. The plain
-  model's limitation F4 — `h` re-seeds to `H0` at every MTM row — carries over, and the intercept
-  strip also restarts at `ω_0`, so a back row prices under the *front* of the L curve. On a term
-  structure moving 2 vol points over six months that is a real level error on the back rows of an
-  exposure profile. The fix is shallow; which state a row inherits is the open decision above.
-- **The coarse-grid walk has no accuracy gate, and its plain sibling has one.**
-  `utils.hn_component_correlated_substeps` is what the scenario process walks between exposure
-  dates, and nothing measures its distribution against the daily-grid witness.
-  `gates/hn_pfe_stepping.py` is that measurement for the plain and GARCH(1,1)-t siblings, and it
-  caught exactly the two ingredients this function reimplements: the fractional remainder (a
-  `round(f)` truncation cost up to 13% of interval variance) and the forwarded mean that sets the
-  correlation weights. The component version forwards a pair and slices a per-sub-step ω strip, so it
-  has strictly more to get wrong. Until the gate exists the component exposure profile is gated for
-  shape only — rows, dispersion, a finite CVA.
-
-**`Steps_Per_Year` (plain limitation F2) is amplified on this family.** A deal's valuation option
-agreeing with the factor's calibrated clock by convention rather than by a check costs the plain
-model one rescaled variance horizon; here it rescales two things at once, because the `L` knots are
-in years while `ω_t` is a per-step difference — a mismatch moves the number of steps per knot
-interval *and* `ρⁿ` over that interval, so one silent disagreement gives a level error and a
-persistence error. The emitted block states the clock it was fitted on; nothing refuses a deal that
-declares another.
-
-**What remains narrow on the HN stack**: batched-carry `hn_call` (stochastic-rate CVA raises loud
-today rather than mispricing silently, and the already-hit leg raises the same refusal — the second
-caller that would pay for the fix), and the `Steps_Per_Year` check. The `phi_max` scan is **CLOSED
-(2026-09-03)**: the doubling ladder runs as one batched recursion pass — bit-identical as measured
-(elementwise on CUDA; on CPU a different complex kernel lands 3–4 rungs in 20 within 1–2 ulp, the
-bound surviving because it is a threshold on a power-of-two ladder with 15–42 units of margin to
-`HN_STRIDE_PHI_MIN_DECAY`) — verified on 300 pinned keys both devices plus a four-pillar fit
-landing the same parameters to the last digit. The scan is now 0.08 / 0.26 / 0.98 s at 21 / 63 /
-252 steps against 0.15 / 0.22 / 0.87 s pinned — **31–38% of a price, was 75–82%** — so every
-calibration in the stack roughly halves. `hit_value` staying GBM
-under HN is closed: both vanillas take the declared model's closed form, worth 15.8% per unit and
-25.3% EPE / 26.9% PFE95 on the profile. The Malz surface lookup is gated again by
-`test_the_hn_ladder_is_ten_vega_weighted_points_on_the_surfaces_own_strikes`, which puts every strike
-the FX calibration emits back through `pricing.calc_moneyness` and demands the built surface answer
-the vol the block carries to 1e-9 relative on all ten points across both expiries.
+**The Heston-Nandi stack is retired** (2026-09-06) and what it measured is in the Built entry
+above. Two paragraphs are kept because they are the MODEL CLASS's and not that family's: a deal's
+`Steps_Per_Year` agreeing with the factor's calibrated clock by convention rather than by a check
+still costs a rescaled variance horizon — the emitted block states the clock it was fitted on and
+nothing refuses a deal that declares another — and the coarse-grid scenario walk between exposure
+dates still has no accuracy gate against a daily-grid witness on any surviving family.
 
 !!! warning "The cleanup punchlist is stale by design"
     A separate, older sweep list exists outside the docs. Much of its target code was deleted with
