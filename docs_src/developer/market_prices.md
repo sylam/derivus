@@ -413,7 +413,7 @@ structure exactly and is judged on the smile alone; the ATM misses the report pr
 Newton step at its own root, so `dL/dθ` rides the tape and the outer solver keeps its exact Jacobian.
 What that costs is one graph pass per segment per iterate: the search itself runs off the tape on the
 previous sweep's slope, and on the walk at 8192 paths over 504 daily steps a forward pass is 0.280 s
-against 0.756 s with its backward. The grid is the QUOTES' own, `Internal_Step_Days` trading days
+against 0.756 s with its backward. The grid is the QUOTES' own, one trading day
 between block ends with a stub landing each block on its `T`: reading the same rung on the
 trading-day grid instead costs **0.124 vol points** at the 1m ATM (`jac_check.py`).
 

@@ -579,6 +579,12 @@ class ComponentHestonNandiKit(PlainHestonNandiKit):
                 strike ** power * self.stride_partial_moment(fix, x_bound, fired_above, 0.0))
 
 
+#: Internal steps ONE CHECKPOINTED SEGMENT of the walk holds. The forward keeps two boundary states
+#: per segment and the backward recomputes one segment's intermediates at a time, so a finer split
+#: buys tape and pays in boundaries; a trading month sits near the flat optimum of that trade.
+LV_CHECKPOINT_STEPS = 21
+
+
 class LogVar2FJKit(object):
     """LogVar2FJ as an OSS kit: ONE internal-step walk per MTM row, off which each remaining fixing
     interval reads its own Gaussian block law ``(M, Sigma)``.
@@ -601,57 +607,76 @@ class LogVar2FJKit(object):
                            **{x: float(structural[x]) for x in utils.LV_STRUCTURAL_NAMES})
         self.knots, self.values = knots, dict(zip(self.curve_names, scalars[n:]))
         self.steps_per_year = float(factor_dep['HN_Steps_Per_Year'])
-        self.step_days = float(factor_dep['Internal_Step_Days'])
 
-    def draws(self, shared, num_sims, deltas, antithetic):
-        """The walk's two normals and its jump counts, over ``[batch, sims, n]`` and IN FLOAT32 -
-        the only tensors of that shape a pricing call holds, 1.05 GiB each at 256 x 2048 over a 2y
-        daily grid, promoted step by step inside the scan.
+    def draws(self, key, shape, deltas, antithetic):
+        """One SEGMENT's two normals and its jump counts, over ``[batch, sims, n]`` and IN FLOAT32,
+        from a generator seeded by that segment's own key.
 
-        From the PLAIN generator, which `utils.rng_position` replays by state under
-        `InnerMCRecompute` and every Heston-Nandi unmonitored sub-step already draws from: a Sobol
-        walk block is 3n dimensions wide and MEMOIZED per row, 6 GiB a row at this shape. So the
-        row's `u` shares this stream exactly where `sobol` is off - at 16 scenarios or fewer.
-        ``antithetic`` mirrors it along the SIMS axis, ``-eta`` and ``1 - u_N`` (spec 3).
+        REGENERATED, NEVER STORED: the checkpoint's backward re-draws them where a stored tape
+        would have held them, so no tensor of the whole grid's shape exists at any point. The key
+        is the row's ``base`` - one int64 off the plain generator, which `utils.rng_position`
+        replays under `InnerMCRecompute` - plus the segment's index. ``antithetic`` mirrors along
+        the SIMS axis, ``-eta`` and ``1 - u_N`` (spec 3).
         """
-        shape = [shared.simulation_batch, num_sims, int(deltas.shape[0])]
-        z = torch.randn([2] + shape, dtype=torch.float32, device=shared.one.device)
-        u = torch.rand(shape, dtype=torch.float32, device=shared.one.device)
+        gen = torch.Generator(device=deltas.device).manual_seed(key)
+        kw = {'dtype': torch.float32, 'device': deltas.device, 'generator': gen}
+        z = torch.randn([2] + shape, **kw)
+        u = torch.rand(shape, **kw)
         if antithetic:
             z, u = torch.cat([z, -z], dim=-2), torch.cat([u, 1.0 - u], dim=-2)
         return z[0], z[1], utils.lv_counts(u, self.params['Lambda'], deltas)
 
+    def segment(self, key, shape, antithetic, params, curve, deltas, l, s):
+        """One checkpointed segment of the walk: its own draws, then `utils.lv_walk` over them."""
+        eta_l, eta_s, counts = self.draws(key, shape + [int(deltas.shape[0])], deltas, antithetic)
+        return utils.lv_walk(params, curve, deltas, eta_l, eta_s, counts, (l, s))
+
     def blocks(self, row_t, deltas, carry, shared, num_sims, antithetic):
         """Every remaining fixing interval's block law, ``(M, Sigma)`` of shape [batch, sims] each.
 
-        The grid runs `Internal_Step_Days` trading days on the `Steps_Per_Year` clock between
-        fixings, every fixing landing ON a grid point, so there are no stubs and the block sums are
-        exact. The state seeds at ``l = L(t_row)``, ``s = 0`` per row, of the same class as the
+        ONE TRADING DAY PER INTERNAL STEP on the `Steps_Per_Year` clock - the day is the model
+        (spec 2.1) - every fixing landing ON a grid point, so there are no stubs and the block sums
+        are exact. The state seeds at ``l = L(t_row)``, ``s = 0`` per row, of the same class as the
         daily kits' per-row re-seed.
 
-        THE SCAN BLOCK-SUMS AS IT PASSES: `utils.lv_walk` accumulates each interval's ``M`` and
-        ``Sigma^2`` inside its own loop, so no ``[batch, sims, n]`` tensor exists but the draws.
+        EVERY SEGMENT OF `LV_CHECKPOINT_STEPS` STEPS IS A CHECKPOINT: the tape keeps its two
+        boundary states and the backward recomputes its intermediates - draws included - one
+        segment at a time, which is what puts a daily 2y walk at 2,048 x 2,048 on a 24 GiB card.
+        `utils.lv_walk` accumulates as it passes, so a fixing block's law is the sum over its own
+        segments and no ``[batch, sims, n]`` tensor exists at all.
 
         All five curves are PIECEWISE CONSTANT and read at ABSOLUTE times - ``L`` on the segments
         between ATM expiries, the four levers on their calendar buckets - because both are calendar
         time from the base date, not time from this row. ``antithetic`` is REQUIRED because the
         wrong value is a shape error at every consumer, never a quiet bias.
         """
-        steps = [max(int(round(float(dt) * self.steps_per_year / self.step_days)), 1)
-                 for dt in deltas]
+        steps = [max(int(round(float(dt) * self.steps_per_year)), 1) for dt in deltas]
         delta = torch.cat([(dt / n).expand(n) for dt, n in zip(deltas, steps)])
-        block = torch.repeat_interleave(
-            torch.arange(len(steps), device=delta.device),
-            torch.tensor(steps, dtype=torch.long, device=delta.device))
         t = float(row_t) + torch.cat([delta.new_zeros(1), delta.cumsum(0)])
         curve = utils.bucket_at(self.knots['L_Curve'], self.values['L_Curve'], t)
-        params = dict(self.params, **{x: utils.bucket_at(self.knots[x], self.values[x], t[:-1])
-                                      for x in utils.LV_BUCKET_NAMES})
-        eta_l, eta_s, counts = self.draws(shared, num_sims, delta, antithetic)
-        seed = delta.new_zeros(eta_l.shape[:-1])
-        M, var = utils.lv_walk(params, curve, delta, eta_l, eta_s, counts,
-                               state0=(seed + curve[0], seed), blocks=block)
-        return M + (carry * deltas.reshape(-1, 1)).T.unsqueeze(1), utils.sqrt_or_zero(var)
+        levers = {x: utils.bucket_at(self.knots[x], self.values[x], t[:-1])
+                  for x in utils.LV_BUCKET_NAMES}
+        shape = [shared.simulation_batch, num_sims]
+        # the row's own stream key, off the plain generator so the position bookkeeping replays
+        # it; shifted clear of the segment index, which counts up from it
+        base = int(torch.randint(1 << 42, (1,)).item()) << 20
+        s = delta.new_zeros([shape[0], num_sims * (2 if antithetic else 1)])
+        l, M, var, k, j = s + curve[0], [], [], 0, 0
+        for n in steps:
+            m, v = 0.0, 0.0
+            for a in range(k, k + n, LV_CHECKPOINT_STEPS):
+                b = min(a + LV_CHECKPOINT_STEPS, k + n)
+                dm, dv, l, s = torch.utils.checkpoint.checkpoint(
+                    self.segment, base + j, shape, antithetic,
+                    dict(self.params, **{x: levers[x][a:b] for x in utils.LV_BUCKET_NAMES}),
+                    curve[a:b + 1], delta[a:b], l, s,
+                    use_reentrant=False, preserve_rng_state=False)
+                m, v, j = m + dm, v + dv, j + 1
+            M.append(m)
+            var.append(v)
+            k += n
+        return (torch.stack(M, -1) + (carry * deltas.reshape(-1, 1)).T.unsqueeze(1),
+                utils.sqrt_or_zero(torch.stack(var, -1)))
 
     def european(self, S, law, K, is_call, digital):
         """This model's own European, undiscounted - the barrier's KI parity leg and its

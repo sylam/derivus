@@ -560,12 +560,11 @@ def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, 
 
 
 def set_spot_model_index(field_index, hn, options):
-    """Write a declared spot model's compile facts - the parameter factor, the trading-day clock a
-    daily family sub-steps on, and the internal step a walking one takes. A GBM deal writes none."""
+    """Write a declared spot model's compile facts - the parameter factor and the trading-day clock
+    a daily family sub-steps on and a walking one steps once per day of. A GBM deal writes none."""
     if hn is not None:
         field_index['HN_Params'] = hn
         field_index['HN_Steps_Per_Year'] = options.get('Steps_Per_Year', 252.0)
-        field_index['Internal_Step_Days'] = options.get('Internal_Step_Days', 1)
 
 
 def spot_model_reciprocal_axis(spot_model, underlying, currency, base, reference):
@@ -3987,11 +3986,7 @@ class QEDI_CustomAutoCallSwap(Deal):
                       'Quanto/Compo carry is a lognormal quantity, so declaring one alongside a non-`None`',
                       'SpotModel is the same loud skip.',
                       '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH steps',
-                      '(default 252; only read when SpotModel is not `None`).',
-                      '- **Internal_Step_Days**: trading days per internal step of a model that walks one',
-                      '(`LogVar2FJ`; default 1). A NUMERICAL setting, not a parameter: prices converge as it',
-                      'shrinks and a fit must be run at the step its pricing will use.'
-                      ])
+                      '(default 252; only read when SpotModel is not `None`).'])
 
     def __init__(self, params, valuation_options):
         super(QEDI_CustomAutoCallSwap, self).__init__(params, valuation_options)
@@ -4486,10 +4481,7 @@ class EquityBarrierOption(Deal):
                      'single-currency payoff: a Quanto/Compo carry is a lognormal quantity, so declaring',
                      'one alongside a non-`None` SpotModel is the same loud skip.',
                      '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH steps',
-                     '(default 252; only read when SpotModel is not `None`).',
-                     '- **Internal_Step_Days**: trading days per internal step of a model that walks one',
-                     '(`LogVar2FJ`; default 1). A NUMERICAL setting, not a parameter.'
-                     ])
+                     '(default 252; only read when SpotModel is not `None`).'])
 
     def __init__(self, params, valuation_options):
         super(EquityBarrierOption, self).__init__(params, valuation_options)
@@ -5723,10 +5715,7 @@ class FXTARFOptionDeal(Deal):
             'USD book, whichever side the deal is written from). Switching the model on without that',
             'factor in the market data is a loud skip, never a silent lognormal fallback.',
             '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH steps',
-            '(default 252; only read when SpotModel is not `None`).',
-            '- **Internal_Step_Days**: trading days per internal step of a model that walks one',
-            '(`LogVar2FJ`; default 1). A NUMERICAL setting, not a parameter.'
-        ])
+            '(default 252; only read when SpotModel is not `None`).'])
 
     def __init__(self, params, valuation_options):
         super(FXTARFOptionDeal, self).__init__(params, valuation_options)
@@ -5877,10 +5866,7 @@ class FXAccumulatorOptionDeal(Deal):
             '`<SpotModel>ModelParameters.<non-base token>` exactly as for the FX TARF; `LogVar2FJ` walks',
             'its own INTERNAL step and hands each fixing interval the block law this loop truncates at.',
             '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH',
-            'steps (default 252; only read when SpotModel is not `None`).',
-            '- **Internal_Step_Days**: trading days per internal step of a model that walks one',
-            '(`LogVar2FJ`; default 1). A NUMERICAL setting, not a parameter.'
-        ])
+            'steps (default 252; only read when SpotModel is not `None`).'])
 
     def __init__(self, params, valuation_options):
         super(FXAccumulatorOptionDeal, self).__init__(params, valuation_options)

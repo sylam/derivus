@@ -2340,7 +2340,7 @@ class LVFit(object):
         #: and the declaration cannot disagree
         self.instrument = read = declared_defaults(type(family), instrument)
         self.mode = read['Fit_Mode']
-        self.delta = int(read['Internal_Step_Days']) / float(read['Steps_Per_Year'])
+        self.delta = 1.0 / float(read['Steps_Per_Year'])
         self.c_min, self.rcond = float(read['C_Min']), float(read['Jacobian_Rcond'])
         self.stationarity = float(read['Stationarity_Tol'])
         self.tolerance, self.max_iter = float(read['Tolerance']), int(read['Max_Iterations'])
@@ -2391,11 +2391,18 @@ class LVFit(object):
         """
         params = dict(scalars, **{name: utils.bucket_at(self.buckets, levers[name], self.times[:n])
                                   for name in utils.LV_BUCKET_NAMES})
-        eta_l, eta_s, counts = (draw[:, :n] for draw in self.draws)
-        seed = eta_l.new_zeros(eta_l.shape[0])
-        M, var = utils.lv_walk(params, curve[:n + 1], self.deltas[:n], eta_l, eta_s, counts,
-                               (seed + curve[0], seed), self.blocks[:n])
-        return M.cumsum(-1), var.cumsum(-1)
+        eta_l, eta_s, counts = self.draws
+        s = eta_l.new_zeros(eta_l.shape[0])
+        l, M, var, a = s + curve[0], [], [], 0
+        for b in [int(x) for x in self.upto if x <= n]:
+            m, v, l, s = utils.lv_walk(
+                dict(params, **{x: params[x][a:b] for x in utils.LV_BUCKET_NAMES}),
+                curve[a:b + 1], self.deltas[a:b], eta_l[:, a:b], eta_s[:, a:b], counts[:, a:b],
+                (l, s))
+            M.append(m)
+            var.append(v)
+            a = b
+        return torch.stack(M, -1).cumsum(-1), torch.stack(var, -1).cumsum(-1)
 
     @staticmethod
     def conditional_black(M, var, carry, strike):
@@ -3217,8 +3224,8 @@ class LogVar2FJModelParameters(HestonNandiModelParameters):
          'inversion of both premia, unweighted and vega-weighted: three functionals, named, because',
          'a fit is quoted in whichever the reader had in mind.',
          '',
-         'ONE WALK PER EVALUATION, ON THE QUOTES OWN CLOCK. The internal grid steps',
-         '*Internal_Step_Days* trading days on the *Steps_Per_Year* clock, and a block ends at',
+         'ONE WALK PER EVALUATION, ON THE QUOTES OWN CLOCK. The internal grid steps one trading',
+         'day on the *Steps_Per_Year* clock - the day is the model - and a block ends at',
          'every quoted maturity and at every forward target $T_1$ and $T_2$ - its last step a STUB',
          'landing it exactly on $T$, so the variance the fit reads at a maturity is the variance a',
          'pricer reads at that tenor of the curve written out. The block sums are cumulated, so a',
@@ -3338,11 +3345,6 @@ class LogVar2FJModelParameters(HestonNandiModelParameters):
                       'is what an autocall wants; Bootstrap makes the ladder\'s WING EXPIRIES the '
                       'calendar buckets and fits each given the ones before it, which is what a '
                       'TARF read at many fixings wants (spec 5.4.1)'),
-        F('Internal_Step_Days', 'Integer', default=1,
-          description='Trading days per INTERNAL step of the walk, on the Steps_Per_Year clock. '
-                      'Delta is a modelling choice, not a nuisance: it is WRITTEN ONTO THE FACTOR '
-                      'and the pricer refuses a deal walked on another one by name, because a deal '
-                      'priced at a step the fit did not run on simulates a different model'),
         F('Paths', 'Integer', default=8192,
           description='Paths the fixed antithetic draws carry. The objective is deterministic in '
                       'them, so this sets the noise floor under every fitted number rather than a '
@@ -3561,7 +3563,7 @@ class LogVar2FJModelParameters(HestonNandiModelParameters):
         needs before a stage runs. False where the block carries nothing to fit.
 
         THE GRID IS THE QUOTES' OWN: a block ends at every quoted maturity and at every forward
-        window's two ends, its steps `Internal_Step_Days` long except the last, a STUB landing the
+        window's two ends, its steps one trading day except the last, a STUB landing the
         block exactly on T. So the variance the fit reads at a maturity is the variance a pricer
         reads at that tenor of the curve written out, to the digit.
         """
@@ -3627,9 +3629,6 @@ class LogVar2FJModelParameters(HestonNandiModelParameters):
             [np.append(np.full(n - 1, fit.delta), span - (n - 1) * fit.delta)
              for n, span in zip(counts, spans)]))
         fit.times = torch.cat([fit.deltas.new_zeros(1), fit.deltas.cumsum(0)])
-        fit.blocks = torch.repeat_interleave(
-            torch.arange(len(ends), device=self.device),
-            torch.tensor(counts.tolist(), device=self.device))
         fit.uniforms = fit.draw(int(fit.instrument['Paths']), fit.n, int(fit.instrument['Random_Seed']))
         fit.knots = np.array([0.0] + [quote.T for quote in fit.atm])
         variance = np.array([quote.sigma ** 2 * quote.T for quote in fit.atm])

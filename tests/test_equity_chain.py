@@ -982,7 +982,7 @@ def test_the_chain_emits_a_logvar2fj_block_that_bootstraps(caplog):
         minimum_contracts=4)[1]['instrument']['European_Options'], (
         'one selection wrote two different option tables')
 
-    block['instrument'].update(Paths=512, Max_Iterations=4, Internal_Step_Days=5)
+    block['instrument'].update(Paths=512, Max_Iterations=4)
     document = job_document({name: block}, surface=False)
     document['Calc']['MergeMarketData']['ExplicitMarketData'][
         'Bootstrapper Configuration'] = {'LogVar2FJModelParameters': {}}

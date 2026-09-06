@@ -3705,20 +3705,14 @@ def lv_ou_step_weights(kappa, sigma, deltas):
     return phi, sigma * sqrt_or_zero((1.0 - phi * phi) / (2.0 * kappa))
 
 
-def lv_block_ends(block_of_step):
-    """Index of the last step of each block."""
-    return torch.cumsum(torch.bincount(block_of_step), dim=0) - 1
+def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0):
+    """Walk both log-variance factors over ONE block and return its sums and the state it ends in.
 
-
-def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0, blocks):
-    """Walk both log-variance factors and BLOCK-SUM the return law of each monitored interval.
-
-    eta_l, eta_s, counts are [batch, sims, n]; curve_at_grid is L at the n+1 grid times,
-    params[name] for each of `LV_BUCKET_NAMES` is that lever's bucket value in force at each step
-    start, state0 = (l0, s0) is [batch, sims] and `blocks` is the per-step block index. Returns
-    (M, Sigma^2) over [..., n_blocks]: the scan ACCUMULATES each block's sums as it passes that
-    block's steps, so nothing of shape [batch, sims, n] is materialised at all. M carries no
-    carry term - that is added per block by the caller.
+    eta_l, eta_s, counts are [batch, sims, n] over the BLOCK's own steps, curve_at_grid is L at its
+    n+1 grid times, params[name] for each of `LV_BUCKET_NAMES` is that lever's value in force at
+    each step start and state0 = (l, s) is [batch, sims]. Returns (M, var, l, s): the block's
+    return mean and variance, no carry term - the caller adds that - and the end state, which seeds
+    the next block. The scan ACCUMULATES, so nothing of shape [batch, sims, n] but the draws exists.
     """
     rl, nu = params['Rho_L'], params['Nu']
     a, beta = params['Cap_A'], params['Cap_Beta']
@@ -3733,24 +3727,19 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0, blocks)
     l, s = state0
     phi_s, w_s = lv_ou_step_weights(params['Kappa_S'], ss, deltas)
     phi_l, w_l = lv_ou_step_weights(params['Kappa_L'], params['Sigma_L'], deltas)
-    ends = set(lv_block_ends(blocks).tolist())
-    acc_m, acc_v, ms, vs = 0.0, 0.0, [], []
+    M, var = 0.0, 0.0
     for k in range(deltas.shape[0]):
         Nk = counts[..., k].to(eta_l.dtype)
         rs_k, mu_k = rs[..., k], mu[..., k]
         V = deltas[k] * torch.exp(lv_cap(l + s, a, beta))
         sq = sqrt_or_zero(V)
-        acc_v = acc_v + ((1.0 - rs_k * rs_k - rl * rl) * V + Nk * sj2[..., k])
-        acc_m = acc_m + (-0.5 * V + rl * sq * eta_l[..., k] + rs_k * sq * eta_s[..., k]
-                         + Nk * mu_k - comp[..., k])
-        if k in ends:
-            ms.append(acc_m)
-            vs.append(acc_v)
-            acc_m, acc_v = 0.0, 0.0
+        var = var + ((1.0 - rs_k * rs_k - rl * rl) * V + Nk * sj2[..., k])
+        M = M + (-0.5 * V + rl * sq * eta_l[..., k] + rs_k * sq * eta_s[..., k]
+                 + Nk * mu_k - comp[..., k])
         s = phi_s[..., k] * s + w_s[..., k] * eta_s[..., k] + nu * Nk
         l = (curve_at_grid[k + 1] + phi_l[..., k] * (l - curve_at_grid[k])
              + w_l[..., k] * eta_l[..., k])
-    return torch.stack(ms, -1), torch.stack(vs, -1)
+    return M, var, l, s
 
 
 # Correlated sub-stepping -- exact within-interval dynamics between coarse scenario nodes. A coarse

@@ -381,6 +381,49 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **LogVar2FJ per-block checkpointing, and the day as the model** (2026-09-06, spec §6 and §12) -
+  `utils.lv_walk` walks ONE block and returns `(M, var, l, s)`; `LogVar2FJKit.blocks` loops the
+  fixing blocks as checkpointed segments of `LV_CHECKPOINT_STEPS` (21) internal steps
+  (`use_reentrant=False`, `preserve_rng_state=False`), each regenerating its own draws from a
+  generator keyed on the row's `base` - one int64 off the plain stream `utils.rng_position`
+  replays - plus the segment index, so nothing of the whole grid's shape is ever held. The segment
+  length is measured, not chosen: at 2,048 x 2,048 the semi-annual block OOMs, 42 steps read
+  11,184 MiB / 74 s, **21 read 8,392 MiB / 71 s**, 10 read 8,112 / 110, 5 read 10,896 / 138 - the
+  forward pays boundary states in 1/seg, the backward tape in seg. On the 2y SPX autocall at
+  256 x 2,048 daily with the CVA gradient on, peak falls **20,287 -> 1,083 MiB for 1.47x the wall
+  clock**, and the contracted target prices: 2,048 x 2,048 daily, uncollateralised,
+  `Recompute_Inner_MC: 'Yes'`, **8,392 MiB in 70.5 s**, where the un-checkpointed walk asks for
+  7.95 GiB it cannot have. THE CVA DELTA ROW, read on the step the model offers: the
+  uncollateralised spot delta is **+4.64e-05** against a ladder +3.96 / +4.22 / +4.49e-05 flat to
+  12.5%, between the two finest Richardson extrapolations (+4.58e-05 in h^2, +4.75e-05 in h) -
+  superseding the 21-day +5.524e-05 against +5.55..+5.82e-05, a measurement under a step the
+  model no longer offers. The collateralised row is read for the first time, at 256 x 2,048
+  (-1.223e-04 against a ladder scattering 16.0%) and priced to 1,024 x 2,048 (11.8 GiB); at 2,048
+  it still OOMs and THE WALK IS NOT WHAT BINDS IT - the CSA adds 1,909 MiB at 256 outer and 15.0
+  GiB at 2,048 against the walk's own 1,083 -> 8,392, so the next memory lane is the collateral
+  recursion. Second order is VERIFIED, not assumed: the non-reentrant checkpoint carries a double
+  backward, `Greeks: 'All'` reads gamma **0.016%** off the AAD delta's own ladder, with spot
+  0.32%, rates 0.06% and the L curve 0.92% at 65,536 paths; CVA gamma through `InnerMCRecompute`
+  stays out of scope (the node is first order by contract). `Internal_Step_Days` is GONE - from
+  the four deals' valuation options and documentation, from `set_spot_model_index` (two keys
+  remain), from the kit (`steps = max(round(dt * spy), 1)`), from the calibrator's fields and
+  grid, and from the campaign's authoring; `checks.py` G9 keeps its 1/2/5/21-day table on its own
+  test-only grids, reported and no longer gated (the day is the model; the table documents what a
+  coarser chain would change - 12.4 SE at 21 days, 3.4 SE at 5). Every GBM and Heston-Nandi
+  document is hex-identical (`tarf_hex.py`, `hn_hex.py`, `run_trials.py base`, the 14 keys of
+  `lv_deals.py hex`); every LogVar2FJ document RE-MARKS within its own MC error (rev3 -52.397 ->
+  -53.356, 0.65 SE; Q-sized -59.884 -> -60.746, 0.53 SE), the draw stream being per-segment now,
+  with the GBM limit still at rounding on all five documents (8.2e-16 on the autocall) and the
+  9-month deal blind to a year-two bucket to the bit; the limit's CVA reads one float32 ulp off
+  GBM's (9.1e-8) where phase 1 read it bit-identical, because the row's key consumes one draw of
+  the plain stream the GBM document does not. The calibrator's fitted leaves move 7e-12..3.2e-08:
+  the walk is bitwise identical on identical inputs on CPU and CUDA and the fit is run-to-run
+  reproducible, so this is the Jacobian reassociating over a curve leaf's per-block reductions in
+  the flat `(Sigma_L, Rho_L)` valley, not a changed model. Net **-6** tracked lines. PROOF
+  DOCUMENTS: `tarf_hex.py`, `lv_phase1/hn_hex.py`, `lv_deals.py hex | limit | values | guards`,
+  `lv_hex.py`, `lv_trials.py limit | base | buckets | greeks | refuse`, `lv_remark.py`,
+  `lv_cva_daily.py`, `lv_recompute_parity.py`, `checks.py g9 g10 buckets`, `fit_doc.py`.
+
 - **The LogVar2FJ L curve is piecewise constant on the segments between ATM expiries** (2026-09-06,
   spec 5.4.3, the owner's ruling). Matching segment integrals with a curve whose integral reads
   both ends is a recurrence with multiplier -1, so the fitted strip alternated with a phase nothing
