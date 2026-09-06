@@ -439,7 +439,7 @@ def hw2f_block(ladder, curve=None, screen=None):
     WHAT IS WRITTEN AND WHAT IS NOT. `Swaption_Volatility`, `Quote_Source` and
     `Instrument_Definitions` are the quote; every other declared field on this family is a property
     of the SOLVE rather than of the market and is left to the engine's declared default, so an
-    emitted ladder follows that default wherever it moves. (The Heston-Nandi emitter states
+    emitted ladder follows that default wherever it moves. (The equity chain emitter states
     `Steps_Per_Year` for the opposite reason: there the step clock is what the parameters MEAN.)
 
     THE FIT'S CONVENTION IS THE SURFACE'S, NOT THE LADDER'S: `create_market_swaps` prices each

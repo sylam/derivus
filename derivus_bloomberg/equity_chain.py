@@ -10,12 +10,12 @@
 # Derivus is distributed WITHOUT ANY WARRANTY; without even the implied
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
-"""The listed equity option CHAIN, read off a terminal and emitted as a Heston-Nandi quote block.
+"""The listed equity option CHAIN, read off a terminal and emitted as one option quote block.
 
 Equities calibrate TO THE CHAIN and quote PREMIUMS rather than implied vols: a listed price is a
 print while its implied vol is a convention (which forward, which discounting, which exercise), and
-any equity vol surface is already somebody's fit. The Heston-Nandi families accept `Quote_Type`
-Premium, which is what this emitter writes.
+any equity vol surface is already somebody's fit. The family accepts `Quote_Type` Premium,
+which is what this emitter writes.
 
 It is `fxvol`'s sibling - reach a terminal, screen what came back, write a `{"instrument": {...}}`
 block - and it prices nothing, fits nothing, builds no surface, and imports no engine nor pandas,
@@ -29,9 +29,8 @@ is indices only - and a contract stating no exercise style is refused too, absen
 European.
 
 THE LADDER REACHES THE PRODUCT HORIZON: pillars default to 3M/6M/1Y/2Y/3Y where the FX ladder stops
-at 1Y, because equity autocalls run three to five years and one omega cannot hold a multi-year ATM
-term structure. The target family is therefore `HestonNandiComponentModelPrices`; the plain
-spelling is emitted from the same selection, the two blocks differing only in their header.
+at 1Y, because equity autocalls run three to five years and one flat variance level cannot hold a
+multi-year ATM term structure. The target family is `LogVar2FJModelPrices`, whose L curve can.
 
 THE FORWARD IS DECLARED, NOT DISCOVERED - the strikes and every weight hang off it, so an emitter
 forward disagreeing with the pricer's fits the calibration at coordinates the pricer never visits.
@@ -76,38 +75,26 @@ CONTRACT_FIELDS = ('OPT_STRIKE_PX', 'OPT_EXPIRE_DT', 'OPT_PUT_CALL', 'OPT_EXER_T
 #: outage partial. A full SPX chain is thousands of names.
 BATCH = 50
 
-#: The five reference fields the Heston-Nandi families declare, and the factor TYPE this emitter
-#: names each with for an equity underlying. Spelled here because the package may not import the
-#: engine; held against `HestonNandiModelParameters.factor_types` by a gate.
-HN_REFERENCE_TYPES = {'Underlying': 'EquityPrice', 'Volatility': 'EquityPriceVol',
-                      'Discount_Rate': 'InterestRate', 'Yield': 'DividendRate',
-                      'Funding_Rate': 'InterestRate'}
+#: The five reference fields the family declares, and the factor TYPE this emitter names each
+#: with for an equity underlying. Spelled here because the package may not import the engine; held
+#: against `OptionQuoteFamily.factor_types` by a gate.
+REFERENCE_TYPES = {'Underlying': 'EquityPrice', 'Volatility': 'EquityPriceVol',
+                   'Discount_Rate': 'InterestRate', 'Yield': 'DividendRate',
+                   'Funding_Rate': 'InterestRate'}
 
-#: The two switches the emitter STATES rather than lets fall through, at the families' own
-#: declared defaults. The STEP CLOCK is what the fitted parameters mean, so a deal's
-#: `Steps_Per_Year` has to be this number or it simulates a different model.
+#: The one switch the emitter STATES rather than lets fall through, at the family's own declared
+#: default. The STEP CLOCK is what the fitted parameters mean, so a deal's `Steps_Per_Year` has to
+#: be this number or it simulates a different model.
 STEPS_PER_YEAR = 252.0
-QUADRATURE_PANELS = 64
 
-#: The target families and the header each declares BEYOND the shared one, emitted off ONE
-#: selection: the component family for the multi-year ATM term structure its L curve holds (`Rho` a
-#: pin the block states, `Quote_Sensitivity` Yes being refused there), the plain one for the
-#: five-parameter fit, and LogVar2FJ, which prices by conditional Black over a walk and so declares
-#: no `Quadrature_Panels` at all - a header line rather than a blank one, a block carrying only
-#: what its family declares.
-COMPONENT_FAMILY = 'HestonNandiComponentModelPrices'
-PLAIN_FAMILY = 'HestonNandiModelPrices'
-LOGVAR_FAMILY = 'LogVar2FJModelPrices'
-FAMILY_HEADER = {COMPONENT_FAMILY: {'Quadrature_Panels': QUADRATURE_PANELS,
-                                    'Rho': 0.99, 'Quote_Sensitivity': 'No'},
-                 PLAIN_FAMILY: {'Quadrature_Panels': QUADRATURE_PANELS},
-                 LOGVAR_FAMILY: {}}
-FAMILIES = tuple(FAMILY_HEADER)
+#: The family this emitter writes. LogVar2FJ prices by conditional Black over a walk, so the block
+#: is the shared header and nothing else.
+FAMILY = 'LogVar2FJModelPrices'
 
 #: The value-plane keys an option quote row carries beside its mid - the two-way the print was
 #: dealt on and its own clock, which are the evidence.
 #:
-#: The Heston-Nandi families declare all three on their option row (`schema.QUOTE_TWO_WAY`), so
+#: The family declares all three on its option row (`schema.QUOTE_TWO_WAY`), so
 #: `European_Options` is a `schema.MARKET_QUOTE_CONTAINERS` table and these travel the VALUE plane
 #: as an FX smile's `Points` do: a re-quoted chain on the same contracts moves `values_hash` with
 #: `plan_hash` bit-identical. A moved strike or expiry is still a re-authoring.
@@ -216,11 +203,11 @@ class EquityForward:
     rate: float
     dividend_yield: float | None = None
     funding_rate: str = ''
-    underlying_type: str = HN_REFERENCE_TYPES['Underlying']
-    volatility_type: str = HN_REFERENCE_TYPES['Volatility']
-    discount_rate_type: str = HN_REFERENCE_TYPES['Discount_Rate']
-    dividend_type: str = HN_REFERENCE_TYPES['Yield']
-    funding_rate_type: str = HN_REFERENCE_TYPES['Funding_Rate']
+    underlying_type: str = REFERENCE_TYPES['Underlying']
+    volatility_type: str = REFERENCE_TYPES['Volatility']
+    discount_rate_type: str = REFERENCE_TYPES['Discount_Rate']
+    dividend_type: str = REFERENCE_TYPES['Yield']
+    funding_rate_type: str = REFERENCE_TYPES['Funding_Rate']
 
     def __post_init__(self):
         for name, value in (('underlying_factor', self.underlying_factor),
@@ -244,13 +231,13 @@ class EquityLadder:
     """The ladder, its screens and its floors - every one of them a parameter with a stated default.
 
     THE PILLARS REACH THE PRODUCT HORIZON: 3M/6M/1Y/2Y/3Y, where the FX ladder stops at 1Y,
-    because equity autocalls run three to five years and one omega cannot hold a multi-year ATM
-    term structure. The component family's L curve can, and the pillars are what identify it.
+    because equity autocalls run three to five years and one flat variance level cannot hold a
+    multi-year ATM term structure. The L curve can, and the pillars are what identify it.
 
     THE WINGS ARE ONE PILLAR SHORT of the ATM ladder, four expiries as
-    `HestonNandiComponentModelParameters` wants: the ATM rungs are SPENT on the L pillars, so what
-    identifies the five free globals is what is left. The 3Y wing is dropped rather than the 3M
-    one because that is where a listed chain thins out first.
+    `LogVar2FJModelParameters` wants: the ATM rungs are SPENT on the L pillars, so what identifies
+    the free globals is what is left. The 3Y wing is dropped rather than the 3M one because that is
+    where a listed chain thins out first.
     """
     pillars: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 3.0)
     wing_pillars: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0)
@@ -274,8 +261,8 @@ class EquityLadder:
     #: answers a plausible price, and the date is the only thing that says otherwise.
     stale_days: int = 5
     #: DISTINCT contracts the ladder must survive snapping with -
-    #: `HestonNandiComponentModelParameters.fx_minimum_contracts`: the ATM rungs are consumed by
-    #: the L bootstrap, so what identifies the globals is what is left.
+    #: `LogVar2FJModelParameters.fx_minimum_contracts`: the ATM rungs are consumed by the L
+    #: bootstrap, so what identifies the globals is what is left.
     minimum_contracts: int = 8
     #: How far PAST the ladder's longest rung a listed expiry may still be snapped to. A month,
     #: because that is the width of the same quarterly listing rolled once - not a second expiry.
@@ -290,9 +277,8 @@ class EquityLadder:
     #: WEIGHT and never the contract, since the contract was snapped to a listing rather than
     #: computed.
     days_per_year: float = 365.0
-    #: The step clock and the inversion width the block STATES. Read off the field declarations.
+    #: The step clock the block STATES. Read off the field declaration.
     steps_per_year: float = STEPS_PER_YEAR
-    quadrature_panels: int = QUADRATURE_PANELS
     #: The flat vol the wing bands fall back to where an expiry's own ATM contract yields no
     #: admissible Black implied vol. A seed for a coordinate, never a price.
     reference_vol: float = 0.20
@@ -377,8 +363,7 @@ def black_price(forward, strike, rate, vol, tau, is_call):
 
 
 def black_vega(forward, strike, rate, vol, tau):
-    """`exp(-r t) F n(d1) sqrt(t)`, shared by puts and calls - `HestonNandiModelParameters
-    .fx_black_vega`.
+    """`exp(-r t) F n(d1) sqrt(t)`, shared by puts and calls - `OptionQuoteFamily.fx_black_vega`.
 
     THE WEIGHT, before the liquidity factor and before normalisation. It is what makes the
     objective scale-free across a term structure running to three years: a 3M premium is a
@@ -764,9 +749,8 @@ def assign_expiries(expiries, ladder):
 
     ONE EXPIRY, ONE PILLAR is the third. An ordinary board lists quarterlies out a year then jumps
     to LEAPS, so a 1Y and a 2Y pillar both land on one January listing. Allowing it would emit ONE
-    contract as TWO equations at double weight - which the two family spellings read differently -
-    and write an L strip with fewer knots than the ladder declares pillars. So a pillar left with
-    nothing is DROPPED by name.
+    contract as TWO equations at double weight and write an L strip with fewer knots than the
+    ladder declares pillars. So a pillar left with nothing is DROPPED by name.
 
     NEAREST CLAIM WINS, not shortest-first: pairs are taken in order of log-distance, so a 3Y
     listing does not enter as the 2Y rung while the 3Y pillar it IS gets dropped. Ties break on the
@@ -825,8 +809,7 @@ def _snap_strike(candidates, forward, target, ratio=False):
 
 
 def select_rungs(chain, forward, ladder=None):
-    """`(rungs, notes, readings)` - the selection, and the one both family spellings are emitted
-    from. Nothing below this line knows which family it is writing for.
+    """`(rungs, notes, readings)` - the selection the block is emitted from.
 
     THE FORMULA, stated once:
 
@@ -980,10 +963,9 @@ def _believed_carry(implied, pillar, expiry, forward, ladder):
 def collapse_rungs(rungs):
     """`(rows, notes)` - ONE ROW PER DISTINCT LISTED CONTRACT, the colliding rungs' weights SUMMED.
 
-    A repeated contract is a WEIGHT and not a second equation, and the collapse happens HERE because
-    the two family spellings do not agree about a duplicate row: the component bootstrap
-    deduplicates a repeated ATM by strike within an expiry and DISCARDS that row's weight, the plain
-    family applies every row. One block that reads two ways is not one selection with two spellings.
+    A repeated contract is a WEIGHT and not a second equation, and the collapse happens HERE
+    because the fit reads a duplicate row as a second equation at its own weight, which is one
+    contract entered twice.
 
     `assign_expiries` has already made the cross-pillar collision impossible; what survives is the
     collision WITHIN a pillar. The note names which rung was absorbed into which, a rung that
@@ -1118,13 +1100,8 @@ def market_price_name(family, forward):
     return '{}.{}'.format(family, forward.underlying_factor)
 
 
-def equity_hn_block(chain, forward, ladder=None, family=COMPONENT_FAMILY):
-    """`(Market Prices name, block)` - the chain as ONE Heston-Nandi quote block.
-
-    ONE SELECTION, THREE SPELLINGS. `select_rungs` runs the same way for every family and the
-    `European_Options` table is byte-identical between them; only the header each family declares
-    differs. `collapse_rungs` keeps that true of the families' READING of the table as well, and
-    the header is `FAMILY_HEADER`'s own registry entry rather than a branch per family.
+def equity_option_block(chain, forward, ladder=None):
+    """`(Market Prices name, block)` - the chain as ONE `LogVar2FJModelPrices` quote block.
 
     PREMIUMS, NOT VOLS. `Quote_Type` is Premium and `Quoted_Market_Value` the mid of the terminal's
     two-way, in the underlying's own units, with `QUOTE_VALUE_KEYS` beside it as DECLARED value
@@ -1140,10 +1117,6 @@ def equity_hn_block(chain, forward, ladder=None, family=COMPONENT_FAMILY):
     an undeclared carry outside `parity_band`, and a ladder with no weight in it.
     """
     ladder = ladder or EquityLadder()
-    if family not in FAMILIES:
-        raise BloombergConfigurationError(
-            '{!r} is not a Heston-Nandi quote family - this emitter writes {}'.format(
-                family, ' or '.join(FAMILIES)))
     _refuse_american(chain, ladder)
 
     rungs, selection_notes, readings = select_rungs(chain, forward, ladder)
@@ -1162,7 +1135,7 @@ def equity_hn_block(chain, forward, ladder=None, family=COMPONENT_FAMILY):
                 ladder.wing_delta * 100,
                 '/'.join('{:g}'.format(pillar) for pillar in sorted(ladder.wing_pillars)),
                 len(contracts), '' if len(contracts) == 1 else 's', len(contracts),
-                ladder.minimum_contracts, family,
+                ladder.minimum_contracts, FAMILY,
                 ', '.join(notes) or 'every rung landed on the pillar it was asked for'))
 
     quotes = [{
@@ -1189,14 +1162,10 @@ def equity_hn_block(chain, forward, ladder=None, family=COMPONENT_FAMILY):
         'Quote_Type': 'Premium',
         'Use_Forward': 'No', 'Invert_Moneyness': 'No',
         'Steps_Per_Year': ladder.steps_per_year,
-        # what each family declares BEYOND the shared header, at its own declared defaults - the
-        # panel count off the ladder, which is where a caller may move it
-        **{key: ladder.quadrature_panels if key == 'Quadrature_Panels' else value
-           for key, value in FAMILY_HEADER[family].items()},
         'Quote_Timestamp': _timestamp(chain.as_of),
         'Quote_Source': quote_source(chain, forward, ladder, rungs, rows, notes, readings),
         'European_Options': quotes}
-    return market_price_name(family, forward), {'instrument': instrument}
+    return market_price_name(FAMILY, forward), {'instrument': instrument}
 
 
 def _refuse_american(chain, ladder):
@@ -1218,9 +1187,9 @@ def _refuse_american(chain, ladder):
     raise UnsupportedExerciseStyle(
         '{} screened to {} believed contract{} against a floor of {}, and {} of its {} candidates '
         'were refused on exercise style ({}) - so what the chain IS killed the ladder, not how '
-        'thinly it is quoted. An AMERICAN premium is not the European premium a Heston-Nandi fit '
-        'prices against: the early-exercise right is worth something the closed form does not '
-        'carry, so fitting one would put the wrong number in the objective under the right name. '
+        'thinly it is quoted. An AMERICAN premium is not the European premium this fit prices '
+        'against: the early-exercise right is worth something the model does not carry, so fitting '
+        'one would put the wrong number in the objective under the right name. '
         'Quote an index chain with European exercise (SPX Index, SX5E Index). The whole census: '
         '{}'.format(
             chain.underlying, len(chain.contracts), '' if len(chain.contracts) == 1 else 's',

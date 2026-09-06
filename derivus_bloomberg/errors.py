@@ -69,7 +69,7 @@ class IncompleteChain(BloombergFXError):
 
 class UnsupportedExerciseStyle(BloombergFXError):
     """The chain's exercise style is not the one the fit assumes. An AMERICAN premium is not the
-    European premium a Heston-Nandi calibration prices against, so it refuses rather than fits."""
+    European premium the calibration prices against, so it refuses rather than fits."""
 
 
 class IncompleteStrip(BloombergFXError):

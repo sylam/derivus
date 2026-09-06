@@ -942,7 +942,7 @@ def quote_census(strip):
     """The strip's own account of what the terminal served, for a caller with a screen or a report.
 
     DECLARED LIMITATION: it is not written into the block. `InterestRateCurveParameters` declares
-    no `Quote_Source` and no `Quote_Timestamp` where the Heston-Nandi and HW2F families do, so the
+    no `Quote_Source` and no `Quote_Timestamp` where the option and HW2F families do, so the
     only block-level provenance a curve block carries is the per-point `Descriptor`, which names
     the ticker and nothing about the census. The per-point EVIDENCE is declared: `Quoted_Bid`,
     `Quoted_Ask` and `Timestamp` are columns of `Points`.

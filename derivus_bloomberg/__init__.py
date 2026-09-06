@@ -21,7 +21,7 @@ removed.
 import importlib
 
 from .equity_chain import (ChainContract, EquityChain, EquityForward, EquityLadder,
-                           equity_hn_block, fetch_equity_chain, screen_chain, select_rungs)
+                           equity_option_block, fetch_equity_chain, screen_chain, select_rungs)
 
 #: `{exported name: the submodule that owns it}` - the lazy half of `__all__`, read by
 #: `__getattr__` and `__dir__`. The rates emitters belong here too: `ir_curve` and `swaption_vol`
@@ -46,7 +46,7 @@ __all__ = [
     'ChainContract', 'CurveConventions', 'CurveScreen', 'CurveStrip', 'EquityChain',
     'EquityForward', 'EquityLadder', 'FXQuoteSecurity', 'FXVolDefinition', 'FXVolPoint',
     'FXVolSnapshot', 'RatePrint', 'RawBloombergObservation', 'SwaptionConventions',
-    'SwaptionLadder', 'SwaptionQuote', 'SwaptionScreen', 'curve_conventions', 'equity_hn_block',
+    'SwaptionLadder', 'SwaptionQuote', 'SwaptionScreen', 'curve_conventions', 'equity_option_block',
     'fetch_curve_strip', 'fetch_equity_chain', 'fetch_fx_vol', 'fetch_swaption_ladder',
     'hw2f_block', 'install_fx_vol_snapshot', 'ir_curve_block', 'normalize_fx_vol', 'reauthor',
     'screen_chain', 'screen_ladder', 'screen_strip', 'select_rungs', 'swaption_conventions',

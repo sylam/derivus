@@ -47,7 +47,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from derivus_bloomberg import equity_chain
 from derivus_bloomberg.equity_chain import (ChainContract, EquityForward, EquityLadder,
-                                            black_price, equity_hn_block, fetch_equity_chain,
+                                            black_price, equity_option_block, fetch_equity_chain,
                                             screen_chain, select_rungs)
 from derivus_bloomberg.errors import (BloombergConfigurationError, IncompleteChain, InvalidQuote,
                                       UnsupportedExerciseStyle)
@@ -272,7 +272,7 @@ def test_importing_the_chain_emitter_lands_no_engine_no_blpapi_and_no_pandas():
 
     # the re-export still WORKS, and the emitter is reachable off the package by name
     assert 'derivus_bloomberg' in in_a_fresh_interpreter(
-        'from derivus_bloomberg import equity_hn_block, EquityLadder')
+        'from derivus_bloomberg import equity_option_block, EquityLadder')
     # non-vacuous: asking the package for an FX name is what pays for pandas, so the gate above
     # measures a deferral rather than an absence
     assert 'pandas' in in_a_fresh_interpreter(
@@ -404,7 +404,7 @@ def test_a_field_exception_does_not_throw_the_contract_away_with_it():
     assert flagged not in chain.rejected
     assert any(item.security == flagged for item in chain.contracts)
     # and the rung it carries is still selected, so the block is the one the clean chain writes
-    assert equity_hn_block(chain, FORWARD)[1] == equity_hn_block(canned_chain(), FORWARD)[1]
+    assert equity_option_block(chain, FORWARD)[1] == equity_option_block(canned_chain(), FORWARD)[1]
 
     # a row with NO fields at all is the genuine refusal, error text or not
     empty = fetch_equity_chain(
@@ -449,7 +449,7 @@ def test_a_stale_spot_refuses_the_way_a_stale_contract_does():
     chain = canned_chain()
     assert chain.spot_as_of == AS_OF
     assert 'spot 5000 (last printed 2026-08-31)' in \
-        equity_hn_block(chain, FORWARD)[1]['instrument']['Quote_Source']
+        equity_option_block(chain, FORWARD)[1]['instrument']['Quote_Source']
 
 
 def test_an_american_chain_refuses_by_name_with_its_remedy():
@@ -463,7 +463,7 @@ def test_an_american_chain_refuses_by_name_with_its_remedy():
     chain = canned_chain(poison=american)
     assert chain.contracts == ()
     with pytest.raises(UnsupportedExerciseStyle) as refusal:
-        equity_hn_block(chain, FORWARD)
+        equity_option_block(chain, FORWARD)
     message = str(refusal.value)
     assert 'SPX Index' in message and 'american' in message
     assert 'European exercise' in message and 'SX5E Index' in message
@@ -488,7 +488,7 @@ def test_a_chain_that_is_american_but_for_one_survivor_still_refuses_on_exercise
     assert len(chain.contracts) == 1 and len(chain.rejected) == 191
 
     with pytest.raises(UnsupportedExerciseStyle) as refusal:
-        equity_hn_block(chain, FORWARD)
+        equity_option_block(chain, FORWARD)
     message = str(refusal.value)
     assert 'SPX Index' in message and 'exercise style' in message and 'american' in message
     assert 'European exercise' in message and 'SX5E Index' in message
@@ -500,7 +500,7 @@ def test_a_chain_that_is_american_but_for_one_survivor_still_refuses_on_exercise
     mixed = canned_chain()
     assert sum(1 for verdict in mixed.rejected.values()
                if verdict in ('american', 'unstated-exercise')) == 6
-    assert len(equity_hn_block(mixed, FORWARD)[1]['instrument']['European_Options']) == 13
+    assert len(equity_option_block(mixed, FORWARD)[1]['instrument']['European_Options']) == 13
 
 
 # =============================================================================================
@@ -618,7 +618,7 @@ def test_the_distinct_contract_floor_fires_naming_the_chains_own_expiries():
     assert {rung.contract.expiry for rung in rungs} == set(EXPIRIES[1:3])
 
     with pytest.raises(IncompleteChain) as refusal:
-        equity_hn_block(chain, FORWARD)
+        equity_option_block(chain, FORWARD)
     message = str(refusal.value)
     assert '2026-11-30' in message and '2027-02-28' in message
     assert 'distinct contract' in message and 'at least 8' in message
@@ -627,7 +627,7 @@ def test_the_distinct_contract_floor_fires_naming_the_chains_own_expiries():
     assert '1y DROPPED' in message
 
     # the floor is a PARAMETER with a stated default, so a shorter ladder is taken deliberately
-    _, block = equity_hn_block(chain, FORWARD, EquityLadder(
+    _, block = equity_option_block(chain, FORWARD, EquityLadder(
         pillars=(0.25, 0.5), wing_pillars=(0.25, 0.5), minimum_contracts=4))
     assert len({(row['Expiry_Date']['.Timestamp'], row['Strike'])
                 for row in block['instrument']['European_Options']}) >= 4
@@ -665,7 +665,7 @@ def test_two_pillars_cannot_claim_one_listed_expiry():
     assert not [rung for rung in rungs if rung.pillar == 2.0]
     assert next(rung for rung in rungs if rung.pillar == 3.0).contract.expiry == board[3]
 
-    _, block = equity_hn_block(chain, FORWARD)
+    _, block = equity_option_block(chain, FORWARD)
     rows = block['instrument']['European_Options']
     keys = [(row['Expiry_Date']['.Timestamp'], row['Strike'], row['Option_Type']) for row in rows]
     assert len(keys) == len(set(keys)) == len(rungs) == 10
@@ -703,7 +703,7 @@ def test_two_rungs_on_one_contract_are_one_row_at_the_summed_weight():
                             if item.contract.security != rung.contract.security)
     assert sum(weight for _, weight in rows) == pytest.approx(1.0, rel=1e-12)
 
-    _, block = equity_hn_block(chain, FORWARD, ladder)
+    _, block = equity_option_block(chain, FORWARD, ladder)
     emitted_rows = block['instrument']['European_Options']
     keys = [(row['Expiry_Date']['.Timestamp'], row['Strike'], row['Option_Type'])
             for row in emitted_rows]
@@ -773,7 +773,7 @@ def test_the_forward_is_declared_and_the_chain_is_measured_against_it():
     undeclared = EquityForward(
         underlying_factor='SPX', volatility_factor='SPX', discount_rate='USD',
         dividend_reference='SPX', rate=RATE)
-    _, block = equity_hn_block(chain, undeclared)
+    _, block = equity_option_block(chain, undeclared)
     source = block['instrument']['Quote_Source']
     assert 'chain implies' in source and 'carried at r=4.0000% on USD against SPX' in source
 
@@ -852,7 +852,7 @@ def test_an_undeclared_carry_outside_the_band_refuses_by_name():
     chain = canned_chain(poison=fat)
 
     with pytest.raises(IncompleteChain) as refusal:
-        equity_hn_block(chain, UNDECLARED)
+        equity_option_block(chain, UNDECLARED)
     message = str(refusal.value)
     assert 'the 2y pillar (2028-08-31)' in message
     assert 'outside the declared band' in message and 'EquityLadder.parity_band' in message
@@ -860,7 +860,7 @@ def test_an_undeclared_carry_outside_the_band_refuses_by_name():
     assert 'EquityForward.dividend_yield' in message
 
     # declared, the same chain emits - and says so
-    _, block = equity_hn_block(chain, FORWARD)
+    _, block = equity_option_block(chain, FORWARD)
     source = block['instrument']['Quote_Source']
     assert '2y declared 1.5000% / chain implies -7.8' in source
     assert 'OUTSIDE the declared band -5.0000%..15.0000%' in source
@@ -869,7 +869,7 @@ def test_an_undeclared_carry_outside_the_band_refuses_by_name():
 
     # the band is a PARAMETER with a stated default, so a desk that really carries that carry says so
     widened = EquityLadder(parity_band=(-0.20, 0.20))
-    assert equity_hn_block(chain, UNDECLARED, widened)[1]['instrument']['European_Options']
+    assert equity_option_block(chain, UNDECLARED, widened)[1]['instrument']['European_Options']
     with pytest.raises(BloombergConfigurationError, match='parity_band'):
         EquityLadder(parity_band=(0.20, -0.20))
 
@@ -878,8 +878,8 @@ def test_an_undeclared_carry_outside_the_band_refuses_by_name():
 # 5  the block
 # =============================================================================================
 
-def emitted(family=equity_chain.COMPONENT_FAMILY, **kwargs):
-    return equity_hn_block(canned_chain(), FORWARD, EquityLadder(**kwargs), family=family)
+def emitted(**kwargs):
+    return equity_option_block(canned_chain(), FORWARD, EquityLadder(**kwargs))
 
 
 def test_the_block_writes_only_fields_the_family_declares():
@@ -949,7 +949,7 @@ def test_one_selection_writes_both_family_spellings():
             if key not in difference} == plain['instrument']
 
     with pytest.raises(BloombergConfigurationError, match='not a Heston-Nandi quote family'):
-        equity_hn_block(canned_chain(), FORWARD, family='FXVolPrices')
+        equity_option_block(canned_chain(), FORWARD, family='FXVolPrices')
 
 
 def test_the_chain_emits_a_logvar2fj_block_that_bootstraps(caplog):
@@ -1041,7 +1041,7 @@ def test_the_same_canned_chain_emits_the_same_bytes():
     # the ladder EMITS, which is what "the market moved" means for a block of listed premiums
     bumped = dict(POISON)
     bumped[(3, 1.025, 'Put')] = {'PX_BID': 371.0, 'PX_ASK': 375.0, 'PX_LAST': 373.0}
-    moved = equity_hn_block(canned_chain(poison=bumped), FORWARD)[1]
+    moved = equity_option_block(canned_chain(poison=bumped), FORWARD)[1]
     assert json.dumps(moved, sort_keys=True) != first
     assert [row['Quoted_Bid'] for row in moved['instrument']['European_Options']].count(371.0) == 1
 
@@ -1049,7 +1049,7 @@ def test_the_same_canned_chain_emits_the_same_bytes():
     # it is a function of - it moved the block while a single parity pair placed the forward
     ignored = dict(POISON)
     ignored[(3, 1.00, 'Call')] = {'PX_BID': 401.0, 'PX_ASK': 405.0, 'PX_LAST': 403.0}
-    assert json.dumps(equity_hn_block(canned_chain(poison=ignored), FORWARD)[1],
+    assert json.dumps(equity_option_block(canned_chain(poison=ignored), FORWARD)[1],
                       sort_keys=True) == first
 
 
@@ -1148,7 +1148,7 @@ def test_the_block_installs_and_updates_through_the_engines_own_guard():
     # the emitter's own re-emission: the contracts stand, the WEIGHTS do not
     bumped = dict(POISON)
     bumped[(4, 1.15, 'Call')] = {'PX_BID': 611.0, 'PX_ASK': 619.0, 'PX_LAST': 615.0}
-    reticked = equity_hn_block(canned_chain(poison=bumped), FORWARD)[1]
+    reticked = equity_option_block(canned_chain(poison=bumped), FORWARD)[1]
     node = lambda item: [(row['Expiry_Date'], row['Strike'], row['Option_Type'])
                          for row in item['instrument']['European_Options']]
     assert node(reticked) == node(block), 'the re-emission moved a contract, not a value'
@@ -1230,7 +1230,7 @@ def test_the_component_family_fits_the_chain_block_with_no_authored_surface(capl
     import derivus
     from derivus.config import CustomJsonEncoder
 
-    name, block = equity_hn_block(canned_chain(), FORWARD, E2E_LADDER)
+    name, block = equity_option_block(canned_chain(), FORWARD, E2E_LADDER)
     rows = block['instrument']['European_Options']
     assert len({(row['Expiry_Date']['.Timestamp'], row['Strike']) for row in rows}) >= 4
 
@@ -1290,7 +1290,7 @@ def test_a_surface_the_book_does_carry_is_still_read_where_the_quote_type_reads_
     from derivus import utils
 
     def fitted(surface):
-        name, block = equity_hn_block(canned_chain(), FORWARD, E2E_LADDER)
+        name, block = equity_option_block(canned_chain(), FORWARD, E2E_LADDER)
         block['instrument']['Max_Iterations'] = 8
         document = job_document({name: block}, surface=surface)
         document['Calc']['MergeMarketData']['ExplicitMarketData'][
@@ -1333,7 +1333,7 @@ def bootstrapped(block, family='HestonNandiComponentModelPrices', **world):
 def blanked(field, quote_type='Premium'):
     """The canned chain's block with one reference BLANKED - the shape a block takes when its author
     leaves a panel empty, which is the case that used to skip."""
-    _, block = equity_hn_block(canned_chain(), FORWARD, E2E_LADDER)
+    _, block = equity_option_block(canned_chain(), FORWARD, E2E_LADDER)
     block['instrument'][field] = ''
     block['instrument']['Quote_Type'] = quote_type
     block['instrument']['Max_Iterations'] = 2
@@ -1379,7 +1379,7 @@ def test_a_reference_the_book_does_not_carry_refuses_naming_the_factor_it_looked
     """The field is NAMED and the book has nothing under that name. The refusal spells out the
     factor it looked for, because the block's name and the `Price Factors` key differ by a TYPE -
     which is what `<field>_Type` is for. A `Quote_Type` this family does not fit refuses first."""
-    _, block = equity_hn_block(canned_chain(), FORWARD, E2E_LADDER)
+    _, block = equity_option_block(canned_chain(), FORWARD, E2E_LADDER)
     block['instrument']['Discount_Rate'] = 'ZAR'
     block['instrument']['Max_Iterations'] = 2
 
@@ -1575,7 +1575,7 @@ def test_the_chain_emitter_declares_the_funding_curve_it_placed_its_strikes_with
         underlying_factor='SPX', volatility_factor='SPX', discount_rate='USD',
         dividend_reference='SPX', rate=RATE + REPO_SPREAD, dividend_yield=DIVIDEND,
         funding_rate=REPO)
-    instrument = equity_hn_block(canned_chain(), spread, E2E_LADDER)[1]['instrument']
+    instrument = equity_option_block(canned_chain(), spread, E2E_LADDER)[1]['instrument']
 
     assert (instrument['Funding_Rate'], instrument['Funding_Rate_Type']) == (REPO, 'InterestRate')
     assert instrument['Discount_Rate'] == 'USD'
@@ -1587,7 +1587,7 @@ def test_the_chain_emitter_declares_the_funding_curve_it_placed_its_strikes_with
     assert 'premiums discounting on USD' in source
 
     # blank, and the block says nothing rather than something wrong
-    plain = equity_hn_block(canned_chain(), FORWARD, E2E_LADDER)[1]['instrument']
+    plain = equity_option_block(canned_chain(), FORWARD, E2E_LADDER)[1]['instrument']
     assert 'Funding_Rate' not in plain and 'Funding_Rate_Type' not in plain
     assert 'discounting on' not in plain['Quote_Source']
 
@@ -1705,7 +1705,7 @@ def test_five_quotes_an_expiry_span_the_smile_and_fit_through_the_job_json(caplo
             item, ladder)).strike == rung.contract.strike, rung.kind
 
     # THE JOB DOCUMENT, through the real bootstrap in a book carrying no surface at all
-    name, block = equity_hn_block(chain, FORWARD, FIVE_LADDER)
+    name, block = equity_option_block(chain, FORWARD, FIVE_LADDER)
     rows = block['instrument']['European_Options']
     assert len(rows) == 10 and sum(row['Weight'] for row in rows) == pytest.approx(1.0, rel=1e-12)
     assert 'the best 5 an expiry chosen by liquidity and weighted by vega alone' in \

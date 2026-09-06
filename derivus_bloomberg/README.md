@@ -4,7 +4,7 @@
 existing Derivus `FXVolPrices` market-price block. It does not construct a smile or price a deal;
 `FXVolSurfaceParameters` remains the owner of those operations.
 
-It also reads a listed **equity option chain** and writes a Heston-Nandi quote block
+It also reads a listed **equity option chain** and writes an option quote block
 (`equity_chain`, below). The two halves share one discipline and nothing else: FX calibrates off
 the desk's own built surface because that surface *is* the market, while an equity's market is the
 listed chain — so equities quote **premiums off actual listed contracts**, never implied vols off
@@ -134,21 +134,21 @@ and refresh validate a complete block before assigning it; after that assignment
 
 ## The equity option chain
 
-`equity_chain` turns an index's listed chain into one `HestonNandiComponentModelPrices` (or
-`HestonNandiModelPrices`) block. It reaches the terminal twice — the underlying and its `OPT_CHAIN`
+`equity_chain` turns an index's listed chain into one `LogVar2FJModelPrices` block. It reaches
+the terminal twice — the underlying and its `OPT_CHAIN`
 membership through `BloombergSession.bulk_reference_data_report`, then every member in batches
 through the tolerant scalar reader — and spells no ticker of its own: a listed chain's membership
 is the terminal's to state, so the trust boundary is the **screen** rather than a grammar.
 
 ```python
-from derivus_bloomberg.equity_chain import EquityForward, EquityLadder, equity_hn_block, \
+from derivus_bloomberg.equity_chain import EquityForward, EquityLadder, equity_option_block, \
     fetch_equity_chain
 from derivus_bloomberg.session import BloombergSession
 
 with BloombergSession(timeout_ms=30000) as bloomberg:
     chain = fetch_equity_chain(bloomberg, 'SPX Index', datetime.date.today())
 
-name, block = equity_hn_block(chain, EquityForward(
+name, block = equity_option_block(chain, EquityForward(
     underlying_factor='SPX', volatility_factor='SPX', discount_rate='USD',
     dividend_reference='SPX', rate=0.04, dividend_yield=0.015))
 ```
