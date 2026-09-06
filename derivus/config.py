@@ -29,9 +29,9 @@ from pyparsing import Literal, Word, nums, OneOrMore, delimitedList, oneOf, Opti
 
 from . import utils
 from . import schema
-from .bootstrappers import construct_bootstrapper, InterestRateCurveParameters
+from .bootstrappers import construct_bootstrapper, family_class, InterestRateCurveParameters, FAMILIES
 from .instruments import construct_instrument, Deal
-from .stochasticprocess import construct_calibration_config, construct_process
+from .stochasticprocess import construct_calibration_config, construct_process, process_class
 
 Timestamp = pd.Timestamp
 DateOffset = pd.DateOffset
@@ -547,9 +547,14 @@ class Config(object):
         bootstraps write ordinary `InterestRate`/`FXVol` blocks and declare that as
         `price_factor_type`; the other six are named for their own class.
         """
-        # need to implement ordered dicts in the params obj - TODO
+        # a block no family reads, or a family no class answers to, is a refusal, never a skip
+        orphans = sorted({utils.check_rate_name(x)[0] for x in self.params['Market Prices']}
+                         - set(FAMILIES.values()))
+        if orphans:
+            raise ValueError('Market Prices carries {}, which no price family reads; the families read '
+                             '{}'.format(', '.join(orphans), ', '.join(sorted(FAMILIES.values()))))
         for bootstrapper_name, params in sorted(self.params['Bootstrapper Configuration'].items()):
-            # need parsers here - but for now, can just use the name to know what to do
+            family_class(bootstrapper_name)
             try:
                 bootstrapper = construct_bootstrapper(bootstrapper_name, params)
             except Exception:
@@ -1141,6 +1146,7 @@ class Config(object):
             additional_factor = self.params['Model Configuration'].additional_factors(stoch_proc, factor)
             base_fx = factor.type == 'FxRate' and factor.name[0] == self.params['System Parameters']['Base_Currency']
             if stoch_proc and not base_fx:
+                process_class(stoch_proc)
                 factor_model = utils.Factor(stoch_proc, factor.name)
                 implied = additional_factor is not None and self.params['Price Factors'].get(
                     utils.check_tuple_name(additional_factor)) is not None

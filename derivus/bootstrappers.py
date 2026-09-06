@@ -5605,6 +5605,20 @@ class FXVolSurfaceParameters(object):
                                          skews[T], T, nodes).max()), tolerance))
 
 
+def family_class(btype):
+    """The price family `Bootstrapper Configuration` names; an unknown name refuses by name."""
+    cls = globals().get(btype)
+    if not (isinstance(cls, type) and 'market_factor_type' in cls.__dict__):
+        raise ValueError('Bootstrapper Configuration names {}, which is no price family; the families '
+                         'are {}'.format(btype, ', '.join(sorted(FAMILIES))))
+    return cls
+
+
 def construct_bootstrapper(btype, param, dtype=torch.float32):
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
-    return globals().get(btype)(param, device, dtype)
+    return family_class(btype)(param, device, dtype)
+
+
+#: class name -> the `Market Prices` type it reads, one row per family (the emitter's own rule)
+FAMILIES = {name: cls.__dict__['market_factor_type'] for name, cls in list(globals().items())
+            if isinstance(cls, type) and 'market_factor_type' in cls.__dict__}

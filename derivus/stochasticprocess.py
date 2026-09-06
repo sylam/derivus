@@ -4567,8 +4567,19 @@ class BasisLinkedSpotCalibration(object):
         return utils.CalibrationInfo(param, [[1.0]], delta)
 
 
+def process_class(sp_type):
+    """The process `Model Configuration` names; an unknown name refuses by name."""
+    cls = globals().get(sp_type)
+    if not (isinstance(cls, type) and callable(getattr(cls, 'generate', None))):
+        raise ValueError('Model Configuration names {}, which is no stochastic process; the processes '
+                         'are {}'.format(sp_type, ', '.join(sorted(
+                             k for k, v in globals().items()
+                             if isinstance(v, type) and callable(getattr(v, 'generate', None))))))
+    return cls
+
+
 def construct_process(sp_type, factor, param, implied_factor=None):
-    return globals().get(sp_type)(factor, param, implied_factor)
+    return process_class(sp_type)(factor, param, implied_factor)
 
 
 def construct_calibration_config(calibration_model, param):
