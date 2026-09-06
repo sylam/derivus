@@ -176,17 +176,21 @@ and `Beta = ψ(1-|l|)`, every iterate feasible. At `l = 0` there is no leverage 
 the SIGN off the quotes (a smile rising with strike is a negative `Gamma_Star`), because the objective
 has a kink at zero leverage.
 
-**`POST /book/hn` is the verb**, calibrate-on-request at the heavy cost class. The fit is a least
-squares over a Fourier-inverted daily GARCH recursion and it is MINUTES: **288 s** on the four-pillar
-ladder reaching six months (549 s with the suite running beside it, to the same five parameters bit
-for bit), past 21 minutes on one reaching a year. Iteration count dominates step count, so neither
-reading predicts the other; both share that the adaptive `phi_max` scan is **31–38% of every
-option price** since the doubling ladder batched. So it rides no tick, and a market tick
-leaves the parameters where they were. `Bootstrapper Configuration` names the families that run on
-every bootstrap and a tick is a bootstrap, so the verb BORROWS the family entry for its run and hands
-it back. It drops its own block before re-installing it, because these strikes are a FUNCTION of the
-surface: re-emitting after a tick legitimately moves them, which `update_market_quote` would refuse.
-There is no GET side — the written factor is the projection and `GET /book` serves it.
+**`POST /book/model` is the verb**, calibrate-on-request at the heavy cost class, and it is
+FAMILY-NEUTRAL: `{pair, family}`, `family` defaulting to `structures.SPOT_MODEL` so a desk that
+calibrates and a runner that pins cannot name two different models. `/book/hn` is kept as an alias
+for one release, meaning the family it is named for. The fit is minutes whichever family runs it:
+plain Heston-Nandi is a least squares over a Fourier-inverted daily GARCH recursion — **288 s** on
+the four-pillar ladder reaching six months (549 s with the suite running beside it, to the same five
+parameters bit for bit), past 21 minutes on one reaching a year, and the adaptive `phi_max` scan is
+**31–38% of every option price** — against **205 s** for LogVar2FJ on the banked USDZAR ladder's
+22 contracts reaching a year, where the same ladder costs plain Heston-Nandi 513 s. So it rides no
+tick, and a market tick leaves the parameters where they were. `Bootstrapper Configuration` names
+the families that run on every bootstrap and a tick is a bootstrap, so the verb BORROWS the family
+entry for its run and hands it back. It drops its own block before re-installing it, because these
+strikes are a FUNCTION of the surface: re-emitting after a tick legitimately moves them, which
+`update_market_quote` would refuse. There is no GET side — the written factor is the projection and
+`GET /book` serves it.
 
 ## `HestonNandiComponentModelPrices` — a term structure fitted as a curve {#hestonnandi-component}
 

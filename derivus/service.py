@@ -37,7 +37,7 @@ verb on `Context`, not an endpoint that reaches inside.
 | `POST /book/solve` | solve one field of a candidate deal to a target value - a root find over base valuations, writes nothing |
 | `POST /book/market` | tick the book's market: quote blocks installed or value-updated, a values patch applied, the bootstrap run - one atomic write |
 | `POST /book/bloomberg` | provision the security map, fetch the desk's FX vol surfaces off the terminal and tick the book |
-| `POST /book/hn` | calibrate one pair's Heston-Nandi parameters off its built surface - on request, never on the tick |
+| `POST /book/model` | calibrate one pair's spot-model parameters off its built surface - on request, never on the tick |
 | `POST /book/structure` | quote a named structure against the book - legs solved, the pending trade filed under its quote id |
 | `POST /book/quote` | book a quote already given - the approval half, refused exactly as a booking is |
 | `GET /book/risk` | the book's CONSOLIDATED risk - one greeks run over every counterparty at once, cached on what it reads |
@@ -81,8 +81,7 @@ from itertools import count
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import Context, content_hash, solve_deal_field, spine
-from .bootstrappers import HestonNandiModelParameters
+from . import Context, bootstrappers, content_hash, solve_deal_field, spine, structures
 from .schema import mapping
 from ._version import __version__
 from .config import (as_json, deal_at, remove_deal, sniff_indent, splice_deal, tables_of,
@@ -1602,20 +1601,28 @@ def book_bloomberg(request: dict):
         {key: request[key] for key in ('pairs', 'expiries', 'pillars') if key in request})
 
 
-#: The `Bootstrapper Configuration` entry that turns a `HestonNandiModelPrices` block into the
-#: parameters a TARF reads - borrowed for the run, never left standing (see `hn_edit`). Families run
-#: in SORTED order, so `FXVolSurfaceParameters` rebuilds the surface before the fit reads it.
-HN_FAMILY = 'HestonNandiModelParameters'
+def spot_model_family(family):
+    """The bootstrapper class that fits `family`, by the naming convention the pin resolves its
+    parameters on (`structures.SPOT_MODEL_FACTOR`). A family that authors no quote block off the
+    book's own built surface has nothing for this verb to run, and refuses by name."""
+    calibrator = getattr(bootstrappers, family + 'ModelParameters', None)
+    if not hasattr(calibrator, 'fx_surface_block'):
+        raise ValueError(
+            '{0!r} names no spot model this verb calibrates - {0}ModelParameters authors no quote '
+            'block off a built surface. The model this book pins is {1!r}'.format(
+                family, structures.SPOT_MODEL))
+    return calibrator
 
 
-def hn_factor(block_name):
-    """The price factor a `HestonNandiModelPrices.<name>` block writes. The family declares the two
+def spot_model_factor(family, block_name):
+    """The price factor a `<family>ModelPrices.<name>` block writes. A family declares the two
     strings ARE different (`market_factor_type` against the class name) and no rule recovers one
-    from the other, so the one place the name is composed is here."""
-    return '{}.{}'.format(HN_FAMILY, block_name.split('.', 1)[1])
+    from the other, so the name is composed on `structures.SPOT_MODEL_FACTOR` - the same key the
+    pin checks and the engine's own lookup takes."""
+    return structures.SPOT_MODEL_FACTOR.format(family, block_name.split('.', 1)[1])
 
 
-def hn_edit(document, pair):
+def spot_model_edit(document, pair, family):
     """The calibration as ONE edit closure over a wire document, for `Book.mutate`: the quote block
     authored off the book's own built surface, installed through the `/book/market` seam,
     bootstrapped, and the fitted factor landing with it in a single atomic write.
@@ -1627,18 +1634,20 @@ def hn_edit(document, pair):
 
     THE FAMILY ENTRY IS BORROWED FOR THIS RUN AND HANDED BACK: every market tick is a bootstrap, so
     a book left declaring this family would refit on every tick. It is added if missing and removed
-    once the fit has run; a book declaring the family itself keeps it.
+    once the fit has run; a book declaring the family itself keeps it. Families run in SORTED
+    order, so `FXVolSurfaceParameters` rebuilds the surface before the fit reads it.
     """
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     if not market.get('Bootstrapper Configuration'):
         raise ValueError(NO_BOOTSTRAPPER)
+    calibrator = spot_model_family(family)
     params = load(document).current_cfg.params
-    name, block = HestonNandiModelParameters.fx_surface_block(
+    name, block = calibrator.fx_surface_block(
         pair, params['Price Factors'], params['System Parameters'],
         params['Price Factor Interpolation'])
     market.get('Market Prices', {}).pop(name, None)
-    borrowed = HN_FAMILY not in market['Bootstrapper Configuration']
-    market['Bootstrapper Configuration'].setdefault(HN_FAMILY, {})
+    borrowed = calibrator.__name__ not in market['Bootstrapper Configuration']
+    market['Bootstrapper Configuration'].setdefault(calibrator.__name__, {})
     try:
         written, outcome = market_edit(document, {name: as_json(block)}, {}, 'Yes')
     except (ValueError, KeyError) as error:
@@ -1647,87 +1656,100 @@ def hn_edit(document, pair):
         written, outcome = False, {'written': False, 'refused': [str(error)]}
     finally:
         if borrowed:
-            market['Bootstrapper Configuration'].pop(HN_FAMILY, None)
-    factor = hn_factor(name)
+            market['Bootstrapper Configuration'].pop(calibrator.__name__, None)
+    factor = spot_model_factor(family, name)
     # the parameters are read back off the WRITE - a refused bootstrap leaves the section as it was,
     # and reporting the standing block would report the previous fit as this one's answer
     fitted = (market['Price Factors'].get(factor) or {}) if written else {}
-    return written, dict(outcome, pair=pair, block=name, factor=factor,
+    return written, dict(outcome, pair=pair, family=family, block=name, factor=factor,
                          quotes=len(block['instrument']['European_Options']),
                          source=block['instrument']['Quote_Source'],
                          parameters={key: value for key, value in fitted.items()
                                      if key != 'Property_Aliases'})
 
 
-class HestonNandiJob:
-    """One pair's Heston-Nandi calibration as ONE unit of queued work.
+class SpotModelJob:
+    """One pair's spot-model calibration as ONE unit of queued work.
 
-    The XVA mosaic's pattern, for its reason: the fit is a least squares over a Fourier inversion
-    of a daily GARCH recursion and it takes MINUTES - 288 s for a ten-quote ladder reaching six
-    months, past 21 minutes on one reaching a year - so it is queued at `HEAVY` and must not sit in
-    front of a salesperson's quote.
+    The XVA mosaic's pattern, for its reason: the fit is a least squares over a simulated walk or a
+    Fourier inversion of a daily recursion, and it takes MINUTES - 205 s for LogVar2FJ on a
+    22-contract ladder reaching a year, 513 s for plain Heston-Nandi on the same one - so it is
+    queued at `HEAVY` and must not sit in front of a salesperson's quote.
 
-    No second file and no projection: the fitted `HestonNandiModelParameters.<underlying>` block
-    lands in the book's own `Price Factors`, which every read of the book already serves and an FX
-    TARF resolves by naming convention. The outcome rides the run's `Stats` under `HestonNandi`.
+    No second file and no projection: the fitted `<family>ModelParameters.<underlying>` block lands
+    in the book's own `Price Factors`, which every read of the book already serves and an accrual
+    leg resolves by naming convention. The outcome rides the run's `Stats` under `SpotModel`.
     """
 
-    def __init__(self, book, pair, result_id):
-        self.book, self.pair, self.result_id = book, pair, result_id
+    def __init__(self, book, pair, family, result_id):
+        self.book, self.pair, self.family, self.result_id = book, pair, family, result_id
 
     def run_job(self):
         started = time.perf_counter()
         # minutes behind one result id, so the worker says what it is doing
         PROGRESS[self.result_id] = {
             'done': 0, 'total': 1,
-            'note': 'fitting {} against ten vega-weighted vols'.format(self.pair)}
+            'note': 'fitting {} to {} against its own vega-weighted ladder'.format(
+                self.pair, self.family)}
         try:
-            outcome = self.book.mutate(lambda document: hn_edit(document, self.pair))
+            outcome = self.book.mutate(
+                lambda document: spot_model_edit(document, self.pair, self.family))
         finally:
             PROGRESS.pop(self.result_id, None)
-        return None, {'Results': {}, 'Stats': {'HestonNandi': dict(
+        return None, {'Results': {}, 'Stats': {'SpotModel': dict(
             outcome, seconds=round(time.perf_counter() - started, 2))}}
 
 
-@app.post('/book/hn', summary="Calibrate one pair's Heston-Nandi parameters off its built surface")
-def book_hn(request: dict):
-    """`{pair}` - fit the five Q-measure Heston-Nandi parameters for one FX pair against ten
-    vega-weighted vols read off the surface the book already carries, and land them in it.
+@app.post('/book/model', summary="Calibrate one pair's spot model off its built surface")
+def book_model(request: dict):
+    """`{pair, family}` - fit one FX pair's spot-model parameters against the vega-weighted vols
+    that family's own ladder reads off the surface the book already carries, and land them in it.
+    `family` defaults to `structures.SPOT_MODEL`, the model an accrual leg is pinned to, so a desk
+    that calibrates and a runner that pins cannot name two different models.
 
     ON REQUEST, NEVER ON THE TICK. The fit is minutes of work, so it is queued at the heavy cost
     class and a desk's quotes keep jumping it. A market tick moves the surface and leaves these
     parameters where they were, STRUCTURALLY, the family being borrowed into `Bootstrapper
-    Configuration` for this run and handed back. Call it after a re-tick, before quoting the TARFs.
+    Configuration` for this run and handed back. Call it after a re-tick, before quoting the
+    accrual strips.
 
-    The quote ladder is stated once, on `HestonNandiModelParameters.fx_surface_block`.
+    The quote ladder is stated once, on the family's own `fx_surface_block`.
 
-    Answers `{result_id, status}` like `/execute`; the outcome arrives under `stats.HestonNandi`.
+    Answers `{result_id, status}` like `/execute`; the outcome arrives under `stats.SpotModel`.
     There is no GET side: the written factor IS the projection and `GET /book` serves it.
 
-    The pair is REFUSED HERE, on the request thread, when the book carries no built surface for it.
-    The job re-authors the block against the document it locks, so a book that moved between the
-    check and the write is fitted as it is rather than as it was.
+    REFUSED HERE, on the request thread, on a pair the book carries no built surface for and on a
+    family that calibrates nothing off one. The job re-authors the block against the document it
+    locks, so a book that moved between the check and the write is fitted as it is rather than as
+    it was.
     """
     live = live_book()
     document, etag = live.read()
-    pair = request.get('pair')
+    pair, family = request.get('pair'), request.get('family') or structures.SPOT_MODEL
     if not pair:
         raise HTTPException(422, 'a calibration names the pair it fits, e.g. {"pair": "USD.ZAR"}')
     try:
         # the pre-flight IS the emitter, run on the read copy and thrown away: every refusal it
         # names is a fact about the book a desk must hear now rather than poll for
         params = load(document).current_cfg.params
-        block_name, _ = HestonNandiModelParameters.fx_surface_block(
+        block_name, _ = spot_model_family(family).fx_surface_block(
             pair, params['Price Factors'], params['System Parameters'],
             params['Price Factor Interpolation'])
     except (ValueError, KeyError) as error:
         raise HTTPException(422, str(error))
     # content addressed on the book it fits: the same calibration over an unmoved book is one
     # execution, and a tick moves the etag, so asking again after one genuinely refits
-    result_id = content_hash({'book': etag, 'hn': pair})
-    submitted = Job(result_id, HestonNandiJob(live, pair, result_id), {})
-    return {'result_id': result_id, 'factor': hn_factor(block_name),
+    result_id = content_hash({'book': etag, 'model': [family, pair]})
+    submitted = Job(result_id, SpotModelJob(live, pair, family, result_id), {})
+    return {'result_id': result_id, 'factor': spot_model_factor(family, block_name),
             'status': EXECUTOR.submit(submitted, HEAVY)}
+
+
+@app.post('/book/hn', summary='Alias of /book/model - kept for one release')
+def book_hn(request: dict):
+    """`/book/model` under the Heston-Nandi spelling it shipped as, kept for one release. The
+    family a caller of this name means is the one it names, whatever the book pins."""
+    return book_model(dict(request, family=request.get('family') or 'HestonNandi'))
 
 
 class Metronome:
@@ -2070,8 +2092,6 @@ def patch_live_spot(document, params):
     Answers the `source`/`note` half of the outcome's `spot` block; the runner fills in the value
     it actually priced on, so the two cannot disagree.
     """
-    from . import structures
-
     try:
         currencies = structures.split_pair(params['pair'])
     except (KeyError, TypeError, ValueError) as error:
@@ -2151,8 +2171,6 @@ class StructureJob:
         return {'sheet': path}
 
     def run_job(self):
-        from . import structures
-
         # the book's own two hashes, taken before the live spot moves this copy's market
         pinned = self.pinned()
         # the live spot lands BEFORE anything is priced, so `engine_spot`, every solve bracket and
@@ -2209,8 +2227,6 @@ def book_structure(request: dict):
     the book's plan and values hashes beside the solved coordinates and the edge. `request` is
     optional and is what the CLIENT ASKED FOR, relayed - free text, filed in the sealed body.
     """
-    from . import structures
-
     document, etag = live_book().read()
     structure = request.get('structure')
     if not structure:
@@ -2282,7 +2298,6 @@ def book_quote(request: dict):
     with open(path, encoding='utf-8') as handle:
         pending = json.load(handle)
 
-    from . import structures
     # the window is read off the BOOK as it stands now, not off the quote: the mandate is the
     # desk's, the same way the validation is against the book as it is now
     document, _ = live.read()

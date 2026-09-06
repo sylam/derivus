@@ -283,7 +283,7 @@ fix. What ships:
 - **A re-quoted grid is a re-authoring.** `HullWhite2FactorModelPrices` quotes in
   `Instrument_Definitions` rather than `Points`, so `schema.partition_market_price` gives it an
   empty values half and no tick reaches it. `reauthor` drops the block and re-installs it, as
-  `POST /book/hn` does. **A curve strip needs it too, for a weaker reason:** that family *does*
+  `POST /book/model` does. **A curve strip needs it too, for a weaker reason:** that family *does*
   have a values half and a same-day re-tick passes as *updated*, but `Effective_Date` and
   `Maturity_Date` are structure — so the next day's strip of the same benchmarks refuses, rightly,
   and reaches the book through `reauthor`. One function, exported as

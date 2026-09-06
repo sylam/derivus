@@ -506,10 +506,11 @@ async def tick_market_from_bloomberg(pairs: list = None, expiries: list = None,
 
 
 @MCP.tool()
-def calibrate_heston_nandi(pair: str, wait_seconds: float = 1800.0) -> dict:
-    """Fit one FX pair's Heston-Nandi parameters to the vol surface the book already carries, and
-    land them in the book - the model a TARF or an accumulator prices on when `SpotModel` is
-    `HestonNandi`.
+def calibrate_spot_model(pair: str, family: str = '', wait_seconds: float = 1800.0) -> dict:
+    """Fit one FX pair's spot-model parameters to the vol surface the book already carries, and
+    land them in the book - the model a TARF or an accumulator prices on when its `SpotModel` is
+    that family. `family` blank takes the one the book's own runner pins, which is what a desk
+    wants: calibrating one model and pricing under another is the one mistake this verb prevents.
 
     WHEN TO CALL IT: after a market re-tick and BEFORE quoting TARFs or accumulators on that pair.
     A tick moves the surface and NEVER refits these parameters - they are a calibration, not a
@@ -517,34 +518,35 @@ def calibrate_heston_nandi(pair: str, wait_seconds: float = 1800.0) -> dict:
     convention. Skip it and the TARF prices on yesterday's dynamics against today's spot. Call it
     once per pair per re-tick, not per quote.
 
-    THE SPEC IS THE DESK'S AND IT IS NOT A PARAMETER OF THIS CALL: the five parameters (Omega,
-    Alpha, Beta, Gamma_Star, H0) are fitted against TEN vega-weighted implied vols read off the
-    pair's BUILT surface - ATM at 1M, 2M, 3M, 6M, 9M and 1Y, which is what identifies H0, Beta and
-    Omega, plus the 25 delta wings at 3M and 6M, which is what identifies Gamma_Star (the skew) and
-    Alpha (the wings' width). Weight is the Black vega off the same surface, normalised. NOTHING
-    PAST 1Y: TARFs and accumulators are sub-year products, and a parameter fitted to the 2Y smile is
-    borrowed against products nobody quotes. An expiry the surface does not carry is moved to the
-    NEAREST QUOTED one AT OR UNDER a year and the installed block says so - never interpolated
-    silently, and never snapped onto a pillar past the cap.
+    THE SPEC IS THE FAMILY'S AND IT IS NOT A PARAMETER OF THIS CALL: the parameters are fitted
+    against vega-weighted implied vols read off the pair's BUILT surface, on the ladder that family
+    declares - ATM pillars, which is what identifies the variance level and its term structure,
+    plus the delta wings, which is what identifies the skew and the wings' width. Weight is the
+    Black vega off the same surface, normalised. NOTHING PAST 1Y: TARFs and accumulators are
+    sub-year products, and a parameter fitted to the 2Y smile is borrowed against products nobody
+    quotes. An expiry the surface does not carry is moved to the NEAREST QUOTED one AT OR UNDER a
+    year and the installed block says so - never interpolated silently, and never snapped onto a
+    pillar past the cap.
 
     TEN RUNGS ARE NOT TEN QUOTES, and a thin surface REFUSES here rather than fitting. Every rung
     the surface does not carry lands on a contract another rung already named, so a two-pillar
     surface collapses the ladder onto four distinct contracts and four do not identify five
-    parameters. Below six distinct contracts the verb refuses by name, saying which pillars the
+    parameters. Below the family's own minimum the verb refuses by name, saying which pillars the
     surface carries - the remedy is to quote the pair at more expiries.
 
     `pair` is the surface's own name (`"USD.ZAR"`). The answer is the run's outcome under
-    `stats.HestonNandi`: the parameters fitted, the block installed, the factor written, the quotes'
-    provenance and the fit's wall time. THIS IS THE EXPENSIVE ONE - measured in the tens of
-    minutes, at the same cost class as an XVA recalculation, so quotes and valuations keep jumping
-    the queue while it runs. `poll_result` follows it if the wait runs out; the fit carries on
-    service-side either way.
+    `stats.SpotModel`: the family and parameters fitted, the block installed, the factor written,
+    the quotes' provenance and the fit's wall time. THIS IS THE EXPENSIVE ONE - measured in the
+    tens of minutes, at the same cost class as an XVA recalculation, so quotes and valuations keep
+    jumping the queue while it runs. `poll_result` follows it if the wait runs out; the fit carries
+    on service-side either way.
 
-    There is nothing further to read: the written `HestonNandiModelParameters.<currency>` factor in
-    the book's `Price Factors` IS the result, so `read_book` serves it like any other market data. A
-    pair the book carries no built surface for refuses BY NAME - tick the market first.
+    There is nothing further to read: the written `<family>ModelParameters.<currency>` factor in
+    the book's `Price Factors` IS the result, so `read_book` serves it like any other market data.
+    A pair the book carries no built surface for refuses BY NAME - tick the market first.
     """
-    submitted = service().call('POST', '/book/hn', json={'pair': pair})
+    submitted = service().call('POST', '/book/model',
+                               json={'pair': pair, 'family': family})
     outcome = _await_result(submitted['result_id'], wait_seconds)
     return dict(outcome, factor=submitted['factor'])
 

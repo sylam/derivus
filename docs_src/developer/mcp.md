@@ -40,7 +40,7 @@ There is deliberately no tracked `.mcp.json`: it would pin one machine's paths i
 | `book_quote` | `POST /book/quote` — approve a quote by id and book its mirror, refused exactly as a booking is |
 | `update_market_quotes` / `patch_market_values` | `POST /book/market` — quote blocks in (values-only updates, bootstrap judging the write), spot/vol values patched |
 | `tick_market_from_bloomberg` | `POST /book/bloomberg` — today's surfaces off this workstation's terminal; provisions the desk on first use, reporting progress while it waits |
-| `calibrate_heston_nandi` | `POST /book/hn` — fit one pair's Heston-Nandi parameters off its built surface and land them in the book; the expensive one, on request and never on the tick, and what a TARF or accumulator quote reads |
+| `calibrate_spot_model` | `POST /book/model` — fit one pair's spot-model parameters off its built surface and land them in the book, under the family the runner pins unless one is named; the expensive one, on request and never on the tick, and what a TARF or accumulator quote reads |
 | `book_risk_summary` | `GET /book/risk` — the whole book's mark and its biggest gradient rows, counterparty-blind |
 | `xva_view` / `recalc_xva` | `GET`/`POST /book/xva` — the cached XVA projection per netting set, and the only thing that moves it |
 | `validate_book` / `describe_book` | the read verbs over the live document |

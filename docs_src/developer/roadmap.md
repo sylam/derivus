@@ -11,6 +11,14 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Open
 
+- **Solved accrual strikes moved across the checkpoint landing on documents carrying no LogVar2FJ**
+  - the FX gate read the GBM TARF's zero-cost strike at 15.32196559 on 48f4779 and 15.31624884 on
+  7ed3faf (the GBM ZAR accumulator 15.68600904 -> 15.68756069), up to 3.7e-4 and 15x the runner's
+  own 2.5e-5 MC floor, while the same documents priced at a FIXED strike are hex-identical across
+  7ed3faf -> 678af12 (`artifacts/fx_gate/hexcheck.py`). The estimator is bit-stable where it was
+  checked and the root moved where it was not; 48f4779 is not in any checkout any more, so the
+  move is unpinned. Read the 48f4779 -> 7ed3faf pair at a fixed strike before the next hex claim
+  on an accrual document's ROOT.
 - **`HestonNandiComponentModelParameters` x the last `L_Curve` knot's gradient** - on the 2y SPX
   autocall the AAD reports -15,474 on `L_Curve[last]` while the CRN ladder of the same document
   reads exactly +0 at both rungs (2026-09-06, `artifacts/fx_gate/out_row45.json`; the campaign's
@@ -393,6 +401,32 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **The desk pin moves to LogVar2FJ** (2026-09-06, licensed by the FX gate's addendum) -
+  `structures.SPOT_MODEL` is `LogVar2FJ` and `/book/hn` becomes the family-neutral `/book/model`
+  (`{pair, family}`, the family defaulting to the pin so a desk that calibrates and a runner that
+  pins cannot name two different models); `HestonNandiJob` is `SpotModelJob`, the MCP tool
+  `calibrate_spot_model` with a `family` argument (no alias tool: a tool list is re-read on every
+  connect and has no deployed callers), and `/book/hn` stays one release as an alias meaning the
+  family it is named for. `HN_FAMILY` and `hn_factor` fold into `structures.SPOT_MODEL_FACTOR`, the
+  one key the pin, the verb and the engine's lookup now share; the runner's `spot_model` reads the
+  BOOK's own `Valuation Configuration` switch where it declares one, so the note that said "priced
+  GBM - looked up `HestonNandiModelParameters.ZAR`" while pricing an authored LogVar2FJ pin cannot
+  be told again, and on a book carrying no factor it names the pinned family and the verb that
+  installs it. One `/book/model` call lands `LogVar2FJModelParameters.ZAR` off the banked USDZAR
+  surface in 206.5 s, reproducing the banked ladder fit digit for digit (0.084 vega-weighted vol
+  points, ATM misses at 1e-14). On the banked USDZAR book under the runner's own pin, re-taken on
+  main with the reciprocal axis landed: the ZAR accumulator 15.63403002 against 15.68600904 GBM
+  and 15.63101970 plain HN (-0.331%); the USD-notional accumulator 15.64067534; the TARF - the
+  product the desk quotes, forced onto the base by `furnish_accrual` - **15.31369426** against
+  15.32196559 GBM and 15.32078223 plain HN, where before the reciprocal lane it refused by name;
+  a straddle on the same book hex-unmoved (`40b5b5b769f3949e`); `GET /schema` still lists all
+  eight families and the alias verb answers. The run's Stats key is the constant `SpotModel`. The
+  Heston-Nandi families are NOT retired: their retirement waits on the axis gap, the credit MC's
+  per-document clock on the GPU and the autocall's CJOW re-fit (the FX gate below), and until
+  then a book may author `SpotModel: 'HestonNandi'` on a deal type and the runner honours it.
+  Net +18 lines (-6 in the engine). PROOF DOCUMENTS: `artifacts/hnpin/verb.py` (the one
+  `/book/model` call), `artifacts/hnpin/pin.py` (the eleven quotes above, re-taken on main).
+
 - **LogVar2FJ on the reciprocal axis** (2026-09-06, spec §2.8, `HN_Invert`'s analogue) - the carry
   is a measure change inside the walk, not a parameter map. Under the `S`-numeraire the step's
   density `exp(R_k - b_k delta_k)` is one in expectation and factorises over its own draws, so the
@@ -462,9 +496,27 @@ set; and five model items in the punchlist below.
   orientation (same), the per-document clock on CPU (3.7x a quote, 7.3x a credit MC, 4.3-5.2x on
   the autocall, against a 2x rule; the GPU reading is the checkpoint lane's 70 s at 2,048 x
   2,048 and the rule is re-read there), and the autocall's efficiency until the CJOW re-fit. WHAT
-  PASSES: everything else. THE VERDICT: the retirement of neither family is licensed by this
-  reading; the desk pin moves once the reciprocal lane lands and the TARF and the USD-side
-  accumulator price under LogVar2FJ within MC error of their GBM limits. Found beside it, not
+  PASSES: everything else. THE ADDENDUM, on the reciprocal-axis engine (678af12), every FX row
+  re-taken on one engine: the TARF under LogVar2FJ PRICES - zero-cost strike 15.30473115 against
+  GBM's 15.31624884 and plain HN's 15.31754457 (-0.075% against +0.0085%: the model moves the strike
+  the desk quotes nine times further than plain HN, the other way); in the GBM LIMIT (every lever
+  zero, `L` flat, the surface flat at the same vol) the reciprocal-axis TARF and both accumulator
+  orientations are **bit-identical** to GBM (relative 0.0), so the measure change costs nothing
+  where nothing should be lost; the two accumulator orientations solve **2.01e-4** apart against
+  the plain family's 1.44e-5 and GBM's 4.05e-5 on the same engine and seeds - the shocks'
+  estimator error at 16,384 paths, on the runner's 2e-4 lognormal band and 2x outside the 1e-4
+  the plain family is held to, the one number the carry still owes a path count or a variate;
+  the TARF's ladders read no worse (spot 0.710% against 1.124% on ladders 2.3% and 2.7% non-flat;
+  `Mu_J` 7.2% on a ladder scattering 5.0%, a tail lever on a crisp latch), its gamma lands 3.26%
+  off the AAD delta's ladder under `Branch_And_Weight` where plain HN refuses the switch by name,
+  and its quote-space risk is 22 identified `dV/dq` concentrated on the front ATM pillars
+  (0.167y ATM -550,142) over a 0-dimensional null space with both active bounds named; its credit
+  MC agrees with the other families to 0.9% uncollateralised and 1.4% under the CSA. THE CLOCK:
+  tick-to-price 211 s against 519 s (2.5x faster) and the quote itself equal (5.9 s against 5.8 s);
+  the credit MC per document 78 / 232 s against 15 / 37 s on CPU (5.1x / 6.4x), the one clause
+  still failing. THE VERDICT, revised: the desk pin MOVES (the quote path passes every clause);
+  the retirement of the families does not - the axis gap, the per-document credit-MC clock (a GPU
+  reading owed) and the autocall's stale-fit row are the named blockers. Found beside it, not
   blocking: the structures runner's leg note says "priced GBM - looked up
   `HestonNandiModelParameters.ZAR`" on a book carrying only another family's factor while the
   deal priced under the authored pin (the family is hard-coded in three places); and

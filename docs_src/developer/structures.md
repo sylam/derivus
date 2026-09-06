@@ -118,15 +118,18 @@ price. `furnish_accrual` is where a leg becomes a strip:
   `leverage ×` it. `leverage` is the registry's first parameter with a DEFAULT (2.0, the market's own
   gearing), published as the descriptor's `value` and read through `declared()` rather than a `.get`.
 - **the model.** Both deals declare `spot_models = ('None', 'HestonNandi',
-  'HestonNandiComponent', 'LogVar2FJ')`, of which the runner pins only `HestonNandi`
-  (`structures.SPOT_MODEL`) — the component model is the autocall ladder's, and LogVar2FJ walks its
-  own internal step. The switch is a `Valuation Configuration` entry per deal TYPE resolved by naming
-  convention off the pair's NON-BASE token — `HestonNandiModelParameters.ZAR` for a USDZAR leg on a USD
+  'HestonNandiComponent', 'LogVar2FJ')`, of which the runner pins only `LogVar2FJ`
+  (`structures.SPOT_MODEL`) — the two Heston-Nandi families are pinned by a book that authors the
+  switch itself. The switch is a `Valuation Configuration` entry per deal TYPE resolved by naming
+  convention off the pair's NON-BASE token — `LogVar2FJModelParameters.ZAR` for a USDZAR leg on a USD
   book, whichever side the notional is on, because the base currency is a numeraire and can name no
   block. `spot_model` checks the book for that exact key and pins the model only where it is there: the
   switch on with the factor absent raises inside the engine's dependency loop, which SKIPS the deal and
   logs an ERROR, so a structure that pinned it unconditionally would quote ZERO on every uncalibrated
   book. Where it is absent the leg carries a `note` naming that factor and the verb that installs it.
+  **A book that already declares the switch for that type keeps it**, and both the check and the note
+  are taken on THAT family: a leg priced under a book's own pin and noted as GBM is a note disagreeing
+  with the number beside it.
   The rule needs the BASE as well as the pair, read off `System Parameters.Base_Currency` in the
   EXPLICIT block — the same half `market_data` reads and the only half a quote can write. A book keeping
   its `System Parameters` behind a `MarketDataFile` answers nothing here, and `utils.spot_model_currency`
@@ -167,11 +170,25 @@ never a second fit, which is why no pricer knows about the axis. Leaving it unca
 variance of Siegel drift in the answer: the two orientations of one accumulator then solve strikes
 **3.4e-3** apart and the gap does not close with the path count, against **4.2e-6** carried.
 
+**LogVar2FJ transports too, as a measure change rather than a parameter.** Under the `S`-numeraire
+the step's density factorises over its own draws, so each shifts by its own loading —
+`eta_l ~ N(rho_l sqrt(V), 1)`, `eta_s ~ N(rho_s sqrt(V), 1)`, the counts at
+`lambda delta exp(mu_J + sigma_J^2/2)` and the return's own shock by one standard deviation — and
+the block law becomes `-(M + Sigma^2)` at the deal's own carry (`utils.lv_walk`). One law, two
+currencies, no second fit. In the GBM limit the reciprocal-axis TARF is **bit-identical** to GBM's
+(15.0858444086898 under both); on the fitted market the two orientations of one accumulator solve
+**2.0e-4** apart at 16,384 paths against the plain family's 1.4e-5 and GBM's own 4.1e-5 — the
+shocks' estimator error, not the numeraire, and the one number this carry still owes a path count.
+Uncarried they solve 3.7e-3 apart and the gap does not close with the path count, as the plain
+family's 3.4e-3 does not. So under the pin a USD-base book quotes its TARF (15.31369426 against
+15.32196559 GBM on the banked USDZAR world) and both orientations of its accumulator.
+
 The COMPONENT family does not transport — the change puts a state-dependent term in its long-run
 intercept, `omega_t + phi(1 − 2·gamma_2)h_t`, and leaves the family — so a component deal on the
-reciprocal axis REFUSES by name rather than pricing off a law nobody fitted. A CROSS pair (neither leg
-the base) keeps the underlying's own read: both tokens are simulated factors there and the composed
-spot's law is out of the ruling's scope.
+reciprocal axis REFUSES by name rather than pricing off a law nobody fitted; `spot_model_reciprocal_axis`
+is the allow-list (`HestonNandi`, `LogVar2FJ`) a family joins. A CROSS pair (neither leg the base)
+keeps the underlying's own read: both tokens are simulated factors there and the composed spot's
+law is out of the ruling's scope.
 
 ### What the model is worth, and what it is not {#hn-worth}
 

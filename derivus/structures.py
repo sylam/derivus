@@ -109,7 +109,7 @@ SPOT_MODEL_FACTOR = '{}ModelParameters.{}'
 #: The model an accrual leg is priced under WHERE THE BOOK CARRIES A CALIBRATION. The switch lives
 #: in `Valuation Configuration` per deal TYPE, not on a deal, and both accrual deals declare it in
 #: their own `spot_models`.
-SPOT_MODEL = 'HestonNandi'
+SPOT_MODEL = 'LogVar2FJ'
 
 #: Every vanilla leg is European. Pinned per leg rather than injected by the runner: it is an
 #: `FXOptionDeal` field, and an `FXBarrierOption` declares no such field.
@@ -520,7 +520,7 @@ def declared(structure, params):
 
 
 def spot_model(document, deal_type, underlying, settlement):
-    """Pin `HestonNandi` on `deal_type` where THIS book carries a calibration for the leg's pair.
+    """Pin `SPOT_MODEL` on `deal_type` where THIS book carries a calibration for the leg's pair.
     Returns the leg's note, or `None` when the model was pinned.
 
     The switch is a `Valuation Configuration` entry per deal TYPE, and the parameters resolve by
@@ -533,19 +533,28 @@ def spot_model(document, deal_type, underlying, settlement):
     factors whose composed law nothing fits. A book declaring no `Base_Currency` REFUSES rather
     than guessing a token, since the engine would then look the switch up under the other name.
 
+    THE BOOK'S OWN SWITCH WINS. A book that already declares `SpotModel` for this deal type is
+    marked under that family whatever the runner would have pinned, so the presence check and the
+    note are taken on the family the ENGINE will look up - a leg priced under a book's own pin and
+    noted as GBM is a note disagreeing with the number beside it.
+
     Writes IN PLACE on the document the runner holds; every pricing deep-copies it through `alone`,
     so one write reaches every iterate of the solve.
     """
     factors = market_data(document)
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    standing = (market.get('Valuation Configuration', {}).get(deal_type) or {}).get('SpotModel')
+    model = standing or SPOT_MODEL
     token = utils.spot_model_currency(underlying, settlement, base_currency(document))
-    factor = SPOT_MODEL_FACTOR.format(SPOT_MODEL, token)
+    factor = SPOT_MODEL_FACTOR.format(model, token)
     if factor in factors:
-        document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
-            'Valuation Configuration', {}).setdefault(deal_type, {})['SpotModel'] = SPOT_MODEL
+        market.setdefault('Valuation Configuration', {}).setdefault(
+            deal_type, {})['SpotModel'] = model
         return None
-    return ('priced GBM - a spot model is keyed off the pair\'s non-base token, so this leg looked '
-            'up {}, which this book does not carry. The HestonNandiModelParameters bootstrapper '
-            'installs it: calibrate {} (/book/hn)'.format(factor, token))
+    return ('{} - a spot model is keyed off the pair\'s non-base token, so this leg looked up {}, '
+            'which this book does not carry. Calibrate {} under {} (/book/model)'.format(
+                'SKIPPED, this book pinning {} itself'.format(standing) if standing
+                else 'priced GBM', factor, token, model))
 
 
 def pinned_models(document):
