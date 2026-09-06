@@ -1146,10 +1146,14 @@ class LogVar2FJModelParameters(CurveModelParameters):
     $c(t)=1-\\rho_s(t)^2-\\rho_\\ell^2\\ge$ **C_Min** in every bucket, refusing with the bucket's
     time and the three numbers.
 
-    **Lambda**, **Cap_A**, **Cap_Beta** and **C_Min** are STRUCTURAL, not leaves: the counts' law
-    is not on the tape, and the cap and the floor are guards a calibrated model never reaches, so
-    a derivative reported at any of them would be wrong. Every curve's knots are structural and
-    its VALUES are `bind='value'` leaves.
+    **Lambda** is a structural CURVE on the L segments: $\\lambda(t)=w_J\\xi_{mkt}(t)/(\\mu_J^2+
+    \\sigma_J^2)$ follows the market's own forward-variance strip (spec 5.1), so the jump share is
+    constant along it, the diffusive strip tracks the market's shape instead of its inverse, and
+    one knot is the constant-intensity model. It, **Cap_A**, **Cap_Beta** and **C_Min** are
+    STRUCTURAL, not leaves: the counts' law is not on the tape, and the cap and the floor are
+    guards a calibrated model never reaches, so a derivative reported at any of them would be
+    wrong. The five FITTED curves' knots are structural and their VALUES are `bind='value'`
+    leaves.
     """
     fields = [
         F('Kappa_L', 'Float', default=0, bind='value',
@@ -1161,8 +1165,9 @@ class LogVar2FJModelParameters(CurveModelParameters):
           description='Fast reversion speed $\\kappa_s$, per year'),
         F('Nu', 'Float', default=0, bind='value',
           description='Fast log-variance co-jump $\\nu$ per event'),
-        F('Lambda', 'Float', default=0,
-          description='Jump intensity $\\lambda$ per year - STRUCTURAL, bumped by re-authoring'),
+        F('Lambda', 'Curve',
+          description='Jump intensity $\\lambda(t)$ per year, piecewise constant on the L segment '
+                      'each knot (years) starts - STRUCTURAL, bumped by re-authoring'),
         F('Cap_A', 'Float', default=4.605170185988092,
           description='Log-variance cap level $a$ - STRUCTURAL, default $\\log 100$ (1000% vol)'),
         F('Cap_Beta', 'Float', default=0.25,
@@ -1187,12 +1192,14 @@ class LogVar2FJModelParameters(CurveModelParameters):
     #: functions and the kit consume by the same names
     parameters = utils.LV_PARAM_NAMES
     structural = utils.LV_STRUCTURAL_NAMES
+    structural_curves = utils.LV_STRUCTURAL_CURVES
     curve_names = utils.LV_CURVE_NAMES
 
     def __init__(self, param):
         super(LogVar2FJModelParameters, self).__init__(param)
         self.declared = declared_defaults(type(self), param)
-        flat = [c for c in self.curve_names if not isinstance(self.param[c], utils.Curve)]
+        flat = [c for c in self.curve_names + self.structural_curves
+                if not isinstance(self.param[c], utils.Curve)]
         if flat:
             raise ValueError(
                 'LogVar2FJModelParameters: %s must be authored as CURVES - knots in years, which '
@@ -1220,12 +1227,14 @@ class LogVar2FJModelParameters(CurveModelParameters):
                 % (knots['Rho_S'][i], rho_s[i], rho_l, c[i], c_min))
 
     def curve_tenors(self):
-        """Every structural fact the kit reads off this factor: each curve's knots - the L
-        pillars, and for the four levers the buckets - and the structural scalars, at their
-        declared defaults where unauthored. Resolved once at dependency time, so nothing rides the tensor
-        side that carries no derivative."""
+        """Every structural fact the kit reads off this factor: each fitted curve's knots - the
+        L segments, and for the four levers the buckets - the structural scalars at their declared
+        defaults where unauthored, and lambda(t) whole, its knots and values both structural.
+        Resolved once at dependency time, so nothing rides the tensor side that carries no
+        derivative."""
         return dict({c: self.param[c].array[:, 0] for c in self.curve_names},
-                    **{x: self.declared[x] for x in self.structural})
+                    **{x: self.declared[x] for x in self.structural},
+                    **{c: self.param[c].array for c in self.structural_curves})
 
 
 class GBMAssetPriceTSModelParameters(Factor1D):

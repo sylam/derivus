@@ -67,8 +67,8 @@ DECLARED_DEFAULTS = {'leverage': 2.0}
 #: strike needs; the curves are the fit's own segments, in years.
 MODEL_PARAMS = {
     'Property_Aliases': None, 'Kappa_L': 0.5, 'Sigma_L': 0.0, 'Rho_L': 0.0, 'Kappa_S': 6.0,
-    'Nu': 4.401650676117734e-08, 'Lambda': 0.07345372461752837, 'Cap_A': 4.605170185988092,
-    'Cap_Beta': 0.25, 'C_Min': 0.12,
+    'Nu': 4.401650676117734e-08, 'Cap_A': 4.605170185988092, 'Cap_Beta': 0.25, 'C_Min': 0.12,
+    'Lambda': utils.Curve([], [[0.0, 0.07345372461752837]]),
     'L_Curve': utils.Curve([], [[0.0, -4.79855357189], [0.0821917808219, -4.92096383098],
                                 [0.167123287671, -4.88786832253], [0.249315068493, -4.84055015853],
                                 [0.498630136986, -4.69955594235], [0.747945205479, -4.61140627756]]),

@@ -89,6 +89,9 @@ There is no per-step state for a pricer to carry: given the walk's shocks and co
 
     param_names = utils.LV_PARAM_NAMES
     curve_names = utils.LV_CURVE_NAMES
+    #: what `utils.lv_walk` is handed PER STEP: the four fitted levers on their buckets and the
+    #: structural intensity on the L segments
+    step_names = utils.LV_BUCKET_NAMES + utils.LV_STRUCTURAL_CURVES
 
     def __init__(self, scalars, knots, factor_dep):
         n = len(self.param_names)
@@ -96,6 +99,8 @@ There is no per-step state for a pricer to carry: given the walk's shocks and co
         self.params = dict(zip(self.param_names, scalars[:n]),
                            **{x: float(structural[x]) for x in utils.LV_STRUCTURAL_NAMES})
         self.knots, self.values = knots, dict(zip(self.curve_names, scalars[n:]))
+        self.strips = {x: np.asarray(structural[x], dtype=float)
+                       for x in utils.LV_STRUCTURAL_CURVES}
         self.steps_per_year = float(factor_dep['Steps_Per_Year'])
         self.invert = bool(factor_dep.get('Invert_Spot'))
 
@@ -122,7 +127,7 @@ There is no per-step state for a pricer to carry: given the walk's shocks and co
 
         Under ``invert`` the counts are the ESSCHER-TILTED ones - the measure change's third
         factor, the two shocks' being shifts inside the step."""
-        lam = self.params['Lambda']
+        lam = params['Lambda']
         if self.invert:
             lam = lam * torch.exp(params['Mu_J'] + 0.5 * params['Sigma_J'] * params['Sigma_J'])
         eta_l, eta_s, counts = self.draws(
@@ -143,10 +148,11 @@ There is no per-step state for a pricer to carry: given the walk's shocks and co
         `utils.lv_walk` accumulates as it passes, so a fixing block's law is the sum over its own
         segments and no ``[batch, sims, n]`` tensor exists at all.
 
-        All five curves are PIECEWISE CONSTANT and read at ABSOLUTE times - ``L`` on the segments
-        between ATM expiries, the four levers on their calendar buckets - because both are calendar
-        time from the base date, not time from this row. ``antithetic`` is REQUIRED because the
-        wrong value is a shape error at every consumer, never a quiet bias.
+        All six curves are PIECEWISE CONSTANT and read at ABSOLUTE times - ``L`` and the jump
+        intensity on the segments between ATM expiries, the four levers on their calendar buckets -
+        because both are calendar time from the base date, not time from this row.
+        ``antithetic`` is REQUIRED because the wrong value is a shape error at every consumer,
+        never a quiet bias.
 
         ``carry`` is the DEAL's own either way - on the reciprocal axis the walk is the only thing
         that changes measure, and the law it hands back is already the one for ``1/S``.
@@ -157,6 +163,10 @@ There is no per-step state for a pricer to carry: given the walk's shocks and co
         curve = utils.bucket_at(self.knots['L_Curve'], self.values['L_Curve'], t)
         levers = {x: utils.bucket_at(self.knots[x], self.values[x], t[:-1])
                   for x in utils.LV_BUCKET_NAMES}
+        # lambda(t) is STRUCTURAL, so it is read in the GRID's own dtype and not a leaf's: a
+        # one-knot strip then scales the counts exactly as the scalar it replaced did
+        levers.update({x: utils.bucket_at(strip[:, 0], delta.new_tensor(strip[:, 1]), t[:-1])
+                       for x, strip in self.strips.items()})
         shape = [shared.simulation_batch, num_sims]
         # the row's own stream key, off the plain generator so the position bookkeeping replays
         # it; shifted clear of the segment index, which counts up from it
@@ -169,7 +179,7 @@ There is no per-step state for a pricer to carry: given the walk's shocks and co
                 b = min(a + LV_CHECKPOINT_STEPS, k + n)
                 dm, dv, l, s = torch.utils.checkpoint.checkpoint(
                     self.segment, base + j, shape, antithetic,
-                    dict(self.params, **{x: levers[x][a:b] for x in utils.LV_BUCKET_NAMES}),
+                    dict(self.params, **{x: levers[x][a:b] for x in self.step_names}),
                     curve[a:b + 1], delta[a:b], l, s,
                     use_reentrant=False, preserve_rng_state=False)
                 m, v, j = m + dm, v + dv, j + 1

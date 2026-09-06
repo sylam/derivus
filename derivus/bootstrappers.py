@@ -1287,9 +1287,9 @@ LVQuote = namedtuple(
     'sigma quoted')
 
 #: One forward-start target: a window `[j1, j2]` of the same walk, a strike as a fraction of
-#: S_T1, and the same two market numbers taken at the target vol.
-LVForward = namedtuple(
-    'lv_forward', 'j1 j2 T1 tenor strike ratio carry premium vega weight target')
+#: S_T1, and the vol it is aimed at - spec 5.3's objective is in vol points, so this block carries
+#: no premium. Under `Prior` the target is the model's own spot smile and `target` is unread.
+LVForward = namedtuple('lv_forward', 'j1 j2 T1 tenor strike ratio carry weight target')
 
 #: The three structural numbers the PRICE FACTOR declares, read here rather than re-spelt so the
 #: calibrator's bound and the factor's own load assertion cannot disagree.
@@ -1324,9 +1324,14 @@ class LVFit(object):
     prepares the quotes and orders the stages; everything else is here.
     """
 
+    #: What the walk is handed per STEP: the four fitted levers and the structural intensity.
+    step_names = utils.LV_BUCKET_NAMES + utils.LV_STRUCTURAL_CURVES
     #: The fitted box, per coordinate (spec 5.2). `Rho_S`'s own lower edge is derived from `Rho_L`
     #: and `C_Min` at every stage and so cannot live here.
-    box = {'Sigma_L': (0.0, 2.0), 'Rho_L': (-0.6, 0.0), 'Sigma_S': (0.5, 5.0),
+    #: `Sigma_L`'s floor is for EXPOSURES (spec 5.2 stage 4): a two-year surface cannot claim
+    #: five-year vol is certain, and a zero slow factor collapses a CVA profile's vol distribution
+    #: onto the fast factor's spread, which reverts within months.
+    box = {'Sigma_L': (0.3, 2.0), 'Rho_L': (-0.6, 0.0), 'Sigma_S': (0.5, 5.0),
            'Nu': (0.0, 0.6), 'Sigma_J': (0.02, 0.25), 'Mu_J': (-0.40, -0.03)}
     #: How far inside `C_Min` and inside `share_box` the soft penalties start, and what a full
     #: margin's violation costs: 1.25 vol points of residual, which the data rows at a one-point
@@ -1355,8 +1360,14 @@ class LVFit(object):
     #: the sub-year smile, stage 4 what is left beyond it.
     stage_horizons = (0.25, 1.0)
     #: Spec 5.3's forward-start strikes, as fractions of S_T1 - what `Forward_Smile_Source` Prior
-    #: quotes its own rows at.
+    #: quotes its own rows at - and the three both stickiness ratios are read at: the 90-110 slope
+    #: over its log-strike gap, and the 90/110 average less the ATM.
     prior_strikes = (0.90, 0.95, 1.00, 1.05, 1.10)
+    psi_strikes = (0.90, 1.00, 1.10)
+    #: The shortest WING expiry that identifies the slow pair (spec 5.2 stage 4), in years.
+    slow_horizon = 1.5
+    #: What one point of `Diffusive_Share` miss costs, on the same scale the other soft terms use.
+    split_penalty = 0.25
 
     def __init__(self, family, market_price, instrument, factors, previous):
         self.family, self.market_price, self.instrument = family, market_price, instrument
@@ -1377,6 +1388,11 @@ class LVFit(object):
         self.source = read['Forward_Smile_Source']
         self.previous, self.tables, self.calls = previous, [], {'n': 0, 'j': 0, 'l': 0, 'b': 0}
         self.targets, self.guarded, self.base_rmse, self.ties = [], [], 0.0, {}
+        #: `Stickiness_Prior`'s pair, `Diffusive_Share`'s per-segment target where one is
+        #: declared, the spot rung each forward tenor's own smile is read at, and the two report
+        #: lines the slow pair and an identified event day each earn
+        self.psi, self.diffusive, self.spot_rung = (1.0, 1.0), None, {}
+        self.pinned_slow, self.identified_days = '', []
         self.notes, self.final, self.leaf, self.theta = [], {}, None, None
         #: the last stage's box as `(lower, upper)` and the gradient `J^T r` it stopped on, which
         #: `interior` and `report` read the KKT active set off; and the stage that hit its cap
@@ -1403,28 +1419,42 @@ class LVFit(object):
         return torch.cat([z_l, -z_l]), torch.cat([z_s, -z_s]), torch.cat([u, 1.0 - u])
 
     def counted(self):
-        """The integer counts at the CURRENT lambda, redrawn only where stage 5's bounded search
-        for the jump share moves it - nothing else in the fit can."""
+        """The integer counts at the CURRENT lambda strip, redrawn only where stage 5's bounded
+        search for the jump share moves it - nothing else in the fit can."""
         return self.uniforms[0], self.uniforms[1], utils.lv_counts(
-            self.uniforms[2], self.state['Lambda'], self.deltas)
+            self.uniforms[2], self.lam_at(), self.deltas)
+
+    def lam_at(self):
+        """`lambda(t)` at the walk's step STARTS: the segment strip of spec 5.1, read as `L` is."""
+        return utils.bucket_at(self.knots[:-1], self.vector(self.state['Lambda']),
+                               self.times[:-1])
+
+    def lam_strip(self, w=None):
+        """Spec 5.1's rule per segment, `lambda = w_J xi_mkt / (mu_J^2 + sigma_J^2)`, off the
+        market's own forward-variance increments - so the jump share is the same number on every
+        segment and the diffusive strip follows the market's shape. STRUCTURAL: never a fitted
+        coordinate, re-derived from the strip whenever `w_J` moves."""
+        share = self.share if w is None else w
+        return [share * x / self.jump_size for x in self.xi]
 
     def walk(self, scalars, levers, curve, n):
         """`(M, Sigma^2)` CUMULATED to every grid point, off ONE internal-step walk.
 
         A maturity is then a prefix and a forward window the difference of two prefixes, so the
-        whole quote set and the whole forward block cost one pass. The levers are read at the
-        ABSOLUTE step-START times, as `L` is: the buckets are calendar time from the base date,
-        which is how `pricing.LogVar2FJKit` reads them. The fit is on the FxRate's own axis, never
-        the reciprocal - one law per pair, carried at the deal.
+        whole quote set and the whole forward block cost one pass. The levers and `lambda(t)` are
+        read at the ABSOLUTE step-START times, as `L` is: buckets and segments are calendar time
+        from the base date, which is how `pricing.LogVar2FJKit` reads them. The fit is on the
+        FxRate's own axis, never the reciprocal - one law per pair, carried at the deal.
         """
-        params = dict(scalars, **{name: utils.bucket_at(self.buckets, levers[name], self.times[:n])
-                                  for name in utils.LV_BUCKET_NAMES})
+        params = dict(scalars, Lambda=self.lam_at()[:n],
+                      **{name: utils.bucket_at(self.buckets, levers[name], self.times[:n])
+                         for name in utils.LV_BUCKET_NAMES})
         eta_l, eta_s, counts = self.draws
         s = eta_l.new_zeros(eta_l.shape[0])
         l, M, var, a = s + curve[0], [], [], 0
         for b in [int(x) for x in self.upto if x <= n]:
             m, v, l, s = utils.lv_walk(
-                dict(params, **{x: params[x][a:b] for x in utils.LV_BUCKET_NAMES}),
+                dict(params, **{x: params[x][a:b] for x in self.step_names}),
                 curve[a:b + 1], self.deltas[a:b], eta_l[:, a:b], eta_s[:, a:b], counts[:, a:b],
                 (l, s), False)
             M.append(m)
@@ -1448,6 +1478,55 @@ class LVFit(object):
         return pricing.lognormal_fired_gain(
             1.0, drift, sigma, (torch.log(strike) - drift) / sigma, strike, True)
 
+    def implied(self, price, forward, strike, T):
+        """A conditional-Black price as a Black vol, DIFFERENTIABLE: the numpy inversion off the
+        tape and then one Newton splice at its own vega, so the value is the true inversion and
+        `dsigma/dtheta` is `dP/dtheta` over that vega - the splice the L pillar already returns."""
+        sd = np.sqrt(max(utils.bs_implied_total_var(
+            float(price.detach()), forward, strike, 0.0, 1), 0.0))
+        d1 = (np.log(forward / strike) + 0.5 * sd * sd) / sd
+        vega = max(forward * np.exp(-0.5 * d1 * d1) / np.sqrt(2.0 * np.pi), 1.0e-12)
+        return (sd + (price - price.detach()) / vega) / np.sqrt(T)
+
+    def smile(self, cum, j, carry, T, strikes):
+        """The model's own smile at block `j`, as vols at `strikes` given as fractions of that
+        block's forward - the reading both the forward rows and the stickiness ratios are taken
+        on, so neither can drift from the other."""
+        forward = np.exp(carry)
+        return [self.implied(self.conditional_black(
+            cum[0][..., j], cum[1][..., j], carry, self.tensor(k * forward)).mean(),
+            forward, k * forward, T) for k in strikes]
+
+    @classmethod
+    def shape(cls, vols):
+        """`(atm, slope, butterfly)` of a `psi_strikes` smile in DECIMAL vol: the 90-110 difference
+        over its log-strike gap, and the 90/110 average less the ATM."""
+        low, atm, high = vols
+        return atm, (low - high) / np.log(cls.psi_strikes[2] / cls.psi_strikes[0]), \
+            0.5 * (low + high) - atm
+
+    def spot_shape(self, cum, tenor):
+        """The model's OWN spot smile at the quoted maturity nearest `tenor`, as
+        `(atm, slope, butterfly)` - what `Stickiness_Prior` tilts and what psi divides by."""
+        j, carry, T = self.spot_rung[tenor]
+        return self.shape(self.smile(cum, j, carry, T, self.psi_strikes))
+
+    def target_vol(self, target, shape):
+        """The vol one forward row is aimed at: the quoted or reference number, or - under
+        `Prior` - the model's own spot smile at that tenor with both ratios applied (spec 5.3).
+
+        The tilted smile is the quadratic in log-strike through the ATM whose own slope and
+        butterfly are `Stickiness_Prior` times the spot smile's, which is what a prior on the pair
+        MEANS: at (1.0, 1.0) it is sticky-delta, the FX convention.
+        """
+        if shape is None:
+            return target.target
+        atm, slope, bfly = shape
+        a, b = np.log(self.psi_strikes[0]), np.log(self.psi_strikes[2])
+        q = -(self.psi[1] * bfly + 0.5 * self.psi[0] * slope * (a + b)) / (a * b)
+        u = np.log(target.strike)
+        return atm + (-self.psi[0] * slope - q * (a + b)) * u + q * u * u
+
     def value(self, cum, quote):
         """One quote's model premium: the conditional Black over the paths, the discount and the
         yield rescale as the component family applies them, and a put by parity off the ANALYTIC
@@ -1456,6 +1535,12 @@ class LVFit(object):
             cum[0][..., quote.j], cum[1][..., quote.j], quote.carry, quote.ratio).mean()
         return quote.units * np.exp(-quote.rate * quote.T) * (
             gain if quote.is_call else gain - (quote.forward - quote.strike))
+
+    def forward_vol(self, cum, target):
+        """One forward-start row's model vol - `forward_value` inverted by the same splice the
+        spot smile uses, spec 5.3's objective being in vol points."""
+        return self.implied(self.forward_value(cum, target), np.exp(target.carry), target.strike,
+                            target.tenor)
 
     def forward_value(self, cum, target):
         """One forward-start target's model premium in units of `S_T1`: the block over `[T1, T2]`
@@ -1548,41 +1633,48 @@ class LVFit(object):
         return near / (eta_l.shape[0] * self.deltas.shape[0])
 
     @classmethod
-    def seed_curve(cls, xi, scalars, mu_j, sigma_j, sigma_s, delta, ends):
-        """Spec 2.6's mapping, one level per SEGMENT: the level whose UNCONDITIONAL diffusive
-        variance AVERAGES the market's own forward variance over that segment's own steps.
+    def jensen(cls, scalars, lam, sigma_s, delta, ends):
+        """Spec 2.6's Jensen factor per SEGMENT: `E[exp(l+s)]/exp(L)` averaged over that segment's
+        own steps, which is what lifts the model's diffusive variance above `exp(L)`.
 
         The OU deviation from `L` is independent of `L`, so with `l_0 = L(0)`, `s_0 = 0`,
         `E[exp(l+s)] = exp(L(t) + (Var(l) + Var(s))/2 + sum_j lam*d*(exp(nu*phi_s^m) - 1))` whatever
-        shape `L` has: a segment is `log(xi - lam(mu^2 + sigma^2))` less the log mean of those two
-        over its steps, each OU variance by its own recursion and the fast factor's
-        compound-Poisson part a running sum. `ends` is the step each ATM expiry lands on. A SEED -
-        the bootstrap then matches the model's own ATM price per segment - so it lives beside its
-        one caller rather than in `utils`.
+        shape `L` has - the Gaussian half of it is the Jensen share the split report prints, and
+        the running sum is the co-jump's. `ends` is the step each ATM expiry lands on.
         """
-        lam, nu = float(scalars['Lambda']), float(scalars['Nu'])
-        jump = lam * (mu_j ** 2 + sigma_j ** 2)
-        diffusive = np.asarray(xi, dtype=float) - jump
-        if (diffusive <= 0.0).any():
-            raise ValueError(
-                'the seeded jump variance lambda*(mu_J^2 + sigma_J^2) = {:.6g} is at or above this '
-                'surface\'s own forward variance at {} of {} knots (smallest {:.6g}), so xi_diff '
-                '<= 0 and spec 2.6\'s mapping has no answer. Lower Jump_Share or the wing the jump '
-                'is sized off (Wing_Strike), or pin a smaller Lambda'.format(
-                    jump, int((diffusive <= 0.0).sum()), diffusive.size, float(np.min(xi))))
+        nu = float(scalars['Nu'])
         sigma = {'S': sigma_s, 'L': float(scalars['Sigma_L'])}
         phi = {x: np.exp(-float(scalars['Kappa_' + x]) * delta) for x in ('S', 'L')}
         weight = {x: sigma[x] ** 2 * (1.0 - phi[x] ** 2) / (2.0 * float(scalars['Kappa_' + x]))
                   for x in ('S', 'L')}
-        var, compound, levels, jensen, k = {'S': 0.0, 'L': 0.0}, 0.0, [], [], 0
+        var, compound, factors, rows, k = {'S': 0.0, 'L': 0.0}, 0.0, [], [], 0
         for step in range(ends[-1]):
-            jensen.append(0.5 * (var['S'] + var['L']) + compound)
-            compound += lam * delta * (np.exp(nu * phi['S'] ** step) - 1.0)
+            rows.append(0.5 * (var['S'] + var['L']) + compound)
+            compound += lam[k] * delta * (np.exp(nu * phi['S'] ** step) - 1.0)
             var = {x: phi[x] ** 2 * var[x] + weight[x] for x in ('S', 'L')}
             if step + 1 == ends[k]:
-                levels.append(np.log(diffusive[k]) - np.log(np.mean(np.exp(jensen))))
-                jensen, k = [], k + 1
-        return np.array(levels)
+                factors.append(np.mean(np.exp(rows)))
+                rows, k = [], k + 1
+        return np.array(factors)
+
+    @classmethod
+    def seed_curve(cls, xi, scalars, lam, mu_j, sigma_j, sigma_s, delta, ends):
+        """Spec 2.6's mapping, one level per SEGMENT: the level whose UNCONDITIONAL diffusive
+        variance AVERAGES the market's own forward variance over that segment's own steps - the
+        market's total less that segment's own jump variance, over its Jensen factor. A SEED, the
+        bootstrap then matching the model's own ATM price per segment."""
+        jump = np.asarray(lam, dtype=float) * (mu_j ** 2 + sigma_j ** 2)
+        diffusive = np.asarray(xi, dtype=float) - jump
+        if (diffusive <= 0.0).any():
+            worst = int(np.argmin(diffusive))
+            raise ValueError(
+                'the seeded jump variance lambda(t)*(mu_J^2 + sigma_J^2) is at or above this '
+                'surface\'s own forward variance on {} of {} segments (worst {:.6g} against '
+                '{:.6g}), so xi_diff <= 0 and spec 2.6\'s mapping has no answer. Lower Jump_Share '
+                'or the wing the jump is sized off (Wing_Strike), or pin a smaller Lambda'.format(
+                    int((diffusive <= 0.0).sum()), diffusive.size, float(jump[worst]),
+                    float(xi[worst])))
+        return np.log(diffusive) - np.log(cls.jensen(scalars, lam, sigma_s, delta, ends))
 
     def l_knots(self, levels):
         """The L curve as it is WRITTEN, off the segment levels solved so far: one level per
@@ -1665,7 +1757,7 @@ class LVFit(object):
         Jacobian hangs on - everything else off `self.state`, and then the TIES of `Bootstrap` mode
         applied in bucket order, so a tie carried from the previous bucket chains."""
         scalars = {name: self.tensor(value) for name, value in self.state.items()
-                   if name not in utils.LV_BUCKET_NAMES}
+                   if name not in self.step_names}
         levers = {name: [self.tensor(v) for v in self.state[name]]
                   for name in utils.LV_BUCKET_NAMES}
         for i, (name, bucket) in enumerate(coords):
@@ -1686,12 +1778,14 @@ class LVFit(object):
         return scalars, levers, self.walk(scalars, levers, self.l_at(self.levels), self.n)
 
     def rows(self, cum, judged, forwards):
-        """Every row's vol-space residual, `(model - market)/vega_market`, weighted."""
-        market = self.market(judged)
+        """Every row's residual, weighted: a vanilla's premium miss over its own market vega, and
+        a forward-start's vol miss itself (spec 5.3's own objective term)."""
+        market, shapes = self.market(judged), self.spot_shapes(cum, forwards)
         return ([quote.weight * (self.value(cum, quote) - market[i]) / quote.vega
                  for i, quote in enumerate(judged)] +
-                [target.weight * (self.forward_value(cum, target) - target.premium)
-                 / target.vega for target in forwards])
+                [target.weight * (self.forward_vol(cum, target)
+                                  - self.target_vol(target, shapes.get(target.tenor)))
+                 for target in forwards])
 
     def residual(self, x, coords, judged, forwards=(), guard=None, smooth=None):
         """The stage's residual VECTOR: its own rows FIRST, which is what the identification table
@@ -1706,10 +1800,13 @@ class LVFit(object):
         terms.append(self.soft_penalty * torch.relu(
             self.c_min + self.c_margin
             - (1.0 - levers['Rho_S'] ** 2 - scalars['Rho_L'] ** 2)))
-        realised = self.state['Lambda'] * (
+        realised = self.state['Lambda'][0] * (
             levers['Mu_J'][0] ** 2 + levers['Sigma_J'][0] ** 2) / self.xi_0
         terms.append(self.soft_penalty * (torch.relu(realised - self.share_box[1])
                                           + torch.relu(self.share_box[0] - realised)))
+        if self.diffusive is not None:
+            terms.append(self.split_penalty
+                         * (self.split(levers)[1] - self.vector(self.diffusive)))
         if guard is not None:
             held, base = guard
             kept = torch.stack([(self.value(cum, quote) - quote.premium) / quote.vega
@@ -1720,6 +1817,16 @@ class LVFit(object):
             terms += [self.smoothness * levers[name][:smooth + 1].diff()
                       for name in utils.LV_BUCKET_NAMES]
         return torch.cat([term.reshape(-1) for term in terms])
+
+    def split(self, levers):
+        """The split per SEGMENT (spec 5.4.8): `(jump variance, diffusive share)` at the jump
+        sizes in force there, both taken of the MARKET's own forward variance - the denominator a
+        desk quotes, and the one `Diffusive_Share` is declared against."""
+        starts = self.vector(self.knots[:-1])
+        jump = self.vector(self.state['Lambda']) * (
+            utils.bucket_at(self.buckets, levers['Mu_J'], starts) ** 2
+            + utils.bucket_at(self.buckets, levers['Sigma_J'], starts) ** 2)
+        return jump, 1.0 - jump / self.vector(self.xi)
 
     def jacobian(self, x, coords, judged, forwards, **kw):
         """dr/dx by autograd at a fitted leaf - ONE vmapped backward over the residual rows, which
@@ -1797,18 +1904,20 @@ class LVFit(object):
     def solve_share(self):
         """Stage 5's third variable, by a BOUNDED SCALAR search rather than a coordinate.
 
-        `w_J` sets lambda by 5.1, lambda sets the law of the integer counts, and a count drawn by
-        inverse CDF off a fixed uniform is a STEP function of it - so no Jacobian carries this
-        direction and least_squares would read the flat one it has. The same weighted sum of
-        squares, at counts redrawn per candidate; the box IS spec 5.1's.
+        `w_J` sets the whole lambda STRIP by 5.1, lambda sets the law of the integer counts, and
+        a count drawn by inverse CDF off a fixed uniform is a STEP function of it - so no Jacobian
+        carries this direction and least_squares would read the flat one it has. The same
+        weighted sum of squares, at counts redrawn per candidate; the box IS spec 5.1's.
         """
         def objective(w):
-            self.state['Lambda'] = w * self.xi_0 / self.jump_size
+            self.state['Lambda'] = self.lam_strip(w)
             self.draws = self.counted()
             self.calls['n'] += 1
-            cum = self.evaluate()[2]
+            _, levers, cum = self.evaluate()
+            split = ((self.split_penalty * (self.split(levers)[1] - self.vector(self.diffusive)))
+                     ** 2).sum() if self.diffusive is not None else 0.0
             return sum(float(row.detach()) ** 2
-                       for row in self.rows(cum, self.guarded, self.targets)) + (
+                       for row in self.rows(cum, self.guarded, self.targets)) + float(split) + (
                 self.vanilla_guard * max(
                     self.rmse(cum, self.guarded) - self.base_rmse - self.vanilla_band, 0.0)) ** 2
 
@@ -1873,13 +1982,8 @@ class LVFit(object):
                    or self.quotes)
         self.stage('3 (rho_s, sigma_s, nu)', [('Rho_S', 0), ('Sigma_S', 0), ('Nu', None)],
                    middle or self.quotes)
-        if long:
+        if self.identified_slow():
             self.stage('4 (rho_l, sigma_l)', [('Rho_L', None), ('Sigma_L', None)], long)
-        else:
-            self.state['Rho_L'], self.state['Sigma_L'] = 0.0, 0.0
-            logging.info('  stage 4 skipped: nothing is quoted beyond {:g}y, so the slow leverage '
-                         'is left at zero rather than fitted to nothing'.format(
-                             self.stage_horizons[1]))
         self.state['Cap_A'] = self.cap_level()
 
         self.guarded = [q for q in self.quotes if any(
@@ -1896,10 +2000,27 @@ class LVFit(object):
         if self.targets and not self.pinned:
             self.share = self.solve_share()
 
-        polish = [(name, None) for name in (('Sigma_L', 'Rho_L', 'Nu') if long else ('Nu',))]
+        polish = [(name, None) for name in
+                  (('Sigma_L', 'Rho_L', 'Nu') if self.identified_slow() else ('Nu',))]
         polish += [(name, b) for name in utils.LV_BUCKET_NAMES
                    for b in range(self.buckets.size)]
         self.stage('6 joint polish', polish, self.quotes, self.targets, smooth=last)
+
+    def identified_slow(self):
+        """Does this ladder identify `(rho_l, sigma_l)` - WING quotes at `slow_horizon` or longer
+        (spec 5.2 stage 4)? Otherwise both are held at their priors and the report says so, exactly
+        as the kappas are: a fit to nothing writes a number a desk would read as one."""
+        if any(T >= self.slow_horizon for T in self.wings):
+            return True
+        if not self.pinned_slow:
+            self.pinned_slow = (
+                'pinned: not identified by this ladder - Rho_L {:+.4f} and Sigma_L {:.4f} are held '
+                'at their priors, the longest wing expiry being {} against the {:g}y spec 5.2 '
+                'stage 4 asks for'.format(
+                    self.state['Rho_L'], self.state['Sigma_L'],
+                    '{:g}y'.format(max(self.wings)) if self.wings else 'none at all',
+                    self.slow_horizon))
+        return False
 
     def bootstrap_stages(self):
         """Spec 5.4.1's `Bootstrap`: the wing expiries ARE the buckets, and bucket `k` is fitted to
@@ -1912,7 +2033,7 @@ class LVFit(object):
         penalty is not optional here.
         """
         long = [q for q in self.quotes if q.T > self.stage_horizons[1]]
-        if long:
+        if self.identified_slow():
             self.stage('4 (rho_l, sigma_l)', [('Rho_L', None), ('Sigma_L', None)], long)
         self.state['Cap_A'] = self.cap_level()
         for k, expiry in enumerate(self.wings):
@@ -1924,6 +2045,13 @@ class LVFit(object):
             self.stage('bootstrap bucket {:g}y ({} wing quote{}, free {})'.format(
                 expiry, len(rung), '' if len(rung) == 1 else 's', '/'.join(free)),
                 [(name, k) for name in free], rung, smooth=k)
+
+    def own_segment(self, t):
+        """Is the ATM segment holding `t` ONE internal step - the event day its own pillar, with
+        expiries on the business days either side (spec 5.4.3)?"""
+        k = int(np.searchsorted(self.knots, t + utils.BUCKET_TOL)) - 1
+        return 0 <= k < self.knots.size - 1 and round(
+            (self.knots[k + 1] - self.knots[k]) / self.delta) <= 1
 
     def finish(self, theta):
         """The fit as it stands: the walk at theta*, every quote's TRUE vol-point miss, and - where
@@ -1939,7 +2067,7 @@ class LVFit(object):
                                               self.quotes, (), **self.final)[:len(self.quotes)]))
         self.scalars, self.levers, self.cum = self.evaluate(theta, self.fitted)
         self.misses = [100.0 * self.quote_vol(self.cum, quote) for quote in self.quotes]
-        self.realised = self.state['Lambda'] * (
+        self.realised = self.state['Lambda'][0] * (
             self.state['Mu_J'][0] ** 2 + self.state['Sigma_J'][0] ** 2) / self.xi_0
 
     def verify(self):
@@ -2020,14 +2148,17 @@ class LVFit(object):
 
     def written(self):
         """The `LogVar2FJModelParameters` price factor: the scalars, the structural ones the kit
-        reads, and the five curves, `L` on its segments and the four levers on their buckets. The L
-        strip is the ONE `finish` banked, so the factor and `connect`'s tensors are one solve."""
+        reads, and the six curves - `L` and `lambda(t)` on the segments, the four levers on their
+        buckets. The L strip is the ONE `finish` banked, so the factor and `connect`'s tensors
+        are one solve."""
         knots, values = self.l_knots(self.levels)
         values = values.detach()
         return {'Property_Aliases': None,
                 **{name: float(self.state[name])
                    for name in utils.LV_PARAM_NAMES + utils.LV_STRUCTURAL_NAMES},
                 'C_Min': self.c_min,
+                'Lambda': utils.Curve([], [[float(t), float(v)] for t, v
+                                           in zip(self.knots[:-1], self.state['Lambda'])]),
                 'L_Curve': utils.Curve([], [[float(t), float(v)]
                                             for t, v in zip(knots, values)]),
                 **{name: utils.Curve([], [[float(t), float(v)] for t, v
@@ -2075,43 +2206,45 @@ class LVFit(object):
 
     def forward_smile(self, cum):
         """`{(T1, Delta): {strike: (model vol, target vol)}}` - every forward-start target's own
-        implied vol beside the one it was set to, by the same numpy inversion the vanillas use."""
-        smiles = {}
+        implied vol beside the one it was aimed at, both by the splice the rows are built on."""
+        smiles, shapes = {}, self.spot_shapes(cum)
         for target in self.targets:
-            price = float(self.forward_value(cum, target))
-            vol = np.sqrt(max(utils.bs_implied_total_var(
-                price, np.exp(target.carry), target.strike, 0.0, 1), 0.0) / target.tenor)
-            smiles.setdefault((target.T1, target.tenor), {})[target.strike] = (vol, target.target)
+            smiles.setdefault((target.T1, target.tenor), {})[target.strike] = (
+                float(self.forward_vol(cum, target).detach()),
+                float(self.target_vol(target, shapes.get(target.tenor))))
         return smiles
 
-    def stickiness(self, cum):
-        """`psi(T1, Delta)` model and target: the forward 90-110 slope over the SPOT slope at
-        maturity `Delta`, in the model's own smile and in the quoted one (spec 5.3).
+    def spot_shapes(self, cum, forwards=None):
+        """The model's own spot `(atm, slope, butterfly)` at each forward row's own `Delta`, where
+        the source is `Prior` and the rows read one; an empty dict otherwise."""
+        rows = self.targets if forwards is None else forwards
+        return ({target.tenor: self.spot_shape(cum, target.tenor) for target in rows}
+                if self.source == 'Prior' else {})
 
-        The widest pair the forward target carries stands for 90-110, and the SPOT slope is read at
-        the quoted strikes nearest that same pair - a ratio of two slopes taken at two different
-        moneyness spans is not a stickiness. A tenor with one strike, or whose `Delta` no quoted
-        maturity lands on, has no ratio and is left out.
+    def stickiness(self, cum):
+        """`(psi_skew, psi_bfly)` per forward tenor, model and target (spec 5.3): the forward
+        smile's 90-110 slope and its 90/110-minus-ATM butterfly, each over the SPOT counterpart at
+        maturity `Delta`.
+
+        BOTH ratios, because the two ingredients of the split have opposite signatures - jump skew
+        is sticky while its convexity dilutes at the forward date, leverage skew dilutes while
+        vol-of-vol convexity amplifies - so the pair separates what the slope alone cannot. The
+        denominator is the MODEL's own spot smile on both sides, which is the ratio `Prior` targets
+        and, where the vanillas fit, the market's own. A tenor whose rows do not carry
+        `psi_strikes` has no ratio and is left out.
         """
         rows = {}
         for (T1, tenor), smile in self.forward_smile(cum).items():
-            nearest = min({quote.T for quote in self.quotes}, key=lambda T: abs(T - tenor))
-            rung = [quote for quote in self.quotes if quote.T == nearest]
-            if len(smile) < 2 or len(rung) < 2:
+            if not set(self.psi_strikes) <= set(smile):
                 continue
-            low, high = min(smile), max(smile)
-            gap = np.log(high / low)
-            at = lambda k: min(rung, key=lambda quote: abs(quote.strike / quote.forward - k))
-            under, over = at(low), at(high)
-            spread = np.log((over.strike / over.forward) / (under.strike / under.forward))
-            if not spread:
-                continue
-            model, target = ((smile[low][i] - smile[high][i]) / gap for i in (0, 1))
-            market = (under.sigma - over.sigma) / spread
-            fitted = market + (self.quote_vol(cum, under) - self.quote_vol(cum, over)) / spread
-            rows[(T1, tenor)] = (100 * model, 100 * target, 100 * fitted, 100 * market,
-                                 model / fitted if fitted else float('nan'),
-                                 target / market if market else float('nan'))
+            model = self.shape([smile[k][0] for k in self.psi_strikes])
+            target = self.shape([smile[k][1] for k in self.psi_strikes])
+            spot = [float(x) for x in self.spot_shape(cum, tenor)]
+            ratio = lambda i: (model[i] / spot[i] if spot[i] else float('nan'),
+                               target[i] / spot[i] if spot[i] else float('nan'))
+            rows[(T1, tenor)] = (100 * model[1], 100 * target[1], 100 * spot[1],
+                                 100 * model[2], 100 * target[2], 100 * spot[2]) + ratio(1) \
+                + ratio(2)
         return rows
 
     def band(self, lo, hi):
@@ -2138,13 +2271,22 @@ class LVFit(object):
             self.market_price, self.mode, ', '.join(
                 '{} {:.6g}'.format(name, self.state[name])
                 for name in utils.LV_PARAM_NAMES + utils.LV_STRUCTURAL_NAMES)))
-        logging.info('  L segments, annualised DIFFUSIVE vol beside the market\'s own forward '
-                     'variance strip on the SAME segments: {}'.format(', '.join(
-                         '{:g}-{:g}y {:.2%} against {:.2%}'.format(
-                             lo, hi, float(np.sqrt(np.exp(float(v.detach())))),
-                             np.sqrt(max(x, 0.0)))
-                         for lo, hi, v, x in zip(self.knots[:-1], self.knots[1:], self.levels,
-                                                 self.xi))))
+        jump = self.split(self.levers)[0].detach().numpy()
+        factors = self.jensen(self.state, self.state['Lambda'], self.state['Sigma_S'][0],
+                              self.delta, [int(self.upto[q.j]) for q in self.atm])
+        logging.info('  THE SPLIT per segment (spec 5.4.8), each share taken of the MARKET\'s '
+                     'own forward variance there. The model\'s total is its MEAN diffusive '
+                     'variance plus the jump, and sits ABOVE the market by what matching the '
+                     'ATM PRICE rather than the variance costs - the vol-of-vol\'s convexity:')
+        for lo, hi, level, x, factor, j in zip(self.knots[:-1], self.knots[1:], self.levels,
+                                               self.xi, factors, jump):
+            flat = np.exp(float(level.detach()))
+            model = flat * factor + j
+            logging.info(
+                '    {:5.3f}-{:5.3f}y  market {:.2%} vol, model {:.2%}, annualised DIFFUSIVE vol '
+                '{:.2%}; jump share {:.1%}, Jensen share {:.1%}'.format(
+                    lo, hi, np.sqrt(max(x, 0.0)), np.sqrt(model), np.sqrt(flat),
+                    j / x, flat * (factor - 1.0) / x))
         for name in utils.LV_BUCKET_NAMES:
             logging.info('  {}: {}'.format(name, ', '.join(
                 '{:g}y {:+.4f}{}'.format(t, v, '' if not self.free else ' ({})'.format(
@@ -2173,9 +2315,10 @@ class LVFit(object):
         c = 1.0 - np.array(self.state['Rho_S']) ** 2 - self.state['Rho_L'] ** 2
         logging.info(
             '  jump share {:.1%} asked of the {:g}y variance and {:.1%} REALISED as '
-            'lambda(mu_J^2 + sigma_J^2)/xi_0 (lambda {:.4g}); leverage products rho_s*sigma_s {}, '
-            'rho_l*sigma_l {:+.3f}; c {} with efficiency {}'.format(
-                self.share, self.knots[1], self.realised, self.state['Lambda'],
+            'lambda(mu_J^2 + sigma_J^2)/xi_0 (the lambda strip {}); leverage products '
+            'rho_s*sigma_s {}, rho_l*sigma_l {:+.3f}; c {} with efficiency {}'.format(
+                self.share, self.knots[1], self.realised,
+                '/'.join('{:.4g}'.format(x) for x in self.state['Lambda']),
                 '/'.join('{:+.3f}'.format(x * y) for x, y
                          in zip(self.state['Rho_S'], self.state['Sigma_S'])),
                 self.state['Rho_L'] * self.state['Sigma_L'],
@@ -2191,11 +2334,20 @@ class LVFit(object):
                          self.headroom, self.state['Cap_A']))
         for note in self.notes:
             logging.warning('  {}: {}'.format(self.market_price, note))
+        for line in ([self.pinned_slow] if self.pinned_slow else []) + self.identified_days:
+            logging.info('  {}'.format(line))
+        if self.diffusive is not None:
+            logging.info('  Diffusive_Share is ON: the split is targeted at {} per segment as a '
+                         'soft term of weight {:g}, which is an explicit override of it and '
+                         'nothing else'.format(
+                             '/'.join('{:.1%}'.format(x) for x in self.diffusive),
+                             self.split_penalty))
 
         for (T1, tenor), row in self.stickiness(self.cum).items():
             logging.info(
-                '  psi({:g}y into {:g}y): forward slope model {:.2f} target {:.2f}, spot slope '
-                'model {:.2f} market {:.2f}, psi {:.3f} against {:.3f}'.format(T1, tenor, *row))
+                '  psi({:g}y into {:g}y): forward slope model {:.2f} target {:.2f} over spot '
+                '{:.2f}, butterfly {:.2f} / {:.2f} over {:.2f}; psi_skew {:.3f} against {:.3f}, '
+                'psi_bfly {:.3f} against {:.3f}'.format(T1, tenor, *row))
         # spec 5.3's composition check is the smile BEYOND the last bucket boundary: that rung is
         # the composition of the conditional laws either side of it, and the rungs inside the last
         # bucket are ordinary vanillas the earlier buckets already fitted
@@ -2301,19 +2453,29 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
          '',
          'THE STAGES (spec 5.2), warm-started, each `least_squares` over its own subset:',
          '',
-         '0. $\\kappa_\\ell$, $\\kappa_s$, $\\lambda$ and the cap are STRUCTURAL and never enter a',
-         'fitted vector. $\\mu_J$ seeds at $\\log$ *Wing_Strike* and $\\sigma_J$ at half that',
-         'magnitude, then $\\lambda=w_J\\xi_0/(\\mu_J^2+\\sigma_J^2)$ - the wing a desk hedges is ONE',
-         'jump, and vanillas do not identify $\\lambda$ apart from the jump sizes.',
+         '0. $\\kappa_\\ell$, $\\kappa_s$, $\\lambda(t)$ and the cap are STRUCTURAL and',
+         'never enter a fitted vector. $\\mu_J$ seeds at $\\log$ *Wing_Strike* and $\\sigma_J$ at',
+         'half that magnitude, then $\\lambda(t)=w_J\\xi_{mkt}(t)/(\\mu_J^2+\\sigma_J^2)$ PER',
+         'SEGMENT: the wing a desk hedges is ONE jump, vanillas do not identify $\\lambda$ apart',
+         'from the jump sizes, and a CONSTANT intensity would force the diffusive share to move',
+         'inversely to the market own strip. The one free number in the split is its level $w_J$.',
          '1. The curve $L$ from the ATM term structure through spec 2.6 mapping, then the',
          'triangular bootstrap - at every iterate thereafter.',
          '2. $(\\mu_J,\\sigma_J)$ on the 1-3 month rows. 3. $(\\rho_s,\\sigma_s,\\nu)$ on the 1-12',
-         'month rows. 4. $(\\rho_\\ell,\\sigma_\\ell)$ beyond one year, left at zero where the',
-         'surface quotes nothing there.',
+         'month rows. 4. $(\\rho_\\ell,\\sigma_\\ell)$ beyond one year, and ONLY where',
+         'the ladder carries wing quotes at 18 months or longer; otherwise both are held at',
+         'their priors with the report line *pinned: not identified by this ladder*, as the',
+         '$\\kappa$ pair is. $\\sigma_\\ell$ has a FLOOR of 0.3 for exposures - a zero slow factor',
+         'collapses a CVA profile vol distribution onto the fast factor spread, which reverts',
+         'within months - and a fit sitting on it with long expiries present is a RESULT,',
+         'reported and never refused.',
          '5. THE FORWARD BLOCK, in the order spec 5.3 states and only where *Forward_Smile_Source*',
          'names one: the later buckets of $\\mu_J(t)$, then of $\\rho_s(t)$, then the jump share',
-         '$w_J$ by a BOUNDED SCALAR SEARCH - $w_J$ moves $\\lambda$, which moves integer counts, so',
-         'it is not a coordinate any Jacobian can carry. The spot smile at $T$ never sees a bucket',
+         '$w_J$ by a BOUNDED SCALAR SEARCH - $w_J$ moves the whole $\\lambda$ strip, which moves',
+         'integer counts, so it is not a coordinate any Jacobian can carry. *Prior* targets',
+         'BOTH stickiness ratios on the model OWN spot smiles, so what is pinned is the pair',
+         'and not a vol, and the forward rows are residuals in VOL POINTS - spec 5.3 own term.',
+         'The spot smile at $T$ never sees a bucket',
          'later than $T$ and a forward smile prices on nothing else, which is why the lever is',
          'CALENDAR TIME and not the vol state (2.3.1, measured three ways).',
          '6. A joint polish over everything but $\\lambda$, the $\\kappa$ pair and the cap.',
@@ -2327,10 +2489,14 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
          'so, which is what leaves the quote contraction at the point it was taken.',
          '',
          'WHAT THE FIT REPORTS. The vol-point miss per maturity and over the surface, unweighted',
-         'and vega-weighted; the wing and convexity residuals; the segment levels beside the market',
-         'own forward-variance strip; per bucket the parameters and which were free; the jump share',
-         'asked and the one REALISED; the leverage products and $c$; the stationary log-vol sd; the',
-         'cap headroom; the stickiness ratios $\\psi(T_1,\\Delta)$ model beside target; and THE',
+         'and vega-weighted; the wing and convexity residuals; per bucket the parameters and',
+         'which were free; the jump share asked and the one REALISED; the leverage products and',
+         '$c$; the stationary log-vol sd; the cap headroom; THE SPLIT per segment - the market',
+         'own forward variance, the model total as MEAN diffusive plus jump, the jump share and',
+         'the Jensen share the vol-of-vol implies, so a gap between the curve level and the',
+         'market reads as the split it is and not as a miss (the total sits ABOVE the market by',
+         'what matching the ATM PRICE rather than the variance costs); BOTH stickiness ratios',
+         '$\\psi_{skew}$ and $\\psi_{bfly}$ per $(T_1,\\Delta)$, model beside target; and THE',
          'IDENTIFICATION TABLE, the SVD of the DATA rows of the Jacobian at each fitted point, its',
          'columns scaled by $1/\\|J_{:,j}\\|$ and the unscaled norms beside it - scaling reads',
          'conditioning, and only the norm says that a well-conditioned direction moves nothing. The',
@@ -2427,10 +2593,13 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                       'tenor. With the mode and the curve\'s knots this is where a fit is '
                       'strongest (spec 5.4.1), so it is a field rather than a rule'),
         F('Lambda', 'Text', default='',
-          description='Blank DERIVES the jump intensity by spec 5.1 off Jump_Share and the seeded '
-                      'jump sizes; a number PINS it, which is what a structural review writes '
-                      'back. Never a fitted coordinate - its whole content is the law of integer '
-                      'counts, which no Jacobian carries'),
+          description='Blank DERIVES the jump intensity PER SEGMENT by spec 5.1, '
+                      'w_J*xi_mkt(t)/(mu_J^2 + sigma_J^2) off Jump_Share, the seeded jump sizes '
+                      'and the market\'s own forward-variance strip - so the jump share is the '
+                      'same number on every segment and the diffusive strip follows the market\'s '
+                      'shape rather than its inverse. A number PINS it flat, which is what a '
+                      'structural review writes back. Never a fitted coordinate - its whole '
+                      'content is the law of integer counts, which no Jacobian carries'),
         F('Param_Buckets', 'Table', default='null', row=Row([
             F('Tenor', 'Float', description='Years from the base date the bucket STARTS at')]),
           description='Calendar-time buckets the four levers are piecewise constant on. Empty is '
@@ -2466,9 +2635,19 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
           description='The rows Forward_Smile_Source Quotes or Reference reads its targets from'),
         F('Forward_Tenors', 'Text', default='6m:6m,1y:1y,1y:3m',
           description='The (T1:Delta) pairs Forward_Smile_Source Prior builds its rows on'),
-        F('Stickiness_Prior', 'Float', default=1.0,
-          description='The psi Forward_Smile_Source Prior targets: 1.0 for a GARCH-like view, '
-                      '0.7-0.9 for an LSV-like one, applied to the market\'s own spot slopes'),
+        F('Stickiness_Prior', 'Text', default='1.0,1.0',
+          description='The PAIR psi_skew,psi_bfly that Forward_Smile_Source Prior targets on the '
+                      'model\'s OWN spot smiles: 1.0,1.0 is sticky-delta, the FX convention and '
+                      'the default; 0.7-0.9 is an LSV-like view. Both, because jump skew is sticky '
+                      'while its convexity dilutes at the forward date and leverage skew dilutes '
+                      'while vol-of-vol convexity amplifies - the slope alone cannot separate '
+                      'the jump share from the vol-of-vol'),
+        F('Diffusive_Share', 'Text', default='',
+          description='Target share of each L segment\'s total variance carried by the DIFFUSIVE '
+                      'part - one number for the strip or one per segment - as a soft term on the '
+                      'split and NOTHING ELSE. Blank is off and there is no default: it is a prior '
+                      'on a number the desk has no market for. Tightening the jump-share box is '
+                      'not a substitute; that box touches one side of the gap'),
         F('Forward_Weight', 'Float', default=1.0 / 3.0,
           description='The forward block\'s share of the total objective weight, the vanillas '
                       'carrying the rest'),
@@ -2627,10 +2806,15 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
 
         quotes = self.emphasis(fit, quotes, set(atm))
         rungs = {T: [quotes[i] for i in rows] for T, rows in by_expiry.items()}
-        targets = self.forward_rows(fit, rungs, factors)
+        targets = self.forward_rows(fit, factors)
         ends = sorted(set(by_expiry) | {t for target in targets
                                         for t in (target.T1, target.T1 + target.tenor)})
         at = {T: j for j, T in enumerate(ends)}
+        # every forward tenor's own spot rung: the quoted maturity nearest it, which is where the
+        # model's spot smile is read for the two ratios and for what `Prior` tilts
+        near = {target.tenor: min(rungs, key=lambda T: abs(T - target.tenor))
+                for target in targets}
+        fit.spot_rung = {d: (at[T], rungs[T][0].carry, T) for d, T in near.items()}
         spans = np.diff([0.0] + ends)
         counts = np.maximum(np.round(spans / fit.delta), 1.0).astype(int)
         fit.upto = np.cumsum(counts)
@@ -2720,13 +2904,13 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                                 ', '.join('{:g}y'.format(T) for T in wings)))
         return np.array([0.0] + list(wings)[:-1])
 
-    def forward_rows(self, fit, by_expiry, factors):
+    def forward_rows(self, fit, factors):
         """Spec 5.3's forward-start rows, in the instrument `Forward_Smile_Source` names.
 
         `Quotes` and `Reference` read `Forward_Smiles`; `Prior` builds its own rows off
-        `Forward_Tenors`, tilting the MARKET's spot smile at each `Delta` by `Stickiness_Prior` -
-        which is what a prior on psi applied to the model's own slopes is, the fit reproducing
-        those slopes. A table with no source, or a source in `Bootstrap` mode, refuses by name.
+        `Forward_Tenors` and aims them at the MODEL's own spot smile, tilted by both
+        `Stickiness_Prior` ratios per evaluation. A table with no source, or a source in
+        `Bootstrap` mode, refuses by name.
         """
         rows, source = fit.table('Forward_Smiles'), fit.source
         if source != 'None' and fit.mode == 'Bootstrap':
@@ -2748,7 +2932,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                 'block that asked for a forward target. Author the rows, or name Prior, which '
                 'needs none, or None'.format(fit.market_price, source))
         if source == 'Prior':
-            rows = self.prior_rows(fit, by_expiry)
+            rows = self.prior_rows(fit)
         elif source == 'None':
             return []
 
@@ -2761,67 +2945,89 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
             # the window's own carry, differenced off the two maturities the curves read
             window = ((r2 - self.effective_yield(r2, funding, carry, t2)) * t2
                       - (r1 - self.effective_yield(r1, funding, carry, t1)) * t1)
-            strike, vol = float(row['Strike']), float(row['Target_Vol'])
             targets.append(LVForward(
-                j1=None, j2=None, T1=t1, tenor=t2 - t1, strike=strike,
-                ratio=self.tensor(strike), carry=window,
-                premium=utils.black_european_option_price(
-                    np.exp(window), strike, 0.0, vol, t2 - t1, 1.0, 1.0),
-                vega=self.fx_black_vega(np.exp(window), strike, 0.0, vol, t2 - t1),
-                weight=float(row.get('Weight', 1.0)), target=vol))
+                j1=None, j2=None, T1=t1, tenor=t2 - t1, strike=float(row['Strike']),
+                ratio=self.tensor(float(row['Strike'])), carry=window,
+                weight=float(row.get('Weight', 1.0)), target=float(row['Target_Vol'])))
         return targets
 
-    def prior_rows(self, fit, by_expiry):
-        """`Forward_Smiles` rows built from a prior on psi: at each `(T1, Delta)` the MARKET's own
-        spot smile at the quoted maturity nearest `Delta`, its 90-110 slope multiplied by
-        `Stickiness_Prior` and re-quoted at spec 5.3's strikes around that rung's ATM vol."""
-        psi, rows = float(fit.instrument['Stickiness_Prior']), []
-        for pair in fit.instrument['Forward_Tenors'].split(','):
-            t1, tenor = (lv_tenor(x) for x in pair.split(':'))
-            nearest = min(by_expiry, key=lambda T: abs(T - tenor))
-            rung = sorted(by_expiry[nearest], key=lambda q: q.strike)
-            if len(rung) < 2:
-                raise ValueError(
-                    '{}: Forward_Smile_Source Prior tilts the market\'s own spot smile at each '
-                    'Delta, and the quoted maturity nearest {:g}y ({:g}y) carries {} quote - there '
-                    'is no slope to tilt. Quote a smile at that maturity, or name '
-                    'Forward_Smiles and a source that reads them'.format(
-                        fit.market_price, tenor, nearest, len(rung)))
-            slope = (rung[0].sigma - rung[-1].sigma) / np.log(
-                (rung[-1].strike / rung[-1].forward) / (rung[0].strike / rung[0].forward))
-            atm = min(rung, key=lambda q: abs(q.strike / q.forward - 1.0)).sigma
-            rows += [{'T1': t1, 'Delta': tenor, 'Strike': k,
-                      'Target_Vol': atm - psi * slope * np.log(k)} for k in fit.prior_strikes]
-        return rows
+    def prior_rows(self, fit):
+        """The rows a prior on the two ratios builds: spec 5.3's strikes at each `(T1, Delta)`,
+        aimed at the MODEL's own spot smile at the quoted maturity nearest `Delta` with its slope
+        and butterfly scaled by `Stickiness_Prior` (5.3 source 3).
+
+        The target therefore moves with the fit and what is pinned is the RATIO pair, not a vol -
+        which is what makes `(1.0, 1.0)` sticky-delta rather than a smile from yesterday. The row
+        carries no target vol of its own; `LVFit.target_vol` builds it per evaluation.
+        """
+        return [{'T1': lv_tenor(pair.split(':')[0]), 'Delta': lv_tenor(pair.split(':')[1]),
+                 'Strike': k, 'Target_Vol': 0.0}
+                for pair in fit.instrument['Forward_Tenors'].split(',')
+                for k in fit.prior_strikes]
+
+    def stickiness_prior(self, fit):
+        """`Stickiness_Prior` as `(psi_skew, psi_bfly)` - the two ratios spec 5.3 targets, the FX
+        default `1.0,1.0` being sticky-delta."""
+        rows = [x for x in str(fit.instrument['Stickiness_Prior']).split(',') if x.strip()]
+        if len(rows) != 2:
+            raise ValueError(
+                '{}: Stickiness_Prior is the PAIR psi_skew,psi_bfly (spec 5.3) and reads {!r}. The '
+                'forward smile\'s slope and its convexity dilute differently - jump skew is sticky '
+                'while jump convexity dilutes, leverage skew dilutes while vol-of-vol convexity '
+                'amplifies - so one number cannot say what the desk assumes. Write both, 1.0,1.0 '
+                'for sticky-delta'.format(fit.market_price, fit.instrument['Stickiness_Prior']))
+        return tuple(float(x) for x in rows)
+
+    def diffusive_share(self, fit):
+        """`Diffusive_Share` as one target per L SEGMENT - one number for all of them, or one
+        each. An explicit override of the split and nothing else (spec 5.3), never a default."""
+        rows = [float(x) for x in str(fit.instrument['Diffusive_Share']).split(',') if x.strip()]
+        if not rows:
+            return None
+        if len(rows) not in (1, fit.xi.size):
+            raise ValueError(
+                '{}: Diffusive_Share carries {} numbers against {} L segments. It is a target '
+                'share of each segment\'s total variance carried by the DIFFUSIVE part, so write '
+                'one number for the whole strip or one per segment'.format(
+                    fit.market_price, len(rows), fit.xi.size))
+        return rows * fit.xi.size if len(rows) == 1 else rows
 
     def event_knots(self, fit, sys_params):
         """`Event_Days` as a one-INTERNAL-STEP SEGMENT each - a day at the default delta (spec
         5.4.3) - carrying `Event_Variance_Prior` times the enclosing segment's level, the knot
-        after it restoring that level. So the variance on the event day is one number and the ATM
-        pillar straddling it gives that variance back over the days around it; a date with no
-        straddling expiry carries the prior alone."""
+        after it restoring that level. A day whose ATM segment is ALREADY one step is IDENTIFIED
+        by its own pillar, so the prior is ignored there and the report says so. The variance on
+        the event day is then one number and the ATM pillar straddling it gives that variance back
+        over the days around it; a date with no straddling expiry carries the prior alone."""
         days = [x.strip() for x in str(fit.instrument['Event_Days']).split(',') if x.strip()]
         prior = float(fit.instrument['Event_Variance_Prior'])
         base, discount = sys_params['Base_Date'], fit.factors['Discount_Rate']
         marks = {}
         for day in days:
             t = discount.get_day_count_accrual(base, (pd.Timestamp(day) - base).days)
+            if fit.own_segment(t):
+                fit.identified_days.append(
+                    'the event day {} is its OWN L segment - expiries on the business days either '
+                    'side - so the ordinary pillar bootstrap sets its variance and '
+                    'Event_Variance_Prior is IGNORED (spec 5.4.3)'.format(day))
+                continue
             marks.setdefault(t + fit.delta, 0.0)                  # the restore, unless a day is
             marks[t] = np.log(prior)                              # already bumped there
         keep = sorted(t for t in marks
                       if t > 0.0 and np.min(np.abs(fit.knots - t)) > utils.BUCKET_TOL)
         fit.event_times = np.array(keep)
         fit.event_log = self.vector([marks[t] for t in keep])
-        if days:
+        priced = len(days) - len(fit.identified_days)
+        if priced:
             logging.info('  {} event day{} carrying {:g}x the diffusive variance of the day '
                          'around them, as {} extra L knots'.format(
-                             len(days), '' if len(days) == 1 else 's', prior, fit.event_times.size))
+                             priced, '' if priced == 1 else 's', prior, fit.event_times.size))
 
     def seed(self, fit):
-        """STAGE 0, the structural half: the jump sized off the wing the desk hedges, lambda off
-        the share it carries at the SHORTEST maturity (5.1), and the L strip off spec 2.6's
-        mapping. The kappas and the cap width are read and never moved; a previous factor then
-        replaces every seed but those.
+        """STAGE 0, the structural half: the jump sized off the wing the desk hedges, the lambda
+        STRIP off the share it carries along the market's own forward variance (5.1), and the L
+        strip off spec 2.6's mapping. The kappas and the cap width are read and never moved; a
+        previous factor then replaces every seed but those.
         """
         read, wing = fit.instrument, float(fit.instrument['Wing_Strike'])
         n, fit.xi_0 = fit.buckets.size, fit.atm[0].sigma ** 2
@@ -2836,24 +3042,29 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         fit.jump_size = 1.25 * np.log(wing) ** 2
         fit.pinned = str(read['Lambda']).strip()
         fit.share = float(read['Jump_Share'])
-        fit.state['Lambda'] = (float(fit.pinned) if fit.pinned
-                               else fit.share * fit.xi_0 / fit.jump_size)
+        fit.psi = self.stickiness_prior(fit)
+        fit.diffusive = self.diffusive_share(fit)
 
         previous, levels = fit.previous, None
         if previous:
             fit.state.update({name: float(previous[name]) for name in utils.LV_PARAM_NAMES
                               if not name.startswith('Kappa')})
-            fit.state['Lambda'] = float(previous['Lambda'])
             fit.state.update({name: utils.bucket_at(
                 previous[name].array[:, 0], self.vector(previous[name].array[:, 1]),
                 self.vector(fit.buckets)).tolist() for name in utils.LV_BUCKET_NAMES})
             levels = list(utils.bucket_at(previous['L_Curve'].array[:, 0],
                                           self.vector(previous['L_Curve'].array[:, 1]),
                                           self.vector(fit.knots[:-1])))
+        # spec 5.1: lambda(t) is RE-DERIVED from today's strip and never warm started - what
+        # carries across days is w_J, read back off a previous factor's own first segment
+        if previous and not fit.pinned:
+            fit.share = float(previous['Lambda'].array[0, 1]) * fit.jump_size / fit.xi_0
+        fit.state['Lambda'] = ([float(fit.pinned)] * fit.xi.size if fit.pinned
+                               else fit.lam_strip())
         if levels is None:
             levels = [self.tensor(x) for x in LVFit.seed_curve(
-                fit.xi, fit.state, fit.state['Mu_J'][0], fit.state['Sigma_J'][0],
-                fit.state['Sigma_S'][0], fit.delta,
+                fit.xi, fit.state, fit.state['Lambda'], fit.state['Mu_J'][0],
+                fit.state['Sigma_J'][0], fit.state['Sigma_S'][0], fit.delta,
                 [int(fit.upto[quote.j]) for quote in fit.atm])]
         fit.levels, fit.warm = list(levels), list(levels)
         fit.slopes = [None] * len(levels)

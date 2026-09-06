@@ -367,6 +367,54 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **λ(t) follows the market's own strip, and the report prints the split** (2026-09-06, spec 5.1 /
+  5.2 / 5.3 / 5.4.3 / 5.4.8) - a constant intensity makes the jump variance `λ(μ_J² + σ_J²)` the
+  same number on every segment while the market's forward variance moves along the strip, so the
+  diffusive share was forced to track the market's shape BACKWARDS. `Lambda` is now a STRUCTURAL
+  CURVE on the ATM segments, `λ(t) = w_J ξ_mkt(t)/(μ_J² + σ_J²)`, read by `bucket_at` at absolute
+  times as `L` and the four levers are - never a leaf, knots and values compile-time facts, one
+  knot the constant-intensity model (`LV_STRUCTURAL_CURVES`), re-derived from the strip daily with
+  `w_J` rather than λ carried across days off a previous factor's first segment; it flows through
+  the reciprocal axis's tilt and the compensator per step. MEASURED: the jump share is now the
+  SAME number on every segment - **11.9%** on the reduced USDZAR block, **14.8%** on the 22-rung
+  ladder, **15.2%** on CJOW - where the same ladder with `Lambda` pinned flat reads 18.2 / 17.4 /
+  15.8 / 14.5 / 12.2 / 10.9%, the market's shape backwards, for 0.189 wing RMSE against 0.202
+  (inside the seed spread). THE REPORT PRINTS THE SPLIT per segment - the market's forward
+  variance, the model's total as MEAN diffusive plus jump, the jump share and the Jensen share -
+  and does NOT claim the spec's "equal at the pillars by construction": the pillar matches the
+  ATM PRICE, `E[Black(sd)] < Black(E[sd])`, so the model's mean total sits 4-23% above the
+  market's ATM² and the Jensen share (14-58%) is what sizes it. THE SLOW FACTOR'S RULE: `(ρ_l,
+  σ_l)` fitted only where the ladder carries wing quotes at 18 months or longer, else held at
+  their priors with "pinned: not identified by this ladder", and `σ_l ∈ [0.3, 2.0]`. That costs
+  the USDZAR wings **0.132 -> 0.202** and the reduced block 0.099 -> 0.202: the banked 0.132 was
+  bought by a `Sigma_L` the old box ran to **1.5e-06**, the collapse the floor exists to stop; on
+  CJOW, where 2y wings identify it, it is fitted and lands ON the 0.3 floor, named by the
+  active-bound line and reported, never refused. TWO STICKINESS RATIOS: ψ_skew 0.950 / 0.984 /
+  0.858 against CJOW's 0.975 / 1.008 / 0.552, ψ_bfly a division by nothing on this surface (the
+  model's own spot butterfly is within 0.3 vol points of zero at 3m and 6m); `Forward_Smile_Source:
+  Prior` targets both on the model's OWN spot smiles per evaluation (the forward block is now a
+  vol-point residual, spec 5.3's own term, the implied vol one Newton splice at Black's vega), and
+  on a ONE-bucket ladder at `1.0,1.0` it reaches 0.859 / 0.713 for +0.329 vol points of vanilla
+  degradation and 0.202 -> 0.512 on the wings - spec 5.3's failure mode, reported by name.
+  `Diffusive_Share` drives the jump share to exactly its declared 5.0% at 0.245 wing RMSE. An
+  event day whose segment is one internal step is IDENTIFIED and the prior is ignored, which the
+  report states; λ's knots are the ATM segments, not the tent's. THE GATE'S ROW 4, RE-READ off
+  the CJOW surface re-fitted at `Paths` 8192 on the flat L with λ(t) (spot RMSE 0.930 / 0.319
+  against 1.020 / 0.331, 29 wings 1.005 against 1.063): the 2y SPX autocall reads **-30.855 (SE
+  0.143)** at `SE² x time` **2.83e-02**, against its own stale-fit -32.80 (SE 0.251) at 9.28e-02
+  and the retired component family's banked -31.89 (SE 0.088) at 1.31e-02 - the efficiency 3.3x
+  better, now 2.2x the record rather than 7.1x, the remainder the model's own SE on this deal and
+  not the clock; the value sits 3.8% from CJOW's -32.068 where the linear-L vanilla fit read 1.1%,
+  at an unchanged-to-better spot fit - the forward-skew ambiguity 5.3 names, now with a bigger
+  number on it, and whether the forward block or a second calendar bucket pulls it back is the next
+  lane's call. OPEN for the owner: the unidentified slow pair's prior level - (-0.4, 1.0) is the
+  seed, and 1.0 is what costs the sub-year wings 0.058 where the spec's own reason for the 0.3
+  floor argues the unidentified prior should BE the floor; ψ_bfly wants a denominator floor or the
+  butterfly difference in its place. Engine net +238 lines. PROOF DOCUMENTS: `lv_hex.py`,
+  `lv_trials.py limit`, `lv_deals.py hex`, `tarf_hex.py` (all four hex-identical),
+  `artifacts/lv_split_20260906/split.py reduced | ladder | pinlam | prior | share | events | cjow
+  | tables | autocall`.
+
 - **The retirement** (2026-09-06, licensed outright by the owner: "we didn't actually validate HN or
   TARFs or accumulators, so we can remove HN any time we like in favour of LogVar2FJ") — both
   Heston-Nandi families are GONE from the engine, in four commits off the desk pin above, **net

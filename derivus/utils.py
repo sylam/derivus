@@ -2370,10 +2370,16 @@ def barrier_touched(prev_touched, prev_spot, s_t, barrier, variance, up):
 #: source of that name set, shared with the riskfactors class and every consumption site.
 LV_PARAM_NAMES = ('Kappa_L', 'Sigma_L', 'Rho_L', 'Kappa_S', 'Nu')
 
-#: The structural parameters THE KIT reads off the factor: the jump intensity, whose whole content
-#: is the law of integer counts and so is not on the tape, and the cap, a guard on log-variance
-#: rather than a modelling device. A leaf at either would report a derivative nothing carries.
-LV_STRUCTURAL_NAMES = ('Lambda', 'Cap_A', 'Cap_Beta')
+#: The structural SCALARS the kit reads off the factor: the cap, a guard on log-variance rather
+#: than a modelling device. A leaf at either would report a derivative nothing carries.
+LV_STRUCTURAL_NAMES = ('Cap_A', 'Cap_Beta')
+
+#: The structural CURVES: `lambda(t) = w_J xi_mkt(t)/(mu_J^2 + sigma_J^2)` follows the market's own
+#: forward-variance strip on the L segments (spec 5.1), so the jump share is constant along it and
+#: the diffusive strip tracks the market's shape. Piecewise constant, read by `bucket_at` at
+#: absolute times as `L` is; its whole content is the law of integer counts, which is not on the
+#: tape, so its KNOTS AND VALUES are both structural and one knot is the constant-lambda model.
+LV_STRUCTURAL_CURVES = ('Lambda',)
 
 #: The four levers piecewise CONSTANT on calendar-time buckets whose START times are the curves'
 #: knots (spec 2.3.1) - one knot at 0 is the constant-parameter model. `Rho_S` and `Mu_J` are the
@@ -2418,7 +2424,8 @@ def sqrt_or_zero(v):
 def lv_counts(u, lam, deltas):
     """Poisson(lam*delta) counts per step by inverse CDF, truncated at `LV_MAX_JUMPS` (spec 2.5).
 
-    Integer and off the tape: lam is structural, so nothing here carries a gradient.
+    Integer and off the tape: `lam` is structural - a scalar, or the strip's own value per step -
+    so nothing here carries a gradient.
     """
     a = lam * deltas
     pmf = torch.exp(-a)
@@ -2453,10 +2460,11 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0, invert)
     """Walk both log-variance factors over ONE block and return its sums and the state it ends in.
 
     eta_l, eta_s, counts are [batch, sims, n] over the BLOCK's own steps, curve_at_grid is L at its
-    n+1 grid times, params[name] for each of `LV_BUCKET_NAMES` is that lever's value in force at
-    each step start and state0 = (l, s) is [batch, sims]. Returns (M, var, l, s): the block's
-    return mean and variance, no carry term - the caller adds that - and the end state, which seeds
-    the next block. The scan ACCUMULATES, so nothing of shape [batch, sims, n] but the draws exists.
+    n+1 grid times, params[name] for each of `LV_BUCKET_NAMES` and for `Lambda` is that curve's
+    value in force at each step start and state0 = (l, s) is [batch, sims]. Returns
+    (M, var, l, s): the block's return mean and variance, no carry term - the caller adds that -
+    and the end state, which seeds the next block. The scan ACCUMULATES, so nothing of shape
+    [batch, sims, n] but the draws exists.
 
     `invert` is the S-NUMERAIRE measure, for a deal paying on 1/S (`Invert_Spot`): the step's density
     exp(R_k - b_k delta_k) is one in expectation and factorises over its own draws, so
