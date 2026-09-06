@@ -2514,15 +2514,16 @@ class LVFit(object):
 
     @classmethod
     def seed_curve(cls, xi, scalars, mu_j, sigma_j, sigma_s, delta, ends):
-        """Spec 2.6's mapping: the L level at each PILLAR whose UNCONDITIONAL diffusive variance is
-        the market's own forward variance there.
+        """Spec 2.6's mapping, one level per SEGMENT: the level whose UNCONDITIONAL diffusive
+        variance AVERAGES the market's own forward variance over that segment's own steps.
 
-        With `l_0 = L(0)`, `s_0 = 0`,
-        `E[exp(l+s)] = exp(L(t) + (Var(l) + Var(s))/2 + sum_j lam*d*(exp(nu*phi_s^m) - 1))`, so a
-        pillar is `log(xi - lam(mu^2 + sigma^2))` less those two, accumulated along the internal
-        grid: each OU variance by its own recursion, the fast factor's compound-Poisson part as a
-        running sum. A SEED - the bootstrap then matches the model's own ATM price at each pillar -
-        so it lives beside its one caller rather than in `utils`.
+        The OU deviation from `L` is independent of `L`, so with `l_0 = L(0)`, `s_0 = 0`,
+        `E[exp(l+s)] = exp(L(t) + (Var(l) + Var(s))/2 + sum_j lam*d*(exp(nu*phi_s^m) - 1))` whatever
+        shape `L` has: a segment is `log(xi - lam(mu^2 + sigma^2))` less the log mean of those two
+        over its steps, each OU variance by its own recursion and the fast factor's
+        compound-Poisson part a running sum. `ends` is the step each ATM expiry lands on. A SEED -
+        the bootstrap then matches the model's own ATM price per segment - so it lives beside its
+        one caller rather than in `utils`.
         """
         lam, nu = float(scalars['Lambda']), float(scalars['Nu'])
         jump = lam * (mu_j ** 2 + sigma_j ** 2)
@@ -2538,46 +2539,48 @@ class LVFit(object):
         phi = {x: np.exp(-float(scalars['Kappa_' + x]) * delta) for x in ('S', 'L')}
         weight = {x: sigma[x] ** 2 * (1.0 - phi[x] ** 2) / (2.0 * float(scalars['Kappa_' + x]))
                   for x in ('S', 'L')}
-        var, compound, levels, k = {'S': 0.0, 'L': 0.0}, 0.0, [], 0
-        for step in range(max(ends) + 1):
-            if step in ends:
-                levels.append(np.log(diffusive[k]) - 0.5 * (var['S'] + var['L']) - compound)
-                k += 1
+        var, compound, levels, jensen, k = {'S': 0.0, 'L': 0.0}, 0.0, [], [], 0
+        for step in range(ends[-1]):
+            jensen.append(0.5 * (var['S'] + var['L']) + compound)
             compound += lam * delta * (np.exp(nu * phi['S'] ** step) - 1.0)
             var = {x: phi[x] ** 2 * var[x] + weight[x] for x in ('S', 'L')}
+            if step + 1 == ends[k]:
+                levels.append(np.log(diffusive[k]) - np.log(np.mean(np.exp(jensen))))
+                jensen, k = [], k + 1
         return np.array(levels)
 
     def l_knots(self, levels):
-        """The L curve as it is WRITTEN, off the pillar levels solved so far.
+        """The L curve as it is WRITTEN, off the segment levels solved so far: one level per
+        SEGMENT on knots that START it - tenor 0, then every ATM expiry but the last - and flat
+        beyond (spec 5.4.3). `L(0)` is the first segment's level.
 
-        `L(0)` is TIED to the first pillar (spec 5.4.3): no option separates them, and a free phase
-        there reprices nothing. An `Event_Days` date carries its own KNOT PAIR - the day's own
-        level, `Event_Variance_Prior` above the smooth curve there - so the variance on the event
-        day is one number and the pillar straddling it re-solves around it (5.4.3).
+        An `Event_Days` date carries its own KNOT PAIR, a one-day segment at
+        `Event_Variance_Prior` times the enclosing segment's level and that level again after it,
+        so the variance on the event day is one number.
         """
-        pillars = torch.stack(levels[:1] + list(levels))
+        pillars = torch.stack(list(levels))
         knots = self.knots[:pillars.numel()]
         if not self.event_times.size:
             return knots, pillars
-        extra = utils.curve_at(knots, pillars, self.vector(self.event_times)) + self.event_log
+        extra = utils.bucket_at(knots, pillars, self.vector(self.event_times)) + self.event_log
         merged = np.concatenate([knots, self.event_times])
         order = np.argsort(merged, kind='stable')
         return merged[order], torch.cat([pillars, extra])[order.tolist()]
 
     def l_at(self, levels):
         """`L` at the walk's grid times."""
-        return utils.curve_at(*self.l_knots(levels), t=self.times)
+        return utils.bucket_at(*self.l_knots(levels), t=self.times)
 
     def solve_l(self, scalars, levers):
-        """The inner triangular bootstrap, RE-RUN AT EVERY OUTER ITERATE: the L pillars solved one
+        """The inner triangular bootstrap, RE-RUN AT EVERY OUTER ITERATE: the L SEGMENTS solved one
         at a time against their own ATM premium, so every candidate reprices the ATM term structure
         exactly and is judged on the smile alone (spec 5.4.2).
 
-        Triangular because the model is - an option to `T_k` reads `L` only on `[0, T_k]` - and
-        the premium is monotone in the pillar's own level, so the root is unique and the search is
-        a CHORD off the previous sweep's slope, warm started at the previous sweep's answer and run
-        to `Pillar_Tolerance` OFF THE TAPE. A stale chord that misses gets one refreshed slope,
-        which is the whole of the fallback.
+        Triangular because the model is - an option to `T_k` reads `L` only on `[0, T_k]`, and
+        segment k's level nowhere before `T_{k-1}` - and the premium is monotone in that level, so
+        the root is unique and the search is a CHORD off the previous sweep's slope, warm started
+        at the previous sweep's answer and run to `Pillar_Tolerance` OFF THE TAPE. A stale chord
+        that misses gets one refreshed slope, which is the whole of the fallback.
 
         The level RETURNED is one NEWTON STEP at that root, `L_k* - F_k/detach(dF_k/dL_k)`, off the
         one graph pass a pillar costs - so `dL_k/dtheta`, `dL_k/dL_j` down the triangle and
@@ -2982,7 +2985,7 @@ class LVFit(object):
 
     def written(self):
         """The `LogVar2FJModelParameters` price factor: the scalars, the structural ones the kit
-        reads, and the five curves, `L` on its pillars and the four levers on their buckets. The L
+        reads, and the five curves, `L` on its segments and the four levers on their buckets. The L
         strip is the ONE `finish` banked, so the factor and `connect`'s tensors are one solve."""
         knots, values = self.l_knots(self.levels)
         values = values.detach()
@@ -3100,11 +3103,13 @@ class LVFit(object):
             self.market_price, self.mode, ', '.join(
                 '{} {:.6g}'.format(name, self.state[name])
                 for name in utils.LV_PARAM_NAMES + utils.LV_STRUCTURAL_NAMES)))
-        logging.info('  L pillars, annualised DIFFUSIVE vol beside the market\'s own forward '
-                     'variance strip: {}'.format(', '.join(
-                         '{:g}y {:.2%} against {:.2%}'.format(
-                             k, float(np.sqrt(np.exp(float(v.detach())))), np.sqrt(max(x, 0.0)))
-                         for k, v, x in zip(self.knots[1:], self.levels, self.xi))))
+        logging.info('  L segments, annualised DIFFUSIVE vol beside the market\'s own forward '
+                     'variance strip on the SAME segments: {}'.format(', '.join(
+                         '{:g}-{:g}y {:.2%} against {:.2%}'.format(
+                             lo, hi, float(np.sqrt(np.exp(float(v.detach())))),
+                             np.sqrt(max(x, 0.0)))
+                         for lo, hi, v, x in zip(self.knots[:-1], self.knots[1:], self.levels,
+                                                 self.xi))))
         for name in utils.LV_BUCKET_NAMES:
             logging.info('  {}: {}'.format(name, ', '.join(
                 '{:g}y {:+.4f}{}'.format(t, v, '' if not self.free else ' ({})'.format(
@@ -3221,12 +3226,14 @@ class LogVar2FJModelParameters(HestonNandiModelParameters):
          '',
          'THE FIT IS TWO NESTED SOLVES, and the inner one runs at EVERY outer iterate.',
          '',
-         '1. THE INNER TRIANGULAR BOOTSTRAP. Given candidate shape parameters the $L$ pillars are',
-         'solved SEQUENTIALLY, each against its own ATM expiry premium. An option to $T$ never',
-         'reads $L$ beyond $T$, so the system is exactly triangular, and the premium is monotone in',
-         'the pillar level, so a damped Newton off the previous sweep converges in a step or two',
-         'and is iterated to *Pillar_Tolerance*. $L(0)$ is TIED to the first pillar (5.4.3): no',
-         'option separates them.',
+         '1. THE INNER TRIANGULAR BOOTSTRAP. $L$ is PIECEWISE CONSTANT on the segments between ATM',
+         'expiries - flat forward variance, the shape var-swap strips are quoted in (5.4.3) - and',
+         'given candidate shape parameters its levels are solved SEQUENTIALLY, one per segment',
+         'against that segment own ATM expiry premium. A segment integral depends on nothing but',
+         'its own level, so no recurrence runs along the strip; an option to $T$ never reads $L$',
+         'beyond $T$, so the system is exactly triangular; and the premium is monotone in the',
+         'level, so a damped Newton off the previous sweep converges in a step or two and is',
+         'iterated to *Pillar_Tolerance*. $L(0)$ is the first segment level.',
          '2. THE OUTER FIT concentrates $L$ out - the ATM ladder is a CONSTRAINT and not a term, so',
          'no smile improvement may pay for an ATM miss - plus the soft constraints of 5.2 and, in',
          '`Global` mode with a forward source, the forward-smile block of 5.3.',
@@ -3286,7 +3293,7 @@ class LogVar2FJModelParameters(HestonNandiModelParameters):
          'so, which is what leaves the quote contraction at the point it was taken.',
          '',
          'WHAT THE FIT REPORTS. The vol-point miss per maturity and over the surface, unweighted',
-         'and vega-weighted; the wing and convexity residuals; the pillar levels beside the market',
+         'and vega-weighted; the wing and convexity residuals; the segment levels beside the market',
          'own forward-variance strip; per bucket the parameters and which were free; the jump share',
          'asked and the one REALISED; the leverage products and $c$; the stationary log-vol sd; the',
          'cap headroom; the stickiness ratios $\\psi(T_1,\\Delta)$ model beside target; and THE',
@@ -3341,7 +3348,7 @@ class LogVar2FJModelParameters(HestonNandiModelParameters):
                       'them, so this sets the noise floor under every fitted number rather than a '
                       'confidence interval around it: at the default, re-running a 34-quote fit at '
                       'three seeds moves the ATM term structure by 0.1 to 0.6 vol points and an L '
-                      'pillar by up to 2.6'),
+                      'level by up to 2.6'),
         F('Random_Seed', 'Integer', default=1,
           description='Seeds the fixed draws. Re-running at another seed is the honest way to '
                       'read how much of a parameter is the surface and how much is the sample'),
@@ -3404,14 +3411,14 @@ class LogVar2FJModelParameters(HestonNandiModelParameters):
                       'horizons: a spot smile at T never sees a bucket later than T. IGNORED under '
                       'Fit_Mode Bootstrap, where the ladder\'s wing expiries are the buckets'),
         F('Event_Days', 'Text', default='',
-          description='Optional comma-separated dates carrying their own DAILY knot pair in L, so '
-                      'the variance on the event day is one number and the ATM pillar straddling '
-                      'it re-solves around it (spec 5.4.3). For short-dated FX this single lever '
+          description='Optional comma-separated dates each carrying a ONE-DAY L segment, so the '
+                      'variance on the event day is one number and the ATM pillar straddling it '
+                      're-solves around it (spec 5.4.3). For short-dated FX this single lever '
                       'outweighs any smile parameter'),
         F('Event_Variance_Prior', 'Float', default=1.0,
           description='The multiplier an event day\'s own diffusive variance carries over the '
-                      'smooth curve there. 1.0 is OFF; 3.0 says the day carries three ordinary '
-                      'days of variance and the pillar around it gives that back'),
+                      'segment enclosing it. 1.0 is OFF; 3.0 says the day carries three ordinary '
+                      'days of variance and the segment around it gives that back'),
         F('Forward_Smile_Source', 'Text', default='None',
           values=['None', 'Quotes', 'Reference', 'Prior'],
           description='Where spec 5.3\'s forward-skew target comes from, and therefore which '
@@ -3468,7 +3475,7 @@ class LogVar2FJModelParameters(HestonNandiModelParameters):
           description='Convergence tolerance (scipy\'s ftol) on each stage\'s weighted vol-space '
                       'residual'),
         F('Pillar_Tolerance', 'Float', default=1e-10,
-          description='The relative ATM miss each L pillar\'s own Newton solve stops at, at EVERY '
+          description='The relative ATM miss each L segment\'s own Newton solve stops at, at EVERY '
                       'outer iterate. It is what makes the objective a function of x alone rather '
                       'than of the sweep it warm-started from, so it wants to sit well under '
                       'Tolerance; every step below that costs one prefix walk'),
@@ -3764,21 +3771,23 @@ class LogVar2FJModelParameters(HestonNandiModelParameters):
         return rows
 
     def event_knots(self, fit, sys_params):
-        """`Event_Days` as a KNOT PAIR each, one INTERNAL STEP wide - a day at the default
-        delta (spec 5.4.3). The day's own level sits `Event_Variance_Prior` above the smooth curve
-        there, so the variance on the event day is one number and the ATM pillar straddling it
-        gives that variance back over the days around it; a date with no straddling expiry carries
-        the prior alone."""
+        """`Event_Days` as a one-INTERNAL-STEP SEGMENT each - a day at the default delta (spec
+        5.4.3) - carrying `Event_Variance_Prior` times the enclosing segment's level, the knot
+        after it restoring that level. So the variance on the event day is one number and the ATM
+        pillar straddling it gives that variance back over the days around it; a date with no
+        straddling expiry carries the prior alone."""
         days = [x.strip() for x in str(fit.instrument['Event_Days']).split(',') if x.strip()]
         prior = float(fit.instrument['Event_Variance_Prior'])
         base, discount = sys_params['Base_Date'], fit.factors['Discount_Rate']
-        times = []
+        marks = {}
         for day in days:
             t = discount.get_day_count_accrual(base, (pd.Timestamp(day) - base).days)
-            times += [t, t + fit.delta]
-        keep = [t for t in times if t > 0.0 and np.min(np.abs(fit.knots - t)) > utils.BUCKET_TOL]
-        fit.event_times = np.array(sorted(set(keep)))
-        fit.event_log = self.tensor(np.log(prior)).expand(fit.event_times.size)
+            marks.setdefault(t + fit.delta, 0.0)                  # the restore, unless a day is
+            marks[t] = np.log(prior)                              # already bumped there
+        keep = sorted(t for t in marks
+                      if t > 0.0 and np.min(np.abs(fit.knots - t)) > utils.BUCKET_TOL)
+        fit.event_times = np.array(keep)
+        fit.event_log = self.vector([marks[t] for t in keep])
         if days:
             logging.info('  {} event day{} carrying {:g}x the diffusive variance of the day '
                          'around them, as {} extra L knots'.format(
@@ -3814,14 +3823,14 @@ class LogVar2FJModelParameters(HestonNandiModelParameters):
             fit.state.update({name: utils.bucket_at(
                 previous[name].array[:, 0], self.vector(previous[name].array[:, 1]),
                 self.vector(fit.buckets)).tolist() for name in utils.LV_BUCKET_NAMES})
-            levels = list(utils.curve_at(previous['L_Curve'].array[:, 0],
-                                         self.vector(previous['L_Curve'].array[:, 1]),
-                                         self.vector(fit.knots[1:])))
+            levels = list(utils.bucket_at(previous['L_Curve'].array[:, 0],
+                                          self.vector(previous['L_Curve'].array[:, 1]),
+                                          self.vector(fit.knots[:-1])))
         if levels is None:
             levels = [self.tensor(x) for x in LVFit.seed_curve(
                 fit.xi, fit.state, fit.state['Mu_J'][0], fit.state['Sigma_J'][0],
                 fit.state['Sigma_S'][0], fit.delta,
-                {int(fit.upto[quote.j]) for quote in fit.atm})]
+                [int(fit.upto[quote.j]) for quote in fit.atm])]
         fit.levels, fit.warm = list(levels), list(levels)
         fit.slopes = [None] * len(levels)
         fit.draws = fit.counted()

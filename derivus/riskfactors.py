@@ -1215,6 +1215,11 @@ class LogVar2FJModelParameters(CurveModelParameters):
     $\\nu$. Given the shocks and the counts a block return is exactly Gaussian, which is the whole
     of the pricing (logvar2fj_spec.md).
 
+    **L_Curve** is piecewise CONSTANT on the segments its knots start - flat forward variance, the
+    shape var-swap strips are quoted in - so each segment's ATM increment pins its own level and no
+    recurrence runs along the strip; the OU recursion is a deviation from $L$, so the step at a
+    pillar costs nothing (spec 5.4.3).
+
     **Rho_S**, **Mu_J**, **Sigma_S** and **Sigma_J** are piecewise CONSTANT on calendar-time
     buckets: their knots ARE the buckets' start times in years, the four curves carry the same
     ones, and one knot at 0 is the constant-parameter model. A spot smile never sees a later bucket
@@ -1249,8 +1254,8 @@ class LogVar2FJModelParameters(CurveModelParameters):
           description='Floor on the idiosyncratic share $c(t)=1-\\rho_s(t)^2-\\rho_\\ell^2$, '
                       'asserted in every bucket at load - STRUCTURAL'),
         F('L_Curve', 'Curve', bind='value',
-          description='Log annualised DIFFUSIVE variance $L$ at knots in years, piecewise linear '
-                      'between them and flat outside'),
+          description='Log annualised DIFFUSIVE variance $L$, piecewise constant on the segment '
+                      'each knot (years) starts and flat beyond the last'),
         F('Rho_S', 'Curve', bind='value',
           description='Fast leverage $\\rho_s(t)$, piecewise constant on buckets starting at its '
                       'knots (years)'),
@@ -1273,9 +1278,9 @@ class LogVar2FJModelParameters(CurveModelParameters):
         flat = [c for c in self.curve_names if not isinstance(self.param[c], utils.Curve)]
         if flat:
             raise ValueError(
-                'LogVar2FJModelParameters: %s must be authored as CURVES - knots in years, and '
-                'for the four levers those knots ARE the calendar buckets. A bare number is not a '
-                'curve; [[0.0, x]] is the one-bucket model that reproduces it'
+                'LogVar2FJModelParameters: %s must be authored as CURVES - knots in years, which '
+                'START the segment or bucket each is constant on. A bare number is not a curve; '
+                '[[0.0, x]] is the one-bucket model that reproduces it'
                 % ', '.join(flat))
         knots = self.curve_tenors()
         odd = [c for c in utils.LV_BUCKET_NAMES if not np.array_equal(knots[c], knots['Rho_S'])]

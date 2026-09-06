@@ -2771,8 +2771,8 @@ BUCKET_TOL = 1.0e-9
 
 
 def bucket_at(knots, values, t):
-    """A bucketed parameter's value in force at times ``t`` in years: PIECEWISE CONSTANT, the last
-    knot at or before ``t`` (within ``BUCKET_TOL``) and the first value before the first knot.
+    """A bucketed curve's value in force at times ``t`` in years: PIECEWISE CONSTANT, the last knot
+    at or before ``t`` (within ``BUCKET_TOL``) and the first value before the first knot.
     ``knots`` is structural (numpy), ``values`` the differentiable leaf, and the answer carries
     ``t``'s shape."""
     k = torch.as_tensor(np.ascontiguousarray(knots, dtype=float),
@@ -3662,8 +3662,8 @@ LV_STRUCTURAL_NAMES = ('Lambda', 'Cap_A', 'Cap_Beta')
 LV_BUCKET_NAMES = ('Rho_S', 'Mu_J', 'Sigma_S', 'Sigma_J')
 
 #: The CURVE parameters, in the order the kit unpacks them. `L_Curve` is log annualised DIFFUSIVE
-#: variance at knots in years, piecewise linear between them and flat outside; all five carry
-#: structural knots and VALUES that are leaves.
+#: variance, piecewise CONSTANT on the segments its knots START (spec 5.4.3) as the four levers are
+#: on their buckets; all five carry structural knots and VALUES that are leaves.
 LV_CURVE_NAMES = ('L_Curve',) + LV_BUCKET_NAMES
 
 #: Jumps per internal step past which the inverse-CDF count truncates. At lam*delta ~ 0.006 the

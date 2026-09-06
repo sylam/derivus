@@ -400,11 +400,18 @@ the inherited `fx_surface_block` authors the FX one, asked here for **two delta 
 component family's four wing expiries, because a `Bootstrap` bucket frees one parameter per wing
 quote. What follows is what it MEASURED.
 
+**`L` is piecewise CONSTANT on the segments between ATM expiries** — flat forward variance, the shape
+var-swap strips are quoted in. A segment's integral depends on its own level alone, so the strip has
+no recurrence to zig-zag along, every ATM still reprices exactly (one level per segment, one ATM
+increment per segment, triangular and unique) and anything priced between pillars reads a quoted
+forward variance; the OU recursion is a deviation from `L`, so the step at a pillar costs nothing.
+`Event_Days` is then a one-day segment at `Event_Variance_Prior` times the level enclosing it.
+
 **The L strip is re-bootstrapped at EVERY outer iterate**, so every candidate reprices the ATM term
 structure exactly and is judged on the smile alone; the ATM misses the report prints are 1e-16 to
-1e-13 rather than the 1e-12 to 1e-9 a between-stage refit left. The level each pillar returns is one
+1e-13 rather than the 1e-12 to 1e-9 a between-stage refit left. The level each segment returns is one
 Newton step at its own root, so `dL/dθ` rides the tape and the outer solver keeps its exact Jacobian.
-What that costs is one graph pass per pillar per iterate: the search itself runs off the tape on the
+What that costs is one graph pass per segment per iterate: the search itself runs off the tape on the
 previous sweep's slope, and on the walk at 8192 paths over 504 daily steps a forward pass is 0.280 s
 against 0.756 s with its backward. The grid is the QUOTES' own, `Internal_Step_Days` trading days
 between block ends with a stub landing each block on its `T`: reading the same rung on the
@@ -460,17 +467,25 @@ the quote that frees it — on a sub-year ladder that is most of the ladder. It 
 read at many fixings, not the mode that fits a surface best, and the report says per bucket which
 parameters were free and which tied.
 
-!!! note "The fitted L strip is not the market's forward-variance strip, and that is unexplained"
-    Both modes reprice every ATM rung to 1e-14 through a curve that sits well under the market's own
-    strip and zig-zags across it — `Global` reads 9.08 / 7.98 / 9.44 / 8.35 / 10.79 / 9.21% against
-    9.85 / 10.08 / 10.58 / 11.04 / 12.04 / 12.75%, `Bootstrap` 9.04 / 7.60 / 9.10 / 7.49 / 9.48 /
-    8.28%. The jump and the two shocks make up the difference, so the ATM is right and the
-    decomposition is a choice the data did not pin. The component family's own L strip on the same
-    ladder rises across the ladder with two small reversals (9.93 / 9.81 / 11.01 / 10.54 / 12.12 /
-    12.70 / 13.26%), which is the same kind of finding as its `-1`-multiplier phase oscillation. The
-    CJOW fit does it too - 14.56 / 5.51 / 19.95 / 10.76 / 13.37% against a market strip of 15.97 /
-    12.73 / 15.71 / 19.77 / 17.52%. All of them are printed beside the market's by the harnesses and
-    banked; the tie is not touched.
+!!! note "The zig-zag was the parametrisation; the level that is left is the decomposition"
+    Both tables above were read on the **piecewise-linear** `L` this family carried until
+    2026-09-06, whose strip alternated across the market's — `Global` 9.08 / 7.98 / 9.44 / 8.35 /
+    10.79 / 9.21% against 9.85 / 10.08 / 10.58 / 11.04 / 12.04 / 12.75%, `Bootstrap` 9.04 / 7.60 /
+    9.10 / 7.49 / 9.48 / 8.28%, the CJOW fit 14.56 / 5.51 / 19.95 / 10.76 / 13.37% against 15.97 /
+    12.73 / 15.71 / 19.77 / 17.52%. That was the `−1` multiplier of a segment integral that reads
+    both ends. Flat segments removed it: the same CJOW surface at `Paths` 2048 reads **14.43 / 9.34
+    / 11.91 / 14.37 / 12.44%**, a diffusive share of the market's own strip of 0.90 / 0.73 / 0.76 /
+    0.73 / 0.71 where the linear one read 0.91 / 0.43 / **1.27** / 0.54 / 0.76 — it no longer
+    crosses one — and the strip's second difference, which IS the alternation, falls from 20.4 vol
+    points RMS to 5.1 at a vanilla RMSE of 0.931 against 1.020 (at a quarter of the paths). A
+    reduced USDZAR block (3 expiries, 15 quotes, `Paths` 2048) reads 9.11 / 8.75 / 8.82% where the
+    linear `L` read 9.11 / 8.38 / 9.23%, 0.42 vol points of second difference against 1.57, at an
+    unchanged wing RMSE (0.099 against 0.098). What remains is a LEVEL: the diffusive strip sits
+    under the market's total forward variance because the jump and the two leverage shocks carry
+    the rest, so the ATM is right and the split is a choice the data does not pin. The component
+    family's `L` is still piecewise-linear — `ω_t = L_{t+1} − ρL_t` differences it, so a step would
+    spike `ω` — and still carries its own phase (9.93 / 9.81 / 11.01 / 10.54 / 12.12 / 12.70 /
+    13.26% on the same ladder). The tables are not re-measured at their own path counts.
 
 **Risk in quote space.** `Quote_Sensitivity` **Yes** keeps the written parameters connected to the
 numbers quoted. The outer fit is a least-squares minimum, so its half is the Gauss-Newton contraction

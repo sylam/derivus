@@ -381,6 +381,39 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **The LogVar2FJ L curve is piecewise constant on the segments between ATM expiries** (2026-09-06,
+  spec 5.4.3, the owner's ruling). Matching segment integrals with a curve whose integral reads
+  both ends is a recurrence with multiplier -1, so the fitted strip alternated with a phase nothing
+  pinned: on CJOW it read 14.56 / 5.51 / 19.95 / 10.76 / 13.37 vol against the market's
+  forward-variance strip 15.97 / 12.73 / 15.71 / 19.77 / 17.52. Flat on each segment the integral
+  depends on that segment's own level alone, so the multiplier is zero, every ATM still reprices
+  exactly (one level per segment, one ATM increment per segment, triangular and unique) and
+  anything priced between pillars reads a quoted forward variance; the OU recursion is a deviation
+  from L, so the step at a pillar costs nothing. The same CJOW surface at `Paths` 2048 now reads
+  14.43 / 9.34 / 11.91 / 14.37 / 12.44 - a diffusive share of the market's strip of 0.90 / 0.73 /
+  0.76 / 0.73 / 0.71 where the linear one read 0.91 / 0.43 / **1.27** / 0.54 / 0.76 and crossed one
+  twice - the strip's second difference falling **20.4 -> 5.1** vol points RMS at a vanilla RMSE of
+  0.931 against 1.020 at four times the paths; a reduced USDZAR block reads 9.11 / 8.75 / 8.82
+  against 9.11 / 8.38 / 9.23, 0.42 against 1.57, at an unchanged wing RMSE (0.0988 / 0.0984).
+  `L_Curve`'s knots are the segment starts (tenor 0, then every ATM expiry but the last) and its
+  values the levels; `L(0)` is the first segment's level and the phase that tied it to the first
+  pillar is gone with the pillar; `Event_Days` is a one-day segment at `Event_Variance_Prior`
+  times the enclosing level, measured at exactly 3.000000x and restored to the bit; the 2.6 seed
+  maps each segment off its own forward-variance increment and is EXACT for the unconditional
+  mapping, since the OU deviation from L does not depend on L. The kit, the calibrator and the
+  pack read L with `bucket_at`, the levers' spelling; `curve_at` keeps its one remaining reader,
+  the component Heston-Nandi L, which must stay linear because omega differences it. Every
+  one-value-L document is hex-identical (`-0x1.a32dcde94c00ap+5`), the GBM limit unmoved
+  (1.90e-15, CVA hex-identical), and a document carrying a fitted multi-knot curve RE-MARKS: the
+  campaign's V2 autocall off B2's reduced-USDZAR fit moves **1.53%** in MTM (-14.7517 -> -14.5260)
+  and 0.41% in spot delta. What is left is the LEVEL: the diffusive strip sits at 0.71-0.90 of the
+  market's total forward variance and does not track its shape - the jump plus the two leverage
+  shocks, a decomposition the vanillas do not pin, not a phase. The two `Paths` 8192 tables in
+  `market_prices.md` are readings of the linear L until re-taken. Engine net +15 lines. PROOF
+  DOCUMENTS: `lv_hex.py`, `lv_trials.py limit`, `lv_deals.py hex` (14 keys unmoved),
+  `artifacts/logvar2fj/flat_l.py fit lane | fit b2 | cjow lvl2048 | remark b2 | remark b2:lane |
+  fit events`.
+
 - **LogVar2FJ on the autocall's averaging arm** (2026-09-06, spec 2.4.1) - a coupon whose decision
   reads the arithmetic average of a window of fixings is priced by SAMPLING THE WINDOW AND
   TRUNCATING THE PREFIX: the window's fixing-to-fixing blocks are ordinary blocks of the daily walk

@@ -632,9 +632,10 @@ class LogVar2FJKit(object):
         THE SCAN BLOCK-SUMS AS IT PASSES: `utils.lv_walk` accumulates each interval's ``M`` and
         ``Sigma^2`` inside its own loop, so no ``[batch, sims, n]`` tensor exists but the draws.
 
-        The four bucketed levers are read at the ABSOLUTE step-START times, as ``L`` is: the
-        buckets are calendar time from the base date, not time from this row. ``antithetic`` is
-        REQUIRED because the wrong value is a shape error at every consumer, never a quiet bias.
+        All five curves are PIECEWISE CONSTANT and read at ABSOLUTE times - ``L`` on the segments
+        between ATM expiries, the four levers on their calendar buckets - because both are calendar
+        time from the base date, not time from this row. ``antithetic`` is REQUIRED because the
+        wrong value is a shape error at every consumer, never a quiet bias.
         """
         steps = [max(int(round(float(dt) * self.steps_per_year / self.step_days)), 1)
                  for dt in deltas]
@@ -643,7 +644,7 @@ class LogVar2FJKit(object):
             torch.arange(len(steps), device=delta.device),
             torch.tensor(steps, dtype=torch.long, device=delta.device))
         t = float(row_t) + torch.cat([delta.new_zeros(1), delta.cumsum(0)])
-        curve = utils.curve_at(self.knots['L_Curve'], self.values['L_Curve'], t)
+        curve = utils.bucket_at(self.knots['L_Curve'], self.values['L_Curve'], t)
         params = dict(self.params, **{x: utils.bucket_at(self.knots[x], self.values[x], t[:-1])
                                       for x in utils.LV_BUCKET_NAMES})
         eta_l, eta_s, counts = self.draws(shared, num_sims, delta, antithetic)
