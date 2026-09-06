@@ -3705,7 +3705,7 @@ def lv_ou_step_weights(kappa, sigma, deltas):
     return phi, sigma * sqrt_or_zero((1.0 - phi * phi) / (2.0 * kappa))
 
 
-def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0):
+def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0, invert):
     """Walk both log-variance factors over ONE block and return its sums and the state it ends in.
 
     eta_l, eta_s, counts are [batch, sims, n] over the BLOCK's own steps, curve_at_grid is L at its
@@ -3713,6 +3713,11 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0):
     each step start and state0 = (l, s) is [batch, sims]. Returns (M, var, l, s): the block's
     return mean and variance, no carry term - the caller adds that - and the end state, which seeds
     the next block. The scan ACCUMULATES, so nothing of shape [batch, sims, n] but the draws exists.
+
+    `invert` is the S-NUMERAIRE measure, for a deal paying on 1/S (`HN_Invert`): the step's density
+    exp(R_k - b_k delta_k) is one in expectation and factorises over its own draws, so
+    eta_l ~ N(rho_l sq, 1), eta_s ~ N(rho_s sq, 1), N ~ Poisson(lambda delta exp(mu_J + sigma_J^2/2))
+    (the caller's) and eps ~ N(sqrt(var), 1) - a block law of (M + var, var), negated by the caller.
     """
     rl, nu = params['Rho_L'], params['Nu']
     a, beta = params['Cap_A'], params['Cap_Beta']
@@ -3733,12 +3738,15 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0):
         rs_k, mu_k = rs[..., k], mu[..., k]
         V = deltas[k] * torch.exp(lv_cap(l + s, a, beta))
         sq = sqrt_or_zero(V)
+        e_l, e_s = eta_l[..., k], eta_s[..., k]
+        if invert:
+            # each shock's own loading, so the shift feeds the variance path as it feeds the
+            # return; conditional rather than a multiply by zero, so `invert` off is bit-identical
+            e_l, e_s = e_l + rl * sq, e_s + rs_k * sq
         var = var + ((1.0 - rs_k * rs_k - rl * rl) * V + Nk * sj2[..., k])
-        M = M + (-0.5 * V + rl * sq * eta_l[..., k] + rs_k * sq * eta_s[..., k]
-                 + Nk * mu_k - comp[..., k])
-        s = phi_s[..., k] * s + w_s[..., k] * eta_s[..., k] + nu * Nk
-        l = (curve_at_grid[k + 1] + phi_l[..., k] * (l - curve_at_grid[k])
-             + w_l[..., k] * eta_l[..., k])
+        M = M + (-0.5 * V + rl * sq * e_l + rs_k * sq * e_s + Nk * mu_k - comp[..., k])
+        s = phi_s[..., k] * s + w_s[..., k] * e_s + nu * Nk
+        l = curve_at_grid[k + 1] + phi_l[..., k] * (l - curve_at_grid[k]) + w_l[..., k] * e_l
     return M, var, l, s
 
 

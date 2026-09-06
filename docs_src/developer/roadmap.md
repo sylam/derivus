@@ -258,10 +258,8 @@ owner's ruling on the strip that zig-zags 14.6 / 5.5 / 20.0 / 10.8 / 13.4 vol ag
 16.0 / 12.7 / 15.7 / 19.8 / 17.5 - a segment integral that depends on both ends is a recurrence with
 multiplier -1, a flat segment's depends on its own level alone); **the averaging arm** by 2.4.1
 (sample the window, truncate the prefix); **per-block checkpointing with regenerated draws** (§6)
-and the deletion of the step setting (§12: the day is the model); **the reciprocal axis** (§2.8:
-mean shifts on the two shocks inside the step, the counts at `lambda exp(mu_J + sigma_J^2/2)`, the
-block law `-(M + Sigma^2)`), without which `spot_model_reciprocal_axis` refuses the family on a
-base-currency notional and the desk pin cannot move. Not yet cut: the **density recursion** (one
+and the deletion of the step setting (§12: the day is the model); **the reciprocal axis** (§2.8),
+all four now Built above. Not yet cut: the **density recursion** (one
 FFT convolution per monitored date against the block Gaussian, as an alternative inner estimator)
 and the **xVA outer generator carrying `(S, l, s)`** (phase 3), which retires the per-row re-seed
 phase 1 declares - the kit seeds `l = L(t_row)`, `s = 0` at every MTM row, of the same class as the
@@ -394,6 +392,40 @@ with the mock-built suite and has no replacement; batching Schrager–Pelsser ac
 set; and five model items in the punchlist below.
 
 ## Built
+
+- **LogVar2FJ on the reciprocal axis** (2026-09-06, spec §2.8, `HN_Invert`'s analogue) - the carry
+  is a measure change inside the walk, not a parameter map. Under the `S`-numeraire the step's
+  density `exp(R_k - b_k delta_k)` is one in expectation and factorises over its own draws, so the
+  two shocks take their mean shifts INSIDE the step (`eta_l ~ N(rho_l sqrt(V), 1)`,
+  `eta_s ~ N(rho_s sqrt(V), 1)` - the leverage feeding back into the variance path as `1 - gamma*`
+  does for Heston-Nandi), the counts arrive at `lambda delta exp(mu_J + sigma_J^2/2)` (the kit's
+  `draws` converts the uniforms at the tilted intensity, the inverse-CDF spelling unchanged), and
+  the block law handed back is `-(M + Sigma^2)` at the deal's own carry - `utils.lv_walk` takes
+  `invert` as a REQUIRED positional, since a wrong value there is a quiet bias and not a shape
+  error. `spot_model_reciprocal_axis` is an ALLOW-LIST the family joins (`'HestonNandi',
+  'LogVar2FJ'`; the component family still refuses by name), and the plain family's own carry
+  moved out of `reciprocal_spot_scalars` (deleted) into `PlainHestonNandiKit.__init__` so
+  `oss_model_kit` has one spelling of invert - its three reciprocal documents hex-identical
+  across the move. MEASURED: a strip of forwards on `1/S` reads its own market forward to
+  **-2.3e-05** against the direct axis' +2.4e-05 at 2^18 paths; the GBM limit on the reciprocal
+  lands at **4 ulp** (-7.8e-16); one accumulator solved from both orientations off the banked
+  USDZAR fit reads a mean gap of -1.0e-4 / +2.2e-4 / -1.2e-4 / **-4.2e-05** at 4k / 16k / 65k /
+  262k paths, sign-changing and inside the same-side seed spread at every rung (6.1e-4 down to
+  1.3e-4). UNCARRIED it is a bias, measured on a mutant that walks the fitted law and reads `1/s`
+  off it: the forward strip +4.1e-3 (the Siegel drift), the two orientations **+3.7e-3** at every
+  count beside plain Heston-Nandi's own 3.4e-3, and the reciprocal GBM limit **16% wrong**, which
+  pins the `+Sigma^2` factor on its own. Every non-inverted document is hex-identical (`lv_hex`
+  `-0x1.aad8d5d75f8c9p+5`, `lv_deals` 14 keys, `tarf_hex`, `hn_hex`), the calibrator's fifteen
+  fitted leaves hex-identical on a 2,048-path fit (it walks the `FxRate`'s own axis), the TARF's
+  second side still refuses by name, and one inverted document prices under the credit MC at
+  256 x 2,048 with the gradient on (CVA 0.2167, seven finite rows). OPEN: on the reciprocal axis
+  `dV/dMu_J` and `dV/dSigma_J` lose the term through the tilted count law (integer counts carry
+  no graph) - a gap the direct axis does not have, unmeasured (a CRN ladder on `Mu_J` of an
+  inverted document sizes it); the banked FX fits carry no slow factor (`Sigma_L = Rho_L = 0`),
+  so the `rho_l` shift is exercised only on authored parameters. Net +17 lines. PROOF DOCUMENTS:
+  `lv_hex.py`, `lv_deals.py hex`, `tarf_hex.py`, `lv_phase1/hn_hex.py`,
+  `artifacts/lv_reciprocal_20260906/lvinv.py hnrecip | limit | forward | orient | refuse | cmc`,
+  `logvar2fj/fit_doc.py fit_lvl2048.json` on both trees.
 
 - **The FX gate: LogVar2FJ beside plain Heston-Nandi on the desk's own products** (2026-09-06,
   `artifacts/fx_gate/`, CPU, both engines stamped in `engine_stamp.json`). On the banked USDZAR

@@ -182,6 +182,11 @@ class PlainHestonNandiKit(object):
 
     The math stays in `utils` as free functions taking the recursion parameters as explicit trailing
     args; the kit owns the name->args unpack and the state, which is opaque to the pricer.
+
+    ``HN_Invert`` carries the law to the RECIPROCAL axis, which is a change of numeraire as well as
+    of axis: an FX deal whose `Underlying_Currency` IS the base pays on ``1/s`` and settles in the
+    other currency, and this family transports there exactly at the cost of one parameter
+    (`utils.hn_reciprocal_gamma`), which is why nothing else in a pricer knows about the axis.
     """
 
     #: `param_names` and `curve_names` are what `oss_model_scalars` reads off the parameter factor
@@ -195,6 +200,8 @@ class PlainHestonNandiKit(object):
 
     def __init__(self, scalars, knots, factor_dep):
         *self.params, self.h0 = scalars          # (omega, alpha, beta, gamma_star), H0
+        if factor_dep.get('HN_Invert'):
+            self.params[3] = utils.hn_reciprocal_gamma(self.params[3])
 
     def seed(self):
         return (self.h0,)
@@ -593,6 +600,9 @@ class LogVar2FJKit(object):
     shocks and counts the whole interval's return is exactly Gaussian (spec 1.2). So the pricer's
     GBM arithmetic serves this model verbatim: ``p`` is one Phi, the continuing draw one Phi^-1 and
     the put leg's fired branch `lognormal_fired_gain` at this ``(M, Sigma)``.
+
+    ``HN_Invert`` carries the law to the reciprocal axis as a MEASURE CHANGE inside the walk
+    (`utils.lv_walk`), where the plain family carries it as one parameter.
     """
 
     param_names = utils.LV_PARAM_NAMES
@@ -607,10 +617,11 @@ class LogVar2FJKit(object):
                            **{x: float(structural[x]) for x in utils.LV_STRUCTURAL_NAMES})
         self.knots, self.values = knots, dict(zip(self.curve_names, scalars[n:]))
         self.steps_per_year = float(factor_dep['HN_Steps_Per_Year'])
+        self.invert = bool(factor_dep.get('HN_Invert'))
 
-    def draws(self, key, shape, deltas, antithetic):
-        """One SEGMENT's two normals and its jump counts, over ``[batch, sims, n]`` and IN FLOAT32,
-        from a generator seeded by that segment's own key.
+    def draws(self, key, shape, lam, deltas, antithetic):
+        """One SEGMENT's two normals and its jump counts at intensity ``lam``, over
+        ``[batch, sims, n]`` and IN FLOAT32, from a generator seeded by that segment's own key.
 
         REGENERATED, NEVER STORED: the checkpoint's backward re-draws them where a stored tape
         would have held them, so no tensor of the whole grid's shape exists at any point. The key
@@ -624,12 +635,19 @@ class LogVar2FJKit(object):
         u = torch.rand(shape, **kw)
         if antithetic:
             z, u = torch.cat([z, -z], dim=-2), torch.cat([u, 1.0 - u], dim=-2)
-        return z[0], z[1], utils.lv_counts(u, self.params['Lambda'], deltas)
+        return z[0], z[1], utils.lv_counts(u, lam, deltas)
 
     def segment(self, key, shape, antithetic, params, curve, deltas, l, s):
-        """One checkpointed segment of the walk: its own draws, then `utils.lv_walk` over them."""
-        eta_l, eta_s, counts = self.draws(key, shape + [int(deltas.shape[0])], deltas, antithetic)
-        return utils.lv_walk(params, curve, deltas, eta_l, eta_s, counts, (l, s))
+        """One checkpointed segment of the walk: its own draws, then `utils.lv_walk` over them.
+
+        Under ``invert`` the counts are the ESSCHER-TILTED ones - the measure change's third
+        factor, the two shocks' being shifts inside the step."""
+        lam = self.params['Lambda']
+        if self.invert:
+            lam = lam * torch.exp(params['Mu_J'] + 0.5 * params['Sigma_J'] * params['Sigma_J'])
+        eta_l, eta_s, counts = self.draws(
+            key, shape + [int(deltas.shape[0])], lam, deltas, antithetic)
+        return utils.lv_walk(params, curve, deltas, eta_l, eta_s, counts, (l, s), self.invert)
 
     def blocks(self, row_t, deltas, carry, shared, num_sims, antithetic):
         """Every remaining fixing interval's block law, ``(M, Sigma)`` of shape [batch, sims] each.
@@ -649,6 +667,9 @@ class LogVar2FJKit(object):
         between ATM expiries, the four levers on their calendar buckets - because both are calendar
         time from the base date, not time from this row. ``antithetic`` is REQUIRED because the
         wrong value is a shape error at every consumer, never a quiet bias.
+
+        ``carry`` is the DEAL's own either way - on the reciprocal axis the walk is the only thing
+        that changes measure, and the law it hands back is already the one for ``1/S``.
         """
         steps = [max(int(round(float(dt) * self.steps_per_year)), 1) for dt in deltas]
         delta = torch.cat([(dt / n).expand(n) for dt, n in zip(deltas, steps)])
@@ -672,7 +693,9 @@ class LogVar2FJKit(object):
                     curve[a:b + 1], delta[a:b], l, s,
                     use_reentrant=False, preserve_rng_state=False)
                 m, v, j = m + dm, v + dv, j + 1
-            M.append(m)
+            # the reciprocal's log-return is -R, and R is (M + Sigma^2, Sigma) under the walked
+            # measure; its carry is the deal's own, added below with the direct axis'
+            M.append(-(m + v) if self.invert else m)
             var.append(v)
             k += n
         return (torch.stack(M, -1) + (carry * deltas.reshape(-1, 1)).T.unsqueeze(1),
@@ -703,18 +726,6 @@ OSS_SPOT_MODEL_KITS = {'HestonNandi': PlainHestonNandiKit,
                        'LogVar2FJ': LogVar2FJKit}
 
 
-def reciprocal_spot_scalars(scalars):
-    """The plain HN parameters carried to the reciprocal axis (`HN_Invert`).
-
-    An FX deal whose `Underlying_Currency` IS the base pays on `1/s` and settles in the other
-    currency, so the payoff is valued under that currency's numeraire. The change is exact and costs
-    one parameter (`utils.hn_reciprocal_gamma`), which is why nothing else in a pricer knows about
-    the axis.
-    """
-    omega, alpha, beta, gamma_star, h0 = scalars
-    return omega, alpha, beta, utils.hn_reciprocal_gamma(gamma_star), h0
-
-
 def oss_model_scalars(factor_dep, shared):
     """The declared spot model's parameter tensors, in the order its own kit unpacks them.
 
@@ -738,15 +749,13 @@ def oss_model_kit(factor_dep, scalars):
     `scalars` cross the bound/theta split - `InnerMCRecompute` needs every tensor an explicit
     argument - while the model name and every curve's knots are compile-time facts on `factor_dep`.
     An empty `scalars` is a GBM deal and answers None. `HN_Invert` carries the law to the deal's own
-    axis (`reciprocal_spot_scalars`); the compile has already refused any family that cannot go
-    there.
+    axis and is the KIT's own - one parameter for the plain family, a measure change inside the walk
+    for LogVar2FJ - and the compile has already refused any family that cannot go there.
     """
     if not scalars:
         return None
     code = factor_dep['HN_Params'][0]
     kit = OSS_SPOT_MODEL_KITS[code[utils.FACTOR_INDEX_SubType]]
-    if factor_dep.get('HN_Invert'):
-        scalars = reciprocal_spot_scalars(scalars)
     knots = code[utils.FACTOR_INDEX_Tenor_Index]
     return kit(scalars, {c: knots[c] for c in kit.curve_names}, factor_dep)
 
@@ -3965,7 +3974,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     (F4) ``h`` re-seeds to ``H0`` at every MTM row - there is no outer-grid variance term structure.
     Absent the HN scalars the GBM path is byte-identical. RECOMPUTE: the vol strip is built at the
     call site and the simulation RETURNS its settled cashflows and registrations. THE RECIPROCAL
-    AXIS (``HN_Invert``) is one parameter in ``reciprocal_spot_scalars``; nothing here knows of it.
+    AXIS (``HN_Invert``) is the declared kit's own; nothing here knows of it.
 
     BOUNDARY AAD registers two decisions taken on simulated state: the target FILLING (LATCHED, a
     later block's accrual being only ever larger) and the OTM leg KNOCKING IN (per inner path). The

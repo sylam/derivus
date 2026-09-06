@@ -573,28 +573,27 @@ def spot_model_reciprocal_axis(spot_model, underlying, currency, base, reference
 
     An `FxRate` is a currency priced in the BASE, so a deal whose underlying IS the base pays on
     `1/s` and settles in the other currency. The plain family transports to that numeraire exactly,
-    at the cost of one parameter (`utils.hn_reciprocal_gamma`); the COMPONENT family does not - the
-    change puts a state-dependent term in its long-run intercept and leaves the family - and
-    LogVar2FJ's own carry, a mean shift on the shocks with a tilt of the jump law, is not built.
+    at the cost of one parameter (`utils.hn_reciprocal_gamma`), and LogVar2FJ as a measure change
+    inside its walk (`utils.lv_walk`); the COMPONENT family does not - the change puts a
+    state-dependent term in its long-run intercept and leaves the family.
 
-    Compared on `check_rate_name` tuples, the same spelling-blind test `utils.spot_model_currency`
-    makes, or a mixed call misses the inversion and prices the fit on the wrong axis.
+    An ALLOW-LIST, so a family added without a carry refuses rather than pricing a fit on the
+    wrong axis. Compared on `check_rate_name` tuples, the same spelling-blind test
+    `utils.spot_model_currency` makes, or a mixed call misses the inversion.
     """
     if utils.check_rate_name(underlying) != utils.check_rate_name(base):
         return False
-    if spot_model != 'HestonNandi':
-        why = ('the change of numeraire puts a state-dependent term in its long-run intercept'
-               if spot_model == 'HestonNandiComponent' else
-               'its carry, a mean shift on the shocks with a tilt of the jump law, is not built')
+    if spot_model not in ('HestonNandi', 'LogVar2FJ'):
         raise utils.UnpriceableSchedule(
             '{0}: SpotModel={1!r} on a deal whose Underlying_Currency {2} IS the book\'s base '
             'currency. The fit describes {3} - an FxRate is priced in the base, so the base leg '
-            'has no law of its own - and this deal pays on its reciprocal, settled in {3}. The '
-            'plain family carries to that numeraire exactly (one parameter, '
-            "utils.hn_reciprocal_gamma); {1} does not, because {4}. Declare SpotModel: "
-            "'HestonNandi', or quote the pair the other way up so the deal is written on {3} and "
-            'no axis is crossed'.format(
-                reference, spot_model, '.'.join(underlying), '.'.join(currency), why))
+            'has no law of its own - and this deal pays on its reciprocal, settled in {3}. '
+            'HestonNandi carries to that numeraire with one parameter '
+            '(utils.hn_reciprocal_gamma) and LogVar2FJ with a measure change inside its walk '
+            '(utils.lv_walk); {1} does not - the change puts a state-dependent term in its '
+            "long-run intercept. Declare one of those, or quote the pair the other way up so the "
+            'deal is written on {3} and no axis is crossed'.format(
+                reference, spot_model, '.'.join(underlying), '.'.join(currency)))
     return True
 
 

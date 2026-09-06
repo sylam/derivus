@@ -2387,7 +2387,8 @@ class LVFit(object):
         A maturity is then a prefix and a forward window the difference of two prefixes, so the
         whole quote set and the whole forward block cost one pass. The levers are read at the
         ABSOLUTE step-START times, as `L` is: the buckets are calendar time from the base date,
-        which is how `pricing.LogVar2FJKit` reads them.
+        which is how `pricing.LogVar2FJKit` reads them. The fit is on the FxRate's own axis, never
+        the reciprocal - one law per pair, carried at the deal.
         """
         params = dict(scalars, **{name: utils.bucket_at(self.buckets, levers[name], self.times[:n])
                                   for name in utils.LV_BUCKET_NAMES})
@@ -2398,7 +2399,7 @@ class LVFit(object):
             m, v, l, s = utils.lv_walk(
                 dict(params, **{x: params[x][a:b] for x in utils.LV_BUCKET_NAMES}),
                 curve[a:b + 1], self.deltas[a:b], eta_l[:, a:b], eta_s[:, a:b], counts[:, a:b],
-                (l, s))
+                (l, s), False)
             M.append(m)
             var.append(v)
             a = b
