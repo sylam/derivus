@@ -11,6 +11,20 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Open
 
+- **`HestonNandiComponentModelParameters` x the last `L_Curve` knot's gradient** - on the 2y SPX
+  autocall the AAD reports -15,474 on `L_Curve[last]` while the CRN ladder of the same document
+  reads exactly +0 at both rungs (2026-09-06, `artifacts/fx_gate/out_row45.json`; the campaign's
+  banked `out_greeks.json` reads the same). A knot no price reads carries a gradient, or a knot
+  every price reads carries a ladder that cannot see it; either is a wrong greek on the family the
+  autocall desk runs. Not measured further because the FX gate does not retire the family on it.
+- **A `torch.compile` failure SKIPS the deal** - the fused Heston-Nandi substep's CPU backend
+  raises `InvalidCxxCompiler` without MSVC on PATH, `Deal.calculate`'s guard swallows it, and the
+  run continues to a frame-shape error downstream (`Shape of passed values is (1, 1), indices imply
+  (37, 1)`). Should refuse by name at the compile, like every other unpriceable document.
+- **`structures` hard-codes the desk's spot-model family in three places** - `SPOT_MODEL`, the
+  presence check and the leg note: on a book carrying only a LogVar2FJ or component factor the
+  runner prices under the authored `Valuation Configuration` and its note still says "priced GBM -
+  looked up `HestonNandiModelParameters.ZAR`". The pin-flip lane's closed list.
 - **`hn_component_stride_invert`'s deep-tail bracket** — a target the strip cannot represent (past ~mean−5 sd the quadrature's error exceeds the probability asked; past mean−10 sd it loses monotonicity) has no bracket, the widening loop runs out, and the returned "root" is |x| of 10³–10⁵ — booked by `stride_advance` at ~1e-10 weight per path (396 paths below −100 at 2¹⁷; identical before and after the batched layer, so pre-existing). The convergence refusal now exempts these paths by the `beyond` mark, so they return as they always did rather than killing the valuation. The fix mirrors `stride_cdf`'s saturation — invert to the support edge, never beyond — and re-marks a default path, so it waits for the word. *Measured:* min draw −211,472 on both trees; zero open-and-never-widened stalls across 26 operating bands.
 - **`pv_partial_barrier_option` settlement completeness** — the rebate leg's per-decision `cash_events` are declared and audited off-gate (booked rows {1, 2}, declared {0, 1, 2}, support exact over 1024 paths) but no shipped gate forces completeness, for want of a collateralised partial-barrier document. The safety half is gated (`test_a_rebated_knock_out_registers_the_rebate_it_books_row_by_row`).
 - **`pricing.stochastic_boundary_correction` (`gates/boundary_bandwidth_plateau.py`)** — The bandwidth plateau holds and is carried, not closed: the 32768-path operating point became runnable when the Sobol chunking closed (2026-09-03) and the re-read there is pending. The declared `Boundary_AAD_Bandwidth` default 0.01 sits one rung inside the plateau's lower edge. The suppression seam is that same field at 1e-12, bit-identical to deleting the correction. *Measured:* At 16384 and 20480 paths the estimate holds over 0.005–0.08: seed-mean correction spread 2.41% (discrete barrier) / 3.87% (HN), reported CVA delta 0.60% / 0.24%, against seed floors 13.69% / 28.52%. No single seed sees it — per-seed spreads 12.7–23.1%, seeds disagreeing on the drift's sign, and the seed floor bounds part of the noise only because the Sobol stream is not derived from `Random_Seed`. Lower edge at 0.0025: 9–20% low, per-rung seed spread to 101% (kernel starvation). At 2048 paths the correction falls monotonically 23.76% and nothing holds still. Acceptance names 32768. Re-baselined onto the declared grid: the HN barrier gate is 1.18% against a 6.19% suppression mutant, and the discrete-barrier profile gate is a bit-exact rebate ledger.
@@ -380,6 +394,50 @@ with the mock-built suite and has no replacement; batching Schrager–Pelsser ac
 set; and five model items in the punchlist below.
 
 ## Built
+
+- **The FX gate: LogVar2FJ beside plain Heston-Nandi on the desk's own products** (2026-09-06,
+  `artifacts/fx_gate/`, CPU, both engines stamped in `engine_stamp.json`). On the banked USDZAR
+  world the model wins every row it is allowed to price and is blocked out of the one the desk
+  actually quotes. THE LADDER (22 contracts, `Paths` 8192, daily): `Global` fits the 16 wings at
+  **0.132** vol points against the plain family's 0.663 and the component family's worst wing
+  0.760 (CAPPED), `Bootstrap` 0.574, in 205 / 169 s against 513 / 93 s; the flat-L diffusive strip
+  reads 9.08 / 8.54 / 8.68 / 8.89 / 9.54 / 9.97% against the market's 9.85 / 10.08 / 10.58 / 11.04 /
+  12.04 / 12.75 - a share of 0.92 down to 0.78, monotone, where the linear strip alternated. THE
+  ACCUMULATOR solves to -0.309% of GBM against plain HN's -0.351% and the component's -0.308%, the
+  two orientations 4.0e-6 (GBM) and 7.6e-6 (HN) apart; **the USD-notional side and the TARF
+  ENTIRELY refuse by name**, `furnish_accrual` forcing the base-currency notional onto the
+  reciprocal of the fitted axis, which is spec 2.8 and the reason `structures.SPOT_MODEL` cannot
+  move until the reciprocal lane lands. FIRST ORDER on the accumulator: spot **0.084%** against
+  HN's 0.067% and the component's 0.010% on ladders flat to 0.2-0.3%, `Mu_J` 0.024%; no spot model
+  reports a vol-surface row (the model's parameters replace the surface; the quote-space row is
+  the vega). SECOND ORDER is LogVar2FJ's alone: gamma **0.32%** off the AAD delta's ladder under
+  `Branch_And_Weight`, where both Heston-Nandi families refuse the switch by name and the crisp
+  arm reads 73-88% off. CREDIT MC at 256 x 2,048 agrees across families (CVA 97.5 / 103.0 / 103.2
+  uncollateralised, 49.9 / 49.4 / 49.5 under the CSA) and no family's CVA spot delta is resolved
+  there - 10.6-12.6% against ladders 14.1-14.8% non-flat. QUOTE SPACE is the widest gap:
+  `Quote_Sensitivity` on the FX block publishes 22 `dV/dq` over a 0-dimensional null space at
+  `||J^T r||` 1.1e-8 with `Nu` and `Sigma_J[0y]` held by the KKT box; the 16 wing rows match the
+  node's contraction to the digit and the 6 ATM rows carry a SECOND route beside it - an ATM quote
+  moves the L strip directly through the per-iterate inner bootstrap's Newton splice, so the
+  total `dV/dq` (1y ATM -160,095) is the node's route (-56,455) plus `dV/dL . dL/dq` at fixed
+  theta, which is the whole derivative and not a disagreement; the plain family publishes **no
+  quote leaf**. THE 2y SPX AUTOCALL reads spot **0.502%** and rates 0.493% against the component
+  family's 2.26% and 3.43%, with gamma at 0.017% where the component refuses second order - but
+  its value is -32.80 (SE 0.251) against -31.89 (SE 0.088) at a `SE^2 x time` of 9.28e-02 against
+  1.31e-02, because the CJOW factors it prices off were fitted on the LINEAR L and now walk
+  alternating flat segments; a re-fit is what that row waits on. WHAT FAILS, named: the TARF under
+  LogVar2FJ (all of it, on §2.8 - the reciprocal lane), the accumulator's base-currency
+  orientation (same), the per-document clock on CPU (3.7x a quote, 7.3x a credit MC, 4.3-5.2x on
+  the autocall, against a 2x rule; the GPU reading is the checkpoint lane's 70 s at 2,048 x
+  2,048 and the rule is re-read there), and the autocall's efficiency until the CJOW re-fit. WHAT
+  PASSES: everything else. THE VERDICT: the retirement of neither family is licensed by this
+  reading; the desk pin moves once the reciprocal lane lands and the TARF and the USD-side
+  accumulator price under LogVar2FJ within MC error of their GBM limits. Found beside it, not
+  blocking: the structures runner's leg note says "priced GBM - looked up
+  `HestonNandiModelParameters.ZAR`" on a book carrying only another family's factor while the
+  deal priced under the authored pin (the family is hard-coded in three places); and
+  `torch.compile`'s CPU backend without MSVC on PATH raises inside the fused Heston-Nandi substep
+  and the deal is SKIPPED rather than refused (surfacing downstream as a frame-shape error).
 
 - **LogVar2FJ per-block checkpointing, and the day as the model** (2026-09-06, spec §6 and §12) -
   `utils.lv_walk` walks ONE block and returns `(M, var, l, s)`; `LogVar2FJKit.blocks` loops the
