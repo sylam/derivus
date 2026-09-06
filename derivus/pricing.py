@@ -13,7 +13,6 @@
 
 import logging
 import math
-from collections import namedtuple
 from functools import partial
 
 import numpy as np
@@ -36,8 +35,8 @@ BOUNDARY_MAX_AMPLIFICATION = 25.0
 The weights sum to one by construction, so their L1 norm is EXACTLY the factor by which the fit can
 amplify the jumps it is averaging - scale-free in the gap, in the jump and in the sample size, which
 a threshold on the solve's determinant is not. Measured over 2685 solves in 82 runs: of the 2424
-carrying any density, every one reads 1.00 to 8.06 except the single decision that broke the
-Heston-Nandi barrier gradient, at 99.9. 25 sits 3.1x above the largest legitimate reading and 4.0x
+carrying any density, every one reads 1.00 to 8.06 except the single decision that broke a
+barrier gradient, at 99.9. 25 sits 3.1x above the largest legitimate reading and 4.0x
 below that one."""
 
 KINK_ATOM_BANDWIDTH_FLOOR = 0.01
@@ -69,523 +68,6 @@ DEBUG."""
 # walks it after that.
 
 
-#: ONE fixing interval opened as a stride - the cached k-step law, the spot and state it conditions
-#: on, and the carry shift moving this deal's levels into the strip's measure and its drawn return
-#: back out. A strip is built at ``r = 0`` and keyed on calendar position alone
-#: (`ComponentHestonNandiKit.stride`), so ``shift`` is the whole of the deal's carry over the
-#: interval and every consumer of the interval reads the same one. Skip it in either direction and
-#: the survivor law sits the whole carry away from the barrier - 27x the daily walk's own quantile
-#: band at k = 21.
-HNStrideFixing = namedtuple('HNStrideFixing', 'strip day n_steps spot h q shift')
-
-
-#: How far outside the k-step law's own mean a barrier may be carried into the Gil-Pelaez inversion,
-#: in standard deviations of that law. The quadrature grid resolves the integrand's decay, not the
-#: oscillation of ``exp(-i phi x)``, so a bound far outside the law aliases and what comes back is
-#: not a probability (measured 1.63 at ``x = 31.6``). Past eight SD the answer is written rather
-#: than integrated (`stride_cdf`).
-HN_STRIDE_BOUND_SD = 8.0
-
-#: The decay `hn_stride_phi_max` stops at when it can reach it, and the worst it accepts when it
-#: cannot. Measured against the daily walk the stride replaces, 2^20 paths, k = 21, on the walk's
-#: own return quantiles: a state reaching -30 lands inside 8.2e-4 absolute, one reaching -11 inside
-#: 1.3e-3, one reaching only -7 is 3.8e-2 out and no longer a probability. Below -10 the state is
-#: floored rather than integrated (`stride_state_floor`).
-HN_STRIDE_PHI_LOG_TOL, HN_STRIDE_PHI_MIN_DECAY = -25.0, -10.0
-
-#: The fractions of the interval's own long-run variance level the state floor is tried at, in
-#: order. The first that resolves the bound is taken, so a healthy cube pays nothing (0.0 is the
-#: first rung) and a cube that has drifted pays the smallest floor that buys it a probability.
-HN_STRIDE_STATE_FLOORS = (0.0, 1.0 / 32, 1.0 / 16, 0.125, 0.25, 0.375, 0.5, 0.75)
-
-#: Largest bound the stride's scan will reach for. Past this the node count buys resolution the
-#: oscillation does not need (`HN_STRIDE_BOUND_SD` keeps ``|x|`` inside a standard deviation or so)
-#: and every state that needs it has already turned.
-HN_STRIDE_PHI_CAP = 2.0 ** 20
-
-#: Gauss-Legendre panels the stride's strips are built on, against `utils.cf_european_probabilities`
-#: own default of 256. Measured: 32 panels and 256 panels agree to the last printed digit against a
-#: 2^20-path daily walk at k = 21, so 64 carries a factor of two of headroom for a bound out at
-#: `HN_STRIDE_BOUND_SD`. The footprint is what limits a cube - a differentiable draw holds about six
-#: (paths, node) complex128 buffers alive per fixing for the backward pass - and the default OOMs a
-#: six-fixing TARF at 16k paths on a 24 GB device.
-HN_STRIDE_PANELS = 64
-
-
-def hn_stride_phi_max(omegas, hnc_params, h_box, q_box, r=0.0):
-    """The stride's quadrature bound: the best decay the recursion reaches, not the first bound to
-    meet a fixed tolerance. Returns ``(phi_max, best decay)``.
-
-    Past a parameter- and step-count-dependent point the component A/B/C recursion DIVERGES rather
-    than decaying, so a tolerance-seeking scan (`utils.hn_component_auto_phi_max`) walks straight
-    through it and returns its cap. This stops the moment the metric turns upward - the divergence's
-    own signature - and ``-25`` is a stop rather than a requirement: the caller reads the decay to
-    decide whether the bound is a quadrature bound at all (`stride_state_floor`).
-
-    All four corners of the ``(h, q)`` box: B and C may carry opposite signs, so the slowest-decaying
-    state can be (h.max, q.min).
-
-    THE RUNGS RIDE ONE RECURSION. Each rung is an independent evaluation and the A/B/C recursion is
-    elementwise in phi, so the whole ladder and both contours go through as one tensor whose
-    trailing axis - the branch unwrap's anchor - stays length one; the best-decay walk then reads
-    the answers off in order. Same bound, same strip, same price, MEASURED RATHER THAN BY
-    CONSTRUCTION: on CPU torch dispatches a different complex kernel for the batch and the returned
-    DECAY moves by 1 ulp. The RUNG does not, because it is a threshold on a power-of-two ladder
-    whose rungs are units of the metric apart; nor does its consumer's ruling, `stride_state_floor`
-    reading the decay against :data:`HN_STRIDE_PHI_MIN_DECAY` with 15 to 42 units of margin.
-    """
-    h = torch.as_tensor(h_box).detach().reshape(-1)
-    q = torch.as_tensor(q_box).detach().reshape(-1)
-    hs = torch.stack([h.min(), h.min(), h.max(), h.max()]).reshape(-1, 1, 1)
-    qs = torch.stack([q.min(), q.max(), q.min(), q.max()]).reshape(-1, 1, 1)
-    dt, dev = hs.dtype, hs.device
-    rungs, phi = [], 8.0
-    while phi <= HN_STRIDE_PHI_CAP:
-        rungs.append(phi)
-        phi *= 2.0
-    with torch.no_grad():
-        ladder = torch.tensor(rungs, dtype=dt, device=dev).reshape(-1, 1) * 1j
-
-        def envelope(z):
-            m = utils.hn_component_logmgf(z, omegas, hs, qs, *hnc_params, r).real
-            return m.movedim(-2, 0).reshape(len(rungs), -1).amax(-1).tolist()
-
-        tops = list(zip(envelope(ladder), envelope(ladder + 1.0)))
-    best, best_phi = float('inf'), 8.0
-    for phi, (m0, m1) in zip(rungs, tops):
-        m = max(m0, m1) - math.log(phi)
-        if m > best:
-            break                         # the metric has turned: the recursion is diverging
-        best, best_phi = m, phi
-        if m < HN_STRIDE_PHI_LOG_TOL:
-            break
-    return best_phi, best
-
-
-def stride_normals(shared, num_sims, antithetic):
-    """The two independent standard normals the stride's carried state needs, drawn from the same
-    regular stream the daily sub-steps draw from and paired the same antithetic way.
-
-    From the global generator, so finite-difference greeks w.r.t. non-HN factors pick up RNG noise
-    where AAD ones do not - the (F3) note every HN pricer carries.
-    """
-    z = torch.randn([2, shared.simulation_batch, num_sims],
-                    dtype=shared.one.dtype, device=shared.one.device)
-    if antithetic:
-        z = torch.cat([z, -z], dim=-1)
-    return z[0], z[1]
-
-
-class PlainHestonNandiKit(object):
-    """The plain Heston-Nandi model as an OSS walking kit: seed a state, sub-step it, advance it
-    on a truncated draw, and price the analytic legs off the seed.
-
-    The math stays in `utils` as free functions taking the recursion parameters as explicit trailing
-    args; the kit owns the name->args unpack and the state, which is opaque to the pricer.
-
-    ``HN_Invert`` carries the law to the RECIPROCAL axis, which is a change of numeraire as well as
-    of axis: an FX deal whose `Underlying_Currency` IS the base pays on ``1/s`` and settles in the
-    other currency, and this family transports there exactly at the cost of one parameter
-    (`utils.hn_reciprocal_gamma`), which is why nothing else in a pricer knows about the axis.
-    """
-
-    #: `param_names` and `curve_names` are what `oss_model_scalars` reads off the parameter factor
-    #: and in which order this kit unpacks it - the scalars, then each fitted CURVE's values.
-    #: `daily` is whether the family walks a per-step state, `strides` whether it opens a fixing
-    #: interval as one k-step draw; both are read by the pricers and by `branch_and_weight`.
-    param_names = utils.HN_PARAM_NAMES
-    curve_names = ()
-    daily = True
-    strides = False
-
-    def __init__(self, scalars, knots, factor_dep):
-        *self.params, self.h0 = scalars          # (omega, alpha, beta, gamma_star), H0
-        if factor_dep.get('HN_Invert'):
-            self.params[3] = utils.hn_reciprocal_gamma(self.params[3])
-
-    def seed(self):
-        return (self.h0,)
-
-    def h(self, state):
-        """The predictable variance of the next step - what an OSS truncation bound is built off."""
-        return state[0]
-
-    def substeps(self, Sj, state, b_step, n_steps, shared, num_sims, antithetic):
-        Sj, h = utils.hn_unmonitored_substeps(
-            Sj, state[0], b_step, n_steps, self.params, shared, num_sims, antithetic)
-        return Sj, (h,)
-
-    def advance(self, Sj, state, b_step, Z):
-        Sj, h = utils.hn_daily_advance(Sj, state[0], b_step, Z, *self.params)
-        return Sj, (h,)
-
-    def scalar_state(self):
-        """The seed state reduced to scalars, for the analytic legs - which price the remaining
-        horizon from the row's own entry state, never from a walked one."""
-        return (self.h0.reshape(-1)[0],)
-
-    def cdf_logret(self, x, n_steps, r_step):
-        """Q(R_n <= x) off the seed state - the already-hit / parity digital leg."""
-        om, al, be, ga = (v.reshape(-1)[0] for v in self.params)
-        return utils.hn_cdf_logret(x, n_steps, self.scalar_state()[0], om, al, be, ga, r_step)
-
-    def vanilla(self, S, K, n_steps, r_step, is_call):
-        """The European closed form off the seed state, under this model rather than Black at the
-        implied surface - the KI parity leg and the already-hit leg."""
-        om, al, be, ga = (v.reshape(-1)[0] for v in self.params)
-        return (utils.hn_call if is_call else utils.hn_put)(
-            S, K, n_steps, self.scalar_state()[0], om, al, be, ga, r_step)
-
-
-class ComponentHestonNandiKit(PlainHestonNandiKit):
-    """The component Heston-Nandi model as an OSS walking kit - the same three verbs over the pair
-    (h, q) and a per-step intercept strip.
-
-    The day counter is part of the state: ``omega_t = L_{t+1} - rho*L_t`` off the fitted L curve, on
-    the calibration's own trading-day clock from the base date, so every verb slices the strip at it.
-
-    The row re-seeds at day zero - h at H0, q at L(0), omega at omega_0 - a declared approximation of
-    the same class as the plain model's H0 re-seed. The closed-form gate prices exactly what the walk
-    simulates because both start at the same place.
-    """
-
-    param_names = utils.HN_COMPONENT_PARAM_NAMES
-    curve_names = (utils.HN_COMPONENT_CURVE_NAME,)
-    strides = True
-
-    def __init__(self, scalars, knots, factor_dep):
-        *self.params, self.h0, self.l_values = scalars   # (alpha,beta,g1,rho,phi,g2), H0, L values
-        self.knots = knots[utils.HN_COMPONENT_CURVE_NAME]
-        self.steps_per_year = float(factor_dep['HN_Steps_Per_Year'])
-        # rho squeezed to 0-dim: scalar parameters arrive (-1, 1) to broadcast against the
-        # [batch, sims] variance state, but the omega path is indexed by trading day and has no
-        # path axis - a (1, 1) rho turns a (n,) strip into (1, n)
-        self.rho = self.params[3].reshape(())
-        self._omegas, self._built = None, 0
-        # the stride's caches, per kit (a kit is built per pricing call, so a recompute rebuilds
-        # them): the Phi/carry strip per (day, length) and the Esscher tilt per (day, length, power)
-        self._strips, self._tilts = {}, {}
-
-    def omegas(self, day, n_steps):
-        """The `n_steps` intercepts starting at trading day `day`. The strip is built once and
-        doubled when a longer walk asks for it, so a row's walk costs one L interpolation.
-
-        The `is None` is not redundant with the length test: a daily fixing walks zero unmonitored
-        sub-steps, so the first call can be `omegas(0, 0)`, which the length test alone answers by
-        slicing a strip that was never built."""
-        if self._omegas is None or self._built < day + n_steps:
-            self._built = max(day + n_steps, 2 * self._built, 64)
-            l_path = utils.hn_component_l_path(
-                self.knots, self.l_values, self._built, self.steps_per_year)
-            self._omegas = utils.hn_component_omega_path(l_path, self.rho)
-        return self._omegas[day:day + n_steps]
-
-    def q0(self):
-        """q_0 = L(0), the anchoring - read off the curve rather than carried as a second field."""
-        return utils.hn_component_l_path(self.knots, self.l_values, 0, self.steps_per_year)[0]
-
-    def seed(self):
-        return (self.h0, torch.zeros_like(self.h0) + self.q0(), 0)
-
-    def substeps(self, Sj, state, b_step, n_steps, shared, num_sims, antithetic):
-        """The unmonitored days of a fixing interval - walked, or stridden under ``HN_Stride``.
-
-        NOT A SPEED LEVER, measured: on the three-fixing component TARF the strided pricer runs 111x
-        to 147x slower at 2^10 to 2^15 inner paths, and the ratio widens with the cube. A daily step
-        is cheap elementwise work over the whole cube, so the walk is flat in the path count; a
-        stride pays a fixed cache build (3.0s, mostly the bound scan's kernel launches) plus a
-        Gil-Pelaez inversion per path at every fixing (4.8e-5 s a path). The open lever is a batched
-        phi plus B/C strips reused across intervals of equal length; neither is built. The stepping
-        stays regardless - it is the smooth estimator's own conditioning law.
-
-        The stride OPENS AT k = 1 rather than standing down. A monitored final step reaches here as
-        ``n_steps == 0`` and strides nothing; a pricer that strides the whole fixing interval
-        (`pv_MC_Tarf`, `pv_MC_Accumulator`) hands a daily-monitored contract an interval of one day,
-        where the one-step law IS the daily law exactly - 1.8e-11 relative against 2.9e-2 on the
-        monthly one (`tests/test_hn_stride.py::test_the_one_step_stride_is_the_daily_advance`).
-
-        What it costs is the carried state: the walk moves ``(h, q)`` exactly and the stride matches
-        it quadratically - a declared approximation. Off, the walk is unchanged down to the draws.
-        """
-        h, q, day = state
-        if n_steps and shared.hn_stride:
-            fix = self.stride_interval(Sj, state, b_step, n_steps)
-            u = torch.rand([shared.simulation_batch, num_sims],
-                           dtype=shared.one.dtype, device=shared.one.device)
-            if antithetic:
-                u = torch.cat([u, 1.0 - u], dim=-1)
-            e1, e2 = stride_normals(shared, num_sims, antithetic)
-            _, Sj, state = self.stride_advance(fix, b_step, u, e1, e2)
-            return Sj, state
-        Sj, h, q = utils.hn_component_unmonitored_substeps(
-            Sj, h, q, b_step, self.omegas(day, n_steps), self.params,
-            shared, num_sims, antithetic)
-        return Sj, (h, q, day + n_steps)
-
-    def advance(self, Sj, state, b_step, Z):
-        h, q, day = state
-        Sj, h, q = utils.hn_component_daily_advance(
-            Sj, h, q, b_step, Z, self.omegas(day, 1)[0], *self.params)
-        return Sj, (h, q, day + 1)
-
-    def scalar_state(self):
-        return (self.h0.reshape(-1)[0], self.q0().reshape(-1)[0])
-
-    def cdf_logret(self, x, n_steps, r_step):
-        h0, q0 = self.scalar_state()
-        return utils.hn_component_cdf_logret(
-            x, list(self.omegas(0, n_steps)), h0, q0, *self.params, r_step)
-
-    def vanilla(self, S, K, n_steps, r_step, is_call):
-        h0, q0 = self.scalar_state()
-        return (utils.hn_component_call if is_call else utils.hn_component_put)(
-            S, K, list(self.omegas(0, n_steps)), h0, q0, *self.params, r_step)
-
-    # -- The stride. The k-step conditional law of the interval, in place of walking it. ----------
-
-    def stride(self, day, n_steps, h, q, moments=True):
-        """The cached ``n_steps``-day law starting at trading day ``day`` - one strip, whole cube.
-
-        Built at ``r = 0`` and keyed on calendar position alone, which is what lets one strip serve
-        every path and every row of a block: the cost of carry is a shift on the moneyness rather
-        than a rebuild (`utils.hn_component_stride_strip`). So the key is ``(day, n_steps)`` and
-        nothing about the deal.
-
-        The quadrature bound is not transferable and a LARGER one is not conservative - past a
-        step-count-dependent point the A/B/C recursion diverges rather than decaying - so the state
-        box the bound was resolved on is stored beside the strip and the strip is rebuilt whenever
-        the cube has left it.
-        """
-        key = (day, n_steps, bool(moments))
-        hb = (float(h.detach().min()), float(h.detach().max()))
-        qb = (float(q.detach().min()), float(q.detach().max()))
-        hit = self._strips.get(key)
-        if hit is not None and hit[2][0] <= hb[0] and hb[1] <= hit[2][1] \
-                and hit[3][0] <= qb[0] and qb[1] <= hit[3][1]:
-            return hit[0], hit[1]
-        box, omegas = self.params[0].new_tensor, list(self.omegas(day, n_steps))
-        floor, phi_max = self.stride_state_floor(omegas, hb, qb)
-        fb = (max(hb[0], floor), max(hb[1], floor)), (max(qb[0], floor), max(qb[1], floor))
-        strip = utils.hn_component_stride_strip(
-            omegas, self.params, 0.0, box(fb[0]), box(fb[1]),
-            moments=moments, phi_max=phi_max, panels=HN_STRIDE_PANELS)
-        self._strips[key] = (strip, floor, hb, qb)
-        return strip, floor
-
-    def stride_state_floor(self, omegas, hb, qb):
-        """The smallest floor on the carried state at which this interval's inversion is still a
-        probability, and the quadrature bound that goes with it. Returns ``(floor, phi_max)``.
-
-        The state is floored at `utils.HN_COMPONENT_VARIANCE_FLOOR`, so a share of the cube arrives
-        at a frozen 1e-12 (1.1% at k = 21) and the long-run component drifts with it. At a long-run
-        level a tenth of its own the inversion no longer decays before the recursion turns, so
-        integrating there returns a number that is not a probability.
-
-        The floor is expressed in the interval's own long-run variance level, ``omega/(1 - rho)`` off
-        the model's omega strip, so no new constant is introduced. The rungs are tried in order: a
-        healthy cube takes 0.0 and pays nothing; a drifted cube is clamped, a declared approximation
-        of the kind the model's own variance floor already is.
-        """
-        level = float(omegas[0].detach()) / max(1.0 - float(self.rho.detach()), 1.0e-12)
-        box = self.params[0].new_tensor
-        for f in HN_STRIDE_STATE_FLOORS:
-            floor = f * level
-            phi_max, best = hn_stride_phi_max(
-                omegas, self.params, box((max(hb[0], floor), max(hb[1], floor))),
-                box((max(qb[0], floor), max(qb[1], floor))))
-            if best <= HN_STRIDE_PHI_MIN_DECAY:
-                if f:
-                    logging.debug('HN_STRIDE floor %d steps: %.4g (%.3g of level) decay %.3g '
-                                  'phi_max %g', len(omegas), floor, f, best, phi_max)
-                return floor, phi_max
-        raise ValueError(
-            'HN_Stride: the {}-step inversion is not a probability on this cube at any state floor '
-            'up to {:.3g} of the interval\'s own long-run level (best decay {:.3g} at phi_max '
-            '{:.0f}; the state reached h in [{:.4g}, {:.4g}], q in [{:.4g}, {:.4g}] against a level '
-            'of {:.4g}). Past the bound the component A/B/C recursion DIVERGES rather than '
-            'decaying, so a larger one is not conservative and there is nothing to widen to. That '
-            'is a property of the calibrated parameters at this step count, not of the deal. What '
-            "works today: price with HN_Stride off, whose daily walk inverts nothing; or monitor "
-            'this deal on shorter intervals, which is what sets the step count.'.format(
-                len(omegas), HN_STRIDE_STATE_FLOORS[-1], best, phi_max,
-                hb[0], hb[1], qb[0], qb[1], level))
-
-    def stride_interval(self, Sj, state, b_step, n_steps):
-        """Open a fixing interval as one stride - see :data:`HNStrideFixing`.
-
-        The state the fixing carries is the CLAMPED one (`stride_state_floor`), read off here rather
-        than off the walker's own state, so the drawing law, the state loadings and the fired
-        branch's partial moments are all conditioned on one state.
-        """
-        h, q, day = state
-        strip, floor = self.stride(day, n_steps, h, q)
-        return HNStrideFixing(strip, day, n_steps, Sj, h.clamp_min(floor), q.clamp_min(floor),
-                              b_step * n_steps)
-
-    def stride_bound(self, fix, level):
-        """A spot level as a return in the strip's own measure: the moneyness moved in by the carry
-        shift, which is the half of the un-shift a consumer must not skip."""
-        return torch.log(level / fix.spot) - fix.shift
-
-    def stride_support(self, fix):
-        """``(lo, hi)``: how far either side of the k-step law's own mean a bound may be carried
-        into the inversion, at :data:`HN_STRIDE_BOUND_SD` standard deviations. Detached - a
-        quadrature's reach, not a quantity anything differentiates.
-        """
-        mean, var, _, _ = utils.hn_component_stride_cumulants(fix.strip, fix.h, fix.q)
-        edge = HN_STRIDE_BOUND_SD * var.detach().clamp_min(0.0).sqrt()
-        return (mean - edge).detach(), (mean + edge).detach()
-
-    def stride_cdf(self, fix, strip, x):
-        """``Q(R_k <= x)`` over a strip of this interval, saturated outside the law's own support.
-
-        The saturation is exactness. The inversion resolves a probability to about 1e-8, so an
-        unreachable bound comes back as ``1 - 4e-8`` rather than one, and a TARF whose remaining
-        target is 1e15 then books ``(1 - p) * R`` at every fixing (measured 2.3e8 against a true
-        8.2e5, on a deal with no knockout in it). Past the support the answer is an exact zero or
-        one, with an exactly zero derivative, so it is written rather than integrated.
-        """
-        lo, hi = self.stride_support(fix)
-        cdf = utils.hn_component_stride_cdf(strip, x.clamp(min=lo, max=hi), fix.h, fix.q)
-        return torch.where(x >= hi, torch.ones_like(cdf),
-                           torch.where(x <= lo, torch.zeros_like(cdf), cdf))
-
-    def stride_advance(self, fix, b_step, u, e1, e2, x_bound=None, survive_below=True):
-        """Survival probability and one survival-truncated stride - ``oss_truncated_draw``'s sibling
-        over the k-step law, and the verb every branch-and-weight HN arm calls.
-
-        ``x_bound`` is the barrier already in the strip's measure (`stride_bound`); ``None`` strides
-        an unmonitored interval, whose ``p`` is one. ``survive_below`` reads as it does at
-        ``oss_truncated_draw``: True truncates into the lower tail and ``p`` is the law's own
-        ``Phi``, False into the upper and ``p`` is its complement.
-
-        The down side is the same primitive, not a second inversion: the draw solves
-        ``Q(R <= x) = u * Phi_cap`` for a cap it is handed, so an upper truncation is that solve at
-        ``u' = Phi + u*(1 - Phi)`` with no cap - one uniform re-aimed.
-
-        `utils.hn_component_stride_step` ALWAYS WITH ``b_step``: it un-shifts the drawn return back
-        into the deal's carry, and the state is carried at the unshifted return because that is the
-        mean the loadings centre on.
-        """
-        h, q = fix.h, fix.q
-        if x_bound is None:
-            Sj, h, q, _ = utils.hn_component_stride_step(
-                fix.strip, fix.spot, h, q, u, e1, e2, x_cap=None, b_step=b_step)
-            return torch.ones_like(fix.spot), Sj, (h, q, fix.day + fix.n_steps)
-        # `p` is the saturated Phi and the draw takes the clamped cap: the two differ only where
-        # the bound is outside the law, where the truncation is inert and only `p` has to be exact
-        lo, hi = self.stride_support(fix)
-        below = self.stride_cdf(fix, fix.strip, x_bound)
-        if survive_below:
-            p = below
-            Sj, h, q, _ = utils.hn_component_stride_step(
-                fix.strip, fix.spot, h, q, u, e1, e2,
-                x_cap=x_bound.clamp(min=lo, max=hi), b_step=b_step)
-        else:
-            p = 1.0 - below
-            Sj, h, q, _ = utils.hn_component_stride_step(
-                fix.strip, fix.spot, h, q, below + u * p, e1, e2, x_cap=None, b_step=b_step)
-        return p, Sj, (h, q, fix.day + fix.n_steps)
-
-    def stride_tilt(self, fix, power):
-        """The Esscher-tilted strip at real ``power`` - the partial-moment half of a fired branch.
-        Returns ``(strip, A_0, B_0, C_0)``: the tilted strip and the three parts of ``log M(a)``,
-        which is per path because it reads the state.
-
-        ``E[e^{a R} 1{fired}] = M(a) * Q_a(fired)`` with ``Q_a`` the tilted law, whose log-CF is
-        ``A(a + i phi) + B(.) h + C(.) q`` minus its own value at ``phi = 0`` - the same backward
-        recursion on a contour shifted off the imaginary axis, assembled onto the same nodes the
-        strip already carries. ``a = 1`` is the share-measure contour
-        `utils.cf_european_probabilities` runs for P1, so a fired gain and `utils.hn_component_call`
-        are the same two probabilities assembled twice, which is the gate.
-
-        The bound is the strip's own, sound by construction for ``a`` in {0, 1} (the scan read both
-        contours). Any other tilt is checked at the top node against
-        :data:`HN_STRIDE_PHI_MIN_DECAY` and refused by name. Measured at k = 21, the strip's bound
-        leaves ``a = -1`` at -25.38 and ``a = 60`` at -33.30; what the check catches is ``a = 80``,
-        past the real MGF's radius, where the metric is NaN - hence the negated ``<=``.
-
-        ``phi_max`` IS PART OF THE KEY: `stride` rebuilds its strip whenever the cube's state box
-        has left the one the bound was resolved on, and a tilt keyed on calendar position alone
-        would be served the old strip's nodes (measured 1.04e-3 out on a floored row). The decay
-        check re-runs on every call, cache hit included, because it reads the state BOX, which
-        widens under the caller whether or not the bound moved.
-        """
-        strip = fix.strip
-        key = (fix.day, fix.n_steps, float(power), strip.phi_max)
-        hit = self._tilts.get(key)
-        if hit is not None:
-            self.stride_tilt_decay(hit[0], fix, power)
-            return hit
-        omegas = list(self.omegas(fix.day, fix.n_steps))
-        a = strip.nodes.new_tensor(float(power))
-        A0, B0, C0 = utils.hn_component_abc(a, omegas, *self.params, 0.0)
-        At, Bt, Ct = utils.hn_component_abc(a + strip.nodes * 1j, omegas, *self.params, 0.0)
-        A, B, C = At - A0, Bt - B0, Ct - C0
-        tilt = (utils.HNComponentStride(strip.n_steps, strip.nodes, strip.wts, strip.phi_max,
-                                        A, B, C, None, strip.r), A0, B0, C0)
-        self.stride_tilt_decay(tilt[0], fix, power)
-        self._tilts[key] = tilt
-        return tilt
-
-    def stride_tilt_decay(self, tilt, fix, power):
-        """Verify one tilted strip's integrand has decayed at its own quadrature bound, on the state
-        box this fixing carries - `stride_tilt`'s refusal, factored out because it runs on a cache
-        hit as well as on a build. ``a`` in {0, 1} is sound by construction and skips.
-        """
-        if float(power) in (0.0, 1.0):
-            return
-        A, B, C = tilt.A, tilt.B, tilt.C
-        # the integrand's envelope at the strip's top node, on BOTH corners of the state box -
-        # the slowest decay sits at the smallest variance, which pairing by rank never probes
-        top = max(float((A[..., -1] + B[..., -1] * hh + C[..., -1] * qq).real.max())
-                  for hh in (fix.h.min(), fix.h.max()) for qq in (fix.q.min(), fix.q.max()))
-        # NOT `>`: a tilt past the real MGF's own radius returns NaN rather than a large
-        # number, and NaN fails every comparison including the one that would have caught it
-        if not top - math.log(tilt.phi_max) <= HN_STRIDE_PHI_MIN_DECAY:
-            raise ValueError(
-                'HN_Stride: the Esscher tilt at power {} has not decayed at the strip\'s own '
-                'quadrature bound (phi_max {:.0f}, log integrand {:.3g} against a tolerance of '
-                '{:.0f}, on a state box of h in [{:.4g}, {:.4g}] and q in [{:.4g}, {:.4g}]). That '
-                'bound is resolved on the i*phi and i*phi+1 contours - the two a probability and a '
-                'forward-weighted mass ride - and it is NOT transferable to a third for free: past '
-                'a step-count- and parameter-dependent point the component A/B/C recursion '
-                'DIVERGES rather than decaying, so integrating here would return a number rather '
-                'than fail. What works today: price this deal with HN_Stride off, whose daily walk '
-                "needs no tilt; or with Branch_And_Weight: 'No', whose crisp estimator samples the "
-                'leg instead of integrating it.'.format(
-                    power, tilt.phi_max, top - math.log(tilt.phi_max), HN_STRIDE_PHI_MIN_DECAY,
-                    float(fix.h.min()), float(fix.h.max()),
-                    float(fix.q.min()), float(fix.q.max())))
-
-    def stride_partial_moment(self, fix, x_bound, fired_above, power=1.0):
-        """``E[S_k**power * 1{fired}]`` over the stride's k-step law - the analytic half of a fired
-        branch, and :func:`lognormal_partial_moment` one family over.
-
-        ``x_bound`` is the trigger already in the strip's measure (`stride_bound`) and
-        ``fired_above`` says which tail fires. ``power = 0`` is the fired probability and skips the
-        scale factors, being identities; a caller holding the survival ``p`` should use ``1 - p``
-        instead, the survival ledger telescoping only on that exact complement.
-
-        The carry shift enters twice: in the bound the caller moved in, and in the
-        ``exp(a * shift)`` that moves the moment back out.
-        """
-        if not power:
-            below = self.stride_cdf(fix, fix.strip, x_bound)
-            return (1.0 - below) if fired_above else below
-        tilt, A0, B0, C0 = self.stride_tilt(fix, power)
-        below = self.stride_cdf(fix, tilt, x_bound)
-        tail = (1.0 - below) if fired_above else below
-        return (fix.spot ** power * torch.exp(power * fix.shift + A0 + B0 * fix.h + C0 * fix.q)
-                * tail)
-
-    def stride_fired_gain(self, fix, x_bound, strike, fired_above, power=1.0):
-        """``E[(S_k**power - strike**power) * 1{fired}]`` - the k-step law's own difference of two
-        partial moments, and :func:`lognormal_fired_gain` one family over."""
-        return (self.stride_partial_moment(fix, x_bound, fired_above, power) -
-                strike ** power * self.stride_partial_moment(fix, x_bound, fired_above, 0.0))
-
-
 #: Internal steps ONE CHECKPOINTED SEGMENT of the walk holds. The forward keeps two boundary states
 #: per segment and the backward recomputes one segment's intermediates at a time, so a finer split
 #: buys tape and pays in boundaries; a trading month sits near the flat optimum of that trade.
@@ -596,28 +78,26 @@ class LogVar2FJKit(object):
     """LogVar2FJ as an OSS kit: ONE internal-step walk per MTM row, off which each remaining fixing
     interval reads its own Gaussian block law ``(M, Sigma)``.
 
-    Not a daily kit - there is no per-step state for a pricer to carry, because given the walk's
-    shocks and counts the whole interval's return is exactly Gaussian (spec 1.2). So the pricer's
-    GBM arithmetic serves this model verbatim: ``p`` is one Phi, the continuing draw one Phi^-1 and
-    the put leg's fired branch `lognormal_fired_gain` at this ``(M, Sigma)``.
+There is no per-step state for a pricer to carry: given the walk's shocks and counts the whole
+    interval's return is exactly Gaussian (spec 1.2). So the pricer's GBM arithmetic serves this
+    model verbatim: ``p`` is one Phi, the continuing draw one Phi^-1 and the put leg's fired branch
+    `lognormal_fired_gain` at this ``(M, Sigma)``.
 
-    ``HN_Invert`` carries the law to the reciprocal axis as a MEASURE CHANGE inside the walk
-    (`utils.lv_walk`), where the plain family carries it as one parameter.
+    ``Invert_Spot`` carries the law to the reciprocal axis as a MEASURE CHANGE inside the walk
+    (`utils.lv_walk`).
     """
 
     param_names = utils.LV_PARAM_NAMES
     curve_names = utils.LV_CURVE_NAMES
-    daily = False
-    strides = False
 
     def __init__(self, scalars, knots, factor_dep):
         n = len(self.param_names)
-        structural = factor_dep['HN_Params'][0][utils.FACTOR_INDEX_Tenor_Index]
+        structural = factor_dep['Spot_Model'][0][utils.FACTOR_INDEX_Tenor_Index]
         self.params = dict(zip(self.param_names, scalars[:n]),
                            **{x: float(structural[x]) for x in utils.LV_STRUCTURAL_NAMES})
         self.knots, self.values = knots, dict(zip(self.curve_names, scalars[n:]))
-        self.steps_per_year = float(factor_dep['HN_Steps_Per_Year'])
-        self.invert = bool(factor_dep.get('HN_Invert'))
+        self.steps_per_year = float(factor_dep['Steps_Per_Year'])
+        self.invert = bool(factor_dep.get('Invert_Spot'))
 
     def draws(self, key, shape, lam, deltas, antithetic):
         """One SEGMENT's two normals and its jump counts at intensity ``lam``, over
@@ -719,11 +199,9 @@ class LogVar2FJKit(object):
 
 
 #: The OSS kits, keyed by the `SpotModel` valuation option each deal declares. A pricer looks its
-#: model up once (`oss_model_kit`) and never names one again, so a fourth family is a class here and
-#: a row in this dict rather than a fifth branch in four pricers.
-OSS_SPOT_MODEL_KITS = {'HestonNandi': PlainHestonNandiKit,
-                       'HestonNandiComponent': ComponentHestonNandiKit,
-                       'LogVar2FJ': LogVar2FJKit}
+#: model up once (`oss_model_kit`) and never names one again, so a second family is a class here
+#: and a row in this dict rather than a branch in four pricers.
+OSS_SPOT_MODEL_KITS = {'LogVar2FJ': LogVar2FJKit}
 
 
 def oss_model_scalars(factor_dep, shared):
@@ -734,9 +212,9 @@ def oss_model_scalars(factor_dep, shared):
     out flat, being indexed by knot and not by path. Empty tuple where the deal prices GBM, which
     `oss_model_kit` reads as None.
     """
-    if 'HN_Params' not in factor_dep:
+    if 'Spot_Model' not in factor_dep:
         return ()
-    code = factor_dep['HN_Params'][0]
+    code = factor_dep['Spot_Model'][0]
     kit = OSS_SPOT_MODEL_KITS[code[utils.FACTOR_INDEX_SubType]]
     block = {x.name[-1]: shared.t_Static_Buffer[x] for x in code[utils.FACTOR_INDEX_Offset]}
     return tuple([block[k].reshape(-1, 1) for k in kit.param_names] +
@@ -748,13 +226,13 @@ def oss_model_kit(factor_dep, scalars):
 
     `scalars` cross the bound/theta split - `InnerMCRecompute` needs every tensor an explicit
     argument - while the model name and every curve's knots are compile-time facts on `factor_dep`.
-    An empty `scalars` is a GBM deal and answers None. `HN_Invert` carries the law to the deal's own
-    axis and is the KIT's own - one parameter for the plain family, a measure change inside the walk
-    for LogVar2FJ - and the compile has already refused any family that cannot go there.
+    An empty `scalars` is a GBM deal and answers None. `Invert_Spot` carries the law to the deal's
+    own axis and is the KIT's own, and the compile has already refused any family that cannot go
+    there.
     """
     if not scalars:
         return None
-    code = factor_dep['HN_Params'][0]
+    code = factor_dep['Spot_Model'][0]
     kit = OSS_SPOT_MODEL_KITS[code[utils.FACTOR_INDEX_SubType]]
     knots = code[utils.FACTOR_INDEX_Tenor_Index]
     return kit(scalars, {c: knots[c] for c in kit.curve_names}, factor_dep)
@@ -769,15 +247,6 @@ def oss_window_ends(fixings, coupons):
                            np.array(coupons, dtype='datetime64[ns]'), 'right') - 1
     return ends if (ends[0] >= 0 and (np.diff(ends) > 0).all()
                     and ends[-1] == len(fixings) - 1) else None
-
-
-def oss_strides(factor_dep, shared):
-    """Does this deal open each fixing interval as ONE survival-truncated k-step draw?
-
-    `HN_Stride` consented to by the caller, and a declared family that carries the stride.
-    """
-    return (shared.hn_stride and 'HN_Params' in factor_dep and
-            OSS_SPOT_MODEL_KITS[factor_dep['HN_Params'][0][utils.FACTOR_INDEX_SubType]].strides)
 
 
 def cash_settle(shared, currency, time_index, value):
@@ -894,7 +363,7 @@ def oss_uniforms(shared, n_fix, num_sims, sobol):
     """Antithetic uniforms for a one-step-survival loop: ``[n_fix, batch, 2 * num_sims]``.
 
     One Sobol/pseudo draw plus its ``1 - u`` mirror, pairing an OSS step's truncated final draws
-    with the antithetic halves of ``hn_unmonitored_substeps``. NOT used by ``pv_MC_AutoCallSwap``'s
+    with the antithetic halves of the kit's own walk. NOT used by ``pv_MC_AutoCallSwap``'s
     no-averaging loop, which draws the same Sobol block but consumes it raw - adopting this there
     would change that estimator.
     """
@@ -929,61 +398,6 @@ def oss_truncated_draw(u, z_bound, survive_below):
         p = 1.0 - Phi
         Z = utils.norm_icdf(torch.clamp(Phi + u * p, eps, 1.0 - eps))
     return p, Z
-
-
-def branch_and_weight(shared, deal_data):
-    """Is the smooth estimator on for this deal - and under a non-GBM spot model, the refusal.
-
-    ``Branch_And_Weight`` (``Base_Revaluation`` only, default 'No') SWAPS the value estimator rather
-    than adding to it: at each fixing the fired branch is integrated analytically against the
-    conditioning step's own law and the continuing branch draws from the truncated one. A switch and
-    not an addition because one decision must have ONE estimator - on the smooth path a deal
-    registers no ``BoundarySet``, or the boundary flux is counted twice. Off, and absent, is the
-    crisp OSS path bit for bit.
-
-    The conditioning step is the FIXING INTERVAL's own lognormal law, which is what makes ``p`` a
-    ``Phi`` and the continuing draw a ``Phi^-1`` (``oss_truncated_draw``). Under GBM the fixing
-    interval IS the simulated step, so the strips a pricer already walks are its ``m`` and ``s``.
-    An AVERAGING coupon has that law too where the kit walks blocks: the window is sampled and the
-    PREFIX return truncated (spec 2.4.1), so the conditioning law is the prefix's own Gaussian.
-
-    Under component Heston-Nandi that law is the STRIDE, so the deal is admitted provided
-    ``HN_Stride`` consents: the carry across each jump is a declared approximation and a caller
-    consents to it by name. The plain family still refuses - the stride carries the ``C*q`` state
-    axis the plain law has no room for, and a plain deal is one point of that space
-    (``utils.hn_component_from_plain``, exact and gated at 1.5e-13) - so the remedy is to declare
-    the component model.
-
-    Read once per deal at the top of a pricer, so the refusal lands before a draw is taken.
-    """
-    if not shared.branch_and_weight:
-        return False
-    factor_dep = deal_data.Factor_dep
-    if 'HN_Params' in factor_dep:
-        model = factor_dep['HN_Params'][0][utils.FACTOR_INDEX_SubType]
-        if not OSS_SPOT_MODEL_KITS[model].daily:
-            # a NON-daily kit's own conditioning step IS the fixing interval, so its `p` is that
-            # block's Phi and nothing here is approximated - the model is admitted unconditionally
-            return True
-        if OSS_SPOT_MODEL_KITS[model].strides and shared.hn_stride:
-            return True
-        raise ValueError(
-            "Branch_And_Weight: 'Yes' is refused on {} under SpotModel={!r} - the smooth estimator "
-            "conditions on the FIXING interval's own law, and a {} walk is DAILY, so the only "
-            'Gaussian conditional in hand is the last daily sub-step (the s^-3 regime, at monthly '
-            'fixings too, because the walk is daily whatever the fixings are). The fixing-interval '
-            "law and its survival-truncated inversion are THE STRIDE's cached Phi and inverse-CDF "
-            'verbatim - utils.hn_cdf_logret is the existing half - and it is built, for the '
-            'COMPONENT family, behind HN_Stride. Applying a Gaussian p here would be a wrong '
-            "number wearing the right estimator's name. What works today: {} price this deal under "
-            "GBM (drop SpotModel), or run it with Branch_And_Weight: 'No', which is the default "
-            'and is the crisp OSS estimator this deal already prices under, unchanged.'.format(
-                deal_data.Instrument.field.get('Reference'), model, model,
-                "declare HN_Stride: 'Yes', which consents to the CARRIED STATE the stride "
-                'approximates across each jump;' if OSS_SPOT_MODEL_KITS[model].strides else
-                "declare SpotModel: 'HestonNandiComponent' (utils.hn_component_from_plain is the "
-                'exact map, and the stride is that recursion\'s cache) with HN_Stride: \'Yes\';'))
-    return True
 
 
 def lognormal_partial_moment(spot, drift, vol, z_bound, fired_above, power=1.0):
@@ -1335,7 +749,7 @@ def exposure_kink_term(V, n_paths_axis=1):
             'is what would smear an atom into a density, but that is not a book you can price here '
             'yet - a collateralised set registers an MTA boundary correction and is refused one '
             'step earlier - and estimating through one is the conditional-p mixture on the roadmap '
-            '(Second-order flux at a JUMP), pinned to the stride.'.format(
+            '(Second-order flux at a JUMP).'.format(
                 rows, worst_row, reading, ladder, climb, span))
 
     u = V - Vbar
@@ -2005,12 +1419,12 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     exactly and only surviving paths draw a truncated step - differentiable end to end and free of
     the variance paths near the barrier would contribute. ``BARRIER_IN`` is priced by in-out parity,
     its vanilla leg valued from the block spot forwarded by ``total_log_forward`` in the DECLARED
-    model - Black, or the Heston-Nandi closed form.
+    model - Black, or the kit's own European over its walk.
 
     Reads. The carry arrives as the interval strip (``forward_carry_rate``) and the vol as TWO
     quantities, deliberately not unified: the per-interval strip the simulation steps on, and
     ``sd_to_expiry = sigma(K, tau) * sqrt(tau)`` for the European legs. The strip reads the moneyness
-    the deal declares; the per-fixing smile convention is open (roadmap.md). Under Heston-Nandi
+    the deal declares; the per-fixing smile convention is open (roadmap.md). Under a spot model
     neither vol quantity is built, so a leg reaching for an implied surface fails on the shape rather
     than quietly pricing a second model. Quanto bends the per-fixing carry; compo prices S*X.
 
@@ -2051,9 +1465,9 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     """
 
     def sim_spot_oss(offset, sobol, num_sims, row_times,
-                     spot_prices, vols, sd_to_expiry, times, carry, discount_rates, *hn_scalars):
+                     spot_prices, vols, sd_to_expiry, times, carry, discount_rates, *scalars):
         """Run the OSS inner Monte Carlo; returns ``(mtm,)``, the tuple being
-        ``InnerMCRecompute``'s contract - plus, under a walking kit, the in-out-parity vanilla as a
+        ``InnerMCRecompute``'s contract - plus, under a kit, the in-out-parity vanilla as a
         by-product, that leg BEING the already-hit value and priced off this row's own walk.
 
         PURE bound/theta split: leading arguments are the block's shape, trailing ones every
@@ -2061,14 +1475,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         ``[N_block, N_fix, batch]`` the simulation steps on, ``sd_to_expiry`` the European standard
         deviation ``[N_block, batch]`` the parity vanilla is valued at.
 
-        Under Heston-Nandi the KI parity vanilla is the HN closed form over ``n_total`` daily steps
-        with a scalar per-step carry, valid only while the carry is batch-constant - hence the loud
-        refusal under stochastic rates.
-
         A digital's TERMINAL step is INTEGRATED, not sampled: an indicator on a drawn spot has zero
-        derivative almost everywhere, so sampling it loses most of a digital's delta and vega. The
-        HN branch keeps the indicator - its per-path conditional variance has no scalar closed form
-        to integrate against.
+        derivative almost everywhere, so sampling it loses most of a digital's delta and vega.
         """
         eps = torch.finfo(shared.one.dtype).eps
 
@@ -2077,16 +1485,15 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             crossed strictly above the level, so a spot sitting ON it survives."""
             return ((spot <= barrier) if eta == BARRIER_UP else (spot >= barrier)).to(spot.dtype)
 
-        # the outer function's kit on THIS call's tensors; `hn` and `walks` are its class facts
-        kit = oss_model_kit(factor_dep, hn_scalars)
+        # the outer function's kit on THIS call's tensors
+        kit = oss_model_kit(factor_dep, scalars)
 
         # `carry` is the INTERVAL carry rate (forward_carry_rate), so this product is the interval
-        # integral. GBM folds it with the vol; HN keeps it raw, its recursion supplying variance
+        # integral, which GBM folds with the vol
         dt = times.unsqueeze(axis=2)                        # [N_block, N_fix, 1]
         carry_int = carry * dt                              # [N_block, N_fix, batch]
         # a ZERO-LENGTH step moves nothing: it resolves against the row's own spot below, and the
-        # mask is what makes it the identity. Read on the HOST - the day-count strip is constant.
-        # HN keeps its whole-daily-step floor, its variance being model state rather than dt-scaled
+        # mask is what makes it the identity. Read on the HOST - the day-count strip is constant
         zero_step = (times <= 0).detach().cpu().numpy()     # [N_block, N_fix]
         if kit is None:
             live = (dt > 0).to(carry_int.dtype)             # [N_block, N_fix, 1]
@@ -2111,12 +1518,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
             D_T = D[-1].reshape(-1, 1)  # terminal discount: [batch, 1]
 
-            if hn:
-                # per-interval daily sub-step counts and per-step carry (r-q). n_sub floors at 1.
-                nj = [max(int(round(float(t) * hn_spy)), 1) for t in times[blk]]
-                b_steps = [(carry_int[blk][j] / nj[j]).reshape(-1, 1) for j in range(N_fix)]
-                st = kit.seed()
-            elif walks:
+            if kit is not None:
                 # one walk per row, AFTER its `u` and mirrored the way `oss_uniforms` mirrors
                 law = kit.blocks(row_times[blk], times[blk], carry[blk], shared, num_sims, True)
 
@@ -2133,30 +1535,11 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                     else:
                         vanilla_pv = utils.black_european_option(
                             fwd_to_T, strike, vol_to_T, 1.0, 1.0, phi, shared) * D[-1]
-                elif walks:
+                else:
                     # the model's own European over the SAME walk, the whole remaining grid as ONE
                     vanilla_pv = kit.european(
                         s.reshape(-1, 1), law, strike, phi == OPTION_CALL, isdigital) * D[-1]
                     parity.append(vanilla_pv)
-                else:
-                    # the HN closed form; a scalar r_step needs batch-constant carry, so the guard
-                    # is loud rather than silent
-                    n_total = int(sum(nj))
-                    carry_total = total_log_forward(carry[blk], times[blk]).reshape(-1)
-                    if float(carry_total.detach().max() - carry_total.detach().min()) > 1.0e-9:
-                        raise ValueError(
-                            'HN KI closed-form leg needs batch-constant carry; carry varies across '
-                            'scenarios by {:.2e} (stochastic rates?) - extend hn_call to batched '
-                            'carry or price this deal under GBM'.format(
-                                float(carry_total.max() - carry_total.min())))
-                    r_step = carry_total[0] / n_total  # scalar b*T/n
-                    if isdigital:
-                        q_below = kit.cdf_logret(torch.log(strike / s), n_total, r_step)
-                        vanilla_pv = ((1.0 - q_below) if phi == OPTION_CALL else q_below) * D[-1]
-                    else:
-                        fwd_growth = torch.exp(r_step * n_total)
-                        vanilla = kit.vanilla(s, strike, n_total, r_step, phi == OPTION_CALL)
-                        vanilla_pv = vanilla * fwd_growth * D[-1]
                 vanilla_pv = vanilla_pv.reshape(-1, 1)  # [batch, 1]
 
             P = shared.one.new_zeros(shared.simulation_batch, 2 * num_sims)
@@ -2166,31 +1549,6 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             Sj = s.reshape(-1, 1) + P
 
             for j in range(N_fix):
-                if hn:
-                    b_step = b_steps[j]
-                    if isBarrierDate_block[j] > 0:
-                        # nj-1 unmonitored daily steps + 1 monitored: the OSS truncation is at the
-                        # CONSTANT barrier, F-measurable over the interval, so the scheme is exact
-                        Sj, st = kit.substeps(
-                            Sj, st, b_step, nj[j] - 1, shared, num_sims, antithetic=True)
-                        h = kit.h(st)
-                        z_max = (torch.log(barrier / Sj) - (b_step - 0.5 * h)) / torch.sqrt(h)
-                        if eta == BARRIER_UP:
-                            p = utils.norm_cdf(z_max)
-                            Z = utils.norm_icdf(torch.clamp(u[j] * p, eps, 1.0 - eps))
-                        else:
-                            p = 1.0 - utils.norm_cdf(z_max)
-                            Z = utils.norm_icdf(torch.clamp((1.0 - p) + u[j] * p, eps, 1.0 - eps))
-                        if direction == BARRIER_OUT:
-                            P = P + (1.0 - p) * L * rebate_per_unit * D[j].reshape(-1, 1)
-                        L = p * L
-                        Sj, st = kit.advance(Sj, st, b_step, Z)
-                    else:
-                        # non-barrier observation date (incl. expiry): full nj unconditional steps
-                        Sj, st = kit.substeps(
-                            Sj, st, b_step, nj[j], shared, num_sims, antithetic=True)
-                    continue
-
                 if kit is None:
                     r_j, sig_j = r[j].reshape(-1, 1), sigma[j].reshape(-1, 1)  # [batch, 1] each
                 else:
@@ -2312,14 +1670,10 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     rebate_per_unit = cash_rebate / size
 
     # the declared model's parameter tensors, by ITS OWN canonical name tuple, and the kit they
-    # build: a DAILY family sub-steps this pricer's interval, a walking one hands it one block law
-    # and GBM is neither, which is also which deals build an implied-surface quantity
-    hn_scalars = oss_model_scalars(factor_dep, shared)
-    kit = oss_model_kit(factor_dep, hn_scalars)
-    hn, walks = kit is not None and kit.daily, kit is not None and not kit.daily
-    if hn:
-        hn_spy = factor_dep['HN_Steps_Per_Year']
-
+    # build: the kit hands this pricer one block law per interval, GBM builds an implied-surface
+    # quantity instead
+    scalars = oss_model_scalars(factor_dep, shared)
+    kit = oss_model_kit(factor_dep, scalars)
 
     sobol = False
     if shared.simulation_batch > 16:
@@ -2341,7 +1695,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     row_ofs = 0
     # read once before a draw is taken so a non-GBM refusal lands first; it SUPERSEDES the
     # registration below rather than joining it
-    smooth = branch_and_weight(shared, deal_data)
+    smooth = shared.branch_and_weight
     second_order = smooth and shared.gamma
     boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
     b_gaps, b_crossed, b_obs_before, b_alive, b_dead, b_cash = [], [], [], [], [], []
@@ -2442,11 +1796,11 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         some_hit = row_barrier_hit.any()
 
         # THE OSS, run even where every row has resolved if a walking kit's hit leg is inside it
-        run_oss = not all_hit or (walks and direction == BARRIER_IN)
+        run_oss = not all_hit or (kit is not None and direction == BARRIER_IN)
         if run_oss:
             simulate = partial(sim_spot_oss, sample_index_t, sobol, shared.MCMC_sims, row_times)
             theta = (spot_block, interval_vols, sd_to_expiry, sample_ts, fwd_drifts,
-                     discount_rates) + hn_scalars
+                     discount_rates) + scalars
             # the SAME callable either way: under the node it is called twice
             oss_result, *parity = InnerMCRecompute.run(shared, simulate, *theta)
             oss_result = nominal * oss_result
@@ -2456,45 +1810,21 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         if some_hit or boundary_aad:
             if direction != BARRIER_IN:
                 hit_value = shared.one.new_zeros(len(t_block), shared.simulation_batch)
-            elif walks:
+            elif kit is not None:
                 # an already-knocked-in KI IS that vanilla: one estimator, off the row's own walk
                 hit_value = nominal * parity[0]
             else:
                 # ONE forward, shared with the in-out-parity leg inside sim_spot_oss - the two
                 # value the same European on the same state
                 log_fwd = total_log_forward(fwd_drifts, sample_ts)              # [N_block, batch]
-                if hn:
-                    # same per-row n_total, same scalar carry
-                    carry_det = log_fwd.detach()  # a guard reads a magnitude, not the tape
-                    carry_spread = float((carry_det.amax(dim=1) - carry_det.amin(dim=1)).max())
-                    if carry_spread > 1.0e-9:
-                        raise ValueError(
-                            'HN already-hit KI leg needs batch-constant carry; carry varies across '
-                            'scenarios by {:.2e} (stochastic rates?) - extend hn_call to batched '
-                            'carry or price this barrier under GBM'.format(carry_spread))
-                    rows = []
-                    for row, spot_row in enumerate(spot_block):
-                        # n_steps drives the variance recursion, so it is a scalar per MTM row
-                        n_total = sum(max(int(round(float(t) * hn_spy)), 1) for t in sample_ts[row])
-                        r_step = log_fwd[row][0] / n_total
-                        if isdigital:
-                            q_below = kit.cdf_logret(
-                                torch.log(strike / spot_row), n_total, r_step)
-                            rows.append((1.0 - q_below) if phi == OPTION_CALL else q_below)
-                        else:
-                            rows.append(kit.vanilla(
-                                spot_row, strike, n_total, r_step, phi == OPTION_CALL
-                            ) * torch.exp(r_step * n_total))
-                    vanilla = torch.stack(rows)
+                fwd_to_expiry = spot_block * torch.exp(log_fwd)                 # [N_block, batch]
+                vol_to_T = sd_to_expiry                                         # [N_block, batch]
+                if isdigital:
+                    vanilla = utils.black_european_option(
+                        fwd_to_expiry, strike, vol_to_T, 1.0, 1.0, phi, shared, cash_payoff=1.0)
                 else:
-                    fwd_to_expiry = spot_block * torch.exp(log_fwd)                     # [N_block, batch]
-                    vol_to_T = sd_to_expiry                                             # [N_block, batch]
-                    if isdigital:
-                        vanilla = utils.black_european_option(
-                            fwd_to_expiry, strike, vol_to_T, 1.0, 1.0, phi, shared, cash_payoff=1.0)
-                    else:
-                        vanilla = utils.black_european_option(
-                            fwd_to_expiry, strike, vol_to_T, 1.0, 1.0, phi, shared)
+                    vanilla = utils.black_european_option(
+                        fwd_to_expiry, strike, vol_to_T, 1.0, 1.0, phi, shared)
                 terminal_df = torch.squeeze(utils.calc_discount_rate(
                     discount_block, tenor_block.reshape(-1, 1), shared), dim=1)     # [N_block, batch]
                 hit_value = nominal * vanilla * terminal_df
@@ -3098,9 +2428,9 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     agree in value and differ by the whole fixing's contribution in delta (``make_fixing_data``).
 
     The carry and vol arrive as interval strips built at the call site, ``use_forwards=True``, so
-    the never-knocking limit prices at the quote the FX vanillas mark with. Under Heston-Nandi the
-    strips are not built and ``sim_spot_tarf``'s (F1)-(F4) and its RECIPROCAL AXIS note apply
-    verbatim. RECOMPUTE: pure bound/theta split; settles are RETURNED, and grouped settlements
+    the never-knocking limit prices at the quote the FX vanillas mark with. Under a spot model the
+    strips are not built and ``sim_spot_tarf``'s declared limitations and its RECIPROCAL AXIS note
+    apply verbatim. RECOMPUTE: pure bound/theta split; settles are RETURNED, and grouped settlements
     accumulate through ``cash_settle``.
 
     BOUNDARY AAD: the knock-out is decided on OUTER scenario state, so the whole latch is built
@@ -3129,11 +2459,6 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     built at second order (``accrual_kink_term``), both legs being relus of one argument whose
     pathwise gamma is an exact zero.
 
-    THE STRIDE (``HN_Stride: 'Yes'``, component Heston-Nandi only) makes the whole fixing interval
-    ONE survival-truncated k-step draw instead of a daily walk. There is no fired branch to
-    integrate here, so it changes the SAMPLER and nothing else on either estimator; what it costs is
-    the state carried across each jump. Off is bit for bit.
-
     THE PENDING HEAD IS ARITHMETIC HERE, not a branch to build: each fixing is already discounted to
     its OWN settlement date and paid with weight ``L_{j-1} * p_j``, so a path knocking at fixing
     ``k`` has already been paid for every fixing before it, whatever their settlement lag.
@@ -3147,7 +2472,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
 
     def sim_spot_accumulator(settlement, fixing_offset, sobol, num_sims, row_times,
                              spot_prices, times, carry, prev_alive, discount_rates, vols_all,
-                             past_fixings, *hn_scalars):
+                             past_fixings, *scalars):
         """OSS inner Monte Carlo over one block of MTM rows; mean PV and alive-branch PV per row.
 
         PURE bound/theta split for `InnerMCRecompute`. Returns `(mtm, alive_pv, settled,
@@ -3157,8 +2482,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
         decision that gates it. `prev_alive` is theta, carrying the observed samples' graph.
         """
         # the declared model as a kit - the pricer names it once, here
-        kit = oss_model_kit(factor_dep, hn_scalars)
-        hn, walks = kit is not None and kit.daily, kit is not None and not kit.daily
+        kit = oss_model_kit(factor_dep, scalars)
         mcmc, alive, settled, settle_rows, settle_cols = [], [], [], [], []
         for i, (D, s, carry_rate, delta_t, tau) in enumerate(zip(
                 discount_rates, spot_prices, carry, times, settlement)):
@@ -3171,11 +2495,10 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
             if kit is None:
                 vols = vols_all[i]
             u = oss_uniforms(shared, reduced_samples, num_sims, sobol)
-            if walks:
+            if kit is not None:
                 # one walk per row, AFTER its `u` and mirrored the way `oss_uniforms` mirrors
                 law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, True)
             Sj = torch.unsqueeze(s, 1)
-            st = kit.seed() if hn else None
             P = shared.one.new_zeros((shared.simulation_batch, 2 * num_sims))
             L = prev_alive.reshape(-1, 1) * shared.one.new_ones((shared.simulation_batch, 2 * num_sims))
             if boundary_aad:
@@ -3189,38 +2512,15 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                 Dj = D[j].reshape(-1, 1)
                 if dt > 0:
                     fwd_carry = carry_rate[j].reshape(-1, 1)
-                    if hn and stride:
-                        # THE WHOLE INTERVAL IS ONE STRIDE, survival-truncated at the barrier: the
-                        # k-step law's own Phi rather than the last daily Gaussian's, conditioned
-                        # over the interval rather than over its final day
-                        n_sub = max(int(round(float(dt) * hn_spy)), 1)
-                        b_step = fwd_carry * dt / n_sub
-                        fix = kit.stride_interval(Sj, st, b_step, n_sub)
-                        e1, e2 = stride_normals(shared, num_sims, True)
-                        p, Sj, st = kit.stride_advance(
-                            fix, b_step, u[j], e1, e2,
-                            kit.stride_bound(fix, barrier), barrier_up)
-                    elif hn:
-                        # daily HN sub-steps; only the LAST is monitored, so the OSS truncation at
-                        # the constant barrier is exact
-                        n_sub = max(int(round(float(dt) * hn_spy)), 1)
-                        b_step = fwd_carry * dt / n_sub
-                        Sj, st = kit.substeps(
-                            Sj, st, b_step, n_sub - 1, shared, num_sims, antithetic=True)
-                        h = kit.h(st)
-                        z_bound = (torch.log(barrier / Sj) - (b_step - 0.5 * h)) / torch.sqrt(h)
-                        p, Z = oss_truncated_draw(u[j], z_bound, barrier_up)
-                        Sj, st = kit.advance(Sj, st, b_step, Z)
+                    if kit is None:
+                        fwd_vol = vols[j].reshape(-1, 1)
+                        vol_step = fwd_vol * torch.sqrt(dt)
+                        fwd_drift = (fwd_carry - 0.5 * fwd_vol * fwd_vol) * dt
                     else:
-                        if kit is None:
-                            fwd_vol = vols[j].reshape(-1, 1)
-                            vol_step = fwd_vol * torch.sqrt(dt)
-                            fwd_drift = (fwd_carry - 0.5 * fwd_vol * fwd_vol) * dt
-                        else:
-                            fwd_drift, vol_step = law[0][..., j], law[1][..., j]
-                        z_bound = (torch.log(barrier / Sj) - fwd_drift) / vol_step
-                        p, Z = oss_truncated_draw(u[j], z_bound, barrier_up)
-                        Sj = Sj * torch.exp(fwd_drift + vol_step * Z)
+                        fwd_drift, vol_step = law[0][..., j], law[1][..., j]
+                    z_bound = (torch.log(barrier / Sj) - fwd_drift) / vol_step
+                    p, Z = oss_truncated_draw(u[j], z_bound, barrier_up)
+                    Sj = Sj * torch.exp(fwd_drift + vol_step * Z)
                     payoff_spot = Sj
                     p_alive = p
                 else:
@@ -3303,13 +2603,9 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                   len(known_resets) + len(sim_samples), barrier, int(barrier_up),
                   int(bool(factor_dep['Prefix_Breached'])), len(counts))
 
-    # read once before a draw is taken so a non-GBM refusal lands first; it SUPERSEDES the
-    # registration below rather than joining it
-    smooth = branch_and_weight(shared, deal_data)
-    # THE STRIDE (`HN_Stride`, component Heston-Nandi only): the whole fixing interval as one
-    # survival-truncated k-step draw. No fired branch to integrate here, so it changes the SAMPLER
-    # and nothing else, on either estimator
-    stride = oss_strides(factor_dep, shared)
+    # read once before a draw is taken; it SUPERSEDES the registration below rather than
+    # joining it
+    smooth = shared.branch_and_weight
     # curvature is the switch: the per-fixing kink term is never BUILT unless a second derivative
     # was asked for, so it costs nothing on a first-order run
     second_order = smooth and shared.gamma
@@ -3328,10 +2624,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                            F.relu(-intrinsic) * factor_dep['Notional2'])
 
     # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
-    hn_scalars = oss_model_scalars(factor_dep, shared)
-    hn = bool(hn_scalars)
-    if hn:
-        hn_spy = factor_dep['HN_Steps_Per_Year']
+    scalars = oss_model_scalars(factor_dep, shared)
 
     # prefix knock-out state, entirely a fold over observations: the settled fixings' breach tests
     # fold in calc_dependencies (`Prefix_Breached`); the unsettled observed and simulated fixings
@@ -3371,12 +2664,12 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
         vols = forward_vol_rate(forward_vol_strip(
             deal_data, strike, spot_block, drifts, fixing_block, shared,
             factor_dep['Invert_Moneyness'], use_forwards=True), cum_t,
-            sample_ts) if not hn else spot_block.new_empty(0)
+            sample_ts) if not scalars else spot_block.new_empty(0)
 
         simulate = partial(sim_spot_accumulator, settlement, settle_index_local, sobol,
                            shared.MCMC_sims, daycount_fn(t_block[:, utils.TIME_GRID_MTM]))
         theta = (spot_block, sample_ts, fwd_drifts, alive_seq[settle_index_local],
-                 discount_rates, vols, all_samples) + hn_scalars
+                 discount_rates, vols, all_samples) + scalars
         # the SAME callable either way: under the node it is called twice
         block_mtm, block_alive, block_settled, settle_rows, settle_cols = InnerMCRecompute.run(
             shared, simulate, *theta)
@@ -3474,8 +2767,8 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
     first-order moving-boundary term vanishes.
 
     SCOPE: GBM off the implied surface, the smile frozen at K2 moneyness for transition variances.
-    Heston-Nandi would make the continuation state two-dimensional and is deliberately not
-    approximated. Reconstructed outer-grid decisions register a `LatchedBoundarySet`: the alive
+    A stochastic-variance spot model would make the continuation state two-dimensional and is
+    deliberately not approximated. Reconstructed outer-grid decisions register a `LatchedBoundarySet`: the alive
     branch is the facts-only world, the dead branch the survived-weighted pending head, both from
     the same `value = fixed + state * live` row arithmetic the forward reports.
 
@@ -3970,17 +3263,13 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     the surviving branch, and only the ITM leg accrues toward the target - the OTM leg affects PV
     only, plus the optional knock-in barrier.
 
-    Heston-Nandi limitations - accepted design semantics, stated so they are not re-derived:
-    (F1) each fixing spans ``n_sub = max(round(dt * Steps_Per_Year), 1)`` whole HN daily steps, so
-         per-fixing variance is quantised to trading days with a floor of one;
-    (F2) ``Steps_Per_Year`` must match the daily clock the HN factor was calibrated on - a mismatch
+    Spot-model limitations - accepted design semantics, stated so they are not re-derived:
+    (F1) ``Steps_Per_Year`` must match the internal clock the factor was calibrated on - a mismatch
          silently rescales the variance horizon;
-    (F3) the ``n_sub - 1`` unmonitored sub-step normals come from the global torch generator, so
-         finite-difference greeks w.r.t. non-HN factors pick up RNG noise (AAD HN greeks do not);
-    (F4) ``h`` re-seeds to ``H0`` at every MTM row - there is no outer-grid variance term structure.
-    Absent the HN scalars the GBM path is byte-identical. RECOMPUTE: the vol strip is built at the
-    call site and the simulation RETURNS its settled cashflows and registrations. THE RECIPROCAL
-    AXIS (``HN_Invert``) is the declared kit's own; nothing here knows of it.
+    (F2) the walk re-seeds at every MTM row - there is no outer-grid variance term structure.
+    Absent the model's scalars the GBM path is byte-identical. RECOMPUTE: the vol strip is built at
+    the call site and the simulation RETURNS its settled cashflows and registrations. THE RECIPROCAL
+    AXIS (``Invert_Spot``) is the declared kit's own; nothing here knows of it.
 
     BOUNDARY AAD registers two decisions taken on simulated state: the target FILLING (LATCHED, a
     later block's accrual being only ever larger) and the OTM leg KNOCKING IN (per inner path). The
@@ -3999,13 +3288,6 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     tape), the per-fixing accrual kink at second order (``accrual_kink_term``, added to ``cf_itm``
     so it reaches both the payment and the running target), and an exact target pin, whose crisp
     flux resolves no better than ~10%.
-
-    THE STRIDE (``HN_Stride: 'Yes'``, component Heston-Nandi only) replaces (F1)'s daily walk: the
-    WHOLE fixing interval becomes one survival-truncated k-step draw, so ``p`` is the k-step law's
-    own ``Phi`` rather than the last daily Gaussian's - the regime the daily one gets wrong by
-    ``Delta_t^(-3/2)``. It is what lets branch-and-weight price this deal under Heston-Nandi at all;
-    crisp, it hands the knock-IN's flux to `splice_conditional_p`, SUPERSEDING that registration.
-    What it costs is (F4)'s sibling: the state across each jump is matched quadratically.
 
     WHAT THE SWITCH DOES NOT SMOOTH: a decision taken on an OBSERVED sample. The redemption latch's
     gaps are the accrual of fixings already seen - data, not simulated state - and under base
@@ -4038,7 +3320,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
     def sim_spot_tarf(settlement, sobol, num_sims, settle_offset, row_times,
                       spot_prices, times, carry, prev_accum, discount_rates, vols_all,
-                      past_fixings, *hn_scalars):
+                      past_fixings, *scalars):
         """Inner one-step-survival Monte Carlo over one block of MTM rows; the mean PV per row.
 
         PURE bound/theta split for ``InnerMCRecompute``; by-products are RETURNED. Returns
@@ -4046,10 +3328,6 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         the redemption latch's counterfactual rows, the cashflows settling today, the block-local
         rows they and the knock-in decisions land on, then one gap and one jump per (row, fixing) -
         the gaps being the outputs whose cotangent carries the correction.
-
-        Heston-Nandi: ``h`` re-seeds to ``H0`` per MTM row. Only the LAST step of a fixing is
-        truncated - the TARF accrues and knocks AT it - and the PnL barrier depends only on the
-        remaining target, F-measurable at the truncation, so the scheme is exact.
 
         Two decisions fork here under ``boundary_aad``:
 
@@ -4068,8 +3346,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
         K = strike
         # the declared model as a kit - the pricer names it once, here
-        kit = oss_model_kit(factor_dep, hn_scalars)
-        hn, walks = kit is not None and kit.daily, kit is not None and not kit.daily
+        kit = oss_model_kit(factor_dep, scalars)
         # per-block results, and the by-products the caller performs once
         mcmc, alive, settled, gaps, jumps = [], [], [], [], []
         settle_rows, knock_rows = [], []
@@ -4085,13 +3362,11 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 vols = vols_all[i]
             if reduced_samples:
                 u = oss_uniforms(shared, reduced_samples, num_sims, sobol)
-                if walks:
+                if kit is not None:
                     # one walk per row, AFTER its `u` and mirrored the way `oss_uniforms` mirrors
                     law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, True)
 
             Sj = torch.unsqueeze(s, 1)  # [batch, 1]
-            # the HN variance state, re-seeded per MTM row
-            st = kit.seed() if hn else None
             P = shared.one.new_zeros((shared.simulation_batch, 2*num_sims))
             L = shared.one.new_ones((shared.simulation_batch, 2*num_sims))
             remaining_target = targetValue-prev_accum
@@ -4137,43 +3412,16 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                         rhs = (1.0 / K) + (R / N_i) * (-callOrPut)
                         B_pnl = 1.0 / rhs
 
-                    fix = None
-                    if hn:
-                        # HN calibrates per day, so this fixing spans n_sub daily steps
-                        n_sub = max(int(round(float(dt) * hn_spy)), 1)
-                        b_step = fwd_carry * dt / n_sub  # per-step r-q; the total is fwd_carry*dt
-                    if hn and stride:
-                        # THE WHOLE INTERVAL IS ONE STRIDE, survival-truncated at the PnL barrier:
-                        # the conditioning step is the FIXING interval rather than its last day,
-                        # the regime the daily Gaussian gets wrong by Delta_t^(-3/2)
-                        Sj_prev = Sj
-                        fix = kit.stride_interval(Sj, st, b_step, n_sub)
-                        e1, e2 = stride_normals(shared, num_sims, True)
-                        p, Sj, st = kit.stride_advance(
-                            fix, b_step, u[j], e1, e2,
-                            kit.stride_bound(fix, B_pnl), callOrPut > 0)
-                    elif hn:
-                        # only the LAST daily step is truncated, which is what makes the scheme
-                        # exact; the first n_sub-1 are unmonitored and antithetic, to align with
-                        # the u <-> 1-u halves of the truncated final draw below
-                        Sj, st = kit.substeps(
-                            Sj, st, b_step, n_sub - 1, shared, num_sims, antithetic=True)
-                        h = kit.h(st)
-                        fwd_drift = b_step - 0.5 * h  # the FINAL (monitored) daily step's drift
-                        vol_step = torch.sqrt(h)
-                        z_max = (torch.log(B_pnl / Sj) - fwd_drift) / vol_step
+                    # the PnL cap standardises in the interval's own law, off Sj as S_{i-1}
+                    if kit is None:
+                        fwd_drift = (fwd_carry - 0.5 * fwd_vol * fwd_vol) * dt
+                        vol_step = fwd_vol * torch.sqrt(dt)
                     else:
-                        # the PnL cap standardises in the interval's own law, off Sj as S_{i-1}
-                        if kit is None:
-                            fwd_drift = (fwd_carry - 0.5 * fwd_vol * fwd_vol) * dt
-                            vol_step = fwd_vol * torch.sqrt(dt)
-                        else:
-                            fwd_drift, vol_step = law[0][..., j], law[1][..., j]
-                        z_max = (torch.log(B_pnl/Sj) - fwd_drift) / vol_step
-                    if fix is None:
-                        # the survival side follows the PnL cap's direction
-                        Sj_prev = Sj
-                        p, Z = oss_truncated_draw(u[j], z_max, callOrPut > 0)
+                        fwd_drift, vol_step = law[0][..., j], law[1][..., j]
+                    z_max = (torch.log(B_pnl/Sj) - fwd_drift) / vol_step
+                    # the survival side follows the PnL cap's direction
+                    Sj_prev = Sj
+                    p, Z = oss_truncated_draw(u[j], z_max, callOrPut > 0)
 
                     # the analytic KO-in-step: the knocked-out weight pays the REMAINING TARGET,
                     # discounted at the j-th point. R is measurable one fixing back, so
@@ -4184,23 +3432,12 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     # THE KNOCK-IN, INTEGRATED: `otm_bound` carries the strike's side and the
                     # barrier's, so this tail lies wholly inside the surviving set for every R >= 0
                     otm_analytic = None
-                    # a conditioning step exists under the smooth estimator, the stride, and any
-                    # model whose fixing-interval law is in hand; the daily HN arm has none
-                    if (smooth or fix is not None or not hn) and otm_bound is not None:
-                        otm_analytic = Dj * L * N_otm * (-gain_sign) * (
-                            kit.stride_fired_gain(
-                                fix, kit.stride_bound(fix, otm_bound), K, callOrPut < 0, gain_power)
-                            if fix is not None else lognormal_fired_gain(
-                                Sj_prev, fwd_drift, vol_step,
-                                (torch.log(otm_bound / Sj_prev) - fwd_drift) / vol_step,
-                                K, callOrPut < 0, gain_power))
-                    if fix is None:
-                        if hn:
-                            # HN increment + h-recursion on the truncated final draw; leverage-
-                            # asymmetric because Z is survival-truncated (see hn_daily_advance)
-                            Sj, st = kit.advance(Sj, st, b_step, Z)
-                        else:
-                            Sj = Sj * torch.exp(fwd_drift + vol_step * Z)
+                    if otm_bound is not None:
+                        otm_analytic = Dj * L * N_otm * (-gain_sign) * lognormal_fired_gain(
+                            Sj_prev, fwd_drift, vol_step,
+                            (torch.log(otm_bound / Sj_prev) - fwd_drift) / vol_step,
+                            K, callOrPut < 0, gain_power)
+                    Sj = Sj * torch.exp(fwd_drift + vol_step * Z)
                 else:
                     # the strip's j-th fixing is the schedule's `settle_offset + j`-th, which is
                     # where the resolved samples stand too - declared ones first, then simulated.
@@ -4363,13 +3600,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                   deal_data.Instrument.field.get('Reference'), len(fx_samples.schedule),
                   len(known_resets) + len(sim_samples), targetValue, barrier, len(counts))
 
-    # read once before a draw is taken so a non-GBM refusal lands first. It SUPERSEDES the two
-    # registrations below rather than joining them - one decision, one estimator
-    smooth = branch_and_weight(shared, deal_data)
-    # THE STRIDE (`HN_Stride`, component Heston-Nandi only): the k-step law of the whole fixing
-    # interval in place of the daily walk. Under `smooth` it IS the estimator's conditioning law;
-    # crisp, it hands the knock-IN's flux to the conditional-p mixture
-    stride = oss_strides(factor_dep, shared)
+    # read once before a draw is taken. It SUPERSEDES the two registrations below rather than
+    # joining them - one decision, one estimator
+    smooth = shared.branch_and_weight
     # `eff_intr = gain_sign * (S**gain_power - K**gain_power)` on BOTH targets, which is what lets
     # one closed form serve the inverted accrual (`lognormal_fired_gain`'s own `power`)
     gain_power = -1.0 if invertedTarget else 1.0
@@ -4383,18 +3616,14 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     # second derivative, so it costs nothing on a first-order run
     second_order = smooth and shared.gamma
 
-    # `smooth` removes both decisions; the CRISP MIXTURE (`stride and not smooth`) takes only the
-    # KNOCK-IN's, so under it the redemption latch still registers and the knock-in does not
+    # `smooth` removes both decisions, so under it neither the redemption latch nor the
+    # knock-in registers
     boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
     b_gaps, b_fired, b_obs_before, b_inner, alive, row_ofs = [], [], [], [], [], 0
     b_pending, b_cash = [], []
 
     # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
-    hn_scalars = oss_model_scalars(factor_dep, shared)
-    hn = bool(hn_scalars)
-    if hn:
-        hn_spy = factor_dep['HN_Steps_Per_Year']
-
+    scalars = oss_model_scalars(factor_dep, shared)
 
     # the accrual by SCHEDULE POSITION - `accumulation[k]` nets the first k fixings, the declared
     # ones and then the simulated ones behind them. A block opens on the pot its SETTLED fixings
@@ -4438,12 +3667,12 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         vols = forward_vol_rate(forward_vol_strip(
             deal_data, strike, spot_block, drifts, fixing_block, shared,
             factor_dep['Invert_Moneyness'], use_forwards=True), cum_t,
-            sample_ts) if not hn else spot_block.new_empty(0)
+            sample_ts) if not scalars else spot_block.new_empty(0)
 
         simulate = partial(sim_spot_tarf, settlement, sobol, shared.MCMC_sims,
                            settle_index_local, daycount_fn(t_block[:, utils.TIME_GRID_MTM]))
         theta = (spot_block, sample_ts, fwd_drifts, accumulation[settle_index_local],
-                 discount_rates, vols, all_samples) + hn_scalars
+                 discount_rates, vols, all_samples) + scalars
         # the SAME callable either way: under the node it is called twice
         outputs = InnerMCRecompute.run(shared, simulate, *theta)
         (block_mtm, block_alive, block_settled, settle_rows, knock_rows,
@@ -4550,7 +3779,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     """Autocallable swap by inner Monte Carlo, one-step-survival when there is no averaging.
 
     RECOMPUTE: ``sim_spot`` is a pure bound/theta split called through ``InnerMCRecompute`` - the
-    floating leg, past fixings and Heston-Nandi scalars enter as theta, and settled cashflows and
+    floating leg, past fixings and the spot model's scalars enter as theta, and settled cashflows and
     trigger registrations are RETURNED, not performed. THE VOL IS AN INTERVAL STRIP in both
     branches, read at the moneyness the deal declares; the per-fixing smile convention is open
     (roadmap.md). Quanto bends the carry at the expiry read; compo prices the product S*X.
@@ -4583,9 +3812,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     through ``C_ts_te``. One decision is ONE counterfactual - an
     objective with a kink scores two partial counterfactuals differently from their sum. A
     re-observation of an old decision registers nothing. THE TERMINAL PUT registers beside it as an
-    ``InnerBoundarySet`` - one decision per inner path - only where no conditioning step exists (the
-    plain daily HN arm, an observed fixing, a block opening on an unaligned one); under GBM and the
-    stride the conditional-p splice takes it. NOTHING ELSE IS DECLARED: the float leg and the put are
+    ``InnerBoundarySet`` - one decision per inner path - only where no conditioning step exists (an
+    observed fixing, a block opening on an unaligned one); where one does, the conditional-p splice
+    takes it. NOTHING ELSE IS DECLARED: the float leg and the put are
     paid but never ``cash_settle``d here, and a fact the chain cannot find in ``Cf_Rec`` replays a
     ledger the reported world does not have.
 
@@ -4611,17 +3840,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     OBSERVED fixing and a block opening on an unaligned one. A coupon row of ``<= 0`` would be a
     third and inexact way; ``calc_dependencies`` refuses that document by name.
 
-    THE STRIDE (``HN_Stride: 'Yes'``, component Heston-Nandi only, OSS arm only) makes each
-    coupon interval ONE survival-truncated k-step draw, so the put leg's conditioning step is the
-    fixing interval. The advance is HELD and applied where the daily draw would have been taken, so
-    the payment and the weight update in the order above. Crisp, the put leg keeps its indicator for
-    the VALUE and takes the mixture's derivatives through `splice_conditional_p`, closing the 18-22%
-    delta-ladder miss without moving a price. Off is the daily walk bit for bit.
-
     THE FULL-PATH BRANCH REFUSES BY NAME rather than no-opping: its termination is a smoothed
     per-inner-path weight with no crisp per-scenario decision to replace, and its ``breached`` is a
-    hard indicator, on the average or the spot as the deal declares. The stride does not reach it
-    either, for the same reason - a mean of spots is not one fixing interval's law.
+    hard indicator, on the average or the spot as the deal declares.
     """
     def sim_autocall(S, isBarrierDate, isFixingDate, isFloatDate, floating, threshold, coupon, terminationDate):
         """The FULL-PATH branch's inner walk: coupons trigger off the running average of spots and
@@ -4681,7 +3902,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
     def sim_spot(offset, times, row_days, row_times, last_fixing, windows, sobol, num_sims,
                  spot_prices, vols, carry, terminationDate, discount_rates, floating_leg,
-                 past_fixings, *hn_scalars):
+                 past_fixings, *scalars):
         """Inner one-step-survival Monte Carlo over one block of MTM rows; the mean PV per row.
 
         PURE bound/theta split for ``InnerMCRecompute``. ``times`` is bound because it is built from
@@ -4709,8 +3930,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
         timesteps, num_samples = times.shape
         # the declared model as a walking kit - the pricer names it once, here
-        kit = oss_model_kit(factor_dep, hn_scalars)
-        hn, walks = kit is not None and kit.daily, kit is not None and not kit.daily
+        kit = oss_model_kit(factor_dep, scalars)
         # the by-products the caller performs once
         settled, settle_rows, event_rows, gaps, fired, survived = [], [], [], [], [], []
         alive, cash_on = [], []
@@ -4743,9 +3963,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                        dtype=shared.one.dtype, device=shared.one.device)
                 Sj = torch.unsqueeze(
                     s if last_fixing is None else past_fixings[last_fixing], 1)
-                if hn:
-                    st = kit.seed()  # re-seed the variance state at the start of this MTM row
-                elif walks and reduced_samples:
+                if kit is not None and reduced_samples:
                     # one walk per row, AFTER its `u`; NOT antithetic, this loop drawing raw
                     law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, False)
 
@@ -4767,9 +3985,6 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                     # the conditioning step THIS iteration's coupon block advanced `Sj` over, or
                     # None - the put leg below integrates against it, and only a fresh one is one
                     interval = None
-                    # the spot and state a STRIDE has already moved this coupon to, applied where
-                    # the daily draw is taken so the P and L arithmetic keeps its order
-                    strided = None
                     # what this date's decisions read: the window's average where a coupon block
                     # ran, this row's own spot otherwise
                     decided = Sj
@@ -4796,68 +4011,38 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         if dt > 0:
                             # `carry` arrives as the INTERVAL carry strip (forward_carry_rate)
                             forward_carry = carry_rate[coupon_index].reshape(-1, 1)
-                            if hn and stride:
-                                # THE WHOLE COUPON INTERVAL IS ONE STRIDE. The advance is HELD and
-                                # applied where the daily draw would have been taken, so the payment
-                                # and the weight are updated in the same order
-                                n_sub = max(int(round(float(dt) * hn_spy)), 1)
-                                b_step = forward_carry * dt / n_sub
-                                fixing = kit.stride_interval(Sj, st, b_step, n_sub)
-                                e1, e2 = stride_normals(shared, num_sims, False)
-                                p, Sj_next, st_next = kit.stride_advance(
-                                    fixing, b_step, u[coupon_index], e1, e2,
-                                    kit.stride_bound(fixing, K), True)
-                                strided = (Sj_next, st_next)
-                                if barrier > 0 and putBarrier > 0.0:
-                                    # held below: the interval's cached law, the weight from BEFORE
-                                    # `p` enters `L`, and the breach's bound inside the surviving
-                                    # set. A daily kit has ONE fixing, where the two readings agree
-                                    interval = (fixing, Sj, None, None, L,
-                                                kit.stride_bound(fixing, min(putBarrier, K)), c)
-                            elif hn:
-                                # HN daily sub-stepping to the coupon date. The autocall knocks out
-                                # only AT the coupon observation, so the OSS truncation - survival
-                                # is spot BELOW K - applies only on the final daily step
-                                n_sub = max(int(round(float(dt) * hn_spy)), 1)
-                                b_step = forward_carry * dt / n_sub
-                                Sj, st = kit.substeps(
-                                    Sj, st, b_step, n_sub - 1, shared, num_sims, antithetic=False)
-                                h = kit.h(st)
-                                p = utils.norm_cdf(
-                                    (torch.log(K / Sj) - (b_step - 0.5 * h)) / torch.sqrt(h))
+                            # THE INTERVAL'S OWN LAW as `(m, s)` - the kit's walked block, or
+                            # the step GBM simulates, the fixing interval BEING that step. `s`
+                            # shadows the row's spot, which `Sj` captured before the loop
+                            if kit is None:
+                                vol = v[coupon_index].reshape(-1, 1)  # [batch,1]
+                                m, s = ((forward_carry - 0.5 * vol * vol) * dt,
+                                        vol * torch.sqrt(dt))
                             else:
-                                # THE INTERVAL'S OWN LAW as `(m, s)` - the kit's walked block, or
-                                # the step GBM simulates, the fixing interval BEING that step. `s`
-                                # shadows the row's spot, which `Sj` captured before the loop
-                                if kit is None:
-                                    vol = v[coupon_index].reshape(-1, 1)  # [batch,1]
-                                    m, s = ((forward_carry - 0.5 * vol * vol) * dt,
-                                            vol * torch.sqrt(dt))
-                                else:
-                                    m, s = law[0][..., coupon_index], law[1][..., coupon_index]
-                                if ahead > 1:
-                                    # THE WINDOW: fixing-to-fixing blocks of the same walk, drawn
-                                    # as plain Gaussians off their own dimensions of this row's
-                                    # block, and summed into the average's factor `G`
-                                    win = slice(coupon_index + 1, coupon_index + ahead)
-                                    z = utils.norm_icdf(
-                                        torch.clamp(u[win], eps, 1.0 - eps)).permute(1, 2, 0)
-                                    steps = (law[0][..., win] + law[1][..., win] * z).cumsum(-1)
-                                    win_end = torch.exp(steps[..., -1])
-                                    G = (1.0 + torch.exp(steps).sum(-1)) / n_win
-                                scale = Sj * G
-                                k_ratio = (K - c) / scale
-                                p = utils.norm_cdf(
-                                    (torch.log(torch.clamp_min(k_ratio, eps)) - m) / s)
-                                if barrier > 0 and putBarrier > 0.0:
-                                    # held below: the average's lognormal factor before the
-                                    # advance, the prefix's own law, the weight from BEFORE `p`
-                                    # enters `L`, the breach's half-line INTERSECTED with the
-                                    # surviving one - both bound the same return - and the shift
-                                    b_ratio = observe(putBarrier, putBarrier - c) / (
-                                        Sj * observe(win_end, G))
-                                    interval = (None, scale, m, s, L, (torch.log(torch.clamp_min(
-                                        torch.minimum(b_ratio, k_ratio), eps)) - m) / s, c)
+                                m, s = law[0][..., coupon_index], law[1][..., coupon_index]
+                            if ahead > 1:
+                                # THE WINDOW: fixing-to-fixing blocks of the same walk, drawn
+                                # as plain Gaussians off their own dimensions of this row's
+                                # block, and summed into the average's factor `G`
+                                win = slice(coupon_index + 1, coupon_index + ahead)
+                                z = utils.norm_icdf(
+                                    torch.clamp(u[win], eps, 1.0 - eps)).permute(1, 2, 0)
+                                steps = (law[0][..., win] + law[1][..., win] * z).cumsum(-1)
+                                win_end = torch.exp(steps[..., -1])
+                                G = (1.0 + torch.exp(steps).sum(-1)) / n_win
+                            scale = Sj * G
+                            k_ratio = (K - c) / scale
+                            p = utils.norm_cdf(
+                                (torch.log(torch.clamp_min(k_ratio, eps)) - m) / s)
+                            if barrier > 0 and putBarrier > 0.0:
+                                # held below: the average's lognormal factor before the
+                                # advance, the prefix's own law, the weight from BEFORE `p`
+                                # enters `L`, the breach's half-line INTERSECTED with the
+                                # surviving one - both bound the same return - and the shift
+                                b_ratio = observe(putBarrier, putBarrier - c) / (
+                                    Sj * observe(win_end, G))
+                                interval = (scale, m, s, L, (torch.log(torch.clamp_min(
+                                    torch.minimum(b_ratio, k_ratio), eps)) - m) / s, c)
                         else:
                             decided = obs / n_win
                             p = torch.where(K > decided, 1.0, 0.0)
@@ -4916,16 +4101,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             # prevent underflow or overflow
                             safe_pu = torch.clamp(p * u[coupon_index], min=eps, max=1.0-eps)
 
-                            if strided is not None:
-                                # the stride drew and carried above; this is where it lands, so the
-                                # coupon and the weight read the pre-advance spot exactly as they
-                                # do on the daily path
-                                Sj, st = strided
-                            elif hn:
-                                # the survival-truncated final draw and its h-recursion
-                                Sj, st = kit.advance(Sj, st, b_step, utils.norm_icdf(safe_pu))
-                            else:
-                                Sj = Sj * torch.exp(m + s * utils.norm_icdf(safe_pu))
+                            Sj = Sj * torch.exp(m + s * utils.norm_icdf(safe_pu))
                             # the average this coupon decided on, then the window's LAST fixing,
                             # which is where the next coupon's prefix opens
                             decided = c + Sj * G
@@ -4941,12 +4117,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             # THE PUT LEG, INTEGRATED against `bound`, and `L_prev` - the weight
                             # from before `p` entered `L` - IS `L / p` without the 0/0 where every
                             # path fired
-                            fixing, scale, m, s, L_prev, bound, c = interval
-                            analytic = L_prev * D[j] * fx * (
-                                kit.stride_fired_gain(fixing, bound, strike * (1.0 - rebate), False)
-                                if fixing is not None else lognormal_fired_gain(
-                                    scale, m, s, bound,
-                                    strike * (1.0 - rebate) - c, False)) / strike
+                            scale, m, s, L_prev, bound, c = interval
+                            analytic = L_prev * D[j] * fx * lognormal_fired_gain(
+                                scale, m, s, bound, strike * (1.0 - rebate) - c, False) / strike
                             if smooth:
                                 P = P + analytic
                             else:
@@ -5103,7 +4276,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
     # read once before a draw is taken so a non-GBM refusal lands first. It SUPERSEDES the
     # registration below rather than joining it - one decision, one estimator
-    smooth = branch_and_weight(shared, deal_data)
+    smooth = shared.branch_and_weight
     if smooth and not factor_dep['oss_windows']:
         raise ValueError(
             "Branch_And_Weight: 'Yes' is refused on {} because it prices on the FULL-PATH branch - "
@@ -5121,18 +4294,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             'crisp estimator this deal already prices under, unchanged.'.format(
                 deal_data.Instrument.field.get('Reference')))
 
-    # THE STRIDE (`HN_Stride`, component Heston-Nandi only): each coupon interval as one
-    # survival-truncated k-step draw. It reaches the no-averaging arm alone, for the reason the
-    # switch above does - a mean of spots is not one interval's law
-    stride = oss_strides(factor_dep, shared) and factor_dep['oss_windows']
-
-    # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM. HN is
-    # only wired into the OSS arm
-    hn_scalars = oss_model_scalars(factor_dep, shared)
-    hn = bool(hn_scalars)
-    if hn:
-        hn_spy = factor_dep['HN_Steps_Per_Year']
-
+    # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM. The
+    # model is only wired into the OSS arm
+    scalars = oss_model_scalars(factor_dep, shared)
 
     sobol = False
     # a quasi random generator for large batches; the counter is reset so subsequent runs reuse the
@@ -5256,7 +4420,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             theta = (spot_block, interval_vols, fwd_drifts, terminationDate, discount_rates,
                      floating_leg,
                      all_eq_samples if factor_dep['oss_windows'] else spot_block.new_empty(0)
-                     ) + hn_scalars
+                     ) + scalars
             # the SAME callable either way: under the node it is called twice
             outputs = InnerMCRecompute.run(shared, simulate, *theta)
             # `terminationDate` comes back stamped by this block's observed fixing and is handed to

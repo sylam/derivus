@@ -76,9 +76,7 @@ class ModelParams(object):
         self.implied_models = {
             'CSImpliedForwardPriceModel': 'CSForwardPriceModelParameters',
             'GBMAssetPriceTSModelImplied': 'GBMAssetPriceTSModelParameters',
-            'HullWhite2FactorImpliedInterestRateModel': 'HullWhite2FactorModelParameters',
-            'HestonNandiImpliedSpotModel': 'HestonNandiModelParameters',
-            'HestonNandiComponentImpliedSpotModel': 'HestonNandiComponentModelParameters'
+            'HullWhite2FactorImpliedInterestRateModel': 'HullWhite2FactorModelParameters'
         }
 
         self.modeldefaults = {}

@@ -1673,8 +1673,7 @@ class SpotModelJob:
 
     The XVA mosaic's pattern, for its reason: the fit is a least squares over a simulated walk or a
     Fourier inversion of a daily recursion, and it takes MINUTES - 205 s for LogVar2FJ on a
-    22-contract ladder reaching a year, 513 s for plain Heston-Nandi on the same one - so it is
-    queued at `HEAVY` and must not sit in front of a salesperson's quote.
+    22-contract ladder reaching a year - so it is queued at `HEAVY` and must not sit in front of a salesperson's quote.
 
     No second file and no projection: the fitted `<family>ModelParameters.<underlying>` block lands
     in the book's own `Price Factors`, which every read of the book already serves and an accrual
@@ -1747,9 +1746,9 @@ def book_model(request: dict):
 
 @app.post('/book/hn', summary='Alias of /book/model - kept for one release')
 def book_hn(request: dict):
-    """`/book/model` under the Heston-Nandi spelling it shipped as, kept for one release. The
-    family a caller of this name means is the one it names, whatever the book pins."""
-    return book_model(dict(request, family=request.get('family') or 'HestonNandi'))
+    """`/book/model` under the spelling it shipped as, kept for one release. The family it named
+    is retired, so an unqualified call means the pin, as `/book/model`'s own does."""
+    return book_model(request)
 
 
 class Metronome:

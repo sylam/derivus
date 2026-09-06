@@ -923,10 +923,6 @@ class Credit_Monte_Carlo(Calculation):
         F('Recompute_Inner_MC', 'Text', default='No', values=['Yes', 'No'],
           description='Re-simulate a Monte Carlo pricer\'s inner paths in backward() rather than '
                       'taping them; trades a second forward pass for the graph of every pricing'),
-        F('HN_Stride', 'Text', default='No', values=['Yes', 'No'],
-          description='The stride inside every inner Monte Carlo, as BaseValuation declares it: '
-                      'the component k-step law between fixings, with the conditional-p mixture '
-                      'carrying the flux of every decision at both orders'),
         F('Credit_Valuation_Adjustment', 'Container',
           default={"Calculate": "No", "Counterparty": "", "Bank": "",
                    "Deflate_Stochastically": "Yes", "Stochastic_Hazard_Rates": "No",
@@ -1269,7 +1265,6 @@ class Credit_Monte_Carlo(Calculation):
             keep_tensor=self.params.get('Keep_Tensor', 'No') == 'Yes')
         shared_mem.boundary_aad = calc_greeks is not None
         shared_mem.recompute_inner_mc = self.params.get('Recompute_Inner_MC', 'No') == 'Yes'
-        shared_mem.hn_stride = self.params.get('HN_Stride', 'No') == 'Yes'
         # the one registration that is opt-in rather than implied by wanting sensitivities - its
         # magnitude is unestablished, so a document asks for it by name
         shared_mem.boundary_window_touch = self.params.get(
@@ -1892,32 +1887,11 @@ class Base_Revaluation(Calculation):
                       'integrated analytically against that interval\'s own lognormal law and the '
                       'continuing branch drawn from the truncated one. Same expectation, lower '
                       'variance, and no indicator on the tape - so second-order greeks flow where '
-                      'the crisp estimator has to refuse them. GBM only; a non-GBM spot model '
-                      'refuses by name (`pricing.branch_and_weight`), as does an AVERAGING '
-                      'autocall, whose conditioning law is the distribution of a mean of spots '
-                      'rather than one fixing interval\'s. Off is the crisp path bit for bit, and '
+                      'the crisp estimator has to refuse them. An AVERAGING autocall refuses by '
+                      'name, its conditioning law being the distribution of a mean of spots rather '
+                      'than one fixing interval\'s. Off is the crisp path bit for bit, and '
                       'on it is a RE-ESTIMATION of the same deal - it changes which estimator '
-                      'prices a settlement convention, never which convention the deal settles on'),
-        F('HN_Stride', 'Text', default='No', values=['Yes', 'No'],
-          description='Use THE STRIDE - the component Heston-Nandi k-step conditional law of the '
-                      'log spot given (h, q), cached per fixing interval - in place of the daily '
-                      'walk between fixings. One field governs its three consumers: the '
-                      'branch-and-weight HN arm (whose `p` must be the FIXING interval\'s own Phi '
-                      'and not the last daily Gaussian), the conditional-p jump gamma that '
-                      'replaces a kernel-flux registration on the crisp path, and the '
-                      'fixing-to-fixing sampler that jumps an unmonitored interval instead of '
-                      'walking it. THE THIRD IS NOT A SPEED LEVER and was bought as one: measured '
-                      'on a three-fixing component TARF it runs 111x to 147x SLOWER at 2^10 to '
-                      '2^15 inner paths, and the ratio WIDENS with the cube, so there is no '
-                      'crossover. The daily walk is cheap elementwise work over the whole cube and '
-                      'is FLAT in the path count; the stride pays a fixed per-interval cache build '
-                      'plus a Gil-Pelaez inversion PER PATH at every fixing. A batched Phi across '
-                      'the cube is the open lever and is not built. Turn this on for the two '
-                      'estimators, not for time. All three consumers consent to the same declared '
-                      'approximation - the state CARRIED across the jump is matched quadratically, '
-                      'exactly at one day and worst near twenty-four (tests/test_hn_stride.py) - '
-                      'which is why they share one switch. Component Heston-Nandi only; the plain '
-                      'family refuses by name. Off is the daily walk bit for bit')
+                      'prices a settlement convention, never which convention the deal settles on')
     ]
 
     def __init__(self, config, **kwargs):
@@ -1994,12 +1968,9 @@ class Base_Revaluation(Calculation):
         shared_mem.recompute_inner_mc = self.params.get('Recompute_Inner_MC', 'No') == 'Yes'
         shared_mem.boundary_window_touch = self.params.get(
             'Boundary_AAD_Window_Touch', 'No') == 'Yes'
-        # the SMOOTH estimator (`pricing.branch_and_weight`), declared on this calculation alone;
-        # `execute` has completed the block, so the key is present and the read direct
+        # the SMOOTH estimator, declared on this calculation alone; `execute` has completed the
+        # block, so the key is present and the read direct
         shared_mem.branch_and_weight = self.params['Branch_And_Weight'] == 'Yes'
-        # THE STRIDE (`pricing.ComponentHestonNandiKit.stride`), read the same way - one field for
-        # all three of its consumers
-        shared_mem.hn_stride = self.params['HN_Stride'] == 'Yes'
         return shared_mem
 
     def report(self):

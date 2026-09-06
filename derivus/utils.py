@@ -187,8 +187,7 @@ FactorRiskClass = {
     'CSForwardPriceModelParameters': 'Commodity',
     'SurvivalProb': 'Credit',
     'Correlation': 'CrossClass', 'ObservedBasis': 'CrossClass',
-    'GBMAssetPriceTSModelParameters': 'CrossClass', 'HestonNandiModelParameters': 'CrossClass',
-    'HestonNandiComponentModelParameters': 'CrossClass', 'LogVar2FJModelParameters': 'CrossClass',
+    'GBMAssetPriceTSModelParameters': 'CrossClass', 'LogVar2FJModelParameters': 'CrossClass',
     # TRANSITIONAL: an untagged surface cannot decide its own class. Here only because the store
     # still declares the name `resolve_factor_key` reads, and it retires with that shim.
     'VolatilityGrid': 'CrossClass'
@@ -1293,13 +1292,13 @@ class Calculation_State(object):
         # The smooth (branch-and-weight) value estimator is wanted (`Branch_And_Weight`, base
         # valuation only); off is the crisp one-step-survival path bit for bit. False here is what
         # keeps `Credit_Monte_Carlo`, which declares no such field, on the crisp estimator.
+        # THE SMOOTH ESTIMATOR is wanted (`Branch_And_Weight`, base valuation only): at each
+        # fixing the fired branch is integrated analytically against the FIXING INTERVAL's own
+        # lognormal law - which is what makes `p` a Phi and the continuing draw a Phi^-1
+        # (`pricing.oss_truncated_draw`) - and the continuing branch draws from the truncated one.
+        # A SWAP and not an addition: on the smooth path a deal registers no `BoundarySet`, or the
+        # boundary flux is counted twice. Off, and absent, is the crisp OSS path bit for bit.
         self.branch_and_weight = False
-        # THE STRIDE is wanted (`HN_Stride`, base valuation only): the component Heston-Nandi
-        # k-step conditional law in place of the daily walk between fixings. ONE field governs every
-        # consumer, because all consent to the SAME declared approximation - the carried state
-        # across the jump. Not a speed lever (`pricing.ComponentHestonNandiKit.substeps`); off is
-        # the daily walk bit for bit.
-        self.hn_stride = False
         # where the memoized quasi-random stream stands, per (dimension, sample_size) - only
         # `CMC_State.quasi_rng` advances it, but `rng_position` seeks every state's streams
         self.t_quasi_rng_batch = {}

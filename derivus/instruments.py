@@ -559,12 +559,12 @@ def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, 
                    factor.curve_tenors()])]
 
 
-def set_spot_model_index(field_index, hn, options):
+def set_spot_model_index(field_index, model, options):
     """Write a declared spot model's compile facts - the parameter factor and the trading-day clock
-    a daily family sub-steps on and a walking one steps once per day of. A GBM deal writes none."""
-    if hn is not None:
-        field_index['HN_Params'] = hn
-        field_index['HN_Steps_Per_Year'] = options.get('Steps_Per_Year', 252.0)
+    it steps once per day of. A GBM deal writes none."""
+    if model is not None:
+        field_index['Spot_Model'] = model
+        field_index['Steps_Per_Year'] = options.get('Steps_Per_Year', 252.0)
 
 
 def spot_model_reciprocal_axis(spot_model, underlying, currency, base, reference):
@@ -572,10 +572,8 @@ def spot_model_reciprocal_axis(spot_model, underlying, currency, base, reference
     family that cannot be carried there, the refusal.
 
     An `FxRate` is a currency priced in the BASE, so a deal whose underlying IS the base pays on
-    `1/s` and settles in the other currency. The plain family transports to that numeraire exactly,
-    at the cost of one parameter (`utils.hn_reciprocal_gamma`), and LogVar2FJ as a measure change
-    inside its walk (`utils.lv_walk`); the COMPONENT family does not - the change puts a
-    state-dependent term in its long-run intercept and leaves the family.
+    `1/s` and settles in the other currency. LogVar2FJ transports to that numeraire as a measure
+    change inside its walk (`utils.lv_walk`).
 
     An ALLOW-LIST, so a family added without a carry refuses rather than pricing a fit on the
     wrong axis. Compared on `check_rate_name` tuples, the same spelling-blind test
@@ -583,16 +581,14 @@ def spot_model_reciprocal_axis(spot_model, underlying, currency, base, reference
     """
     if utils.check_rate_name(underlying) != utils.check_rate_name(base):
         return False
-    if spot_model not in ('HestonNandi', 'LogVar2FJ'):
+    if spot_model != 'LogVar2FJ':
         raise utils.UnpriceableSchedule(
             '{0}: SpotModel={1!r} on a deal whose Underlying_Currency {2} IS the book\'s base '
             'currency. The fit describes {3} - an FxRate is priced in the base, so the base leg '
             'has no law of its own - and this deal pays on its reciprocal, settled in {3}. '
-            'HestonNandi carries to that numeraire with one parameter '
-            '(utils.hn_reciprocal_gamma) and LogVar2FJ with a measure change inside its walk '
-            '(utils.lv_walk); {1} does not - the change puts a state-dependent term in its '
-            "long-run intercept. Declare one of those, or quote the pair the other way up so the "
-            'deal is written on {3} and no axis is crossed'.format(
+            'LogVar2FJ carries to that numeraire with a measure change inside its walk '
+            '(utils.lv_walk); {1} carries no such derivation. Declare LogVar2FJ, or quote the pair '
+            'the other way up so the deal is written on {3} and no axis is crossed'.format(
                 reference, spot_model, '.'.join(underlying), '.'.join(currency)))
     return True
 
@@ -3658,7 +3654,7 @@ class EquityBarrierBinaryOption(Deal):
         F('Settlement_Date', 'Date', default='')
 ])]
 
-    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent', 'LogVar2FJ')
+    spot_models = ('None', 'LogVar2FJ')
 
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
@@ -3673,9 +3669,9 @@ class EquityBarrierBinaryOption(Deal):
                      'is a fixed cash amount rather than a vanilla call/put payoff.',
                      'See `EquityBarrierOption` for the full OSS methodology, the `Barrier_Dates` `Observed`',
                      'column and its compile-time fold, and the **SpotModel** valuation option shared by both',
-                     'deals - `HestonNandi`, `HestonNandiComponent` or `LogVar2FJ`, the last of which walks',
-                     'its own internal step and is exact where the observation dates lie on that grid. A',
-                     'knocked-in binary compiles as the plain `EquityBinaryOption` it now is.'
+                     'deals - `LogVar2FJ`, which walks its own internal step and is exact where the',
+                     'observation dates lie on that grid. A knocked-in binary compiles as the plain',
+                     '`EquityBinaryOption` it now is.'
                      ])
 
     def __init__(self, params, valuation_options):
@@ -3925,7 +3921,7 @@ class EquityBinaryOption(EquityOptionDeal):
 class QEDI_CustomAutoCallSwap(Deal):
     fields = [ADMIN, EQUITYOPTIONBASE, QEDI_CUSTOMAUTOCALLSWAP]
 
-    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent', 'LogVar2FJ')
+    spot_models = ('None', 'LogVar2FJ')
 
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
@@ -3976,18 +3972,17 @@ class QEDI_CustomAutoCallSwap(Deal):
                       '',
                       '**Valuation options** (set in the Valuation Configuration section, per deal type)',
                       '',
-                      '- **SpotModel**: `None` (default — lognormal dynamics off the implied vol surface),',
-                      '`HestonNandi`, `HestonNandiComponent` or `LogVar2FJ`. Selects the model family driving the',
-                      'OSS simulation and its analytic legs; the parameters are resolved by naming convention from',
-                      'the `<SpotModel>ModelParameters.<underlying>` price factor (e.g.',
-                      '`HestonNandiModelParameters.SPX`). `LogVar2FJ` is the two-factor log-variance model with',
-                      'co-jumps, which walks its own INTERNAL step and hands each fixing interval one Gaussian',
-                      'block law rather than a daily state. Switching the model on without that factor in the',
-                      'market data is a loud skip, never a silent lognormal fallback. `LogVar2FJ` also',
-                      'prices an AVERAGING coupon - a window of fixings whose arithmetic mean is compared',
-                      'to the threshold - by sampling the window and truncating the prefix return, which',
-                      'keeps the termination a crisp per-scenario decision; the daily families require one',
-                      'fixing per coupon. Every barrier date must sit ON a coupon date, and the payoff must',
+                      '- **SpotModel**: `None` (default — lognormal dynamics off the implied vol surface)',
+                      'or `LogVar2FJ`, the two-factor log-variance model with co-jumps, which drives the',
+                      'OSS simulation and its analytic legs; the parameters are resolved by naming convention',
+                      'from the `<SpotModel>ModelParameters.<underlying>` price factor (e.g.',
+                      '`LogVar2FJModelParameters.SPX`). It walks its own INTERNAL step and hands each fixing',
+                      'interval one Gaussian block law rather than a daily state. Switching the model on',
+                      'without that factor in the market data is a loud skip, never a silent lognormal',
+                      'fallback. It also prices an AVERAGING coupon - a window of fixings whose arithmetic',
+                      'mean is compared to the threshold - by sampling the window and truncating the prefix',
+                      'return, which keeps the termination a crisp per-scenario decision.',
+                      'Every barrier date must sit ON a coupon date, and the payoff must',
                       'be single-currency: a',
                       'Quanto/Compo carry is a lognormal quantity, so declaring one alongside a non-`None`',
                       'SpotModel is the same loud skip.',
@@ -4066,7 +4061,7 @@ class QEDI_CustomAutoCallSwap(Deal):
             prior = [x for x in ac if x < min(ac_dates)]
             pf_dates = sorted([x for x in pf if not prior or x > max(prior)])
         oss_windows = barriers_on_coupons and (one_each or (
-            spot_model != 'None' and not pricing.OSS_SPOT_MODEL_KITS[spot_model].daily
+            spot_model != 'None'
             and pricing.oss_window_ends(pf_dates, ac_dates) is not None))
 
         if self.field['Barrier_Observation'] == 'Average':
@@ -4426,7 +4421,7 @@ class EquityBarrierOption(Deal):
         F('Payoff_Type', 'Text', default='Standard', values=['Standard', 'Quanto', 'Compo'])
 ])]
 
-    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent', 'LogVar2FJ')
+    spot_models = ('None', 'LogVar2FJ')
 
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
@@ -4493,20 +4488,19 @@ class EquityBarrierOption(Deal):
                      '',
                      '**Valuation options** (set in the Valuation Configuration section, per deal type)',
                      '',
-                     '- **SpotModel**: `None` (default — lognormal dynamics off the implied vol surface),',
-                     '`HestonNandi`, `HestonNandiComponent` or `LogVar2FJ`. Selects the model family driving',
-                     'the OSS simulation; the barrier-hit and in-out-parity legs then use the matching closed',
-                     'form (the Heston-Nandi CF pricer instead of Black-Scholes), and `LogVar2FJ` walks its own',
-                     'INTERNAL step, giving each observation interval one Gaussian block law - exact where the',
-                     'dates lie on that grid, as a daily-monitored barrier does, and both European legs are its',
-                     'conditional Black over the walk. Parameters are resolved by naming convention from the',
+                     '- **SpotModel**: `None` (default — lognormal dynamics off the implied vol surface)',
+                     'or `LogVar2FJ`, which drives the OSS simulation and walks its own INTERNAL step,',
+                     'giving each observation interval one Gaussian block law - exact where the dates lie on',
+                     'that grid, as a daily-monitored barrier does - and prices the barrier-hit and',
+                     'in-out-parity legs as its conditional Black over that walk rather than Black-Scholes.',
+                     'Parameters are resolved by naming convention from the',
                      '`<SpotModel>ModelParameters.<underlying>` price factor (e.g.',
-                     '`HestonNandiModelParameters.SPX`). Switching the model on without that factor in the',
+                     '`LogVar2FJModelParameters.SPX`). Switching the model on without that factor in the',
                      'market data is a loud skip, never a silent lognormal fallback. Requires a',
                      'single-currency payoff: a Quanto/Compo carry is a lognormal quantity, so declaring',
                      'one alongside a non-`None` SpotModel is the same loud skip.',
-                     '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH steps',
-                     '(default 252; only read when SpotModel is not `None`).'])
+                     '- **Steps_Per_Year**: trading-day count converting year fractions to integer internal',
+                     'steps (default 252; only read when SpotModel is not `None`).'])
 
     def __init__(self, params, valuation_options):
         super(EquityBarrierOption, self).__init__(params, valuation_options)
@@ -5700,7 +5694,7 @@ class FXTARFOptionDeal(Deal):
         F('Barrier', 'Float', default=0)
 ])]
 
-    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent', 'LogVar2FJ')
+    spot_models = ('None', 'LogVar2FJ')
 
     factor_fields = {'Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
@@ -5729,17 +5723,16 @@ class FXTARFOptionDeal(Deal):
             '',
             '**Valuation options** (set in the Valuation Configuration section, per deal type)',
             '',
-            '- **SpotModel**: `None` (default — lognormal dynamics off the implied vol surface),',
-            '`HestonNandi`, `HestonNandiComponent` or `LogVar2FJ`. Selects the model family driving the',
-            'OSS fixing-to-fixing simulation; `LogVar2FJ` walks its own INTERNAL step and hands each fixing',
-            'interval one Gaussian block law, which the PnL-cap survival and the integrated knock-in tail',
-            'both read. Parameters are resolved by naming convention from the',
-            '`<SpotModel>ModelParameters.<non-base token>` price factor — the leg of the pair that is',
+            '- **SpotModel**: `None` (default — lognormal dynamics off the implied vol surface)',
+            'or `LogVar2FJ`, which drives the OSS fixing-to-fixing simulation, walking its own INTERNAL',
+            'step and handing each fixing interval one Gaussian block law that the PnL-cap survival and',
+            'the integrated knock-in tail both read. Parameters are resolved by naming convention from',
+            'the `<SpotModel>ModelParameters.<non-base token>` price factor — the leg of the pair that is',
             'not the book\'s base currency, that being the only one which IS an `FxRate` and the only',
-            'one the calibration writes (e.g. `HestonNandiModelParameters.EUR` for an EURUSD leg on a',
+            'one the calibration writes (e.g. `LogVar2FJModelParameters.EUR` for an EURUSD leg on a',
             'USD book, whichever side the deal is written from). Switching the model on without that',
             'factor in the market data is a loud skip, never a silent lognormal fallback.',
-            '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH steps',
+            '- **Steps_Per_Year**: trading-day count converting year fractions to integer internal steps',
             '(default 252; only read when SpotModel is not `None`).'])
 
     def __init__(self, params, valuation_options):
@@ -5755,12 +5748,12 @@ class FXTARFOptionDeal(Deal):
                           calendars):
         """Resolve the TARF's factor dependencies and the opt-in spot-model switch.
 
-        The Heston-Nandi switch swaps the (moneyness, vol-surface) lookup for the daily GARCH
-        recursion in the pricer, leaving the GBM `field_index['Volatility']` path untouched when off
-        or absent. No deal field: the params factor resolves by NAMING CONVENTION off the pair's
-        NON-BASE token, which for a TARF forced onto the base is `Currency` rather than
-        `Underlying_Currency`. Where the underlying IS the base, `HN_Invert` carries that one law to
-        this deal's own axis and numeraire."""
+        The switch swaps the (moneyness, vol-surface) lookup for the model's own walk in the
+        pricer, leaving the GBM `field_index['Volatility']` path untouched when off or absent. No
+        deal field: the params factor resolves by NAMING CONVENTION off the pair's NON-BASE token,
+        which for a TARF forced onto the base is `Currency` rather than `Underlying_Currency`.
+        Where the underlying IS the base, `Invert_Spot` carries that one law to this deal's own
+        axis and numeraire."""
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Underlying_Currency': utils.check_rate_name(self.field['Underlying_Currency']),
                  'FX_Volatility': utils.check_rate_name(self.field['FX_Volatility'])}
@@ -5799,7 +5792,7 @@ class FXTARFOptionDeal(Deal):
             'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
         }
 
-        # opt-in Heston-Nandi spot model, by naming convention off the pair's non-base token. The
+        # opt-in spot model, by naming convention off the pair's non-base token. The
         # token resolves only under the switch: it needs the book's base, and a GBM deal is priced
         # on compile paths that never knew one
         spot_model = self.options.get('SpotModel', 'None')
@@ -5813,7 +5806,7 @@ class FXTARFOptionDeal(Deal):
             if spot_model_reciprocal_axis(
                     self.options['SpotModel'], field['Underlying_Currency'], field['Currency'],
                     self.base_currency, self.field.get('Reference')):
-                field_index['HN_Invert'] = True
+                field_index['Invert_Spot'] = True
 
         return field_index
 
@@ -5851,7 +5844,7 @@ class FXAccumulatorOptionDeal(Deal):
             F('Fixing Date', 'Date'), F('Settlement Date', 'Date'), F('Value', 'Float')]))
 ])]
 
-    spot_models = ('None', 'HestonNandi', 'HestonNandiComponent', 'LogVar2FJ')
+    spot_models = ('None', 'LogVar2FJ')
 
     factor_fields = {'Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
@@ -5886,11 +5879,11 @@ class FXAccumulatorOptionDeal(Deal):
             '',
             '**Valuation options** (set in the Valuation Configuration section, per deal type)',
             '',
-            '- **SpotModel**: `None` (default - lognormal dynamics off the implied vol surface),',
-            '`HestonNandi`, `HestonNandiComponent` or `LogVar2FJ`, resolved by naming convention from',
-            '`<SpotModel>ModelParameters.<non-base token>` exactly as for the FX TARF; `LogVar2FJ` walks',
+            '- **SpotModel**: `None` (default - lognormal dynamics off the implied vol surface) or',
+            '`LogVar2FJ`, resolved by naming convention from',
+            '`<SpotModel>ModelParameters.<non-base token>` exactly as for the FX TARF; it walks',
             'its own INTERNAL step and hands each fixing interval the block law this loop truncates at.',
-            '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH',
+            '- **Steps_Per_Year**: trading-day count converting year fractions to integer internal',
             'steps (default 252; only read when SpotModel is not `None`).'])
 
     def __init__(self, params, valuation_options):
@@ -5913,7 +5906,7 @@ class FXAccumulatorOptionDeal(Deal):
 
         The knock-out state carried in from before the base date is a FOLD over the schedule:
         every settled fixing's own breach test, and nothing else. Unsettled and future fixings are
-        the pricer's business. The Heston-Nandi switch is the TARF's - see
+        the pricer's business. The spot-model switch is the TARF's - see
         FXTARFOptionDeal.calc_dependencies."""
         refuse_consequence_field(self.field, 'Barrier_Hit', 'FXAccumulatorOptionDeal', (
             'record the fixing that knocked it out in Accumulator_ExpiryDates - its date, its '
@@ -5984,7 +5977,7 @@ class FXAccumulatorOptionDeal(Deal):
             'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
         }
 
-        # opt-in Heston-Nandi spot model, by naming convention off the pair's non-base token. The
+        # opt-in spot model, by naming convention off the pair's non-base token. The
         # token resolves only under the switch: it needs the book's base, and a GBM deal is priced
         # on compile paths that never knew one
         spot_model = self.options.get('SpotModel', 'None')
@@ -5998,7 +5991,7 @@ class FXAccumulatorOptionDeal(Deal):
             if spot_model_reciprocal_axis(
                     self.options['SpotModel'], field['Underlying_Currency'], field['Currency'],
                     self.base_currency, self.field.get('Reference')):
-                field_index['HN_Invert'] = True
+                field_index['Invert_Spot'] = True
 
         return field_index
 

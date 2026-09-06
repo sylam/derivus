@@ -387,7 +387,7 @@ def quote_delta(name, container, points, values):
     """One `Market Prices` block's patched value rows: the delta merged onto what each row carries.
 
     `container` is the block's OWN quote table - `schema.quote_rows` names it off the declarations,
-    `Points` for a curve strip or an FX smile and `European_Options` for a Heston-Nandi ladder - and
+    `Points` for a curve strip or an FX smile and `European_Options` for an option ladder - and
     it is the one key a quote patch may name. Everything else on a block is plan, and a family whose
     rows declare no value keys has no such table, so every key a patch names on one refuses.
 
@@ -601,7 +601,7 @@ class Context:
         The two sections cannot collide in one dict: every family type string ends in `Prices` and
         no factor type does. A market-price entry is keyed by the block's OWN quote table -
         `{'Points': [row, ...]}` for a curve strip or an FX smile, `{'European_Options': [...]}` for
-        a Heston-Nandi ladder - which is the shape `patch_market` takes it back in.
+        an option ladder - which is the shape `patch_market` takes it back in.
         """
         patch = {}
         for name, block in self.current_cfg.params['Price Factors'].items():

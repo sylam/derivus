@@ -1100,42 +1100,6 @@ class CSForwardPriceModelParameters(Factor0D):
         return {'Alpha': np.array([self.param['Alpha']]), 'Sigma': np.array([self.param['Sigma']])}
 
 
-class HestonNandiModelParameters(Factor0D):
-    """
-    Represents the Bootstrapped Heston-Nandi GARCH(1,1) implied parameters for a risk neutral process.
-    Asset class agnostic - the underlying may be any spot (0D) factor (FX, equity, commodity, futures);
-    the factor name is just the underlying's name.
-
-    The persistence is $\\psi=\\beta+\\alpha\\gamma^{*2}$ (must be less than 1) and the stationary
-    per-step variance is $\\frac{\\omega+\\alpha}{1-\\psi}$.
-    """
-    fields = [
-        F('Omega', 'Float', default=0, bind='value',
-          description='Constant $\\omega$ of the per-step variance recursion'),
-        F('Alpha', 'Float', default=0, bind='value', description='ARCH coefficient $\\alpha$'),
-        F('Beta', 'Float', default=0, bind='value', description='GARCH coefficient $\\beta$'),
-        F('Gamma_Star', 'Float', default=0, bind='value',
-          description='Risk neutral leverage $\\gamma^*=\\gamma+\\lambda+\\frac{1}{2}$'),
-        F('H0', 'Float', default=0, bind='value',
-          description='The predictable variance $h_1$ of the first step from the base date')
-    ]
-    # one source of truth for the key set - get_tenor_indices and current_value must agree; the
-    # canonical name tuple lives in utils (the explicit-arg hn_* pricers/simulator consume the same set)
-    parameters = utils.HN_PARAM_NAMES
-
-    def get_tenor_indices(self):
-        zero = np.array([[0.0]])
-        return {x: zero for x in self.parameters}
-
-    def curve_tenors(self):
-        """No curve and no non-leaf scalar: every parameter of this family is a leaf."""
-        return {}
-
-    def current_value(self, tenors=None, offset=0.0):
-        """Returns the parameters of the Heston-Nandi factor model as a dictionary"""
-        return {x: np.array([self.param[x]]) for x in self.parameters}
-
-
 class CurveModelParameters(Factor0D):
     """A spot model's parameters where some of them are term structures: the LEAVES are the
     scalars `parameters` names plus every curve's values, and each curve's knots are structural.
@@ -1157,53 +1121,6 @@ class CurveModelParameters(Factor0D):
         publishes and what a greek flows to."""
         return dict({x: np.array([self.param[x]]) for x in self.parameters},
                     **{c: self.param[c].array[:, 1] for c in self.curve_names})
-
-
-class HestonNandiComponentModelParameters(CurveModelParameters):
-    """The bootstrapped COMPONENT Heston-Nandi (Christoffersen-Jacobs-Ornthanalai-Wang) parameters.
-
-    The variance splits into a long-run component $q_t$ and a short-run deviation that is a pure
-    AR(1) at $\\beta$; the recursions and the L-curve construction are in
-    [Market Prices](market_prices.md#hestonnandi-component).
-
-    THERE IS NO OMEGA FIELD: $\\omega_t=L_{t+1}-\\rho L_t$ is a function of the **L_Curve**, whose
-    anchoring ($q_0=L(0)$) makes $E_0[q_t]=L_t$ exactly, so L is the model's expected long-run
-    variance path. L is piecewise-linear between its knots and flat outside them. AND NO Q0 FIELD:
-    $q_0$ is $L(0)$, off the curve's first knot - written at tenor 0 with value **H0**, the two
-    states held equal at the base date since no option is quoted there.
-
-    The knots are STRUCTURAL (the calibration ladder's pillars); the curve's VALUES are
-    `bind='value'` leaves, so a greek flows to each fitted pillar as to the seven scalars.
-    """
-    fields = [
-        F('Alpha', 'Float', default=0, bind='value',
-          description='Short-run ARCH coefficient $\\alpha$'),
-        F('Beta', 'Float', default=0, bind='value',
-          description='Short-run persistence $\\beta$ - the AR(1) coefficient of $h_t-q_t$'),
-        F('Gamma_1', 'Float', default=0, bind='value',
-          description='Short-run leverage $\\gamma_1$ (its SIGN is the direction of the smile)'),
-        F('Rho', 'Float', default=0, bind='value',
-          description='Long-run persistence $\\rho$ of the component $q_t$'),
-        F('Phi', 'Float', default=0, bind='value',
-          description='Long-run ARCH coefficient $\\phi$'),
-        F('Gamma_2', 'Float', default=0, bind='value',
-          description='Long-run leverage $\\gamma_2$'),
-        F('H0', 'Float', default=0, bind='value',
-          description='The predictable variance $h_0$ of the first step from the base date'),
-        F('L_Curve', 'Curve', bind='value',
-          description='The expected long-run per-step variance path $L_t$, in years - '
-                      '$\\omega_t=L_{t+1}-\\rho L_t$ and $q_0=L(0)$')
-    ]
-    # one source of truth for the scalar key set (utils owns the canonical tuple - the explicit-arg
-    # hn_component_* pricers/simulator consume the same set) plus the one curve parameter
-    parameters = utils.HN_COMPONENT_PARAM_NAMES
-    curve_names = (utils.HN_COMPONENT_CURVE_NAME,)
-
-    def curve_tenors(self):
-        """`{parameter: knots}` for the ONE curve this family carries - what a consumer needs to
-        read the values back as a function of time, and structural, so it is resolved once at
-        dependency time rather than carried on the tensor side."""
-        return {c: self.param[c].array[:, 0] for c in self.curve_names}
 
 
 class LogVar2FJModelParameters(CurveModelParameters):
@@ -1232,7 +1149,7 @@ class LogVar2FJModelParameters(CurveModelParameters):
     **Lambda**, **Cap_A**, **Cap_Beta** and **C_Min** are STRUCTURAL, not leaves: the counts' law
     is not on the tape, and the cap and the floor are guards a calibrated model never reaches, so
     a derivative reported at any of them would be wrong. Every curve's knots are structural and
-    its VALUES are `bind='value'` leaves, as the component Heston-Nandi L curve's are.
+    its VALUES are `bind='value'` leaves.
     """
     fields = [
         F('Kappa_L', 'Float', default=0, bind='value',

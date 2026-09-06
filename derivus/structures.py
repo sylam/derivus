@@ -561,7 +561,7 @@ def pinned_models(document):
     """The `Valuation Configuration` a quote's own passes pinned on this document, or `None`.
 
     `spot_model` writes the switch onto the document the runner holds; this reads it back so the
-    outcome can REPORT it. A leg priced under Heston-Nandi that books into a book marking it GBM is
+    outcome can REPORT it. A leg priced under a spot model that books into a book marking it GBM is
     a mark disagreeing with the price it was dealt at, and the approval is where that is fixed.
     """
     pinned = document.get('Calc', {}).get('MergeMarketData', {}).get(
@@ -573,7 +573,7 @@ def pin_models(document, deal, pinned):
     """`pinned` merged into a document's `Valuation Configuration`, per deal TYPE, in place.
 
     The booking half of `pinned_models`: an approval carries the quote's own pins onto the BOOK, so
-    a leg dealt under Heston-Nandi re-marks under Heston-Nandi. Merged per type and per key rather
+    a leg dealt under a spot model re-marks under it. Merged per type and per key rather
     than assigned, because the block is the whole book's and a quote owns only what it pinned.
 
     REFUSES where a pinned model's parameters are no longer on the book. A switch pinned over a
@@ -1013,7 +1013,7 @@ def furnish_accrual(deal, params, document, base_date, underlying, inverted):
     FIRST statement, since a refusal firing later has already written the block the caller holds. An
     accumulator has no target and crosses freely.
 
-    THE MODEL. `spot_model` pins Heston-Nandi where the book carries a calibration for this leg's
+    THE MODEL. `spot_model` pins `SPOT_MODEL` where the book carries a calibration for this leg's
     PAIR, and hands back the note where it does not.
     """
     if inverted and deal['Object'] == 'FXTARFOptionDeal':

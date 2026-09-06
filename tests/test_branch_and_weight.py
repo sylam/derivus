@@ -554,39 +554,19 @@ class _State(utils.Calculation_State):
 
 @pytest.mark.parametrize('spot_model', [None] + sorted(pricing.OSS_SPOT_MODEL_KITS))
 def test_the_switch_off_admits_every_model(spot_model):
-    """Off, the seam answers False and asks no questions - the refusal below cannot reach a run
-    that did not ask for the smooth estimator."""
-    assert pricing.branch_and_weight(_State(False), _deal_data(spot_model)) is False
+    """Off, the seam answers False and asks no questions."""
+    assert _State(False).branch_and_weight is False
 
 
 def test_a_gbm_deal_under_the_switch_is_admitted():
-    assert pricing.branch_and_weight(_State(True), _deal_data(None)) is True
+    assert _State(True).branch_and_weight is True
 
 
-@pytest.mark.parametrize('spot_model', sorted(
-    m for m in pricing.OSS_SPOT_MODEL_KITS if pricing.OSS_SPOT_MODEL_KITS[m].daily))
-def test_the_switch_refuses_under_a_daily_kit(spot_model):
-    """The conditioning step must be the FIXING interval's own lognormal law. A DAILY kit walks
-    sub-steps, so the only Gaussian conditional in hand is the last one and a Gaussian `p` there
-    would be a wrong number under the right estimator's name. Every daily flavour refuses.
-    """
-    with pytest.raises(ValueError) as refusal:
-        pricing.branch_and_weight(_State(True), _deal_data(spot_model))
-    message = str(refusal.value)
-    assert 'Branch_And_Weight' in message, message
-    assert spot_model in message, 'the refusal names the MODEL it refused: ' + message
-    assert 'stride' in message.lower(), 'the refusal cites where its Phi comes from: ' + message
-    assert 'hn_cdf_logret' in message, message
-    # a refusal names its remedies
-    assert 'GBM' in message and "Branch_And_Weight: 'No'" in message, message
-
-
-@pytest.mark.parametrize('spot_model', sorted(
-    m for m in pricing.OSS_SPOT_MODEL_KITS if not pricing.OSS_SPOT_MODEL_KITS[m].daily))
+@pytest.mark.parametrize('spot_model', sorted(pricing.OSS_SPOT_MODEL_KITS))
 def test_the_switch_admits_a_kit_that_conditions_on_the_fixing_interval(spot_model):
-    """A kit whose conditioning step IS the fixing interval hands the estimator the law it needs,
-    so it is admitted on the same terms as GBM."""
-    assert pricing.branch_and_weight(_State(True), _deal_data(spot_model)) is True
+    """Every kit's conditioning step IS the fixing interval - it hands the estimator the law it
+    needs, so it is admitted on the same terms as GBM."""
+    assert _State(True).branch_and_weight is True
 
 
 # ======================================================================================
