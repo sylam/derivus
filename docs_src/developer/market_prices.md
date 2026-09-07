@@ -130,8 +130,9 @@ stands in the roadmap; nothing in the engine reads them, and a book that names o
 
 **The block** is `OptionQuoteFamily`'s shared quote preparation plus `Fit_Mode`, the walk, the
 structural constants, the two declared guards, the weights, the calendar-time `Param_Buckets`,
-`Event_Days`, spec 5.3's forward block with its `Stickiness_Prior` PAIR, `Diffusive_Share` and
-`Quote_Sensitivity` — each documented where it is declared. `derivus_bloomberg.equity_chain` emits it off a listed chain, and the inherited
+`Event_Days`, spec 5.3's forward block with its `Stickiness_Prior` DIFFERENCE pair, spec 5.2 stage
+4's `Slow_Factor_Prior`, `Diffusive_Share` and `Quote_Sensitivity` — each documented where it is
+declared. `derivus_bloomberg.equity_chain` emits it off a listed chain, and the inherited
 `fx_surface_block` authors the FX one, asked here for **two delta pillars** at four wing expiries,
 because a `Bootstrap` bucket frees one parameter per wing quote. What follows is what it MEASURED.
 
@@ -199,9 +200,9 @@ family's banked −31.89.
     0.63 vol points and an L pillar by up to 2.6. The 0.930 against 1.020 against 0.995, and the
     ψ_skew 0.984 against 0.985 against 0.964, are all INSIDE that floor: what the forward target
     demonstrably moves is the composition residual and the deal, and what `λ(t)` demonstrably
-    moves is the SPLIT, not the spot fit. ψ_bfly is the fragile one — the model's own spot
-    butterfly at 6m is −0.02 vol points, so its ratio is a division by nothing and only
-    ψ_bfly(1y into 1y) is worth reading.
+    moves is the SPLIT, not the spot fit. ψ_bfly WAS the fragile one — the model's own spot
+    butterfly at 6m is −0.02 vol points, so its ratio is a division by nothing — which is why the
+    target is now the DIFFERENCE and the report prints a ratio only above 0.5 vol points of spot.
 
 **Two modes on one banked surface** (`artifacts/logvar2fj/fx_ladder.py`, the campaign's USDZAR
 `FXVol` at `Paths` 8192, daily δ, CPU, four processes contending), against BOTH Heston-Nandi
@@ -213,21 +214,25 @@ rather than the fit: the table separates them and the headline is the WING RMSE 
 
 | fit | ATM rungs | 16 WING rungs, RMSE | worst wing | wall clock |
 |---|---|---|---|---|
-| LogVar2FJ `Global`, `λ(t)` and the slow pair PINNED | 6 at **0.0e+00** vol points | **0.202** | −0.415 | 819 s (a contended box) |
-| the same, `Lambda` pinned flat | 6 at 0.0e+00 | 0.189 | −0.417 | 203 s |
+| LogVar2FJ `Global`, `λ(t)` and the slow pair PINNED at the FX CLASS DEFAULT (−0.2, 0.5) | 6 at **0.0e+00** vol points | **0.135** | −0.282 | 213 s |
+| the same, PINNED at the index seed (−0.4, 1.0) | 6 at **0.0e+00** vol points | 0.202 | −0.415 | 819 s (a contended box) |
+| the same at the index seed, `Lambda` pinned flat | 6 at 0.0e+00 | 0.189 | −0.417 | 203 s |
 | LogVar2FJ `Global`, the slow pair fitted to nothing | 6 at **0.0e+00** vol points | **0.131** | −0.251 | 254 s |
 | LogVar2FJ `Bootstrap` | 6 at 0.0e+00 | 0.575 | +1.291 | 222 s |
 | plain Heston-Nandi | 6 at 1.45e-01 | 0.663 | −1.744 | 420 s |
 | component Heston-Nandi | residual 4.4e-15 | prints no per-quote record; worst wing **0.760** | +0.760 | 137 s, CAPPED at 300 evaluations |
 
 `Global` fits the wings **five times** better than the plain family and **six times** better than
-the component one, which carries an L curve of its own and the same four wing expiries. The first
-row is what spec 5.2 stage 4's identification rule COSTS: this ladder's longest wing is 1y against
-the 18 months the rule asks for, so `(ρ_l, σ_l)` are held at their priors (−0.4, 1.0) with the
-report line *pinned: not identified by this ladder* instead of being fitted to nothing — the third
-row's 0.131 was bought by a slow factor the box ran to zero, which is the reading that made the
-floor a rule. `λ(t)` itself costs 0.013 of the 0.071 (row one against row two), inside the seed
-spread. `Bootstrap` is worse than any `Global` row, and structurally so: bucket `k` acts only on `[E_{k−1}, E_k)` while the option
+the component one, which carries an L curve of its own and the same four wing expiries. Rows one and
+two are what spec 5.2 stage 4's identification rule COSTS and what the PRIOR under it is worth: this
+ladder's longest wing is 1y against the 18 months the rule asks for, so `(ρ_l, σ_l)` are pinned with
+the report line *pinned: not identified by this ladder* instead of being fitted to nothing — row
+four's 0.131 was bought by a slow factor the box ran to zero, which is the reading that made the
+floor a rule. Pinned at the index SEED that rule charged 0.070 of wing RMSE; pinned at the FX CLASS
+DEFAULT it charges **0.003** (0.135 against 0.132), so almost all of what the rule appeared to cost
+was the seed being wrong-sized for FX. `λ(t)` itself costs 0.013 (row two against row three), inside
+the seed spread. `Bootstrap` is worse than any `Global` row, and structurally so: bucket `k` acts
+only on `[E_{k−1}, E_k)` while the option
 to `E_k` averages over every bucket before it, so a later bucket has progressively less leverage on
 the quote that frees it — on a sub-year ladder that is most of the ladder. It is the mode for a deal
 read at many fixings, not the mode that fits a surface best, and the report says per bucket which
@@ -265,6 +270,53 @@ parameters were free and which tied.
     family's `L` is still piecewise-linear — `ω_t = L_{t+1} − ρL_t` differences it, so a step would
     spike `ω` — and still carries its own phase (9.93 / 9.81 / 11.01 / 10.54 / 12.12 / 12.70 /
     13.26% on the same ladder). The tables are not re-measured at their own path counts.
+
+**The slow factor's prior is per ASSET CLASS, and the floor is the guard beneath it.** Where the
+ladder carries no wing at 18 months or longer, `(ρ_l, σ_l)` are fitted to nothing and are pinned
+instead. What they are pinned at is read in one order — `Slow_Factor_Prior` where the block declares
+one, else a LogVar2FJ history for the underlying in `Price Models` (the `utils.LV_SLOW_HISTORY`
+shape — the one place both lanes declare it — reported with both standard errors and taken to the
+floor by name where it sits under it, as a hand-authored `(−0.35, 0.22)` with SEs 0.09 / 0.14 reads
+back *held at the history's estimate … its Sigma_L 0.2200 TAKEN TO the 0.3 floor*; the ESTIMATOR
+that would write that block is spec 5.5's and is not built), else
+the class default off the factor type `Underlying` resolves to: **FX (0.2, 0.5), an index
+(0.4, 1.0)**, whose SIGN is that of the `Rho_S` in force at the pin. The sign is the point: the fit
+runs on the `FxRate`'s own axis, so a USDZAR block whose deal convention has vol rising as the rand
+weakens fits `ρ_s < 0` on `FxRate.ZAR`, and pinning `ρ_l = −0.4` from the index seed would be the
+right sign here but the wrong one on the reciprocal — the rule reads it off the data instead of
+assuming it. **On this engine it always reads negative**: spec 5.2 stage 3 boxes
+`ρ_s ∈ [−√(1 − ρ_l² − c_min), 0]`, so no fit can produce a positive fast leverage and the FX default
+resolves to (−0.2, 0.5) on every ladder — the rule is the right one and it is inert until that box
+opens. A pin is applied to every name without an 18-month wing, so a floor-BY-DEFAULT would
+understate a whole book's 2–5 year vol in one direction; the floor `σ_l ≥ 0.3` is the BOX beneath
+all three instead, a declared prior under it refusing by name.
+
+Where the pair is pinned the report reads the ladder under all three priors, at ONE extra forward
+pass each — everything but the slow pair held at θ\*, the `L` strip re-bootstrapped so every ATM
+still reprices, the wings re-priced, no outer search — with the wing RMSE and the **5-year log-vol
+sd** `½√(σ_s²(1−e^{−10κ_s})/2κ_s + σ_l²(1−e^{−10κ_l})/2κ_l)`, which is the number a phase-3 exposure
+row will read:
+
+| pinned ladder | the floor (·, 0.3) | the class default | the index seed (−0.4, 1.0) |
+|---|---|---|---|
+| reduced USDZAR (`FxRate`), 12 wings | 0.143 / sd 0.515 | **0.132 / sd 0.553** (in force) | 0.324 / sd 0.701 |
+| the 22-rung USDZAR ladder, 16 wings | 0.158 / sd 0.521 | **0.135 / sd 0.558** (in force) | 0.422 / sd 0.705 |
+| CJOW cut to 4 maturities (`EquityPrice`), `Global` | 1.448 / sd 0.516 | **1.279 / sd 0.701** (in force) = the seed | — |
+| the same in `Fit_Mode` `Bootstrap` | 1.330 / sd 0.482 | **1.056 / sd 0.677** (in force) = the seed | — |
+
+Two priors that land on the same pair are ONE pass named for both, which is what an index's class
+default IS. And the two classes want opposite things: on FX the floor beats the seed and the class
+default beats the floor, while on the index surface the floor is the WORST of the three (1.448
+against 1.279) — a floor-by-default would have been the wrong answer for every equity book, which is
+the whole reason it is the guard and not the default. The row in force is exact; the others
+APPROXIMATE the re-fit they are not, and the table says so, because a re-fit lets the fast pair take
+back some of what the slow one gives. The size of that is
+measured: the ladder's index-seed row reads 0.422 where the same ladder RE-FITTED at the index seed
+banked **0.202**, so a distant prior's cost is overstated about twofold by one pass. What the
+comparison is for is the ORDER, and the order is unambiguous — the FX class default costs the
+22-rung ladder **0.135 against the 0.132** a slow pair fitted to nothing bought before the
+identification rule existed, where the index seed cost 0.202. The whole 0.070 the rule appeared to
+cost was the seed being wrong-sized for FX, not the rule.
 
 **Risk in quote space.** `Quote_Sensitivity` **Yes** keeps the written parameters connected to the
 numbers quoted. The outer fit is a least-squares minimum, so its half is the Gauss-Newton contraction
@@ -308,10 +360,64 @@ derivative as the whole surface's.
 **A traded forward-start is a different contract** from a reference model's slopes, and the block
 says which it is being given: **Quotes** prices `E[S_T1(R − k)⁺]/E[S_T1]`, the same per-path gain
 under the share measure and about 0.4 vol points of level away from **Reference**'s ratio
-expectation `E[(S_T2/S_T1 − k)⁺]`. **Prior** needs no table and tilts the market's own spot smile at
-each Δ by `Stickiness_Prior`; at ψ = 1 the target smile reads the market's own slope back, which
-`checks.py prior` gates. Either table-reading source with no rows refuses rather than quietly
-fitting the vanillas alone.
+expectation `E[(S_T2/S_T1 − k)⁺]`. Either table-reading source with no rows refuses rather than
+quietly fitting the vanillas alone.
+
+**The target is a DIFFERENCE, and there is one term whatever the source.** `Δ_skew` is the forward
+90–110 slope less the spot slope at maturity Δ and `Δ_bfly` the same for the 90/110 butterfly, both
+in vol points, both targeted — jump skew is sticky while its convexity dilutes at the forward date,
+leverage skew dilutes while vol-of-vol convexity amplifies, so the slope alone cannot separate the
+jump share from the vol-of-vol. **Prior** DECLARES the pair (`Stickiness_Prior`, `0.0,0.0` being
+sticky-delta and the default); **Quotes** and **Reference** MEASURE it — the source's own forward
+smile less the MARKET's own spot smile at the rung nearest Δ, read off the quoted vols in
+log-moneyness, a quote itself wherever the rung carries one at 90/100/110 and the nearest quote
+with a log line where it does not. The residual is then the model's difference less the target's,
+applied to the model's OWN spot smile per evaluation, and the forward ATM LEVEL is targeted by
+neither: the ATM ladder pins it and the L strip reprices it exactly.
+
+A RATIO divides by a spot quantity that is within a few tenths of zero wherever the smile is
+symmetric — on CJOW `ψ_bfly` read 0.075, 1.37 and −4.1 across three tenors — so it asks the fit to
+match noise, and it did: a ratio target of `1.0,1.0` on the 22-rung USDZAR ladder pulled the wings
+0.202 → **0.512** and degraded the vanillas at the target maturities by **+0.329** vol points, spec
+5.3's own failure mode. The same ladder at `0.0,0.0` — the identical assumption, sticky-delta,
+written as differences — moves that guarded RMSE by **−0.012**: it does not reproduce the failure.
+What it does not buy is the rest of the surface. The wings still go 0.135 → **0.433** and the spot
+RMSE 0.115 → 0.369, because spec 5.3's guard watches the TARGET maturities (0.5y and 1y here) and
+the degradation lands on the shorter expiries it does not watch; the forward block is expensive on a
+sub-year FX ladder either way, and what changed is that it is no longer expensive for a reason that
+was arithmetic. The fit lands at `Δ_skew` −1.84 (6m into 6m) and −2.54 (1y into 1y) against a target
+of exactly `+0.00` — sticky-delta is what it is aimed at, not what it reaches — but it reaches
+CLOSER than the ratio target did, `ψ_skew` 0.906 / 0.819 against 0.859 / 0.713, on a fit that also
+lands a better surface: 0.433 wings against 0.512.
+
+The ratios are still REPORTED beside the differences, but only where the spot side exceeds **0.5
+vol points**; where it does not the row prints `no ratio, spot +0.39 inside 0.5 vol points` and no
+number, which is `ψ_bfly(1y into 1y)` on that very ladder and two of the three tenors on CJOW.
+
+**What the difference target does NOT fix is the lever.** On the CJOW surface at `Paths` 2048 and
+ONE bucket, both sources trip spec 5.3's failure mode by name — `Prior` at `0.0,0.0` degrades the
+guarded vanilla RMSE **+0.215**, `Reference` against CJOW's own differences **+0.212** — and neither
+lands its ψ near the source: 1.034 / 1.034 / 0.982 and 1.055 / 1.038 / 0.969 against CJOW's own
+0.975 / 1.008 / **0.552**. With one bucket stages 5a and 5b have nothing to fit, so the forward
+block's only lever is `w_J`, and a block with a target and no lever moves the vanillas instead. The
+measurement that matters is therefore the bucketed one, and the target's own MECHANISM is visible in
+the `Reference` rows: it aims at CJOW's measured `Δ_skew` of −1.01 / +0.19 / −9.98 rather than at
+zero, which is what "the source's own difference" means. A rung that does not reach 90 or 110 is
+named: CJOW's 3-month row is quoted 70–105% of its forward, so `Δ` at the 1y-into-3m tenor is
+measured against an understated spot slope and the log says so.
+
+**Give it the lever and it works.** The SAME `Reference` fit with `Param_Buckets` at 1y — so stages
+5a and 5b have a year-two bucket of `μ_J(t)` and `ρ_s(t)` to move — reads `ψ_skew` **1.021 / 1.034 /
+0.935** against CJOW's own 0.975 / 1.008 / **0.552** on the independent 2¹⁸-path walk, where one
+bucket read 1.055 / 1.038 / 0.969: closer on all three. Its 29 wings go 2.067 → **1.763**, the whole
+surface 1.916 → **1.632** and the 5 ATM rungs 0.406 → 0.312, so the second bucket pays for itself on
+the spot fit as well. In the fit's own report the 1y-into-3m target `Δ_skew` is −9.98 and the model
+reaches −8.10 where the unbucketed fit reached −6.46. Both of spec 5.3's own diagnostics print by
+name: the **composition residual is 0.104 vol points** at the 2y rung, the first beyond the bucket
+boundary, comfortably inside the 0.3 the spec calls a failure, while the stage-5 vanilla degradation
+is **+0.184**, still outside the 0.1 it calls one. The buckets end at (`ρ_s`, `μ_J`) of (−0.718,
+−0.216) in year one and (−0.716, −0.207) in year two, which is the smoothness penalty holding a term
+structure the 2y vanillas have to tolerate.
 
 ## `FXVolPrices` — a smile quoted in delta, and where the conversion runs {#fxvolprices}
 

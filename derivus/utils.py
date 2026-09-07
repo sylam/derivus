@@ -2392,6 +2392,11 @@ LV_BUCKET_NAMES = ('Rho_S', 'Mu_J', 'Sigma_S', 'Sigma_J')
 #: on their buckets; all five carry structural knots and VALUES that are leaves.
 LV_CURVE_NAMES = ('L_Curve',) + LV_BUCKET_NAMES
 
+#: What `stochasticprocess.LogVar2FJCalibration` writes into `Price Models` for the surface's
+#: stage-4 pin to read (spec 5.5.3), declared here because both lanes read it: the model name the
+#: block is keyed under with the underlying's own name, and the slow pair with its standard errors.
+LV_SLOW_HISTORY = ('LogVar2FJImpliedSpotModel', ('Rho_L', 'Sigma_L', 'Rho_L_SE', 'Sigma_L_SE'))
+
 #: Jumps per internal step past which the inverse-CDF count truncates. At lam*delta ~ 0.006 the
 #: truncated mass is 5e-11; at a 21-day step it is 9e-6 and drifts a 5y forward by 4e-5.
 LV_MAX_JUMPS = 3

@@ -348,6 +348,51 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **`Slow_Factor_Prior` by asset class, the floor as the guard, stickiness targets that are
+  DIFFERENCES** (2026-09-07, spec 5.2 stage 4 / 5.3 / 5.4.4 / 5.5.3) - the two questions the split
+  lane left open, closed by measurement. THE PIN'S LEVEL IS A FIELD WITH A CLASS DEFAULT: where the
+  ladder carries no wing at 18 months or longer, `(ρ_l, σ_l)` are read in one order -
+  `Slow_Factor_Prior` where the block declares one, else a LogVar2FJ history for the underlying in
+  `Price Models` (the shape declared once in `utils.LV_SLOW_HISTORY`, reported with both standard
+  errors; the ESTIMATOR is the next lane's, only its reader is built), else the default off the
+  factor type `Underlying` resolves to - a REGISTRY keyed by that type: **FX (0.2, 0.5), an index
+  (0.4, 1.0)**, the magnitude, whose SIGN is that of the `Rho_S` in force at the pin so the slow
+  skew is never set against the fast one stage 3 has just fitted. The floor is the BOX beneath all
+  three and never their default (a floor-by-default understates a whole book's 2-5 year vol in one
+  direction); a DECLARED prior under it refuses by name, a history under it is floored and named.
+  MEASURED: the FX class default takes the 22-rung USDZAR ladder's wings to **0.135** where the
+  index seed cost 0.202, against the 0.132 a slow factor fitted to nothing bought - so the
+  identification rule costs **0.003**, not the 0.070 the seed charged it; the reduced block reads
+  0.132 the same way. WHERE THE PAIR IS PINNED THE REPORT READS THE LADDER UNDER ALL THREE PRIORS -
+  the floor, the class default, the index seed - at ONE extra forward pass each with everything but
+  the slow pair at θ*, the L strip re-bootstrapped and the wings re-priced, no outer search,
+  printing the wing RMSE and the 5-year log-vol sd `½√(σ_s²(1−e^{−10κ_s})/2κ_s +
+  σ_l²(1−e^{−10κ_l})/2κ_l)`, the number a phase-3 exposure row will read: on the ladder 0.158 / sd
+  0.521, **0.135 / 0.558**, 0.422 / 0.705; on CJOW's index surface 1.448 / 0.516 under the floor
+  against **1.279 / 0.701** under the class default, which there IS the seed - the ordering
+  REVERSES by class (on FX the floor beats the seed, on the index the floor is the worst of the
+  three), which is why it is the guard and not the default. The row in force is exact and the
+  other two approximate a re-fit, overstating a distant prior's cost about twofold (the seed row
+  reads 0.422 where a re-fit at the same prior banked 0.202). THE STICKINESS TARGETS ARE
+  DIFFERENCES, both: `Δ_skew` and `Δ_bfly` in vol points, `Stickiness_Prior` defaulting to
+  `0.0,0.0` (sticky-delta), `Quotes` / `Reference` measuring their own difference off the source's
+  forward smile less the market's spot smile at the rung nearest Δ. The ratio prior's failure is NOT
+  reproduced: the same sticky-delta assumption written as differences moves the guarded vanilla
+  RMSE by **−0.012** where `1.0,1.0` degraded it +0.329, the wings still 0.135 → 0.433 at expiries
+  spec 5.3's guard does not watch; CJOW's own forward smiles as difference targets trip 5.3's
+  failure mode BY NAME at one bucket (+0.212 at the target maturities, no lever but `w_J`, no
+  composition residual exists) and at a year-two bucket read a composition residual of 0.104 and a
+  degradation of +0.184 - the forward-block lane's row. `ψ_skew` / `ψ_bfly` stay in the report only
+  above 0.5 vol points of spot. FOUND: the sign rule is INERT today - stage 3's box keeps
+  `ρ_s ≤ 0`, so no fit can produce a positive fast leverage and the FX default resolves to
+  (−0.2, 0.5) on every ladder; on `FxRate.ZAR`'s own axis USDZAR fits `ρ_s = −0.276`, right-signed
+  there - what the index seed got wrong was the SIZE; the rule waits for the box (an owner's
+  call). `Param_Buckets` should be required when `Forward_Smile_Source` is set. Every one-value-λ
+  document hex-identical. Engine net +242 lines. PROOF DOCUMENTS: `lv_hex.py`, `lv_trials.py
+  limit`, `tarf_hex.py`, `lv_deals.py hex`, `artifacts/lv_split_20260906/split.py slow reduced |
+  ladder | refuse | prior | cjowprior | cjowref | cjowref2 | index | indexboot | history`,
+  `artifacts/logvar2fj/fit_bootstrap.json`.
+
 - **λ(t) follows the market's own strip, and the report prints the split** (2026-09-06, spec 5.1 /
   5.2 / 5.3 / 5.4.3 / 5.4.8) - a constant intensity makes the jump variance `λ(μ_J² + σ_J²)` the
   same number on every segment while the market's forward variance moves along the strip, so the
@@ -388,10 +433,11 @@ set; and five model items in the punchlist below.
   not the clock; the value sits 3.8% from CJOW's -32.068 where the linear-L vanilla fit read 1.1%,
   at an unchanged-to-better spot fit - the forward-skew ambiguity 5.3 names, now with a bigger
   number on it, and whether the forward block or a second calendar bucket pulls it back is the next
-  lane's call. OPEN for the owner: the unidentified slow pair's prior level - (-0.4, 1.0) is the
-  seed, and 1.0 is what costs the sub-year wings 0.058 where the spec's own reason for the 0.3
-  floor argues the unidentified prior should BE the floor; ψ_bfly wants a denominator floor or the
-  butterfly difference in its place. Engine net +238 lines. PROOF DOCUMENTS: `lv_hex.py`,
+  lane's call. CLOSED 2026-09-07 by the slow-prior lane above: the prior is a FIELD with a
+  per-asset-class default (FX (0.2, 0.5) signed by the fitted `Rho_S`), not the floor and not the
+  seed - the floor stays the guard beneath it, and the ladder's wings read 0.135 rather than
+  0.202; ψ_bfly's denominator problem is answered by targeting the DIFFERENCE and printing the
+  ratio only above 0.5 vol points of spot. Engine net +238 lines. PROOF DOCUMENTS: `lv_hex.py`,
   `lv_trials.py limit`, `lv_deals.py hex`, `tarf_hex.py` (all four hex-identical),
   `artifacts/lv_split_20260906/split.py reduced | ladder | pinlam | prior | share | events | cjow
   | tables | autocall`.
