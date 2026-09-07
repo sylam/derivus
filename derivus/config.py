@@ -1222,8 +1222,10 @@ class Config(object):
             self.archive = pd.read_csv(mkt_data_details['name'], skiprows=mkt_data_details['skiprows'],
                                        sep=mkt_data_details.get('sep', '\t'),
                                        index_col=mkt_data_details['index_column'])
-            # normalise the archive index to Excel-offset ints (filter_data_frame/calibrate_PFE convention)
-            if self.archive.index.dtype == object:
+            # normalise the archive index to Excel-offset ints (filter_data_frame/calibrate_PFE
+            # convention). By dtype, not by `== object`: pandas reads a date column as its own
+            # string dtype, which is not object, and every calibration then sliced on strings
+            if not pd.api.types.is_numeric_dtype(self.archive.index):
                 self.archive.index = (pd.to_datetime(self.archive.index) - utils.excel_offset).days
             self.calibration_process_map = {k: construct_calibration_config(
                 k, v) for k,v in self.calibrations['Calibrations'].items()}

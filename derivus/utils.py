@@ -2381,6 +2381,11 @@ LV_STRUCTURAL_NAMES = ('Cap_A', 'Cap_Beta')
 #: tape, so its KNOTS AND VALUES are both structural and one knot is the constant-lambda model.
 LV_STRUCTURAL_CURVES = ('Lambda',)
 
+#: The floor on the idiosyncratic share `c(t) = 1 - Rho_S^2 - Rho_L^2` (spec 2.2.2): the factor
+#: asserts it at load, the surface's stages 3-4 box the fit by it, and 5.5.1's leverage
+#: regression is ridged onto it where the slow shock is too weak to carry a coefficient.
+LV_C_MIN = 0.12
+
 #: The four levers piecewise CONSTANT on calendar-time buckets whose START times are the curves'
 #: knots (spec 2.3.1) - one knot at 0 is the constant-parameter model. `Rho_S` and `Mu_J` are the
 #: forward-skew pair; `Sigma_S` and `Sigma_J` carry buckets because Bootstrap mode frees them per

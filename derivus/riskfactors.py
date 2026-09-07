@@ -1172,7 +1172,7 @@ class LogVar2FJModelParameters(CurveModelParameters):
           description='Log-variance cap level $a$ - STRUCTURAL, default $\\log 100$ (1000% vol)'),
         F('Cap_Beta', 'Float', default=0.25,
           description='Log-variance cap width $\\beta$ - STRUCTURAL'),
-        F('C_Min', 'Float', default=0.12,
+        F('C_Min', 'Float', default=utils.LV_C_MIN,
           description='Floor on the idiosyncratic share $c(t)=1-\\rho_s(t)^2-\\rho_\\ell^2$, '
                       'asserted in every bucket at load - STRUCTURAL'),
         F('L_Curve', 'Curve', bind='value',

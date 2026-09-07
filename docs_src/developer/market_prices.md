@@ -277,8 +277,8 @@ instead. What they are pinned at is read in one order — `Slow_Factor_Prior` wh
 one, else a LogVar2FJ history for the underlying in `Price Models` (the `utils.LV_SLOW_HISTORY`
 shape — the one place both lanes declare it — reported with both standard errors and taken to the
 floor by name where it sits under it, as a hand-authored `(−0.35, 0.22)` with SEs 0.09 / 0.14 reads
-back *held at the history's estimate … its Sigma_L 0.2200 TAKEN TO the 0.3 floor*; the ESTIMATOR
-that would write that block is spec 5.5's and is not built), else
+back *held at the history's estimate … its Sigma_L 0.2200 TAKEN TO the 0.3 floor*; the block is
+written by `stochasticprocess.LogVar2FJCalibration`, spec 5.5's estimator), else
 the class default off the factor type `Underlying` resolves to: **FX (0.2, 0.5), an index
 (0.4, 1.0)**, whose SIGN is that of the `Rho_S` in force at the pin. The sign is the point: the fit
 runs on the `FxRate`'s own axis, so a USDZAR block whose deal convention has vol rising as the rand

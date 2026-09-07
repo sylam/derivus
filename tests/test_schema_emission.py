@@ -976,7 +976,7 @@ def param_reads(cls):
 def test_the_declared_tuning_keys_are_the_ones_the_class_reads(model_type):
     """The declaration IS the tuning contract, held to the reads in both directions.
 
-    Every knob the thirteen classes take was undeclared and nineteen descriptors were read by
+    Every knob the fourteen classes take was undeclared and nineteen descriptors were read by
     nothing - a whole `MLE_Parameters` tree, `Data_Retrieval_Parameters` and
     `Use_Pre_Computed_Statistics` - so the panel offered fields the fit ignores and none of the
     fields it honours. `Method` is exempt: it is stamped from the class name and read by

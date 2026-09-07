@@ -165,6 +165,16 @@
                     "Calendar": "",
                     "Business_Days_In_Year": 252
                 }
+            },
+            "LogVar2FJImpliedSpotModel": {
+                "ID": "",
+                "Method": "LogVar2FJCalibration",
+                "Jump_Threshold": 4.0,
+                "Event_Days": "",
+                "Particle_Count": 1000,
+                "Random_Seed": 0,
+                "Implied_Values": "",
+                "Scale_To_Sector": "No"
             }
         },
         "BootstrappingPriceFactorSelections": {

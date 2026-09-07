@@ -23,7 +23,7 @@ are no other framework hooks.
 The framework calls exactly that and passes nothing else —
 `rate_value.calibration.calibrate(data_frame, vol_shift, num_business_days=252.0)`. Declaring
 `**kwargs` is optional future-proofing that **no** shipped class takes, so a framework-passed
-keyword would raise `TypeError` across all thirteen at once rather than being ignored. Two classes
+keyword would raise `TypeError` across all fourteen at once rather than being ignored. Two classes
 add tuning positionals of their own with defaults, so the signature is not verbatim across the
 family either.
 

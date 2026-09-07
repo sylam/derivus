@@ -11,6 +11,25 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Open
 
+- **Every correlation between a `calc_statistics` factor and a newer one is a business day out**
+  (2026-09-07) - `utils.calc_statistics` builds its `delta` as `transformed.diff(1).shift(-1)`, so
+  each innovation is indexed at the return's START date, while `GARCHSpotCalibration`,
+  `MarkovHMMSpotCalibration`, the two basis classes and `LogVar2FJCalibration` all index at the
+  END. `Config.calibrate_factors` then concatenates the two families and takes a Pearson
+  correlation of series that are one day apart. MEASURED on ONE simulated series read by both
+  classes: GARCH against GBM reads **0.009** - a series uncorrelated with itself - and against the
+  LogVar2FJ estimator's own `eps`, **0.335** (GARCH) against **-0.008** (GBM), where the sibling
+  was drawn at rho 0.6 (`artifacts/lv_hist_20260907/hist.py recover fine`). Five shipped classes
+  read `calc_statistics` (GBM asset, GBM index, CS forward, HW rate, HW hazard), so the fix is one
+  line in `calc_statistics` and a re-read of every banked `Correlations` block, which is why it is
+  a row and not a fix.
+- **`calibrate_factors` reports a calibration class's own refusal as "Data errors in factor"**, and
+  raises `AttributeError: 'NoneType' object has no attribute 'corr'` where EVERY factor is skipped:
+  the bare `except:` around `rate_value.calibration.calibrate` swallows the message the class
+  wrote, and `consolidated_df` is then still `None` when the correlation step runs. Both measured
+  2026-09-07 (`hist.py sector`, whose blank-`Implied_Values` arm refuses by name inside the class
+  and reads as a data error outside it).
+
 - **Solved accrual strikes moved across the checkpoint landing on documents carrying no LogVar2FJ**
   - the FX gate read the GBM TARF's zero-cost strike at 15.32196559 on 48f4779 and 15.31624884 on
   7ed3faf (the GBM ZAR accumulator 15.68600904 -> 15.68756069), up to 3.7e-4 and 15x the runner's
@@ -347,6 +366,99 @@ with the mock-built suite and has no replacement; batching Schrager–Pelsser ac
 set; and five model items in the punchlist below.
 
 ## Built
+
+- **Spec 5.5's historical estimator: `stochasticprocess.LogVar2FJCalibration`** (2026-09-07) - the
+  P-measure half of LogVar2FJ, whose purpose is the correlation matrix and the priors and NOT the
+  pricing parameters. `log RV_t = l_t + s_t + u_t` is a linear measurement of the model's OWN
+  two-factor OU state stepped by `utils.lv_ou_step_weights`, so the Kalman likelihood is exact;
+  `scipy` L-BFGS-B maximises it on the AAD gradient and the standard errors come off the SAME
+  tape's inverse Hessian - AAD and not finite differences precisely because the standard errors ARE
+  the deliverable (stage 4 pins the slow pair by them) and a differenced Hessian of a 1,260-step
+  filter has no step both large enough to see curvature and small enough not to be noise. The
+  measurement is chosen by the archive's own columns from ONE registry, `LV_MEASURES` - Yang-Zhang
+  where the bar carries opens, Garman-Klass without them, `log r^2` at the log-chi^2 mean -1.27 and
+  variance 4.93 otherwise - and the range modes carry the lognormal offset `-sigma_u^2/2`; on the
+  simulated bar `log r^2` reads bias **-1.34** and sd **2.18** against the law's -1.27 and 2.22.
+  Three things the build had to get right and the documents measured wrong first: the jump mask
+  iterates to a FIXED POINT (a jump day's range IS the jump's, so the first filter reads it as
+  variance, and one pass apart the fit's mask and the reported jump set are different series - the
+  cross-check gate read 51 nats of exactly that); the leverages regress the diffusive remainder on
+  the SMOOTHED state shocks, because the FILTERED increment is `k_j v` in both components, exactly
+  proportional, so it cannot separate the two leverages at all; and the pair is ridged onto the
+  model's own `utils.LV_C_MIN` box, which is now one constant both `riskfactors` and this class
+  read. `Rho_L`, `Sigma_L` and both standard errors are written under `utils.LV_SLOW_HISTORY`,
+  which is where the surface's stage-4 pin reads them, beside `Kappa_S` / `Kappa_L` as priors, the
+  sanity table's P side, and `Lambda` / `Mu_J` / `Sigma_J` / the level, which never cross.
+
+  **RECOVERY** on a five-year daily bar simulated from `utils.lv_walk` itself at the Q-sized
+  defaults, 260 intraday prints a day, calibrated through `Config`'s own `Calibrations` entry
+  (`artifacts/lv_hist_20260907/hist.py recover fine`): `Kappa_S` -0.39, `Sigma_S` -0.90, `Rho_S`
+  -0.46, `Kappa_L` +0.28, `Sigma_L` -0.32, `Rho_L` +0.70 standard errors from their truths, and
+  the slow pair's standard errors are 248% and 339% of the estimates - 5.5.2's "reported with its
+  standard error rather than trusted" as a number. The level lands 3.2 SE low, and that SE is
+  itself conditional on a fitted `Kappa_L` of 1.39 against the true 0.5, so a five-year sample
+  cannot say where the level is either; 5.5.3 already forbids it crossing. The particle gate
+  passes at **1.54%** h-path RMS with the log-likelihood **-1649.23 (replicate sd 0.60)** against
+  the Kalman's -1648.07.
+
+  **THE CROSS-CHECK GATE IS NOT DECORATION.** The same truth on the contract's 26-print bar
+  refuses BY NAME at 11.0%: 26 prints a day give the range estimator `sigma_u 1.13` against a
+  260-print bar's 0.83, and at that noise `z = (r - drift)/sqrt(h_hat*delta)` has tails a 4 sigma
+  threshold reads as 2 jumps in a history containing none - which is the measurement noise the
+  refusal names. A jump sample of two diffusive days is a `lambda` of 0.4/yr at `sigma_J` 0.027,
+  a 27x variance inflation the particle filter's Poisson mixture can then blame every high range
+  on. The reduced-USDZAR round trip refuses the same way and RAISING the threshold does not
+  clear it - the same two days cross at 5 sigma as at 4 (17.6% against 18.5%) - because that
+  surface's `Sigma_S` of 3.42 is a stationary log-vol spread of 1.11 and the filter lags the
+  true variance by more than a Gaussian tail allows. No threshold on `z` separates a jump from a
+  day the filter has not caught up with, which is a statement about a history with the
+  vol-of-vol of a fitted FX surface and not about the threshold.
+
+  **What history identifies, measured.** The jump SIZES come back (`Mu_J` -0.0557 against -0.05,
+  `Sigma_J` 0.0169 against 0.02, both inside half a standard error) and the INTENSITY does not.
+  The `log r^2` fallback on the same series passes the gate at 1.14% and costs 46% on `Sigma_S`'s
+  standard error and 39% on `Kappa_S`'s, with the level's unchanged; its filtered `h` sits 2.07 RMS
+  in logs from its own measurement against the bar's 0.78. The P-vs-Q round trip on the banked
+  reduced-USDZAR factor reads `Sigma_S` **0.998**, `Rho_S` 1.27, `Kappa_S` 1.35 - and `Sigma_L`
+  1.75, `Kappa_L` 2.02, `Rho_L` **-1.64** (the sign flipped, standard error 0.53) - so the fast
+  factor round-trips and the slow one does not, which is exactly the split 5.5.2 and 5.5.3 draw.
+
+  **THE SEAM CLOSES.** A job carrying the estimator's own `Price Models` block for ZAR beside the
+  reduced USDZAR ladder fits with the pin reading it: *pinned: not identified by this ladder -
+  Rho_L +0.2928 and Sigma_L 0.5544 are held at the history's estimate, Rho_L SE 0.9913 and Sigma_L
+  SE 1.3743 (spec 5.5.3)*, at a ladder RMSE of 0.062 vol points unweighted over 15 quotes, and the
+  three-way table beside it reads wing RMSE 0.271 / 0.303 / 0.610 and 5-year log-vol sd 0.489 /
+  0.528 / 0.682 under the floor, the class default and the index seed. The same job with
+  `Sigma_L_SE` stripped from the block refuses in 0.0 s by name, from the WRITE side this time.
+  On the one real series - 15 years of platinum LME closes, the `log r^2` mode - the gate passes at
+  0.65% and the fast factor DISAPPEARS: `Sigma_S` sits on its 0.05 box bound (which the report
+  names, with `Kappa_S`'s standard error infinite beside it) and the whole log-variance dynamic is
+  the slow factor's, `Kappa_L` 0.672 +- 0.367 and `Sigma_L` 0.5355 +- 0.1138 at a level of -3.096
+  +- 0.193 (21.3% vol) with 13 jumps at 4 sigma in 3,855 days. Squared returns at a measurement
+  noise of 2.22 cannot see a factor reverting at 6/yr, which is the efficiency loss stated in the
+  currency that matters.
+
+  **Found, not this lane's to fix.** `utils.calc_statistics` indexes its `delta` at the return's
+  START date while `GARCHSpotCalibration`, the HMM and the basis classes index at the END, so every
+  correlation between the two families is one business day out: ONE simulated sibling series read
+  by both classes reads **0.009 against itself**, and against this estimator's `eps` **0.335**
+  (GARCH) versus **-0.008** (GBM), where the sibling was drawn at rho 0.6 on the LogVar2FJ return's
+  own idiosyncratic Gaussian. The dilution from 0.6 to 0.335 is the leverage the SMOOTHED shocks
+  cannot remove - the slow shock comes back with a standard deviation of 0.083 against the
+  unit one it has - and since the shocks are already the posterior means, no estimator on this
+  data does better. FIXED here (one line): `Config.parse_json` normalised the
+  archive index by `dtype == object`, which pandas 3's string dtype is not, so every calibration
+  sliced on date strings.
+
+  **Not built:** spec 5.5.1's intraday realised-variance measurement and 5.5.2's bipower variation
+  (no archive convention carries intraday returns; `LV_MEASURES` is where a fourth mode goes), and
+  v2's joint QML, which the spec defers. The framework cannot finish the Correlations half until
+  6.1: `calibrate_factors` constructs the process to NAME the correlation and
+  `LogVar2FJImpliedSpotModel` is phase 3, so every calibration document drives the framework path
+  to that refusal and finishes the two steps after it itself. Engine net **+385 lines**. Proof
+  documents: `campaign/lv_hex.py lvhist`, `campaign/tarf_hex.py` (both hex-identical),
+  `artifacts/lv_hist_20260907/hist.py recover | recover fine | recover pjump | closes | sector |
+  banked | pvq | seam | refuse`.
 
 - **The forward block on the autocall, re-read** (2026-09-07, spec 8 steps 2-4 / 5.3 as patched)
   - the flat-L / λ(t) fit's 3.8% is not the forward block's to close, and the block makes it

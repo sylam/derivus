@@ -4567,6 +4567,389 @@ class BasisLinkedSpotCalibration(object):
         return utils.CalibrationInfo(param, [[1.0]], delta)
 
 
+#: The daily variance the filter measures, in the order the frame's own columns decide (spec
+#: 5.5.1). Each entry is the bar columns the estimator needs, the estimator on
+#: (open, high, low, close, previous close), and the law's OWN measurement noise where it has one:
+#: `log r^2` is log-chi^2_1 with mean -1.27 and variance 4.93 (Harvey-Ruiz-Shephard QML), while a
+#: range estimator fits its noise and carries the lognormal offset -sigma_u^2/2 instead.
+LV_MEASURES = {
+    'Yang_Zhang': (('OPEN', 'HIGH', 'LOW'),
+                   lambda o, h, l, c, p: np.log(o / p) ** 2 + np.log(h / c) * np.log(h / o)
+                   + np.log(l / c) * np.log(l / o), {}),
+    'Garman_Klass': (('HIGH', 'LOW'),
+                     lambda o, h, l, c, p: 0.5 * np.log(h / l) ** 2
+                     - (2.0 * np.log(2.0) - 1.0) * np.log(c / p) ** 2, {}),
+    'Log_Chi2': ((), lambda o, h, l, c, p: np.log(c / p) ** 2,
+                 {'Sigma_U': float(np.sqrt(4.93)), 'Offset': -1.27})}
+
+#: The box the historical fit runs in, in the order the parameter vector takes. The two reversion
+#: speeds are DISJOINT at the six-month half-life: which factor is the fast one is structural, and
+#: a likelihood surface carrying two interchangeable labels should not have to decide it.
+LV_HIST_BOX = {'Kappa_S': (2.0, 120.0), 'Sigma_S': (0.05, 8.0), 'Kappa_L': (0.02, 2.0),
+               'Sigma_L': (0.02, 4.0), 'L': (float(np.log(1.0e-4)), float(np.log(4.0))),
+               'Sigma_U': (0.05, 3.0)}
+
+
+def lv_bars(data_frame):
+    """The factor's own bar and the measurement its columns decide: the unsuffixed archive column
+    is the close and `,OPEN` / `,HIGH` / `,LOW` the rest, the mode the first of `LV_MEASURES` the
+    bar carries whole."""
+    name = data_frame.columns[0].split(',')[0]
+    bar = data_frame[[c for c in data_frame.columns if c.split(',')[0] == name]].dropna()
+    bar.columns = [(c.split(',') + ['CLOSE'])[1] for c in bar.columns]
+    return name, bar.astype(np.float64), next(
+        m for m, (cols, _, _) in LV_MEASURES.items() if set(cols) <= set(bar.columns))
+
+
+def lv_filter(y, seen, theta, delta, offset):
+    """The exact Gaussian likelihood of `log RV_t = l_t + s_t + offset + u_t` on the model's own
+    two-factor OU state with its own step coefficients (spec 5.5.1), started stationary.
+
+    `seen` masks a day the measurement does not carry - a jump day, whose range is the jump's, an
+    event day, a non-positive range - which the filter passes through as a pure prediction.
+    Returns `(loglik, m, cov)`, the filtered mean [T, 2] and covariance [T, 3] as (ss, sl, ll);
+    the covariance is data-free, so the smoother needs nothing else.
+    """
+    phi_s, w_s = utils.lv_ou_step_weights(theta['Kappa_S'], theta['Sigma_S'], delta)
+    phi_l, w_l = utils.lv_ou_step_weights(theta['Kappa_L'], theta['Sigma_L'], delta)
+    level, su2 = theta['L'], theta['Sigma_U'] ** 2
+    m1, m2 = 0.0 * level, level + 0.0
+    p11 = theta['Sigma_S'] ** 2 / (2.0 * theta['Kappa_S'])
+    p22 = theta['Sigma_L'] ** 2 / (2.0 * theta['Kappa_L'])
+    p12, loglik, rows, cov = 0.0 * p11, 0.0 * level, [], []
+    for t in range(len(seen)):
+        if t:
+            m1, m2 = phi_s * m1, level + phi_l * (m2 - level)
+            p11, p12, p22 = (phi_s * phi_s * p11 + w_s * w_s, phi_s * phi_l * p12,
+                             phi_l * phi_l * p22 + w_l * w_l)
+        if seen[t]:
+            f = p11 + 2.0 * p12 + p22 + su2
+            v = y[t] - (m1 + m2 + offset)
+            k1, k2 = (p11 + p12) / f, (p12 + p22) / f
+            m1, m2 = m1 + k1 * v, m2 + k2 * v
+            p11, p12, p22 = (p11 - k1 * (p11 + p12), p12 - k1 * (p12 + p22),
+                             p22 - k2 * (p12 + p22))
+            loglik = loglik - 0.5 * (torch.log(2.0 * np.pi * f) + v * v / f)
+        rows += [m1, m2]
+        cov += [p11, p12, p22]
+    return loglik, torch.stack(rows).reshape(-1, 2), torch.stack(cov).reshape(-1, 3)
+
+
+def lv_history_start(y, seen, fixed):
+    """Moment starts inside the box: the level off the observed mean, the measurement noise off the
+    one-day difference, the two vol-of-vols splitting what is left of the sample variance at the
+    spec's own reversion priors."""
+    obs = y[seen]
+    su = fixed.get('Sigma_U', float(np.sqrt(max(0.4 * np.var(np.diff(obs)), 1.0e-4))))
+    spread = max(float(np.var(obs)) - su * su, 1.0e-3)
+    start = {'Kappa_S': 6.0, 'Sigma_S': np.sqrt(6.0 * spread), 'Kappa_L': 0.5,
+             'Sigma_L': np.sqrt(0.5 * spread), 'Sigma_U': su,
+             'L': float(np.mean(obs)) - fixed.get('Offset', -0.5 * su * su)}
+    return {n: float(np.clip(v, *LV_HIST_BOX[n])) for n, v in start.items()}
+
+
+def lv_history_fit(y, seen, delta, fixed):
+    """The filter's MLE with standard errors off the inverse Hessian (spec 5.5.1), returning
+    `(theta, se, loglik, m, cov)`.
+
+    AAD, not finite differences. The standard errors ARE the deliverable - stage 4 pins the slow
+    pair by them - and a differenced Hessian of a 1,260-step filter has no step that is both large
+    enough to see curvature and small enough not to be noise; the same tape gives L-BFGS-B its
+    gradient, so there is one recursion and no second spelling of it.
+    """
+    from scipy.optimize import minimize
+    free = [name for name in LV_HIST_BOX if name not in fixed]
+    held = {n: torch.tensor(v, dtype=torch.float64) for n, v in fixed.items() if n in LV_HIST_BOX}
+
+    def negative(vector):
+        theta = dict(held, **{n: vector[i] for i, n in enumerate(free)})
+        return -lv_filter(y, seen, theta, delta,
+                          fixed.get('Offset', -0.5 * theta['Sigma_U'] ** 2))[0]
+
+    def objective(x):
+        vector = torch.tensor(x, dtype=torch.float64, requires_grad=True)
+        value = negative(vector)
+        return float(value.detach()), torch.autograd.grad(value, vector)[0].numpy()
+
+    start = lv_history_start(y, seen, fixed)
+    best = minimize(objective, np.array([start[n] for n in free]), jac=True, method='L-BFGS-B',
+                    bounds=[LV_HIST_BOX[n] for n in free])
+    x = torch.tensor(best.x, dtype=torch.float64)
+    spread = torch.linalg.inv(torch.autograd.functional.hessian(negative, x)).diagonal()
+    theta = dict({n: float(v) for n, v in fixed.items() if n in LV_HIST_BOX},
+                 **{n: float(best.x[i]) for i, n in enumerate(free)})
+    se = dict({n: 0.0 for n in fixed if n in LV_HIST_BOX},
+              **{n: float(spread[i].sqrt()) if spread[i] > 0 else float('inf')
+                 for i, n in enumerate(free)})
+    loglik, m, cov = lv_filter(
+        y, seen, {n: torch.tensor(v, dtype=torch.float64) for n, v in theta.items()},
+        delta, fixed.get('Offset', -0.5 * theta['Sigma_U'] ** 2))
+    return theta, se, float(loglik), m.detach().numpy(), cov.detach().numpy()
+
+
+def lv_ou_pair(theta, delta):
+    """`(phi, w)` for the fast and slow factors as numpy pairs - `utils.lv_ou_step_weights` read
+    at a fitted theta, so the smoother and the cross-check filter step the model itself rather
+    than a second spelling of it."""
+    return tuple(x.numpy() for x in utils.lv_ou_step_weights(
+        torch.tensor([theta['Kappa_S'], theta['Kappa_L']], dtype=torch.float64),
+        torch.tensor([theta['Sigma_S'], theta['Sigma_L']], dtype=torch.float64), delta))
+
+
+def lv_smooth_shocks(m, cov, phi, w, level):
+    """The state's OWN per-step shocks `E[eta_t | y]` by one RTS backward pass over the filtered
+    path - the object spec 5.5.1's leverage regression runs on.
+
+    The FILTERED increment is `k_j v` in both components, PROPORTIONAL, so a regression on it
+    cannot separate the two leverages at all; the smoother's increment is what distinguishes a
+    shock that persists from one that decays, and its wide standard error on the slow side is
+    5.5.2's poor identification measured rather than assumed.
+    """
+    step = np.diag(phi)
+    drift = np.array([0.0, level * (1.0 - phi[1])])
+    smooth, q = m.copy(), np.diag(w * w)
+    for t in range(len(m) - 2, -1, -1):
+        p = np.array([[cov[t, 0], cov[t, 1]], [cov[t, 1], cov[t, 2]]])
+        gain = p @ step @ np.linalg.inv(step @ p @ step + q)
+        smooth[t] = m[t] + gain @ (smooth[t + 1] - drift - step @ m[t])
+    return (smooth[1:] - drift - smooth[:-1] @ step) / w
+
+
+def lv_leverage(shocks, z, c_min):
+    """The two leverages: spec 5.5.1's regression of the diffusive remainder on the state's own
+    shocks, inside the MODEL's own box `1 - rho_s^2 - rho_l^2 >= c_min` (2.2.2).
+
+    A decade of daily data holds few slow cycles, so the smoothed slow shock keeps a small
+    fraction of its unit variance and is 0.7-0.8 correlated with the fast one; the normal
+    equations will put anything at all on it. The ridge that lands the pair back on the box IS
+    that box, and the standard error beside it is 5.5.2's poor identification as a number.
+    """
+    from scipy.optimize import brentq
+    a, b, radius = shocks.T @ shocks, shocks.T @ z, np.sqrt(1.0 - c_min)
+    ridge, rho = 0.0, np.linalg.solve(a, b)
+    if rho @ rho > radius * radius:
+        ridge = brentq(lambda x: np.linalg.norm(np.linalg.solve(a + x * np.eye(2), b)) - radius,
+                       0.0, np.linalg.norm(b) / radius)
+        rho = np.linalg.solve(a + ridge * np.eye(2), b)
+    return rho, np.linalg.inv(a) * float((z - shocks @ rho).var(ddof=2)), ridge
+
+
+def lv_jump_split(excess, variance, threshold):
+    """The jump sample and the diffusive remainder: returns standardised by the filtered variance
+    and thresholded (spec 5.5.1), then apportioned by the Gaussian posterior so a flagged day's
+    remainder is the diffusion the jump sat on rather than an identical zero. Three passes."""
+    flag = np.abs(excess) > threshold * np.sqrt(variance)
+    jump, mu, sigma = np.where(flag, excess, 0.0), 0.0, 0.0
+    for _ in range(3):
+        sample = jump[flag]
+        mu = float(sample.mean()) if sample.size else 0.0
+        sigma = float(sample.std(ddof=1)) if sample.size > 1 else 0.0
+        share = sigma * sigma / (sigma * sigma + variance)
+        jump = np.where(flag, mu + share * (excess - mu), 0.0)
+    return flag, jump, mu, sigma
+
+
+def lv_particle_gate(y, seen, theta, jumps, delta, particles, replicates, seed):
+    """A batched bootstrap particle filter on the same state and the same measurement, WITHOUT the
+    linear filter's two approximations (spec 5.5.1).
+
+    The per-particle likelihood is the Poisson-mixed Gaussian in closed form: a day carrying n
+    jumps has a range measuring `h + n(mu_J^2 + sigma_J^2)/delta`, which is exactly what a linear
+    measurement cannot say and what the Kalman masks the flagged days instead of saying; and the
+    state's posterior is never forced Gaussian. `replicates` independent clouds run as ONE batch,
+    so the gate carries its own noise. Returns the log-likelihood per replicate and the
+    posterior-mean `h` path.
+    """
+    generator = torch.Generator().manual_seed(seed)
+    shape, lam, su2 = (replicates, particles), jumps['Lambda'], theta['Sigma_U'] ** 2
+    count = torch.arange(utils.LV_MAX_JUMPS + 1, dtype=torch.float64)
+    share = torch.exp(-lam * delta + count * np.log(max(lam * delta, 1.0e-300))
+                      - torch.lgamma(count + 1.0))
+    size = (jumps['Mu_J'] ** 2 + jumps['Sigma_J'] ** 2) / delta
+    phi, w = lv_ou_pair(theta, delta)
+    stationary = w / np.sqrt(1.0 - phi * phi)
+
+    def draw():
+        return torch.randn(shape, generator=generator, dtype=torch.float64)
+
+    s = stationary[0] * draw()
+    l = theta['L'] + stationary[1] * draw()
+    weight = torch.full(shape, 1.0 / particles, dtype=torch.float64)
+    loglik, path = torch.zeros(replicates, dtype=torch.float64), []
+    for t in range(len(y)):
+        if t:
+            s = phi[0] * s + w[0] * draw()
+            l = theta['L'] + phi[1] * (l - theta['L']) + w[1] * draw()
+        h = torch.exp(l + s)
+        if seen[t]:
+            mean = torch.log(h.unsqueeze(-1) + count * size) + theta['Offset']
+            like = (share * torch.exp(-0.5 * (y[t] - mean) ** 2 / su2)).sum(-1) / np.sqrt(
+                2.0 * np.pi * su2)
+            loglik = loglik + torch.log((weight * like).sum(-1))
+            weight = weight * like
+            weight = weight / weight.sum(-1, keepdim=True)
+        path.append((weight * h).sum(-1))
+        # resample on effective sample size, not every step: the slow factor mixes over months, so
+        # a step that resamples flat weights costs it ancestors it cannot draw back
+        if float((1.0 / (weight * weight).sum(-1)).min()) < 0.5 * particles:
+            index = torch.multinomial(weight, particles, replacement=True, generator=generator)
+            s, l = s.gather(1, index), l.gather(1, index)
+            weight = torch.full_like(weight, 1.0 / particles)
+    return loglik.numpy(), torch.stack(path).mean(-1).numpy()
+
+
+class LogVar2FJCalibration(object):
+    """The P-measure historical estimate of the LogVar2FJ state (spec 5.5), whose purpose is the
+    correlation matrix and the priors and NOT the pricing parameters.
+
+    `log RV_t = l_t + s_t + u_t` measures the two-factor OU state through a range estimator. The
+    variance has its own shocks, so unlike GARCH the state is never a function of the observed
+    returns and this is a filter, not a recursion: the Kalman likelihood is exact and maximised by
+    AAD; the returns standardised by the filtered variance and thresholded give the P-measure jump
+    sample; the leverages are the regression of the diffusive remainder on the SMOOTHED state
+    shocks; and `delta` is `(z - rho_s eta_s - rho_l eta_l)/sqrt(c)`, the process's own
+    idiosyncratic Gaussian, so the framework's correlation is estimated on the object 6.1 applies
+    it to and no input needs rescaling.
+
+    What crosses into a pricing model (5.5.3) is that correlation, the two reversion speeds as
+    priors, and the slow pair `utils.LV_SLOW_HISTORY` names, which stage 4 pins by where the ladder
+    carries no wing. The vol-of-vols and leverages are a sanity table against the fitted factor and
+    nothing more - invariant in theory, and in practice neither risk-premium-free nor unattenuated
+    - and lambda, the jump sizes and the level never cross at all. `Scale_To_Sector` is 5.5.3's
+    last row, for an underlying with no liquid surface: the history's parameters are taken to the
+    sector's own implied values, per name, with the report stating each ratio.
+    """
+    model_type = utils.LV_SLOW_HISTORY[0]
+    fields = [
+        F('Jump_Threshold', 'Float', default=4.0,
+          description='Standard deviations of the filtered daily variance past which a return is '
+                      'one jump and not diffusion'),
+        F('Event_Days', 'Text', default='',
+          description='Declared corporate-event dates, comma separated - flagged and EXCLUDED '
+                      'rather than thresholded, since a scheduled event is not a jump draw'),
+        F('Particle_Count', 'Integer', default=1000,
+          description='Particles per replicate in the cross-check filter'),
+        F('Random_Seed', 'Integer', default=0,
+          description='Seed of the cross-check filter - the gate is a number, so it repeats'),
+        F('Implied_Values', 'Text', default='',
+          description='The fitted factor\'s own Q values as name=value pairs - the RIGHT-hand '
+                      'side of the P-vs-Q table, and what Scale_To_Sector scales onto'),
+        F('Scale_To_Sector', 'Text', default='No', values=['Yes', 'No'],
+          description='Spec 5.5.3\'s no-liquid-surface mode: write the sector\'s implied values '
+                      'in place of the history\'s own, stating each ratio')
+    ]
+
+    def __init__(self, model, param):
+        self.model = model
+        self.param = param
+        self.num_factors = 1
+
+    def implied(self):
+        """The declared Q values of `Implied_Values`, the sanity table's right-hand side."""
+        rows = [x for x in str(self.param['Implied_Values']).split(',') if x.strip()]
+        return {name.strip(): float(value) for name, value in (x.split('=') for x in rows)}
+
+    def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
+        threshold = float(self.param['Jump_Threshold'])
+        delta = 1.0 / float(num_business_days)
+        name, bar, mode = lv_bars(data_frame)
+        sector = self.implied() if self.param['Scale_To_Sector'] == 'Yes' else {}
+        if self.param['Scale_To_Sector'] == 'Yes' and not sector:
+            raise ValueError(
+                '{}: Scale_To_Sector is Yes and Implied_Values is blank. Spec 5.5.3 lets a whole '
+                'history cross into Q for an underlying with no liquid surface ONLY scaled to the '
+                "sector's own implied values, with the report stating the scaling - and there is "
+                'nothing here to scale to. Write the sector values, or leave the mode off and the '
+                'history stands as the P-measure estimate it is'.format(name))
+        _, estimator, fixed = LV_MEASURES[mode]
+        close = bar['CLOSE'].values
+        arg = {'c': close[1:], 'p': close[:-1]}
+        for key, fallback in (('OPEN', 'p'), ('HIGH', 'c'), ('LOW', 'c')):
+            arg[key[0].lower()] = bar[key].values[1:] if key in bar else arg[fallback]
+        rv, r = estimator(**arg), np.log(close[1:] / close[:-1])
+        y = np.log(np.where(rv > 0.0, rv, 1.0) * num_business_days)
+        event = np.isin(bar.index[1:], [(pd.Timestamp(x) - utils.excel_offset).days for x in
+                                        str(self.param['Event_Days']).split(',') if x.strip()])
+        seen = (rv > 0.0) & ~event
+
+        # to a FIXED POINT, at most three passes: a jump day's range is the jump's, so the first
+        # filter reads it as variance, and the mask the fit ends on has to be the mask the jump
+        # sample and the cross-check gate then read - one pass apart they are different series
+        flag = np.zeros(len(r), dtype=bool)
+        for _ in range(3):
+            theta, se, loglik, m, cov = lv_history_fit(y, seen & ~flag, delta, fixed)
+            h = np.exp(m.sum(1) + 0.5 * (cov[:, 0] + 2.0 * cov[:, 1] + cov[:, 2]))
+            drift = float(np.mean(r[~event & ~flag]))
+            found, jump, mu_j, sigma_j = lv_jump_split(
+                np.where(event, 0.0, r - drift), h * delta, threshold)
+            if np.array_equal(found, flag):
+                break
+            flag = found
+        seen = seen & ~flag
+        theta['Offset'] = fixed.get('Offset', -0.5 * theta['Sigma_U'] ** 2)
+        shocks = lv_smooth_shocks(m, cov, *lv_ou_pair(theta, delta), theta['L'])
+        z, keep = (r - drift - jump) / np.sqrt(h * delta), ~event[:-1]
+        rho, rho_cov, ridge = lv_leverage(shocks[keep], z[:-1][keep], utils.LV_C_MIN)
+        c = 1.0 - float(rho @ rho)
+        eps = (z[:-1] - shocks @ rho) / np.sqrt(c)
+
+        jumps = {'Lambda': float(flag.sum()) / (len(r) * delta), 'Mu_J': mu_j, 'Sigma_J': sigma_j,
+                 'Drift': drift}
+        pf_loglik, pf_h = lv_particle_gate(
+            y, seen, theta, jumps, delta, int(self.param['Particle_Count']), 4,
+            int(self.param['Random_Seed']))
+        miss = float(np.sqrt(np.mean((pf_h / h - 1.0) ** 2)))
+        count = max(float(flag.sum()), 1.0)
+        errors = dict(se, Rho_S=float(np.sqrt(rho_cov[0, 0])), Rho_L=float(np.sqrt(rho_cov[1, 1])),
+                      Lambda=jumps['Lambda'] / np.sqrt(count), Mu_J=sigma_j / np.sqrt(count),
+                      Sigma_J=sigma_j / np.sqrt(2.0 * count),
+                      Drift=float(np.std(r)) / np.sqrt(len(r)))
+        values = dict(theta, Rho_S=float(rho[0]), Rho_L=float(rho[1]), **jumps)
+        logging.info(
+            'LogVar2FJ history %s: %s on %d days, %d measured (%d jumps at %g sigma, %d events); '
+            'loglik %.2f', name, mode, len(r), int(seen.sum()), int(flag.sum()),
+            threshold, int(event.sum()), loglik)
+        for row in (('Kappa_S', 'Sigma_S', 'Rho_S'), ('Kappa_L', 'Sigma_L', 'Rho_L'),
+                    ('L', 'Sigma_U', 'Drift'), ('Lambda', 'Mu_J', 'Sigma_J')):
+            logging.info('  ' + '   '.join('%s %+.4f +- %.4f' % (n, values[n], errors[n])
+                                           for n in row))
+        pinned = [n for n in se if not LV_HIST_BOX[n][0] < theta[n] < LV_HIST_BOX[n][1]]
+        logging.info(
+            '  c %.4f (ridge %.3g, slow shock sd %.4f), eps sd %.4f, filtered h against RV '
+            '%.4f RMS in logs%s', c, ridge, float(shocks[:, 1].std()),
+            float(eps.std()),
+            float(np.sqrt(np.mean((np.log(h[seen]) - (y[seen] - theta['Offset'])) ** 2))),
+            '; ON ITS BOX BOUND: ' + ', '.join(pinned) if pinned else '')
+        for n, q in sorted(self.implied().items()):
+            logging.info('  P vs Q %s: %+.4f against %+.4f, ratio %+.4f', n, values[n], q,
+                         values[n] / q if q else float('nan'))
+        logging.info(
+            '  particle gate: %s - %d particles x 4 replicates, loglik %.2f (replicate sd %.2f) '
+            "against the Kalman's %.2f, h path %.2f%% RMS",
+            'PASS' if miss < 0.10 else 'FAIL', int(self.param['Particle_Count']),
+            pf_loglik.mean(), pf_loglik.std(ddof=1), loglik, 100.0 * miss)
+        if miss >= 0.10:
+            raise ValueError(
+                "{}: the particle filter reads the filtered h path {:.1f}% RMS from the Kalman's, "
+                'past the 10% spec 5.5.1 gates it at. The two agree only where the linear '
+                'measurement carries the whole of the variance, so what is wrong is the '
+                'measurement noise (sigma_u {:.4f} on the {} estimator) or the jump threshold '
+                '({:g} sigma, {} days)'.format(name, 100.0 * miss, theta['Sigma_U'], mode,
+                                               threshold, int(flag.sum())))
+
+        for n, q in sorted(sector.items()):
+            logging.info('  scaled to the sector: %s %+.4f -> %+.4f, ratio %+.4f', n, values[n], q,
+                         q / values[n] if values[n] else float('nan'))
+
+        param = dict({n: float(v) for n, v in dict(values, **sector).items()},
+                     **{n + '_SE': float(errors[n]) for n in errors})
+        param.update({'Measurement': mode, 'Jump_Count': int(flag.sum()), 'C': c,
+                      'Jump_Threshold': threshold, 'Log_Likelihood': loglik,
+                      'Calibration_DT_Years': delta})
+        return utils.CalibrationInfo(
+            param, [[1.0]], pd.DataFrame({name: eps}, index=bar.index[1:-1]).loc[keep])
+
+
 def process_class(sp_type):
     """The process `Model Configuration` names; an unknown name refuses by name."""
     cls = globals().get(sp_type)
