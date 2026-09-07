@@ -34,10 +34,11 @@ master_curve_list = {
     'ZAR': 'ZAR-SWAP'
 }
 
-def work(job_id, queue, result, price_factors, price_factor_interp,
-         price_models, sys_params, holidays):
-    # set the visible GPU
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(job_id)
+def work(job_id, num_devices, queue, result, price_factors, price_factor_interp,
+        price_models, sys_params, holidays):
+    # Set visibility before Derivus imports torch. Each worker sees its assigned physical GPU as
+    # local cuda:0; modulo deliberately permits more workers than devices.
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(job_id % num_devices) if num_devices else '-1'
 
     # log to file
     logging.basicConfig(level=logging.INFO,
@@ -76,11 +77,21 @@ def work(job_id, queue, result, price_factors, price_factor_interp,
 
 
 class Parent(object):
+    cuda_device_count = None
+
     def __init__(self, num_jobs):
+        # Discover once before `start` masks CUDA in the orchestration process. Importing torch in
+        # a Windows worker happens in a fresh interpreter, after `work` installs its own mask.
+        if Parent.cuda_device_count is None:
+            import torch
+
+            Parent.cuda_device_count = torch.cuda.device_count()
+
         self.queue = Queue()
         self.result = Queue()
         self.manager = Manager()
         self.NUMBER_OF_PROCESSES = num_jobs
+        self.NUMBER_OF_CUDA_DEVICES = Parent.cuda_device_count
         self.path = None
         self.cx = None
         self.ref = None
@@ -182,9 +193,10 @@ class Parent(object):
         sys_params = self.manager.dict(self.cx.params['System Parameters'])
         holidays = self.manager.dict(self.cx.holidays)
 
-        logging.info("starting {0} workers in {1}".format(self.NUMBER_OF_PROCESSES, input_path))
+        logging.info("starting {0} workers over {1} CUDA devices in {2}".format(
+            self.NUMBER_OF_PROCESSES, self.NUMBER_OF_CUDA_DEVICES, input_path))
         self.workers = [Process(target=work, args=(
-            i, self.queue, self.result, price_factors, price_factor_interp,
+            i, self.NUMBER_OF_CUDA_DEVICES, self.queue, self.result, price_factors, price_factor_interp,
             price_models, sys_params, holidays)) for i in range(self.NUMBER_OF_PROCESSES)]
 
         for w in self.workers:
@@ -316,7 +328,6 @@ def main():
             del context.params['System Parameters']['Volatility_Delta']
         if 'Master_Curves' in context.params['System Parameters']:
             del context.params['System Parameters']['Master_Curves']
-        context.write_market_file(args.market_file.replace('.json', '.dat'))
     else:
         logging.error('Invalid Job - aborting')
 
