@@ -12,7 +12,7 @@
 ########################################################################
 
 import importlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from .errors import BloombergRequestError, BloombergUnavailable, raise_response_error
 
@@ -120,33 +120,35 @@ class BloombergSession:
         self.stop()
         return False
 
-    def reference_data(self, securities: Sequence[str],
-                       fields: Sequence[str]) -> dict[str, dict[str, object]]:
+    def reference_data(self, securities: Sequence[str], fields: Sequence[str],
+                       overrides: Mapping[str, object] = None) -> dict[str, dict[str, object]]:
         """`{security: {field: value}}`, refusing the whole batch on ANY per-security error: a
         production tick built from a partial answer is a wrong market, not a smaller one."""
         response = {}
-        for security, error, values in self._walked(securities, fields):
+        for security, error, values in self._walked(securities, fields, overrides):
             if error is not None:
                 raise_response_error('{}: {}'.format(security, error))
             response[security] = values
         return response
 
-    def reference_data_report(self, securities: Sequence[str],
-                              fields: Sequence[str]) -> dict[str, dict[str, object]]:
+    def reference_data_report(self, securities: Sequence[str], fields: Sequence[str],
+                              overrides: Mapping[str, object] = None
+                              ) -> dict[str, dict[str, object]]:
         """Per-security outcomes, for DISCOVERY: `{security: {'ok', 'error', 'fields'}}` with every
         requested name answered, a refused ticker reported rather than raised. A request-level
         error - a timeout, a `responseError` - still raises: that is transport, not a name."""
-        return self._reported(securities, self._walked(securities, fields))
+        return self._reported(securities, self._walked(securities, fields, overrides))
 
-    def bulk_reference_data_report(self, securities: Sequence[str],
-                                   fields: Sequence[str]) -> dict[str, dict[str, object]]:
+    def bulk_reference_data_report(self, securities: Sequence[str], fields: Sequence[str],
+                                   overrides: Mapping[str, object] = None
+                                   ) -> dict[str, dict[str, object]]:
         """`reference_data_report`'s contract over BULK fields: same `{security: {'ok', 'error',
         'fields'}}`, same tolerance, but each field answers a LIST OF ROWS rather than one value.
 
         Separate from the scalar reader because a field means something different here, not because
         the policy differs; both walk one `_request` under their own extractor.
         """
-        return self._reported(securities, self._walked_bulk(securities, fields))
+        return self._reported(securities, self._walked_bulk(securities, fields, overrides))
 
     @staticmethod
     def _reported(securities, walked):
@@ -158,18 +160,27 @@ class BloombergSession:
                                          'fields': {}})
         return report
 
-    def _walked(self, securities, fields):
+    def _walked(self, securities, fields, overrides=None):
         """The event walk the SCALAR readers share: `(security, error, values)` per name, `error`
         carrying Bloomberg's own text where it refused one.
 
         Materialized, so the response is DRAINED before either policy raises and the session is
         left clean for its next request. The cost is that a transport failure on a later event
         outranks a per-security error already walked."""
-        return self._drained(lambda: self._walk(securities, fields))
+        return self._drained(self._walking(self._walk, securities, fields, overrides))
 
-    def _walked_bulk(self, securities, fields):
+    def _walked_bulk(self, securities, fields, overrides=None):
         """`_walked` over the bulk extractor - the same drain, wrapping and failure precedence."""
-        return self._drained(lambda: self._walk_bulk(securities, fields))
+        return self._drained(self._walking(self._walk_bulk, securities, fields, overrides))
+
+    @staticmethod
+    def _walking(walk, securities, fields, overrides):
+        """The walk, bound to its request. `overrides` is passed ONLY when there are any, so a
+        subclass overriding the walk with the two arguments it has always taken - the canned walks
+        every offline gate in this package is built on - keeps working."""
+        if overrides:
+            return lambda: walk(securities, fields, overrides)
+        return lambda: walk(securities, fields)
 
     def _drained(self, walk):
         if self._session is None or self._service is None or self._api is None:
@@ -181,13 +192,17 @@ class BloombergSession:
         except Exception as error:
             raise BloombergRequestError('Bloomberg reference-data request failed: {}'.format(error)) from error
 
-    def _walk(self, securities, fields):
-        yield from self._request(securities, fields, _scalar_value)
+    def _walk(self, securities, fields, overrides=None):
+        yield from self._request(securities, fields, _scalar_value, overrides)
 
-    def _walk_bulk(self, securities, fields):
-        yield from self._request(securities, fields, _bulk_value)
+    def _walk_bulk(self, securities, fields, overrides=None):
+        yield from self._request(securities, fields, _bulk_value, overrides)
 
-    def _request(self, securities, fields, value_of):
+    def _request(self, securities, fields, value_of, overrides=None):
+        """`overrides` is `{fieldId: value}` - the request-level parameters a field reads in place
+        of its default (`IVOL_MATURITY`, `BEST_FPERIOD_OVERRIDE` and their kind), sent as
+        Bloomberg's own `overrides` array. Without one, a field whose NAME carries a tenor still
+        answers at the service's default maturity."""
         request = self._service.createRequest('ReferenceDataRequest')
         security_element = request.getElement('securities')
         field_element = request.getElement('fields')
@@ -195,6 +210,12 @@ class BloombergSession:
             security_element.appendValue(security)
         for field in fields:
             field_element.appendValue(field)
+        if overrides:
+            override_element = request.getElement('overrides')
+            for field, value in overrides.items():
+                row = override_element.appendElement()
+                row.setElement('fieldId', str(field))
+                row.setElement('value', str(value))
         self._session.sendRequest(request)
 
         while True:

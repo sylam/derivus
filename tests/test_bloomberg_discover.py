@@ -335,3 +335,78 @@ def test_progress_counts_answered_names_and_lands_exactly_on_the_total(tmp_path,
                        on_batch=lambda done, count: threaded.append((done, count)))
     assert threaded and threaded[-1] == (total, total)
 
+
+class Element:
+    """The two shapes `_request` touches on a blpapi request: an ARRAY it appends to and a ROW it
+    sets named values on. Enough of the SDK's element to record what was assembled, no more."""
+
+    def __init__(self):
+        self.values, self.rows, self.named = [], [], {}
+
+    def appendValue(self, value):
+        self.values.append(value)
+
+    def appendElement(self):
+        row = Element()
+        self.rows.append(row)
+        return row
+
+    def setElement(self, name, value):
+        self.named[name] = value
+
+
+class Request:
+    def __init__(self):
+        self.elements = {}
+
+    def getElement(self, name):
+        return self.elements.setdefault(name, Element())
+
+
+class Assembling(BloombergSession):
+    """A started session whose service hands out recording requests and whose event loop answers
+    one empty RESPONSE - so what reaches `sendRequest` is the assertion."""
+
+    def __init__(self):
+        super().__init__()
+        self.sent = []
+        self._api = type('api', (), {'Event': type('Event', (), {'TIMEOUT': 0, 'RESPONSE': 1})})
+        self._service = type('service', (), {'createRequest': staticmethod(
+            lambda name: Request())})
+        self._session = self
+
+    def sendRequest(self, request):
+        self.sent.append(request)
+
+    def nextEvent(self, timeout_ms):
+        return type('event', (), {'eventType': lambda self=None: 1, '__iter__':
+                                  lambda self=None: iter(())})()
+
+
+def test_an_override_rides_the_request_and_its_absence_sends_no_element():
+    """`IVOL_MATURITY` and its kind are REQUEST parameters, not fields: without an `overrides`
+    array a field whose name carries a tenor answers at the service's default maturity. The
+    element is assembled only when one is asked for, so every existing caller sends the request
+    it always sent."""
+    plain = Assembling()
+    plain.reference_data_report(['NKY Index'], ('3MTH_IMPVOL_100.0%MNY_DF',))
+    assert 'overrides' not in plain.sent[0].elements
+    # and a canned two-argument walk, which is what every offline gate in this package overrides,
+    # still answers under the new signature
+    assert Walked([('GOOD Curncy', None, {'NAME': 'GOOD-NAME'})]).reference_data_report(
+        ['GOOD Curncy'], ('NAME',))['GOOD Curncy']['ok'] is True
+
+    session = Assembling()
+    session.reference_data_report(['NKY Index'], ('12MTH_IMPVOL_100.0%MNY_DF', 'IVOL_MATURITY'),
+                                  {'IVOL_MATURITY': '12M', 'IVOL_MONEYNESS': 100})
+    request = session.sent[0]
+    assert request.elements['securities'].values == ['NKY Index']
+    assert request.elements['fields'].values == ['12MTH_IMPVOL_100.0%MNY_DF', 'IVOL_MATURITY']
+    assert [row.named for row in request.elements['overrides'].rows] == [
+        {'fieldId': 'IVOL_MATURITY', 'value': '12M'},
+        {'fieldId': 'IVOL_MONEYNESS', 'value': '100'}]
+
+    bulk = Assembling()
+    bulk.bulk_reference_data_report(['NKY Index'], ('OPT_CHAIN',), {'SINGLE_DATE_OVERRIDE': 1})
+    assert [row.named for row in bulk.sent[0].elements['overrides'].rows] == [
+        {'fieldId': 'SINGLE_DATE_OVERRIDE', 'value': '1'}]
